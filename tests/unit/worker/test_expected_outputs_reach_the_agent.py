@@ -22,9 +22,15 @@ the worker's half:
   runner's own stdout and stderr logs and transcript -- is never in those
   instructions. Telling an agent to write a file the platform then overwrites,
   or is writing to at the same moment, is worse than telling it nothing;
-* an attempt that ends without one of them says so, in one log line and in its
-  result summary, and is NOT failed for it -- whether it should be is an open
-  owner decision.
+* an attempt whose runner finished cleanly but did not upload one of them
+  FAILS, RETRYABLY, with the missing names as its cause (owner decision on
+  #149, 2026-09-25, replacing the report-only behaviour this PR first
+  shipped). The task goes back to READY while it has attempts left and to
+  FAILED once `max_attempts` is spent, so a dependant never starts on a parent
+  that did not write what it promised. An attempt that would be retried
+  publishes nothing, as a parked one does not: the work is not finished;
+* an attempt whose runner failed on its own keeps its own cause, and the
+  missing names are still recorded.
 
 `test_work_artifacts_link.py` holds the other half of #149: the `./artifacts`
 link, for the agent that reads the right path and writes somewhere else anyway.
@@ -41,6 +47,8 @@ import json
 import tarfile
 from pathlib import Path
 from typing import Any
+
+import pytest
 
 from agent_worker.errors import ExitCode
 from agent_worker.objectstore import LocalObjectStore
@@ -234,7 +242,7 @@ def test_the_prompt_is_unchanged_when_every_expected_name_is_the_runners_own(
 
 
 # ---------------------------------------------------------------------------
-# the worker: the names reach the runner, and a missing one is reported
+# the worker: the names reach the runner, and a missing one fails the attempt
 # ---------------------------------------------------------------------------
 
 
@@ -302,22 +310,155 @@ def test_the_workers_own_patch_is_never_handed_to_the_runner(db, store, worker_f
     assert _runner_input(store).get(RUNNER_INPUT_KEY) == ["notes.md"]
 
 
-def test_a_missing_expected_output_is_named_in_one_line_and_does_not_fail_the_attempt(
+def _retrying(db: Any) -> list[dict[str, Any]]:
+    return [e for e in db.events("task_1") if e["type"] == "retrying"]
+
+
+def test_a_missing_expected_output_fails_the_attempt_retryably_and_names_it(
     db, worker_factory, log_stream
 ):
+    """The owner's decision on #149: the attempt FAILS, retryably, with the
+    missing names as its cause. Attempt 1 of 3, so the task goes back to READY
+    and gives its capacity back; the dependant does not start."""
     _seed(db, ["notes.md", "scan-01.md"], artifact_name="notes.md")
     worker, _config, _exporter = worker_factory()
 
-    assert worker.run() == ExitCode.OK
+    assert worker.run() == ExitCode.FAILED
     task = db.doc("tasks/task_1")
-    # NOT failed: whether it should be is the owner's decision, not this one.
-    assert task["state"] == TaskState.SUCCEEDED.value
+    assert task["state"] == TaskState.READY.value, task["state"]
+    assert task["current_lease_id"] is None
+    assert task["next_eligible_at"] is not None
+    assert task.get("completed_at") is None, "a task that will run again is not complete"
+    assert db.doc("leases/lease_1")["released_at"] is not None, "capacity was not returned"
+    # The cause names the file that is missing, and only that one.
+    assert "scan-01.md" in task["last_error"]
+    assert "notes.md" not in task["last_error"]
     assert task["result_summary"].get(MISSING_KEY) == ["scan-01.md"]
+    assert "scan-01.md" in db.doc("attempts/att_1")["error"]
+
+    retrying = _retrying(db)
+    assert len(retrying) == 1, db.event_types("task_1")
+    detail = retrying[0]["detail"]
+    assert detail["cause"] == "expected_outputs_missing"
+    assert detail["missing"] == ["scan-01.md"]
+    assert detail["to_state"] == TaskState.READY.value
+    assert (detail["attempt_count"], detail["max_attempts"]) == (1, 3)
+    assert "succeeded" not in db.event_types("task_1")
 
     lines = _warnings_naming(log_stream, "scan-01.md")
     assert len(lines) == 1, lines
     # The file that WAS written is not reported as missing.
     assert "notes.md" not in lines[0]["message"]
+
+
+def test_the_last_attempt_without_an_expected_output_fails_the_task(db, worker_factory):
+    """Bounded by `max_attempts`: attempt 3 of 3 ends FAILED, for good, with the
+    same cause. The dependant is then cancelled as for any failed parent."""
+    _seed(db, ["scan-01.md"], artifact_name="notes.md")
+    db.doc("tasks/task_1")["attempt_count"] = 3
+    worker, _config, _exporter = worker_factory()
+
+    assert worker.run() == ExitCode.FAILED
+    task = db.doc("tasks/task_1")
+    assert task["state"] == TaskState.FAILED.value, task["state"]
+    assert task["completed_at"] is not None
+    assert task.get("next_eligible_at") is None, "a retry time on a task that will not run"
+    assert "scan-01.md" in task["last_error"]
+    assert db.doc("leases/lease_1")["released_at"] is not None
+    assert _retrying(db) == []
+    assert "failed" in db.event_types("task_1")
+
+
+def test_a_cancel_requested_before_the_attempt_ends_is_not_undone_by_a_retry(
+    db, worker_factory, monkeypatch
+):
+    """The user's decision survives a retry, as it does in the reconciler's
+    repair: a cancel that lands after the agent exits ends CANCELLED, not
+    READY. Read inside the transaction that decides, not from the task the
+    worker fetched when it started."""
+    _seed(db, ["scan-01.md"], artifact_name="notes.md")
+    worker, _config, _exporter = worker_factory()
+    upload = worker._upload_outputs
+
+    def cancel_then_upload(**kwargs: Any) -> dict[str, Any]:
+        db.doc("tasks/task_1")["cancel_requested"] = True
+        return upload(**kwargs)
+
+    monkeypatch.setattr(worker, "_upload_outputs", cancel_then_upload)
+
+    worker.run()
+    task = db.doc("tasks/task_1")
+    assert task["state"] == TaskState.CANCELLED.value, task["state"]
+    assert db.doc("leases/lease_1")["released_at"] is not None
+
+
+def test_an_attempt_that_will_be_retried_publishes_nothing(db, worker_factory, monkeypatch):
+    """Like a park: the work is not finished, and the next attempt publishes it.
+    Published now, the retry would push again from a checkpoint taken before
+    this attempt's auto-commit, and be refused as a non-fast-forward."""
+    _seed(db, ["scan-01.md"], artifact_name="notes.md")
+    worker, _config, _exporter = worker_factory()
+    seen: list[dict[str, Any]] = []
+
+    def harvest(**kwargs: Any) -> None:
+        seen.append(kwargs)
+        return None
+
+    monkeypatch.setattr(worker, "_harvest_git", harvest)
+
+    worker.run()
+    assert [call["publish"] for call in seen] == [False], seen
+    assert "expected output" in seen[0].get("withheld", ""), seen
+
+
+@pytest.mark.parametrize(
+    "attempt_count, written",
+    [(1, "scan-01.md"), (3, "notes.md")],
+    ids=["every-expected-output-written", "missing-on-the-last-attempt"],
+)
+def test_an_attempt_that_will_not_run_again_publishes(
+    db, worker_factory, monkeypatch, attempt_count, written
+):
+    """The control for the test above: publishing is withheld only from an
+    attempt that is going to run again. A clean attempt publishes, and so does
+    the last one, like any other failed attempt."""
+    _seed(db, ["scan-01.md"], artifact_name=written)
+    db.doc("tasks/task_1")["attempt_count"] = attempt_count
+    worker, _config, _exporter = worker_factory()
+    seen: list[bool] = []
+
+    def harvest(*, publish: bool, **_kwargs: Any) -> None:
+        seen.append(publish)
+        return None
+
+    monkeypatch.setattr(worker, "_harvest_git", harvest)
+    worker.run()
+    assert seen == [True], seen
+
+
+def test_a_runner_that_failed_on_its_own_keeps_its_own_cause(db, worker_factory):
+    """The retry is for a runner that finished cleanly and left a file out. A
+    runner that failed fails as it always has, terminal and with its own error;
+    the missing names are still recorded next to it."""
+    seed_attempt(
+        db,
+        task_input={
+            "prompt": "x",
+            "steps": 1,
+            "sleep_seconds": 0.01,
+            "fail": True,
+            "fail_message": "the agent gave up",
+        },
+    )
+    db.doc("tasks/task_1")["metadata"] = {METADATA_KEY: ["scan-01.md"]}
+    worker, _config, _exporter = worker_factory()
+
+    assert worker.run() == ExitCode.FAILED
+    task = db.doc("tasks/task_1")
+    assert task["state"] == TaskState.FAILED.value
+    assert "the agent gave up" in task["last_error"]
+    assert task["result_summary"].get(MISSING_KEY) == ["scan-01.md"]
+    assert _retrying(db) == []
 
 
 def test_nothing_is_reported_when_every_expected_output_was_written(db, worker_factory, log_stream):
@@ -353,9 +494,10 @@ def test_a_file_written_but_not_uploaded_is_named_as_such(db, worker_factory, lo
     _seed(db, ["notes.md"], artifact_name="notes.md")
     worker, _config, _exporter = worker_factory(max_artifact_bytes=4)
 
-    assert worker.run() == ExitCode.OK
+    assert worker.run() == ExitCode.FAILED
     task = db.doc("tasks/task_1")
-    assert task["state"] == TaskState.SUCCEEDED.value
+    # Missing for the dependant, so failed retryably like a file never written.
+    assert task["state"] == TaskState.READY.value
     assert task["result_summary"].get(MISSING_KEY) == ["notes.md"]
     lines = _warnings_naming(log_stream, "notes.md")
     missing_lines = [r for r in lines if "not uploaded" in r["message"]]
