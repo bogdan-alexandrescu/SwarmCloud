@@ -748,7 +748,7 @@ export function canonical(r: Route): string {
  * the list (`canonical`); only the reads scope ignores it.
  */
 function readsKey(r: Route): string {
-  return canonical(r)
+  return canonical({ ...r, list: null })
 }
 
 export function App() {
