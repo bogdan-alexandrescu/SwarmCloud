@@ -178,7 +178,7 @@ class ControlStore:
         The claim is written BEFORE the sweep runs, not after. A sweep that
         crashes half way therefore waits a full interval before trying again,
         which is the safe direction: the alternative is a failing sweep relisting
-        the entire bucket on every five-minute tick for as long as it keeps
+        the entire bucket on every one-minute tick for as long as it keeps
         failing.
         """
         collection, document = self.SWEEP_STATE_PATH

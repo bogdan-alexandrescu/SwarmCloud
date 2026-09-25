@@ -36,8 +36,8 @@ inside the grace too, before any rule has tried to delete the Job. The worker
 writes the terminal state first and releases its lease in a separate write
 (`ControlPlane.finish`). A worker that wedges between the two leaves a finished
 task, an unreleased lease and a pod that is still up. The reconciler runs every
-five minutes, so its first pass after that almost always lands inside the
-300s grace. On that pass, nothing is deleted and nothing is released. The
+minute, so its first several passes after that land inside the 300s grace. On
+those passes, nothing is deleted and nothing is released. The
 lease's 2 units on each of the seven pools stay held, because the pod is still
 using them. On the first pass after the grace, the Job is deleted, and only then
 is the lease released. If the delete is refused, the lease stays held and the
