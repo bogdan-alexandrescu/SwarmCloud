@@ -37,6 +37,7 @@ from swarm_common.models import Lease, Task, Tenant, utcnow
 from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES, resolve_backend
 from swarm_common.states import PENDING_STATES, EventType, ParkReason, TaskState
 
+from .credentials import AccountPool, credential_for
 from .dispatch import BackendRouter, DispatchError
 from .fairness import AgingConfig, round_robin_order
 from .metrics import SchedulerMetrics
@@ -187,11 +188,19 @@ class Scheduler:
         metrics: SchedulerMetrics | None = None,
         now: Callable[[], datetime] = utcnow,
         monotonic: Callable[[], float] = time.monotonic,
+        pool: AccountPool | None = None,
     ) -> None:
         self._settings = settings
         self._store = store
         self._router = router
         self._metrics = metrics or SchedulerMetrics()
+        # The account pool admission and the credential sweep ask about
+        # (credentials.py). `main.build_scheduler` hands the SAME instance to
+        # the Cloud Run dispatcher, so the Job's secret mount is decided on the
+        # list admission read, and `drain()` forgets it at the top of each run.
+        self._pool = pool if pool is not None else AccountPool.for_deployment(
+            settings, store.db
+        )
         self._now = now
         self._monotonic = monotonic
         self._aging = AgingConfig(
@@ -245,6 +254,8 @@ class Scheduler:
         self._topup_tenant_ids: list[str] | None = None
         self._workflow_verdicts = {}
         self._swept_workflows = set()
+        # A loan made or withdrawn since the last drain is seen by this one.
+        self._pool.forget()
 
         if self._store.dispatch_paused():
             self._metrics.paused.set(1)
@@ -449,14 +460,19 @@ class Scheduler:
             )
             return False
 
-        if profile.provider and profile.provider not in tenant.credentials:
-            # Admitting this would start a container that can only fail, and it
-            # would hold a slot while doing so.
+        # ONE QUESTION, asked here, in the credential sweep and by the Cloud
+        # Run Job's secret mount: can this tenant run this profile, on a key of
+        # its own or on a pool account it may use (credentials.py, #169). No
+        # means a container that can only park or fail, holding a slot while
+        # it does, so it parks here, before any lease. The detail names what
+        # the account pool answered, so the park says what would clear it.
+        credential = credential_for(profile, tenant, self._pool)
+        if not credential.runnable:
             self._park(
                 task,
                 ParkReason.CREDENTIAL_MISSING,
                 report,
-                detail={"provider": profile.provider},
+                detail=credential.park_detail(),
             )
             return False
 
@@ -874,7 +890,14 @@ class Scheduler:
         return promoted
 
     def _promote_credentials(self, report: DrainReport) -> int:
-        """Re-ready tasks whose tenant has since registered the missing key.
+        """Re-ready tasks that admission would now let run.
+
+        The same question admission asks (`credential_for`): the tenant has
+        since registered the missing key, or has since been lent -- or has
+        registered -- a pool account that serves the profile. Asked in any
+        other words, a task this sweep promotes could be parked again by
+        admission a moment later, or one admission would run could wait here
+        for a key nobody needs to register.
 
         A step of a failed `fail_workflow` workflow is cancelled here instead,
         which can happen long before its key is registered. `report` is
@@ -893,11 +916,12 @@ class Scheduler:
             profile = RUNNER_PROFILES.get(task.runner_profile)
             if profile is None:
                 continue
-            if not profile.provider or profile.provider in tenant.credentials:
+            credential = credential_for(profile, tenant, self._pool)
+            if credential.runnable:
                 if self._promote(
                     task,
                     kind="credential",
-                    detail={"reason": "credential_registered", "provider": profile.provider},
+                    detail=credential.promote_detail(),
                     report=report,
                 ):
                     promoted += 1

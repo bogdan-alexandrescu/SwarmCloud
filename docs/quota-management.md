@@ -167,12 +167,35 @@ From `swarm_common.states.ParkReason`. None of these cost compute:
 | `DEPENDENCY_INCOMPLETE` | upstream workflow step unfinished | dependency sweep |
 | `MANUAL_PAUSE` | an operator paused it | `resume-swarm.sh` |
 | `BUDGET_EXHAUSTED` | tenant budget spent | budget reset / admin raise |
-| `CREDENTIAL_MISSING` | tenant has no key for this provider | admin adds the key |
+| `CREDENTIAL_MISSING` | tenant has no key for this provider, and no pool account can run the profile for it | admin adds the key, or lends the tenant an account |
 
 `CREDENTIAL_MISSING` is worth calling out: a tenant that has not registered a key
 is **not** an error. The task parks, costs nothing, and starts by itself once an
 admin adds the key. The alternative — failing at runtime — burns an attempt, a
 container start and a slot to discover something the control plane already knew.
+
+**A key is not the only credential.** A tenant with no key of its own is
+admitted when an account in the pool can run the profile for it, and parks only
+when none can (#169). One function decides this,
+`apps/scheduler/scheduler/credentials.py`. Admission asks it, and so do the
+credential sweep that re-readies these parks and the Cloud Run Job's secret
+mount. The API no longer judges it at submission. An account can run a profile
+for a tenant only when all four of these hold:
+
+* the deployment has a quota broker (`QUOTA_BROKER_URL`);
+* the profile takes a subscription token (`CLAUDE_CODE_OAUTH_TOKEN` in its
+  `secrets`). `claude-code` does. **`browser` does not**, so no account can run
+  it, and a keyless tenant's browser work always needs a key;
+* the account is of the profile's provider;
+* the account is **owned by or lent to** that tenant. Having a pool does not
+  mean the pool serves everyone. A personal tenant nobody has lent an account to
+  is served by nothing (`quota_broker.accounts.accounts_serving`, invariant 9).
+
+The park's `parked` event records which of these failed, as
+`detail.account_pool`: `no_broker_configured`, `profile_takes_no_subscription`
+or `no_accounts_registered`. A spent or paused account is not one of them. That
+is the pool's own wait, and the worker parks on it as
+`PROVIDER_QUOTA_EXHAUSTED` with the broker's reset time.
 
 ---
 
@@ -228,7 +251,7 @@ original state on every exit path.
 
 | Symptom | Likely cause | Check |
 |---|---|---|
-| Tasks park immediately on submit | tenant has no key for the profile's provider | `park_reason: CREDENTIAL_MISSING`; `scripts/create-secrets.sh --list` |
+| Tasks park on their first drain after submit | tenant has no key for the profile's provider, and no pool account can run the profile for it | `park_reason: CREDENTIAL_MISSING`; the `parked` event's `detail.account_pool` says which condition in section 4 failed; `scripts/create-secrets.sh --list` |
 | Provider stuck at a low target | AIMD is still climbing after a 429 storm | `quota/{provider}:{tenant}.success_count` vs `AIMD_SUCCESS_THRESHOLD` |
 | Provider never recovers | `state=EXHAUSTED` and nothing clears it | `reset_at` in the future, or the broker tick is not running |
 | One tenant's 429s throttle everyone | **a regression, not an expected mode** — section 3 forbids a tenant-derived limit on `provider:X`. Compare `provider:X` and `provider:X:tenant:Y` in `status.sh`; if `provider:X` carries a `quota_derived_limit` while any enabled tenant is healthy, `_recompute_provider_pool` has broken and the AIMD test that covers it should be failing |
