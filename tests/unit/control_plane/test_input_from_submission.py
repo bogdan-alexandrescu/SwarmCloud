@@ -17,17 +17,28 @@ the whole upstream run before anybody heard about it.
 
 WHAT IS ASSERTED, AND WHY IT IS A PROPERTY RATHER THAN A SHAPE. A refusal
 proves nothing on its own: a handler that wrote the tasks and THEN raised would
-return the same 422 and leave the upstream steps enqueued to burn exactly the
+return the same 400 and leave the upstream steps enqueued to burn exactly the
 compute this exists to save. So every refusal below is checked for three things
 together: the status and code, the step/parents/filename in the message (the
 only part a person can act on), and that NOTHING was created -- no task
 document, no workflow document, no scheduler wake.
 
-The status is 422 `invalid_dag`, not 400. That is the status of every other
-refusal `validate_dag` makes, including the sibling `input_from`-must-be-a-
-`depends_on` rule, and the only 4xx the New Workflow screen maps to "invalid"
-(`SubmitWorkflow.tsx` `KIND_BY_STATUS`); a 400 would render there as a server
-error.
+THE STATUS IS 400 `invalid_dag`, BECAUSE THE OWNER'S BRIEF FOR #64 SAID 400.
+The first cut of PR #65 returned 422 instead, the status of every other
+`validate_dag` refusal, on the grounds that the New Workflow screen mapped
+only 422 to "invalid". That revised a decision that was not the lane's to
+revise. The screen now maps 400 to "invalid" too
+(`src/__tests__/submit.workflow.refusal.test.ts` holds it), and the sibling
+refusals -- a cycle, a dangling dependency, an `input_from` source that is not
+a `depends_on` -- keep their 422.
+
+A WORKFLOW-LEVEL `metadata.input_from` IS THE SAME DECLARATION BY ANOTHER
+DOOR. `submit_workflow` copies the workflow's `metadata` onto every step's
+task and replaces `input_from` only on a step that declares its own. Every
+root step declares none (it has no `depends_on` for one to name), so a
+workflow-level `metadata.input_from` reaches at least one task verbatim, keyed
+by upstream TASK id, and the worker refuses it there exactly as it refused
+merge-1. Section 5 holds that door to the same rule.
 
 THE LAST SECTION BINDS THE RESTATEMENT TO THE WORKER. swarm-api cannot import
 `agent_worker` (images/swarm-api/Dockerfile ships apps/common and apps/swarm-api
@@ -53,12 +64,11 @@ from swarm_api.validation import StepSpec, validate_dag
 from .conftest import auth_header
 
 
-def _post(client, steps: list[dict[str, Any]]):
-    return client.post(
-        "/v1/workflows",
-        headers=auth_header("alice"),
-        json={"steps": steps, "on_step_failure": "continue"},
-    )
+def _post(client, steps: list[dict[str, Any]], *, metadata: dict[str, Any] | None = None):
+    body: dict[str, Any] = {"steps": steps, "on_step_failure": "continue"}
+    if metadata is not None:
+        body["metadata"] = metadata
+    return client.post("/v1/workflows", headers=auth_header("alice"), json=body)
 
 
 def _created(db) -> list[str]:
@@ -81,7 +91,8 @@ def _join(step_id: str, input_from: dict[str, str]) -> dict[str, Any]:
 
 
 def _assert_refused_before_anything_was_created(response, db, api_context) -> dict[str, Any]:
-    assert response.status_code == 422, response.text
+    # 400, as the owner's brief for #64 specified. Not 422: see the header.
+    assert response.status_code == 400, response.text
     body = response.json()
     assert body["code"] == "invalid_dag", body
     assert _created(db) == [], (
@@ -298,3 +309,120 @@ def test_every_filename_the_api_accepts_the_worker_can_stage(tmp_path: Path):
     # and both outcomes occurred -- exactly the safe names were accepted.
     assert len(accepted) + len(refused) == len(corpus)
     assert sorted(accepted) == sorted(safe), (accepted, refused)
+
+
+# --------------------------------------------------------------------------
+# 5. A workflow-level metadata.input_from: the same declaration, another door
+# --------------------------------------------------------------------------
+#
+# `submit_workflow` builds each step's task with `{**spec.metadata, ...}` and
+# replaces `input_from` only on a step that declares its own. A root step
+# cannot declare one (it has no `depends_on` for it to name), so whatever the
+# workflow's own `metadata.input_from` says reaches every root step's task,
+# keyed by upstream TASK id, exactly as the worker reads it. The worker refuses
+# a colliding or unsafe one there, after the other roots have been enqueued.
+
+MALFORMED_DECLARATIONS = [
+    ["task_earlier"],
+    [],
+    "task_earlier:notes.md",
+    3,
+    {"": "notes.md"},
+    {"   ": "notes.md"},
+    {"task_earlier": 3},
+    {"task_earlier": None},
+    {"task_earlier": ["notes.md"]},
+]
+
+
+def _roots_and_join() -> list[dict[str, Any]]:
+    """Two roots, which inherit the workflow's metadata, and a join, which has its own."""
+    return [
+        _root("scan-A"),
+        _root("scan-B"),
+        _join("merge-1", {"scan-A": "scan-A-notes.md", "scan-B": "scan-B-notes.md"}),
+    ]
+
+
+def test_a_workflow_level_input_from_that_collides_is_refused_before_anything_is_created(
+    client, db, api_context
+):
+    metadata = {"input_from": {"task_earlier_a": "notes.md", "task_earlier_b": "notes.md"}}
+
+    body = _assert_refused_before_anything_was_created(
+        _post(client, _roots_and_join(), metadata=metadata), db, api_context
+    )
+
+    message = body["message"]
+    assert "metadata.input_from" in message, message
+    for upstream in ("task_earlier_a", "task_earlier_b"):
+        assert upstream in message, f"{upstream} is not named in: {message}"
+    assert "notes.md" in message, message
+    assert "distinct" in message.lower(), message
+    assert body["detail"]["filename"] == "notes.md"
+    assert sorted(body["detail"]["colliding_upstream_tasks"]) == [
+        "task_earlier_a",
+        "task_earlier_b",
+    ]
+
+
+@pytest.mark.parametrize("filename", UNSAFE_FILENAMES)
+def test_a_workflow_level_input_from_with_an_unsafe_filename_is_refused_before_anything_is_created(
+    client, db, api_context, filename
+):
+    metadata = {"input_from": {"task_earlier": filename}}
+
+    body = _assert_refused_before_anything_was_created(
+        _post(client, _roots_and_join(), metadata=metadata), db, api_context
+    )
+
+    assert "metadata.input_from" in body["message"], body["message"]
+    assert "'task_earlier'" in body["message"], body["message"]
+    assert body["detail"]["input_from"] == "task_earlier"
+
+
+@pytest.mark.parametrize("declaration", MALFORMED_DECLARATIONS, ids=repr)
+def test_a_malformed_workflow_level_input_from_is_refused_before_anything_is_created(
+    client, db, api_context, declaration
+):
+    body = _assert_refused_before_anything_was_created(
+        _post(client, _roots_and_join(), metadata={"input_from": declaration}), db, api_context
+    )
+    assert "metadata.input_from" in body["message"], body["message"]
+
+
+@pytest.mark.parametrize("declaration", MALFORMED_DECLARATIONS, ids=repr)
+def test_every_malformed_declaration_the_api_refuses_the_worker_refuses_too(declaration):
+    """The API must not refuse a declaration the worker would have staged."""
+    with pytest.raises(InputUnavailable):
+        worker_inputs.declared_inputs({"input_from": declaration})
+
+
+def test_a_well_formed_workflow_level_input_from_still_reaches_the_root_steps(client, db):
+    """Refusing the bad shapes must not remove the good one: a root step still
+    carries the workflow's declaration, as it did before #64."""
+    metadata = {"input_from": {"task_earlier": "notes.md"}, "unit": "payments"}
+
+    response = _post(client, _roots_and_join(), metadata=metadata)
+
+    assert response.status_code == 201, response.text
+    by_step = {s["step_id"]: s for s in response.json()["workflow"]["steps"]}
+    for root in ("scan-A", "scan-B"):
+        task = db.docs[f"tasks/{by_step[root]['task_id']}"]
+        assert task["metadata"]["input_from"] == {"task_earlier": "notes.md"}
+        assert task["metadata"]["unit"] == "payments"
+
+
+@pytest.mark.parametrize("absent", [None, {}])
+def test_an_empty_workflow_level_input_from_is_accepted(client, absent):
+    """`declared_inputs` reads None and {} as "stages nothing", so the API does too."""
+    response = _post(client, _roots_and_join(), metadata={"input_from": absent})
+    assert response.status_code == 201, response.text
+
+
+def test_the_metadata_key_the_api_checks_is_the_one_the_worker_reads():
+    """Two spellings of one key in two images, held equal here: a check on a key
+    the worker does not read would pass everything."""
+    from swarm_api import validation
+
+    assert validation.INPUT_FROM_METADATA_KEY == worker_inputs.METADATA_KEY
