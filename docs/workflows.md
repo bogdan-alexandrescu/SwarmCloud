@@ -114,6 +114,27 @@ first alone was measured not to be enough.
    write what it promised.** A runner that fails, times out or is stopped
    keeps its own cause, and the missing names are recorded next to it.
 
+   **Only the clean finish is failed for it.** An attempt that parks (on
+   provider quota, or because its worker was stopped), is cancelled, or ends
+   in a worker crash ends exactly as it did before #149, and records no
+   missing names: a parked attempt resumes and can still write the file, a
+   cancel is a person's decision, and a crash has a cause of its own.
+   **A superseded attempt writes none of it.** READY, FAILED or CANCELLED is
+   chosen inside one fenced transaction (`control.fail_retryably`), so a
+   worker whose generation was fenced after its runner finished leaves the
+   task, the lease, the pools and the event stream alone, and records the
+   fence on its own attempt document (invariant 5). A missing-output retry
+   that ignored the fence would send a newer attempt's task back to READY.
+   `tests/unit/worker/test_expected_outputs_other_exits.py` holds both.
+
+   **Where the cause shows.** `last_error` carries it, and every surface that
+   prints a task's error prints it: `swarm result` ("why"), `sc task` and the
+   `sc` agents table, the `swarm_result` and `swarm_workflow_status` tools,
+   and, in the web UI, the agent page's error banner and the agents list,
+   which shows it beside a READY task that no pool is refusing. The web UI's
+   attempt chart starts the retry's queue at the `retrying` event that sent
+   the task back to READY.
+
 None of this makes an agent write the file; the third layer makes it cost at
 most `max_attempts` upstream attempts instead of the rest of the workflow. A
 prompt that names the file and the directory as well does no harm.

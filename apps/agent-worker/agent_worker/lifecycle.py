@@ -882,11 +882,6 @@ class Worker:
             self._checkpoint("cancellation")
             summary = self._upload_outputs()
             self._export_metrics()
-            # MUTATION M3 (#149, red on purpose, reverted in the next commit):
-            # a cancel fails for a missing expected output.
-            missing = self._report_missing_outputs(summary, fails_the_attempt=True)
-            if missing:
-                return self._fail_for_missing_outputs(missing, summary, exit_code=0)
             self.control.finish(
                 state=TaskState.CANCELLED,
                 exit_code=None,
@@ -958,11 +953,6 @@ class Worker:
             self._checkpoint("interrupted")
             summary = self._upload_outputs()
             self._export_metrics()
-            # MUTATION M2 (#149, red on purpose, reverted in the next commit):
-            # a SIGTERM park fails for a missing expected output.
-            missing = self._report_missing_outputs(summary, fails_the_attempt=True)
-            if missing:
-                return self._fail_for_missing_outputs(missing, summary, exit_code=0)
             self.control.park(
                 reason=ParkReason.SCHEDULED_RETRY,
                 next_eligible_at=utcnow(),
@@ -2324,11 +2314,6 @@ class Worker:
         self._checkpoint("quota-park")
         summary = self._upload_outputs()
         self._export_metrics()
-        # MUTATION M4 (#149, red on purpose, reverted in the next commit): a
-        # quota park fails for a missing expected output.
-        missing = self._report_missing_outputs(summary, fails_the_attempt=True)
-        if missing:
-            return self._fail_for_missing_outputs(missing, summary, exit_code=0)
         provider = str(decision.detail.get("provider") or self.cfg.provider or "")
         if provider:
             # NOT FENCED, and not a task write. This is the tenant's document
@@ -3410,12 +3395,6 @@ class Worker:
         try:
             summary = self._upload_outputs()
             self._export_metrics()
-            # MUTATION M5 (#149, red on purpose, reverted in the next commit):
-            # a crash fails retryably for a missing expected output.
-            missing = self._report_missing_outputs(summary, fails_the_attempt=True)
-            if missing:
-                self._fail_for_missing_outputs(missing, summary, exit_code=exit_code)
-                return None
             self.control.finish(
                 state=state,
                 exit_code=exit_code,
