@@ -526,6 +526,30 @@ test('a task that never ran does not print its wait as its run', () => {
   )
 })
 
+/**
+ * AG-3, THE NOTE UNDER A FIGURE THAT ALREADY SAYS IT. Since #145, `elapsed()`
+ * gives a task that finished without starting the figure `never ran`. The
+ * note under it still opened `never ran · cancelled 3d ago`: the same two
+ * words twice, one line apart, with the one fact the figure cannot carry --
+ * how the task ended, and when -- pushed behind them.
+ *
+ * BREAK IT: prefix the never-ran note with `never ran · ` again.
+ */
+test('a task that never ran says so once on its Elapsed tile, and the note names how it ended', () => {
+  const tile = tiles(surface(cascade())).get('Elapsed')
+  assert.ok(tile, 'the Elapsed tile is gone')
+  assert.equal(tile.value, 'never ran')
+  assert.ok(!/never ran/.test(tile.sub), `the note repeats the figure: "${tile.sub}"`)
+  assert.match(tile.sub, /^cancelled \S/, `the note does not say how the task ended: "${tile.sub}"`)
+
+  // With no end recorded, the ending is still named, and so is the absence.
+  const unended = tiles(surface(run({ ...cascade(), task: { ...CASCADE, completed_at: null } }))).get('Elapsed')
+  assert.ok(unended, 'the Elapsed tile is gone')
+  assert.equal(unended.value, 'never ran')
+  assert.ok(!/never ran/.test(unended.sub), `the note repeats the figure: "${unended.sub}"`)
+  assert.match(unended.sub, /^cancelled\b.*no finish recorded/, `the note hides the missing end: "${unended.sub}"`)
+})
+
 /** The head's facts strip: the `ctl-facts` list that carries the `age` fact. */
 function headFacts(markup: string): string {
   const strip = markup.split('<ul class="ctl-facts">').slice(1).map((s) => s.split('</ul>')[0] ?? '')
