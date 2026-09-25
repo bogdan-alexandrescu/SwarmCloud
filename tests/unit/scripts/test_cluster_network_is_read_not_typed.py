@@ -726,40 +726,59 @@ def test_apply_takes_the_expected_cluster_entry_from_the_configuration(tmp_path)
 # `configured`. This branch's own first apply has two: the Role and
 # swarm-deny-cross-tenant-ingress drop an empty list from the annotation.
 #
-# The fixtures below are shaped as kubectl prints; the objects are the ones the
-# 2026-09-25 read-only diff of this render against swarm-tenant-eng named. They
-# are not captured output.
+# CAPTURED, not constructed. Both fixtures are what this branch's apply.sh
+# printed on 2026-09-25 (~04:00Z) for `KUBECONFIG=build/kubeconfig-dev.yaml
+# kubernetes/apply.sh --tenant eng --context swarm-dev` -- a dry run, nothing
+# written -- against swarm-tenant-eng. Only the temporary directories kubectl
+# diff names are shortened. The diff shows two objects; the verdicts show four
+# `configured`, and the two the diff cannot show are the Role and
+# swarm-deny-cross-tenant-ingress.
 
 #: `kubectl apply --dry-run=server` for this branch's first apply to eng.
 VERDICTS_FIRST_APPLY = f"""\
 namespace/{NAMESPACE} unchanged (server dry run)
+resourcequota/swarm-tenant-quota unchanged (server dry run)
+limitrange/swarm-worker-limits unchanged (server dry run)
 serviceaccount/swarm-agent-worker configured (server dry run)
+serviceaccount/default unchanged (server dry run)
 role.rbac.authorization.k8s.io/swarm-worker configured (server dry run)
 rolebinding.rbac.authorization.k8s.io/swarm-worker configured (server dry run)
+role.rbac.authorization.k8s.io/swarm-dispatcher unchanged (server dry run)
+rolebinding.rbac.authorization.k8s.io/swarm-dispatcher unchanged (server dry run)
+role.rbac.authorization.k8s.io/swarm-reaper unchanged (server dry run)
+rolebinding.rbac.authorization.k8s.io/swarm-reaper unchanged (server dry run)
 networkpolicy.networking.k8s.io/swarm-default-deny unchanged (server dry run)
 networkpolicy.networking.k8s.io/swarm-deny-cross-tenant-ingress configured (server dry run)
+networkpolicy.networking.k8s.io/swarm-allow-worker-egress unchanged (server dry run)
 """
 
 #: `kubectl diff` of the same render: the RoleBinding and the ServiceAccount,
-#: and neither the Role nor the NetworkPolicy.
+#: and neither the Role nor the NetworkPolicy. The merged ServiceAccount still
+#: carries the OLD last-applied annotation: kubectl diff does not rewrite it.
 DIFF_FIRST_APPLY = f"""\
-diff -u -N /tmp/LIVE-1/rbac.authorization.k8s.io.v1.RoleBinding.{NAMESPACE}.swarm-worker /tmp/MERGED-1/rbac.authorization.k8s.io.v1.RoleBinding.{NAMESPACE}.swarm-worker
---- /tmp/LIVE-1/rbac.authorization.k8s.io.v1.RoleBinding.{NAMESPACE}.swarm-worker
-+++ /tmp/MERGED-1/rbac.authorization.k8s.io.v1.RoleBinding.{NAMESPACE}.swarm-worker
-@@ -21,6 +21,3 @@
+diff -u -N LIVE-3898782905/rbac.authorization.k8s.io.v1.RoleBinding.{NAMESPACE}.swarm-worker MERGED-2960625049/rbac.authorization.k8s.io.v1.RoleBinding.{NAMESPACE}.swarm-worker
+--- LIVE-3898782905/rbac.authorization.k8s.io.v1.RoleBinding.{NAMESPACE}.swarm-worker\t2026-09-24 20:59:21
++++ MERGED-2960625049/rbac.authorization.k8s.io.v1.RoleBinding.{NAMESPACE}.swarm-worker\t2026-09-24 20:59:21
+@@ -19,8 +19,5 @@
+   name: swarm-worker
+ subjects:
  - kind: ServiceAccount
-   name: swarm-agent-worker
-   namespace: {NAMESPACE}
--- kind: ServiceAccount
 -  name: swarm-worker
 -  namespace: {NAMESPACE}
-diff -u -N /tmp/LIVE-1/v1.ServiceAccount.{NAMESPACE}.swarm-agent-worker /tmp/MERGED-1/v1.ServiceAccount.{NAMESPACE}.swarm-agent-worker
---- /tmp/LIVE-1/v1.ServiceAccount.{NAMESPACE}.swarm-agent-worker
-+++ /tmp/MERGED-1/v1.ServiceAccount.{NAMESPACE}.swarm-agent-worker
-@@ -4,7 +4,6 @@
-   annotations:
+-- kind: ServiceAccount
+   name: swarm-agent-worker
+   namespace: {NAMESPACE}
+diff -u -N LIVE-3898782905/v1.ServiceAccount.{NAMESPACE}.swarm-agent-worker MERGED-2960625049/v1.ServiceAccount.{NAMESPACE}.swarm-agent-worker
+--- LIVE-3898782905/v1.ServiceAccount.{NAMESPACE}.swarm-agent-worker\t2026-09-24 20:59:20
++++ MERGED-2960625049/v1.ServiceAccount.{NAMESPACE}.swarm-agent-worker\t2026-09-24 20:59:20
+@@ -6,7 +6,6 @@
      iam.gke.io/gcp-service-account: {TENANT_GSA}
+     kubectl.kubernetes.io/last-applied-configuration: |
+       {{"apiVersion":"v1","automountServiceAccountToken":false,"kind":"ServiceAccount","metadata":{{"annotations":{{"iam.gke.io/gcp-service-account":"{TENANT_GSA}","swarm.saga.xyz/alias-of":"swarm-worker"}},"labels":{{"app.kubernetes.io/component":"agent-worker","app.kubernetes.io/part-of":"swarm","managed-by":"swarm-terraform","swarm-tenant":"eng"}},"name":"swarm-agent-worker","namespace":"{NAMESPACE}"}}}}
 -    swarm.saga.xyz/alias-of: swarm-worker
+   creationTimestamp: "2026-09-24T03:42:00Z"
+   labels:
+     app.kubernetes.io/component: agent-worker
 """
 
 
