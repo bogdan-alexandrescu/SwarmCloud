@@ -528,8 +528,11 @@ function RuntimeCard({ runtime, all }: { runtime: Runtime; all: Runtime[] }) {
             refused. The catalogue serves it because an existing task that names
             it still has to render; a reader scanning this list needs to know at
             a glance that it cannot be dispatched, or the entry reads as an
-            option. `is-bad` stays: codex was switched off over a credential
-            its provider refused, which is a failure and not a choice. */}
+            option. `is-bad` stays: the one profile disabled today was switched
+            off over a credential its provider refused, which is a failure and
+            not a choice. (No profile is named here: this file may hold no
+            name from the frozen catalogue, comments included --
+            test_runtimes_screen.py reads it whole.) */}
         {off ? (
           <span className="ctl-chip is-bad" aria-describedby={runtime.disabled_reason ? reasonId : undefined}>
             <i aria-hidden="true" />
@@ -545,7 +548,8 @@ function RuntimeCard({ runtime, all }: { runtime: Runtime; all: Runtime[] }) {
             2026-09-25). It was the chip's `aria-label` and nothing else: a
             sighted reader got `disabled` and no way to learn why, which sends
             them looking for a setting -- and the reason is the only part of
-            this they can act on ("Use claude-code"). The chip points at it, so
+            this they can act on (it names the profile to use instead). The
+            chip points at it, so
             a screen reader still hears it with the mark. */}
         {off && runtime.disabled_reason && (
           <p className="muted" id={reasonId}>
