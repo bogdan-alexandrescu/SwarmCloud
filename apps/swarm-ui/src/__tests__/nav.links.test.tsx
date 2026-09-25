@@ -220,4 +220,33 @@ describe('the links the frame draws itself', () => {
     expect(last).toBeTruthy()
     expect(last!.taskId).toBeNull()
   })
+
+  /**
+   * OV-10 (App half). The list's tab and Recent state are an address, so App
+   * hands them to the list with a callback for the list's clicks, and the
+   * drawer's close goes back to the list address it was opened from rather
+   * than to bare `#work/running` -- or the address bar and the visible list
+   * would disagree the moment the drawer shut.
+   *
+   * MUTATION: close to `work/running`, or stop passing `list`.
+   */
+  it('hands the list its address, and closes the drawer back to it', async () => {
+    window.location.hash = '#work/running/recent/failed'
+    render(<App />)
+    const first = agentsProps[agentsProps.length - 1]
+    expect(first, 'the agent list was not rendered').toBeTruthy()
+    expect(first!.list).toEqual({ tab: 'recent', state: 'failed' })
+    expect(typeof first!.onList, 'the list has no way to report a click').toBe('function')
+
+    await act(async () => {
+      window.location.hash = '#work/task/task_0123456789abcdef0123'
+      window.dispatchEvent(new HashChangeEvent('hashchange'))
+    })
+    const close = document.querySelector<HTMLButtonElement>('.ctl-drawer > button.drawer-close')
+    expect(close, 'the drawer did not open').not.toBeNull()
+    await act(async () => {
+      close!.click()
+    })
+    expect(window.location.hash, 'the drawer closed to a different list').toBe('#work/running/recent/failed')
+  })
 })
