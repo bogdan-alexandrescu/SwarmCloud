@@ -2040,7 +2040,9 @@ def test_a_projected_reading_is_not_drawn_in_the_absence_colour(sheet_scan, them
 # word at full ink, and paints a text grey, not `--ok`. CP-14 chose
 # `--text-dim`, the grey §6.4 already uses for a proportion that is fine;
 # CH-17, decided after it, draws the chip and dot primitives' ok disc in
-# `--text-faint`, and `.tag.ok` stays `--text-dim`. Either is a text grey, so
+# `--text-faint`, and the 2026-09-25 follow-up on #85 moved `.tag.ok` from
+# #159's `--text-dim` to `--text-faint` too (design-system.md §15.7; pinned in
+# `encoding.hues.test.ts`, not here). Either is a text grey, so
 # the assertion below accepts both. Hue on a state mark is left to the
 # verdicts -- warn, bad, paused -- and to live. The screens that drew twenty
 # green `ok` discs (Pools, Runtimes, Accounts, Provider quota) go grey with no

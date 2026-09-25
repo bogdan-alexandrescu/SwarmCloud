@@ -1072,7 +1072,9 @@ primitives this moved: `.ctl-dot.is-ok`, `.ctl-dot.is-info`, `.ctl-chip.is-ok`,
 `--text`), and the dock's read cells (§15.4). Healthy-state hue that remains has
 an owner and is not this ruling's: `.pool .ctl-track > i`, `.pool.prov.ok`,
 `.state.acct-ok`, `.tag.ok` (CP-14 — neutral since the 2026-09-25 consistency
-sweep, §15.7); the Profile headroom status (CP-12);
+sweep, §15.7, whose follow-up puts the success heading and the legacy ok tag,
+two words, in `--text-faint` rather than this paragraph's "plain or
+`--text-dim`": it is later and names them); the Profile headroom status (CP-12);
 `.wf-tl-span.is-ok` and the Workflows graph's `.node.ok` (WF-11). This ruling
 does not reach chart segment fills: TS-4's outcome stack keeps its solid hues
 and gained a shape for each outcome (§15.3) — failed is still solid `--bad`,
@@ -1115,13 +1117,17 @@ and every other state declares its own fill.
 > the chip and dot primitives and draws the ok disc and the info bar in
 > `--text-faint` (the hue ruling above), so the later ruling sets the grey of
 > `.ctl-chip.is-ok` and `.ctl-dot.is-ok`. `.tag.ok`, which CH-17 leaves to
-> CP-14, stays `--text-dim`. CP-14's ruling — no hue on a healthy mark — holds
+> CP-14, was `--text-dim` from #159 until the 2026-09-25 follow-up on #85
+> ("The primitives paint `--text-faint` per CH-17, which is later than #159's
+> `--text-dim`"), which moved it, and Accounts' success heading, to
+> `--text-faint` (§15.7). CP-14's ruling — no hue on a healthy mark — holds
 > under either grey, and `test_the_ok_mark_is_a_text_grey` accepts both.
 >
 > **The cost, recorded so it is not rediscovered:** in greyscale the ok disc is
 > now told from bad and warn **by its silhouette alone**. `--text-faint`, the
-> primitives' grey, is 1.01:1 from `--bad` in the dark theme and 1.45:1 from
-> `--warn` in the light one; `--text-dim`, `.tag.ok`'s, is 1.26:1 and 1.30:1
+> primitives' grey and now `.tag.ok`'s, is 1.01:1 from `--bad` in the dark
+> theme and 1.45:1 from `--warn` in the light one; `--text-dim`, CP-14's first
+> choice, is 1.26:1 and 1.30:1
 > (WCAG relative luminance of the theme tokens in `styles.css`). The
 > 1.5:1 triad floor (`MIN_STATE_RATIO` in `test_state_colour_discriminability.py`)
 > still governs the `--ok` / `--warn` / `--bad` tokens that fills use and is not
@@ -2966,7 +2972,7 @@ plus the sub-sections that have no other home.
 | Box | The primitive | Where |
 |---|---|---|
 | CH-17 | the hue ruling: ok and info marks are grey; hue only on warn, bad, paused, live | §1.2, §1.3, §6.6, §6.7 |
-| CP-14 | healthy carries no hue (ruled first; CH-17 set the primitives' grey, `.tag.ok` keeps `--text-dim`); the chip's base mark is the hollow ring, so a modifier that matches nothing draws unknown — built by the Capacity lane (#159) | §6.6, §6.7 |
+| CP-14 | healthy carries no hue (ruled first; CH-17 set the primitives' grey, and the 2026-09-25 follow-up gave `.tag.ok` and the Accounts success heading the same `--text-faint`, §15.7); the chip's base mark is the hollow ring, so a modifier that matches nothing draws unknown — built by the Capacity lane (#159) | §6.6, §6.7 |
 | CH-22 | `stateTone`'s `ended` tone for CANCELLED, drawn as the grey flat bar (`is-info`) | §6.6 |
 | CH-23 | a link's resting underline is `--line` at 1px | §1.3 |
 | CH-19 | the live pulse's `.8` floor; reduced motion rests the pulse | §5.4 |
@@ -3165,15 +3171,22 @@ for the next release's screenshots.
 ### 15.7 The consistency sweep (#85 and #87 follow-ups, 2026-09-25)
 
 Three follow-ups the epics recorded after the decision PRs merged, one line
-each. Each is held by a test committed red first; `.tag.ok` was already grey,
-so its line in that test is a guard rather than a red.
+each. Each is held by a test committed red first.
 
 * **CP-14 / CH-17, the last healthy greens.** `.pool .ctl-track > i` is
   `--text-faint`, the primitives' ok grey; an ok `.pool.prov` card draws no
   edge rule, because a grey 3px rule is `.pool.prov.unknown`'s and would draw
   a provider nobody read as one that is fine; `.state.acct-ok` is the plain
-  `.state` box with a `--text-dim` heading, the grey `.tag.ok` keeps
-  (`encoding.hues.test.ts`).
+  `.state` box; its heading and `.tag.ok` are `--text-faint`, the grey the
+  follow-up names ("the primitives paint `--text-faint` per CH-17, which is
+  later than #159's `--text-dim`") — two words, so this is the one place the
+  follow-up overrides §6.6's "plain or `--text-dim`" for a word
+  (`encoding.hues.test.ts`, one case each for the fill, the heading and the
+  tag). **Two costs, recorded so they are not rediscovered:** `.tag.ok` is
+  now the same grey as `.tag.unknown`, and a tag has no silhouette, so only
+  its word tells an ok tag from an unknown one (Dispatch draws both: a
+  strategy and role, and `dispatch?`); and the success heading is one step
+  fainter than its own paragraph (`.state p` is `--text-dim`).
 * **CH-13, the log stream's uri.** Under the stream's name in the row header,
   it takes §7.3's long-value rule — the rule names `th[scope='row'] > .uri`
   beside `td[data-label] > .uri`, in both copies of the stacked block — and is
