@@ -328,8 +328,8 @@ class SubmissionService:
             # filenames of, so it answers 422 `invalid_dispatch` whatever its
             # value, and a step's own `input_from` is the only declaration
             # `validate_dag` ever sees (#151).
-            order = validate_dag(step_specs, max_steps=self._settings.core.max_workflow_steps)
             reject_reserved_metadata(spec.metadata)
+            order = validate_dag(step_specs, max_steps=self._settings.core.max_workflow_steps)
             dispatch = resolve_dispatch_options(
                 strategy=spec.strategy,
                 carrier=spec.carrier,
