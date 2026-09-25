@@ -31,7 +31,12 @@ WHAT IS ASSERTED HERE
     (execution swarm-job-u-sw-c90291-mock-6smzz), it has no NetworkPolicy, and
     a Cloud Run execution override MERGES into the Job's environment -- so the
     variables in the shared `worker_env` would have changed every Cloud Run
-    execution to fix a GKE-only fault.
+    execution to fix a GKE-only fault;
+  * nor does terraform give them to the Cloud Run Jobs it creates: no file
+    those Jobs take their environment from -- terraform/infra,
+    modules/cloud_run_jobs, and every environment's tfvars, whose
+    `settings_env` is merged into every one of them -- names either variable.
+    That check reads text, not a plan; what it cannot see is in its docstring.
 
 The templates under kubernetes/worker-templates/ are held to the same two
 entries by tests/unit/worker/test_worker_templates_name_the_metadata_server.py.
@@ -277,20 +282,105 @@ def test_cloud_run_workers_are_not_given_the_gke_metadata_override(settings, ten
     )
 
 
+def _cloud_run_job_env_sources() -> dict[str, list[Path]]:
+    """Every file in this repository a terraform Cloud Run Job's environment is built from.
+
+    Terraform creates a `swarm-job-<tenant>-<profile>` Job for each Cloud Run
+    profile a tenant holds, and the scheduler runs executions of it. That Job's
+    container environment is assembled in three places:
+
+      * terraform/infra -- `local.jobs[*].env` is `merge(local.common_env, ...)`,
+        and `local.common_env` is `merge({...}, var.settings_env)` (locals.tf),
+        with the variable's default in variables.tf. A `*.tfvars` in the root
+        itself would be auto-loaded, so one is read too if it ever appears;
+      * terraform/environments/<env>/<env>.tfvars -- the value of `settings_env`
+        every plan in this repository uses (scripts/lib/common.sh `tf_var_file`,
+        release.yml, terraform.yml). A key there lands in EVERY worker Job;
+      * terraform/modules/cloud_run_jobs -- turns that map, and `secret_env`,
+        into the container's env blocks, and could add a literal block of its own.
+    """
+    tf = REPO / "terraform"
+    return {
+        "terraform/infra": sorted([*(tf / "infra").glob("*.tf"), *(tf / "infra").glob("*.tfvars*")]),
+        "terraform/modules/cloud_run_jobs": sorted((tf / "modules" / "cloud_run_jobs").glob("*.tf")),
+        "terraform/environments": sorted((tf / "environments").glob("*/*.tfvars*")),
+    }
+
+
+def _hcl_code(line: str) -> str:
+    """`line` without its `#` or `//` comment -- a comment OUTSIDE a string only.
+
+    So `URL = "https://x", GCE_METADATA_HOST = "y"` keeps the name after the
+    `//` in its URL, and a comment that merely names a variable is not taken
+    for an assignment. `/* */` blocks are not stripped: a name inside one is
+    reported, which errs the loud way.
+    """
+    out = []
+    in_string = False
+    i = 0
+    while i < len(line):
+        ch = line[i]
+        if in_string:
+            if ch == "\\":
+                out.append(line[i : i + 2])
+                i += 2
+                continue
+            in_string = ch != '"'
+        elif ch == '"':
+            in_string = True
+        elif ch == "#" or line.startswith("//", i):
+            break
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
 def test_terraform_does_not_give_the_cloud_run_jobs_the_override():
-    """Terraform creates the `swarm-job-<tenant>-<profile>` Jobs the scheduler
-    runs; their environment is the other half of what a Cloud Run worker sees.
-    Comments may name the variables; an assignment may not."""
-    tf_files = sorted((REPO / "terraform" / "infra").glob("*.tf"))
-    assert tf_files, "no terraform/infra/*.tf found; this would check nothing"
+    """No file a terraform Cloud Run Job's environment is built from names either variable.
+
+    Those Jobs are the other half of what a Cloud Run worker sees: an execution
+    override merges INTO the Job's environment, so a GCE_METADATA_* that
+    terraform put there reaches every execution the scheduler runs, whatever
+    `worker_env` says. The sources are listed in `_cloud_run_job_env_sources`.
+    Comments may name the variables; code may not.
+
+    MUTATION (pushed to this test's pull request, then reverted):
+    GCE_METADATA_HOST in dev.tfvars' `settings_env`, and a literal
+    GCE_METADATA_IP env block in modules/cloud_run_jobs/main.tf. The first
+    version of this test read terraform/infra/*.tf alone and stayed green on
+    both. This one fails naming both files.
+
+    WHAT THIS DOES NOT SEE. It reads text, not a plan. A `-var settings_env=...`
+    on a command line, or a tfvars file kept outside this repository, reaches
+    the Jobs without passing through any file read here. And application.yml,
+    which runs this file, does not trigger on a pull request that changes only
+    terraform files, so a tfvars-only change meets this check on its push to
+    main rather than on its pull request.
+    """
+    # The comment stripper, both ways, so the scan below is about something: a
+    # name in a comment is not code, and a `//` inside a string is not a comment.
+    assert "GCE_METADATA_HOST" not in _hcl_code('A = "x" # GCE_METADATA_HOST = "y"')
+    assert "GCE_METADATA_HOST" in _hcl_code('m = { U = "https://x", GCE_METADATA_HOST = "y" }')
+
+    sources = _cloud_run_job_env_sources()
+    empty = sorted(where for where, paths in sources.items() if not paths)
+    assert not empty, f"read no files under {empty}; the check would be about nothing there"
+
+    # Every environment, derived from the directory rather than listed: a new
+    # environment's tfvars is read without anyone remembering to add it.
+    environments = {p for p in (REPO / "terraform" / "environments").iterdir() if p.is_dir()}
+    unread = environments - {p.parent for paths in sources.values() for p in paths}
+    assert not unread, f"no tfvars read for {sorted(str(p.relative_to(REPO)) for p in unread)}"
 
     assigned = []
-    for path in tf_files:
-        for number, line in enumerate(path.read_text().splitlines(), start=1):
-            code = line.split("#", 1)[0].split("//", 1)[0]
-            if re.search(r"GCE_METADATA_[A-Z]+", code):
-                assigned.append(f"{path.relative_to(REPO)}:{number}")
+    for paths in sources.values():
+        for path in paths:
+            for number, line in enumerate(path.read_text().splitlines(), start=1):
+                if re.search(r"GCE_METADATA_[A-Z]+", _hcl_code(line)):
+                    assigned.append(f"{path.relative_to(REPO)}:{number}")
     assert not assigned, (
-        f"terraform names the GKE-only metadata override at {assigned}; Cloud Run "
-        f"workers reach their metadata server by name and do not need it"
+        f"terraform names the GKE-only metadata override at {assigned}, in the "
+        f"files the Cloud Run Jobs terraform creates take their environment from "
+        f"(an environment's settings_env is merged into every one of those Jobs). "
+        f"Cloud Run workers reach their metadata server by name and do not need it."
     )

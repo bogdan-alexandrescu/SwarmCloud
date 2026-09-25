@@ -467,8 +467,12 @@ def gke_worker_env(*, task: Task, lease: Lease, tenant: Tenant, settings: Any) -
     Cloud Run execution override also MERGES into the Job's own environment,
     so a value in `worker_env` would change every Cloud Run worker to fix a
     GKE-only fault. tests/unit/control_plane/test_gke_worker_metadata_env.py
-    fails if either variable reaches the Cloud Run execution, the Cloud Run
-    Job, `worker_env` or terraform's Cloud Run Jobs.
+    fails if either variable reaches the Cloud Run execution override, the
+    Cloud Run Job the scheduler creates or `worker_env`, or is named in a
+    file terraform's Cloud Run Jobs take their environment from (terraform/
+    infra, modules/cloud_run_jobs, every environment's tfvars -- its
+    `settings_env` is merged into each of those Jobs). That last check reads
+    text, not a plan: a `-var settings_env=...` override is not seen by it.
 
     The YAML copy of this Job (kubernetes/worker-templates/*.yaml) carries the
     same two entries, held to these values by
