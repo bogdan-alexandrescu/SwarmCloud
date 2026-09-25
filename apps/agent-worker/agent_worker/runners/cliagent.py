@@ -46,7 +46,7 @@ from typing import Any, Sequence
 
 from .. import expected_outputs as expected_mod
 from ..logs import StructuredLogger
-from ..procman import run_child
+from ..procman import TRUNCATION_MARK, run_child
 from ..redact import collect_secrets, scrub_file, scrub_text
 from .base import (
     SPEND_KEYS,
@@ -406,7 +406,25 @@ def run_cli_agent(
         max_stdout_bytes=limits.max_stdout_bytes,
         max_stderr_bytes=limits.max_stderr_bytes,
         logger=log,
+        # THE END OF A CAPPED STREAM IS KEPT (#188 review). Under stream-json
+        # the stdout is the whole conversation, and its LAST line is the
+        # `result` event: the answer, the spend, the evidence the rate-limit
+        # decision below reads. A capture that kept only the first
+        # `max_stdout_bytes` lost exactly that line on every long session.
+        keep_tail=True,
     )
+    # Reported on every outcome from here on -- `write_result` carries it --
+    # so a run that failed or parked after passing its cap still says so.
+    capture = result.capture_report()
+    ctx.report.update(capture)
+    if result.stdout_truncated or result.stderr_truncated:
+        log.warning(
+            "the agent's output passed its size cap: the start and the end of each "
+            "capped stream were kept and the middle dropped, with a notice where",
+            **capture,
+            max_stdout_bytes=limits.max_stdout_bytes,
+            max_stderr_bytes=limits.max_stderr_bytes,
+        )
 
     # Redact before anything is read back out. Everything below this line either
     # becomes an artifact in GCS or a field in Firestore, and both outlive the
@@ -430,8 +448,13 @@ def run_cli_agent(
     spend = _scrub_json(_spend_of(parsed), secrets)
 
     # What the rate-limit and credential heuristics read. For a streamed run
-    # this is NOT the raw stdout tail -- see `_detection_text`.
-    combined = _detection_text(raw_stdout, parsed) + "\n" + _tail(stderr_path)
+    # this is NOT the raw stdout tail -- see `_detection_text`. Neither half
+    # includes the capture's own notices, which count bytes: `429` is a marker.
+    combined = (
+        _detection_text(raw_stdout, parsed)
+        + "\n"
+        + _without_capture_notices(_tail(stderr_path))
+    )
 
     if result.exit_code != 0 or result.timed_out:
         hit, retry_after, reset_at = detect_rate_limit(combined)
@@ -468,7 +491,12 @@ def run_cli_agent(
     # WHOLE OR NOT AT ALL -- see TRANSCRIPT_MAX_CHARS. The stdout capture above
     # is the canonical transcript and is uploaded either way.
     transcript_skipped: str | None = None
-    if parsed is not None:
+    if result.stdout_truncated:
+        # A transcript re-serialised from a stream whose middle was dropped
+        # would be valid JSON that says nothing of the gap. The stdout capture
+        # carries the notice at the cut; it is the record.
+        transcript_skipped = "capture_truncated"
+    elif parsed is not None:
         document = json.dumps(parsed, indent=2)
         if len(document) <= TRANSCRIPT_MAX_CHARS:
             ctx.write_artifact(spec.transcript_name, scrub_text(document, secrets))
@@ -514,6 +542,9 @@ def run_cli_agent(
         # Read by the worker into `result_summary.agent_streams`; null when the
         # transcript was written (or there was no parsed output to write).
         "transcript_skipped": transcript_skipped,
+        # Also in `ctx.report`, which `write_result` merges anyway; stated here
+        # so this function's own return value is the whole answer.
+        **capture,
         "metrics": {
             "duration_seconds": round(result.duration_seconds, 3),
             "stdout_bytes": result.stdout_bytes,
@@ -588,23 +619,53 @@ def _detection_text(raw_stdout: str, parsed: Any) -> str:
     Under the single-object format the heuristics saw the final result and
     nothing else; this keeps that for a streamed run instead of widening it
     to the whole conversation.
+
+    NEVER THE CAPTURE'S OWN NOTICE (#188 review). Where the output cap cut a
+    stream, `procman.StreamCapture` writes a line counting the bytes it
+    dropped -- and `429` is a marker matched anywhere, so 4,290,117 dropped
+    bytes would park a failed run as rate-limited. Nor, in a streamed run,
+    the line the cut went through, just above the notice: half an event is
+    the agent's words or a tool's output as often as the provider's, and
+    cannot be told apart.
     """
     if not isinstance(parsed, list):
-        return raw_stdout[-8000:]
+        return _without_capture_notices(raw_stdout[-8000:])
     kept: list[str] = []
+    previous_unparsed = False
     for line in raw_stdout.splitlines():
         stripped = line.strip()
         if not stripped:
+            continue
+        if _is_capture_notice(stripped):
+            if previous_unparsed and kept:
+                kept.pop()
+            previous_unparsed = False
             continue
         try:
             event = json.loads(stripped)
         except json.JSONDecodeError:
             kept.append(stripped)
+            previous_unparsed = True
             continue
+        previous_unparsed = False
         if isinstance(event, dict) and _not_evidence(event):
             continue
         kept.append(stripped)
     return "\n".join(kept)[-8000:]
+
+
+_CAPTURE_MARK = TRUNCATION_MARK.decode("ascii")
+
+
+def _is_capture_notice(line: str) -> bool:
+    return line.lstrip().startswith(_CAPTURE_MARK)
+
+
+def _without_capture_notices(text: str) -> str:
+    """`text` less every line the output capture wrote where it cut a stream."""
+    if _CAPTURE_MARK not in text:
+        return text
+    return "\n".join(line for line in text.splitlines() if not _is_capture_notice(line))
 
 
 def _spend_of(parsed: Any) -> dict[str, Any]:

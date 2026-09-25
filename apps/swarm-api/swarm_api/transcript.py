@@ -19,6 +19,18 @@ served on request, re-serialised from the decoded event and redacted the same
 way. Image bytes inside a tool result are COUNTED, never served: base64 in a
 JSON string would be a way around the raw route's image path.
 
+AT LEAST AS FAR AS THE RAW LINE (#188 review). Decoding turns a private key's
+`\\n` escapes into real newlines, and the line-scoped rule then masked the
+BEGIN line and served the body that `/logs` masks over the same bytes. Each
+string is redacted with `decoded=True`: a key is masked as a block, and one
+with no END to the end of the string, which is what the line rule masked of
+the raw line holding it.
+
+A CAPTURE CUT AT ITS CAP. Where the worker's output capture dropped the
+middle of a stream, it wrote a line starting `TRUNCATION_MARK`. That line is a
+`system` step with `meta.subtype: "capture_truncated"`, not an unparseable
+line, and the window says `capture_truncated`.
+
 THE FORMAT IS SNIFFED, NOT TRUSTED. Nothing the worker wrote says what the
 stream is:
 
@@ -39,6 +51,7 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
+from .agent_streams import TRUNCATION_MARK
 from .redaction import redact
 
 #: The longest any one string field of a step may be, in characters (16 KiB).
@@ -73,6 +86,8 @@ class ParsedWindow:
     skipped_lines: int = 0
     redaction_count: int = 0
     answer_in_window: bool = False
+    #: A line of this window is the capture's notice that it cut the stream.
+    capture_truncated: bool = False
 
 
 @dataclass
@@ -84,7 +99,8 @@ class _Scrubber:
     def text(self, value: Any, *, name: str, truncated: list[str]) -> str | None:
         if not isinstance(value, str):
             return None
-        cleaned = redact(value)
+        # `decoded=True`: masked at least as far as the raw line would be.
+        cleaned = redact(value, decoded=True)
         self.count += cleaned.count
         out = cleaned.text
         if len(out) > FIELD_CAP_CHARS:
@@ -123,24 +139,36 @@ def parse_window(
     apart as `claude-json` rather than the last page of a stream.
     """
     scrubber = _Scrubber()
-    events: list[tuple[int, dict[str, Any]]] = []
+    # In order: `(offset, event)` for a JSON object, `(offset, line)` for the
+    # capture's notice that it cut the stream here.
+    records: list[tuple[int, dict[str, Any] | bytes]] = []
+    events: list[dict[str, Any]] = []
     skipped = 0
+    cut = False
     for offset, line in split_lines(data, base_offset=base_offset):
         stripped = line.strip()
         if not stripped:
             continue
+        if stripped.startswith(TRUNCATION_MARK):
+            cut = True
+            records.append((offset, stripped))
+            continue
         parsed, value = _decode(stripped)
         if parsed and isinstance(value, dict):
-            events.append((offset, value))
+            records.append((offset, value))
+            events.append(value)
         else:
             skipped += 1
 
     if not events:
         if skipped == 0:
             # A measured-empty window: the object is empty, or this page held
-            # only blank lines. No steps, and not "text".
-            return ParsedWindow(format=None, steps=[])
-        if whole_object:
+            # only blank lines (and the capture's notices). Not "text".
+            steps = [_notice_step(scrubber, offset, line) for offset, line in records]
+            return ParsedWindow(
+                format=None, steps=steps, redaction_count=scrubber.count, capture_truncated=cut
+            )
+        if whole_object and not cut:
             # One JSON document written across several lines.
             parsed, document = _decode(data.strip())
             if parsed and isinstance(document, dict) and document.get("type") == "result":
@@ -153,25 +181,38 @@ def parse_window(
                 )
         # Nothing here is JSON: a plain-text stream. Nothing is dropped -- the
         # reader shows the raw window -- so nothing is counted as skipped.
-        return ParsedWindow(format="text", steps=None)
+        return ParsedWindow(format="text", steps=None, capture_truncated=cut)
 
-    if any(event.get("type") in CLAUDE_EVENT_TYPES for _, event in events):
+    if any(event.get("type") in CLAUDE_EVENT_TYPES for event in events):
         single_result = (
-            whole_object and skipped == 0 and len(events) == 1
-            and events[0][1].get("type") == "result"
+            whole_object and skipped == 0 and not cut and len(events) == 1
+            and events[0].get("type") == "result"
         )
         fmt = "claude-json" if single_result else "claude-stream-json"
     else:
         fmt = "ndjson"
     steps: list[dict[str, Any]] = []
-    for offset, event in events:
-        steps.extend(map_event(scrubber, event, line_offset=offset, include_raw=include_raw))
+    for offset, record in records:
+        if isinstance(record, bytes):
+            steps.append(_notice_step(scrubber, offset, record))
+        else:
+            steps.extend(map_event(scrubber, record, line_offset=offset, include_raw=include_raw))
     return ParsedWindow(
         format=fmt,
         steps=steps,
         skipped_lines=skipped,
         redaction_count=scrubber.count,
         answer_in_window=_has_answer(steps),
+        capture_truncated=cut,
+    )
+
+
+def _notice_step(scrubber: _Scrubber, offset: int, line: bytes) -> dict[str, Any]:
+    """The capture's notice that it dropped bytes here, as a `system` step."""
+    return _step(
+        scrubber, uuid=None, line_offset=offset, block=0, kind="system", role="system",
+        parent=None, raw=None, text=line.decode("utf-8", errors="replace"),
+        meta={"subtype": "capture_truncated"},
     )
 
 

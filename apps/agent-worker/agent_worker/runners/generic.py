@@ -311,7 +311,13 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
         max_stdout_bytes=limits.max_stdout_bytes,
         max_stderr_bytes=limits.max_stderr_bytes,
         logger=log,
+        # The END of a capped stream is kept, as for a CLI agent: a test
+        # suite's summary and a build's error are its last lines, and
+        # `stdout_tail` below would otherwise be the cap's cut (#188 review).
+        keep_tail=True,
     )
+    # On every outcome, a failure included -- `write_result` carries it.
+    ctx.report.update(result.capture_report())
 
     tail = stdout_path.read_text(errors="replace")[-2000:] if stdout_path.exists() else ""
     if result.timed_out:

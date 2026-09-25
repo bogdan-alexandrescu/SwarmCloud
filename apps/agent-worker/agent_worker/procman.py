@@ -18,6 +18,7 @@ untrusted-ish code lives here:
   stdout and stderr after the cap is reached and discard the excess. Stopping the
   read instead would fill the pipe buffer and deadlock the child at 64KB -- a
   hang that looks exactly like a slow agent.
+* **A capped agent stream keeps its END** (`keep_tail`). See `StreamCapture`.
 * **No zombies.** Every exit path waits on the process and joins the readers.
 """
 
@@ -28,23 +29,64 @@ import signal
 import subprocess
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Sequence
 
-TRUNCATION_NOTICE = b"\n[swarm] output truncated: size cap reached\n"
+#: The first bytes of every line a capture writes where it cut a stream.
+#: `swarm_api.agent_streams.TRUNCATION_MARK` restates it, so the transcript
+#: and answer routes can tell a capped capture from a whole one;
+#: `tests/unit/control_plane/test_agent_stream_parity.py` holds the two equal.
+TRUNCATION_MARK = b"[swarm] output truncated"
+TRUNCATION_NOTICE = b"\n" + TRUNCATION_MARK + b": size cap reached\n"
+#: What a `keep_tail` capture writes where its head filled, while the stream is
+#: still running: the live-tail publisher reads the file as it grows, and a
+#: live view that simply stopped growing would read as an agent that stopped
+#: printing. Replaced when the stream closes -- by the kept end, with a notice
+#: counting what was dropped, or by the rest of the stream when nothing was.
+TAIL_PENDING_NOTICE = (
+    b"\n" + TRUNCATION_MARK
+    + b": size cap reached; the end of the stream is kept and written here when it closes\n"
+)
+
+#: How much of a capped stream's END a `keep_tail` capture keeps: at most this,
+#: and never more than half the cap, so the head and the end share the cap.
+#: The end is where claude-code's `result` event is -- always its last line,
+#: and a few KB: the answer, the usage, the cost -- and 1 MiB holds it with
+#: room for the last turns before it.
+TAIL_KEEP_BYTES = 1024 * 1024
 
 
 @dataclass
 class StreamCapture:
     path: Path
     limit: int
+    #: Keep the END of a stream that passes `limit`, not only its start.
+    #:
+    #: WHY (#188 review). claude-code prints stream-json since #184, so its
+    #: stdout is the whole conversation and its `result` event -- the answer,
+    #: the spend, the evidence the rate-limit decision reads -- is the LAST
+    #: line. A capture that kept only the first `limit` bytes lost exactly
+    #: that line on every long session, and nothing said so.
+    #:
+    #: With it, the first `limit - tail` bytes are written as they arrive (the
+    #: live view), the last `tail` bytes are held in memory, and when the
+    #: stream closes they are written after a notice counting what was dropped
+    #: -- starting on a whole line, so an NDJSON reader loses nothing but the
+    #: line the cut went through. The file stays within `limit` plus the
+    #: notice. OFF by default: git's captures judge a patch by the file's size,
+    #: and a patch with its middle removed must never read as one that fitted.
+    keep_tail: bool = False
+    #: Bytes of the stream in the file: the head, plus the kept end.
     written: int = 0
     truncated: bool = False
+    #: Bytes of the stream that are in no file.
+    dropped: int = 0
     _thread: threading.Thread | None = field(default=None, repr=False)
 
     def pump(self, source: Any) -> None:
-        """Drain `source` into `path`, writing at most `limit` bytes.
+        """Drain `source` into `path`, writing at most `limit` bytes of it.
 
         `read1`, NOT `read`, AND THAT ONE CALL IS WHAT MAKES OUTPUT LIVE. The
         Popen pipe is a `BufferedReader`, and `BufferedReader.read(n)` blocks
@@ -60,30 +102,94 @@ class StreamCapture:
 
         A source without `read1` (a plain raw stream in a test) falls back to
         `read`, which for a raw stream already returns what is available.
+
+        THE CUT IS ALWAYS MARKED. The notice is written with the first byte
+        past the head, whichever read brings it. It used to be written only
+        when a read STRADDLED the cap, so a cap reached exactly at the end of
+        one read dropped the rest of the stream without a word.
         """
         reader = getattr(source, "read1", None) or source.read
+        tail_room = min(TAIL_KEEP_BYTES, self.limit // 2) if self.keep_tail else 0
+        head_limit = self.limit - tail_room
+        held: deque[bytes] = deque()
+        held_bytes = 0
+        past = 0  # every byte that arrived after the head was full
         with self.path.open("wb") as sink:
-            while True:
-                chunk = reader(65536)
-                if not chunk:
-                    break
-                if self.written >= self.limit:
-                    self.truncated = True
-                    continue  # keep draining so the child never blocks
-                room = self.limit - self.written
-                if len(chunk) > room:
-                    sink.write(chunk[:room])
-                    sink.write(TRUNCATION_NOTICE)
-                    self.written = self.limit
-                    self.truncated = True
-                else:
-                    sink.write(chunk)
-                    self.written += len(chunk)
-                sink.flush()
+            try:
+                while True:
+                    try:
+                        chunk = reader(65536)
+                    except (OSError, ValueError):
+                        break  # the pipe was closed under the reader: the stream is over
+                    if not chunk:
+                        break
+                    room = head_limit - self.written
+                    if room > 0:
+                        head = chunk[:room]
+                        sink.write(head)
+                        self.written += len(head)
+                        chunk = chunk[room:]
+                    if chunk:
+                        if past == 0:
+                            sink.write(TAIL_PENDING_NOTICE if tail_room else TRUNCATION_NOTICE)
+                        past += len(chunk)
+                        if tail_room:
+                            # Hold the newest bytes, dropping whole reads from
+                            # the front while what is left still fills the room.
+                            held.append(chunk)
+                            held_bytes += len(chunk)
+                            while len(held) > 1 and held_bytes - len(held[0]) >= tail_room:
+                                held_bytes -= len(held.popleft())
+                        if past > tail_room:
+                            # Bytes are being dropped for certain. Said now, not
+                            # only at a close a wedged pipe may never reach.
+                            self.truncated = True
+                    sink.flush()  # keep draining past the cap so the child never blocks
+            finally:
+                if past:
+                    self._close_tail(sink, head_end=head_limit, held=held, past=past,
+                                     tail_room=tail_room)
         try:
             source.close()
         except Exception:
             pass
+
+    def _close_tail(
+        self, sink: Any, *, head_end: int, held: deque[bytes], past: int, tail_room: int
+    ) -> None:
+        """Finish a stream that passed its head: count the cut, write the kept end."""
+        if not tail_room:
+            self.dropped = past
+            self.truncated = True
+            return
+        end = b"".join(held)
+        sink.seek(head_end)
+        sink.truncate()  # the pending notice goes; what replaces it says what happened
+        if past <= tail_room:
+            # Past the head, within the cap: nothing was dropped after all, and
+            # the file is the whole stream.
+            sink.write(end)
+            self.written += len(end)
+            sink.flush()
+            return
+        kept = end[-tail_room:]
+        newline = kept.find(b"\n")
+        if 0 <= newline < len(kept) - 1:
+            # Start on a whole line, as the live tail does: for an NDJSON
+            # stream a fragment is a line that parses as nothing. Kept whole
+            # when the only newline ends it -- one long final line is still
+            # the newest output there is.
+            kept = kept[newline + 1 :]
+        self.dropped = past - len(kept)
+        self.truncated = True
+        counted = (
+            b": size cap reached; %d bytes were dropped here, and the last %d bytes "
+            b"of the stream follow\n" % (self.dropped, len(kept))
+        )
+        sink.write(b"\n" + TRUNCATION_MARK + counted)
+        sink.write(kept)
+        self.written += len(kept)
+        sink.flush()
 
 
 @dataclass(frozen=True)
@@ -97,10 +203,27 @@ class ChildResult:
     stderr_bytes: int
     stdout_truncated: bool
     stderr_truncated: bool
+    stdout_dropped_bytes: int = 0
+    stderr_dropped_bytes: int = 0
 
     @property
     def succeeded(self) -> bool:
         return self.exit_code == 0 and not self.timed_out
+
+    def capture_report(self) -> dict[str, Any]:
+        """What the caps did to each stream, for a runner's result.json.
+
+        A runner puts this into `RunnerContext.report`, which every
+        `write_result` carries -- a failed or parked run included -- and the
+        worker reads `stdout_truncated`/`stderr_truncated` into
+        `result_summary.agent_streams`.
+        """
+        return {
+            "stdout_truncated": self.stdout_truncated,
+            "stderr_truncated": self.stderr_truncated,
+            "stdout_dropped_bytes": self.stdout_dropped_bytes,
+            "stderr_dropped_bytes": self.stderr_dropped_bytes,
+        }
 
 
 class ProcessError(RuntimeError):
@@ -136,13 +259,14 @@ class ChildProcess:
         max_stdout_bytes: int,
         max_stderr_bytes: int,
         logger: Any,
+        keep_tail: bool = False,
     ) -> None:
         self.argv = validate_argv(argv)
         self._cwd = Path(cwd)
         self._env = dict(env)
         self._log = logger
-        self._stdout = StreamCapture(Path(stdout_path), max_stdout_bytes)
-        self._stderr = StreamCapture(Path(stderr_path), max_stderr_bytes)
+        self._stdout = StreamCapture(Path(stdout_path), max_stdout_bytes, keep_tail=keep_tail)
+        self._stderr = StreamCapture(Path(stderr_path), max_stderr_bytes, keep_tail=keep_tail)
         self._proc: subprocess.Popen[bytes] | None = None
         self._threads: list[threading.Thread] = []
         self._started_at = 0.0
@@ -248,6 +372,8 @@ class ChildProcess:
             stderr_bytes=self._stderr.written,
             stdout_truncated=self._stdout.truncated,
             stderr_truncated=self._stderr.truncated,
+            stdout_dropped_bytes=self._stdout.dropped,
+            stderr_dropped_bytes=self._stderr.dropped,
         )
 
 
@@ -263,12 +389,15 @@ def run_child(
     max_stdout_bytes: int,
     max_stderr_bytes: int,
     logger: Any,
+    keep_tail: bool = False,
 ) -> ChildResult:
     """Start, wait with a hard deadline, escalate, reap. One call, no leaks.
 
     Used for the short-lived helpers (git clone) where there is nothing to
-    supervise; the runner itself is driven by the lifecycle loop instead, which
-    needs to heartbeat and checkpoint while it waits.
+    supervise, and by the runners for the agent child they start; the runner
+    itself is driven by the lifecycle loop instead, which needs to heartbeat
+    and checkpoint while it waits. `keep_tail` is `StreamCapture`'s: the
+    runners set it for the agent's streams, whose last line is the result.
     """
     child = ChildProcess(
         argv,
@@ -279,6 +408,7 @@ def run_child(
         max_stdout_bytes=max_stdout_bytes,
         max_stderr_bytes=max_stderr_bytes,
         logger=logger,
+        keep_tail=keep_tail,
     )
     child.start()
     if child.wait(timeout_seconds) is None:

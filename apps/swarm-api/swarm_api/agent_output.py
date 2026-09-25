@@ -61,7 +61,7 @@ from .inspect import (
     parse_tail_header,
 )
 from .objects import ObjectAbsent, ObjectReader, ObjectSlice, ObjectUnreadable
-from .redaction import RULES as REDACTION_RULES, redact, redact_detail
+from .redaction import RULES as REDACTION_RULES, open_key_start, redact, redact_detail
 from .transcript import last_result_event, parse_window
 
 log = logging.getLogger(__name__)
@@ -81,6 +81,14 @@ RUNNER_SUMMARY_CAP = 2000
 #: cut (at a UTF-8 character boundary) -- the one case a credential could be
 #: split, in a whitespace-free run longer than the largest content window.
 MAX_TEXT_CARRY = 4 * 1024 * 1024
+
+#: What `/transcript` and `/answer` say when the agent's stdout capture was cut
+#: at its size cap (`agent_worker.procman.StreamCapture`, `keep_tail`).
+CAPTURE_CUT_DETAIL = (
+    "the agent's output passed its capture size cap: the capture kept the start "
+    "and the end of the stream and dropped the middle, with a notice where, so "
+    "this is not the whole run"
+)
 
 #: The headers every successful raw response carries, whatever it holds.
 #: `nosniff` and a text/plain type are what stop an agent-written `.html` or
@@ -226,7 +234,9 @@ class AgentOutputService:
           * TEXT -- no NUL in the head. Served as `text/plain; charset=utf-8`
             WHATEVER the name says, so an `.html` or an `.svg` an agent wrote
             is shown as its source and never rendered; redacted window by
-            window on the way out.
+            window on the way out. Bytes that are not UTF-8 pass through
+            exactly as stored -- only a credential-shaped run changes -- so
+            a Latin-1 file downloads as itself, not as U+FFFD.
           * BINARY -- anything else. `application/octet-stream`, always an
             attachment (an `inline` request is ignored), not redacted -- no
             rule runs over bytes like these, and the header says so.
@@ -337,7 +347,11 @@ class AgentOutputService:
         The same boundary rule the paged routes apply (`inspect._last_boundary`:
         the last newline, else the last whitespace): each window is cut after
         it and the remainder carried into the next, so every token is redacted
-        whole. Concatenated, the windows are the redaction of the whole object.
+        whole. A private key is a TOKEN OF LINES: a window that would end
+        inside one is cut before its BEGIN marker instead, and the key carried
+        whole into the next (up to `redaction.PEM_BLOCK_MAX_CHARS`), so it is
+        masked as one block. Concatenated, the windows are the redaction of the
+        whole object.
         """
         total = first.total_bytes
         carry = b""
@@ -350,6 +364,11 @@ class AgentOutputService:
                     yield _scrub(buffer)
                 return
             cut = _last_boundary(buffer)
+            if cut >= 0:
+                begin = open_key_start(buffer, cut + 1)
+                if begin is not None:
+                    # -1 when the key is all this window holds: carry it.
+                    cut = _last_boundary(buffer[:begin])
             if cut >= 0:
                 yield _scrub(buffer[: cut + 1])
                 carry = buffer[cut + 1 :]
@@ -391,6 +410,15 @@ class AgentOutputService:
         after the stream's first byte -- the UI says "earlier steps are not in
         this window". Absent and unreadable are 200s with `stream.status`,
         three answers, not errors.
+
+        A CAPTURE CUT AT ITS CAP IS NEVER COMPLETE (#188 review). The worker's
+        capture of a stream past `max_stdout_bytes` keeps its start and its
+        end and drops the middle, with a notice line where. `capture_truncated`
+        is true when this window holds that notice or the worker reported the
+        cut for this attempt (`result_summary.agent_streams.stdout_truncated`);
+        false when the worker reported none, or this read is the whole final
+        object and holds no notice; null when neither can be said. True makes
+        `complete` false and says why in `stream.detail`.
         """
         ins = self._ins
         task, _prefix = ins._scoped(tenant_id, task_id)
@@ -419,12 +447,20 @@ class AgentOutputService:
             "window_starts_mid_stream": offset > 0,
             "skipped_lines": 0,
             "answer_in_window": False,
+            "capture_truncated": None,
             "redaction": {"applied_at_read_time": True, "rules": len(REDACTION_RULES)},
             "redaction_count": 0,
         }
         if chosen is None:
             body["stream"]["detail"] = "this task has no attempt yet, so it has no transcript"
             return body
+        # What the worker reported about this attempt's capture. The summary
+        # describes the manifest's attempt only.
+        declared_cut = (
+            agent_streams_mod.declared_truncation(task.result_summary, "stdout")
+            if chosen == manifest_attempt(task)
+            else None
+        )
 
         reader = ins._reader()
         base = attempt_prefix(tenant_id=task.tenant_id, task_id=task.id, attempt_id=chosen)
@@ -445,11 +481,14 @@ class AgentOutputService:
         if not chunk.data:
             # A zero-byte object, or a page past the end: an object that
             # EXISTS and holds nothing here -- no steps, not "no transcript".
+            whole = opened.source in ("final", "artifact") and offset == 0
+            cut = _capture_cut(seen=False, declared=declared_cut, whole=whole)
             stream.update(offset=min(offset, chunk.total_bytes), next_offset=None)
             body.update(
                 format=None,
                 steps=[],
-                complete=opened.source in ("final", "artifact") and offset == 0,
+                complete=whole and cut is not True,
+                capture_truncated=cut,
             )
             return body
         data = chunk.data
@@ -486,6 +525,7 @@ class AgentOutputService:
         if detail:
             stream["detail"] = detail
 
+        seen_cut = False
         if oversize:
             body.update(format=None, steps=[_oversize_step(base_offset)])
         else:
@@ -497,6 +537,7 @@ class AgentOutputService:
                 ),
                 include_raw=include_raw,
             )
+            seen_cut = parsed.capture_truncated
             body.update(
                 format=parsed.format,
                 steps=parsed.steps,
@@ -504,9 +545,12 @@ class AgentOutputService:
                 answer_in_window=parsed.answer_in_window,
                 redaction_count=parsed.redaction_count,
             )
-        body["complete"] = (
-            opened.source in ("final", "artifact") and offset == 0 and complete_object
-        )
+        whole = opened.source in ("final", "artifact") and offset == 0 and complete_object
+        cut = _capture_cut(seen=seen_cut, declared=declared_cut, whole=whole)
+        body["capture_truncated"] = cut
+        body["complete"] = whole and cut is not True
+        if cut is True and stream.get("detail") is None:
+            stream["detail"] = CAPTURE_CUT_DETAIL
         body["window_starts_mid_stream"] = offset > 0 or bool(
             tail_window and tail_window["object_offset"] > 0
         )
@@ -534,6 +578,15 @@ class AgentOutputService:
         ended and neither source exists; `unreadable` -- a read FAILED, and
         nothing further down the chain is tried, exactly as `/logs` never
         falls back past a failure.
+
+        `capture_truncated` (#188 review): whether the agent's stdout capture
+        was cut at its size cap, as `/transcript` decides it. The capture
+        keeps the END of the stream, where the result event is, so a cut
+        capture still answers whole; the flag and `detail` say the rest of the
+        run was not all kept, and why a result event may be missing.
+
+        Decoded strings are redacted with `decoded=True`: at least as far as
+        their raw line would be (see `swarm_api.transcript`).
         """
         ins = self._ins
         task, _prefix = ins._scoped(tenant_id, task_id)
@@ -560,6 +613,7 @@ class AgentOutputService:
             "bytes": None,
             "redacted": False,
             "redaction_count": 0,
+            "capture_truncated": None,
             "detail": None,
         }
         if chosen is None:
@@ -580,6 +634,12 @@ class AgentOutputService:
         )
         # An attempt with no document cannot be running: nothing admitted it.
         over = True if record is None else attempt_is_over(record, task, is_latest=chosen == latest)
+        declared_cut = (
+            agent_streams_mod.declared_truncation(task.result_summary, "stdout")
+            if chosen == manifest_attempt(task)
+            else None
+        )
+        body["capture_truncated"] = declared_cut
 
         reader = ins._reader()
         base = attempt_prefix(tenant_id=task.tenant_id, task_id=task.id, attempt_id=chosen)
@@ -614,16 +674,37 @@ class AgentOutputService:
                 if opened.source == "live" and chunk.offset == 0:
                     _window, header_end = parse_tail_header(data)
                     data = data[header_end:]
+                whole = (
+                    opened.source in ("final", "artifact")
+                    and chunk.offset == 0
+                    and chunk.end >= chunk.total_bytes
+                )
+                body["capture_truncated"] = _capture_cut(
+                    seen=agent_streams_mod.has_truncation_notice(data),
+                    declared=declared_cut,
+                    whole=whole,
+                )
                 event = last_result_event(data, starts_mid_line=starts_mid_line)
                 if event is not None:
                     self._fill_from_event(body, event, opened, chunk)
+                    if body["capture_truncated"] is True:
+                        body["detail"] = (
+                            CAPTURE_CUT_DETAIL + "; the result event, its last line, was "
+                            "kept whole"
+                        )
                     return body
+        # Why a result event may be missing, when it may be: said first.
+        cut_note = (
+            CAPTURE_CUT_DETAIL + ", and no result event is in what was kept; "
+            if body["capture_truncated"] is True
+            else ""
+        )
 
         summary = task.result_summary if isinstance(task.result_summary, dict) else {}
         runner = summary.get("runner") if isinstance(summary.get("runner"), dict) else {}
         text = runner.get("summary")
         if chosen == manifest_attempt(task) and isinstance(text, str) and text.strip():
-            scrubbed = redact(text)
+            scrubbed = redact(text, decoded=True)
             body.update(
                 status="ok",
                 source="runner_summary",
@@ -633,7 +714,7 @@ class AgentOutputService:
                 bytes=len(text.encode("utf-8")),
                 redacted=scrubbed.any,
                 redaction_count=scrubbed.count,
-                detail=(
+                detail=cut_note + (
                     "the agent's output holds no result event, so this is the runner's "
                     "summary, which the runner cuts at 2,000 characters"
                 ),
@@ -643,12 +724,14 @@ class AgentOutputService:
         if over:
             body.update(
                 status="absent",
-                detail="the attempt ended and left neither a result event nor a runner summary",
+                detail=cut_note
+                + "the attempt ended and left neither a result event nor a runner summary",
             )
         else:
             body.update(
                 status="not_yet",
-                detail="the attempt is still running and has not reported a result yet",
+                detail=cut_note
+                + "the attempt is still running and has not reported a result yet",
             )
         return body
 
@@ -675,7 +758,7 @@ class AgentOutputService:
     ) -> None:
         result = event.get("result")
         text = result if isinstance(result, str) else None
-        scrubbed = redact(text) if text is not None else None
+        scrubbed = redact(text, decoded=True) if text is not None else None
         is_error = event.get("is_error")
         num_turns = event.get("num_turns")
         body.update(
@@ -702,7 +785,21 @@ class AgentOutputService:
 def _text_or_none(value: Any) -> str | None:
     if not isinstance(value, str) or not value:
         return None
-    return redact(value).text
+    return redact(value, decoded=True).text
+
+
+def _capture_cut(*, seen: bool, declared: bool | None, whole: bool) -> bool | None:
+    """Whether the agent's stdout capture was cut at its cap: yes, no, or not known.
+
+    Yes when the read holds the capture's notice or the worker reported the
+    cut; no when the worker reported none, or the read is the whole final
+    object and holds no notice; otherwise nothing can be said.
+    """
+    if seen or declared is True:
+        return True
+    if declared is False or whole:
+        return False
+    return None
 
 
 def _answer_object(opened: OpenedStream, chunk: ObjectSlice | None) -> dict[str, Any] | None:
@@ -789,7 +886,15 @@ def _align_lines(
 
 
 def _scrub(data: bytes) -> bytes:
-    return redact(data.decode("utf-8", errors="replace")).text.encode("utf-8")
+    """One window of a text download, redacted, every other byte exactly as stored.
+
+    `surrogateescape` both ways (#188 review): a byte that is not UTF-8 becomes
+    a lone surrogate, which no rule matches and the encode turns back into the
+    same byte. It used to be `errors="replace"`, which turned every such byte
+    into U+FFFD -- a Latin-1 CSV downloaded corrupted, and nothing said so.
+    """
+    text = data.decode("utf-8", errors="surrogateescape")
+    return redact(text).text.encode("utf-8", errors="surrogateescape")
 
 
 def _char_boundary(data: bytes) -> int:

@@ -52,8 +52,33 @@ ROLE_OF_KEY = {
     "transcript": "agent_transcript",
 }
 
+#: The first bytes of every line the worker's output capture writes where it
+#: cut a stream at its size cap (`agent_worker.procman.TRUNCATION_MARK`). The
+#: capture keeps a capped agent stream's start and its end and drops the
+#: middle (#188 review); the transcript and answer routes find this line to
+#: say so. Restated, not imported, for the reason the table above is.
+TRUNCATION_MARK = b"[swarm] output truncated"
+
 #: Sentinel: `result_summary` carries no `agent_streams` key at all.
 UNDECLARED = object()
+
+
+def has_truncation_notice(data: bytes) -> bool:
+    """True when a line of `data` is one the capture wrote where it cut the stream."""
+    return data.startswith(TRUNCATION_MARK) or (b"\n" + TRUNCATION_MARK) in data
+
+
+def declared_truncation(summary: Any, stream: str) -> bool | None:
+    """`result_summary.agent_streams.<stream>_truncated`, or None when not reported.
+
+    `stream` is `stdout` or `stderr`. The worker writes it from the runner's
+    own capture report; it describes the manifest's attempt only.
+    """
+    declared = declared_streams(summary)
+    if not isinstance(declared, dict):
+        return None
+    value = declared.get(f"{stream}_truncated")
+    return value if isinstance(value, bool) else None
 
 
 def declared_streams(summary: Any) -> Any:

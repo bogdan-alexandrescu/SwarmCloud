@@ -3354,18 +3354,32 @@ class Worker:
         entry that holds that stream, or None when it was not uploaded (the
         runner never wrote it, or `max_artifact_bytes` dropped it: the copy in
         `logs/` is still there). `transcript_skipped` is the runner's own
-        report, `"too_large"` when it omitted a transcript over the cap
-        (`cliagent.TRANSCRIPT_MAX_CHARS`), and None otherwise -- including
-        when no result.json was written, which says nothing either way.
+        report: `"too_large"` when it omitted a transcript over the cap
+        (`cliagent.TRANSCRIPT_MAX_CHARS`), `"capture_truncated"` when the
+        stdout it would be built from had its middle dropped at the output cap,
+        and None otherwise -- including when no result.json was written, which
+        says nothing either way.
+
+        `stdout_truncated` / `stderr_truncated` (#188 review) say whether the
+        output cap cut that agent stream: the capture then kept its start and
+        its end, and wrote a notice where it dropped the middle. The runner
+        reports them on every outcome (`RunnerContext.report`); None when it
+        reported nothing, which is "not known", never "not cut".
         """
         if files is None:
             return None
         uploaded = {entry.get("name") for entry in artifacts}
-        skipped: str | None = None
         result = _read_json(self.ws.result_path) if self.ws is not None else None
         output = (result or {}).get("output")
-        if isinstance(output, dict) and output.get("transcript_skipped") == "too_large":
-            skipped = "too_large"
+        output = output if isinstance(output, dict) else {}
+        skipped = output.get("transcript_skipped")
+        if skipped not in ("too_large", "capture_truncated"):
+            skipped = None
+
+        def cut(stream: str) -> bool | None:
+            value = output.get(f"{stream}_truncated")
+            return value if isinstance(value, bool) else None
+
         return {
             "stdout": files.stdout if files.stdout in uploaded else None,
             "stderr": files.stderr if files.stderr in uploaded else None,
@@ -3373,6 +3387,8 @@ class Worker:
                 files.transcript if files.transcript and files.transcript in uploaded else None
             ),
             "transcript_skipped": skipped,
+            "stdout_truncated": cut("stdout"),
+            "stderr_truncated": cut("stderr"),
         }
 
     # -- spend -------------------------------------------------------------

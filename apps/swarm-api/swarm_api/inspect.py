@@ -67,7 +67,13 @@ from .objects import (
     UnsafeKeySegment,
     safe_segment,
 )
-from .redaction import RULES as REDACTION_RULES, redact, redact_detail
+from .redaction import (
+    PEM_BLOCK_MAX_CHARS,
+    RULES as REDACTION_RULES,
+    open_key_start,
+    redact,
+    redact_detail,
+)
 from .store import Store
 
 # --------------------------------------------------------------------------
@@ -120,6 +126,18 @@ MANIFEST_MAX_BYTES = 64 * 1024
 #: window being served, so the answer for one artifact does not depend on
 #: which page of it was asked for.
 ARTIFACT_SNIFF_BYTES = 4096
+
+#: How far before its own start a page that does not begin at 0 reads (#188
+#: review). A private key printed as text spans lines, and a page in the
+#: middle of one holds neither of its markers -- only a look-back that finds
+#: the BEGIN, and no END after it, says the page begins inside a key
+#: (`redaction.open_key_start`). A key's END is looked for this far after its
+#: BEGIN, so a BEGIN further back than this does not open a key here either.
+#: The byte before the page -- all `_align` needs -- is the look-back's last.
+KEY_LOOKBACK_BYTES = PEM_BLOCK_MAX_CHARS
+
+#: One byte that is not part of any UTF-8 sequence, as `surrogateescape` decodes it.
+_UNDECODABLE = re.compile("[\udc80-\udcff]")
 
 
 def attempts_prefix(*, tenant_id: str, task_id: str) -> str:
@@ -707,13 +725,15 @@ class InspectionService:
             base = attempt_prefix(
                 tenant_id=task.tenant_id, task_id=task.id, attempt_id=chosen
             )
-            # ONE BYTE OF OVERLAP when the caller is not starting at the
-            # beginning. It is what tells `_align` whether `offset` lands on a
-            # token boundary (the previous byte is whitespace) or inside a
-            # token. Without it the head rule has to assume the worst on every
-            # page and would eat the first token of every window after the
-            # first, losing data.
-            probe = 1 if offset > 0 else 0
+            # OVERLAP when the caller is not starting at the beginning. Its last
+            # byte tells `_align` whether `offset` lands on a token boundary
+            # (the previous byte is whitespace) or inside a token; without it
+            # the head rule has to assume the worst on every page and would
+            # eat the first token of every window after the first, losing
+            # data. The rest of it -- up to `KEY_LOOKBACK_BYTES` -- is what
+            # tells the page whether it begins inside a private key (#188
+            # review), which nothing inside the page can.
+            probe = min(offset, KEY_LOOKBACK_BYTES)
             for name in wanted:
                 opened = self._open_stream(
                     task=task,
@@ -945,17 +965,17 @@ class InspectionService:
         assert chunk is not None
         ages = _ages(chunk, read_at)
         raw_full = chunk.data
-        if not raw_full:
+        if len(raw_full) <= probe:
             # Paged past the end, or a zero-byte object. Both are an object
             # that EXISTS, which is a different answer from absent.
             row = _entry(stream, label, "ok")
             row.update(
                 key=key, uri=uri, content="", total_bytes=chunk.total_bytes,
-                offset=min(offset, chunk.total_bytes), **ages,
+                offset=min(offset, chunk.total_bytes), invalid_utf8_bytes=0, **ages,
             )
             return row
 
-        previous = raw_full[:probe]
+        previous = raw_full[probe - 1 : probe] if probe else b""
         raw = raw_full[probe:]
         start = chunk.offset + probe
 
@@ -969,8 +989,13 @@ class InspectionService:
         raw, start, end, withheld = _align(
             raw, start=start, previous=previous, at_eof=at_eof, read_end=chunk.end
         )
+        raw, start, inside_key, key_withheld = _enter_key(
+            raw_full, raw=raw, start=start, end=end, base=chunk.offset
+        )
+        withheld = withheld or key_withheld
 
-        scrubbed = redact(raw.decode("utf-8", errors="replace"))
+        text, undecodable = _decode_window(raw)
+        scrubbed = redact(text, inside_key=inside_key)
         complete = end >= chunk.total_bytes
         row = _entry(stream, label, "ok")
         row.update(ages)
@@ -988,9 +1013,16 @@ class InspectionService:
             redacted=scrubbed.any,
             redaction_count=scrubbed.count,
             tail_window=tail_window,
+            invalid_utf8_bytes=undecodable,
         )
         if withheld is not None:
             row["detail"] = withheld
+        if undecodable:
+            row["detail"] = _with_sentence(
+                row["detail"],
+                f"{undecodable} bytes of this window are not UTF-8 and are shown as "
+                "U+FFFD; the object at uri holds them exactly",
+            )
         return row
 
     # -- artifacts ---------------------------------------------------------
@@ -1065,7 +1097,10 @@ class InspectionService:
         row = _artifact_row(task=task, entry=entry, attempt_id=attempt_id)
         row.update(key=key, uri=reader.uri(key))
 
-        probe = 1 if offset > 0 else 0
+        # The look-back `read_logs` takes, for the same two reasons: the byte
+        # before `offset` for `_align`, and whether the window begins inside
+        # a private key.
+        probe = min(offset, KEY_LOOKBACK_BYTES)
         try:
             chunk = reader.read_range(key, offset=offset - probe, length=window + probe)
         except ObjectAbsent:
@@ -1102,7 +1137,7 @@ class InspectionService:
             )
             return row
 
-        if not chunk.data:
+        if len(chunk.data) <= probe:
             # Paged past the end, or a zero-byte artifact. Both are an object
             # that EXISTS and is empty, which is not absent and not a failure.
             row.update(
@@ -1110,10 +1145,11 @@ class InspectionService:
                 content="",
                 offset=min(offset, chunk.total_bytes),
                 truncated=False,
+                invalid_utf8_bytes=0,
             )
             return row
 
-        previous = chunk.data[:probe]
+        previous = chunk.data[probe - 1 : probe] if probe else b""
         raw = chunk.data[probe:]
         start = chunk.offset + probe
         raw, start, end, withheld = _align(
@@ -1123,7 +1159,12 @@ class InspectionService:
             at_eof=chunk.end >= chunk.total_bytes,
             read_end=chunk.end,
         )
-        scrubbed = redact(raw.decode("utf-8", errors="replace"))
+        raw, start, inside_key, key_withheld = _enter_key(
+            chunk.data, raw=raw, start=start, end=end, base=chunk.offset
+        )
+        withheld = withheld or key_withheld
+        text, undecodable = _decode_window(raw)
+        scrubbed = redact(text, inside_key=inside_key)
         complete = end >= chunk.total_bytes
         row.update(
             status="ok",
@@ -1137,6 +1178,7 @@ class InspectionService:
             truncated=not complete,
             redacted=scrubbed.any,
             redaction_count=scrubbed.count,
+            invalid_utf8_bytes=undecodable,
         )
         if withheld is not None:
             row["detail"] = withheld
@@ -1145,6 +1187,12 @@ class InspectionService:
                 f"{end} of {chunk.total_bytes} bytes are shown. This is a window, not "
                 "the whole artifact -- continue from next_offset, or read the object "
                 "from its uri."
+            )
+        if undecodable:
+            row["detail"] = _with_sentence(
+                row["detail"],
+                f"{undecodable} bytes of this window are not UTF-8 and are shown as "
+                "U+FFFD; the raw route (/artifacts/raw) serves them exactly",
             )
         return row
 
@@ -1470,6 +1518,9 @@ def _artifact_row(*, task: Task, entry: dict[str, Any], attempt_id: str) -> dict
         "truncated": False,
         "redacted": False,
         "redaction_count": 0,
+        # Bytes of the served window that are not UTF-8, shown as U+FFFD. Null,
+        # never 0, when no window was read.
+        "invalid_utf8_bytes": None,
         "redaction": {
             # Stated in the payload so a reader never has to assume it, and so
             # a deployment where it somehow stopped is visible from outside.
@@ -1562,6 +1613,53 @@ def _align(
     return raw, start, start + len(raw), detail
 
 
+def _enter_key(
+    data: bytes, *, raw: bytes, start: int, end: int, base: int
+) -> tuple[bytes, int, bool, str | None]:
+    """Whether an aligned window begins inside a private key; if so, on a whole line.
+
+    `data` is everything the read returned -- the look-back, then the window
+    -- starting at object offset `base`; `raw` is the window as `_align` left
+    it, starting at `start`. Returns `(raw, start, inside_key, detail)`.
+
+    A key's lines hold no whitespace, so `_align` can only leave a window
+    starting mid-line inside a key on its BEGIN line (the marker holds
+    spaces) or on a JSON line holding a whole key written with `\\n`
+    escapes. The rest of that line is key material either way, so it is
+    skipped too and the window starts on the next line, where
+    `redact(inside_key=True)` masks the body. Bytes skipped are not served;
+    `offset` says where the window starts.
+    """
+    at = start - base
+    if not raw or open_key_start(data, at) is None:
+        return raw, start, False, None
+    if at <= 0 or data[at - 1 : at] == b"\n":
+        return raw, start, True, None
+    newline = raw.find(b"\n")
+    if newline < 0:
+        return b"", end, True, (
+            "this window lies inside a private key and holds no line break, so "
+            "nothing of it was served; continue from next_offset"
+        )
+    return raw[newline + 1 :], start + newline + 1, True, None
+
+
+def _decode_window(raw: bytes) -> tuple[str, int]:
+    """`raw` as text for a JSON body, and how many of its bytes are not UTF-8.
+
+    Each such byte is shown as U+FFFD -- a JSON string cannot carry it -- and
+    COUNTED (#188 review), so a window of a Latin-1 file is never taken for
+    the agent's own text. It used to be `errors="replace"`, silently. The raw
+    download serves the exact bytes.
+    """
+    text = raw.decode("utf-8", errors="surrogateescape")
+    return _UNDECODABLE.subn("\N{REPLACEMENT CHARACTER}", text)
+
+
+def _with_sentence(detail: str | None, sentence: str) -> str:
+    return sentence if not detail else f"{detail.rstrip('.')}. {sentence}"
+
+
 # --------------------------------------------------------------------------
 # Row helpers
 # --------------------------------------------------------------------------
@@ -1594,6 +1692,9 @@ def _entry(stream: str, source: str | None, status: str) -> dict[str, Any]:
         # the store reported no time.
         "object_updated_at": None,
         "age_seconds": None,
+        # Bytes of the served window that are not UTF-8, shown as U+FFFD. Null,
+        # never 0, when nothing was read.
+        "invalid_utf8_bytes": None,
     }
 
 
