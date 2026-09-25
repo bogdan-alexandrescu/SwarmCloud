@@ -193,5 +193,11 @@ plus `task_id in`, with no ordering, which merged single-field indexes serve.
 * The API image's time zone database. `python:3.11-slim` installs `tzdata`. If
   it were missing, every zone would fail, and the route answers 503 naming the
   image, not 422 blaming the caller.
-* Tenant offboarding (`scripts/offboard-tenant.sh`) does not yet delete a
-  tenant's `outcome_days` documents.
+
+## Offboarding
+
+`outcome_days` holds a tenant's task ids, profiles and submitter emails. So
+`scripts/offboard-tenant.sh` counts it, deletes it by `tenant_id` (never by the
+document-id prefix, which `eng` and `eng-x` share), and counts it again in the
+proof. That follows the owner's 2026-09-24 decision that offboarding deletes
+everything a tenant left.
