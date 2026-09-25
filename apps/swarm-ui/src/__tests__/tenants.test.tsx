@@ -22,6 +22,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen } from '@testing-library/react'
 
 import type { Result } from '../fetch'
+import { HELP } from '../help'
 import type { Tenant } from '../types'
 import { cascade, type CascadeEnv } from './cssgate'
 
@@ -193,9 +194,14 @@ describe('Tenants shows the ceiling admission enforces (AH-12)', () => {
     const head = [...c.querySelectorAll('thead th')].find((th) => visible(th) === 'Enforced')!
     const glyph = head.querySelector<HTMLButtonElement>('button[aria-label^="Help: "]')
     expect(glyph, 'the Enforced column carries no help').not.toBeNull()
-    // The card behind it ends in the Tenants fields topic.
+    // The card behind it IS the Tenants fields topic, and ends in its link.
+    // Asked of the pinned card itself: the note under the table links to the
+    // same address, so a document-wide query would pass with no card at all.
+    expect(glyph!.getAttribute('aria-label')).toBe(`Help: ${HELP['tenant-fields'].title}`)
     fireEvent.click(glyph!)
-    expect(document.querySelector('a[href="#help/tenant-fields"]'), 'the card does not lead to the Tenants topic').not.toBeNull()
+    const card = document.querySelector('[role="dialog"]')
+    expect(card, 'clicking the glyph pins no card').not.toBeNull()
+    expect(card!.querySelector('a[href="#help/tenant-fields"]'), 'the card does not lead to the Tenants topic').not.toBeNull()
     // BELOW 900px THE HEAD ROW IS VISUALLY HIDDEN (§B6.3) BUT STAYS IN THE TAB
     // ORDER, so a glyph left in it is focusable and invisible -- the defect
     // CP-11 moved Capacity's glyph out of a header cell for. There, the note
