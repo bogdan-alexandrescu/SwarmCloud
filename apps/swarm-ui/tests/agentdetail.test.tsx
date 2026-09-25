@@ -514,12 +514,16 @@ test('a task that never ran does not print its wait as its run', () => {
   const markup = plain(surface(cascade()))
   assert.ok(!markup.includes('<b>run</b>27m 57s'), 'the wait is printed under the run key')
   assert.ok(markup.includes('<b>run</b>never ran'), 'the run key does not say it never ran')
-  // The wait is still on the screen, on the Elapsed tile, and its note says
-  // which clock it is.
+  // The Elapsed tile says it too, in its figure or in its note -- whichever
+  // `elapsed()` leaves it to. The figure is `elapsed()`'s to choose (the
+  // shared-types lane makes it `never ran` outright); what this screen must
+  // never do is show a duration there with nothing saying no run happened.
   const tile = tiles(surface(cascade())).get('Elapsed')
   assert.ok(tile, 'the Elapsed tile is gone')
-  assert.equal(tile.value, '27m 57s')
-  assert.match(tile.sub, /^never ran · cancelled/, `the note does not say this never ran: "${tile.sub}"`)
+  assert.ok(
+    /never ran/.test(tile.value) || /^never ran · cancelled/.test(tile.sub),
+    `the Elapsed tile reads "${tile.value}" / "${tile.sub}" and never says this never ran`,
+  )
 })
 
 test('the error banner names the scheduler for a cascade cancel, not the agent', () => {
