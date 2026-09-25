@@ -56,7 +56,9 @@ class ResolvedCredentials:
     secret_names: tuple[str, ...]
 
 
-def load_tenant(db: Any, tenant_id: str) -> Tenant:
+def load_tenant(
+    db: Any, tenant_id: str, *, call_options: dict[str, Any] | None = None
+) -> Tenant:
     """Read this worker's OWN tenant document.
 
     `tenant_id` is the worker's admitted tenant, never anything a caller
@@ -64,8 +66,12 @@ def load_tenant(db: Any, tenant_id: str) -> Tenant:
     `tenants/{id}` document whose `tenant_id` field says something else is
     either corruption or another tenant writing into this one's record, and
     trusting it would pick the wrong secret name two lines later.
+
+    `call_options` is the read's `retry` and `timeout`. The lifecycle passes
+    its startup budget before the runner starts (`ControlPlane.call_options`),
+    and nothing mid-run, where the library's defaults apply.
     """
-    snap = db.collection("tenants").document(tenant_id).get()
+    snap = db.collection("tenants").document(tenant_id).get(**dict(call_options or {}))
     if not snap.exists:
         raise SecretError(f"tenant {tenant_id} does not exist")
     data = snap.to_dict() or {}

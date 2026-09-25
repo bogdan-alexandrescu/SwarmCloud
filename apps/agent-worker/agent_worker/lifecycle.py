@@ -49,20 +49,55 @@ Between them sits the quota rule: a wait longer than
 checkpoints, publishes what it learned about the provider, parks the task with
 `next_eligible_at`, releases its lease and exits, so the slot and the memory go
 back to the platform instead of idling.
+
+**A SIGTERM means something different before the runner exists.** Three
+windows, and the handler (`_on_signal`) knows which one it is in:
+
+  * During step 1, nothing has been written. The worker names the phase and
+    exits at once with `EXIT_INTERRUPTED` (143).
+  * From step 2 until the runner child is created (steps 2 to 6, the fence
+    re-check and the quota preflight), the handler raises `StartupInterrupted`
+    wherever the main thread is, including inside a blocked Firestore call or
+    a clone. The worker writes neither the task, the lease nor an event, fenced
+    or not. It records the interruption and its phase on its OWN attempt
+    document, gives back a pool account, and exits 143. The reconciler reclaims
+    the lease once it is silent and requeues the task. A park would strand it,
+    because nothing promotes a SCHEDULED_RETRY park.
+    The handler also RECORDS the interrupt before raising it, and `_execute`
+    routes on that record, not on the exception that arrives. A library can
+    replace the exception on its way up: `firestore.transactional` rolls back
+    on any BaseException, and its rollback of a transaction that had not begun
+    raises a ValueError in place of the interrupt.
+  * Once the child exists, the handler only sets `_interrupted`, and the
+    supervision loop stops the runner, checkpoints and parks or stands down
+    exactly as before (`_handle_interruption`).
+
+Every startup phase is also announced (`startup.Phases`), so a worker that
+stalls says where.
+
+**A dependency that is unavailable in the same window exits 78, as at step
+1, and leaves the task to the reconciler.** Every Firestore call from step 1 to
+the runner carries the startup budget (`ControlPlane.startup_budget`), so an
+outage there raises within about 40 s. Failing the task would be terminal: the
+reconciler never requeues FAILED, and `max_attempts` would never be consulted
+for what is a lost attempt, not a failed one. See
+`_exit_unavailable_before_runner` for which errors count. A refusal, such as
+PERMISSION_DENIED, still fails the attempt with its reason.
 """
 
 from __future__ import annotations
 
+import functools
 import json
 import os
 import shutil
-import signal
 import sys
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Iterator
 
 from swarm_common.models import ProviderState, utcnow
 from swarm_common.states import EventType, ParkReason, TaskState
@@ -120,6 +155,12 @@ from .secrets import (
     resolve_credentials,
     resolve_git_token,
 )
+from .startup import EXIT_INTERRUPTED, Phases, StartupInterrupted, route_signals
+
+#: What the SIGTERM/SIGINT handler does, by window. See the module docstring.
+_SIGNAL_EXIT_NOW = "exit_now"   # nothing written yet: name the phase, exit
+_SIGNAL_RAISE = "raise"         # preparing the runner: unwind to run()
+_SIGNAL_FLAG = "flag"           # a runner exists, or the worker is leaving
 
 #: How many times the runner may be restarted in place after a SHORT provider
 #: wait. A long wait parks instead, so this bound is only ever reached by a
@@ -196,6 +237,9 @@ class WorkerDeps:
     #: config names a broker" -- which is what the entrypoint does. Injected in
     #: tests so no unit test needs a metadata server or a network.
     account_broker: Any | None = None
+    #: The entrypoint's phase tracker, carried on so the lifecycle's phases
+    #: continue the same clock. None builds one on the worker's logger.
+    phases: Phases | None = None
 
 
 @dataclass
@@ -227,6 +271,15 @@ class Worker:
             max_bytes=config.max_checkpoint_bytes,
         )
         self._interrupted = False
+        self.phases = deps.phases if deps.phases is not None else Phases(deps.logger)
+        # Which window a SIGTERM lands in. `_on_signal` reads it; `run` and
+        # `_execute` set it, always through `_signal_policy` so that it is
+        # restored however the window is left.
+        self._signal_mode = _SIGNAL_FLAG
+        # The first SIGTERM or SIGINT that arrived in the startup window, kept
+        # here as well as raised. See `_execute` for why the record, not the
+        # exception that reaches it, decides the exit.
+        self._startup_interrupt: StartupInterrupted | None = None
         self._child: ChildProcess | None = None
         # The LIVE runner's sampler, or None between runners. The runners that
         # have ended are in `_runner_usage`, and `_attempt_usage` combines the
@@ -292,12 +345,19 @@ class Worker:
         self._install_signal_handlers()
 
         # ---- STEP 1: fencing, before anything else exists ---------------
+        self.phases.enter("validate_generation")
         try:
-            signals = self.control.validate_generation()
+            # Reads only. A SIGTERM here has nothing to undo, so it exits now.
+            with self._signal_policy(_SIGNAL_EXIT_NOW), self.control.startup_budget():
+                signals = self.control.validate_generation()
         except FencedError as exc:
             return self._exit_fenced(exc)
         except TenantMismatchError as exc:
             return self._exit_tenant_mismatch(exc)
+        except Exception as exc:
+            if not _control_plane_unreachable(exc):
+                raise
+            return self._exit_control_plane_unreachable(exc)
 
         if signals.cancel_requested:
             # Cancelled between admission and start: nothing ran, so there is
@@ -316,6 +376,10 @@ class Worker:
 
         try:
             outcome = self._execute()
+        except StartupInterrupted as exc:
+            # FIRST, and not an Exception at all. A SIGTERM while the runner
+            # was being prepared. See `_exit_interrupted_before_runner`.
+            return self._exit_interrupted_before_runner(exc)
         except FencedWriteRefused as exc:
             # BEFORE `except FencedError`, of which it is a subclass. A task
             # write found the attempt superseded, either on the way out (a
@@ -348,109 +412,51 @@ class Worker:
     # the main path
     # ------------------------------------------------------------------
     def _execute(self) -> Outcome:
-        cfg = self.cfg
-
-        # ---- STEP 2: STARTING -> RUNNING --------------------------------
-        self.control.record_attempt_start(
-            backend=cfg.backend, execution_name=_execution_name()
-        )
-        self.control.advance_to_running()
-
-        # THE FIRST HEARTBEAT GOES HERE, BEFORE ANY SLOW WORK.
+        # ---- STEPS 2-6: prepare the runner, inside the startup window ----
         #
-        # It used to happen only once the agent child was running -- after the
-        # workspace, the checkpoint restore and the clone. But the reconciler
-        # measures silence from LEASE ACQUISITION, so everything before this
-        # point counted against `heartbeat_grace_seconds` (90): container cold
-        # start, image pull, workspace setup, restoring a checkpoint and a
-        # shallow clone.
-        #
-        # On 2026-09-19 that reclaimed a task three times in a row. Each
-        # replacement worker started, found its generation superseded, logged
-        # "FENCED: this attempt has been superseded; exiting without running the
-        # agent" and exited 70 -- invariant 5 doing exactly what it exists to
-        # do, on workers that were never unhealthy. The task never ran at all.
-        #
-        # Raising the grace was the other option and is worse: it delays every
-        # genuine reclaim to accommodate startup cost. Heartbeating here makes
-        # the grace measure LIVENESS, which is what it is for.
-        self._heartbeat()
-
-        # ---- STEP 3: isolated workspace ---------------------------------
-        self.ws = workspace_mod.create(cfg.workspace_root, cfg.attempt_id)
-        ws = self.ws
-        self.log.info("workspace created", path=str(ws.root))
-
-        # ---- STEP 4: restore the latest checkpoint ----------------------
-        task = self.control.fetch_task()
-        # Kept because the publish gate, several steps later, needs the
-        # caller's dispatch strategy and re-fetching it there would be a
-        # second read of a document that cannot have changed.
-        self._task = task
-        self._restore_checkpoint(task.get("latest_checkpoint"))
-        # Restoring a large checkpoint is unbounded; prove liveness after it.
-        self._heartbeat()
-
-        # ---- STEP 5: optional shallow clone -----------------------------
-        repo_info = self._maybe_clone(task)
-        # A clone is the single slowest step before the agent starts, and the
-        # one most likely to vary with repository size.
-        self._heartbeat()
-
-        # ---- STEP 5b: stage the artifacts this step declared -------------
-        # Order relative to the clone is not load-bearing: the two write to
-        # different paths inside `work/`, and a declared name that would collide
-        # with the clone directory is refused rather than resolved. Order
-        # relative to the RUNNER INPUT is: `input.json` has to be able to tell
-        # the agent what it was given, so staging happens first.
-        staged_inputs = self._stage_declared_inputs(task)
-        if staged_inputs:
-            # Downloading an upstream artifact is unbounded in the same way a
-            # clone is; prove liveness after it for the same reason.
-            self._heartbeat()
-
-        # ---- runner input -----------------------------------------------
-        payload = dict(task.get("input") or {})
-        if repo_info:
-            payload.setdefault("repository", repo_info)
-        if staged_inputs:
-            # Assigned, not `setdefault`: this key describes what is actually on
-            # disk right now, so a caller's own `staged_inputs` in the step input
-            # must not shadow it and leave the agent reading a stale claim.
-            payload["staged_inputs"] = [item.as_dict() for item in staged_inputs]
-        if cfg.model:
-            payload.setdefault("model", cfg.model)
-        payload.setdefault("task_id", cfg.task_id)
-        payload.setdefault("attempt_id", cfg.attempt_id)
-        payload.setdefault("resumed_from_checkpoint", bool(self._restored_from))
-        ws.input_path.write_text(json.dumps(payload, indent=2, default=str))
-
-        # ---- STEP 6: tenant credentials ---------------------------------
+        # A SIGTERM in here raises `StartupInterrupted` wherever the main
+        # thread is, and `run` turns it into an exit that writes neither the
+        # task nor the lease. Every Firestore call in here carries the startup
+        # budget. The window closes BEFORE any park it decided on is made: a
+        # park is several writes (state, event, lease release), and an
+        # exception landing between two of them would leave the task parked
+        # with its lease still held.
         try:
-            child_env = self._build_child_env()
-        except CredentialMissing as exc:
-            return self._park_credential_missing(exc)
-        except NoAccountAvailable as exc:
-            # The pool is this tenant's way of running and it is momentarily
-            # empty. A wait, not a failure -- see `_park_no_account`.
-            return self._park_no_account(exc)
-
-        # Re-check fencing immediately before the agent starts. Cloning a large
-        # repository can take minutes, and the whole point of step 1 is that
-        # nothing runs under a stale generation -- including after a slow setup.
-        self.control.validate_generation()
-
-        # A provider that is already exhausted must not be hit again.
-        preflight = self.control.poll(cfg.provider)
-        quota_signal = signal_from_control(preflight, cfg.provider)
-        if quota_signal is not None:
-            decision = decide(
-                quota_signal,
-                max_in_worker_retry_delay_seconds=cfg.max_in_worker_retry_delay_seconds,
-                remaining_task_seconds=self._remaining_seconds(),
-            )
-            if decision.park:
-                return self._park_for_quota(decision, source="preflight")
+            with self._signal_policy(_SIGNAL_RAISE), self.control.startup_budget():
+                prepared = self._prepare()
+                if self._startup_interrupt is not None:
+                    # A SIGTERM whose exception something caught and dropped
+                    # (an `except BaseException` with no re-raise). The
+                    # platform still asked this process to stop.
+                    raise self._startup_interrupt
+        except StartupInterrupted:
+            raise
+        except BaseException as exc:
+            interrupt = self._startup_interrupt
+            if interrupt is not None:
+                # REPLACED ON THE WAY UP. `firestore.transactional` rolls back
+                # on any BaseException, and the rollback can raise: a
+                # ValueError for a transaction whose begin had not returned,
+                # or the rollback RPC's own error. Whatever arrives here, a
+                # SIGTERM was delivered in this window, and that decides the
+                # exit. Raised again, not handled here, so `run` has one path
+                # for every interrupt.
+                interrupt.replaced_by = exc
+                raise interrupt
+            if not isinstance(exc, Exception) or isinstance(exc, WorkerError):
+                # Fenced, tenant mismatch, cancelled and the other deliberate
+                # exits keep their own handlers in `run`.
+                raise
+            unavailable = _unavailable_cause(exc)
+            if unavailable is None:
+                raise
+            return Outcome(exit_code=self._exit_unavailable_before_runner(exc, unavailable))
+        if callable(prepared):
+            return prepared()
+        child_env = prepared
+        cfg = self.cfg
+        ws = self.ws
+        assert ws is not None
 
         # ---- STEPS 7-9: run the child, supervised -----------------------
         attempt_number = 0
@@ -543,6 +549,126 @@ class Worker:
         # ---- STEPS 10-12: artifacts, checkpoint, terminal state, lease --
         return self._finalise(result)
 
+    def _prepare(self) -> dict[str, str] | Callable[[], Outcome]:
+        """Steps 2 to 6, the fence re-check and the quota preflight.
+
+        Returns the runner's environment, or a park to make once the startup
+        window has closed (see `_execute`).
+        """
+        cfg = self.cfg
+
+        # ---- STEP 2: STARTING -> RUNNING --------------------------------
+        self.phases.enter("record_attempt_start")
+        self.control.record_attempt_start(
+            backend=cfg.backend, execution_name=_execution_name()
+        )
+        self.phases.enter("advance_to_running")
+        self.control.advance_to_running()
+
+        # THE FIRST HEARTBEAT GOES HERE, BEFORE ANY SLOW WORK.
+        #
+        # It used to happen only once the agent child was running -- after the
+        # workspace, the checkpoint restore and the clone. But the reconciler
+        # measures silence from LEASE ACQUISITION, so everything before this
+        # point counted against `heartbeat_grace_seconds` (90): container cold
+        # start, image pull, workspace setup, restoring a checkpoint and a
+        # shallow clone.
+        #
+        # On 2026-09-19 that reclaimed a task three times in a row. Each
+        # replacement worker started, found its generation superseded, logged
+        # "FENCED: this attempt has been superseded; exiting without running the
+        # agent" and exited 70 -- invariant 5 doing exactly what it exists to
+        # do, on workers that were never unhealthy. The task never ran at all.
+        #
+        # Raising the grace was the other option and is worse: it delays every
+        # genuine reclaim to accommodate startup cost. Heartbeating here makes
+        # the grace measure LIVENESS, which is what it is for.
+        self._heartbeat()
+
+        # ---- STEP 3: isolated workspace ---------------------------------
+        self.phases.enter("workspace")
+        self.ws = workspace_mod.create(cfg.workspace_root, cfg.attempt_id)
+        ws = self.ws
+        self.log.info("workspace created", path=str(ws.root))
+
+        # ---- STEP 4: restore the latest checkpoint ----------------------
+        self.phases.enter("restore_checkpoint")
+        task = self.control.fetch_task()
+        # Kept because the publish gate, several steps later, needs the
+        # caller's dispatch strategy and re-fetching it there would be a
+        # second read of a document that cannot have changed.
+        self._task = task
+        self._restore_checkpoint(task.get("latest_checkpoint"))
+        # Restoring a large checkpoint is unbounded; prove liveness after it.
+        self._heartbeat()
+
+        # ---- STEP 5: optional shallow clone -----------------------------
+        self.phases.enter("clone")
+        repo_info = self._maybe_clone(task)
+        # A clone is the single slowest step before the agent starts, and the
+        # one most likely to vary with repository size.
+        self._heartbeat()
+
+        # ---- STEP 5b: stage the artifacts this step declared -------------
+        # Order relative to the clone is not load-bearing: the two write to
+        # different paths inside `work/`, and a declared name that would collide
+        # with the clone directory is refused rather than resolved. Order
+        # relative to the RUNNER INPUT is: `input.json` has to be able to tell
+        # the agent what it was given, so staging happens first.
+        self.phases.enter("stage_inputs")
+        staged_inputs = self._stage_declared_inputs(task)
+        if staged_inputs:
+            # Downloading an upstream artifact is unbounded in the same way a
+            # clone is; prove liveness after it for the same reason.
+            self._heartbeat()
+
+        # ---- runner input -----------------------------------------------
+        payload = dict(task.get("input") or {})
+        if repo_info:
+            payload.setdefault("repository", repo_info)
+        if staged_inputs:
+            # Assigned, not `setdefault`: this key describes what is actually on
+            # disk right now, so a caller's own `staged_inputs` in the step input
+            # must not shadow it and leave the agent reading a stale claim.
+            payload["staged_inputs"] = [item.as_dict() for item in staged_inputs]
+        if cfg.model:
+            payload.setdefault("model", cfg.model)
+        payload.setdefault("task_id", cfg.task_id)
+        payload.setdefault("attempt_id", cfg.attempt_id)
+        payload.setdefault("resumed_from_checkpoint", bool(self._restored_from))
+        ws.input_path.write_text(json.dumps(payload, indent=2, default=str))
+
+        # ---- STEP 6: tenant credentials ---------------------------------
+        self.phases.enter("credentials")
+        try:
+            child_env = self._build_child_env()
+        except CredentialMissing as exc:
+            return functools.partial(self._park_credential_missing, exc)
+        except NoAccountAvailable as exc:
+            # The pool is this tenant's way of running and it is momentarily
+            # empty. A wait, not a failure -- see `_park_no_account`.
+            return functools.partial(self._park_no_account, exc)
+
+        # Re-check fencing immediately before the agent starts. Cloning a large
+        # repository can take minutes, and the whole point of step 1 is that
+        # nothing runs under a stale generation -- including after a slow setup.
+        self.phases.enter("revalidate_generation")
+        self.control.validate_generation()
+
+        # A provider that is already exhausted must not be hit again.
+        self.phases.enter("quota_preflight")
+        preflight = self.control.poll(cfg.provider)
+        quota_signal = signal_from_control(preflight, cfg.provider)
+        if quota_signal is not None:
+            decision = decide(
+                quota_signal,
+                max_in_worker_retry_delay_seconds=cfg.max_in_worker_retry_delay_seconds,
+                remaining_task_seconds=self._remaining_seconds(),
+            )
+            if decision.park:
+                return functools.partial(self._park_for_quota, decision, source="preflight")
+        return child_env
+
     # ------------------------------------------------------------------
     # child supervision
     # ------------------------------------------------------------------
@@ -575,6 +701,9 @@ class Worker:
             stale.unlink(missing_ok=True)
         self._spend_pending = True
 
+        if self.phases.current != "runner":
+            # The last startup line. An in-place restart is not a new phase.
+            self.phases.enter("runner")
         child = ChildProcess(
             argv,
             cwd=ws.work,
@@ -1019,6 +1148,165 @@ class Worker:
         )
         return ExitCode.TENANT_MISMATCH
 
+    def _exit_control_plane_unreachable(self, exc: BaseException) -> int:
+        """The generation check could not read Firestore. Say so and leave.
+
+        Nothing is written. Firestore is the thing that could not be reached,
+        and without the generation check this attempt does not know that it
+        owns the task, so even a write that could land would not be its to
+        make. The exit is 78, "could not start", like the DNS preflight's. See
+        `__main__` for what the reconciler does with the silent lease.
+
+        The error is logged whole, with its type and its cause: a RetryError
+        from the startup budget, UNAVAILABLE from DNS or a refused connection,
+        PERMISSION_DENIED from IAM, or an auth failure that grpc reports as
+        UNAVAILABLE. Before this, every one of those looked like 300 s of
+        nothing.
+        """
+        options = self.control.startup_call_options
+        retry = options.get("retry")
+        cause = getattr(exc, "cause", None)
+        self.log.exception(
+            "could not read the control plane at startup; exiting without writing anything",
+            exc,
+            phase=self.phases.current,
+            seconds_in_phase=self.phases.seconds_in_phase(),
+            cause=f"{type(cause).__name__}: {cause}" if cause is not None else None,
+            retry_budget_seconds=getattr(retry, "timeout", None),
+            call_timeout_seconds=options.get("timeout"),
+            exit_code=ExitCode.CONFIG,
+        )
+        return ExitCode.CONFIG
+
+    def _exit_interrupted_before_runner(self, exc: StartupInterrupted) -> int:
+        """A SIGTERM while the runner was being prepared: record it on OUR attempt, leave.
+
+        WHAT IS NOT WRITTEN: the task, the lease, the pools and the event
+        stream. That holds whether this attempt is fenced or not, and it is why
+        the fence does not need checking here. The two senders are the ones
+        `_handle_interruption` describes:
+
+          * The reconciler deleting the Job. It fences first, so this attempt
+            owns nothing, and PR #49's rule applies: the stale worker writes
+            only its own attempt document.
+          * The platform taking the instance away. This attempt still owns
+            its task, but no agent has run, so there is nothing to checkpoint.
+            A SCHEDULED_RETRY park is promoted by nothing
+            (docs/incidents/2026-09-24-gke-dispatch.md), so parking here would
+            strand the task. RUNNING -> READY is a legal transition, and the
+            worker could requeue the task itself. It would then have to apply
+            the retry cap that the reconciler applies (`retries_exhausted`), and
+            make a fenced transition plus a lease release inside the SIGTERM
+            grace, against a Firestore that may be the reason it is stuck. The
+            reconciler already does all of that once the lease falls silent:
+            it fences the attempt, releases the lease, and requeues the task or
+            fails it when its attempts are spent. What this costs is one
+            `heartbeat_grace_seconds` with the slot held.
+
+        WHAT IS WRITTEN: this attempt's own document, with the phase, under the
+        startup budget, so that a Firestore that cannot be reached costs
+        seconds of the SIGTERM grace, not all of it. That write is inside
+        invariant 5, as in `_record_fenced_end`. The window only opens once
+        step 1 has checked that document's tenant, and `record_attempt_start`
+        then wrote it with this tenant's id. `_cleanup` then gives back a pool
+        account, if one was leased, and removes the workspace.
+
+        `replaced_by` is logged when a library raised something else in the
+        interrupt's place on the way up (see `_execute`). It is how an
+        operator tells a rollback that failed from one that was not needed.
+        """
+        replaced_by = getattr(exc, "replaced_by", None)
+        self.log.warning(
+            f"{exc.signal_name} before the runner started; exiting without writing "
+            "the task, the lease or an event",
+            signal=exc.signal_name,
+            phase=exc.phase,
+            seconds_in_phase=self.phases.seconds_in_phase(),
+            seconds_since_start=self.phases.seconds_since_start(),
+            exit_code=EXIT_INTERRUPTED,
+            replaced_by=(
+                f"{type(replaced_by).__name__}: {replaced_by}" if replaced_by is not None else None
+            ),
+            then=(
+                "the reconciler reclaims the lease once it is silent and requeues "
+                "the task, or fails it when its attempts are spent"
+            ),
+        )
+        self._record_startup_end(
+            EXIT_INTERRUPTED,
+            f"interrupted by {exc.signal_name} during startup phase {exc.phase}; "
+            "the runner never started",
+        )
+        return EXIT_INTERRUPTED
+
+    def _exit_unavailable_before_runner(self, exc: Exception, cause: BaseException) -> int:
+        """A dependency was unavailable before the runner started: leave the task, exit 78.
+
+        `cause` is the error in `exc`'s chain that says so (`_unavailable_cause`).
+        It is usually `exc` itself: a RetryError from the startup budget, or
+        UNAVAILABLE. It is further down the chain when a library raised
+        something else on the way up, such as Firestore's rollback of a
+        transaction whose begin had failed.
+
+        WHY NOT FAIL THE TASK. FAILED is terminal. `finish` sets completed_at
+        and releases the lease, and the reconciler never requeues a FAILED
+        task, so one Firestore outage longer than the 30 s budget would end
+        the task for good without `max_attempts` being consulted. Before the
+        startup budget, the same reads retried for 60 to 300 s and would have
+        ridden most such outages out. Exiting as step 1 does leaves the task
+        where the reconciler can see it: the lease falls silent, the reconciler
+        fences and releases it, and requeues the task or fails it once its
+        attempts are spent.
+
+        WHY NOT REQUEUE IT HERE. The same reason as the interrupted exit: a
+        fenced transition, the retry cap and a lease release, made against
+        the service that just failed. The reconciler already does all three.
+
+        WHAT IS WRITTEN: only this attempt's own document, best effort and
+        under the budget, as in `_exit_interrupted_before_runner`. When the
+        unavailable dependency was not Firestore (the checkpoint store, Secret
+        Manager), it records why the attempt ended where an operator will look.
+        """
+        options = self.control.startup_call_options
+        retry = options.get("retry")
+        phase = self.phases.current
+        self.log.exception(
+            f"{type(cause).__name__} before the runner started; exiting without "
+            "writing the task, the lease or an event",
+            exc,
+            phase=phase,
+            seconds_in_phase=self.phases.seconds_in_phase(),
+            unavailable=f"{type(cause).__name__}: {cause}",
+            retry_budget_seconds=getattr(retry, "timeout", None),
+            call_timeout_seconds=options.get("timeout"),
+            exit_code=ExitCode.CONFIG,
+            then=(
+                "the reconciler reclaims the lease once it is silent and requeues "
+                "the task, or fails it when its attempts are spent"
+            ),
+        )
+        self._record_startup_end(
+            ExitCode.CONFIG,
+            f"{type(cause).__name__} during startup phase {phase}; the runner never "
+            f"started: {cause}",
+        )
+        return ExitCode.CONFIG
+
+    def _record_startup_end(self, exit_code: int, error: str) -> None:
+        """This attempt's own end, best effort, under the startup budget. Never raises."""
+        if self._writes_forbidden:
+            return
+        try:
+            with self.control.startup_budget():
+                self.control.record_attempt_end(
+                    exit_code=exit_code, error=self._scrub(error[:4000])
+                )
+        except Exception as write_exc:
+            self.log.warning(
+                "could not record the end of this attempt on its own document",
+                error=f"{type(write_exc).__name__}: {write_exc}",
+            )
+
     def _restore_checkpoint(self, pointer: Any) -> None:
         ws = self.ws
         assert ws is not None
@@ -1111,6 +1399,9 @@ class Worker:
             work=ws.work,
             store=self.store,
             db=self.db,
+            # The startup budget: staging runs before the runner, inside
+            # `startup_budget()`, and reads each upstream step's task.
+            call_options=self.control.call_options(),
             tenant_id=self.cfg.tenant_id,
             logger=self.log,
             resumed=self._restored_from is not None,
@@ -1178,7 +1469,9 @@ class Worker:
         if self.secret_client is None:
             return None
         try:
-            tenant = load_tenant(self.db, self.cfg.tenant_id)
+            tenant = load_tenant(
+                self.db, self.cfg.tenant_id, call_options=self.control.call_options()
+            )
             return resolve_git_token(
                 tenant=tenant, client=self.secret_client, logger=self.log
             )
@@ -1279,7 +1572,12 @@ class Worker:
             if account_env is not None:
                 base.update(account_env)
             else:
-                tenant = load_tenant(self.db, self.cfg.tenant_id)
+                # Under the startup budget before the runner. The credential
+                # reload calls this again mid-run, outside the window, and gets
+                # the library's defaults there.
+                tenant = load_tenant(
+                    self.db, self.cfg.tenant_id, call_options=self.control.call_options()
+                )
                 resolved = resolve_credentials(
                     tenant=tenant,
                     provider=profile.provider,
@@ -2694,14 +2992,40 @@ class Worker:
         return max(0.0, self._deadline - time.monotonic())
 
     def _install_signal_handlers(self) -> None:
-        def _handler(signum: int, _frame: Any) -> None:
-            self._interrupted = True
+        # Through `route_signals`, which also re-arms the SIGTERM stack dump
+        # that installing a Python handler would otherwise have disarmed.
+        route_signals(self._on_signal)
 
-        for sig in (signal.SIGTERM, signal.SIGINT):
-            try:
-                signal.signal(sig, _handler)
-            except (ValueError, OSError):
-                pass
+    def _on_signal(self, signum: int, frame: Any) -> None:
+        """SIGTERM or SIGINT. What it does depends on the window; see the module docstring.
+
+        It used to set `_interrupted` and nothing else, and only the runner's
+        supervision loop read that. A worker stuck before its runner existed
+        ignored the reconciler's SIGTERM and died to the SIGKILL 120 s later
+        without a line (the 2026-09-24 GKE incident).
+        """
+        self._interrupted = True
+        mode = self._signal_mode
+        if mode == _SIGNAL_EXIT_NOW:
+            self.phases.exit_on_signal(signum, frame)
+        elif mode == _SIGNAL_RAISE:
+            interrupt = StartupInterrupted(signum, self.phases.current)
+            # Recorded BEFORE it is raised, and only the first. The exception
+            # can be replaced on its way up (see `_execute`); the record
+            # cannot. A second signal still raises, to cut short whatever the
+            # first one's unwinding is waiting on.
+            if self._startup_interrupt is None:
+                self._startup_interrupt = interrupt
+            raise interrupt
+
+    @contextmanager
+    def _signal_policy(self, mode: str) -> Iterator[None]:
+        previous = self._signal_mode
+        self._signal_mode = mode
+        try:
+            yield
+        finally:
+            self._signal_mode = previous
 
     def _safe_finish(self, state: TaskState, *, exit_code: int, error: str) -> int | None:
         """The crash path's terminal write. Never raises.
@@ -2777,6 +3101,95 @@ def _runner_argv(cfg: WorkerConfig) -> list[str]:
     if program in ("python", "python3") and shutil.which(program) is None:
         argv[0] = sys.executable
     return argv
+
+
+def _control_plane_unreachable(exc: BaseException) -> bool:
+    """True for the errors a Firestore call raises when it cannot be completed.
+
+    `GoogleAPICallError` (UNAVAILABLE, DEADLINE_EXCEEDED, PERMISSION_DENIED,
+    ...) and `RetryError`, which is what the startup retry budget raises when it
+    runs out. Also google-auth's own errors, for a credential that fails
+    outside grpc's auth plugin. Imported here, on the failure path only, so
+    that no unit test imports grpc just to construct a worker.
+    """
+    try:
+        from google.api_core import exceptions as core_exceptions
+    except ImportError:
+        return False
+    if isinstance(exc, (core_exceptions.GoogleAPICallError, core_exceptions.RetryError)):
+        return True
+    try:
+        from google.auth import exceptions as auth_exceptions
+    except ImportError:
+        return False
+    return isinstance(exc, auth_exceptions.GoogleAuthError)
+
+
+def _unavailable_cause(exc: BaseException) -> BaseException | None:
+    """The error in `exc`'s chain that says a dependency could not be reached, or None.
+
+    UNAVAILABLE ONLY, not every Google API error. Counted: RetryError (a
+    budget ran out), UNAVAILABLE, DEADLINE_EXCEEDED, INTERNAL and the other
+    5xx, RESOURCE_EXHAUSTED and 429, ABORTED (contention that outlasted the
+    transaction's own retries), and google-auth's transport and timeout
+    errors or any it marks retryable. These say the call did not complete,
+    and the next attempt may find the service back.
+
+    Not counted: PERMISSION_DENIED, NOT_FOUND, INVALID_ARGUMENT,
+    FAILED_PRECONDITION, UNAUTHENTICATED and a non-retryable RefreshError.
+    Those are answers: the service was reached and said no, and it will say no
+    to the next attempt too. The attempt owns its task at this point (step 1
+    passed), so it fails it with the reason, as it did before the startup
+    budget. Step 1 is different, and `_control_plane_unreachable` takes every
+    API error there: without the generation check, the attempt does not know
+    that the task is its to fail.
+
+    The whole chain is searched (`__cause__` and `__context__`), because a
+    library can raise something else on the way up. Firestore's rollback of a
+    transaction whose begin failed raises a ValueError whose `__context__` is
+    the RetryError. Bounded, and cycle-safe.
+    """
+    try:
+        from google.api_core import exceptions as core
+    except ImportError:
+        return None
+    transient: tuple[type[BaseException], ...] = (
+        core.RetryError,
+        core.ServiceUnavailable,
+        core.GatewayTimeout,  # DeadlineExceeded is a subclass
+        core.InternalServerError,
+        core.BadGateway,
+        core.TooManyRequests,  # ResourceExhausted is a subclass
+        core.Aborted,
+    )
+    try:
+        from google.auth import exceptions as auth
+    except ImportError:
+        auth = None  # type: ignore[assignment]
+    auth_transient: tuple[type[BaseException], ...] = ()
+    if auth is not None:
+        auth_transient = tuple(
+            kind
+            for kind in (getattr(auth, "TransportError", None), getattr(auth, "TimeoutError", None))
+            if isinstance(kind, type)
+        )
+
+    seen: set[int] = set()
+    pending: list[BaseException] = [exc]
+    while pending and len(seen) < 16:
+        current = pending.pop(0)
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        if isinstance(current, transient):
+            return current
+        if auth is not None and isinstance(current, auth.GoogleAuthError):
+            if isinstance(current, auth_transient) or getattr(current, "retryable", False):
+                return current
+        for linked in (current.__cause__, current.__context__):
+            if linked is not None:
+                pending.append(linked)
+    return None
 
 
 def _execution_name() -> str | None:

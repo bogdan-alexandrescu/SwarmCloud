@@ -49,13 +49,24 @@ here compares `tenant_id` against the tenant the attempt was admitted for. A
 mismatch raises `TenantMismatchError` and the worker exits having written
 nothing -- not a state change, not a lease release, not even an event, because
 all three would be writes into another tenant's data.
+
+**Before the runner exists, every Firestore call is bounded.** Inside
+`ControlPlane.startup_budget()` each read, write and transaction RPC this
+module makes carries `startup_call_options`: the reads and writes directly,
+and a transaction's own begin, commit and rollback through
+`FirestoreTransactionRunner`. Outside it, every call keeps the library's
+defaults. The lifecycle holds the window open from the generation check
+until the runner child is built, and nowhere else.
 """
 
 from __future__ import annotations
 
+import functools
+import sys
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Any, Callable, Protocol, Sequence
+from typing import Any, Callable, Iterator, Mapping, Protocol, Sequence
 
 from swarm_common.admission import _snapshot, release_lease_in_transaction
 from swarm_common.models import Attempt, ProviderState, TaskEvent, new_id, utcnow
@@ -69,6 +80,7 @@ from swarm_common.states import (
 )
 
 from .errors import ControlPlaneError, FencedError, FencedWriteRefused, TenantMismatchError
+from .startup import StartupInterrupted
 
 # ---------------------------------------------------------------------------
 # Signals
@@ -187,25 +199,169 @@ def _lease_fence(
 
 
 class TransactionRunner(Protocol):
-    """Runs a function inside one Firestore transaction, retrying on contention."""
+    """Runs a function inside one Firestore transaction, retrying on contention.
 
-    def run(self, fn: Callable[[Any], Any]) -> Any: ...
+    `call_options` is the `retry` and `timeout` for the transaction's own
+    RPCs. `ControlPlane` passes it only when it is not empty, so a runner that
+    takes the body alone still fits everywhere outside the startup window.
+    """
+
+    def run(
+        self, fn: Callable[[Any], Any], *, call_options: Mapping[str, Any] | None = None
+    ) -> Any: ...
 
 
 class FirestoreTransactionRunner:
     def __init__(self, db: Any) -> None:
         self._db = db
 
-    def run(self, fn: Callable[[Any], Any]) -> Any:
+    def run(
+        self, fn: Callable[[Any], Any], *, call_options: Mapping[str, Any] | None = None
+    ) -> Any:
         from google.cloud import firestore  # lazy: unit tests never import grpc
 
         transaction = self._db.transaction()
+        if call_options:
+            # The same kind of transaction the client makes, with its begin,
+            # commit and rollback under the budget. See `_with_budget`.
+            transaction = _with_budget(type(transaction))(self._db, budget=call_options)
 
         @firestore.transactional
         def _inner(txn: Any) -> Any:
             return fn(txn)
 
         return _inner(transaction)
+
+
+def _commit_retry(retry: Any) -> Any:
+    """`retry` for a transaction's commit: the same deadline, a narrower predicate.
+
+    A commit is retried only on errors that mean it was not applied:
+    UNAVAILABLE and RESOURCE_EXHAUSTED. DEADLINE_EXCEEDED and INTERNAL can
+    arrive after the commit landed, and a second commit of the same
+    transaction id is then refused. That would report a failed transition that
+    had in fact been made. The library's own default for `commit` draws the
+    same line. A read has no such hazard, which is why the read budget retries
+    DEADLINE_EXCEEDED and INTERNAL.
+    """
+    with_predicate = getattr(retry, "with_predicate", None)
+    if with_predicate is None:
+        return retry
+    from google.api_core import exceptions as core_exceptions  # lazy: grpc
+    from google.api_core.retry import if_exception_type
+
+    return with_predicate(
+        if_exception_type(core_exceptions.ServiceUnavailable, core_exceptions.ResourceExhausted)
+    )
+
+
+@functools.lru_cache(maxsize=None)
+def _with_budget(base: type) -> type:
+    """`base`, a Firestore `Transaction` class, with its three RPCs under a budget.
+
+    WHY A SUBCLASS. `Transaction._begin`, `_commit` and `_rollback` call the
+    Firestore API with no `retry` or `timeout`, so each gets the library's
+    default: 60 s of retries per call (google-cloud-firestore 2.30.0,
+    services/firestore/transports/base.py). No public argument reaches them.
+    These three overrides make the same requests the library makes, with the
+    budget added. They read the same private attributes the library's own
+    methods read (`_client._firestore_api`, `_id`, `_write_pbs`), and uv.lock
+    pins the library version they were read from.
+    `tests/unit/worker/test_startup_window_under_real_transactions.py` runs
+    them inside the library's own `firestore.transactional`.
+
+    TWO CHANGES TO ROLLBACK, besides the budget. `firestore.transactional`
+    calls `_rollback` from `except BaseException`, and whatever `_rollback`
+    raises replaces the exception that was unwinding:
+
+      * A transaction whose `begin_transaction` never returned has no id. The
+        library raises `ValueError("... cannot be rolled back.")` for that,
+        and a SIGTERM's `StartupInterrupted`, or the `RetryError` that ended
+        the begin, left the transaction as that ValueError. Here there is
+        nothing to roll back, so nothing is raised and the original goes on.
+      * A rollback RPC that fails is added to the unwinding exception as a
+        note and not raised. Firestore expires an abandoned transaction by
+        itself. What unwound is the error the caller has to act on.
+
+    Under a SIGTERM the rollback is one try, with the per-call timeout and no
+    retries. The process has been asked to leave, and the rollback only frees
+    locks that Firestore frees on its own when the transaction expires.
+    """
+    from google.cloud.firestore_v1.base_transaction import (  # lazy: grpc
+        _CANT_BEGIN,
+        _CANT_COMMIT,
+        _CANT_ROLLBACK,
+    )
+
+    class BudgetedTransaction(base):  # type: ignore[misc, valid-type]
+        def __init__(self, client: Any, *, budget: Mapping[str, Any]) -> None:
+            super().__init__(client)
+            self._budget = dict(budget)
+
+        def _begin(self, retry_id: bytes | None = None) -> None:
+            if self.in_progress:
+                raise ValueError(_CANT_BEGIN.format(self._id))
+            response = self._client._firestore_api.begin_transaction(
+                request={
+                    "database": self._client._database_string,
+                    "options": self._options_protobuf(retry_id),
+                },
+                metadata=self._client._rpc_metadata,
+                **self._budget,
+            )
+            self._id = response.transaction
+
+        def _commit(self) -> list:
+            if not self.in_progress:
+                raise ValueError(_CANT_COMMIT)
+            options = dict(self._budget)
+            if "retry" in options:
+                options["retry"] = _commit_retry(options["retry"])
+            response = self._client._firestore_api.commit(
+                request={
+                    "database": self._client._database_string,
+                    "writes": self._write_pbs,
+                    "transaction": self._id,
+                },
+                metadata=self._client._rpc_metadata,
+                **options,
+            )
+            self._clean_up()
+            self.write_results = list(response.write_results)
+            self.commit_time = response.commit_time
+            return self.write_results
+
+        def _rollback(self) -> None:
+            unwinding = sys.exc_info()[1]
+            if not self.in_progress:
+                if unwinding is None:
+                    raise ValueError(_CANT_ROLLBACK)
+                return
+            options = dict(self._budget)
+            if isinstance(unwinding, StartupInterrupted):
+                options["retry"] = None
+            try:
+                self._client._firestore_api.rollback(
+                    request={
+                        "database": self._client._database_string,
+                        "transaction": self._id,
+                    },
+                    metadata=self._client._rpc_metadata,
+                    **options,
+                )
+            except Exception as exc:
+                if unwinding is None:
+                    raise
+                unwinding.add_note(
+                    "the transaction's rollback failed as well, and was not "
+                    f"raised: {type(exc).__name__}: {exc}"
+                )
+            finally:
+                self._clean_up()
+
+    BudgetedTransaction.__name__ = f"Budgeted{base.__name__}"
+    BudgetedTransaction.__qualname__ = BudgetedTransaction.__name__
+    return BudgetedTransaction
 
 
 # ---------------------------------------------------------------------------
@@ -228,6 +384,7 @@ class ControlPlane:
         logger: Any,
         txn_runner: TransactionRunner | None = None,
         heartbeat_extension_seconds: int = 120,
+        startup_call_options: Mapping[str, Any] | None = None,
     ) -> None:
         self._db = db
         self.task_id = task_id
@@ -239,6 +396,66 @@ class ControlPlane:
         self._txn = txn_runner or FirestoreTransactionRunner(db)
         self._heartbeat_extension = heartbeat_extension_seconds
         self._lease_released = False
+        # `retry` and `timeout` for every Firestore call a worker makes before
+        # its runner exists, applied inside `startup_budget()`. The entrypoint
+        # supplies a bounded budget (`__main__.firestore_startup_call_options`).
+        # Empty means the library's defaults, which for a document read is up
+        # to 300 s of silent retries, and 60 s for each of a transaction's
+        # begin, commit and rollback. Calls made while the agent runs keep the
+        # defaults: changing how long a running agent tolerates a Firestore
+        # outage is a separate decision.
+        self._startup_call: dict[str, Any] = dict(startup_call_options or {})
+        # True inside `startup_budget()`. Read by `call_options`, which every
+        # call this class can make before the runner goes through. The writes
+        # made only while an agent runs or after it (`record_checkpoint`,
+        # `record_resource_usage`, `record_spend`, `update_quota_state`) do
+        # not ask, and keep the library's defaults.
+        self._budgeted = False
+
+    @property
+    def startup_call_options(self) -> dict[str, Any]:
+        return dict(self._startup_call)
+
+    @contextmanager
+    def startup_budget(self) -> Iterator[None]:
+        """Every Firestore call made inside carries `startup_call_options`.
+
+        Reads, writes, events, the heartbeat, and a transaction's own begin,
+        commit and rollback. The lifecycle opens it for the generation check,
+        again from `record_attempt_start` until the runner child is built, and
+        for the attempt's own record on the two exits taken from that window.
+        Nowhere else: the same calls made while an agent runs keep the
+        library's defaults.
+
+        ONE SWITCH, rather than a budget argument on each call. Before this,
+        the budget was passed call by call, and the calls nobody passed it to
+        (the three transactions in `advance_to_running`, the STARTING and
+        RUNNING events, the first heartbeat) kept 60 s and 300 s defaults.
+        """
+        previous = self._budgeted
+        self._budgeted = True
+        try:
+            yield
+        finally:
+            self._budgeted = previous
+
+    def call_options(self) -> dict[str, Any]:
+        """`retry` and `timeout` for a Firestore call made now.
+
+        The startup budget inside `startup_budget()`, else empty, which means
+        the library's defaults. Public because the lifecycle's own startup
+        reads (`secrets.load_tenant`, `inputs.stage_inputs`) take the same
+        options.
+        """
+        return dict(self._startup_call) if self._budgeted else {}
+
+    def _run_transaction(self, fn: Callable[[Any], Any]) -> Any:
+        options = self.call_options()
+        if options:
+            return self._txn.run(fn, call_options=options)
+        # Called exactly as before when there is no budget, so a runner written
+        # to the one-argument form still works outside the window.
+        return self._txn.run(fn)
 
     # -- raw reads ---------------------------------------------------------
     def _task_ref(self) -> Any:
@@ -272,7 +489,7 @@ class ControlPlane:
         return data
 
     def fetch_task(self) -> dict[str, Any]:
-        snap = self._task_ref().get()
+        snap = self._task_ref().get(**self.call_options())
         if not snap.exists:
             raise FencedError(self.generation, -1, "task document no longer exists")
         return self._assert_tenant(
@@ -280,7 +497,7 @@ class ControlPlane:
         )
 
     def fetch_lease(self) -> dict[str, Any] | None:
-        snap = self._lease_ref().get()
+        snap = self._lease_ref().get(**self.call_options())
         if not snap.exists:
             return None
         return self._assert_tenant(
@@ -299,9 +516,14 @@ class ControlPlane:
         document carrying another tenant's id, and the attempt document is
         checked here as well, so an attempt cannot be pointed at a task, a lease
         and an attempt that do not all belong to the same tenant.
+
+        Called only before the runner, inside `startup_budget()`, so all three
+        reads carry the startup budget, and a Firestore that cannot be reached
+        raises within it rather than after 300 s of silent retries. The caller
+        logs what it raised.
         """
         task = self.fetch_task()
-        attempt_snap = self._attempt_ref().get()
+        attempt_snap = self._attempt_ref().get(**self.call_options())
         if attempt_snap.exists:
             self._assert_tenant(
                 attempt_snap.to_dict() or {}, kind="attempt", document_id=self.attempt_id
@@ -343,7 +565,12 @@ class ControlPlane:
         Raises `FencedWriteRefused` with nothing written, and
         `TenantMismatchError` for a document that is not this tenant's.
         """
-        task_snap = _snapshot(txn.get(self._task_ref()))
+        # Through the transaction, and still under the budget inside the
+        # startup window: `Transaction.get` is a `batch_get_documents` call,
+        # with its 300 s default. `firestore.transactional` retries only an
+        # ABORTED commit, never a read.
+        options = self.call_options()
+        task_snap = _snapshot(txn.get(self._task_ref(), **options))
         if not task_snap.exists:
             raise FencedWriteRefused(
                 self.generation, -1, "task document no longer exists", write=write
@@ -353,7 +580,7 @@ class ControlPlane:
         )
         fence = _task_fence(task, generation=self.generation)
         if fence is None:
-            lease_snap = _snapshot(txn.get(self._lease_ref()))
+            lease_snap = _snapshot(txn.get(self._lease_ref(), **options))
             lease = (
                 self._assert_tenant(
                     lease_snap.to_dict() or {}, kind="lease", document_id=self.lease_id
@@ -395,11 +622,16 @@ class ControlPlane:
         because `TransactionRunner` has one entry point, and no test in this
         repository runs the worker against a real Firestore transaction.
         """
-        self._txn.run(lambda txn: self._fenced_task(txn, write=write))
+        self._run_transaction(lambda txn: self._fenced_task(txn, write=write))
 
     # -- polling -----------------------------------------------------------
     def poll(self, provider: str | None = None) -> ControlSignals:
-        """One read of task + lease (+ quota), used by the supervision loop."""
+        """One read of task + lease (+ quota), used by the supervision loop.
+
+        The quota preflight makes the one poll that comes before the runner,
+        inside `startup_budget()`, and so under the budget. The supervision
+        loop's polls keep the library's defaults.
+        """
         try:
             task = self.fetch_task()
         except FencedError:
@@ -417,7 +649,7 @@ class ControlPlane:
         reset_at: datetime | None = None
 
         if provider:
-            qsnap = self._quota_ref(provider).get()
+            qsnap = self._quota_ref(provider).get(**self.call_options())
             if qsnap.exists:
                 q = qsnap.to_dict() or {}
                 try:
@@ -490,7 +722,9 @@ class ControlPlane:
         at: datetime | None = None,
     ) -> None:
         ref, document = self._event_write(event_type, detail, at=at)
-        ref.set(document)
+        # A retry after a DEADLINE_EXCEEDED that had landed rewrites the same
+        # event id with the same bytes, so the read budget's predicate is safe.
+        ref.set(document, **self.call_options())
         self._log.info("event", event_type=event_type.value, detail=document["detail"])
 
     # -- state transitions -------------------------------------------------
@@ -541,7 +775,7 @@ class ControlPlane:
             payload.update(fields or {})
             txn.update(self._task_ref(), payload)
 
-        self._txn.run(_apply)
+        self._run_transaction(_apply)
         for _, document in announced:
             self._log.info("event", event_type=document["type"], detail=document["detail"])
 
@@ -599,7 +833,10 @@ class ControlPlane:
                 "peak_disk_bytes": None,
                 "oom_near_miss": False,
                 "checkpoints": [],
-            }
+            },
+            # The attempt's first write, and the first write of all. Made
+            # inside `startup_budget()`, like the reads before it.
+            **self.call_options(),
         )
 
     def record_checkpoint(self, *, checkpoint_id: str, uri: str, size_bytes: int, seq: int) -> None:
@@ -630,7 +867,7 @@ class ControlPlane:
             self._fenced_task(txn, write="checkpoint pointer")
             txn.update(self._task_ref(), {"latest_checkpoint": uri, "updated_at": utcnow()})
 
-        self._txn.run(_point)
+        self._run_transaction(_point)
         self.emit(
             EventType.CHECKPOINT_COMPLETED,
             {"checkpoint_id": checkpoint_id, "uri": uri, "size_bytes": size_bytes, "seq": seq},
@@ -696,6 +933,7 @@ class ControlPlane:
                 "tenant_id": self.tenant_id,
             },
             merge=True,
+            **self.call_options(),
         )
 
     # -- heartbeat ---------------------------------------------------------
@@ -705,7 +943,10 @@ class ControlPlane:
             {
                 "heartbeat_at": now,
                 "expires_at": now + timedelta(seconds=self._heartbeat_extension),
-            }
+            },
+            # The startup heartbeats, inside `startup_budget()`. The payload is
+            # built before the call, so a retry writes the same values.
+            **self.call_options(),
         )
 
     # -- quota -------------------------------------------------------------
@@ -765,7 +1006,7 @@ class ControlPlane:
                 txn, db=self._db, lease_id=self.lease_id, reason=reason
             )
 
-        released = bool(self._txn.run(_release))
+        released = bool(self._run_transaction(_release))
         self._lease_released = True
         if released:
             self.emit(EventType.LEASE_RELEASED, {"reason": reason})
