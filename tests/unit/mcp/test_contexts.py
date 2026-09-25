@@ -473,6 +473,11 @@ def test_the_bridge_never_opens_a_tfvars_file_outside_developer_mode(
     repo = _unreadable_repo(tmp_path)
     monkeypatch.setenv("SWARM_REPO_ROOT", str(repo))
     _config().add_context("mine", "https://mine.example.test", client_id="1-a.apps.googleusercontent.com")
+    # THE SETUP WROTE THE FILE, and a write is an `open`. Forget it: only what
+    # the bridge opens from here on is the question. (Measured: without this
+    # line the test failed against the FIXED bridge too -- CI run 36093266742
+    # -- so its first red, 36093035420, proved nothing about the gate.)
+    watch_tfvars.clear()
 
     try:
         built = SwarmClient()
@@ -508,6 +513,7 @@ def test_developer_mode_does_read_the_repository(monkeypatch, tmp_path, store, w
     (repo / "terraform" / "environments" / "dev" / "dev.tfvars").chmod(0o644)
     monkeypatch.setenv("SWARM_REPO_ROOT", str(repo))
     monkeypatch.setenv("SWARM_MCP_CONFIG_FROM", "repo")
+    watch_tfvars.clear()  # the setup's own write, as above
 
     assert client.front_door_host() == "saga-only.example.test"
     assert watch_tfvars, "developer mode read no tfvars file"
