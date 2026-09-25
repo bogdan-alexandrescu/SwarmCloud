@@ -245,6 +245,15 @@ spec:
               value: "__MAX_IN_WORKER_RETRY_DELAY_SECONDS__"
             - name: TASK_TIMEOUT_SECONDS
               value: "__TIMEOUT_SECONDS__"
+            # The metadata server BY ADDRESS; see worker-job.yaml. On the
+            # worker container only: `install-credential` above runs a binary
+            # this repository does not contain, so whether it uses google-auth
+            # at all is unknown, and a variable set there on a guess is a
+            # second copy nobody can check.
+            - name: GCE_METADATA_HOST
+              value: "169.254.169.254"
+            - name: GCE_METADATA_IP
+              value: "169.254.169.254"
             # NO PROVIDER KEY IS PROJECTED HERE, and root makes this stricter
             # rather than looser. Every process in this container is uid 0, so
             # anything in the worker's environment is readable at /proc/1/environ

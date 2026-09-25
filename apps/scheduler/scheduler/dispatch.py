@@ -358,6 +358,10 @@ def worker_env(*, task: Task, lease: Lease, tenant: Tenant, settings: Any) -> di
     execution override MERGES with the Job's own environment, so an empty value
     here would override a URL that terraform had baked into the Job and turn a
     wired deployment back into an unwired one.
+
+    The GKE pod gets this through `gke_worker_env` below, which adds the
+    metadata server's address and nothing else. Anything BOTH backends need
+    still belongs here, not there.
     """
     env = {
         "TASK_ID": task.id,
@@ -382,10 +386,6 @@ def worker_env(*, task: Task, lease: Lease, tenant: Tenant, settings: Any) -> di
         # per-attempt value of its own. See WORKER_ARTIFACTS_DIR for why it is
         # kept and why it was never the fix it was taken for.
         "SWARM_ARTIFACTS_DIR": WORKER_ARTIFACTS_DIR,
-        # MUTATION, reverted by the next commit: the GKE-only metadata override
-        # in the builder BOTH dispatchers share.
-        "GCE_METADATA_HOST": "169.254.169.254",
-        "GCE_METADATA_IP": "169.254.169.254",
     }
     broker_url = str(getattr(settings, "quota_broker_url", "") or "").strip()
     if broker_url:
@@ -397,6 +397,86 @@ def worker_env(*, task: Task, lease: Lease, tenant: Tenant, settings: Any) -> di
         audience = str(getattr(settings, "quota_broker_audience", "") or "").strip()
         if audience:
             env["QUOTA_BROKER_AUDIENCE"] = audience
+    return env
+
+
+#: The GKE metadata server's link-local address. On a Workload Identity node
+#: pool gke-metadata-server answers here, on plain HTTP port 80, for every pod
+#: on the node -- the address, not a name, so reaching it needs no DNS.
+GKE_METADATA_SERVER_IP = "169.254.169.254"
+
+
+def gke_worker_env(*, task: Task, lease: Lease, tenant: Tenant, settings: Any) -> dict[str, str]:
+    """`worker_env`, plus what only a GKE worker pod needs: the metadata server BY ADDRESS.
+
+    WHY. The silent GKE worker of 2026-09-24 (task_1f699ef4cdbb4cc79c16,
+    attempt att_78e34e7537de487ba71d). The tenant egress NetworkPolicy allowed
+    DNS only to the `k8s-app=kube-dns` pods, but swarm-autopilot answers pod
+    DNS from the host-network NodeLocal DNSCache, which no rule allowed, so
+    every lookup by NAME was dropped -- silently, because anetd runs with
+    `--policy-deny-response=none`. google-auth's first request, the ping,
+    goes to the metadata server by IP, and the gke-metadata-server log shows
+    it arriving (`"/" HTTP/200`). The project-id request that follows goes to
+    `metadata.google.internal` by name; nothing after the ping ever arrived,
+    and no token was ever minted for the tenant's GSA.
+
+    WHAT THE TWO VARIABLES DO. google-auth reads both once, when
+    `google.auth.compute_engine._metadata` is imported -- in this container
+    that is before any worker code runs, with this environment already set:
+
+      * GCE_METADATA_HOST is the host of every metadata `get()`: the project
+        id, the service-account email, and every access and identity token
+        google-auth mints. Unset, it is `metadata.google.internal`.
+      * GCE_METADATA_IP is the host of the `ping()` that decides whether the
+        process is on Google Cloud at all. Its default is already this address;
+        it is set anyway so the one value is stated for both, not half by
+        google-auth's default.
+
+    169.254.169.254 is in google-auth's own list of default metadata hosts, so
+    its strict-mTLS check does not treat it as an override it must refuse, and
+    the tenant egress policy (kubernetes/network-policies/allow-egress.yaml,
+    rule 2) opens it on TCP 80, the port these requests use.
+
+    THIS TAKES DNS OUT OF GOOGLE-AUTH'S METADATA AND TOKEN PATH, AND NOTHING
+    ELSE. It is not the fix for that incident. Everything else the worker
+    reaches, it still reaches BY NAME, and every one of those still needs the
+    NetworkPolicy DNS rule that reaches NodeLocal DNSCache (lane gke-netpol-dns,
+    F1 of the incident report):
+      * firestore.googleapis.com, Secret Manager, Cloud Storage, Monitoring;
+      * the quota broker, and the identity token the worker fetches for it --
+        `agent_worker/accountlease.py` builds that URL from
+        `metadata.google.internal` itself and does not read either variable;
+      * the provider APIs (api.anthropic.com and the rest) and every site a
+        browser task opens.
+    With DNS still dropped, a worker with this override gets its project id
+    and its token and then hangs on Firestore instead: later in the same
+    silence, not out of it.
+
+    WHO SEES THEM. The worker lifecycle process -- the one that authenticates.
+    Its runner child does not: `lifecycle._build_child_env` builds the child's
+    environment from an allowlist, and no runner authenticates to Google.
+    Nothing in `apps/agent-worker` reads these names; google-auth does, so they
+    are not dead configuration if scripts/lib/check-env-parity.sh is ever
+    extended to the worker's environment (today it excludes it on purpose).
+
+    NOT CLOUD RUN, which is why this is a separate function and not two more
+    entries in `worker_env`. Cloud Run has no NetworkPolicy, its path by name
+    is measured working (execution swarm-job-u-sw-c90291-mock-6smzz ran the
+    full startup sequence), and its metadata server is not gke-metadata-server
+    -- nothing here measured that it answers this address the same way. A
+    Cloud Run execution override also MERGES into the Job's own environment,
+    so a value in `worker_env` would change every Cloud Run worker to fix a
+    GKE-only fault. tests/unit/control_plane/test_gke_worker_metadata_env.py
+    fails if either variable reaches the Cloud Run execution, the Cloud Run
+    Job, `worker_env` or terraform's Cloud Run Jobs.
+
+    The YAML copy of this Job (kubernetes/worker-templates/*.yaml) carries the
+    same two entries, held to these values by
+    tests/unit/worker/test_worker_templates_name_the_metadata_server.py.
+    """
+    env = worker_env(task=task, lease=lease, tenant=tenant, settings=settings)
+    env["GCE_METADATA_HOST"] = GKE_METADATA_SERVER_IP
+    env["GCE_METADATA_IP"] = GKE_METADATA_SERVER_IP
     return env
 
 
@@ -1162,8 +1242,11 @@ class GkeJobDispatcher:
         # Identifiers only. No provider key is injected: there is no Kubernetes
         # Secret to project from, and the worker fetches its tenant's key from
         # Secret Manager itself under the identity this pod's KSA assumes.
+        # `gke_worker_env`, not `worker_env`: the GKE pod also names the
+        # metadata server by address, and only the GKE pod (see its docstring).
         env = [{"name": k, "value": v} for k, v in
-               worker_env(task=task, lease=lease, tenant=tenant, settings=self._settings).items()]
+               gke_worker_env(task=task, lease=lease, tenant=tenant,
+                              settings=self._settings).items()]
         resources = {
             "cpu": str(int(rc.cpu)),
             "memory": f"{rc.memory_gib}Gi",

@@ -179,6 +179,17 @@ spec:
               value: "__MAX_IN_WORKER_RETRY_DELAY_SECONDS__"
             - name: TASK_TIMEOUT_SECONDS
               value: "__TIMEOUT_SECONDS__"
+            # The metadata server BY ADDRESS, so google-auth's project-id and
+            # token requests need no DNS lookup. That is ALL these do: Firestore,
+            # the provider APIs and every other Google API are still reached by
+            # name and still need the egress policy's DNS rule. The reason and
+            # the limits are in `gke_worker_env` (apps/scheduler/scheduler/
+            # dispatch.py), whose values these must equal; tests/unit/worker/
+            # test_worker_templates_name_the_metadata_server.py holds them.
+            - name: GCE_METADATA_HOST
+              value: "169.254.169.254"
+            - name: GCE_METADATA_IP
+              value: "169.254.169.254"
             # NO PROVIDER KEY IS PROJECTED HERE, deliberately.
             #
             # Every process in this container runs as uid 10001, so anything in
