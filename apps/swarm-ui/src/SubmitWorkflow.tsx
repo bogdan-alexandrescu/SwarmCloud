@@ -147,8 +147,9 @@ const KIND_BY_STATUS: Partial<Record<number, ApiErrorKind>> = {
 }
 const unsure = (kind: ApiErrorKind, httpStatus: number | null, message: string): Submission => ({ kind: 'uncertain', error: { kind, httpStatus, code: null, message } })
 
-/** POST /v1/workflows. fetch.ts owns reads and has no write half yet. */
-async function postWorkflow(body: unknown): Promise<Submission> {
+/** POST /v1/workflows. fetch.ts owns reads and has no write half yet.
+ *  Exported for `submit.workflow.refusal.test.ts`, which hands it real responses. */
+export async function postWorkflow(body: unknown): Promise<Submission> {
   let res: Response
   try {
     res = await fetch('/v1/workflows', {

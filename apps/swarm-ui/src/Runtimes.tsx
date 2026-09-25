@@ -232,7 +232,18 @@ function Backends({
             column name it cannot be scrolled away from the rows it governs and
             cannot be read as qualifying the next column along.
             `#help/declared-vs-resolved-backend` is in the footer index. */}
-        <h2 className="ctl-card-title">Backends</h2>
+        {/* AH-24: THE UNREAD ROW'S `?` FOLLOWS THIS HEADING, the slot Pools'
+            `Headroom ?` uses. It trailed the server's own words inside the
+            one-line `.rt-unread-detail` -- after a value, and clipped with it
+            when the message ran long -- and then led the row, which follows
+            nothing: the row has no label, its first item is the mark. Drawn
+            only while the counters are unread, because `absent-vs-zero` is
+            what the mark and the dashes below it need, and nothing else here
+            does. */}
+        <h2 className="ctl-card-title">
+          Backends
+          {capped === null && <HelpCard topic="absent-vs-zero" />}
+        </h2>
         {/* Trap E: a number may only sit beside a number of the same scope, so
             the scope is declared rather than left to be inferred. Both numbers
             here are platform-wide and cannot be otherwise -- the catalogue route
@@ -255,10 +266,10 @@ function Backends({
           with no digit in it, which is the fact the mark indexes. */}
       {capped === null && (
         <div className="rt-unread">
+          {/* Its `?` is on the `Backends` heading above (AH-24). */}
           <span className="ctl-mark is-unread">not read</span>
           <span className="rt-unread-detail">
             {poolsDetail ?? 'the capacity read did not complete'}
-            <HelpCard topic="absent-vs-zero" />
           </span>
         </div>
       )}

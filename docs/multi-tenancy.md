@@ -348,6 +348,18 @@ New tenants start small — `default_tenant_max_active` 20, `capacity_units` 40 
 and an admin raises them. The failure mode of starting large is a new tenant
 consuming the platform on their first bad loop.
 
+**The tenant's pool ceiling is the smaller of the two.** `max_active` and
+`capacity_units` bound one count: the units the tenant's running work holds,
+where every task costs at least one. So every path that writes `tenant:<id>`
+writes `min(max_active, capacity_units)` as its hard limit — the admin routes
+(`store.set_tenant_limits`), a first sign-in (`store.ensure_tenant`),
+`scripts/register-tenant.sh`, and Terraform's bootstrap (`pool_tenants` in
+`terraform/infra/locals.tf`) — and the console's Tenants screen prints that
+figure as `Enforced`. A new tenant at the defaults is capped at 20, not 40.
+Until 2026-09-25 the script wrote `capacity_units` and Terraform wrote
+`max_active`, so a pool one of them created before then can hold the larger
+value; setting either limit through the admin route rewrites it.
+
 ---
 
 ## 6. The personal fallback tenant

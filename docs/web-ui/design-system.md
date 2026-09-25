@@ -312,9 +312,16 @@ wearing six names. The h1 also drops from weight 650 to 600, because this
 section already said the ladder stops at 600 and the h1 was the one rule in the
 sheet that ignored it.
 
-**The cap is the real rule: one `--t-figure` per card, and one card per screen
-carries the screen's figure.** A smaller step used eight times still reads as a
-KPI wall. No reference screen shows its largest size more than once.
+**The cap is the real rule: one `--t-figure` per card.** On a screen that
+summarises, one card carries the screen's figure. In a grid of peer cards that
+each state the same measure in the same unit, every card carries its own
+figure, because the figures are compared card to card, not read as a KPI wall.
+The peer grids are Pools' pool tiles (occupancy), Pool limits' profile cards
+(agent ceiling) and Platform counts' scope cards (task total per scope). A
+smaller step used eight times on a summary still reads as a KPI wall; no
+reference screen shows its largest size more than once on one. *(Amended
+2026-09-25, AH-22 in #86, so this section and §6.2 agree;
+`honesty.admin.test.tsx` holds the per-card half on Pool limits.)*
 `apps/swarm-ui/src/__tests__/typescale.test.ts` states the six values and was
 re-pointed, not worked around.
 
@@ -1221,12 +1228,42 @@ the count of sentences above a table in this product is zero.
 marked by a surface step and weight — **not a filled pill**. Very low ink, and
 it survives both themes without a fill that has to be re-tuned for each.
 
-### 6.12 Page header — `.ctl-page-head`
+### 6.12 Page header — `PageHead` (`.head` + `.sub`), and `.ctl-page-head`
 
-Title left, actions right, nothing else. No subtitle, no description, no
-breadcrumb duplication — the breadcrumb lives in `.ctl-head` one region up and is
-never repeated. `flex-wrap` is the entire mobile strategy: the actions wrap under
-the title at 390px instead of needing a second, phone-only header.
+*(Amended 2026-09-25, AH-25 in #86: this section said "title left, actions
+right, nothing else", while fourteen routes drew a title over a line of
+provenance and the code called that line the house standard. The rule below is
+the head that ships.)*
+
+**A title, then one line of provenance.** The line says what was read, how old
+it is, and the screen's read control: `4 tenants · read 2m ago · refresh`. It
+carries no description sentence. **A control that costs something prints its
+cost immediately before it on that line**, and the two sit in one unit that does
+not wrap apart: `not counted yet · 24 count() per run · Run the count`. The
+control is `.sub button`, the link-style read-now control, not a boxed button.
+
+`PageHead` in `Shell.tsx` is the markup, once: `.head > h1` over `p.sub`.
+`Screen` renders it on fourteen routes, and Platform counts and Help render it
+with their own lines. Every head has a line.
+
+**The one exception is Help.** It reads nothing, so it has no provenance to
+print: its line says what the page is and which topic is showing —
+`<n> topics in <m> groups · showing <topic title>` — every part read from
+`help.ts` at render time, so no count is written down here to go stale. It is
+the head-line shape, facts joined by `·`, and not the description sentence
+AH-15 deleted ("why a figure on these screens looks the way it does"), which
+was true of about one topic in eight.
+
+A screen whose one `?` explains the whole screen puts it after the title, in
+`.head` and outside the `<h1>` (`PageHead`'s `help`): the Workflows board's
+absent figures are the one case.
+
+`.ctl-page-head` is the wrapper for the heads `PageHead` does not describe —
+Overview's facts row and the API reads page. There it stays title left, actions
+right. No breadcrumb duplication anywhere — the breadcrumb lives in `.ctl-head`
+one region up and is never repeated. `flex-wrap` is the entire mobile strategy:
+the line wraps under the title at 390px instead of needing a second, phone-only
+header.
 
 **The one sentence a screen is allowed lives behind the `?`.** `.ctl-q` already
 ships with 82 help topics, hover-120ms / focus-immediate / click-to-pin, and
@@ -1491,6 +1528,14 @@ Six places, in order of commitment. Nothing outside this list.
 5. **The `?` card (`.ctl-q` → `help.ts`).** The sentence, the paragraph, the
    worked example. 82 topics already exist, with `#help/<topic>` deep links.
    Hover after 120ms, focus immediately, click to pin.
+   **One slot for the glyph (AH-24, 2026-09-25): after the label or heading
+   it explains, never after a value** — `Headroom ?`, `reads ?`,
+   `never written: ?`, not `masked 4 … ?` or `● running ? ● live`. The rule
+   names no exception. Where a line had no label of its own, the 2026-09-25
+   pass gave the value its missing key (`state ? ● running` on the agent
+   headline) or moved the glyph to the heading the line sits under
+   (`Backends ?` over Runtimes' unread row; `Workflows ?` for the board's
+   absent figures). `HelpCard.tsx`'s header states the same rule.
 6. **`docs/`.** The argument, the constraint, the thing that is true for six
    months. A docs link is a legitimate element of an empty state and of a help
    card; it is not an element of a data view.
@@ -2572,6 +2617,12 @@ WF-17)*:
    section gave it.** This is not a general rule that "rows that open in place
    are panels": that rule would bring back exactly the per-row boxes this
    section deleted from `.ctl-line`.
+
+**Help topics are rows of their region, with no box** (AH-18): a group is the
+`.section`, each `.help-topic` inside it is separated by `--ctl-s5` and draws
+nothing, and a deep-linked topic takes the §1.3 selection treatment — a
+`--surface-2` fill and a 2px `--text` inline-start rule declared transparent on
+every topic, so marking one moves nothing.
 
 **What this pass deleted under that rule** — all primitives or frame, no screens:
 

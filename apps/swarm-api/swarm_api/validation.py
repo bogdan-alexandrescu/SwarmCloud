@@ -12,14 +12,16 @@ The second is workflow DAG validation. A workflow whose `depends_on` graph has
 a cycle would sit in DEPENDENCY_INCOMPLETE forever, holding no capacity but also
 never completing and never erroring -- the worst kind of failure, because
 nothing alerts. So the cycle is rejected at submission with the exact cycle
-named.
+named. An `input_from` the worker would refuse gets the same treatment: caught
+at run time, it is caught only after every upstream step has spent its compute.
 """
 
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
-from typing import Any, Iterable, Sequence
+from dataclasses import dataclass, field
+from pathlib import PurePosixPath
+from typing import Any, Iterable, Mapping, Sequence
 
 from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES, RunnerProfile
 
@@ -390,10 +392,29 @@ class StepSpec:
 
     step_id: str
     depends_on: tuple[str, ...]
-    input_from: tuple[str, ...] = ()
+    #: upstream step_id -> artifact filename, exactly as submitted.
+    #:
+    #: THE FILENAMES ARE HERE, NOT ONLY THE IDS. This used to be a tuple of
+    #: parent ids, which is all the dependency rule needs. That is why two
+    #: parents staging the same `notes.md` into one step went unchecked until
+    #: the worker refused the step, after both parents had run (#64). Excluded
+    #: from the hash because a mapping has none.
+    input_from: Mapping[str, str] = field(default_factory=dict, hash=False)
 
 
 class DagError(ValidationFailed):
+    """Every workflow refusal `validate_dag` and its helpers make: 422 `invalid_dag`.
+
+    ONE CODE, ONE STATUS. The `input_from` refusals added for #64 (a filename
+    two parents stage into one step, an absolute or traversing filename, a
+    malformed workflow-level `metadata.input_from`) raise this class too, not
+    a subclass with a status of its own. The owner decided so on #64 on
+    2026-09-25: the New Workflow screen (`SubmitWorkflow.tsx` `KIND_BY_STATUS`)
+    heads a 422 "That request was not valid", and a caller branching on the
+    status or on the code must read every refusal in the family the same way.
+    `test_every_invalid_dag_refusal_answers_one_status` holds it.
+    """
+
     code = "invalid_dag"
 
 
@@ -406,7 +427,9 @@ def validate_dag(steps: Sequence[StepSpec], *, max_steps: int) -> list[str]:
       3. no step depends on itself
       4. every `depends_on` names a step IN THIS WORKFLOW
       5. every `input_from` source is also an upstream dependency
-      6. the graph is acyclic
+      6. every `input_from` filename is a relative path inside the workspace,
+         and no two parents of one step stage the same one
+      7. the graph is acyclic
 
     Returns a topological order, which the caller uses to create tasks parent
     before child so a child never observes a missing parent task document.
@@ -458,6 +481,7 @@ def validate_dag(steps: Sequence[StepSpec], *, max_steps: int) -> list[str]:
                     "not have run yet",
                     detail={"step_id": step.step_id, "input_from": source},
                 )
+        validate_staged_filenames(step)
 
     cycle = find_cycle(steps)
     if cycle:
@@ -466,6 +490,215 @@ def validate_dag(steps: Sequence[StepSpec], *, max_steps: int) -> list[str]:
             detail={"cycle": cycle},
         )
     return topological_order(steps)
+
+
+# --------------------------------------------------------------------------
+# input_from filenames: what the worker would refuse, refused here first
+# --------------------------------------------------------------------------
+#
+# The worker ALREADY enforces every rule below at run time
+# (`agent_worker/inputs.py`: `declared_inputs`, `_assert_distinct_destinations`,
+# `destination_for`), and it keeps doing so. That is defence in depth, and the
+# only guard on a plain task that carries `metadata.input_from`. What checking
+# here changes is WHEN the answer arrives. At run time it arrives after every
+# upstream step has run. Measured 2026-09-25 on wf_1e547922a981411991e2, that
+# was ~20 minutes of claude-code across nine steps, then four failed merges and
+# seventeen cancellations, for a mistake visible in the request body (#64).
+#
+# THE RULE IS RESTATED BECAUSE IT HAS TO BE, AND A TEST HOLDS THE COPY. The
+# swarm-api image ships apps/common and apps/swarm-api and nothing else, so
+# `agent_worker` cannot be imported here.
+# tests/unit/control_plane/test_input_from_submission.py runs the worker's own
+# functions against these rules: every filename accepted here must pass the
+# worker's `destination_for`, and the collision refused here must be one the
+# worker refuses.
+#
+# THE WORKER'S RESERVED NAMES ARE NOT RESTATED. The worker derives `repo`,
+# `.swarm` and the workspace control files from `Workspace` at run time, and a
+# copy here would be the mirrored-value shape behind three outages in this
+# repository (docs/mirrored-values.md). A reserved name is still refused: by
+# the worker, at staging.
+
+#: Path segments that make a filename name something other than a file inside
+#: the step's workspace. "" comes from a leading, doubled or trailing "/".
+#:
+#: STRICTER THAN THE WORKER on "" and ".". `destination_for` normalises
+#: `./notes.md` and `reports//notes.md` through `PurePosixPath` and would place
+#: them. Refusing them costs nothing, because such a name can never MATCH an
+#: artifact. The uploader names each artifact by its path relative to the
+#: artifacts directory (`relative_to(...).as_posix()` in
+#: `lifecycle._upload_outputs`), and that path never has an empty or "."
+#: segment, so the worker would refuse the name one step later with "did not
+#: produce an artifact named ...".
+_UNSAFE_SEGMENTS = ("", ".", "..")
+
+
+def _filename_problem(filename: str) -> str | None:
+    """Why `filename` cannot be staged into a workspace, or None if it can.
+
+    `filename` has already been stripped, as the worker strips it.
+    """
+    if not filename:
+        return "is empty"
+    if filename.startswith("/"):
+        return "is an absolute path"
+    if "\\" in filename or "\x00" in filename:
+        return "contains a backslash or a NUL character"
+    for segment in filename.split("/"):
+        if segment in _UNSAFE_SEGMENTS:
+            return f"contains the path segment {segment!r}"
+    return None
+
+
+def _distinct_name(source: str, filename: str) -> str:
+    """The filename the refusal suggests: the same name, prefixed with the parent's step id."""
+    path = PurePosixPath(filename)
+    return str(path.with_name(f"{source}-{path.name}"))
+
+
+def validate_staged_filenames(step: StepSpec) -> None:
+    """Refuse an `input_from` whose files cannot all land in this step's workspace.
+
+    There are two refusals. Each names the step, the parent and the filename,
+    because those three strings are what a person needs to fix the request:
+
+    * a filename that is empty, absolute, or has an empty, "." or ".." segment;
+    * two or more parents staging the SAME filename. `input_from` names the
+      artifact in the upstream's prefix AND the path it lands at here, so there
+      is no way to say "take both": one would overwrite the other. The fix is
+      on the upstream side: each parent writes its own filename.
+
+    Filenames are compared after `.strip()`, which is what the worker compares.
+    """
+    landing: dict[str, list[str]] = {}
+    for source, raw in step.input_from.items():
+        filename = raw.strip() if isinstance(raw, str) else ""
+        problem = _filename_problem(filename)
+        if problem is not None:
+            raise DagError(
+                f"step {step.step_id!r} stages input from {source!r} as {raw!r}, which "
+                f"{problem}. An input_from filename is where the artifact lands in "
+                "this step's workspace, so it must be a relative path inside it, "
+                "such as 'notes.md' or 'reports/notes.md', with no empty, '.' or "
+                "'..' segment. The worker would refuse it at run time, after "
+                f"{source!r} had already run.",
+                detail={
+                    "step_id": step.step_id,
+                    "input_from": source,
+                    "filename": raw,
+                    "problem": problem,
+                },
+            )
+        landing.setdefault(filename, []).append(source)
+
+    for filename, sources in landing.items():
+        if len(sources) < 2:
+            continue
+        parents = sorted(sources)
+        suggestion = " and ".join(repr(_distinct_name(p, filename)) for p in parents[:2])
+        raise DagError(
+            f"step {step.step_id!r} stages {filename!r} from {len(parents)} upstream "
+            f"steps ({', '.join(repr(p) for p in parents)}). An input_from filename "
+            "is both the artifact's name in the upstream step and the path it lands "
+            "at in this step's workspace, so these files would overwrite one another. "
+            "The worker refuses such a step at run time, after every one of those "
+            "upstream steps has already run. Give each parent a distinct artifact "
+            f"filename (have each upstream step write its own, e.g. {suggestion}) "
+            "and stage those instead.",
+            detail={
+                "step_id": step.step_id,
+                "filename": filename,
+                "colliding_upstream_steps": parents,
+            },
+        )
+
+
+#: The key inside `task.metadata` the worker stages declared inputs from:
+#: `{upstream TASK id: filename}`. The worker spells it
+#: `agent_worker.inputs.METADATA_KEY`, and a test holds the two equal, because
+#: a check on a key the worker does not read would pass everything.
+INPUT_FROM_METADATA_KEY = "input_from"
+
+
+def validate_workflow_input_from_metadata(metadata: Mapping[str, Any]) -> None:
+    """Refuse a WORKFLOW-level `metadata.input_from` the worker would refuse.
+
+    WHY THE WORKFLOW'S OWN METADATA IS CHECKED, NOT ONLY ITS STEPS. `submit_workflow`
+    builds every step's task with `{**spec.metadata, ...}` and replaces
+    `input_from` only on a step that declares its own. A root step cannot
+    declare one (it has no `depends_on` for it to name), so a workflow-level
+    `metadata.input_from` reaches every root step's task verbatim, keyed by
+    upstream TASK id, which is exactly the shape the worker reads. Checking only
+    the steps left that door open: a colliding or traversing name there was
+    accepted and enqueued, and refused by the worker afterwards (#64).
+
+    The rules are the worker's `declared_inputs` and `destination_for`, as the
+    step-level check states them: absent, None or {} stages nothing; anything
+    else is a mapping of non-empty upstream task id to a filename that is a
+    relative path inside the workspace, and no two entries land on one name.
+    Whether a workflow-level declaration should exist at all is a separate
+    question (docs/contract-change-requests.md §3); this refuses only what can
+    never be staged.
+    """
+    raw = metadata.get(INPUT_FROM_METADATA_KEY)
+    if raw is None or raw == {}:
+        return
+    where = f"metadata.{INPUT_FROM_METADATA_KEY}"
+    # Why it matters, in the words a caller needs: which tasks carry it.
+    inherited = (
+        "Every step of this workflow that declares no input_from of its own "
+        "inherits it, every root step among them, and the worker would refuse "
+        "each of those steps at run time."
+    )
+    if not isinstance(raw, dict):
+        raise DagError(
+            f"{where} must map an upstream task id to one artifact filename, got "
+            f"{type(raw).__name__} {raw!r}. {inherited} To stage an upstream step's "
+            "artifact, declare it in that step's own `input_from`, keyed by upstream "
+            "step id.",
+            detail={"metadata_key": INPUT_FROM_METADATA_KEY, "type": type(raw).__name__},
+        )
+
+    landing: dict[str, list[str]] = {}
+    for upstream, value in raw.items():
+        if not isinstance(upstream, str) or not upstream.strip():
+            raise DagError(
+                f"{where} has the key {upstream!r}, which is not an upstream task id. "
+                f"{inherited}",
+                detail={"input_from": upstream, "problem": "is not an upstream task id"},
+            )
+        filename = value.strip() if isinstance(value, str) else ""
+        problem = (
+            _filename_problem(filename)
+            if isinstance(value, str)
+            else f"is not a filename (it is {type(value).__name__})"
+        )
+        if problem is not None:
+            raise DagError(
+                f"{where} stages input from {upstream!r} as {value!r}, which {problem}. "
+                "The filename is where the artifact lands in the workspace, so it must "
+                "be a relative path inside it, such as 'notes.md' or 'reports/notes.md', "
+                f"with no empty, '.' or '..' segment. {inherited}",
+                detail={
+                    "input_from": upstream,
+                    "filename": value,
+                    "problem": problem,
+                },
+            )
+        landing.setdefault(filename, []).append(upstream.strip())
+
+    for filename, sources in landing.items():
+        if len(sources) < 2:
+            continue
+        upstreams = sorted(sources)
+        raise DagError(
+            f"{where} stages {filename!r} from {len(upstreams)} upstream tasks "
+            f"({', '.join(repr(u) for u in upstreams)}). The filename is both the "
+            "artifact's name upstream and the path it lands at in the workspace, so "
+            f"these files would overwrite one another. {inherited} Stage a distinct "
+            "artifact filename from each upstream task.",
+            detail={"filename": filename, "colliding_upstream_tasks": upstreams},
+        )
 
 
 def find_cycle(steps: Iterable[StepSpec]) -> list[str] | None:

@@ -9,6 +9,7 @@ import {
 } from 'react'
 import { loadTaskWindow, loadTenants } from './api'
 import { helpAnchor, type TopicId } from './help'
+import { HelpLinks } from './HelpCard'
 import { sumReported, usd } from './measure'
 import { Mark, Metric } from './primitives'
 import { Id, Screen, timeAgo } from './Shell'
@@ -993,35 +994,81 @@ export function TenantsScreen() {
     >
       {(d) => (
         <section className="section">
-          {/* `is-scroll` (CH-13), for the same reason as the People table
-              above: a data table scrolls with its first column held. It was
-              `is-stacked`, and more of the reason applied: eight columns is
-              the widest table in this file, so at
-              390pt everything from `Max active` rightwards — the two ceilings,
-              the credentials, the service account and the enabled/disabled
-              state — sat behind a scrollbar this platform does not paint. A
-              tenant row whose visible part ends at `Principal` says nothing
-              about whether that tenant can run anything at all. */}
+          {/* `is-scroll` (CH-13, design-system.md §7.3), for the same reason
+              as the People table above: nine columns compared down the
+              roster is a data table, so below 900px it scrolls sideways with
+              the tenant column held in view; only records of four columns or
+              fewer stack. It was `is-stacked`, because at 390pt everything
+              from `Max active` rightwards sat behind a scrollbar this
+              platform does not paint, and a tenant row whose visible part
+              ends at `Principal` says nothing about whether that tenant can
+              run anything at all. The held column is what answers that now:
+              every value stays beside the tenant it belongs to.
+
+              STATUS IS THE SECOND COLUMN, beside the name (AH-11). It was the
+              last, and at 1440 it sat past the panel edge behind the same
+              unpainted scrollbar -- pushed there by two identity columns of
+              55-65 characters in `nowrap` cells. Whether a tenant can run
+              anything is the first thing this roster is read for, so it
+              cannot be the column that falls off, and at 390 it is the first
+              column past the held name. The identities are shortened on the
+              wide table instead (`.ten-ident`, styles.css). */}
           <div className="table-wrap is-scroll">
             <table className="pools" role="table">
               <thead role="rowgroup">
                 <tr role="row">
-                  <th role="columnheader" scope="col">Tenant</th>
-                  <th role="columnheader" scope="col">Kind</th>
-                  <th role="columnheader" scope="col">Principal</th>
+                  <th role="columnheader" scope="col" rowSpan={2}>Tenant</th>
+                  <th role="columnheader" scope="col" rowSpan={2}>Status</th>
+                  <th role="columnheader" scope="col" rowSpan={2}>Kind</th>
+                  <th role="columnheader" scope="col" rowSpan={2}>Principal</th>
+                  {/* THE CEILING ADMISSION ACTUALLY APPLIES (AH-12). The two
+                      registry values were printed bare, and the figure that
+                      binds -- the smaller, which every writer of the tenant
+                      pool writes as its hard limit -- was nowhere. It is the
+                      column; the two values it comes from sit under
+                      `Configured`.
+
+                      THE HEAD IS ITS LABEL AND NOTHING ELSE. The decided help
+                      link is under the table, not a `?` in here: a glyph in a
+                      `<th>` publishes its HelpNote as part of the column's
+                      name, which a screen reader then reads on every cell, and
+                      while this table was stacked below 900px §B6.3 hid this
+                      row while leaving it in the tab order. It scrolls now
+                      (CH-13), so the row shows, but the first reason stands. */}
+                  <th role="columnheader" scope="col" rowSpan={2} className="n">
+                    Enforced
+                  </th>
+                  <th role="columnheader" scope="colgroup" colSpan={2} className="n">
+                    Configured
+                  </th>
+                  <th role="columnheader" scope="col" rowSpan={2}>Credentials</th>
+                  <th role="columnheader" scope="col" rowSpan={2}>Identity</th>
+                </tr>
+                <tr role="row">
                   <th role="columnheader" scope="col" className="n">Max active</th>
                   <th role="columnheader" scope="col" className="n">Units</th>
-                  <th role="columnheader" scope="col">Credentials</th>
-                  <th role="columnheader" scope="col">Identity</th>
-                  <th role="columnheader" scope="col">Status</th>
                 </tr>
               </thead>
               <tbody role="rowgroup">
                 {d.tenants.map((t) => (
                   <tr role="row" key={t.tenant_id} className={t.enabled === false ? 'paused' : undefined}>
                     <th role="rowheader" scope="row">{t.tenant_id}</th>
+                    <td role="cell" data-label="Status">
+                      {t.enabled === false ? (
+                        <span className="tag paused">disabled</span>
+                      ) : (
+                        <span className="tag ok">enabled</span>
+                      )}
+                    </td>
                     <td role="cell" data-label="Kind">{t.kind}</td>
-                    <td role="cell" data-label="Principal" className="mono">{t.principal}</td>
+                    <td role="cell" data-label="Principal" className="mono">
+                      <span className="ten-ident" title={t.principal}>
+                        {t.principal}
+                      </span>
+                    </td>
+                    <td role="cell" data-label="Enforced" className="n">
+                      <Enforced tenant={t} />
+                    </td>
                     <td role="cell" data-label="Max active" className="n">{t.max_active}</td>
                     <td role="cell" data-label="Units" className="n">{t.capacity_units}</td>
                     <td role="cell" data-label="Credentials">
@@ -1049,15 +1096,12 @@ export function TenantsScreen() {
                     <td role="cell" data-label="Identity" className="mono">
                       {/* null means NO IDENTITY, not an empty string. A blank
                           cell here reads as fine and it is the opposite. */}
-                      {t.service_account ?? (
-                        <span className="tag full">no service account</span>
-                      )}
-                    </td>
-                    <td role="cell" data-label="Status">
-                      {t.enabled === false ? (
-                        <span className="tag paused">disabled</span>
+                      {typeof t.service_account === 'string' ? (
+                        <span className="ten-ident" title={t.service_account}>
+                          {t.service_account}
+                        </span>
                       ) : (
-                        <span className="tag ok">enabled</span>
+                        <span className="tag full">no service account</span>
                       )}
                     </td>
                   </tr>
@@ -1065,23 +1109,60 @@ export function TenantsScreen() {
               </tbody>
             </table>
           </div>
-          {/* WHY A COLUMN IS ABSENT IS STILL STATED, IN ONE LINE. A table with
-              a column quietly missing is a table a reader completes from
-              memory, so this cannot simply be deleted -- but the 56-word
-              account of the 422, the missing cost-attribution source and the
-              permanent null is an argument, and arguments live in `docs/`.
-              What stays is the fact: there is no budget column, and the reason
-              is one word long. */}
+          {/* WHY A COLUMN IS ABSENT IS STILL STATED, IN ONE LINE, IN THE
+              READER'S WORDS (AH-21). A table with a column quietly missing is
+              a table a reader completes from memory, so this cannot simply be
+              deleted. It printed the API's field name and a rationale under a
+              `not measured` mark -- but a budget is a setting, not a
+              measurement, and this line sits in no figure slot, so it carries
+              no mark (as AG-5's plain facts do not). The account of the 422
+              and of the missing cost-attribution source is one paragraph of
+              the Tenants fields topic, behind `Why →`.
+
+              AND IT IS IN PLAIN INK (`.ten-budget`). AG-5 defines a plain
+              fact as no mark AND NO DIMMING; `.ctl-panel-note` is the faint
+              tone of a qualifier under a figure, and this line qualifies no
+              figure -- it is the fact that a column is absent. */}
           <p
-            className="ctl-panel-note"
-            aria-label="monthly_budget_usd is not shown. PUT /v1/admin/tenants/{id}/limits rejects it with a 422 because there is no cost attribution source, so it is null for every tenant; rendering it would render a permanent blank that reads as no budget set."
+            className="ctl-panel-note ten-budget"
+            aria-label="No budget column, and no budget can be set: the only route that could set a budget refuses it, so none is set for any tenant, and the column is left out rather than drawn empty."
           >
-            <i className="ctl-mark is-absent">not measured</i>
-            no <code>monthly_budget_usd</code> column · no cost attribution
-            source
+            no budget column · no budget can be set
+            <a href={helpHref(TENANT_HELP)}>Why &rarr;</a>
           </p>
+          {/* THE HELP LINK AH-12 DECIDED FOR THE ENFORCED COLUMN: the footer
+              index every migrated panel carries (HelpCard.tsx, route 3 of 4),
+              drawn at every width and costing no glyph from the ration. It is
+              a separate line from the note's `Why →` because the two answer
+              different questions -- what the columns mean, and why one is
+              missing -- that happen to live in one topic. */}
+          <HelpLinks topics={TENANT_TOPICS} label="Reading this table:" />
         </section>
       )}
     </Screen>
   )
+}
+
+/** Where the Enforced column, and the budget the table leaves out, are explained. */
+const TENANT_HELP: TopicId = 'tenant-fields'
+
+/** The Tenants table's help link (AH-12), as a footer index. */
+const TENANT_TOPICS: readonly TopicId[] = [TENANT_HELP]
+
+/**
+ * THE CEILING ADMISSION APPLIES TO A TENANT (AH-12): the smaller of its two
+ * configured values. Both cap the same count -- the units its running work
+ * holds, where every task costs at least one -- so the smaller binds, and it
+ * is what every writer of the tenant pool writes as its hard limit:
+ * `set_tenant_limits` and `ensure_tenant` (swarm_api/store.py),
+ * scripts/register-tenant.sh, and terraform/infra/locals.tf `pool_tenants`.
+ *
+ * A value that is not a finite number is not a limit anyone can read, so the
+ * cell is the em dash rather than `NaN` or a guess from the other value.
+ */
+function Enforced({ tenant: t }: { tenant: { max_active: number; capacity_units: number } }) {
+  if (!Number.isFinite(t.max_active) || !Number.isFinite(t.capacity_units)) {
+    return <i className="ctl-em">—</i>
+  }
+  return <>{Math.min(t.max_active, t.capacity_units)}</>
 }

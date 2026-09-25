@@ -175,9 +175,24 @@ locals {
     "global" = { hard_limit = var.pool_limits.global }
   }
 
+  # THE SMALLER OF THE TENANT'S TWO LIMITS, as the API writes it.
+  # `max_active` and `capacity_units` bound one count -- the units the
+  # tenant's running work holds, where every task costs at least one -- so the
+  # smaller is the one that binds. swarm_api/store.py writes the tenant pool as
+  # min(max_active, capacity_units) in `ensure_tenant` and on every
+  # `set_tenant_limits`, scripts/register-tenant.sh does, and the console's
+  # Tenants screen prints that minimum as the ceiling admission enforces
+  # (AH-12 in #86). This wrote max_active alone, so a tenant declared with
+  # capacity_units below it was bootstrapped with a pool admitting more than
+  # the record, the API and the console say it may hold.
+  #
+  # No live pool moves: every tfvars tenant has capacity_units at twice
+  # max_active, and the pool documents are under ignore_changes, so this only
+  # decides the ceiling of a pool Terraform is creating.
+  # tests/terraform/infra_guards.tftest.hcl holds it.
   pool_tenants = {
     for t, cfg in var.tenants :
-    "tenant:${t}" => { hard_limit = local.tenant_max_active[t] }
+    "tenant:${t}" => { hard_limit = min(local.tenant_max_active[t], cfg.capacity_units) }
   }
 
   pool_resource_classes = {

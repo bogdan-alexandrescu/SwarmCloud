@@ -268,7 +268,14 @@ function Provenance({ data }: { data: ArtifactContent }) {
             remove them from the bucket is a standing fact about the read path
             and is `#help/credential-names-not-values`. */}
         <li className={`ctl-fact art-redacted${data.redacted ? ' is-absent' : ''}`}>
-          <b>masked</b>
+          {/* THE `?` IS ON THE KEY (AH-24): after the label it explains, as
+              Overview's `reads ?` is, and never after the count -- where it
+              trailed `masked 4 …` and read as a footnote on the figure. Why it
+              is here at all is the note at the end of this fact. */}
+          <b>
+            masked
+            <HelpCard topic="masking-is-serve-time" />
+          </b>
           {data.redacted ? (
             <>
               {data.redaction_count}{' '}
@@ -284,13 +291,13 @@ function Provenance({ data }: { data: ArtifactContent }) {
               it holds is a property of the SERVING path rather than of this
               artifact: masking happens on the way out, the object in the bucket
               is unchanged, and no label on a count can say that. `0 of N
-              families` is the count; this is what the count does not mean.
+              families` is the count; the glyph on the key is what the count
+              does not mean.
 
               IT OPENS `masking-is-serve-time` (AG-19). It opened "Credential
               names, never values" -- the rule for how a tenant's secrets are
               NAMED, not what happens to a value found in an artifact. The new
               topic is built from the masked mark's own `say` string. */}
-          <HelpCard topic="masking-is-serve-time" />
         </li>
       </ul>
       <span className="art-prov-actions">

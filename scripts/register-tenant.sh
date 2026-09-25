@@ -78,6 +78,38 @@ done
 
 require_cmd gcloud jq curl python3
 
+# --- limits ------------------------------------------------------------------
+#
+# WHOLE NUMBERS, CHECKED BEFORE ANYTHING USES THEM. The pool's ceiling below is
+# computed in shell arithmetic, and `$(( ))` evaluates what it is given: a bare
+# word is read as a variable name and `4 + 4` as a sum, so an unchecked limit
+# becomes a ceiling nobody typed. jq's `--argjson` used to be the only check,
+# and it accepted a negative number. `10#` stops a leading zero reading as
+# octal, and writes the value back normalised so jq gets a JSON integer.
+for limit_flag in max-active capacity-units; do
+  case "${limit_flag}" in
+    max-active) limit_value="${MAX_ACTIVE}" ;;
+    *)          limit_value="${CAPACITY_UNITS}" ;;
+  esac
+  [[ "${limit_value}" =~ ^[0-9]+$ ]] \
+    || die "--${limit_flag} must be a whole number of units, got '${limit_value}'"
+done
+MAX_ACTIVE=$((10#${MAX_ACTIVE}))
+CAPACITY_UNITS=$((10#${CAPACITY_UNITS}))
+
+# THE TENANT POOL'S CEILING IS THE SMALLER OF THE TWO. `max_active` and
+# `capacity_units` bound ONE count -- the units the tenant's running work
+# holds, where every task costs at least one -- so the smaller is the one that
+# binds. swarm_api/store.py writes the pool that way in `ensure_tenant` and on
+# every `set_tenant_limits`, terraform/infra/locals.tf `pool_tenants` does, and
+# the console's Tenants screen prints this minimum as the ceiling admission
+# enforces (AH-12 in #86).
+#
+# This used to write CAPACITY_UNITS: at the defaults above, a pool admitting 40
+# units for a tenant whose record, the API and the console all say is capped
+# at 20. tests/integration/test_register_tenant_grants.py holds it to min().
+POOL_HARD_LIMIT=$(( MAX_ACTIVE < CAPACITY_UNITS ? MAX_ACTIVE : CAPACITY_UNITS ))
+
 # --- identity -> tenant id ---------------------------------------------------
 #
 # Asked of swarm_common.identity rather than restated in shell. The shell copy
@@ -234,7 +266,7 @@ info "principal      ${PRINCIPAL}"
 info "service acct   ${GSA_EMAIL}"
 info "namespace      ${NAMESPACE}"
 info "gcs prefix     gs://${ARTIFACT_BUCKET}/${GCS_PREFIX}/"
-info "limits         max_active=${MAX_ACTIVE} capacity_units=${CAPACITY_UNITS}"
+info "limits         max_active=${MAX_ACTIVE} capacity_units=${CAPACITY_UNITS} (pool ceiling ${POOL_HARD_LIMIT}, the smaller)"
 [[ "${#PROVIDERS[@]}" -eq 0 ]] || info "providers      ${PROVIDERS[*]}"
 [[ "${DRY_RUN}" -eq 1 ]] && warn "DRY RUN: nothing will be created"
 
@@ -820,23 +852,23 @@ fi
 
 POOL="tenant:${TENANT_ID}"
 if [[ "${DRY_RUN}" -eq 1 ]]; then
-  dim "  would write pools/${POOL} with hard_limit=${CAPACITY_UNITS}"
+  dim "  would write pools/${POOL} with hard_limit=${POOL_HARD_LIMIT}"
 else
   POOL_EXISTING="$(fs_get "pools/${POOL}" | jq -c "${FS_JQ} if .fields then doc else null end")"
   if [[ "${POOL_EXISTING}" == "null" || -z "${POOL_EXISTING}" ]]; then
     # `active` starts at 0 and is only ever changed inside the admission and
     # release transactions -- never here, and never by any other background job.
     fs_patch "pools/${POOL}" "name,hard_limit,active,enabled,updated_at" \
-      "$(jq -nc --arg n "${POOL}" --argjson l "${CAPACITY_UNITS}" --arg t "$(iso_now)" \
+      "$(jq -nc --arg n "${POOL}" --argjson l "${POOL_HARD_LIMIT}" --arg t "$(iso_now)" \
         '{name:{stringValue:$n},hard_limit:{integerValue:($l|tostring)},
           active:{integerValue:"0"},enabled:{booleanValue:true},updated_at:{timestampValue:$t}}')"
-    ok "created pools/${POOL} (hard_limit ${CAPACITY_UNITS} units)"
+    ok "created pools/${POOL} (hard_limit ${POOL_HARD_LIMIT} units)"
   else
     CURRENT_ACTIVE="$(jq -r '.active // 0' <<<"${POOL_EXISTING}")"
     fs_patch "pools/${POOL}" "hard_limit,updated_at" \
-      "$(jq -nc --argjson l "${CAPACITY_UNITS}" --arg t "$(iso_now)" \
+      "$(jq -nc --argjson l "${POOL_HARD_LIMIT}" --arg t "$(iso_now)" \
         '{hard_limit:{integerValue:($l|tostring)},updated_at:{timestampValue:$t}}')"
-    ok "updated pools/${POOL} hard_limit to ${CAPACITY_UNITS} (active ${CURRENT_ACTIVE} left untouched)"
+    ok "updated pools/${POOL} hard_limit to ${POOL_HARD_LIMIT} (active ${CURRENT_ACTIVE} left untouched)"
   fi
 fi
 
