@@ -187,6 +187,32 @@ export function poolLabel(name: string): string {
   return `${parts[1]} · ${parts[3] ?? parts[2]}`
 }
 
+/**
+ * `poolLabel`, qualified by kind wherever another pool in `among` would print
+ * the same word (CP-15).
+ *
+ * `poolLabel` drops the kind, which is right almost everywhere and wrong in
+ * exactly one shape this platform has: `resource:browser` and
+ * `runner:browser` both print `browser`. A blocker list then read "Lift
+ * browser" twice and "browser and browser still binds" -- two different
+ * ceilings, owned by two different settings, under one name. Where that
+ * happens both are qualified, `browser · resource` and `browser · runner`;
+ * where it does not, nothing changes, so the short label stays the common
+ * case.
+ *
+ * `among` is whatever set the labels will be READ together in -- a blocker's
+ * pools, a profile's pools, every pool on a screen. Two pools of the SAME kind
+ * that still print one label differ only in the part `poolLabel` drops, so
+ * those fall back to the raw name, the one spelling left that cannot collide.
+ */
+export function poolLabelAmong(name: string, among: readonly string[]): string {
+  const label = poolLabel(name)
+  const rivals = among.filter((other) => other !== name && poolLabel(other) === label)
+  if (rivals.length === 0) return label
+  const kind = poolKind(name)
+  return rivals.some((other) => poolKind(other) === kind) ? name : `${label} · ${kind}`
+}
+
 /** What `headroomFor` hands a screen. Every field comes off the response. */
 export interface Headroom {
   /**

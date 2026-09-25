@@ -1551,16 +1551,10 @@ export async function loadHolders(): Promise<Result<HoldersBoard>> {
   if (USE_FIXTURES) return fixtureHolders()
 
   const [leases, capacity] = await Promise.all([
-    // EMPTY ONLY WHEN THE ROUTE VOUCHES FOR IT. `empty` is drawn as a real
-    // zero ("no lease holds capacity"), and no rows is only that when no live
-    // lease was left out of the window. An API older than
-    // `active_beyond_window` cannot say so, and its empty page goes to the
-    // screen as a page, where Holders.tsx marks the coverage unreported
-    // rather than calling it a zero.
-    read<LeasePage>(
-      '/v1/admin/leases?active_only=true&limit=200',
-      (d) => d.leases.length === 0 && d.active_beyond_window === 0 && d.truncated !== true,
-    ),
+    // NEVER `empty` FROM THE LEASE READ ALONE -- see `holdersAreEmpty`. The
+    // page comes back as a page, and whether it is a real zero is decided
+    // below with the counters in hand.
+    read<LeasePage>('/v1/admin/leases?active_only=true&limit=200', () => false),
     read<Capacity>('/v1/capacity', () => false),
   ])
 
@@ -1576,11 +1570,40 @@ export async function loadHolders(): Promise<Result<HoldersBoard>> {
         : 'The pool read did not complete.'
       : null
 
+  if (leases.status === 'ok' && holdersAreEmpty(leases.data, pools)) {
+    return { status: 'empty', fetchedAt: leases.fetchedAt, serverAt: leases.serverAt }
+  }
+
   return {
     status: leases.status,
     fetchedAt: leases.fetchedAt,
     data: { page: leases.data, pools, poolsDetail: detail },
   } as Result<HoldersBoard>
+}
+
+/**
+ * WHETHER THE HOLDERS SCREEN MAY SAY "NOTHING HOLDS CAPACITY" (CP-7, visual QA
+ * 2026-09-25).
+ *
+ * `empty` is drawn as a REAL ZERO, and it is two claims, not one: no live
+ * lease exists, AND no pool counter is holding units. The second is the one
+ * that matters most here -- a counter left non-zero with nothing behind it is
+ * exactly the leak the drift card exists to find -- and it used to be dropped:
+ * the capacity read was issued alongside the lease read and then discarded
+ * whenever the lease page came back with no rows, so a leaked counter with
+ * zero live leases rendered as the calmest thing on the screen.
+ *
+ * So `empty` needs BOTH, measured: a lease page that vouches it left no live
+ * lease out (`active_beyond_window === 0`, not truncated -- an older API that
+ * cannot say goes to the screen as a page, where the coverage is marked
+ * unreported), and a counter read that succeeded with every `active` at 0.
+ * A counter read that FAILED is not a zero either: the page goes to the screen,
+ * where the drift card says the comparison was not made.
+ */
+function holdersAreEmpty(page: LeasePage, pools: Pool[] | null): boolean {
+  const noLiveLease =
+    page.leases.length === 0 && page.active_beyond_window === 0 && page.truncated !== true
+  return noLiveLease && pools !== null && pools.every((p) => p.active === 0)
 }
 
 async function fixtureHolders(): Promise<Result<HoldersBoard>> {
@@ -2162,6 +2185,34 @@ const FIXTURE_INPUT_CONTRACTS: Record<string, RunnerInputContract> = {
   "browser": {"required_keys": []}
 }
 
+/**
+ * Whether each of the five may be dispatched, as `/v1/capacity` now serves it
+ * (CP-3, visual QA 2026-09-25). A fixture whose `codex` is on offer develops
+ * Pools, Profile headroom and Submit against a platform that does not exist --
+ * which is how the disabled branch of all three shipped unexercised.
+ *
+ * A COPY OF THE FROZEN CATALOGUE'S TWO FIELDS, and therefore a strict-JSON
+ * literal: `test_capacity_serves_availability.py` reads it with the same
+ * `json_literal` the input-contract table above is held by and compares it to
+ * `RUNNER_PROFILES`, so re-enabling a profile there fails here until this
+ * follows.
+ *
+ * The value type is NAMED rather than written inline: the reader takes the
+ * first `{` after the declaration as the literal, and an inline object type
+ * would be that brace.
+ */
+interface FixtureAvailability {
+  available: boolean
+  disabled_reason: string
+}
+const FIXTURE_AVAILABILITY: Record<string, FixtureAvailability> = {
+  "mock": {"available": true, "disabled_reason": ""},
+  "generic": {"available": true, "disabled_reason": ""},
+  "claude-code": {"available": true, "disabled_reason": ""},
+  "codex": {"available": false, "disabled_reason": "codex is disabled on this platform. The provider refused the registered credential and the platform is focused on Claude. Use claude-code."},
+  "browser": {"available": true, "disabled_reason": ""}
+}
+
 async function fixtureCapacity(): Promise<Result<Capacity>> {
   await new Promise((r) => setTimeout(r, 400))
   noteFixtureProbe('/v1/capacity', 400, true)
@@ -2200,18 +2251,21 @@ async function fixtureCapacity(): Promise<Result<Capacity>> {
       runner_profiles: {
         mock: {
           resource_class: 'standard', backend: 'CLOUD_RUN_JOB', provider: null, units: 1,
+          ...FIXTURE_AVAILABILITY.mock,
           pools: ['global', 'tenant:u-bogdan', 'resource:standard', 'runner:mock', 'backend:CLOUD_RUN_JOB'],
           admission: FIXTURE_ADMISSION.mock,
           input_contract: FIXTURE_INPUT_CONTRACTS.mock,
         },
         generic: {
           resource_class: 'standard', backend: 'CLOUD_RUN_JOB', provider: null, units: 1,
+          ...FIXTURE_AVAILABILITY.generic,
           pools: ['global', 'tenant:u-bogdan', 'resource:standard', 'runner:generic', 'backend:CLOUD_RUN_JOB'],
           admission: FIXTURE_ADMISSION.generic,
           input_contract: FIXTURE_INPUT_CONTRACTS.generic,
         },
         'claude-code': {
           resource_class: 'standard', backend: 'CLOUD_RUN_JOB', provider: 'anthropic', units: 1,
+          ...FIXTURE_AVAILABILITY['claude-code'],
           pools: [
             'global', 'tenant:u-bogdan', 'resource:standard', 'runner:claude-code',
             'backend:CLOUD_RUN_JOB', 'provider:anthropic', 'provider:anthropic:tenant:u-bogdan',
@@ -2221,6 +2275,7 @@ async function fixtureCapacity(): Promise<Result<Capacity>> {
         },
         codex: {
           resource_class: 'standard', backend: 'CLOUD_RUN_JOB', provider: 'openai', units: 1,
+          ...FIXTURE_AVAILABILITY.codex,
           pools: [
             'global', 'tenant:u-bogdan', 'resource:standard', 'runner:codex',
             'backend:CLOUD_RUN_JOB', 'provider:openai',
@@ -2230,6 +2285,7 @@ async function fixtureCapacity(): Promise<Result<Capacity>> {
         },
         browser: {
           resource_class: 'browser', backend: 'GKE_AUTOPILOT', provider: 'anthropic', units: 2,
+          ...FIXTURE_AVAILABILITY.browser,
           pools: [
             'global', 'tenant:u-bogdan', 'resource:browser', 'runner:browser',
             'backend:GKE_AUTOPILOT', 'provider:anthropic', 'provider:anthropic:tenant:u-bogdan',
