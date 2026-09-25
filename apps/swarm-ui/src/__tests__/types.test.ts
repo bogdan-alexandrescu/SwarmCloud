@@ -443,24 +443,38 @@ describe('elapsed', () => {
   })
 
   /**
-   * AG-12. `started_at` is written on DISPATCHED -> STARTING, so LEASED and
-   * DISPATCHED legitimately have none -- and those two HOLD A POOL SLOT. The
-   * prefix was `queued` for every unstarted task, which on the Live tab (the
-   * tab that means "holding capacity") contradicted the tab it sat in.
+   * AG-12, AND WHAT ITS FIRST FIX LEFT. `started_at` is written on DISPATCHED
+   * -> STARTING, so LEASED and DISPATCHED legitimately have none -- and those
+   * two HOLD A POOL SLOT. The prefix was `queued` for every unstarted task,
+   * which on the Live tab (the tab that means "holding capacity") contradicted
+   * the tab it sat in. AG-12 named the state instead: `leased 3h 0m`.
    *
-   * MUTATION: keep one prefix for every unstarted state. LEASED reads `queued`.
+   * But that figure is the task's AGE, and a state word in front of a duration
+   * reads as time spent in that state. A task that queued for three hours and
+   * was leased a second ago read `leased 3h 0m`, which is what a stuck lease
+   * looks like. Nothing on the task document records when a lease was taken,
+   * so there is no time-in-state to give: a slot-holding task that has not
+   * started reads its state word alone, and does not tick. READY and PARKED
+   * that never started have waited their whole age, so `waiting 4m 0s` is
+   * true of them and they keep it.
+   *
+   * MUTATION: put the age back after the state word. LEASED reads `leased 4m 0s`.
    */
   it.each([
-    ['LEASED', 'leased 4m 0s'],
-    ['DISPATCHED', 'dispatched 4m 0s'],
-    ['READY', 'waiting 4m 0s'],
-    ['PARKED', 'waiting 4m 0s'],
-  ] as ReadonlyArray<[TaskState, string]>)('prefixes an unstarted %s task by what it is doing: %s', (state, text) => {
-    const el = elapsed(task(state, { created: 4 * 60_000 }), NOW)
-    expect(el.text).toBe(text)
-    expect(el.ticking).toBe(true)
-    expect(el.text).not.toContain('queued')
-  })
+    ['LEASED', 'leased', false],
+    ['DISPATCHED', 'dispatched', false],
+    ['READY', 'waiting 4m 0s', true],
+    ['PARKED', 'waiting 4m 0s', true],
+  ] as ReadonlyArray<[TaskState, string, boolean]>)(
+    'says what an unstarted %s task is doing without timing a state: %s',
+    (state, text, ticking) => {
+      const el = elapsed(task(state, { created: 4 * 60_000 }), NOW)
+      expect(el.text).toBe(text)
+      expect(el.ticking).toBe(ticking)
+      expect(el.phase).toBe('waiting')
+      expect(el.text).not.toContain('queued')
+    },
+  )
 
   it('times a started task from its start, and keeps it ticking', () => {
     const el = elapsed(task('RUNNING', { created: 9 * 60_000, started: 90_000 }), NOW)
@@ -500,22 +514,85 @@ describe('elapsed', () => {
    * Only STARTING and RUNNING make `now - started_at` time run: they are the
    * two states in which the start on the task document is this attempt's.
    *
+   * AND THE AGE IS NOT A WAIT EITHER. The first fix timed such a task from
+   * its submission instead and printed `waiting 50m 0s`: fifty minutes of
+   * waiting, for a task that ran for most of them, under an inspector key that
+   * said `wait`. On the retry's lease it printed `leased 50m 0s` for a lease
+   * taken seconds ago. The task document holds no time for the state the task
+   * is in now -- a park, a promote and a lease write none of their own -- and
+   * the age includes the earlier run. So between attempts the text is the
+   * state word and no figure, and nothing ticks. The age is the inspector's
+   * `age` fact, which says it is one.
+   *
    * MUTATION: time every task that has a `started_at` as running (the test was
    * `Number.isFinite(started)` alone). PARKED reads `41m 0s`, phase `running`.
+   * MUTATION: the first fix, `now - created_at` under `waiting` or the state
+   * word. PARKED reads `waiting 50m 0s`.
    */
-  it.each([
-    ['PARKED', 'waiting 50m 0s'],
-    ['READY', 'waiting 50m 0s'],
-    ['LEASED', 'leased 50m 0s'],
-    ['DISPATCHED', 'dispatched 50m 0s'],
-  ] as ReadonlyArray<[TaskState, string]>)('never times a %s task that ran before as running: %s', (state, text) => {
-    // Submitted 50 minutes ago; an earlier attempt started 41 minutes ago.
-    const el = elapsed(task(state, { created: 50 * 60_000, started: 41 * 60_000 }), NOW)
-    expect(el.phase, 'a task that is not running is labelled running').not.toBe('running')
-    expect(el.text, 'wall time since an old start reported as run time').not.toBe('41m 0s')
-    expect(el.phase).toBe('waiting')
-    expect(el.text).toBe(text)
+  it.each(['PARKED', 'READY', 'LEASED', 'DISPATCHED'] as ReadonlyArray<TaskState>)(
+    'never presents a %s task that ran before as running, as waiting, or as its age in that state',
+    (state) => {
+      // Submitted 50 minutes ago; an earlier attempt started 41 minutes ago.
+      const el = elapsed(task(state, { created: 50 * 60_000, started: 41 * 60_000 }), NOW)
+      expect(el.phase, 'a task that is not running is labelled running').not.toBe('running')
+      expect(el.text, 'wall time since an old start reported as run time').not.toBe('41m 0s')
+      expect(el.text, 'the age, which includes the earlier run, presented as a wait').not.toMatch(/^waiting\b/)
+      expect(el.text, 'a figure for a span the task document does not hold').not.toMatch(/\d/)
+      expect(el.ticking, 'a figure nobody can time is counting').toBe(false)
+      expect(el.phase).toBe('waiting')
+      expect(el.text).toBe(state.toLowerCase())
+    },
+  )
+
+  /**
+   * A STATE WORD IN FRONT OF A DURATION READS AS TIME IN THAT STATE, and the
+   * task document holds that time for no state: nothing records when a task
+   * was leased, dispatched, parked or made ready. The one span that is this
+   * attempt's -- `now - started_at` in STARTING or RUNNING -- prints as a bare
+   * duration. So no form `elapsed()` prints is a state word and then a number,
+   * in any state, on a first attempt or after one has run.
+   *
+   * MUTATION: the AG-12 form, `${state.toLowerCase()} ${formatDuration(age)}`
+   * for the concurrency states. LEASED, DISPATCHED, and STARTING or RUNNING
+   * with no start recorded, each read `<state> 50m 0s`.
+   */
+  it('never prints a state word in front of a duration, in any state, started or not', () => {
+    const every: readonly TaskState[] = [...REAL_STATES, ...NEVER_WRITTEN]
+    expect(every, 'the state list is not all twelve; this sweep is partial').toHaveLength(12)
+    const seen: string[] = []
+    const bad: string[] = []
+    for (const state of every) {
+      for (const started of [undefined, 41 * 60_000]) {
+        const { text } = elapsed(task(state, { created: 50 * 60_000, started }), NOW)
+        seen.push(text)
+        if (new RegExp(`^${state.toLowerCase()}\\s+\\d`).test(text)) {
+          bad.push(`${state}${started === undefined ? '' : ' (ran before)'}: ${text}`)
+        }
+      }
+    }
+    expect(seen, 'the sweep visited fewer forms than 12 states x 2 starts').toHaveLength(24)
+    expect(bad).toEqual([])
   })
+
+  /**
+   * STARTING OR RUNNING WITH NO START RECORDED. The worker writes `started_at`
+   * in the same update as STARTING, so this is an older document or a writer
+   * that forgot. It fell through to the age and printed `running 50m 0s`: a
+   * run length that is the task's age. There is no run to time, so the figure
+   * is an absence, and the state chip beside it already says RUNNING.
+   *
+   * MUTATION: let it fall through to the created-at branch.
+   */
+  it.each(['STARTING', 'RUNNING'] as ReadonlyArray<TaskState>)(
+    'prints an absence for a %s task whose start was never recorded, not its age',
+    (state) => {
+      expect(elapsed(task(state, { created: 50 * 60_000 }), NOW)).toEqual({
+        text: '—',
+        ticking: false,
+        phase: 'unknown',
+      })
+    },
+  )
 
   it('calls a figure running in exactly the two states where the start on the document is this attempt’s', () => {
     const every: readonly TaskState[] = [...REAL_STATES, ...NEVER_WRITTEN]
