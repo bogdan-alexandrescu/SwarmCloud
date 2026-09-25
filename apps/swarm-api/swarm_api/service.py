@@ -525,6 +525,17 @@ class SubmissionService:
                 "resource_class": profile.resource_class,
                 "backend": backend,
                 "provider": profile.provider,
+                # WHETHER IT MAY BE DISPATCHED AT ALL, read off the frozen
+                # catalogue exactly as /v1/runtimes serves it. Without these
+                # two keys every client check of `available` on this route was
+                # dead code, and a disabled profile (codex) was drawn with
+                # headroom on Pools and Profile headroom and offered on Submit
+                # (visual QA 2026-09-25, CP-3). The admission block below is
+                # still served for a disabled profile: it is a true statement
+                # about the pools, and the screens decide not to draw it as an
+                # offer.
+                "available": profile.available,
+                "disabled_reason": profile.disabled_reason,
                 "units": units,
                 "pools": required,
                 # What this profile's RUNNER refuses to start without, so a

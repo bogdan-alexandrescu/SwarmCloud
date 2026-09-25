@@ -2162,6 +2162,34 @@ const FIXTURE_INPUT_CONTRACTS: Record<string, RunnerInputContract> = {
   "browser": {"required_keys": []}
 }
 
+/**
+ * Whether each of the five may be dispatched, as `/v1/capacity` now serves it
+ * (CP-3, visual QA 2026-09-25). A fixture whose `codex` is on offer develops
+ * Pools, Profile headroom and Submit against a platform that does not exist --
+ * which is how the disabled branch of all three shipped unexercised.
+ *
+ * A COPY OF THE FROZEN CATALOGUE'S TWO FIELDS, and therefore a strict-JSON
+ * literal: `test_capacity_serves_availability.py` reads it with the same
+ * `json_literal` the input-contract table above is held by and compares it to
+ * `RUNNER_PROFILES`, so re-enabling a profile there fails here until this
+ * follows.
+ *
+ * The value type is NAMED rather than written inline: the reader takes the
+ * first `{` after the declaration as the literal, and an inline object type
+ * would be that brace.
+ */
+interface FixtureAvailability {
+  available: boolean
+  disabled_reason: string
+}
+const FIXTURE_AVAILABILITY: Record<string, FixtureAvailability> = {
+  "mock": {"available": true, "disabled_reason": ""},
+  "generic": {"available": true, "disabled_reason": ""},
+  "claude-code": {"available": true, "disabled_reason": ""},
+  "codex": {"available": false, "disabled_reason": "codex is disabled on this platform. The provider refused the registered credential and the platform is focused on Claude. Use claude-code."},
+  "browser": {"available": true, "disabled_reason": ""}
+}
+
 async function fixtureCapacity(): Promise<Result<Capacity>> {
   await new Promise((r) => setTimeout(r, 400))
   noteFixtureProbe('/v1/capacity', 400, true)
@@ -2200,18 +2228,21 @@ async function fixtureCapacity(): Promise<Result<Capacity>> {
       runner_profiles: {
         mock: {
           resource_class: 'standard', backend: 'CLOUD_RUN_JOB', provider: null, units: 1,
+          ...FIXTURE_AVAILABILITY.mock,
           pools: ['global', 'tenant:u-bogdan', 'resource:standard', 'runner:mock', 'backend:CLOUD_RUN_JOB'],
           admission: FIXTURE_ADMISSION.mock,
           input_contract: FIXTURE_INPUT_CONTRACTS.mock,
         },
         generic: {
           resource_class: 'standard', backend: 'CLOUD_RUN_JOB', provider: null, units: 1,
+          ...FIXTURE_AVAILABILITY.generic,
           pools: ['global', 'tenant:u-bogdan', 'resource:standard', 'runner:generic', 'backend:CLOUD_RUN_JOB'],
           admission: FIXTURE_ADMISSION.generic,
           input_contract: FIXTURE_INPUT_CONTRACTS.generic,
         },
         'claude-code': {
           resource_class: 'standard', backend: 'CLOUD_RUN_JOB', provider: 'anthropic', units: 1,
+          ...FIXTURE_AVAILABILITY['claude-code'],
           pools: [
             'global', 'tenant:u-bogdan', 'resource:standard', 'runner:claude-code',
             'backend:CLOUD_RUN_JOB', 'provider:anthropic', 'provider:anthropic:tenant:u-bogdan',
@@ -2221,6 +2252,7 @@ async function fixtureCapacity(): Promise<Result<Capacity>> {
         },
         codex: {
           resource_class: 'standard', backend: 'CLOUD_RUN_JOB', provider: 'openai', units: 1,
+          ...FIXTURE_AVAILABILITY.codex,
           pools: [
             'global', 'tenant:u-bogdan', 'resource:standard', 'runner:codex',
             'backend:CLOUD_RUN_JOB', 'provider:openai',
@@ -2230,6 +2262,7 @@ async function fixtureCapacity(): Promise<Result<Capacity>> {
         },
         browser: {
           resource_class: 'browser', backend: 'GKE_AUTOPILOT', provider: 'anthropic', units: 2,
+          ...FIXTURE_AVAILABILITY.browser,
           pools: [
             'global', 'tenant:u-bogdan', 'resource:browser', 'runner:browser',
             'backend:GKE_AUTOPILOT', 'provider:anthropic', 'provider:anthropic:tenant:u-bogdan',
