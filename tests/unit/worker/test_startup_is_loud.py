@@ -26,6 +26,9 @@ WHAT IS PINNED, each in the real entrypoint running in its own process
     retry logic before failing, to prevent intermittent dns failures"). Nor
     does a resolver that fails every lookup at once for 15 s and then comes
     back;
+  * nor does a control plane that cannot be reached for 40 s after the
+    worker starts, longer than the generation check's old single 30 s budget
+    (#198: the Direct VPC egress delay Google documents at instance start);
   * a worker that exits 78 leaves its cause, as one JSON line, in the file
     Kubernetes reads as the container's termination message, which is how
     the reconciler learns it without Firestore;
@@ -522,6 +525,48 @@ def test_a_resolver_that_fails_at_once_for_fifteen_seconds_does_not_fail_the_att
     for number, warning in enumerate(warnings, start=1):
         assert warning["severity"] == "WARNING" and warning["attempt"] == number, warning
         assert warning["retry_in_seconds"] > 0, warning
+    assert child.phases()[-1] == "runner", child.phases()
+
+
+def test_a_control_plane_unreachable_for_forty_seconds_does_not_fail_the_attempt(spawn):
+    """#198, in the real entrypoint: an outage longer than the old single 30 s budget.
+
+    The 2026-09-25 worker (swarm-job-eng-mock-9ngvq) could not reach Firestore
+    for the whole of its generation check's one 30 s budget and exited 69. Its
+    replacement, five minutes later, started in four seconds. Here every task
+    read fails at once with that incident's error for 40 s from the first
+    (`startup_harness.FIRESTORE_OUTAGE_SECONDS`), then Firestore answers. The
+    worker must still be asking when it does, and then run.
+    """
+    outage = 40.0  # startup_harness.FIRESTORE_OUTAGE_SECONDS, restated like DNS_BUDGET_SECONDS
+    child = spawn("firestore-down-40s", FIRESTORE_EMULATOR_HOST=LOCAL_FIRESTORE)
+    announced = child.wait_for(_phase("validate_generation"))
+    assert announced is not None, f"no validate_generation phase\n{child.transcript()}"
+    code = child.finish(timeout=150)
+    assert code == 0, (
+        f"exit {code}: a {outage:g}s control-plane outage ended the attempt\n{child.transcript()}"
+    )
+
+    warnings = [
+        r for r in child.records
+        if r.get("severity") == "WARNING" and r.get("phase") == "validate_generation"
+        and r.get("attempt") is not None
+    ]
+    assert [w["attempt"] for w in warnings] == [1, 2], child.transcript()
+    for warning in warnings:
+        assert warning["retry_in_seconds"] > 0, warning
+    after = child.wait_for(
+        lambda r: r.get("message") == "startup phase"
+        and r.get("previous_phase") == "validate_generation",
+        timeout=1,
+    )
+    assert after is not None, child.transcript()
+    # It got through because it was still asking once the outage was over,
+    # on the child's own clock, and not because the outage never happened.
+    assert _seconds_between(announced, after) >= outage - CLOCK_SLACK_SECONDS, (
+        f"passed {_seconds_between(announced, after):.1f}s in, inside a {outage:g}s "
+        f"outage\n{child.transcript()}"
+    )
     assert child.phases()[-1] == "runner", child.phases()
 
 
