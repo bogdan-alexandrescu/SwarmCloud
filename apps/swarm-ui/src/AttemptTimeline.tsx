@@ -1,10 +1,10 @@
 import { useCallback } from 'react'
-import { Chip, Em, Mark, type ChipTone } from './AgentDetail'
+import { Chip, Em, Mark, attemptLabel, type ChipTone } from './AgentDetail'
 import { loadAgentDetail, loadAttempts } from './api'
 import { num, type Result } from './fetch'
 import { HelpCard } from './HelpCard'
 import { Screen, timeAgo } from './Shell'
-import type { AttemptRow, TaskEvent } from './types'
+import { bytesLabel, formatDuration, type AttemptRow, type TaskEvent } from './types'
 
 /**
  * One task, attempt by attempt. Replaces the flat event list in the drawer, which
@@ -121,11 +121,15 @@ function grouped(t: AttemptTimeline): Group[] {
   }
 
   const groups: Group[] = [{ key: '@preface', attempt: null, label: 'Before any attempt', events: preface }]
-  for (const a of [...t.attempts].sort((x, y) => x.created_at.localeCompare(y.created_at))) {
-    const label = `Attempt · gen ${a.generation}`
+  const ordered = [...t.attempts].sort((x, y) => x.created_at.localeCompare(y.created_at))
+  ordered.forEach((a, i) => {
+    // THE DETAIL PANE'S NAME FOR THE SAME ATTEMPT (AG-21). This was
+    // `Attempt · gen N` -- no ordinal -- beside a detail pane that said
+    // `Attempt 1` and `Attempt 1 · generation 1` for it.
+    const label = attemptLabel(i + 1, a.generation)
     groups.push({ key: a.attempt_id, attempt: a, label, events: byAttempt.get(a.attempt_id) ?? [] })
     byAttempt.delete(a.attempt_id)
-  }
+  })
   // What is left names an attempt no document on this page describes. Folding these into
   // the preface would file real attempt events under "before any attempt", a lie.
   for (const [id, events] of byAttempt) {
@@ -177,19 +181,33 @@ function Body({ t }: { t: AttemptTimeline }) {
             {/* create_tasks writes the task and its `submitted` event in ONE
                 batch (store.py), so zero events is a failed query wearing a
                 success code -- which is a different mark from a page that is
-                merely short. */}
+                merely short.
+
+                A PAGE THAT IS MERELY SHORT GETS NO MARK (AG-9). It drew
+                `pending` -- the word `reading`, the dotted in-flight shape --
+                permanently, on a toolbar whose read had landed. `reading` is
+                the one mark of the six that means "still asking"
+                (design-system.md §8.7.1); that the route pages oldest-first
+                with no token is a standing caveat about the route, not a read
+                in flight. The figures are the qualifier and the caveat is
+                their accessible name. Blind attempts, below, are what this
+                page can PROVE is missing, and they keep the `partial` mark. */}
             {count === 0 ? (
-              <Mark
-                kind="unread"
-                say="Zero events came back, yet a task is written with its submitted event in the same batch — so this is a failed query, not an empty history."
-              />
+              <>
+                <Mark
+                  kind="unread"
+                  say="Zero events came back, yet a task is written with its submitted event in the same batch — so this is a failed query, not an empty history."
+                />{' '}
+                {count} ev · no page token
+              </>
             ) : (
-              <Mark
-                kind="pending"
-                say="The events endpoint orders oldest-first, caps the page server-side and returns no page token, so newer events may exist and are unreachable from this screen."
-              />
-            )}{' '}
-            {count} ev · no page token
+              <span
+                className="att-ev-cap"
+                aria-label={`${count} events, one page, oldest first. The events endpoint caps the page server-side and returns no page token, so newer events may exist and are unreachable from this screen.`}
+              >
+                {count} ev · no page token
+              </span>
+            )}
             {blind.length > 0 && (
               <>
                 {' · '}
@@ -294,7 +312,12 @@ function AttemptCard({ g, eventsRead }: { g: Group; eventsRead: boolean }) {
                   />
                 </>
               ) : (
-                `${(a.peak_rss_bytes / 1e9).toFixed(2)} GB`
+                // `bytesLabel`, AS THE DETAIL PANE PRINTS IT (AG-21). This
+                // was `/ 1e9` and `GB`: the same attempt read `18.6 MiB` in
+                // one pane and `0.02 GB` in the other -- decimal against the
+                // binary GiB the ceilings are in, and two figures a reader has
+                // to convert before they can believe they agree.
+                bytesLabel(a.peak_rss_bytes)
               )}
             </li>
             <li className="ctl-fact">
@@ -373,5 +396,9 @@ function ran(a: AttemptRow): string | null {
   if (a.completed_at === null) return `${timeAgo(a.started_at)} · open`
   const ms = new Date(a.completed_at).getTime() - new Date(a.started_at).getTime()
   if (!Number.isFinite(ms)) return null
-  return `${Math.round(ms / 1000)}s`
+  // `formatDuration`, the one duration formatter (AG-21). `769s` here beside
+  // `12m 49s` for the same attempt in the detail pane was two formatters for
+  // one number -- the disagreement `formatDuration`'s own comment exists to
+  // prevent.
+  return formatDuration(ms)
 }

@@ -385,6 +385,23 @@ function tokens(v: number | null | undefined): ReactNode {
   return v.toLocaleString()
 }
 
+/**
+ * ONE NAME FOR ONE ATTEMPT, on every pane that draws it (AG-21).
+ *
+ * The same attempt was `Attempt 1` with a `gen 1` chip on its card, `Attempt
+ * 1 · generation 1` over its events and `Attempt · gen 1` -- no ordinal at all
+ * -- in the Attempts view. A reader matching a card to its events across two
+ * panes had three spellings to reconcile. The ordinal is the attempt's place
+ * among the documents, oldest first; the generation is the fencing number it
+ * was minted with, and the two are not the same number on a fenced task.
+ *
+ * EXPORTED because AttemptTimeline draws the same attempts and imports its
+ * primitives from here already.
+ */
+export function attemptLabel(ordinal: number, generation: number): string {
+  return `Attempt ${ordinal} · gen ${generation}`
+}
+
 // ---------------------------------------------------------------------------
 // Head
 // ---------------------------------------------------------------------------
