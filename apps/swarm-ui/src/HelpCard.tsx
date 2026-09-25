@@ -564,8 +564,12 @@ function subscribePhone(onChange: () => void): () => void {
  * Whether the viewport is phone-width. False where there is no `matchMedia` --
  * jsdom has none, and neither does `renderToStaticMarkup` under node -- which
  * is the wide-screen answer and draws nothing extra.
+ *
+ * EXPORTED for the Agents list, which reads a 50-row page at this width
+ * (Agents.tsx, `PHONE_PAGE_LIMIT`): one definition of "phone", so the page
+ * size and the layout cannot disagree about which width is one.
  */
-function phoneWidth(): boolean {
+export function phoneWidth(): boolean {
   return (
     typeof window !== 'undefined' &&
     typeof window.matchMedia === 'function' &&

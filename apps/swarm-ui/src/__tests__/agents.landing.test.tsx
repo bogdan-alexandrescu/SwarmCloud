@@ -334,18 +334,32 @@ describe('the row clock does not run past the read (AG-1)', () => {
   it('stops a running row’s elapsed time once the read is older than one interval', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'setInterval', 'clearTimeout', 'clearInterval', 'Date'] })
     const start = Date.now()
-    api.loadTasks.mockImplementation(async () => ({
-      status: 'ok',
-      data: {
-        tasks: [
-          task('task_ffffffff00000000000f', 'RUNNING', {
-            started_at: new Date(start - 60_000).toISOString(),
-          }),
-        ],
-        tenant_id: 'acme',
-      },
-      fetchedAt: Date.now(),
-    }))
+    // THE FIRST READ LANDS AND EVERY RE-READ FAILS. The list polls now, and a
+    // re-read that lands moves the read forward -- which is the clock
+    // resuming correctly, not the defect. What must not happen is the clock
+    // running on over rows no read has refreshed.
+    let reads = 0
+    api.loadTasks.mockImplementation(async () => {
+      reads += 1
+      if (reads > 1) {
+        return {
+          status: 'error',
+          error: { kind: 'upstream_degraded', httpStatus: 503, code: 'upstream_unavailable', message: 'Busy.' },
+        }
+      }
+      return {
+        status: 'ok',
+        data: {
+          tasks: [
+            task('task_ffffffff00000000000f', 'RUNNING', {
+              started_at: new Date(start - 60_000).toISOString(),
+            }),
+          ],
+          tenant_id: 'acme',
+        },
+        fetchedAt: Date.now(),
+      }
+    })
     const { container } = render(<AgentsScreen onOpen={() => {}} />)
     const advance = async (ms: number) => {
       await act(async () => {
@@ -360,7 +374,46 @@ describe('the row clock does not run past the read (AG-1)', () => {
     expect(when()).toBe('1m 3s')
     // A minute on, with no fresh read, it has stopped at the interval's edge.
     await advance(60_000)
+    expect(reads, 'the list did not try to re-read at all').toBeGreaterThan(1)
     expect(when(), 'the row went on counting past a read nobody refreshed').toBe('1m 5s')
+  })
+
+  /**
+   * AG-1. THE LIST RE-READS, at §2.5's cadence: 5s while Live holds a row,
+   * 30s when it does not. It read once and never again.
+   *
+   * BREAK IT: drop `pollMs` from AgentsScreen. `loadTasks` is called once.
+   */
+  it('re-reads every 5s while Live holds a row, and every 30s when it does not', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'setInterval', 'clearTimeout', 'clearInterval', 'Date'] })
+    const advance = async (ms: number) => {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(ms)
+      })
+    }
+    const page = (state: TaskState) => async (): Promise<Result<TaskPage>> => ({
+      status: 'ok',
+      data: { tasks: [task('task_ffffffff00000000000f', state)], tenant_id: 'acme' },
+      fetchedAt: Date.now(),
+    })
+
+    api.loadTasks.mockImplementation(page('RUNNING'))
+    const live = render(<AgentsScreen onOpen={() => {}} />)
+    await advance(0)
+    expect(api.loadTasks).toHaveBeenCalledTimes(1)
+    await advance(LIVE_POLL_MS)
+    expect(api.loadTasks, 'a Live row did not bring a re-read at 5s').toHaveBeenCalledTimes(2)
+    live.unmount()
+
+    api.loadTasks.mockReset()
+    api.loadTasks.mockImplementation(page('SUCCEEDED'))
+    render(<AgentsScreen onOpen={() => {}} />)
+    await advance(0)
+    expect(api.loadTasks).toHaveBeenCalledTimes(1)
+    await advance(LIVE_POLL_MS)
+    expect(api.loadTasks, 'an idle list re-read at the Live cadence').toHaveBeenCalledTimes(1)
+    await advance(IDLE_POLL_MS - LIVE_POLL_MS)
+    expect(api.loadTasks, 'an idle list never re-read').toHaveBeenCalledTimes(2)
   })
 })
 

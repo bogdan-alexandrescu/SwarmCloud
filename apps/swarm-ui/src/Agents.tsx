@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type Dispatch, type SetStateAction } from 'react'
+import { useEffect, useMemo, useState, type Dispatch, type SetStateAction } from 'react'
 // `Em` and `Mark` live in AgentDetail.tsx, which is where `ABSENT_MARK` was
 // written and which design-system.md §9.1 names as the source to promote from.
 // One definition for the four screens of this group; a second copy of a mark
@@ -8,10 +8,12 @@ import { useCallback, useEffect, useMemo, useState, type Dispatch, type SetState
 // is only a rebuild if the screens stop hand-rolling their own.
 import { Chip, Em, Mark, type ChipTone } from './AgentDetail'
 import { RECENT_STATES, RECENT_STATE_OF, type AgentList, type RecentState } from './agentlist'
-import { loadTasks } from './api'
+import { TASK_PAGE_LIMIT, loadTasks } from './api'
 import { DispatchChip } from './Dispatch'
-import { HelpCard } from './HelpCard'
+import type { Result } from './fetch'
+import { HelpCard, phoneWidth } from './HelpCard'
 import { Id, Screen } from './Shell'
+import { rowClock, useNow } from './useNow'
 import {
   CONCURRENCY_STATES,
   RESOURCE_UNITS,
@@ -107,15 +109,50 @@ function shortTaskId(id: string): string {
  *
  * THE COST IS THE PAYLOAD, NOT THE QUERY. Every row carries `input`,
  * `metadata` and `result_summary`, so a 200-row page is 2-4 MB (§2.5), and at
- * 5s that is roughly 600 KB/s to a phone. Only the Live tab earns the fast
- * cadence, and only while it has rows; the `view=summary` parameter §8/P2
- * proposes is what would make it cheap.
+ * 5s that is roughly 600 KB/s. Only the Live tab earns the fast cadence, and
+ * only while it has rows; the `view=summary` parameter §8/P2 proposes is what
+ * would make it cheap. Until it exists, a phone reads `PHONE_PAGE_LIMIT` rows
+ * rather than 200 -- see below.
  */
 export const LIVE_POLL_MS = 5_000
 export const IDLE_POLL_MS = 30_000
 
 export function pollInterval(page: TaskPage | null): number {
   return page !== null && page.tasks.some((t) => tabOf(t) === 'live') ? LIVE_POLL_MS : IDLE_POLL_MS
+}
+
+/**
+ * THE PHONE PAGE: 50 rows, not 200 (docs/web-ui/03-agents-and-workflows.md
+ * §2.1 and §2.5).
+ *
+ * §2.5 states the condition this screen's 5s poll ships under: "Until
+ * [view=summary] exists, the phone build must cap at limit=50 and say 'showing
+ * the 50 most recent' rather than ship a 4 MB poll." `view=summary` does not
+ * exist (routes/tasks.py and codec.py take no such parameter), and the list
+ * polled the full 200-row page on every viewport -- 2-4 MB every 5s over
+ * cellular, for as long as Live held a row and the tab was visible.
+ *
+ * "PHONE" IS `phoneWidth()` from HelpCard.tsx: 560px and under, the width at
+ * which this list already draws as cards and a `?` takes a fingertip. §2.1
+ * writes 640px for the card layout; the stylesheet has drawn the phone list at
+ * 560px since before this, and one definition of phone keeps the two from
+ * disagreeing about which layout a width gets. It is decided at each READ,
+ * not once, so a rotated device takes the right page on its next poll.
+ */
+export const PHONE_PAGE_LIMIT = 50
+
+/** A page of the list, and the page size that read asked for. */
+interface AgentsPage extends TaskPage {
+  /** The `limit` the read asked for: `PHONE_PAGE_LIMIT` at phone width. */
+  asked: number
+}
+
+async function loadAgentsPage(): Promise<Result<AgentsPage>> {
+  const asked = phoneWidth() ? PHONE_PAGE_LIMIT : TASK_PAGE_LIMIT
+  const read = await loadTasks(asked)
+  return read.status === 'ok' || read.status === 'stale'
+    ? { ...read, data: { ...read.data, asked } }
+    : read
 }
 
 /**
@@ -162,21 +199,18 @@ export function AgentsScreen({
   }, [listTab, listState])
   const [profile, setProfile] = useState<string>('')
   const [grouped, setGrouped] = useState(false)
-  // WHEN THE ROWS ON SCREEN WERE READ. The row clock stops one interval past
-  // this (see `AgentsBody`), so it is recorded from the read itself -- the
-  // `fetchedAt` the Result carries -- and not from when React got round to
-  // rendering it.
-  const [readAt, setReadAt] = useState<number | null>(null)
-  const load = useCallback(async () => {
-    const r = await loadTasks()
-    if (r.status === 'ok') setReadAt(r.fetchedAt)
-    return r
-  }, [])
 
   return (
     <Screen
       title="Agents"
-      load={load}
+      load={loadAgentsPage}
+      // THE LIST RE-READS (AG-1). It read once and never again, while its
+      // clock went on adding to every row: a finished agent read `running`
+      // and was counted in Live. `Screen` owns the timer, the pause while the
+      // tab is hidden, the back-off and the stop on an answer only a person
+      // can change; this screen owns the cadence, which is a function of the
+      // rows it holds.
+      pollMs={pollInterval}
       summary={(d) => {
         const live = d.tasks.filter((t) => tabOf(t) === 'live').length
         return (
@@ -203,12 +237,17 @@ export function AgentsScreen({
         body: <>The read succeeded and returned nothing.</>,
       }}
     >
-      {(d) => (
+      {(d, reading) => (
         <AgentsBody
           onOpen={onOpen}
           openTaskId={taskId}
           page={d}
-          readAt={readAt}
+          // WHEN THE ROWS ON SCREEN WERE READ, and the cadence in force, as
+          // `Screen` read them -- not recorded a second time here. A stale
+          // screen hands over the last GOOD read's time, which is the one the
+          // rows describe.
+          readAt={reading.fetchedAt}
+          interval={reading.pollMs ?? pollInterval(d)}
           tab={tab}
           setTab={setTab}
           recentState={recentState}
@@ -225,25 +264,18 @@ export function AgentsScreen({
 }
 
 /**
- * The instant the row durations are computed at: the clock, until the rows
- * are more than one poll interval old, and then no further (AG-1).
- *
- * The rows are a READ, and a read has an age. A ticking clock over rows
- * nobody has re-read kept adding to `run 4m` after the agent had finished --
- * the page said running, the clock said still going, and the platform had
- * moved on. Past one interval a fresh read was due and has not arrived, so the
- * figures stop where the read can still vouch for them; the age of the read
- * is the Screen's to show. `readAt` null (not yet known) keeps the clock.
+ * The instant the row durations are computed at (AG-1). It lives in useNow.ts
+ * now, beside the clock it caps, because the inspector's drawer caps its clock
+ * the same way; re-exported so this screen's tests keep reading it from here.
  */
-export function rowClock(now: number, readAt: number | null, interval: number): number {
-  return readAt === null ? now : Math.min(now, readAt + interval)
-}
+export { rowClock }
 
 function AgentsBody({
   onOpen,
   openTaskId,
   page,
   readAt,
+  interval,
   tab,
   setTab,
   recentState,
@@ -256,8 +288,10 @@ function AgentsBody({
 }: {
   onOpen: (taskId: string) => void
   openTaskId: string | null
-  page: TaskPage
+  page: AgentsPage
   readAt: number | null
+  /** The cadence the rows are re-read at: how far past `readAt` they are good for. */
+  interval: number
   tab: Tab | null
   setTab: Dispatch<SetStateAction<Tab | null>>
   /** The Recent tab's state filter (OV-10); null is "all". */
@@ -273,12 +307,10 @@ function AgentsBody({
   // One clock for every ticking duration on the screen, so a hundred rows do
   // not each hold their own interval -- and it stops advancing the rows once
   // they are older than one poll interval (`rowClock`).
-  const [tick, setTick] = useState(() => Date.now())
-  useEffect(() => {
-    const id = setInterval(() => setTick(Date.now()), 1000)
-    return () => clearInterval(id)
-  }, [])
-  const now = rowClock(tick, readAt, pollInterval(page))
+  // The SHARED 1s clock (useNow.ts), the cadence a running duration asks for:
+  // the inspector's `run` ticks on the same instant, so a row and the drawer
+  // beside it cannot disagree by a tick.
+  const now = rowClock(useNow(1000), readAt, interval)
 
   const counts = useMemo(() => {
     const c: Record<Tab, number> = { live: 0, waiting: 0, recent: 0 }
@@ -304,9 +336,10 @@ function AgentsBody({
   // THE RECENT STATE FILTER (OV-10) applies on Recent alone, over the same
   // loaded rows as every other count here -- the toolbar's scope qualifier
   // already says so for all of them. Client-side ON PURPOSE: the Overview's
-  // failures check counts FAILED among these same newest 200, and a
-  // server-side FAILED list would be a different, larger population answering
-  // to the same number.
+  // failures check counts FAILED among the newest 200, this list is that same
+  // newest page, and a server-side FAILED list would be a different, larger
+  // population answering to the same number. (At phone width the page is the
+  // newest `PHONE_PAGE_LIMIT`, and the scope qualifier says so.)
   const stateFilter = shown === 'recent' ? recentState : null
   const rows = useMemo(
     () =>
@@ -349,9 +382,17 @@ function AgentsBody({
   // its accessible name. A count that looks server-side but is not is the same
   // lie as an error rendered as an empty list, so the qualifier is never
   // conditional on there being a next page -- only its second half is.
-  const scopeSay = page.next_page_token
-    ? `Every count and filter on this screen runs over the ${page.tasks.length} rows loaded into this page, not over the platform. More rows exist beyond it.`
-    : `Every count and filter on this screen runs over the ${page.tasks.length} rows loaded into this page, not over the platform.`
+  //
+  // A PHONE PAGE THAT STOPPED SHORT SAYS SO IN §2.5's WORDS. At phone width
+  // the read asks for `PHONE_PAGE_LIMIT` rows, and when more exist the list is
+  // the most recent ones -- `showing the 50 most recent` -- not a page that
+  // merely happens to end early.
+  const phonePage = page.asked < TASK_PAGE_LIMIT && Boolean(page.next_page_token)
+  const scopeSay = phonePage
+    ? `Every count and filter on this screen runs over the ${page.tasks.length} most recent agents, not over the platform. At this width the list reads ${PHONE_PAGE_LIMIT} rows rather than ${TASK_PAGE_LIMIT}, because every row carries its input and its output and the list re-reads every few seconds. More rows exist beyond it.`
+    : page.next_page_token
+      ? `Every count and filter on this screen runs over the ${page.tasks.length} rows loaded into this page, not over the platform. More rows exist beyond it.`
+      : `Every count and filter on this screen runs over the ${page.tasks.length} rows loaded into this page, not over the platform.`
 
   return (
     <>
@@ -414,7 +455,9 @@ function AgentsBody({
         )}
 
         <span className="is-end ag-scope" aria-label={scopeSay}>
-          {page.tasks.length} loaded{page.next_page_token ? ' · more beyond' : ''}
+          {phonePage
+            ? `showing the ${page.tasks.length} most recent`
+            : `${page.tasks.length} loaded${page.next_page_token ? ' · more beyond' : ''}`}
         </span>
       </div>
 
