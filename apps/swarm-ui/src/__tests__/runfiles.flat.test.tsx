@@ -181,7 +181,7 @@ function logs(streams: LogStream[], over: Partial<TaskLogs> = {}): TaskLogs {
 const TASK: Task = task({ id: 'tsk_files', state: 'SUCCEEDED' })
 
 async function panel(
-  title: 'Checkpoints' | 'Output, as the agent wrote it',
+  title: 'Checkpoints' | 'Runner log (platform)',
   reads: { checkpoints?: Result<CheckpointsPage>; logs?: Result<TaskLogs> },
   attempts = [attempt(1)],
   t: Task = TASK,
@@ -519,18 +519,18 @@ describe('the restore fact says what a retry would restore from', () => {
 
 describe('the log panel is one table of streams', () => {
   it('draws one box: a table with name, size and age, and no card per stream', async () => {
-    const s = await panel('Output, as the agent wrote it', {
+    const s = await panel('Runner log (platform)', {
       logs: ok(logs([stream('stdout'), stream('stderr', { content: '', total_bytes: 0, returned_bytes: 0 })])),
     })
     expect(boxes(s).map((b) => b.className)).toEqual(['ctl-table is-stacked'])
     expect(heads(s).slice(0, 3)).toEqual(['Stream', 'Size', 'Age'])
     expect(s.querySelectorAll('tbody tr')).toHaveLength(2)
-    // The window itself is still there, as the agent wrote it.
+    // The window itself is still there, as the runner wrote it.
     expect(s.querySelector('pre.logwin-body')?.textContent).toContain('[13:42:09] ready')
   })
 
   it('draws a measured empty stream as the real-zero mark, and the paragraph is gone', async () => {
-    const s = await panel('Output, as the agent wrote it', {
+    const s = await panel('Runner log (platform)', {
       logs: ok(logs([stream('stdout'), stream('stderr', { content: '', total_bytes: 0, returned_bytes: 0 })])),
     })
     const size = cell(rowFor(s, 'stderr'), 'Size')
@@ -540,7 +540,7 @@ describe('the log panel is one table of streams', () => {
   })
 
   it('marks a truncated window partial, a missing object absent and an unreadable one not read', async () => {
-    const s = await panel('Output, as the agent wrote it', {
+    const s = await panel('Runner log (platform)', {
       logs: ok(
         logs([
           stream('stdout', { truncated: true, returned_bytes: 1024, next_offset: 1024 }),
@@ -561,7 +561,7 @@ describe('the log panel is one table of streams', () => {
     expect(s.textContent).toContain('permission denied reading the object')
     expect(s.textContent, 'a lowercase detail still follows a full stop').not.toMatch(/\.\s+permission denied/)
 
-    const absent = await panel('Output, as the agent wrote it', {
+    const absent = await panel('Runner log (platform)', {
       logs: ok(logs([stream('stdout', { status: 'absent', source: null, content: null, total_bytes: null, returned_bytes: 0 })])),
     })
     const size = cell(rowFor(absent, 'stdout'), 'Size')
@@ -587,7 +587,7 @@ describe('the log panel is one table of streams', () => {
         total_bytes: null,
         returned_bytes: 0,
       })
-    const s = await panel('Output, as the agent wrote it', {
+    const s = await panel('Runner log (platform)', {
       logs: ok(
         logs([absentStream('stdout'), absentStream('stderr')], {
           attempt_id: null,
@@ -609,7 +609,7 @@ describe('the log panel is one table of streams', () => {
 
     // RUNNING, attempt open: the tail is being written.
     const running = await panel(
-      'Output, as the agent wrote it',
+      'Runner log (platform)',
       { logs: ok(logs([tail], { attempt: open })) },
       [attempt(1)],
       task({ id: 'tsk_files', state: 'RUNNING' }),
@@ -625,7 +625,7 @@ describe('the log panel is one table of streams', () => {
       [task({ id: 'tsk_files', state: 'PARKED', park_reason: 'PROVIDER_QUOTA_EXHAUSTED' }), open],
     ]
     for (const [t, a] of cases) {
-      const s = await panel('Output, as the agent wrote it', { logs: ok(logs([tail], { attempt: a })) }, [attempt(1)], t)
+      const s = await panel('Runner log (platform)', { logs: ok(logs([tail], { attempt: a })) }, [attempt(1)], t)
       const age = cell(rowFor(s, 'stdout'), 'Age')
       expect(age.textContent ?? '', `a ${t.state} task's leftover tail is called live`).not.toMatch(/\blive\b/)
       expect(age.querySelector('.ctl-em')).not.toBeNull()
@@ -636,7 +636,7 @@ describe('the log panel is one table of streams', () => {
   })
 
   it('marks a final log whose attempt end is not recorded, rather than a bare dash', async () => {
-    const s = await panel('Output, as the agent wrote it', {
+    const s = await panel('Runner log (platform)', {
       logs: ok(
         logs([stream('stdout')], {
           attempt: { status: 'latest', known: true, generation: 1, created_at: iso(30), completed_at: null, exit_code: null },
@@ -673,7 +673,7 @@ describe("the log stream's gs:// uri is one line, whole in its title and in its 
     const writeText = vi.fn(async (_: string) => {})
     Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
     try {
-      const s = await panel('Output, as the agent wrote it', { logs: ok(logs([stream('stdout')])) })
+      const s = await panel('Runner log (platform)', { logs: ok(logs([stream('stdout')])) })
       const head = rowFor(s, 'stdout').querySelector('th')!
       const uri = head.querySelector<HTMLElement>('.uri')
       expect(uri?.textContent, 'the row header draws no uri').toBe(URI)
@@ -691,7 +691,7 @@ describe("the log stream's gs:// uri is one line, whole in its title and in its 
   })
 
   it('cuts it to one line below 900px and in the inspector, rather than breaking it', async () => {
-    const s = await panel('Output, as the agent wrote it', { logs: ok(logs([stream('stdout')])) })
+    const s = await panel('Runner log (platform)', { logs: ok(logs([stream('stdout')])) })
     const uri = rowFor(s, 'stdout').querySelector<HTMLElement>('th .uri')
     expect(uri, 'the row header draws no uri').not.toBeNull()
     // 390: the page's stacked block. 1440 with a 480px inspector: its

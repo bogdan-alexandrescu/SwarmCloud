@@ -212,7 +212,9 @@ def test_the_viewer_never_constructs_a_gcs_location_for_a_request() -> None:
 # --------------------------------------------------------------------------
 
 @pytest.mark.parametrize(
-    "name", ["ArtifactViewer.tsx", "AgentDetail.tsx", "Workflows.tsx", "StopRun.tsx"]
+    # Artifacts.tsx (#184) renders the agent's answer and every transcript
+    # step -- the most agent-written text on any screen.
+    "name", ["ArtifactViewer.tsx", "AgentDetail.tsx", "Workflows.tsx", "StopRun.tsx", "Artifacts.tsx"]
 )
 def test_no_artifact_bytes_are_turned_into_html(name) -> None:
     """An artifact is the least trustworthy string in this application."""

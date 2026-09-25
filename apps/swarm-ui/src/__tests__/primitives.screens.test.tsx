@@ -442,7 +442,9 @@ describe('AgentDetail draws requested-vs-utilised through the shared track', () 
     }
   })
 
-  it('fills a measured peak, and hatches cpu, which nothing samples', async () => {
+  // #184: cpu is sampled now; an attempt row served with no `usage` reading
+  // -- this fixture's -- is one hatched `not served` row, never a zero.
+  it('fills a measured peak, and hatches cpu when the attempt serves no reading', async () => {
     await mountRun(agentRun())
     const memory = track(row('memory')).querySelector<HTMLElement>('.ctl-util-fill')
     expect(memory, 'a measured peak drew no fill').not.toBeNull()
