@@ -30,11 +30,18 @@ every combination.
 
 from __future__ import annotations
 
+import io
+from datetime import datetime, timedelta, timezone
+
 import pytest
 
+from agent_worker.control import ControlPlane
+from agent_worker.logs import build_logger as worker_logger
 from quota_broker.accountstore import AccountStore
 from swarm_common.identity import tenant_id_for_user
+from swarm_common.models import Lease
 from swarm_common.profiles import RUNNER_PROFILES, Backend, resolve_backend
+from swarm_common.states import ParkReason
 
 from scheduler.dispatch import BackendRouter, CloudRunJobDispatcher
 from scheduler.loop import Scheduler
@@ -433,3 +440,227 @@ def test_admission_and_dispatch_agree(db, profile_name, tenant_key, broker, acco
     for job in created:
         for _env, secret in secret_refs(job):
             assert secret.startswith(f"swarm-tenant-{TENANT}-"), secret
+
+
+# --------------------------------------------------------------------------
+# A worker's park on a task the pool serves waits for its own instant
+# --------------------------------------------------------------------------
+#
+# Admission now lets a keyless tenant's task start (above). Two sweeps return
+# the parks a WORKER then writes on it, and each answered a different question
+# from the one the park was about:
+#
+#   * the credential sweep asked only "could this tenant run, on paper". For a
+#     lent account that is yes whether or not the broker can be reached. So a
+#     worker that fell back to a key the tenant does not have
+#     (`_park_credential_missing`, +1h), or that the broker refused
+#     (`_park_no_account`, +900s), was promoted on the very next drain and
+#     started again, once a drain, for as long as the cause lasted;
+#   * the prewarm sweep, the only code that returns a PROVIDER_QUOTA_EXHAUSTED
+#     park to READY, skipped any task whose `provider:{p}:tenant:{t}` pool did
+#     not exist, even after its instant had passed. Terraform creates that pool
+#     only from a tenant's declared `providers`, and a keyless tenant declares
+#     none (u-sw-c90291 has `providers = []`). So the pool's own wait -- a spent
+#     window, an unobserved account, a paused one -- never ended.
+#
+# Driven through the worker's own ControlPlane, so the park is the document a
+# real worker writes, not a hand-made one.
+
+
+class LeaseKeeper(RecordingDispatcher):
+    """Records what was started, and keeps each Lease so a worker can run on it."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.leases: list[Lease] = []
+
+    def dispatch(self, *, task, lease, profile, tenant) -> str:
+        self.leases.append(lease)
+        return super().dispatch(task=task, lease=lease, profile=profile, tenant=tenant)
+
+
+class Clock:
+    """The scheduler's `now`, moved by the test rather than by waiting."""
+
+    def __init__(self) -> None:
+        self.at = datetime.now(timezone.utc)
+
+    def __call__(self) -> datetime:
+        return self.at
+
+
+def pool_scheduler(db, started: LeaseKeeper, clock: Clock) -> Scheduler:
+    settings = pool_settings()
+    return Scheduler(
+        settings=settings,
+        store=SchedulerStore(db),
+        router=BackendRouter(cloud_run=started, gke=started, settings=settings),
+        metrics=SchedulerMetrics(),
+        now=clock,
+    )
+
+
+def worker_parks(db, lease: Lease, *, reason: ParkReason, until: datetime, detail: dict) -> None:
+    """What `_park_credential_missing` and `_park_no_account` write, after the checkpoint."""
+    control = ControlPlane(
+        db,
+        task_id=lease.task_id,
+        attempt_id=lease.attempt_id,
+        lease_id=lease.lease_id,
+        tenant_id=lease.tenant_id,
+        generation=lease.generation,
+        logger=worker_logger(
+            task_id=lease.task_id,
+            attempt_id=lease.attempt_id,
+            tenant_id=lease.tenant_id,
+            generation=lease.generation,
+            runner_profile="claude-code",
+            stream=io.StringIO(),
+        ),
+    )
+    control.validate_generation()
+    control.advance_to_running()
+    control.park(reason=reason, next_eligible_at=until, detail=detail)
+
+
+def admitted_on_a_loan(db) -> tuple[Scheduler, LeaseKeeper, Clock]:
+    """A keyless tenant, an account lent to it, and its task started on the pool."""
+    world(db)
+    AccountStore(db).register(OWNER, "team", lend_to=[TENANT])
+    task(db, "task_pool")
+    started, clock = LeaseKeeper(), Clock()
+    scheduler = pool_scheduler(db, started, clock)
+    scheduler.drain()
+    assert db.docs["tasks/task_pool"]["state"] == "DISPATCHED", db.docs["tasks/task_pool"]
+    assert len(started.leases) == 1
+    return scheduler, started, clock
+
+
+#: The worker's CREDENTIAL_MISSING parks on a pool task, each with the interval
+#: it sets. `broker_unreachable`: the broker timed out or answered 5xx, the
+#: worker fell back to the tenant's key (`_decline_pool`), there is none, and
+#: `_park_credential_missing` parks for an hour. The other two are
+#: `_park_no_account`'s configuration errors, on its 900-second fallback.
+WORKER_CREDENTIAL_PARKS = {
+    "broker_unreachable": (timedelta(hours=1), {"provider": "anthropic"}),
+    "broker_refused": (
+        timedelta(seconds=900),
+        {"provider": "anthropic", "account_pool_reason": "broker_refused",
+         "park_phase": "account_assign"},
+    ),
+    "account_unreadable": (
+        timedelta(seconds=900),
+        {"provider": "anthropic", "account_pool_reason": "account_unreadable",
+         "park_phase": "account_assign"},
+    ),
+}
+
+
+@pytest.mark.parametrize("cause", sorted(WORKER_CREDENTIAL_PARKS))
+def test_a_worker_credential_park_on_a_pool_task_waits_out_its_interval(db, cause):
+    """A 40-minute broker outage used to cost one container start per task per
+    drain: lease, start, restore, fail to reach the broker, find no key, park,
+    and be promoted by the credential sweep on the next safety tick. Each start
+    held a `max_active` slot and platform capacity, and could only park."""
+    scheduler, started, clock = admitted_on_a_loan(db)
+    interval, detail = WORKER_CREDENTIAL_PARKS[cause]
+    until = clock.at + interval
+    worker_parks(
+        db, started.leases[-1], reason=ParkReason.CREDENTIAL_MISSING, until=until, detail=detail
+    )
+    assert db.docs["pools/global"]["active"] == 0
+
+    for tick in range(1, 4):   # the 1-minute safety tick, three times over
+        clock.at += timedelta(minutes=1)
+        report = scheduler.drain()
+        doc = db.docs["tasks/task_pool"]
+        assert (doc["state"], doc["park_reason"]) == ("PARKED", "CREDENTIAL_MISSING"), (
+            f"tick {tick}: the credential sweep promoted a worker's {cause} park "
+            f"before its next_eligible_at, and admission started it again"
+        )
+        assert report.promoted_credentials == 0
+        assert len(started.dispatched) == 1, "a container was started only to park again"
+        assert db.docs["pools/global"]["active"] == 0, "a slot is held by a task that can only park"
+
+    clock.at = until + timedelta(seconds=1)
+    report = scheduler.drain()
+
+    assert report.promoted_credentials == 1
+    assert db.docs["tasks/task_pool"]["state"] == "DISPATCHED"
+    assert len(started.dispatched) == 2
+
+
+def test_a_key_registered_during_the_wait_promotes_the_worker_park_at_once(db):
+    """Honouring the worker's instant does not delay the fix an admin makes: a
+    key registered meanwhile makes the answer the tenant's own key, which the
+    sweep promotes on the next drain, an hour early."""
+    scheduler, started, clock = admitted_on_a_loan(db)
+    worker_parks(
+        db,
+        started.leases[-1],
+        reason=ParkReason.CREDENTIAL_MISSING,
+        until=clock.at + timedelta(hours=1),
+        detail={"provider": "anthropic"},
+    )
+
+    clock.at += timedelta(minutes=1)
+    assert scheduler.drain().promoted_credentials == 0
+    assert db.docs["tasks/task_pool"]["state"] == "PARKED"
+
+    db.docs[f"tenants/{TENANT}"]["credentials"] = ["anthropic"]
+    clock.at += timedelta(minutes=1)
+    report = scheduler.drain()
+
+    assert report.promoted_credentials == 1
+    assert db.docs["tasks/task_pool"]["state"] == "DISPATCHED"
+    assert len(started.dispatched) == 2
+
+
+#: The worker's waits on the pool (`_park_no_account`), each parked
+#: PROVIDER_QUOTA_EXHAUSTED with its own instant: the account window's reset
+#: from the broker, the next usage poll (`STALE_READING_RETRY_SECONDS`), and
+#: the long fallback for a DRAINING or REAUTH_REQUIRED account
+#: (`NO_ACCOUNT_RETRY_SECONDS`).
+POOL_WAITS = {
+    "no_account_available": timedelta(minutes=30),
+    "no_recent_reading": timedelta(seconds=300),
+    "pool_paused": timedelta(seconds=900),
+}
+
+
+@pytest.mark.parametrize("cause", sorted(POOL_WAITS))
+def test_a_pool_wait_ends_at_its_instant_with_no_per_tenant_provider_pool(db, cause):
+    """u-sw-c90291, lent an account, runs claude-code until the account's
+    five-hour window drops below the assign floor. The next task parks on the
+    window's reset. It must run again once the window has reset -- and not
+    before, because nothing caps this tenant's provider to stop an early
+    promotion from starting a container on a guess."""
+    scheduler, started, clock = admitted_on_a_loan(db)
+    assert f"pools/provider:anthropic:tenant:{TENANT}" not in db.docs
+    reopens = clock.at + POOL_WAITS[cause]
+    worker_parks(
+        db,
+        started.leases[-1],
+        reason=ParkReason.PROVIDER_QUOTA_EXHAUSTED,
+        until=reopens,
+        detail={"provider": "anthropic", "account_pool_reason": cause,
+                "park_phase": "account_assign"},
+    )
+
+    # Inside prewarm's lead window, still before the instant: it waits.
+    clock.at = reopens - timedelta(seconds=60)
+    report = scheduler.drain()
+    doc = db.docs["tasks/task_pool"]
+    assert (doc["state"], doc["park_reason"]) == ("PARKED", "PROVIDER_QUOTA_EXHAUSTED")
+    assert report.promoted_prewarm == 0
+    assert len(started.dispatched) == 1
+
+    clock.at = reopens + timedelta(seconds=1)
+    report = scheduler.drain()
+
+    assert report.promoted_prewarm == 1, (
+        f"a {cause} park with no provider:anthropic:tenant:{TENANT} pool stayed "
+        "PARKED after its next_eligible_at: nothing else returns it to READY"
+    )
+    assert db.docs["tasks/task_pool"]["state"] == "DISPATCHED"
+    assert len(started.dispatched) == 2
