@@ -487,6 +487,21 @@ describe('keyboard traversal', () => {
     ).toBe('fixed')
     expect(document.activeElement, 'the overlay opened without taking focus').toBe(panel)
 
+    // THE PANEL THAT TAKES FOCUS DRAWS A RING THE SHEET CHOSE (AG-31). Moving
+    // focus onto the panel is right; with no `:focus-visible` rule reaching it,
+    // a keyboard open drew the user agent's default ring around the whole
+    // viewport-tall drawer. The sweep above counts ringed stops; the panel is
+    // not a tab stop (tabindex -1), so it is asked here, by the same stripped
+    // selectors the sweep uses. MUTATION: delete `.ctl-drawer:focus-visible`.
+    const ringedBy = RINGS.filter((sel) => {
+      try {
+        return panel!.matches(sel)
+      } catch {
+        return false
+      }
+    })
+    expect(ringedBy, 'no :focus-visible rule in the sheet reaches the drawer that focus moves onto').not.toEqual([])
+
     const inside = tabStops(panel!)
     // Grip, close, and two pane tabs at the very least. A drawer with one stop
     // cannot demonstrate a wrap and would pass this test vacuously.

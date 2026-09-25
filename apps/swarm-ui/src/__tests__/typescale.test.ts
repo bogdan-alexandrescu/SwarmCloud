@@ -103,6 +103,18 @@ const SOURCES: ReadonlyArray<readonly [string, string]> = [
 ]
 
 /**
+ * EVERY screen source, for the casing scans (CH-3). The size scan above names
+ * its five files because those are the ones that carried type; casing can be
+ * written into any component's inline style, so these read all of them.
+ * `?raw` through Vite's own loader, as the imports above are.
+ */
+const SCREENS = import.meta.glob<string>(['../*.tsx', '../charts/*.tsx'], {
+  query: '?raw',
+  import: 'default',
+  eager: true,
+})
+
+/**
  * Drop comments before anything reads the text.
  *
  * NOT OPTIONAL, and test_ui_contrast.py records the same lesson from the other
@@ -248,6 +260,83 @@ describe('B5.2: casing is a rule, and the rule is that nothing shouts', () => {
       (m) => `src/styles.css:${clean.slice(0, m.index).split('\n').length}  ${m[0]}`,
     )
     expect(loose, `tracking without capitals to open up:\n${loose.join('\n')}`).toEqual([])
+  })
+
+  /**
+   * THE SAME TWO RULES, IN THE SPELLING THE SCANS ABOVE COULD NOT READ (CH-3).
+   *
+   * Both scans read `styles.css` with kebab-case patterns, so a React inline
+   * style -- `textTransform: 'uppercase'`, `letterSpacing: '.04em'` -- was
+   * outside them by construction. The 2026-09-25 QA pass found exactly that:
+   * every help card's title rendered in tracked capitals through
+   * `HelpCard.tsx`'s `CARD_TITLE`, on the screens where §B5.2 said nothing
+   * shouts. So every screen source is read here too, in BOTH spellings (a
+   * `style="…"` string in a component is kebab-case), comments first.
+   *
+   * THE PENDING LIST, AND WHY IT IS NOT A FIX HERE. The two declarations in
+   * `CARD_TITLE` are the fault this scan exists to catch, and removing them is
+   * the markup's half of the box -- the `ui-shell-help-shared` lane's, written
+   * in parallel in the same file as three other fixes to that card. They are
+   * listed by file, by the object they are in and by their exact text, so the
+   * allowance cannot excuse the same declaration anywhere else; the lane that
+   * removes them deletes these two entries, and a stale entry is reported in
+   * the log. Nothing may be ADDED to this list: a new finding fails.
+   */
+  const PENDING: ReadonlyArray<{ file: string; object: string; text: string }> = []
+  const SHOUT_TSX = /textTransform\s*:\s*['"`]uppercase['"`]|text-transform\s*:\s*uppercase/g
+  const TRACK_TSX = /letterSpacing\s*:\s*(?:['"`]\s*(?:0?\.\d+em|[1-9][\d.]*(?:em|px))\s*['"`]|[1-9][\d.]*)|letter-spacing\s*:\s*(?:0?\.\d+em|[1-9][\d.]*(?:em|px))/g
+
+  /** Findings in the screen sources, with the ones on the pending list set aside. */
+  function scanScreens(pattern: RegExp): { found: string[]; excused: string[] } {
+    const found: string[] = []
+    const excused: string[] = []
+    for (const [path, src] of Object.entries(SCREENS)) {
+      const file = path.replace(/^\.\.\//, '')
+      const clean = stripComments(src, true)
+      for (const m of clean.matchAll(pattern)) {
+        const at = m.index ?? 0
+        const where = `src/${file}:${clean.slice(0, at).split('\n').length}  ${m[0]}`
+        const pending = PENDING.find((p) => {
+          if (p.file !== file || p.text !== m[0]) return false
+          const open = clean.indexOf(`const ${p.object}`)
+          const close = open === -1 ? -1 : clean.indexOf('}', open)
+          return open !== -1 && at > open && at < close
+        })
+        if (pending === undefined) found.push(where)
+        else excused.push(where)
+      }
+    }
+    return { found, excused }
+  }
+
+  it('reads the screen sources it claims to, and its patterns find both spellings', () => {
+    // The precondition, so neither scan below can pass over an empty glob.
+    expect(Object.keys(SCREENS).length, 'the glob read no screen sources').toBeGreaterThan(20)
+    // And the patterns against a known answer: the defect's own spelling, a
+    // component's style string, and the legal values that must not match.
+    const sample = [
+      "const T: CSSProperties = { textTransform: 'uppercase', letterSpacing: '.04em' }",
+      '<span style="text-transform: uppercase; letter-spacing: 1px">',
+      "const U = { textTransform: 'lowercase', letterSpacing: 0, letterSpacing: '-0.01em' }",
+    ].join('\n')
+    expect(sample.match(SHOUT_TSX)?.length).toBe(2)
+    expect(sample.match(TRACK_TSX)?.length).toBe(2)
+  })
+
+  it('writes no uppercase and no positive tracking in any screen\'s inline styles', () => {
+    const shout = scanScreens(SHOUT_TSX)
+    const track = scanScreens(TRACK_TSX)
+    const stale = PENDING.filter(
+      (p) => ![...shout.excused, ...track.excused].some((e) => e.includes(p.file) && e.endsWith(p.text)),
+    )
+    if (stale.length > 0) {
+      console.log(
+        `typescale: PENDING entries that match nothing any more -- delete them:\n` +
+          stale.map((p) => `  ${p.file} ${p.object} ${p.text}`).join('\n'),
+      )
+    }
+    expect(shout.found, `inline uppercase in a screen:\n${shout.found.join('\n')}`).toEqual([])
+    expect(track.found, `inline positive tracking in a screen:\n${track.found.join('\n')}`).toEqual([])
   })
 })
 

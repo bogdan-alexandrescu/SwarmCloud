@@ -26,7 +26,7 @@
 // track axis) as longhands, with the reason beside them.
 
 import STYLES from '../styles.css?raw'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 
 import { App } from '../App'
@@ -41,6 +41,9 @@ import {
   writePane,
 } from '../panes'
 import type { ProbeRecord } from '../fetch'
+import { elapsed, formatDuration, timeAgo } from '../types'
+import { cascade, declarations, flatRules, splitTop, type CascadeEnv } from './cssgate'
+import { task } from './runfixture'
 
 /**
  * Put the SHIPPED stylesheet into the document so `getComputedStyle` answers
@@ -1065,12 +1068,42 @@ describe('the overflow inventory, as rules that cannot be quietly dropped', () =
     expect(len(band, 'margin-right')).toBe(-gutter)
 
     const close = ruleFor('.drawer-close')
-    const z = /z-index:\s*(\d+)/.exec(close)?.[1]
-    expect(z, 'the ✕ must rank above the band it sits on, not default to auto').toBe('2')
     expect(
       /float:\s*right/.test(close),
       'floated, the ✕ shares its line with the pane tabs and the band covers both',
     ).toBe(false)
+
+    // THE STICKY INSET CANCELS THE DRAWER'S PADDING (AG-31). A sticky box's
+    // `top` is measured from the scroll container's CONTENT edge, so at `top:
+    // 0` the band stuck 18px below the drawer's top and the content showed
+    // through above it. MUTATION: put `top: 0` back.
+    expect(len(band, 'top'), 'the band sticks at the drawer\'s edge, not 18px inside it').toBe(-padTop)
+
+    // RE-POINTED (AG-30): this asserted `z-index: 2` on the ✕, which was the
+    // right number until the band's own 1 turned out to tie with the sticky
+    // table head (`.ctl-table thead th`, z 1, later in the DOM) -- the head
+    // then painted over the band. What the number stood for is an ORDER, so
+    // the order is what is asserted now, derived from the sheet: every sticky
+    // table head < the band < the ✕ < the inspector's drag handle.
+    // MUTATIONS: the band back to 1; the ✕ at or under the band; the grip
+    // under the ✕.
+    const z = (rule: string): number => {
+      const raw = /(?:^|[;{\s])z-index:\s*(\d+)/.exec(rule)?.[1]
+      expect(raw, 'the rule must state a numeric z-index, not default to auto').toBeDefined()
+      return Number(raw)
+    }
+    const heads = flatRules(STYLES).filter(
+      (r) => /thead th/.test(r.selector) && /position:\s*sticky/.test(r.body) && /z-index/.test(r.body),
+    )
+    expect(heads.length, 'no sticky table head found; the ordering below would be vacuous').toBeGreaterThan(0)
+    for (const h of heads) {
+      expect(z(band), `the band must paint over \`${h.selector}\``).toBeGreaterThan(z(h.body))
+    }
+    expect(z(close), 'the ✕ must rank above the band it sits on').toBeGreaterThan(z(band))
+    expect(
+      z(ruleFor('.ctl-inspector-grip')),
+      'the drag handle must stay above the band and the ✕ at the drawer\'s top edge',
+    ).toBeGreaterThan(z(close))
     style.remove()
   })
 
@@ -1166,5 +1199,701 @@ describe('the overflow inventory, as rules that cannot be quietly dropped', () =
     expect(text, 'the read age is the fact that went missing at 390pt').toMatch(
       /newest|nothing has loaded/,
     )
+  })
+})
+
+// ===========================================================================
+// THE 2026-09-25 VISUAL QA PASS, AS RULES THE CASCADE HAS TO PICK
+// ===========================================================================
+//
+// Each `it` is one box from the QA epics (#81-#87), named by its id, and each
+// states the mutation that turns it red. They are asked of `cascade` (in
+// `cssgate.ts`), NOT of `getComputedStyle`, and that choice is the point: jsdom
+// orders rules by source position alone and applies no `@media` block, and
+// several of these defects were exactly a specificity or an order that jsdom
+// would have reported the other way round -- `.state p` beating `.checked-at`,
+// `.limit-edit input` beating `.acct-wide`, a phone rule written above the base
+// rule it had to beat. `stylesheet.gate.test.ts` proves the resolver on
+// fixtures with known answers before anything here relies on it.
+//
+// WHAT NONE OF THIS CAN SEE: a pixel. These assert the rule a browser would
+// choose and the value it would use; whether "queued 13m 18s" then fits in
+// 15ch of a given font is arithmetic in the sheet's comments, not a
+// measurement, and the QA screenshots are the only evidence of the rendering.
+
+const WIDE: CascadeEnv = { width: 1440 }
+const PHONE: CascadeEnv = { width: 390 }
+
+/** `elapsed()`'s queued form and its bare durations, at the edges of each unit. */
+const NOW = Date.parse('2026-09-25T12:00:00Z')
+const SPANS = [59_000, 59 * 60_000 + 59_000, 23 * 3_600_000 + 59 * 60_000, 99 * 86_400_000 + 23 * 3_600_000]
+const queued = (ms: number): string =>
+  elapsed(task({ created_at: new Date(NOW - ms).toISOString(), started_at: null, completed_at: null }), NOW).text
+
+describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
+  const hosts: HTMLElement[] = []
+  afterEach(() => {
+    for (const h of hosts.splice(0)) h.remove()
+  })
+
+  /** A fixture to ask the cascade about. Attached, so nothing about it is special. */
+  function fragment(html: string): HTMLElement {
+    const host = document.createElement('div')
+    host.innerHTML = html
+    document.body.appendChild(host)
+    hosts.push(host)
+    return host
+  }
+
+  function pick(host: Element, sel: string): Element {
+    const el = host.querySelector(sel)
+    expect(el, `the fixture has no ${sel}`).not.toBeNull()
+    return el!
+  }
+
+  /** The value the cascade chooses. A selector the resolver could not
+   *  evaluate fails here by name rather than being read as "no rule". */
+  function won(
+    el: Element,
+    prop: string | readonly string[],
+    env: CascadeEnv,
+    pseudo: string | null = null,
+  ): string | null {
+    const r = cascade(STYLES, el, prop, env, pseudo)
+    expect(r.unsupported, 'selectors the resolver could not evaluate').toEqual([])
+    return r.winner?.value ?? null
+  }
+
+  /** The track that follows `[name]` in a grid template. */
+  function trackAfter(template: string | null, name: string): string {
+    const parts = splitTop(template ?? '', ' ')
+    const at = parts.indexOf(`[${name}]`)
+    expect(at, `the template names no [${name}] line: ${template}`).toBeGreaterThanOrEqual(0)
+    return parts[at + 1] ?? ''
+  }
+  const minmax = (track: string): [string, string] => {
+    const m = /^minmax\((.*)\)$/.exec(track)
+    if (m === null) return [track, track]
+    const [lo, hi] = splitTop(m[1]!)
+    return [lo ?? '', hi ?? '']
+  }
+  const ch = (v: string | null | undefined): number => Number(/^([\d.]+)ch$/.exec(v ?? '')?.[1] ?? Number.NaN)
+  const px = (v: string | null | undefined): number => Number(/^([\d.]+)px$/.exec(v ?? '')?.[1] ?? Number.NaN)
+  /** `flex-shrink`, out of whichever of `flex` / `flex-shrink` won. */
+  const shrinkOf = (el: Element, env: CascadeEnv): number => {
+    const w = cascade(STYLES, el, ['flex', 'flex-shrink'], env).winner
+    if (w === null) return 1
+    if (w.property === 'flex-shrink') return Number(w.value)
+    if (w.value === 'none') return 0
+    const parts = w.value.split(/\s+/)
+    return parts.length >= 2 && /^[\d.]+$/.test(parts[1]!) ? Number(parts[1]) : 1
+  }
+
+  it('AG-11: sizes the run list\'s [age] track to the longest thing the cell prints', () => {
+    // DERIVED FROM `elapsed()`, so a new unit or a longer word moves the floor.
+    const longest = Math.max(...SPANS.map((ms) => queued(ms).length))
+    const bare = Math.max(...SPANS.map((ms) => formatDuration(ms).length))
+    expect(queued(SPANS[2]!), 'the queued form this track exists for').toBe('queued 23h 59m')
+    expect(longest).toBeGreaterThan(bare)
+
+    // `ch`, because the cell is tabular: a px width cannot be compared with a
+    // character count at all, and 76px was a guess that cut "queued 1…".
+    // MUTATION: `[age] minmax(0, 76px)` back in either template.
+    const list = fragment('<div class="app"><div class="rows"><div class="row"><span class="when">x</span></div></div></div>')
+    const open = fragment(
+      '<div class="app has-inspector"><div class="rows"><div class="row"><span class="when">x</span></div></div></div>',
+    )
+    for (const [label, row] of [
+      ['the full row', pick(list, '.row')],
+      ['the row beside the inspector', pick(open, '.row')],
+    ] as const) {
+      const age = trackAfter(won(row, 'grid-template-columns', WIDE), 'age')
+      expect(ch(minmax(age)[1]), `${label}: [age] is ${age}, under ${longest} characters`).toBeGreaterThanOrEqual(longest)
+    }
+
+    // THE 1101-1200 BAND holds the DURATION and wraps the word "queued" above
+    // it, because 15ch there comes out of the name. MUTATION: drop the
+    // `white-space: normal`, or size the track under a bare duration.
+    const band: CascadeEnv = { width: 1150 }
+    const age = trackAfter(won(pick(open, '.row'), 'grid-template-columns', band), 'age')
+    expect(ch(minmax(age)[1]), `the 1200 stage's [age] is ${age}`).toBeGreaterThanOrEqual(bare)
+    expect(won(pick(open, '.when'), 'white-space', band)).toBe('normal')
+  })
+
+  it('AG-13: at 390 the age wraps in a fixed track and the name keeps the whole id', () => {
+    const bare = Math.max(...SPANS.map((ms) => formatDuration(ms).length))
+    const f = fragment(
+      '<div class="rows"><div class="row"><span class="agent"><b>browser</b><span class="id">0961e42e</span></span><span class="when">x</span></div></div>',
+    )
+    const age = trackAfter(won(pick(f, '.row'), 'grid-template-columns', PHONE), 'age')
+    // Each row is its own grid, so a content-sized track moves the name column
+    // from row to row. MUTATION: `[age] auto` back.
+    expect(age, 'an `auto` [age] hands the name\'s width to "queued 13m 18s"').not.toMatch(/auto|content/)
+    expect(ch(minmax(age)[1])).toBeGreaterThanOrEqual(bare)
+    expect(won(pick(f, '.when'), 'white-space', PHONE)).toBe('normal')
+    // `shortTaskId` prints at most 8 characters (Agents.tsx `.slice(0, 8)`),
+    // and the id is mono, so 8ch is the whole id. MUTATION: drop the floor.
+    expect(ch(won(pick(f, '.id'), 'min-width', PHONE))).toBeGreaterThanOrEqual(8)
+  })
+
+  it('AG-27: every line clamp has the box it needs, and the phone why-line has one', () => {
+    // A SHEET-WIDE PROPERTY, because `-webkit-line-clamp` alone is inert
+    // anywhere: it needs a `-webkit-box`, a vertical orient and a clip.
+    // MUTATION: delete any one of the three from `.row .why`.
+    const clamps = flatRules(STYLES).filter((r) =>
+      declarations(r.body).some((d) => d.property === '-webkit-line-clamp'),
+    )
+    expect(clamps.length, 'no line clamp found; this check would be vacuous').toBeGreaterThan(0)
+    for (const r of clamps) {
+      const d = new Map(declarations(r.body).map((x) => [x.property, x.value]))
+      expect(d.get('display'), `${r.selector} clamps without display: -webkit-box`).toBe('-webkit-box')
+      expect(d.get('-webkit-box-orient'), `${r.selector} clamps without a vertical orient`).toBe('vertical')
+      expect(d.get('overflow'), `${r.selector} clamps and clips nothing`).toBe('hidden')
+    }
+    const f = fragment('<div class="row"><span class="why">five lines of error</span></div>')
+    expect(won(pick(f, '.why'), 'display', PHONE)).toBe('-webkit-box')
+  })
+
+  it('AG-32: the why line sits closer to its own row than to the next one', () => {
+    // MUTATION: `gap: var(--ctl-s3)` back on `.row`.
+    const f = fragment('<div class="rows"><div class="row"></div></div>')
+    const w = cascade(STYLES, pick(f, '.row'), ['row-gap', 'gap'], WIDE).winner
+    const rowGap = w?.property === 'gap' ? splitTop(w.value, ' ')[0] : w?.value
+    expect(rowGap).toBe('var(--ctl-s1)')
+  })
+
+  it('AG-15: an attempt count over its ceiling is drawn as a fault, in both lists', () => {
+    // MUTATION: delete the rule, or drop either of its two class names -- the
+    // markup halves are written in parallel and either spelling must land.
+    const f = fragment(
+      '<div class="row"><span class="try spent">83/3</span><span class="try is-over">4/3</span></div>' +
+        '<div class="ctl-table wf-table"><table><tbody><tr><td class="is-over">4 of 3</td><td class="spent">5 of 3</td></tr></tbody></table></div>',
+    )
+    for (const sel of ['.try.spent', '.try.is-over', 'td.is-over', 'td.spent']) {
+      expect(won(pick(f, sel), 'color', WIDE), `${sel}`).toBe('var(--bad)')
+      expect(won(pick(f, sel), ['font-weight', 'font'], WIDE), `${sel}`).toBe('600')
+    }
+  })
+
+  it('AG-16: the run list has a head row on the same grid, in the column-head register', () => {
+    // The head is a `.row`, so it takes the template and the breakpoints from
+    // `.row` itself; only its register is asserted here. MUTATION: delete the
+    // head rules, or lower the cell rule to (0,2,0) so `.row .owner` wins.
+    for (const html of [
+      '<div class="rows"><div class="row is-head"><span class="owner">owner</span><span class="try">tries</span><span class="when">age</span></div><div class="row clickable"></div></div>',
+      // The same row found by what it is, with no class: the one `.row` in a
+      // list that is not a control.
+      '<div class="rows"><div class="row"><span class="owner">owner</span><span class="try">tries</span><span class="when">age</span></div><div class="row clickable"></div></div>',
+    ]) {
+      const f = fragment(html)
+      for (const cell of ['.owner', '.try', '.when']) {
+        const el = pick(f, `.row:first-child ${cell}`)
+        expect(won(el, ['font', 'font-size'], WIDE), `head ${cell}`).toContain('var(--t-micro)')
+        expect(won(el, 'color', WIDE), `head ${cell}`).toBe('var(--text-faint)')
+      }
+      // And it drops what a row drops, because it is one.
+      expect(won(pick(f, '.row:first-child .owner'), 'display', PHONE)).toBe('none')
+    }
+  })
+
+  it('AG-17: the open agent\'s row is marked with a surface step and an ink rule', () => {
+    // MUTATION: delete the rule, or paint it `--info`.
+    const f = fragment(
+      '<div class="rows"><div class="row clickable" aria-current="true"></div><div class="row clickable" aria-current="false"></div></div>',
+    )
+    const [on, off] = [...f.querySelectorAll('.row')]
+    expect(won(on!, ['background', 'background-color'], WIDE)).toBe('var(--surface-2)')
+    expect(won(on!, 'box-shadow', WIDE)).toContain('var(--text)')
+    expect(won(off!, ['background', 'background-color'], WIDE), 'aria-current="false" is not current').toBeNull()
+  })
+
+  it('AG-18: the liveness word is ink in every state; the mark carries the tone', () => {
+    // MUTATION: put back any of `.liveness.live|quiet|silent .lv-word { color: … }`.
+    for (const state of ['live', 'quiet', 'silent', 'finished', 'not-started']) {
+      const f = fragment(`<span class="liveness ${state}"><i></i><span class="lv-word">${state}</span></span>`)
+      expect(won(pick(f, '.lv-word'), 'color', WIDE), state).toBe('var(--text)')
+    }
+  })
+
+  it('AG-22: a markdown artifact is capped like the text viewer and scrolls inside itself', () => {
+    const f = fragment('<div class="art-md"></div><pre class="art-text"></pre>')
+    const cap = won(pick(f, '.art-text'), 'max-height', WIDE)
+    expect(cap, 'the text viewer lost its own cap; nothing to compare with').not.toBeNull()
+    // MUTATION: drop `max-height` or `overflow` from `.art-md`.
+    expect(won(pick(f, '.art-md'), 'max-height', WIDE)).toBe(cap)
+    expect(won(pick(f, '.art-md'), ['overflow', 'overflow-y'], WIDE)).toMatch(/^(auto|scroll)$/)
+  })
+
+  it('AG-26: tables in the inspector stack by the drawer\'s width, from the same rules', () => {
+    // THE TWO BLOCKS ARE ONE LAYOUT. The page's block is a viewport query and
+    // the drawer's a container query, and CSS cannot put one set of rules
+    // under both -- so they are held identical here, rule by rule and
+    // declaration by declaration. MUTATION: change a declaration in either
+    // block, or add a stacked rule to one of them only.
+    const stackedIn = (condition: string): string[] =>
+      flatRules(STYLES)
+        .filter((r) => r.conditions.length === 1 && r.conditions[0] === condition && r.selector.includes('.is-stacked'))
+        .map((r) => `${splitTop(r.selector).join(', ')} { ${declarations(r.body).map((d) => `${d.property}: ${d.value}`).join('; ')} }`)
+    const containers = flatRules(STYLES)
+      .flatMap((r) => r.conditions)
+      .filter((c) => c.startsWith('@container'))
+    const drawerCondition = [...new Set(containers)].find((c) => /max-width:\s*899px/.test(c))
+    expect(drawerCondition, 'no container query restates the stacked layout').toBeDefined()
+    const page = stackedIn('@media (max-width: 899px)')
+    expect(page.length, 'the page\'s stacked block was not found').toBeGreaterThan(10)
+    expect(stackedIn(drawerCondition!)).toEqual(page)
+
+    // The container it names is DECLARED, on the drawer. A container query
+    // naming a container nothing establishes matches nothing, silently.
+    const name = /^@container\s+([a-zA-Z][\w-]*)\s+\(/.exec(drawerCondition!)?.[1]
+    expect(name, 'the stacked container query names no container').toBeDefined()
+    const drawer = flatRules(STYLES).find((r) => r.conditions.length === 0 && r.selector === '.ctl-drawer')
+    const declared = new Map(declarations(drawer?.body ?? '').map((d) => [d.property, d.value]))
+    const container = declared.get('container') ?? `${declared.get('container-name') ?? ''} / ${declared.get('container-type') ?? ''}`
+    expect(container, '`.ctl-drawer` must be the size container the query names').toMatch(
+      new RegExp(`^${name!}\\s*/\\s*inline-size$`),
+    )
+    // The inspector is never wider than the threshold, so its tables always
+    // stack -- the claim the block's comment makes, checked against panes.ts.
+    expect(INSPECTOR.max).toBeLessThanOrEqual(899)
+
+    // And the cascade agrees: the same cell stacks in the drawer at 1440 and
+    // stays a table cell on the page at 1440.
+    const f = fragment(
+      '<div class="ctl-drawer drawer"><div class="ctl-table is-stacked"><table><tbody><tr><td data-label="Object">gs://x</td></tr></tbody></table></div></div>',
+    )
+    const td = pick(f, 'td')
+    expect(won(td, 'display', { width: 1440, container: INSPECTOR.initial })).toBe('grid')
+    expect(won(td, 'display', WIDE), 'with no container in play, a 1440 page keeps its tables').not.toBe('grid')
+
+    // The prefix line: a path has no spaces, so it breaks anywhere or overflows.
+    const p = fragment('<div class="drawer"><p class="muted small">Prefix <code class="mono">gs://bucket/t/tsk_0123/checkpoints/</code></p></div>')
+    expect(won(pick(p, 'code'), 'overflow-wrap', WIDE)).toBe('anywhere')
+  })
+
+  it('AH-8: an invalid ceiling is marked on its field, and its message takes its own line', () => {
+    // MUTATION: drop the `[aria-invalid]` rule, or the message's `flex-basis`.
+    const f = fragment(
+      '<div class="app"><span class="limit-edit"><input type="number" aria-invalid="true"><button>save</button><span class="warn-text">0–100000</span></span></div>',
+    )
+    expect(won(pick(f, 'input'), ['border-color', 'border'], WIDE)).toBe('var(--warn)')
+    const basis = cascade(STYLES, pick(f, '.warn-text'), ['flex-basis', 'flex'], WIDE).winner
+    expect(basis?.value, 'the message has to wrap under the field, not widen the cell').toMatch(/(^|\s)100%$/)
+  })
+
+  it('AH-19: Pool limits\' operand figures align right in a fixed tabular track', () => {
+    // MUTATION: drop the operand grid, or lower it to (0,3,0) so the
+    // primitive's flex row wins by order.
+    const f = fragment(
+      '<ul class="ctl-facts is-rows adm-operands"><li class="ctl-fact"><b>anthropic · u-bogdan</b>25</li></ul>',
+    )
+    const li = pick(f, 'li')
+    expect(won(li, 'display', WIDE)).toBe('grid')
+    const template = won(li, 'grid-template-columns', WIDE) ?? ''
+    const last = splitTop(template, ' ').at(-1)
+    expect(ch(last), `the figure track is ${last}; it must be a fixed width in characters`).toBeGreaterThanOrEqual(6)
+    expect(won(li, 'justify-items', WIDE)).toBe('end')
+    expect(won(li, 'font-variant-numeric', WIDE)).toBe('tabular-nums')
+    expect(won(pick(f, 'b'), 'justify-self', WIDE), 'the key stays left').toBe('start')
+  })
+
+  it('CH-4: the absent and stale marks put their words on a solid fill and keep the hatch as a band', () => {
+    // The contrast half is `test_ui_contrast.py`, which now measures a hatch
+    // stripe by stripe. This is the silhouette half: the hatch did not simply
+    // go away. MUTATION: drop the `::before` band from either mark.
+    const f = fragment('<span class="ctl-mark is-absent">not measured</span><span class="ctl-stale-mark">2m old</span>')
+    for (const sel of ['.ctl-mark.is-absent', '.ctl-stale-mark']) {
+      expect(won(pick(f, sel), ['background', 'background-color'], WIDE), sel).toBe('var(--surface-2)')
+      expect(won(pick(f, sel), 'content', WIDE, 'before'), `${sel} draws no band`).toBe("''")
+      expect(won(pick(f, sel), ['background', 'background-image'], WIDE, 'before'), sel).toBe('var(--ctl-hatch)')
+    }
+  })
+
+  it('CH-5: every link is ink with a quiet underline, and the accent only on hover', () => {
+    // MUTATION: put `color: var(--info)` back on any of the five, or delete the
+    // `:where(a)` fallback so an unclassed anchor is the browser's blue.
+    const f = fragment(
+      '<div class="app">' +
+        '<p class="sub">read 2s ago <button>refresh</button></p>' +
+        '<div class="ctl-dock-tools"><a href="#a">API reads</a></div>' +
+        '<p class="ctl-panel-note"><a href="#b">why</a></p>' +
+        '<p class="wb-more"><a href="#c">widen</a></p>' +
+        '<div class="wf-inspect-head"><a class="wf-inspect-run" href="#d">run</a></div>' +
+        '<p><a href="#e">What these mean</a></p>' +
+        '</div>',
+    )
+    const links = [
+      pick(f, '.sub button'),
+      pick(f, '.ctl-dock-tools a'),
+      pick(f, '.ctl-panel-note a'),
+      pick(f, '.wb-more a'),
+      pick(f, '.wf-inspect-run'),
+      pick(f, 'p:last-child a'),
+    ]
+    for (const link of links) {
+      const name = link.textContent
+      expect(won(link, 'color', WIDE), `"${name}" at rest`).toBe('var(--text)')
+      expect(won(link, 'text-decoration-color', WIDE), `"${name}" underline`).toBe('var(--line-soft)')
+      expect(won(link, 'color', { ...WIDE, states: ['hover'] }), `"${name}" on hover`).toBe('var(--info)')
+    }
+  })
+
+  it('CH-6: API reads and Help mark the current page the way a section does', () => {
+    // MUTATION: `color: var(--info)` back on `.ctl-nav-util button.is-on`, or
+    // drop the rule's surface step or its rule.
+    const f = fragment(
+      '<nav class="ctl-rail"><div class="ctl-nav-util"><button class="is-on" aria-current="page">API reads</button></div></nav>',
+    )
+    const b = pick(f, 'button')
+    expect(won(b, 'color', WIDE)).toBe('var(--text)')
+    expect(won(b, ['background', 'background-color'], WIDE)).toBe('var(--surface-2)')
+    expect(won(b, ['border-left-color', 'border-left', 'border-color', 'border'], WIDE)).toBe('var(--text)')
+    // Below 900px the strip is horizontal and the rule is the bottom edge.
+    expect(won(b, ['border-bottom-color', 'border-bottom', 'border-color', 'border'], PHONE)).toBe('var(--text)')
+  })
+
+  it('CH-7: the `?` glyph is as tall as it is wide, not stretched by the button floor', () => {
+    // `:where(.app button)` gives every button a 28px minimum, and a minimum
+    // beats a smaller height. MUTATION: delete the glyph's own `min-height`.
+    const f = fragment('<div class="app"><button class="ctl-q-glyph">?</button></div>')
+    const g = pick(f, 'button')
+    const height = px(won(g, 'height', WIDE))
+    expect(height).toBeGreaterThan(0)
+    expect(px(won(g, 'min-height', WIDE)), 'min-height over the height makes the disc a pill').toBeLessThanOrEqual(height)
+  })
+
+  it('CH-8: every control reaches 44px at 390, by height or by hit area, with the type unchanged', () => {
+    const f = fragment(
+      '<div class="app">' +
+        '<nav class="ctl-rail"><button class="ctl-nav-link">Work</button>' +
+        '<div class="ctl-rail-tabs"><button role="tab">Agents</button></div>' +
+        '<div class="ctl-nav-util"><button>?</button></div></nav>' +
+        '<div class="ctl-seg"><button>Live</button></div>' +
+        '<span class="limit-edit"><input type="number"><button>save</button></span>' +
+        '<div class="wb-controls"><select></select></div>' +
+        '<button class="sbf-go">Send</button>' +
+        '<div class="wfb-step"><button class="sbf-offer">url</button></div>' +
+        '<button class="ctl-q-glyph">?</button><button class="ov-refresh">refresh</button>' +
+        '<a class="ov-link" href="#x">open</a><button class="sbf-mini">remove</button>' +
+        '</div>',
+    )
+    // MUTATION: move any of these phone rules above the base rule it has to
+    // beat -- which is how `.ctl-seg > button` shipped -- or delete it.
+    for (const sel of [
+      '.ctl-nav-link',
+      '.ctl-rail-tabs button',
+      '.ctl-nav-util button',
+      '.ctl-seg > button',
+      '.limit-edit input',
+      '.limit-edit button',
+      '.wb-controls select',
+      '.sbf-go',
+      '.wfb-step .sbf-offer',
+    ]) {
+      expect(px(won(pick(f, sel), 'min-height', PHONE)), `${sel} at 390`).toBeGreaterThanOrEqual(44)
+    }
+    // The segment keeps its desktop size: the target is a phone rule.
+    expect(px(won(pick(f, '.ctl-seg > button'), 'min-height', WIDE))).toBeLessThan(44)
+    // A word or a disc that must not grow gets an empty, centred hit area.
+    for (const sel of ['.ctl-q-glyph', '.ov-refresh', '.ov-link', '.sbf-mini']) {
+      const el = pick(f, sel)
+      expect(won(el, 'position', PHONE), `${sel} is not the hit area's containing block`).toBe('relative')
+      expect(won(el, 'content', PHONE, 'after'), `${sel} has no hit area`).toBe("''")
+      for (const axis of ['width', 'height']) {
+        expect(won(el, axis, PHONE, 'after'), `${sel} hit area ${axis}`).toMatch(/44px/)
+      }
+    }
+  })
+
+  it('CH-9: the help card casts the elevation token, not the dark theme\'s literal', () => {
+    // MUTATION: the literal `0 8px 24px rgb(0 0 0 / .28)` back.
+    const f = fragment('<div class="ctl-q-card"></div>')
+    expect(won(pick(f, 'div'), 'box-shadow', WIDE)).toBe('var(--ctl-shadow-pop)')
+    // And no elevation token is declared for nothing: a named shadow that no
+    // rule reads is how the light theme kept the dark value.
+    // Comments out first: the sheet quotes these names in its own prose.
+    const code = STYLES.replace(/\/\*[\s\S]*?\*\//g, ' ')
+    const names = [...new Set([...code.matchAll(/(--ctl-shadow[\w-]*)\s*:/g)].map((m) => m[1]!))]
+    expect(names.length).toBeGreaterThan(0)
+    const used = flatRules(STYLES).map((r) => r.body).join('\n')
+    for (const n of names) expect(used, `${n} is declared and never used`).toContain(`var(${n})`)
+  })
+
+  it('CH-10: "Checked just now." is the micro step inside a state panel too', () => {
+    // `.state p` (0,1,1) beat `.checked-at` (0,1,0) on font-size, so it
+    // rendered at the lead step. MUTATION: drop `.state p.checked-at`.
+    const f = fragment('<div class="state"><p class="checked-at">Checked just now.</p></div>')
+    expect(won(pick(f, 'p'), ['font-size', 'font'], WIDE)).toContain('var(--t-micro)')
+  })
+
+  it('CH-11: every key in a stacked record is left-aligned, numeric field or not', () => {
+    // MUTATION: drop `text-align: left` from the key's `::before`; the numeric
+    // cells then inherit their value's right alignment into the key again.
+    const f = fragment(
+      '<div class="ctl-table is-stacked"><table><tbody><tr>' +
+        '<td class="is-num" data-label="Ceiling (units)">4</td><td data-label="Set by">operator</td>' +
+        '</tr></tbody></table></div>' +
+        '<div class="table-wrap is-stacked"><table class="pools"><tbody><tr>' +
+        '<td class="n" data-label="Fits">3</td></tr></tbody></table></div>',
+    )
+    for (const td of f.querySelectorAll('td')) {
+      const own = won(td, 'text-align', PHONE, 'before')
+      // Not declared on the key means inherited from the cell, as a browser does.
+      const key = own ?? won(td, 'text-align', PHONE)
+      expect(key, `the key of "${td.getAttribute('data-label')}"`).toBe('left')
+    }
+  })
+
+  it('CH-12: stacked tags and scopes are as wide as their words, and identities wrap', () => {
+    const f = fragment(
+      '<div class="table-wrap is-stacked"><table class="pools"><tbody><tr>' +
+        '<td data-label="Scope"><span class="scope tenant">this tenant</span></td>' +
+        '<td data-label="Status"><span class="tag full">none registered</span></td>' +
+        '<td data-label="Identity" class="mono">swarm-u-bogdan@saga-agents-staging.iam.gserviceaccount.com</td>' +
+        '</tr></tbody></table></div>',
+    )
+    // MUTATION: take `.tag` or `.scope` out of the justify-self list.
+    expect(won(pick(f, '.scope'), 'justify-self', PHONE)).toBe('start')
+    expect(won(pick(f, '.tag'), 'justify-self', PHONE)).toBe('start')
+    expect(won(pick(f, '.scope'), ['margin-left', 'margin'], PHONE)).toBe('0')
+    // MUTATION: drop `overflow-wrap: anywhere` from the identity cells.
+    expect(won(pick(f, 'td.mono'), 'overflow-wrap', PHONE)).toBe('anywhere')
+  })
+
+  it('CH-14: the rail\'s items scroll into view clear of the fade', () => {
+    // MUTATION: drop `scroll-margin-inline-end` from any of the three.
+    const f = fragment(
+      '<nav class="ctl-rail"><button class="ctl-nav-link is-on">Work</button>' +
+        '<div class="ctl-rail-tabs"><button role="tab" aria-selected="true">Agents</button></div>' +
+        '<div class="ctl-nav-util"><button class="is-on">?</button></div></nav>',
+    )
+    for (const sel of ['.ctl-nav-link', '.ctl-rail-tabs button', '.ctl-nav-util button']) {
+      expect(won(pick(f, sel), 'scroll-margin-inline-end', PHONE), sel).toBe('var(--rail-fade)')
+    }
+  })
+
+  it('CH-15: the breadcrumb holds one line and the read age holds one width', () => {
+    // DERIVED FROM `timeAgo`: the age's floor is the longest thing it prints.
+    const T = Date.parse('2026-09-25T12:00:00Z')
+    const ages = [0, 30_000, 59 * 60_000, 47 * 3_600_000, 999 * 86_400_000].map(
+      (ms) => `newest read ${timeAgo(T - ms, T)}`,
+    )
+    const longest = Math.max(...ages.map((s) => s.length))
+    const f = fragment(
+      '<div class="ctl-head"><p class="ctl-crumb"><span class="ctl-crumb-at">Capacity</span><span class="ctl-crumb-sep">▸</span><span class="ctl-crumb-at">Profile headroom</span></p><span class="ctl-head-age">newest read 5s ago</span></div>',
+    )
+    // MUTATION: drop the age's `min-width`, or make it narrower than `longest`.
+    expect(ch(won(pick(f, '.ctl-head-age'), 'min-width', WIDE)), ages.join(' | ')).toBeGreaterThanOrEqual(longest)
+    // MUTATION: `flex-wrap: wrap` back, or the ellipsis off the last segment.
+    expect(won(pick(f, '.ctl-crumb'), 'flex-wrap', PHONE)).toBe('nowrap')
+    const last = pick(f, '.ctl-crumb > :last-child')
+    expect(won(last, 'white-space', PHONE)).toBe('nowrap')
+    expect(won(last, 'text-overflow', PHONE)).toBe('ellipsis')
+    expect(won(last, 'min-width', PHONE)).toBe('0')
+  })
+
+  it('CH-16: in the open dock only the body gives way', () => {
+    // MUTATION: drop `flex: none` from the line or the grip.
+    const f = fragment(
+      '<div class="ctl-dock"><div class="ctl-dock-grip"></div><button class="ctl-dock-line">x</button><div class="ctl-dock-body"></div></div>',
+    )
+    expect(shrinkOf(pick(f, '.ctl-dock-line'), PHONE)).toBe(0)
+    expect(shrinkOf(pick(f, '.ctl-dock-grip'), PHONE)).toBe(0)
+    expect(shrinkOf(pick(f, '.ctl-dock-body'), PHONE), 'the body is the part that scrolls').toBeGreaterThan(0)
+  })
+
+  it('OV-3: every rule that gives a `.ctl-util` a grid template also makes it a grid', () => {
+    // The primitive is a wrapping FLEX line (§B6.2), so a template without
+    // `display: grid` beside it is inert -- which is what Overview's ≥900
+    // override was, and what the drawer's variant was before it. A property
+    // of the sheet rather than of one rule, so the next override is covered
+    // the moment it is written. MUTATION: delete `display: grid` from either.
+    const templated = flatRules(STYLES).filter(
+      (r) =>
+        splitTop(r.selector).some((b) => /\.ctl-util\s*$/.test(b)) &&
+        declarations(r.body).some((d) => d.property === 'grid-template-columns' || d.property === 'grid-template-areas'),
+    )
+    expect(templated.length, 'fewer templated `.ctl-util` rules than the drawer and Overview').toBeGreaterThanOrEqual(2)
+    for (const r of templated) {
+      const display = declarations(r.body).find((d) => d.property === 'display')?.value
+      expect(display, `\`${r.selector}\` ${r.conditions.join(' ')} declares a template and no grid`).toBe('grid')
+    }
+    // "five-hour · 2m ago" and its kin are up to 19 characters. MUTATION: the
+    // override's last track or the primitive's basis back under 19ch.
+    const f = fragment(
+      '<div class="ov-group"><div class="ctl-card-body"><div class="ctl-util"><span class="ctl-util-name">x</span><span class="ctl-util-by">five-hour · 2m ago</span></div></div></div>',
+    )
+    const last = splitTop(won(pick(f, '.ctl-util'), 'grid-template-columns', WIDE) ?? '', ' ').at(-1) ?? ''
+    expect(ch(minmax(last)[0]), `Overview's last track is ${last}`).toBeGreaterThanOrEqual(19)
+    const basis = splitTop(won(pick(f, '.ctl-util-by'), ['flex', 'flex-basis'], { width: 800 }) ?? '', ' ').at(-1)
+    expect(ch(basis), `the primitive's provenance basis is ${basis}`).toBeGreaterThanOrEqual(19)
+  })
+
+  it('OV-13: every metric label reserves the mark\'s width, painted or not', () => {
+    // MUTATION: generate the `::after` only on `.is-alert` / `.is-good` again.
+    const f = fragment(
+      '<div class="ctl-metric"><span class="ctl-metric-label">Running</span></div>' +
+        '<div class="ctl-metric is-alert"><span class="ctl-metric-label">Over ceiling</span></div>',
+    )
+    const [plain, alert] = [...f.querySelectorAll('.ctl-metric-label')]
+    expect(won(plain!, 'content', WIDE, 'after'), 'an unpainted label reserves nothing').toBe("''")
+    for (const prop of ['width', 'margin-left', 'display']) {
+      expect(won(plain!, prop, WIDE, 'after'), prop).toBe(won(alert!, prop, WIDE, 'after'))
+    }
+  })
+
+  it('TS-7: an offer inside a workflow step is a step off the step card', () => {
+    // MUTATION: drop the `--surface` fill from `.wfb-step .sbf-offer`.
+    const f = fragment('<div class="app"><div class="wfb-step"><button class="sbf-offer">url</button></div></div>')
+    const card = won(pick(f, '.wfb-step'), ['background', 'background-color'], WIDE)
+    const offer = won(pick(f, '.sbf-offer'), ['background', 'background-color'], WIDE)
+    expect(card).not.toBeNull()
+    expect(offer, 'the offer is painted in its own card\'s fill, at zero contrast').not.toBe(card)
+  })
+
+  it('TS-13: the submit form selects without the accent and spends none on emphasis', () => {
+    // MUTATION: the blue border/tint back on `.is-on`, the count back to
+    // `--info`, or the consequence rule back to `--info`.
+    const f = fragment(
+      '<div class="dsp-options"><label class="dsp-option is-on"><span class="dsp-count">1 pull request</span></label></div>' +
+        '<div class="dsp-consequence"></div>',
+    )
+    const on = pick(f, '.dsp-option')
+    for (const props of [['background', 'background-color'], ['border-left-color', 'border-left', 'border-color', 'border']]) {
+      expect(won(on, props, WIDE) ?? '', props.join('/')).not.toContain('--info')
+    }
+    expect(won(on, ['border-left-color', 'border-left', 'border-color', 'border'], WIDE)).toBe('var(--text)')
+    expect(won(on, ['background', 'background-color'], WIDE)).toBe('var(--surface-2)')
+    expect(won(pick(f, '.dsp-count'), 'color', WIDE)).toBe('var(--text)')
+    expect(won(pick(f, '.dsp-consequence'), ['border-left', 'border-left-color'], WIDE)).toContain('var(--text-faint)')
+  })
+
+  it('TS-21: the spacing the QA pass found between steps is back on the scale', () => {
+    // The four steps and the chrome padding, as `move 6` above pins them.
+    const scale = new Set(['0', 'var(--ctl-s1)', 'var(--ctl-s2)', 'var(--ctl-s3)', 'var(--ctl-s5)', 'var(--ctl-pad-chrome)'])
+    // MUTATION: any of 24/16/14/10/11/13/18/6px back in these rules.
+    for (const sel of ['.sub', '.window-bar', '.tiles', '.tile', '.dsp', '.dsp-options', '.wfb-stage + .wfb-stage']) {
+      const rules = flatRules(STYLES).filter((r) => r.conditions.length === 0 && r.selector === sel)
+      expect(rules.length, `no top-level rule for ${sel}`).toBeGreaterThan(0)
+      for (const r of rules) {
+        for (const d of declarations(r.body)) {
+          if (!/^(margin|padding|gap|row-gap|column-gap)(-|$)/.test(d.property)) continue
+          for (const v of splitTop(d.value, ' ')) {
+            expect(scale.has(v), `${sel} { ${d.property}: ${d.value} } -- ${v} is off the scale`).toBe(true)
+          }
+        }
+      }
+    }
+  })
+
+  it('TS-22: the "still open" legend key is the hatch its segment is', () => {
+    // MUTATION: give the key its own flat fill again.
+    const f = fragment('<p class="chart-legend"><i class="k open"></i></p><div class="stackcol"><i class="open"></i></div>')
+    const bar = won(pick(f, '.stackcol > i'), ['background', 'background-image'], WIDE)
+    expect(bar).toMatch(/gradient/)
+    expect(won(pick(f, '.k'), ['background', 'background-image'], WIDE)).toBe(bar)
+  })
+
+  it('TS-24: the dependency disclosure has a marker, a hover and a focus ring', () => {
+    // MUTATION: delete any of the four rules.
+    const f = fragment(
+      '<details class="wfb-more"><summary>waits for the stage above</summary></details>' +
+        '<details class="wfb-more" open><summary>waits for</summary></details>',
+    )
+    const [shut, open] = [...f.querySelectorAll('summary')]
+    expect(won(shut!, 'content', WIDE, 'before')).toContain('25B8')
+    expect(won(open!, 'content', WIDE, 'before')).toContain('25BE')
+    expect(won(shut!, 'color', { ...WIDE, states: ['hover'] })).toBe('var(--text)')
+    expect(won(shut!, 'outline', { ...WIDE, states: ['focus-visible'] })).toContain('var(--info)')
+  })
+
+  it('CP-18: the family tables and the profile tables each share one set of columns', () => {
+    // `table-layout: fixed` takes the widths from the head row, which is the
+    // same in every table of a screen, so the columns line up down the page.
+    // MUTATION: drop `table-layout: fixed`, or the head widths, from either.
+    const pools = fragment(
+      '<div class="cap-families"><div class="ctl-card"><div class="ctl-card-body"><div class="ctl-table is-stacked"><table>' +
+        '<thead><tr><th>Pool</th><th class="is-num">In use (units)</th></tr></thead></table></div></div></div></div>',
+    )
+    const profiles = fragment(
+      '<section class="section panel"><dl class="kv"></dl><div class="table-wrap is-stacked"><table class="pools">' +
+        '<thead><tr><th>Pool it must clear</th><th>Scope</th><th class="n">Units free</th></tr></thead></table></div></section>',
+    )
+    for (const [label, host, num] of [
+      ['Pools', pools, 'th.is-num'],
+      ['Profile headroom', profiles, 'th.n'],
+    ] as const) {
+      expect(won(pick(host, 'table'), 'table-layout', WIDE), label).toBe('fixed')
+      expect(won(pick(host, 'th'), 'width', WIDE), `${label}: the name column`).toMatch(/%$/)
+      expect(won(pick(host, num), 'width', WIDE), `${label}: a figure column`).toMatch(/%$/)
+    }
+  })
+
+  it('CP-19: the fields in an open account take the panel\'s width', () => {
+    // `.limit-edit input { width: 74px }` (0,1,1) beat `.acct-wide` (0,1,0).
+    // MUTATION: lower the account rules' specificity, or drop them.
+    const f = fragment(
+      '<div class="acct-action"><span class="limit-edit"><input class="mono acct-wide"><button>save lending</button></span></div>' +
+        '<div class="acct-action danger"><span class="limit-edit"><input class="mono"><button class="danger">remove</button></span></div>',
+    )
+    const [wide, confirm] = [...f.querySelectorAll('input')]
+    expect(won(wide!, 'width', WIDE), 'the lending field').not.toBe('74px')
+    const grow = cascade(STYLES, wide!, ['flex', 'flex-grow'], WIDE).winner
+    expect(Number(grow?.property === 'flex' ? grow.value.split(/\s+/)[0] : grow?.value)).toBeGreaterThanOrEqual(1)
+    expect(won(pick(f, '.limit-edit'), 'justify-self', WIDE)).toBe('stretch')
+    expect(won(confirm!, 'width', WIDE), 'the confirmation field').not.toBe('74px')
+    expect(ch(won(confirm!, 'min-width', WIDE))).toBeGreaterThanOrEqual(20)
+    expect(won(confirm!, 'field-sizing', WIDE)).toBe('content')
+  })
+
+  it('CP-20: the fixed provider and its chip are two words, not one', () => {
+    // MUTATION: drop the chip's margin.
+    const f = fragment('<p class="acct-fixed mono">anthropic<span class="ctl-chip is-info"><i></i>fixed</span></p>')
+    expect(won(pick(f, '.ctl-chip'), ['margin-left', 'margin'], WIDE)).toBe('var(--ctl-s2)')
+  })
+
+  it('CP-22: the em dash is one face wherever it lands', () => {
+    // It inherited its family, so in an `.is-num` cell it was the mono dash and
+    // elsewhere the sans one. MUTATION: drop `font-family` from `.ctl-em`.
+    const f = fragment(
+      '<div class="ctl-table"><table><tbody><tr><td class="is-num"><i class="ctl-em">—</i></td></tr></tbody></table></div>' +
+        '<span><i class="ctl-em">—</i></span>',
+    )
+    const [inCell, inProse] = [...f.querySelectorAll('.ctl-em')]
+    const a = cascade(STYLES, inCell!, ['font-family', 'font'], WIDE).winner
+    const b = cascade(STYLES, inProse!, ['font-family', 'font'], WIDE).winner
+    expect(a, 'the dash declares no face of its own and inherits its cell\'s').not.toBeNull()
+    expect(a?.value).toBe(b?.value)
+  })
+
+  it('CP-23: an open account is marked as a selection, without the accent', () => {
+    // MUTATION: the 3px `--info` rule back.
+    const f = fragment('<div class="acct-detail"></div>')
+    const rule = won(pick(f, 'div'), ['border-left', 'border-left-color'], WIDE) ?? ''
+    expect(rule).toContain('var(--text)')
+    expect(rule).not.toContain('--info')
+    expect(won(pick(f, 'div'), ['background', 'background-color'], WIDE)).toBe('var(--surface-2)')
+  })
+
+  it('WF-8: the level rail\'s containing block spans the whole scrolled canvas', () => {
+    // MUTATION: drop `width: max-content` from `.wf-graph`.
+    const f = fragment('<div class="wf-graph"></div>')
+    expect(won(pick(f, 'div'), 'width', WIDE)).toBe('max-content')
+  })
+
+  it('WF-16: the flags column is reserved on every row, and a mix chip is whole or absent', () => {
+    // MUTATION: `[flags] minmax(0, auto)` back.
+    const f = fragment('<button class="wf-bar"></button><span class="wf-mix"><span class="wf-chip">mock</span></span>')
+    const flags = trackAfter(won(pick(f, '.wf-bar'), 'grid-template-columns', WIDE), 'flags')
+    expect(flags, 'a content-sized flags track takes width from the name on the rows that have a flag').not.toMatch(
+      /auto|content/,
+    )
+    // MUTATION: the one-line `overflow: hidden` strip back, which cut chips
+    // mid-word; or drop the one-chip height that hides the second line.
+    const mix = pick(f, '.wf-mix')
+    expect(won(mix, 'flex-wrap', WIDE)).toBe('wrap')
+    expect(won(mix, 'overflow', WIDE)).toBe('hidden')
+    expect(won(mix, 'height', WIDE)).toContain('var(--lh-micro)')
+    expect(won(pick(f, '.wf-chip'), 'text-overflow', WIDE)).toBe('ellipsis')
   })
 })

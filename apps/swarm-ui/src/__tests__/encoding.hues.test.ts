@@ -112,6 +112,28 @@ describe('an absence is not drawn in the colour of an outcome', () => {
   }
 })
 
+describe('metadata and hypotheticals carry no state hue (CP-13)', () => {
+  // A STATE HUE IS A VERDICT (design-system.md §1.2-§1.3): `--paused` means an
+  // operator is holding something, `--ok` means it went well. Profile headroom
+  // spent both on things that are neither -- the "this tenant" scope pill in
+  // `--paused`, beside pools that really were paused, and every counterfactual
+  // effect in `--ok`, including the one that says it "could not be measured".
+  const CSS = stripComments(STYLES)
+  const STATE = /var\(--(?:ok|warn|bad|paused|info)(?:-ink)?\)/
+
+  it('draws the tenant scope as a neutral step, not in the paused hue', () => {
+    // MUTATION: `.scope.tenant` back on a `--paused` tint.
+    for (const prop of ['background', 'color']) {
+      expect(declared(CSS, '.scope.tenant', prop), `.scope.tenant ${prop}`).not.toMatch(STATE)
+    }
+  })
+
+  it('draws a counterfactual effect in ink, not in the healthy hue', () => {
+    // MUTATION: `.cf-effect { color: var(--ok) }` back.
+    expect(declared(CSS, '.cf-effect', 'color')).toBe('var(--text)')
+  })
+})
+
 describe("the token mix's four segments are separable in greyscale", () => {
   // `styles.css`, where Overview's rules have lived since U8 folded the
   // `OVERVIEW_CSS` template literal into the sheet. The `.ov-sN` tones are the
