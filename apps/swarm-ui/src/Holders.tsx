@@ -159,14 +159,27 @@ export function HoldersScreen() {
           </>
         )
       }}
-      /* A REAL ZERO, DRAWN AS ONE. The read succeeded and no lease holds
-         capacity. The mark is what says which kind of nothing this is, and it
-         says it in two words instead of two sentences. */
+      /* A REAL ZERO, DRAWN AS ONE. The read succeeded, no live lease exists
+         and no pool counter holds a unit -- `loadHolders` calls it empty only
+         with both measured (CP-7). The mark is what says which kind of nothing
+         this is, and it says it in two words instead of two sentences.
+
+         WHOSE LEASES, AND WHERE NEXT (CP-21, visual QA 2026-09-25). The
+         populated summary says `every tenant`; this said nothing about scope,
+         so "no unreleased leases" read as a claim about whoever was looking.
+         The read names no tenant, so it IS every tenant. And §6.9's empty
+         state ends in a way out: the counters this zero was checked against
+         are on Pools. The link sits in the body until `Screen`'s `empty`
+         prop has a slot for it (CH-10, in the shell lane's PR). */
       empty={{
         heading: 'No unreleased leases',
         body: (
           <>
-            <span className="ctl-mark is-zero">real zero</span> no lease holds capacity
+            <span className="ctl-mark is-zero">real zero</span> no lease or counter holds
+            capacity · every tenant ·{' '}
+            <a className="ctl-link" href="#capacity/pools">
+              Pools
+            </a>
           </>
         ),
       }}
@@ -193,9 +206,11 @@ export function HoldersScreen() {
 /**
  * Units held per pool, from the leases, beside that pool's own counter.
  *
- * Only pools that at least one loaded lease names are compared. A pool no
- * lease mentions has nothing to compare against, and showing it with a lease
- * side of 0 would manufacture a delta out of an absence.
+ * Over a CUT or unreported window, only pools that at least one loaded lease
+ * names are compared: a pool no loaded lease mentions may be named by a lease
+ * the window left out, and showing it with a lease side of 0 would manufacture
+ * a delta out of an absence. Over EVERY live lease that argument is gone, and
+ * every pool is compared (CP-7) -- see `Drift`.
  */
 /**
  * THE DRIFT CARD'S HEAD, WRITTEN ONCE, AND THIS SCREEN'S ONLY `?` (B7.4).
@@ -276,6 +291,18 @@ function Drift({ board, coverage }: { board: HoldersBoard; coverage: LeaseCovera
     const units = typeof l.units === 'number' && Number.isFinite(l.units) ? l.units : null
     if (units === null) continue
     for (const p of l.pools) byPool.set(p, (byPool.get(p) ?? 0) + units)
+  }
+  // OVER EVERY LIVE LEASE, EVERY POOL IS COMPARED (CP-7, visual QA 2026-09-25).
+  // A pool no loaded lease names used to be skipped, on the grounds that its
+  // lease side of 0 would be an absence dressed as a measurement -- which is
+  // true of a CUT window and false of a complete one. When `leaseCoverage`
+  // says no live lease was left out, and the rows are not filtered to one
+  // tenant (a tenant's leases say nothing about the platform's `global`
+  // counter), a pool no lease names holds 0 units BY MEASUREMENT. A counter
+  // above that is the leak this card exists to find, and it was the one leak
+  // the card could not see.
+  if (coverage.kind === 'complete' && board.page.tenant_id === null) {
+    for (const p of board.pools) if (!byPool.has(p.name)) byPool.set(p.name, 0)
   }
 
   const rows = Array.from(byPool.entries())

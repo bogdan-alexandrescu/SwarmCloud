@@ -30,9 +30,14 @@ import { describe, expect, it, vi } from 'vitest'
 import { render } from '@testing-library/react'
 
 import STYLES from '../styles.css?raw'
+// App.tsx as TEXT, not as a module: importing it would evaluate every screen
+// against the api mock below, which declares only the eight reads Overview
+// makes. The tab labels are string literals in `SECTIONS` -- the Python gate
+// reads them the same way -- so the source is the one place they are stated.
+import APP_SOURCE from '../App.tsx?raw'
 import type { Result } from '../fetch'
 import type { SpendRollup } from '../api'
-import type { Account, AccountsPage, Capacity, Stats, TaskPage } from '../types'
+import type { Account, AccountsPage, Capacity, Stats, Task, TaskPage } from '../types'
 
 const api = vi.hoisted(() => ({
   loadCapacity: vi.fn(),
@@ -116,13 +121,15 @@ async function settle(): Promise<void> {
   for (let i = 0; i < 40; i++) await new Promise((r) => setTimeout(r, 5))
 }
 
-async function mountOverview(): Promise<HTMLElement> {
+async function mountOverview(
+  over: { tasks?: TaskPage; stats?: Stats } = {},
+): Promise<HTMLElement> {
   api.loadCapacity.mockResolvedValue(ok(CAPACITY))
-  api.loadTasks.mockResolvedValue(ok(EMPTY_TASKS))
+  api.loadTasks.mockResolvedValue(ok(over.tasks ?? EMPTY_TASKS))
   api.loadLeases.mockResolvedValue({ status: 'empty', fetchedAt: Date.now() })
   api.loadProviders.mockResolvedValue({ status: 'empty', fetchedAt: Date.now() })
   api.loadWorkflows.mockResolvedValue({ status: 'empty', fetchedAt: Date.now() })
-  api.loadStats.mockResolvedValue(ok(EMPTY_STATS))
+  api.loadStats.mockResolvedValue(ok(over.stats ?? EMPTY_STATS))
   api.loadAccountPool.mockResolvedValue(ok(accountsPage([account({})])))
   api.loadSpend.mockResolvedValue(ok(spend()))
 
@@ -271,5 +278,145 @@ describe('§B6.1: a fact is not a tile', () => {
         `${state} went back to a four-sided dashed box`,
       ).toBe(false)
     }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// What the cards say about what they link to and what they count
+// ---------------------------------------------------------------------------
+
+function liveTask(over: Partial<Task> = {}): Task {
+  return {
+    id: 'task_0123456789abcdef0123',
+    tenant_id: 'eng',
+    state: 'RUNNING',
+    runner_profile: 'claude-code',
+    resource_class: 'standard',
+    provider: 'anthropic',
+    priority: 5,
+    created_at: '2026-09-23T09:00:00Z',
+    updated_at: '2026-09-23T09:30:00Z',
+    started_at: '2026-09-23T09:01:00Z',
+    completed_at: null,
+    submitted_by: 'ada@eng.test',
+    attempt_count: 1,
+    max_attempts: 3,
+    park_reason: null,
+    blocked_by: null,
+    workflow_id: null,
+    step_id: null,
+    depends_on: null,
+    cancel_requested: false,
+    repository_url: null,
+    model: null,
+    timeout_seconds: 3600,
+    next_eligible_at: null,
+    metadata: null,
+    repository_ref: null,
+    input: null,
+    last_error: null,
+    result_summary: null,
+    latest_checkpoint: null,
+    current_generation: 1,
+    current_lease_id: 'lease_1',
+    ...over,
+  }
+}
+
+/**
+ * The label App.tsx's `SECTIONS` gives the tab a `#<section>/<tab>` hash
+ * opens, read out of the source. Null when the hash names no declared tab, so
+ * a link to nowhere fails here as well as in `nav.links.test.tsx`.
+ */
+function tabLabel(hash: string): string | null {
+  const tab = hash.replace(/^#/, '').split('/')[1]
+  if (tab === undefined) return null
+  const escaped = tab.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const decl = new RegExp(`\\{\\s*id:\\s*'${escaped}',\\s*label:\\s*'([^']+)'`).exec(APP_SOURCE)
+  return decl?.[1] ?? null
+}
+
+describe('a card says what it opens, and a count is not a verdict', () => {
+  /**
+   * OV-11. THE LINK WORD IS THE NAME OF THE TAB IT OPENS.
+   *
+   * The Headroom card's link read `pools →` and opened Profile headroom -- a
+   * reader who wanted the Pools tab got a different one, and the word gave no
+   * warning. Every card-head link is held to the label its destination tab
+   * carries in `SECTIONS`, DERIVED from App.tsx rather than restated here, so
+   * a renamed tab fails this rather than leaving a card pointing at an old
+   * name.
+   *
+   * MUTATION: put `cta="pools"` back on the Headroom card. This goes red on
+   * `#capacity/profiles`.
+   */
+  it('names every card-head link after the tab it opens', async () => {
+    const el = await mountOverview()
+    const links = [...el.querySelectorAll<HTMLAnchorElement>('.ctl-card-head a.ov-link')]
+    // A sweep that found no links would pass over the one that is wrong.
+    expect(links.length, 'no card-head link was found, so nothing was checked').toBeGreaterThanOrEqual(3)
+    for (const a of links) {
+      const href = a.getAttribute('href') ?? ''
+      const label = tabLabel(href)
+      expect(label, `${href} names no tab declared in App.tsx SECTIONS`).not.toBeNull()
+      const word = (a.textContent ?? '').replace('→', '').trim().toLowerCase()
+      expect(word, `the link to ${href} reads "${word}", not the tab's name`).toBe(label!.toLowerCase())
+    }
+  })
+
+  /**
+   * OV-5. A RUNNING COUNT CARRIES NO VERDICT TONE.
+   *
+   * The Running tile was `is-good` -- --ok green, with the verdict disc --
+   * whenever anything ran, while the table under it drew the same agents with
+   * the blue `is-live` mark. Five agents running is neither good nor bad; it
+   * is a fact (design-system.md §6.7), and green was the one place the screen
+   * called it healthy.
+   *
+   * MUTATION: restore `tone={inFlight > 0 ? 'good' : undefined}` on the tile.
+   */
+  it('draws a non-zero running count with no verdict tone', async () => {
+    const el = await mountOverview({
+      tasks: { tasks: [liveTask()], next_page_token: null },
+      stats: { ...EMPTY_STATS, tasks_by_state: { RUNNING: 5, LEASED: 0 } },
+    })
+    const tile = [...el.querySelectorAll('.ctl-metrics .ctl-metric')].find((m) =>
+      /^running/i.test((m.querySelector('.ctl-metric-label')?.textContent ?? '').trim()),
+    )
+    expect(tile, 'the Running figure is not on the strip').toBeDefined()
+    // The count IS there -- this is the running case, not an empty one.
+    expect(tile!.querySelector('.ctl-metric-value')!.textContent).toMatch(/5/)
+    expect(tile!.classList.contains('is-good'), 'a running count is painted as healthy').toBe(false)
+    expect(tile!.classList.contains('is-alert'), 'a running count is painted as a problem').toBe(false)
+  })
+
+  /**
+   * AG-3. A COLUMN THAT HOLDS A WAIT DOES NOT CLAIM RUN TIME.
+   *
+   * A LEASED task has no `started_at` -- the worker writes it on DISPATCHED ->
+   * STARTING -- so its cell is how long it has WAITED, prefixed with the state
+   * it waits in. The column was headed "Runtime", which labelled that wait as
+   * the agent's run. The property pinned is the one the finding is about: the
+   * heading over a not-started row's figure makes no claim that anything ran.
+   *
+   * MUTATION: head the column "Runtime" again.
+   */
+  it('does not head a not-started agent’s wait as run time', async () => {
+    const leased = liveTask({ id: 'task_leased00000000000000', state: 'LEASED', started_at: null })
+    const el = await mountOverview({
+      tasks: { tasks: [leased], next_page_token: null },
+      stats: { ...EMPTY_STATS, tasks_by_state: { LEASED: 1 } },
+    })
+    const table = el.querySelector('.ov-running table')
+    expect(table, 'the running table is not drawn for a leased agent').not.toBeNull()
+    const heads = [...table!.querySelectorAll('thead th')].map((th) => (th.textContent ?? '').trim())
+    const row = table!.querySelector('tbody tr')!
+    const cells = [...row.children]
+    const figure = cells[cells.length - 1]!
+    // The row's last cell is the duration, and it is the wait.
+    expect(figure.textContent ?? '').toMatch(/\d/)
+    const head = heads[heads.length - 1] ?? ''
+    expect(head, 'the duration column has no heading').not.toBe('')
+    expect(head, `a not-started agent's wait sits under "${head}"`).not.toMatch(/run/i)
   })
 })

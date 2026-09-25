@@ -5,6 +5,7 @@ import {
   DISPATCH_CARRIERS,
   DISPATCH_STRATEGIES,
   STRATEGY_LABEL,
+  TERMINAL_STATES,
   consequenceOf,
   dispatchOf,
   needsRepository,
@@ -76,6 +77,28 @@ export interface DispatchChoiceProps {
   errors?: { strategy?: string; carrier?: string; repository_url?: string }
 }
 
+/**
+ * The prefixes `repository_url` must start with: `_repo_scheme` in
+ * `swarm_api/schemas.py`, on both `TaskCreate` and `WorkflowCreate`.
+ *
+ * A SECOND COPY OF A SERVER RULE, KEPT FOR ONE REASON AND HELD TO THE FIRST.
+ * The form only ever WARNS with it -- the API owns the refusal and names it --
+ * so a drift here shows a wrong caution rather than blocking a valid submission.
+ * `dispatch.test.ts` reads the validator's tuple out of `schemas.py` and fails
+ * when the two disagree, so the drift is caught rather than shipped.
+ */
+export const REPOSITORY_SCHEMES: readonly string[] = ['https://', 'ssh://', 'git@']
+
+/**
+ * Whether a repository URL, as the form will send it, is one the API's scheme
+ * check refuses. Blank is not: a blank field is omitted from the request, and
+ * whether this choice REQUIRES one is the other warning's job.
+ */
+export function repositorySchemeRefused(url: string): boolean {
+  const sent = url.trim()
+  return sent !== '' && !REPOSITORY_SCHEMES.some((p) => sent.startsWith(p))
+}
+
 export function DispatchChoice({
   draft,
   onChange,
@@ -87,6 +110,7 @@ export function DispatchChoice({
   const set = (patch: Partial<DispatchDraft>) => onChange({ ...draft, ...patch })
   const repoRequired = needsRepository(draft.strategy, draft.carrier)
   const repoMissing = repoRequired && draft.repositoryUrl.trim() === ''
+  const repoRefused = repositorySchemeRefused(draft.repositoryUrl)
 
   return (
     <fieldset className="dsp">
@@ -153,7 +177,11 @@ export function DispatchChoice({
       />
       {errors?.strategy && <p className="warn-text" role="alert">{errors.strategy}</p>}
 
-      <label className="t-label" htmlFor="dsp-carrier" style={{ marginTop: 14 }}>
+      {/* `.dsp-label`, NOT AN INLINE `marginTop: 14`. 14px is off the
+          four-step scale and an inline style is out of the sheet's reach, so
+          no spacing rule could ever correct it; the gap above each field is
+          `--ctl-s3`, declared once in the sheet. */}
+      <label className="t-label dsp-label" htmlFor="dsp-carrier">
         what carries work between steps
       </label>
       <select
@@ -176,17 +204,31 @@ export function DispatchChoice({
       <p className="warn-text">{CARRIER_NOTE}</p>
       {errors?.carrier && <p className="warn-text" role="alert">{errors.carrier}</p>}
 
-      <label className="t-label" htmlFor="dsp-repo" style={{ marginTop: 14 }}>
+      <label className="t-label dsp-label" htmlFor="dsp-repo">
         repository url {repoRequired ? '(required by this choice)' : '(optional)'}
       </label>
+      {/* NOT `type="url"`. The form has no `noValidate`, so the browser would
+          enforce its own URL grammar on submit -- and `git@github.com:o/r.git`,
+          which the API accepts, is not a URL to it. The scheme warning below is
+          this field's only check, and it never blocks. */}
       <input
         id="dsp-repo"
         className="mono dsp-repo"
         spellCheck={false}
         placeholder="https://github.com/owner/repo.git"
         value={draft.repositoryUrl}
+        aria-invalid={repoRefused || undefined}
         onChange={(e) => set({ repositoryUrl: e.target.value })}
       />
+      {repoRefused && (
+        // UNDER ANY STRATEGY. `collect` does not need a repository, but a
+        // repository that IS given is validated whatever the strategy, so
+        // `not a url` under the default is refused on the click just the same.
+        <p className="warn-text" role="alert">
+          The API accepts only a URL starting with {REPOSITORY_SCHEMES.join(', ')}, so it will
+          refuse this one.
+        </p>
+      )}
       {repoMissing && (
         // A warning, never a block. The API owns this rule
         // (`DispatchOptions.needs_repository`) and names its own refusal; this
@@ -269,84 +311,92 @@ function IntegratorPreview({ terminals, steps }: { terminals: string[]; steps: n
 // ---------------------------------------------------------------------------
 
 /**
- * WHY THIS RUN PRODUCED A PULL REQUEST, OR DID NOT -- shown wherever a task is.
+ * Whether this task's run is over AND reported what it did to the repository.
+ *
+ * `result_summary.git` is written by `_harvest_git` at the end of an attempt,
+ * so it is the one record that the harvest the strategy describes actually
+ * happened. Before a terminal state there is no harvest yet; a terminal task
+ * without the block cloned nothing, or never ran at all.
+ */
+function harvestedGit(task: Task): { patch: string | null } | null {
+  if (!TERMINAL_STATES.has(task.state)) return null
+  const git: unknown = task.result_summary?.git
+  if (typeof git !== 'object' || git === null || Array.isArray(git)) return null
+  const patch: unknown = (git as { patch?: unknown }).patch
+  return { patch: typeof patch === 'string' && patch !== '' ? patch : null }
+}
+
+/**
+ * WHAT THIS RUN'S DISPATCH WAS, AND -- ONCE IT HAS HAPPENED -- WHAT IT DID.
  *
  * `null` from `dispatchOf` means the API did not report a dispatch, which is a
  * deployment older than the field rather than a caller who chose `collect`.
  * Those render differently here for the same reason a failed read never renders
  * as empty data anywhere else in this app.
+ *
+ * A FACTS STRIP, NOT A DEFINITION LIST OF SENTENCES. Every key used to carry a
+ * sentence explaining its value -- what a strategy publishes, what a role does,
+ * that no worker reads the carrier -- and those sentences are the same on every
+ * task there has ever been. They are `#help/dispatch-strategies` and
+ * `#help/dispatch-carrier`, in the card foot and the rail's Help section. What
+ * stays on the surface is this task's values, and one mark.
+ *
+ * THE MARK IS THE CARRIER'S, AND IT MAY NOT GO. The carrier is recorded and
+ * nothing acts on it; a value printed with no qualifier reads as a behaviour.
+ * `not acted on` keeps that visible on the value itself (§9, the mark carries
+ * the claim), and `CARRIER_NOTE` is its accessible name.
+ *
+ * NOTHING IN THE PAST TENSE BEFORE IT HAPPENED. The collect line said "The
+ * patch was harvested into this task's artifacts" on tasks still QUEUED, on
+ * tasks cancelled before they ran, and on the Submit read-back of a task that
+ * had only just been created. `published` is shown only once the run is over
+ * and its git block says a harvest happened (`harvestedGit`); until then the
+ * strip states the strategy and claims no outcome.
  */
 export function DispatchFacts({ task }: { task: Task }) {
   const d = dispatchOf(task)
   if (d === null) return <DispatchUnreported />
   const c = consequenceOf(d.strategy, 1)
+  const harvest = harvestedGit(task)
 
   return (
-    <dl className="kv dsp-facts">
-      <dt>Strategy</dt>
-      <dd>
-        <code>{d.strategy}</code>{' '}
-        <span className="muted small">{strategyOutcome(d)}</span>
-      </dd>
-
-      <dt>Carrier</dt>
-      <dd>
-        <code>{d.carrier}</code> <span className="muted small">{CARRIER_NOTE}</span>
-      </dd>
-
+    <ul className="ctl-facts dsp-facts">
+      <li className="ctl-fact">
+        <b>strategy</b>
+        <code>{d.strategy}</code>
+      </li>
+      <li className="ctl-fact">
+        <b>carrier</b>
+        <code>{d.carrier}</code>
+        <i className="ctl-mark" role="img" aria-label={CARRIER_NOTE}>
+          not acted on
+        </i>
+      </li>
       {d.role !== null && (
-        <>
-          <dt>Role</dt>
-          <dd>
-            <code>{d.role}</code>{' '}
-            <span className="muted small">
-              {d.role === 'integrator'
-                ? 'This step merges the other steps’ branches and opens the workflow’s single pull request.'
-                : 'This step pushes its branch and opens nothing; the integrator merges it.'}
-            </span>
-          </dd>
-        </>
+        <li className="ctl-fact">
+          <b>role</b>
+          <code>{d.role}</code>
+        </li>
       )}
-
       {d.integrates.length > 0 && (
-        <>
-          <dt>Integrates</dt>
-          <dd>
-            {/* The task ids, in the order their patches must be applied --
-                `integrates` is the workflow's topological prefix, not a set. */}
-            <span className="mono">{d.integrates.join(', ')}</span>
-            <span className="muted small">
-              {' '}
-              · {d.integrates.length} upstream task
-              {d.integrates.length === 1 ? '' : 's'}, in the order they are applied
-            </span>
-          </dd>
-        </>
+        // The task ids, in the order their patches are applied --
+        // `integrates` is the workflow's topological prefix, not a set, so the
+        // arrows are the order and not decoration.
+        <li className="ctl-fact">
+          <b>integrates</b>
+          <span className="mono" title="In the order their patches are applied.">
+            {d.integrates.join(' → ')}
+          </span>
+        </li>
       )}
-
-      {!c.pushes && d.role === null && (
-        <>
-          <dt>Published</dt>
-          <dd className="muted">
-            Nothing, by request. The patch is in this task&rsquo;s artifacts.
-          </dd>
-        </>
+      {!c.pushes && d.role === null && harvest !== null && (
+        <li className="ctl-fact">
+          <b>published</b>
+          {harvest.patch !== null ? 'nothing, by request · patch in artifacts' : 'nothing, by request'}
+        </li>
       )}
-    </dl>
+    </ul>
   )
-}
-
-function strategyOutcome(d: TaskDispatch): string {
-  switch (d.strategy) {
-    case 'collect':
-      return 'The patch was harvested into this task’s artifacts and nothing was pushed.'
-    case 'direct-pr':
-      return 'This task pushes its own branch and opens its own pull request.'
-    case 'integrate':
-      return d.role === 'integrator'
-        ? 'One pull request for the whole workflow, opened by this step.'
-        : 'One pull request for the whole workflow, opened by a later step.'
-  }
 }
 
 function DispatchUnreported() {

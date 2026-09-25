@@ -322,7 +322,15 @@ export function CheckpointBrowser({
     void load()
   }, [load])
 
-  const absent = state.status === 'ok' && state.data.status === 'absent'
+  // THE TWO WAYS THE SERVER SAYS "NO ARCHIVE" (AG-10). A listing whose
+  // `status` is `absent` is one; a 404 is the other -- the checkpoint, or its
+  // attempt, is not there to list -- and it was drawn as a FAILED read, with
+  // `try again` beside it and `download archive` above it. Nothing failed, a
+  // retry gets the same 404, and the download link points at an object that
+  // does not exist. Both are the absent treatment, with neither control.
+  const absent =
+    (state.status === 'ok' && state.data.status === 'absent') ||
+    (state.status === 'error' && state.error.kind === 'not_found')
 
   return (
     <div className="ckb" role="region" aria-label={`Checkpoint ${checkpointId} files`}>
@@ -389,6 +397,9 @@ function Body({
         </p>
       )
     case 'error':
+      if (state.error.kind === 'not_found') {
+        return <ArchiveAbsent detail={state.error.message} />
+      }
       return <Failed error={state.error} onRetry={onRetry} />
     case 'empty':
       // Unreachable -- the loader passes `() => false` -- and handled anyway:
@@ -432,6 +443,28 @@ function Failed({ error, onRetry }: { error: ApiError; onRetry: () => void }) {
       <button type="button" className="retry" onClick={onRetry}>
         try again
       </button>
+    </div>
+  )
+}
+
+/**
+ * THE ABSENT ARCHIVE, drawn once for both of the server's ways of saying it:
+ * a listing with `status: absent`, and a 404 on the listing route. No retry
+ * and no download -- asking again gets the same answer, and there is no object
+ * to download. `detail` is the server's own sentence about THIS checkpoint,
+ * the one sentence §6.9 leaves an empty state.
+ */
+function ArchiveAbsent({ detail }: { detail: string | null }) {
+  return (
+    <div className="ctl-empty is-partial" role="status">
+      <h3>
+        <Mark
+          kind="absent"
+          say="This checkpoint has no archive object in the bucket, so there are no files to list. It was reclaimed, or its upload never completed. This is not an empty checkpoint, and not a failed read."
+        />{' '}
+        archive not in the bucket
+      </h3>
+      {detail !== null && <p>{detail}</p>}
     </div>
   )
 }
@@ -501,18 +534,7 @@ function Listing({
   if (data.status === 'absent' || members === null) {
     // `files: null`. NOT a checkpoint with nothing in it: there is no
     // archive object to have anything in.
-    return (
-      <div className="ctl-empty is-partial" role="status">
-        <h3>
-          <Mark
-            kind="absent"
-            say="This checkpoint has no archive object in the bucket, so there are no files to list. It was reclaimed, or its upload never completed. This is not an empty checkpoint."
-          />{' '}
-          archive not in the bucket
-        </h3>
-        {data.detail !== null && <p>{data.detail}</p>}
-      </div>
-    )
+    return <ArchiveAbsent detail={data.detail} />
   }
 
   return (

@@ -25,7 +25,7 @@
 import STYLES from '../styles.css?raw'
 import { describe, expect, it } from 'vitest'
 
-import { gate } from './cssgate'
+import { cascade, conditionHolds, gate, specificity } from './cssgate'
 
 // ONE SHEET. Overview used to inject a second one -- `OVERVIEW_CSS`, a
 // template literal rendered as a `<style>` after this sheet -- and this file
@@ -123,6 +123,96 @@ describe('the gate, against fixtures', () => {
     // under the light-theme condition is a theme, not a collision.
     expect(r.rootTokens).toHaveLength(1)
     expect(r.rootTokens[0]).toContain('--measure')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The cascade resolver, against sheets whose answer is known.
+//
+// `shell.test.tsx` asks `cascade` which rule wins for a dozen QA defects, and
+// every one of those answers is only as good as this file's proof that the
+// resolver weighs specificity, order, importance and conditions the way a
+// browser does -- which is exactly what jsdom's own cascade does not do.
+// ---------------------------------------------------------------------------
+
+describe('the cascade resolver, against fixtures', () => {
+  /** A detached fragment; `Element.matches` needs no document around it. */
+  function el(html: string, pick: string): Element {
+    const host = document.createElement('div')
+    host.innerHTML = html
+    const found = host.querySelector(pick)
+    expect(found, `fixture has no ${pick}`).not.toBeNull()
+    return found!
+  }
+
+  it('computes Selectors Level 4 specificity for what this sheet writes', () => {
+    expect(specificity('.a')).toEqual([0, 1, 0])
+    expect(specificity('.state p')).toEqual([0, 1, 1])
+    expect(specificity('.state p.checked-at')).toEqual([0, 2, 1])
+    expect(specificity('#root .x')).toEqual([1, 1, 0])
+    // `:where()` contributes nothing, which is the whole reason the sheet's
+    // control floor is written with it.
+    expect(specificity(':where(.app button)')).toEqual([0, 0, 0])
+    expect(specificity(':where(.app input:not([type="checkbox"]))')).toEqual([0, 0, 0])
+    // `:not()` and `:is()` take their most specific argument.
+    expect(specificity('.row:not(.clickable)')).toEqual([0, 2, 0])
+    expect(specificity(':is(.a, #b) span')).toEqual([1, 0, 1])
+    // An attribute and a pseudo-class are classes; a pseudo-element is a type.
+    expect(specificity('td[data-label]::before')).toEqual([0, 1, 2])
+    expect(specificity('.x:hover')).toEqual([0, 2, 0])
+  })
+
+  it('lets a later equal-specificity base rule beat an earlier phone rule', () => {
+    // The `.ctl-seg` defect in miniature: a media query adds no specificity,
+    // so the phone rule written ABOVE the base rule loses at every width.
+    const sheet = `@media (max-width: 560px) { .seg > button { min-height: 44px } }
+                   .seg > button { min-height: 26px }`
+    const b = el('<div class="seg"><button>x</button></div>', 'button')
+    expect(cascade(sheet, b, 'min-height', { width: 390 }).winner?.value).toBe('26px')
+    // The same rules in the other order: the phone rule wins at 390 only.
+    const fixed = `.seg > button { min-height: 26px }
+                   @media (max-width: 560px) { .seg > button { min-height: 44px } }`
+    expect(cascade(fixed, b, 'min-height', { width: 390 }).winner?.value).toBe('44px')
+    expect(cascade(fixed, b, 'min-height', { width: 1440 }).winner?.value).toBe('26px')
+  })
+
+  it('weighs specificity over order, and importance over both', () => {
+    const sheet = `.state p.checked-at { font-size: 12px }
+                   .state p { font-size: 16px }
+                   .checked-at { font-size: 10px }`
+    const p = el('<div class="state"><p class="checked-at">x</p></div>', 'p')
+    expect(cascade(sheet, p, 'font-size', { width: 1440 }).winner?.value).toBe('12px')
+    const loud = `.state p { color: red } .checked-at { color: blue !important }`
+    expect(cascade(loud, p, 'color', { width: 1440 }).winner?.value).toBe('blue')
+    // A shorthand and its longhand compete for one value when both are asked.
+    const short = `.checked-at { font: 12px/1.4 mono } .state p { font-size: 16px }`
+    const w = cascade(short, p, ['font-size', 'font'], { width: 1440 }).winner
+    expect(w?.property).toBe('font-size')
+    expect(w?.value).toBe('16px')
+  })
+
+  it('answers for a pseudo-element separately from its element', () => {
+    const sheet = `.t .n { text-align: right } td[data-label]::before { text-align: left }`
+    const td = el('<table class="t"><tr><td class="n" data-label="x">1</td></tr></table>', 'td')
+    expect(cascade(sheet, td, 'text-align', { width: 390 }).winner?.value).toBe('right')
+    expect(cascade(sheet, td, 'text-align', { width: 390 }, 'before').winner?.value).toBe('left')
+  })
+
+  it('evaluates media and container conditions, and only the states it is given', () => {
+    expect(conditionHolds('@media (min-width: 561px) and (max-width: 900px)', { width: 700 })).toBe(true)
+    expect(conditionHolds('@media (min-width: 561px) and (max-width: 900px)', { width: 390 })).toBe(false)
+    expect(conditionHolds('@media (prefers-color-scheme: light)', { width: 1440 })).toBe(false)
+    expect(conditionHolds('@media (prefers-color-scheme: light)', { width: 1440, theme: 'light' })).toBe(true)
+    // No container is no match, as in a browser; a container is asked its own size.
+    expect(conditionHolds('@container side (max-width: 899px)', { width: 390 })).toBe(false)
+    expect(conditionHolds('@container side (max-width: 899px)', { width: 1440, container: 480 })).toBe(true)
+    // An unknown feature is loud, never read as "does not apply".
+    expect(() => conditionHolds('@media (orientation: portrait)', { width: 390 })).toThrow(/cannot evaluate/)
+
+    const sheet = `.a { color: red } .a:hover { color: blue }`
+    const a = el('<a class="a">x</a>', 'a')
+    expect(cascade(sheet, a, 'color', { width: 1440 }).winner?.value).toBe('red')
+    expect(cascade(sheet, a, 'color', { width: 1440, states: ['hover'] }).winner?.value).toBe('blue')
   })
 })
 

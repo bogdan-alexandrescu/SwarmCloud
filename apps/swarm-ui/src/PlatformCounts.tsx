@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import { loadStats } from './api'
+import { useEffect, useState } from 'react'
+import { loadMe, loadStats } from './api'
 import { errorHeading, type ApiError, type Result } from './fetch'
 import { HelpCard } from './HelpCard'
 import { timeAgo } from './Shell'
@@ -32,6 +32,27 @@ export function PlatformCountsScreen() {
   const [run, setRun] = useState<Result<Stats> | null>(null)
   const [runs, setRuns] = useState(0)
   const [busy, setBusy] = useState(false)
+  /**
+   * WHO IS ASKING, FROM THE SESSION READ -- the same `/v1/tenants/me` the
+   * header's admin badge is drawn from (AH-9, visual QA 2026-09-25).
+   *
+   * The cost below used to learn it only from the RESULT of a run, so before
+   * the first press it was unknown and was priced as a tenant's: an admin was
+   * shown `12 count()` for a press that costs 24. The figure exists to say what
+   * the button costs, and it was wrong on exactly the press it was there for.
+   * `null` is "not known yet, or the read failed" and is priced as such.
+   */
+  const [sessionAdmin, setSessionAdmin] = useState<boolean | null>(null)
+
+  useEffect(() => {
+    let live = true
+    loadMe().then((r) => {
+      if (live && (r.status === 'ok' || r.status === 'stale')) setSessionAdmin(r.data.principal.is_admin)
+    })
+    return () => {
+      live = false
+    }
+  }, [])
 
   const go = () => {
     setBusy(true)
@@ -46,12 +67,17 @@ export function PlatformCountsScreen() {
   }
 
   const data = run && (run.status === 'ok' || run.status === 'stale') ? run.data : null
-  const admin = data ? data.platform_tasks_by_state !== undefined : null
+  // A RUN'S OWN ANSWER WINS WHEN THERE IS ONE: it is the route that bills, and
+  // it says whether it counted the platform. Before any run, the session says.
+  const admin = data ? data.platform_tasks_by_state !== undefined : sessionAdmin
   // DERIVED, both halves. "Twelve, or twenty-four as an admin" was a copy of
   // the size of the frozen state enum, written in prose, with nothing checking
   // it -- and the admin doubling was a clause the reader had to apply. Now the
-  // number on screen is the number this caller's next press will cost.
-  const queries = STATE_COUNT * (admin === true ? 2 : 1)
+  // number on screen is the number this caller's next press will cost -- and
+  // when nobody could say who the caller is, BOTH numbers, because a single one
+  // would be a guess about the caller presented as a price.
+  const queries =
+    admin === null ? `${STATE_COUNT}–${STATE_COUNT * 2}` : String(STATE_COUNT * (admin ? 2 : 1))
 
   return (
     <>

@@ -207,7 +207,13 @@ describe('a listing', () => {
     mount(l)
     fireEvent.click(await screen.findByRole('button', { name: 'data.log' }))
     const viewer = await screen.findByRole('region', { name: 'Artifact data.log' })
-    expect(await within(viewer).findByText(/not text/)).toBeTruthy()
+    // RE-POINTED AGAIN (AG-29). The finding was drawn as `not text` beside the
+    // `not measured` mark -- an absence mark next to a size that WAS measured.
+    // It is the size and the word now, with no mark: nothing is missing, the
+    // bytes are simply not text.
+    expect(await within(viewer).findByText('binary · 47 KiB')).toBeTruthy()
+    expect(viewer.querySelector('.ctl-mark'), 'a measured binary member carries an absence mark').toBeNull()
+    expect(viewer.textContent).not.toContain('not measured')
     expect(viewer.querySelector('pre')).toBeNull()
   })
 
@@ -280,6 +286,39 @@ describe('absence and failure are not an empty checkpoint', () => {
 
     fireEvent.click(within(failed).getByRole('button', { name: 'try again' }))
     await waitFor(() => expect(l.files).toHaveBeenCalledTimes(2))
+  })
+
+  // AG-10. A 404 IS AN ABSENCE, NOT A FAILURE. The listing route answers
+  // `not_found` for a checkpoint whose object is gone -- reclaimed, or never
+  // uploaded -- and the browser drew it as `not read` with a `try again` that
+  // can only get the same 404, under a `download archive` link to an object
+  // that does not exist.
+  //
+  // BREAK IT: drop the `not_found` case from `Body`, or from `absent`.
+  it('draws a 404 as an absent archive, with no retry and no download', async () => {
+    const l = loaders({
+      status: 'error',
+      error: {
+        kind: 'not_found',
+        httpStatus: 404,
+        code: 'not_found',
+        message: 'checkpoint ckpt-00001 not found for attempt att_1',
+      },
+    })
+    mount(l)
+
+    expect(await screen.findByText(/archive not in the bucket/)).toBeTruthy()
+    expect(within(region()).getByText('not measured')).toBeTruthy()
+    expect(within(region()).queryByText('not read'), 'a 404 is drawn as a failed read').toBeNull()
+    expect(within(region()).queryByRole('button', { name: 'try again' }), 'a 404 offers a retry').toBeNull()
+    expect(
+      within(region()).queryByRole('link', { name: 'download archive' }),
+      'a 404 offers a download of an object that is not there',
+    ).toBeNull()
+    expect(region().textContent).not.toMatch(/0 files/)
+    // The server's own sentence about this checkpoint is the one sentence kept.
+    expect(region().textContent).toContain('checkpoint ckpt-00001 not found for attempt att_1')
+    expect(l.files).toHaveBeenCalledTimes(1)
   })
 
   it('draws a CORRUPT archive as unreadable past a point, with the rows before it marked partial', async () => {
