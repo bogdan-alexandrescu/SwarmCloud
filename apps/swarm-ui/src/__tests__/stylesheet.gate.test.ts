@@ -454,7 +454,10 @@ describe('the Overview decisions, as the cascade resolves them', () => {
     const partBad = won(dial('is-partial is-bad'), BG, WIDE, 'after') ?? ''
     expect(partBad).toContain('var(--bad)')
     expect(partBad, 'a partial verdict lost its hatched remainder').toContain('var(--ctl-hatch)')
-    expect(partBad, 'a partial verdict hatches from its figure, not from what was measured').toContain(
+    // The plain track under the verdict runs to `--measured`, so the hatch
+    // starts where the measured share ends -- a layer size, not an image.
+    const partBadSize = won(dial('is-partial is-bad'), ['background-size', 'background'], WIDE, 'after') ?? ''
+    expect(partBadSize, 'a partial verdict hatches from its figure, not from what was measured').toContain(
       'var(--measured',
     )
   })
