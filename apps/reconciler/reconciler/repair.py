@@ -1380,7 +1380,7 @@ class Reconciler:
         question of the control plane -- which tasks are FINISHED, where
         `snapshot()` reads only the four states that hold capacity -- and it
         lists an entire bucket, so it runs on its own slower clock instead of on
-        every five-minute tick.
+        every one-minute tick.
         """
         if self._checkpoints is None or not self._config.enable_checkpoint_gc:
             return

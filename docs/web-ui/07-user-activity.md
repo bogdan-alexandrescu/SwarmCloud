@@ -57,6 +57,15 @@ The caveat that can: **reordering `tenant_groups` re-homes a user.** Their new t
 
 ### 1. The one design rule for this section
 
+> **Superseded 2026-09-25 (#185).** The rule below held while the task list
+> could not filter by time, and the Timeline was built on it. `GET /v1/outcomes`
+> removes that premise: the Timeline now reads a real span (24h to 90d, 14d by
+> default, or a range), the server buckets it in the viewer's zone and derives
+> every figure on one `completed_at` basis from a per-tenant, per-day rollup,
+> and the Rows control is retired. What the screen draws, and why each part is
+> drawn the way it is, is [design-system.md §16](design-system.md#16-the-timeline-as-an-outcome-ledger-185-owner-decisions-2026-09-25).
+> This section is kept as the record of the constraint the old design answered.
+
 > **Bound by rows. Label by the span those rows actually covered.**
 
 The platform can serve "the most recent N tasks for this tenant" cheaply and exactly (`tasks-tenant-created` index, `tenant_id ASC, created_at DESC`, `terraform/modules/firestore/indexes.tf:103-110`). It cannot serve "everything in August" at all.
@@ -74,6 +83,15 @@ Hour/day/week/month bucketing then happens **client-side over rows already fetch
 ---
 
 ### 2. Screen A1 — Activity
+
+> **Superseded 2026-09-25 (#185).** Screen A1 is now the Timeline's outcome
+> ledger: a success-rate headline, four aligned lanes (rate with its Wilson
+> interval, decided work, cancels on their own scale, and throughput as the one
+> submission-time series), a Table twin and eight cards. The stat strip, the
+> Token spend tile, the runner-profile split and the People table below are
+> replaced by the ledger's readout, "Retries and attempts", "Reported cost · not
+> a bill" and "Reliability by runner profile, tenant or person"
+> ([design-system.md §16](design-system.md#16-the-timeline-as-an-outcome-ledger-185-owner-decisions-2026-09-25)).
 
 The tenant's timeline. One screen, dense.
 

@@ -890,7 +890,7 @@ def google_bearer_token(credentials: Any) -> str:
     kubernetes client is built once and then lives as long as the process --
     `service.create_app` keeps the Reconciler (and therefore this backend) in
     app state, and `run.googleapis.com/cpu-throttling: 'false'` plus a
-    five-minute Cloud Scheduler tick keeps the instance warm for hours.
+    one-minute Cloud Scheduler tick keeps the instance warm for hours.
 
     That is not a theoretical decay. swarm-reconciler instance 00a41e8c started
     at 2026-09-22T00:18:03Z and minted its token on the first pass at 00:20:24Z;

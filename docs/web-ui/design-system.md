@@ -1643,7 +1643,10 @@ Six places, in order of commitment. Nothing outside this list.
    `showing <title>` line. "One page of events, oldest first" was false of the
    Timeline, which reads newest first; the title is "Paged reads: a page of
    events, a window of tasks" and claims no order, and the topic opens by
-   naming both reads.
+   naming both reads. *(Superseded by #185, §16: the Timeline no longer reads
+   a window of tasks, so nothing links it to `event-paging`, and the topic is
+   written for the attempt timeline alone again, titled "One page of events,
+   not the whole history". The rule this paragraph states is unchanged.)*
 6. **`docs/`.** The argument, the constraint, the thing that is true for six
    months. A docs link is a legitimate element of an empty state and of a help
    card; it is not an element of a data view.
@@ -3240,3 +3243,96 @@ each. Each is held by a test committed red first.
   and no figure — `elapsed()`'s wording for the same task (#145) — because
   its age includes that run and nothing records when its current state began
   (`workflow.views.test.tsx`).
+
+---
+
+## 16. The Timeline as an outcome ledger (#185, owner decisions 2026-09-25)
+
+The Timeline read the newest 200–2,000 tasks and labelled whatever span they
+happened to cover ("bound by rows, label by the span"), because the task list
+could not filter by time. Dev's 730 tasks already exceeded the default window,
+so the page was partial on the day it was redesigned, and one column stacked
+outcomes by `completed_at` on top of still-open work by `created_at`, so its
+height measured nothing: 416 cancels flattened 28 failures. The owner accepted
+the synthesis of a three-concept design round with one change (a throughput
+lane), and the page now reads `GET /v1/outcomes` over a real span. This
+section records what each part must keep, so none of it is quietly reverted.
+
+| Part | What it keeps | Why | Test |
+|---|---|---|---|
+| **The span** | 24h · 7d · **14d (default)** · 30d · 90d · from–to, applied by the server; the server buckets (hour ≤ 48h, day ≤ 60d, week beyond) unless overridden; month only at ≥ 60 days; hourly never past 2,000 buckets | the Rows control's premise (the list cannot filter by time) is gone; a combination the route refuses (422) is one the page never sends | `outcomes.view`, `activity.timeline` "the read" |
+| **The address** | every filter is the hash's query (`#work/timeline?span=30d&table=1`); the last view is remembered per browser inside try/catch; a filter change is a route change with `replaceState` | a link reproduces the page; `fromHash` splits the query off first, because `timeline?span=30d` otherwise matched no tab and opened an **agent drawer** named after it | `route.test.ts` #185 |
+| **One figure** | the success rate at `--t-figure`, `k of n decided`, the Wilson 95 % interval **printed beside it** (`95 % interval 86.8–93.5 %`) as well as in its accessible name, `excludes N cancelled` in the card-note; `no finished work` (never 0 %) at a measured n = 0; the partial mark and `k of n days` when a bucket is unread; **the not-read mark and no digit when no bucket was read**; the previous-span delta **dropped, with the reason**, when that span is partial or decided nothing | cancels are left out of the denominator (owner decision); a delta over part of a span compares two different things; an interval only in an aria-label is one no sighted reader sees, and under Table the readout that also carries it is not drawn | `activity.timeline` "the headline" |
+| **Four lanes, one axis** | rate (`--series-1`, y fixed 0–100 %, Wilson band on `--surface-2` with ruled edges, hollow under 5 decided, a gap at n = 0); decided (succeeded up in TS-4's solid `--ok`, failed and dead-lettered down in solid `--bad` with the 2px `--surface` cut, ≥ 4px, one scale through zero); cancelled (its own scale, max printed; requested and other as TS-4's flat bars, the cancels a failure caused as a 1px `--text-dim` outline); throughput (submitted as a `--series-2` step line over finished as `--series-5` columns, **labelled as the only lane on the submission-time basis**) | small multiples, never a dual axis; failures hang from a common zero; cancels stop drowning them; throughput answers "are we keeping up" | `activity.timeline` "the ledger" |
+| **Every bucket** | a column per bucket from `since` to `until`; a measured zero is the axis tick in each lane; the current bucket has a dashed right edge and reads `so far`; a just-ended one reads `settling`; an unread bucket is one hatched band across all four lanes with no mark and no digit | an absence is never a zero, and a zero is never an absence (§8.6) | same |
+| **Drawn three times** | 1080, 640 and 300 units, each with its own geometry and label stride; `.ol-chart` is the size container; `@container ol-chart (min-width: 640px / 1080px)` shows the drawing whose authored width the box holds; the narrow drawing's column floor is 26px, past which it grows and scrolls, opening at the newest end | AG-20's mechanism plus a page-width entry: the 640 drawing scaled across a 1,144px column would carry ~21px ticks, and scaled into a phone ~6px ones | `timeline.ledger.rules` |
+| **The scale does not scroll** | each drawing is a positioned frame of three layers: `.ol-gutter` (an SVG as wide as the left margin, every tick), the lane labels (HTML over the plot's left edge, on `--bg`, `pointer-events: none`, one line), and `.ol-plot`, the only layer in the scroller; each drawing has its own scroller, opened at its newest end the first time it is shown | wireframe_390 pins `100┤ … 0┤ … ok ┤ … cx ┤` with older days behind the fade. Drawn as one SVG inside the scroller, the ticks scrolled off on open (at 390 and 14 days the plot opens 52px in) and, at 24h or 30d, every lane label with them, the throughput lane's `by created_at` among them | `activity.timeline` "keeps each lane's scale…", `timeline.ledger.rules` "pins the scale column…" |
+| **The readout is the legend** (TS-9) | span totals by default, one bucket's on hover, tap or focus; `all`, Escape and leaving restore; one tab stop with a roving tabindex starting on the newest bucket; not a live region; 44px ‹ › steps on a phone; `zoom to <day>` with a chip back; `N failed that day →` says `not limited to <day>`. **One number per key, and it is the number the key's mark draws**: the flat bars' key prints requested + other, the outline's after_failure + workflow_sweep (`incl. workflow sweep N`), and the cancelled total, which no single mark draws, stands unkeyed; the column names and the Table's `requested or other / after a failure` use the same two sums. The span's totals carry the partial mark and `read of n` when a bucket is unread, and the not-read mark with no count when none was | the SVG marks are `aria-hidden`; each column is an HTML `role="img"` named with its full time and every count. The readout printed 5 beside the outline on 22 Sep while the outline, the column name and the Table said 8 | `activity.timeline` "the readout" |
+| **Table** | the same buckets as a `.ctl-table.is-scroll`, with `Submitted · by <basis.submitted>` | the keyboard and screen-reader route to every value; under Table no lane label is drawn, so the one submission-time column names its basis itself | "the Table toggle" |
+| **The route's words, as the route means them** | the basis is **read** from the payload's `basis` (lane label, readout, facts line, Table), never restated; `coverage.days` is printed in its own unit, `N of M UTC days` in tenant scope and `tenant-days` in platform scope; the provenance says `cached 60 s` only for a payload the route caches (every bucket read, the previous span's too) and `not cached: partial` otherwise; a submitter the route sends as `''` is `not recorded` or `—`, never a blank; the from–to inputs refuse, with the reason, a start in the future and a span over 400 days | a parity pass read #196's route beside this page and found each of these saying something the route does not mean: `cached 60 s` on a payload it re-derives, "56 days" for four tenants' 14, a basis word that would survive the basis changing, a blank row, and a 422 the page could have prevented | `activity.timeline` "what the route serves…", `outcomes.view` "what the route means…", `test_outcomes_ui_field_contract.py` |
+| **Eight cards** | Why tasks failed (the server's fixed class order) · Retries and attempts (admissions, not runs) · Time to result by profile (no all-profiles row) · Reliability by profile, tenant or person · Workflows that failed, and where (its step composition in the ledger's TS-4 forms, succeeded solid `--ok`) · **Reported cost · not a bill** (renamed from "Token spend"; per attempt, by task end) · Not finished yet (live, span not applied) · Why tasks were cancelled | every card but the live one draws the same payload on the same basis under the same filters | "the eight cards" |
+| **Every card says what it covers** | the route sums every card over the buckets it READ. One unread: each card-note carries the partial mark and `read of n <unit>` (§8.6's coverage note; the card head wraps rather than overflow), and an empty list is the partial empty state `… in the 13 of 14 days read`, never `a real zero`. None read: every card draws the not-read mark and the reason, and **no digit** — no count, no real-zero tick, no `$`, and no lane prints a `max` | a zero summed over no bucket is not a measurement; drawn as the real-zero tick it is the absence-as-zero this system exists to prevent | `activity.timeline` "partial and not read" |
+| **The live card carries its age** | "Not finished yet" prints `read <age>` from its own `/v1/stats` read (never `now`), is re-read on every filter change and on the Agents screen's idle cadence (`IDLE_POLL_MS`) while the page is visible, keeps its last counts between reads, and names every set filter it does not apply: `not filtered by profile, tenant, person, kind` | the head's age is the ledger's `generated_at`, a different read; left open 40 minutes and then filtered, the card said `now` over 40-minute-old counts that included the tenant the toolbar had just excluded | "the eight cards" |
+| **Strips only where they fit** | a mini strip is 6px a bucket beside a row of 220px (name ≥ 104 · track ≥ 48 · count 44 · three 8px gaps); the card body is the `ol-card` size container and each strip carries its band (`is-n14` … `is-n60`), shown at ≥ 900px once the body is 220 + 6 × band wide: 304, 364, 406, 490, 580px | at 1440 the cards are 3-up and a body is ~329px: a 24-hour or 30-day strip spilled 20–70px over the card's border into the next card; 14 days fits | `timeline.ledger.rules` "a card's mini strips…" |
+| **One glyph** | the only `?` is after "Success rate"; the cards publish their topics through `explain` (a `HelpNote`, no glyph) and the screen ends in a `Reading this screen:` index | B7.4's ceiling is twenty glyphs and two per screen; the console was at nineteen | `tests/help.test.ts` |
+
+**The throughput lane's encoding is recorded as chosen, not as decided.** The
+Flow concept drew `submitted` as the 1px outline column that lane 3 already
+uses for "after a failure" cancels, so one mark would have meant two things on
+one chart. The contract's recommended option — a `--series-2` step line over
+neutral `--series-5` columns, because these are counts and not outcomes — is
+what shipped; it is surfaced on #185 for the owner's confirmation.
+
+**TS-4's forms on an SVG.** The segments of §15.3 are CSS backgrounds, which an
+SVG shape cannot take, so the ledger restates them as fills (`.ol-m-ok`,
+`.ol-m-bad` with `.ol-m-cut`, the `.ol-flat` pattern) with the same tokens. The
+legend keys and the cards' outcome tracks (`.ol-k.is-*`, `.ol-meter > .ol-seg.*`)
+are added to TS-4's own rules by selector, so those cannot drift.
+
+**What retired with the window.** The Rows control and its rule; the window
+bar's `Last N tasks` / `All N tasks`; the People table (grouping by person is
+now server-side over the whole span, in Reliability); the metric strip; AG-19's
+link from the window to `event-paging`, whose topic is written for the attempt
+timeline alone again (§8.4 item 5 describes the state before #185). The old
+Activity rules in `styles.css` (`.window-bar`, `.chart .col`, `.stackcol`,
+`.chart-legend`) are no longer rendered by the Timeline and are kept: TS-4's
+failed and cancelled rules are shared with `.wf-meter`, and the rest are held by
+tests that read the sheet (`shell.test.tsx`, `timeline.submit.rules.test.ts`,
+`test_workflow_step_measurements.py`), which a removal would have to re-point.
+
+**How the tests were proven red.** The first test commit (run 36190161144)
+failed at `tsc`, so it proved no assertion. The ledger's honesty rules were
+then broken one line each in a MUTATION commit (0.0 % for nothing decided in
+the headline and the Table, no partial mark, an unread bucket drawn as zeroes,
+no real-zero tick) and the Timeline's tests went red on exactly those five in
+vitest; the review fix-up's cases were pushed before the code that satisfies
+them and went red in vitest too. One of those, the live card's `not filtered
+by tenant`, went red on a gap in its fixture before its assertion, so a second
+mutation dropped the disclosure and the fixed case went red on the assertion
+itself. The pull request names every run.
+
+**The page is held to the route, not only to a fixture.**
+`tests/unit/control_plane/test_outcomes_ui_field_contract.py` reads
+`outcomes.ts` as text and checks it against the payloads that #196's real
+route serves over its own fixture week: tenant scope with every filter the
+page sends, platform scope with an exclusion and with an include list, an
+explicit range, and a read past its derive budget. It checks every field in
+both directions and at every depth, including the literal unions the page
+switches on. Every declared array must be seen with an element, and every
+nullable object must be seen at least once not null, so no type passes by
+being checked only against `[]` or `null`. The same file holds the query
+parameters, the span, bucket, kind and group choices, the default span and
+the restated limits (`MAX_BUCKETS`, `MONTH_MIN_DAYS`, `MAX_SPAN_DAYS`,
+`OUTCOMES_CACHE_S`) to `swarm_api.outcomes` (docs/mirrored-values.md). It
+fails on this branch alone, as the route-level seam test does, and passes
+only once the route is merged.
+
+**What this did NOT verify.** Nothing here was seen rendered: the tests prove
+which marks the ledger draws for a contract-shaped payload, which drawing the
+sheet picks at a container width, and which rule wins. The component tests
+draw from a fixture in the contract's exact shape (`outcomes.fixture.ts`), not
+from a live read; the field-contract test above is what holds that shape to
+the route. Whether the 1080
+drawing reads well at 1440, how a 26px column reads under a thumb, and whether
+the Wilson band's ruled edges are enough in the light theme are for the next
+release's screenshots.

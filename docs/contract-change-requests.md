@@ -35,6 +35,9 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 20 | `models.py`: `Workflow.on_step_failure` is a bare `str`, and its vocabulary is stated four times | open |
 | 21 | `states.py`: the worker's exit codes have no shared home, and the reconciler now acts on one | open |
 | 22 | `profiles.py`: whether a runner profile can run on a pool account is stated by the worker and restated by the scheduler | open |
+| 23 | `models.py`: a task's end has no typed cause, so the outcome ledger classifies `last_error` text | open |
+| 24 | `profiles.py`: whether a profile's cost is declared rather than measured is named outside the catalogue | open |
+| 25 | `profiles.py`: a runner profile cannot declare the inputs a caller may send it, so the bridge names the mock's by profile | open |
 
 ---
 
@@ -2239,3 +2242,201 @@ the behavioural half.
 The parity test stays and does its job for these two copies. A third reader,
 for example a UI hint that says which profiles a lent account can run, would
 have to restate the name again and would need its own parity test.
+
+---
+
+## 23. `models.py`: a task's end has no typed cause, so the outcome ledger classifies `last_error` text
+
+**Status:** open, recorded 2026-09-25 by the lane that built `GET /v1/outcomes`
+(branch `lane/outcomes-api`, #185). If another branch has taken 23 by the time
+this merges, renumber this one.
+
+### What is true today
+
+The Timeline's "Why tasks failed" and "Why tasks were cancelled" cards need one
+fixed class per ended task. `Task` carries `state` and a free-text
+`last_error`, and nothing else about why the task ended. So
+`swarm_api.outcomes.classify_failure` and `cancel_cause` infer the class from
+text written by four writers the API image does not carry:
+
+* `agent_worker/lifecycle.py` (timeouts, runner errors);
+* `agent_worker/expected_outputs.py` (missing outputs);
+* `reconciler/detect.py` and `reconciler/repair.py` (could not start, lost
+  worker);
+* `scheduler/store.py` and `scheduler/loop.py` (dispatch failures, cascade
+  cancels, the fail_workflow sweep).
+
+`tests/unit/control_plane/test_outcomes_classifier_parity.py` pins every pattern
+to its writer's source, so a reworded message turns CI red. That is still a
+restatement of every writer's words, in a fifth place.
+
+One case is not recoverable from the text at all. "an upstream workflow step
+did not succeed" is written when a parent is FAILED, DEAD_LETTERED **or
+CANCELLED**. So a cancel caused by a person's cancel reads the same as one
+caused by a failure.
+
+### The requested change
+
+Add to `models.py`:
+
+```python
+class EndCause(str, Enum):
+    """Why a task reached its terminal state. Written by the terminal writer."""
+    TIMEOUT = "timeout"
+    CANNOT_START = "cannot_start"
+    LOST_WORKER = "lost_worker"
+    OUTPUTS_MISSING = "outputs_missing"
+    DISPATCH_FAILED = "dispatch_failed"
+    RUNNER_ERROR = "runner_error"
+    CANCEL_REQUESTED = "cancel_requested"
+    FAILED_PARENT = "failed_parent"
+    CANCELLED_PARENT = "cancelled_parent"
+    WORKFLOW_SWEEP = "workflow_sweep"
+```
+
+Add `end_cause: EndCause | None = None` to `Task`, set by the four terminal
+writers beside `completed_at`. `classify_failure` would then read the field
+first and fall back to the text only for tasks that ended before it existed.
+
+### What it would break if accepted
+
+* **Nothing stored.** The field is optional, and an old document decodes with
+  None.
+* **Every terminal writer changes**: the worker's `control.finish`, the
+  reconciler's `repair_task_state`, and the scheduler's cancel and
+  dispatch-failure paths. They are separate images, so the field would be
+  written by some before others during a rollout. The text fallback covers
+  that window.
+* **`DERIVE_VERSION` in `swarm_api.outcomes` must be bumped**, so that stored
+  days are re-derived with the new classes.
+
+### If it is declined
+
+The parity test stays and does its job. The cascade-cancel overclaim stays
+unless the ledger reads each cancelled step's parents at derive time, which is
+the recommended option on #185's open question.
+
+---
+
+## 24. `profiles.py`: whether a profile's cost is declared rather than measured is named outside the catalogue
+
+**Status:** open, recorded 2026-09-25 by the lane that built `GET /v1/outcomes`
+(branch `lane/outcomes-api`, #185). If another branch has taken 24 by the time
+this merges, renumber this one.
+
+### What is true today
+
+The Timeline marks cost that a runner **declares**, rather than cost measured
+from a provider bill: `mock` reports $0.00 on purpose. That lets a reader tell a
+deliberate zero from a real one. The catalogue has no field for it, so
+`swarm_api.outcomes.DECLARED_COST_PROFILES = frozenset({"mock"})` names it, and
+`test_outcomes_classifier_parity.py` holds every entry to a real profile.
+
+### The requested change
+
+Add `cost_declared: bool = False` to `RunnerProfile`, and set it True on
+`mock`. `DECLARED_COST_PROFILES` would then be derived from the catalogue.
+
+### What it would break if accepted
+
+* **Nothing stored.** No document carries the name.
+* **The UI's catalogue mirror** (`apps/swarm-ui/src/types.ts`, section 5 of
+  `docs/mirrored-values.md`) mirrors `RunnerProfile` field for field. The
+  parity check would require the new field there as well.
+
+### If it is declined
+
+The single named set stays, held to the catalogue by its test.
+
+---
+
+## 25. `profiles.py`: a runner profile cannot declare the inputs a caller may send it, so the bridge names the mock's by profile
+
+**Status:** open, recorded 2026-09-25 by the plugin lane that delivered #142
+(branch `lane/plugin-cli-0.5.2`). Numbered 25 because #196 (the outcomes API)
+takes 23 and 24; if another branch has taken 25 by the time this merges,
+renumber this one.
+
+### What is true today
+
+A runner reads its task's `input`. The mock reads `sleep_seconds`, `steps`,
+`fail`, `artifact_text` and more (`agent_worker/runners/mock.py`); the CLI
+runners read `input.prompt` and `input.model` (`runners/cliagent.py`). The
+frozen catalogue says nothing about which keys a profile reads, or which of
+them a caller may set.
+
+#142 asked for the plugin to send the mock's test knobs, so a mock step can be
+caught RUNNING and cancelled, or fail or park on purpose (the park is withheld;
+see below). Invariant 10 is not
+at stake -- these are data, never an image, a command, a resource spec or a
+backend -- but an input means something only to the runner that reads it:
+`input.model` would select the model a `claude-code` agent runs, which is the
+contract change `tests/unit/mcp/test_model_flag_is_attribution_only.py` exists
+to stop. So the gate has to be per profile.
+
+With nothing in the catalogue to read, the bridge gates on the profile NAME,
+in one place: `DECLARED_INPUTS` in `apps/swarm-mcp/swarm_mcp/profiles.py`,
+which declares eight keys for `mock` and nothing for any other profile.
+`tests/unit/mcp/test_runner_inputs.py` holds every name there to
+`RUNNER_PROFILES` and every key to a `payload` read in the runner's source,
+which it finds from the profile's own `runner_argv`.
+
+Two of #142's asks are **not** declared, and why is what a catalogue field
+would have to carry too. `quota_exhausted` (and `retry_after_seconds`, which
+only shapes it) would let a caller start something they cannot stop: the mock
+raises its rate limit on every attempt, with no count, and a park does not
+spend an attempt, so the task parks and resumes until it is cancelled. A
+bounded park needs a counter in the mock (a `quota_exhausted_times`, kept in
+its state file the way `credential_revoked_times` keeps its own), which is a
+worker change. And `exit_code` is declared with values refused inside its
+range -- 0, 77, 78 and 143 -- because the worker reads those as a success, a
+rate limit, a refused credential and a cancellation; a failure on purpose that
+exits with one is not a failure. The API does not check
+input keys at all -- `validate_input_size` bounds the size -- so a caller that
+does not go through the bridge can still send anything.
+
+### The requested change
+
+Add to `profiles.py`:
+
+```python
+@dataclass(frozen=True)
+class RunnerInput:
+    kind: str                     # number | integer | boolean | string | filename
+    minimum: float | None = None
+    maximum: float | None = None
+    means: str = ""
+    #: Values inside the bounds that are refused anyway, each with what the
+    #: platform would read it as (the mock's exit codes 77, 78 and 143).
+    refused: tuple[tuple[Any, str], ...] = ()
+
+
+@dataclass(frozen=True)
+class RunnerProfile:
+    ...
+    #: The keys of `input`, besides `prompt`, a caller may set for this
+    #: profile. Empty for every profile that takes only a prompt.
+    inputs: Mapping[str, RunnerInput] = field(default_factory=dict)
+```
+
+and give `mock` the eight entries the bridge declares today. The bridge would
+then read `profile.inputs` and delete its table, and the API could refuse an
+undeclared key at submission, for every caller, with the same rule.
+
+### What it would break if accepted
+
+* **Nothing stored.** No document carries the field; tasks keep their `input`.
+* **The UI's catalogue mirror** (`apps/swarm-ui/src/types.ts`, section 5 of
+  `docs/mirrored-values.md`) would gain a field to follow, or state that it
+  does not.
+* **An API that refuses undeclared keys** would refuse a caller that sends one
+  today and has it ignored. That is the point, and it is a behaviour change to
+  announce, not to slip in.
+
+### If it is declined
+
+The bridge's table stays, gated on the profile name, with its two parity tests.
+Anything that is not the bridge -- the web UI's New Workflow screen, a script
+posting to `/v1/tasks` -- keeps sending whatever `input` it likes, and a new
+profile that should take inputs takes none from the plugin until someone edits
+the table.

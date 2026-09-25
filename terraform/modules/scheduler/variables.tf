@@ -115,8 +115,30 @@ variable "safety_tick_schedule" {
 }
 
 variable "reconciler_schedule" {
-  type    = string
-  default = "*/5 * * * *"
+  description = <<-EOT
+    How often a reconciliation pass runs. Every minute, written */1 so that
+    tests/unit/worker/test_recovery_after_a_dead_worker.py can still read it.
+
+    It was */5. A pass is what notices a dead attempt, so the tick is added
+    to every recovery bound: a silent lease was repaired within 390 s (90 s
+    grace + a 300 s tick) and is now repaired within 150 s. The rule #198
+    added, which requeues a task whose execution ended before its runner
+    started, waits 30 s past the execution's end and then for the next
+    pass: at */5 that was up to five and a half minutes, no sooner than the
+    300 s dispatch deadline it replaces. At */1 it is about a minute and a
+    half.
+
+    What a pass costs, measured over the 300 passes of 2026-09-24/25: p50
+    3.0 s, p90 8.7 s, max 111 s. A pass that runs past the next tick makes
+    that tick's request answer 409 (the service's one-pass lock), which
+    Cloud Scheduler retries and which does nothing. Where the service may
+    run two instances (the default max of 2; dev runs 1), two passes can
+    overlap. Every repair step is a compare-and-set transaction and the
+    lease release is the frozen idempotent one, so the second pass's
+    fence, release and requeue each find the work done and write nothing.
+  EOT
+  type        = string
+  default     = "*/1 * * * *"
 }
 
 variable "quota_refresh_schedule" {

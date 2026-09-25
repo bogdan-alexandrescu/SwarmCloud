@@ -511,7 +511,7 @@ _INSTALL_REF = os.environ.get("SWARM_BRIDGE_INSTALL_REF", "").strip()
 #: and how it classes the front door. One JSON line on stdout.
 _PROBE = """
 import json, sys
-from swarm_mcp import client
+from swarm_mcp import client, follow
 front_door = sys.argv[1]
 print(json.dumps({
     "file": client.__file__,
@@ -519,6 +519,7 @@ print(json.dumps({
     "host": client.front_door_host(),
     "front_door_is_front_door": client.is_front_door("https://" + front_door),
     "run_app_is_front_door": client.is_front_door("https://swarm-api-xyz123-uc.a.run.app"),
+    "follow": follow.follow_command(["task_x"]),
 }))
 """
 
@@ -719,6 +720,32 @@ def test_the_bridge_installs_from_git_the_way_the_plugin_fetches_it(tmp_path):
         problems.append(
             f"escape hatch: found front door {local['host']!r}; this checkout's "
             f"dev.tfvars says {front_door!r}"
+        )
+    # WHAT A READER IS TOLD TO RUN (#189), asked of the real installs. At
+    # sc-v0.5.1 both answered `uv run swarm tail ...`, which outside a checkout
+    # is `Failed to spawn: swarm`. The git install must name the requirement it
+    # was built from -- the one plugin.json passes to `--from` -- and the escape
+    # hatch the directory it was built from, each read off the install's own
+    # PEP 610 record, which is uv's to write and is checked here, not assumed.
+    import shlex
+
+    pinned_argv = shlex.split(pinned["follow"])
+    if pinned_argv != ["uv", "tool", "run", "--from", requirement, "swarm", "tail", "task_x"]:
+        problems.append(
+            f"pinned: the follow command is {pinned['follow']!r}; expected "
+            f"`uv tool run --from {requirement!r} swarm tail task_x`"
+        )
+    local_argv = shlex.split(local["follow"])
+    local_source = (_REPO / spec["subdirectory"]).resolve()
+    if (
+        local_argv[:4] != ["uv", "tool", "run", "--from"]
+        or len(local_argv) != 8
+        or Path(local_argv[4]).resolve() != local_source
+        or local_argv[5:] != ["swarm", "tail", "task_x"]
+    ):
+        problems.append(
+            f"escape hatch: the follow command is {local['follow']!r}; expected "
+            f"`uv tool run --from {local_source} swarm tail task_x`"
         )
     assert not problems, "\n".join(problems)
 

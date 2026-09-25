@@ -322,3 +322,35 @@ test('OV-10: an address under running/ never opens a drawer, and a mistyped one 
   at('#work/task/task_abc123')
   assert.equal(fromHash().taskId, 'task_abc123')
 })
+
+/**
+ * #185: THE TIMELINE'S VIEW RIDES ON ITS ADDRESS, AND A QUERY IS NOT A TASK ID.
+ *
+ * The Timeline writes every filter to the hash (`#work/timeline?span=30d`).
+ * Before the query was split off, `timeline?span=30d` matched no tab and the
+ * Work fallback read the whole tail as a TASK ID, opening an inspector for an
+ * agent called "timeline?span=30d". And `canonical` has to keep the query, or
+ * the normalise effect would strip every filter from the address the moment
+ * it was written.
+ *
+ * MUTATION: route on the unsplit hash (the drawer opens); drop the view from
+ * `canonical` (the round trip loses the query).
+ */
+test('#185: #work/timeline?… opens the Timeline with its view, never a drawer, and keeps the query', () => {
+  for (const hash of ['#work/timeline?span=30d', '#work/timeline?span=7d&table=1', '#history/timeline?span=90d']) {
+    at(hash)
+    const r = fromHash()
+    assert.equal(r.taskId, null, `${hash} opened the agent drawer`)
+    assert.equal(r.sectionId, 'work', `${hash} left Work`)
+    assert.equal(r.tab, 'timeline', `${hash} left the Timeline`)
+    assert.equal(r.view, hash.slice(hash.indexOf('?') + 1), `${hash} lost its view`)
+    assert.equal(canonical(r), `work/timeline?${r.view}`, `${hash} is not written back with its view`)
+  }
+  // No query, no view: the plain address is unchanged.
+  at('#work/timeline')
+  assert.equal(fromHash().view ?? null, null)
+  assert.equal(canonical(fromHash()), 'work/timeline')
+  // And only the Timeline carries one: a query on any other route is dropped.
+  at('#work/running?span=30d')
+  assert.equal(canonical(fromHash()), 'work/running')
+})
