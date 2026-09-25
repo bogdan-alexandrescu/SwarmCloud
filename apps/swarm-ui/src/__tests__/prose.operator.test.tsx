@@ -160,8 +160,8 @@ function quota(): QuotaState[] {
 
 function probes(): ProbeRecord[] {
   return [
-    { path: '/v1/capacity', lastStatus: 200, lastKind: null, lastLatencyMs: 31, lastAttemptAt: Date.now(), lastSuccessAt: Date.now() - 4000 },
-    { path: '/v1/admin/quota', lastStatus: 403, lastKind: 'admin_required', lastLatencyMs: 12, lastAttemptAt: Date.now(), lastSuccessAt: null },
+    { path: '/v1/capacity', lastUrl: '/v1/capacity', lastStatus: 200, lastKind: null, lastLatencyMs: 31, lastAttemptAt: Date.now(), lastSuccessAt: Date.now() - 4000 },
+    { path: '/v1/admin/quota', lastUrl: '/v1/admin/quota', lastStatus: 403, lastKind: 'admin_required', lastLatencyMs: 12, lastAttemptAt: Date.now(), lastSuccessAt: null },
   ]
 }
 

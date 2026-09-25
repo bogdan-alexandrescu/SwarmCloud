@@ -589,7 +589,12 @@ function People({ window: w }: { window: TaskWindow }) {
   return (
     <section className="section">
       <h2>People</h2>
-      {/* `is-stacked` — F6 OF `docs/audits/2026-09-23/overflow-inventory.md`,
+      {/* `is-scroll` NOW (CH-13, design-system.md §7.3): six columns compared
+          across rows is a data table, so below 900px it scrolls with the
+          engineer column held in view; only records of four columns or fewer
+          stack. What follows is why it was `is-stacked`, and the problem it
+          named is the one the held column answers.
+          F6 OF `docs/audits/2026-09-23/overflow-inventory.md`,
           which measured this exact table at 390pt: `clientWidth: 358` against a
           `scrollWidth` of 512, so 30% of it was behind an `overflow-x: auto`
           that paints no scrollbar on this platform. The three columns hiding
@@ -600,7 +605,7 @@ function People({ window: w }: { window: TaskWindow }) {
           supplies that key, as an attribute so the rendered-word budgets are
           unchanged, and the explicit `role`s keep the ARIA table that changing
           `display` would otherwise drop. */}
-      <div className="table-wrap is-stacked">
+      <div className="table-wrap is-scroll">
         <table className="pools" role="table">
           <thead role="rowgroup">
             <tr role="row">
@@ -687,14 +692,16 @@ export function TenantsScreen() {
     >
       {(d) => (
         <section className="section">
-          {/* `is-stacked`, for the same reason as the People table above and
-              more of it: eight columns is the widest table in this file, so at
+          {/* `is-scroll` (CH-13), for the same reason as the People table
+              above: a data table scrolls with its first column held. It was
+              `is-stacked`, and more of the reason applied: eight columns is
+              the widest table in this file, so at
               390pt everything from `Max active` rightwards — the two ceilings,
               the credentials, the service account and the enabled/disabled
               state — sat behind a scrollbar this platform does not paint. A
               tenant row whose visible part ends at `Principal` says nothing
               about whether that tenant can run anything at all. */}
-          <div className="table-wrap is-stacked">
+          <div className="table-wrap is-scroll">
             <table className="pools" role="table">
               <thead role="rowgroup">
                 <tr role="row">

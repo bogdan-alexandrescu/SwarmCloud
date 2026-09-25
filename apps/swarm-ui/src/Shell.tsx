@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
-import { errorHeading, errorReassurance, type ApiError, type ApiErrorKind, type Result } from './fetch'
+import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react'
+import { errorHeading, errorReassurance, pageReads, type ApiError, type ApiErrorKind, type Result } from './fetch'
 import { Absent, type LinkOut } from './primitives'
 import { formatDuration, timeAgo } from './types'
 import { AGE_TICK_MS, useNow } from './useNow'
@@ -93,6 +93,14 @@ function tabHidden(): boolean {
   return typeof document !== 'undefined' && document.hidden === true
 }
 
+/**
+ * True inside the routed PAGE -- the screen the rail points at -- and false in
+ * the agent inspector drawn over it (CH-2). App provides it; `Screen` reads it
+ * so that the page's reads stay the page's while an inspector is open over it,
+ * and the head can speak for each one truthfully (`pageReads` in fetch.ts).
+ */
+export const RoutedPage = createContext(false)
+
 /** What the sub-line says about the cadence. */
 interface Cadence {
   /** The screen's own cadence. */
@@ -158,6 +166,8 @@ export function Screen<T>({
   /** Set by a 429 so the retry control can say how long, rather than lying. */
   const [pausedUntil, setPausedUntil] = useState<number | null>(null)
   const now = useNow(AGE_TICK_MS)
+  /** Whether this screen is the page, rather than the inspector over it. */
+  const page = useContext(RoutedPage)
 
   // ---- polling ----------------------------------------------------------
   //
@@ -238,7 +248,9 @@ export function Screen<T>({
     byPoll.current = false
     if (!lastGood.current && !polled) setState({ status: 'loading', since: Date.now() })
 
-    load().then((next) => {
+    // The page's reads are the page's, even under an open inspector (CH-2).
+    const reading = page ? pageReads(load) : load()
+    reading.then((next) => {
       if (!live) return
 
       if (next.status === 'ok') {

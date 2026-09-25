@@ -44,26 +44,35 @@ import { act, render } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi, type Mock } from 'vitest'
 
 import { App } from '../App'
-import { parseSheet, type GateNode } from './cssgate'
+import { parseSheet, splitTop, type GateNode } from './cssgate'
 import { stripComments } from './spaceprobe'
 
 const PHONE = '@media (max-width: 899px)'
 
-/**
- * Every declaration block for `selector` inside the phone-width context, in
- * source order. Keyed by CONDITION, as the gate keys it: the sheet carries more
- * than one `@media (max-width: 899px)` block, and to the cascade they are one.
- */
-function phoneBodies(selector: string): string[] {
-  const out: string[] = []
+/** The phone-width rules, as (selector list, body). */
+function phoneRules(): { selectors: string[]; body: string }[] {
+  const out: { selectors: string[]; body: string }[] = []
   const walk = (nodes: readonly GateNode[], inPhone: boolean): void => {
     for (const n of nodes) {
       if (n.kind === 'group') walk(n.children, inPhone || n.prelude === PHONE)
-      else if (n.kind === 'rule' && inPhone && n.prelude === selector) out.push(n.body)
+      else if (n.kind === 'rule' && inPhone) out.push({ selectors: splitTop(n.prelude), body: n.body })
     }
   }
   walk(parseSheet(STYLES).nodes, false)
   return out
+}
+
+/**
+ * Every declaration block that names `selector` inside the phone-width context,
+ * in source order -- on its own or as one branch of a selector list, since the
+ * two rows' scroller is ONE rule for both (CH-21). Keyed by CONDITION, as the
+ * gate keys it: the sheet carries more than one `@media (max-width: 899px)`
+ * block, and to the cascade they are one.
+ */
+function phoneBodies(selector: string): string[] {
+  return phoneRules()
+    .filter((r) => r.selectors.includes(selector))
+    .map((r) => r.body)
 }
 
 /** The LAST value a phone-width block declares for `prop` on `selector`. */
@@ -91,11 +100,36 @@ function holdsItsWidth(selector: string): boolean {
 }
 
 describe('the top strip at phone width', () => {
-  /** The precondition: the block exists, and the strip is still a scroller. */
-  it('is a horizontal scroller, as design-system.md §6.15 says it is', () => {
+  /**
+   * The precondition: the block exists, and each of the strip's two rows is a
+   * horizontal scroller.
+   *
+   * RE-POINTED BY CH-21. The strip was ONE scrolling row with the open
+   * section's tabs inserted inline, which moved every section after it. It is
+   * two rows now -- `.ctl-rail-main` (the sections and the utility corner) and
+   * `.ctl-rail-sub` (the open section's tabs) -- and `.ctl-rail` is the column
+   * that holds them rather than the scroller. The scroller declarations moved
+   * to ONE rule naming both rows: two copies of them is how the next edit to
+   * one row silently leaves the other behind.
+   */
+  it('is two horizontal scrollers, as design-system.md §6.15 says it is', () => {
     expect(phoneBodies('.ctl-rail').length, `no ${PHONE} rule for .ctl-rail`).toBeGreaterThan(0)
-    expect(phoneValue('.ctl-rail', 'flex-direction')).toBe('row')
-    expect(phoneValue('.ctl-rail', 'overflow-x')).toBe('auto')
+    expect(phoneValue('.ctl-rail', 'flex-direction'), '.ctl-rail holds the two rows in a column').toBe('column')
+    expect(phoneValue('.ctl-rail', 'overflow-x') ?? 'visible', '.ctl-rail is still the scroller').not.toBe('auto')
+
+    const scrollers = phoneRules().filter((r) => /(?:^|[;\s])overflow-x\s*:\s*auto/.test(r.body))
+    const shared = scrollers.filter(
+      (r) => r.selectors.includes('.ctl-rail-main') && r.selectors.includes('.ctl-rail-sub'),
+    )
+    expect(shared, 'the two rows do not share ONE scroller rule').toHaveLength(1)
+    for (const row of ['.ctl-rail-main', '.ctl-rail-sub']) {
+      expect(
+        scrollers.filter((r) => r.selectors.includes(row)),
+        `${row} is made a scroller by more than one rule`,
+      ).toHaveLength(1)
+    }
+    expect(phoneValue('.ctl-rail-main', 'flex-direction')).toBe('row')
+    expect(phoneValue('.ctl-rail-sub', 'flex-direction')).toBe('row')
   })
 
   /**
@@ -150,15 +184,22 @@ describe('the top strip at phone width', () => {
     walk(parseSheet(STYLES).nodes)
     expect(roots.some((b) => /--rail-fade\s*:/.test(b)), 'the fade width is not a :root token').toBe(true)
 
-    const mask = phoneValue('.ctl-rail', 'mask-image') ?? ''
-    expect(mask, 'the mask no longer reads the fade width it shares').toContain('var(--rail-fade)')
-    expect(phoneValue('.ctl-rail', '-webkit-mask-image') ?? '').toContain('var(--rail-fade)')
+    // RE-POINTED BY CH-21: the mask is on each row, from the one shared rule.
+    for (const row of ['.ctl-rail-main', '.ctl-rail-sub']) {
+      const mask = phoneValue(row, 'mask-image') ?? ''
+      expect(mask, `${row}'s mask no longer reads the fade width it shares`).toContain('var(--rail-fade)')
+      expect(phoneValue(row, '-webkit-mask-image') ?? '', row).toContain('var(--rail-fade)')
+    }
+    // And the old one-row mask is gone from the column, or it would fade row 2
+    // under row 1's edge.
+    expect(phoneValue('.ctl-rail', 'mask-image') ?? 'none').toBe('none')
 
-    const pad =
-      phoneValue('.ctl-nav-util', 'padding-inline-end') ?? phoneValue('.ctl-nav-util', 'padding-right')
-    expect(pad, 'the corner does not reserve the faded band at the end of the scroll').toBe(
-      'var(--rail-fade)',
-    )
+    // Each row ends on the faded band's width of empty space: row 1 through
+    // the utility corner, as before, and row 2 on its own.
+    for (const end of ['.ctl-nav-util', '.ctl-rail-sub']) {
+      const pad = phoneValue(end, 'padding-inline-end') ?? phoneValue(end, 'padding-right')
+      expect(pad, `${end} does not reserve the faded band at the end of the scroll`).toBe('var(--rail-fade)')
+    }
   })
 })
 
@@ -196,12 +237,20 @@ describe('the strip brings the current item into view (CH-14)', () => {
     return spy.mock.contexts.filter((el): el is Element => el instanceof Element && rail !== null && rail.contains(el))
   }
 
-  /** MUTATION: remove the effect. Nothing in the rail is scrolled to. */
+  /**
+   * MUTATION: remove the effect. Nothing in the rail is scrolled to.
+   *
+   * RE-POINTED BY CH-21: the open section's tabs are drawn twice -- inline for
+   * the desktop column, and as the phone's second row -- and only one copy is
+   * ever displayed. Below 900px the visible copy is the second row's, so that
+   * is the one scrolled to; jsdom has no layout to tell the two apart, and the
+   * effect falls back to the second row's copy there too.
+   */
   it('scrolls the selected tab into view when a route opens', () => {
     stub()
     window.location.hash = '#admin/counts'
     const { container } = render(createElement(App))
-    const selected = container.querySelector('.ctl-rail [role="tab"][aria-selected="true"]')
+    const selected = container.querySelector('.ctl-rail-sub [role="tab"][aria-selected="true"]')
     expect(selected?.textContent).toContain('Platform counts')
     const hits = scrolledInRail(container)
     expect(hits, 'the rail scrolled nothing into view').toContain(selected)
@@ -218,7 +267,7 @@ describe('the strip brings the current item into view (CH-14)', () => {
       window.location.hash = '#capacity/quota'
       window.dispatchEvent(new Event('hashchange'))
     })
-    const selected = container.querySelector('.ctl-rail [role="tab"][aria-selected="true"]')
+    const selected = container.querySelector('.ctl-rail-sub [role="tab"][aria-selected="true"]')
     expect(selected?.textContent).toContain('Provider quota')
     expect(scrolledInRail(container)).toContain(selected)
   })

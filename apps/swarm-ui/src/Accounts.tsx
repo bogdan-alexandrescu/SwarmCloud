@@ -482,10 +482,13 @@ function Pool({
             the section in `.ctl-card-note`. */}
         <span className="ctl-card-note is-end">{pluralise(accounts.length, 'account')}</span>
       </h2>
-      {/* §B6.3: `is-stacked`, because `the pool` is the widest table in the
-          app -- 909px of columns inside a 358px phone, 61% of it behind a
-          scrollbar this platform does not paint. */}
-      <div className="table-wrap is-stacked">
+      {/* `is-scroll` (CH-13, design-system.md §7.3), and it was §B6.3's
+          `is-stacked`, because `the pool` is the widest table in the app --
+          909px of columns inside a 358px phone, 61% of it behind a scrollbar
+          this platform does not paint. Five columns compared across rows is a
+          data table: below 900px it scrolls with the account column held in
+          view, and only a record of four columns or fewer stacks. */}
+      <div className="table-wrap is-scroll">
         <table role="table" className="pools accounts">
           <thead role="rowgroup">
             <tr role="row">
