@@ -564,7 +564,10 @@ export function WorkflowTable({
   const [sort, setSort] = useState<SortSpec>(DEFAULT_SORT)
   const sorted = sortRows(rows, sort)
   return (
-    <div className="ctl-table wf-table">
+    // `is-scroll` (CH-13): nine columns compared across rows is a DATA table,
+    // so below 900px it scrolls with the step column held in view rather than
+    // stacking (design-system.md §7.3).
+    <div className="ctl-table wf-table is-scroll">
       <table>
         <thead>
           <tr>

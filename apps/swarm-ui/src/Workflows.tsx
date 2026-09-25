@@ -1043,7 +1043,7 @@ export function WorkflowCard({
  * Neither is a filled mark, so neither can be read as a state the platform
  * holds -- which is the whole of the invariant, restated as a shape.
  */
-function dotClass(header: { tone: Tone | 'unknown'; derived: boolean }): string {
+export function dotClass(header: { tone: Tone | 'unknown'; derived: boolean }): string {
   if (header.tone === 'unknown') {
     return header.derived ? 'ctl-dot' : 'ctl-dot is-underived'
   }
@@ -1054,10 +1054,16 @@ function dotClass(header: { tone: Tone | 'unknown'; derived: boolean }): string 
       return 'ctl-dot is-bad'
     case 'live':
       return 'ctl-dot is-live'
-    // QUEUED, PARKED, READY. `--info` is this sheet's "a fact, not a verdict"
-    // (§1.2), which is exactly what a waiting workflow is: it is not a
-    // failure, it is not healthy, and it is certainly not an absence.
+    // QUEUED, PARKED, READY: THE WAIT MARK AGENTS ALREADY DRAWS (CH-22). This
+    // was `is-info`, argued as "a fact, not a verdict" -- and `is-info` is now
+    // the flat bar CANCELLED ends in, so a waiting workflow and a cancelled
+    // one would have shared it. Agents' chip draws `wait` as the caution
+    // triangle (`chipTone` in AgentDetail.tsx); the workflow row, its graph
+    // node and its band now draw the same.
     case 'wait':
+      return 'ctl-dot is-warn'
+    // CANCELLED: the neutral flat bar, the one `is-info` modifier (CH-22).
+    case 'ended':
       return 'ctl-dot is-info'
   }
 }
