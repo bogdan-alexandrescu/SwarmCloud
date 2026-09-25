@@ -2183,3 +2183,108 @@ the behavioural half.
 The parity test stays and does its job for these two copies. A third reader,
 for example a UI hint that says which profiles a lent account can run, would
 have to restate the name again and would need its own parity test.
+
+---
+
+## 23. `models.py`: a task's end has no typed cause, so the outcome ledger classifies `last_error` text
+
+**Status:** open, recorded 2026-09-25 by the lane that built `GET /v1/outcomes`
+(branch `lane/outcomes-api`, #185). If another branch has taken 23 by the time
+this merges, renumber this one.
+
+### What is true today
+
+The Timeline's "Why tasks failed" and "Why tasks were cancelled" cards need one
+fixed class per ended task. `Task` carries `state` and a free-text
+`last_error`, and nothing else about why the task ended. So
+`swarm_api.outcomes.classify_failure` and `cancel_cause` infer the class from
+text written by four writers the API image does not carry:
+
+* `agent_worker/lifecycle.py` (timeouts, runner errors);
+* `agent_worker/expected_outputs.py` (missing outputs);
+* `reconciler/detect.py` and `reconciler/repair.py` (could not start, lost
+  worker);
+* `scheduler/store.py` and `scheduler/loop.py` (dispatch failures, cascade
+  cancels, the fail_workflow sweep).
+
+`tests/unit/control_plane/test_outcomes_classifier_parity.py` pins every pattern
+to its writer's source, so a reworded message turns CI red. That is still a
+restatement of every writer's words, in a fifth place.
+
+One case is not recoverable from the text at all. "an upstream workflow step
+did not succeed" is written when a parent is FAILED, DEAD_LETTERED **or
+CANCELLED**. So a cancel caused by a person's cancel reads the same as one
+caused by a failure.
+
+### The requested change
+
+Add to `models.py`:
+
+```python
+class EndCause(str, Enum):
+    """Why a task reached its terminal state. Written by the terminal writer."""
+    TIMEOUT = "timeout"
+    CANNOT_START = "cannot_start"
+    LOST_WORKER = "lost_worker"
+    OUTPUTS_MISSING = "outputs_missing"
+    DISPATCH_FAILED = "dispatch_failed"
+    RUNNER_ERROR = "runner_error"
+    CANCEL_REQUESTED = "cancel_requested"
+    FAILED_PARENT = "failed_parent"
+    CANCELLED_PARENT = "cancelled_parent"
+    WORKFLOW_SWEEP = "workflow_sweep"
+```
+
+Add `end_cause: EndCause | None = None` to `Task`, set by the four terminal
+writers beside `completed_at`. `classify_failure` would then read the field
+first and fall back to the text only for tasks that ended before it existed.
+
+### What it would break if accepted
+
+* **Nothing stored.** The field is optional, and an old document decodes with
+  None.
+* **Every terminal writer changes**: the worker's `control.finish`, the
+  reconciler's `repair_task_state`, and the scheduler's cancel and
+  dispatch-failure paths. They are separate images, so the field would be
+  written by some before others during a rollout. The text fallback covers
+  that window.
+* **`DERIVE_VERSION` in `swarm_api.outcomes` must be bumped**, so that stored
+  days are re-derived with the new classes.
+
+### If it is declined
+
+The parity test stays and does its job. The cascade-cancel overclaim stays
+unless the ledger reads each cancelled step's parents at derive time, which is
+the recommended option on #185's open question.
+
+---
+
+## 24. `profiles.py`: whether a profile's cost is declared rather than measured is named outside the catalogue
+
+**Status:** open, recorded 2026-09-25 by the lane that built `GET /v1/outcomes`
+(branch `lane/outcomes-api`, #185). If another branch has taken 24 by the time
+this merges, renumber this one.
+
+### What is true today
+
+The Timeline marks cost that a runner **declares**, rather than cost measured
+from a provider bill: `mock` reports $0.00 on purpose. That lets a reader tell a
+deliberate zero from a real one. The catalogue has no field for it, so
+`swarm_api.outcomes.DECLARED_COST_PROFILES = frozenset({"mock"})` names it, and
+`test_outcomes_classifier_parity.py` holds every entry to a real profile.
+
+### The requested change
+
+Add `cost_declared: bool = False` to `RunnerProfile`, and set it True on
+`mock`. `DECLARED_COST_PROFILES` would then be derived from the catalogue.
+
+### What it would break if accepted
+
+* **Nothing stored.** No document carries the name.
+* **The UI's catalogue mirror** (`apps/swarm-ui/src/types.ts`, section 5 of
+  `docs/mirrored-values.md`) mirrors `RunnerProfile` field for field. The
+  parity check would require the new field there as well.
+
+### If it is declined
+
+The single named set stays, held to the catalogue by its test.

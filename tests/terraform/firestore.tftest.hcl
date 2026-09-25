@@ -126,6 +126,44 @@ run "every_tenant_scoped_collection_has_a_tenant_leading_index" {
   }
 }
 
+run "the_outcome_ledger_has_its_index_and_its_exemptions" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/firestore"
+  }
+
+  # GET /v1/outcomes derives each tenant-day from
+  #   tasks where tenant_id == T and D <= completed_at < D+1 order by completed_at
+  # Without this index that query does not run slowly; it fails, and every day
+  # comes back unread with read_failed.
+  assert {
+    condition     = contains(output.index_names, "tasks-tenant-completed")
+    error_message = "the outcome ledger's ended-tasks query needs tasks-tenant-completed"
+  }
+
+  assert {
+    condition = (
+      google_firestore_index.this["tasks-tenant-completed"].collection == "tasks" &&
+      google_firestore_index.this["tasks-tenant-completed"].fields[0].field_path == "tenant_id" &&
+      google_firestore_index.this["tasks-tenant-completed"].fields[1].field_path == "completed_at" &&
+      google_firestore_index.this["tasks-tenant-completed"].fields[1].order == "ASCENDING"
+    )
+    error_message = "tenant_id must lead (the equality filter, and the tenant boundary), then completed_at ASCENDING"
+  }
+
+  # The rollup's two payload fields are ~700 KB JSON strings that are only ever
+  # read by document id; indexing them is pure write amplification.
+  assert {
+    condition = alltrue([
+      for f in ["ended", "arrived"] :
+      google_firestore_field.outcome_days_unindexed[f].collection == "outcome_days" &&
+      google_firestore_field.outcome_days_unindexed[f].field == f
+    ])
+    error_message = "outcome_days.ended and outcome_days.arrived must be exempt from single-field indexing"
+  }
+}
+
 run "pools_and_tenants_are_materialised_at_provisioning_time" {
   command = plan
 
