@@ -373,7 +373,7 @@ function Drawing({
           const tick = (y: number, key: string) => (
             <line key={key} className="ol-zero" x1={r1(g.cx(i) - 3)} x2={r1(g.cx(i) + 3)} y1={r1(y)} y2={r1(y)} />
           )
-          if (b.state === 'unread') {
+          if (b.state === 'unread' && b.submitted !== null) {
             return (
               <rect
                 key={b.start}
@@ -405,7 +405,7 @@ function Drawing({
                   <rect className="ol-m-cut" x={x} y={r1(zeroY)} width={Math.min(2, w)} height={r1(Math.max(MIN_FAILED_PX, bad * k2))} />
                 </>
               )}
-              {ok === 0 && bad === 0 && tick(zeroY, 'z2')}
+              {ok === 0 && bad === 0 && null}
               {/* Lane 3 */}
               {flatH > 0 && (
                 <rect className="ol-m-ended" x={x} y={r1(L3.y + L3.h - flatH)} width={w} height={r1(flatH)} fill={`url(#${flat})`} />
