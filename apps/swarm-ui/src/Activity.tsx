@@ -303,20 +303,23 @@ export function outcomeBuckets(
 }
 
 /**
- * Up to this many columns, every column is labelled. At 390 the chart is about
- * 330px across, so six columns sit at least 55px apart -- room for the widest
+ * Up to this many columns, `axisLabels` labels every column. At 390 the chart
+ * is about 330px across, so six columns sit at least 55px apart -- room for the widest
  * label (`Sep 21`, six characters of --t-micro mono, ~43px). Past it a column
  * can be at its 26px floor, 29px apart with the gap, and two labels side by
  * side run into each other (`01 PM02 PM03 PM`, which is what 390 already drew
  * before every empty hour got a column too). So past it, every other column.
  * Every column keeps its full time in its accessible name either way, and the
- * legend prints it when the column is picked (TS-9).
+ * legend prints it when the column is picked (TS-9). A phone's HOURLY axis
+ * does not use this: it thins at every length (`PHONE_HOUR_STRIDE`). A phone's
+ * day, week and month axes do.
  */
 const LABEL_ALL_UP_TO = 6
 
 /**
- * AT PHONE WIDTH, AN HOURLY AXIS PAST SIX COLUMNS LABELS EVERY THIRD HOUR
- * (TS-3, owner decision 2026-09-25).
+ * AT PHONE WIDTH, AN HOURLY AXIS LABELS EVERY THIRD HOUR, WHATEVER ITS LENGTH
+ * (TS-3, owner decision 2026-09-25: "labels thin to every 3rd hour at phone
+ * width").
  *
  * Every other column is still too dense at 390: a 29px column pitch puts an
  * `01 PM` (~43px of --t-micro mono) against its neighbour's, which is what the
@@ -324,6 +327,12 @@ const LABEL_ALL_UP_TO = 6
  * The stride is ON THE CLOCK -- 00, 03, 06 ... -- rather than every third
  * column from wherever the axis starts, so the ticks read as a scale and not as
  * an accident of the window's first row.
+ *
+ * NO LENGTH EXCEPTION. A first cut kept every label on an hourly axis of six
+ * columns or fewer, because those fit at 390 -- which is a different rule from
+ * the one decided, and an axis whose tick spacing changes with the window's
+ * length reads as two scales. Nothing is lost by thinning a short one: each
+ * column names its full hour, and the legend prints it on a pick (TS-9).
  */
 const PHONE_HOUR_STRIDE = 3
 
@@ -386,9 +395,9 @@ export function axisLabels(keys: readonly number[], bucket: Bucket): string[] {
  *
  * The same two rules `axisLabels` keeps, at the wider stride: a day's first
  * column always carries its date, and no label lands within a stride of the
- * next day's date, so a date never has an hour pressed against it. Anything
- * that is not an hourly axis past `LABEL_ALL_UP_TO` columns draws exactly what
- * a wide screen draws -- those axes did not collide at 390 in the first place.
+ * next day's date, so a date never has an hour pressed against it. An axis
+ * that is not hourly draws exactly what a wide screen draws: the decision is
+ * about hours, and a day, week or month label is a date, not a clock tick.
  *
  * The chart renders the UNION of this and `axisLabels`, and the sheet hides
  * each set's extras at the other width (`.col-label.is-wide-only` /
@@ -396,7 +405,7 @@ export function axisLabels(keys: readonly number[], bucket: Bucket): string[] {
  * other phone rule rather than by a second copy of it in script.
  */
 export function phoneAxisLabels(keys: readonly number[], bucket: Bucket): string[] {
-  if (bucket !== 'hour' || keys.length <= LABEL_ALL_UP_TO) return axisLabels(keys, bucket)
+  if (bucket !== 'hour') return axisLabels(keys, bucket)
   const starts = dayStarts(keys, bucket)
   const startsDay = (i: number): boolean => starts[i] === true
   const dayWithin = (i: number): boolean => {
@@ -483,6 +492,16 @@ export function windowTotals(buckets: ReadonlyArray<readonly [number, Outcomes]>
  * the way to the next control; the arrows move between them, Home and End jump
  * to either end, and the stop starts on the newest column because that is
  * where the chart opens (TS-3).
+ *
+ * "LEAVING THE CHART" MEANS LEAVING THE CHART AND ITS READOUT. `all` sits in
+ * the legend, below the columns, so every real way of reaching it -- the
+ * pointer moving down to it, a Tab from the picked column, a tap -- leaves
+ * `.chart` first. With leave and focus-out on `.chart` itself, each of those
+ * cleared the pick, and clearing the pick unmounts `all`: the button could not
+ * be pressed by anything but a test, and a Tab onto it dropped focus to
+ * <body>. So both are on `.chart-readout`, which holds the columns and the
+ * legend that reads them out. Escape is on it too, so it works on `all` as
+ * well as on a column.
  */
 function Chart({ window: w, bucket }: { window: TaskWindow; bucket: Bucket }) {
   const { buckets, anomalies } = useMemo(() => outcomeBuckets(w.tasks, bucket), [w.tasks, bucket])
@@ -524,11 +543,33 @@ function Chart({ window: w, bucket }: { window: TaskWindow; bucket: Bucket }) {
     setOlder(el.scrollLeft > 0)
   }, [axis])
 
-  const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
-    if (e.key === 'Escape') {
-      clear()
-      return
+  // `all` AND ESCAPE PUT THE WINDOW BACK, AND FOCUS STAYS IN THE CHART. `all`
+  // exists only while a column is picked, so pressing it unmounts it -- and a
+  // button that goes while it holds focus drops focus to <body> (WCAG 2.4.3).
+  // When it held focus, focus goes back to the column the chart's one tab stop
+  // is on, WITHOUT picking it: the same state Escape on a column leaves, the
+  // column focused and the legend reading the window. `quiet` is how the
+  // column's focus handler tells this apart from a reader landing on it, and
+  // `preventScroll` keeps the scroller where the reader left it.
+  const allButton = useRef<HTMLButtonElement>(null)
+  const quiet = useRef(false)
+  const restore = () => {
+    const hadFocus = allButton.current !== null && allButton.current === document.activeElement
+    clear()
+    if (!hadFocus) return
+    quiet.current = true
+    try {
+      cols.current[stopAt]?.focus({ preventScroll: true })
+    } finally {
+      quiet.current = false
     }
+  }
+
+  // On the readout -- the columns and the legend -- so it works on `all` too.
+  const onReadoutKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+    if (e.key === 'Escape') restore()
+  }
+  const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
     const last = keys.length - 1
     const next =
       e.key === 'ArrowRight'
@@ -545,7 +586,8 @@ function Chart({ window: w, bucket }: { window: TaskWindow; bucket: Bucket }) {
     e.preventDefault()
     cols.current[next]?.focus()
   }
-  // Focus leaving the chart is leaving it, the same as the pointer leaving.
+  // Focus leaving the chart AND ITS READOUT is leaving it, the same as the
+  // pointer leaving them; moving from a column to `all` is not.
   const onBlur = (e: FocusEvent<HTMLDivElement>) => {
     const to = e.relatedTarget
     if (!(to instanceof Node) || !e.currentTarget.contains(to)) clear()
@@ -572,102 +614,108 @@ function Chart({ window: w, bucket }: { window: TaskWindow; bucket: Bucket }) {
           <a href={helpHref(ABSENCE_HELP)}>Why &rarr;</a>
         </p>
       )}
-      <div
-        ref={scroller}
-        className={older ? 'chart has-older' : 'chart'}
-        role="group"
-        aria-label={`Task outcomes by ${bucket}`}
-        onKeyDown={onKeyDown}
-        onMouseLeave={clear}
-        onBlur={onBlur}
-        onScroll={(e) => setOlder(e.currentTarget.scrollLeft > 0)}
-      >
-        {buckets.map(([k, c], i) => {
-          const total = c.succeeded + c.failed + c.cancelled + c.open
-          // The UNION of the wide and the phone labels; the sheet hides each
-          // set's extras at the other width (TS-3).
-          const wide = labels[i] ?? ''
-          const phone = phoneLabels[i] ?? ''
-          const labelClass =
-            wide !== '' && phone === ''
-              ? 'col-label is-wide-only'
-              : wide === '' && phone !== ''
-                ? 'col-label is-phone-only'
-                : 'col-label'
-          const cls = ['col']
-          if (i > 0 && boundaries[i] === true) cls.push('is-day-start')
-          if (i === pickedAt) cls.push('is-picked')
-          return (
-            // An empty bucket is a column with four zero-height segments whose
-            // name says `0 succeeded, 0 failed, ...`: a measured zero, drawn
-            // where it happened.
-            <div
-              ref={(el) => {
-                cols.current[i] = el
-              }}
-              className={cls.join(' ')}
-              key={k}
-              role="img"
-              aria-label={`${bucketName(k, bucket)}: ${countsSaid(c)}`}
-              tabIndex={i === stopAt ? 0 : -1}
-              data-total={total}
-              onMouseEnter={() => setPicked(k)}
-              // A TAP PICKS TOO: a phone has no hover, and not every phone
-              // moves focus to what was tapped.
-              onClick={() => setPicked(k)}
-              onFocus={(e) => {
-                setPicked(k)
-                setStop(k)
-                // Inside TS-3's scroller: an arrow press onto a column past
-                // the edge brings it into view. jsdom has no scrollIntoView.
-                e.currentTarget.scrollIntoView?.({ block: 'nearest', inline: 'nearest' })
-              }}
-            >
-              <div className="stackcol">
-                <i className="open" style={{ height: `${(c.open / max) * 100}%` }} />
-                <i className="cancelled" style={{ height: `${(c.cancelled / max) * 100}%` }} />
-                <i className="failed" style={{ height: `${(c.failed / max) * 100}%` }} />
-                <i className="succeeded" style={{ height: `${(c.succeeded / max) * 100}%` }} />
+      {/* THE CHART AND ITS READOUT ARE ONE THING TO LEAVE (TS-9). `all` is in
+          the legend, so the pointer, a Tab and a tap all leave `.chart` on
+          the way to it; only leaving this clears the pick. */}
+      <div className="chart-readout" onMouseLeave={restore} onBlur={onBlur} onKeyDown={onReadoutKeyDown}>
+        <div
+          ref={scroller}
+          className={older ? 'chart has-older' : 'chart'}
+          role="group"
+          aria-label={`Task outcomes by ${bucket}`}
+          onKeyDown={onKeyDown}
+          onScroll={(e) => setOlder(e.currentTarget.scrollLeft > 0)}
+        >
+          {buckets.map(([k, c], i) => {
+            const total = c.succeeded + c.failed + c.cancelled + c.open
+            // The UNION of the wide and the phone labels; the sheet hides each
+            // set's extras at the other width (TS-3).
+            const wide = labels[i] ?? ''
+            const phone = phoneLabels[i] ?? ''
+            const labelClass =
+              wide !== '' && phone === ''
+                ? 'col-label is-wide-only'
+                : wide === '' && phone !== ''
+                  ? 'col-label is-phone-only'
+                  : 'col-label'
+            const cls = ['col']
+            if (i > 0 && boundaries[i] === true) cls.push('is-day-start')
+            if (i === pickedAt) cls.push('is-picked')
+            return (
+              // An empty bucket is a column with four zero-height segments whose
+              // name says `0 succeeded, 0 failed, ...`: a measured zero, drawn
+              // where it happened.
+              <div
+                ref={(el) => {
+                  cols.current[i] = el
+                }}
+                className={cls.join(' ')}
+                key={k}
+                role="img"
+                aria-label={`${bucketName(k, bucket)}: ${countsSaid(c)}`}
+                tabIndex={i === stopAt ? 0 : -1}
+                data-total={total}
+                onMouseEnter={() => setPicked(k)}
+                // A TAP PICKS TOO: a phone has no hover, and not every phone
+                // moves focus to what was tapped.
+                onClick={() => setPicked(k)}
+                onFocus={(e) => {
+                  setStop(k)
+                  // Focus handed back by `restore` lands here without picking,
+                  // and without moving the scroller.
+                  if (quiet.current) return
+                  setPicked(k)
+                  // Inside TS-3's scroller: an arrow press onto a column past
+                  // the edge brings it into view. jsdom has no scrollIntoView.
+                  e.currentTarget.scrollIntoView?.({ block: 'nearest', inline: 'nearest' })
+                }}
+              >
+                <div className="stackcol">
+                  <i className="open" style={{ height: `${(c.open / max) * 100}%` }} />
+                  <i className="cancelled" style={{ height: `${(c.cancelled / max) * 100}%` }} />
+                  <i className="failed" style={{ height: `${(c.failed / max) * 100}%` }} />
+                  <i className="succeeded" style={{ height: `${(c.succeeded / max) * 100}%` }} />
+                </div>
+                {/* A no-break space where a label is thinned out, so every
+                    column's label line is the same height and the bars stay on
+                    one baseline. */}
+                <span className={labelClass}>{wide || phone || ' '}</span>
               </div>
-              {/* A no-break space where a label is thinned out, so every
-                  column's label line is the same height and the bars stay on
-                  one baseline. */}
-              <span className={labelClass}>{wide || phone || ' '}</span>
-            </div>
-          )
-        })}
+            )
+          })}
+        </div>
+        {/* THE LEGEND IS A LEGEND AGAIN, AND EACH BASIS SITS BESIDE ITS SERIES.
+            The key used to end in one `by completed_at` after all four swatches,
+            which put `still open` under it too -- and an open task has no
+            `completed_at`; it is bucketed by `created_at`. Two series, two
+            bases, each fused to the swatches it qualifies.
+            AND IT IS THE READOUT (TS-9): each series' count beside its swatch,
+            the window's until a column is picked, then that column's after its
+            full name. Not `aria-live` -- see the component's comment. */}
+        <p className="chart-legend">
+          {pickedAt >= 0 && <span className="cl-at">{bucketName(keys[pickedAt]!, bucket)} ·</span>}
+          {pickedAt >= 0 && ' '}
+          <span className="k succeeded" /> succeeded <b className="cl-n">{shown.succeeded}</b>
+          <span className="cl-sep"> · </span>
+          <span className="k failed" /> failed <b className="cl-n">{shown.failed}</b>
+          <span className="cl-sep"> · </span>
+          <span className="k cancelled" /> cancelled <b className="cl-n">{shown.cancelled}</b>{' '}
+          <span className="cl-basis">
+            by <code>completed_at</code>
+          </span>
+          <span className="cl-sep"> · </span>
+          <span className="k open" /> still open <b className="cl-n">{shown.open}</b>{' '}
+          <span className="cl-basis">
+            by <code>created_at</code>
+          </span>
+          {pickedAt >= 0 && ' '}
+          {pickedAt >= 0 && (
+            <button type="button" className="sbf-mini cl-all" ref={allButton} onClick={restore}>
+              all
+            </button>
+          )}
+        </p>
       </div>
-      {/* THE LEGEND IS A LEGEND AGAIN, AND EACH BASIS SITS BESIDE ITS SERIES.
-          The key used to end in one `by completed_at` after all four swatches,
-          which put `still open` under it too -- and an open task has no
-          `completed_at`; it is bucketed by `created_at`. Two series, two
-          bases, each fused to the swatches it qualifies.
-          AND IT IS THE READOUT (TS-9): each series' count beside its swatch,
-          the window's until a column is picked, then that column's after its
-          full name. Not `aria-live` -- see the component's comment. */}
-      <p className="chart-legend">
-        {pickedAt >= 0 && <span className="cl-at">{bucketName(keys[pickedAt]!, bucket)} ·</span>}
-        {pickedAt >= 0 && ' '}
-        <span className="k succeeded" /> succeeded <b className="cl-n">{shown.succeeded}</b>
-        <span className="cl-sep"> · </span>
-        <span className="k failed" /> failed <b className="cl-n">{shown.failed}</b>
-        <span className="cl-sep"> · </span>
-        <span className="k cancelled" /> cancelled <b className="cl-n">{shown.cancelled}</b>{' '}
-        <span className="cl-basis">
-          by <code>completed_at</code>
-        </span>
-        <span className="cl-sep"> · </span>
-        <span className="k open" /> still open <b className="cl-n">{shown.open}</b>{' '}
-        <span className="cl-basis">
-          by <code>created_at</code>
-        </span>
-        {pickedAt >= 0 && ' '}
-        {pickedAt >= 0 && (
-          <button type="button" className="sbf-mini cl-all" onClick={clear}>
-            all
-          </button>
-        )}
-      </p>
     </section>
   )
 }

@@ -1010,10 +1010,12 @@ export function ProfileFacts({ name, profile, pools }: { name: string; profile: 
           "Costs N weighted units in each of its M pools, all at once." was a
           second sentence; the figures are facts and sit on the head. "In each
           of", never "x", which reads as a total. "All at once" is the
-          all-or-nothing rule, and that lives in the capacity help topic. */}
+          all-or-nothing rule, and that lives in the capacity help topic.
+          The decided phrase at every pool count, one pool included: "in each
+          of 1 pool", not a second wording. Each noun agrees with its count. */}
       <p className="sbf-room-h">
         <span className="mono">{name}</span> right now · {profile.units} unit{profile.units === 1 ? '' : 's'}{' '}
-        {profile.pools.length === 1 ? 'in its 1 pool' : `in each of ${profile.pools.length} pools`}
+        in each of {profile.pools.length} pool{profile.pools.length === 1 ? '' : 's'}
       </p>
       <p className="muted">
         {room.agents === null ? (
