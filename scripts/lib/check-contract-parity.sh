@@ -1458,6 +1458,239 @@ else:
                  "%d terraform validation(s) accept exactly the [%s] the frozen "
                  "resolver slugs to" % (len(classes), FROZEN_CLASS.group(1)))
 
+# -- 13. the runner inputs the scripts send and the Submit form offers -----
+# Contract request 25 (accepted by the owner on #142, 2026-09-25) put each
+# runner profile inputs in the frozen catalogue, `RunnerProfile.inputs`, and
+# the API now refuses any key of `input` that a declared profile does not
+# declare, with 422 `invalid_input`, from every caller. That turned two lists
+# nobody compared into restatements of the catalogue:
+#
+#   * THE TASK INPUTS THE OPERATIONAL SCRIPTS SEND. smoke, concurrency, race,
+#     load, both benches, quota and failure all sent `message`, and several
+#     `index` or `run_id`, which every runner ignored. Against a deployment of
+#     this change each of those submissions is a 422, and nothing offline said
+#     so: the scripts run against a live platform, never in CI.
+#   * `SUGGESTED` IN apps/swarm-ui/src/Submit.tsx, the keys the Submit form
+#     OFFERS per profile. Its comment called a stale suggestion harmless -- it
+#     "never refuses valid work" -- and that stopped being true: an offer the
+#     catalogue does not declare is a refusal the form invites.
+#
+# `prompt` is every profile input. A profile whose inputs are NOT DECLARED YET
+# -- `inputs is None`: browser and generic, whose runners cannot start on a
+# prompt alone -- is bounded by size only, so nothing sent to it is compared.
+# The default branch of `profile_input` in testlib.sh goes to whichever
+# profile a run names, so it may carry only what every declared profile takes.
+#
+# NO APOSTROPHES, for the reason section 5 gives. A single quote is built with
+# chr(39) wherever a pattern needs one.
+Q = chr(39)
+# Parentheses too, where one would stand unpaired in a string: bash counts
+# them while it looks for the end of this command substitution.
+OPENERS = "{[" + chr(40)
+CLOSERS = "}]" + chr(41)
+SUBSHELL = "\"$" + chr(40)
+QUOTED = re.compile(Q + "([^" + Q + "]*)" + Q)
+from swarm_common import profiles as frozen_profiles
+
+
+def top_level_keys(program):
+    """The keys of the first object literal in a jq program or a JSON text.
+
+    A jq object is `{key: value, "key": value, key}`; a value may nest
+    brackets, parentheses and strings, and only depth one names a key of
+    `input`. None when the text holds no complete object.
+    """
+    keys = []
+    depth = 0
+    want_key = False
+    i = 0
+    while i < len(program):
+        ch = program[i]
+        if ch == "\"":
+            j = i + 1
+            while j < len(program) and program[j] != "\"":
+                j += 2 if program[j] == "\\" else 1
+            token = program[i + 1:j]
+            i = j + 1
+            if depth == 1 and want_key and program[i:].lstrip().startswith(":"):
+                keys.append(token)
+                want_key = False
+            continue
+        if ch in OPENERS:
+            depth += 1
+            if depth == 1:
+                if ch != "{":
+                    return None
+                want_key = True
+        elif ch in CLOSERS:
+            depth -= 1
+            if depth == 0:
+                return keys
+        elif depth == 1 and ch == ",":
+            want_key = True
+        elif depth == 1 and ch == ":":
+            want_key = False
+        elif depth == 1 and want_key and (ch.isalpha() or ch == "_"):
+            word = re.match(r"[A-Za-z_][A-Za-z0-9_]*", program[i:]).group(0)
+            if program[i + len(word):].lstrip()[:1] in (":", ",", "}"):
+                keys.append(word)
+                want_key = False
+            i += len(word)
+            continue
+        i += 1
+    return None
+
+
+def script_default(text, var):
+    """The first non-empty literal a script assigns to `var`, or None."""
+    found = re.search(r"(?:^|[\s;\x29])%s=\"([a-z][a-z0-9-]*)\"" % var, text, re.M)
+    return found.group(1) if found else None
+
+
+if "inputs" not in getattr(frozen_profiles.RunnerProfile, "__dataclass_fields__", {}):
+    emit("MISSING", "RunnerProfile.inputs",
+         "the frozen catalogue declares no runner inputs, so there is nothing "
+         "for the scripts or the Submit form to be compared against")
+else:
+    CATALOGUE = frozen_profiles.RUNNER_PROFILES
+    DECLARING = [set(p.inputs) for p in CATALOGUE.values() if p.inputs is not None]
+
+    def accepted(name):
+        """`prompt` plus what `name` declares; None when it is not declared yet."""
+        declared = CATALOGUE[name].inputs
+        if declared is None:
+            return None
+        return {"prompt"} | set(declared)
+
+    # What the default branch of profile_input may carry: the keys EVERY
+    # declared profile takes, because a run may name any of them.
+    EVERYWHERE = {"prompt"} | (set.intersection(*DECLARING) if DECLARING else set())
+
+    # Every site: (where, the profile or a rule name, the keys it sends).
+    sites = []
+    unread = []
+    for rel, text in FILES:
+        if not (rel.startswith("scripts/") and rel.endswith(".sh")):
+            continue
+        logical = re.sub(r"\\\n\s*", " ", text)
+        for call in re.finditer(r"\bsubmit_task\s+(\S+)\s+(.*)", logical):
+            where = "%s:%d" % (rel, line_of(logical, call.start()))
+            token, rest = call.group(1).strip("\""), call.group(2)
+            if token.startswith("$" + "{"):
+                token = script_default(text, token[2:].split("}")[0].split(":")[0])
+            if rest.startswith(SUBSHELL + "profile_input"):
+                sites.append((where, "profile_input", None))
+                continue
+            literal = QUOTED.search(rest)
+            if not literal or not (rest.startswith(Q) or rest.startswith(SUBSHELL + "jq")):
+                unread.append(where)
+                continue
+            keys = top_level_keys(literal.group(1))
+            if keys is None or token is None:
+                unread.append(where)
+                continue
+            sites.append((where, token, keys))
+        for step in re.finditer(r"\binput:\s*[{]", text):
+            where = "%s:%d" % (rel, line_of(text, step.start()))
+            keys = top_level_keys(text[step.end() - 1:])
+            profile = script_default(text, "PROFILE")
+            if keys is None or profile is None:
+                unread.append(where)
+                continue
+            sites.append((where, profile, keys))
+
+    testlib = TEXT.get("scripts/lib/testlib.sh", "")
+    body = re.search(r"^profile_input[(][)]\s*[{]\n(.*?)^[}]", testlib, re.M | re.S)
+    branches = (
+        re.findall(r"^\s*([a-z*|-]+)\)\n(.*?)[;]{2}", body.group(1), re.M | re.S) if body else []
+    )
+    for label, code in branches:
+        literal = QUOTED.search(code)
+        keys = top_level_keys(literal.group(1)) if literal else None
+        where = "scripts/lib/testlib.sh profile_input, branch %s" % label
+        if keys is None:
+            unread.append(where)
+        elif label == "*":
+            sites.append((where, "*", keys))
+        elif label in CATALOGUE:
+            sites.append((where, label, keys))
+        else:
+            unread.append(where)
+
+    # The floor is what this scan found when it was written: eleven
+    # submit_task calls, four workflow steps in e2e-test.sh and the two
+    # branches of profile_input. Fewer means a site moved out of its sight.
+    SITE_FLOOR = 17
+    compared = 0
+    drift = []
+    for where, profile, keys in sites:
+        if profile == "profile_input":
+            continue
+        if profile == "*":
+            allowed = EVERYWHERE
+        elif profile not in CATALOGUE:
+            drift.append("%s names %s, which the catalogue does not hold" % (where, profile))
+            continue
+        else:
+            allowed = accepted(profile)
+        if allowed is None:
+            continue
+        compared += 1
+        extra = sorted(set(keys) - allowed)
+        if extra:
+            drift.append("%s sends %s to %s, which takes only %s"
+                         % (where, " ".join(extra), profile, " ".join(sorted(allowed))))
+    if unread:
+        emit("MISSING", "script runner inputs",
+             "could not read the input at %s; the scan no longer understands the "
+             "shape there -- teach it rather than trusting this pass" % ", ".join(unread))
+    elif len(sites) < SITE_FLOOR:
+        emit("MISSING", "script runner inputs",
+             "found %d submission site(s), expected at least %d; one moved and "
+             "this scan stopped seeing it" % (len(sites), SITE_FLOOR))
+    elif drift:
+        for line in drift:
+            emit("DRIFT", "script runner inputs",
+                 line + " -- the API answers 422 invalid_input, against a live platform")
+    else:
+        emit("OK", "script runner inputs",
+             "%d submission site(s), %d compared with a declaration; every key is declared"
+             % (len(sites), compared))
+
+    # The Submit form: `SUGGESTED` per profile, plus `ANY_PROFILE` for all.
+    SUBMIT = TEXT.get("apps/swarm-ui/src/Submit.tsx", "")
+    table = re.search(r"const SUGGESTED\b[^=]*=\s*[{]\n(.*?)\n[}]\n", SUBMIT, re.S)
+    every = re.search(r"const ANY_PROFILE\b[^=]*=\s*\[(.*?)\n\]", SUBMIT, re.S)
+    NAME = re.compile(r"name:\s*" + Q + "([A-Za-z_]+)" + Q)
+    for_all = NAME.findall(every.group(1)) if every else []
+    offered = {}
+    if table:
+        for block in re.finditer(
+                r"^  (" + Q + r"?)([a-z][a-z0-9-]*)\1:\s*\[(.*?)^  \],?$",
+                table.group(1), re.M | re.S):
+            offered[block.group(2)] = NAME.findall(block.group(3)) + for_all
+    if len(offered) < len(CATALOGUE):
+        emit("MISSING", "Submit.tsx SUGGESTED",
+             "read suggestions for %d profile(s) of the %d in the catalogue; the "
+             "table moved or changed shape" % (len(offered), len(CATALOGUE)))
+    else:
+        wrong = []
+        for name, keys in sorted(offered.items()):
+            if name not in CATALOGUE:
+                wrong.append("%s is not a profile in the catalogue" % name)
+                continue
+            allowed = accepted(name)
+            extra = sorted(set(keys) - allowed) if allowed is not None else []
+            if extra:
+                wrong.append("%s offers %s, which it does not declare" % (name, " ".join(extra)))
+        if wrong:
+            for line in wrong:
+                emit("DRIFT", "Submit.tsx SUGGESTED",
+                     line + " -- the form invites a submission the API refuses")
+        else:
+            emit("OK", "Submit.tsx SUGGESTED",
+                 "every key the form offers a declared profile is one it declares")
+
 print("\n".join(REPORT))
 PY
 )"; then
