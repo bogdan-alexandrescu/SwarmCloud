@@ -1203,8 +1203,12 @@ export interface AttemptRow {
    * serve it -- a deployment older than the change, or a read that did not
    * ask -- never "no CPU was used". The typed Attempt fields that would
    * replace it are contract request #15.
+   *
+   * NULL IS READ AS NOT SERVED TOO. The route fills `usage` from a map keyed by
+   * attempt id (`routes/tasks.py` `blocks.get(...)`), so a row the map missed
+   * arrives as `null`, not as a missing key -- and it is the same fact.
    */
-  usage?: AttemptUsage
+  usage?: AttemptUsage | null
 }
 
 // --------------------------------------------------------------------------
@@ -3197,6 +3201,12 @@ export interface LogStream {
    */
   object_updated_at?: string | null
   age_seconds?: number | null
+  /**
+   * Bytes of this window that are not UTF-8 (#188 review): JSON cannot carry
+   * them, so the server shows each as U+FFFD, COUNTS them here and says so in
+   * `detail`. Null when nothing was read; absent on an API older than it.
+   */
+  invalid_utf8_bytes?: number | null
 }
 
 /** Which attempt a log, transcript or answer read describes. */
@@ -3273,8 +3283,22 @@ export interface AgentStreams {
   stdout: string | null
   stderr: string | null
   transcript: string | null
-  /** `too_large`: the transcript was over 4,000,000 characters and was not written. */
-  transcript_skipped: 'too_large' | null
+  /**
+   * Why no transcript artifact was written, when one was not:
+   *  - `too_large`: the transcript was over 4,000,000 characters;
+   *  - `capture_truncated`: the stdout it is built from was cut at the output
+   *    cap (the capture kept its start and its end), so a transcript built
+   *    from it would present a cut run as a whole one (#188 review).
+   */
+  transcript_skipped: 'too_large' | 'capture_truncated' | null
+  /**
+   * Whether the output cap cut that agent stream (#188 review): the capture
+   * kept its start and its end and wrote a notice where it dropped the middle.
+   * Null is NOT REPORTED -- never "not cut". Absent on a summary written
+   * before the change.
+   */
+  stdout_truncated?: boolean | null
+  stderr_truncated?: boolean | null
 }
 
 export type TranscriptStepKind =
@@ -3303,9 +3327,15 @@ export interface TranscriptStep {
   /** Set on a sub-agent's steps: the tool call that spawned it. */
   parent_tool_use_id: string | null
   text: string | null
-  /** `input` is the tool input as pretty JSON TEXT, never an object. */
-  tool: { id: string; name: string; input: string | null } | null
-  tool_result: { tool_use_id: string; is_error: boolean; content: string | null; images: number } | null
+  /**
+   * `input` is the tool input as pretty JSON TEXT, never an object. Every
+   * string here is null when the event did not carry one as a string
+   * (`transcript._Scrubber.text`), so an id is never assumed: two null ids are
+   * not a call and its result.
+   */
+  tool: { id: string | null; name: string | null; input: string | null } | null
+  /** `is_error` is null when the event carried no boolean there: not said, which is not `false`. */
+  tool_result: { tool_use_id: string | null; is_error: boolean | null; content: string | null; images: number } | null
   meta: Record<string, unknown> | null
   truncated_fields: string[]
   raw: string | null
@@ -3348,6 +3378,15 @@ export interface TaskTranscript {
   /** Lines that did not parse. Counted, never silently dropped. */
   skipped_lines: number
   answer_in_window: boolean
+  /**
+   * Whether the agent's stdout capture was cut at its size cap (#188 review):
+   * the capture kept the start and the end of the run and dropped the middle,
+   * with a notice line where (a `system` step, `meta.subtype:
+   * "capture_truncated"`). True makes `complete` false and puts the reason in
+   * `stream.detail`; false is known whole; null is nothing can be said.
+   * OPTIONAL: an API older than the change does not send it.
+   */
+  capture_truncated?: boolean | null
   redaction: { applied_at_read_time: boolean; rules: number }
   redaction_count: number
 }
@@ -3392,6 +3431,15 @@ export interface TaskAnswer {
   bytes: number | null
   redacted: boolean
   redaction_count: number
+  /**
+   * Whether the agent's stdout capture was cut at its size cap (#188 review),
+   * decided as the transcript decides it. The capture keeps the END of the
+   * run, where the result event is, so a cut capture can still answer whole;
+   * `detail` then says the rest of the run was not all kept. OPTIONAL: an API
+   * older than the change does not send it.
+   */
+  capture_truncated?: boolean | null
+  /** The server's sentence about this read -- on `ok` too, where it says a capture was cut or why a summary stands in. */
   detail: string | null
 }
 
@@ -3422,7 +3470,15 @@ export interface AttemptUsage {
   mean_cpu_cores: number | null
   cpu_wall_seconds: number | null
   cpu_source: string | null
-  /** The container's own limit, from cgroup `cpu.max`; null when unlimited or unreadable. */
+  /**
+   * The limit the figures are a fraction of, and WHERE IT CAME FROM, as the
+   * worker decided it (`agent_worker.metrics.heartbeat_cpu_fields`,
+   * `lifecycle._cpu_limit`): `cgroup` when read from the container's own
+   * `cpu.max`, `resource_class` when `cpu.max` said nothing and this is the
+   * catalogue cpu of the class the container was SIZED with. Both null when
+   * neither is known. A non-null limit is NOT always the cgroup's: the
+   * source says which, and a label must read it.
+   */
   cpu_limit_cores: number | null
   cpu_limit_source: 'cgroup' | 'resource_class' | null
   peak_rss_bytes: number | null
@@ -3476,6 +3532,12 @@ export interface ArtifactContent {
    */
   content_type?: string | null
   kind?: ArtifactKindName | null
+  /**
+   * Bytes of this window that are not UTF-8 (#188 review), each shown as
+   * U+FFFD because JSON cannot carry them, and said in `detail`. The raw route
+   * serves them exactly. Null when no window was read; absent on an older API.
+   */
+  invalid_utf8_bytes?: number | null
 }
 
 /**

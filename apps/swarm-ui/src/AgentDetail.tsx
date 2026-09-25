@@ -1792,11 +1792,21 @@ function AttemptResources({
  *
  * TWO ROWS, NOT A BAR WITH A TICK: the shared track draws one fill per row,
  * and whether the owner wants one bar with a mean tick instead is an open
- * question on #184. The ceiling is the container's own limit from cgroup
- * `cpu.max` when the worker could read it, else the catalogue's cpu for the
- * task's class -- `requests == limits`, so that is the limit -- and the `by`
- * column says which. A figure over the ceiling takes the track's over-ceiling
- * hatch.
+ * question on #184. The ceiling is the limit the WORKER reported with the
+ * reading, and the `by` column says where it came from, in the worker's own
+ * words (`cpu_limit_source`): the container's cgroup `cpu.max`, or -- when
+ * that said nothing -- the catalogue cpu of the class the container was sized
+ * with. `requests == limits`, so either is the limit. Only when the reading
+ * carries no limit at all does this fall back to the catalogue's cpu for the
+ * task's class, as read here. A figure over the ceiling takes the track's
+ * over-ceiling hatch.
+ *
+ * THE SOURCE IS READ, NOT INFERRED (#187/#188 parity). This labelled every
+ * limit the reading carried `cgroup limit`, and the worker sends a limit with
+ * `cpu_limit_source: "resource_class"` whenever `cpu.max` is `max` or
+ * unreadable -- and nobody has yet read what Cloud Run's `cpu.max` holds
+ * (#188, "not verified"). A catalogue figure was then captioned as a
+ * kernel-enforced one.
  *
  * ONE ROW WHEN THERE IS NOTHING TO SPLIT. With no reading -- the API did not
  * serve one, the attempt never ran, the event window missed it, the read
@@ -1830,9 +1840,11 @@ function CpuRows({
   readAt: number | null
   now: number
 }) {
-  const u = a.usage
-  const cgroup = u?.cpu_limit_cores ?? null
-  const ceiling = cgroup ?? (cls === null ? null : cls.cpu)
+  // `null` is the route's own way of not serving a row's reading (see
+  // `AttemptRow.usage`); it is read exactly as a missing key.
+  const u = a.usage ?? undefined
+  const reported = u?.cpu_limit_cores ?? null
+  const ceiling = reported ?? (cls === null ? null : cls.cpu)
   const fmt = (v: number) => `${Number(v.toFixed(2))} vCPU`
   const reading = cpuReading(u, readAt, now)
 
@@ -1845,7 +1857,7 @@ function CpuRows({
     )
   }
 
-  const from = cgroup !== null ? 'cgroup limit' : cls !== null ? `${cls.name} limit` : null
+  const from = limitSource(u, cls)
   const seconds = u.cpu_seconds === null ? null : `${Number(u.cpu_seconds.toFixed(1))} cpu-s`
   return (
     <>
@@ -1874,6 +1886,30 @@ function CpuRows({
       <CpuNote reading={reading} seconds={seconds} from={from} />
     </>
   )
+}
+
+/**
+ * WHERE THE CPU CEILING CAME FROM, in words for the `by` column and the strip.
+ *
+ *   cgroup          `cgroup limit`: the container's own `cpu.max`.
+ *   resource_class  the class's name when the class read here has that very
+ *                   cpu (`standard limit`), else `resource class limit`: the
+ *                   worker sized the container by the task's class when the
+ *                   catalogue still has it and by the profile's otherwise, so
+ *                   a class read here with a different cpu is not the one it
+ *                   used, and naming it would name the wrong one.
+ *   anything else   with a limit: `reported limit` -- the worker sent a figure
+ *                   and did not say where from, which is not the cgroup's.
+ *   no limit        the task's class read here, by name, as before.
+ */
+function limitSource(u: AttemptUsage, cls: ResourceClassSpec | null): string | null {
+  const cores = u.cpu_limit_cores
+  if (cores === null) return cls !== null ? `${cls.name} limit` : null
+  if (u.cpu_limit_source === 'cgroup') return 'cgroup limit'
+  if (u.cpu_limit_source === 'resource_class') {
+    return cls !== null && cls.cpu === cores ? `${cls.name} limit` : 'resource class limit'
+  }
+  return 'reported limit'
 }
 
 /** One attempt's CPU reading, in words, for the rows' `by` column and for the strip under them. */

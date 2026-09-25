@@ -350,6 +350,22 @@ function Provenance({
             </button>
           )}
         </li>
+        {/* BYTES THAT ARE NOT UTF-8 (#188 review). JSON cannot carry them, so
+            the server shows each as U+FFFD and COUNTS them; without the count
+            a Latin-1 file reads as the agent's own text with odd glyphs in
+            it. The download on this strip saves what is shown, U+FFFD and all;
+            the Artifacts pane's `download` is the raw route, which serves the
+            stored bytes exactly. Absent on an older API; zero draws nothing. */}
+        {typeof data.invalid_utf8_bytes === 'number' && data.invalid_utf8_bytes > 0 && (
+          <li className="ctl-fact is-absent">
+            <b>not utf-8</b>
+            {num(data.invalid_utf8_bytes)}{' '}
+            <Mark
+              kind="partial"
+              say={`${num(data.invalid_utf8_bytes)} bytes of this window are not UTF-8 and are shown as U+FFFD. The stored object holds them exactly; the raw download serves them as stored.`}
+            />
+          </li>
+        )}
         {/* THE COUNT IS THE DIFFERENCE between "this output is clean" and
             "this output had four credentials in it and you should rotate
             them", so the count stays on the glass. That masking here does not

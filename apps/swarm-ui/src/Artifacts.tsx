@@ -612,6 +612,12 @@ function Answer({ v }: { v: ArtifactsView }) {
             say="The attempt ended and wrote no result event, and there is no runner summary to stand in for one."
           />{' '}
           no answer recorded
+          {/* A CUT CAPTURE IS A REASON, and the server's sentence names it:
+              the run's middle was not kept, so "no result event" is about
+              what was kept. Said only then; otherwise the mark says it all. */}
+          {r.data.capture_truncated === true && r.data.detail !== null && (
+            <span className="ctl-sub">{r.data.detail}</span>
+          )}
         </p>
       ) : r.data.status === 'unreadable' ? (
         <p className="att-none">
@@ -643,6 +649,15 @@ function Answer({ v }: { v: ArtifactsView }) {
 function AnswerNote({ a }: { a: TaskAnswer }) {
   return (
     <span className="is-end ctl-card-note">
+      {a.capture_truncated === true && (
+        <>
+          <Mark
+            kind="partial"
+            say="The agent's output passed the worker's capture size cap, so the middle of the run was not kept. The capture keeps the end of the run, where the result is, so this answer can still be whole; the rest of the run is not."
+          />{' '}
+          capture cut ·{' '}
+        </>
+      )}
       {a.is_error === true && (
         <>
           <Chip tone="bad">the agent reported an error</Chip>{' '}
@@ -1362,6 +1377,16 @@ function TranscriptBody({
             {t.format}
           </li>
         )}
+        {t.capture_truncated === true && (
+          <li className="ctl-fact is-absent">
+            <b>capture</b>
+            cut at its cap{' '}
+            <Mark
+              kind="partial"
+              say="The agent's output passed the worker's capture size cap. The capture kept the start and the end of the run and dropped the middle, with a notice where, so this transcript is not the whole run."
+            />
+          </li>
+        )}
         {skipped > 0 && (
           <li className="ctl-fact is-absent">
             <b>skipped</b>
@@ -1379,6 +1404,17 @@ function TranscriptBody({
           </button>
         </li>
       </ul>
+      {/* THE SERVER'S OWN SENTENCE ABOUT THIS WINDOW, when it read one: a
+          capture cut at its cap, a line longer than the window, a window that
+          began inside such a line. The absent and unreadable answers draw it
+          beside their own mark; an `ok` read that carries one is saying the
+          window is less than it looks. */}
+      {t.stream.status === 'ok' && t.stream.detail !== null && (
+        <p className="arts-window-note">
+          <Mark kind="partial" say="The server says this window is less than it looks, in the words beside this mark." />{' '}
+          {t.stream.detail}
+        </p>
+      )}
       <TranscriptSteps t={t} steps={steps} v={v} reading={reading} now={now} />
       {next !== null && (
         <p className="arts-window-note">
@@ -1505,18 +1541,22 @@ function TranscriptSteps({
  * step whose parent is not, are drawn at the top level rather than dropped.
  */
 function Steps({ steps }: { steps: TranscriptStep[] }) {
+  // A NULL ID JOINS NOTHING. The server sends `tool.id` and
+  // `tool_result.tool_use_id` as null when the event carried no string there;
+  // two nulls are two unknowns, not a call and its result, so neither side is
+  // entered into the join and each is drawn on its own.
   const calls = new Set<string>()
-  for (const s of steps) if (s.kind === 'tool_call' && s.tool !== null) calls.add(s.tool.id)
+  for (const s of steps) if (s.kind === 'tool_call' && s.tool !== null && s.tool.id !== null) calls.add(s.tool.id)
   const results = new Map<string, TranscriptStep>()
   for (const s of steps) {
-    if (s.kind === 'tool_result' && s.tool_result !== null && calls.has(s.tool_result.tool_use_id)) {
-      results.set(s.tool_result.tool_use_id, s)
-    }
+    const use = s.kind === 'tool_result' && s.tool_result !== null ? s.tool_result.tool_use_id : null
+    if (use !== null && calls.has(use)) results.set(use, s)
   }
   const children = new Map<string, TranscriptStep[]>()
   const top: TranscriptStep[] = []
   for (const s of steps) {
-    if (s.kind === 'tool_result' && s.tool_result !== null && results.get(s.tool_result.tool_use_id) === s) continue
+    const use = s.kind === 'tool_result' && s.tool_result !== null ? s.tool_result.tool_use_id : null
+    if (use !== null && results.get(use) === s) continue
     const parent = s.parent_tool_use_id
     if (parent !== null && calls.has(parent) && !(s.kind === 'tool_call' && s.tool?.id === parent)) {
       const list = children.get(parent)
@@ -1711,13 +1751,45 @@ function StepRow({
         </li>
       )
     case 'system':
+      // THE CAPTURE'S OWN NOTICE is a system step (`meta.subtype:
+      // "capture_truncated"`) whose text is the line the worker wrote where it
+      // dropped the middle of the run: what was cut is in those words, so they
+      // are drawn, with the mark that says this is where the run is not whole.
       return (
         <li className="arts-step is-meta">
           <span className="arts-step-kind">system{typeof m.subtype === 'string' ? ` · ${m.subtype}` : ''}</span>
+          {m.subtype === 'capture_truncated' && (
+            <>
+              {' '}
+              <Mark
+                kind="partial"
+                say="The worker's capture of the agent's output was cut at its size cap here: the steps before and after this line are the run's start and its end, and the middle between them was not kept."
+              />
+            </>
+          )}
+          {step.text !== null && step.text !== '' && <pre className="art-code">{step.text}</pre>}
           {record}
         </li>
       )
     case 'other':
+      // `meta.oversize`: ONE LINE LONGER THAN THE WINDOW, which the server
+      // does not decode and says so in the window's `stream.detail` (drawn
+      // above the steps). The step carries no text, so without its own words
+      // it is an empty `other` row that reads as an event with nothing in it.
+      if (m.oversize === true) {
+        return (
+          <li className="arts-step is-meta">
+            <span className="arts-step-kind">
+              line longer than this window{' '}
+              <Mark
+                kind="partial"
+                say="One line of the agent's output is longer than the window the server reads, so it was not decoded into a step and nothing of it is shown here. Its bytes are in the agent's stdout."
+              />
+            </span>
+            {record}
+          </li>
+        )
+      }
       return (
         <li className="arts-step is-meta">
           <span className="arts-step-kind">other{typeof m.raw_type === 'string' ? ` · ${m.raw_type}` : ''}</span>{' '}

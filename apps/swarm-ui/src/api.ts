@@ -1026,6 +1026,8 @@ async function fixtureAnswer(taskId: string): Promise<Result<TaskAnswer>> {
       bytes: ok ? new TextEncoder().encode(content).length : null,
       redacted: false,
       redaction_count: 0,
+      // What the server says of a capture that was not cut, as #188 sends it.
+      capture_truncated: ok ? false : null,
       detail: null,
     },
   }
@@ -1092,6 +1094,8 @@ async function fixtureTranscript(taskId: string, includeRaw: boolean): Promise<R
       window_starts_mid_stream: false,
       skipped_lines: 0,
       answer_in_window: finished,
+      // Known whole only for a whole final read, as #188 decides it.
+      capture_truncated: finished ? false : null,
       redaction: { applied_at_read_time: true, rules: 6 },
       redaction_count: 0,
     },

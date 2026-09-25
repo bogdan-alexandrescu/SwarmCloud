@@ -117,6 +117,33 @@ window is described before the first row:
 `show records` re-reads with `include_raw=true` for each step's redacted source
 record.
 
+**A null id joins nothing.** The server sends `tool.id` and
+`tool_result.tool_use_id` as null when the event carried no string there. Two
+nulls are two unknowns, not a call and its result, so each is drawn on its own
+(`no result in this window`, `its call is not in this window`).
+
+**A capture cut at its cap, and a line longer than the window** (#188's review
+fix-up, read here since the parity pass):
+
+* When the agent's output passed the worker's capture cap, the capture keeps the
+  run's start and end and drops the middle, with a notice line where. The
+  server sends `capture_truncated: true` and puts the reason in `stream.detail`.
+  The window reads `capture · cut at its cap` with the `partial` mark, and it
+  draws the server's sentence above the steps. The notice itself is a `system ·
+  capture_truncated` step, and its own words (how many bytes were dropped) are
+  drawn with the `partial` mark.
+* A line longer than the window is one step with `meta.oversize` and no text,
+  and its reason is in `stream.detail`. It reads `line longer than this window`,
+  never a bare `other`.
+* The answer carries `capture_truncated` too. The capture keeps the run's end,
+  where the result is, so a cut capture can still answer whole. The answer is
+  drawn, and its note reads `capture cut` with the `partial` mark. An ended run
+  with no answer and a cut capture shows the server's sentence, because then
+  "no result event" is about what was kept.
+
+Any `stream.detail` on an `ok` transcript read is drawn above the steps. Those
+sentences are how the server says a window is less than it looks.
+
 ## The honesty rules, as this pane applies them
 
 `absent`, `unreadable`, `not_applicable` and a measured-empty `''` are four
@@ -127,16 +154,33 @@ not serve yet (an API older than #184) reads `not served by this API`, never
 of a JSON document does not parse, so it is shown as served and marked
 `partial, not pretty-printed`.
 
+Bytes that are not UTF-8 cannot travel in JSON. `/artifacts/content` and
+`/logs` show each one as U+FFFD and count them in `invalid_utf8_bytes`, with a
+sentence in `detail`. The file viewer draws the count as `not utf-8 N` with the
+`partial` mark, and draws nothing at zero. The log rows already draw the
+server's `detail`. The raw route serves those bytes exactly as stored, so a
+file's `download` is the one to use.
+
 ## CPU in Details
 
 `GET /v1/tasks/{id}/attempts?include=usage` adds each attempt's newest CPU
 reading, found by the server in one descending events read. The drawer's own
 events page is oldest-first and capped, so on a long run it misses exactly the
 final reading. Details draws two rows, `cpu peak` and `cpu mean`, in the
-memory and workspace style. Each is set against the container's cgroup limit
-when the worker could read it, and otherwise against the class's cpu
-(`requests == limits`). The `by` column says which, plus where the reading came
-from:
+memory and workspace style. Each is set against the limit the worker sent with
+the reading, and the label follows the worker's `cpu_limit_source`:
+
+| cpu_limit_source | ceiling label |
+|---|---|
+| `cgroup` (the container's own `cpu.max`) | `cgroup limit` |
+| `resource_class` (`cpu.max` said nothing; the catalogue cpu of the class the container was sized with) | the class's name when the class read here has that cpu, else `resource class limit` |
+| no limit in the reading | the task's class read here, by name (`requests == limits`) |
+
+The first version labelled every limit in the reading `cgroup limit`. The
+worker sends `resource_class` whenever `cpu.max` is `max` or cannot be read, and
+nobody has yet read what Cloud Run's `cpu.max` holds. A catalogue figure would
+then have been captioned as a limit the kernel enforces. The `by` column also
+says where the reading came from:
 
 | usage.status | by |
 |---|---|
@@ -147,7 +191,7 @@ from:
 | absent, or every figure null | `never measured` |
 | beyond_window | `off the event window` |
 | unread | `read failed` |
-| no `usage` served | `not served` |
+| no `usage` served, or `usage: null` | `not served` |
 
 With no reading there is one `cpu` row, not two identical hatched ones. An
 absent figure is never drawn as zero, and a figure over the limit takes the
