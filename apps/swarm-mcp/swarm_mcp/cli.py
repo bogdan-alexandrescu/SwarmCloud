@@ -149,14 +149,25 @@ def _finished_quietly(
     Its contents are NOT printed here. `swarm follow` reads the completed log
     through the API, which redacts at read time. That is the path for output
     this tail never saw, and the line names it.
+
+    EVERY LINE NAMES THE ATTEMPT IT DESCRIBES. What is read here is one
+    attempt's objects, under its own `attempts/<id>/logs` prefix, and a task
+    can have several. Only the no-object line named one, so the rest read as
+    a verdict on the whole task -- and `tail` used to pass in the first
+    attempt it saw, which after a quota park or a retry is not the one the
+    task finished on. `tail` now passes the newest, read on the poll that saw
+    the terminal state.
     """
     task_id = task_id_of(task)
     if live_unreadable:
         # The warning above has the status. A read that failed says nothing
         # about the output, so this line does not either.
-        return "whether it printed anything is unknown -- its logs could not be read"
+        return (
+            f"whether attempt {attempt} printed anything is unknown -- its logs could "
+            "not be read"
+        )
     if live_found:
-        return "printed nothing -- its live log is empty"
+        return f"attempt {attempt} printed nothing -- its live log is empty"
     held: dict[str, int] = {}
     for stream in STREAMS:
         try:
@@ -167,18 +178,21 @@ def _finished_quietly(
             if exc.status == 404:
                 continue
             return (
-                "whether it printed anything is unknown -- its completed log could not "
-                f"be read: {exc}"
+                f"whether attempt {attempt} printed anything is unknown -- its completed "
+                f"log could not be read: {exc}"
             )
     if not held:
         return no_log_line(task_id, attempt)
     if not any(held.values()):
-        return "printed nothing -- its completed log is empty, and an empty stream gets no live log"
+        return (
+            f"attempt {attempt} printed nothing -- its completed log is empty, and an "
+            "empty stream gets no live log"
+        )
     sizes = " and ".join(f"{count} bytes of {stream}" for stream, count in held.items() if count)
     return (
-        f"no live log exists, but its completed log holds {sizes} -- the worker publishes "
-        "the live log every 5 s by default, not at exit, so output written after its "
-        f"last flush never reaches one. Read it with: "
+        f"attempt {attempt} has no live log, but its completed log holds {sizes} -- the "
+        "worker publishes the live log every 5 s by default, not at exit, so output "
+        f"written after its last flush never reaches one. Read it with: "
         f"{terminal_command(f'swarm follow {task_id}')}"
     )
 
@@ -301,6 +315,9 @@ def cmd_tail(client: SwarmClient, args) -> int:
     tasks = _expand(client, list(args.task_ids))
     seen_events: dict[str, set[str]] = {t: set() for t in tasks}
     shown_to: dict[tuple[str, str], int] = {}
+    # Per task: the newest attempt, looked up again on EVERY poll (see below).
+    # `shown_to`, `found_log` and `unreadable` all describe this attempt, and
+    # are cleared when it changes.
     attempts: dict[str, str] = {}
     labels: dict[str, str] = {t: task_label(t) for t in tasks}
     # Said ONCE per task, not once per poll: at three seconds an interval, a
@@ -314,6 +331,9 @@ def cmd_tail(client: SwarmClient, args) -> int:
     # nothing about the output, so the finished line must not either -- and a
     # read that failed once and then worked is not held against the task.
     unreadable: set[str] = set()
+    # Per task, as of its LATEST poll: the attempts read failed. With no
+    # attempt stored, whether the task started is unknown. With one stored,
+    # whether a later attempt ran is unknown.
     attempts_failed: set[str] = set()
     # The bucket, resolved once per tail and only once an attempt exists --
     # `[value]` or `[error]` -- because resolving it may ask gcloud.
@@ -375,19 +395,52 @@ def cmd_tail(client: SwarmClient, args) -> int:
 
         for task_id, task in polled.items():
             label = labels[task_id]
-            attempt = attempts.get(task_id)
-            if attempt is None:
-                attempt, why = _latest_attempt(client, task_id)
-                attempts_failed.discard(task_id)
-                if why is not None:
-                    # Not fatal -- the state polling above still works, so the
-                    # tail can still report the outcome. But silence here is
-                    # indistinguishable from an agent that has printed nothing,
-                    # which is the reading an operator would take.
+            # EVERY POLL, NOT ONCE. A task moves to a new attempt when a quota
+            # park ends one and the resume starts the next (invariant 4), and
+            # on a retry after a crash or a reclaim. A slow interval can see
+            # RUNNING on both sides of the move, so no state says when to look.
+            # Each attempt publishes under its own prefix. `tail` looked once
+            # and kept the first id, so it polled the old attempt's objects
+            # while the new one published, and its finished line explained the
+            # task from the wrong attempt's logs. The task was read ABOVE,
+            # before this, so on the poll that reads a terminal state this is
+            # the attempt the task finished on.
+            stored = attempts.get(task_id)
+            latest, why = _latest_attempt(client, task_id)
+            attempts_failed.discard(task_id)
+            if why is not None:
+                # Not fatal -- the state polling above still works, so the
+                # tail can still report the outcome. But silence here is
+                # indistinguishable from an agent that has printed nothing,
+                # which is the reading an operator would take.
+                attempts_failed.add(task_id)
+                if stored:
+                    # The stored attempt is still read below. What is lost is
+                    # knowing whether it is still the newest.
+                    warn_once(
+                        task_id,
+                        f"latest:{stored}",
+                        f"! cannot tell whether {stored} is still the latest attempt: {why}",
+                    )
+                else:
                     warn_once(task_id, "attempts", f"! logs unavailable: {why}")
-                    attempts_failed.add(task_id)
-            if attempt:
-                attempts[task_id] = attempt
+            elif latest and stored and latest != stored:
+                # Said, as `follow._logs` says it, rather than left to be read
+                # off output that starts again from nothing. Every position
+                # held was measured against the old attempt's objects, and the
+                # new attempt's streams start at zero.
+                _emit(
+                    label,
+                    f"attempt {latest} is now the latest one, not {stored}: what follows "
+                    f"is {latest}'s output, not a continuation of {stored}'s",
+                )
+                for stream in STREAMS:
+                    shown_to.pop((task_id, stream), None)
+                found_log.discard(task_id)
+                unreadable.discard(task_id)
+            if latest:
+                attempts[task_id] = latest
+            attempt = attempts.get(task_id)
             where = resolve_bucket() if attempt else None
             if attempt and where is None:
                 # A CONFIGURATION error, said. It was raised inside the read
@@ -408,8 +461,8 @@ def cmd_tail(client: SwarmClient, args) -> int:
                         # Anything else -- a 403 on the tenant's prefix, a
                         # timeout -- is a read that FAILED, and an agent that
                         # printed nothing looks exactly like it unless it is
-                        # said. Once per task.
-                        warn_once(task_id, "read", f"! logs unreadable: {exc}")
+                        # said. Once per attempt: the URI in it names one.
+                        warn_once(task_id, f"read:{attempt}", f"! logs unreadable: {exc}")
                         unreadable.add(task_id)
                         continue
                     found_log.add(task_id)
@@ -441,7 +494,7 @@ def cmd_tail(client: SwarmClient, args) -> int:
             if state in TERMINAL:
                 done.add(task_id)
                 if not printed:
-                    if task_id in attempts_failed:
+                    if not attempt and task_id in attempts_failed:
                         # "No attempt" is an ANSWER from the attempts route;
                         # a failed read of it is not, and was warned above.
                         _emit(
@@ -450,6 +503,15 @@ def cmd_tail(client: SwarmClient, args) -> int:
                         )
                     elif not attempt:
                         _emit(label, "never started, so it printed nothing")
+                    elif task_id in attempts_failed:
+                        # The attempt read is known. Whether the task finished
+                        # on it is not, so a cause taken from its logs could
+                        # be the stale-attempt explanation all over again.
+                        _emit(
+                            label,
+                            f"nothing was shown from attempt {attempt}, and whether a later "
+                            "attempt ran is unknown -- its attempts could not be read",
+                        )
                     elif where:
                         _emit(
                             label,
