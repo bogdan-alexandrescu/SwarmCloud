@@ -293,7 +293,10 @@ class SubmissionService:
             StepSpec(
                 step_id=s.step_id,
                 depends_on=tuple(s.depends_on),
-                input_from=tuple(s.input_from),
+                # The filenames too, not only the parent ids: validate_dag
+                # refuses two parents staging one filename, and a filename that
+                # is absolute or traverses, before anything is created (#64).
+                input_from=dict(s.input_from),
             )
             for s in spec.steps
         ]

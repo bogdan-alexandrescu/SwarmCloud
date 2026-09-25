@@ -105,8 +105,9 @@ def build_steps(raw_steps: Any) -> list[dict[str, Any]]:
 
     Everything else about the DAG -- cycles, a dependency naming a step that is
     not in the workflow, an `input_from` whose source is not also a `depends_on`,
-    the step ceiling -- is checked by `swarm_api.validation` and is NOT restated
-    here. That validator is the one with the tests; a second opinion in this file
+    two parents of one step staging the same filename, an absolute or
+    traversing filename, the step ceiling -- is checked by
+    `swarm_api.validation` and is NOT restated here. That validator is the one with the tests; a second opinion in this file
     would be a second thing to keep in step with it.
     """
     if not isinstance(raw_steps, list) or not raw_steps:

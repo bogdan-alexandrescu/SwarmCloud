@@ -119,7 +119,10 @@ not through a hand-rolled join. Dispatching the units separately and stitching
 them together in a later prompt is exactly the hand bookkeeping the platform
 exists to remove, and it loses artifact staging entirely --- `input_from` is how
 one step's output reaches the next, by GCS reference rather than through a
-prompt.
+prompt. The filename is also where the file lands, so a join with several
+parents needs each parent to write a **distinct** filename (`scan-A-notes.md`,
+`scan-B-notes.md`, not `notes.md` twice). The API refuses a shared name, or an
+absolute or `..` path, at submission.
 
 Per-step state comes from `swarm_workflow_status`, which reports the **derived**
 rollup and never a stored `state` field. That distinction is not theoretical: on

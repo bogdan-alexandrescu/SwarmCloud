@@ -227,7 +227,7 @@ One idea, five spellings:
 |---|---|---|
 | `swarm_common/models.py:333` `WorkflowStep.input_from` | `dict[str, str]` | step id |
 | `swarm-api/schemas.py:80` `WorkflowStepCreate.input_from` | `dict[str, str]` | step id |
-| `swarm-api/validation.py:358` `StepSpec.input_from` | `tuple[str, ...]` | step id, **no filenames** |
+| `swarm-api/validation.py` `StepSpec.input_from` | `Mapping[str, str]` | step id (was a tuple of ids with no filenames until #64) |
 | `task.metadata["input_from"]` | untyped | **task id** |
 | `swarm-ui/src/types.ts:1227` `WorkflowStep.input_from` | `string \| null` | -- |
 
@@ -251,9 +251,11 @@ what is inside it. That defensiveness is correct and would still be wanted; the
 request is about the fifth row of that table, and about the submission path that
 never gets validated at all.
 
-`StepSpec.input_from` being a *tuple of ids* is not sloppiness: `validate_dag`
-needs to know which step a file comes from, not which file. It is listed because
-it is a fourth shape somebody has to hold in their head while reading this.
+`StepSpec.input_from` was a *tuple of ids* because the dependency rule needs to
+know only which step a file comes from. That shape is also why the API could not
+see two parents staging one filename, a mistake that surfaced only after both
+parents had run. Since #64 it carries the filenames too, and `validate_dag`
+refuses that collision and any absolute or traversing filename at submission.
 
 ### Why: the failure it prevents
 
