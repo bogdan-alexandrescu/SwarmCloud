@@ -209,6 +209,19 @@ DEFAULT_CARRIER = "checkpoints"
 #: must not have it silently overwritten by the platform.
 DISPATCH_METADATA_KEY = "dispatch"
 
+#: The key inside `task.metadata` the worker stages declared inputs from:
+#: `{upstream TASK id: filename}`. Written by workflow expansion only
+#: (`SubmissionService.submit_workflow`), which rewrites a step's
+#: `{upstream_step: filename}` to the task ids it has just minted. The worker
+#: spells it `agent_worker.inputs.METADATA_KEY`, and
+#: tests/unit/control_plane/test_input_from_is_reserved.py holds the two equal:
+#: reserving a key the worker does not read would refuse nothing that matters.
+INPUT_FROM_METADATA_KEY = "input_from"
+
+#: Every key inside `task.metadata` this service writes and a caller may not,
+#: in the order a refusal names them.
+RESERVED_METADATA_KEYS = (DISPATCH_METADATA_KEY, INPUT_FROM_METADATA_KEY)
+
 #: Strategies and carriers that cannot work without somewhere to push to.
 _NEEDS_REPOSITORY_STRATEGIES = ("direct-pr", "integrate")
 
