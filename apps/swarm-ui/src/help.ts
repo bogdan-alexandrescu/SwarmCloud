@@ -437,6 +437,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
       'Token counts come from the runner, through the worker, and only the CLI runners produce them. An attempt from any other runner carries none.',
       'Attempts that ran before the worker’s token capture shipped also carry none, so the absence is common on older runs and says nothing about them.',
       'Where a total exists, the caption names how many attempts of the run contributed to it, and which halves — input, output, or both — are in it.',
+      'The Timeline’s Token spend is summed from each task’s result, and a result covers only that task’s last attempt, so a task that ran more than once is counted at one attempt’s cost there.',
     ],
   },
 

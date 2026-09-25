@@ -509,9 +509,14 @@ describe('TS-20: a stage says "then", and "waits for" is said once, on each step
     fireEvent.click(alongside)
     expect(head().querySelector('.wfb-stage-say')?.textContent).toBe('2 steps run together')
     expect(visible(head())).not.toContain('everything above')
-    // Once per step, on the step's own disclosure -- the control that changes it.
-    const says = (visible(second()).match(/waits for/g) ?? []).length
-    expect(says).toBe(second().querySelectorAll('.wfb-step').length)
+    // Said on each step's own disclosure -- the control that changes it...
+    const steps = [...second().querySelectorAll('.wfb-step')]
+    expect(steps).toHaveLength(2)
+    for (const s of steps) expect(visible(s.querySelector('.wfb-more > summary')!)).toMatch(/^waits for/)
+    // ...and nowhere else in the stage.
+    const rest = second().cloneNode(true) as HTMLElement
+    for (const s of [...rest.querySelectorAll('.wfb-step')]) s.remove()
+    expect(visible(rest), 'the stage says "waits for" outside its steps').not.toContain('waits for')
   })
 })
 

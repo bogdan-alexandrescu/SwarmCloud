@@ -1084,6 +1084,9 @@ while being real as rendering inconsistency across DPI.
 **Fix the inversion.** `.section > h2` becomes `--t-title` / 600 in `--text`.
 The uppercase small-caps treatment drops one level, to panel labels only.
 
+> *Superseded by design-system §2 (TS-18, 2026-09-25): section, panel and step
+> headings are `--t-lead` / 600; `--t-title` is the screen h1's step.*
+
 **Hierarchy channels, in priority order**, because size is already spent:
 
 1. **Weight + case + tracking on the label, full size on the value.** Already

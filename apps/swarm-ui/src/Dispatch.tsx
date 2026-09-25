@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
+import { helpAnchor, type TopicId } from './help'
 import {
-  CARRIER_LABEL,
   CARRIER_NOTE,
   DISPATCH_CARRIERS,
   DISPATCH_STRATEGIES,
@@ -58,9 +58,15 @@ export interface DispatchChoiceProps {
   /**
    * "task" or "workflow", exactly as `resolve_dispatch_options` means it.
    * `integrate` names a FINAL STEP that receives the others' patches, so at
-   * task scale the API refuses it -- and this control says so on the option
-   * rather than hiding it, because a missing option is a question nobody can
-   * answer.
+   * task scale the API refuses it. The task form therefore does not offer it,
+   * and says in one line where one pull request for several steps lives
+   * (TS-14): a missing option with nothing said is a question nobody can
+   * answer, and a disabled card drawn dashed read as a broken read.
+   *
+   * The CARRIER is a workflow question too -- "what carries work between
+   * steps" has no answer when there are no steps -- so it is asked only here
+   * at workflow scale (TS-6). A task still SENDS the default carrier, as it
+   * always did; it just is not asked for one.
    */
   scale: 'task' | 'workflow'
   /**
@@ -99,6 +105,16 @@ export function repositorySchemeRefused(url: string): boolean {
   return sent !== '' && !REPOSITORY_SCHEMES.some((p) => sent.startsWith(p))
 }
 
+/** Where the carrier's caveat is argued. Typed, so a renamed topic fails to build. */
+const CARRIER_HELP: TopicId = 'dispatch-carrier'
+
+/**
+ * The route the single-task form points to for one pull request over several
+ * steps. The rail does not show this tab at 390 (TS-14), which is why the line
+ * carries a link rather than naming a place to go and look.
+ */
+const WORKFLOW_FORM = '#work/new-workflow'
+
 export function DispatchChoice({
   draft,
   onChange,
@@ -112,6 +128,12 @@ export function DispatchChoice({
   const repoMissing = repoRequired && draft.repositoryUrl.trim() === ''
   const repoRefused = repositorySchemeRefused(draft.repositoryUrl)
 
+  // THE STRATEGIES THIS SCALE CAN TAKE, and no others (TS-14). A task cannot
+  // integrate -- there is no final step to receive anyone's patches -- so at
+  // task scale `integrate` is not drawn at all, rather than drawn disabled.
+  const offered: readonly DispatchStrategy[] =
+    scale === 'task' ? DISPATCH_STRATEGIES.filter((s) => s !== 'integrate') : DISPATCH_STRATEGIES
+
   return (
     <fieldset className="dsp">
       {/* NO `?` ON ANY CONTROL IN THIS FIELDSET (B7.4), AND THE REASON IS THAT
@@ -123,33 +145,24 @@ export function DispatchChoice({
           and every one of those controls already says what it does: the legends
           are sentences (`how this work gets merged`, `what carries work between
           steps`), each strategy prints its own consequence in numbers beside
-          it, the unavailable one says why it is unavailable, and the repository
-          field says in its own label whether the current choice requires it.
-          `CARRIER_NOTE` below is the one thing no label could carry -- that the
-          control records a preference nothing acts on yet -- and it is printed,
-          not hidden behind a glyph. The strategy and carrier topics are in the
-          rail's Help section and on the agent detail's card foot. */}
+          it, the task form says in one line where the strategy it cannot take
+          lives, and the repository field says in its own label whether the
+          current choice requires it. The carrier's `not acted on yet` is the one
+          thing no label could carry -- that the control records a preference
+          nothing acts on -- and it is printed as a plain line with a link to
+          `#help/dispatch-carrier`, with `CARRIER_NOTE` as its accessible name. */}
       <legend className="t-label">how this work gets merged</legend>
 
       <div className="dsp-options" role="radiogroup" aria-label="dispatch strategy">
-        {DISPATCH_STRATEGIES.map((s) => {
+        {offered.map((s) => {
           const c = consequenceOf(s, steps)
-          // The API refuses `integrate` outside a workflow. The option stays
-          // visible and carries the refusal's own reasoning, because a caller
-          // who came looking for "one pull request" needs to be told where it
-          // lives, not shown two options and left to guess.
-          const unavailable = s === 'integrate' && scale === 'task'
           return (
-            <label
-              key={s}
-              className={`dsp-option${draft.strategy === s ? ' is-on' : ''}${unavailable ? ' is-off' : ''}`}
-            >
+            <label key={s} className={`dsp-option${draft.strategy === s ? ' is-on' : ''}`}>
               <input
                 type="radio"
                 name="dispatch-strategy"
                 value={s}
                 checked={draft.strategy === s}
-                disabled={unavailable}
                 onChange={() => set({ strategy: s })}
               />
               <span className="dsp-option-body">
@@ -158,16 +171,24 @@ export function DispatchChoice({
                   <code className="dsp-code">{s}</code>
                   {s === 'collect' && <span className="dsp-default">default</span>}
                 </span>
-                {/* THE CONSEQUENCE, on the option, in numbers. */}
+                {/* THE CONSEQUENCE, on the option, in numbers. It is the only
+                    place it is said: the box under the options no longer
+                    repeats it (TS-20). */}
                 <span className={`dsp-count${c.pushes ? '' : ' is-none'}`}>{c.headline}</span>
-                {unavailable && (
-                  <span className="dsp-off-why">Not available for a single task</span>
-                )}
               </span>
             </label>
           )
         })}
       </div>
+      {scale === 'task' && (
+        // WHERE ONE PULL REQUEST FOR SEVERAL STEPS LIVES (TS-14, the first
+        // option in #121). Plain ink, no mark and no warning: nothing is wrong,
+        // the option simply belongs to the other form. A link rather than a
+        // place to go and look, because at 390 the rail does not show that tab.
+        <p className="ctl-panel-note">
+          one PR for several steps → <a href={WORKFLOW_FORM}>Submit a workflow</a>
+        </p>
+      )}
 
       <Consequence
         strategy={draft.strategy}
@@ -177,31 +198,42 @@ export function DispatchChoice({
       />
       {errors?.strategy && <p className="warn-text" role="alert">{errors.strategy}</p>}
 
-      {/* `.dsp-label`, NOT AN INLINE `marginTop: 14`. 14px is off the
-          four-step scale and an inline style is out of the sheet's reach, so
-          no spacing rule could ever correct it; the gap above each field is
-          `--ctl-s3`, declared once in the sheet. */}
-      <label className="t-label dsp-label" htmlFor="dsp-carrier">
-        what carries work between steps
-      </label>
-      <select
-        id="dsp-carrier"
-        className="mono"
-        value={draft.carrier}
-        onChange={(e) => set({ carrier: e.target.value as DispatchCarrier })}
-      >
-        {DISPATCH_CARRIERS.map((c) => (
-          <option key={c} value={c}>
-            {c} — {CARRIER_LABEL[c]}
-          </option>
-        ))}
-      </select>
-      {/* Said on every carrier, not only on `branches`: the control records a
-          preference the platform does not act on yet, and a caller is entitled
-          to know that before they choose one. `CARRIER_DETAIL` -- what the
-          carrier would mean if something read it -- moved to
-          `#help/dispatch-carrier`; this did not, and must not. */}
-      <p className="warn-text">{CARRIER_NOTE}</p>
+      {scale === 'workflow' && (
+        <>
+          {/* `.dsp-label`, NOT AN INLINE `marginTop: 14`. 14px is off the
+              four-step scale and an inline style is out of the sheet's reach,
+              so no spacing rule could ever correct it; the gap above each
+              field is `--ctl-s3`, declared once in the sheet. */}
+          <label className="t-label dsp-label" htmlFor="dsp-carrier">
+            what carries work between steps
+          </label>
+          <select
+            id="dsp-carrier"
+            className="mono"
+            value={draft.carrier}
+            aria-describedby="dsp-carrier-note"
+            onChange={(e) => set({ carrier: e.target.value as DispatchCarrier })}
+          >
+            {/* THE VALUE, ONCE (TS-6). It read `checkpoints — Checkpoints`:
+                the token and a capitalised copy of the token. */}
+            {DISPATCH_CARRIERS.map((c) => (
+              <option key={c} value={c}>
+                {c}
+              </option>
+            ))}
+          </select>
+          {/* THE FACT STAYS ON THE SURFACE, AS ONE PLAIN LINE (TS-6). Said on
+              every carrier, not only on `branches`: the control records a
+              preference the platform does not act on yet, and a caller is
+              entitled to know that before they choose one. It was a permanent
+              two-sentence `--warn` paragraph -- a warning on a choice nothing
+              is wrong with. The two sentences are this line's accessible name
+              and the select's description; the argument is the help topic. */}
+          <p id="dsp-carrier-note" className="ctl-panel-note" aria-label={CARRIER_NOTE}>
+            not acted on yet <a href={`#${helpAnchor(CARRIER_HELP)}`}>Why &rarr;</a>
+          </p>
+        </>
+      )}
       {errors?.carrier && <p className="warn-text" role="alert">{errors.carrier}</p>}
 
       <label className="t-label dsp-label" htmlFor="dsp-repo">
@@ -245,7 +277,17 @@ export function DispatchChoice({
   )
 }
 
-/** The selected strategy, spelled out in full underneath the options. */
+/**
+ * What the options above do NOT already say, and only that (TS-20).
+ *
+ * This box used to open with the chosen option's own headline -- the count
+ * sentence printed on the option directly above it -- so every choice was read
+ * twice. What it can add is the one thing an option cannot: on a WORKFLOW with
+ * `integrate`, which step would open the one pull request as the form is drawn,
+ * or that the graph has no single final step. Anywhere else it draws nothing,
+ * and on the task form that means never: the count on each option is the
+ * consequence.
+ */
 function Consequence({
   strategy,
   steps,
@@ -257,13 +299,12 @@ function Consequence({
   scale: 'task' | 'workflow'
   terminals?: string[]
 }) {
-  const c = consequenceOf(strategy, steps)
+  // IntegratorPreview has nothing to say under two steps; checked here too so
+  // an empty box is never drawn around it.
+  if (strategy !== 'integrate' || scale !== 'workflow' || terminals === undefined || steps < 2) return null
   return (
-    <div className={`dsp-consequence${c.pushes ? '' : ' is-none'}`} role="status">
-      <p className="dsp-consequence-head">{c.headline}</p>
-      {strategy === 'integrate' && scale === 'workflow' && terminals !== undefined && (
-        <IntegratorPreview terminals={terminals} steps={steps} />
-      )}
+    <div className="dsp-consequence" role="status">
+      <IntegratorPreview terminals={terminals} steps={steps} />
     </div>
   )
 }

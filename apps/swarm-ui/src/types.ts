@@ -654,12 +654,6 @@ export const STRATEGY_LABEL: Readonly<Record<DispatchStrategy, string>> = {
   integrate: 'One PR for all steps',
 }
 
-/** Label and gloss for each carrier. See the honesty note in `CARRIER_NOTE`. */
-export const CARRIER_LABEL: Readonly<Record<DispatchCarrier, string>> = {
-  checkpoints: 'Checkpoints',
-  branches: 'Branches',
-}
-
 /**
  * THE SENTENCE THAT KEEPS THE CARRIER CONTROL HONEST.
  *
