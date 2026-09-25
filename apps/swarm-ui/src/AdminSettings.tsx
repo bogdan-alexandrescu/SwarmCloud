@@ -1,9 +1,9 @@
-import { useState } from 'react'
+import { useId, useState } from 'react'
 import { loadCapacity, setPoolLimit } from './api'
 import { errorHeading, isPaused, type ApiError } from './fetch'
 import { HelpCard } from './HelpCard'
 import { Screen } from './Shell'
-import { poolKind, poolLabel, setBy, type Capacity, type Pool } from './types'
+import { poolKind, poolLabel, poolLabeller, setBy, type Capacity, type Pool } from './types'
 
 /**
  * Pool limits: the concurrency ceilings, editable.
@@ -40,10 +40,53 @@ import { poolKind, poolLabel, setBy, type Capacity, type Pool } from './types'
  * The sentence itself lives at `#help/pools-all-at-once`.
  */
 export function AdminSettingsScreen() {
-  const [nonce, setNonce] = useState(0)
+  /**
+   * THE READ A SAVE TRIGGERS, AND WHAT THE SAVE SAID, BOTH HELD OUT HERE (AH-7,
+   * visual QA 2026-09-25).
+   *
+   * A save used to bump a `key` on `Screen`, which re-reads by being REMOUNTED:
+   * the skeletons flashed, every row was rebuilt, so the `saved` tag the row
+   * had just set never painted, an unsaved edit in another row was thrown
+   * away, and -- because `Screen`'s stale rule lives in a ref the remount
+   * destroys -- a re-read that failed blanked the whole screen immediately
+   * after a write that had SUCCEEDED. The operator was left not knowing
+   * whether their ceiling had been applied, which is the one thing this
+   * screen exists to tell them.
+   *
+   * So `Screen` is never remounted. A save re-reads `/v1/capacity` itself and
+   * the result is drawn in place of the rows `Screen` last handed down, for as
+   * long as those rows are the ones the re-read was taken over: a refresh from
+   * `Screen`'s own control hands down a new object and wins, so the newer read
+   * is always the one on screen. A re-read that fails leaves the rows exactly
+   * as they were and says, on the row, that the figures were not re-read.
+   * `Accounts.tsx` keeps its verdicts on this side of the reload for the same
+   * reason (its `Persisted`); this is that rule without the remount.
+   */
+  const [fresh, setFresh] = useState<{ over: Capacity; data: Capacity } | null>(null)
+  const [saved, setSaved] = useState<Readonly<Record<string, SaveMark>>>({})
+
+  const mark = (pool: string, m: SaveMark | null) =>
+    setSaved((all) => {
+      const next = { ...all }
+      if (m === null) delete next[pool]
+      else next[pool] = m
+      return next
+    })
+
+  const reread = async (over: Capacity, pool: string): Promise<boolean> => {
+    mark(pool, 'rereading')
+    const r = await loadCapacity()
+    if (r.status === 'ok' || r.status === 'stale') {
+      setFresh({ over, data: r.data })
+      mark(pool, 'saved')
+      return true
+    }
+    mark(pool, 'unread')
+    return false
+  }
+
   return (
     <Screen
-      key={nonce}
       // "Pool limits", not "Admin settings". The tab says Pool limits and it
       // is the accurate one twice over: this screen edits concurrency ceilings
       // and nothing else, so "Admin settings" over-claimed a settings page
@@ -61,10 +104,28 @@ export function AdminSettingsScreen() {
         body: 'Pools are created at provisioning time.',
       }}
     >
-      {(d) => <Body capacity={d} onChanged={() => setNonce((n) => n + 1)} />}
+      {(d) => (
+        <Body
+          capacity={fresh !== null && fresh.over === d ? fresh.data : d}
+          saved={saved}
+          onSaved={(pool) => reread(d, pool)}
+          onEdit={(pool) => mark(pool, null)}
+        />
+      )}
     </Screen>
   )
 }
+
+/**
+ * What the last save of one row said, kept OUTSIDE the row so nothing that
+ * re-renders the rows can take it off screen.
+ *
+ *   rereading  written; the figures are being read back
+ *   saved      written and read back -- the row shows the platform's value
+ *   unread     written, but the read-back failed: the row's figures are the
+ *              ones from before the write, and it says so
+ */
+type SaveMark = 'rereading' | 'saved' | 'unread'
 
 /**
  * One profile's ceiling, with the numbers it was taken over.
@@ -79,30 +140,50 @@ interface Operand {
   agents: number | null
 }
 
+/**
+ * The ceiling, and EVERY pool that sets it.
+ *
+ * AH-1 (S1, visual QA 2026-09-25): this kept a running minimum with a strict
+ * `<` and so named the FIRST of two pools tied at it. On 3 of 5 live cards two
+ * pools tied, the card bolded one and its foot said `binds on` that one -- and
+ * an operator who raised it watched the ceiling stay exactly where it was,
+ * which is the incident this screen's header describes, reintroduced by the
+ * screen built to prevent it.
+ *
+ * NOT `profile.admission.binding`. That list is HEADROOM-binding -- which pool
+ * the next task would run out on given what is in use now -- and this card is
+ * about the CEILING, which is a property of the limits alone. The two name
+ * different pools whenever one pool is busier than another with a higher
+ * limit, so reading the served list here would mark the wrong operand.
+ */
 function arithmetic(
   pools: string[],
   units: number,
   byName: Map<string, Pool>,
-): { operands: Operand[]; ceiling: number | null; binding: string | null } {
+): { operands: Operand[]; ceiling: number | null; binding: string[] } {
   const w = units > 0 ? units : 1
   const operands: Operand[] = pools.map((pool) => {
     const p = byName.get(pool)
     return { pool, agents: p ? Math.floor(p.effective_limit / w) : null }
   })
 
-  let ceiling: number | null = null
-  let binding: string | null = null
-  for (const o of operands) {
-    if (o.agents === null) continue
-    if (ceiling === null || o.agents < ceiling) {
-      ceiling = o.agents
-      binding = o.pool
-    }
-  }
+  const measured = operands.flatMap((o) => (o.agents === null ? [] : [o.agents]))
+  const ceiling = measured.length === 0 ? null : Math.min(...measured)
+  const binding = ceiling === null ? [] : operands.filter((o) => o.agents === ceiling).map((o) => o.pool)
   return { operands, ceiling, binding }
 }
 
-function Body({ capacity, onChanged }: { capacity: Capacity; onChanged: () => void }) {
+function Body({
+  capacity,
+  saved,
+  onSaved,
+  onEdit,
+}: {
+  capacity: Capacity
+  saved: Readonly<Record<string, SaveMark>>
+  onSaved: (pool: string) => Promise<boolean>
+  onEdit: (pool: string) => void
+}) {
   const byName = new Map(capacity.pools.map((p) => [p.name, p]))
   const profiles = Object.entries(capacity.runner_profiles).sort(([a], [b]) =>
     a.localeCompare(b),
@@ -139,7 +220,7 @@ function Body({ capacity, onChanged }: { capacity: Capacity; onChanged: () => vo
         </section>
       )}
 
-      <PoolEditor pools={capacity.pools} onChanged={onChanged} />
+      <PoolEditor pools={capacity.pools} saved={saved} onSaved={onSaved} onEdit={onEdit} />
     </>
   )
 }
@@ -155,7 +236,7 @@ function ProfileCard({
   units: number
   operands: Operand[]
   ceiling: number | null
-  binding: string | null
+  binding: string[]
 }) {
   // The unit that used to be a footnote -- "'Ceiling' is how many AGENTS of
   // that profile could run at once, not units" -- is now fused to the figure
@@ -163,6 +244,11 @@ function ProfileCard({
   // the other half of the same fact. §8.4.1: a well-chosen unit is the
   // explanation.
   const measured = ceiling !== null
+  // One name per operand, qualified where two would read alike (CP-15): the
+  // `browser` profile takes `resource:browser` AND `runner:browser`, and both
+  // printed `browser` -- two operands with one name and different ceilings.
+  const label = poolLabeller(operands.map((o) => o.pool))
+  const named = binding.map(label).join(' and ')
 
   return (
     <section className="ctl-card">
@@ -177,7 +263,7 @@ function ProfileCard({
           className={`ctl-figure${measured ? '' : ' is-absent'}`}
           aria-label={
             measured
-              ? `${ceiling} agents of ${name} can run at once. That is the smallest ceiling across the ${operands.length} pools this profile takes, and ${binding === null ? 'none' : poolLabel(binding)} is the pool that binds it.`
+              ? `${ceiling} agents of ${name} can run at once. That is the smallest ceiling across the ${operands.length} pools this profile takes, and ${binding.length === 1 ? `${named} is the pool that binds it` : `${named} bind it together: raising any one of them alone leaves it where it is`}.`
               : `No ceiling can be computed for ${name}: none of the pools it takes are in this response, so the figure is not measured rather than zero.`
           }
         >
@@ -194,33 +280,54 @@ function ProfileCard({
             wrapping strip read as one run-on line of alternating word and
             digit; the smallest of them is the whole point of the card and it
             was the hardest thing on it to find. */}
+        {/* EVERY OPERAND AT THE MINIMUM IS MARKED (AH-1), not the first one:
+            two pools tied at the ceiling both bind it, and raising either
+            alone moves nothing.
+
+            THE FIGURE IS ITS OWN ELEMENT (AH-19). It was a bare text node after
+            the key, so it started wherever the key's column ended and a `5`
+            sat under the `2` of a `25`. `.adm-value` is the hook the
+            stylesheet right-aligns in a fixed tabular-nums track, so the
+            operands compare down the card the way a column of figures does. */}
         <ul className="ctl-facts is-rows adm-operands">
           {operands.map((o) => (
             <li
               key={o.pool}
               className={`ctl-fact${o.agents === null ? ' is-absent' : ''}${
-                o.pool === binding ? ' is-binding' : ''
+                binding.includes(o.pool) ? ' is-binding' : ''
               }`}
               title={o.pool}
             >
-              <b>{poolLabel(o.pool)}</b>
-              {o.agents === null ? <i className="ctl-em">—</i> : o.agents}
+              <b>{label(o.pool)}</b>
+              <span className="adm-value">
+                {o.agents === null ? <i className="ctl-em">—</i> : o.agents}
+              </span>
             </li>
           ))}
         </ul>
       </div>
       <p className="ctl-card-foot">
-        {binding === null ? (
+        {binding.length === 0 ? (
           <>no pool in this response</>
         ) : (
-          <>binds on {poolLabel(binding)}</>
+          <>binds on {named}</>
         )}
       </p>
     </section>
   )
 }
 
-function PoolEditor({ pools, onChanged }: { pools: Pool[]; onChanged: () => void }) {
+function PoolEditor({
+  pools,
+  saved,
+  onSaved,
+  onEdit,
+}: {
+  pools: Pool[]
+  saved: Readonly<Record<string, SaveMark>>
+  onSaved: (pool: string) => Promise<boolean>
+  onEdit: (pool: string) => void
+}) {
   return (
     <section className="section">
       <span className="ctl-eyebrow has-q">
@@ -242,9 +349,11 @@ function PoolEditor({ pools, onChanged }: { pools: Pool[]; onChanged: () => void
           <thead role="rowgroup">
             <tr role="row">
               <th role="columnheader" scope="col">Pool</th>
-              <th role="columnheader" scope="col" className="is-num">In use</th>
               {/* The unit rides on the column name (§8.4.3) rather than in a
-                  footnote under the table. */}
+                  footnote under the table -- on BOTH figures (CP-24). This
+                  said `In use` bare beside `Ceiling (units)` while Pools said
+                  the opposite, so each screen labelled the other one's half. */}
+              <th role="columnheader" scope="col" className="is-num">In use (units)</th>
               <th role="columnheader" scope="col" className="is-num">Ceiling (units)</th>
               <th role="columnheader" scope="col">Set by</th>
               <th role="columnheader" scope="col">Change</th>
@@ -254,7 +363,13 @@ function PoolEditor({ pools, onChanged }: { pools: Pool[]; onChanged: () => void
             {[...pools]
               .sort((a, b) => a.name.localeCompare(b.name))
               .map((p) => (
-                <PoolRow key={p.name} pool={p} onChanged={onChanged} />
+                <PoolRow
+                  key={p.name}
+                  pool={p}
+                  mark={saved[p.name] ?? null}
+                  onSaved={() => onSaved(p.name)}
+                  onEdit={() => onEdit(p.name)}
+                />
               ))}
           </tbody>
           <caption>lowering a ceiling evicts nothing</caption>
@@ -264,15 +379,33 @@ function PoolEditor({ pools, onChanged }: { pools: Pool[]; onChanged: () => void
   )
 }
 
-function PoolRow({ pool, onChanged }: { pool: Pool; onChanged: () => void }) {
-  const [value, setValue] = useState(String(pool.hard_limit))
+function PoolRow({
+  pool,
+  mark,
+  onSaved,
+  onEdit,
+}: {
+  pool: Pool
+  /** What the last save of this row said. Held by the screen, not the row (AH-7). */
+  mark: SaveMark | null
+  /** Resolves true once the pools have been read back after the write. */
+  onSaved: () => Promise<boolean>
+  onEdit: () => void
+}) {
+  // WHAT SOMEBODY TYPED, OR NOTHING. `null` means the field shows the pool's
+  // own value off the latest read, so a row nobody touched follows a re-read
+  // -- including one that picked up another operator's change -- instead of
+  // showing the old limit as an unsaved edit a stray `save` would write back.
+  const [draft, setDraft] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<ApiError | null>(null)
-  const [done, setDone] = useState(false)
+  const messageId = useId()
 
+  const value = draft ?? String(pool.hard_limit)
   const dirty = value.trim() !== String(pool.hard_limit)
   const parsed = Number(value)
   const valid = Number.isInteger(parsed) && parsed >= 0 && parsed <= 100_000
+  const invalid = dirty && !valid
   const by = setBy(pool)
   const editable = isEditable(pool)
 
@@ -280,12 +413,14 @@ function PoolRow({ pool, onChanged }: { pool: Pool; onChanged: () => void }) {
     if (!valid || busy) return
     setBusy(true)
     setError(null)
-    setDone(false)
-    setPoolLimit(pool.name, parsed).then((r) => {
+    setPoolLimit(pool.name, parsed).then(async (r) => {
       setBusy(false)
       if (r.status === 'ok' || r.status === 'stale') {
-        setDone(true)
-        onChanged()
+        // The typed value is dropped only once the read-back carries it, so
+        // the field never flicks back to the old limit in between. If the
+        // read-back fails the field keeps showing what was written, beside
+        // `not re-read`.
+        if (await onSaved()) setDraft(null)
       } else if (r.status === 'error') {
         setError(r.error)
       }
@@ -300,7 +435,7 @@ function PoolRow({ pool, onChanged }: { pool: Pool; onChanged: () => void }) {
             prettified label is not. */}
         <span className="ctl-sub">{pool.name}</span>
       </th>
-      <td role="cell" data-label="In use" className="is-num">{pool.active}</td>
+      <td role="cell" data-label="In use (units)" className="is-num">{pool.active}</td>
       <td role="cell" data-label="Ceiling (units)" className="is-num">{pool.effective_limit}</td>
       <td role="cell" data-label="Set by" title={by.detail}>{by.term}</td>
       <td role="cell" data-label="Change">
@@ -312,8 +447,8 @@ function PoolRow({ pool, onChanged }: { pool: Pool; onChanged: () => void }) {
             value={value}
             disabled={busy || !editable}
             onChange={(e) => {
-              setValue(e.target.value)
-              setDone(false)
+              setDraft(e.target.value)
+              onEdit()
             }}
             // The sentence that used to sit beside a disabled input lives here,
             // where a keyboard reader reaching the control gets it and a
@@ -323,19 +458,37 @@ function PoolRow({ pool, onChanged }: { pool: Pool; onChanged: () => void }) {
                 ? `Hard limit for ${pool.name}`
                 : `Hard limit for ${pool.name}. This pool kind has no write route, so the control is read-only.`
             }
+            // THE INPUT SAYS IT IS WRONG, AND WHY (AH-8). The range message used
+            // to appear beside the control with nothing tying the two together,
+            // so a keyboard or screen-reader user typing `-1` was told nothing;
+            // the stylesheet draws the warn border off `aria-invalid`.
+            aria-invalid={invalid ? true : undefined}
+            aria-describedby={invalid ? messageId : undefined}
           />
           <button onClick={save} disabled={!dirty || !valid || busy || !editable}>
             {busy ? 'saving…' : 'save'}
           </button>
           {!editable && <span className="client-side">read-only</span>}
-          {dirty && !valid && <span className="warn-text">0–100000</span>}
-          {done && <span className="tag ok">saved</span>}
+          {mark !== null && <span className="tag ok">saved</span>}
+          {mark === 'unread' && (
+            <span className="warn-text" title="The write succeeded; reading the pools back afterwards did not, so the figures in this row are from before it.">
+              not re-read
+            </span>
+          )}
           {error && (
             <span className="warn-text" title={error.message}>
               {errorHeading(error)}
             </span>
           )}
         </span>
+        {/* BELOW THE CONTROL ROW, NOT IN IT (AH-8). Inside the wrapping flex
+            strip it arrived as one more item and reflowed every column of the
+            table the moment a character was typed. */}
+        {invalid && (
+          <div className="warn-text limit-message" id={messageId}>
+            0–100000
+          </div>
+        )}
       </td>
     </tr>
   )
