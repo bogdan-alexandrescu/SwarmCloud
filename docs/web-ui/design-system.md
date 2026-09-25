@@ -777,6 +777,13 @@ greyscale.
 > `--text-dim`, failed and dead-lettered TS-4's solid `--bad` with the 2px rule,
 > cancelled TS-4's flat "ended" bars, by selector on TS-4's own rules (§15.3). A
 > row that has not ended keeps the meter (`workflow.board.test.tsx`).
+> **A failed or dead-lettered segment is at least 4px wide**: TS-4's 2px cut is
+> drawn inside the segment, and one step of thirty is 1.7px of the meter's 51px,
+> which the cut painted entirely `--surface` — a failure drawn as nothing. 4px
+> is the cut plus 2px of `--bad`; the other segments shrink to give it up.
+> Succeeded in `--text-dim` rather than TS-4's `--ok`, and dead-lettered in the
+> failed form, are this build's reading of "TS-4's vocabulary" and are open for
+> the owner's confirmation (#83).
 
 > **Answered by the owner, 2026-09-24: `.wf-meter` goes grey.** The question
 > held open here was this: `.wf-meter`'s fill carries
@@ -1624,7 +1631,12 @@ Six places, in order of commitment. Nothing outside this list.
    **The topic is about what the glyph or link sits beside, and a topic linked
    from two screens is written for both** (AG-19, AH-13): the Timeline
    window's `Why →` opens `event-paging`, not `partial-read`, and
-   `event-paging` names the Timeline screen as well as the attempt timeline.
+   `event-paging` names the Timeline screen as well as the attempt timeline —
+   in its title too, which the Help page prints as its heading and in its
+   `showing <title>` line. "One page of events, oldest first" was false of the
+   Timeline, which reads newest first; the title is "Paged reads: a page of
+   events, a window of tasks" and claims no order, and the topic opens by
+   naming both reads.
 6. **`docs/`.** The argument, the constraint, the thing that is true for six
    months. A docs link is a legitimate element of an empty state and of a help
    card; it is not an element of a data view.
@@ -2738,11 +2750,17 @@ WF-17)*:
 `.section`, each `.help-topic` inside it is separated by `--ctl-s5` and draws
 nothing, and a deep-linked topic takes the §1.3 selection treatment — a
 `--surface-2` fill and a 2px `--text` inline-start rule declared transparent on
-every topic, so marking one moves nothing. A deep link lands with the group
-heading in view (AH-16, settled against AH-18 on #86, 2026-09-25): the topic's
-scroll margin clears any sticky head (none today) plus the `.section > h2` line
-box and its margin, with `--ctl-s5` above it, and `shell.test.tsx` "AH-16"
-resolves both sides.
+every topic, so marking one moves nothing. A deep link to **any** topic lands with its group
+heading in view (AH-16, settled against AH-18 on #86, 2026-09-25). The group
+heading is the sticky head: `.help-group > h2` sticks to the top of the
+scroller while its group is in view, in the page ground `--bg`, because no
+scroll margin can bring back a heading a screenful above a topic halfway down
+its group. The topic's scroll margin clears that heading — its line box and
+the 10px under it (padding here, so a stuck heading keeps the gap opaque) —
+with `--ctl-s5` above it, and a topic sitting under the stuck heading does not
+count as already in view. Nothing else sticks over the Help column.
+`shell.test.tsx` "AH-16" resolves both sides on the page Help renders, and
+`helpcard.placement.test.tsx` holds the in-view band.
 
 **What this pass deleted under that rule** — all primitives or frame, no screens:
 
@@ -2919,7 +2937,7 @@ a stated width, and jsdom used only for `Element.matches`.
 | CH-16 | `flex: none` on the dock's line and grip | only the body may shrink |
 | OV-3 | `display: grid` on Overview's ≥900 util override; 19ch provenance | a grid template on a flex box is inert; 128px was 19 characters at an 11px step that no longer exists |
 | OV-13 | every metric label reserves its mark | the strip slid 8–9px when the Running tile's mark appeared |
-| AG-11, AG-13 | `[age]` in `ch` | at least `elapsed()`'s longest form over every state, started or not; at 1101–1200px and 390px, where the cell wraps, at least its longest word (`dispatched`, 10ch, since 2026-09-25: a word cannot wrap) and "waiting" wraps above its duration |
+| AG-11, AG-13 | `[age]` in `ch` | at least `elapsed()`'s longest form over every state, started or not; at 1101–1200px and 390px the duration holds the track and "waiting" wraps above it, because the width would come out of the name |
 | AG-15 | `.try.spent` / `.is-over` | an attempt count over its ceiling is a fault; two class names because the markup halves were written in parallel |
 | AG-16 | `.row.is-head` | the head is a `.row`, so it inherits the grid and the breakpoints; only its register is new |
 | AG-18 | `.lv-word` in ink | the mark carries the tone (§6.6) |

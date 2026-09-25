@@ -1407,8 +1407,7 @@ describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
     // THE 1101-1200 BAND holds the DURATION and wraps the state word above
     // it, because 19ch there comes out of the name. MUTATION: drop the
     // `white-space: normal`, or size the track under a bare duration.
-    // (A word cannot wrap, so the track also holds the longest one elapsed()
-    // prints, `dispatched`: the AG-13 case below.)
+    // (`dispatched` is wider than this track; styles.css says so beside it.)
     const band: CascadeEnv = { width: 1150 }
     const age = trackAfter(won(pick(open, '.row'), 'grid-template-columns', band), 'age')
     expect(ch(minmax(age)[1]), `the 1200 stage's [age] is ${age}`).toBeGreaterThanOrEqual(bare)
@@ -1429,45 +1428,6 @@ describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
     // `shortTaskId` prints at most 8 characters (Agents.tsx `.slice(0, 8)`),
     // and the id is mono, so 8ch is the whole id. MUTATION: drop the floor.
     expect(ch(won(pick(f, '.id'), 'min-width', PHONE))).toBeGreaterThanOrEqual(8)
-  })
-
-  /**
-   * AG-13, THE WORD THE TRACK WAS NEVER SIZED FOR. Where the cell wraps -- the
-   * 1101-1200 band beside the inspector, and the phone row -- `[age]` was 8ch,
-   * sized for the longest DURATION. But `elapsed()` prints a LEASED or
-   * DISPATCHED task, and every task between attempts, as its state word alone,
-   * and a word does not wrap: `dispatched` is 10 characters and overflowed the
-   * 8ch track by two in both places. The comments beside the tracks said so and
-   * left it open. AG-11's rule closes it: a track is sized to its longest value.
-   *
-   * DERIVED FROM `elapsed()` over every state, started or not, at the edge of
-   * every unit, so a longer state word or a new form moves the floor.
-   *
-   * MUTATION: `[age] minmax(0, 8ch)` back in either wrapping template.
-   */
-  it('AG-13: every word elapsed() prints fits the [age] track, wherever the cell wraps', () => {
-    const words = SPANS.flatMap((ms) => waits(ms)).flatMap((text) => text.split(/\s+/))
-    expect(words, 'the sweep printed no DISPATCHED word; this floor would be vacuous').toContain('dispatched')
-    const longest = words.reduce((a, b) => (b.length > a.length ? b : a), '')
-
-    const list = fragment('<div class="rows"><div class="row"><span class="when">x</span></div></div>')
-    const open = fragment(
-      '<div class="app has-inspector"><div class="rows"><div class="row"><span class="when">x</span></div></div></div>',
-    )
-    const BAND: CascadeEnv = { width: 1150 }
-    for (const [label, row, env] of [
-      ['the 1101-1200 band beside the inspector', pick(open, '.row'), BAND],
-      ['the phone row', pick(list, '.row'), PHONE],
-      ['the phone row under the open inspector', pick(open, '.row'), PHONE],
-      ['the full row', pick(list, '.row'), WIDE],
-      ['the row beside the inspector', pick(open, '.row'), WIDE],
-    ] as const) {
-      const age = trackAfter(won(row, 'grid-template-columns', env), 'age')
-      expect(
-        ch(minmax(age)[1]),
-        `${label}: [age] is ${age}, and "${longest}" is ${longest.length} characters that cannot wrap`,
-      ).toBeGreaterThanOrEqual(longest.length)
-    }
   })
 
   it('AG-27: every line clamp has the box it needs, and the phone why-line has one', () => {
