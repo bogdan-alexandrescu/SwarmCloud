@@ -3305,7 +3305,10 @@ then broken one line each in a MUTATION commit (0.0 % for nothing decided in
 the headline and the Table, no partial mark, an unread bucket drawn as zeroes,
 no real-zero tick) and the Timeline's tests went red on exactly those five in
 vitest; the review fix-up's cases were pushed before the code that satisfies
-them and went red in vitest too. The pull request names both runs.
+them and went red in vitest too. One of those, the live card's `not filtered
+by tenant`, went red on a gap in its fixture before its assertion, so a second
+mutation dropped the disclosure and the fixed case went red on the assertion
+itself. The pull request names every run.
 
 **What this did NOT verify.** Nothing here was seen rendered: the tests prove
 which marks the ledger draws for a contract-shaped payload, which drawing the

@@ -35,7 +35,11 @@
 //   * the cases added by the review fix-up (partial and not-read cards, the
 //     legend's numbers against its marks, the pinned scale, the live card's
 //     age, the headline's interval, the strips that do not fit) were pushed
-//     before the code that satisfies them, and went red in vitest.
+//     before the code that satisfies them, and went red in vitest. One of
+//     them -- the live card's "not filtered by tenant" -- went red on a gap
+//     in its stats fixture before reaching its assertion, so a second
+//     MUTATION commit dropped that disclosure and the fixed case went red on
+//     the assertion itself.
 //
 // A case in neither group -- for example the absence of `Last N tasks`, which
 // holds with or without the ledger -- is NOT proven to catch anything.
