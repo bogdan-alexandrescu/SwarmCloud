@@ -599,8 +599,9 @@ class TestAgents:
         out = text(render_agents(
             [task(state="RUNNING"), task("t_q", state="QUEUED")], WIDE, NOW
         ))
-        assert "running" in out
-        assert "queued" in out
+        # Upper case, as the API spells a state (#88, SC-F19).
+        assert "RUNNING" in out
+        assert "QUEUED" in out
 
     def test_a_parked_task_says_why(self):
         out = text(render_agents(
@@ -639,7 +640,9 @@ class TestAgents:
             [task(state="RUNNING"), task("a", state="LEASED"), task("b", state="QUEUED")],
             WIDE,
         )
-        assert "2 running" in subtitle and "1 queued" in subtitle
+        # Both hold capacity, so both are ACTIVE; only one of them is running,
+        # and the headline says so (#88, SC-F14).
+        assert "2 active (1 leased, 1 running)" in subtitle and "1 queued" in subtitle
 
     @pytest.mark.parametrize("width", [80, 66, 52, 40, 34])
     def test_it_fits_however_narrow_the_terminal_is(self, width):
@@ -818,8 +821,9 @@ class TestTrouble:
         ]
         findings = find_trouble(snapshot(tasks=tasks), WIDE)
         parked = [f.what for f in findings if f.where == "parked"]
-        assert "2 task(s): provider quota exhausted" in parked
-        assert "1 task(s): credential missing" in parked
+        # Whose tasks they are is part of the finding (#88, SC-F5).
+        assert "2 task(s) of tenant acme: provider quota exhausted" in parked
+        assert "1 task(s) of tenant acme: credential missing" in parked
 
     def test_findings_are_ordered_worst_first(self):
         findings = find_trouble(
@@ -975,7 +979,7 @@ class TestTheFrozenContract:
 
     def test_counting_running_agents_uses_those_states(self):
         tasks = [task(f"t{i}", state=state) for i, state in enumerate(sorted(render.RUNNING_STATES))]
-        assert render.agents_subtitle(tasks, WIDE).startswith(f"{len(tasks)} running")
+        assert render.agents_subtitle(tasks, WIDE).startswith(f"{len(tasks)} active")
 
 
 class TestTimeFormatting:
