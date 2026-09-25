@@ -671,3 +671,206 @@ def test_a_read_only_token_is_a_stated_fact_not_a_failed_attempt(
     assert out["can_push"] is False
     assert "push" in out["publish_reason"]
     assert (worker.ws.artifacts / lifecycle.PATCH_NAME).exists()
+
+
+# -- no tool's attribution reaches the forge --------------------------------
+#
+# THE OWNER'S RULE (2026-09-25): nothing this platform puts on GitHub carries
+# Claude attribution -- no `Co-Authored-By: Claude` trailer, no "Generated with
+# Claude Code" footer, no commit authored as Claude.
+#
+# The worker's own commits never did. The AGENT's could: the claude-code runner
+# starts Claude Code with no settings of its own and with HOME set to the
+# attempt's workspace (`runners/cliagent.py`), so a settings file baked into
+# the image's home directory is never read, and an agent that runs `git commit`
+# itself follows Claude Code's default instruction to add the trailer. In a
+# container with no git identity it may also pick an identity of its own. Those
+# commits were pushed exactly as the agent made them.
+#
+# So the guarantee is made where the work leaves the worker, for every runner
+# at once, and these tests hold it against the REMOTE: every commit a `swarm/`
+# branch adds over `main` is authored AND committed by the worker's identity,
+# with a message the worker wrote.
+
+#: Case-insensitive fragments that only attribution produces. Deliberately not
+#: the bare word "claude": the platform's own runner profile is `claude-code`,
+#: and the pull request body names it as provenance.
+ATTRIBUTION_MARKERS = (
+    "co-authored-by",
+    "generated with",
+    "noreply@anthropic.com",
+    "anthropic.com",
+    "claude.com/claude-code",
+    "claude.ai/code",
+)
+
+CLAUDE_COMMIT_MESSAGE = (
+    "Add committed.txt\n"
+    "\n"
+    "\U0001f916 Generated with [Claude Code](https://claude.com/claude-code)\n"
+    "\n"
+    "Co-Authored-By: Claude <noreply@anthropic.com>\n"
+)
+
+
+def _commit_as_claude(repo: Path, name: str) -> None:
+    """Commit the way an agent in the claude-code runner does by default."""
+    ident = ["-c", "user.name=Claude", "-c", "user.email=noreply@anthropic.com"]
+    subprocess.run(["git", *ident, "add", "-A"], cwd=str(repo), check=True, capture_output=True)
+    subprocess.run(
+        ["git", *ident, "commit", "--quiet", "-m",
+         CLAUDE_COMMIT_MESSAGE.replace("committed.txt", name)],
+        cwd=str(repo), check=True, capture_output=True,
+    )
+
+
+def agent_commits_with_claude_attribution(repo: Path) -> None:
+    """One attributed commit, then more work left uncommitted on top of it."""
+    (repo / "committed.txt").write_text("work the agent committed as Claude\n")
+    _commit_as_claude(repo, "committed.txt")
+    (repo / "uncommitted.txt").write_text("work the agent left uncommitted\n")
+
+
+def contributor_commits_with_claude_attribution(name: str):
+    def edit(repo: Path) -> None:
+        (repo / f"{name}.txt").write_text(f"work from {name}, committed as Claude\n")
+        _commit_as_claude(repo, f"{name}.txt")
+    return edit
+
+
+def pushed_commits(bare: Path, branch: str) -> list[dict]:
+    """Every commit `branch` adds over `main` on the remote: what a reviewer sees."""
+    raw = subprocess.run(
+        ["git", "log", "--format=%an%x1f%ae%x1f%cn%x1f%ce%x1f%B%x1e", f"main..{branch}"],
+        cwd=str(bare), check=True, capture_output=True, text=True,
+    ).stdout
+    commits = []
+    for record in raw.split("\x1e"):
+        record = record.strip("\n")
+        if not record:
+            continue
+        author, author_email, committer, committer_email, message = record.split("\x1f", 4)
+        commits.append({
+            "author": (author, author_email),
+            "committer": (committer, committer_email),
+            "message": message,
+        })
+    return commits
+
+
+def assert_only_the_worker_wrote(commits: list[dict], config) -> None:
+    assert commits, "the branch adds no commits, so there was nothing to check"
+    worker = (config.git_author_name, config.git_author_email)
+    for commit in commits:
+        assert commit["author"] == worker, (
+            f"a pushed commit is authored by {commit['author']}, not the worker"
+        )
+        assert commit["committer"] == worker, (
+            f"a pushed commit is committed by {commit['committer']}, not the worker"
+        )
+        lowered = commit["message"].lower()
+        found = [m for m in ATTRIBUTION_MARKERS if m in lowered]
+        assert not found, f"a pushed commit message carries attribution {found}:\n{commit['message']}"
+
+
+def assert_no_attribution_in(text: str, what: str) -> None:
+    lowered = text.lower()
+    found = [m for m in ATTRIBUTION_MARKERS if m in lowered]
+    assert not found, f"the {what} carries attribution {found}:\n{text}"
+
+
+def test_direct_pr_pushes_no_commit_the_agent_attributed_to_claude(
+    worker_factory, monkeypatch, origin, local_urls, forge
+):
+    """The agent committed as Claude with the trailer and the footer, then left
+    more work uncommitted. All of the work reaches the branch; none of the
+    attribution does."""
+    _, config, out = run_attempt(
+        worker_factory, monkeypatch, origin,
+        task_id="t-direct-attributed",
+        dispatch={"strategy": "direct-pr"},
+        edit=agent_commits_with_claude_attribution,
+    )
+
+    branch = f"{config.git_branch_prefix}{config.task_id}"
+    assert out["published"] is True, out.get("publish_reason")
+    assert {"committed.txt", "uncommitted.txt"} <= tree_at(origin, branch), (
+        "replacing the agent's commits lost some of its work"
+    )
+    assert_only_the_worker_wrote(pushed_commits(origin, branch), config)
+
+    assert len(forge.pulls) == 1
+    assert_no_attribution_in(forge.pulls[0]["title"], "pull request title")
+    assert_no_attribution_in(forge.pulls[0]["body"], "pull request body")
+
+
+def test_integrate_pushes_no_commit_any_step_attributed_to_claude(
+    worker_factory, monkeypatch, origin, local_urls, forge
+):
+    """Every contributor and the integrator commit as Claude. The contributor
+    branches and the one integrated branch carry every step's work and only
+    the worker's commits -- the integrator merges what the contributors
+    PUSHED, so a contributor that pushed attribution would put it here too."""
+    for name in ("t-a", "t-b"):
+        run_attempt(
+            worker_factory, monkeypatch, origin,
+            task_id=name,
+            dispatch={"strategy": "integrate", "carrier": "branches", "role": "contributor"},
+            edit=contributor_commits_with_claude_attribution(name),
+        )
+
+    _, config, out = run_attempt(
+        worker_factory, monkeypatch, origin,
+        task_id="t-int-attributed",
+        dispatch={
+            "strategy": "integrate",
+            "carrier": "branches",
+            "role": "integrator",
+            "integrates": ["t-a", "t-b"],
+        },
+        edit=contributor_commits_with_claude_attribution("t-int-attributed"),
+    )
+
+    assert out["integrated"]["merged"] == ["swarm/t-a", "swarm/t-b"]
+    for name in ("t-a", "t-b"):
+        assert_only_the_worker_wrote(pushed_commits(origin, f"swarm/{name}"), config)
+
+    branch = f"{config.git_branch_prefix}{config.task_id}"
+    assert {"t-a.txt", "t-b.txt", "t-int-attributed.txt"} <= tree_at(origin, branch)
+    assert_only_the_worker_wrote(pushed_commits(origin, branch), config)
+    assert len(forge.pulls) == 1
+    assert_no_attribution_in(forge.pulls[0]["body"], "pull request body")
+
+
+def test_an_unknown_clone_base_publishes_nothing_rather_than_unchecked_commits(
+    worker_factory, monkeypatch, origin, local_urls, forge
+):
+    """Replacing the agent's commits needs the commit the clone landed on. A
+    resumed attempt whose marker was lost does not have it, and pushing
+    whatever HEAD holds is exactly the unchecked push the rule forbids. The
+    patch is still harvested, so the work is not lost -- only not pushed."""
+    url = f"file://{origin}"
+    worker, config, _ = worker_factory(
+        task_id="t-no-base", attempt_id="att-t-no-base", lease_id="lease-t-no-base",
+        repository_url=url,
+    )
+    worker.ws = workspace_mod.create(config.workspace_root, config.attempt_id)
+    task = {"task_id": "t-no-base", "metadata": {"dispatch": {"strategy": "direct-pr"}}}
+    worker._task = task
+    monkeypatch.setattr(worker, "_git_token", lambda: "not-a-real-token")
+    assert worker._maybe_clone(task) is not None
+    agent_commits_with_claude_attribution(worker.ws.work / lifecycle.REPO_DIR_NAME)
+
+    # What a resumed attempt with no marker looks like: nothing in memory, and
+    # nothing on disk to read it back from.
+    worker._clone_base = None
+    marker = worker.ws.work / lifecycle.WORKER_STATE_DIR / lifecycle.CLONE_BASE_FILE
+    marker.unlink(missing_ok=True)
+
+    before = refs(origin)
+    out = worker._harvest_git(publish=True)
+
+    assert refs(origin) == before, "commits nobody checked were pushed"
+    assert forge.pulls == []
+    assert out["published"] is False
+    assert "clone base" in out["publish_reason"]
