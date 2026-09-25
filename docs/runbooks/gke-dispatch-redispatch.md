@@ -66,11 +66,15 @@ kubernetes/apply.sh --tenant eng
 
 Without `--confirm` this renders the manifests, validates them client-side, and
 prints a `kubectl diff`. Nothing is written. Read the diff: you should see the
-namespace, the ResourceQuota and LimitRange, **three** ServiceAccounts
-(`swarm-worker`, `swarm-agent-worker`, and the namespace's own `default` with
-token automounting disabled), the worker Role/RoleBinding, the
-**`swarm-dispatcher` and `swarm-reaper`** Roles and RoleBindings, and two
-NetworkPolicies.
+namespace, the ResourceQuota and LimitRange, **two** ServiceAccounts
+(`swarm-agent-worker`, and the namespace's own `default` with token
+automounting disabled), the worker Role/RoleBinding, the
+**`swarm-dispatcher` and `swarm-reaper`** Roles and RoleBindings, and three
+NetworkPolicies. A third ServiceAccount, the older `swarm-worker` (with a
+`swarm-worker-legacy` RoleBinding), appears only where the tenant GSA
+Workload Identity-binds it — a tenant `scripts/register-tenant.sh`
+provisioned; eng, a terraform tenant, does not get it. The script prints which
+KSAs it found bound on its `workload identity` line.
 
 `swarm-dispatcher` is the object this whole exercise is about. If it is not in
 the diff, you are on an older checkout — it is added by
@@ -149,8 +153,10 @@ kubectl get serviceaccount -n swarm-tenant-eng
 
 Expect the namespace; a `swarm-dispatcher` RoleBinding whose `USERS` column
 carries **two** entries for the scheduler — its email *and* its numeric
-uniqueId; and `swarm-worker`, `swarm-agent-worker` and `default` in the
-ServiceAccount list.
+uniqueId; and `swarm-agent-worker` and `default` in the ServiceAccount list
+(plus `swarm-worker` only where the tenant GSA binds it, or where an earlier
+apply created it and nobody has deleted it -- `kubectl apply` does not prune;
+kubernetes/README.md §5).
 
 `-o wide` is what shows the `USERS` column at all; plain `get rolebinding` shows
 only the role and the age, which is how a binding with one subject too few passes

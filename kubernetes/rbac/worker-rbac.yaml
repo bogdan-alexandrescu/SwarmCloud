@@ -1,8 +1,8 @@
 # What a worker may do to the Kubernetes API: nothing.
 #
-# `rules: []` is not an oversight and not a placeholder. Every question of the
-# form "what does a worker need from the API server?" has the same answer, and
-# it is none:
+# The Role below has no `rules` key, and that is not an oversight and not a
+# placeholder. Every question of the form "what does a worker need from the API
+# server?" has the same answer, and it is none:
 #
 #   * it does not read its own pod -- its identifiers arrive as environment
 #     variables that the dispatcher set, and the authority on its task is the
@@ -26,6 +26,21 @@
 # The token is not mounted either (see service-accounts/), so this Role is the
 # second of two independent reasons a worker cannot call the API. Either alone
 # would do; both together mean a mistake in one does not become an escalation.
+#
+# WHY NO `rules: []`. This file said `rules: []` until 2026-09-25, and every
+# `kubectl apply` reported `role.rbac.authorization.k8s.io/swarm-worker
+# configured` although nothing changed. The API server stores the Role as
+# protobuf, where an empty list and no list are the same bytes, and serves it
+# back as `rules: null`. Client-side apply patches from the LIVE object to this
+# manifest, so null -> [] was a change on every run; the server then found
+# nothing to write (the live Role's resourceVersion and managedFields time were
+# still those of its creation), and `kubectl diff` showed nothing. Omitting the
+# key is the same empty rule set, spelled the way the server stores it, so an
+# unchanged Role now applies as `unchanged`. The first apply after this edit
+# still says `configured` once: it removes `rules` from the last-applied
+# annotation. tests/unit/worker/test_kubernetes_manifests.py
+# (test_nothing_apply_sends_carries_an_empty_list_the_api_server_drops) keeps
+# every empty list out of what apply.sh sends.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -40,7 +55,6 @@ metadata:
       Intentionally empty. A worker needs no Kubernetes API access; its state is
       in Firestore, its artifacts are in GCS and its credentials arrive as
       projected environment variables.
-rules: []
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -55,10 +69,12 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
   name: swarm-worker
+# The account the dispatcher's pods run as. The older `swarm-worker` account is
+# bound by its own RoleBinding, `swarm-worker-legacy`, in
+# service-accounts/legacy-worker-serviceaccount.yaml -- rendered only where
+# that account is Workload Identity-bound, so this binding never names an
+# account the render did not create.
 subjects:
-  - kind: ServiceAccount
-    name: swarm-worker
-    namespace: __NAMESPACE__
   - kind: ServiceAccount
     name: __KSA_NAME__
     namespace: __NAMESPACE__

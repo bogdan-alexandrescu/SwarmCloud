@@ -14,7 +14,8 @@ to be written down rather than assumed.
 | Path | What it is |
 | --- | --- |
 | `namespaces/tenant-namespace.yaml` | Namespace, ResourceQuota, LimitRange |
-| `service-accounts/worker-serviceaccount.yaml` | Workload Identity accounts, no mounted API token |
+| `service-accounts/worker-serviceaccount.yaml` | The worker's Workload Identity account and a disarmed `default`, no mounted API token |
+| `service-accounts/legacy-worker-serviceaccount.yaml` | The older `swarm-worker` account and its binding — rendered only where IAM binds it |
 | `rbac/worker-rbac.yaml` | A Role with no rules, and the binding |
 | `network-policies/default-deny.yaml` | Deny ingress and egress, for every pod |
 | `network-policies/allow-egress.yaml` | DNS (NodeLocal DNSCache and kube-dns), the metadata server, Google APIs, the internet minus the cluster |
@@ -22,7 +23,7 @@ to be written down rather than assumed.
 | `worker-templates/worker-job.yaml` | The canonical worker Job |
 | `worker-templates/worker-job-browser.yaml` | The same, plus shared memory for Chromium |
 | `render.py` | Fills in the placeholders; sizing comes from the frozen catalogue, the cluster's network from its inputs |
-| `apply.sh` | Checks it is pointed at the right cluster, reads that cluster's network, renders, applies |
+| `apply.sh` | Checks it is pointed at the right cluster, reads that cluster's network and the tenant GSA's Workload Identity bindings, renders, applies |
 | `cluster-network.sh` | Reads the pod range, service range, kube-dns IP and NodeLocal DNSCache address from the live cluster (sourced) |
 | `network_parity.py` | Compares an applied egress policy with the live network; run by `scripts/lib/check-cluster-network-parity.sh` |
 
@@ -55,19 +56,37 @@ kubernetes/render.py job --tenant eng --profile browser \
 
 `apply.sh` refuses three ways, and each catches what the others cannot:
 
-* the context must name nothing on `SHARED_DENY_LIST`. That list lives **once**,
-  in `scripts/lib/common.sh`, and `apply.sh` sources it rather than restating it,
-  so a resource added there is protected here on the same commit. `agents-staging`
-  in particular is a live GKE Standard cluster owned by another team **in this
-  same project**, and it is the current context on a freshly configured
-  workstation;
+* the **cluster** the context names — in its label, in the kubeconfig cluster
+  entry it resolves to, and in `--cluster` — must not be on `SHARED_DENY_LIST`.
+  That list lives **once**, in `scripts/lib/common.sh`, and `apply.sh` sources it
+  rather than restating it, so a resource added there is protected here on the
+  same commit. `agents-staging` in particular is a live GKE Standard cluster owned
+  by another team **in this same project**, and it is the current context on a
+  freshly configured workstation. The cluster is the last segment of
+  `gke_<project>_<location>_<cluster>`; the whole string used to be matched, and
+  because our project id `saga-agents-staging` contains `agents-staging`, gcloud's
+  own name for our cluster (`gke_saga-agents-staging_us-central1_swarm-autopilot`)
+  was refused. Both it and the `swarm-dev` label `configure-kubectl.sh` writes are
+  accepted now; `gke_saga-agents-staging_us-central1-a_agents-staging` is still
+  refused, including behind a label that looks like ours;
 * the context must not look like EKS. The EKS cluster's **name appears nowhere in
   this repository**, so this check matches its shape instead — an ARN, or a host
   under `eks.amazonaws.com`. An earlier version carried a literal
   `eks-cluster-name` in its deny list, which matches no real context and made the
   EKS case read as handled while handling nothing;
-* the cluster must start with `swarm-` and the context must name it — the same
-  rule terraform enforces on `gke_autopilot.cluster_name`.
+* the cluster must start with `swarm-` — the same rule terraform enforces on
+  `gke_autopilot.cluster_name` — and the context must point at **exactly** it, not
+  at a cluster whose name merely contains it: the network `apply.sh` renders is
+  read from that cluster by name. This is also what refuses the other team's
+  `gke_saga-agents-prod_us-central1_agents-prod`, which is not in this project and
+  so not on the shared deny-list.
+
+`apply.sh` also reads the tenant GSA's IAM policy, and passes `render.py` one
+`--bound-ksa` per Kubernetes service account it binds in the namespace (a
+`roles/iam.workloadIdentityUser` member `<project>.svc.id.goog[<namespace>/<ksa>]`).
+The older `swarm-worker` account is rendered only when it is among them — see
+§5 below. It refuses `--bound-ksa` on its own command line, and it names the KSA
+the dispatcher's pods run as when that one is unbound.
 
 It also resolves kubectl through `common.sh`'s `kubectl_bin` rather than trusting
 `PATH`: an EKS kubectl 1.22 shadows the current one on the reference workstation,
@@ -151,11 +170,29 @@ dependency nothing satisfied: `secretKeyRef` names a **Kubernetes** Secret and
 nothing in this repository creates one — tenant keys live in Secret Manager as
 `swarm-tenant-<tenant>-<provider>`.
 
-**A Role with `rules: []`.** A worker needs nothing from the Kubernetes API: its
+**A Role with no rules.** A worker needs nothing from the Kubernetes API: its
 state is in Firestore, its artifacts are in GCS, and its credentials arrive as
 environment variables projected from the tenant's own Secret Manager secret. The
 empty Role makes that absence greppable; `automountServiceAccountToken: false`
 makes it true even if someone fills the Role in.
+
+It is spelled by **omitting** `rules`, not as `rules: []`, and
+`swarm-deny-cross-tenant-ingress` omits `ingress` the same way. Nothing `apply.sh`
+sends may carry an empty list: the API server stores one as null or absent,
+client-side apply patches from that live object to the manifest, and so every run
+re-sent `[]` and reported the object `configured`. Measured 2026-09-25 on
+`swarm-tenant-eng`: the Role's resourceVersion was still its creation's (the
+"configured" wrote nothing, and `kubectl diff` showed nothing), while the
+NetworkPolicy — whose registry compares specs with `reflect.DeepEqual`, where
+nil ≠ `[]` — was written on every apply and stood at generation 4 against 1 for
+`swarm-default-deny`; its `generation: 4 → 5` was the unexplained second
+NetworkPolicy in every dry-run diff. `test_nothing_apply_sends_carries_an_empty_list_the_api_server_drops`
+holds every render to it. The first apply after the change still reports both
+objects `configured` once, because it rewrites their last-applied annotation —
+a change `kubectl diff` does not display, so that one run's dry-run diff will not
+list them. (Measured: `kubectl diff` of the new render against swarm-tenant-eng
+shows only the `swarm-worker` RoleBinding losing its `swarm-worker` subject and
+`swarm-agent-worker` losing its `alias-of` annotation.)
 
 ## What this directory does NOT cover
 
@@ -295,15 +332,36 @@ after the dispatcher RBAC was applied.
 (`swarm-agent-worker`), `register-tenant.sh` binds that name, and
 `tests/unit/worker/test_kubernetes_manifests.py` asserts the rendered
 ServiceAccount set contains exactly what `GkeJobDispatcher.ksa_for` asks for.
-`swarm-worker` stays, for tenants `register-tenant.sh` provisioned — it binds
-both names. It is **not** bound for `eng`, which terraform provisioned: measured
-2026-09-24, the only `roles/iam.workloadIdentityUser` member on
-`swarm-agent-worker-eng@` is `[swarm-tenant-eng/swarm-agent-worker]`. Nothing
-names `swarm-worker` in a pod spec, so that costs nothing today; see the header
-of `service-accounts/worker-serviceaccount.yaml`.
 
-**A leftover to delete by hand.** `swarm-tenant-eng` also holds a ServiceAccount
-`swarm-eng` — what `__KSA_NAME__` rendered to before this fix. No manifest here
+**`swarm-worker` is rendered only where it is bound.** It is **not** bound for
+`eng`, which terraform provisioned: measured 2026-09-24 and again 2026-09-25, the
+only `roles/iam.workloadIdentityUser` member on `swarm-agent-worker-eng@` is
+`[swarm-tenant-eng/swarm-agent-worker]`, and nothing in the namespace names
+`swarm-worker`. It used to be rendered for every tenant anyway, so eng carried an
+account whose Workload Identity annotation IAM does not honour. `apply.sh` now
+reads the GSA's IAM policy and `render.py` includes
+`service-accounts/legacy-worker-serviceaccount.yaml` (the account, and a
+`swarm-worker-legacy` RoleBinding to the empty worker Role) only where
+`swarm-worker` is bound — which is where `register-tenant.sh` provisioned the
+tenant. That script now issues its bindings **before** it calls `apply.sh`, so a
+tenant it registers has the account from its first apply.
+
+**A leftover to delete by hand, once this is applied.** `kubectl apply` never
+deletes an object a manifest stopped declaring (apply.sh does not `--prune`), so
+the next `apply.sh --tenant eng --confirm` stops naming `swarm-worker` in the
+`swarm-worker` RoleBinding and leaves the ServiceAccount itself in place. Check
+nothing names it, then delete it:
+
+```bash
+KUBECONFIG=build/kubeconfig-dev.yaml kubectl --context swarm-dev -n swarm-tenant-eng \
+  get pods,jobs -o jsonpath='{range .items[*]}{.spec.serviceAccountName}{.spec.template.spec.serviceAccountName}{"\n"}{end}'
+KUBECONFIG=build/kubeconfig-dev.yaml kubectl --context swarm-dev -n swarm-tenant-eng \
+  delete serviceaccount swarm-worker
+```
+
+**An earlier leftover.** `swarm-tenant-eng` also held a ServiceAccount
+`swarm-eng` — what `__KSA_NAME__` rendered to before this fix (it was no longer
+there on 2026-09-25). No manifest here
 declares it any more, and `kubectl apply` never deletes an object a manifest
 stopped declaring. Nothing uses it (no pod or Job in the namespace names it);
 delete it once:
