@@ -1801,10 +1801,10 @@ describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
         '<details class="wfb-more" open><summary>waits for</summary></details>',
     )
     const [shut, open] = [...f.querySelectorAll('summary')]
-    expect(won(shut!, 'content', WIDE, 'before')).toContain('25B8')
-    expect(won(open!, 'content', WIDE, 'before')).toContain('25BE')
+    expect(won(shut!, 'content', WIDE, 'before') ?? '', 'no marker on a closed disclosure').toContain('25B8')
+    expect(won(open!, 'content', WIDE, 'before') ?? '', 'no marker on an open one').toContain('25BE')
     expect(won(shut!, 'color', { ...WIDE, states: ['hover'] })).toBe('var(--text)')
-    expect(won(shut!, 'outline', { ...WIDE, states: ['focus-visible'] })).toContain('var(--info)')
+    expect(won(shut!, 'outline', { ...WIDE, states: ['focus-visible'] }) ?? '', 'no focus ring').toContain('var(--info)')
   })
 
   it('CP-18: the family tables and the profile tables each share one set of columns', () => {
