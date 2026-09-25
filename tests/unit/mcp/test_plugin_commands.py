@@ -136,22 +136,18 @@ def test_every_command_the_plugin_names_is_one_that_exists(path):
 def test_nothing_the_bridge_hands_back_tells_a_model_to_run_a_bare_swarm():
     """The live defect, guarded at the place it actually lived.
 
-    `swarm` and `sc` are not on anyone's PATH -- they are console scripts of
-    this package, installed into the uv environment. Any command string the
-    bridge RETURNS is a string a model will run verbatim, so it has to carry the
-    `uv run` prefix that works in a fresh checkout.
+    In a checkout `swarm` and `sc` are not on the reader's PATH -- they are
+    console scripts in the uv workspace -- so a command the bridge RETURNS
+    there has to carry `uv run`. That is one install of three: on a
+    plugin-only install the same prefix fails (#189), and
+    test_commands_run_where_the_bridge_runs.py holds the other two. This is the
+    checkout, which is where this suite imports the bridge from.
 
-    THE MUTATION THIS CATCHES: change `follow.TAIL_COMMAND` back to
-    `"swarm tail"`, or rebuild the string inline in `workflows.report` the way
-    that function used to, and this goes red. Reverting it in only one of the
-    three original places goes red too, because every producer is checked.
+    THE MUTATION THIS CATCHES: rebuild the string inline in `workflows.report`
+    or `server` the way those used to, bypassing `invocation.terminal_command`,
+    and this goes red, because every producer is checked.
     """
     from swarm_mcp import follow, server, workflows
-
-    assert follow.TAIL_COMMAND.startswith("uv run "), (
-        "the tailer is spelled for a shell that has `swarm` on its PATH, and no "
-        "shell does -- it is a console script in the uv environment"
-    )
 
     command = follow.follow_command(["task_a", "task_b"])
     assert command == "uv run swarm tail task_a task_b"

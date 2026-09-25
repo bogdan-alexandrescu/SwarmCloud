@@ -33,11 +33,226 @@ reintroduce exactly that, one layer up.
 
 from __future__ import annotations
 
+import json
+from dataclasses import dataclass
 from typing import Any
 
 from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES, resolve_backend
 
 from .client import SwarmError
+
+
+# --------------------------------------------------------------------------
+# The inputs a caller may send a runner (#142)
+# --------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class InputSpec:
+    """One input a runner reads from its task's `input`, and what it must be.
+
+    `kind` is one of `number`, `integer`, `boolean`, `string` and `filename` (a
+    bare file name, no directory). The bounds are what the runner can do
+    anything useful with; a value outside them is refused here, before it has
+    been admitted, rather than coerced or crashed on four minutes later.
+    """
+
+    kind: str
+    minimum: float | None = None
+    maximum: float | None = None
+    means: str = ""
+    #: Values inside the bounds that are refused all the same, each with what
+    #: the platform would read it as instead. A tuple of pairs, not a dict, so
+    #: the spec stays hashable.
+    refused: tuple[tuple[Any, str], ...] = ()
+
+    def describe(self) -> str:
+        if self.minimum is not None and self.maximum is not None:
+            text = f"{self.kind} {self.minimum:g}..{self.maximum:g}"
+        elif self.minimum is not None:
+            text = f"{self.kind} >= {self.minimum:g}"
+        else:
+            text = self.kind
+        if self.refused:
+            text += " except " + ", ".join(str(value) for value, _ in self.refused)
+        return text
+
+
+#: THE ONE PLACE a runner's caller-settable inputs are named, keyed by profile
+#: NAME, until the frozen catalogue can declare them itself -- contract request
+#: 25 in docs/contract-change-requests.md asks for `RunnerProfile.inputs`, and
+#: when it lands this table is read from there and deleted.
+#:
+#: WHY PER PROFILE, AND WHY THIS IS NOT INVARIANT 10 LOOSENED. A caller still
+#: names a profile and supplies DATA; nothing here is an image, a command, a
+#: resource spec or a backend parameter, and none of those can be declared. But
+#: an input means something only to the runner that reads it, and to another
+#: runner it can mean something else entirely: `input.model` is read by the CLI
+#: runners and would select the model a `claude-code` agent runs, which is the
+#: contract change test_model_flag_is_attribution_only.py exists to stop. So a
+#: profile that declares nothing takes nothing, and a key a profile does not
+#: declare is refused by name -- never dropped, never passed through.
+#:
+#: WHAT THE MOCK DECLARES, and what it deliberately does not. It reads more
+#: than this (`agent_worker/runners/mock.py`); left out are the keys that write
+#: platform records rather than shape the run: `spend`, which the worker books
+#: as the attempt's cost; `provider`, which names whose quota document a park
+#: writes; `credential_revoked_times`, `credential_detail`, `quota_detail` and
+#: `reset_at`, which simulate a provider's refusal.
+#:
+#: `quota_exhausted` AND `retry_after_seconds` ARE LEFT OUT TOO, because a
+#: caller could not stop what they start (review of PR #201). The mock raises
+#: its rate limit on EVERY attempt -- the check runs before any saved state
+#: and keeps no count, unlike `credential_revoked_times` -- and a park does
+#: not spend an attempt: `admission.acquire_lease_in_transaction` counts it,
+#: but neither the worker's `ControlPlane.park` nor the scheduler's
+#: `promote_to_ready` reads `retries_exhausted`, and neither does admission.
+#: So a mock step sent `{"quota_exhausted": true}`
+#: re-leased and re-parked, in a new Cloud Run execution each time, until
+#: somebody ran `swarm cancel`. The park path wants a bounded park in the
+#: mock -- a `quota_exhausted_times` counter kept in its state file -- which
+#: is a worker change and an owner's decision, not this table's.
+#: `retry_after_seconds` only shapes that signal, so it goes with it.
+#:
+#: tests/unit/mcp/test_runner_inputs.py holds every name here to the frozen
+#: catalogue, every key to a `payload` read in the runner's source, and no key
+#: to the branch that raises the rate limit.
+DECLARED_INPUTS: dict[str, dict[str, InputSpec]] = {
+    "mock": {
+        "sleep_seconds": InputSpec("number", minimum=0, means="how long the run sleeps, in total"),
+        "cpu_burn_seconds": InputSpec("number", minimum=0, means="how long it burns CPU, in total"),
+        "steps": InputSpec("integer", minimum=1, means="how many progress files, and checkpoints, it writes"),
+        "fail": InputSpec("boolean", means="fail on purpose, after the steps"),
+        "fail_message": InputSpec("string", means="the error a failure reports"),
+        # THE WORKER DECIDES WHAT AN ATTEMPT WAS FROM ITS EXIT CODE, so a code
+        # it reads as something else turns a failure on purpose into that
+        # thing (`agent_worker/runners/base.py`, `lifecycle._finalise`).
+        # Minimum 1: a 0 beside the result.json the mock writes is recorded
+        # SUCCEEDED. The three refused below are the EXIT_* codes that are
+        # not a plain failure; restated here because swarm-mcp cannot import
+        # the worker, and test_runner_inputs.py reads base.py's EXIT_*
+        # constants and fails if one is missing (contract request 21 asks for
+        # the codes to have a shared home).
+        "exit_code": InputSpec(
+            "integer",
+            minimum=1,
+            maximum=255,
+            means="the exit code a failure uses",
+            refused=(
+                (77, "77 is a provider rate limit to the worker, which parks the task "
+                     "instead of failing it -- and with no quota.json, again on every attempt"),
+                (78, "78 is the code a runner exits with when its credential is refused, "
+                     "so a failure recorded with it reads as one"),
+                (143, "143 is a runner stopped by SIGTERM, which the worker records CANCELLED"),
+            ),
+        ),
+        "artifact_text": InputSpec("string", means="what the output artifact holds"),
+        "artifact_name": InputSpec("filename", means="the output artifact's file name"),
+    },
+}
+
+
+def declared_inputs(name: str) -> dict[str, InputSpec]:
+    """The inputs this profile declares; `{}` for one that declares none."""
+    return dict(DECLARED_INPUTS.get(name, {}))
+
+
+def _declaring() -> str:
+    return ", ".join(sorted(DECLARED_INPUTS)) or "none"
+
+
+def _check_value(key: str, value: Any, spec: InputSpec, where: str) -> Any:
+    prefix = f"{where}: " if where else ""
+    wanted = f"{prefix}input {key!r} must be a {spec.describe()}"
+    if spec.kind in ("number", "integer"):
+        # A bool is an int to Python and is refused here: `sleep_seconds: true`
+        # is a caller who meant something else.
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise SwarmError(f"{wanted}, not {value!r}")
+        if spec.kind == "integer" and not (isinstance(value, int) or float(value).is_integer()):
+            raise SwarmError(f"{wanted}, not {value!r}")
+        if spec.kind == "integer":
+            value = int(value)
+        if spec.minimum is not None and value < spec.minimum:
+            raise SwarmError(f"{wanted}, not {value!r}")
+        if spec.maximum is not None and value > spec.maximum:
+            raise SwarmError(f"{wanted}, not {value!r}")
+        for refused, reads_as in spec.refused:
+            if value == refused:
+                raise SwarmError(f"{wanted}, not {value!r}: {reads_as}")
+        return value
+    if spec.kind == "boolean":
+        if not isinstance(value, bool):
+            raise SwarmError(f"{wanted} (true or false), not {value!r}")
+        return value
+    if not isinstance(value, str):
+        raise SwarmError(f"{wanted}, not {value!r}")
+    if spec.kind == "filename":
+        # The worker strips a path to its last segment (`RunnerContext.
+        # artifact_path`), so `../x` would quietly become `x`. Said instead.
+        if not value or value in (".", "..") or "/" in value or "\\" in value or "\x00" in value:
+            raise SwarmError(f"{wanted} -- a bare file name with no directory -- not {value!r}")
+    return value
+
+
+def check_inputs(name: str, raw: Any, *, where: str = "") -> dict[str, Any]:
+    """The declared inputs `raw` asks for, checked; refuses anything else. Returns them.
+
+    `raw` is None (nothing asked for) or an object. The profile NAME has already
+    been checked by `check`; this is only about what may travel with it.
+    """
+    prefix = f"{where}: " if where else ""
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise SwarmError(
+            f"{prefix}`inputs` must be an object of the inputs {name} declares, not "
+            f"{type(raw).__name__}"
+        )
+    declared = DECLARED_INPUTS.get(name, {})
+    if raw and not declared:
+        raise SwarmError(
+            f"{prefix}runner profile {name!r} declares no inputs, so none can be sent "
+            f"({sorted(raw)} were given). Only these profiles declare any: {_declaring()} "
+            "-- see `swarm_profiles`. A step's instructions go in `prompt`."
+        )
+    unknown = sorted(set(raw) - set(declared))
+    if unknown:
+        offered = ", ".join(f"{key} ({spec.describe()})" for key, spec in sorted(declared.items()))
+        raise SwarmError(
+            f"{prefix}{name} does not declare {unknown} as an input, so it is not sent. "
+            f"It declares: {offered}. The instructions go in `prompt`; an image, a "
+            "command, a resource spec, a backend or a model are never sent "
+            "(invariant 10)."
+        )
+    return {key: _check_value(key, raw[key], declared[key], where) for key in sorted(raw)}
+
+
+def parse_input_flags(name: str, flags: list[str] | None, *, where: str = "") -> dict[str, Any]:
+    """`swarm dispatch --input KEY=VALUE ...`, typed by what `name` declares.
+
+    A string input keeps its text as typed -- `fail_message=123` is the message
+    "123" -- and every other kind is read as JSON (`120`, `2.5`, `true`), so
+    the value is typed by the DECLARATION rather than by whatever JSON happens
+    to make of the text. The result goes through `check_inputs`.
+    """
+    prefix = f"{where}: " if where else ""
+    declared = DECLARED_INPUTS.get(name, {})
+    raw: dict[str, Any] = {}
+    for flag in flags or []:
+        key, sep, text = str(flag).partition("=")
+        key = key.strip()
+        if not sep or not key:
+            raise SwarmError(f"{prefix}--input takes KEY=VALUE, not {flag!r}")
+        spec = declared.get(key)
+        if spec is None or spec.kind in ("string", "filename"):
+            raw[key] = text
+            continue
+        try:
+            raw[key] = json.loads(text)
+        except json.JSONDecodeError:
+            raw[key] = text
+    return check_inputs(name, raw or None, where=where)
 
 
 def names() -> list[str]:
@@ -90,6 +305,14 @@ def public_profile(name: str) -> dict[str, Any]:
     }
     if not profile.available:
         out["disabled_reason"] = profile.disabled_reason
+    declared = declared_inputs(name)
+    if declared:
+        # What a caller may send this profile besides its prompt (#142), so the
+        # names are learned here rather than from prose that goes stale.
+        out["inputs"] = {
+            key: {"kind": spec.describe(), "means": spec.means}
+            for key, spec in sorted(declared.items())
+        }
     return out
 
 

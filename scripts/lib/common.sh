@@ -1597,8 +1597,27 @@ iso_now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 # The `Bearer` rule is separate from the assignment rule on purpose: the
 # assignment rule's terminator stops at whitespace, so `Authorization: Bearer X`
 # would otherwise mask only the literal word `Bearer` and print X.
+#
+# A STATUS WORD IS NOT A VALUE (#195). The assignment rule masks the first run
+# of non-space characters after `token:`, and for `SWARM_ID_TOKEN: not set`
+# that run is `not`: the line came out `SWARM_ID_TOKEN: ******** set`, which
+# says a missing token is set (measured 2026-09-25 on `swarm doctor | redact`).
+# sed has no lookahead, so the words `not set`, `set`, `unset`, `none`,
+# `(none)` and `missing` -- standing alone as the whole value -- are marked for
+# one pass: a control byte goes between the key and its separator, where the
+# assignment rule cannot match across it, and comes out again at the end. The
+# assignment rule itself is unchanged, so every value it masked it still
+# masks, including `none-of-your-business` and `settings-...`. The first
+# expression strips that byte from the input, so a line cannot carry its own
+# to shield a real value. tests/unit/control_plane/test_log_redaction.py runs
+# this function, on both halves.
 redact() {
+  # SOH: a byte no credential and no log line carries, and one no locale counts
+  # as [[:space:]] -- which the assignment rule would otherwise match across.
+  local keep=$'\001'
+  local key='"?(api_?key|apikey|password|passwd|secret|token|credential|authorization)"?'
   sed -E \
+    -e "s/${keep}//g" \
     -e 's/(sk-[A-Za-z0-9_-]{6})[A-Za-z0-9_-]+/\1********/g' \
     -e 's/(ya29\.)[A-Za-z0-9._-]+/\1********/g' \
     -e 's/(ey[A-Za-z0-9_-]{8})[A-Za-z0-9._-]+/\1********/g' \
@@ -1609,7 +1628,9 @@ redact() {
     -e 's/((AKIA|ASIA)[A-Z0-9]{4})[A-Z0-9]+/\1********/g' \
     -e 's/(-----BEGIN [A-Z ]*PRIVATE KEY-----).*/\1********/g' \
     -e 's/(([Bb]earer|[Bb]asic)[[:space:]]+)[A-Za-z0-9._~+\/-]{12,}=*/\1********/g' \
-    -e 's/("?(api_?key|apikey|password|passwd|secret|token|credential|authorization)"?[[:space:]]*[:=][[:space:]]*"?)[^",[:space:]]+/\1********/Ig'
+    -e "s/(${key})([[:space:]]*[:=][[:space:]]*\"?)((not set|unset|set|none|\\(none\\)|missing)([\",[:space:]]|\$))/\\1${keep}\\3\\4/Ig" \
+    -e 's/("?(api_?key|apikey|password|passwd|secret|token|credential|authorization)"?[[:space:]]*[:=][[:space:]]*"?)[^",[:space:]]+/\1********/Ig' \
+    -e "s/${keep}//g"
 }
 
 load_env

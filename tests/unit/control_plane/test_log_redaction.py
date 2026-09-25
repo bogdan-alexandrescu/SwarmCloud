@@ -347,6 +347,119 @@ def test_the_shell_filter_is_not_wider_than_this_one_on_the_corpus():
 
 
 # --------------------------------------------------------------------------
+# The house filter, run (#195)
+# --------------------------------------------------------------------------
+#
+# `redact` in scripts/lib/common.sh rewrote `SWARM_ID_TOKEN: not set` as
+# `SWARM_ID_TOKEN: ******** set`, so redacted output said a missing token was
+# set. Measured 2026-09-25 on `swarm doctor | redact`; `swarm_mcp.auth` emits
+# `("SWARM_ID_TOKEN", "not set")`. The assignment rule masks the first run of
+# non-space characters after `token:`, and for `not set` that run is `not`.
+#
+# These RUN the function, where the parity tests above only parse it: what is
+# being checked is what sed does to a line, and no parse says that. They run in
+# CI, which is the gate (CLAUDE.md), on the GNU sed the filter's `I` flag is
+# written for.
+
+
+def _house_filter(lines: list[str]) -> list[str]:
+    """`redact()` exactly as common.sh defines it, fed `lines` on stdin.
+
+    The function's own text is lifted out and run by itself, rather than
+    sourcing common.sh, whose load-time work (project, region, `.env`) is not
+    what is under test and would need a configured machine.
+    """
+    import subprocess
+
+    text = (REPO / "scripts/lib/common.sh").read_text()
+    match = re.search(r"^redact\(\) \{\n.*?^\}\n", text, re.MULTILINE | re.DOTALL)
+    assert match, "redact() is no longer where this test expects it in common.sh"
+    done = subprocess.run(
+        ["bash", "-c", match.group(0) + "redact\n"],
+        input="".join(line + "\n" for line in lines),
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert done.returncode == 0, done.stderr
+    out = done.stdout.splitlines()
+    assert len(out) == len(lines), (lines, out)
+    return out
+
+
+def _house_key_words() -> list[str]:
+    """The key words the house assignment rule masks after, read off the rule."""
+    rule = next(r for r in _shell_redact_rules() if "api_?key" in r)
+    words = re.search(r"\(api_\?key\|([a-z|]+)\)", rule)
+    assert words, rule
+    return ["api_key"] + words.group(1).split("|")
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "SWARM_ID_TOKEN: not set",
+        "SWARM_ID_TOKEN: set",
+        "GITHUB_TOKEN: not set",
+        "  checked   SWARM_ID_TOKEN: not set",
+        "password: none",
+        "api_key=(none)",
+        "secret: missing",
+        "token: unset",
+        '{"token": "not set", "password": "none"}',
+    ],
+)
+def test_the_house_filter_passes_a_status_word_through(line):
+    """A status word is not a credential, and masking it changes what the line
+    says: `not set` and `set` came out differing only by a trailing word."""
+    assert _house_filter([line]) == [line]
+
+
+def test_every_key_the_house_filter_masks_after_lets_not_set_through():
+    """The status words are protected for EVERY key word the assignment rule
+    knows -- read off that rule, so a key word added there without its status
+    words comes out as `******** set` again and goes red here."""
+    words = _house_key_words()
+    assert len(words) >= 8, words
+    lines = [f"{word.upper()}: not set" for word in words]
+    assert _house_filter(lines) == lines
+
+
+@pytest.mark.parametrize(
+    "line,secret",
+    [
+        ("SWARM_ID_TOKEN: nothing-to-see-here-1234", "nothing-to-see"),
+        ("token: settings-are-secret-99", "settings-are"),
+        ("password: none-of-your-business", "of-your-business"),
+        ("GITHUB_TOKEN=unset_me_now_123", "unset_me_now"),
+        ("SWARM_ID_TOKEN: not-set-but-a-real-value", "but-a-real-value"),
+        ("secret: missing_link_42", "missing_link"),
+    ],
+)
+def test_the_house_filter_still_masks_a_value_that_starts_like_a_status_word(line, secret):
+    """The fix must not weaken masking: this filter is the last of three layers
+    and a regression here puts a credential in a CI log."""
+    (out,) = _house_filter([line])
+    assert secret not in out, out
+    assert "********" in out, out
+
+
+def test_the_house_filter_still_masks_the_whole_corpus():
+    """Every credential shape above, through the shell filter itself."""
+    out = _house_filter([line for _, line, _ in CORPUS])
+    for (name, _, secret), redacted in zip(CORPUS, out):
+        assert secret not in redacted, f"{name} survived the house filter: {redacted}"
+
+
+def test_a_planted_sentinel_cannot_shield_a_value():
+    """The fix marks a protected status word with a control byte for one pass.
+    A line that already carries that byte must not be able to use it to keep a
+    real value out of the masking rule."""
+    (out,) = _house_filter(["TOKEN\x01: hunter2-hunter2-hunter2"])
+    assert "hunter2" not in out, repr(out)
+
+
+# --------------------------------------------------------------------------
 # End to end, through the route
 # --------------------------------------------------------------------------
 
