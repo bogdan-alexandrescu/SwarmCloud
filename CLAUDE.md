@@ -347,7 +347,11 @@ rule 1 says so.
 **AN EPIC CLOSES ON ITS COMMENTS, NEVER ON ITS INDEX.** In saga-prompt-lab,
 #871 closed over two live defects its body's index never listed. Enumerate the
 boxes from the comments, reconcile them against anything the body lists, and if
-the two disagree the epic is not closeable.
+the two disagree the epic is not closeable. So an epic's body carries **no task
+item at all** — not from the CLI, and not from the form, which has no
+checkboxes for exactly this reason: GitHub writes a form's checkboxes into the
+filed body as `- [X]` items, and a required acknowledgement would arrive as a
+ticked box no comment matches, on every epic.
 
 **`Closes #N` ONLY WHEN IT IS UNCONDITIONALLY TRUE.** GitHub reads the keyword
 and drops every qualifier around it: "Closes #12 except the GKE half" closes

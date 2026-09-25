@@ -3,6 +3,15 @@
 # epic is most often broken on -- the comments are the record, the body is not
 # an index -- is in front of whoever opens one, every time. The rules are in
 # CLAUDE.md, "Issues".
+#
+# NO CHECKBOXES IN THIS FORM, not even a required "I understand". GitHub writes
+# a checkboxes element into the filed body as `- [X]` task items, so an
+# acknowledgement arrives as a ticked box in the one place this form says is
+# not the record -- and CLAUDE.md's closing rule, which reconciles the boxes in
+# the comments against anything the body lists, would find two boxes no comment
+# matches on every epic. The rules are in the markdown element below, which
+# GitHub shows to the filer and never submits. A test fails on any task item
+# this form would write: tests/unit/scripts/test_issue_forms.py.
 name: Epic — one wave's findings
 description: Mechanical defects a wave of lanes found outside their own files. Each finding is a comment, not a line in this body.
 title: "[epic] Wave YYYY-MM-DD out-of-territory findings"
@@ -54,13 +63,3 @@ body:
         so nobody files them twice and nobody closes this one thinking they were covered.
     validations:
       required: false
-
-  - type: checkboxes
-    id: rules
-    attributes:
-      label: Before filing
-      options:
-        - label: "Each finding will be its own COMMENT, in the box shape above — not a line in this body"
-          required: true
-        - label: "Anything touching the frozen contract, a Firestore document shape or product behaviour gets its own issue instead"
-          required: true
