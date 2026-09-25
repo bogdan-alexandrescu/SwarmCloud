@@ -164,6 +164,22 @@ class ReconcilerConfig:
     #: short beside the 300 s dispatch deadline this rule is there to beat. The
     #: repair also refuses, inside its transactions, a task that has left
     #: DISPATCHED and STARTING, so this is the first of two guards.
+    #:
+    #: HOW MUCH SOONER IT IS, measured against 2026-09-25. It is not the grace
+    #: that decides that; it is the reconciler's tick and how late the worker
+    #: exits. A 69 from an unreachable control plane now comes after the
+    #: generation check's ~90 s of attempts (`agent_worker.startup.
+    #: CONTROL_PLANE_READ_SCHEDULE_SECONDS`), so its execution ends about
+    #: cold start + 95 s after dispatch and this rule may act 30 s after that.
+    #: For the cold starts measured that day (103 to 195 s, dispatch to worker)
+    #: that is 70 s before to 20 s after the 300 s deadline. At the `*/5`
+    #: tick a pass falls between the two at most a quarter of the time, so for
+    #: that exit this rule mostly changes `last_error`, not when the task is
+    #: requeued. A worker that dies in its first seconds (an exit 1, a 143) is
+    #: eligible 65 to 155 s before the deadline, so a pass falls between more
+    #: often, and then it is requeued five minutes sooner. At a `*/1` tick (PR
+    #: #202, the owner's decision) any of them is requeued 30 to 90 s after its
+    #: execution ends.
     ended_execution_grace_seconds: int = 30
 
     max_findings_per_pass: int = 200

@@ -3587,10 +3587,13 @@ def _unreachable_hint(exc: BaseException) -> str:
     )
     if "ipv6:" in text and "all addresses" in text:
         hint += (
-            " 'failed to connect to all addresses' means every address failed, the "
-            "IPv4 one included. The ipv6 address in it is only the last error gRPC "
-            "kept: the swarm subnet is IPv4-only, so that address is never reachable "
-            "from it, and a worker does not need it to be."
+            " 'failed to connect to all addresses' means every address gRPC resolved "
+            "failed: if the DNS preflight line lists an IPv4 address, that one failed "
+            "too (on 2026-09-25 the VPC flow logs showed its SYNs unanswered, "
+            "docs/incidents/2026-09-25-worker-startup-network.md). The ipv6 address "
+            "in it is only the last error gRPC kept: the swarm subnet is IPv4-only, "
+            "so that address fails at once without leaving the instance, and a "
+            "worker does not need it."
         )
     return hint
 

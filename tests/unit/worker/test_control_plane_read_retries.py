@@ -8,14 +8,16 @@ preflight in 28 ms, and then could not reach Firestore at all:
     ipv6:[2607:f8b0:4001:c00::5f]:443 ... Network is unreachable
 
 It spent the generation check's whole 30 s budget in one silent retry and
-exited 69 at 20:37:56Z. The other 119 executions of the previous 14 days
-(measured from their "startup phase" log lines) made the same read in at most
-0.43 s, though every one of them was given the same IPv6 address as well as an
-IPv4 one. "Failed to connect to ALL addresses" means the IPv4 address failed
-too; the IPv6 error is only the last one gRPC kept. Google documents the cause
-for Direct VPC egress: "You might experience connection establishment delays
-of a minute or more on instance startup when using Direct VPC egress."
-(docs.cloud.google.com/run/docs/configuring/vpc-direct-vpc, read 2026-09-25.)
+exited 69 at 20:37:56Z. The other 119 executions that logged the check (every
+one since those log lines were deployed at 03:23Z that day) made the same read
+in at most 0.43 s, though every one of them was given the same IPv6 address as
+well as an IPv4 one. The IPv4 address is the one that failed: VPC flow logs
+show the instance's SYNs to 173.194.206.95:443 unanswered from 50 ms into the
+check until it exited. The IPv6 error is only the last one gRPC kept. Google
+documents the cause for Direct VPC egress: "You might experience connection
+establishment delays of a minute or more on instance startup when using Direct
+VPC egress." (docs.cloud.google.com/run/docs/configuring/vpc-direct-vpc, read
+2026-09-25; docs/incidents/2026-09-25-worker-startup-network.md.)
 
 So the read now gets the DNS preflight's own treatment: attempts at fixed
 start times that span more than a minute, one WARNING per failed attempt, and
