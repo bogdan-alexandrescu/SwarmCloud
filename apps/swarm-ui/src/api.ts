@@ -837,10 +837,10 @@ export async function loadTask(taskId: string): Promise<Result<Task>> {
  * `limit` got `default_page_size`. `store.list_artifacts` then returned
  * `manifest.artifacts[:50]` with `complete: true` and nothing saying it had
  * cut the list. A browser run that took 60 screenshots drew 50 rows and a
- * chip reading 50. The route takes no page token, so one read goes no further
- * than this. The pane lists anything past it from the task's own manifest,
- * which is the record the route serves, and it says how many the route
- * listed (Artifacts.tsx `Files`).
+ * chip reading 50. The route returns no `next_page_token` and accepts none, so
+ * one read goes no further than this. The pane lists anything past it from
+ * the task's own manifest, which is the record the route serves, and it says
+ * how many the route listed (Artifacts.tsx `Files`).
  *
  * This is its own constant, not `ATTEMPT_PAGE_LIMIT`, for the reason that one
  * gives: the two routes share a cap today, and nothing makes them share one.

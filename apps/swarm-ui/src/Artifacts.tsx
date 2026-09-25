@@ -703,7 +703,7 @@ interface ListingCut {
  * the stored object with your own credentials.
  *
  * EVERY FILE, NOT ONE PAGE OF THEM. The listing route returns one page, at
- * most `ARTIFACT_PAGE_LIMIT` entries, and it takes no page token. Until
+ * most `ARTIFACT_PAGE_LIMIT` entries, and it cannot be paged past that. Until
  * #187's fix-up it also returned the server's default of 50, because no
  * `limit` was sent, and the pane drew those 50 as the whole run. A file past
  * the route's page is listed from the task's own manifest, which is the same
@@ -786,7 +786,7 @@ function Files({ v }: { v: ArtifactsView }) {
       <span key="cut">
         <Mark
           kind="partial"
-          say={`The listing route returned ${cut.listed} of this run's ${cut.total} files: it answers one page and takes no page token. The other ${cut.total - cut.listed} are listed from the task's own manifest, the record the route serves. The server named no kind for them, so each opens by its name, and open full lets the raw route decide what the bytes are.`}
+          say={`The listing route returned ${cut.listed} of this run's ${cut.total} files: it answers one page and cannot be paged past it. The other ${cut.total - cut.listed} are listed from the task's own manifest, the record the route serves. The server named no kind for them, so each opens by its name, and open full lets the raw route decide what the bytes are.`}
         />{' '}
         {cut.listed} of {cut.total} listed
       </span>,
