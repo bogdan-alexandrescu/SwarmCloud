@@ -284,8 +284,13 @@ function Provenance({ data }: { data: ArtifactContent }) {
               it holds is a property of the SERVING path rather than of this
               artifact: masking happens on the way out, the object in the bucket
               is unchanged, and no label on a count can say that. `0 of N
-              families` is the count; this is what the count does not mean. */}
-          <HelpCard topic="credential-names-not-values" />
+              families` is the count; this is what the count does not mean.
+
+              IT OPENS `masking-is-serve-time` (AG-19). It opened "Credential
+              names, never values" -- the rule for how a tenant's secrets are
+              NAMED, not what happens to a value found in an artifact. The new
+              topic is built from the masked mark's own `say` string. */}
+          <HelpCard topic="masking-is-serve-time" />
         </li>
       </ul>
       <span className="art-prov-actions">
