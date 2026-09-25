@@ -347,6 +347,10 @@ def _publish(worker_factory, tmp_path, monkeypatch, dispatch, *, opened):
 
     monkeypatch.setattr(lifecycle, "probe_repository", lambda **kw: _Access())
     monkeypatch.setattr(lifecycle, "commit_dirty", lambda **kw: "")
+    # Faked like every other git helper here: `repo` is not a repository and
+    # there is no clone base. The fold itself runs for real, against a real
+    # remote, in test_strategy_end_to_end.py.
+    monkeypatch.setattr(lifecycle, "fold_agent_commits", lambda **kw: 0)
     monkeypatch.setattr(lifecycle, "push_branch", lambda **kw: "deadbeef")
     monkeypatch.setattr(
         lifecycle,

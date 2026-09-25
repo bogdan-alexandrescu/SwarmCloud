@@ -650,6 +650,104 @@ def commit_dirty(
     return text.strip() if code == 0 else None
 
 
+def fold_agent_commits(
+    *,
+    repo: Path,
+    base: str | None,
+    keep: str | None,
+    message: str,
+    author_name: str,
+    author_email: str,
+    private_dir: Path,
+    logs_dir: Path,
+    timeout_seconds: int,
+    logger: Any,
+    git_binary: str = "git",
+) -> int:
+    """Replace every commit made since `base` with ONE commit the worker makes.
+
+    Returns how many commits were replaced, or 0 when there was nothing to
+    replace -- no commits at all, or only `keep`, the worker's own commit from
+    `commit_dirty`.
+
+    WHY THE WORKER WRITES EVERY COMMIT IT PUSHES. Nothing this platform puts on
+    a forge may carry Claude attribution (the owner's rule, 2026-09-25). The
+    worker's own commits never did; the AGENT'S could. The claude-code runner
+    starts Claude Code with HOME set to the attempt's workspace and no settings
+    of its own, so an agent that runs `git commit` follows Claude Code's
+    default instruction to add a `Co-Authored-By: Claude` trailer and a
+    "Generated with Claude Code" line -- and in a container with no git
+    identity it may commit AS Claude. A settings file cannot fix this from the
+    image: HOME is overridden, a setting governs only the tool's instruction
+    and not the model's choice of identity, and it covers one runner. Folding
+    here covers every runner, and is checkable against a real remote.
+
+    The tree is not touched: `reset --soft` keeps the index and the working
+    tree exactly as the agent left them, so the one commit carries all of its
+    work, committed or not. What the agent committed is still recorded -- the
+    harvest ran first, and `result_summary.git.commits` lists each commit's
+    subject and author -- it is only not pushed as the agent wrote it.
+
+    An unknown `base` REFUSES rather than degrading. Without it there is no way
+    to tell the agent's commits from the repository's own, and pushing whatever
+    HEAD holds is the unchecked push this exists to prevent.
+    """
+    if not base or not _SHA_RE.match(base.strip()):
+        raise GitError(
+            "the clone base is unknown, so the worker cannot replace the agent's "
+            "commits with its own; nothing was pushed rather than commits whose "
+            "author and message the worker did not write"
+        )
+    base = base.strip()
+    repo = Path(repo)
+    ident = [
+        "-c", f"user.name={author_name}",
+        "-c", f"user.email={author_email}",
+    ]
+    g = [git_binary, *_NO_HOOKS, *ident]
+
+    def run(argv: list[str], slug: str) -> tuple[int, str]:
+        return _git_text(
+            argv,
+            repo=repo,
+            private_dir=private_dir,
+            logs_dir=logs_dir,
+            slug=slug,
+            timeout_seconds=timeout_seconds,
+            logger=logger,
+        )
+
+    code, text = run([*g, "rev-list", "--count", f"{base}..HEAD"], "publish-fold-count")
+    if code != 0:
+        raise GitError("could not count the commits made since the clone base")
+    try:
+        count = int(text.strip() or "0")
+    except ValueError as exc:
+        raise GitError(f"could not read the commit count {text.strip()[:40]!r}") from exc
+    if count == 0:
+        return 0
+    if count == 1 and keep:
+        code, head = run([git_binary, *_NO_HOOKS, "rev-parse", "HEAD"], "publish-fold-head")
+        if code == 0 and head.strip() == keep:
+            # The only commit is the worker's own, from `commit_dirty`.
+            return 0
+
+    code, _ = run([*g, "reset", "--soft", base], "publish-fold-reset")
+    if code != 0:
+        raise GitError("could not rewind to the clone base to replace the agent's commits")
+
+    # Commits that add up to no change leave nothing staged; HEAD is the base.
+    code, _ = run([*g, "diff", "--cached", "--quiet"], "publish-fold-staged")
+    if code != 0:
+        code, _ = run(
+            [*g, "commit", "--no-verify", "--message", message], "publish-fold-commit"
+        )
+        if code != 0:
+            raise GitError("could not commit the agent's work as the worker")
+    logger.info("folded the agent's commits into one worker commit", replaced=count)
+    return count
+
+
 def push_branch(
     *,
     repo: Path,

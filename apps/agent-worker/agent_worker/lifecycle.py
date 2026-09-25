@@ -156,6 +156,7 @@ from .gitops import (
     GitError,
     MergeOutcome,
     commit_dirty,
+    fold_agent_commits,
     merge_branches,
     push_branch,
     shallow_clone,
@@ -3111,6 +3112,7 @@ class Worker:
         out["role"] = role or None
 
         auto_committed = False
+        folded = 0
         merge: MergeOutcome | None = None
         try:
             new_sha = commit_dirty(
@@ -3131,6 +3133,35 @@ class Worker:
             if new_sha:
                 auto_committed = True
                 work_head = new_sha
+
+            # EVERY COMMIT THIS PUSHES IS THE WORKER'S. Whatever the agent
+            # committed itself -- possibly as Claude, possibly with a
+            # Co-Authored-By trailer and a "Generated with" line, which is what
+            # Claude Code adds by default -- is folded into one commit the
+            # worker writes. See `gitops.fold_agent_commits` for why this is
+            # done here and not with a setting in the image.
+            replaced = fold_agent_commits(
+                repo=repo,
+                base=self._clone_base or self._read_clone_base(),
+                keep=new_sha,
+                message=(
+                    f"swarm: work from {cfg.task_id}\n\n"
+                    "Everything the agent changed in this attempt, committed or "
+                    "not, as one commit made by the worker. The worker writes "
+                    "every commit it pushes, so no author, trailer or footer "
+                    "added inside the agent's container reaches this branch."
+                ),
+                author_name=cfg.git_author_name,
+                author_email=cfg.git_author_email,
+                private_dir=ws.private,
+                logs_dir=ws.logs,
+                timeout_seconds=cfg.git_harvest_timeout_seconds,
+                logger=self.log,
+            )
+            # The worker's own auto-commit is among what was replaced when
+            # there was one; the rest were the agent's.
+            folded = max(replaced - (1 if new_sha else 0), 0)
+            out["agent_commits_folded"] = folded
 
             # THE INTEGRATOR MERGES BEFORE IT PUSHES.
             #
@@ -3221,7 +3252,7 @@ class Worker:
 
         title = f"[swarm] {cfg.task_id}"
         body = self._pull_request_body(
-            branch=branch, auto_committed=auto_committed, merge=merge
+            branch=branch, auto_committed=auto_committed, merge=merge, folded=folded
         )
         try:
             pr = open_pull_request(
@@ -3263,6 +3294,7 @@ class Worker:
         branch: str,
         auto_committed: bool,
         merge: "MergeOutcome | None" = None,
+        folded: int = 0,
     ) -> str:
         """The body a reviewer reads. Provenance first, prompt second.
 
@@ -3285,7 +3317,17 @@ class Worker:
             lines.append(f"- base commit: `{self._clone_base}`")
         if self._last_checkpoint is not None:
             lines.append(f"- checkpoint: `{self._last_checkpoint.uri}`")
-        if auto_committed:
+        if folded:
+            # Said on the page, because a reviewer who knows the agent made
+            # several commits would otherwise look for them. They are in the
+            # run result; here they are one commit the worker wrote.
+            lines += [
+                "",
+                f"The agent's {folded} commit(s) and any changes it left "
+                "uncommitted are one commit on this branch, made by the worker. "
+                "The worker writes every commit it pushes.",
+            ]
+        elif auto_committed:
             lines += [
                 "",
                 "One commit on this branch was made by the worker, not the agent: "
