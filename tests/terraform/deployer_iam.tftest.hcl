@@ -672,7 +672,7 @@ run "the_scoping_terraform_tfvars_names_moves_its_own_grants_and_nothing_else" {
   # comment, and the plan PR #73 derived (1 to add, 0 to change, 1 to destroy
   # against a live policy with nothing scoped), describe.
   assert {
-    condition     = var.deployer_scoped_roles == toset([])
+    condition     = var.deployer_scoped_roles == toset(["roles/resourcemanager.projectIamAdmin"])
     error_message = "terraform/bootstrap/terraform.tfvars no longer scopes exactly roles/resourcemanager.projectIamAdmin, so the targeted apply command in its comment and the plan derived for it describe a different change. Update the command, that plan and this assertion together."
   }
 }
@@ -824,6 +824,7 @@ run "every_project_role_the_verify_identity_holds_is_grantable" {
   assert {
     condition = alltrue([
       contains(run.every_switched_role_trades_its_project_wide_grant_for_a_conditioned_one.deployer_grantable_project_roles, google_project_iam_member.verify_reads_firestore.role),
+      contains(run.every_switched_role_trades_its_project_wide_grant_for_a_conditioned_one.deployer_grantable_project_roles, google_project_iam_member.verify_reads_run.role),
     ])
     error_message = "terraform/infra/verify.tf grants a project-level role the scoped projectIamAdmin may not grant; add it to deployer_grantable_project_roles"
   }
