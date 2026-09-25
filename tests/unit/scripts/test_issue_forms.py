@@ -385,8 +385,11 @@ def _nav_options() -> dict[str, str]:
     ref = _const(app, "REFERENCE")
     out[ref] = f"{UI}{_const(app, 'REFERENCE_LABEL')} (#{ref})"
     help_route = _const(_read(HELP_TS), "HELP_ROUTE")
-    # The Help screen's name is what the head's crumb prints for it.
-    m = re.search(r"at\.sectionId === HELP \? '([^']+)'", app)
+    # The Help screen's name is what the head's crumb prints for it. Anchored on
+    # the crumb's own `??` fallback: the same `at.sectionId === HELP ? '...'`
+    # shape also picks the rail button's CSS class, and a bare search for it
+    # reads the name as "is-on".
+    m = re.search(r"\?\? \(at\.sectionId === HELP \? '([^']+)'", app)
     assert m is not None, "could not read the name the head prints for the Help screen"
     out[help_route] = f"{UI}{m.group(1)} (#{help_route})"
     return out

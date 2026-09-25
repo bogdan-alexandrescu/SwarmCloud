@@ -1,0 +1,66 @@
+# An epic collects one wave's MECHANICAL out-of-territory findings. Prompt Lab
+# files these from the CLI with no form; this one exists so that the rule an
+# epic is most often broken on -- the comments are the record, the body is not
+# an index -- is in front of whoever opens one, every time. The rules are in
+# CLAUDE.md, "Issues".
+name: Epic — one wave's findings
+description: Mechanical defects a wave of lanes found outside their own files. Each finding is a comment, not a line in this body.
+title: "[epic] Wave YYYY-MM-DD out-of-territory findings"
+labels: ["epic"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        An epic collects the **mechanical** defects a wave of parallel lanes found outside
+        their own files — a stale comment, a missed call site, a guard that checks less
+        than its name says.
+
+        **The comments are the record; this body is not an index.** Post each finding as
+        its own comment, in this shape:
+
+            - [ ] **<the defect, stated as a fact>** · `apps/scheduler/scheduler/dispatch.py` `worker_env()` · <how it was measured, and by which lane or PR>
+
+        - **Tick a box only with evidence**: the PR that fixed it, or a measurement showing
+          its premise was wrong.
+        - **Not here:** anything that changes the frozen contract, a Firestore document
+          shape or product behaviour. That gets its own issue, linked from its box — and a
+          frozen-contract change is also a request in `docs/contract-change-requests.md`.
+        - **Closing:** enumerate the boxes from the COMMENTS, reconcile them against
+          anything listed below, and if the two disagree the epic is not closeable.
+
+  - type: input
+    id: wave
+    attributes:
+      label: Wave
+      description: The date (UTC) the lanes ran, or the wave's name. It goes in the title too.
+      placeholder: "2026-09-24"
+    validations:
+      required: true
+
+  - type: textarea
+    id: source
+    attributes:
+      label: Where these findings came from
+      description: The lanes or PRs whose reports feed this epic.
+    validations:
+      required: false
+
+  - type: textarea
+    id: elsewhere
+    attributes:
+      label: Recorded elsewhere, deliberately not duplicated here
+      description: >
+        Findings that already have their own issue or a box on another epic. Name where,
+        so nobody files them twice and nobody closes this one thinking they were covered.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: rules
+    attributes:
+      label: Before filing
+      options:
+        - label: "Each finding will be its own COMMENT, in the box shape above — not a line in this body"
+          required: true
+        - label: "Anything touching the frozen contract, a Firestore document shape or product behaviour gets its own issue instead"
+          required: true

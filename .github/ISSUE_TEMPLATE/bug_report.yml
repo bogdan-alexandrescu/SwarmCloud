@@ -1,0 +1,204 @@
+# Adopted from saga-prompt-lab's bug form on 2026-09-24 (owner's request): the
+# shape is theirs, the content is SwarmCloud's. The rules around filing and
+# closing are in CLAUDE.md, "Issues".
+#
+# The `surface` options are held to the nav by
+# tests/unit/scripts/test_issue_forms.py: every tab in SECTIONS
+# (apps/swarm-ui/src/App.tsx) must be offered here with its current name and
+# route, and nothing the nav no longer reaches may be. Change a tab and this
+# file has to follow, which is the point.
+name: Bug report
+description: Something in SwarmCloud is broken, wrong, or confusing.
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing. Fill in what you know — a partial report with a **task id**
+        and **what you expected** beats a blank one. Skip anything that doesn't apply.
+
+        > **Pick severity S0 if you think any of these happened**, and say which in the
+        > summary. They are the guarantees this platform exists to keep, and an S0 is
+        > looked at before everything else:
+        >
+        > - one tenant saw, used or wrote another tenant's tasks, secrets, GCS prefix or
+        >   namespace (invariant 9)
+        > - anything named, changed, or pointed `kubectl` at the other team's resources in
+        >   the shared project `saga-agents-staging` — the deny-list in `scripts/lib/common.sh`
+        > - more work admitted than a pool allows, a reservation that took some pools and
+        >   not others, or a slot released while its worker was still running (invariants 1–3)
+        > - a worker whose fencing generation was stale ran the agent or touched the lease
+        >   (invariant 5)
+        > - a secret, token or credential appeared in a log, a screen, an API response or
+        >   CI output — **say where; never paste it here**
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened
+      description: One or two sentences, in your own words. The headline, not the whole story.
+      placeholder: |
+        Work › Agents shows a task as RUNNING forty minutes after its Cloud Run execution
+        failed, and Capacity › Holders still counts its slot.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: severity
+    attributes:
+      label: Severity
+      description: Best guess is fine — this gets triaged, not audited.
+      options:
+        - "S0 — a platform guarantee at risk (tenant isolation, the other team's resources, over-admission or a slot released under a running worker, a stale generation that ran, a secret printed)"
+        - "S1 — blocked: I cannot do the thing at all"
+        - "S2 — wrong data on screen or in the API (states, counts, capacity, costs, timings) — I can't trust what it says"
+        - "S3 — broken, but I found a workaround"
+        - "S4 — polish, cosmetic, or confusing wording"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Where you saw it
+      description: >
+        The screen, service or pipeline. Pick "Not sure" rather than guessing. Web UI
+        entries carry the route you see in the address bar after the #.
+      multiple: true
+      options:
+        - "Web UI · Overview (#overview/now)"
+        - "Web UI · Work › Agents (#work/running)"
+        - "Web UI · Work › Workflows (#work/workflows)"
+        - "Web UI · Work › Timeline (#work/timeline)"
+        - "Web UI · Work › Submit a task (#work/new)"
+        - "Web UI · Capacity › Pools (#capacity/pools)"
+        - "Web UI · Capacity › Runtimes (#capacity/catalogue)"
+        - "Web UI · Capacity › Runner profiles (#capacity/profiles)"
+        - "Web UI · Capacity › Holders (#capacity/holders)"
+        - "Web UI · Capacity › Accounts (#capacity/accounts)"
+        - "Web UI · Capacity › Provider quota (#capacity/quota)"
+        - "Web UI · Admin › Pool limits (#admin/limits)"
+        - "Web UI · Admin › Tenants (#admin/tenants)"
+        - "Web UI · Admin › Platform counts (#admin/counts)"
+        - "Web UI · Agent inspector — the drawer that opens on one agent"
+        - "Web UI · Checkpoint browser — inside the agent inspector"
+        - "Web UI · API reads (#reference)"
+        - "Web UI · Help (#help)"
+        - "Web UI · Navigation, layout or theme — every page"
+        - "API — /v1, including sign-in and tenant resolution (apps/swarm-api)"
+        - "Claude Code plugin or MCP bridge — /sc and the swarm_* tools (plugin, apps/swarm-mcp)"
+        - "Scheduler — admission and dispatch (apps/scheduler)"
+        - "Reconciler — lease repair and reclaim (apps/reconciler)"
+        - "Quota broker (apps/quota-broker)"
+        - "Worker on Cloud Run (apps/agent-worker, images/agent-runtime-base)"
+        - "Worker on GKE — browser (apps/agent-worker, images/agent-runtime-browser, kubernetes)"
+        - "Release pipeline or CI (.github/workflows)"
+        - "Terraform or infrastructure (terraform)"
+        - "Scripts or make targets (scripts, Makefile)"
+        - "Docs (docs)"
+        - "Not sure"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: environment
+    attributes:
+      label: Environment
+      options:
+        - "dev — https://swarm.saga.xyz"
+        # Prod has never been deployed (docs/DEPLOY_STATE.md is the dated record
+        # of what runs where). Reword this option the day it is.
+        - "prod — not deployed yet (if something told you it was prod, say what and where)"
+        - "local — swarm-ui on fixtures (npm run dev, no network)"
+        - "local — swarm-ui against dev (VITE_LIVE=1)"
+        - "local — make dev (Firestore emulator)"
+        - "CI — a workflow run"
+        - "Not sure"
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: >
+        Number them. Include the specific choices you made — which runner profile,
+        which tenant, which workflow — because a lot of behaviour here depends on them.
+      placeholder: |
+        1. Submit a task with runner profile `mock` from Work › Submit a task
+        2. Open it from Work › Agents
+        3. Wait for its attempt to fail
+        4. Look at Capacity › Holders
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected instead
+      description: >
+        This is the most useful box on the form. It is how we tell a bug from documented
+        behaviour — and a lot here is documented: a READY or PARKED task holds no capacity
+        and shows no progress, by design (invariant 1).
+    validations:
+      required: true
+
+  - type: textarea
+    id: identifiers
+    attributes:
+      label: Identifiers
+      description: >
+        Anything that lets someone else land on the same record. Paste whatever you have —
+        the inspector's URL already carries the task id.
+      value: |
+        - URL:
+        - Task id:
+        - Workflow id:
+        - Attempt id:
+        - Lease id:
+        - Cloud Run execution or GKE Job name:
+        - Tenant:
+        - Release or CI run id:
+        - Commit:
+        - When (UTC):
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: shapes
+    attributes:
+      label: Does it look like one of these?
+      description: >
+        Optional. These are failure shapes this repository has shipped before — ticking
+        one points triage at a known cause. Leave them all blank if none fit.
+      options:
+        - label: "A `0`, `$0` or \"real zero\" where the true answer is *we don't know*"
+        - label: "A failed read that looks like an empty list — \"no agents\", \"nothing needs attention\" — when the request actually failed"
+        - label: "Two places disagree about one value (a mirrored copy drifted)"
+        - label: "A task stuck in `LEASED` or `DISPATCHED` that nothing reclaims"
+        - label: "A green check that ran nothing — an empty loop, a skipped suite, a probe that returned `[]`"
+        - label: "An IAM or policy condition that matches nothing — it applies cleanly and authorises nobody"
+        - label: "Something happened that I did not click"
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Screenshots, errors, logs
+      description: >
+        Drag images straight in. For the UI, the browser console and the failing `/v1`
+        request (F12 → Network → the red one → Response) help most; for a task, the output
+        of `/sc task <id>`; for CI, the run URL and the failing step. **Never paste a token,
+        an API key or an Authorization header** — cut it, say where it appeared, and pick S0.
+      placeholder: |
+        Paste console output, an API response or a log excerpt here.
+    validations:
+      required: false
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: Anything else
+      description: How often it happens, whether it used to work, what you were actually trying to get done.
+    validations:
+      required: false

@@ -38,6 +38,11 @@ on:
       # to hold it to reusing this workflow's build. release.yml never runs on
       # a pull request, so without this a PR touching only it ran nothing.
       - ".github/workflows/release.yml"
+      # tests/unit/scripts/test_issue_forms.py validates the issue forms and
+      # the label declaration. Without these a PR editing only a form would run
+      # nothing -- and a form GitHub rejects fails nowhere a reviewer looks.
+      - ".github/ISSUE_TEMPLATE/**"
+      - ".github/labels.yml"
   workflow_dispatch:
 
 permissions:

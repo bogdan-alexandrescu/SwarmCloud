@@ -182,6 +182,10 @@ a manual environment approval — no downloadable service-account keys exist.
 
 [`CONTRACT.md`](CONTRACT.md) holds the invariants every component must respect.
 
+Bugs, fixes and improvements are filed through the
+[issue forms](.github/ISSUE_TEMPLATE/); [`CLAUDE.md`](CLAUDE.md#issues) has the
+rules for filing, batching and closing them.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
