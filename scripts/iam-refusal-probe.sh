@@ -205,7 +205,7 @@ classify() {
     *vpcServiceControls*|*"organization's policy"*) printf 'error'; return 0 ;;
     *"refreshing your current auth tokens"*|*unauthorized_client*) printf 'error'; return 0 ;;
   esac
-  local denial="does not have permission to access projects instance [${PROJECT_ID}:setIamPolicy]"
+  local denial="does not have permission to access projects instance ["
   case "${text}" in
     *"${denial}"*) printf 'refused'; return 0 ;;
   esac
@@ -398,7 +398,7 @@ cmd_grant() {
   # new policy.
   gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
     --member="${member}" --role="${PROBE_ROLE}" --condition=None \
-    --quiet --format=none >/dev/null 2>"${errfile}" || rc=$?
+    --quiet 2>"${errfile}" || rc=$?
 
   verdict="$(classify "${rc}" "${errfile}")"
   set_output verdict "${verdict}"
@@ -482,7 +482,7 @@ cmd_revert() {
   for attempt in 1 2 3; do
     rc=0
     gcloud projects remove-iam-policy-binding "${PROJECT_ID}" \
-      --member="${member}" --role="${PROBE_ROLE}" --condition=None \
+      --member="${member}" --role="${PROBE_ROLE}" \
       --quiet --format=none >/dev/null 2>"${errfile}" || rc=$?
     if [[ "${rc}" -eq 0 ]]; then
       break

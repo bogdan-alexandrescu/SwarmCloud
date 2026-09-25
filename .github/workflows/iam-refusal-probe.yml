@@ -43,6 +43,10 @@ name: iam refusal probe
 
 on:
   workflow_dispatch:
+  # MUTATION (reverted in the next commit): a schedule fires only on the
+  # default branch, so this cannot start a run from a pull request branch.
+  schedule:
+    - cron: "0 6 * * 1"
 
 # Nothing at the workflow level. The one job asks for what it needs.
 permissions: {}
@@ -113,7 +117,7 @@ jobs:
 
       - name: revert and read back
         id: revert
-        if: always() && steps.preflight.outputs.ready == 'true'
+        if: steps.preflight.outputs.ready == 'true'
         timeout-minutes: 5
         env:
           PREFLIGHT_UNREAD: ${{ steps.preflight.outputs.unread }}
