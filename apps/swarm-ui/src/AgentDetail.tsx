@@ -849,16 +849,17 @@ function tokenRollupNote(total: number, withIn: number, withOut: number): string
  * whatever `Date.now()` said when the tile last happened to render.
  */
 function elapsedNote(task: Task, phase: ElapsedPhase, now: number): string {
+  // NEVER RAN (AG-3). A finished task with no start never had a worker, so
+  // there is no run to time. `elapsed()` says so in the figure itself, so the
+  // note does not say it twice: it names how the task ended and when, which is
+  // what the figure does not carry. Read from `phase`, the answer `elapsed()`
+  // gives for exactly this, never from the figure's text.
+  if (phase === 'never-ran') {
+    return task.completed_at !== null
+      ? `${stateWord(task.state)} ${timeAgo(task.completed_at, now)}`
+      : `${stateWord(task.state)} · no finish recorded`
+  }
   if (TERMINAL_STATES.has(task.state)) {
-    // NEVER RAN (AG-3). A finished task with no start never had a worker, so
-    // there is no run to time -- created to, say, a cascade cancel is how long
-    // it WAITED. The figure says `never ran`; this names the ending so the
-    // wait has an end a reader can see.
-    if (task.started_at === null) {
-      return task.completed_at !== null
-        ? `never ran · ${stateWord(task.state)} ${timeAgo(task.completed_at, now)}`
-        : 'never ran · no finish recorded'
-    }
     if (task.completed_at !== null) return `finished ${timeAgo(task.completed_at, now)}`
     // NO completion time. Every terminal write sets one with the state, so
     // this is an older document or a writer that forgot, and the figure above
