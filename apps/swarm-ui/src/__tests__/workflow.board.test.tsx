@@ -1915,6 +1915,103 @@ describe('the owner’s decisions: the open card', () => {
     expect(heightOf(spaced)).toBeGreaterThan(heightOf(step('merge', ['plan', 'fencing'])))
   })
 
+  it('WF-19: gives a unit longer than a line the whole line, so nothing shares a line with it', () => {
+    // FIX-UP, #160 review finding 3. An inline-block whose text is wider than
+    // the line is shrink-to-fit to the WHOLE line: it cannot sit after `↑ ` or
+    // after a unit before it, and nothing after it can share its last line.
+    // `depLines` let the next unit onto that last line, so a long file unit
+    // followed by another parent came out a line short -- 18px of dependency
+    // text in the stop strip, the overlap `heightOf` exists to prevent.
+    //
+    // `details`, which Auto picks for a six-wide stage: short names, so a line
+    // holds (144 - 28) / 7.22 = 16 columns and `(cc-checkpoint.md),` is 19.
+    const merge = step('merge', ['plan', 'fencing'], { input_from: { plan: 'cc-checkpoint.md' } })
+    const w = workflow('wf_long_unit', [step('plan', []), step('fencing', []), merge])
+    const dw = nodeWidthAt('details', w.steps)
+    const perLine = Math.floor((dw - NODE_CHROME_W) / monoW(1, 12))
+    expect(depUnits(merge).map((u) => u.text)).toEqual(['plan', '(cc-checkpoint.md),', 'fencing'])
+    expect('(cc-checkpoint.md),'.length, 'the fixture no longer has a unit longer than a line').toBeGreaterThan(perLine)
+    // The lines the model counts, read back out of the height: `--ctl-s1` (4)
+    // above the list, 18 a line (12 x 1.45, rounded up), as the sheet declares.
+    const lines = (s: WorkflowStep) => (heightOf(s, 'details', dw) - nodeHeightAt('details') - 4) / 18
+    // `↑ plan` / `(cc-checkpoint.md),` on two lines of its own / `fencing`.
+    expect(lines(merge), 'the unit after a line-wide one was packed onto its last line').toBe(
+      1 + Math.ceil('(cc-checkpoint.md),'.length / perLine) + 1,
+    )
+    // LAST, it changes nothing: nothing follows it to be displaced.
+    const last = step('merge', ['fencing', 'plan'], { input_from: { plan: 'cc-checkpoint.md' } })
+    expect(lines(last)).toBe(1 + Math.ceil('(cc-checkpoint.md)'.length / perLine))
+    // FIRST -- a parent this workflow does not contain, so its id was never
+    // measured into the node's width -- it cannot sit after the `↑ ` either.
+    const stray = step('merge', ['a-parent-this-workflow-lacks'])
+    expect('a-parent-this-workflow-lacks'.length).toBeGreaterThan(perLine)
+    expect(lines(stray), 'a line-wide first unit was counted as fitting after the arrow').toBe(
+      1 + Math.ceil('a-parent-this-workflow-lacks'.length / perLine),
+    )
+  })
+
+  it('WF-5: says a figure is the result’s on a line of its own that the node counts, and never clips the figure', () => {
+    // FIX-UP, #160 review finding 2. `from result` shared the value's column,
+    // which is budgeted for a 20-character figure and nothing else: beside a
+    // token figure the note showed as `…`, and past 173px the figure itself was
+    // CLIPPED with no mark (`text-overflow: clip`), the F1 class NODE_W was set
+    // to prevent. The note now has a line the node reserves for it.
+    const tasks = new Map<string, Task>([
+      [
+        't_work',
+        task('t_work', 'SUCCEEDED', {
+          started_at: iso(-90_000),
+          completed_at: iso(-30_000),
+          result_summary: { runner: { usage: { total_cost_usd: 0.5, input_tokens: 123_400, output_tokens: 45_600 } } },
+        }),
+      ],
+    ])
+    const w = workflow('wf_src', [step('work', [], { task_id: 't_work' }), step('idle', [])])
+    // Outside the sample (the harness's `usage: null`), at the Figures tier.
+    const { container } = card(w, tasks, true)
+    const node = nodeNamed(container, 'work')
+    const row = (label: string) => {
+      const r = [...node.querySelectorAll<HTMLElement>('.node-num')].find((el) => el.querySelector('dt')?.textContent === label)
+      expect(r, `no ${label} figure on the node`).toBeTruthy()
+      return r!
+    }
+    // THE FIGURE, WHOLE, and nothing else in its slot.
+    expect(row('cost').querySelector('dd')!.textContent).toBe('$0.50')
+    expect(row('tokens').querySelector('dd')!.textContent).toBe('123.4k in · 45.6k out')
+    expect(node.querySelector('.node-num .wf-src'), 'the note still shares the figure’s column').toBeNull()
+
+    // THE NOTE, in the one spelling, naming the figures it is about.
+    const src = node.querySelector<HTMLElement>('.node-src')
+    expect(src, 'the node draws no source line').toBeTruthy()
+    expect(src!.textContent).toBe('cost · tokens from result')
+    expect(src!.querySelector('.wf-src')?.textContent).toBe('from result')
+    // RESERVED on a node with nothing to say, so no card changes height when
+    // the attempt read lands and turns a figure into the result's.
+    const idle = nodeNamed(container, 'idle').querySelector<HTMLElement>('.node-src')
+    expect(idle, 'the source line is not reserved on every Figures-tier node').toBeTruthy()
+    expect(idle!.textContent).toBe('')
+
+    // COUNTED IN THE HEIGHT: 10 + 42 of padding, 2 of border, `.node-id` 21,
+    // three micro rows (`.node-line`, `.node-meta`, `.node-src`) at 17.4,
+    // `.node-nums` 8 + 4 x 22 + 3 x 2, and four `--ctl-s1` gaps between five
+    // children.
+    const figuresH = Math.ceil(10 + 42 + 2 + 14 * 1.5 + 3 * (12 * 1.45) + (8 + 4 * (14 * 1.5 + 1) + 3 * 2) + 4 * 4)
+    expect(nodeHeightAt('figures'), 'the node does not count its source line').toBe(figuresH)
+    expect(Number.parseFloat(slotOf(container, 'work').style.height)).toBe(figuresH)
+    // AND IN THE WIDTH: the longest line it can print fits the content box,
+    // and so does the widest figure beside its label.
+    expect(monoW('cost · tokens from result'.length, 12)).toBeLessThanOrEqual(NODE_W - NODE_CHROME_W)
+    expect(46 + 8 + monoW(20, 14)).toBeLessThanOrEqual(NODE_W - NODE_CHROME_W)
+
+    // A FIGURE THAT OUTGROWS ITS COLUMN ELLIPSES; it is never cut silently.
+    for (const theme of THEMES) {
+      for (const label of ['cost', 'tokens']) {
+        const r = cascade(SHEETS[theme], row(label).querySelector('dd')!, 'text-overflow', { width: 1440, theme })
+        expect(r.winner?.value, `${theme}: the ${label} figure is clipped without a mark`).toBe('ellipsis')
+      }
+    }
+  })
+
   it('WF-9: opens a canvas wider than its column on the start node, and again when a stage is opened', () => {
     // THE VIEWPORT, stubbed, because jsdom has no layout: the wrapper is a
     // 390px phone's 358px column, and it scrolls as far as the canvas is wide.

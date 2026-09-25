@@ -1320,6 +1320,117 @@ describe('the owner’s decisions: where a figure came from (WF-5)', () => {
     // And the total says how much of it came from results.
     expect(total.getAttribute('title')).toContain('1 from the step’s result summary')
   })
+
+  it('says on the board that it did not read a step’s attempts, and leaves the claim about the attempt document to the inspector, which did', async () => {
+    // FIX-UP, #160 review finding 1. The board's cells and nodes carried the
+    // inspector's note -- "This attempt’s own document carries no typed figure
+    // for it" -- on a step outside the sample and on one whose attempt read
+    // failed. On both paths the board never read that document, so the title
+    // stated a fact about the platform nobody had measured; and picking the
+    // step, the inspector read the attempt and could show a figure the title
+    // had just said was not there.
+    const done = task('t_res', 'SUCCEEDED', {
+      started_at: iso(-500),
+      completed_at: iso(-400),
+      result_summary: { runner: { usage: { total_cost_usd: 0.5, input_tokens: 1200, output_tokens: 300 } } },
+    })
+    const notSampled: WorkflowUsage = {
+      byTaskId: new Map(),
+      notSampled: new Set(['t_res']),
+      failed: new Map(),
+      sampleLimit: 12,
+      tasksRequested: 13,
+    }
+    const unread: WorkflowUsage = {
+      byTaskId: new Map(),
+      notSampled: new Set(),
+      failed: new Map([['t_res', 'HTTP 503']]),
+      sampleLimit: 12,
+      tasksRequested: 1,
+    }
+    const work = [step('work', [], { task_id: 't_res' })]
+    const cases: ReadonlyArray<readonly [WorkflowUsage, string]> = [
+      [notSampled, 'did not read'],
+      [unread, 'could not read'],
+    ]
+    for (const [usage, says] of cases) {
+      const table = viewCard(work, [done], 'table', usage)
+      const node = nodeNamed(viewCard(work, [done], 'graph', usage), 'work')
+      const nodeRow = (label: string) =>
+        [...node.querySelectorAll<HTMLElement>('.node-num')].find((r) => r.querySelector('dt')?.textContent === label)
+      const titles = [
+        cell(table, 'work', 'cost').querySelector('.wf-cell')?.getAttribute('title') ?? '',
+        cell(table, 'work', 'tokens').querySelector('.wf-cell')?.getAttribute('title') ?? '',
+        nodeRow('cost')?.getAttribute('title') ?? '',
+        nodeRow('tokens')?.getAttribute('title') ?? '',
+      ]
+      for (const t of titles) {
+        expect(t, 'the board claims to know what an attempt document it never read carries').not.toContain(
+          'own document carries no typed figure',
+        )
+        expect(t, `the board does not say it ${says} this step’s attempts`).toContain(says)
+        expect(t).toContain('result summary')
+      }
+    }
+
+    // THE INSPECTOR READ THE ATTEMPT, so the claim about its document is its
+    // to make, and it keeps making it.
+    const root = viewCard(work, [done], 'table', notSampled, { t_res: [attempt(1, { task_id: 't_res' })] })
+    pick(root, 'work')
+    const i = inspector(root)
+    await within(i).findByText('attempt 1 of 1')
+    expect(factLi(i, 'cost').getAttribute('title')).toContain('own document carries no typed figure')
+  })
+
+  it('borrows a result only for a step that has finished -- in the table, on the node and in the total -- as the inspector does', () => {
+    // FIX-UP, #160 review finding 4. control.py's fail_retryably writes the
+    // failed attempt's result_summary and sends the task back to READY, so a
+    // step on its second attempt carries its FIRST attempt's result while it
+    // runs again. The inspector offers a result only to the newest attempt of
+    // a finished task; the node, the table and the row's total borrowed it for
+    // every state -- a figure that appeared nowhere in the inspector, under a
+    // note saying it was what the worker wrote when "this attempt" finished.
+    const retrying = task('t_retry', 'RUNNING', {
+      started_at: iso(-100),
+      attempt_count: 2,
+      result_summary: { runner: { usage: { total_cost_usd: 0.3, input_tokens: 900, output_tokens: 100 } } },
+    })
+    const done = task('t_done', 'SUCCEEDED', {
+      started_at: iso(-500),
+      completed_at: iso(-400),
+      result_summary: { runner: { usage: { total_cost_usd: 0.2 } } },
+    })
+    const usage: WorkflowUsage = {
+      byTaskId: new Map(),
+      notSampled: new Set(['t_retry', 't_done']),
+      failed: new Map(),
+      sampleLimit: 0,
+      tasksRequested: 2,
+    }
+    const steps = [step('done', [], { task_id: 't_done' }), step('again', ['done'], { task_id: 't_retry' })]
+
+    const table = viewCard(steps, [done, retrying], 'table', usage)
+    const cost = cell(table, 'again', 'cost')
+    expect(cost.querySelector('.wf-cell')?.textContent, 'a running step shows its failed attempt’s result as its cost').toBe(
+      'not sampled',
+    )
+    expect(cost.querySelector('.wf-src')).toBeNull()
+    expect(cell(table, 'again', 'tokens').querySelector('.wf-cell')?.textContent).toBe('not sampled')
+    // A finished step still borrows, and says so.
+    expect(cell(table, 'done', 'cost').querySelector('.wf-src')?.textContent).toBe('from result')
+
+    // THE TOTAL IS WHAT THE STEPS SHOW: $0.20, from one of the two, and so a
+    // floor rather than a total.
+    const total = table.querySelector<HTMLElement>('.wf-spend')!
+    expect(total.firstChild?.textContent, 'the row’s total counts a figure no step shows').toBe('$0.2000')
+    expect(total.querySelector('.wf-spend-cov')?.textContent).toBe('1/2')
+
+    // And the node agrees with the table.
+    const node = nodeNamed(viewCard(steps, [done, retrying], 'graph', usage), 'again')
+    const row = [...node.querySelectorAll<HTMLElement>('.node-num')].find((r) => r.querySelector('dt')?.textContent === 'cost')
+    expect(row?.querySelector('dd')?.textContent, 'the node shows a running step’s old result as its cost').toBe('not sampled')
+    expect(node.querySelector('.wf-src')).toBeNull()
+  })
 })
 
 describe('the owner’s decisions: scrubbing across workflows (WF-10)', () => {
