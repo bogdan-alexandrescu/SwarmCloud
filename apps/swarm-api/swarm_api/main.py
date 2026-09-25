@@ -27,6 +27,7 @@ from .routes import (
     attempts,
     checkpoints,
     health,
+    outcomes,
     platform,
     tasks,
     tenants,
@@ -82,6 +83,9 @@ def create_app(ctx: AppContext | None = None) -> FastAPI:
     # Attempts across every task of the caller's tenant. Tenant-scoped like
     # the per-task attempts route, not admin-gated: they are the caller's own.
     app.include_router(attempts.router)
+    # What the work in a span ended as, by when it ended (#185). Tenant-scoped;
+    # platform scope only behind require_admin, which the route runs first.
+    app.include_router(outcomes.router)
     app.include_router(workflows.router)
     app.include_router(tenants.router)
     # The account pool. Every route on it PROXIES to the quota broker, which is

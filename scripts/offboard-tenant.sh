@@ -26,7 +26,12 @@
 #                                  they carry, BEFORE the task itself
 #        tasks                     tenant_id == <id>, each one only once its
 #                                  events are recounted at ZERO
-#        attempts, leases, workflows, quota          tenant_id == <id>
+#        attempts, leases, workflows, quota,
+#        outcome_days                                 tenant_id == <id>
+#                                  (outcome_days: the GET /v1/outcomes rollup,
+#                                  per tenant per UTC day; it holds task ids,
+#                                  profiles and submitter emails, so it goes
+#                                  with the tenant like everything else)
 #        accounts, account_auth                       owner_tenant == <id>
 #        credential_publications/<name>  listed from the ledger itself: see
 #                                  ledger_of_tenant for how an entry is
@@ -662,7 +667,7 @@ pools_for_terraform() {
 
 inventory() {
   local table="${WORK}/inventory.txt" c n events=0 visited=0 task tasks objects bytes
-  local attempts workflows quota auth tenant_events
+  local attempts workflows quota auth tenant_events outcome_days
   step "Inventory"
   fresh_token
   gcs_total --all-versions "${GCS_PREFIX_URL}" || die "cannot inventory ${GCS_PREFIX_URL}"
@@ -696,6 +701,8 @@ inventory() {
     || die "could not count workflows; a failed read, not zero"
   quota="$(fs_count_where quota "$(eq_filter tenant_id "${TENANT}")")" \
     || die "could not count quota; a failed read, not zero"
+  outcome_days="$(fs_count_where outcome_days "$(eq_filter tenant_id "${TENANT}")")" \
+    || die "could not count outcome_days; a failed read, not zero"
   auth="$(fs_count_where account_auth "$(eq_filter owner_tenant "${TENANT}")")" \
     || die "could not count account_auth; a failed read, not zero"
 
@@ -711,6 +718,7 @@ inventory() {
     printf '    %-26s %s   (all released)\n' "leases" "$(grep -c . "${WORK}/leases.jsonl" || true)"
     printf '    %-26s %s\n' "workflows" "${workflows}"
     printf '    %-26s %s\n' "quota" "${quota}"
+    printf '    %-26s %s\n' "outcome_days" "${outcome_days}"
     printf '    %-26s %s\n' "accounts (owned)" "$(grep -c . "${WORK}/accounts.jsonl" || true)"
     printf '    %-26s %s\n' "account_auth" "${auth}"
     printf '    %-26s %s   (listed from the ledger, named for %s)\n' "credential_publications" \
@@ -844,6 +852,7 @@ delete_records() {
 
   delete_where workflows tenant_id workflows
   delete_where quota tenant_id quota
+  delete_where outcome_days tenant_id outcome_days
   delete_where account_auth owner_tenant account_auth
 
   # Accounts: owned by this tenant, id `<tenant>:<label>`, nothing assigned.
@@ -900,7 +909,7 @@ prove_gone() {
   gcs_total --all-versions "${GCS_PREFIX_URL}" || die "cannot verify ${GCS_PREFIX_URL}; a failed look is not proof"
   proof_row "${GCS_PREFIX_URL}" "${GCS_OBJECTS}" "object version(s), live and noncurrent"
 
-  for c in tasks attempts leases workflows quota; do
+  for c in tasks attempts leases workflows quota outcome_days; do
     n="$(fs_count_where "${c}" "$(eq_filter tenant_id "${TENANT}")")" \
       || die "could not count ${c}; a failed read is not proof"
     proof_row "${c}" "${n}"
