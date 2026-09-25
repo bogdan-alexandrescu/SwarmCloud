@@ -301,3 +301,140 @@ def test_sc_task_says_never_started_rather_than_a_dash():
     out = text(render.render_task(task, WIDE, NOW))
     assert "never started" in out, out
     assert "started —" not in out, out
+
+
+# ==========================================================================
+# #190: a count taken over a window names the window
+# ==========================================================================
+#
+# `sc trouble` printed `failed  5 task(s) of tenant eng in the window listed`
+# and listed no window anywhere. The count is right; it is taken over the
+# newest `sc.TASK_PAGE` tasks by creation time, which only a docstring said.
+# Firestore on 2026-09-25 20:28Z: the newest 100 `eng` tasks were 58 SUCCEEDED,
+# 37 CANCELLED and 5 FAILED, created between 03:28Z and 18:58Z.
+
+
+def _findings(swarm, where: str) -> list[str]:
+    snap = render.Snapshot(tasks=sc.fetch_tasks(swarm), now=NOW)
+    return [f.what for f in render.find_trouble(snap, WIDE) if f.where == where]
+
+
+def test_the_failed_count_names_the_newest_n_and_when_they_were_created(swarm, db):
+    """110 tasks: the window is the newest 100, created from minute 10 on."""
+    for n in range(110):
+        state = "FAILED" if n in (100, 101, 102, 103, 104) else "SUCCEEDED"
+        _seed(db, f"task_window{n:015d}", state, n)
+
+    failed = _findings(swarm, "failed")
+
+    assert failed == [
+        f"5 of the newest 100 tasks of tenant {TENANT} failed "
+        "(created since 2026-09-01 00:10Z)"
+    ], failed
+
+
+def test_the_dead_lettered_count_names_the_same_window(swarm, db):
+    for n in range(110):
+        state = "DEAD_LETTERED" if n == 108 else "SUCCEEDED"
+        _seed(db, f"task_letter{n:015d}", state, n)
+
+    dead = _findings(swarm, "dead-lettered")
+
+    assert dead == [
+        f"1 of the newest 100 tasks of tenant {TENANT} gave up after every attempt "
+        "(created since 2026-09-01 00:10Z)"
+    ], dead
+
+
+def test_a_window_that_holds_every_task_says_all(swarm, db):
+    """Seven tasks fit in one page: the count is over all of them, and saying
+    "the newest 7" would imply there are older ones it left out."""
+    for n in range(7):
+        _seed(db, f"task_small{n:016d}", "FAILED" if n < 2 else "SUCCEEDED", n)
+
+    failed = _findings(swarm, "failed")
+
+    assert failed == [
+        f"2 of all 7 tasks of tenant {TENANT} failed (created since 2026-09-01 00:00Z)"
+    ], failed
+
+
+def test_the_window_rides_on_the_listing_for_the_json_dump(swarm, db):
+    """`sc --json` is what a script reads; the window is part of the answer."""
+    for n in range(3):
+        _seed(db, f"task_json{n:017d}", "SUCCEEDED", n)
+
+    window = render.listing_window(sc.fetch_tasks(swarm))
+
+    assert window is not None
+    assert (window.count, window.whole) == (3, True)
+
+
+# ==========================================================================
+# #192: USED is units, ROOM is agents, and the screen says which
+# ==========================================================================
+#
+# `sc capacity` showed a pool's `active/limit` -- UNITS, since admission adds a
+# task's `units` on every pool it takes (`swarm_common/admission.py`) -- beside
+# ROOM, which is `available // units`, a count of AGENTS. Nothing said so, and
+# the note said "USED on a shared pool counts every tenant's agents". So two
+# browser agents on `resource:browser` read `4/10`, and the note said that
+# meant four agents.
+
+_BROWSER_CAPACITY = {
+    "tenant_id": "eng",
+    "pools": [
+        _pool("resource:browser", limit=10, active=4),
+        _pool("runner:generic", limit=10, active=0),
+    ],
+    "runner_profiles": {
+        "browser": {"resource_class": "browser", "backend": "GKE_AUTOPILOT", "provider": None,
+                    "units": 2, "pools": ["resource:browser"]},
+        "generic": {"resource_class": "standard", "backend": "CLOUD_RUN_JOB", "provider": None,
+                    "units": 1, "pools": ["runner:generic"]},
+    },
+}
+
+
+@pytest.mark.parametrize("profiles_only", [True, False])
+def test_the_capacity_table_labels_units_and_says_room_counts_agents(profiles_only):
+    lines = render.render_capacity(_BROWSER_CAPACITY, WIDE, profiles_only=profiles_only)
+    out = text(lines)
+
+    header = next(line for line in lines if "PROFILE" in line)
+    assert "UNITS" in header, header
+    assert " USED" not in header, header
+    browser = next(line for line in lines if line.strip().startswith("browser"))
+    assert re.search(r"\b4/10\b", browser) and browser.rstrip().endswith("3"), browser
+    assert "every tenant's agents" not in out, "the note still calls units agents"
+    flat = " ".join(out.split())
+    assert "ROOM" in flat and "agents" in flat, flat
+
+
+def test_the_note_gives_each_classes_units_from_the_catalogue():
+    """Read from `swarm_common.profiles.RESOURCE_CLASSES`, so the note cannot
+    go on saying 2 the day the catalogue says 3."""
+    from swarm_common.profiles import RESOURCE_CLASSES
+
+    flat = " ".join(text(render.render_capacity(_BROWSER_CAPACITY, WIDE)).split())
+    for name, resource in RESOURCE_CLASSES.items():
+        assert f"{name} {resource.units}" in flat, (name, flat)
+
+
+def test_the_tightest_line_says_what_it_ranks_by():
+    """`tightest: resource:browser 0/10` named an empty pool the tightest,
+    because it ranks by agents of a profile that still fit and printed units."""
+    subtitle = render.capacity_subtitle(_BROWSER_CAPACITY, WIDE)
+
+    assert subtitle == (
+        "tightest: browser, 3 more agents fit on resource:browser (4/10 units)"
+    ), subtitle
+
+
+def test_a_full_pool_finding_counts_units_not_agents():
+    capacity = dict(_BROWSER_CAPACITY, pools=[_pool("resource:browser", limit=10, active=10)])
+    snap = render.Snapshot(capacity=capacity, now=NOW)
+
+    full = [f.what for f in render.find_trouble(snap, WIDE) if f.where == "resource:browser"]
+
+    assert full == ["full at 10/10 units, counting every tenant's"], full

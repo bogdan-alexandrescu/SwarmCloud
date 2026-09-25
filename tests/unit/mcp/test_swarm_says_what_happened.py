@@ -1104,3 +1104,144 @@ def test_the_state_is_spelled_once_across_sc_task_and_swarm_result(swarm, world,
 
     assert re.search(rf"^{task_id}\s+SUCCEEDED\b", capsys.readouterr().out, re.MULTILINE)
     assert re.search(rf"^{task_id}\s+SUCCEEDED\b", out.getvalue(), re.MULTILINE), out.getvalue()
+
+
+# ==========================================================================
+# #191: a count nobody measured is absent, not 0
+# ==========================================================================
+#
+# `describe_task` defaulted `commits`, `insertions`, `deletions` and
+# `uncommitted_files` to 0 whenever a task had no `result_summary.git`, so
+# `swarm workflow-status --result` printed `commits 0` beside a footnote
+# saying the step cloned no repository, or never started -- and the result
+# tools handed the model the same zeros. `sc --help`'s legend: "Never 0 for
+# unknown." Measured 2026-09-25 on wf_6d56f91390d647ee81ea: step e, attempts=0.
+
+
+def test_workflow_status_claims_no_commits_for_a_step_that_measured_none(capsys):
+    envelope = _envelope([
+        # A mock step: it ran, and cloned nothing.
+        {"id": "task_a", "state": "SUCCEEDED", "result_summary": {"status": "succeeded"}},
+        # Cascade-cancelled before it started: no summary at all.
+        {"id": "task_e", "state": "CANCELLED",
+         "last_error": "an upstream workflow step did not succeed"},
+        # The control: a step whose harvest MEASURED zero commits.
+        {"id": "task_g", "state": "SUCCEEDED", "result_summary": {"git": {
+            "commit_count": 0, "insertions": 0, "deletions": 0, "dirty_count": 0,
+            "commits": [], "dirty": [],
+        }}},
+    ])
+
+    cli.cmd_workflow_status(
+        _WorkflowClient(envelope), argparse.Namespace(workflow_id="wf_x", result=True, json=False)
+    )
+    printed = capsys.readouterr().out
+    cli.cmd_workflow_status(
+        _WorkflowClient(envelope), argparse.Namespace(workflow_id="wf_x", result=True, json=True)
+    )
+    report = json.loads(capsys.readouterr().out)
+
+    assert printed.count("commits 0") == 1, printed
+    produced = {row["step_id"]: row["produced"] for row in report["steps"]}
+    for step in ("a", "e"):
+        for key in ("commits", "insertions", "deletions", "uncommitted_files"):
+            assert produced[step][key] is None, (step, key, produced[step])
+    assert produced["g"]["commits"] == 0, "a measured zero is still a zero"
+
+
+def test_swarm_result_does_not_print_zero_commits_for_a_harvest_that_failed(swarm, world, capsys):
+    """A `git` summary that carries only the harvest's error measured nothing."""
+    task_id = world.task("task_0000000000harvested", state="SUCCEEDED")
+    world.set(task_id, result_summary={"git": {"error": "git rev-parse failed"}})
+
+    cli.cmd_result(swarm, argparse.Namespace(task_id=task_id, json=False))
+
+    printed = capsys.readouterr().out
+    assert "commits 0" not in printed, printed
+    assert "+0/-0" not in printed, printed
+
+
+# ==========================================================================
+# #193: tail and follow word one fact one way
+# ==========================================================================
+#
+# The same step, the same run, on 2026-09-25 (wf_7d0bb295af404d7a8c93):
+#
+#   tail:    [e 484fa55e] attempt att_… printed nothing -- its completed log is
+#            empty, and an empty stream gets no live log
+#   tail:    [e 484fa55e] OK
+#   follow:  [e 484fa55e] printed nothing -- its logs exist and are empty
+#   follow:  [e 484fa55e] SUCCEEDED
+
+
+def test_tail_and_follow_close_a_finished_step_with_the_same_lines(swarm, world, capsys, monkeypatch):
+    task_id = world.task("task_0000000000000closing", state="SUCCEEDED")
+    world.attempt(task_id, "att_closing")
+    world.final(task_id, "att_closing", "")
+    world.final(task_id, "att_closing", "", stream="stderr")
+    _bucket(monkeypatch, {"/logs/stdout.log": b"", "/logs/stderr.log": b""})
+    label = f"[{task_id[-8:]}]"
+
+    cli.cmd_tail(swarm, _args(task_ids=[task_id]))
+    tail = capsys.readouterr().out.splitlines()
+    cli.cmd_follow(swarm, _args(task_ids=[task_id], once=True))
+    followed = capsys.readouterr().out.splitlines()
+
+    assert followed[-1] == f"{label} SUCCEEDED", followed
+    assert followed[-2] == (
+        f"{label} attempt att_closing printed nothing -- its completed log is empty"
+    ), followed
+    assert tail[-2:] == followed[-2:], (tail, followed)
+    assert not any(line.endswith(" OK") for line in tail), tail
+
+
+def test_tail_says_what_follow_says_about_an_attempt_with_no_log_yet(
+    swarm, world, capsys, monkeypatch
+):
+    """Follow said `no output yet -- the attempt has published no log`; tail
+    said nothing at all for the same state."""
+    task_id = world.task("task_0000000000000nologyet", state="RUNNING")
+    world.attempt(task_id, "att_nologyet")
+    _bucket(monkeypatch, {})
+    said = f"[{task_id[-8:]}] no output yet -- the attempt has published no log"
+
+    cli.cmd_follow(swarm, _args(task_ids=[task_id], once=True))
+    followed = capsys.readouterr().out.splitlines()
+    _sleeps(monkeypatch, lambda n: world.set(task_id, state="CANCELLED") if n == 1 else None)
+    cli.cmd_tail(swarm, _args(task_ids=[task_id]))
+    tail = capsys.readouterr().out.splitlines()
+
+    assert said in followed, followed
+    assert tail.count(said) == 1, tail
+
+
+# ==========================================================================
+# #194: follow orders a poll's events by time across tasks, as tail does
+# ==========================================================================
+
+
+def test_follow_prints_one_polls_events_in_the_order_they_happened(swarm, world, capsys):
+    """`follow` walked the tasks in argument order and printed each one's events
+    and closing lines before the next, so step b's CANCELLED landed above step
+    d's earlier checkpoint. Firestore agreed with `tail`, which sorts by `at`."""
+    first = world.task("task_00000000000000first", state="CANCELLED")
+    second = world.task("task_0000000000000second", state="CANCELLED")
+    world.event(first, "ev_first", "cancelled", AT + timedelta(seconds=4))
+    world.event(second, "ev_second_a", "checkpoint_started", AT)
+    world.event(second, "ev_second_b", "cancelled", AT + timedelta(seconds=2))
+
+    cli.cmd_follow(swarm, _args(task_ids=[first, second], once=True))
+
+    lines = capsys.readouterr().out.splitlines()
+
+    def index(task: str, text: str) -> int:
+        return next(i for i, line in enumerate(lines) if line == f"[{task[-8:]}] {text}")
+
+    events = [
+        index(second, "03:52:50Z · checkpoint_started"),
+        index(second, "03:52:52Z · cancelled"),
+        index(first, "03:52:54Z · cancelled"),
+    ]
+    assert events == sorted(events), lines
+    closing = [index(first, "CANCELLED"), index(second, "CANCELLED")]
+    assert min(closing) > max(events), f"a closing line landed above an event it follows: {lines}"
