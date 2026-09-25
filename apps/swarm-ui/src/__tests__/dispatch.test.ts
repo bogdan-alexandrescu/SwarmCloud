@@ -13,6 +13,7 @@ import { describe, expect, it } from 'vitest'
 import { render } from '@testing-library/react'
 
 import { DispatchChoice, DispatchFacts, REPOSITORY_SCHEMES, repositorySchemeRefused } from '../Dispatch'
+import * as TYPES from '../types'
 import {
   CARRIER_NOTE,
   DEFAULT_CARRIER,
@@ -301,5 +302,124 @@ describe('DispatchChoice, the control', () => {
     const labels = [...container.querySelectorAll('label.t-label')]
     expect(labels.length).toBeGreaterThan(0)
     for (const label of labels) expect(label.getAttribute('style'), label.textContent ?? '').toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The owner's decisions on epic #84, 2026-09-25 (TS-6, TS-14, TS-20)
+// ---------------------------------------------------------------------------
+//
+// Each case was committed RED against the code it describes before the change
+// landed.
+
+function control(
+  scale: 'task' | 'workflow',
+  strategy: DispatchStrategy = 'collect',
+  steps = scale === 'task' ? 1 : 3,
+) {
+  return render(
+    createElement(DispatchChoice, {
+      draft: { strategy, carrier: 'checkpoints', repositoryUrl: '' },
+      onChange: () => {},
+      steps,
+      scale,
+      terminals: scale === 'workflow' ? ['report'] : undefined,
+    }),
+  )
+}
+const radios = (root: HTMLElement) =>
+  [...root.querySelectorAll<HTMLInputElement>('input[name="dispatch-strategy"]')].map((r) => r.value)
+
+describe('TS-14: the task form offers what a task can be, and says where the rest lives', () => {
+  it('draws only collect and direct-pr as choices at task scale, and no unavailable card', () => {
+    const { container } = control('task')
+    expect(radios(container), 'integrate is still drawn on the single-task form').toEqual(['collect', 'direct-pr'])
+    // The dashed, faded card is the failed-read vocabulary (§8.6); it is gone,
+    // not restyled.
+    expect(container.querySelector('.dsp-option.is-off')).toBeNull()
+    expect(container.querySelector('.dsp-off-why')).toBeNull()
+    expect(container.textContent).not.toContain('Not available for a single task')
+  })
+
+  it('points to the workflow form in one plain line, with no mark and no warning', () => {
+    const { container } = control('task')
+    const link = container.querySelector<HTMLAnchorElement>('.dsp a[href="#work/new-workflow"]')
+    expect(link, 'nothing says where one PR for several steps lives').not.toBeNull()
+    expect(link!.textContent).toBe('Submit a workflow')
+    const note = link!.closest('p')!
+    expect(note.classList.contains('ctl-panel-note')).toBe(true)
+    expect((note.textContent ?? '').replace(/\s+/g, ' ').trim()).toBe('one PR for several steps → Submit a workflow')
+    expect(note.querySelector('.ctl-mark')).toBeNull()
+    expect(note.classList.contains('warn-text')).toBe(false)
+  })
+
+  it('keeps all three strategies, all selectable, on the workflow form', () => {
+    const { container } = control('workflow')
+    expect(radios(container)).toEqual(['collect', 'direct-pr', 'integrate'])
+    const disabled = [...container.querySelectorAll<HTMLInputElement>('input[name="dispatch-strategy"]')].filter((r) => r.disabled)
+    expect(disabled).toEqual([])
+    expect(container.querySelector('a[href="#work/new-workflow"]')).toBeNull()
+  })
+})
+
+describe('TS-6: the carrier is a workflow question, asked once, and its caveat is one plain line', () => {
+  it('is not asked on the single-task form, where there are no steps to carry work between', () => {
+    const { container } = control('task')
+    expect(container.querySelector('#dsp-carrier'), 'the carrier select is on the single-task form').toBeNull()
+    expect(container.textContent).not.toContain('what carries work between steps')
+    expect(container.textContent).not.toContain('not acted on')
+  })
+
+  it('names each carrier once on the workflow form', () => {
+    const { container } = control('workflow')
+    const options = [...container.querySelectorAll('#dsp-carrier option')].map((o) => o.textContent)
+    expect(options, '"checkpoints — Checkpoints"').toEqual(['checkpoints', 'branches'])
+  })
+
+  it('says "not acted on yet" in plain ink with a help link, and keeps the full sentence as its name', () => {
+    const { container } = control('workflow')
+    // The two-sentence --warn paragraph is gone from the surface...
+    expect(container.textContent).not.toContain('no worker code reads it yet')
+    const warned = [...container.querySelectorAll('.warn-text')].map((w) => w.textContent ?? '')
+    expect(warned.filter((w) => /worker|acted on/.test(w))).toEqual([])
+    // ...and the fact stays on it, as one line with the way to the argument.
+    const note = [...container.querySelectorAll('.ctl-panel-note')].find((p) => (p.textContent ?? '').includes('not acted on yet'))
+    expect(note, 'the "not acted on" fact left the surface').toBeTruthy()
+    expect(note!.querySelector('a[href="#help/dispatch-carrier"]')).not.toBeNull()
+    expect(note!.getAttribute('aria-label')).toBe(CARRIER_NOTE)
+    expect(container.querySelector('#dsp-carrier')!.getAttribute('aria-describedby')).toBe(note!.id)
+  })
+})
+
+describe('TS-20: the control says each thing once', () => {
+  it('draws no consequence box on the task form: the count on each option is the consequence', () => {
+    for (const strategy of ['collect', 'direct-pr'] as const) {
+      const { container, unmount } = control('task', strategy)
+      expect(container.querySelector('.dsp-consequence'), `${strategy}: the box repeats the option`).toBeNull()
+      unmount()
+    }
+  })
+
+  it('draws the box on a workflow only to name the step that opens the one PR, without the headline again', () => {
+    const { container } = control('workflow', 'integrate')
+    const box = container.querySelector('.dsp-consequence')
+    expect(box, 'the integrator preview is gone').not.toBeNull()
+    expect(box!.getAttribute('role')).toBe('status')
+    expect(box!.textContent).toContain('report')
+    expect(container.querySelector('.dsp-consequence-head')).toBeNull()
+    const headline = consequenceOf('integrate', 3).headline
+    expect((container.textContent ?? '').split(headline).length - 1, 'the headline is printed twice').toBe(1)
+  })
+
+  it('draws nothing under the options for a workflow strategy the options already explain', () => {
+    for (const strategy of ['collect', 'direct-pr'] as const) {
+      const { container, unmount } = control('workflow', strategy)
+      expect(container.querySelector('.dsp-consequence'), strategy).toBeNull()
+      unmount()
+    }
+  })
+
+  it('has no second label table for the carriers: the option is the value', () => {
+    expect(Object.keys(TYPES), 'CARRIER_LABEL outlived its only caller').not.toContain('CARRIER_LABEL')
   })
 })

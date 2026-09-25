@@ -448,7 +448,7 @@ describe('B4.1: the tokens are actually in the cascade', () => {
     style.remove()
   })
 
-  it('fixes the inversion: a panel title is --t-title in --text, not small caps', () => {
+  it('fixes the inversion: a panel title is --t-lead in --text, not small caps', () => {
     const style = withStyles()
     const section = document.createElement('section')
     section.className = 'section'
@@ -461,9 +461,15 @@ describe('B4.1: the tokens are actually in the cascade', () => {
     // rule is in the cascade AND that it carries the token rather than a
     // number. `.section > h2` is written as longhands precisely so this can be
     // read back -- a `font:` shorthand holding var() is not expanded here.
+    //
+    // --t-lead, NOT --t-title (TS-18, owner decision 2026-09-25). §B4.1 put
+    // the section heading on the h1's own step, so "Outcomes by day" and
+    // "Timeline" above it were both 18/600 and the page had no second rank.
+    // design-system.md §2 gives every section, panel and step heading
+    // --t-lead, set apart from body by weight; --t-title is the screen h1's.
     const seen = getComputedStyle(h2)
-    expect(seen.fontSize).toBe('var(--t-title)')
-    expect(seen.lineHeight).toBe('var(--lh-title)')
+    expect(seen.fontSize).toBe('var(--t-lead)')
+    expect(seen.lineHeight).toBe('var(--lh-lead)')
     expect(seen.color).toBe('var(--text)')
     // It was 13px, 600, uppercase, in --text-faint: a heading drawn smaller
     // and fainter than the rows under it, losing to its own content on size,

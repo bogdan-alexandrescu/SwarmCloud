@@ -18,9 +18,10 @@
 // fix landed.
 
 import { describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen, within } from '@testing-library/react'
 
 import type { Result } from '../fetch'
+import { HELP } from '../help'
 import type { Task, TaskState, TaskWindow, Tenant } from '../types'
 
 const api = vi.hoisted(() => ({
@@ -96,9 +97,45 @@ async function timeline(w: TaskWindow, bucket?: 'hour' | 'day'): Promise<HTMLEle
   return container as HTMLElement
 }
 
-/** The chart's columns, each as its task count, read off the title it carries. */
+/**
+ * The chart's columns, each as its task count, read off `data-total`.
+ *
+ * NOT OFF A `title` ANY MORE (TS-9). The count used to live in a hover-only
+ * `title=`, which §8.3 forbids for a value: a phone has no hover and a keyboard
+ * cannot reach one. The column now carries its counts in its accessible name
+ * and the legend reads them out; `data-total` is the machine-readable total.
+ */
 function totals(root: HTMLElement): number[] {
-  return [...root.querySelectorAll('.chart .col')].map((c) => Number(/(\d+) tasks$/.exec(c.getAttribute('title') ?? '')?.[1]))
+  return [...root.querySelectorAll('.chart .col')].map((c) => Number(c.getAttribute('data-total')))
+}
+
+/** The same date the axis prints, in the viewer's locale. */
+const dayOf = (h: number, d = 24) => new Date(2026, 8, d, h).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })
+/** An hourly column's full label: its date and its hour. */
+const hourLabel = (h: number, d = 24) =>
+  `${dayOf(h, d)} ${new Date(2026, 8, d, h).toLocaleTimeString(undefined, { hour: '2-digit' })}`
+
+/** The legend's counts, in its order: succeeded, failed, cancelled, still open. */
+function readout(root: HTMLElement): number[] {
+  return [...root.querySelectorAll('.chart-legend .cl-n')].map((n) => Number(n.textContent))
+}
+
+/** A figure on the metric strip, by its label -- the label's own words, not its help note. */
+function figure(root: HTMLElement, label: string): HTMLElement {
+  const m = [...root.querySelectorAll('.ctl-metrics .ctl-metric')].find(
+    (el) => el.querySelector('.ctl-metric-label')?.firstChild?.textContent === label,
+  )
+  expect(m, `no "${label}" figure on the strip`).toBeTruthy()
+  return m as HTMLElement
+}
+
+/** A row whose result carries this usage block, as `finish()` writes it. */
+function spent(id: string, usage: Record<string, number> | null, over: Partial<Task> = {}): Task {
+  return task(id, 'SUCCEEDED', {
+    completed_at: local(10),
+    result_summary: usage === null ? null : { runner: { usage } },
+    ...over,
+  })
 }
 
 function section(root: HTMLElement, heading: string): HTMLElement {
@@ -125,8 +162,10 @@ describe('the outcomes chart', () => {
     // 10, 11, 12 and 13 -- the idle hours drawn as the measured zeroes they
     // are, and nothing before the first outcome.
     expect(totals(root), 'the x-axis skips the empty hours, or starts at a submission').toEqual([1, 0, 0, 1])
-    const first = root.querySelector('.chart .col')!.getAttribute('title')!
-    expect(first.startsWith(new Date(2026, 8, 24, 10).toLocaleString())).toBe(true)
+    // The first column's time, off its accessible name (TS-9) rather than the
+    // hover-only `title` it used to carry.
+    const first = root.querySelector('.chart .col')!.getAttribute('aria-label') ?? ''
+    expect(first.startsWith(`${hourLabel(10)}:`), `the first column is named "${first}"`).toBe(true)
   })
 
   it('TS-2: carries the date at each day boundary when grouped by hour', async () => {
@@ -253,6 +292,258 @@ describe('the window it describes', () => {
   it('TS-10: keeps the mark when older tasks were not read', async () => {
     const cut = await timeline(windowOf([task('a', 'SUCCEEDED', { completed_at: local(10) })], true))
     expect(section(cut, 'People').querySelector('.ctl-mark.is-partial')).toBeTruthy()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The owner's decisions on epic #84, 2026-09-25 (TS-3, TS-9, TS-11, TS-12)
+// ---------------------------------------------------------------------------
+//
+// Each case was committed RED against the code it describes before the change
+// landed, and the PR that carries them names the red run.
+
+/** Five rows over three hours: 2 succeeded at 10, 1 open since 11, 1 failed and 1 cancelled at 12. */
+const MIXED = (): TaskWindow =>
+  windowOf(
+    [
+      task('a', 'SUCCEEDED', { created_at: local(9, 50), completed_at: local(10, 5) }),
+      task('b', 'SUCCEEDED', { created_at: local(9, 55), completed_at: local(10, 40) }),
+      task('e', 'RUNNING', { created_at: local(11, 10) }),
+      task('c', 'FAILED', { created_at: local(11, 50), completed_at: local(12, 20) }),
+      task('d', 'CANCELLED', { created_at: local(11, 55), completed_at: local(12, 30) }),
+    ],
+    false,
+  )
+
+/** Thirty hours from 10:00 on the 23rd, one outcome in each: past the six columns that all fit a label, and across a midnight. */
+const THIRTY_HOURS = (): TaskWindow =>
+  windowOf(
+    Array.from({ length: 30 }, (_, i) =>
+      task(`h${i}`, 'SUCCEEDED', {
+        created_at: new Date(2026, 8, 23, 10 + i, 1).toISOString(),
+        completed_at: new Date(2026, 8, 23, 10 + i, 5).toISOString(),
+      }),
+    ),
+    false,
+  )
+
+describe('the chart is read out, not hovered (TS-9)', () => {
+  it('is one named group of columns, each an image named with its full time and its four counts', async () => {
+    const root = await timeline(MIXED(), 'hour')
+    const chart = root.querySelector('.chart')!
+    expect(chart.getAttribute('role')).toBe('group')
+    expect(chart.getAttribute('aria-label')).toBe('Task outcomes by hour')
+    const cols = [...chart.querySelectorAll('.col')]
+    expect(cols).toHaveLength(3)
+    for (const c of cols) {
+      expect(c.getAttribute('role')).toBe('img')
+      // §8.3: no value lives only in a hover. The title is gone; the counts
+      // are the column's name and the legend's readout.
+      expect(c.hasAttribute('title'), 'a column still carries a hover-only title').toBe(false)
+    }
+    expect(cols.map((c) => c.getAttribute('aria-label'))).toEqual([
+      `${hourLabel(10)}: 2 succeeded, 0 failed, 0 cancelled, 0 still open`,
+      `${hourLabel(11)}: 0 succeeded, 0 failed, 0 cancelled, 1 still open`,
+      `${hourLabel(12)}: 0 succeeded, 1 failed, 1 cancelled, 0 still open`,
+    ])
+  })
+
+  it('reads out the window totals in the legend, summed from the columns it draws', async () => {
+    const root = await timeline(MIXED(), 'hour')
+    const legend = root.querySelector<HTMLElement>('.chart-legend')!
+    expect(readout(root), 'the legend carries no counts').toEqual([2, 1, 1, 1])
+    // THE READOUT AND THE BARS CANNOT DISAGREE: its totals are the columns'.
+    const drawn = totals(root).reduce((a, b) => a + b, 0)
+    expect(readout(root).reduce((a, b) => a + b, 0), 'the legend totals are not the sum of the columns').toBe(drawn)
+    expect((legend.textContent ?? '').replace(/\s+/g, ' ').trim()).toBe(
+      'succeeded 2 · failed 1 · cancelled 1 by completed_at · still open 1 by created_at',
+    )
+    // Not a live region: the focused column's name already carries the same
+    // counts, and a live legend would read them twice on every arrow press.
+    expect(legend.getAttribute('aria-live')).toBeNull()
+  })
+
+  it('swaps to one column\'s counts when it is hovered, tapped or focused, and back on "all", Escape or leaving', async () => {
+    const root = await timeline(MIXED(), 'hour')
+    const chart = root.querySelector<HTMLElement>('.chart')!
+    const cols = [...chart.querySelectorAll<HTMLElement>('.col')]
+    const legend = root.querySelector<HTMLElement>('.chart-legend')!
+    const prefix = () => legend.querySelector('.cl-at')?.textContent?.trim() ?? null
+    const picked = () => cols.filter((c) => c.classList.contains('is-picked'))
+
+    // Hover.
+    fireEvent.mouseEnter(cols[2]!)
+    expect(readout(root)).toEqual([0, 1, 1, 0])
+    expect(prefix()).toBe(`${hourLabel(12)} ·`)
+    expect(picked()).toEqual([cols[2]])
+    // `all`, a text button, returns to the window.
+    fireEvent.click(within(legend).getByRole('button', { name: 'all' }))
+    expect(readout(root)).toEqual([2, 1, 1, 1])
+    expect(prefix()).toBeNull()
+    expect(picked()).toEqual([])
+    expect(within(legend).queryByRole('button', { name: 'all' }), '"all" is drawn with nothing picked').toBeNull()
+
+    // Tap: a phone has no hover, so a click picks too.
+    fireEvent.click(cols[1]!)
+    expect(readout(root)).toEqual([0, 0, 0, 1])
+    expect(prefix()).toBe(`${hourLabel(11)} ·`)
+    // Escape returns to the window.
+    fireEvent.keyDown(cols[1]!, { key: 'Escape' })
+    expect(readout(root)).toEqual([2, 1, 1, 1])
+
+    // Focus.
+    act(() => cols[0]!.focus())
+    expect(readout(root)).toEqual([2, 0, 0, 0])
+    expect(picked()).toEqual([cols[0]])
+    // Leaving the chart returns to the window.
+    fireEvent.mouseLeave(chart)
+    expect(readout(root)).toEqual([2, 1, 1, 1])
+    expect(picked()).toEqual([])
+  })
+
+  it('is one tab stop, moved by the arrows, Home and End', async () => {
+    const root = await timeline(MIXED(), 'hour')
+    const cols = [...root.querySelectorAll<HTMLElement>('.chart .col')]
+    const stops = () => cols.filter((c) => c.getAttribute('tabindex') === '0')
+    // The newest column, where the chart opens (TS-3).
+    expect(stops(), 'the chart is not exactly one tab stop').toEqual([cols[2]])
+    for (const c of cols.slice(0, 2)) expect(c.getAttribute('tabindex')).toBe('-1')
+
+    act(() => cols[2]!.focus())
+    fireEvent.keyDown(cols[2]!, { key: 'ArrowLeft' })
+    expect(document.activeElement).toBe(cols[1])
+    expect(stops()).toEqual([cols[1]])
+    fireEvent.keyDown(cols[1]!, { key: 'Home' })
+    expect(document.activeElement).toBe(cols[0])
+    fireEvent.keyDown(cols[0]!, { key: 'ArrowLeft' })
+    expect(document.activeElement, 'ArrowLeft past the oldest column went somewhere').toBe(cols[0])
+    fireEvent.keyDown(cols[0]!, { key: 'End' })
+    expect(document.activeElement).toBe(cols[2])
+    fireEvent.keyDown(cols[2]!, { key: 'ArrowRight' })
+    expect(document.activeElement).toBe(cols[2])
+    expect(stops()).toEqual([cols[2]])
+  })
+})
+
+describe('the hourly chart at phone width (TS-3)', () => {
+  it('opens at its newest end, and fades its left edge only while older buckets are off-screen', async () => {
+    // jsdom lays nothing out, so the scroller's geometry is stated here: 1,200px
+    // of columns in a 330px chart, which is the 390pt case the QA pass shot.
+    const proto = HTMLElement.prototype
+    const isChart = (el: HTMLElement) => el.classList.contains('chart')
+    Object.defineProperty(proto, 'scrollWidth', { configurable: true, get(this: HTMLElement) { return isChart(this) ? 1200 : 0 } })
+    Object.defineProperty(proto, 'clientWidth', { configurable: true, get(this: HTMLElement) { return isChart(this) ? 330 : 0 } })
+    try {
+      const root = await timeline(THIRTY_HOURS(), 'hour')
+      const chart = root.querySelector<HTMLElement>('.chart')!
+      expect(chart.scrollLeft, 'the chart opened at its oldest end').toBeGreaterThanOrEqual(1200 - 330)
+      expect(chart.classList.contains('has-older'), 'older buckets are off-screen and nothing says so').toBe(true)
+      // Scrolled back to the oldest column, there is nothing older to cue.
+      chart.scrollLeft = 0
+      fireEvent.scroll(chart)
+      expect(chart.classList.contains('has-older')).toBe(false)
+    } finally {
+      Reflect.deleteProperty(proto, 'scrollWidth')
+      Reflect.deleteProperty(proto, 'clientWidth')
+    }
+  })
+
+  it('labels every third hour and every day at phone width, and nothing in between', async () => {
+    const root = await timeline(THIRTY_HOURS(), 'hour')
+    const cols = [...root.querySelectorAll('.chart .col')]
+    expect(cols).toHaveLength(30)
+    // What a phone shows: a label with words in it that is not wide-only.
+    const shown = cols.flatMap((c, i) => {
+      const l = c.querySelector('.col-label')!
+      return l.classList.contains('is-wide-only') || (l.textContent ?? '').trim() === '' ? [] : [i]
+    })
+    const hourAt = (i: number) => (10 + i) % 24
+    for (const i of shown) {
+      const text = cols[i]!.querySelector('.col-label')!.textContent
+      const isDate = text === dayOf(0, 23) || text === dayOf(0, 24)
+      expect(isDate || hourAt(i) % 3 === 0, `column ${i} (${hourAt(i)}:00) is labelled "${text}" at phone width`).toBe(true)
+    }
+    for (let j = 1; j < shown.length; j++) {
+      expect(shown[j]! - shown[j - 1]!, `labels on columns ${shown[j - 1]} and ${shown[j]} crowd each other`).toBeGreaterThanOrEqual(3)
+    }
+    // Every day is still named: the chart's first column and midnight.
+    expect(shown).toContain(0)
+    expect(shown).toContain(14)
+    expect(shown.length).toBeGreaterThanOrEqual(8)
+  })
+})
+
+describe('the figures under the chart (TS-11, TS-12)', () => {
+  it('TS-11: are the boxless metric strip, holding Completed, Attempts consumed and Token spend -- and no Submitted', async () => {
+    const root = await timeline(MIXED())
+    expect(root.querySelector('.tiles, .tile'), 'a boxed tile is still drawn').toBeNull()
+    const strip = root.querySelector('.ctl-metrics')
+    expect(strip, 'the figures are not on the metric strip').not.toBeNull()
+    const labels = [...strip!.querySelectorAll('.ctl-metric-label')].map((l) => l.firstChild?.textContent)
+    expect(labels).toEqual(['Completed', 'Attempts consumed', 'Token spend'])
+    // `w.tasks.length` is the window bar's own figure; a fourth tile repeated it.
+    expect(strip!.textContent).not.toContain('Submitted')
+  })
+
+  it('TS-12: sums the cost the results carry, and marks the sum partial when some rows carry none', async () => {
+    const root = await timeline(
+      windowOf([spent('a', { total_cost_usd: 0.5 }), spent('b', { total_cost_usd: 0.25 }), spent('c', null)], false),
+    )
+    const m = figure(root, 'Token spend')
+    expect(m.querySelector('.ctl-metric-value')!.textContent).toBe('$0.75')
+    expect(m.querySelector('.ctl-metric-foot')!.textContent).toBe('2 of 3 tasks · from result')
+    const mark = m.querySelector('.ctl-metric-sub .ctl-mark.is-partial')
+    expect(mark, 'a sum over 2 of 3 rows is drawn as a total').not.toBeNull()
+    // Its name says BOTH reasons a result-sum can fall short.
+    expect(mark!.getAttribute('aria-label')).toMatch(/no cost/i)
+    expect(mark!.getAttribute('aria-label')).toMatch(/last attempt/i)
+    // The row count that stood where the figure should be, and its bar, are gone.
+    expect(m.textContent).not.toMatch(/of rows carry usage/)
+    expect(root.querySelector('.coverage')).toBeNull()
+    // The label carries the help topic, as a description, not a glyph.
+    expect(m.querySelector('.ctl-metric-label')!.getAttribute('aria-describedby')).not.toBeNull()
+  })
+
+  it('TS-12: draws no partial mark when every row carries a cost for its only attempt', async () => {
+    const root = await timeline(
+      windowOf([spent('a', { total_cost_usd: 0.5 }), spent('b', { total_cost_usd: 0.25 })], false),
+    )
+    const m = figure(root, 'Token spend')
+    expect(m.querySelector('.ctl-metric-value')!.textContent).toBe('$0.75')
+    expect(m.querySelector('.ctl-metric-foot')!.textContent).toBe('2 of 2 tasks · from result')
+    expect(m.querySelector('.ctl-mark.is-partial')).toBeNull()
+  })
+
+  it('TS-12: marks the sum partial when a summed task ran more than once, because a result is its last attempt', async () => {
+    const root = await timeline(
+      windowOf([spent('a', { total_cost_usd: 0.5 }), spent('b', { total_cost_usd: 0.25 }, { attempt_count: 2 })], false),
+    )
+    expect(figure(root, 'Token spend').querySelector('.ctl-mark.is-partial')).not.toBeNull()
+  })
+
+  it('TS-12: prints a measured zero as $0.00, because it was measured', async () => {
+    const root = await timeline(windowOf([spent('a', { total_cost_usd: 0 })], false))
+    const m = figure(root, 'Token spend')
+    expect(m.querySelector('.ctl-metric-value')!.textContent).toBe('$0.00')
+    expect(m.classList.contains('is-absent')).toBe(false)
+  })
+
+  it('TS-12: says "not recorded" -- never $0.00 -- when no result carries a cost, even one carrying tokens', async () => {
+    const root = await timeline(windowOf([spent('a', { input_tokens: 1200 }), spent('b', null)], false))
+    const m = figure(root, 'Token spend')
+    expect(m.classList.contains('is-absent')).toBe(true)
+    expect(m.querySelector('.ctl-metric-value')!.textContent).toBe('not recorded')
+    expect(m.textContent, 'an absent spend printed as money').not.toMatch(/\$/)
+    const mark = m.querySelector('.ctl-metric-sub .ctl-mark.is-absent')
+    expect(mark).not.toBeNull()
+    expect(mark!.getAttribute('aria-label')).toBe(
+      'Token spend: no task in this window carries a cost in its result. That is an absent measurement, not a spend of zero.',
+    )
+    expect(m.querySelector(`a[href="#help/tokens-reported"]`)).not.toBeNull()
+  })
+
+  it('TS-12: the help topic says the Timeline sum covers each task\'s last attempt only', () => {
+    expect(HELP['tokens-reported'].long.join(' ')).toMatch(/Timeline.*last attempt/)
   })
 })
 
