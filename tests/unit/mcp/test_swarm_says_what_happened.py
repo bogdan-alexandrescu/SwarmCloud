@@ -103,8 +103,10 @@ class World:
         assert response.status_code == 200, response.text
         return response.json()["task"]["state"]
 
-    def attempt(self, task_id: str, attempt_id: str) -> None:
-        created = AT - timedelta(minutes=5)
+    def attempt(self, task_id: str, attempt_id: str, *, created: datetime | None = None) -> None:
+        """One attempt. The route lists a task's attempts newest first by
+        `created`, so a test with two of them says which one came later."""
+        created = created or AT - timedelta(minutes=5)
         self.db.collection("attempts").document(attempt_id).set(
             {
                 "attempt_id": attempt_id,
@@ -865,10 +867,14 @@ def test_follow_tells_an_empty_log_from_a_missing_one(swarm, world, capsys):
 # other key is a 404 -- the answer GCS gives for an object never written.
 
 
-def _bucket(monkeypatch, objects: dict[str, bytes]) -> None:
+def _bucket(monkeypatch, objects: dict[str, bytes], forbidden: tuple[str, ...] = ()) -> None:
+    """`forbidden`: key endings that answer 403, as the tenant's prefix does
+    to a principal without `storage.objects.get` on it."""
     monkeypatch.setenv("SWARM_ARTIFACT_BUCKET", "a-bucket")
 
     def _find(uri: str) -> bytes:
+        if any(uri.endswith(suffix) for suffix in forbidden):
+            raise SwarmError(f"could not read {uri}: 403 forbidden", status=403)
         for suffix, data in objects.items():
             if uri.endswith(suffix):
                 return data
@@ -952,6 +958,138 @@ def test_tail_does_not_say_never_started_when_it_could_not_read_the_attempts(
     assert any("503" in line for line in lines), "the failed read is still warned about"
     assert not any("never started" in line for line in lines), lines
     assert any("unknown" in line for line in lines), lines
+
+
+# `tail` followed the FIRST attempt it saw for as long as it ran. A task moves
+# to another one: a quota park ends its attempt and the resume is a new one
+# (invariant 4), and so is a retry after a crash or a reclaim. Each attempt
+# publishes under its own `attempts/<id>/logs` prefix, so the first attempt's
+# objects say nothing about the second's -- and the finished line then stated
+# a cause, for the whole task, from the wrong attempt's logs.
+
+_FIRST = "att_first"
+_SECOND = "att_second"
+
+#: `att_first`'s completed stderr: what `_park_for_quota` uploads when the
+#: runner's 429 lands inside the first live interval, so no live log carried it.
+_STALE = {f"/attempts/{_FIRST}/logs/stderr.log": b"x" * 212}
+
+
+def _resumed(world: World, monkeypatch, task_id: str) -> None:
+    """`task_id` is PARKED on `att_first` when `tail` first looks. Before its
+    second poll it has resumed as `att_second`, which is newer, and finished."""
+    world.attempt(task_id, _FIRST, created=AT - timedelta(minutes=40))
+
+    def _resume(polls: int) -> None:
+        if polls == 1:
+            world.attempt(task_id, _SECOND, created=AT - timedelta(minutes=35))
+            world.set(task_id, state="SUCCEEDED")
+
+    _sleeps(monkeypatch, _resume)
+
+
+def test_tail_reads_the_attempt_a_resumed_task_did_its_work_in(swarm, world, capsys, monkeypatch):
+    """The review's case: `att_second`'s live output never shown, and a line
+    blaming flush timing for it, from `att_first`'s 212 bytes. `follow._logs`
+    resets its cursor when the attempt changes; `tail` never looked again."""
+    task_id = world.task("task_0000000000000resumed", state="PARKED")
+    _resumed(world, monkeypatch, task_id)
+    _bucket(
+        monkeypatch,
+        {
+            **_STALE,
+            f"/attempts/{_SECOND}/logs/live/stdout.tail.log":
+                b"#swarm-tail offset=0 size=23\nthirty minutes of work\n",
+            f"/attempts/{_SECOND}/logs/stdout.log": b"thirty minutes of work\n",
+            f"/attempts/{_SECOND}/logs/stderr.log": b"",
+        },
+    )
+
+    cli.cmd_tail(swarm, _args(task_ids=[task_id]))
+
+    lines = capsys.readouterr().out.splitlines()
+    assert any("thirty minutes of work" in line for line in lines), lines
+    # The move is said, as `follow` says it, rather than left to be inferred
+    # from output that starts again from nothing.
+    assert any(_SECOND in line and "latest" in line for line in lines), lines
+    assert not any("212 bytes" in line for line in lines), lines
+    assert lines[-1].endswith("OK"), lines
+
+
+@pytest.mark.parametrize(
+    ("second", "forbidden", "says"),
+    [
+        pytest.param(
+            {f"/attempts/{_SECOND}/logs/stdout.log": b"",
+             f"/attempts/{_SECOND}/logs/stderr.log": b""},
+            (), "printed nothing", id="empty-completed-log",
+        ),
+        pytest.param(
+            {f"/attempts/{_SECOND}/logs/stdout.log": b"all done\n"},
+            (), "9 bytes of stdout", id="bytes-no-live-log-carried",
+        ),
+        pytest.param(
+            {f"/attempts/{_SECOND}/logs/live/stdout.tail.log": b"#swarm-tail offset=0 size=0\n"},
+            (), "live log is empty", id="empty-live-log",
+        ),
+        pytest.param(
+            {}, (f"/attempts/{_SECOND}/logs/live/stdout.tail.log",), "unknown",
+            id="live-log-unreadable",
+        ),
+        pytest.param(
+            {}, (f"/attempts/{_SECOND}/logs/stdout.log",), "unknown",
+            id="completed-log-unreadable",
+        ),
+        pytest.param({}, (), "no log object", id="no-object-at-all"),
+    ],
+)
+def test_every_finished_line_names_the_newest_attempt(
+    swarm, world, capsys, monkeypatch, second, forbidden, says
+):
+    """Each line `tail` prints for a finished task that showed nothing names
+    the attempt it describes, and that is the NEWEST attempt rather than the
+    first one `tail` saw. Only the no-object line named one, so the other five
+    read as a verdict on the whole task."""
+    task_id = world.task("task_000000000000namesatt", state="PARKED")
+    _resumed(world, monkeypatch, task_id)
+    _bucket(monkeypatch, {**_STALE, **second}, forbidden)
+
+    cli.cmd_tail(swarm, _args(task_ids=[task_id]))
+
+    lines = capsys.readouterr().out.splitlines()
+    finished = [line for line in lines if says in line]
+    assert len(finished) == 1, lines
+    assert _SECOND in finished[0], finished
+    assert _FIRST not in finished[0], finished
+    assert not any("212 bytes" in line for line in lines), lines
+
+
+def test_tail_does_not_explain_an_attempt_it_could_not_confirm_was_the_newest(
+    swarm, world, capsys, monkeypatch
+):
+    """Looking again can fail. `tail` then knows which attempt it read but not
+    whether a later one ran, and a cause stated from the one it read is the
+    same wrong explanation by another route. It says which attempt showed
+    nothing, and that whether another ran is unknown."""
+    task_id = world.task("task_000000000unconfirmed", state="PARKED")
+    world.attempt(task_id, _FIRST)
+    _bucket(monkeypatch, dict(_STALE))
+    answers = iter([(_FIRST, None)])
+    monkeypatch.setattr(
+        cli,
+        "_latest_attempt",
+        lambda client, tid: next(
+            answers, (None, SwarmError(f"GET /v1/tasks/{tid}/attempts: 503 unavailable"))
+        ),
+    )
+    _sleeps(monkeypatch, lambda polls: world.set(task_id, state="SUCCEEDED"))
+
+    cli.cmd_tail(swarm, _args(task_ids=[task_id]))
+
+    lines = capsys.readouterr().out.splitlines()
+    assert any("503" in line for line in lines), "the failed read is warned about"
+    assert any(_FIRST in line and "unknown" in line for line in lines), lines
+    assert not any("212 bytes" in line for line in lines), lines
 
 
 def test_the_state_is_spelled_once_across_sc_task_and_swarm_result(swarm, world, capsys):
