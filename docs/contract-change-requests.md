@@ -34,6 +34,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 19 | `states.py`: no `EventType` says "the reconciler evicted this execution" | open |
 | 20 | `models.py`: `Workflow.on_step_failure` is a bare `str`, and its vocabulary is stated four times | open |
 | 21 | `states.py`: the worker's exit codes have no shared home, and the reconciler now acts on one | open |
+| 22 | `profiles.py`: whether a runner profile can run on a pool account is stated by the worker and restated by the scheduler | open |
 
 ---
 
@@ -2070,3 +2071,81 @@ would then both be derived from it, and the parity test deleted.
 The parity test stays and does its job for these two copies. A third reader of
 exit codes (a UI badge, a smoke check, an alert on 78s) would have to restate
 the number again, and would need its own parity test to be safe.
+
+---
+
+## 22. `profiles.py`: whether a runner profile can run on a pool account is stated by the worker and restated by the scheduler
+
+**Status:** open, recorded 2026-09-25 by the lane that made admission and
+dispatch ask one question (branch `lane/pool-credential-admission`, #169). If
+another branch has taken 22 by the time this merges, renumber this one.
+
+### What is true today
+
+A pool account is a Claude subscription. Its token fills one variable,
+`CLAUDE_CODE_OAUTH_TOKEN`, and a runner profile can run on an account only if
+its `secrets` declare that name. `claude-code` does. `browser` does not.
+
+The frozen catalogue says nothing about this. It lists the names, and the
+meaning of one of them is decided outside it:
+
+* `agent_worker.accountlease.ACCOUNT_TOKEN_ENV`, which the worker checks before
+  it asks the broker for an account (`lifecycle._lease_account`);
+* `scheduler.credentials.SUBSCRIPTION_TOKEN_ENV`, which admission checks before
+  it lets a tenant with no key of its own through on the pool.
+
+The scheduler's image does not carry the worker, so it cannot import the
+worker's constant. `tests/unit/worker/test_pool_credential_parity.py` holds the
+two together. It compares the constants, and it also runs the real worker's
+credential resolution for every profile in the catalogue against the
+scheduler's `credential_for`.
+
+If they drifted, the failure would be quiet in both directions:
+
+* the scheduler expects the pool and the worker does not ask it: a keyless
+  tenant's task is admitted, a container starts, the worker parks it on
+  CREDENTIAL_MISSING, and the credential sweep promotes it again on the next
+  drain;
+* the worker would ask and the scheduler does not expect it: a tenant the pool
+  serves is parked at admission and never runs.
+
+### The requested change
+
+Add to `profiles.py`:
+
+```python
+#: The variable a Claude subscription token fills. A profile whose `secrets`
+#: name it can run on an account from the pool; one that does not, cannot.
+SUBSCRIPTION_TOKEN_ENV = "CLAUDE_CODE_OAUTH_TOKEN"
+
+
+@dataclass(frozen=True)
+class RunnerProfile:
+    ...
+
+    @property
+    def runs_on_a_pool_account(self) -> bool:
+        return self.provider is not None and SUBSCRIPTION_TOKEN_ENV in self.secrets
+```
+
+`agent_worker.accountlease.ACCOUNT_TOKEN_ENV` and
+`scheduler.credentials.SUBSCRIPTION_TOKEN_ENV` would then both be derived from
+it. The worker's `_lease_account` and the scheduler's `credential_for` would
+both ask `profile.runs_on_a_pool_account`, and the parity test could shrink to
+the behavioural half.
+
+### What it would break if accepted
+
+* **Nothing stored.** No document carries the name.
+* **`ACCOUNT_TOKEN_ENV` is imported by that name** in the worker and its tests.
+  Keeping it as an alias of the new constant avoids a rename in the same
+  change.
+* **The UI's catalogue mirror** (`apps/swarm-ui/src/types.ts`, section 5 of
+  `docs/mirrored-values.md`) mirrors `RunnerProfile` fields, not properties, so
+  a property adds nothing it has to follow.
+
+### If it is declined
+
+The parity test stays and does its job for these two copies. A third reader,
+for example a UI hint that says which profiles a lent account can run, would
+have to restate the name again and would need its own parity test.

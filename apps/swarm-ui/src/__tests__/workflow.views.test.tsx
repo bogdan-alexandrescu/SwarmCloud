@@ -22,6 +22,7 @@
 //  U5  the inspector scrubs to the next attempt of a step and to the same step
 //      in the next workflow, from the keyboard as well as the pointer.
 
+import STYLES from '../styles.css?raw'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { useState } from 'react'
@@ -29,6 +30,8 @@ import { useState } from 'react'
 import type { Result } from '../fetch'
 import type { StepUsage, WorkflowBoard, WorkflowUsage } from '../api'
 import type { AttemptRow, Task, TaskState, Workflow, WorkflowStep } from '../types'
+import { cascade } from './cssgate'
+import { colour, resolveSheet, resolveVars, tokenTables, type RGBA } from './spaceprobe'
 
 const api = vi.hoisted(() => ({
   loadWorkflowBoard: vi.fn(),
@@ -41,7 +44,7 @@ vi.mock('../api', async (importOriginal) => {
 })
 
 const { WorkflowCard, WorkflowsScreen } = await import('../Workflows')
-const { layoutOf, stepDuration } = await import('../dag')
+const { inputsByStep, layoutOf, stepDuration } = await import('../dag')
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -608,9 +611,20 @@ describe('U2: a step reads the same in every view', () => {
       tasks: [plan],
     })
     const root = container as HTMLElement
-    const node = nodeNamed(root, 'work').querySelector('.node-dur')!
-    expect(node.textContent, 'the node claims run time nothing recorded').not.toMatch(/^ran/)
-    expect(node.textContent).toBe('never started')
+    // EVERYTHING THE NODE SAYS ABOUT ITS TIME, wherever the tier puts it: the
+    // duration line where it is drawn, and the `ran` figure at the Figures tier
+    // -- which is where this two-step card lands, and where the line is not
+    // drawn for a step that never started because the figure already says so.
+    const workNode = nodeNamed(root, 'work')
+    const said = [
+      ...workNode.querySelectorAll('.node-dur'),
+      ...[...workNode.querySelectorAll('.node-num')]
+        .filter((n) => n.querySelector('dt')?.textContent === 'ran')
+        .map((n) => n.querySelector('dd')!),
+    ].map((e) => e.textContent ?? '')
+    expect(said.length, 'the node says nothing about its time').toBeGreaterThan(0)
+    expect(said.filter((t) => /^ran\b|^\d/.test(t)), 'the node claims run time nothing recorded').toEqual([])
+    expect(said).toContain('never started')
 
     const seg = root.querySelector('.wf-viewbar .ctl-seg') as HTMLElement
     fireEvent.click(within(seg).getByText('Timeline'))
@@ -702,18 +716,22 @@ describe('U3: an edge that carries a file', () => {
   it('draws input_from apart from depends_on, one mark per pair either way', () => {
     const { w, tasks } = edgeCard()
     const { container } = render(<Card w={w} tasks={tasks} />)
-    const links = container.querySelectorAll('.wf-link')
+    // THE MARKS ARE THE GROUPS THAT NAME THEIR PAIR. The halo under each edge
+    // is painted in a layer of its own, beneath every stroke, and its group
+    // carries the kind class so the sheet can widen a data edge's clearance --
+    // but it names no pair, because it is clearance and not a mark.
+    const links = container.querySelectorAll('.wf-link[data-edge]')
     expect(links).toHaveLength(3)
     // One path per pair is unchanged: a data edge is a KIND of edge, not a
     // second edge drawn on top of the first.
     expect(container.querySelectorAll('.wf-edge')).toHaveLength(3)
     for (const l of links) expect(l.querySelectorAll('.wf-edge')).toHaveLength(1)
-    expect(container.querySelectorAll('.wf-link.is-order')).toHaveLength(1)
-    expect(container.querySelectorAll('.wf-link.is-staged')).toHaveLength(1)
-    expect(container.querySelectorAll('.wf-link.is-declared')).toHaveLength(1)
-    expect(container.querySelector('.wf-link.is-order')!.getAttribute('data-edge')).toBe('plan->scan')
-    expect(container.querySelector('.wf-link.is-staged')!.getAttribute('data-edge')).toBe('plan->build')
-    expect(container.querySelector('.wf-link.is-declared')!.getAttribute('data-edge')).toBe('build->check')
+    expect(container.querySelectorAll('.wf-link.is-order[data-edge]')).toHaveLength(1)
+    expect(container.querySelectorAll('.wf-link.is-staged[data-edge]')).toHaveLength(1)
+    expect(container.querySelectorAll('.wf-link.is-declared[data-edge]')).toHaveLength(1)
+    expect(container.querySelector('.wf-link.is-order[data-edge]')!.getAttribute('data-edge')).toBe('plan->scan')
+    expect(container.querySelector('.wf-link.is-staged[data-edge]')!.getAttribute('data-edge')).toBe('plan->build')
+    expect(container.querySelector('.wf-link.is-declared[data-edge]')!.getAttribute('data-edge')).toBe('build->check')
   })
 
   it('names the file on the dependency line, and marks whether it arrived', () => {
@@ -992,5 +1010,604 @@ describe('U5: scrubbing', () => {
     // Picking it again puts it down.
     pick(c, 'ship')
     expect(c.querySelector('.wf-inspect')).toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The visual QA pass of 2026-09-25 (epics #83 and #87)
+// ---------------------------------------------------------------------------
+//
+// One box each, committed RED against the code it describes before the fix
+// landed.
+
+describe('the QA pass: the table, the inspector and the board chrome', () => {
+  it('WF-6: lists every declared input on its own line, in the order the step depends on them', () => {
+    // `input_from` in the REVERSE of `depends_on`, which is what a Firestore map
+    // is free to hand back. merge-1..4 each declared two files and failed on
+    // the second; the cell showed one, clipped, and a different one per read.
+    const w = workflow('wf_merge', 600, [
+      step('left', [], { task_id: 'tl' }),
+      step('right', [], { task_id: 'tr' }),
+      step('merge', ['left', 'right'], { task_id: 'tm', input_from: { right: 'right.md', left: 'left.md' } }),
+    ])
+    const tasks = new Map<string, Task>([
+      ['tl', task('tl', 'SUCCEEDED', { started_at: iso(-590), completed_at: iso(-500) })],
+      ['tr', task('tr', 'SUCCEEDED', { started_at: iso(-590), completed_at: iso(-500) })],
+      [
+        'tm',
+        task('tm', 'FAILED', {
+          started_at: iso(-490),
+          completed_at: iso(-300),
+          result_summary: { staged_inputs: [{ task_id: 'tl', filename: 'left.md', path: 'left.md', bytes: 10 }] },
+        }),
+      ],
+    ])
+    const { container } = render(<Card w={w} tasks={tasks} />)
+    fireEvent.click(within(container.querySelector<HTMLElement>('.wf-viewbar')!).getByText('Table'))
+    const td = cell(container as HTMLElement, 'merge', 'inputs')
+    const files = [...td.querySelectorAll('.wf-input')].map((el) => (el.textContent ?? '').split(' ←')[0])
+    expect(files, 'the inputs follow the map, not depends_on').toEqual(['left.md', 'right.md'])
+    // ONE LINE EACH: a break between the two, and no comma-joined run for the
+    // cell's `nowrap` to cut the second one off.
+    expect(td.querySelectorAll('br'), 'the two inputs share one clipped line').toHaveLength(1)
+    expect(td.textContent).not.toContain(', ')
+  })
+
+  it('WF-6: orders a step’s inputs by depends_on whatever order the map arrives in', () => {
+    // Every permutation of three keys, plus one key the list does not name --
+    // which `validate_dag` should make impossible, and which still has to land
+    // somewhere deterministic: last, by name.
+    const orders: Array<Record<string, string>> = [
+      { a: 'a.md', b: 'b.md', c: 'c.md', z: 'z.md' },
+      { c: 'c.md', z: 'z.md', b: 'b.md', a: 'a.md' },
+      { z: 'z.md', b: 'b.md', a: 'a.md', c: 'c.md' },
+      { b: 'b.md', c: 'c.md', a: 'a.md', z: 'z.md' },
+    ]
+    for (const input_from of orders) {
+      const steps = [step('a', []), step('b', []), step('c', []), step('m', ['c', 'a', 'b'], { input_from })]
+      const declared = [...inputsByStep(steps, new Map()).get('m')!.declared.keys()]
+      expect(declared, JSON.stringify(input_from)).toEqual(['c', 'a', 'b', 'z'])
+    }
+  })
+
+  it('WF-18: says a finished step that never got an attempt never started, as the table does', async () => {
+    const dropped = task('t_drop', 'CANCELLED', { created_at: iso(-480), completed_at: iso(-300) })
+    const { container } = oneStepCard(dropped, [], 'table')
+    const root = container as HTMLElement
+    pick(root, 'work')
+    const scrub = inspector(root).querySelector<HTMLElement>('[data-scrub="attempt"]')!
+    await waitFor(() => expect(scrub.textContent).not.toContain('reading'))
+    expect(scrub.textContent, 'an ended step is promised an attempt "yet"').not.toContain('no attempt yet')
+    expect(scrub.textContent).toContain('never started')
+    // The same word the table prints for the same step.
+    expect(cell(root, 'work', 'ran').textContent).toBe('never started')
+  })
+
+  it('WF-18: still says "no attempt yet" for a step that is waiting for its first', async () => {
+    const waiting = task('t_wait', 'READY', { created_at: iso(-120) })
+    const { container } = oneStepCard(waiting, [], 'table')
+    const root = container as HTMLElement
+    pick(root, 'work')
+    const scrub = inspector(root).querySelector<HTMLElement>('[data-scrub="attempt"]')!
+    await waitFor(() => expect(scrub.textContent).toContain('no attempt yet'))
+  })
+
+  it('CH-5: draws the inspector’s run link in the link treatment, not the browser’s blue', async () => {
+    const running = task('t_run', 'RUNNING', { created_at: iso(-600), started_at: iso(-300) })
+    const { container } = oneStepCard(running, [])
+    pick(container as HTMLElement, 'work')
+    const i = inspector(container as HTMLElement)
+    const run = i.querySelector('a.wf-inspect-run')!
+    expect(run.getAttribute('href')).toBe('#work/task/t_run')
+    expect(run.classList.contains('ctl-link'), 'the run link is unclassed and falls back to UA blue').toBe(true)
+    // Let the attempt read the inspector started settle inside the test.
+    const scrub = i.querySelector<HTMLElement>('[data-scrub="attempt"]')!
+    await waitFor(() => expect(scrub.textContent).not.toContain('reading'))
+  })
+
+  it('WF-3: widens a data edge’s clearance with its stroke, from the layer beneath the strokes', () => {
+    // The halos moved into one layer under every stroke. The sheet widens a
+    // DATA edge's halo through `.wf-link.is-data .wf-edge-halo`, so the halo
+    // layer has to keep the kind class or that clearance silently narrows.
+    const { w, tasks } = edgeCard()
+    const { container } = render(<Card w={w} tasks={tasks} />)
+    const layer = container.querySelector('svg.wf-edges > .wf-edge-halos')
+    expect(layer, 'the halos are not in a layer of their own').toBeTruthy()
+    expect(layer!.querySelectorAll('.wf-edge-halo')).toHaveLength(3)
+    expect(layer!.querySelectorAll('.wf-link.is-data .wf-edge-halo')).toHaveLength(2)
+    expect(layer!.querySelectorAll('.wf-link.is-order .wf-edge-halo')).toHaveLength(1)
+  })
+
+  it('WF-22: shows the sample mark only while an open card draws step figures', async () => {
+    // Twelve tasks is the attempt read's ceiling; this board asked for more,
+    // so the mark has something to say.
+    const { usage } = board()
+    api.loadWorkflowUsage.mockResolvedValue({
+      status: 'ok',
+      data: { ...usage, notSampled: new Set(['t_beyond']), tasksRequested: 8 },
+      fetchedAt: T0,
+    } satisfies Result<WorkflowUsage>)
+    await landed()
+    const mark = () => document.querySelector('.wf-caveats .ctl-mark.is-partial')
+    // The Table draws cost and tokens per step: the coverage of that read is
+    // worth stating there. Waiting for it here is also what proves the read
+    // has LANDED, so the absences below are not just an early render.
+    chooseBoard('Table')
+    await waitFor(() => expect(mark()?.textContent).toBe('6/8 sampled'))
+    // Rows draws no step figure at all, and its spend column is summed from a
+    // different source the sample says nothing about.
+    chooseBoard('Rows')
+    expect(mark(), 'a caveat about figures nobody can see').toBeNull()
+    // The Timeline draws times from the task read, not the sample.
+    chooseBoard('Timeline')
+    expect(mark()).toBeNull()
+    // AH-24: AFTER THE LABEL OR HEADING, NEVER AFTER A VALUE. The board's one
+    // `?` trailed the caveats -- `6/8 sampled ?` -- where it read as a
+    // footnote on the figure. #161's first version moved it to LEAD the
+    // strip, which has no label, so it followed nothing. The glyph explains a
+    // property of the whole screen (a word where a digit would be, on every
+    // absent figure), so it follows the screen's heading, `Workflows`, in the
+    // page head, and is there whether any caveat is drawn or none.
+    // MUTATION: move it back into `.wf-caveats`, at either end.
+    chooseBoard('Table')
+    await waitFor(() => expect(mark()?.textContent).toBe('6/8 sampled'))
+    const caveats = document.querySelector('.wf-caveats')!
+    expect(caveats.querySelector('button[aria-label^="Help: "]'), 'the board `?` is still among the caveats').toBeNull()
+    const head = document.querySelector('.head')
+    expect(head?.querySelector('h1')?.textContent).toBe('Workflows')
+    const glyph = head?.querySelector('button[aria-label^="Help: "]') ?? null
+    expect(glyph, 'the `?` does not follow the Workflows heading').not.toBeNull()
+    expect(glyph!.closest('h1'), 'the `?` is inside the heading, and in its name').toBeNull()
+    expect(
+      head!.querySelector('h1')!.compareDocumentPosition(glyph!) & Node.DOCUMENT_POSITION_FOLLOWING,
+      'the `?` sits before the heading',
+    ).toBeTruthy()
+    // The Graph, at the Figures tier these small workflows land on, draws
+    // them on every node.
+    chooseBoard('Graph')
+    expect(mark()?.textContent).toBe('6/8 sampled')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The owner's decisions on the QA pass (epic #83), the workflows lane
+// ---------------------------------------------------------------------------
+//
+// Each case was committed RED against the code it describes before the change
+// landed. Colours are read through `cssgate`'s `cascade` over the resolved
+// sheet, in both themes -- not through `getComputedStyle`, which orders rules
+// by source position alone (design-system.md §14.1) and computes no
+// pseudo-element at all.
+
+type Theme = 'dark' | 'light'
+const THEMES: readonly Theme[] = ['dark', 'light']
+const TOKENS = tokenTables(STYLES)
+const SHEETS: Readonly<Record<Theme, string>> = {
+  dark: resolveSheet(STYLES, 'dark'),
+  light: resolveSheet(STYLES, 'light'),
+}
+const FILL = ['background', 'background-color'] as const
+const OUTLINE = ['border', 'border-color', 'border-top', 'border-top-color'] as const
+
+function tokenColour(name: string, theme: Theme): RGBA {
+  const v = TOKENS[theme].get(name)
+  expect(v, `${name} is not declared`).toBeDefined()
+  const c = colour(resolveVars(v!, TOKENS[theme]))
+  expect(c, `${name} does not resolve to a colour`).not.toBeNull()
+  return c!
+}
+
+/** The first word of a declared value that reads as a colour. */
+function colourIn(value: string): RGBA | null {
+  for (const word of value.split(/\s+(?![^(]*\))/)) {
+    if (word === '') continue
+    const c = colour(word)
+    if (c !== null) return c
+  }
+  return null
+}
+
+function paintOf(el: Element, props: readonly string[], theme: Theme, pseudo: string | null = null): RGBA | null {
+  const r = cascade(SHEETS[theme], el, props, { width: 1440, theme }, pseudo)
+  return r.winner === null ? null : colourIn(r.winner.value)
+}
+
+const sameColour = (a: RGBA | null, b: RGBA): boolean =>
+  a !== null && Math.abs(a.r - b.r) < 0.5 && Math.abs(a.g - b.g) < 0.5 && Math.abs(a.b - b.b) < 0.5
+
+/** A card drawn in one view, with the attempt read and the usage read given. */
+function viewCard(
+  steps: WorkflowStep[],
+  tasks: Task[],
+  view: 'graph' | 'timeline' | 'table',
+  usage: WorkflowUsage | null = null,
+  attempts: Record<string, AttemptRow[]> = {},
+): HTMLElement {
+  const load = async (taskId: string): Promise<Result<{ attempts: AttemptRow[] }>> => {
+    const rows = attempts[taskId] ?? []
+    return rows.length === 0 ? { status: 'empty', fetchedAt: T0 } : { status: 'ok', data: { attempts: rows }, fetchedAt: T0 }
+  }
+  const { container } = render(
+    <WorkflowCard
+      workflow={workflow('wf_decided', 1200, steps)}
+      taskById={new Map(tasks.map((t) => [t.id, t]))}
+      expanded
+      usage={{ kind: 'ready', usage }}
+      onToggle={() => {}}
+      openStages={{}}
+      onToggleStage={() => {}}
+      view={view}
+      loadAttempts={load}
+      reload={() => {}}
+    />,
+  )
+  return container as HTMLElement
+}
+
+function factLi(root: HTMLElement, key: string): HTMLElement {
+  const li = [...root.querySelectorAll<HTMLElement>('.ctl-fact')].find((el) => el.querySelector('b')?.textContent === key)
+  expect(li, `no ${key} fact`).toBeTruthy()
+  return li!
+}
+
+describe('the owner’s decisions: where a figure came from (WF-5)', () => {
+  it('shows the result’s cost and tokens where telemetry was not sampled, says so, and the inspector says it the same way', async () => {
+    // Outside the attempt sample, with a result that DID report: the board
+    // already held these figures and printed "not sampled" beside them, while
+    // the row's total counted them.
+    const done = task('t_res', 'SUCCEEDED', {
+      started_at: iso(-500),
+      completed_at: iso(-400),
+      result_summary: { runner: { usage: { total_cost_usd: 0.42, input_tokens: 1200, output_tokens: 300 } } },
+    })
+    const usage: WorkflowUsage = {
+      byTaskId: new Map(),
+      notSampled: new Set(['t_res']),
+      failed: new Map(),
+      sampleLimit: 12,
+      tasksRequested: 13,
+    }
+    // Its one attempt carries no typed figure -- the shape the live board had:
+    // the inspector said "not reported" where the table said "not sampled".
+    const root = viewCard([step('work', [], { task_id: 't_res' })], [done], 'table', usage, {
+      t_res: [attempt(1, { task_id: 't_res' })],
+    })
+    const cost = cell(root, 'work', 'cost')
+    expect(cost.querySelector('.wf-cell')?.textContent, 'the table still says the figure was not sampled').toBe('$0.42')
+    expect(cost.querySelector('.wf-src')?.textContent, 'a filled figure does not say where it came from').toBe('from result')
+    const tokens = cell(root, 'work', 'tokens')
+    expect(tokens.querySelector('.wf-cell')?.textContent).toBe('1.2k in · 300 out')
+    expect(tokens.querySelector('.wf-src')?.textContent).toBe('from result')
+
+    // ONE WORDING: the inspector's newest attempt reads the same figure from
+    // the same source, in the same words.
+    pick(root, 'work')
+    const i = inspector(root)
+    await within(i).findByText('attempt 1 of 1')
+    const costFact = factLi(i, 'cost')
+    expect(costFact.classList.contains('is-absent'), 'the inspector calls a reported cost absent').toBe(false)
+    expect(costFact.textContent).toContain('$0.42')
+    expect(costFact.querySelector('.wf-src')?.textContent).toBe('from result')
+    const tokensFact = factLi(i, 'tokens')
+    expect(tokensFact.textContent).toContain('1.2k in · 300 out')
+    expect(tokensFact.querySelector('.wf-src')?.textContent).toBe('from result')
+  })
+
+  it('makes a workflow’s total the sum of its steps’ own figures', () => {
+    // `a` was sampled: two attempts, $0.50 between them -- its result reports
+    // only the attempt that wrote it, $0.30. `b` was not sampled: its result's
+    // $0.20 is the only figure there is. The row summed the RESULTS ($0.50)
+    // while the steps under it showed $0.50 and "not sampled".
+    const a = task('t_a', 'SUCCEEDED', {
+      started_at: iso(-500),
+      completed_at: iso(-400),
+      attempt_count: 2,
+      result_summary: { runner: { usage: { total_cost_usd: 0.3 } } },
+    })
+    const b = task('t_b', 'SUCCEEDED', {
+      started_at: iso(-500),
+      completed_at: iso(-400),
+      result_summary: { runner: { usage: { total_cost_usd: 0.2 } } },
+    })
+    const usage: WorkflowUsage = {
+      byTaskId: new Map([
+        [
+          't_a',
+          {
+            attempts: 2,
+            attemptsWithCost: 2,
+            attemptsWithTokens: 0,
+            checkpoints: 0,
+            costUsd: 0.5,
+            inputTokens: null,
+            outputTokens: null,
+            cacheReadTokens: null,
+            cacheCreationTokens: null,
+          },
+        ],
+      ]),
+      notSampled: new Set(['t_b']),
+      failed: new Map(),
+      sampleLimit: 1,
+      tasksRequested: 2,
+    }
+    const root = viewCard([step('a', [], { task_id: 't_a' }), step('b', [], { task_id: 't_b' })], [a, b], 'table', usage)
+    const figure = (id: string) => Number.parseFloat((cell(root, id, 'cost').querySelector('.wf-cell')?.textContent ?? '').replace('$', ''))
+    expect(figure('a')).toBeCloseTo(0.5, 6)
+    expect(figure('b')).toBeCloseTo(0.2, 6)
+    expect(cell(root, 'a', 'cost').querySelector('.wf-src'), 'a telemetry figure is marked as the result’s').toBeNull()
+    const total = root.querySelector<HTMLElement>('.wf-spend')!
+    expect(total.textContent, 'the row’s total is not the sum of its steps').toBe('$0.7000')
+    // And the total says how much of it came from results.
+    expect(total.getAttribute('title')).toContain('1 from the step’s result summary')
+  })
+
+  it('says on the board that it did not read a step’s attempts, and leaves the claim about the attempt document to the inspector, which did', async () => {
+    // FIX-UP, #160 review finding 1. The board's cells and nodes carried the
+    // inspector's note -- "This attempt’s own document carries no typed figure
+    // for it" -- on a step outside the sample and on one whose attempt read
+    // failed. On both paths the board never read that document, so the title
+    // stated a fact about the platform nobody had measured; and picking the
+    // step, the inspector read the attempt and could show a figure the title
+    // had just said was not there.
+    const done = task('t_res', 'SUCCEEDED', {
+      started_at: iso(-500),
+      completed_at: iso(-400),
+      result_summary: { runner: { usage: { total_cost_usd: 0.5, input_tokens: 1200, output_tokens: 300 } } },
+    })
+    const notSampled: WorkflowUsage = {
+      byTaskId: new Map(),
+      notSampled: new Set(['t_res']),
+      failed: new Map(),
+      sampleLimit: 12,
+      tasksRequested: 13,
+    }
+    const unread: WorkflowUsage = {
+      byTaskId: new Map(),
+      notSampled: new Set(),
+      failed: new Map([['t_res', 'HTTP 503']]),
+      sampleLimit: 12,
+      tasksRequested: 1,
+    }
+    const work = [step('work', [], { task_id: 't_res' })]
+    const cases: ReadonlyArray<readonly [WorkflowUsage, string]> = [
+      [notSampled, 'did not read'],
+      [unread, 'could not read'],
+    ]
+    for (const [usage, says] of cases) {
+      const table = viewCard(work, [done], 'table', usage)
+      const node = nodeNamed(viewCard(work, [done], 'graph', usage), 'work')
+      const nodeRow = (label: string) =>
+        [...node.querySelectorAll<HTMLElement>('.node-num')].find((r) => r.querySelector('dt')?.textContent === label)
+      const titles = [
+        cell(table, 'work', 'cost').querySelector('.wf-cell')?.getAttribute('title') ?? '',
+        cell(table, 'work', 'tokens').querySelector('.wf-cell')?.getAttribute('title') ?? '',
+        nodeRow('cost')?.getAttribute('title') ?? '',
+        nodeRow('tokens')?.getAttribute('title') ?? '',
+      ]
+      for (const t of titles) {
+        expect(t, 'the board claims to know what an attempt document it never read carries').not.toContain(
+          'own document carries no typed figure',
+        )
+        expect(t, `the board does not say it ${says} this step’s attempts`).toContain(says)
+        expect(t).toContain('result summary')
+      }
+    }
+
+    // THE INSPECTOR READ THE ATTEMPT, so the claim about its document is its
+    // to make, and it keeps making it.
+    const root = viewCard(work, [done], 'table', notSampled, { t_res: [attempt(1, { task_id: 't_res' })] })
+    pick(root, 'work')
+    const i = inspector(root)
+    await within(i).findByText('attempt 1 of 1')
+    expect(factLi(i, 'cost').getAttribute('title')).toContain('own document carries no typed figure')
+  })
+
+  it('borrows a result only for a step that has finished -- in the table, on the node and in the total -- as the inspector does', () => {
+    // FIX-UP, #160 review finding 4. control.py's fail_retryably writes the
+    // failed attempt's result_summary and sends the task back to READY, so a
+    // step on its second attempt carries its FIRST attempt's result while it
+    // runs again. The inspector offers a result only to the newest attempt of
+    // a finished task; the node, the table and the row's total borrowed it for
+    // every state -- a figure that appeared nowhere in the inspector, under a
+    // note saying it was what the worker wrote when "this attempt" finished.
+    const retrying = task('t_retry', 'RUNNING', {
+      started_at: iso(-100),
+      attempt_count: 2,
+      result_summary: { runner: { usage: { total_cost_usd: 0.3, input_tokens: 900, output_tokens: 100 } } },
+    })
+    const done = task('t_done', 'SUCCEEDED', {
+      started_at: iso(-500),
+      completed_at: iso(-400),
+      result_summary: { runner: { usage: { total_cost_usd: 0.2 } } },
+    })
+    const usage: WorkflowUsage = {
+      byTaskId: new Map(),
+      notSampled: new Set(['t_retry', 't_done']),
+      failed: new Map(),
+      sampleLimit: 0,
+      tasksRequested: 2,
+    }
+    const steps = [step('done', [], { task_id: 't_done' }), step('again', ['done'], { task_id: 't_retry' })]
+
+    const table = viewCard(steps, [done, retrying], 'table', usage)
+    const cost = cell(table, 'again', 'cost')
+    expect(cost.querySelector('.wf-cell')?.textContent, 'a running step shows its failed attempt’s result as its cost').toBe(
+      'not sampled',
+    )
+    expect(cost.querySelector('.wf-src')).toBeNull()
+    expect(cell(table, 'again', 'tokens').querySelector('.wf-cell')?.textContent).toBe('not sampled')
+    // A finished step still borrows, and says so.
+    expect(cell(table, 'done', 'cost').querySelector('.wf-src')?.textContent).toBe('from result')
+
+    // THE TOTAL IS WHAT THE STEPS SHOW: $0.20, from one of the two, and so a
+    // floor rather than a total.
+    const total = table.querySelector<HTMLElement>('.wf-spend')!
+    expect(total.firstChild?.textContent, 'the row’s total counts a figure no step shows').toBe('$0.2000')
+    expect(total.querySelector('.wf-spend-cov')?.textContent).toBe('1/2')
+
+    // And the node agrees with the table.
+    const node = nodeNamed(viewCard(steps, [done, retrying], 'graph', usage), 'again')
+    const row = [...node.querySelectorAll<HTMLElement>('.node-num')].find((r) => r.querySelector('dt')?.textContent === 'cost')
+    expect(row?.querySelector('dd')?.textContent, 'the node shows a running step’s old result as its cost').toBe('not sampled')
+    expect(node.querySelector('.wf-src')).toBeNull()
+  })
+})
+
+describe('the owner’s decisions: scrubbing across workflows (WF-10)', () => {
+  it('keeps the view the reader chose, and the picked step, when the scrubber moves to another workflow', async () => {
+    await landed()
+    // Rows: open one card and look at it as a Timeline.
+    fireEvent.click(cardOf('wf_new').querySelector('.wf-bar')!)
+    fireEvent.click(within(cardOf('wf_new').querySelector<HTMLElement>('.wf-viewbar')!).getByText('Timeline'))
+    pick(cardOf('wf_new'), 'plan')
+    fireEvent.click(within(inspector(cardOf('wf_new'))).getByRole('button', { name: 'Same step, older workflow' }))
+    const mid = cardOf('wf_mid')
+    expect(mid.querySelector('.wf-timeline'), 'the next workflow opened in a view the reader did not choose').toBeTruthy()
+    expect(mid.querySelector('.wf-canvas')).toBeNull()
+    expect(mid.querySelector('.wf-pick[data-step="plan"]')!.getAttribute('aria-pressed')).toBe('true')
+    expect(inspector(mid)).toBeTruthy()
+    // And from a Table, to a Table.
+    fireEvent.click(within(mid.querySelector<HTMLElement>('.wf-viewbar')!).getByText('Table'))
+    fireEvent.click(within(inspector(cardOf('wf_mid'))).getByRole('button', { name: 'Same step, older workflow' }))
+    expect(cardOf('wf_old').querySelector('.wf-table'), 'the next workflow opened in a view the reader did not choose').toBeTruthy()
+    expect(inspector(cardOf('wf_old'))).toBeTruthy()
+  })
+})
+
+describe('the owner’s decisions: the Timeline’s hues (WF-11)', () => {
+  it('outlines a wait in --text-faint, fills a finished run --text-dim, and keeps hue for a failure or live work', () => {
+    const tasks = [
+      task('t_ok', 'SUCCEEDED', { created_at: iso(-600), started_at: iso(-590), completed_at: iso(-500) }),
+      task('t_bad', 'FAILED', { created_at: iso(-600), started_at: iso(-580), completed_at: iso(-450) }),
+      task('t_live', 'RUNNING', { created_at: iso(-600), started_at: iso(-300) }),
+      task('t_wait', 'QUEUED', { created_at: iso(-200) }),
+      task('t_stop', 'CANCELLED', { created_at: iso(-600), started_at: iso(-570), completed_at: iso(-400) }),
+    ]
+    const root = viewCard(
+      ['ok', 'bad', 'live', 'wait', 'stop'].map((id) => step(id, [], { task_id: `t_${id}` })),
+      tasks,
+      'timeline',
+    )
+    const span = (id: string, kind: string) => {
+      const el = track(root, id).querySelector<HTMLElement>(`.wf-tl-span.is-${kind}`)
+      expect(el, `${id} has no ${kind} span`).toBeTruthy()
+      return el!
+    }
+    const waited = span('ok', 'waited')
+    const okRan = span('ok', 'ran')
+    const badRan = span('bad', 'ran')
+    const running = span('live', 'running')
+    const waiting = span('wait', 'waiting')
+    const stopRan = span('stop', 'ran')
+    // The class is the verdict: only a failed run carries one.
+    expect(okRan.classList.contains('is-ok'), 'a succeeded run still carries is-ok').toBe(false)
+    expect(badRan.classList.contains('is-bad')).toBe(true)
+    expect(stopRan.classList.contains('is-bad')).toBe(false)
+    expect(running.classList.contains('is-running')).toBe(true)
+
+    const HUES = ['--ok', '--bad', '--info', '--warn', '--warn-ink']
+    const spans = [...root.querySelectorAll<HTMLElement>('.wf-tl-span')]
+    expect(spans.length).toBeGreaterThanOrEqual(8)
+    for (const theme of THEMES) {
+      const faint = tokenColour('--text-faint', theme)
+      const dim = tokenColour('--text-dim', theme)
+      expect(sameColour(paintOf(waited, OUTLINE, theme), faint), `${theme}: a wait is not a --text-faint outline`).toBe(true)
+      expect(sameColour(paintOf(waiting, OUTLINE, theme), faint), `${theme}: a wait is not a --text-faint outline`).toBe(true)
+      expect(sameColour(paintOf(okRan, FILL, theme), dim), `${theme}: a succeeded run is not --text-dim`).toBe(true)
+      expect(sameColour(paintOf(stopRan, FILL, theme), dim), `${theme}: a cancelled run is not --text-dim`).toBe(true)
+      // ONLY A FAILURE OR LIVE WORK IS COLOURED, across every span drawn.
+      const hues = HUES.map((h) => tokenColour(h, theme))
+      for (const el of spans) {
+        const painted = [paintOf(el, FILL, theme), paintOf(el, OUTLINE, theme)]
+        const hued = painted.some((c) => hues.some((h) => sameColour(c, h)))
+        const verdict = el.classList.contains('is-bad') || el.classList.contains('is-running')
+        expect(hued, `${theme}: \`${el.className}\` ${verdict ? 'lost' : 'took'} a state hue`).toBe(verdict)
+      }
+      // THE FAILED RUN'S POST, read from the sheet: jsdom computes no
+      // pseudo-element. A --bad rule standing 8px above and below the bar,
+      // because a --bad rule on a --bad fill is invisible.
+      expect(
+        sameColour(paintOf(badRan, FILL, theme, 'before'), tokenColour('--bad', theme)),
+        `${theme}: a failed run carries no --bad post`,
+      ).toBe(true)
+      const top = cascade(SHEETS[theme], badRan, 'top', { width: 1440, theme }, 'before').winner
+      expect(top, `${theme}: the post declares no top`).not.toBeNull()
+      expect(Number.parseFloat(top!.value), `${theme}: the post does not stand past the bar`).toBeLessThan(0)
+      const content = cascade(SHEETS[theme], badRan, 'content', { width: 1440, theme }, 'before').winner
+      expect(content?.value, `${theme}: the post is never generated`).toBe("''")
+    }
+  })
+})
+
+describe('the owner’s decisions: the Timeline’s axis (WF-12)', () => {
+  it('prints every other label on a phone, counting back from the last, and keeps every rule', () => {
+    // 03g's shape: a twenty-one-minute span, ticks at 0, +5m, +10m, +15m and
+    // +20m -- where 390 printed "+10m+15m" and "+1520m".
+    const t = task('t_work', 'SUCCEEDED', { created_at: iso(-1260), started_at: iso(-1200), completed_at: iso(0) })
+    const { container } = oneStepCard(t, [], 'timeline')
+    const root = container as HTMLElement
+    const ticks = [...root.querySelectorAll<HTMLElement>('.wf-tl-scale .wf-tl-tick')]
+    expect(ticks.map((el) => el.textContent)).toEqual(['0', '+5m', '+10m', '+15m', '+20m'])
+    const labels = ticks.map((el) => el.querySelector<HTMLElement>('.wf-tl-tick-label'))
+    expect(labels.every((l) => l !== null), 'a tick’s label is not an element of its own, so no rule can thin it').toBe(true)
+    const shown = (width: number) =>
+      labels
+        .filter((l) => cascade(STYLES, l!, 'visibility', { width }).winner?.value !== 'hidden')
+        .map((l) => l!.textContent)
+    expect(shown(390), 'the phone axis prints labels over each other').toEqual(['0', '+10m', '+20m'])
+    expect(shown(1440)).toEqual(['0', '+5m', '+10m', '+15m', '+20m'])
+    // Every tick keeps its line: only the LABEL is hidden.
+    for (const tick of ticks) expect(cascade(STYLES, tick, ['visibility', 'display'], { width: 390 }).winner).toBeNull()
+    // The last tick, at 95% of the track, hangs left of its line; no other does.
+    expect(ticks.map((el) => el.classList.contains('is-end'))).toEqual([false, false, false, false, true])
+  })
+
+  it('hangs only a tick marked is-end, and thins the labels only at the phone breakpoint', () => {
+    // The sheet on its own, over six ticks -- an even count, where '0' and
+    // the first tick after it both print.
+    const scale = document.createElement('div')
+    scale.className = 'wf-tl-scale'
+    for (const label of ['0', '+5m', '+10m', '+15m', '+20m', '+25m']) {
+      const tick = document.createElement('span')
+      tick.className = 'wf-tl-tick'
+      const text = document.createElement('span')
+      text.className = 'wf-tl-tick-label'
+      text.textContent = label
+      tick.appendChild(text)
+      scale.appendChild(tick)
+    }
+    document.body.appendChild(scale)
+    try {
+      const ticks = [...scale.children]
+      const last = ticks[ticks.length - 1]!
+      // A last tick that is NOT marked faces right, like every other: the
+      // hang went on `:last-child` whatever the tick's position.
+      expect(cascade(STYLES, last, 'transform', { width: 1440 }).winner, 'a last tick hangs left wherever it sits').toBeNull()
+      last.classList.add('is-end')
+      expect(cascade(STYLES, last, 'transform', { width: 1440 }).winner?.value).toBe('translateX(-100%)')
+      const hidden = (width: number) =>
+        ticks.map((t) => cascade(STYLES, t.firstElementChild!, 'visibility', { width }).winner?.value === 'hidden')
+      expect(hidden(560)).toEqual([false, false, true, false, true, false])
+      expect(hidden(561)).toEqual([false, false, false, false, false, false])
+    } finally {
+      scale.remove()
+    }
+  })
+})
+
+describe('the owner’s decisions: two durations, two facts (WF-21)', () => {
+  it('says which timestamps the table’s "ran" is read from, and points at the inspector’s "took"', () => {
+    const t = task('t_work', 'SUCCEEDED', { created_at: iso(-600), started_at: iso(-500), completed_at: iso(-400) })
+    const { container } = oneStepCard(t, [], 'table')
+    const ran = cell(container as HTMLElement, 'work', 'ran').querySelector<HTMLElement>('.wf-cell')!
+    expect(ran.textContent).toBe('1m 40s')
+    const note = ran.getAttribute('title') ?? ''
+    expect(note, 'the note does not say it is the task’s timestamps').toMatch(/task’s latest started_at/)
+    expect(note, 'the note does not point at the inspector’s figure').toMatch(/inspector’s “took”/)
+    // A park ENDS the attempt and the next start rewrites started_at, which is
+    // why the Timeline counts earlier attempts as waiting. "and any park" was
+    // false.
+    expect(note, 'the note still claims the run includes a park').not.toMatch(/park/)
   })
 })

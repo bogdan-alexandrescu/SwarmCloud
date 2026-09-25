@@ -1,11 +1,13 @@
 import { useCallback, useMemo, useState } from 'react'
 import { loadTaskWindow, loadTenants } from './api'
 import { helpAnchor, type TopicId } from './help'
+import { HelpLinks } from './HelpCard'
 import { Id, Screen, timeAgo } from './Shell'
 import {
   TERMINAL_STATES,
   bucketStart,
   hasUsage,
+  pluralise,
   type Bucket,
   type Task,
   type TaskWindow,
@@ -36,7 +38,8 @@ function helpHref(topic: TopicId): string {
  * collapsed to three sections; the route is `#work/timeline`).
  *
  * THE ONE DESIGN RULE: bound by ROWS, label by the SPAN those rows covered.
- * The window control says "Last 500 tasks", never "Last 7 days" -- the latter
+ * The window header says "Last 500 tasks" -- or "All 170 tasks" when nothing
+ * older exists -- and never "Last 7 days": the latter
  * becomes a lie the moment the window truncates, which is exactly the class
  * of lie this platform keeps shipping. The header then reports the span the
  * rows turned out to cover, which may be six hours or three months.
@@ -139,7 +142,13 @@ function WindowBar({
   return (
     <div className="window-bar">
       <div className="wb-span">
-        <strong>Last {budget} tasks</strong>
+        {/* THE ROWS READ, NOT THE ROWS ASKED FOR. This printed the Rows
+            control's budget -- `Last 500 tasks` -- over a window that held all
+            170 of the tenant's tasks, which is a claim of truncation where
+            there was none. When nothing older exists the window IS everything,
+            and says so; when the read stopped short it is the newest N, and N
+            is what was read. */}
+        <strong>{`${w.moreExist ? 'Last' : 'All'} ${pluralise(w.tasks.length, 'task')}`}</strong>
         <span className="wb-detail">
           {spanOf(w)} · {zone}
         </span>
@@ -194,10 +203,166 @@ function WindowBar({
 }
 
 /**
- * Stacked columns, one per bucket.
+ * The start of the bucket after `ms`, in the viewer's zone -- `bucketStart`'s
+ * other half, stepped with the local calendar's own setters so a DST change
+ * moves the boundary with the clock rather than an hour off it.
+ */
+export function nextBucket(ms: number, bucket: Bucket): number {
+  const d = new Date(ms)
+  if (bucket === 'hour') d.setHours(d.getHours() + 1)
+  else if (bucket === 'day') d.setDate(d.getDate() + 1)
+  else if (bucket === 'week') d.setDate(d.getDate() + 7)
+  else d.setMonth(d.getMonth() + 1)
+  const next = bucketStart(d.toISOString(), bucket)
+  // Strictly forward, whatever a zone transition does to the floor: a step
+  // that landed back on `ms` would never terminate the walk below.
+  return next !== null && next > ms ? next : d.getTime()
+}
+
+/** One column's counts. Every field is a count of rows, so zero is measured. */
+interface Outcomes {
+  succeeded: number
+  failed: number
+  cancelled: number
+  open: number
+}
+
+/**
+ * Every bucket from the first one that holds a row to the last, empty ones
+ * included, in order.
  *
- * Terminal series bucket on `completed_at`; the submitted overlay buckets on
- * `created_at`. They are genuinely different questions and are never merged.
+ * THE X-AXIS IS TIME, SO EVERY BUCKET IS DRAWN. Only buckets that held a task
+ * used to get a column, so a four-day window grouped by hour drew nineteen
+ * columns packed side by side: an idle night and the next busy hour sat
+ * shoulder to shoulder, and the chart claimed a steady stream where there had
+ * been a gap. An hour with nothing in it is a MEASURED zero -- every row in the
+ * window was read and none landed there -- and it gets a column like any other.
+ *
+ * AND ONLY WHAT IS DRAWN MAKES A BUCKET. A `submitted` count keyed on
+ * `created_at` was built here for an overlay that was never drawn, so a task
+ * submitted on Monday and finished on Tuesday opened a Monday column with no
+ * bar in it. The series that are drawn are the three outcomes (by
+ * `completed_at`) and `still open` (by `created_at`, the only time an open task
+ * has), and those are what decide the span.
+ */
+export function outcomeBuckets(
+  tasks: readonly Task[],
+  bucket: Bucket,
+): { buckets: Array<[number, Outcomes]>; anomalies: number } {
+  const map = new Map<number, Outcomes>()
+  let anomalies = 0
+  const cell = (k: number) => {
+    let c = map.get(k)
+    if (!c) {
+      c = { succeeded: 0, failed: 0, cancelled: 0, open: 0 }
+      map.set(k, c)
+    }
+    return c
+  }
+
+  for (const t of tasks) {
+    const sub = bucketStart(t.created_at, bucket)
+    const terminal = TERMINAL_STATES.has(t.state)
+    const at = t.completed_at ? bucketStart(t.completed_at, bucket) : null
+
+    if (terminal && at === null) {
+      // A terminal task with no completed_at. Not dropped.
+      anomalies++
+      if (sub !== null) cell(sub).open++
+      continue
+    }
+    if (!terminal) {
+      if (sub !== null) cell(sub).open++
+      continue
+    }
+    const c = cell(at as number)
+    if (t.state === 'SUCCEEDED') c.succeeded++
+    else if (t.state === 'FAILED' || t.state === 'DEAD_LETTERED') c.failed++
+    else c.cancelled++
+  }
+
+  const keys = Array.from(map.keys()).sort((a, b) => a - b)
+  const first = keys[0]
+  const last = keys[keys.length - 1]
+  const buckets: Array<[number, Outcomes]> = []
+  if (first !== undefined && last !== undefined) {
+    for (let k = first; k <= last; k = nextBucket(k, bucket)) {
+      buckets.push([k, map.get(k) ?? { succeeded: 0, failed: 0, cancelled: 0, open: 0 }])
+    }
+  }
+  return { buckets, anomalies }
+}
+
+/**
+ * Up to this many columns, every column is labelled. At 390 the chart is about
+ * 330px across, so six columns sit at least 55px apart -- room for the widest
+ * label (`Sep 21`, six characters of --t-micro mono, ~43px). Past it a column
+ * can be at its 26px floor, 29px apart with the gap, and two labels side by
+ * side run into each other (`01 PM02 PM03 PM`, which is what 390 already drew
+ * before every empty hour got a column too). So past it, every other column.
+ * Every column keeps its full time in its `title` either way.
+ */
+const LABEL_ALL_UP_TO = 6
+
+const dateLabel = (ms: number) =>
+  new Date(ms).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })
+
+/**
+ * Which columns of an HOURLY axis are the first of their day, in the viewer's
+ * zone: the chart's first column, and every one whose date differs from the
+ * column before it. Every other grouping is a day or longer, so no column of it
+ * starts a day partway through the axis.
+ */
+export function dayStarts(keys: readonly number[], bucket: Bucket): boolean[] {
+  const dayOf = (ms: number) => new Date(ms).toDateString()
+  return keys.map((k, i) => {
+    if (bucket !== 'hour') return false
+    const before = keys[i - 1]
+    return before === undefined || dayOf(before) !== dayOf(k)
+  })
+}
+
+/**
+ * The label under each column, or `''` for a column that carries none.
+ *
+ * AN HOUR IS NOT A TIME WITHOUT ITS DAY. `08 PM` appeared three times across a
+ * four-day window with nothing saying which evening each was. So in hour
+ * buckets the first column of every day carries the DATE instead of its hour
+ * -- when the columns are contiguous that column is midnight, so nothing is
+ * lost -- and it is always labelled, whatever the thinning below would have
+ * done. The column before a day's first is left bare when thinning, so the date
+ * never has a neighbour's label pressed against it.
+ */
+export function axisLabels(keys: readonly number[], bucket: Bucket): string[] {
+  const stride = bucket === 'month' || keys.length <= LABEL_ALL_UP_TO ? 1 : 2
+  const starts = dayStarts(keys, bucket)
+  const startsDay = (i: number): boolean => starts[i] === true
+  const out = keys.map(() => '')
+  let labelled = -Infinity
+  keys.forEach((k, i) => {
+    if (startsDay(i)) {
+      // The chart's first column counts as a day's first -- unless the very
+      // next column starts the next day, when two dates would sit side by
+      // side. The later one is the boundary, so it is the one that is kept.
+      if (i === 0 && stride > 1 && startsDay(1)) return
+      out[i] = dateLabel(k)
+      labelled = i
+      return
+    }
+    if (i - labelled < stride) return
+    if (stride > 1 && startsDay(i + 1)) return
+    out[i] = labelFor(k, bucket)
+    labelled = i
+  })
+  return out
+}
+
+/**
+ * Stacked columns, one per bucket, every bucket from the first to the last.
+ *
+ * The three outcomes bucket on `completed_at`; `still open` buckets on
+ * `created_at`, because an open task has no other time. The legend says which
+ * series is on which basis.
  *
  * `completed_at` is safe to bucket on because EVERY writer that moves a task
  * terminal sets it -- worker, API cancel, scheduler cancel, reconciler
@@ -205,48 +370,12 @@ function WindowBar({
  * is counted in "still open" AND surfaced, rather than dropped.
  */
 function Chart({ window: w, bucket }: { window: TaskWindow; bucket: Bucket }) {
-  const { buckets, anomalies } = useMemo(() => {
-    const map = new Map<
-      number,
-      { succeeded: number; failed: number; cancelled: number; open: number; submitted: number }
-    >()
-    let anomalies = 0
-    const cell = (k: number) => {
-      let c = map.get(k)
-      if (!c) {
-        c = { succeeded: 0, failed: 0, cancelled: 0, open: 0, submitted: 0 }
-        map.set(k, c)
-      }
-      return c
-    }
-
-    for (const t of w.tasks) {
-      const sub = bucketStart(t.created_at, bucket)
-      if (sub !== null) cell(sub).submitted++
-
-      const terminal = TERMINAL_STATES.has(t.state)
-      const at = t.completed_at ? bucketStart(t.completed_at, bucket) : null
-
-      if (terminal && at === null) {
-        // A terminal task with no completed_at. Not dropped.
-        anomalies++
-        if (sub !== null) cell(sub).open++
-        continue
-      }
-      if (!terminal) {
-        if (sub !== null) cell(sub).open++
-        continue
-      }
-      const c = cell(at as number)
-      if (t.state === 'SUCCEEDED') c.succeeded++
-      else if (t.state === 'FAILED' || t.state === 'DEAD_LETTERED') c.failed++
-      else c.cancelled++
-    }
-    return {
-      buckets: Array.from(map.entries()).sort(([a], [b]) => a - b),
-      anomalies,
-    }
-  }, [w.tasks, bucket])
+  const { buckets, anomalies } = useMemo(() => outcomeBuckets(w.tasks, bucket), [w.tasks, bucket])
+  const labels = useMemo(() => axisLabels(buckets.map(([k]) => k), bucket), [buckets, bucket])
+  // THE DAY BOUNDARY, DRAWN as well as labelled: a rule down the first column
+  // of each day after the first, so a four-day hourly axis reads as four days
+  // even where thinning left a label out.
+  const boundaries = useMemo(() => dayStarts(buckets.map(([k]) => k), bucket), [buckets, bucket])
 
   const max = Math.max(1, ...buckets.map(([, c]) => c.succeeded + c.failed + c.cancelled + c.open))
 
@@ -270,32 +399,45 @@ function Chart({ window: w, bucket }: { window: TaskWindow; bucket: Bucket }) {
         </p>
       )}
       <div className="chart" role="img" aria-label={`Task outcomes by ${bucket}`}>
-        {buckets.map(([k, c]) => {
+        {buckets.map(([k, c], i) => {
           const total = c.succeeded + c.failed + c.cancelled + c.open
           return (
-            <div className="col" key={k} title={`${new Date(k).toLocaleString()}\n${total} tasks`}>
+            // An empty bucket is a column with four zero-height segments and a
+            // `0 tasks` title: a measured zero, drawn where it happened.
+            <div
+              className={i > 0 && boundaries[i] === true ? 'col is-day-start' : 'col'}
+              key={k}
+              data-total={total}
+              title={`${new Date(k).toLocaleString()}\n${total} tasks`}
+            >
               <div className="stackcol">
                 <i className="open" style={{ height: `${(c.open / max) * 100}%` }} />
                 <i className="cancelled" style={{ height: `${(c.cancelled / max) * 100}%` }} />
                 <i className="failed" style={{ height: `${(c.failed / max) * 100}%` }} />
                 <i className="succeeded" style={{ height: `${(c.succeeded / max) * 100}%` }} />
               </div>
-              <span className="col-label">{labelFor(k, bucket)}</span>
+              {/* A no-break space where a label is thinned out, so every
+                  column's label line is the same height and the bars stay on
+                  one baseline. */}
+              <span className="col-label">{labels[i] || ' '}</span>
             </div>
           )
         })}
       </div>
-      {/* THE LEGEND IS A LEGEND AGAIN. It carried a trailing clause explaining
-          that the stacks bucket on `completed_at` and that submission time is
-          a different question -- which is true, and is the axis's job to say.
-          It is the axis's job now: the panel title names the bucket and the
-          legend's own key says `by completed_at`, fused to the thing it
-          qualifies rather than trailing it as a sentence. */}
+      {/* THE LEGEND IS A LEGEND AGAIN, AND EACH BASIS SITS BESIDE ITS SERIES.
+          The key used to end in one `by completed_at` after all four swatches,
+          which put `still open` under it too -- and an open task has no
+          `completed_at`; it is bucketed by `created_at`. Two series, two
+          bases, each fused to the swatches it qualifies. */}
       <p className="chart-legend">
         <span className="k succeeded" /> succeeded <span className="k failed" /> failed
-        <span className="k cancelled" /> cancelled <span className="k open" /> still open
+        <span className="k cancelled" /> cancelled
         <span className="cl-basis">
           by <code>completed_at</code>
+        </span>
+        <span className="k open" /> still open
+        <span className="cl-basis">
+          by <code>created_at</code>
         </span>
       </p>
     </section>
@@ -448,7 +590,12 @@ function People({ window: w }: { window: TaskWindow }) {
   return (
     <section className="section">
       <h2>People</h2>
-      {/* `is-stacked` — F6 OF `docs/audits/2026-09-23/overflow-inventory.md`,
+      {/* `is-scroll` NOW (CH-13, design-system.md §7.3): six columns compared
+          across rows is a data table, so below 900px it scrolls with the
+          engineer column held in view; only records of four columns or fewer
+          stack. What follows is why it was `is-stacked`, and the problem it
+          named is the one the held column answers.
+          F6 OF `docs/audits/2026-09-23/overflow-inventory.md`,
           which measured this exact table at 390pt: `clientWidth: 358` against a
           `scrollWidth` of 512, so 30% of it was behind an `overflow-x: auto`
           that paints no scrollbar on this platform. The three columns hiding
@@ -459,7 +606,7 @@ function People({ window: w }: { window: TaskWindow }) {
           supplies that key, as an attribute so the rendered-word budgets are
           unchanged, and the explicit `role`s keep the ARIA table that changing
           `display` would otherwise drop. */}
-      <div className="table-wrap is-stacked">
+      <div className="table-wrap is-scroll">
         <table className="pools" role="table">
           <thead role="rowgroup">
             <tr role="row">
@@ -495,14 +642,31 @@ function People({ window: w }: { window: TaskWindow }) {
           rather than zero -- the first is an argument and belongs in
           `#help/tenant-scope`, the second is the invariant and is now the
           mark, which is attached to the table instead of sitting under it. */}
-      <p
-        className="ctl-panel-note"
-        aria-label={`Grouped client-side over the ${w.tasks.length} rows in the window. There is no server-side filter or index on submitted_by, so an engineer whose work fell outside the window is absent here rather than shown as zero.`}
-      >
-        <i className="ctl-mark is-partial">partial</i>
-        client-side over {w.tasks.length} rows in the window
-        <a href={helpHref(SCOPE_HELP)}>Why &rarr;</a>
-      </p>
+      {/* PARTIAL ONLY WHEN IT IS. The mark said `partial` on every visit,
+          including over a window that held every task the tenant has -- and a
+          mark that is always there stops being read on the day it is true.
+          `moreExist` is the one fact that makes this table a subset: older
+          tasks were not read, so an engineer whose work is all older is absent
+          rather than zero. Without it the table is the whole tenant, still
+          grouped client-side, which is what the line then says. */}
+      {w.moreExist ? (
+        <p
+          className="ctl-panel-note"
+          aria-label={`Grouped client-side over the ${w.tasks.length} rows in the window. There is no server-side filter or index on submitted_by, so an engineer whose work fell outside the window is absent here rather than shown as zero.`}
+        >
+          <i className="ctl-mark is-partial">partial</i>
+          client-side over {w.tasks.length} rows in the window
+          <a href={helpHref(SCOPE_HELP)}>Why &rarr;</a>
+        </p>
+      ) : (
+        <p
+          className="ctl-panel-note"
+          aria-label={`Grouped client-side over all ${pluralise(w.tasks.length, 'task')} this tenant has. The window holds every one, so nobody's work is missing from this table.`}
+        >
+          client-side over all {pluralise(w.tasks.length, 'task')}
+          <a href={helpHref(SCOPE_HELP)}>Why &rarr;</a>
+        </p>
+      )}
     </section>
   )
 }
@@ -529,57 +693,65 @@ export function TenantsScreen() {
     >
       {(d) => (
         <section className="section">
-          {/* `is-stacked`, for the same reason as the People table above and
-              more of it: eight columns is the widest table in this file, so at
-              390pt everything from `Max active` rightwards — the two ceilings,
-              the credentials, the service account and the enabled/disabled
-              state — sat behind a scrollbar this platform does not paint. A
-              tenant row whose visible part ends at `Principal` says nothing
-              about whether that tenant can run anything at all. */}
-          <div className="table-wrap is-stacked">
+          {/* `is-scroll` (CH-13, design-system.md §7.3), for the same reason
+              as the People table above: nine columns compared down the
+              roster is a data table, so below 900px it scrolls sideways with
+              the tenant column held in view; only records of four columns or
+              fewer stack. It was `is-stacked`, because at 390pt everything
+              from `Max active` rightwards sat behind a scrollbar this
+              platform does not paint, and a tenant row whose visible part
+              ends at `Principal` says nothing about whether that tenant can
+              run anything at all. The held column is what answers that now:
+              every value stays beside the tenant it belongs to.
+
+              STATUS IS THE SECOND COLUMN, beside the name (AH-11). It was the
+              last, and at 1440 it sat past the panel edge behind the same
+              unpainted scrollbar -- pushed there by two identity columns of
+              55-65 characters in `nowrap` cells. Whether a tenant can run
+              anything is the first thing this roster is read for, so it
+              cannot be the column that falls off, and at 390 it is the first
+              column past the held name. The identities are shortened on the
+              wide table instead (`.ten-ident`, styles.css). */}
+          <div className="table-wrap is-scroll">
             <table className="pools" role="table">
               <thead role="rowgroup">
                 <tr role="row">
-                  <th role="columnheader" scope="col">Tenant</th>
-                  <th role="columnheader" scope="col">Kind</th>
-                  <th role="columnheader" scope="col">Principal</th>
+                  <th role="columnheader" scope="col" rowSpan={2}>Tenant</th>
+                  <th role="columnheader" scope="col" rowSpan={2}>Status</th>
+                  <th role="columnheader" scope="col" rowSpan={2}>Kind</th>
+                  <th role="columnheader" scope="col" rowSpan={2}>Principal</th>
+                  {/* THE CEILING ADMISSION ACTUALLY APPLIES (AH-12). The two
+                      registry values were printed bare, and the figure that
+                      binds -- the smaller, which every writer of the tenant
+                      pool writes as its hard limit -- was nowhere. It is the
+                      column; the two values it comes from sit under
+                      `Configured`.
+
+                      THE HEAD IS ITS LABEL AND NOTHING ELSE. The decided help
+                      link is under the table, not a `?` in here: a glyph in a
+                      `<th>` publishes its HelpNote as part of the column's
+                      name, which a screen reader then reads on every cell, and
+                      while this table was stacked below 900px §B6.3 hid this
+                      row while leaving it in the tab order. It scrolls now
+                      (CH-13), so the row shows, but the first reason stands. */}
+                  <th role="columnheader" scope="col" rowSpan={2} className="n">
+                    Enforced
+                  </th>
+                  <th role="columnheader" scope="colgroup" colSpan={2} className="n">
+                    Configured
+                  </th>
+                  <th role="columnheader" scope="col" rowSpan={2}>Credentials</th>
+                  <th role="columnheader" scope="col" rowSpan={2}>Identity</th>
+                </tr>
+                <tr role="row">
                   <th role="columnheader" scope="col" className="n">Max active</th>
                   <th role="columnheader" scope="col" className="n">Units</th>
-                  <th role="columnheader" scope="col">Credentials</th>
-                  <th role="columnheader" scope="col">Identity</th>
-                  <th role="columnheader" scope="col">Status</th>
                 </tr>
               </thead>
               <tbody role="rowgroup">
                 {d.tenants.map((t) => (
                   <tr role="row" key={t.tenant_id} className={t.enabled === false ? 'paused' : undefined}>
                     <th role="rowheader" scope="row">{t.tenant_id}</th>
-                    <td role="cell" data-label="Kind">{t.kind}</td>
-                    <td role="cell" data-label="Principal" className="mono">{t.principal}</td>
-                    <td role="cell" data-label="Max active" className="n">{t.max_active}</td>
-                    <td role="cell" data-label="Units" className="n">{t.capacity_units}</td>
-                    <td role="cell" data-label="Credentials">
-                      {t.credentials.length > 0 ? (
-                        t.credentials.map((c) => (
-                          // These are Secret Manager NAMES and `.tag`
-                          // uppercases. An uppercased secret name is one
-                          // nobody can look up, so the value is wrapped:
-                          // `.id` beats the ancestor by inheritance.
-                          <span className="tag" key={c}>
-                            <Id>{c}</Id>
-                          </span>
-                        ))
-                      ) : (
-                        <span className="tag capped">none registered</span>
-                      )}
-                    </td>
-                    <td role="cell" data-label="Identity" className="mono">
-                      {/* null means NO IDENTITY, not an empty string. A blank
-                          cell here reads as fine and it is the opposite. */}
-                      {t.service_account ?? (
-                        <span className="tag full">no service account</span>
-                      )}
-                    </td>
                     <td role="cell" data-label="Status">
                       {t.enabled === false ? (
                         <span className="tag paused">disabled</span>
@@ -587,28 +759,109 @@ export function TenantsScreen() {
                         <span className="tag ok">enabled</span>
                       )}
                     </td>
+                    <td role="cell" data-label="Kind">{t.kind}</td>
+                    <td role="cell" data-label="Principal" className="mono">
+                      <span className="ten-ident" title={t.principal}>
+                        {t.principal}
+                      </span>
+                    </td>
+                    <td role="cell" data-label="Enforced" className="n">
+                      <Enforced tenant={t} />
+                    </td>
+                    <td role="cell" data-label="Max active" className="n">{t.max_active}</td>
+                    <td role="cell" data-label="Units" className="n">{t.capacity_units}</td>
+                    <td role="cell" data-label="Credentials">
+                      {t.credentials.length > 0 ? (
+                        // `.tags`, the wrapper every other run of tags in this
+                        // console sits in: it spaces them. Bare, `anthropic`
+                        // and `openai` rendered touching, as one word. They
+                        // stay `.tag` and not `.ctl-chip` -- a chip is a state,
+                        // and a credential name is metadata.
+                        <span className="tags">
+                          {t.credentials.map((c) => (
+                            // These are Secret Manager NAMES and `.tag`
+                            // uppercases. An uppercased secret name is one
+                            // nobody can look up, so the value is wrapped:
+                            // `.id` beats the ancestor by inheritance.
+                            <span className="tag" key={c}>
+                              <Id>{c}</Id>
+                            </span>
+                          ))}
+                        </span>
+                      ) : (
+                        <span className="tag capped">none registered</span>
+                      )}
+                    </td>
+                    <td role="cell" data-label="Identity" className="mono">
+                      {/* null means NO IDENTITY, not an empty string. A blank
+                          cell here reads as fine and it is the opposite. */}
+                      {typeof t.service_account === 'string' ? (
+                        <span className="ten-ident" title={t.service_account}>
+                          {t.service_account}
+                        </span>
+                      ) : (
+                        <span className="tag full">no service account</span>
+                      )}
+                    </td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
-          {/* WHY A COLUMN IS ABSENT IS STILL STATED, IN ONE LINE. A table with
-              a column quietly missing is a table a reader completes from
-              memory, so this cannot simply be deleted -- but the 56-word
-              account of the 422, the missing cost-attribution source and the
-              permanent null is an argument, and arguments live in `docs/`.
-              What stays is the fact: there is no budget column, and the reason
-              is one word long. */}
+          {/* WHY A COLUMN IS ABSENT IS STILL STATED, IN ONE LINE, IN THE
+              READER'S WORDS (AH-21). A table with a column quietly missing is
+              a table a reader completes from memory, so this cannot simply be
+              deleted. It printed the API's field name and a rationale under a
+              `not measured` mark -- but a budget is a setting, not a
+              measurement, and this line sits in no figure slot, so it carries
+              no mark (as AG-5's plain facts do not). The account of the 422
+              and of the missing cost-attribution source is one paragraph of
+              the Tenants fields topic, behind `Why →`.
+
+              AND IT IS IN PLAIN INK (`.ten-budget`). AG-5 defines a plain
+              fact as no mark AND NO DIMMING; `.ctl-panel-note` is the faint
+              tone of a qualifier under a figure, and this line qualifies no
+              figure -- it is the fact that a column is absent. */}
           <p
-            className="ctl-panel-note"
-            aria-label="monthly_budget_usd is not shown. PUT /v1/admin/tenants/{id}/limits rejects it with a 422 because there is no cost attribution source, so it is null for every tenant; rendering it would render a permanent blank that reads as no budget set."
+            className="ctl-panel-note ten-budget"
+            aria-label="No budget column, and no budget can be set: the only route that could set a budget refuses it, so none is set for any tenant, and the column is left out rather than drawn empty."
           >
-            <i className="ctl-mark is-absent">not measured</i>
-            no <code>monthly_budget_usd</code> column · no cost attribution
-            source
+            no budget column · no budget can be set
+            <a href={helpHref(TENANT_HELP)}>Why &rarr;</a>
           </p>
+          {/* THE HELP LINK AH-12 DECIDED FOR THE ENFORCED COLUMN: the footer
+              index every migrated panel carries (HelpCard.tsx, route 3 of 4),
+              drawn at every width and costing no glyph from the ration. It is
+              a separate line from the note's `Why →` because the two answer
+              different questions -- what the columns mean, and why one is
+              missing -- that happen to live in one topic. */}
+          <HelpLinks topics={TENANT_TOPICS} label="Reading this table:" />
         </section>
       )}
     </Screen>
   )
+}
+
+/** Where the Enforced column, and the budget the table leaves out, are explained. */
+const TENANT_HELP: TopicId = 'tenant-fields'
+
+/** The Tenants table's help link (AH-12), as a footer index. */
+const TENANT_TOPICS: readonly TopicId[] = [TENANT_HELP]
+
+/**
+ * THE CEILING ADMISSION APPLIES TO A TENANT (AH-12): the smaller of its two
+ * configured values. Both cap the same count -- the units its running work
+ * holds, where every task costs at least one -- so the smaller binds, and it
+ * is what every writer of the tenant pool writes as its hard limit:
+ * `set_tenant_limits` and `ensure_tenant` (swarm_api/store.py),
+ * scripts/register-tenant.sh, and terraform/infra/locals.tf `pool_tenants`.
+ *
+ * A value that is not a finite number is not a limit anyone can read, so the
+ * cell is the em dash rather than `NaN` or a guess from the other value.
+ */
+function Enforced({ tenant: t }: { tenant: { max_active: number; capacity_units: number } }) {
+  if (!Number.isFinite(t.max_active) || !Number.isFinite(t.capacity_units)) {
+    return <i className="ctl-em">—</i>
+  }
+  return <>{Math.min(t.max_active, t.capacity_units)}</>
 }

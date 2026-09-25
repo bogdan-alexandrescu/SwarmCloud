@@ -40,6 +40,8 @@ const api = vi.hoisted(() => ({
   loadCapacity: vi.fn(),
   setPoolLimit: vi.fn(),
   loadStats: vi.fn(),
+  // Platform counts reads the session to price its first run (AH-9).
+  loadMe: vi.fn(),
   loadAdminQuota: vi.fn(),
 }))
 vi.mock('../api', () => api)
@@ -158,8 +160,8 @@ function quota(): QuotaState[] {
 
 function probes(): ProbeRecord[] {
   return [
-    { path: '/v1/capacity', lastStatus: 200, lastKind: null, lastLatencyMs: 31, lastAttemptAt: Date.now(), lastSuccessAt: Date.now() - 4000 },
-    { path: '/v1/admin/quota', lastStatus: 403, lastKind: 'admin_required', lastLatencyMs: 12, lastAttemptAt: Date.now(), lastSuccessAt: null },
+    { path: '/v1/capacity', lastUrl: '/v1/capacity', lastStatus: 200, lastKind: null, lastLatencyMs: 31, lastAttemptAt: Date.now(), lastSuccessAt: Date.now() - 4000 },
+    { path: '/v1/admin/quota', lastUrl: '/v1/admin/quota', lastStatus: 403, lastKind: 'admin_required', lastLatencyMs: 12, lastAttemptAt: Date.now(), lastSuccessAt: null },
   ]
 }
 
@@ -194,6 +196,10 @@ describe('the operator screens carry data, not prose', () => {
 
   it('Platform counts stays inside its word budget', async () => {
     api.loadStats.mockResolvedValue({ status: 'ok', data: stats(), fetchedAt: Date.now() })
+    api.loadMe.mockResolvedValue({
+      status: 'error',
+      error: { kind: 'upstream_degraded', httpStatus: 503, code: null, message: 'no session' },
+    })
     const { container } = render(<PlatformCountsScreen />)
     screen.getByRole('button', { name: /count/i }).click()
     await waitFor(() => expect(container.querySelector('.ctl-util, .split-row')).not.toBeNull())

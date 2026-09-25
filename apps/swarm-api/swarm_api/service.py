@@ -8,11 +8,24 @@ state that costs compute. SUBMITTED -> QUEUED -> READY is walked through
 only the end state is persisted: three writes per task would triple the cost of
 a 100-task batch to prove something the type system already knows.
 
-SECOND, a task whose runner profile needs a provider the tenant has not
-registered a key for is PARKED as CREDENTIAL_MISSING at submission. It is not
-rejected -- the tenant may register the key a minute later and the reconciler
-re-readies it -- and it is not admitted, because admitting it would start a
-container that can only fail. Parked costs nothing (invariant 1).
+SECOND, the API does NOT decide whether the tenant has a credential for the
+task's runner profile. It used to: a task whose tenant had no key for the
+profile's provider was PARKED as CREDENTIAL_MISSING here, at submission. That
+was a copy of a rule that also lived in the scheduler's admission and in its
+Cloud Run dispatcher, and the copies disagreed about the account pool -- a
+tenant with no key of its own can run on an account it owns or is lent, which
+neither this copy nor admission's knew (#169). The rule now has one statement,
+`scheduler/credentials.py`, and this service cannot import it: its image does
+not carry the scheduler.
+
+So a task with no dependencies is written READY, and ADMISSION parks it on
+CREDENTIAL_MISSING if the tenant can run it on neither a key nor a pool
+account -- before any lease, so nothing is reserved and no container starts,
+which is what the park here was for. READY costs nothing (invariant 1), and
+the submission's wake message means that drain is seconds away. The caller
+sees READY in the response and PARKED on its next read. It is still not
+rejected: the tenant may register a key, or be lent an account, a minute
+later, and the scheduler's credential sweep re-readies it.
 """
 
 from __future__ import annotations
@@ -37,6 +50,11 @@ from swarm_common.states import ParkReason, TaskState, assert_transition
 from .auth import AuthContext
 from .codec import quota_to_api
 from .errors import Forbidden, ValidationFailed
+from .expected_outputs import (
+    expected_outputs_by_step,
+    record_expected_outputs,
+    reject_caller_expected_outputs,
+)
 from .metrics import ApiMetrics
 from .runnerinputs import input_contract
 from .schemas import TaskCreate, WorkflowCreate
@@ -195,6 +213,7 @@ class SubmissionService:
         # service adds is two short strings, plus -- on an integrator only -- one
         # task id per upstream step, so `max_workflow_steps` is its ceiling.
         reject_reserved_metadata(spec.metadata)
+        reject_caller_expected_outputs(spec.metadata)
         validate_input_size(spec.metadata, 16 * 1024, label="metadata")
         resource_class = validate_resource_class_override(profile, resource_class_override)
         timeout = validate_timeout(profile, spec.timeout_seconds)
@@ -215,11 +234,11 @@ class SubmissionService:
             assert_transition(TaskState.QUEUED, TaskState.PARKED)
             state = TaskState.PARKED
             park_reason = ParkReason.DEPENDENCY_INCOMPLETE
-        elif profile.provider and profile.provider not in tenant.credentials:
-            assert_transition(TaskState.QUEUED, TaskState.PARKED)
-            state = TaskState.PARKED
-            park_reason = ParkReason.CREDENTIAL_MISSING
         else:
+            # NOT parked on a missing credential here. Whether this tenant can
+            # run this profile -- on a key of its own or on a pool account it
+            # may use -- is admission's question, asked once
+            # (scheduler/credentials.py). See the module docstring.
             assert_transition(TaskState.QUEUED, TaskState.READY)
             state = TaskState.READY
 
@@ -319,6 +338,11 @@ class SubmissionService:
                 # After validate_dag, which has already rejected the cycles and
                 # dangling dependencies this would otherwise have to reason about.
                 integrator_step_id = resolve_integrator_step(step_specs)
+            # The WORKFLOW's own metadata is copied onto every step's task, so
+            # `_build_task` would refuse a caller's `expected_outputs` there
+            # too -- but mid-loop, outside this try, uncounted. Refused here,
+            # before a single task is built (#149).
+            reject_caller_expected_outputs(spec.metadata)
         except ValidationFailed as exc:
             self._metrics.tasks_rejected.labels(reason=exc.code).inc()
             raise
@@ -398,6 +422,13 @@ class SubmissionService:
             on_step_failure=spec.on_step_failure,
             priority=spec.priority,
         )
+        # Each UPSTREAM step's task records the files its dependants stage from
+        # it, so the worker can tell that agent to write them where they are
+        # uploaded (#149). Set before the store call: it is part of the write
+        # that creates the task document, never a second update.
+        expected = expected_outputs_by_step((s.step_id, s.input_from) for s in spec.steps)
+        for task in tasks:
+            record_expected_outputs(task.metadata, expected.get(task.step_id or ""))
         self._store.create_workflow(workflow, tasks)
         self._metrics.workflows_submitted.labels(tenant=tenant.tenant_id).inc()
         self._wake("workflow_submitted", tenant_id=tenant.tenant_id, workflow_id=workflow_id)
@@ -534,6 +565,17 @@ class SubmissionService:
                 "resource_class": profile.resource_class,
                 "backend": backend,
                 "provider": profile.provider,
+                # WHETHER IT MAY BE DISPATCHED AT ALL, read off the frozen
+                # catalogue exactly as /v1/runtimes serves it. Without these
+                # two keys every client check of `available` on this route was
+                # dead code, and a disabled profile (codex) was drawn with
+                # headroom on Pools and Profile headroom and offered on Submit
+                # (visual QA 2026-09-25, CP-3). The admission block below is
+                # still served for a disabled profile: it is a true statement
+                # about the pools, and the screens decide not to draw it as an
+                # offer.
+                "available": profile.available,
+                "disabled_reason": profile.disabled_reason,
                 "units": units,
                 "pools": required,
                 # What this profile's RUNNER refuses to start without, so a

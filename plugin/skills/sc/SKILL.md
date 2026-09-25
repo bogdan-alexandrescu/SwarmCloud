@@ -107,8 +107,10 @@ pools that did not object.
 
 ## Reading accounts
 
-Columns are `cs status`'s: `ACCOUNT | 5H | 7D | CLEARS | STATE`. `CLEARS` is
-when the **binding** window — the fullest one — rolls over.
+Columns are `cs status`'s: `ACCOUNT | 5H USED | 7D USED | CLEARS | STATE`. Every
+window percentage is **% used**, on every surface — the console and `sc` share
+one polarity. `CLEARS` is when the **binding** window — the fullest one — rolls
+over.
 
 States: `available`, `paused`, `draining` (takes no new agents), `reauth needed`
 (the credential is dead; only the quota-broker can fix it).

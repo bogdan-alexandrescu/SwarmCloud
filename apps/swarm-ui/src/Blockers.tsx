@@ -20,7 +20,7 @@ import {
   ceilingCopy,
   headroomFor,
   needsAPerson,
-  poolLabel,
+  poolLabelAmong,
   reasonCopy,
   type Capacity,
   type Ceiling,
@@ -29,6 +29,34 @@ import {
   type ProfileBlocker,
   type RunnerProfile,
 } from './types'
+
+/** How a pool is named on screen. See `poolLabelAmong`. */
+type Label = (pool: string) => string
+
+/**
+ * Every pool name this panel can print for one profile, so a label is decided
+ * against all of them at once (CP-15). Printed separately, `resource:browser`
+ * and `runner:browser` were both `browser`: two `Lift browser` rows, and
+ * `browser and browser still binds`.
+ */
+function printed(h: Headroom): string[] {
+  return [
+    ...h.blockers.map((b) => b.pool),
+    ...h.counterfactual.flatMap((c) => [c.pool, ...c.next_binding]),
+    ...h.unread,
+    ...h.missing,
+  ]
+}
+
+/** Every pool named against `among`, the set the labels are read together in. */
+function labelsAmong(among: readonly string[]): Label {
+  return (pool) => poolLabelAmong(pool, among)
+}
+
+/** The default labeller for a panel drawn on its own, outside a profile card. */
+function labelsFor(h: Headroom): Label {
+  return labelsAmong(printed(h))
+}
 
 /** The number, or an em dash with the reason there is no number. */
 export function headroomFigure(h: Headroom): { text: string; title: string } {
@@ -48,7 +76,7 @@ export function headroomFigure(h: Headroom): { text: string; title: string } {
  * nobody read may still be refusing. So the list is never silently shortened
  * -- what was measured stays on screen, under this.
  */
-export function IncompleteNote({ h }: { h: Headroom }) {
+export function IncompleteNote({ h, label = labelsFor(h) }: { h: Headroom; label?: Label }) {
   if (h.complete) return null
   return (
     <p className="warn-text" role="status">
@@ -56,7 +84,7 @@ export function IncompleteNote({ h }: { h: Headroom }) {
       {h.unread.length > 0 ? (
         <>
           {h.unread.length} pool{h.unread.length === 1 ? '' : 's'} could not be read
-          ({h.unread.map(poolLabel).join(', ')}), and any of them may be refusing
+          ({h.unread.map(label).join(', ')}), and any of them may be refusing
           this profile as well. Everything below was measured; it is not the
           whole list, and the count is withheld rather than guessed.
         </>
@@ -126,7 +154,7 @@ export function ceilingFigure(blocker: ProfileBlocker): string {
   return ceiling === 'paused' ? held : `limit 0 · ${held}`
 }
 
-function BlockerRow({ blocker }: { blocker: ProfileBlocker }) {
+function BlockerRow({ blocker, label }: { blocker: ProfileBlocker; label: Label }) {
   // A pause and a full pool both stop everything and have OPPOSITE remedies:
   // resume it, versus wait or raise it. A pause is told apart by the reason
   // the server sent -- a paused pool can read 0 of 8 in use and still admit
@@ -142,7 +170,7 @@ function BlockerRow({ blocker }: { blocker: ProfileBlocker }) {
           <CeilingTag blocker={blocker} />
         </span>
         <code className="blocker-pool" title={blocker.pool}>
-          {poolLabel(blocker.pool)}
+          {label(blocker.pool)}
         </code>
         <strong className="blocker-reason">{blocker.reason}</strong>
         {/* The numbers that made it fail, on the entry that failed. */}
@@ -165,9 +193,11 @@ function BlockerRow({ blocker }: { blocker: ProfileBlocker }) {
 export function BlockerList({
   h,
   groups,
+  label = labelsFor(h),
 }: {
   h: Headroom
   groups: Record<string, string[]> | undefined
+  label?: Label
 }) {
   const needsAction = h.blockers.filter((b) => blockerGroup(b, groups) === 'needs_action')
   const noRoom = h.blockers.filter((b) => blockerGroup(b, groups) === 'no_room')
@@ -193,7 +223,7 @@ export function BlockerList({
           </h3>
           <ul className="blocker-list">
             {needsAction.map((b) => (
-              <BlockerRow key={b.pool} blocker={b} />
+              <BlockerRow key={b.pool} blocker={b} label={label} />
             ))}
           </ul>
         </div>
@@ -206,7 +236,7 @@ export function BlockerList({
           </h3>
           <ul className="blocker-list">
             {noRoom.map((b) => (
-              <BlockerRow key={b.pool} blocker={b} />
+              <BlockerRow key={b.pool} blocker={b} label={label} />
             ))}
           </ul>
         </div>
@@ -221,7 +251,7 @@ export function BlockerList({
           </h3>
           <ul className="blocker-list">
             {ungrouped.map((b) => (
-              <BlockerRow key={b.pool} blocker={b} />
+              <BlockerRow key={b.pool} blocker={b} label={label} />
             ))}
           </ul>
         </div>
@@ -230,7 +260,7 @@ export function BlockerList({
   )
 }
 
-function counterfactualText(c: Counterfactual): string {
+function counterfactualText(c: Counterfactual, label: Label): string {
   if (c.headroom_after === null) {
     // Nothing else configured would have bound. Not a number, so not phrased
     // as one.
@@ -240,15 +270,36 @@ function counterfactualText(c: Counterfactual): string {
   if (c.delta > 0) {
     const next =
       c.next_binding.length > 0
-        ? ` — then ${c.next_binding.map(poolLabel).join(' and ')} would have bound`
+        ? ` — then ${c.next_binding.map(label).join(' and ')} would have bound`
         : ''
     return `${c.delta} more would have started${next}`
   }
+  // THE VERB AGREES WITH ITS SUBJECT (CP-15). Two pools still in the way
+  // "still bind"; it read "eng and anthropic still binds" for as long as
+  // `next_binding` has been a list.
   const still =
     c.next_binding.length > 0
-      ? `${c.next_binding.map(poolLabel).join(' and ')} still binds`
+      ? `${c.next_binding.map(label).join(' and ')} still ${c.next_binding.length === 1 ? 'binds' : 'bind'}`
       : 'something else still binds'
   return `nothing would have changed — ${still}`
+}
+
+/**
+ * Which KIND of answer a counterfactual row is, as the row's modifier (CP-13).
+ *
+ * `is-pointless` -- a measured +0: lifting this ceiling buys nothing, which is
+ * the valuable half and is dimmed rather than hidden.
+ * `is-unmeasured` -- a delta nobody could compute (`headroom_after` known,
+ * `delta` null because the current figure is not). It was drawn in the
+ * result's green beside "the change could not be measured", which is a
+ * verdict colour on a sentence that says there is no verdict.
+ * No modifier -- a measured change, including "nothing else would have been
+ * left to cap it" (`headroom_after` null), which is an answer, not a gap.
+ */
+function counterfactualKind(c: Counterfactual): string {
+  if (c.delta === 0) return 'cf-row is-pointless'
+  if (c.delta === null && c.headroom_after !== null) return 'cf-row is-unmeasured'
+  return 'cf-row'
 }
 
 /**
@@ -277,9 +328,11 @@ function counterfactualText(c: Counterfactual): string {
 export function Counterfactuals({
   h,
   generatedAt,
+  label = labelsFor(h),
 }: {
   h: Headroom
   generatedAt: string
+  label?: Label
 }) {
   if (h.counterfactual.length === 0) {
     if (!h.complete) {
@@ -298,14 +351,13 @@ export function Counterfactuals({
       <h3>If one ceiling were lifted</h3>
       <ul className="cf-list">
         {h.counterfactual.map((c) => {
-          const none = c.delta === 0
           return (
-            <li key={c.pool} className={none ? 'cf-row is-pointless' : 'cf-row'}>
+            <li key={c.pool} className={counterfactualKind(c)}>
               <span className="cf-action">
                 {c.action === 'resume' ? 'Resume' : 'Lift'}{' '}
-                <code title={c.pool}>{poolLabel(c.pool)}</code>
+                <code title={c.pool}>{label(c.pool)}</code>
               </span>
-              <span className="cf-effect">{counterfactualText(c)}</span>
+              <span className="cf-effect">{counterfactualText(c, label)}</span>
             </li>
           )
         })}
@@ -344,11 +396,15 @@ export function ProfileAdmissionPanel({
   capacity: Capacity
 }) {
   const h = headroomFor(profile)
+  // ONE LABELLER FOR THE WHOLE CARD: the profile's own pool list plus
+  // anything the analysis names, so `browser · resource` in the card's table
+  // is `browser · resource` in its blocker list and counterfactual too.
+  const label = labelsAmong([...profile.pools, ...printed(h)])
   return (
     <div className="admission-panel">
-      <IncompleteNote h={h} />
-      <BlockerList h={h} groups={capacity.blocked_reason_groups} />
-      <Counterfactuals h={h} generatedAt={capacity.generated_at} />
+      <IncompleteNote h={h} label={label} />
+      <BlockerList h={h} groups={capacity.blocked_reason_groups} label={label} />
+      <Counterfactuals h={h} generatedAt={capacity.generated_at} label={label} />
     </div>
   )
 }

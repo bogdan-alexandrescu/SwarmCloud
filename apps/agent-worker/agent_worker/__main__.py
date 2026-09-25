@@ -7,7 +7,10 @@ Everything that decides WHAT to run comes from the frozen catalogue keyed by
 code is the contract with the dispatcher and the reconciler:
 
     0   terminal state persisted, lease released
-    1   the attempt failed, terminal state persisted, lease released
+    1   the attempt failed, its state persisted, lease released. The state is
+        terminal, except for an attempt whose runner finished cleanly without
+        writing an expected output (#149): that task goes back to READY while
+        it has attempts left, and to FAILED once they are spent
     69  a dependency was UNAVAILABLE before the runner existed: a spent startup
         budget, UNAVAILABLE, any 5xx or gRPC UNKNOWN, DATA_LOSS or
         UNIMPLEMENTED, CANCELLED, a google-auth transport error, at the

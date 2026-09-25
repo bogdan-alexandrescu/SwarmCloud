@@ -62,6 +62,10 @@ HEALTHY = {
     "dispatched_backend": "auto",
     "final_state": "SUCCEEDED",
     "park_reason": None,
+    # Merged into the `parked` event's detail. The scheduler's admission
+    # records what the account pool answered there (`account_pool`), and the
+    # proof reads it to say what would unpark the task (#169).
+    "park_detail": {},
     "last_error": None,
     "artifacts": 2,
     "lease_released": True,
@@ -212,7 +216,8 @@ def event_documents():
         rows.append(("ev_3", "dispatched",
                      {"execution_name": "swarm-gkeproof-1", "backend": chosen}, held))
     if state == "PARKED":
-        rows.append(("ev_4", "parked", {"reason": SCENARIO["park_reason"]}, {}))
+        rows.append(("ev_4", "parked",
+                     {"reason": SCENARIO["park_reason"], **SCENARIO["park_detail"]}, {}))
     elif state == "SUCCEEDED":
         rows.append(("ev_4", "succeeded", {}, {}))
     elif state in ("FAILED", "DEAD_LETTERED"):
@@ -421,6 +426,41 @@ def test_a_parked_task_proves_nothing_and_fails_fast(tmp_path):
         "so waiting out the timeout only delays the same answer"
     )
     assert state.get("cancelled"), "a proof task left PARKED must be cancelled, not abandoned"
+
+
+def test_a_credential_park_says_no_pool_account_can_run_the_browser_profile(tmp_path):
+    """The release's own case (#169). The proof submits `browser`, which takes
+    ANTHROPIC_API_KEY only, so no pool account can run it however many the
+    tenant is lent. The hint used to offer "or a pool account" anyway. It now
+    reads what the pool answered from the park's own event and names the one
+    fix that works."""
+    code, out, _ = run_proof(
+        tmp_path,
+        "--timeout", "180",
+        dispatched_backend=None,
+        final_state="PARKED",
+        park_reason="CREDENTIAL_MISSING",
+        park_detail={"provider": "anthropic", "account_pool": "profile_takes_no_subscription"},
+    )
+    assert code != 0, out
+    assert failed_on(out, "PARKED on CREDENTIAL_MISSING", "profile_takes_no_subscription"), out
+    assert "create-secrets.sh --tenant eng --provider anthropic" in out, out
+    assert "or a pool account" not in out, out
+
+
+def test_a_credential_park_names_lending_when_no_account_serves_the_tenant(tmp_path):
+    code, out, _ = run_proof(
+        tmp_path,
+        "--timeout", "180",
+        dispatched_backend=None,
+        final_state="PARKED",
+        park_reason="CREDENTIAL_MISSING",
+        park_detail={"provider": "anthropic", "account_pool": "no_accounts_registered"},
+    )
+    assert code != 0, out
+    assert failed_on(out, "PARKED on CREDENTIAL_MISSING", "no_accounts_registered"), out
+    assert "/lending" in out, out
+    assert "create-secrets.sh --tenant eng --provider anthropic" in out, out
 
 
 def test_a_worker_that_dies_on_start_fails_with_its_error(tmp_path):

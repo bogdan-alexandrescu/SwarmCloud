@@ -84,7 +84,7 @@ const { RuntimesScreen } = await import('../Runtimes')
  * where the explanation was deleted rather than moved.
  */
 function expectAllCardsClosed(): void {
-  const triggers = [...document.querySelectorAll('button[aria-label^="What "]')]
+  const triggers = [...document.querySelectorAll('button[aria-label^="Help: "]')]
   expect(triggers.length, 'this screen carries no ? at all').toBeGreaterThan(0)
   for (const t of triggers) {
     expect(t.getAttribute('aria-expanded'), 'a card is open before anything was clicked').toBe(
@@ -347,8 +347,9 @@ describe('Overview, with every help card closed', () => {
     expect(unpolled!.querySelector('.ctl-util-track')?.className).toContain('is-unknown')
     expect(unpolled!.querySelector('.ctl-util-fill')).toBeNull()
 
-    // THE MEASURED ONE. A digit, on a track that is drawn.
-    expect(textOf(measured!.querySelector('.ctl-util-figure'))).toBe('0%')
+    // THE MEASURED ONE. A digit, on a track that is drawn -- and, since OV-1,
+    // the word that says which way the percentage points.
+    expect(textOf(measured!.querySelector('.ctl-util-figure'))).toBe('0% used')
     expect(measured!.querySelector('.ctl-util-track')?.className).not.toContain('is-unknown')
 
     // AND THE TWO ARE NOT THE SAME PICTURE. This is the assertion the whole
@@ -739,7 +740,7 @@ describe('Accounts, with every help card closed', () => {
     // measured. Nothing here counted anything, so nothing here is a digit.
     expect(textOf(panel)).not.toMatch(/\d/)
     // The route to the sentence is focusable and in the heading.
-    expect(panel!.querySelector('button[aria-label^="What "]')).not.toBeNull()
+    expect(panel!.querySelector('button[aria-label^="Help: "]')).not.toBeNull()
   })
 
   it('carries the marks the deleted legend used to index', async () => {
@@ -751,6 +752,26 @@ describe('Accounts, with every help card closed', () => {
     // ...and the eleven-paragraph legend is gone from the surface.
     expect(document.querySelector('.section.legend')).toBeNull()
     expect(visibleText()).not.toContain('How to run this pool')
+  })
+
+  /**
+   * OV-1: ONE POLARITY, AND EVERY % CARRIES ITS WORD. The Overview's headline
+   * said `% left` over rows of % used; the owner set % used everywhere
+   * (Overview, Accounts, sc). This table already printed used, under column
+   * heads that said only `5h` and `7d` -- so the word goes on the head, and on
+   * the phone key that stands in for it.
+   *
+   * MUTATION: head the columns `5h` and `7d` again.
+   */
+  it('says which way every window percentage points, in its column head', async () => {
+    renderAccounts([MEASURED_ZERO])
+    await screen.findByText('eng:fresh', undefined, WAIT)
+    const heads = [...document.querySelectorAll('table.accounts thead th')].map((th) => textOf(th))
+    expect(heads).toContain('5h used')
+    expect(heads).toContain('7d used')
+    const keys = [...document.querySelectorAll('td.acct-window')].map((td) => td.getAttribute('data-label'))
+    expect(keys.length, 'no window cell was drawn').toBeGreaterThan(0)
+    for (const key of keys) expect(key, 'a phone key drops the polarity').toMatch(/ used$/)
   })
 })
 
@@ -770,7 +791,7 @@ describe('Runtimes, with every help card closed', () => {
     // WHERE THE WORDS LIVE NOW: `.ctl-mark.is-unread` renders `not read`
     // INSIDE the card that holds the affected columns, the server's own detail
     // sits beside it in `.rt-unread-detail`, and the argument is
-    // `#help/absent-vs-zero` on the `?` in that same row.
+    // `#help/absent-vs-zero` on the `?` after the same card's heading (AH-24).
     //
     // WHY THIS IS THE STRONGER ASSERTION. "Those columns are dashes, not
     // zeros" is a sentence ABOUT the cells, and a banner can be scrolled away
@@ -803,7 +824,22 @@ describe('Runtimes, with every help card closed', () => {
     expect(textOf(card!.querySelector('.rt-unread-detail'))).toContain(
       'the capacity read did not complete',
     )
-    expect(card!.querySelector('button[aria-label^="What "]')).not.toBeNull()
+    expect(card!.querySelector('button[aria-label^="Help: "]')).not.toBeNull()
+    // AFTER THE HEADING, NEVER AFTER A VALUE (AH-24). The glyph trailed the
+    // server's own words, inside the one-line `.rt-unread-detail` that clips
+    // with an ellipsis -- after a value, and cut off with it when the message
+    // ran long. #161's first version moved it to LEAD the row, which is not
+    // after a label either. It goes after the card's heading, `Backends`, in
+    // the slot Pools' `Headroom ?` uses, and only while the counters are
+    // unread. MUTATION: put it back in `.rt-unread`, at either end.
+    const heading = card!.querySelector('h2.ctl-card-title')
+    expect(heading, 'the backends card has no heading').not.toBeNull()
+    expect(heading!.firstChild?.textContent, 'the heading does not start with its word').toBe('Backends')
+    expect(
+      heading!.querySelector('button[aria-label^="Help: "]'),
+      'the `?` does not follow the Backends heading',
+    ).not.toBeNull()
+    expect(card!.querySelector('.rt-unread button'), 'the `?` is still in the unread row').toBeNull()
 
     const row = card!.querySelector('.ctl-table tbody tr')
     expect(row, 'no backend row was drawn').not.toBeNull()

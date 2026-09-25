@@ -27,6 +27,7 @@ import {
   needsAHuman,
   neverAssigned,
   pastedCodeHint,
+  pluralise,
   readingOf,
   unreadableFor,
   type Account,
@@ -476,14 +477,18 @@ function Pool({
     <section className="section panel">
       <h2>
         The pool
-        <span className="count-chip">
-          {accounts.length} account{accounts.length === 1 ? '' : 's'}
-        </span>
+        {/* THE QUALIFIER SLOT, NOT A CHIP (CP-22). Body-size mono beside the
+            title, where Pools, Holders and Provider quota put a fact about
+            the section in `.ctl-card-note`. */}
+        <span className="ctl-card-note is-end">{pluralise(accounts.length, 'account')}</span>
       </h2>
-      {/* §B6.3: `is-stacked`, because `the pool` is the widest table in the
-          app -- 909px of columns inside a 358px phone, 61% of it behind a
-          scrollbar this platform does not paint. */}
-      <div className="table-wrap is-stacked">
+      {/* `is-scroll` (CH-13, design-system.md §7.3), and it was §B6.3's
+          `is-stacked`, because `the pool` is the widest table in the app --
+          909px of columns inside a 358px phone, 61% of it behind a scrollbar
+          this platform does not paint. Five columns compared across rows is a
+          data table: below 900px it scrolls with the account column held in
+          view, and only a record of four columns or fewer stacks. */}
+      <div className="table-wrap is-scroll">
         <table role="table" className="pools accounts">
           <thead role="rowgroup">
             <tr role="row">
@@ -493,8 +498,13 @@ function Pool({
                   shouting -- and it shouts in one table rather than all of
                   them, which is the exact inconsistency the rule removes. */}
               <th role="columnheader" scope="col">Account</th>
-              <th role="columnheader" scope="col" className="n">5h</th>
-              <th role="columnheader" scope="col" className="n">7d</th>
+              {/* ONE POLARITY, AND THE WORD IS ON EVERY % (OV-1, owner
+                  decision 2026-09-25). These figures were always % used, under
+                  heads that did not say so, while the Overview's headline beside
+                  them said % left. The heads carry the word for their column,
+                  and the phone key below carries it for each cell. */}
+              <th role="columnheader" scope="col" className="n">5h used</th>
+              <th role="columnheader" scope="col" className="n">7d used</th>
               <th role="columnheader" scope="col" className="n">Clears</th>
               <th role="columnheader" scope="col">State</th>
             </tr>
@@ -604,8 +614,8 @@ function PoolRows({
           </button>
           <span className="raw">{account.account_id}</span>
         </th>
-        <WindowCell reading={five} window="five-hour" label="5h" />
-        <WindowCell reading={seven} window="seven-day" label="7d" />
+        <WindowCell reading={five} window="five-hour" label="5h used" />
+        <WindowCell reading={seven} window="seven-day" label="7d used" />
         <ClearsCell account={account} now={now} readAt={readAt} />
         <td role="cell" data-label="State" className="acct-statecell">
           {/* B4.6: THE STATE IS A MARK AND A WORD, NOT A BADGE (§6.6).
@@ -1219,9 +1229,10 @@ function AllWindows({ account, now }: { account: Account; now: number }) {
           <div className="split-row" key={k}>
             <span className="sr-name">{k}</span>
             <span className="sr-n">
+              {/* No column head over this figure, so the word goes on it (OV-1). */}
               {r.kind === 'never' || r.kind === 'absent'
                 ? '—'
-                : `${isProjected(r) ? '~' : ''}${Math.round(r.pct)}%`}
+                : `${isProjected(r) ? '~' : ''}${Math.round(r.pct)}% used`}
             </span>
             <ExtraClears name={k.replace(/_/g, '-')} w={w} now={now} />
           </div>
@@ -1723,6 +1734,14 @@ function splitTenants(raw: string): string[] {
 // ---------------------------------------------------------------------------
 
 /**
+ * A state button's label, and the one spelling the prose that names the button
+ * uses too -- so "use move to available" cannot drift from the button it means.
+ */
+function moveLabel(to: AccountStateName): string {
+  return `move to ${to.toLowerCase()}`
+}
+
+/**
  * PAUSED, DRAINING and back.
  *
  * The three are not degrees of one thing and the copy must not let them read
@@ -1777,6 +1796,12 @@ function StateControls({ account, reload }: { account: Account; reload: () => vo
           onChange={(e) => setReason(e.target.value)}
         />
       </span>
+      {/* LOWERCASE, AS THE STATE CHIP BESIDE THEM IS (CP-23). The chip
+          lowercases the enum the API sends; these printed it raw, so the row
+          read `available` in its state column and `move to AVAILABLE` on the
+          button that sets it -- one word, two spellings, and the capitals were
+          the only thing on the screen still shouting. The prose that names
+          these buttons (`SignInDone`) spells them the same way. */}
       <div className="acct-buttons">
         {targets.map((t) => (
           <button
@@ -1786,11 +1811,11 @@ function StateControls({ account, reload }: { account: Account; reload: () => vo
             disabled={busy !== null || account.state === t.to}
             onClick={() => void move(t.to)}
           >
-            {busy === t.to ? 'saving…' : `move to ${t.to}`}
+            {busy === t.to ? 'saving…' : moveLabel(t.to)}
           </button>
         ))}
       </div>
-      {done && <p className="muted small">Moved to {done}.</p>}
+      {done && <p className="muted small">Moved to {done.toLowerCase()}.</p>}
       {error && (
         <p className="warn-text">
           {errorHeading(error)} &mdash; {error.message} The state was not changed.
@@ -2976,14 +3001,23 @@ function AddAccount({
             value={lend}
             spellCheck={false}
             autoComplete="off"
-            placeholder="tenant ids, comma separated; empty means this account serves only you"
+            placeholder="tenant ids, comma separated"
+            aria-describedby="acct-lend-rule"
             onChange={(e) => setLend(e.target.value)}
           />
-          {/* "Isolation is the default" said in prose what the placeholder
-              already says in the field it is about -- "empty means this
-              account serves only you" -- and a rule stated twice is a rule a
-              reader has to check for agreement. The `?` beside the label
-              carries why isolation is the default. */}
+          {/* THE ISOLATION RULE IS A LINE UNDER THE FIELD, NOT ITS PLACEHOLDER
+              (CP-20, visual QA 2026-09-25). It lived only in the placeholder,
+              which is truncated at the field's width, vanishes on the first
+              keystroke, and is not reliably announced -- so the rule was gone
+              exactly when somebody was filling the field in. A comment here
+              promised a `?` beside the label carried the reason; none has
+              rendered since B7.4 took it, and none is added: the rule itself is
+              short enough to BE the line, beside the input, which is where the
+              label's own `a-z 0-9 - · ≤40` rule above already sits. The
+              placeholder keeps only the format, so the rule is stated once. */}
+          <p className="muted small acct-flags" id="acct-lend-rule">
+            empty: only {owner} runs on it
+          </p>
 
           <p className="acct-buttons">
             <button type="submit" disabled={state.kind === 'starting' || trimmed === ''}>
@@ -3083,7 +3117,7 @@ function SignInDone({
             </strong>{' '}
             The credential is good; the second call failed:{' '}
             {restore.error?.message ?? 'the request did not complete.'} Use{' '}
-            <em>move to AVAILABLE</em> in the row above.
+            <em>{moveLabel('AVAILABLE')}</em> in the row above.
           </p>
         ))}
       {/* WHAT THE POOL WILL SHOW FOR IT, READ OFF THE ACCOUNT THE EXCHANGE
@@ -3115,10 +3149,10 @@ function SignInDone({
       {restore === null && state.account.state !== 'AVAILABLE' && (
         <p className="warn-text">
           <strong>
-            It is in {state.account.state}, and AVAILABLE is the only state an
-            agent is started on.
+            It is in {state.account.state.toLowerCase()}, and available is the
+            only state an agent is started on.
           </strong>{' '}
-          Its row has <em>move to AVAILABLE</em> for when it should take work
+          Its row has <em>{moveLabel('AVAILABLE')}</em> for when it should take work
           again.
         </p>
       )}

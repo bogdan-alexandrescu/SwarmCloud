@@ -1,4 +1,4 @@
-import { noteFixtureProbe, read, write, type Result } from './fetch'
+import { noteFixtureProbe, read, route, write, type ApiRoute, type Result } from './fetch'
 // A VALUE import, not a type: the attempt fixture needs the terminal-state set
 // so a live task's newest attempt is rendered as live, and the task fixture
 // needs the concurrency set to decide which rows hold a lease -- invariant 1's
@@ -33,14 +33,26 @@ export const USE_FIXTURES = import.meta.env.DEV && !import.meta.env.VITE_LIVE
 
 export async function loadCapacity(): Promise<Result<Capacity>> {
   if (USE_FIXTURES) return fixtureCapacity()
-  return read<Capacity>('/v1/capacity', (d) => d.pools.length === 0)
+  return read<Capacity>(route('/v1/capacity'), (d) => d.pools.length === 0)
 }
 
-export async function loadTasks(): Promise<Result<TaskPage>> {
+/**
+ * The largest page `GET /v1/tasks` serves. Page size caps at 200 server-side
+ * (deps.py:194-199); asking for more is silently clamped, which would make
+ * "200 tasks" look like the whole truth.
+ */
+export const TASK_PAGE_LIMIT = 200
+
+/**
+ * A page of the task list. `limit` is the full page unless a caller has a
+ * reason to ask for less -- the Agents list at phone width asks for 50
+ * (Agents.tsx, `PHONE_PAGE_LIMIT`).
+ */
+export async function loadTasks(limit: number = TASK_PAGE_LIMIT): Promise<Result<TaskPage>> {
   if (USE_FIXTURES) return fixtureTasks()
-  // Page size caps at 200 server-side (deps.py:194-199). Asking for more is
-  // silently clamped, which would make "200 tasks" look like the whole truth.
-  return read<TaskPage>('/v1/tasks?limit=200', (d) => d.tasks.length === 0)
+  // One route with the `?state=` and paged reads below: `/v1/tasks` (CH-18),
+  // whatever page size the caller asked for.
+  return read<TaskPage>(route('/v1/tasks', {}, `limit=${limit}`), (d) => d.tasks.length === 0)
 }
 
 /**
@@ -69,8 +81,8 @@ export async function loadWorkflowBoard(): Promise<Result<WorkflowBoard>> {
   if (USE_FIXTURES) return fixtureWorkflowBoard()
 
   const [wf, tasks] = await Promise.all([
-    read<{ workflows: Workflow[] }>('/v1/workflows?limit=100', (d) => d.workflows.length === 0),
-    read<TaskPage>('/v1/tasks?limit=200', (d) => d.tasks.length === 0),
+    read<{ workflows: Workflow[] }>(route('/v1/workflows?limit=100'), (d) => d.workflows.length === 0),
+    read<TaskPage>(route('/v1/tasks', {}, 'limit=200'), (d) => d.tasks.length === 0),
   ])
 
   // The workflow read decides whether there is a screen at all.
@@ -127,7 +139,7 @@ export async function loadWorkflows(): Promise<Result<WorkflowPage>> {
   // 100, matching loadWorkflowBoard: `max_workflow_steps` is 50 and the route's
   // step-read budget is what actually binds, so a larger page buys rows whose
   // rollup is incomplete rather than more information.
-  return read<WorkflowPage>('/v1/workflows?limit=100', (d) => d.workflows.length === 0)
+  return read<WorkflowPage>(route('/v1/workflows?limit=100'), (d) => d.workflows.length === 0)
 }
 
 /**
@@ -198,10 +210,10 @@ export interface AgentDetail {
 export async function loadAgentDetail(taskId: string): Promise<Result<AgentDetail>> {
   if (USE_FIXTURES) return fixtureAgentDetail(taskId)
 
-  const path = `/v1/tasks/${encodeURIComponent(taskId)}`
+  const id = { id: taskId }
   const [task, events] = await Promise.all([
-    read<{ task: Task } | Task>(path, () => false),
-    read<{ events: TaskEvent[] }>(`${path}/events?limit=${EVENT_PAGE_LIMIT}`, () => false),
+    read<{ task: Task } | Task>(route('/v1/tasks/{id}', id), () => false),
+    read<{ events: TaskEvent[] }>(route(`/v1/tasks/{id}/events?limit=${EVENT_PAGE_LIMIT}`, id), () => false),
   ])
 
   if (task.status === 'loading' || task.status === 'error') return task
@@ -435,7 +447,7 @@ export type ResourceClasses = Record<string, ResourceClassSpec>
 export async function loadResourceClasses(): Promise<Result<{ resource_classes: ResourceClasses }>> {
   if (USE_FIXTURES) return fixtureResourceClasses()
   return read<{ resource_classes: ResourceClasses }>(
-    '/v1/resource-classes',
+    route('/v1/resource-classes'),
     (d) => Object.keys(d.resource_classes ?? {}).length === 0,
   )
 }
@@ -466,16 +478,14 @@ export async function loadCheckpoints(
   if (options.attemptId) query.set('attempt_id', options.attemptId)
   if (options.pageToken) query.set('page_token', options.pageToken)
   if (options.limit) query.set('limit', String(options.limit))
-  const suffix = query.toString() === '' ? '' : `?${query}`
-  // The path is a literal of its own and the query is concatenated after it,
+  // The path is a literal of its own and the query is passed beside it,
   // rather than interpolated into the same template. That is not style: the
   // UI/API seam test in test_runtimes_screen.py scans this file for versioned
   // path literals and compares their SHAPE against the router's declarations,
-  // and
-  // a trailing `${suffix}` inside the template normalises to a path segment
-  // the API does not serve. Keeping them apart keeps the seam checkable.
-  const path = `/v1/tasks/${encodeURIComponent(taskId)}/checkpoints`
-  return read<CheckpointsPage>(path + suffix, () => false)
+  // and a trailing `${suffix}` inside the template normalises to a path
+  // segment the API does not serve. Keeping them apart keeps the seam
+  // checkable -- and `route()` keys the registry by the literal (CH-18).
+  return read<CheckpointsPage>(route('/v1/tasks/{id}/checkpoints', { id: taskId }, query), () => false)
 }
 
 /**
@@ -510,10 +520,8 @@ export async function loadTaskLogs(
   if (options.source) query.set('source', options.source)
   if (options.offset !== undefined) query.set('offset', String(options.offset))
   if (options.limitBytes !== undefined) query.set('limit_bytes', String(options.limitBytes))
-  const suffix = query.toString() === '' ? '' : `?${query}`
   // Path literal and query kept apart; see loadCheckpoints above for why.
-  const path = `/v1/tasks/${encodeURIComponent(taskId)}/logs`
-  return read<TaskLogs>(path + suffix, () => false)
+  return read<TaskLogs>(route('/v1/tasks/{id}/logs', { id: taskId }, query), () => false)
 }
 
 /**
@@ -527,7 +535,7 @@ export async function loadTaskLogs(
  */
 async function fixtureCheckpoints(taskId: string): Promise<Result<CheckpointsPage>> {
   await new Promise((r) => setTimeout(r, 90))
-  noteFixtureProbe(`/v1/tasks/{id}/checkpoints`, 90, true)
+  noteFixtureProbe(route('/v1/tasks/{id}/checkpoints', { id: taskId }), 90, true)
   const prefix = `tenants/u-bogdan/tasks/${taskId}/checkpoints`
   return {
     status: 'ok',
@@ -616,7 +624,7 @@ async function fixtureCheckpoints(taskId: string): Promise<Result<CheckpointsPag
  */
 async function fixtureTaskLogs(taskId: string): Promise<Result<TaskLogs>> {
   await new Promise((r) => setTimeout(r, 110))
-  noteFixtureProbe(`/v1/tasks/{id}/logs`, 110, true)
+  noteFixtureProbe(route('/v1/tasks/{id}/logs', { id: taskId }), 110, true)
   const body = [
     '[13:42:01] cloning https://github.com/saga-xyz/example.git',
     '[13:42:09] workspace ready at /workspace (tmpfs)',
@@ -707,8 +715,7 @@ export async function loadArtifactContent(
   if (options.offset !== undefined) query.set('offset', String(options.offset))
   if (options.limitBytes !== undefined) query.set('limit_bytes', String(options.limitBytes))
   // Path literal and query kept apart; see loadCheckpoints above for why.
-  const path = `/v1/tasks/${encodeURIComponent(taskId)}/artifacts/content`
-  return read<ArtifactContent>(path + `?${query}`, () => false)
+  return read<ArtifactContent>(route('/v1/tasks/{id}/artifacts/content', { id: taskId }, query), () => false)
 }
 
 /**
@@ -725,7 +732,7 @@ export async function loadArtifactContent(
  */
 export async function cancelTask(taskId: string): Promise<Result<CancelResult>> {
   if (USE_FIXTURES) return fixtureCancel(taskId)
-  return write(`/v1/tasks/${encodeURIComponent(taskId)}/cancel`, 'POST') as Promise<
+  return write(route('/v1/tasks/{id}/cancel', { id: taskId }), 'POST') as Promise<
     Result<CancelResult>
   >
 }
@@ -752,8 +759,13 @@ async function fixtureArtifactContent(
   name: string,
 ): Promise<Result<ArtifactContent>> {
   await new Promise((r) => setTimeout(r, 30))
-  const path = `/v1/tasks/${taskId}/artifacts/content`
-  noteFixtureProbe(path, 30, true)
+  // The same `route()` call as the live path, so a fixture read lands in the
+  // same registry record a live one would (CH-18).
+  noteFixtureProbe(
+    route('/v1/tasks/{id}/artifacts/content', { id: taskId }, new URLSearchParams({ name })),
+    30,
+    true,
+  )
   const bodies: Record<string, string> = {
     'synthesis.md':
       '# Synthesis\n\nFive agents looked at the same question.\n\n' +
@@ -799,7 +811,7 @@ async function fixtureArtifactContent(
 
 async function fixtureCancel(taskId: string): Promise<Result<CancelResult>> {
   await new Promise((r) => setTimeout(r, 60))
-  noteFixtureProbe(`/v1/tasks/${taskId}/cancel`, 60, true)
+  noteFixtureProbe(route('/v1/tasks/{id}/cancel', { id: taskId }), 60, true)
   // `released_immediately: false` is the fixture's answer on purpose: it is
   // the case the confirmation copy is written for, and a fixture that always
   // reported an instant stop would let that copy be developed against the
@@ -809,7 +821,7 @@ async function fixtureCancel(taskId: string): Promise<Result<CancelResult>> {
 
 async function fixtureResourceClasses(): Promise<Result<{ resource_classes: ResourceClasses }>> {
   await new Promise((r) => setTimeout(r, 40))
-  noteFixtureProbe('/v1/resource-classes', 40, true)
+  noteFixtureProbe(route('/v1/resource-classes'), 40, true)
   return {
     status: 'ok',
     fetchedAt: Date.now(),
@@ -857,10 +869,10 @@ export async function loadRuntimeTopology(): Promise<Result<RuntimeTopology>> {
 
   const [runtimes, capacity, classes] = await Promise.all([
     read<{ runtimes: Record<string, Runtime> }>(
-      '/v1/runtimes',
+      route('/v1/runtimes'),
       (d) => Object.keys(d.runtimes ?? {}).length === 0,
     ),
-    read<Capacity>('/v1/capacity', () => false),
+    read<Capacity>(route('/v1/capacity'), () => false),
     loadResourceClasses(),
   ])
 
@@ -965,7 +977,7 @@ const FIXTURE_RUNTIMES: Record<string, Runtime> = {
 
 async function fixtureRuntimeTopology(): Promise<Result<RuntimeTopology>> {
   await new Promise((r) => setTimeout(r, 60))
-  noteFixtureProbe('/v1/runtimes', 60, true)
+  noteFixtureProbe(route('/v1/runtimes'), 60, true)
   const capacity = await fixtureCapacity()
   return {
     status: 'ok',
@@ -1020,11 +1032,14 @@ export interface AgentRun {
 export async function loadAgentRun(taskId: string): Promise<Result<AgentRun>> {
   if (USE_FIXTURES) return fixtureAgentRun(taskId)
 
-  const path = `/v1/tasks/${encodeURIComponent(taskId)}`
+  const id = { id: taskId }
   const [task, events, attempts, classes] = await Promise.all([
-    read<{ task: Task } | Task>(path, () => false),
-    read<{ events: TaskEvent[] }>(`${path}/events?limit=${EVENT_PAGE_LIMIT}`, () => false),
-    read<{ attempts: AttemptRow[] }>(`${path}/attempts?limit=${ATTEMPT_PAGE_LIMIT}`, (d) => d.attempts.length === 0),
+    read<{ task: Task } | Task>(route('/v1/tasks/{id}', id), () => false),
+    read<{ events: TaskEvent[] }>(route(`/v1/tasks/{id}/events?limit=${EVENT_PAGE_LIMIT}`, id), () => false),
+    read<{ attempts: AttemptRow[] }>(
+      route(`/v1/tasks/{id}/attempts?limit=${ATTEMPT_PAGE_LIMIT}`, id),
+      (d) => d.attempts.length === 0,
+    ),
     loadResourceClasses(),
   ])
 
@@ -1120,18 +1135,18 @@ export async function loadStats(): Promise<Result<Stats>> {
   // iterates the whole enum and writes a key for each. So there is no empty
   // state here -- and an error must never render as "0 RUNNING", because
   // "0 RUNNING" and "stats failed" are opposite facts.
-  return read<Stats>('/v1/stats', () => false)
+  return read<Stats>(route('/v1/stats'), () => false)
 }
 
 export async function loadDispatchControl(): Promise<Result<DispatchControl>> {
   if (USE_FIXTURES) return fixtureDispatch()
   // Admin-gated. A 403 here is information, not a failure.
-  return read<DispatchControl>('/v1/admin/dispatch', () => false)
+  return read<DispatchControl>(route('/v1/admin/dispatch'), () => false)
 }
 
 export async function loadProviders(): Promise<Result<ProvidersPage>> {
   if (USE_FIXTURES) return fixtureProviders()
-  return read<ProvidersPage>('/v1/providers', (d) => d.providers.length === 0)
+  return read<ProvidersPage>(route('/v1/providers'), (d) => d.providers.length === 0)
 }
 
 /** One page of tasks in one state. Server-side filter, backed by a real index. */
@@ -1145,14 +1160,14 @@ export async function loadTasksInState(state: TaskState): Promise<Result<TaskPag
       : { status: 'ok', fetchedAt: Date.now(), data: { ...page.data, tasks } }
   }
   return read<TaskPage>(
-    `/v1/tasks?state=${encodeURIComponent(state)}&limit=200`,
+    route('/v1/tasks', {}, new URLSearchParams({ state, limit: '200' })),
     (d) => d.tasks.length === 0,
   )
 }
 
 async function fixtureStats(): Promise<Result<Stats>> {
   await new Promise((r) => setTimeout(r, 220))
-  noteFixtureProbe('/v1/stats', 220, true)
+  noteFixtureProbe(route('/v1/stats'), 220, true)
   return {
     status: 'ok',
     fetchedAt: Date.now(),
@@ -1174,7 +1189,7 @@ async function fixtureDispatch(): Promise<Result<DispatchControl>> {
   await new Promise((r) => setTimeout(r, 120))
   // A non-admin genuinely cannot read this, and the board must render that as
   // information rather than breakage. The fixture exercises that path.
-  noteFixtureProbe('/v1/admin/dispatch', 120, false)
+  noteFixtureProbe(route('/v1/admin/dispatch'), 120, false)
   return {
     status: 'error',
     error: {
@@ -1188,7 +1203,7 @@ async function fixtureDispatch(): Promise<Result<DispatchControl>> {
 
 async function fixtureProviders(): Promise<Result<ProvidersPage>> {
   await new Promise((r) => setTimeout(r, 200))
-  noteFixtureProbe('/v1/providers', 200, true)
+  noteFixtureProbe(route('/v1/providers'), 200, true)
   return {
     status: 'ok',
     fetchedAt: Date.now(),
@@ -1224,9 +1239,15 @@ async function fixtureProviders(): Promise<Result<ProvidersPage>> {
   }
 }
 
-export async function loadMe(): Promise<Result<Me>> {
-  if (USE_FIXTURES) return fixtureMe()
-  return read<Me>('/v1/tenants/me', () => false)
+/**
+ * `GET /v1/tenants/me`. `frame` marks the product header's own read, which is
+ * the FRAME's and not the screen's: it lands in the tab-wide registry like any
+ * read, and the head's "newest read" -- the screen's own (CH-2) -- does not
+ * count it. Platform counts reads the same route as a screen, without it.
+ */
+export async function loadMe(options: { frame?: boolean } = {}): Promise<Result<Me>> {
+  if (USE_FIXTURES) return fixtureMe(options)
+  return read<Me>(route('/v1/tenants/me'), () => false, { frame: options.frame === true })
 }
 
 /**
@@ -1249,10 +1270,7 @@ export async function loadTaskWindow(budget: number): Promise<Result<TaskWindow>
   while (tasks.length < budget) {
     const qs = new URLSearchParams({ limit: '200' })
     if (token) qs.set('page_token', token)
-    const page: Result<TaskPage> = await read<TaskPage>(
-      `/v1/tasks?${qs.toString()}`,
-      () => false,
-    )
+    const page: Result<TaskPage> = await read<TaskPage>(route('/v1/tasks', {}, qs), () => false)
     if (page.status === 'error') {
       // Partial data plus a failure is still a failure to describe a window:
       // a span computed from half the rows would be wrong in a way nothing on
@@ -1290,9 +1308,9 @@ export async function loadTaskWindow(budget: number): Promise<Result<TaskWindow>
   } as Result<TaskWindow>
 }
 
-async function fixtureMe(): Promise<Result<Me>> {
+async function fixtureMe(options: { frame?: boolean } = {}): Promise<Result<Me>> {
   await new Promise((r) => setTimeout(r, 150))
-  noteFixtureProbe('/v1/tenants/me', 150, true)
+  noteFixtureProbe(route('/v1/tenants/me'), 150, true, undefined, { frame: options.frame === true })
   return {
     status: 'ok',
     fetchedAt: Date.now(),
@@ -1339,12 +1357,12 @@ async function fixtureWindow(budget: number): Promise<Result<TaskWindow>> {
 /** `GET /v1/admin/tenants`, admin-gated. A 403 here is information. */
 export async function loadTenants(): Promise<Result<{ tenants: Tenant[] }>> {
   if (USE_FIXTURES) return fixtureTenants()
-  return read<{ tenants: Tenant[] }>('/v1/admin/tenants', (d) => d.tenants.length === 0)
+  return read<{ tenants: Tenant[] }>(route('/v1/admin/tenants'), (d) => d.tenants.length === 0)
 }
 
 async function fixtureTenants(): Promise<Result<{ tenants: Tenant[] }>> {
   await new Promise((r) => setTimeout(r, 140))
-  noteFixtureProbe('/v1/admin/tenants', 140, false)
+  noteFixtureProbe(route('/v1/admin/tenants'), 140, false)
   return {
     status: 'error',
     error: {
@@ -1364,21 +1382,21 @@ async function fixtureTenants(): Promise<Result<{ tenants: Tenant[] }>> {
  */
 export async function loadLeases(): Promise<Result<LeasePage>> {
   if (USE_FIXTURES) return fixtureLeases()
-  return read<LeasePage>('/v1/admin/leases?active_only=true&limit=200', (d) => d.leases.length === 0)
+  return read<LeasePage>(route('/v1/admin/leases?active_only=true&limit=200'), (d) => d.leases.length === 0)
 }
 
 /** Every attempt of one task, newest first. Tenant-scoped. */
 export async function loadAttempts(taskId: string): Promise<Result<{ attempts: AttemptRow[] }>> {
   if (USE_FIXTURES) return fixtureAttempts(taskId)
   return read<{ attempts: AttemptRow[] }>(
-    `/v1/tasks/${encodeURIComponent(taskId)}/attempts?limit=${ATTEMPT_PAGE_LIMIT}`,
+    route(`/v1/tasks/{id}/attempts?limit=${ATTEMPT_PAGE_LIMIT}`, { id: taskId }),
     (d) => d.attempts.length === 0,
   )
 }
 
 async function fixtureLeases(): Promise<Result<LeasePage>> {
   await new Promise((r) => setTimeout(r, 180))
-  noteFixtureProbe('/v1/admin/leases', 180, true)
+  noteFixtureProbe(route('/v1/admin/leases'), 180, true)
   const iso = (secAgo: number) => new Date(Date.now() - secAgo * 1000).toISOString()
   const row = (
     id: string,
@@ -1443,7 +1461,7 @@ async function fixtureLeases(): Promise<Result<LeasePage>> {
 
 async function fixtureAttempts(taskId: string): Promise<Result<{ attempts: AttemptRow[] }>> {
   await new Promise((r) => setTimeout(r, 160))
-  noteFixtureProbe(`/v1/tasks/{id}/attempts`, 160, true)
+  noteFixtureProbe(route('/v1/tasks/{id}/attempts', { id: taskId }), 160, true)
   const iso = (m: number) => new Date(Date.now() - m * 60_000).toISOString()
   // THE NEWEST ATTEMPT FOLLOWS THE TASK'S STATE. A fixture that always returned
   // a finished attempt meant the live-agent path -- no exit code, no
@@ -1551,17 +1569,11 @@ export async function loadHolders(): Promise<Result<HoldersBoard>> {
   if (USE_FIXTURES) return fixtureHolders()
 
   const [leases, capacity] = await Promise.all([
-    // EMPTY ONLY WHEN THE ROUTE VOUCHES FOR IT. `empty` is drawn as a real
-    // zero ("no lease holds capacity"), and no rows is only that when no live
-    // lease was left out of the window. An API older than
-    // `active_beyond_window` cannot say so, and its empty page goes to the
-    // screen as a page, where Holders.tsx marks the coverage unreported
-    // rather than calling it a zero.
-    read<LeasePage>(
-      '/v1/admin/leases?active_only=true&limit=200',
-      (d) => d.leases.length === 0 && d.active_beyond_window === 0 && d.truncated !== true,
-    ),
-    read<Capacity>('/v1/capacity', () => false),
+    // NEVER `empty` FROM THE LEASE READ ALONE -- see `holdersAreEmpty`. The
+    // page comes back as a page, and whether it is a real zero is decided
+    // below with the counters in hand.
+    read<LeasePage>(route('/v1/admin/leases?active_only=true&limit=200'), () => false),
+    read<Capacity>(route('/v1/capacity'), () => false),
   ])
 
   if (leases.status === 'loading' || leases.status === 'error' || leases.status === 'empty') {
@@ -1576,11 +1588,40 @@ export async function loadHolders(): Promise<Result<HoldersBoard>> {
         : 'The pool read did not complete.'
       : null
 
+  if (leases.status === 'ok' && holdersAreEmpty(leases.data, pools)) {
+    return { status: 'empty', fetchedAt: leases.fetchedAt, serverAt: leases.serverAt }
+  }
+
   return {
     status: leases.status,
     fetchedAt: leases.fetchedAt,
     data: { page: leases.data, pools, poolsDetail: detail },
   } as Result<HoldersBoard>
+}
+
+/**
+ * WHETHER THE HOLDERS SCREEN MAY SAY "NOTHING HOLDS CAPACITY" (CP-7, visual QA
+ * 2026-09-25).
+ *
+ * `empty` is drawn as a REAL ZERO, and it is two claims, not one: no live
+ * lease exists, AND no pool counter is holding units. The second is the one
+ * that matters most here -- a counter left non-zero with nothing behind it is
+ * exactly the leak the drift card exists to find -- and it used to be dropped:
+ * the capacity read was issued alongside the lease read and then discarded
+ * whenever the lease page came back with no rows, so a leaked counter with
+ * zero live leases rendered as the calmest thing on the screen.
+ *
+ * So `empty` needs BOTH, measured: a lease page that vouches it left no live
+ * lease out (`active_beyond_window === 0`, not truncated -- an older API that
+ * cannot say goes to the screen as a page, where the coverage is marked
+ * unreported), and a counter read that succeeded with every `active` at 0.
+ * A counter read that FAILED is not a zero either: the page goes to the screen,
+ * where the drift card says the comparison was not made.
+ */
+function holdersAreEmpty(page: LeasePage, pools: Pool[] | null): boolean {
+  const noLiveLease =
+    page.leases.length === 0 && page.active_beyond_window === 0 && page.truncated !== true
+  return noLiveLease && pools !== null && pools.every((p) => p.active === 0)
 }
 
 async function fixtureHolders(): Promise<Result<HoldersBoard>> {
@@ -1596,12 +1637,12 @@ async function fixtureHolders(): Promise<Result<HoldersBoard>> {
 /** `GET /v1/admin/quota`. Admin-gated, so a 403 renders as information. */
 export async function loadAdminQuota(): Promise<Result<{ quota: QuotaState[] }>> {
   if (USE_FIXTURES) return fixtureAdminQuota()
-  return read<{ quota: QuotaState[] }>('/v1/admin/quota', (d) => d.quota.length === 0)
+  return read<{ quota: QuotaState[] }>(route('/v1/admin/quota'), (d) => d.quota.length === 0)
 }
 
 async function fixtureAdminQuota(): Promise<Result<{ quota: QuotaState[] }>> {
   await new Promise((r) => setTimeout(r, 170))
-  noteFixtureProbe('/v1/admin/quota', 170, true)
+  noteFixtureProbe(route('/v1/admin/quota'), 170, true)
   const q = (
     provider: string,
     tenant: string,
@@ -1647,16 +1688,18 @@ async function fixtureAdminQuota(): Promise<Result<{ quota: QuotaState[] }>> {
  */
 export async function setPoolLimit(poolName: string, limit: number): Promise<Result<unknown>> {
   const parts = poolName.split(':')
-  let path: string | null = null
+  let path: ApiRoute | null = null
 
-  if (poolName === 'global') path = '/v1/admin/limits/global'
-  else if (parts[0] === 'tenant' && parts[1]) path = `/v1/admin/limits/tenant/${encodeURIComponent(parts[1])}`
-  else if (parts[0] === 'resource' && parts[1]) path = `/v1/admin/limits/resource/${encodeURIComponent(parts[1])}`
-  else if (parts[0] === 'runner' && parts[1]) path = `/v1/admin/limits/runner/${encodeURIComponent(parts[1])}`
-  else if (parts[0] === 'backend' && parts[1]) path = `/v1/admin/limits/backend/${encodeURIComponent(parts[1])}`
+  // One route per pool KIND, each keyed by its template (CH-18): a limit set on
+  // two runners is one `/v1/admin/limits/runner/{name}` in the registry, not two.
+  if (poolName === 'global') path = route('/v1/admin/limits/global')
+  else if (parts[0] === 'tenant' && parts[1]) path = route('/v1/admin/limits/tenant/{name}', { name: parts[1] })
+  else if (parts[0] === 'resource' && parts[1]) path = route('/v1/admin/limits/resource/{name}', { name: parts[1] })
+  else if (parts[0] === 'runner' && parts[1]) path = route('/v1/admin/limits/runner/{name}', { name: parts[1] })
+  else if (parts[0] === 'backend' && parts[1]) path = route('/v1/admin/limits/backend/{name}', { name: parts[1] })
   else if (parts[0] === 'provider' && parts[1] && parts[2] === 'tenant' && parts[3])
-    path = `/v1/admin/limits/provider/${encodeURIComponent(parts[1])}/tenant/${encodeURIComponent(parts[3])}`
-  else if (parts[0] === 'provider' && parts[1]) path = `/v1/admin/limits/provider/${encodeURIComponent(parts[1])}`
+    path = route('/v1/admin/limits/provider/{name}/tenant/{tenant}', { name: parts[1], tenant: parts[3] })
+  else if (parts[0] === 'provider' && parts[1]) path = route('/v1/admin/limits/provider/{name}', { name: parts[1] })
 
   if (path === null) {
     // Fail loudly rather than POSTing somewhere plausible. A limit that
@@ -2162,9 +2205,37 @@ const FIXTURE_INPUT_CONTRACTS: Record<string, RunnerInputContract> = {
   "browser": {"required_keys": []}
 }
 
+/**
+ * Whether each of the five may be dispatched, as `/v1/capacity` now serves it
+ * (CP-3, visual QA 2026-09-25). A fixture whose `codex` is on offer develops
+ * Pools, Profile headroom and Submit against a platform that does not exist --
+ * which is how the disabled branch of all three shipped unexercised.
+ *
+ * A COPY OF THE FROZEN CATALOGUE'S TWO FIELDS, and therefore a strict-JSON
+ * literal: `test_capacity_serves_availability.py` reads it with the same
+ * `json_literal` the input-contract table above is held by and compares it to
+ * `RUNNER_PROFILES`, so re-enabling a profile there fails here until this
+ * follows.
+ *
+ * The value type is NAMED rather than written inline: the reader takes the
+ * first `{` after the declaration as the literal, and an inline object type
+ * would be that brace.
+ */
+interface FixtureAvailability {
+  available: boolean
+  disabled_reason: string
+}
+const FIXTURE_AVAILABILITY: Record<string, FixtureAvailability> = {
+  "mock": {"available": true, "disabled_reason": ""},
+  "generic": {"available": true, "disabled_reason": ""},
+  "claude-code": {"available": true, "disabled_reason": ""},
+  "codex": {"available": false, "disabled_reason": "codex is disabled on this platform. The provider refused the registered credential and the platform is focused on Claude. Use claude-code."},
+  "browser": {"available": true, "disabled_reason": ""}
+}
+
 async function fixtureCapacity(): Promise<Result<Capacity>> {
   await new Promise((r) => setTimeout(r, 400))
-  noteFixtureProbe('/v1/capacity', 400, true)
+  noteFixtureProbe(route('/v1/capacity'), 400, true)
   const pool = (
     name: string,
     hard: number,
@@ -2200,18 +2271,21 @@ async function fixtureCapacity(): Promise<Result<Capacity>> {
       runner_profiles: {
         mock: {
           resource_class: 'standard', backend: 'CLOUD_RUN_JOB', provider: null, units: 1,
+          ...FIXTURE_AVAILABILITY.mock,
           pools: ['global', 'tenant:u-bogdan', 'resource:standard', 'runner:mock', 'backend:CLOUD_RUN_JOB'],
           admission: FIXTURE_ADMISSION.mock,
           input_contract: FIXTURE_INPUT_CONTRACTS.mock,
         },
         generic: {
           resource_class: 'standard', backend: 'CLOUD_RUN_JOB', provider: null, units: 1,
+          ...FIXTURE_AVAILABILITY.generic,
           pools: ['global', 'tenant:u-bogdan', 'resource:standard', 'runner:generic', 'backend:CLOUD_RUN_JOB'],
           admission: FIXTURE_ADMISSION.generic,
           input_contract: FIXTURE_INPUT_CONTRACTS.generic,
         },
         'claude-code': {
           resource_class: 'standard', backend: 'CLOUD_RUN_JOB', provider: 'anthropic', units: 1,
+          ...FIXTURE_AVAILABILITY['claude-code'],
           pools: [
             'global', 'tenant:u-bogdan', 'resource:standard', 'runner:claude-code',
             'backend:CLOUD_RUN_JOB', 'provider:anthropic', 'provider:anthropic:tenant:u-bogdan',
@@ -2221,6 +2295,7 @@ async function fixtureCapacity(): Promise<Result<Capacity>> {
         },
         codex: {
           resource_class: 'standard', backend: 'CLOUD_RUN_JOB', provider: 'openai', units: 1,
+          ...FIXTURE_AVAILABILITY.codex,
           pools: [
             'global', 'tenant:u-bogdan', 'resource:standard', 'runner:codex',
             'backend:CLOUD_RUN_JOB', 'provider:openai',
@@ -2230,6 +2305,7 @@ async function fixtureCapacity(): Promise<Result<Capacity>> {
         },
         browser: {
           resource_class: 'browser', backend: 'GKE_AUTOPILOT', provider: 'anthropic', units: 2,
+          ...FIXTURE_AVAILABILITY.browser,
           pools: [
             'global', 'tenant:u-bogdan', 'resource:browser', 'runner:browser',
             'backend:GKE_AUTOPILOT', 'provider:anthropic', 'provider:anthropic:tenant:u-bogdan',
@@ -2267,7 +2343,7 @@ async function fixtureCapacity(): Promise<Result<Capacity>> {
 
 async function fixtureTasks(): Promise<Result<TaskPage>> {
   await new Promise((r) => setTimeout(r, 350))
-  noteFixtureProbe('/v1/tasks', 350, true)
+  noteFixtureProbe(route('/v1/tasks'), 350, true)
   const now = Date.now()
   const at = (minsAgo: number) => new Date(now - minsAgo * 60_000).toISOString()
 
@@ -2442,11 +2518,11 @@ async function fixtureTasks(): Promise<Result<TaskPage>> {
 
 async function fixtureWorkflowBoard(): Promise<Result<WorkflowBoard>> {
   await new Promise((r) => setTimeout(r, 300))
-  noteFixtureProbe('/v1/workflows', 300, true)
+  noteFixtureProbe(route('/v1/workflows'), 300, true)
   // A route a non-admin genuinely cannot read, so the strip's 403 cell -- the
   // one that must read as information rather than breakage -- is visible in
   // development instead of only in production.
-  noteFixtureProbe('/v1/admin/dispatch', 120, false)
+  noteFixtureProbe(route('/v1/admin/dispatch'), 120, false)
 
   // Reuse the task fixture so the join is a REAL join: if a step_id or task_id
   // stops matching, the fixture shows "state unknown" exactly as production
@@ -2637,7 +2713,7 @@ function fixtureWorkflowRows(): Workflow[] {
  */
 async function fixtureWorkflows(): Promise<Result<WorkflowPage>> {
   await new Promise((r) => setTimeout(r, 300))
-  noteFixtureProbe('/v1/workflows', 300, true)
+  noteFixtureProbe(route('/v1/workflows'), 300, true)
   const workflows = fixtureWorkflowRows()
   return {
     status: 'ok',
@@ -2745,8 +2821,8 @@ export async function loadAccountsBoard(): Promise<Result<AccountsBoard>> {
     // an empty pool would hide the register form -- the one control that fixes
     // an empty pool. Zero accounts is handled inside the body as a state panel
     // sitting above a form that is still there.
-    read<AccountsPage>('/v1/accounts', () => false),
-    read<{ tenants: Tenant[] }>('/v1/admin/tenants', () => false),
+    read<AccountsPage>(route('/v1/accounts'), () => false),
+    read<{ tenants: Tenant[] }>(route('/v1/admin/tenants'), () => false),
   ])
 
   if (accounts.status === 'loading' || accounts.status === 'error' || accounts.status === 'empty') {
@@ -2816,7 +2892,7 @@ export async function beginAccountSignIn(body: {
 }): Promise<Result<AccountAuthorization>> {
   const res = USE_FIXTURES
     ? await fixtureBeginSignIn(body)
-    : await write('/v1/accounts/authorize', 'POST', body)
+    : await write(route('/v1/accounts/authorize'), 'POST', body)
   if (res.status !== 'ok') return res as Result<AccountAuthorization>
 
   const b = res.data
@@ -2906,7 +2982,7 @@ export async function finishAccountSignIn(body: {
 }): Promise<Result<AccountExchangeResponse>> {
   const res = USE_FIXTURES
     ? await fixtureFinishSignIn(body)
-    : await write('/v1/accounts/exchange', 'POST', body)
+    : await write(route('/v1/accounts/exchange'), 'POST', body)
   if (res.status !== 'ok') return res as Result<AccountExchangeResponse>
 
   const b = res.data
@@ -2952,7 +3028,7 @@ export async function setAccountLending(
   lendTo: string[],
 ): Promise<Result<unknown>> {
   if (USE_FIXTURES) return fixtureLending(accountId, lendTo)
-  return write(`/v1/accounts/${encodeURIComponent(accountId)}/lending`, 'PUT', { lend_to: lendTo })
+  return write(route('/v1/accounts/{account_id}/lending', { account_id: accountId }), 'PUT', { lend_to: lendTo })
 }
 
 /** `PUT /v1/accounts/{id}/state`. `reason` is for the next person, so it is required here. */
@@ -2962,7 +3038,7 @@ export async function setAccountState(
   reason: string,
 ): Promise<Result<unknown>> {
   if (USE_FIXTURES) return fixtureState(accountId, state, reason)
-  return write(`/v1/accounts/${encodeURIComponent(accountId)}/state`, 'PUT', { state, reason })
+  return write(route('/v1/accounts/{account_id}/state', { account_id: accountId }), 'PUT', { state, reason })
 }
 
 /**
@@ -2977,7 +3053,7 @@ export async function setAccountState(
 export async function refreshAccount(accountId: string): Promise<Result<RefreshResponse>> {
   const res = USE_FIXTURES
     ? await fixtureRefresh(accountId)
-    : await write(`/v1/accounts/${encodeURIComponent(accountId)}/refresh`, 'POST')
+    : await write(route('/v1/accounts/{account_id}/refresh', { account_id: accountId }), 'POST')
   if (res.status !== 'ok') return res as Result<RefreshResponse>
 
   const body = res.data
@@ -3010,7 +3086,7 @@ export async function refreshAccount(accountId: string): Promise<Result<RefreshR
  */
 export async function removeAccount(accountId: string): Promise<Result<unknown>> {
   if (USE_FIXTURES) return fixtureRemove(accountId)
-  return write(`/v1/accounts/${encodeURIComponent(accountId)}`, 'DELETE')
+  return write(route('/v1/accounts/{account_id}', { account_id: accountId }), 'DELETE')
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -3133,11 +3209,11 @@ const FIXTURE_TENANT = 'u-bogdan'
 
 async function fixtureAccountsBoard(): Promise<Result<AccountsBoard>> {
   await new Promise((r) => setTimeout(r, 210))
-  noteFixtureProbe('/v1/accounts', 210, true)
+  noteFixtureProbe(route('/v1/accounts'), 210, true)
   // The admin tenant list is the one read a non-admin genuinely cannot do, and
   // the fixture exercises that branch rather than the happy one -- otherwise
   // the "no picker, and here is why" copy ships unlooked-at.
-  noteFixtureProbe('/v1/admin/tenants', 90, false, 'admin_required')
+  noteFixtureProbe(route('/v1/admin/tenants'), 90, false, 'admin_required')
   return {
     status: 'ok',
     fetchedAt: Date.now(),
@@ -3210,7 +3286,7 @@ async function fixtureBeginSignIn(body: {
   // the refusal above would put a wrong status on the Reference page, which
   // exists to say what these routes actually answered. A route with no row is
   // a route nothing has called yet: true, and not a claim about the platform.
-  noteFixtureProbe('/v1/accounts/authorize', 260, true)
+  noteFixtureProbe(route('/v1/accounts/authorize'), 260, true)
   return {
     status: 'ok',
     fetchedAt: Date.now(),
@@ -3301,7 +3377,7 @@ async function fixtureFinishSignIn(body: {
     : [...fixtureAccounts, account]
   // Single-use, and deleted only once the account exists.
   fixturePending.delete(body.state)
-  noteFixtureProbe('/v1/accounts/exchange', 480, true)
+  noteFixtureProbe(route('/v1/accounts/exchange'), 480, true)
   // `unnamed` -> the second sentinel: a 201 whose body names no account. The
   // account IS registered above and the record IS gone, which is exactly the
   // situation the treatment describes -- "look for the label in the pool" is
@@ -3407,12 +3483,12 @@ async function fixtureRemove(accountId: string): Promise<Result<unknown>> {
  */
 export async function loadAccountPool(): Promise<Result<AccountsPage>> {
   if (USE_FIXTURES) return fixtureAccountPool()
-  return read<AccountsPage>('/v1/accounts', (d) => d.accounts.length === 0)
+  return read<AccountsPage>(route('/v1/accounts'), (d) => d.accounts.length === 0)
 }
 
 async function fixtureAccountPool(): Promise<Result<AccountsPage>> {
   await new Promise((r) => setTimeout(r, 190))
-  noteFixtureProbe('/v1/accounts', 190, true)
+  noteFixtureProbe(route('/v1/accounts'), 190, true)
   return {
     status: 'ok',
     fetchedAt: Date.now(),
@@ -3757,7 +3833,7 @@ function rollUpAttempts(attempts: readonly AttemptRow[]): StepUsage {
  */
 async function fixtureStepAttempts(taskId: string): Promise<Result<{ attempts: AttemptRow[] }>> {
   await new Promise((r) => setTimeout(r, 70))
-  noteFixtureProbe('/v1/tasks/{id}/attempts', 70, true)
+  noteFixtureProbe(route('/v1/tasks/{id}/attempts', { id: taskId }), 70, true)
   const mk = (n: number, usage: Partial<AttemptRow>, checkpoints: string[] = []): AttemptRow => ({
     attempt_id: `${taskId}-a${n}`,
     task_id: taskId,
@@ -3862,7 +3938,7 @@ async function mapWithLimit<T, R>(
  */
 async function fixtureSpendAttempts(task: Task): Promise<Result<{ attempts: AttemptRow[] }>> {
   await new Promise((r) => setTimeout(r, 90))
-  noteFixtureProbe(`/v1/tasks/{id}/attempts`, 90, true)
+  noteFixtureProbe(route('/v1/tasks/{id}/attempts', { id: task.id }), 90, true)
   const seed = task.id.length + task.attempt_count
   const mk = (n: number, usage: Partial<AttemptRow>): AttemptRow => ({
     attempt_id: `${task.id}-a${n}`,

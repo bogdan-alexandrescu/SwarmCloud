@@ -4,7 +4,7 @@ import type { TopicId } from './help'
 import { HelpLinks } from './HelpCard'
 import { Screen } from './Shell'
 import { ProfileAdmissionPanel, headroomFigure } from './Blockers'
-import { headroomFor, poolLabel, poolScope, type Capacity, type Pool, type RunnerProfile } from './types'
+import { headroomFor, poolLabelAmong, poolScope, type Capacity, type Pool, type RunnerProfile } from './types'
 
 /**
  * The runner-profile catalogue — what kinds of agent this platform can run.
@@ -111,16 +111,20 @@ function Catalogue({ capacity }: { capacity: Capacity }) {
 
   return (
     <>
-      <p className="conjunction">
-        A task must clear <strong>every</strong> pool in its profile&apos;s list at
-        the same moment. Capacity is the <strong>minimum</strong> across them, never a sum.
-      </p>
-      <p className="muted">
-        These pool lists are{' '}
-        {tenant ? <>for tenant <strong>{tenant}</strong></> : <>for your own tenant</>}, including if
-        you are an admin. They describe what a task <em>you</em> submit has to clear — not
-        what the platform as a whole can run.
-      </p>
+      {/* THE BANNER AND THE SCOPE PARAGRAPH ARE GONE (CP-5, visual QA
+          2026-09-25), as prose-migration-table §3.14 had already decided and
+          this screen had not followed. Neither claim was lost:
+
+            "a task must clear EVERY pool ... the MINIMUM, never a sum" is
+            `#help/pools-all-at-once`, linked from this screen's footer, and is
+            drawn on every card as the pool list headed `Pool it must clear`
+            with the figure above it equal to the smallest `Fits`;
+
+            "these pool lists are for tenant X, including if you are an admin"
+            is the `tenant X` note on EVERY card's head -- the card-note slot
+            Pools uses for the same Trap D -- and `#help/tenant-scope` in the
+            footer. A qualifier on the card cannot be scrolled away from the
+            figures it scopes; a paragraph above the first card could. */}
       {entries.map(([name, profile]) => (
         <ProfileCard key={name} name={name} profile={profile} byName={byName} tenant={tenant} capacity={capacity} />
       ))}
@@ -154,6 +158,25 @@ function ProfileCard({ name, profile, byName, tenant, capacity }: {
   // the row tags have to say which one a pool is.
   const refusing = new Set(head.blockers.map((b) => b.pool))
   const unread = new Set(head.unread)
+  // EVERY BINDING POOL, NOT THE FIRST (CP-4, visual QA 2026-09-25). `head.
+  // binding` is `admission.binding[0]` -- one name, for the columns that have
+  // room for one -- and this card used it to tag rows, so when two pools tied
+  // it tagged one of them `binding` while this screen's own counterfactual
+  // said lifting that one alone bought nothing. 3 of 5 cards, live. The list
+  // is the server's (`headroom.py`); nothing here re-derives it.
+  const binding = bindingPools(profile, head.binding)
+  // One name per pool across the whole card, qualified where two would read
+  // alike (CP-15): the `browser` profile clears `resource:browser` AND
+  // `runner:browser`, and both printed `browser`.
+  const among = [...profile.pools, ...binding]
+  const label = (pool: string) => poolLabelAmong(pool, among)
+  // A PROFILE THE PLATFORM REFUSES IS NOT PRICED (CP-3). Its pools are still
+  // listed -- they are true, and they are what re-enabling it would face --
+  // but "N could start", the run-out line and the counterfactuals are offers,
+  // and there is nothing on offer. Absent means available: an older API does
+  // not send the field, and the submit gate refuses a disabled profile anyway.
+  const off = profile.available === false
+  const reason = profile.disabled_reason || 'refused by the platform'
 
   return (
     <section className="section panel">
@@ -166,35 +189,60 @@ function ProfileCard({ name, profile, byName, tenant, capacity }: {
         {/* Three cases, not two. A measured count, a profile nothing caps (no
             number exists), and a profile with an unread pool (a number exists
             and we do not have it). The last two both render an em dash and
-            must not be worded the same. */}
-        <span className="count-chip" title={figure.title}>
-          {head.agents !== null
-            ? `${head.agents} could start for ${tenant ?? 'your tenant'}`
-            : head.basis === 'uncapped'
-              ? 'nothing here caps this'
-              : 'not measured — a pool could not be read'}
-        </span>
+            must not be worded the same. A fourth, above all three: the
+            platform refuses the profile, and no count is drawn at all. */}
+        {off ? (
+          <span className="ctl-chip is-bad" aria-label={`Disabled: ${reason}`}>
+            <i aria-hidden="true" />
+            disabled
+          </span>
+        ) : (
+          <span className="count-chip" title={figure.title}>
+            {head.agents !== null
+              ? `${head.agents} could start`
+              : head.basis === 'uncapped'
+                ? 'nothing here caps this'
+                : 'not measured — a pool could not be read'}
+          </span>
+        )}
+        {/* TRAP D, ON THE CARD (CP-5). Every figure here is the CALLING
+            tenant's, admin included -- `pool_names_for(tenant_id=ctx.
+            tenant_id)`. It is the note Pools' Headroom carries, in the same
+            slot, and it replaces both the paragraph above the first card and
+            the `for <tenant>` this chip used to end on. */}
+        <span className="ctl-card-note is-end">{tenant ? `tenant ${tenant}` : 'your tenant'}</span>
       </h2>
+
+      {off && <p className="muted">{reason}</p>}
 
       <dl className="kv">
         <dt>Backend</dt>
         <dd className="mono">{profile.backend}</dd>
         <dt>Provider</dt>
         {/* null is not "unknown": the profile needs no provider key at all, so
-            no provider pool exists and no provider quota can block it. */}
-        <dd className="mono">{profile.provider ?? <span title="Uses no provider">&mdash;</span>}</dd>
+            no provider pool exists and no provider quota can block it. That
+            is a measured answer, so it is WORDS -- Runtimes' words for the
+            same fact -- and not the em dash, which on this screen means a
+            figure nobody measured (CP-1). */}
+        <dd className="mono">{profile.provider ?? 'none needed'}</dd>
         <dt>Resource class</dt>
         <dd className="mono">{profile.resource_class}</dd>
         {/* Weight straight from the payload. RESOURCE_UNITS in types.ts is a
             bundled copy of the same table and can drift; the response has
-            already resolved the class to units, so that is what is shown. */}
+            already resolved the class to units, so that is what is shown.
+            In the app-wide `2u`, as Pools and Runtimes print it (CP-24): the
+            clause that followed it -- "per agent, added to every pool below
+            on admission" -- was the rationale `#help/units-not-agents` holds,
+            linked from this screen's footer. */}
         <dt>Weight</dt>
-        <dd>
-          {profile.units} unit{profile.units === 1 ? '' : 's'} per agent, added to every pool below on admission
-        </dd>
+        <dd>{profile.units}u</dd>
       </dl>
 
-      {/* `is-stacked` — F6 OF `docs/audits/2026-09-23/overflow-inventory.md`.
+      {/* `is-scroll` NOW (CH-13, design-system.md §7.3): Profile headroom
+          stacked was 9,882px tall at 390, and five columns compared across
+          rows is a data table, so below 900px it scrolls with the pool column
+          held in view. What follows is why it was `is-stacked`.
+          F6 OF `docs/audits/2026-09-23/overflow-inventory.md`.
           At 390pt this table measured `clientWidth: 358` against a
           `scrollWidth` of 543-615 across its five instances: 34-42% of the
           columns were behind an `overflow-x: auto` that paints no scrollbar on
@@ -209,7 +257,7 @@ function ProfileCard({ name, profile, byName, tenant, capacity }: {
           a table element drops its implicit ARIA role in every browser, so
           without them a stacked table is a pile of anonymous blocks to a screen
           reader. They are the roles these elements already have. */}
-      <div className="table-wrap is-stacked">
+      <div className="table-wrap is-scroll">
         <table className="pools" role="table">
           <thead role="rowgroup">
             <tr role="row">
@@ -227,13 +275,13 @@ function ProfileCard({ name, profile, byName, tenant, capacity }: {
               const paused = row !== null && isPaused(row)
               // Every refusing pool is marked, not just the tightest one.
               const blocking = refusing.has(pool)
-              const capping = head.binding === pool || blocking
+              const capping = binding.includes(pool) || blocking
               const notRead = unread.has(pool)
               const scope = poolScope(pool)
               return (
                 <tr role="row" key={pool} className={paused ? 'paused' : blocking ? 'full' : undefined}>
                   <th role="rowheader" scope="row" className="pool-name" title={pool}>
-                    {poolLabel(pool)}
+                    {label(pool)}
                     <span className="raw">{pool}</span>
                   </th>
                   <td role="cell" data-label="Scope">
@@ -257,7 +305,17 @@ function ProfileCard({ name, profile, byName, tenant, capacity }: {
                       {blocking && !paused && (
                         <span className="tag full" title="At its ceiling right now: this pool is refusing the next task of this profile.">full</span>
                       )}
-                      {capping && !blocking && <span className="tag capped">binding</span>}
+                      {/* A FACT ABOUT A HEALTHY POOL, NOT A WARNING (CP-13).
+                          `binding` was the retired bordered `.tag` in the warn
+                          hue, on a pool with room left: it says which ceiling
+                          the figure above is the minimum of. The info chip is
+                          §6.6's word for a fact that is neither good nor bad. */}
+                      {capping && !blocking && (
+                        <span className="ctl-chip is-info">
+                          <i aria-hidden="true" />
+                          binding
+                        </span>
+                      )}
                     </span>
                   </td>
                 </tr>
@@ -267,24 +325,46 @@ function ProfileCard({ name, profile, byName, tenant, capacity }: {
         </table>
       </div>
 
-      <p className="muted small">
-        {head.agents === null
-          ? head.basis === 'uncapped'
-            ? 'No pool in this list is configured, so nothing here limits this profile and there is no number to report.'
-            : 'A pool in this list could not be read, so there is no number to report. That is not the same as zero.'
-          : head.agents === 0
-            ? `Nothing more of this profile can start: ${head.blockers.length} of these ${rows.length} pools ${head.blockers.length === 1 ? 'is' : 'are'} refusing it right now.`
-            : `${head.agents} more could start; ${head.binding ? poolLabel(head.binding) : 'one of these pools'} would run out first.`}
-        {uncapped > 0 && head.basis === 'measured' &&
-          ` ${uncapped} of these ${rows.length} pools ${uncapped === 1 ? 'is' : 'are'} unconfigured and constrains nothing.`}
-      </p>
+      {/* NOTHING BELOW THE TABLE FOR A DISABLED PROFILE. Every line here is
+          what could start, what would run out, or what lifting a ceiling
+          would have bought -- each one an offer the platform will refuse. The
+          reason it refuses is under the heading instead. */}
+      {!off && (
+        <>
+          <p className="muted small">
+            {head.agents === null
+              ? head.basis === 'uncapped'
+                ? 'No pool in this list is configured, so nothing here limits this profile and there is no number to report.'
+                : 'A pool in this list could not be read, so there is no number to report. That is not the same as zero.'
+              : head.agents === 0
+                ? `Nothing more of this profile can start: ${head.blockers.length} of these ${rows.length} pools ${head.blockers.length === 1 ? 'is' : 'are'} refusing it right now.`
+                : `${head.agents} more could start; ${binding.length > 0 ? binding.map(label).join(' and ') : 'one of these pools'} would run out first.`}
+            {uncapped > 0 && head.basis === 'measured' &&
+              ` ${uncapped} of these ${rows.length} pools ${uncapped === 1 ? 'is' : 'are'} unconfigured and constrains nothing.`}
+          </p>
 
-      {/* The object that is stuck, on its own page: every reason it is stuck,
-          grouped by what would clear it, and what lifting each ceiling would
-          have bought at the last read. */}
-      <ProfileAdmissionPanel profile={profile} capacity={capacity} />
+          {/* The object that is stuck, on its own page: every reason it is
+              stuck, grouped by what would clear it, and what lifting each
+              ceiling would have bought at the last read. */}
+          <ProfileAdmissionPanel profile={profile} capacity={capacity} />
+        </>
+      )}
     </section>
   )
+}
+
+/**
+ * Every pool the server says the next task of this profile would run out on.
+ *
+ * `admission.binding` is the list (`headroom.py`). `fallback` is `headroomFor`'s
+ * single name, which is the first blocker when the list is empty and nothing
+ * when the API predates the block -- so a card never tags FEWER pools than it
+ * did before this read the list.
+ */
+function bindingPools(profile: RunnerProfile, fallback: string | null): string[] {
+  const listed = profile.admission?.binding ?? []
+  if (listed.length > 0) return listed
+  return fallback === null ? [] : [fallback]
 }
 
 /**
