@@ -22,7 +22,12 @@ const BUDGETS = [200, 500, 1000, 2000]
  * compile error here instead of a `?` that lands on the top of the Help page
  * and answers nothing -- the same rule `Dock.tsx` states for its own link.
  */
-const WINDOW_HELP: TopicId = 'partial-read'
+// `event-paging`, NOT `partial-read`. The window's `Why →` sits beside
+// "these N rows only · older tasks exist" -- a bounded read of a paged list --
+// and opened "One message belongs to one failure", a topic about attributing
+// one error across several failed reads, which says nothing about why a window
+// stops at N rows. `partial-read` keeps its real callers.
+const WINDOW_HELP: TopicId = 'event-paging'
 const SPEND_HELP: TopicId = 'tokens-reported'
 const SCOPE_HELP: TopicId = 'tenant-scope'
 const ABSENCE_HELP: TopicId = 'absent-vs-zero'
