@@ -41,6 +41,7 @@ from fakes import (
     FakeCollectionRef,
     FakeDocumentRef,
     FakeFirestore,
+    FakeTransaction,
     FakeTransactionRunner,
 )
 
@@ -386,6 +387,87 @@ def test_the_startup_budget_reaches_the_generation_check_and_the_first_write_onl
     db.calls.clear()
     control.poll(None)
     assert db.calls and all(kwargs == {} for _, _, kwargs in db.calls), db.calls
+
+
+class _TaggedTransaction(FakeTransaction):
+    """Reads through a transaction say so, as `Transaction.get` does in Firestore.
+
+    The real one calls `DocumentReference.get(transaction=...)`. A transaction's
+    reads are retried by `firestore.transactional`, not by a per-call budget,
+    so the test below sets them aside by that keyword.
+    """
+
+    def get(self, ref: FakeDocumentRef) -> Any:
+        return ref.get(transaction=self)
+
+
+class _TaggedTransactionRunner(FakeTransactionRunner):
+    def run(self, fn: Any) -> Any:
+        return fn(_TaggedTransaction(self._db))
+
+
+def test_every_control_plane_read_before_the_runner_carries_the_startup_budget(
+    store, tmp_path, log_stream, monkeypatch
+):
+    """Every control-plane read that decides whether to start, not only the four the report named.
+
+    Those are the generation check and its re-check, the state read that
+    `advance_to_running` walks from, the task read that restores the
+    checkpoint, and the quota preflight's poll. The test measures every
+    non-transactional read of a task, lease, attempt or quota document up
+    to the moment the runner is built. So a read added there later is held
+    to the same rule.
+
+    Two startup reads are NOT held to it, and the test leaves them out by
+    name. `secrets.load_tenant` reads `tenants/`, and input staging
+    (`inputs.stage_inputs`) reads upstream tasks. Both belong to modules
+    outside this change. By the time either runs, the generation check has
+    just reached Firestore. If one hangs, the phase line names it, and a
+    SIGTERM still unwinds out of it.
+    """
+    from conftest import build_worker as build_test_worker
+
+    db = RecordingFirestore()
+    seed_attempt(db, task_input={"prompt": "budget", "steps": 1, "sleep_seconds": 0.05})
+    runner = _TaggedTransactionRunner(db)
+    worker, _, _ = build_test_worker(db, store, tmp_path, log_stream, txn_runner=runner)
+    budget = {"retry": object(), "timeout": 10.0}
+    worker.control = ControlPlane(
+        db,
+        task_id="task_1",
+        attempt_id="att_1",
+        lease_id="lease_1",
+        tenant_id=TENANT,
+        generation=1,
+        logger=worker.log,
+        txn_runner=runner,
+        startup_call_options=budget,
+    )
+
+    started_at: list[int] = []
+    real_child = lifecycle.ChildProcess
+
+    class _MarkedChild(real_child):  # type: ignore[misc, valid-type]
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            started_at.append(len(db.calls))
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(lifecycle, "ChildProcess", _MarkedChild)
+
+    assert worker.run() == ExitCode.OK
+    assert started_at, "the runner never started"
+    control_plane = ("tasks/", "leases/", "attempts/", "quota/")
+    reads = [
+        (path, kwargs)
+        for op, path, kwargs in db.calls[: started_at[0]]
+        if op == "get" and "transaction" not in kwargs and path.startswith(control_plane)
+    ]
+    unbudgeted = [(path, kwargs) for path, kwargs in reads if kwargs != budget]
+    assert not unbudgeted, f"read before the runner without the startup budget: {unbudgeted}"
+    task_reads = [path for path, _ in reads if path == "tasks/task_1"]
+    # The generation check, advance_to_running's state read, the checkpoint
+    # restore, the re-check and the preflight poll.
+    assert len(task_reads) >= 5, reads
 
 
 def test_the_entrypoint_gives_the_control_plane_thirty_seconds_of_ten_second_tries(
