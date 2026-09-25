@@ -10,7 +10,8 @@
 // render under --t-micro); drop the container declaration (a query naming a
 // container nothing establishes matches nothing, silently); draw a legend key
 // its own way instead of by TS-4's rule; give the pick a hue; leave the phone's
-// step buttons under 44px.
+// step buttons under 44px; put the scale back inside the scroller; show a
+// card's strips in a card too narrow for its row.
 
 import STYLES from '../styles.css?raw'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -46,11 +47,11 @@ function won(el: Element, prop: string | readonly string[], env: CascadeEnv, sta
 }
 
 const CHART =
-  '<figure class="ol-chart"><div class="ol-plot">' +
-  '<div class="ol-drawing is-wide" id="w"></div>' +
-  '<div class="ol-drawing is-mid" id="m"></div>' +
-  '<div class="ol-drawing is-narrow" id="n"></div>' +
-  '</div></figure>'
+  '<figure class="ol-chart">' +
+  '<div class="ol-drawing is-wide" id="w"><svg class="ol-gutter"></svg><div class="ol-plot"></div></div>' +
+  '<div class="ol-drawing is-mid" id="m"><svg class="ol-gutter"></svg><div class="ol-plot"></div></div>' +
+  '<div class="ol-drawing is-narrow" id="n"><svg class="ol-gutter"></svg><div class="ol-plot"></div></div>' +
+  '</figure>'
 
 describe('the ledger is drawn three times, and its own width picks one (§7.2)', () => {
   it('is asked of the chart’s own box: the figure is the size container the queries name', () => {
@@ -75,6 +76,27 @@ describe('the ledger is drawn three times, and its own width picks one (§7.2)',
     const f = fragment('<div class="ol-plot" id="a"></div><div class="ol-plot has-older" id="b"></div>')
     expect(won(pick(f, '#a'), ['mask-image', 'mask'], WIDE)).toBeNull()
     expect(won(pick(f, '#b'), ['mask-image', 'mask'], WIDE) ?? '').toMatch(/^linear-gradient\(to right, transparent/)
+  })
+
+  it('pins the scale column and the lane labels over the plot that scrolls, on an opaque ground (wireframe_390)', () => {
+    const f = fragment(
+      '<figure class="ol-chart"><div class="ol-drawing is-narrow">' +
+        '<svg class="ol-gutter"><text class="ol-tick">100%</text></svg>' +
+        '<span class="ol-lane-label">Success rate</span>' +
+        '<div class="ol-plot"></div></div></figure>',
+    )
+    expect(won(pick(f, '.ol-drawing'), 'position', PHONE)).toBe('relative')
+    expect(won(pick(f, '.ol-plot'), 'overflow-x', PHONE)).toBe('auto')
+    // The scale is laid over the drawing's left edge, outside the scroller.
+    expect(won(pick(f, '.ol-gutter'), 'position', PHONE)).toBe('absolute')
+    expect(won(pick(f, '.ol-gutter'), 'left', PHONE)).toBe('0')
+    // A lane label sits over columns that move under it: its own ground keeps it legible,
+    // and it takes no pointer so a tap on the column beneath still picks it.
+    const label = pick(f, '.ol-lane-label')
+    expect(won(label, 'position', PHONE)).toBe('absolute')
+    expect(won(label, ['background', 'background-color'], PHONE)).toBe('var(--bg)')
+    expect(won(label, 'pointer-events', PHONE)).toBe('none')
+    expect(won(label, 'white-space', PHONE)).toBe('nowrap')
   })
 
   it('draws its tick text at --t-micro, in mono', () => {
@@ -174,8 +196,48 @@ describe('at 390 (§7.2)', () => {
   })
 
   it('draws the cards’ mini strips only at 900px and up', () => {
-    const f = fragment('<svg class="ol-strip"></svg>')
-    expect(won(pick(f, '.ol-strip'), 'display', { width: 899 })).toBe('none')
-    expect(won(pick(f, '.ol-strip'), 'display', { width: 900 })).toBe('block')
+    const f = fragment('<section class="ctl-card ol-card"><div class="ctl-card-body"><svg class="ol-strip is-n14"></svg></div></section>')
+    expect(won(pick(f, '.ol-strip'), 'display', { width: 899, container: 700 })).toBe('none')
+    expect(won(pick(f, '.ol-strip'), 'display', { width: 900, container: 700 })).toBe('block')
+  })
+
+})
+
+describe('a card’s mini strips are drawn only where its row fits (1440, 3-up)', () => {
+  // A row is name (≥104) · track (≥48) · count (44) · strip, 8px apart: 220px
+  // before the strip, which is 6px a bucket. At 1440 the cards are 3-up
+  // (.ctl-cards' minmax(min(100%, 340px), 1fr) in a ~1144px column), so a
+  // card body is ~329px wide -- room for a 14-bucket strip (304px) and not for
+  // 24 hours (364px) or 30 days (400px), which spilled 20-70px over the card's
+  // border into the next card.
+  const CARD =
+    '<section class="ctl-card ol-card"><div class="ctl-card-body">' +
+    '<svg class="ol-strip is-n14" id="s14"></svg><svg class="ol-strip is-n24" id="s24"></svg>' +
+    '<svg class="ol-strip is-n31" id="s31"></svg><svg class="ol-strip is-n45" id="s45"></svg>' +
+    '<svg class="ol-strip is-n60" id="s60"></svg></div></section>'
+  const shown = (container: number, width = 1440) => {
+    const f = fragment(CARD)
+    return ['#s14', '#s24', '#s31', '#s45', '#s60'].filter((id) => won(pick(f, id), 'display', { width, container }) !== 'none')
+  }
+
+  it('asks the card body, which is the size container the strips are measured against', () => {
+    const f = fragment(CARD)
+    expect(won(pick(f, '.ctl-card-body'), 'container', WIDE)).toMatch(/^ol-card\s*\/\s*inline-size$/)
+  })
+
+  it('keeps a 14-day strip and drops 24-hour and 30-day ones in a 329px card body', () => {
+    expect(shown(329)).toEqual(['#s14'])
+  })
+
+  it('draws each band only once its row fits: 304, 364, 406, 490 and 580px', () => {
+    expect(shown(303)).toEqual([])
+    expect(shown(364)).toEqual(['#s14', '#s24'])
+    expect(shown(406)).toEqual(['#s14', '#s24', '#s31'])
+    expect(shown(489)).toEqual(['#s14', '#s24', '#s31'])
+    expect(shown(580)).toEqual(['#s14', '#s24', '#s31', '#s45', '#s60'])
+  })
+
+  it('draws none below 900px, however wide the card', () => {
+    expect(shown(800, 899)).toEqual([])
   })
 })
