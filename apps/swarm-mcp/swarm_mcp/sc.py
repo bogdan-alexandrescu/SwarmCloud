@@ -64,7 +64,7 @@ from swarm_common.states import CONCURRENCY_STATES, PENDING_STATES, TaskState
 
 from . import render
 from .client import SwarmClient, SwarmError
-from .invocation import terminal_command
+from .invocation import help_command, terminal_command
 from .patches import explain_absence, patch_uri
 from .render import Finding, Snapshot, Style
 
@@ -674,7 +674,9 @@ def _outranked(detection: Any, email: str) -> str:
         who = f"the service account {os.environ.get('SWARM_IMPERSONATE_SA', '').strip()}"
         remedy = "unset SWARM_IMPERSONATE_SA"
     else:
-        who, remedy = f"the {tier.value} tier", "see `swarm doctor`"
+        # Through `terminal_command`, like `sc whoami` below: typed bare, this
+        # was `command not found` on a plugin-only install (review of #201).
+        who, remedy = f"the {tier.value} tier", f"see `{terminal_command('swarm doctor')}`"
     return (
         f"warning     {detection.detail}, which ranks above a sign-in: the plugin's "
         f"tools and every other `sc` and `swarm` command on this machine will act as "
@@ -922,7 +924,7 @@ def _common(parser: argparse.ArgumentParser, *, root: bool) -> None:
     )
     parser.add_argument(
         "--context",
-        help="which configured deployment to use (see `sc context list`)",
+        help=f"which configured deployment to use (see `{help_command('sc context list')}`)",
         **default(None),
     )
 
@@ -1005,7 +1007,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ca.add_argument(
         "--client-id", default="",
-        help="its Desktop OAuth client id (needed for `sc login` at an IAP front door)",
+        help=(
+            "its Desktop OAuth client id "
+            f"(needed for `{help_command('sc login')}` at an IAP front door)"
+        ),
     )
     ca.add_argument(
         "--client-secret-stdin", action="store_true",

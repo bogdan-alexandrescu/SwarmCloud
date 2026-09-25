@@ -61,13 +61,21 @@ class InputSpec:
     minimum: float | None = None
     maximum: float | None = None
     means: str = ""
+    #: Values inside the bounds that are refused all the same, each with what
+    #: the platform would read it as instead. A tuple of pairs, not a dict, so
+    #: the spec stays hashable.
+    refused: tuple[tuple[Any, str], ...] = ()
 
     def describe(self) -> str:
         if self.minimum is not None and self.maximum is not None:
-            return f"{self.kind} {self.minimum:g}..{self.maximum:g}"
-        if self.minimum is not None:
-            return f"{self.kind} >= {self.minimum:g}"
-        return self.kind
+            text = f"{self.kind} {self.minimum:g}..{self.maximum:g}"
+        elif self.minimum is not None:
+            text = f"{self.kind} >= {self.minimum:g}"
+        else:
+            text = self.kind
+        if self.refused:
+            text += " except " + ", ".join(str(value) for value, _ in self.refused)
+        return text
 
 
 #: THE ONE PLACE a runner's caller-settable inputs are named, keyed by profile
@@ -90,12 +98,25 @@ class InputSpec:
 #: platform records rather than shape the run: `spend`, which the worker books
 #: as the attempt's cost; `provider`, which names whose quota document a park
 #: writes; `credential_revoked_times`, `credential_detail`, `quota_detail` and
-#: `reset_at`, which simulate a provider's refusal. `quota_exhausted` is in: it
-#: parks the task, which is the path #142 exists to exercise, on the mock's own
-#: `mock-provider` for the caller's own tenant.
+#: `reset_at`, which simulate a provider's refusal.
+#:
+#: `quota_exhausted` AND `retry_after_seconds` ARE LEFT OUT TOO, because a
+#: caller could not stop what they start (review of PR #201). The mock raises
+#: its rate limit on EVERY attempt -- the check runs before any saved state
+#: and keeps no count, unlike `credential_revoked_times` -- and a park does
+#: not spend an attempt: `admission.acquire_lease_in_transaction` counts it,
+#: but neither the worker's `ControlPlane.park` nor the scheduler's
+#: `promote_to_ready` reads `retries_exhausted`, and neither does admission.
+#: So a mock step sent `{"quota_exhausted": true}`
+#: re-leased and re-parked, in a new Cloud Run execution each time, until
+#: somebody ran `swarm cancel`. The park path wants a bounded park in the
+#: mock -- a `quota_exhausted_times` counter kept in its state file -- which
+#: is a worker change and an owner's decision, not this table's.
+#: `retry_after_seconds` only shapes that signal, so it goes with it.
 #:
 #: tests/unit/mcp/test_runner_inputs.py holds every name here to the frozen
-#: catalogue and every key to a `payload` read in the runner's source.
+#: catalogue, every key to a `payload` read in the runner's source, and no key
+#: to the branch that raises the rate limit.
 DECLARED_INPUTS: dict[str, dict[str, InputSpec]] = {
     "mock": {
         "sleep_seconds": InputSpec("number", minimum=0, means="how long the run sleeps, in total"),
@@ -103,9 +124,28 @@ DECLARED_INPUTS: dict[str, dict[str, InputSpec]] = {
         "steps": InputSpec("integer", minimum=1, means="how many progress files, and checkpoints, it writes"),
         "fail": InputSpec("boolean", means="fail on purpose, after the steps"),
         "fail_message": InputSpec("string", means="the error a failure reports"),
-        "exit_code": InputSpec("integer", minimum=0, maximum=255, means="the exit code a failure uses"),
-        "quota_exhausted": InputSpec("boolean", means="report a provider rate limit, so the task parks"),
-        "retry_after_seconds": InputSpec("integer", minimum=0, means="the retry-after that rate limit carries"),
+        # THE WORKER DECIDES WHAT AN ATTEMPT WAS FROM ITS EXIT CODE, so a code
+        # it reads as something else turns a failure on purpose into that
+        # thing (`agent_worker/runners/base.py`, `lifecycle._finalise`).
+        # Minimum 1: a 0 beside the result.json the mock writes is recorded
+        # SUCCEEDED. The three refused below are the EXIT_* codes that are
+        # not a plain failure; restated here because swarm-mcp cannot import
+        # the worker, and test_runner_inputs.py reads base.py's EXIT_*
+        # constants and fails if one is missing (contract request 21 asks for
+        # the codes to have a shared home).
+        "exit_code": InputSpec(
+            "integer",
+            minimum=1,
+            maximum=255,
+            means="the exit code a failure uses",
+            refused=(
+                (77, "77 is a provider rate limit to the worker, which parks the task "
+                     "instead of failing it -- and with no quota.json, again on every attempt"),
+                (78, "78 is the code a runner exits with when its credential is refused, "
+                     "so a failure recorded with it reads as one"),
+                (143, "143 is a runner stopped by SIGTERM, which the worker records CANCELLED"),
+            ),
+        ),
         "artifact_text": InputSpec("string", means="what the output artifact holds"),
         "artifact_name": InputSpec("filename", means="the output artifact's file name"),
     },
@@ -137,6 +177,9 @@ def _check_value(key: str, value: Any, spec: InputSpec, where: str) -> Any:
             raise SwarmError(f"{wanted}, not {value!r}")
         if spec.maximum is not None and value > spec.maximum:
             raise SwarmError(f"{wanted}, not {value!r}")
+        for refused, reads_as in spec.refused:
+            if value == refused:
+                raise SwarmError(f"{wanted}, not {value!r}: {reads_as}")
         return value
     if spec.kind == "boolean":
         if not isinstance(value, bool):

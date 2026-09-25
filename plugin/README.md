@@ -306,10 +306,11 @@ stated here rather than papered over, because a model that meets it without
 warning reports the platform as broken. `/sc` and the `sc` skill want the
 repository, and the plugin's two descriptions say so. The `delegate` skill's
 tools come from the MCP server and are unaffected. The shell commands the
-bridge hands back -- `follow_live_with`, a sign-in hint -- are spelled for the
-install the bridge runs from, so they need no checkout (see *Where the API
-actually is*, below); the skill's own `uv run swarm doctor` is the checkout's
-spelling.
+bridge hands back -- `follow_live_with`, a sign-in hint, the `swarm doctor`
+command a tool's error ends with when the request never reached the API -- are
+spelled for the install the bridge runs from, so they need no checkout (see
+*Where the API actually is*, below). The delegate skill names no launcher of
+its own: it tells the model to run each command exactly as the bridge spelled it.
 
 The `sc` skill and `/sc` are granted each **view** by name —
 `uv run sc accounts`, `uv run sc task`, and so on — and never `sc` as a
@@ -417,6 +418,11 @@ deleted, so the runs that name it stay readable.
 step can sleep long enough to be cancelled, or fail on purpose: `inputs` on a
 `swarm_dispatch` call or a `swarm_workflow` step, `--input sleep_seconds=120`
 on `swarm dispatch`, `"inputs": {...}` on a step in a `swarm workflow` spec.
+Nothing a caller sends can park a mock step. The mock's `quota_exhausted` fires
+on every attempt, and a park does not spend one, so the task would park and
+resume until someone cancelled it. A bounded park needs a counter in the
+mock itself. `exit_code` refuses 0, 77, 78 and 143, which the worker reads as a
+success, a rate limit, a refused credential and a cancellation.
 Every other profile declares none and takes none. A key the profile does not
 declare is refused by name, never dropped, and never an image, a command, a
 resource spec, a backend or a model: `input.model` is read by the CLI runners,

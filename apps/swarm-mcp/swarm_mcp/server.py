@@ -42,6 +42,7 @@ from . import profiles as catalogue
 from . import workflows
 from .client import TERMINAL, SwarmClient, SwarmError, task_id_of
 from .follow import DEFAULT_EVENT_PAGE, DEFAULT_LOG_BUDGET, follow, follow_command
+from .invocation import terminal_command
 from .patches import (
     apply_patch,
     describe_task,
@@ -964,6 +965,31 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
     raise SwarmError(f"unknown tool: {name}")
 
 
+def _tool_error_text(exc: SwarmError) -> str:
+    """What a failed tool call answers: the error, and, where the request never
+    reached swarm-api, the command that says why -- spelled for this install.
+
+    WHY THE BRIDGE SAYS IT AND THE SKILL DOES NOT (review of PR #201). The
+    delegate skill answered "IAP refused this before the API saw it" with "Run
+    `uv run swarm doctor`", which on a plugin-only install answers `Failed to
+    spawn: swarm` -- #189's own output, met while diagnosing an unreachable
+    API. A skill is text and cannot know the install; `terminal_command` does.
+    So the refusal carries the command and the skill says to run the one the
+    error names, as it says of `follow_live_with`.
+
+    ONLY ON `edge`: Google's edge answered, not the API. An answer from the
+    API itself -- a 409, a validation error -- means the request arrived, and
+    doctor, which explains how a request fails to arrive, is no answer to it.
+    """
+    text = str(exc)
+    if getattr(exc, "edge", False):
+        text = text.rstrip().rstrip(".") + (
+            f". This never reached swarm-api: `{terminal_command('swarm doctor')}` prints "
+            "the address this bridge used and the credential that address takes"
+        )
+    return text
+
+
 def _respond(message_id: Any, result: Any) -> None:
     sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": message_id, "result": result}) + "\n")
     sys.stdout.flush()
@@ -1022,7 +1048,7 @@ def serve(stdin=None, stdout=None) -> int:
                 # session rather than show the operator what went wrong.
                 _respond(
                     message_id,
-                    {"content": [{"type": "text", "text": str(exc)}], "isError": True},
+                    {"content": [{"type": "text", "text": _tool_error_text(exc)}], "isError": True},
                 )
             except Exception as exc:  # pragma: no cover - defensive
                 _respond(

@@ -193,3 +193,14 @@ def terminal_command(words: str) -> str:
     if program not in PROGRAMS:
         return words
     return f"{launcher(program)}{words}"
+
+
+def help_command(words: str) -> str:
+    """`terminal_command`, for an argparse `help=` string.
+
+    argparse %-formats every argument's help when it prints it, so a `%` in
+    the spelled source -- a percent-encoded character in a `SWARM_MCP_FROM`
+    path, say -- would end `--help` in a ValueError. Doubled here, once, rather
+    than at each call site. The SPELLING is still decided above.
+    """
+    return terminal_command(words).replace("%", "%%")

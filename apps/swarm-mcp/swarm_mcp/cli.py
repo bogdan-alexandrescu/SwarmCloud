@@ -58,6 +58,7 @@ from .follow import (
     terminal_line,
     time_order,
 )
+from .invocation import help_command
 from .patches import (
     apply_patch,
     describe_task,
@@ -1441,12 +1442,16 @@ def _workflow_epilog() -> str:
         f"Each step needs step_id and prompt; it may also carry {optional} "
         f"(runner_profile defaults to {workflows.DEFAULT_PROFILE}). No other "
         "step key is sent. `inputs` holds only what the step's profile "
-        "declares -- `swarm profiles` lists them -- e.g. "
-        '{"sleep_seconds": 120} for mock. At the top level, all optional: '
+        'declares -- e.g. {"sleep_seconds": 120} for mock; the command at the '
+        "end lists each profile's. At the top level, all optional: "
         "strategy, carrier, repository_url, repository_ref, on_step_failure, "
         "priority, label -- the flags below override the file's.",
         width=76,
     )
+    # Spelled for this install, and on a line of its own: `textwrap.fill`
+    # breaks at spaces, and the plugin-only spelling has spaces inside its
+    # quoted requirement, so a wrapped copy would not run.
+    profiles_command = terminal_command("swarm profiles")
     return (
         "A minimal spec: two steps, the second reading a file the first wrote.\n"
         "\n"
@@ -1462,6 +1467,10 @@ def _workflow_epilog() -> str:
         "  }\n"
         "\n"
         f"{keys}\n"
+        "\n"
+        "What each runner profile declares:\n"
+        "\n"
+        f"  {profiles_command}\n"
     )
 
 
@@ -1477,7 +1486,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--context",
         default=None,
-        help="which configured deployment to use (`sc context list`); "
+        help=f"which configured deployment to use (`{help_command('sc context list')}`); "
         "default: SWARM_URL, SWARM_CONTEXT, the plugin's, or the current context",
     )
     sub = parser.add_subparsers(dest="command", required=True)
@@ -1531,7 +1540,7 @@ def build_parser() -> argparse.ArgumentParser:
             "an input the profile declares, e.g. --input sleep_seconds=120; "
             "repeatable. Declared today by: "
             f"{', '.join(sorted(catalogue.DECLARED_INPUTS)) or 'no profile'} "
-            "(`swarm profiles` lists each one's inputs)"
+            f"(`{help_command('swarm profiles')}` lists each one's inputs)"
         ),
     )
     d.add_argument("--json", action="store_true")

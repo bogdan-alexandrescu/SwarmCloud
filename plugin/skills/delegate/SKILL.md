@@ -106,8 +106,9 @@ at the ref the dispatch names. Everything follows from that:
 * **Dispatching with no `repo` at all clones nothing.** The task still runs and
   still succeeds; `swarm_result` then reports *"this task cloned no repository,
   so there is no code to apply"*, and the work exists only as transcript. The
-  `repo` argument is optional in the tool and has no default — the terminal
-  `uv run swarm dispatch --repo` falls back to `$SWARM_REPO`, the tool does not.
+  `repo` argument is optional in the tool and has no default — the terminal's
+  `swarm dispatch` falls back to `$SWARM_REPO` when `--repo` is not given, the
+  tool does not.
 
 So: before dispatching anything that touches code, say out loud which ref the
 agents will see, and check that the work they depend on is on it.
@@ -165,9 +166,13 @@ image and asking for one is not a thing a caller may do.
 `inputs` — on `swarm_dispatch` and on each `swarm_workflow` step — carries only
 what the named profile **declares**, which `swarm_profiles` lists under
 `inputs`. Today that is `mock`'s test knobs: `{"sleep_seconds": 120}` keeps a
-mock step RUNNING long enough to cancel, `{"fail": true}` fails it on purpose,
-`{"quota_exhausted": true}` parks it. Every other profile declares none, and a
-key a profile does not declare is refused before anything is dispatched.
+mock step RUNNING long enough to cancel, `{"fail": true}` fails it on purpose.
+There is no knob that parks a mock step: the mock's rate limit fires on every
+attempt, so a step sent one would park, resume and park again until cancelled,
+and the bridge refuses it. `exit_code` takes a failure's code, but not 77, 78
+or 143, which the worker reads as a rate limit, a refused credential and a
+cancellation. Every other profile declares none, and a key a profile does not
+declare is refused before anything is dispatched.
 
 **Do not guess the name — call `swarm_profiles`.** It is the catalogue itself,
 so it cannot go stale the way a list written into this paragraph can: every
@@ -256,10 +261,14 @@ their prompt, their repository and the shared pool — none of which is involved
 
 The tell is in the error, and it is unambiguous: `IAP refused this before the
 API saw it`, `an HTML 404 from Google's edge`, `Error code 900`, or a 403 that
-names a principal. All four mean the request never reached swarm-api. Run
-`uv run swarm doctor`, which prints the address it used and the kind of
-credential that address takes, and report **that** — the `sc` skill's table
-says what each refusal means and which one is an IAM grant away.
+names a principal. All four mean the request never reached swarm-api, and the
+bridge ends a tool error that Google's edge answered, rather than the API, with
+the `swarm doctor` command to run, spelled for this install the way
+`follow_live_with` is. Run it **exactly as the error
+spells it** — never retyped, for the reasons above — and it prints the address
+it used and the kind of credential that address takes; report **that**. The
+`sc` skill's table says what each refusal means and which one is an IAM grant
+away.
 
 Nothing was dispatched, so nothing was spent, so say that too: a developer who
 thinks a batch went out and died will not re-run it.

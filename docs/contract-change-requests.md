@@ -2203,7 +2203,8 @@ frozen catalogue says nothing about which keys a profile reads, or which of
 them a caller may set.
 
 #142 asked for the plugin to send the mock's test knobs, so a mock step can be
-caught RUNNING and cancelled, or fail or park on purpose. Invariant 10 is not
+caught RUNNING and cancelled, or fail or park on purpose (the park is withheld;
+see below). Invariant 10 is not
 at stake -- these are data, never an image, a command, a resource spec or a
 backend -- but an input means something only to the runner that reads it:
 `input.model` would select the model a `claude-code` agent runs, which is the
@@ -2212,10 +2213,22 @@ to stop. So the gate has to be per profile.
 
 With nothing in the catalogue to read, the bridge gates on the profile NAME,
 in one place: `DECLARED_INPUTS` in `apps/swarm-mcp/swarm_mcp/profiles.py`,
-which declares ten keys for `mock` and nothing for any other profile.
+which declares eight keys for `mock` and nothing for any other profile.
 `tests/unit/mcp/test_runner_inputs.py` holds every name there to
 `RUNNER_PROFILES` and every key to a `payload` read in the runner's source,
-which it finds from the profile's own `runner_argv`. The API does not check
+which it finds from the profile's own `runner_argv`.
+
+Two of #142's asks are **not** declared, and why is what a catalogue field
+would have to carry too. `quota_exhausted` (and `retry_after_seconds`, which
+only shapes it) would let a caller start something they cannot stop: the mock
+raises its rate limit on every attempt, with no count, and a park does not
+spend an attempt, so the task parks and resumes until it is cancelled. A
+bounded park needs a counter in the mock (a `quota_exhausted_times`, kept in
+its state file the way `credential_revoked_times` keeps its own), which is a
+worker change. And `exit_code` is declared with values refused inside its
+range -- 0, 77, 78 and 143 -- because the worker reads those as a success, a
+rate limit, a refused credential and a cancellation; a failure on purpose that
+exits with one is not a failure. The API does not check
 input keys at all -- `validate_input_size` bounds the size -- so a caller that
 does not go through the bridge can still send anything.
 
@@ -2230,6 +2243,9 @@ class RunnerInput:
     minimum: float | None = None
     maximum: float | None = None
     means: str = ""
+    #: Values inside the bounds that are refused anyway, each with what the
+    #: platform would read it as (the mock's exit codes 77, 78 and 143).
+    refused: tuple[tuple[Any, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -2240,7 +2256,7 @@ class RunnerProfile:
     inputs: Mapping[str, RunnerInput] = field(default_factory=dict)
 ```
 
-and give `mock` the ten entries the bridge declares today. The bridge would
+and give `mock` the eight entries the bridge declares today. The bridge would
 then read `profile.inputs` and delete its table, and the API could refuse an
 undeclared key at submission, for every caller, with the same rule.
 

@@ -317,9 +317,14 @@ def load(environ: Mapping[str, str] | None = None) -> Config:
     try:
         body = json.loads(text)
     except json.JSONDecodeError as exc:
+        # Spelled for this install, as every command the bridge hands back is
+        # (#189). Imported where it is used, the way `client` imports this
+        # module, so reading a config never loads the install probe.
+        from .invocation import terminal_command
+
         raise SwarmError(
             f"{path} is not valid JSON ({exc.msg}, line {exc.lineno}). Fix or "
-            "delete it; `sc context add` writes a fresh one"
+            f"delete it; `{terminal_command('sc context add')}` writes a fresh one"
         ) from exc
     if not isinstance(body, dict):
         raise SwarmError(f"{path} does not hold a JSON object")
