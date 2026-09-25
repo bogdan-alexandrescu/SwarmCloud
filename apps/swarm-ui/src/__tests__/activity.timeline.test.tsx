@@ -32,7 +32,7 @@ vi.mock('../api', async (importOriginal) => {
   return { ...real, ...api }
 })
 
-const { ActivityScreen, TenantsScreen } = await import('../Activity')
+const { ActivityScreen, TenantsScreen, axisLabels, nextBucket, outcomeBuckets } = await import('../Activity')
 
 /** An instant in the VIEWER'S zone, 24 September 2026 unless said otherwise. */
 const local = (hour: number, minute = 0, day = 24) => new Date(2026, 8, day, hour, minute).toISOString()
@@ -167,6 +167,54 @@ describe('the outcomes chart', () => {
     expect(after(legend.querySelector('.k.cancelled')!, bases[0]!)).toBe(true)
     expect(after(bases[0]!, open)).toBe(true)
     expect(after(open, bases[1]!)).toBe(true)
+  })
+})
+
+describe('the axis arithmetic', () => {
+  const at = (h: number, day = 24) => new Date(2026, 8, day, h).getTime()
+
+  it('steps each bucket to the next one in local time', () => {
+    expect(nextBucket(at(23, 23), 'hour')).toBe(at(0, 24))
+    expect(nextBucket(at(0, 23), 'day')).toBe(at(0, 24))
+    // 21 September 2026 is a Monday, the ISO week's first day.
+    expect(nextBucket(new Date(2026, 8, 21).getTime(), 'week')).toBe(new Date(2026, 8, 28).getTime())
+    expect(nextBucket(new Date(2026, 8, 1).getTime(), 'month')).toBe(new Date(2026, 9, 1).getTime())
+  })
+
+  it('makes no column from a submission alone, and fills every gap between outcomes with a zero', () => {
+    const { buckets } = outcomeBuckets(
+      [
+        task('a', 'SUCCEEDED', { created_at: local(3), completed_at: local(10) }),
+        task('b', 'CANCELLED', { created_at: local(4), completed_at: local(14) }),
+      ],
+      'hour',
+    )
+    expect(buckets.map(([k]) => new Date(k).getHours())).toEqual([10, 11, 12, 13, 14])
+    expect(buckets.map(([, c]) => c.succeeded + c.failed + c.cancelled + c.open)).toEqual([1, 0, 0, 0, 1])
+  })
+
+  it('thins labels on a long hourly axis without ever dropping a day', () => {
+    // Thirty hours from 10:00 on the 23rd: past the point where every column
+    // can carry a label, and across one midnight.
+    const keys = Array.from({ length: 30 }, (_, i) => at(10, 23) + i * 3_600_000)
+    const labels = axisLabels(keys, 'hour')
+    expect(labels).toHaveLength(30)
+    const date = (d: number) => new Date(2026, 8, d).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })
+    // The first column and the first of each day carry the date.
+    expect(labels[0]).toBe(date(23))
+    const midnight = keys.findIndex((k) => new Date(k).getDate() === 24)
+    expect(labels[midnight]).toBe(date(24))
+    // No two neighbours are both labelled, so none runs into the next.
+    for (let i = 1; i < labels.length; i++) {
+      expect(labels[i] !== '' && labels[i - 1] !== '', `columns ${i - 1} and ${i} are both labelled`).toBe(false)
+    }
+    // And the thinning still labels the axis: every other column at worst.
+    expect(labels.filter((l) => l !== '').length).toBeGreaterThanOrEqual(13)
+  })
+
+  it('labels every column of a short axis', () => {
+    const keys = [at(9), at(10), at(11)]
+    expect(axisLabels(keys, 'hour').every((l) => l !== '')).toBe(true)
   })
 })
 

@@ -6707,6 +6707,10 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
 .dsp-repo:focus-visible, .dsp select:focus-visible { outline: 2px solid var(--info); outline-offset: 1px; }
 
 .dsp-facts { margin: 0; }
+/* The gap above each of the dispatch control's two labelled fields. It was an
+   inline `marginTop: 14` on each label in Dispatch.tsx -- off the four-step
+   scale, and out of this sheet's reach. */
+.dsp > .dsp-label { margin-top: var(--ctl-s3); }
 /* `.dsp-rollup` is gone with the paragraph it styled. Its only caller was the
    workflow board's dispatch line, which is now a `.ctl-facts` strip. */
 .node-id .tag { margin-left: 6px; }

@@ -6,11 +6,13 @@
 // asserted the string `dispatchOf` appeared in a screen -- which is true of a
 // screen that calls it and throws the answer away.
 
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { createElement } from 'react'
 import { describe, expect, it } from 'vitest'
 import { render } from '@testing-library/react'
 
-import { DispatchChoice, DispatchFacts } from '../Dispatch'
+import { DispatchChoice, DispatchFacts, REPOSITORY_SCHEMES, repositorySchemeRefused } from '../Dispatch'
 import {
   CARRIER_NOTE,
   DEFAULT_CARRIER,
@@ -267,6 +269,31 @@ describe('DispatchChoice, the control', () => {
       expect(schemeAlert(r.container), JSON.stringify(fine)).toBeUndefined()
       r.unmount()
     }
+  })
+
+  it('TS-17: checks the URL as the form will SEND it, trimmed, against the API’s own prefixes', () => {
+    expect(repositorySchemeRefused('  https://github.com/o/r.git  ')).toBe(false)
+    expect(repositorySchemeRefused('http://github.com/o/r.git')).toBe(true)
+    expect(repositorySchemeRefused('github.com/o/r')).toBe(true)
+    // Blank is omitted from the request, so the scheme check never sees it.
+    expect(repositorySchemeRefused('')).toBe(false)
+    expect(repositorySchemeRefused(' \t ')).toBe(false)
+  })
+
+  it('TS-17: holds its prefixes to the validator in swarm_api/schemas.py, both copies of it', () => {
+    // THE SECOND COPY IS HELD TO THE FIRST. `_repo_scheme` is stated on
+    // TaskCreate and again on WorkflowCreate; the form's warning restates it.
+    // A prefix added there and not here would warn about a URL the API
+    // accepts -- a wrong caution, never a block, but a wrong one.
+    const schemas = readFileSync(
+      join(__dirname, '..', '..', '..', 'swarm-api', 'swarm_api', 'schemas.py'),
+      'utf8',
+    )
+    const tuples = [...schemas.matchAll(/value\.startswith\(\(([^)]*)\)\)/g)].map((m) =>
+      [...(m[1] ?? '').matchAll(/"([^"]*)"/g)].map((q) => q[1]).sort(),
+    )
+    expect(tuples.length, 'no `_repo_scheme` prefix tuple found in schemas.py; this compared nothing').toBeGreaterThanOrEqual(2)
+    for (const t of tuples) expect(t).toEqual([...REPOSITORY_SCHEMES].sort())
   })
 
   it('TS-21: spaces its fields from the sheet, with no inline margin', () => {

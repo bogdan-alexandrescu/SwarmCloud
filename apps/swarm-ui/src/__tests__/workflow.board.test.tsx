@@ -37,8 +37,12 @@ import {
   SIB_GAP,
   STAGE_FITS,
   autoTier,
+  foldMix,
   layoutOf,
+  mixChipW,
   monoW,
+  moreChipW,
+  profileMix,
   nodeHeightAt,
   nodeWidthAt,
   shapeOf,
@@ -1599,6 +1603,42 @@ describe('the QA pass: the collapsed row', () => {
     expect(chips(400)).toMatchObject({ named: ['claude-code', 'browser'], more: '+1' })
     // Every profile stays reachable whatever was folded.
     expect(narrow.title).toBe('Runner profiles: claude-code ×20, browser ×6, mock ×4')
+  })
+})
+
+describe('foldMix', () => {
+  const mix = profileMix([
+    ...Array.from({ length: 20 }, (_, i) => step(`cc-${i}`, [], { runner_profile: 'claude-code' })),
+    ...Array.from({ length: 6 }, (_, i) => step(`br-${i}`, [], { runner_profile: 'browser' })),
+    ...Array.from({ length: 4 }, (_, i) => step(`mk-${i}`, [], { runner_profile: 'mock' })),
+  ])
+
+  it('keeps the plain promise, two named and the rest counted, when the column was never measured', () => {
+    const { shown, rest } = foldMix(mix, null)
+    expect(shown.map((m) => m.profile)).toEqual(['claude-code', 'browser'])
+    expect(rest).toBe(1)
+  })
+
+  it('fits whole chips and an exact count at every width, and never names more than two', () => {
+    // A SWEEP, with its floor stated: every width from nothing to far more than
+    // enough, so "fits" is shown across the boundaries rather than at the one
+    // width the case above happens to use.
+    const widths = Array.from({ length: 81 }, (_, i) => i * 5)
+    let visited = 0
+    for (const room of widths) {
+      const { shown, rest } = foldMix(mix, room)
+      visited += 1
+      expect(shown.length + rest, `${room}px lost a profile`).toBe(mix.length)
+      expect(shown.length, `${room}px named more than two`).toBeLessThanOrEqual(2)
+      const drawn = [...shown.map(mixChipW), ...(rest > 0 ? [moreChipW(rest)] : [])]
+      const w = drawn.reduce((t, x) => t + x, 0) + Math.max(0, drawn.length - 1) * 4
+      // Only the count alone is allowed to overflow, and only when nothing fits.
+      if (shown.length > 0) expect(w, `${room}px drew chips wider than the column`).toBeLessThanOrEqual(room)
+    }
+    expect(visited).toBe(81)
+    // And more room never names FEWER.
+    const named = widths.map((room) => foldMix(mix, room).shown.length)
+    for (let i = 1; i < named.length; i++) expect(named[i]!).toBeGreaterThanOrEqual(named[i - 1]!)
   })
 })
 

@@ -6,6 +6,7 @@ import {
   TERMINAL_STATES,
   bucketStart,
   hasUsage,
+  pluralise,
   type Bucket,
   type Task,
   type TaskWindow,
@@ -36,7 +37,8 @@ function helpHref(topic: TopicId): string {
  * collapsed to three sections; the route is `#work/timeline`).
  *
  * THE ONE DESIGN RULE: bound by ROWS, label by the SPAN those rows covered.
- * The window control says "Last 500 tasks", never "Last 7 days" -- the latter
+ * The window header says "Last 500 tasks" -- or "All 170 tasks" when nothing
+ * older exists -- and never "Last 7 days": the latter
  * becomes a lie the moment the window truncates, which is exactly the class
  * of lie this platform keeps shipping. The header then reports the span the
  * rows turned out to cover, which may be six hours or three months.
@@ -139,7 +141,13 @@ function WindowBar({
   return (
     <div className="window-bar">
       <div className="wb-span">
-        <strong>Last {budget} tasks</strong>
+        {/* THE ROWS READ, NOT THE ROWS ASKED FOR. This printed the Rows
+            control's budget -- `Last 500 tasks` -- over a window that held all
+            170 of the tenant's tasks, which is a claim of truncation where
+            there was none. When nothing older exists the window IS everything,
+            and says so; when the read stopped short it is the newest N, and N
+            is what was read. */}
+        <strong>{`${w.moreExist ? 'Last' : 'All'} ${pluralise(w.tasks.length, 'task')}`}</strong>
         <span className="wb-detail">
           {spanOf(w)} · {zone}
         </span>
@@ -194,10 +202,157 @@ function WindowBar({
 }
 
 /**
- * Stacked columns, one per bucket.
+ * The start of the bucket after `ms`, in the viewer's zone -- `bucketStart`'s
+ * other half, stepped with the local calendar's own setters so a DST change
+ * moves the boundary with the clock rather than an hour off it.
+ */
+export function nextBucket(ms: number, bucket: Bucket): number {
+  const d = new Date(ms)
+  if (bucket === 'hour') d.setHours(d.getHours() + 1)
+  else if (bucket === 'day') d.setDate(d.getDate() + 1)
+  else if (bucket === 'week') d.setDate(d.getDate() + 7)
+  else d.setMonth(d.getMonth() + 1)
+  const next = bucketStart(d.toISOString(), bucket)
+  // Strictly forward, whatever a zone transition does to the floor: a step
+  // that landed back on `ms` would never terminate the walk below.
+  return next !== null && next > ms ? next : d.getTime()
+}
+
+/** One column's counts. Every field is a count of rows, so zero is measured. */
+interface Outcomes {
+  succeeded: number
+  failed: number
+  cancelled: number
+  open: number
+}
+
+/**
+ * Every bucket from the first one that holds a row to the last, empty ones
+ * included, in order.
  *
- * Terminal series bucket on `completed_at`; the submitted overlay buckets on
- * `created_at`. They are genuinely different questions and are never merged.
+ * THE X-AXIS IS TIME, SO EVERY BUCKET IS DRAWN. Only buckets that held a task
+ * used to get a column, so a four-day window grouped by hour drew nineteen
+ * columns packed side by side: an idle night and the next busy hour sat
+ * shoulder to shoulder, and the chart claimed a steady stream where there had
+ * been a gap. An hour with nothing in it is a MEASURED zero -- every row in the
+ * window was read and none landed there -- and it gets a column like any other.
+ *
+ * AND ONLY WHAT IS DRAWN MAKES A BUCKET. A `submitted` count keyed on
+ * `created_at` was built here for an overlay that was never drawn, so a task
+ * submitted on Monday and finished on Tuesday opened a Monday column with no
+ * bar in it. The series that are drawn are the three outcomes (by
+ * `completed_at`) and `still open` (by `created_at`, the only time an open task
+ * has), and those are what decide the span.
+ */
+export function outcomeBuckets(
+  tasks: readonly Task[],
+  bucket: Bucket,
+): { buckets: Array<[number, Outcomes]>; anomalies: number } {
+  const map = new Map<number, Outcomes>()
+  let anomalies = 0
+  const cell = (k: number) => {
+    let c = map.get(k)
+    if (!c) {
+      c = { succeeded: 0, failed: 0, cancelled: 0, open: 0 }
+      map.set(k, c)
+    }
+    return c
+  }
+
+  for (const t of tasks) {
+    const sub = bucketStart(t.created_at, bucket)
+    const terminal = TERMINAL_STATES.has(t.state)
+    const at = t.completed_at ? bucketStart(t.completed_at, bucket) : null
+
+    if (terminal && at === null) {
+      // A terminal task with no completed_at. Not dropped.
+      anomalies++
+      if (sub !== null) cell(sub).open++
+      continue
+    }
+    if (!terminal) {
+      if (sub !== null) cell(sub).open++
+      continue
+    }
+    const c = cell(at as number)
+    if (t.state === 'SUCCEEDED') c.succeeded++
+    else if (t.state === 'FAILED' || t.state === 'DEAD_LETTERED') c.failed++
+    else c.cancelled++
+  }
+
+  const keys = Array.from(map.keys()).sort((a, b) => a - b)
+  const first = keys[0]
+  const last = keys[keys.length - 1]
+  const buckets: Array<[number, Outcomes]> = []
+  if (first !== undefined && last !== undefined) {
+    for (let k = first; k <= last; k = nextBucket(k, bucket)) {
+      buckets.push([k, map.get(k) ?? { succeeded: 0, failed: 0, cancelled: 0, open: 0 }])
+    }
+  }
+  return { buckets, anomalies }
+}
+
+/**
+ * Up to this many columns, every column is labelled. At 390 the chart is about
+ * 330px across, so six columns sit at least 55px apart -- room for the widest
+ * label (`Sep 21`, six characters of --t-micro mono, ~43px). Past it a column
+ * can be at its 26px floor, 29px apart with the gap, and two labels side by
+ * side run into each other (`01 PM02 PM03 PM`, which is what 390 already drew
+ * before every empty hour got a column too). So past it, every other column.
+ * Every column keeps its full time in its `title` either way.
+ */
+const LABEL_ALL_UP_TO = 6
+
+const dateLabel = (ms: number) =>
+  new Date(ms).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })
+
+/**
+ * The label under each column, or `''` for a column that carries none.
+ *
+ * AN HOUR IS NOT A TIME WITHOUT ITS DAY. `08 PM` appeared three times across a
+ * four-day window with nothing saying which evening each was. So in hour
+ * buckets the first column of every day carries the DATE instead of its hour
+ * -- when the columns are contiguous that column is midnight, so nothing is
+ * lost -- and it is always labelled, whatever the thinning below would have
+ * done. The column before a day's first is left bare when thinning, so the date
+ * never has a neighbour's label pressed against it.
+ */
+export function axisLabels(keys: readonly number[], bucket: Bucket): string[] {
+  const stride = bucket === 'month' || keys.length <= LABEL_ALL_UP_TO ? 1 : 2
+  const dayOf = (ms: number) => new Date(ms).toDateString()
+  const startsDay = (i: number): boolean => {
+    if (bucket !== 'hour') return false
+    const here = keys[i]
+    const before = keys[i - 1]
+    if (here === undefined) return false
+    return before === undefined || dayOf(before) !== dayOf(here)
+  }
+  const out = keys.map(() => '')
+  let labelled = -Infinity
+  keys.forEach((k, i) => {
+    if (startsDay(i)) {
+      // The chart's first column counts as a day's first -- unless the very
+      // next column starts the next day, when two dates would sit side by
+      // side. The later one is the boundary, so it is the one that is kept.
+      if (i === 0 && stride > 1 && startsDay(1)) return
+      out[i] = dateLabel(k)
+      labelled = i
+      return
+    }
+    if (i - labelled < stride) return
+    if (stride > 1 && startsDay(i + 1)) return
+    out[i] = labelFor(k, bucket)
+    labelled = i
+  })
+  return out
+}
+
+/**
+ * Stacked columns, one per bucket, every bucket from the first to the last.
+ *
+ * The three outcomes bucket on `completed_at`; `still open` buckets on
+ * `created_at`, because an open task has no other time. The legend says which
+ * series is on which basis.
  *
  * `completed_at` is safe to bucket on because EVERY writer that moves a task
  * terminal sets it -- worker, API cancel, scheduler cancel, reconciler
@@ -205,48 +360,8 @@ function WindowBar({
  * is counted in "still open" AND surfaced, rather than dropped.
  */
 function Chart({ window: w, bucket }: { window: TaskWindow; bucket: Bucket }) {
-  const { buckets, anomalies } = useMemo(() => {
-    const map = new Map<
-      number,
-      { succeeded: number; failed: number; cancelled: number; open: number; submitted: number }
-    >()
-    let anomalies = 0
-    const cell = (k: number) => {
-      let c = map.get(k)
-      if (!c) {
-        c = { succeeded: 0, failed: 0, cancelled: 0, open: 0, submitted: 0 }
-        map.set(k, c)
-      }
-      return c
-    }
-
-    for (const t of w.tasks) {
-      const sub = bucketStart(t.created_at, bucket)
-      if (sub !== null) cell(sub).submitted++
-
-      const terminal = TERMINAL_STATES.has(t.state)
-      const at = t.completed_at ? bucketStart(t.completed_at, bucket) : null
-
-      if (terminal && at === null) {
-        // A terminal task with no completed_at. Not dropped.
-        anomalies++
-        if (sub !== null) cell(sub).open++
-        continue
-      }
-      if (!terminal) {
-        if (sub !== null) cell(sub).open++
-        continue
-      }
-      const c = cell(at as number)
-      if (t.state === 'SUCCEEDED') c.succeeded++
-      else if (t.state === 'FAILED' || t.state === 'DEAD_LETTERED') c.failed++
-      else c.cancelled++
-    }
-    return {
-      buckets: Array.from(map.entries()).sort(([a], [b]) => a - b),
-      anomalies,
-    }
-  }, [w.tasks, bucket])
+  const { buckets, anomalies } = useMemo(() => outcomeBuckets(w.tasks, bucket), [w.tasks, bucket])
+  const labels = useMemo(() => axisLabels(buckets.map(([k]) => k), bucket), [buckets, bucket])
 
   const max = Math.max(1, ...buckets.map(([, c]) => c.succeeded + c.failed + c.cancelled + c.open))
 
@@ -270,32 +385,40 @@ function Chart({ window: w, bucket }: { window: TaskWindow; bucket: Bucket }) {
         </p>
       )}
       <div className="chart" role="img" aria-label={`Task outcomes by ${bucket}`}>
-        {buckets.map(([k, c]) => {
+        {buckets.map(([k, c], i) => {
           const total = c.succeeded + c.failed + c.cancelled + c.open
           return (
-            <div className="col" key={k} title={`${new Date(k).toLocaleString()}\n${total} tasks`}>
+            // An empty bucket is a column with four zero-height segments and a
+            // `0 tasks` title: a measured zero, drawn where it happened.
+            <div className="col" key={k} data-total={total} title={`${new Date(k).toLocaleString()}\n${total} tasks`}>
               <div className="stackcol">
                 <i className="open" style={{ height: `${(c.open / max) * 100}%` }} />
                 <i className="cancelled" style={{ height: `${(c.cancelled / max) * 100}%` }} />
                 <i className="failed" style={{ height: `${(c.failed / max) * 100}%` }} />
                 <i className="succeeded" style={{ height: `${(c.succeeded / max) * 100}%` }} />
               </div>
-              <span className="col-label">{labelFor(k, bucket)}</span>
+              {/* A no-break space where a label is thinned out, so every
+                  column's label line is the same height and the bars stay on
+                  one baseline. */}
+              <span className="col-label">{labels[i] || ' '}</span>
             </div>
           )
         })}
       </div>
-      {/* THE LEGEND IS A LEGEND AGAIN. It carried a trailing clause explaining
-          that the stacks bucket on `completed_at` and that submission time is
-          a different question -- which is true, and is the axis's job to say.
-          It is the axis's job now: the panel title names the bucket and the
-          legend's own key says `by completed_at`, fused to the thing it
-          qualifies rather than trailing it as a sentence. */}
+      {/* THE LEGEND IS A LEGEND AGAIN, AND EACH BASIS SITS BESIDE ITS SERIES.
+          The key used to end in one `by completed_at` after all four swatches,
+          which put `still open` under it too -- and an open task has no
+          `completed_at`; it is bucketed by `created_at`. Two series, two
+          bases, each fused to the swatches it qualifies. */}
       <p className="chart-legend">
         <span className="k succeeded" /> succeeded <span className="k failed" /> failed
-        <span className="k cancelled" /> cancelled <span className="k open" /> still open
+        <span className="k cancelled" /> cancelled
         <span className="cl-basis">
           by <code>completed_at</code>
+        </span>
+        <span className="k open" /> still open
+        <span className="cl-basis">
+          by <code>created_at</code>
         </span>
       </p>
     </section>
@@ -495,14 +618,31 @@ function People({ window: w }: { window: TaskWindow }) {
           rather than zero -- the first is an argument and belongs in
           `#help/tenant-scope`, the second is the invariant and is now the
           mark, which is attached to the table instead of sitting under it. */}
-      <p
-        className="ctl-panel-note"
-        aria-label={`Grouped client-side over the ${w.tasks.length} rows in the window. There is no server-side filter or index on submitted_by, so an engineer whose work fell outside the window is absent here rather than shown as zero.`}
-      >
-        <i className="ctl-mark is-partial">partial</i>
-        client-side over {w.tasks.length} rows in the window
-        <a href={helpHref(SCOPE_HELP)}>Why &rarr;</a>
-      </p>
+      {/* PARTIAL ONLY WHEN IT IS. The mark said `partial` on every visit,
+          including over a window that held every task the tenant has -- and a
+          mark that is always there stops being read on the day it is true.
+          `moreExist` is the one fact that makes this table a subset: older
+          tasks were not read, so an engineer whose work is all older is absent
+          rather than zero. Without it the table is the whole tenant, still
+          grouped client-side, which is what the line then says. */}
+      {w.moreExist ? (
+        <p
+          className="ctl-panel-note"
+          aria-label={`Grouped client-side over the ${w.tasks.length} rows in the window. There is no server-side filter or index on submitted_by, so an engineer whose work fell outside the window is absent here rather than shown as zero.`}
+        >
+          <i className="ctl-mark is-partial">partial</i>
+          client-side over {w.tasks.length} rows in the window
+          <a href={helpHref(SCOPE_HELP)}>Why &rarr;</a>
+        </p>
+      ) : (
+        <p
+          className="ctl-panel-note"
+          aria-label={`Grouped client-side over all ${pluralise(w.tasks.length, 'task')} this tenant has. The window holds every one, so nobody's work is missing from this table.`}
+        >
+          client-side over all {pluralise(w.tasks.length, 'task')}
+          <a href={helpHref(SCOPE_HELP)}>Why &rarr;</a>
+        </p>
+      )}
     </section>
   )
 }
@@ -560,15 +700,22 @@ export function TenantsScreen() {
                     <td role="cell" data-label="Units" className="n">{t.capacity_units}</td>
                     <td role="cell" data-label="Credentials">
                       {t.credentials.length > 0 ? (
-                        t.credentials.map((c) => (
-                          // These are Secret Manager NAMES and `.tag`
-                          // uppercases. An uppercased secret name is one
-                          // nobody can look up, so the value is wrapped:
-                          // `.id` beats the ancestor by inheritance.
-                          <span className="tag" key={c}>
-                            <Id>{c}</Id>
-                          </span>
-                        ))
+                        // `.tags`, the wrapper every other run of tags in this
+                        // console sits in: it spaces them. Bare, `anthropic`
+                        // and `openai` rendered touching, as one word. They
+                        // stay `.tag` and not `.ctl-chip` -- a chip is a state,
+                        // and a credential name is metadata.
+                        <span className="tags">
+                          {t.credentials.map((c) => (
+                            // These are Secret Manager NAMES and `.tag`
+                            // uppercases. An uppercased secret name is one
+                            // nobody can look up, so the value is wrapped:
+                            // `.id` beats the ancestor by inheritance.
+                            <span className="tag" key={c}>
+                              <Id>{c}</Id>
+                            </span>
+                          ))}
+                        </span>
                       ) : (
                         <span className="tag capped">none registered</span>
                       )}

@@ -41,7 +41,7 @@ vi.mock('../api', async (importOriginal) => {
 })
 
 const { WorkflowCard, WorkflowsScreen } = await import('../Workflows')
-const { layoutOf, stepDuration } = await import('../dag')
+const { inputsByStep, layoutOf, stepDuration } = await import('../dag')
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -1048,6 +1048,23 @@ describe('the QA pass: the table, the inspector and the board chrome', () => {
     // cell's `nowrap` to cut the second one off.
     expect(td.querySelectorAll('br'), 'the two inputs share one clipped line').toHaveLength(1)
     expect(td.textContent).not.toContain(', ')
+  })
+
+  it('WF-6: orders a step’s inputs by depends_on whatever order the map arrives in', () => {
+    // Every permutation of three keys, plus one key the list does not name --
+    // which `validate_dag` should make impossible, and which still has to land
+    // somewhere deterministic: last, by name.
+    const orders: Array<Record<string, string>> = [
+      { a: 'a.md', b: 'b.md', c: 'c.md', z: 'z.md' },
+      { c: 'c.md', z: 'z.md', b: 'b.md', a: 'a.md' },
+      { z: 'z.md', b: 'b.md', a: 'a.md', c: 'c.md' },
+      { b: 'b.md', c: 'c.md', a: 'a.md', z: 'z.md' },
+    ]
+    for (const input_from of orders) {
+      const steps = [step('a', []), step('b', []), step('c', []), step('m', ['c', 'a', 'b'], { input_from })]
+      const declared = [...inputsByStep(steps, new Map()).get('m')!.declared.keys()]
+      expect(declared, JSON.stringify(input_from)).toEqual(['c', 'a', 'b', 'z'])
+    }
   })
 
   it('WF-18: says a finished step that never got an attempt never started, as the table does', async () => {
