@@ -30,7 +30,7 @@ benefit. The new pane's address is `#work/task/<id>/artifacts`.
 | Repository | `task.repository_url`, `repository_ref`, `result_summary.git.base` | Nothing when no repository was asked for. The cloned commit is `reported at finish` while the task runs. |
 | Staged files | `metadata.input_from` joined with `result_summary.staged_inputs` (`dag.ts` `taskInputsOf`) and, for a workflow step, `GET /v1/workflows/{id}` | Each file links to the upstream run's own Artifacts pane, labelled with its step. The file is read from the **upstream** task's artifact routes, because the staged copy is never uploaded separately. An upstream object removed since reads `removed from the upstream run`, and the size shown stays the staged size. |
 | Answer | `GET /v1/tasks/{id}/answer` | First in Outputs, rendered with the existing Markdown renderer (React elements, never HTML). `not yet` while running, `no answer recorded` after an end with none. A runner-summary fallback is marked, because that summary is capped at 2,000 characters. |
-| Files | `GET /v1/tasks/{id}/artifacts` | The viewer is chosen by the server's `kind`, not by a name rule in the client. Images are drawn from the raw route; binary files are described. Every row has `download` (the raw route) and `copy gsutil`. Before the last attempt ends the list is `uploaded when the attempt ends`, never "none". |
+| Files | `GET /v1/tasks/{id}/artifacts?limit=200`, then `result_summary.artifacts` for anything past that page | The viewer is chosen by the server's `kind`, not by a name rule in the client. Images are drawn from the raw route; binary files are described. Every row has `download` (the raw route) and `copy gsutil`. Before the last attempt ends the list is `uploaded when the attempt ends`, never "none". See [One page of the listing](#one-page-of-the-listing-and-the-rest-of-the-manifest). |
 | Logs | `GET /v1/tasks/{id}/transcript`, `GET /v1/tasks/{id}/logs?stream=…` | `transcript` (steps), `stdout` and `stderr` (the agent CLI's own), and `runner (platform)`: the runner process's streams, which the Details panel used to present as the agent's output. |
 
 ### Every byte through the API
@@ -47,6 +47,35 @@ blank box.
 
 Nothing in the client builds an object key, a prefix or a `gs://` URI to send.
 A file is named by the name its manifest spells, on the task that owns it.
+
+### One page of the listing, and the rest of the manifest
+
+The listing route goes through `paged_limit`, like every list route. A request
+with no `limit` gets `default_page_size` (50), and any other limit is clamped to
+`max_page_size` (200). `store.list_artifacts` returns `manifest.artifacts[:limit]`
+with `complete: true` and nothing saying it cut the list, and the route takes no
+page token.
+
+The pane's first version sent no `limit`. A browser run that took 60 screenshots
+drew 50 rows and a chip reading 50, with no mark. The last ten screenshots, which
+were the final page states, could not be viewed or downloaded from the pane.
+The Details pane's own file list, which reads the manifest off the task, showed
+all 60. So the pane drew a partial read as if it were the whole list.
+
+It now asks for `limit=200` (`ARTIFACT_PAGE_LIMIT`). Any file past that page is
+listed from the task's own `result_summary.artifacts`, which is the same record
+the route serves. The note beside the count reads `N of M listed`, with the
+`partial` mark. A row past the page reads `from the task's manifest · kind not
+served`, because the server named no kind for it and the client does not keep a
+second copy of the server's name table. Such a row opens in the text viewer by
+its name. It also has `open full`, which sends the raw route the file's name so
+the server can sniff the bytes and serve an image as an image. Every row still
+has `download` and `copy gsutil`.
+
+The pane counts against the manifest, not against 200. A deployment that lowers
+`MAX_PAGE_SIZE` therefore gets the same mark. When a summary carries no manifest
+to count against and the route returned a full page, the note reads
+`first N listed`.
 
 ### Live
 
@@ -125,6 +154,40 @@ absent figure is never drawn as zero, and a figure over the limit takes the
 track's over-ceiling hatch. Two rows rather than one bar with a mean tick is an
 open question on #184. So are the typed Attempt fields that would replace the
 heartbeat interim (contract request #15).
+
+**The age is the server's.** `Ns ago` is `usage.age_seconds`, the gap between
+the reading and the server's `read_at`, moved on by the time since the browser
+received the read (the rule the Artifacts pane's stream ages use). The first
+version aged `measured_at` on the browser's clock, which is a clock the server
+never checked. An age the server did not send reads `age not served` and is
+never filled in from the browser.
+
+### At phone width
+
+The sheet's phone block hides `.ctl-util-track` and `.ctl-util-by` at 560px and
+under. The first version kept the CPU rows' provenance, ceiling source,
+cpu-seconds and kind of absence only in that `by` column. At 390px a live reading
+140 s old read `cpu peak 1.62 vCPU / 2 vCPU`, which is exactly how a final
+figure reads, and every kind of absence read `— / 2 vCPU`. The memory row had
+already solved this with a strip outside the row (`.att-rss-note`). The CPU
+rows now have one too (`.att-cpu-note`), with the same words drawn from the same
+function as the `by` column:
+
+* the mark and its words (`live heartbeat 20s ago`, `last heartbeat …`,
+  `never ran`, `never measured`, `off the event window`, `read failed`,
+  `not served`) show at every width, as the memory strip's do;
+* the cpu-seconds and the ceiling's source show in the strip only at 560px and
+  under, because above that the `by` column beside each bar already says them;
+* a final reading has no mark, so its whole strip (`at exit · 402.3 cpu-s ·
+  cgroup limit`) shows only at 560px and under.
+
+Both strips now name their row (`cpu`, `memory`), because two lines of
+`heartbeat 3m ago` under five bars would not say which bar each is about.
+
+`details.cpu.test.tsx` asks the shipped sheet's cascade (`cssgate.ts`
+`cascade`) what a 390px and a 1440px viewport display. jsdom applies no
+stylesheet, so a test that reads `.ctl-util-by`'s text passes whether or not a
+phone can see it. That is how the first version passed.
 
 ## What this pane does not show, said plainly
 

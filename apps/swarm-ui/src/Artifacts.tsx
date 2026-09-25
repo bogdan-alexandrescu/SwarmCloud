@@ -1,6 +1,7 @@
-import { useCallback, useRef, useState, type ReactNode } from 'react'
+import { Fragment, useCallback, useRef, useState, type ReactNode } from 'react'
 import { Chip, DRAWER_SETTLE_MS, Em, Mark } from './AgentDetail'
 import {
+  ARTIFACT_PAGE_LIMIT,
   artifactRawUrl,
   loadAnswer,
   loadArtifactListing,
@@ -21,6 +22,7 @@ import {
   bytesLabel,
   TERMINAL_STATES,
   type ArtifactEntry,
+  type ArtifactRef,
   type ArtifactKindName,
   type ArtifactListing,
   type LogStreamName,
@@ -670,12 +672,46 @@ function AnswerNote({ a }: { a: TaskAnswer }) {
 const INLINE_IMAGE_MAX_BYTES = 20 * 1024 * 1024
 
 /**
+ * The task's own manifest, `result_summary.artifacts`, which is the record the
+ * listing route serves. Null when the summary carries nothing that reads as a
+ * list. An entry with no name is dropped, because there would be nothing to
+ * ask the API for.
+ */
+function manifestOf(summary: ResultSummary | null): ArtifactRef[] | null {
+  const raw: unknown = summary?.artifacts
+  if (!Array.isArray(raw)) return null
+  return raw.filter(
+    (e): e is ArtifactRef => e !== null && typeof e === 'object' && typeof (e as { name?: unknown }).name === 'string',
+  )
+}
+
+/**
+ * How much of the run's file list the listing route returned. `total` is null
+ * when there is no manifest to count against.
+ */
+interface ListingCut {
+  listed: number
+  total: number | null
+}
+
+/**
  * EVERY FILE THE LAST ATTEMPT UPLOADED, with a way to read each one. The
  * viewer is chosen by the server's `kind`; an image is drawn from the raw
  * route below the table, a binary file is described and downloaded, and the
  * rest open in the text viewer. Each row downloads through the API -- the raw
  * route redacts text on the way out -- and copies a `gsutil` line for reading
  * the stored object with your own credentials.
+ *
+ * EVERY FILE, NOT ONE PAGE OF THEM. The listing route returns one page, at
+ * most `ARTIFACT_PAGE_LIMIT` entries, and it takes no page token. Until
+ * #187's fix-up it also returned the server's default of 50, because no
+ * `limit` was sent, and the pane drew those 50 as the whole run. A file past
+ * the route's page is listed from the task's own manifest, which is the same
+ * record the route serves. The pane says how many the route listed. The
+ * server names no kind for a file it did not list, so that row opens by its
+ * name and has `open full`, and the raw route decides what the bytes are. The
+ * pane counts against the manifest and not against the page limit, so a
+ * deployment that clamps the page lower is caught too.
  */
 function Files({ v }: { v: ArtifactsView }) {
   const { task, listing } = v
@@ -690,6 +726,10 @@ function Files({ v }: { v: ArtifactsView }) {
   let body: ReactNode
   let entries: ArtifactEntry[] = []
   let skipped: string[] = []
+  let cut: ListingCut | null = null
+  // Names of the rows that came from the manifest because the route did not
+  // list them.
+  const unlisted = new Set<string>()
   if (listing === null || (ok(listing) && !listing.data.complete)) {
     body = !terminal ? (
       <p className="att-none">
@@ -716,7 +756,15 @@ function Files({ v }: { v: ArtifactsView }) {
   } else if (!ok(listing)) {
     body = listing.status === 'error' || listing.status === 'stale' ? <ReadFailed error={listing.error} what="the file list" /> : <ReadFailed error={null} what="the file list" />
   } else {
-    entries = listing.data.artifacts
+    const listed = listing.data.artifacts
+    const manifest = manifestOf(summary)
+    const names = new Set(listed.map((e) => e.name))
+    const rest = manifest === null ? [] : manifest.filter((e) => !names.has(e.name))
+    for (const e of rest) unlisted.add(e.name)
+    // Past the page, no kind and no role: the server named neither, and a
+    // name rule here would be a second copy of the server's one table.
+    entries = [...listed, ...rest.map((e): ArtifactEntry => ({ name: e.name, bytes: e.bytes, uri: e.uri, kind: null, role: null }))]
+    cut = { listed: listed.length, total: manifest === null ? null : listed.length + rest.length }
     skipped = Array.isArray(listing.data.artifacts_skipped) ? listing.data.artifacts_skipped : []
     body =
       entries.length === 0 ? (
@@ -729,27 +777,62 @@ function Files({ v }: { v: ArtifactsView }) {
 
   const showing = open === null ? null : (entries.find((e) => e.name === open) ?? null)
   const images = entries.filter((e) => e.kind === 'image')
+
+  // THE NOTE BESIDE THE COUNT: each thing that makes this list less than a
+  // plain answer, as a mark and a few words.
+  const notes: ReactNode[] = []
+  if (cut !== null && cut.total !== null && cut.total > cut.listed) {
+    notes.push(
+      <span key="cut">
+        <Mark
+          kind="partial"
+          say={`The listing route returned ${cut.listed} of this run's ${cut.total} files: it answers one page and takes no page token. The other ${cut.total - cut.listed} are listed from the task's own manifest, the record the route serves. The server named no kind for them, so each opens by its name, and open full lets the raw route decide what the bytes are.`}
+        />{' '}
+        {cut.listed} of {cut.total} listed
+      </span>,
+    )
+  } else if (cut !== null && cut.total === null && cut.listed >= ARTIFACT_PAGE_LIMIT) {
+    notes.push(
+      <span key="full">
+        <Mark
+          kind="partial"
+          say={`The listing route returned a full page of ${cut.listed} files, and this task's summary carries no manifest to check it against, so the run may have more files than are shown.`}
+        />{' '}
+        first {cut.listed} listed
+      </span>,
+    )
+  }
+  if (skipped.length > 0) {
+    notes.push(
+      <span key="skipped">
+        <Mark
+          kind="partial"
+          say={`At least ${skipped.length} file${skipped.length === 1 ? ' was' : 's were'} dropped at the size cap, so this list is incomplete: ${skipped.join(', ')}`}
+        />{' '}
+        {skipped.length} over cap
+      </span>,
+    )
+  }
+  if (unmasked.length > 0) {
+    notes.push(
+      <span key="unmasked">
+        <span className="art-masked is-warn">{unmasked.length}</span> not scrubbed before upload
+      </span>,
+    )
+  }
   return (
     <div className="arts-block arts-files">
       <div className="ctl-toolbar att-sub-head">
         <span className="ctl-eyebrow">files</span>
         {entries.length > 0 && <span className="count-chip">{entries.length}</span>}
-        {(skipped.length > 0 || unmasked.length > 0) && (
+        {notes.length > 0 && (
           <span className="is-end ctl-card-note">
-            {skipped.length > 0 && (
-              <>
-                <Mark
-                  kind="partial"
-                  say={`At least ${skipped.length} file${skipped.length === 1 ? ' was' : 's were'} dropped at the size cap, so this list is incomplete: ${skipped.join(', ')}`}
-                />{' '}
-                {skipped.length} over cap{unmasked.length > 0 ? ' · ' : ''}
-              </>
-            )}
-            {unmasked.length > 0 && (
-              <>
-                <span className="art-masked is-warn">{unmasked.length}</span> not scrubbed before upload
-              </>
-            )}
+            {notes.map((n, i) => (
+              <Fragment key={i}>
+                {i > 0 && ' · '}
+                {n}
+              </Fragment>
+            ))}
           </span>
         )}
       </div>
@@ -770,6 +853,7 @@ function Files({ v }: { v: ArtifactsView }) {
                   key={e.uri || e.name}
                   task={task.id}
                   entry={e}
+                  unlisted={unlisted.has(e.name)}
                   open={e.name === open}
                   onOpen={() => setOpen((cur) => (cur === e.name ? null : e.name))}
                 />
@@ -824,11 +908,14 @@ const ROLE_WORD: Readonly<Record<string, string>> = {
 function FileRow({
   task,
   entry,
+  unlisted,
   open,
   onOpen,
 }: {
   task: string
   entry: ArtifactEntry
+  /** True when the listing route did not return this file and the row comes from the task's manifest. */
+  unlisted: boolean
   open: boolean
   onOpen: () => void
 }) {
@@ -845,12 +932,16 @@ function FileRow({
             {entry.name}
           </button>
         )}
-        {(kind !== null || role !== null) && (
-          <span className="ctl-sub">
-            {kind !== null ? KIND_WORD[kind] : ''}
-            {kind !== null && role !== null ? ' · ' : ''}
-            {role !== null ? `${ROLE_WORD[role] ?? role} · under Logs` : ''}
-          </span>
+        {unlisted ? (
+          <span className="ctl-sub">from the task’s manifest · kind not served</span>
+        ) : (
+          (kind !== null || role !== null) && (
+            <span className="ctl-sub">
+              {kind !== null ? KIND_WORD[kind] : ''}
+              {kind !== null && role !== null ? ' · ' : ''}
+              {role !== null ? `${ROLE_WORD[role] ?? role} · under Logs` : ''}
+            </span>
+          )
         )}
       </th>
       <td role="cell" data-label="Size" className="is-num">
@@ -864,7 +955,11 @@ function FileRow({
           <a className="copy" href={artifactRawUrl(task, entry.name, 'attachment')} download={fileName(entry.name)}>
             download
           </a>
-          {kind === 'image' && (
+          {/* OPEN FULL for an image, and for any file the server named no
+              kind for: the raw route sniffs the bytes and serves an image as
+              an image, text as text/plain and anything else as a download,
+              so no name rule here has to guess. */}
+          {(kind === 'image' || kind === null) && (
             <a className="copy" href={artifactRawUrl(task, entry.name, 'inline')} target="_blank" rel="noreferrer">
               open full
             </a>

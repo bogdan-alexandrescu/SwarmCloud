@@ -3358,6 +3358,38 @@ table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--tex
   font: 500 var(--t-micro)/var(--lh-micro) var(--mono);
   color: var(--text-faint);
 }
+
+/* THE CPU ROWS' STRIP (#184), AND WHY PART OF IT IS FOR PHONES ONLY.
+   ---------------------------------------------------------------------------
+   The phone block below sets `.ctl-util-track, .ctl-util-by { display: none }`
+   at 560px and under. The CPU rows kept their provenance, their ceiling's
+   source, their cpu-seconds and WHICH kind of "no reading" they are in that
+   column and nowhere else. So at 390px a live reading 140 s old read exactly
+   like a final figure, and every absence read `— / 2 vCPU`. The memory row
+   solved this first, with `.att-rss-note` outside the row. This strip does the
+   same for CPU, with the same treatment.
+
+   What shows where (AgentDetail.tsx `CpuNote`):
+     - the mark and its words show at every width, as the memory strip's do;
+     - `.att-cpu-by`, the cpu-seconds and the ceiling's source, shows only at
+       560px and under, because above that the by column beside each bar
+       already says it;
+     - a final reading has no mark, so its whole strip is `.is-final` and shows
+       only at 560px and under. There it is the only place `at exit` appears.
+
+   The two strips carry their row's name as a key, because two lines of
+   `heartbeat 3m ago` under five bars would not say which bar each is about. */
+.att-rss-note > b {
+  font: 500 var(--t-micro)/var(--lh-micro) var(--mono);
+  color: var(--text-dim);
+}
+.att-cpu-note { margin-top: var(--ctl-s1); }
+.att-cpu-note.is-final,
+.att-cpu-note .att-cpu-by { display: none; }
+@media (max-width: 560px) {
+  .att-cpu-note.is-final { display: flex; }
+  .att-cpu-note .att-cpu-by { display: inline; }
+}
 /* The card foot as a link row. `.ctl-card-foot` supplies the surface step, the
    mono face and the tone; this is only the wrapping. */
 .ctl-card-foot,

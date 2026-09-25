@@ -829,6 +829,28 @@ export async function loadTask(taskId: string): Promise<Result<Task>> {
 }
 
 /**
+ * HOW MANY ENTRIES THE ARTIFACTS PANE ASKS THE LISTING FOR: 200, which is
+ * `max_page_size`, the server's own cap.
+ *
+ * WITHOUT IT THE LISTING WAS 50. The artifacts route goes through
+ * `paged_limit` (routes/tasks.py) like every list route, so a request with no
+ * `limit` got `default_page_size`. `store.list_artifacts` then returned
+ * `manifest.artifacts[:50]` with `complete: true` and nothing saying it had
+ * cut the list. A browser run that took 60 screenshots drew 50 rows and a
+ * chip reading 50. The route takes no page token, so one read goes no further
+ * than this. The pane lists anything past it from the task's own manifest,
+ * which is the record the route serves, and it says how many the route
+ * listed (Artifacts.tsx `Files`).
+ *
+ * This is its own constant, not `ATTEMPT_PAGE_LIMIT`, for the reason that one
+ * gives: the two routes share a cap today, and nothing makes them share one.
+ * A deployment that lowered `MAX_PAGE_SIZE` would clamp this read further.
+ * The pane still catches that, because it counts against the manifest and
+ * not against this number.
+ */
+export const ARTIFACT_PAGE_LIMIT = 200
+
+/**
  * The artifact LISTING: `GET /v1/tasks/{id}/artifacts`. The manifest from the
  * task's own result summary -- no GCS call -- plus, since #184, each file's
  * `kind` and `role` from the server's one name table.
@@ -837,10 +859,16 @@ export async function loadTask(taskId: string): Promise<Result<Task>> {
  * and with `complete: false` it is "uploaded when the attempt ends". The
  * screen tells the two apart by `complete`, which a collapse to `empty`
  * would throw away.
+ *
+ * `limit` IS SENT, AT `ARTIFACT_PAGE_LIMIT`. See that constant for what not
+ * sending it cost.
  */
 export async function loadArtifactListing(taskId: string): Promise<Result<ArtifactListing>> {
   if (USE_FIXTURES) return fixtureArtifactListing(taskId)
-  return read<ArtifactListing>(route('/v1/tasks/{id}/artifacts', { id: taskId }), () => false)
+  return read<ArtifactListing>(
+    route('/v1/tasks/{id}/artifacts', { id: taskId }, `limit=${ARTIFACT_PAGE_LIMIT}`),
+    () => false,
+  )
 }
 
 /**
