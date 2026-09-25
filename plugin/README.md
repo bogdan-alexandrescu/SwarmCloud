@@ -378,7 +378,7 @@ where the bridge runs and reaches the same version of it:
 
 | The bridge is running from | A command reads |
 |---|---|
-| a checkout of this repository (its `.mcp.json`, `uv run swarm ...`) | `uv run swarm tail <id>` |
+| a checkout of this repository (its `.mcp.json`, or a shell inside it) | `uv run swarm tail <id>` |
 | `uv tool install`, with that install's `swarm` on your PATH | `swarm tail <id>` |
 | the plugin, with nothing installed | `uv tool run --from 'swarm-mcp @ git+https://github.com/bogdan-alexandrescu/SwarmCloud@sc-v<version>#subdirectory=apps/swarm-mcp' swarm tail <id>` |
 | the escape hatch, `SWARM_MCP_FROM` | `uv tool run --from <that value> swarm tail <id>` |
