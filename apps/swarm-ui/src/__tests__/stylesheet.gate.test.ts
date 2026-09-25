@@ -308,14 +308,25 @@ describe('the Overview decisions, as the cascade resolves them', () => {
    * The tiles were links with no cue at rest -- the underline came on hover
    * only, so a phone showed none (design-system.md §1.3 against redesign-v2
    * §5.5; the owner took §1.3). The cue is `.ctl-link`'s: the label keeps its
-   * faint ink and gains the resting underline in the same token and offset,
-   * and takes the accent on hover and focus. The FIGURE is never underlined:
-   * the tile's bottom edge is reserved for the absence and alert states, and
-   * the label is present in all four renderings while the figure is not.
+   * faint ink and gains the resting underline, and takes the accent on hover
+   * and focus. The FIGURE is never underlined: the tile's bottom edge is
+   * reserved for the absence and alert states, and the label is present in
+   * all four renderings while the figure is not.
    *
-   * MUTATION: move the underline back to `:hover`, or put it on the value.
+   * THE UNDERLINE IS `.ctl-link`'S OWN DECLARATION, NOT A COPY OF ITS VALUE.
+   * The decision says whatever CH-23 decides for the link's token "then
+   * applies here unchanged". A label rule restating `var(--line-soft)` and
+   * `3px` equals the link today and stops equalling it the day the link
+   * moves, so this asks the property rather than the value: for colour,
+   * thickness and offset, the declaration the cascade chooses for the label
+   * is the one it chooses for a `.ctl-link` -- the same rule, the same line.
+   * On hover and focus the label takes `.ctl-link:hover`'s declarations the
+   * same way.
+   *
+   * MUTATION: restate the link's underline in a rule of the label's own, move
+   * the underline back to `:hover`, or put it on the value.
    */
-  it('OV-8: underlines a linked tile’s label at rest, and never its figure', () => {
+  it('OV-8: underlines a linked tile’s label with `.ctl-link`’s own declarations, and never its figure', () => {
     const f = frag(
       '<div class="ctl-metrics"><a class="ctl-metric ov-tile" href="#capacity/pools">' +
         '<span class="ctl-metric-label">Units held</span><span class="ctl-metric-value">2</span></a></div>',
@@ -323,14 +334,42 @@ describe('the Overview decisions, as the cascade resolves them', () => {
     const a = pick(f, 'a')
     const label = pick(f, '.ctl-metric-label')
     const value = pick(f, '.ctl-metric-value')
+    const link = pick(frag('<p><a class="ctl-link" href="#work/running">agents</a></p>'), 'a')
+
+    /** Which declaration won, as the rule's line and its value. */
+    const source = (
+      el: Element,
+      prop: string | readonly string[],
+      env: { width: number; states?: readonly string[] },
+    ): { line: number; value: string } | null => {
+      const r = cascade(STYLES, el, prop, env)
+      expect(r.unsupported, 'selectors the resolver could not evaluate').toEqual([])
+      return r.winner === null ? null : { line: r.winner.line, value: r.winner.value }
+    }
 
     expect(won(label, DECORATION, WIDE) ?? '', 'a linked tile has no cue at rest').toMatch(/underline/)
-    expect(won(label, 'text-decoration-color', WIDE)).toBe('var(--line-soft)')
-    expect(won(label, 'text-underline-offset', WIDE)).toBe('3px')
+    const UNDERLINE = [
+      ['text-decoration-color', 'text-decoration'],
+      ['text-decoration-thickness', 'text-decoration'],
+      ['text-underline-offset'],
+    ] as const
+    for (const prop of UNDERLINE) {
+      const theirs = source(link, prop, WIDE)
+      expect(theirs, `.ctl-link resolves no ${prop[0]}; this check is vacuous`).not.toBeNull()
+      expect(
+        source(label, prop, WIDE),
+        `${prop[0]}: the label restates the link's underline instead of taking .ctl-link's own declaration`,
+      ).toEqual(theirs)
+    }
     expect(won(label, 'color', WIDE), 'the label left its faint ink at rest').toBe('var(--text-faint)')
     for (const state of ['hover', 'focus-visible']) {
+      for (const prop of [['color'], ['text-decoration-color', 'text-decoration']] as const) {
+        expect(
+          source(label, prop, { ...WIDE, states: [state] }),
+          `${state}: the label's ${prop[0]} is not .ctl-link:hover's own declaration`,
+        ).toEqual(source(link, prop, { ...WIDE, states: ['hover'] }))
+      }
       expect(won(label, 'color', { ...WIDE, states: [state] }), state).toBe('var(--info)')
-      expect(won(label, 'text-decoration-color', { ...WIDE, states: [state] }), state).toBe('currentColor')
     }
     // The anchor draws no decoration of its own, which a browser would
     // propagate onto the figure whatever the figure declares.
@@ -415,5 +454,36 @@ describe('the Overview decisions, as the cascade resolves them', () => {
     const partBad = won(dial('is-partial is-bad'), BG, WIDE, 'after') ?? ''
     expect(partBad).toContain('var(--bad)')
     expect(partBad, 'a partial verdict lost its hatched remainder').toContain('var(--ctl-hatch)')
+    expect(partBad, 'a partial verdict hatches from its figure, not from what was measured').toContain(
+      'var(--measured',
+    )
+  })
+
+  /**
+   * OV-2, on a partial track: THE HATCH IS THE UNMEASURED SHARE, AND ONLY IT.
+   *
+   * The track draws the figure (`--pct`), and a partial one hatched everything
+   * from the figure to the end -- so on the attention lead, checks that ran and
+   * came back clear were drawn as checks nobody could run, and one blind check
+   * of eight looked like seven. Three segments now: the figure filled to
+   * `--pct`, the plain track on to `--measured`, the hatch from there.
+   *
+   * MUTATION: end the fill at `--measured`, or start the hatch at `--pct`.
+   */
+  it('OV-2: a partial track fills to its figure and hatches only past what was measured', () => {
+    const part = won(
+      pick(frag('<div class="ctl-dial ov-dial is-partial"><b class="ctl-dial-figure">x</b></div>'), '.ctl-dial'),
+      ['background-image', 'background'],
+      WIDE,
+      'after',
+    ) ?? ''
+    expect(part, 'the fill does not end at the figure').toMatch(/var\(--text-dim\)\s+0\s+calc\(var\(--pct\b/)
+    expect(part, 'the hatch does not start where the measured share ends').toMatch(
+      /transparent\s+calc\(var\(--measured\b[^)]*\)\s*\*\s*1%\)\s+100%/,
+    )
+    expect(part, 'the measured share past the figure is not the plain track').toMatch(
+      /var\(--surface-2\)\s+calc\(var\(--pct\b[^)]*\)\s*\*\s*1%\)\s+calc\(var\(--measured\b/,
+    )
+    expect(part).toContain('var(--ctl-hatch)')
   })
 })

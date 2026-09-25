@@ -189,7 +189,7 @@ describe('the landing screen is a lead and two regions, not a grid of boxes', ()
    *
    * MUTATION: put either removed tile back on the strip.
    */
-  it('says the attention count once, at page rank, and not again in the fact strip', async () => {
+  it('says the attention count once, in the lead, and not again in the fact strip', async () => {
     const el = await mountOverview()
 
     const title = el.querySelector('.ov-lead-title')
@@ -721,6 +721,40 @@ describe('OV-7: on a phone, an account row keeps the note that changes what it m
     // A current reading's window and age is provenance, not a note.
     expect(byOf('fine')!.classList.contains('is-note'), 'a plain reading was marked a note').toBe(false)
   })
+
+  /**
+   * A PAUSED OR DRAINING ACCOUNT KEEPS ITS NOTE WHATEVER ITS READING SAYS.
+   * The column held one word and the reading words outranked the state, so a
+   * paused account whose reading was stale, cleared, never taken or missing
+   * its window printed only the reading word -- unmarked, so a phone showed
+   * no note at all, and a wide screen never said "paused". The decision names
+   * paused and draining among the notes a phone must show; the reading word
+   * follows the note on the same line.
+   *
+   * MUTATION: let a reading word replace the state again, or stop marking it.
+   */
+  it('keeps a paused or draining note when the reading is stale or was never taken', async () => {
+    const el = await mountWith({
+      loadAccountPool: ok(
+        accountsPage([
+          reading('drain', 0.1, { state: 'DRAINING', stale: true }),
+          account({ account_id: 'eng:held', label: 'held', state: 'PAUSED' }),
+          reading('fine', 0.1),
+        ]),
+      ),
+    })
+    const byOf = (name: string) =>
+      [...el.querySelectorAll('.ov-headroom .ctl-util')]
+        .find((r) => text(r.querySelector('.ctl-util-name b')) === name)
+        ?.querySelector('.ctl-util-by') ?? null
+    expect(byOf('drain'), 'the draining account drew no row').not.toBeNull()
+    expect(text(byOf('drain')), 'a stale reading hid the draining note').toMatch(/^draining\b.*\bstale\b/)
+    expect(byOf('drain')!.classList.contains('is-note'), 'draining over a stale reading is not a note').toBe(true)
+    expect(byOf('held'), 'the paused account drew no row').not.toBeNull()
+    expect(text(byOf('held')), 'a reading never taken hid the paused note').toMatch(/^paused\b.*\bnever polled$/)
+    expect(byOf('held')!.classList.contains('is-note'), 'paused over no reading is not a note').toBe(true)
+    expect(byOf('fine')!.classList.contains('is-note')).toBe(false)
+  })
 })
 
 describe('OV-9: while the checks read, the lead says so and draws no figure', () => {
@@ -754,6 +788,30 @@ describe('OV-9: while the checks read, the lead says so and draws no figure', ()
     expect(dial.classList.contains('is-pending')).toBe(false)
     expect(dial.classList.contains('is-partial'), 'a failed check did not hatch the lead').toBe(true)
     expect(dial.querySelector('.ctl-mark.is-partial'), 'a partial lead carries no partial mark').not.toBeNull()
+  })
+
+  /**
+   * THE HATCH IS THE BLIND SHARE, AND ONLY IT (OV-2). The track draws open
+   * checks over all checks; a partial one hatched from that figure to the
+   * end, so seven checks that ran and came back clear were drawn as
+   * unmeasured, and one blind check of eight drew the same track as seven.
+   * `--measured` is the share that ran: the hatch starts there.
+   *
+   * MUTATION: set `--measured` to the figure again, or to the coverage of
+   * anything but the checks.
+   */
+  it('hatches only the checks that could not run, not the ones that came back clear', async () => {
+    const el = await mountWith({
+      loadStats: { status: 'error', error: { kind: 'server_error', httpStatus: 500, code: null, message: 'boom' } },
+      // A polled account, so the accounts check is clear: eight checks, the
+      // dispatch one blind, the other seven clear, none open.
+      loadAccountPool: ok(accountsPage([reading('fine', 0.1)])),
+    })
+    const dial = el.querySelector('.ov-lead .ctl-dial')!
+    expect(dial.classList.contains('is-partial')).toBe(true)
+    const style = dial.getAttribute('style') ?? ''
+    expect(style, 'nothing is open, so nothing is filled').toMatch(/--pct:\s*0(;|$)/)
+    expect(style, 'the hatch does not start where the checks that ran end (7 of 8)').toMatch(/--measured:\s*88(;|$)/)
   })
 
   /**
@@ -828,5 +886,52 @@ describe('OV-16: the running count re-reads every 60 seconds and says how old it
     const mark = el.querySelector('.ov-running .ctl-empty .ctl-mark')
     expect(mark, 'the Running card drew no empty state').not.toBeNull()
     expect(mark!.getAttribute('aria-label') ?? '').toMatch(/state counts, read (just now|\d+[smhd] ago), say 3;/)
+  })
+})
+
+describe('OV-10: the failures figure and the failed-agents list count one population', () => {
+  /** `phoneWidth()` reads `matchMedia`, which jsdom does not have. */
+  function media(phone: boolean): void {
+    vi.stubGlobal('matchMedia', (query: string) => ({
+      matches: phone && query.includes('560'),
+      media: query,
+      onchange: null,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      addListener: () => {},
+      removeListener: () => {},
+      dispatchEvent: () => false,
+    }))
+  }
+
+  /**
+   * THE DECISION'S GUARANTEE, AT PHONE WIDTH. The failures item's figure and
+   * the list its link opens "describe the same population" because the list
+   * filters client-side over the same task read the check counts. Since #152
+   * the agent list reads the 50-row phone page at 560px and under (§2.5, and
+   * `drawer.reread.test.tsx` pins it at 50), while the Overview kept counting
+   * over 200 -- so "7 failed among the 200 most recent" could open a list
+   * reading "nothing failed in recent". The Overview's task read is the list's
+   * page at every width now, and the headline's N says which.
+   *
+   * MUTATION: read the full page on a phone again.
+   */
+  it('reads the phone page at phone width, the page the agent list reads', async () => {
+    media(true)
+    api.loadTasks.mockClear()
+    await mountWith()
+    const limits = api.loadTasks.mock.calls.map((c) => c[0] as unknown)
+    expect(limits.length, 'the Overview made no task read').toBeGreaterThan(0)
+    expect(limits.filter((l) => l !== 50), 'a phone Overview counted over a page the list does not read').toEqual([])
+  })
+
+  /** The control: a wide screen reads the full page, as the list does. */
+  it('reads the full page on a wide screen', async () => {
+    media(false)
+    api.loadTasks.mockClear()
+    await mountWith()
+    const limits = api.loadTasks.mock.calls.map((c) => c[0] as unknown)
+    expect(limits.length).toBeGreaterThan(0)
+    expect(limits.includes(50), 'a wide Overview read the phone page').toBe(false)
   })
 })
