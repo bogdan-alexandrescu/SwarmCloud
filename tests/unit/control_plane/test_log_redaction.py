@@ -28,6 +28,7 @@ come back out.
 
 from __future__ import annotations
 
+import json
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -170,6 +171,112 @@ def test_a_literal_known_to_be_secret_is_masked_whatever_shape_it_has():
     result = redact("the password is hunter2-and-then-some", extra=["hunter2-and-then-some"])
     assert "hunter2" not in result.text
     assert result.count == 1
+
+
+# --------------------------------------------------------------------------
+# Private keys: a BLOCK, not a line (#188 review)
+# --------------------------------------------------------------------------
+#
+# The house rule is `(BEGIN marker).*`, and `.` stops at a newline, so it masks
+# the rest of the BEGIN line and nothing after it. On a raw NDJSON line that
+# is the whole key -- JSON writes the key's newlines as the two characters
+# `\n`. Printed as text, or DECODED out of that line, the newlines are real,
+# and the line rule served the body in clear.
+
+def _pem_marker(which: str) -> str:
+    """The BEGIN or END marker of an RSA key, assembled (see `_shape`)."""
+    return _shape("-----", which, " RSA PRIVATE KEY", "-----")
+
+
+def _pem_body(lines: int = 24) -> list[str]:
+    """Synthetic key lines: 64 base64-alphabet characters, each line unique."""
+    return [f"K{n:04d}" * 12 + "QQQQ" for n in range(lines)]
+
+
+def _pem_text(body: list[str]) -> str:
+    return "\n".join([_pem_marker("BEGIN"), *body, _pem_marker("END")])
+
+
+#: Two consecutive units of any key line: a leak of even part of one line.
+KEY_LEAK = re.compile(r"K\d{4}K\d{4}")
+
+
+def test_a_private_key_printed_over_many_lines_is_masked_as_a_block():
+    result = redact(f"before the key\n{_pem_text(_pem_body())}\nafter the key\n")
+
+    assert not KEY_LEAK.search(result.text), result.text
+    assert result.text.startswith("before the key\n")
+    assert result.text.endswith("\nafter the key\n")
+    assert "PRIVATE KEY" in result.text, "the marker still says WHAT leaked"
+    assert MASK in result.text
+    assert result.count == 1, "one key, one mask"
+
+
+def test_a_key_written_on_one_json_line_is_masked_to_its_end_and_no_further():
+    """The raw NDJSON shape. Masked exactly as the line rule always masked it,
+    and the next line is still readable."""
+    line = json.dumps({"type": "user", "content": _pem_text(_pem_body())})
+    result = redact(line + "\nthe next line\n")
+
+    assert not KEY_LEAK.search(result.text), result.text
+    assert result.text.endswith("\nthe next line\n")
+
+
+def test_text_that_starts_inside_a_key_masks_the_body_above_its_end_marker():
+    """A page, or a tool that printed from an offset, holds a key's END and
+    not its BEGIN."""
+    text = "\n".join([*_pem_body()[10:], _pem_marker("END"), "after"]) + "\n"
+    result = redact(text)
+
+    assert not KEY_LEAK.search(result.text), result.text
+    assert result.text.endswith("after\n")
+
+
+def test_a_key_cut_short_masks_its_body_and_stops_at_the_first_line_that_is_not_key():
+    lines = [_pem_marker("BEGIN"), *_pem_body()[:12], "", "Error: the file ended early"]
+    result = redact("\n".join(lines) + "\n")
+
+    assert not KEY_LEAK.search(result.text), result.text
+    assert "Error: the file ended early" in result.text
+
+
+def test_a_numbered_listing_of_a_key_is_masked_with_or_without_its_end():
+    """An agent's file-read tool prints `     2<TAB>MIIE...`; `cat -n` too."""
+    body = _pem_body()
+    whole = [_pem_marker("BEGIN"), *body, _pem_marker("END")]
+    cut = [_pem_marker("BEGIN"), *body[:8]]
+    for lines in (whole, cut):
+        text = "".join(f"{n + 1:6d}\t{line}\n" for n, line in enumerate(lines))
+        result = redact(text)
+        assert not KEY_LEAK.search(result.text), result.text
+        assert result.text.startswith("     1\t")
+
+
+def test_a_decoded_string_masks_an_unterminated_key_to_its_end():
+    """One string decoded out of a JSON document. The raw line rule masked
+    everything after BEGIN on that line -- the rest of this string -- and
+    decoding it first must not make it weaker."""
+    body = _pem_body()
+    value = (
+        "\n".join([_pem_marker("BEGIN"), *body[:6]])
+        + "\n 1 | ordinary words, not key material\n"
+        + "\n".join(body[6:12])
+    )
+    decoded = redact(value, decoded=True)
+    assert not KEY_LEAK.search(decoded.text), decoded.text
+    assert "ordinary words" not in decoded.text
+
+    raw = redact(json.dumps({"content": value}))
+    assert "ordinary words" not in raw.text, "the raw line rule masked it too"
+
+
+def test_text_the_caller_knows_begins_inside_a_key_is_masked_to_where_the_key_ends():
+    text = "\n".join(_pem_body()[5:15]) + "\nordinary text after a page boundary\n"
+    result = redact(text, inside_key=True)
+
+    assert not KEY_LEAK.search(result.text), result.text
+    assert "ordinary text after a page boundary" in result.text
+    assert redact(text).text == text, "without that knowledge, base64 is just base64"
 
 
 def test_an_upstream_error_string_is_redacted_and_bounded():
@@ -499,3 +606,72 @@ def test_a_caller_supplied_offset_landing_mid_credential_still_does_not_leak(
     assert not survivors, (
         "an offset landing inside the key returned it whole: " + repr(survivors)
     )
+
+
+def _page_through(client, *, offset: int, window: int) -> list[dict]:
+    """Every page of stdout from `offset` to the end, `window` bytes at a time."""
+    pages: list[dict] = []
+    while True:
+        response = client.get(
+            f"/v1/tasks/task_a/logs?stream=stdout&offset={offset}&limit_bytes={window}",
+            headers=auth_header("alice"),
+        )
+        assert response.status_code == 200, response.text
+        entry = response.json()["streams"][0]
+        pages.append(entry)
+        if entry["next_offset"] is None:
+            return pages
+        offset = entry["next_offset"]
+        assert len(pages) < 200, "the offset is not advancing"
+
+
+def test_a_key_longer_than_the_window_leaks_from_no_page_and_no_offset(client, db, objects):
+    """A plain-text key bigger than the smallest window (4 KiB) spans pages,
+    and the pages in its MIDDLE hold neither marker. Each page looks back
+    past its own start, so a page that begins inside a key knows it does --
+    from a boundary the previous page chose or from an offset the caller
+    chose."""
+    before = "".join(f"line {n:03d} before\n" for n in range(40))
+    after = "".join(f"line {n:03d} after\n" for n in range(40))
+    log = before + _pem_text(_pem_body(200)) + "\n" + after
+    _seed(db, objects, body=log)
+
+    pages = _page_through(client, offset=0, window=4096)
+    assert len(pages) > 3, "the key must span several pages for this to test anything"
+    for page in pages:
+        assert not KEY_LEAK.search(page["content"]), (page["offset"], page["content"][:300])
+    seen = "".join(page["content"] for page in pages)
+    assert seen.startswith(before), "the text before the key is whole"
+    assert seen.endswith(after), "and so is the text after it"
+
+    # Offsets across the key, and every few bytes of its BEGIN line: the
+    # marker holds spaces, so a window can begin in the middle of it.
+    start = len(before)
+    offsets = [*range(start, start + 13_000, 211), *range(start + 1, start + 40, 3)]
+    for offset in offsets:
+        response = client.get(
+            f"/v1/tasks/task_a/logs?stream=stdout&offset={offset}&limit_bytes=4096",
+            headers=auth_header("alice"),
+        )
+        assert response.status_code == 200, response.text
+        assert not KEY_LEAK.search(response.text), offset
+
+
+def test_a_log_window_that_is_not_utf8_says_how_many_bytes_it_replaced(client, db, objects):
+    """Shown as U+FFFD -- a JSON string cannot carry the byte -- and COUNTED,
+    so a mangled window is never mistaken for the agent's own text."""
+    _seed(db, objects, body=b"caf\xe9 au lait\nplain line\n")
+
+    entry = client.get("/v1/tasks/task_a/logs?stream=stdout", headers=auth_header("alice")).json()[
+        "streams"
+    ][0]
+    assert entry["status"] == "ok"
+    assert entry["invalid_utf8_bytes"] == 1
+    assert "\ufffd" in entry["content"]
+    assert "UTF-8" in entry["detail"]
+
+    clean = client.get(
+        "/v1/tasks/task_a/logs?stream=stderr", headers=auth_header("alice")
+    ).json()["streams"][0]
+    assert clean["status"] == "absent"
+    assert clean["invalid_utf8_bytes"] is None, "no object read, so nothing measured -- not zero"

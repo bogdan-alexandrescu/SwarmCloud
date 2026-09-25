@@ -6,6 +6,7 @@ import { Absent, Mark } from './primitives'
 import { FailedPanel } from './Shell'
 import type { Result } from './fetch'
 import {
+  ageSpan,
   bytesLabel,
   CONCURRENCY_STATES,
   timeAgo,
@@ -14,6 +15,7 @@ import {
   type CheckpointRecord,
   type CheckpointsPage,
   type LogStream,
+  type LogStreamName,
   type Task,
   type TaskLogs,
 } from './types'
@@ -141,8 +143,12 @@ interface Held<T, C> {
  *    instead would mean a listing slower than 10s never lands at all. When a
  *    read lands and the drawer has read again meanwhile, one more read starts,
  *    with what is true then.
+ *
+ * EXPORTED for the Artifacts pane (#184), whose raw agent-stdout view and
+ * `show records` transcript are reads of their own that follow the pane's
+ * 5 s poll the same way these panels follow the drawer's 10 s one.
  */
-function useRead<T, C = null>(
+export function useRead<T, C = null>(
   load: () => Promise<Result<T>>,
   task: string,
   key: string,
@@ -856,6 +862,24 @@ function ObjectRow({ object }: { object: CheckpointFile }) {
 // Logs
 // ---------------------------------------------------------------------------
 
+/**
+ * WHAT THIS PANEL SHOWS, SAID IN ITS TITLE (#184).
+ *
+ * It was headed "Output, as the agent wrote it", and it is not that. The route
+ * with no `stream` serves the RUNNER PROCESS's stdout and stderr -- the
+ * platform's wrapper around the agent -- and on `task_73b5f4d9ca3641fbb914`
+ * that was an empty stdout and one runner JSON line on stderr (`child
+ * started`, with its argv), while the agent's 7,124-character answer sat in an
+ * artifact the drawer only listed by name. A reader who opened this panel for
+ * the agent's output was told, in a heading, that a platform log line was it.
+ *
+ * The agent's own streams, its transcript and its answer are the Artifacts
+ * pane's Logs and Outputs. Whether this panel stays here as well is an open
+ * question to the owner (#184); until it is answered it stays, named for what
+ * it is.
+ */
+export const RUNNER_LOG_TITLE = 'Runner log (platform)'
+
 function LogsPanel({ task, readAt, now }: { task: Task; readAt: number | null; now: number | null }) {
   // RE-READ WITH THE DRAWER. Read once, this panel said "no attempt yet"
   // beside a RUNNING chip for as long as the drawer stayed open, and kept a
@@ -867,21 +891,21 @@ function LogsPanel({ task, readAt, now }: { task: Task; readAt: number | null; n
 
   if (state.status === 'loading') {
     return (
-      <Panel title="Output, as the agent wrote it">
+      <Panel title={RUNNER_LOG_TITLE}>
         <Reading />
       </Panel>
     )
   }
   if (state.status === 'error') {
     return (
-      <Panel title="Output, as the agent wrote it">
+      <Panel title={RUNNER_LOG_TITLE}>
         <FailedPanel error={state.error} onRetry={() => window.location.reload()} />
       </Panel>
     )
   }
   if (state.status === 'empty') {
     return (
-      <Panel title="Output, as the agent wrote it">
+      <Panel title={RUNNER_LOG_TITLE}>
         <Absent
           kind="failed"
           heading="No stream result"
@@ -901,7 +925,7 @@ function LogsPanel({ task, readAt, now }: { task: Task; readAt: number | null; n
   // once per row. It is the empty state's heading, once, and nothing else.
   const noAttempt = logs.attempt.status === 'no_attempt_yet' || logs.attempt.status === 'unknown_attempt'
   return (
-    <Panel title="Output, as the agent wrote it">
+    <Panel title={RUNNER_LOG_TITLE}>
       <ul className="ctl-facts">
         {!noAttempt && <li className="ctl-fact">{attemptLine(logs)}</li>}
         {/* STATED BY THE SERVER RATHER THAN ASSUMED HERE, and drawn by the rule
@@ -968,7 +992,7 @@ function LogsPanel({ task, readAt, now }: { task: Task; readAt: number | null; n
 
 /** Which attempt the window below belongs to. `no_attempt_yet` is the state a
  *  QUEUED or PARKED task is legitimately in and must not read as a failure. */
-function attemptLine(logs: TaskLogs): string {
+export function attemptLine(logs: Pick<TaskLogs, 'attempt' | 'attempt_id'>): string {
   switch (logs.attempt.status) {
     case 'latest':
       return `Latest attempt${logs.attempt_id ? ` ${logs.attempt_id}` : ''}`
@@ -1016,20 +1040,43 @@ function attemptLine(logs: TaskLogs): string {
  * The table called every tail `live` (fix-up on #170): a FAILED task's
  * leftover output read as an agent still writing, for as long as anyone
  * opened it.
+ *
+ * #184 ADDED TWO ANSWERS AND ONE SOURCE, and a served age:
+ *
+ *   not_applicable   the runner has no agent CLI (mock, browser), so an
+ *                    agent stream was never going to exist: the em dash and
+ *                    `real zero`, never `not measured`, which would say an
+ *                    upload was missed;
+ *   source artifact  an agent stream read from the artifact the runner wrote,
+ *                    on an attempt older than the final copies -- whole, and
+ *                    said to be from the artifact;
+ *   age_seconds      the server's own measure of how old the object is, taken
+ *                    at its `read_at`. For a live tail it is the publisher's
+ *                    liveness -- the tail is republished every interval even
+ *                    when nothing changed -- so it reads `published Ns ago`
+ *                    and moves on this panel's clock between reads.
+ *
+ * EXPORTED for the Artifacts pane's Logs, which draws the agent's streams
+ * with this same row, so the four answers read the same in both panes.
  */
-function Stream({
+export function Stream({
   stream,
   logs,
   task,
   now,
+  fetchedAt = null,
 }: {
   stream: LogStream
   logs: TaskLogs
   task: Task
   now: number | null
+  /** When this browser received the read, so a served age can tick on. */
+  fetchedAt?: number | null
 }) {
   const ended = logs.attempt.completed_at
   const writing = ended === null && CONCURRENCY_STATES.has(task.state)
+  const at = now ?? Date.now()
+  const age = servedAge(stream, fetchedAt, at)
   return (
     <tr role="row">
       <th role="rowheader" scope="row">
@@ -1086,7 +1133,16 @@ function Stream({
             {bytesLabel(0)}{' '}
             <Mark
               kind="zero"
-              say={`This object exists and is empty: the agent wrote nothing to ${stream.stream}. A measured empty stream, not a failed read.`}
+              say={`This object exists and is empty: ${writerOf(stream.stream)} wrote nothing to ${stream.stream}. A measured empty stream, not a failed read.`}
+            />
+          </>
+        )}
+        {stream.status === 'not_applicable' && (
+          <>
+            <Em />{' '}
+            <Mark
+              kind="zero"
+              say={`This runner has no agent CLI, so no ${stream.stream} was ever going to be written. Nothing is missing.`}
             />
           </>
         )}
@@ -1096,7 +1152,10 @@ function Stream({
       <td role="cell" data-label="Age">
         {stream.source === 'live' ? (
           writing ? (
-            'live'
+            <>
+              live
+              {age !== null && <span className="ctl-sub">published {ageSpan(age)} ago</span>}
+            </>
           ) : (
             <>
               <Em />{' '}
@@ -1104,11 +1163,14 @@ function Stream({
                 kind="partial"
                 say="The last tail the worker published before this attempt stopped. No final log was uploaded, so this is not the whole stream, and nothing is writing it now."
               />
+              {age !== null && <span className="ctl-sub">last published {ageSpan(age)} ago</span>}
             </>
           )
         ) : stream.source === 'final' ? (
           ended !== null ? (
-            timeAgo(ended, now ?? Date.now())
+            timeAgo(ended, at)
+          ) : age !== null ? (
+            `${ageSpan(age)} ago`
           ) : (
             <>
               <Em />{' '}
@@ -1118,6 +1180,11 @@ function Stream({
               />
             </>
           )
+        ) : stream.source === 'artifact' ? (
+          <>
+            {age !== null ? `${ageSpan(age)} ago` : <Em />}
+            <span className="ctl-sub">from the artifact</span>
+          </>
         ) : (
           <Em />
         )}
@@ -1126,12 +1193,35 @@ function Stream({
   )
 }
 
+/** Who writes a stream: the agent CLI, or the platform's runner process around it. */
+function writerOf(name: LogStreamName): string {
+  return name === 'agent_stdout' || name === 'agent_stderr' ? 'the agent' : 'the runner process'
+}
+
+/**
+ * How old a served object is NOW, in ms: the server's `age_seconds` -- taken
+ * at its own `read_at`, on its own clock, so no browser clock skew enters it
+ * -- plus the time since this browser received the read. Null when the server
+ * did not say (an API older than #184) or the read time is unknown.
+ */
+export function servedAge(
+  served: { age_seconds?: number | null },
+  fetchedAt: number | null,
+  now: number,
+): number | null {
+  const a = served.age_seconds
+  if (typeof a !== 'number' || !Number.isFinite(a) || fetchedAt === null) return null
+  // A clock that last ticked before the read landed adds nothing, rather than
+  // taking seconds off what the server measured.
+  return Math.max(0, a * 1000) + Math.max(0, now - fetchedAt)
+}
+
 /**
  * How much of a stream the window holds: the whole object as one figure, or
  * a window of it as `returned of total` with the `partial` mark -- the kit's
  * encoding for "some of it arrived and the rest was not read".
  */
-function WindowSize({ stream }: { stream: LogStream }) {
+export function WindowSize({ stream }: { stream: LogStream }) {
   const total = stream.total_bytes
   const whole = total !== null && stream.offset === 0 && !stream.truncated && stream.returned_bytes >= total
   return (

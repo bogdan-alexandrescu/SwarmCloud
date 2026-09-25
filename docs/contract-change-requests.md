@@ -1542,6 +1542,54 @@ run (the last event before exit is not the exit), it is not queryable across
 attempts, and a "CPU per resource class over the last week" report means
 reading every attempt's event stream.
 
+### Amendment, 2026-09-25 (#184): add the mean and the limit
+
+**Status:** open; the owner decides. Raised by the #184 backend lane.
+
+**What changed.** The owner decided on #184 that Details shows CPU as the
+PEAK and the MEAN cores of the runtime's CPU limit, beside memory and
+workspace. The request above deliberately left `mean_cpu_cores` out; it is now
+asked for, together with the limit it is a fraction of. The requested change
+becomes four fields on `Attempt`, beside `peak_rss_bytes`:
+
+```python
+cpu_seconds: float | None = None
+peak_cpu_cores: float | None = None
+mean_cpu_cores: float | None = None
+cpu_limit_cores: float | None = None
+```
+
+`mean_cpu_cores` is the worker's figure -- CPU-seconds over RUNNER wall time,
+so setup, the clone and retry waits are excluded -- not an approximation from
+`started_at`/`completed_at`. `cpu_limit_cores` is what the kernel enforces
+(cgroup v2 `cpu.max`), or, where that reads `max` or cannot be read, the
+catalogue cpu of the class the container was SIZED with
+(`scheduler.dispatch.resource_class_for(task, profile)`, not the profile's own
+class). None means not measured throughout, never zero.
+
+**The interim, shipped without the contract (#184).** The worker now puts
+every figure on its HEARTBEAT events as flat keys in `detail`
+(`agent_worker.metrics.heartbeat_cpu_fields`): the existing `cpu_seconds` and
+`cpu_source`, plus `peak_cpu_cores`, `mean_cpu_cores` (kept current while the
+runner runs, not only at exit), `cpu_wall_seconds`, `cpu_limit_cores`,
+`cpu_limit_source` (`cgroup` or `resource_class`) and `final`. The periodic
+reading stays on every fifth heartbeat; one more, with `final: true`, is
+emitted when each runner is reaped, and never by an attempt that has been
+fenced. `GET /v1/tasks/{id}/attempts?include=usage` serves the newest reading
+per attempt from ONE descending read of the task's events
+(`swarm_api.attempt_usage`), with a status that says what the reading is
+(`final`, `live`, `last_reading`, `never_ran`, `absent`, `beyond_window`,
+`unread`). It works; it is not queryable across attempts, and it costs an
+events read per request, which is why it is opt-in.
+
+**What changes if this is accepted.** `control.record_resource_usage` writes
+the four fields at each runner's end (the same combined, attempt-wide figures
+the final HEARTBEAT carries); `codec.attempt_from_dict` / `attempt_to_api`
+read and serve them (`test_api_contract_shapes.py` pins the serialiser);
+`include=usage` prefers the typed fields for a `final` reading and reads
+events only for a live one. `apps/swarm-ui/src/types.ts` restates `Attempt`
+by hand and needs the same four fields.
+
 ---
 
 ## 16. `identity.py`: the tenant namespace name, `sanitize_name` included, has two copies
@@ -2059,7 +2107,15 @@ it cannot import `agent_worker`. The number is therefore stated twice:
   fails a task on.
 
 `tests/unit/worker/test_worker_cannot_start.py::test_the_reconcilers_78_is_the_workers_78`
-holds the two together in CI. That is the mirrored-value arrangement this
+holds the two together in CI.
+
+Since #198 the reconciler acts on every OTHER code too, but only to requeue,
+and without naming any of them: an execution that ended with anything but 78
+while its task was still DISPATCHED or STARTING is fenced, released and
+requeued in the pass that sees it (`reconciler.detect.detect_ended_at_startup`),
+with the code quoted in `last_error`. That rule needs no second number, so it
+adds no copy. It does depend on 78 being the only code that must NOT be
+requeued, which is the same fact this request would put in one place. That is the mirrored-value arrangement this
 repository has had three outages from. Here the failure would be quiet in both
 directions. If the worker's number moved and the reconciler's did not, a worker
 that cannot start would go back to being retried until its attempts ran out.

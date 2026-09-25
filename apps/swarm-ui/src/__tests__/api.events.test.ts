@@ -84,8 +84,12 @@ describe('the attempts read', () => {
 
     const attemptReads = calls.filter((c) => c.includes('/attempts'))
     expect(attemptReads, 'the attempts route was never read, so this test checked nothing').toHaveLength(2)
-    for (const c of attemptReads) {
-      expect(c).toBe(`/v1/tasks/tsk_live/attempts?limit=${API_MAX_PAGE_SIZE}`)
-    }
+    // #184: the drawer's read -- and ONLY the drawer's -- also asks for each
+    // attempt's CPU reading. `include=usage` costs the API an events read per
+    // request, so the Overview's per-task attempts reads (`loadAttempts`) must
+    // not carry it. MUTATION: add it to `loadAttempts`, or drop it from
+    // `loadAgentRun` and Details draws `not served` on every attempt.
+    expect(attemptReads[0]).toBe(`/v1/tasks/tsk_live/attempts?limit=${API_MAX_PAGE_SIZE}&include=usage`)
+    expect(attemptReads[1]).toBe(`/v1/tasks/tsk_live/attempts?limit=${API_MAX_PAGE_SIZE}`)
   })
 })

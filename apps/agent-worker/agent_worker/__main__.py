@@ -15,7 +15,9 @@ code is the contract with the dispatcher and the reconciler:
         budget, UNAVAILABLE, any 5xx or gRPC UNKNOWN, DATA_LOSS or
         UNIMPLEMENTED, CANCELLED, a google-auth transport error, at the
         generation check or after it. At the generation check it is also
-        every API error that is not a refusal named under 78. The task, the
+        every API error that is not a refusal named under 78, and it comes
+        only after every scheduled attempt of the check failed, over about
+        90 s (`startup.CONTROL_PLANE_READ_SCHEDULE_SECONDS`, #198). The task, the
         lease and the event stream were not written. After the generation
         check, the attempt's own document records the phase and the error,
         when Firestore took it. The next attempt may not meet the outage, so
@@ -67,16 +69,25 @@ FINISHED execution whose attempt still holds its task's current lease
     (Cloud Run keeps no termination message), `last_error` is "worker exited
     78: could not start (see execution logs: <execution>)". A requested
     cancel still ends CANCELLED.
-  * Every other code keeps the rules it had before any exit code was read.
-    The reconciler judges the lease, not the process (`detect_stale_leases`).
-    A 69 or a 143 before the first heartbeat is judged by the lease's
-    dispatch deadline, 300 s after admission. After the first heartbeat the
-    lease is reclaimed once it has been silent for `heartbeat_grace_seconds`.
-    Either way it is fenced, released, and the task goes back to READY, or to
-    FAILED once `max_attempts` is spent. The lifecycle does not park a 143. A
-    SCHEDULED_RETRY park is promoted by nothing
-    (docs/incidents/2026-09-24-gke-dispatch.md), so parking would strand the
-    task where the reconciler's requeue does not.
+  * Any other code, while the task is still DISPATCHED or STARTING (the
+    worker never reached its runner), is RETRIED in the pass that sees the
+    finished execution (#198, `detect_ended_at_startup`), once it ended
+    `ended_execution_grace_seconds` (30) before that pass read Firestore. It
+    is fenced first, released through the frozen release, and the task goes
+    back to READY, or to FAILED once `max_attempts` is spent. `last_error`
+    names the exit code and the execution, "reconciled: execution <name>
+    exited 69 before its runner started (task was DISPATCHED); retrying".
+    Before #198 a 69 there waited out the lease's 300 s dispatch deadline and
+    read "lease silent". The 69 itself comes only after the generation check
+    has been asked on every attempt of
+    `startup.CONTROL_PLANE_READ_SCHEDULE_SECONDS`.
+  * Once the task is RUNNING, the reconciler judges the lease, not the
+    process (`detect_stale_leases`): it is reclaimed once it has been silent
+    for `heartbeat_grace_seconds`. An execution whose exit code could not be
+    read is judged that way too, and so, before the first heartbeat, by the
+    dispatch deadline. The lifecycle does not park a 143. A SCHEDULED_RETRY
+    park is promoted by nothing (docs/incidents/2026-09-24-gke-dispatch.md),
+    so parking would strand the task where the reconciler's requeue does not.
 """
 
 from __future__ import annotations

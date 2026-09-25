@@ -1,5 +1,12 @@
 ## Live agent output and browser-agent visuals
 
+> **Superseded in part by #184 (2026-09-25); see [`docs/agent-output.md`](../agent-output.md).**
+> claude-code now runs `--output-format stream-json --verbose`, the capture reads
+> with `read1` so a child's output reaches disk while it runs, and the worker
+> publishes the agent CLI's own stdout and stderr live every 5 s
+> (`logs/live/agent_*.tail.log`). Points 1 and 2 below describe the platform
+> before that change and are kept as the record of why it was made.
+
 ### Verdict, up front
 
 The owner asked for "live logs from each pod / agent runtime AS THE AGENT WORKS", and "for agents that drive a browser, this must work visually too."

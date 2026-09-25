@@ -355,14 +355,16 @@ def test_the_recovery_bound_is_computed_from_the_deployment_and_not_from_memory(
     stale_lease = config.heartbeat_grace_seconds + tick_seconds
     missing_execution = config.missing_execution_grace_seconds + tick_seconds
 
-    assert stale_lease == 390, (
+    # 150 and 360 since the tick went from */5 to */1 (#198's follow-up):
+    # they were 390 and 600.
+    assert stale_lease == 150, (
         f"the time to notice a dead worker is now {stale_lease}s "
         f"({config.heartbeat_grace_seconds}s grace + a {tick_seconds}s tick), "
-        "not 390s. That is the number the runbook gives an operator."
+        "not 150s. That is the number the runbook gives an operator."
     )
-    assert missing_execution == 600, (
+    assert missing_execution == 360, (
         f"the time to notice a dispatch that never started is now "
-        f"{missing_execution}s, not 600s."
+        f"{missing_execution}s, not 360s."
     )
     # Re-admission and a cold start come after all of that, which is why the
     # observed end-to-end recovery on 2026-09-22 was around twenty minutes and
@@ -374,18 +376,6 @@ def test_the_recovery_bound_is_computed_from_the_deployment_and_not_from_memory(
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "KNOWN, OPEN: apps/reconciler/reconciler/config.py says a reconciler "
-        "pass runs every minute; terraform schedules the tick every five. The "
-        "code is in apps/, which belongs to Track A, so this is reported "
-        "rather than changed. strict=True on purpose -- the day the comment is "
-        "corrected this test fails as an UNEXPECTED PASS and has to be "
-        "un-xfailed, which is how a known defect stops being a permanent "
-        "exception."
-    ),
-)
 def test_the_pass_retention_comment_still_matches_the_deployed_tick():
     """A documented number that stopped being true, asserted so it cannot again.
 
@@ -397,13 +387,19 @@ def test_the_pass_retention_comment_still_matches_the_deployed_tick():
     sentence somebody will use to work out why a recovery took as long as it
     did.
 
-    This test fails until the comment is corrected. The correction belongs to
-    TRACK A, who own apps/; it is reported rather than made.
+    It was a strict xfail while the tick was */5. The tick is */1 now, so the
+    comment is true, and this holds the two together.
+
+    The comment is read with its line breaks and `#:` prefixes folded away.
+    The sentence wraps after "every", so the old search never found the word
+    after it, and the strict xfail was satisfied by "the retention comment no
+    longer states how often a pass runs" rather than by the mismatch it
+    documented.
     """
     import inspect
     import re
 
-    source = inspect.getsource(ReconcilerConfig)
+    source = re.sub(r"\s*\n\s*#:?\s*", " ", inspect.getsource(ReconcilerConfig))
     claim = re.search(r"A pass runs every (\w+)", source)
     assert claim, "the retention comment no longer states how often a pass runs"
 

@@ -40,13 +40,18 @@ relation this module promises is a SUPERSET: everything the shell filter
 redacts, this redacts, and possibly more. `tests/unit/control_plane/
 test_log_redaction.py` pins both halves, including a drift check that fails
 when a rule is added to the shell filter and not here.
+
+The PRIVATE KEY family is the other place it is wider: a key is masked as a
+BLOCK, not as the rest of one line -- see `mask_private_keys`.
 """
 
 from __future__ import annotations
 
 import re
+import string
+from bisect import bisect_left
 from dataclasses import dataclass
-from typing import Iterable
+from typing import Callable, Iterable
 
 #: Same marker the shell filter leaves behind, so redacted output is
 #: recognisable wherever it is read.
@@ -60,6 +65,12 @@ class Rule:
     Group 1 is the identifying prefix and is KEPT -- `sk-abc123********` still
     tells a reader which provider's key leaked, which is the first thing anyone
     needs when rotating it. Everything after group 1 is replaced.
+
+    `apply`, when set, masks the family INSTEAD of one substitution of
+    `pattern`: a family whose extent is not one match of one pattern (a key
+    spans lines) is masked by a function of `(text, decoded, inside_key)`
+    returning `(text, count)`, and `pattern` then only records the marker the
+    family starts from.
     """
 
     name: str
@@ -67,20 +78,294 @@ class Rule:
     #: `scripts/lib/common.sh` uses. The drift test matches on these.
     shell_marker: str
     pattern: re.Pattern[str]
+    apply: Callable[[str, bool, bool], tuple[str, int]] | None = None
 
 
 def _rule(name: str, shell_marker: str, expression: str, flags: int = 0) -> Rule:
     return Rule(name=name, shell_marker=shell_marker, pattern=re.compile(expression, flags))
 
 
+# --------------------------------------------------------------------------
+# Private keys: a BLOCK, not a line
+# --------------------------------------------------------------------------
+#
+# THE HOLE THIS CLOSES (#188 review). The shell filter's rule masks the BEGIN
+# marker's line from the marker on, and sed is line-at-a-time, so nothing
+# after that line. On a raw NDJSON line that is the whole key: JSON writes the
+# key's newlines as the two characters `\n`, so the key IS one line. Once
+# DECODED they are real newlines, and the same rule masked the BEGIN line and
+# served the base64 body in clear: `/transcript` and `/answer`, which redact
+# after `json.loads`, were weaker than `/logs` over the very same bytes. A
+# plain-text log or artifact holding a key (`cat id_rsa`, a generated fixture)
+# had the same hole on every route.
+#
+# So a key is masked as a BLOCK, in four shapes:
+#
+#   (a) BEGIN ... END within `PEM_BLOCK_MAX_CHARS`: from the BEGIN marker
+#       through the END marker and the rest of its line -- which is exactly
+#       the line rule's reach on a key written as one line;
+#   (b) a BEGIN with no END near it -- a window, a tool, or a field that cut
+#       the key short. In a string DECODED from JSON: to the end of the
+#       string, which is what the line rule masked of the raw line holding it.
+#       In text: the rest of the BEGIN line, then every following line shaped
+#       like a key's body (base64, the RFC 1421 headers before it, blank lines
+#       between), stopping at the first line that is not;
+#   (c) an END with no BEGIN -- text that starts inside a key: the key
+#       material before the marker on its line, and the base64 lines above;
+#   (d) text a paged reader KNOWS begins inside a key (`inside_key`: its own
+#       look-back found a BEGIN before the window and no END): the body lines
+#       at its head, and the END line if it follows them. Without this, the
+#       pages in the middle of a key longer than the page hold neither marker.
+#
+# The BEGIN marker is kept, like every rule's identifying prefix, so a reader
+# still sees WHAT leaked. Lines numbered by the tool that printed them (`cat
+# -n`, an agent's file-read tool: `   12<TAB>MIIE...`) count as body lines.
+#
+# BY HAND, NOT AS ONE REGULAR EXPRESSION. A lazy BEGIN-to-END pattern retried
+# at every BEGIN is quadratic on text of many BEGIN markers and no END, and a
+# "body lines, then END" pattern retried at every line start is quadratic on
+# a window of base64 -- and both are shapes an agent's output can take. Every
+# scan below is linear in the text.
+
+_PEM_BEGIN = re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")
+_PEM_END = re.compile(r"-----END [A-Z ]*PRIVATE KEY-----")
+_PEM_BEGIN_BYTES = re.compile(rb"-----BEGIN [A-Z ]*PRIVATE KEY-----")
+_PEM_END_BYTES = re.compile(rb"-----END [A-Z ]*PRIVATE KEY-----")
+#: A cheap test before any of the work: both markers end in it.
+_PEM_HINT = "PRIVATE KEY-----"
+
+#: How far after a BEGIN marker its END is looked for, and how far back a
+#: paged reader looks for a BEGIN. The largest private key anyone generates
+#: (RSA 16384) is under 13 KB of PEM, a little more once JSON escapes its
+#: newlines; an END further away than this belongs to something else, and
+#: masking everything between would hide ordinary output.
+PEM_BLOCK_MAX_CHARS = 64 * 1024
+
+#: The longest a marker is: `-----BEGIN ENCRYPTED PRIVATE KEY-----` is 37.
+_MARKER_MAX = 64
+
+#: A line number a tool printed in front of a line: digits, a tab or an arrow.
+_NUMBERED = r"(?:\d{1,9}(?:\t|\u2192)[ \t]*)?"
+#: One line of a key's body. `*` is there because a literal secret masked
+#: first (`redact(extra=...)`) must not end the block early.
+_PEM_BASE64_LINE = re.compile(_NUMBERED + r"[A-Za-z0-9+/=*]+")
+#: `Proc-Type: 4,ENCRYPTED`, `DEK-Info: AES-128-CBC,...` -- only before the base64.
+_PEM_HEADER_LINE = re.compile(_NUMBERED + r"[A-Za-z][A-Za-z0-9-]*:.*")
+#: What may precede key material or an END marker on its own line.
+_PEM_LINE_PREFIX = re.compile(r"[ \t\r]*" + _NUMBERED)
+#: Key material on the END marker's own line, written JSON-escaped (`\n` as two
+#: characters, `\/` for a slash).
+_PEM_INLINE_BODY = frozenset(string.ascii_letters + string.digits + "+/=*\\")
+
+
+def _body_line(line: str, *, headers_allowed: bool) -> str | None:
+    """`"blank"`, `"base64"` or `"header"` for a line of a key's body, or None."""
+    stripped = line.strip(" \t\r")
+    if not stripped:
+        return "blank"
+    if _PEM_BASE64_LINE.fullmatch(stripped):
+        return "base64"
+    if headers_allowed and _PEM_HEADER_LINE.fullmatch(stripped):
+        return "header"
+    return None
+
+
+def _body_run_end(text: str, pos: int) -> int:
+    """Where the key-body lines after position `pos` end.
+
+    `pos` is the newline that ends the line BEFORE the first candidate, or -1
+    for the start of `text`. Returns the end (exclusive) of the last body line
+    -- blank lines are only taken when more of the body follows them -- or
+    `pos` when the first line is not one.
+    """
+    stop = pos
+    seen_base64 = False
+    size = len(text)
+    while pos < size:
+        following = text.find("\n", pos + 1)
+        end = size if following < 0 else following
+        shape = _body_line(text[pos + 1 : end], headers_allowed=not seen_base64)
+        if shape is None:
+            break
+        if shape != "blank":
+            stop = end
+            seen_base64 = seen_base64 or shape == "base64"
+        pos = end
+    return stop
+
+
+def _line_end(text: str, at: int) -> int:
+    newline = text.find("\n", at)
+    return len(text) if newline < 0 else newline
+
+
+def _block_end(
+    text: str, head_end: int, end_starts: list[int], end_ends: list[int], *, to_end: bool
+) -> int:
+    """Where the masked span of the key whose BEGIN marker ends at `head_end` stops."""
+    at = bisect_left(end_starts, head_end)
+    if at < len(end_starts) and end_starts[at] - head_end <= PEM_BLOCK_MAX_CHARS:
+        return _line_end(text, end_ends[at])  # (a)
+    if to_end:
+        return len(text)  # (b), decoded
+    line_end = text.find("\n", head_end)
+    if line_end < 0:
+        return len(text)
+    return _body_run_end(text, line_end)  # (b), text
+
+
+def _continuation_end(text: str) -> int:
+    """(d): where the key that `text` begins inside ends. 0 when nothing of it is here."""
+    run = _body_run_end(text, -1)
+    line_start = min(run + 1, len(text))
+    prefix = _PEM_LINE_PREFIX.match(text, line_start)
+    marker = _PEM_END.match(text, prefix.end() if prefix else line_start)
+    if marker is not None:
+        return _line_end(text, marker.end())
+    return max(run, 0)
+
+
+#: How far back a line's start is looked for from inside it. A key's lines are
+#: 64 or 70 characters, a numbered one a few more; a line longer than this is
+#: not one, and bounding the search keeps text with many END markers on one
+#: long line linear.
+_LINE_SCAN_MAX = 4096
+
+
+def _start_of_line(text: str, at: int, floor: int) -> int | None:
+    """The start of the line holding `at`, not before `floor`; None if further than the scan."""
+    low = max(floor, at - _LINE_SCAN_MAX)
+    newline = text.rfind("\n", low, at)
+    if newline >= 0:
+        return newline + 1
+    return floor if low == floor else None
+
+
+def _tail_start(text: str, marker_start: int, floor: int) -> int:
+    """(c): the first character of the key material above an END marker with no BEGIN."""
+    at = marker_start
+    while at > floor and text[at - 1] in _PEM_INLINE_BODY:
+        at -= 1
+    line_start = _start_of_line(text, at, floor)
+    if line_start is None or not _PEM_LINE_PREFIX.fullmatch(text, line_start, at):
+        return at  # other text precedes the key material on this line
+    line_end = line_start - 1  # the newline ending the line above
+    while line_end >= floor:
+        above = _start_of_line(text, line_end, floor)
+        if above is None or _body_line(text[above:line_end], headers_allowed=False) != "base64":
+            break
+        at = above
+        line_end = above - 1
+    return at
+
+
+def _mask_orphan_ends(text: str) -> tuple[str, int]:
+    """(c) over every END marker in `text`, which holds no BEGIN."""
+    if _PEM_HINT not in text:
+        return text, 0
+    pieces: list[str] = []
+    count = 0
+    pos = 0
+    for marker in _PEM_END.finditer(text):
+        start = _tail_start(text, marker.start(), pos)
+        if start < marker.start():
+            pieces.append(text[pos:start])
+            pieces.append(MASK)
+            count += 1
+            pos = marker.start()
+    pieces.append(text[pos:])
+    return "".join(pieces), count
+
+
+def mask_private_keys(
+    text: str, decoded: bool = False, inside_key: bool = False
+) -> tuple[str, int]:
+    """Every private key in `text` masked as a block: shapes (a) to (d) above.
+
+    `decoded`: `text` is ONE string decoded out of a JSON document, so a key
+    with no END is masked to the end of it. `inside_key`: the caller's
+    look-back found `text` begins inside a key (`open_key_start`).
+    """
+    if not inside_key and _PEM_HINT not in text:
+        return text, 0
+    ends = [(m.start(), m.end()) for m in _PEM_END.finditer(text)]
+    end_starts = [start for start, _ in ends]
+    end_ends = [end for _, end in ends]
+    pieces: list[str] = []
+    count = 0
+    pos = 0
+    if inside_key:
+        stop = _continuation_end(text)
+        if stop > 0:
+            pieces.append(MASK)
+            count += 1
+            pos = stop
+    search = pos
+    while True:
+        begin = _PEM_BEGIN.search(text, search)
+        if begin is None:
+            break
+        outside, found = _mask_orphan_ends(text[pos : begin.start()])
+        pieces.append(outside)
+        count += found
+        stop = _block_end(text, begin.end(), end_starts, end_ends, to_end=decoded)
+        pieces.append(begin.group(0))
+        pieces.append(MASK)
+        count += 1
+        pos = stop
+        search = max(stop, begin.end())
+    outside, found = _mask_orphan_ends(text[pos:])
+    pieces.append(outside)
+    return "".join(pieces), count + found
+
+
+def open_key_start(data: bytes, at: int) -> int | None:
+    """Where the BEGIN marker of a key still open at byte `at` of `data` starts, or None.
+
+    Open: the marker STARTS before `at` -- it may run past it, when `at` falls
+    inside the marker itself -- and no END marker lies between the two, and
+    the BEGIN is within `PEM_BLOCK_MAX_CHARS`. Used two ways: a paged reader
+    asks whether its window begins inside a key (shape (d)), and a streamed
+    download asks whether the window it is about to cut ends inside one, so
+    it can carry the key whole into the next.
+    """
+    floor = max(0, at - PEM_BLOCK_MAX_CHARS)
+    last = None
+    for match in _PEM_BEGIN_BYTES.finditer(data, floor, min(len(data), at + _MARKER_MAX)):
+        if match.start() >= at:
+            break
+        last = match
+    if last is None:
+        return None
+    if last.end() >= at:
+        return last.start()
+    if _PEM_END_BYTES.search(data, last.end(), at) is not None:
+        return None
+    return last.start()
+
+
+def _private_key_rule() -> Rule:
+    return Rule(
+        name="private_key_block",
+        shell_marker="PRIVATE KEY",
+        # The marker the family starts from; `apply` does the masking.
+        pattern=_PEM_BEGIN,
+        apply=mask_private_keys,
+    )
+
+
 #: Order matters and mirrors the shell filter's `-e` order: a narrow provider
 #: rule runs before the broad key/value rule, so `api_key=sk-live-...` is
 #: reduced by the `sk-` rule first and the survivor is masked by the second.
 #:
-#: `.` never matches a newline in any pattern here (no re.DOTALL), which is what
-#: keeps the PRIVATE KEY rule line-scoped exactly as sed's line-at-a-time
-#: processing makes it.
+#: ONE EXCEPTION: the private-key block runs FIRST here. A key's base64 body
+#: is full of runs other rules match by chance (`ey` and eight more characters
+#: is a JWT to the JWT rule), and masking pieces of a body before the block
+#: rule sees it only adds counts for one leak.
+#:
+#: `.` never matches a newline in any pattern here (no re.DOTALL).
 RULES: tuple[Rule, ...] = (
+    _private_key_rule(),
     _rule("openai_key", "sk-", r"(sk-[A-Za-z0-9_-]{6})[A-Za-z0-9_-]+"),
     _rule("google_oauth_access_token", "ya29", r"(ya29\.)[A-Za-z0-9._-]+"),
     # Any JWT: a Google ID token, an IAP assertion, a session cookie. This is
@@ -92,11 +377,6 @@ RULES: tuple[Rule, ...] = (
     _rule("github_pat", "github_pat_", r"(github_pat_)[A-Za-z0-9_]{8,}"),
     _rule("slack_token", "xox[abprs]-", r"(xox[abprs]-)[A-Za-z0-9-]{8,}"),
     _rule("aws_access_key_id", "AKIA", r"((?:AKIA|ASIA)[A-Z0-9]{4})[A-Z0-9]+"),
-    _rule(
-        "private_key_block",
-        "PRIVATE KEY",
-        r"(-----BEGIN [A-Z ]*PRIVATE KEY-----).*",
-    ),
     # `Authorization: Bearer <token>` in any casing, and the `Basic` form,
     # which is a base64 username:password and is no less a credential.
     _rule(
@@ -138,13 +418,28 @@ class Redacted:
         return self.count > 0
 
 
-def redact(text: str, *, extra: Iterable[str] = ()) -> Redacted:
+def redact(
+    text: str,
+    *,
+    extra: Iterable[str] = (),
+    decoded: bool = False,
+    inside_key: bool = False,
+) -> Redacted:
     """Mask every credential-shaped run in `text`.
 
     `extra` takes literal values the caller knows are secret -- it is the same
     idea as the worker's registered-secret set, available here for a caller
     that has one. It is applied FIRST and whole-string, because a literal is
     known to be a credential while a pattern only guesses.
+
+    `decoded`: `text` is ONE string decoded out of a JSON document (a step of
+    a transcript, an answer). Every such string must be masked at least as far
+    as its raw line would have been, and the raw line rule masks everything
+    after a key's BEGIN marker on that line -- so a key with no END is masked
+    to the end of the string.
+
+    `inside_key`: a paged reader's look-back found `text` begins inside a
+    private key (`open_key_start`); the key material at its head is masked.
     """
     count = 0
     for literal in sorted({v for v in extra if v and len(v) >= 8}, key=len, reverse=True):
@@ -152,7 +447,10 @@ def redact(text: str, *, extra: Iterable[str] = ()) -> Redacted:
             count += text.count(literal)
             text = text.replace(literal, MASK)
     for rule in RULES:
-        text, found = rule.pattern.subn(r"\1" + MASK, text)
+        if rule.apply is not None:
+            text, found = rule.apply(text, decoded, inside_key)
+        else:
+            text, found = rule.pattern.subn(r"\1" + MASK, text)
         count += found
     return Redacted(text=text, count=count)
 
