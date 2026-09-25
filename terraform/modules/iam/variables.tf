@@ -33,17 +33,6 @@ variable "scope_firestore_to_database" {
   default     = false
 }
 
-variable "custom_role_suffix" {
-  description = "Appended to custom role ids so a re-create after a soft delete does not collide with the 7-day tombstone."
-  type        = string
-  default     = ""
-
-  validation {
-    condition     = can(regex("^[a-zA-Z0-9_]*$", var.custom_role_suffix))
-    error_message = "custom role ids accept only letters, digits and underscores."
-  }
-}
-
 variable "gke_enabled" {
   description = "Grant the GKE dispatch role. False when the Autopilot cluster is not deployed."
   type        = bool

@@ -1,221 +1,39 @@
-# Custom roles.
+# The platform's custom roles, as this module GRANTS them -- no longer as it
+# defines them.
 #
-# The predefined alternatives are all too wide for this platform:
+# UNTIL 2026-09-25 THIS FILE DEFINED FIVE CUSTOM ROLES: swarmJobDispatcher,
+# swarmJobReaper, swarmGkeDispatcher, swarmGkeReaper and swarmSecretLister. They
+# are defined in terraform/bootstrap/platform_roles.tf now, with their
+# permission lists and the reasoning behind every permission moved there
+# verbatim (#79, owner decision 2026-09-25). terraform/bootstrap is applied by
+# the owner, never by CI. Defining a role here needed roles/iam.roleAdmin on the
+# CI deployer, and roleAdmin's iam.roles.update cannot be conditioned: CI could
+# add resourcemanager.projects.setIamPolicy to a custom role it already held and
+# grant itself anything, roles/owner included, without any condition on its
+# other grants ever being evaluated. Changing one of these roles is therefore an
+# owner bootstrap apply, not a release.
 #
-#   roles/run.developer also grants run.services.* -- the scheduler could
-#   redeploy the API it is called by.
-#   roles/run.admin adds setIamPolicy, so the dispatcher could grant itself
-#   anything on any Cloud Run resource.
-#   roles/container.developer covers every workload type in every namespace,
-#   including Secrets.
+# What stays here is the module's side: the role NAMES the bindings in
+# bindings.tf use, read from ../custom_role_ids -- the one spelling both roots
+# share -- and never from a resource or a data source, because CI can no longer
+# read a role at all. The roles must exist before this module's first apply on a
+# fresh project; docs/runbooks/custom-roles-to-bootstrap.md gives the order.
 #
-# Each role below is the exact permission set one component needs and nothing
-# beyond it. Note what is absent from every one of them: setIamPolicy, and any
-# delete permission outside the reconciler's role.
+# THE QUOTA BROKER'S swarmSecretLister GRANT IS NOT MADE HERE ANY MORE EITHER
+# (#69, owner decision 2026-09-25). It carries project-wide
+# secrets.setIamPolicy, which reaches the other team's 63 secrets, and while CI
+# made the grant the role had to stay on the scoped projectIamAdmin's grantable
+# list -- which let CI grant it to itself, unconditioned. The owner grants it
+# from terraform/bootstrap, and the role is off that list.
+#
+# terraform/infra/custom_roles_moved_to_bootstrap.tf holds the `removed` blocks
+# that make the release FORGET the live roles and the grant rather than delete
+# them.
 
-locals {
-  role_suffix = var.custom_role_suffix == "" ? "" : "_${var.custom_role_suffix}"
+module "custom_role_ids" {
+  source = "../custom_role_ids"
 
-  # Role ids live here, in configuration, rather than being read back off the
-  # resources. They end up inside for_each KEYS in bindings.tf, and a key that
-  # depends on a resource attribute is unknown for any role that does not exist
-  # yet. `terraform plan` happens to resolve it from configuration anyway, which
-  # is why that worked -- but `terraform import` does not, and the whole root
-  # module becomes un-importable the moment a new custom role is added. Adding
-  # one should not break importing an unrelated Firestore document.
-  custom_role_ids = {
-    job_dispatcher = "swarmJobDispatcher${local.role_suffix}"
-    job_reaper     = "swarmJobReaper${local.role_suffix}"
-    gke_dispatcher = "swarmGkeDispatcher${local.role_suffix}"
-    gke_reaper     = "swarmGkeReaper${local.role_suffix}"
-    secret_lister  = "swarmSecretLister${local.role_suffix}"
-  }
-}
-
-resource "google_project_iam_custom_role" "job_dispatcher" {
-  project = var.project_id
-  role_id = local.custom_role_ids.job_dispatcher
-  title   = "Swarm Job Dispatcher"
-
-  description = "Create and run Cloud Run Job resources. No delete, no IAM, no services."
-  stage       = "GA"
-
-  permissions = [
-    # Per-tenant-per-profile Job resources: Cloud Run pins the service account
-    # on the Job, not the execution, so the dispatcher must be able to create
-    # them (CONTRACT.md, platform decisions).
-    "run.jobs.create",
-    "run.jobs.get",
-    "run.jobs.list",
-    "run.jobs.update",
-    "run.jobs.run",
-    "run.jobs.runWithOverrides",
-    "run.executions.get",
-    "run.executions.list",
-    "run.tasks.get",
-    "run.tasks.list",
-    "run.operations.get",
-    "run.operations.list",
-  ]
-}
-
-resource "google_project_iam_custom_role" "job_reaper" {
-  project = var.project_id
-  role_id = local.custom_role_ids.job_reaper
-  title   = "Swarm Job Reaper"
-
-  description = "Cancel and delete executions, garbage-collect unused Job resources. Reconciler only."
-  stage       = "GA"
-
-  permissions = [
-    "run.jobs.get",
-    "run.jobs.list",
-    "run.jobs.delete",
-    "run.executions.get",
-    "run.executions.list",
-    "run.executions.cancel",
-    "run.executions.delete",
-    "run.tasks.get",
-    "run.tasks.list",
-    "run.operations.get",
-    "run.operations.list",
-  ]
-}
-
-resource "google_project_iam_custom_role" "gke_dispatcher" {
-  count = var.gke_enabled ? 1 : 0
-
-  project = var.project_id
-  role_id = local.custom_role_ids.gke_dispatcher
-  title   = "Swarm GKE Dispatcher"
-
-  description = "Create and observe Jobs on the swarm Autopilot cluster. No Secret access, no cluster mutation."
-  stage       = "GA"
-
-  permissions = [
-    # clusters.get is what `gcloud container clusters get-credentials` needs;
-    # it returns the endpoint and CA, not any workload data.
-    "container.clusters.get",
-    "container.namespaces.get",
-    "container.namespaces.list",
-    "container.jobs.create",
-    "container.jobs.get",
-    "container.jobs.list",
-    "container.jobs.update",
-    "container.pods.get",
-    "container.pods.list",
-    "container.pods.getLogs",
-    "container.events.get",
-    "container.events.list",
-  ]
-}
-
-resource "google_project_iam_custom_role" "gke_reaper" {
-  count = var.gke_enabled ? 1 : 0
-
-  project = var.project_id
-  role_id = local.custom_role_ids.gke_reaper
-  title   = "Swarm GKE Reaper"
-
-  description = "Delete finished Jobs and stuck Pods on the swarm Autopilot cluster. Reconciler only."
-  stage       = "GA"
-
-  permissions = [
-    "container.clusters.get",
-    "container.namespaces.get",
-    "container.jobs.get",
-    "container.jobs.list",
-    "container.jobs.delete",
-    "container.pods.get",
-    "container.pods.list",
-    "container.pods.delete",
-    "container.events.list",
-  ]
-}
-
-resource "google_project_iam_custom_role" "secret_lister" {
-  project = var.project_id
-  role_id = local.custom_role_ids.secret_lister
-  title   = "Swarm Secret Lister and Account Provisioner"
-
-  description = "List secret metadata project-wide, and create the two secrets an account pool entry needs. Cannot read any payload."
-  stage       = "GA"
-
-  # The quota broker must discover which tenants hold a subscription
-  # credential, and discovery is a list. roles/secretmanager.viewer would do it,
-  # but it also grants versions.list and versions.get across every secret in the
-  # project, including secrets belonging to teams that have nothing to do with
-  # this platform. This is the single permission discovery actually needs.
-  #
-  # Absent, and deliberately: secretmanager.versions.access. Payload access
-  # stays per-secret, granted by the secret_manager module on the specific
-  # refresh secrets, so a bug here cannot widen into reading tenant keys.
-  permissions = concat([
-    "secretmanager.secrets.list",
-
-    # PROVISIONING an account's secrets, added when account management moved
-    # into the Settings page and stopped being a shell script.
-    #
-    # A secret for a pool account cannot be created ahead of time: its name
-    # contains a LABEL the operator chooses at registration, so terraform
-    # cannot declare it and only the component handling the registration can
-    # make it. That component is this one, because it is already the single
-    # writer for subscription credentials -- see quota_broker.credentials for
-    # why a second writer bricks a rotating credential.
-    #
-    # `setIamPolicy` is here for the same reason `create` is. A secret created
-    # without an accessor binding is one the tenant's pod cannot read, and the
-    # failure surfaces much later as an unexplained auth error inside a job.
-    # Creating it and binding it are one operation or the secret is useless.
-    "secretmanager.secrets.create",
-    "secretmanager.secrets.get",
-    "secretmanager.secrets.getIamPolicy",
-    "secretmanager.secrets.setIamPolicy",
-
-    # RETENTION, added 2026-09-22 on the owner's explicit decision.
-    #
-    # Without these the broker cannot expire what it supersedes, and it never
-    # could: swarm-tenant-u-bogdan-anthropic reached 1,816 versions, ALL
-    # ENABLED, ZERO destroyed, because nothing in this platform had ever
-    # expired one. Only `latest` is ever read, so 1,815 of those were dead
-    # credentials that stayed retrievable by anything holding accessor. A
-    # credential that rotates but leaves its predecessor enabled has not
-    # rotated -- the same point create-secrets.sh makes beside
-    # `--disable-previous`.
-    #
-    # `list` is needed before `destroy`: retention recomputes the retained set
-    # from a live listing on every publish rather than recording state.
-    #
-    # THE SCOPE IS PROJECT-WIDE AND THAT IS A DELIBERATE, INFORMED CHOICE, not
-    # an oversight. saga-agents-staging is SHARED, so this permits the broker
-    # to destroy a version of any secret in it, including another team's. The
-    # owner chose this over a per-secret binding on 2026-09-22 having been shown
-    # that trade-off explicitly.
-    #
-    # WHAT ACTUALLY STOPS IT is therefore no longer IAM but
-    # `quota_broker.secretstore.owned_by_this_platform`, which matches
-    # \Aswarm-(?:tenant|account)-[A-Za-z0-9_-]+\Z -- anchored with \A/\Z
-    # rather than ^/$ so a trailing newline cannot smuggle a second name past
-    # it, and admitting no `/` so a name cannot re-point the resource path at
-    # another secret or project. It was attacked with thirteen hostile inputs
-    # on 2026-09-22 -- newline injection, traversal, full resource paths,
-    # lookalike prefixes -- and refused all of them.
-    #
-    # If that guard is ever weakened, this grant becomes the hole. Do not widen
-    # one without re-reading the other.
-    "secretmanager.versions.list",
-    "secretmanager.versions.destroy",
-    ],
-    # versions.add, while it is still project-wide. See broker_version_adder
-    # below for where it is going and why it cannot go there in one step.
-    var.secret_lister_project_wide_versions_add ? ["secretmanager.versions.add"] : [],
-  )
-
-  # Create the scoped grant BEFORE this role loses the project-wide permission,
-  # in any apply that does both. Ordering the API calls cannot order IAM's
-  # propagation, which is why the two are also separate releases (below); this
-  # only stops terraform making the window wider than it has to be.
-  depends_on = [google_project_iam_member.broker_version_adder]
+  project_id = var.project_id
 }
 
 # ---------------------------------------------------------------------------
@@ -229,9 +47,10 @@ resource "google_project_iam_custom_role" "secret_lister" {
 #       (`version_adder`). Already per-secret.
 #   swarm-account-<t>--<label>[-refresh]    created by the BROKER at
 #       registration, with a name terraform cannot know in advance. These were
-#       reachable only through `versions.add` in the project-wide role above --
-#       and so was every one of the 63 secrets in this project that belong to
-#       another team (live listing, 2026-09-24: 57 agents-*, 6 promptlab-*).
+#       reachable only through `versions.add` in the project-wide
+#       swarmSecretLister role -- and so was every one of the 63 secrets in this
+#       project that belong to another team (live listing, 2026-09-24: 57
+#       agents-*, 6 promptlab-*).
 #
 # A literal per-secret binding cannot cover the second kind without the broker
 # granting itself adder on every secret it creates, which it could only do
@@ -259,30 +78,26 @@ resource "google_project_iam_custom_role" "secret_lister" {
 # land first -- at ~34 exchanges a day across seven accounts, a few minutes of
 # window is a real chance of bricking one. So:
 #
-#   release 1  this grant exists; the role above still carries versions.add
-#   release 2  secret_lister_project_wide_versions_add = false (the default
-#              below, flipped), after release 1 has been live long enough to
-#              propagate -- 7 minutes is IAM's documented worst case
+#   release 1  this grant exists; swarmSecretLister still carries versions.add
+#   release 2  swarmSecretLister loses versions.add, after release 1 has been
+#              live long enough to propagate -- 7 minutes is IAM's documented
+#              worst case
+#
+# Release 1 has shipped: this grant is in the live policy, condition title
+# "swarm tenant and account secrets only" (read-only
+# `gcloud projects get-iam-policy`, 2026-09-25 08:52 UTC). Step 2 is no longer
+# a release.
+# swarmSecretLister is defined in terraform/bootstrap since #79, so dropping
+# versions.add from it is the owner's bootstrap apply of
+# broker_secret_lister_project_wide_versions_add = false
+# (terraform/bootstrap/platform_roles.tf), made at least 7 minutes after this
+# grant is live -- which it already is.
 #
 # NOT VERIFIED LIVE: that IAM evaluates this condition as documented for
 # versions.add. Release 1 proves nothing about it -- the project-wide grant is
-# still there -- so the proof is the first account refresh after release 2,
+# still there -- so the proof is the first account refresh after step 2,
 # logged as "refresh token rotated and persisted".
 # ---------------------------------------------------------------------------
-
-variable "secret_lister_project_wide_versions_add" {
-  description = <<-EOT
-    Keep secretmanager.versions.add in the project-wide swarmSecretLister role.
-
-    TRUE for exactly one release: the one that creates broker_version_adder, the
-    scoped grant that replaces it. Flip it to false in the next release, once
-    that grant has had time to propagate. Doing both in one apply risks refusing
-    an account's rotated refresh token, which strands the account; see
-    custom_roles.tf for the measurement.
-  EOT
-  type        = bool
-  default     = true
-}
 
 data "google_project" "this" {
   project_id = var.project_id

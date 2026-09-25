@@ -689,12 +689,6 @@ variable "manage_project_services" {
   default     = true
 }
 
-variable "custom_role_suffix" {
-  description = "Disambiguates custom role ids when a previous one is still in its 7-day soft-delete window."
-  type        = string
-  default     = ""
-}
-
 variable "deployer_service_account" {
   description = <<-EOT
     Email of the CI identity that runs this root's applies (the release's

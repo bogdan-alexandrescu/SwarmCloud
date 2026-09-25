@@ -89,32 +89,10 @@ run "only_the_reconciler_can_delete" {
     source = "../../terraform/modules/iam"
   }
 
-  assert {
-    condition     = contains(google_project_iam_custom_role.job_reaper.permissions, "run.jobs.delete")
-    error_message = "the reaper role is what makes deletion possible at all"
-  }
-
-  assert {
-    condition     = !contains(google_project_iam_custom_role.job_dispatcher.permissions, "run.jobs.delete")
-    error_message = "the dispatcher may create and run Jobs; deleting them belongs to the reconciler alone"
-  }
-
-  assert {
-    condition = alltrue([
-      for p in google_project_iam_custom_role.job_dispatcher.permissions :
-      !strcontains(p, "setIamPolicy") && !strcontains(p, "delete")
-    ])
-    error_message = "no delete and no setIamPolicy in the dispatcher role, or it could grant itself anything"
-  }
-
-  assert {
-    condition = alltrue([
-      for p in google_project_iam_custom_role.job_reaper.permissions :
-      !strcontains(p, "setIamPolicy")
-    ])
-    error_message = "even the reaper may not rewrite an IAM policy"
-  }
-
+  # What the reaper and the dispatcher roles CONTAIN is asserted in
+  # platform_roles.tftest.hcl, against terraform/bootstrap, which defines them
+  # since #79. This run holds who is GRANTED the reaper role, which is still
+  # this module's.
   assert {
     condition     = contains(output.granted_roles["swarm-reconciler"], output.job_reaper_role_id)
     error_message = "the reaper role is attached to the reconciler and to nothing else"
@@ -281,18 +259,31 @@ run "the_api_reads_artifacts_but_cannot_write_them" {
   }
 }
 
-run "custom_role_ids_accept_only_legal_characters" {
+# The ids both roots read (terraform/modules/custom_role_ids). This used to
+# refuse an illegal custom_role_suffix variable on this module; the suffix is a
+# constant in that module now, so what is held is its result -- every id legal
+# for IAM, and every name in this project -- and the module's own output
+# precondition refuses an illegal one at plan.
+run "custom_role_ids_are_legal_and_named_in_this_project" {
   command = plan
 
   module {
-    source = "../../terraform/modules/iam"
+    source = "../../terraform/modules/custom_role_ids"
   }
 
-  variables {
-    custom_role_suffix = "not-legal"
+  assert {
+    condition = length(output.ids) == 8 && alltrue([
+      for id in values(output.ids) : can(regex("^[a-zA-Z0-9_.]{3,64}$", id))
+    ])
+    error_message = "every custom role id must be 3 to 64 letters, digits, underscores or dots"
   }
 
-  expect_failures = [var.custom_role_suffix]
+  assert {
+    condition = alltrue([
+      for key, name in output.names : name == "projects/saga-agents-staging/roles/${output.ids[key]}"
+    ])
+    error_message = "a role's name is projects/<project>/roles/<id>; a binding naming anything else names no role"
+  }
 }
 
 # The broker enumerates tenants to find whose subscription credential is due.
@@ -308,63 +299,11 @@ run "the_broker_can_provision_account_secrets_and_read_none" {
     source = "../../terraform/modules/iam"
   }
 
-  # Pinned as an exact SET, not a subset check. The point of a custom role here
-  # is that every permission in it was argued for; asserting "contains x" would
-  # let an unrelated one be added silently, which is how a narrow role becomes
-  # roles/secretmanager.admin one commit at a time.
+  # swarmSecretLister's exact permission set, and the two payload reads it must
+  # never carry, are asserted in platform_roles.tftest.hcl since the role and
+  # the broker's grant of it moved to terraform/bootstrap (#79, #69). This
+  # module grants the broker only what is left below.
   #
-  # `create` and `setIamPolicy` arrived when account management moved into the
-  # Settings page: a pool account's secret name contains a LABEL chosen at
-  # registration, so terraform cannot declare it and the component handling the
-  # registration has to make it -- and a secret created without an accessor
-  # binding is one the tenant's pod cannot read.
-  assert {
-    condition = google_project_iam_custom_role.secret_lister.permissions == toset([
-      "secretmanager.secrets.list",
-      "secretmanager.secrets.create",
-      "secretmanager.secrets.get",
-      "secretmanager.secrets.getIamPolicy",
-      "secretmanager.secrets.setIamPolicy",
-      "secretmanager.versions.add",
-      # RETENTION, 2026-09-22, on the owner's explicit decision. Nothing had
-      # ever expired a superseded version, so one secret reached 1,816 of them,
-      # all ENABLED, while only `latest` was ever read -- 1,815 dead
-      # credentials left retrievable. `list` is needed before `destroy`
-      # because retention recomputes the retained set from a live listing
-      # rather than recording state.
-      #
-      # These are METADATA and LIFECYCLE, not payload: neither reveals a
-      # secret's contents, and the two assertions below still refuse
-      # `versions.get` and `versions.access`. What they do carry is reach --
-      # project-wide, on a SHARED project. The owner chose that over a
-      # per-secret binding having been shown the trade. What stops the broker
-      # touching another team's secret is therefore
-      # `quota_broker.secretstore.owned_by_this_platform`, not this role.
-      "secretmanager.versions.list",
-      "secretmanager.versions.destroy",
-    ])
-    error_message = "every permission in this role was argued for; adding one silently is how it becomes secretmanager.admin"
-  }
-
-  # THE LINE THAT MUST NOT MOVE. The broker writes credentials and binds their
-  # readers; it never reads a payload project-wide. `versions.add` is
-  # write-only, and payload access stays per-secret.
-  assert {
-    condition = !contains(
-      google_project_iam_custom_role.secret_lister.permissions,
-      "secretmanager.versions.get"
-    )
-    error_message = "reading a version project-wide would defeat per-tenant secret isolation"
-  }
-
-  assert {
-    condition = !contains(
-      google_project_iam_custom_role.secret_lister.permissions,
-      "secretmanager.versions.access"
-    )
-    error_message = "a project-wide payload read would defeat per-tenant secret isolation entirely"
-  }
-
   # roles/secretmanager.viewer would have done the job and is the obvious
   # shortcut. It also grants versions.list and versions.get over every secret in
   # a project this platform shares with other teams.
@@ -373,7 +312,7 @@ run "the_broker_can_provision_account_secrets_and_read_none" {
   # this note. `versions.list` is now granted project-wide for retention, so the
   # reason to keep refusing `viewer` is no longer "it reaches other teams'
   # metadata" -- it is `versions.get`, which reaches their PAYLOADS, and which
-  # the assertion above still refuses. A future reader comparing this role to
+  # platform_roles.tftest.hcl still refuses. A future reader comparing this role to
   # `viewer` should weigh that one permission, not the pair.
   assert {
     condition = !contains(

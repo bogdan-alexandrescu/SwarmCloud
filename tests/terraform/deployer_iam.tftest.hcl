@@ -702,16 +702,9 @@ run "every_project_role_the_tenancy_module_grants_is_grantable" {
     }
   }
 
-  # The worker grant names the custom role by its computed id.
-  override_resource {
-    target          = google_project_iam_custom_role.worker_firestore
-    override_during = plan
-    values = {
-      id      = "projects/saga-agents-staging/roles/swarmTenantWorkerFirestore"
-      name    = "projects/saga-agents-staging/roles/swarmTenantWorkerFirestore"
-      role_id = "swarmTenantWorkerFirestore"
-    }
-  }
+  # The worker grant names its custom role by a plain string from
+  # terraform/modules/custom_role_ids since #79, known at plan, so no override
+  # of a computed role id is needed here any more.
 
   assert {
     condition = alltrue(concat(
