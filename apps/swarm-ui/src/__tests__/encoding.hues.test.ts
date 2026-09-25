@@ -252,6 +252,77 @@ describe('a healthy or factual mark carries no state hue (CH-17)', () => {
   })
 })
 
+describe('the last healthy greens are neutral, like the chip and the dot (CP-14, CH-17 follow-up)', () => {
+  // THE FOLLOW-UP SETTLED ON #85, 2026-09-25. Three healthy-state greens were
+  // in neither decision's text and are the same ruling: the pool card's track
+  // fill, the provider card's ok edge, and Accounts' success box together with
+  // the legacy `.tag.ok`. A healthy state is a fact, not a verdict. A MARK takes
+  // the primitives' grey, `--text-faint` (CH-17); a WORD takes `--text-dim`,
+  // the grey `.tag.ok` has carried since CP-14 (§6.6: "their word or figure is
+  // in plain or `--text-dim` ink").
+  //
+  // `.tag.ok` was already `--text-dim` when this block was written, so its line
+  // here is a guard, not a red: it cannot have failed before the fix.
+  //
+  // MUTATION: `var(--ok)` back on the fill, the edge, the box's border, its
+  // tint, its heading or the tag; or the ok edge drawn as the unknown card's.
+  const hosts: HTMLElement[] = []
+  afterEach(() => {
+    for (const h of hosts.splice(0)) h.remove()
+  })
+
+  const HEALTHY: ReadonlyArray<{ what: string; selector: string; props: readonly string[] }> = [
+    { what: "the pool card's healthy fill", selector: '.pool .ctl-track > i', props: ['background', 'background-color'] },
+    {
+      what: "the ok provider card's left edge",
+      selector: '.pool.prov.ok',
+      props: ['border-left-color', 'border-left', 'border-color', 'border'],
+    },
+    { what: "the success box's edge", selector: '.state.acct-ok', props: ['border-color', 'border'] },
+    { what: "the success box's fill", selector: '.state.acct-ok', props: ['background', 'background-color'] },
+    { what: "the success box's heading", selector: '.state.acct-ok > h3', props: ['color'] },
+    { what: 'the legacy ok tag', selector: '.tag.ok', props: ['color'] },
+  ]
+
+  for (const theme of THEMES) {
+    it(`paints none of --ok, --info, --warn, --bad or --paused in the ${theme} theme`, () => {
+      for (const c of HEALTHY) {
+        const value = painted(build(c.selector, hosts), c.props, { width: 1440, theme })
+        expect(stateHueIn(value, theme), `${c.what} (${c.selector}) is painted ${value}`).toBeNull()
+      }
+    })
+
+    it(`draws the fill in the primitives' grey and the words in the tag's, in the ${theme} theme`, () => {
+      const env = { width: 1440, theme }
+      const grey = (token: string) => resolveColour(`var(${token})`, theme)
+      const is = (value: string | null, token: string, what: string) => {
+        expect(value, `${what} declares nothing`).not.toBeNull()
+        const got = resolveColour(value!, theme)
+        const want = grey(token)
+        expect(
+          Math.max(Math.abs(got.r - want.r), Math.abs(got.g - want.g), Math.abs(got.b - want.b)),
+          `${what} is ${value}, not ${token}`,
+        ).toBeLessThan(1)
+      }
+      is(painted(build('.pool .ctl-track > i', hosts), ['background', 'background-color'], env), '--text-faint', 'the fill')
+      is(painted(build('.state.acct-ok > h3', hosts), 'color', env), '--text-dim', "the success box's heading")
+      is(painted(build('.tag.ok', hosts), 'color', env), '--text-dim', 'the ok tag')
+    })
+
+    it(`draws a healthy provider card's edge unlike an unknown one's, in the ${theme} theme`, () => {
+      // With the hue gone, a grey 3px rule on the ok card would be the unknown
+      // card's own rule (`.pool.prov.unknown`, 3px `--text-faint`): a provider
+      // nobody has read drawn as one that is fine. §6.7 draws no form for a
+      // healthy row, and `.source.ok` lost its rule for the same reason
+      // (CH-17), so the ok card keeps the card's plain edge.
+      const env = { width: 1440, theme }
+      expect(shapeOf(build('.pool.prov.ok', hosts), env), 'an ok and an unknown provider card share a silhouette').not.toBe(
+        shapeOf(build('.pool.prov.unknown', hosts), env),
+      )
+    })
+  }
+})
+
 /** The lowest opacity `@keyframes ctl-live-pulse` fades a live mark to. */
 function pulseFloor(): number {
   const frames: string[] = []
