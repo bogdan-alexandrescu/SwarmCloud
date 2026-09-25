@@ -19,7 +19,7 @@ from swarm_api.validation import (
     validate_timeout,
 )
 
-from .conftest import auth_header
+from .conftest import auth_header, seed_pool
 
 
 def submit(client, user: str, **body):
@@ -240,11 +240,27 @@ def test_unknown_provider_cannot_be_registered(client):
     assert "anthropic" in response.json()["detail"]["known_providers"]
 
 
-def test_a_profile_needing_an_unregistered_provider_parks_rather_than_running(client, db):
+def test_a_profile_needing_an_unregistered_provider_parks_rather_than_running(
+    client, db, make_scheduler, dispatcher
+):
+    """Parked by ADMISSION, before any lease, not by the API at submission.
+
+    The API used to decide this itself, with a copy of the rule that knew
+    nothing about the account pool (#169). It now writes READY, which costs
+    nothing (invariant 1), and the scheduler's one statement of the rule
+    (scheduler/credentials.py) parks it: this deployment has no pool, so a
+    missing key is simply a missing key.
+    """
     task = submit(client, "alice", runner_profile="claude-code").json()["task"]
-    assert task["state"] == "PARKED"
-    assert task["park_reason"] == "CREDENTIAL_MISSING"
+    assert task["state"] == "READY"
+
+    seed_pool(db, "global", hard_limit=10)
+    make_scheduler().drain()
+
     assert db.docs[f"tasks/{task['id']}"]["state"] == "PARKED"
+    assert db.docs[f"tasks/{task['id']}"]["park_reason"] == "CREDENTIAL_MISSING"
+    assert dispatcher.dispatched == []
+    assert db.docs["pools/global"]["active"] == 0
 
 
 def test_registering_the_key_makes_new_submissions_ready(client):

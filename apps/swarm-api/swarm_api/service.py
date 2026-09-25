@@ -8,11 +8,24 @@ state that costs compute. SUBMITTED -> QUEUED -> READY is walked through
 only the end state is persisted: three writes per task would triple the cost of
 a 100-task batch to prove something the type system already knows.
 
-SECOND, a task whose runner profile needs a provider the tenant has not
-registered a key for is PARKED as CREDENTIAL_MISSING at submission. It is not
-rejected -- the tenant may register the key a minute later and the reconciler
-re-readies it -- and it is not admitted, because admitting it would start a
-container that can only fail. Parked costs nothing (invariant 1).
+SECOND, the API does NOT decide whether the tenant has a credential for the
+task's runner profile. It used to: a task whose tenant had no key for the
+profile's provider was PARKED as CREDENTIAL_MISSING here, at submission. That
+was a copy of a rule that also lived in the scheduler's admission and in its
+Cloud Run dispatcher, and the copies disagreed about the account pool -- a
+tenant with no key of its own can run on an account it owns or is lent, which
+neither this copy nor admission's knew (#169). The rule now has one statement,
+`scheduler/credentials.py`, and this service cannot import it: its image does
+not carry the scheduler.
+
+So a task with no dependencies is written READY, and ADMISSION parks it on
+CREDENTIAL_MISSING if the tenant can run it on neither a key nor a pool
+account -- before any lease, so nothing is reserved and no container starts,
+which is what the park here was for. READY costs nothing (invariant 1), and
+the submission's wake message means that drain is seconds away. The caller
+sees READY in the response and PARKED on its next read. It is still not
+rejected: the tenant may register a key, or be lent an account, a minute
+later, and the scheduler's credential sweep re-readies it.
 """
 
 from __future__ import annotations
@@ -219,11 +232,11 @@ class SubmissionService:
             assert_transition(TaskState.QUEUED, TaskState.PARKED)
             state = TaskState.PARKED
             park_reason = ParkReason.DEPENDENCY_INCOMPLETE
-        elif profile.provider and profile.provider not in tenant.credentials:
-            assert_transition(TaskState.QUEUED, TaskState.PARKED)
-            state = TaskState.PARKED
-            park_reason = ParkReason.CREDENTIAL_MISSING
         else:
+            # NOT parked on a missing credential here. Whether this tenant can
+            # run this profile -- on a key of its own or on a pool account it
+            # may use -- is admission's question, asked once
+            # (scheduler/credentials.py). See the module docstring.
             assert_transition(TaskState.QUEUED, TaskState.READY)
             state = TaskState.READY
 

@@ -166,7 +166,9 @@ The key is never an argument (argv is readable through `ps`) and is never echoed
 
 A tenant without a key for a profile's provider is not an error: tasks park as
 `CREDENTIAL_MISSING`, cost nothing, and start by themselves when the key
-arrives.
+arrives. A tenant with no key is still admitted if a pool account it owns or is
+lent can run the profile. That is `claude-code` only, never `browser`: see
+[quota management, section 4](quota-management.md).
 
 ---
 
