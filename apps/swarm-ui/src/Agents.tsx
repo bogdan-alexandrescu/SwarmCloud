@@ -102,7 +102,13 @@ function shortTaskId(id: string): string {
  * The tab counts come from the ROWS, never from /v1/stats, so the badge and
  * the table can never disagree with each other.
  */
-export function AgentsScreen({ onOpen }: { onOpen: (taskId: string) => void }) {
+export function AgentsScreen({
+  onOpen,
+}: {
+  onOpen: (taskId: string) => void
+  /** The agent the inspector has open. Declared ahead of its use (AG-17). */
+  taskId?: string | null
+}) {
   // `null` until a page has told the body where to land -- see `landingTab`.
   const [tab, setTab] = useState<Tab | null>(null)
   const [profile, setProfile] = useState<string>('')

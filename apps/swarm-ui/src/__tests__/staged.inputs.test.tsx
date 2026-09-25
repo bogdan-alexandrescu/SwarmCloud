@@ -124,7 +124,11 @@ describe('Panel 3: the inputs a run was given', () => {
       }),
     )
     const plan = row(root, 'plan.md')
-    expect(plan.querySelector('a[href="#work/task/t_plan"]'), 'no way back to the run that produced it').toBeTruthy()
+    const back = plan.querySelector('a[href="#work/task/t_plan"]')
+    expect(back, 'no way back to the run that produced it').toBeTruthy()
+    // CH-5: in the product's link treatment, not the browser's own blue --
+    // and visited purple once followed. BREAK IT: drop `ctl-link`.
+    expect(back!.className.split(/\s+/), 'the run link falls back to the UA link colour').toContain('ctl-link')
     expect(plan.textContent).toContain('2 KiB')
     expect(plan.textContent).toContain('from checkpoint')
 
