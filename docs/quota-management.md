@@ -167,7 +167,7 @@ From `swarm_common.states.ParkReason`. None of these cost compute:
 | `DEPENDENCY_INCOMPLETE` | upstream workflow step unfinished | dependency sweep |
 | `MANUAL_PAUSE` | an operator paused it | `resume-swarm.sh` |
 | `BUDGET_EXHAUSTED` | tenant budget spent | budget reset / admin raise |
-| `CREDENTIAL_MISSING` | tenant has no key for this provider, and no pool account can run the profile for it | admin adds the key, or lends the tenant an account |
+| `CREDENTIAL_MISSING` | tenant has no key for this provider, and no pool account can run the profile for it | admin adds the key, or lends the tenant an account. A worker's park on a task the pool serves also waits for its `next_eligible_at` (below) |
 
 `CREDENTIAL_MISSING` is worth calling out: a tenant that has not registered a key
 is **not** an error. The task parks, costs nothing, and starts by itself once an
@@ -194,8 +194,32 @@ for a tenant only when all four of these hold:
 The park's `parked` event records which of these failed, as
 `detail.account_pool`: `no_broker_configured`, `profile_takes_no_subscription`
 or `no_accounts_registered`. A spent or paused account is not one of them. That
-is the pool's own wait, and the worker parks on it as
-`PROVIDER_QUOTA_EXHAUSTED` with the broker's reset time.
+is the pool's own wait. The worker parks on it as `PROVIDER_QUOTA_EXHAUSTED`,
+with `next_eligible_at` set to the broker's reset time, or to a fallback when
+the broker has none: 300 seconds for an account nobody has read lately, 900 for
+a paused one (`lifecycle._park_no_account`).
+
+**What ends those waits, for a tenant served by a pool account.** Such a tenant
+usually has no `provider:{p}:tenant:{t}` pool. Terraform creates that pool only
+from a tenant's declared `providers`, and declaring one also creates a Job that
+mounts a secret the tenant does not have. Two sweeps handle this case:
+
+* **The prewarm sweep** (section 5) is the only code that returns a
+  `PROVIDER_QUOTA_EXHAUSTED`, `PROVIDER_COOLDOWN` or `PROVIDER_OUTAGE` park to
+  `READY`. The reconciler has no rule for parked tasks. Without the guard pool,
+  the sweep does not promote the task early. It promotes it once
+  `next_eligible_at` has passed. Until the #171 review it did not promote it at
+  all, so the wait never ended.
+* **The credential sweep** handles a `CREDENTIAL_MISSING` park that a worker
+  wrote on a task the pool serves. That happens when the worker cannot reach
+  the broker, falls back to the tenant's key, and finds none (+1 hour), or when
+  the broker refuses the worker or the worker can read no account (the 900-second
+  fallback). The sweep waits for that park's `next_eligible_at`. Firestore's
+  account list still says the pool serves the tenant, and promoting on that
+  alone started a container that could only park, once per drain, for as long
+  as the outage lasted. A key registered in the meantime makes the answer the
+  tenant's own key, and the sweep promotes that at once. Admission's own parks
+  carry no `next_eligible_at`, so this wait does not delay them.
 
 ---
 
@@ -206,8 +230,19 @@ promoted to `READY` early, bounded by `prewarm_max_agents`.
 
 This is free, because `READY` costs nothing (invariant 1). The task is simply
 already in the rotation when the window reopens, instead of waiting for the next
-scheduler wake to notice. Disable with `ENABLE_QUOTA_PREWARM=false` if you want
-strictly no early promotion.
+scheduler wake to notice.
+
+**Do not disable it.** `ENABLE_QUOTA_PREWARM=false` was documented here as
+"strictly no early promotion", but it does more than that. This sweep is also
+the only code that returns these parks to `READY` once their instant has passed,
+so with it disabled, or with `PREWARM_MAX_AGENTS=0`, a quota-parked task is
+never returned. That was found in the #171 review and is not fixed there.
+
+Early promotion needs the task's `provider:{p}:tenant:{t}` pool. That pool's
+quota cap is what stops admission until the window actually reopens. A task
+without one is promoted only once its `next_eligible_at` has passed, and a park
+with no `next_eligible_at` at all is left where it is. See section 4 for why a
+tenant that runs on a pool account usually has no such pool.
 
 ---
 
@@ -252,6 +287,7 @@ original state on every exit path.
 | Symptom | Likely cause | Check |
 |---|---|---|
 | Tasks park on their first drain after submit | tenant has no key for the profile's provider, and no pool account can run the profile for it | `park_reason: CREDENTIAL_MISSING`; the `parked` event's `detail.account_pool` says which condition in section 4 failed; `scripts/create-secrets.sh --list` |
+| A task that ran on a lent account parks `CREDENTIAL_MISSING` and stays parked for up to an hour | the worker wrote that park, not admission. Either it could not reach the broker and the tenant has no key to fall back to (the event has `provider` and no `account_pool_reason`), or the broker refused it (`account_pool_reason: broker_refused`, usually a missing `run.invoker` grant), or it could read no account's secret (`account_unreadable`) | the credential sweep waits for the park's `next_eligible_at` on purpose (section 4). Fix the cause, or register a key: a key promotes the task on the next drain |
 | Provider stuck at a low target | AIMD is still climbing after a 429 storm | `quota/{provider}:{tenant}.success_count` vs `AIMD_SUCCESS_THRESHOLD` |
 | Provider never recovers | `state=EXHAUSTED` and nothing clears it | `reset_at` in the future, or the broker tick is not running |
 | One tenant's 429s throttle everyone | **a regression, not an expected mode** — section 3 forbids a tenant-derived limit on `provider:X`. Compare `provider:X` and `provider:X:tenant:Y` in `status.sh`; if `provider:X` carries a `quota_derived_limit` while any enabled tenant is healthy, `_recompute_provider_pool` has broken and the AIMD test that covers it should be failing |

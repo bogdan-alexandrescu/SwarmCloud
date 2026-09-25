@@ -16,8 +16,9 @@ it to? If the two ever disagree:
 
   * the scheduler expects the pool and the worker does not ask it: a keyless
     tenant is admitted, a container starts, and the worker parks it on
-    CREDENTIAL_MISSING at once. On every drain, because the credential sweep
-    promotes it again;
+    CREDENTIAL_MISSING at once. Then again every hour, because the credential
+    sweep promotes it once the park's `next_eligible_at` has passed. That is
+    once an hour and no longer once a drain, but it still never runs;
   * the worker would ask and the scheduler does not expect it: a tenant the
     pool serves is parked at admission and never runs.
 """

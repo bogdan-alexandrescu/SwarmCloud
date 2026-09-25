@@ -47,11 +47,28 @@ event (`account_pool`), using the worker's own words for its declines, so an
 operator reading a CREDENTIAL_MISSING can tell "register a key" from "lend an
 account" from "this profile cannot run on an account at all".
 
-WHAT IT DOES NOT ASK: whether an account has room now. A spent, paused or
-unobserved account is a wait the pool owns, and the worker parks on it with the
-broker's own reset instant (`lifecycle._park_no_account`). That is where the
-broker itself draws the line: `no_accounts_registered` means the pool is not
-how this tenant runs, and every other answer means it is, so wait.
+WHAT IT DOES NOT ASK: whether an account has room now, or whether the broker
+can be reached. A spent, paused or unobserved account is a wait the pool owns,
+and the worker parks on it as PROVIDER_QUOTA_EXHAUSTED with the broker's own
+reset instant (`lifecycle._park_no_account`). That is where the broker itself
+draws the line: `no_accounts_registered` means the pool is not how this tenant
+runs, and every other answer means it is, so wait.
+
+SO AN ACCOUNT_POOL ANSWER DOES NOT END A WORKER'S WAIT. It is read from
+Firestore, and it stays "yes" through a broker outage, a refused worker and a
+spent window alike. Two sweeps in `loop.py` therefore also read the park's
+own `next_eligible_at`:
+
+  * the credential sweep promotes a CREDENTIAL_MISSING park answered
+    ACCOUNT_POOL only once that instant has passed. A worker that could not
+    reach the broker falls back to a key the tenant does not have and parks
+    for an hour. Promoting it at once started a container on every drain that
+    could only park again;
+  * the prewarm sweep promotes a PROVIDER_QUOTA_EXHAUSTED park with no
+    `provider:{p}:tenant:{t}` guard pool once that instant has passed, but not
+    before. A tenant served only by a lent account has no such pool, because
+    Terraform makes it from declared `providers`. The sweep used to skip
+    such a task for ever.
 
 WHICH CREDENTIAL IS REPORTED when a tenant has both a key and an account: the
 key, because that is the answer that needs no read. At run time the worker asks
