@@ -577,8 +577,14 @@ def test_tail_warns_once_on_a_log_read_that_failed(swarm, world, capsys, monkeyp
 
     cli.cmd_tail(swarm, _args(task_ids=[task_id]))
 
-    warnings = [line for line in capsys.readouterr().out.splitlines() if "403" in line]
+    lines = capsys.readouterr().out.splitlines()
+    warnings = [line for line in lines if "403" in line]
     assert len(warnings) == 1, warnings
+    # A read that failed says nothing about the output, so the finished line
+    # must not either. It said "its output is MISSING, not empty" right after
+    # the 403, which is a verdict on objects the tail could not look at.
+    assert not any("MISSING" in line for line in lines), lines
+    assert any("unknown" in line for line in lines), lines
 
 
 def test_tail_stays_quiet_about_a_log_that_is_simply_not_there_yet(swarm, world, capsys, monkeypatch):
@@ -589,6 +595,10 @@ def test_tail_stays_quiet_about_a_log_that_is_simply_not_there_yet(swarm, world,
         raise SwarmError(f"could not read {uri}: 404 No such object", status=404)
 
     monkeypatch.setattr(cli, "download", _absent)
+    # The completed log is looked up by its size once the task has finished;
+    # it is absent here too. `raising=False` so this test states its world the
+    # same way on a commit where the lookup does not exist yet.
+    monkeypatch.setattr(cli, "object_size", _absent, raising=False)
     task_id = world.task("task_000000000000notthere", state="SUCCEEDED")
     world.attempt(task_id, "att_404")
 
@@ -609,6 +619,20 @@ def test_a_gcs_read_failure_carries_its_status(monkeypatch):
     with pytest.raises(SwarmError) as caught:
         patches.download(SimpleNamespace(access_token=lambda: "a.b.c"), "gs://b/k.log")
     assert caught.value.status == 404
+
+
+def test_an_objects_size_is_read_from_its_metadata_not_its_bytes(monkeypatch):
+    """A completed log can be 32 MB (`max_stdout_bytes`); `tail` needs one number."""
+    asked: list[str] = []
+
+    def _metadata(req, timeout=None):  # noqa: ARG001
+        asked.append(req.full_url)
+        return _Response(json.dumps({"name": "k.log", "size": "42"}).encode())
+
+    monkeypatch.setattr(urllib.request, "urlopen", _metadata)
+
+    assert patches.object_size(SimpleNamespace(access_token=lambda: "a.b.c"), "gs://b/k.log") == 42
+    assert asked and "alt=media" not in asked[0], asked
 
 
 # ==========================================================================
@@ -827,9 +851,86 @@ def test_follow_tells_an_empty_log_from_a_missing_one(swarm, world, capsys):
 
     lines = capsys.readouterr().out.splitlines()
     assert any(line.startswith(f"[{empty[-8:]}]") and "printed nothing" in line for line in lines), lines
-    assert any(
-        line.startswith(f"[{missing[-8:]}]") and "no log was published" in line for line in lines
-    ), lines
+    said = [line for line in lines if line.startswith(f"[{missing[-8:]}]") and "no log object" in line]
+    assert said, lines
+    # Neither object existing is what was OBSERVED. "Its output is MISSING" is
+    # one reading of it, and the worker gives an ordinary one: an attempt that
+    # fails during startup never creates the file either log is written from.
+    assert "MISSING" not in said[0], said
+    assert "att_missing" in said[0], said
+
+
+# `tail` reads GCS itself, so its half of the same question is asked of a fake
+# bucket: `objects` maps the end of an object's key to its bytes, and every
+# other key is a 404 -- the answer GCS gives for an object never written.
+
+
+def _bucket(monkeypatch, objects: dict[str, bytes]) -> None:
+    monkeypatch.setenv("SWARM_ARTIFACT_BUCKET", "a-bucket")
+
+    def _find(uri: str) -> bytes:
+        for suffix, data in objects.items():
+            if uri.endswith(suffix):
+                return data
+        raise SwarmError(f"could not read {uri}: 404 No such object", status=404)
+
+    monkeypatch.setattr(cli, "download", lambda client, uri, timeout=120: _find(uri))
+    # `raising=False`: on the commit these tests were written against, `cli`
+    # has no `object_size`, and the test must fail on what `tail` PRINTS rather
+    # than on the fake failing to install.
+    monkeypatch.setattr(
+        cli, "object_size", lambda client, uri, timeout=30: len(_find(uri)), raising=False
+    )
+
+
+def test_tail_does_not_call_a_short_runs_output_missing(swarm, world, capsys, monkeypatch):
+    """The worker publishes the live log first one interval (5 s by default)
+    after its agent starts, and never at exit, so a run shorter than that
+    leaves no live log -- its output is in the completed log, `logs/stdout.log`.
+    `tail` printed "its output is MISSING, not empty" for it."""
+    task_id = world.task("task_000000000000000short", state="SUCCEEDED")
+    world.attempt(task_id, "att_short")
+    _bucket(monkeypatch, {"/logs/stdout.log": b"all done\n", "/logs/stderr.log": b""})
+
+    cli.cmd_tail(swarm, _args(task_ids=[task_id]))
+
+    lines = capsys.readouterr().out.splitlines()
+    assert not any("MISSING" in line for line in lines), lines
+    said = [line for line in lines if "no live log" in line]
+    assert said, lines
+    assert "9 bytes of stdout" in said[0], said
+    assert "stderr" not in said[0], "an empty stream holds nothing worth naming"
+    assert f"swarm follow {task_id}" in said[0], "say where the output can be read"
+
+
+def test_tail_calls_an_empty_completed_log_printed_nothing(swarm, world, capsys, monkeypatch):
+    """`_publish_live_logs` skips a stream with no bytes, so an agent that
+    printed nothing NEVER has a live log. `tail` called that MISSING."""
+    task_id = world.task("task_000000000000000quiet", state="SUCCEEDED")
+    world.attempt(task_id, "att_quiet")
+    _bucket(monkeypatch, {"/logs/stdout.log": b"", "/logs/stderr.log": b""})
+
+    cli.cmd_tail(swarm, _args(task_ids=[task_id]))
+
+    lines = capsys.readouterr().out.splitlines()
+    assert not any("MISSING" in line for line in lines), lines
+    assert any("printed nothing" in line and "completed log" in line for line in lines), lines
+
+
+def test_tail_says_which_objects_it_found_absent_when_there_are_none(
+    swarm, world, capsys, monkeypatch
+):
+    """No live log and no completed log: say exactly that, for which attempt."""
+    task_id = world.task("task_00000000000000nologs", state="FAILED")
+    world.attempt(task_id, "att_nologs")
+    _bucket(monkeypatch, {})
+
+    cli.cmd_tail(swarm, _args(task_ids=[task_id]))
+
+    lines = capsys.readouterr().out.splitlines()
+    assert not any("MISSING" in line for line in lines), lines
+    said = [line for line in lines if "no log object" in line]
+    assert said and "att_nologs" in said[0], lines
 
 
 def test_the_state_is_spelled_once_across_sc_task_and_swarm_result(swarm, world, capsys):
