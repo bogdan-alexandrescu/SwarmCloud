@@ -566,7 +566,7 @@ def _plugin(environ: Mapping[str, str]) -> _Plugin | None:
         return None
     return _Plugin(
         url=normalise_url(url),
-        client_id=_env(environ, plugin_env(PLUGIN_CLIENT_SECRET)),  # MUTATION: reverted by the next commit
+        client_id=_env(environ, plugin_env(PLUGIN_CLIENT_ID)),
         client_secret=_env(environ, plugin_env(PLUGIN_CLIENT_SECRET)),
     )
 
