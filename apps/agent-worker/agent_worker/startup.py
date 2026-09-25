@@ -27,6 +27,10 @@ This module holds what the entrypoint and the lifecycle share to prevent that:
     nothing, and it is not a resolver outage of under 30 s either (owner,
     2026-09-25: "have some retry logic before failing, to prevent
     intermittent dns failures");
+  * `run_on_schedule` and `call_on_schedule`: the preflight's retry loop,
+    which the generation check's first Firestore read uses too, on its own
+    schedule (`CONTROL_PLANE_READ_SCHEDULE_SECONDS`, #198). One loop, so the
+    two cannot drift apart in how they wait;
   * `write_termination_message`: the cause of a 78, left where Kubernetes
     copies it into the pod's status, which is where the reconciler reads it.
     A worker that cannot reach Firestore cannot put it there;
@@ -161,6 +165,99 @@ TERMINATION_MESSAGE_MAX_BYTES = 4096
 #: 300 s on each read and print nothing.
 FIRESTORE_STARTUP_RETRY_SECONDS = 30.0
 FIRESTORE_STARTUP_CALL_SECONDS = 10.0
+
+#: When each attempt of the GENERATION CHECK starts, in seconds after the first
+#: one started, like `DNS_PREFLIGHT_SCHEDULE_SECONDS`. Each attempt is the whole
+#: check under the startup budget above: up to 30 s of retries, 10 s a try.
+#:
+#: WHY RETRY A BUDGETED READ AT ALL (#198). On 2026-09-25 execution
+#: swarm-job-eng-mock-9ngvq passed its DNS preflight in 28 ms and then could not
+#: connect to Firestore at all: "503 failed to connect to all addresses; last
+#: error: ... ipv6:[2607:f8b0:4001:c00::5f]:443 ... Network is unreachable". It
+#: spent the one 30 s budget and exited 69, and the task sat DISPATCHED for two
+#: more minutes. The other 119 Cloud Run executions that logged this phase
+#: (every one since the line was deployed, 03:23Z that day) made the same read
+#: in at most 0.43 s (p50 0.19 s), given the same IPv4 and IPv6 answers for
+#: firestore.googleapis.com.
+#:
+#: WHAT WENT WRONG IS NOT IPv6, AND THAT IS MEASURED. The swarm subnet's VPC
+#: flow logs show the failed instance (10.40.0.58) sending TCP SYNs to the
+#: IPv4 address, 173.194.206.95:443, 50 ms after the check began
+#: (20:37:28.884Z). Nothing came back and no payload byte left: one connection
+#: gave up after 19.5 s (about gRPC's 20 s minimum connect timeout), the next
+#: ran 7.1 s until the worker exited. So gRPC tried IPv4 first, and IPv4 was
+#: what failed. The IPv6 error is only the last one gRPC kept: the subnet is
+#: IPv4-only (`stackType: IPV4_ONLY`, read 2026-09-25), so that address fails
+#: locally, instantly, and never leaves the instance. The five other
+#: executions Cloud Run started in the same 0.4 s passed the same check in
+#: under 0.3 s.
+#:
+#: WHAT DOES FAIL. Google documents it for Direct VPC egress, which is how every
+#: worker job reaches the network (terraform/modules/cloud_run_jobs,
+#: `vpc_access`): "You might experience connection establishment delays of a
+#: minute or more on instance startup when using Direct VPC egress"
+#: (docs.cloud.google.com/run/docs/configuring/vpc-direct-vpc, read
+#: 2026-09-25). The same flow logs show it twice more in 14 days, both
+#: survived: 2026-09-22 21:13:10Z (a SYN to a Google API address unanswered
+#: for 19.4 s, 7 s after start) and 2026-09-25 10:57:19Z (three unanswered for
+#: up to 40 s, 2 s after start, while other connections from the same instance
+#: got through). Google's mitigation is to test a connection, with retries,
+#: before serving. A job has no probe, so it asks again.
+#:
+#: WHY NOT A NETWORK CHANGE. Private DNS for googleapis.com (the IPv4
+#: private.googleapis.com VIP) would take the IPv6 address out of these errors,
+#: but that VIP is reached over the same Direct VPC egress path whose SYNs went
+#: unanswered, so it would not have prevented this. Forcing IPv4 would change
+#: nothing: IPv4 is what gRPC tried. Egress PRIVATE_RANGES_ONLY would keep
+#: Google API calls off that path, but it also takes provider calls off Cloud
+#: NAT and its reserved addresses, which providers allow-list, so the job
+#: module requires ALL_TRAFFIC (terraform/modules/cloud_run_jobs/main.tf,
+#: `vpc_access.egress`). docs/incidents/2026-09-25-worker-startup-network.md
+#: has the measurements and the commands that repeat them.
+#:
+#: WHY 0, 30 AND 60 s. The last attempt starts a minute after the first, so a
+#: delay of "a minute or more" is outlasted by the last attempt's own 30 s of
+#: retries: the read is still being tried about 90 s after the worker first
+#: asked. An attempt whose tries each fail at once (the incident: nothing
+#: routes) uses its whole 30 s budget, so the attempts run back to back and the
+#: verdict comes at about 90 s. Each failed attempt is ONE warning line, which
+#: the incident's 28 s did not have.
+#:
+#: THE WORST CASE, `CONTROL_PLANE_READ_WINDOW_SECONDS`, is every try hanging
+#: for its whole 10 s: each attempt then costs 40 s, starts as soon as the one
+#: before it ends, and the verdict comes at 120 s. On 2026-09-25 the two
+#: executions of the incident's task started their workers 195 s and 103 s
+#: after dispatch, so either bound ends inside the lease's 300 s dispatch
+#: deadline for them. A slower cold start can reach the deadline first. The
+#: reconciler then fences the attempt and stops the execution, and a SIGTERM
+#: between attempts exits 143 at once having written nothing, as it does
+#: during a read. Nothing is written until the check passes, whichever comes
+#: first.
+#:
+#: NOT RETRIED: a refusal (78, `lifecycle._refusal_cause`), a fence (70) and a
+#: tenant mismatch (79). Each is an answer, and the next attempt would get the
+#: same one.
+CONTROL_PLANE_READ_SCHEDULE_SECONDS: tuple[float, ...] = (0.0, 30.0, 60.0)
+CONTROL_PLANE_READ_ATTEMPTS = len(CONTROL_PLANE_READ_SCHEDULE_SECONDS)
+
+
+def schedule_window_seconds(schedule: Sequence[float], attempt_seconds: float) -> float:
+    """When the last attempt ends if every attempt takes `attempt_seconds`.
+
+    An attempt starts at its scheduled time, or as soon as the one before it
+    ends if that is later (`run_on_schedule`), so this is the worst case for
+    attempts that each use their whole budget.
+    """
+    end = 0.0
+    for start in schedule:
+        end = max(float(start), end) + float(attempt_seconds)
+    return end
+
+
+CONTROL_PLANE_READ_WINDOW_SECONDS = schedule_window_seconds(
+    CONTROL_PLANE_READ_SCHEDULE_SECONDS,
+    FIRESTORE_STARTUP_RETRY_SECONDS + FIRESTORE_STARTUP_CALL_SECONDS,
+)
 
 #: The only environment variables the pre-configuration log lines read. They
 #: are identifiers the dispatcher sets and the same values `build_logger` binds
@@ -580,6 +677,120 @@ class PreflightOutcome:
         return [result for result in self.results if not result["ok"]]
 
 
+@dataclass(frozen=True)
+class ScheduledRun:
+    """How many attempts `run_on_schedule` made, and how long they took."""
+
+    #: 1 to len(schedule).
+    attempts: int
+    #: From the first attempt's start to the verdict, waits included.
+    seconds: float
+
+
+def run_on_schedule(
+    attempt: Callable[[int], bool],
+    *,
+    schedule: Sequence[float],
+    sleep: Callable[[float], Any] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
+    on_failed_attempt: Callable[[int, float], Any] | None = None,
+) -> ScheduledRun:
+    """Call `attempt(n)` on a schedule of start times until it returns True or the schedule ends.
+
+    THE ONE RETRY LOOP of the startup. The DNS preflight and the generation
+    check's read (`call_on_schedule`) both run on it, each with its own
+    schedule and its own idea of what an attempt is.
+
+    Attempt N starts `schedule[N-1]` seconds after the first one started, or
+    at once if the attempt before it ran past that time. The wait before an
+    attempt is measured from the FIRST attempt's start, not from the end of
+    the one before, so the retries span the same time whether an attempt
+    fails at once or uses its whole budget (see
+    `DNS_PREFLIGHT_SCHEDULE_SECONDS` for why that is what matters).
+
+    `on_failed_attempt(n, retry_in)` is called for each failed attempt that
+    WILL be retried, before the wait, so that each one is logged as it
+    happens. The last failed attempt is the caller's to report, as the
+    verdict. Nothing is slept after it.
+    """
+    starts = [max(0.0, float(offset)) for offset in schedule] or [0.0]
+    started = clock()
+    total = len(starts)
+    made = 0
+    for number in range(1, total + 1):
+        made = number
+        if attempt(number) or number == total:
+            break
+        wait = round(max(0.0, started + starts[number] - clock()), 3)
+        if on_failed_attempt is not None:
+            on_failed_attempt(number, wait)
+        if wait > 0:
+            sleep(wait)
+    return ScheduledRun(attempts=made, seconds=round(clock() - started, 3))
+
+
+@dataclass(frozen=True)
+class ScheduledCall:
+    """What `call_on_schedule` concluded: the call's value, or the last error it was retried on."""
+
+    value: Any
+    #: The retryable error the LAST attempt raised, or None when a call returned.
+    error: BaseException | None
+    attempts: int
+    seconds: float
+
+    @property
+    def ok(self) -> bool:
+        return self.error is None
+
+
+def call_on_schedule(
+    call: Callable[[], Any],
+    *,
+    retryable: Callable[[BaseException], bool],
+    schedule: Sequence[float],
+    sleep: Callable[[float], Any] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
+    on_failed_attempt: Callable[[int, BaseException, float], Any] | None = None,
+) -> ScheduledCall:
+    """`call()` on `schedule` until it returns, for errors `retryable` accepts.
+
+    An error `retryable` refuses is raised at once, from the attempt that
+    raised it: a fence or a refusal is an answer, and asking again would get
+    the same one. Only `Exception` is caught. A signal's exception, and the
+    test stand-in for `os._exit`, pass straight through.
+
+    `on_failed_attempt(n, error, retry_in)` is `run_on_schedule`'s, with the
+    error the attempt raised.
+    """
+    outcome: dict[str, Any] = {}
+
+    def _attempt(_number: int) -> bool:
+        try:
+            outcome["value"] = call()
+        except Exception as exc:
+            if not retryable(exc):
+                raise
+            outcome["error"] = exc
+            return False
+        outcome.pop("error", None)
+        return True
+
+    def _failed(number: int, retry_in: float) -> None:
+        if on_failed_attempt is not None:
+            on_failed_attempt(number, outcome["error"], retry_in)
+
+    run = run_on_schedule(
+        _attempt, schedule=schedule, sleep=sleep, clock=clock, on_failed_attempt=_failed
+    )
+    return ScheduledCall(
+        value=outcome.get("value"),
+        error=outcome.get("error"),
+        attempts=run.attempts,
+        seconds=run.seconds,
+    )
+
+
 def dns_preflight_with_retries(
     hosts: Sequence[str],
     *,
@@ -592,12 +803,9 @@ def dns_preflight_with_retries(
 ) -> PreflightOutcome:
     """`dns_preflight`, asked again on a schedule until every host resolves or it ends.
 
-    Attempt N starts `schedule[N-1]` seconds after the first one started, or
-    at once if the attempt before it ran past that time. The wait before an
-    attempt is measured from the FIRST attempt's start, not from the end of
-    the one before. So the retries span the same time whether a lookup fails
-    at once or hangs for its whole budget (see
-    `DNS_PREFLIGHT_SCHEDULE_SECONDS` for why that is what matters).
+    The schedule is `run_on_schedule`'s: attempt N starts `schedule[N-1]`
+    seconds after the first one started, however fast the ones before it
+    failed.
 
     Only the hosts that failed are asked again. A host that resolved stays
     resolved: its address is not what was in doubt.
@@ -608,30 +816,29 @@ def dns_preflight_with_retries(
     failed attempt is the caller's to report, as the verdict. Nothing is slept
     after it.
     """
-    starts = [max(0.0, float(offset)) for offset in schedule] or [0.0]
-    started = clock()
     final: dict[str, dict[str, Any]] = {}
     pending = list(dict.fromkeys(hosts))
-    total = len(starts)
-    made = 0
-    for attempt in range(1, total + 1):
-        made = attempt
+
+    def _attempt(number: int) -> bool:
+        nonlocal pending
         for result in dns_preflight(
             pending, budget_seconds=budget_seconds, resolve=resolve, clock=clock
         ):
-            final[result["host"]] = {**result, "attempt": attempt}
+            final[result["host"]] = {**result, "attempt": number}
         pending = [host for host in pending if not final[host]["ok"]]
-        if not pending or attempt == total:
-            break
-        wait = round(max(0.0, started + starts[attempt] - clock()), 3)
+        return not pending
+
+    def _failed(number: int, retry_in: float) -> None:
         if on_failed_attempt is not None:
-            on_failed_attempt(attempt, [final[host] for host in pending], wait)
-        if wait > 0:
-            sleep(wait)
+            on_failed_attempt(number, [final[host] for host in pending], retry_in)
+
+    run = run_on_schedule(
+        _attempt, schedule=schedule, sleep=sleep, clock=clock, on_failed_attempt=_failed
+    )
     return PreflightOutcome(
         results=[final[host] for host in dict.fromkeys(hosts)],
-        attempts=made,
-        seconds=round(clock() - started, 3),
+        attempts=run.attempts,
+        seconds=run.seconds,
     )
 
 

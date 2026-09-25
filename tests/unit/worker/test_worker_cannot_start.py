@@ -27,8 +27,10 @@ it reports exactly what Cloud Run or the kubelet would.
   * fenced before released, pools returned, events in that order;
   * the cause comes from the worker's own account when there is one (its
     attempt document, then its termination message), else the generic line;
-  * a non-78 failure keeps today's rules: nothing before the deadline, READY
-    (a retry) after it;
+  * a non-78 failure of an execution whose END the backend did not record
+    keeps the dispatch-deadline rules: nothing before the deadline, READY (a
+    retry) after it. One whose end WAS recorded is requeued at once by the
+    ended-at-startup rule (#198, test_worker_ended_at_startup.py);
   * nothing is concluded from a termination the backend could not read, from
     an attempt that is no longer the task's current one, or in a dry run;
   * a requested cancel still ends CANCELLED, as every other repair ends it;
@@ -167,7 +169,12 @@ def seed_an_attempt_that_never_started(
 def finished_execution(
     *, phase: ExecutionPhase = ExecutionPhase.FAILED, generation: int = GENERATION
 ) -> ExecutionView:
-    """The Cloud Run execution of that attempt, as `CloudRunBackend` lists it."""
+    """The Cloud Run execution of that attempt, as `CloudRunBackend` lists it.
+
+    With no `completed_at`: the backend recorded no end time, so only the
+    exit-78 rule may act on it before the dispatch deadline. The
+    ended-at-startup rule needs that time (test_worker_ended_at_startup.py).
+    """
     return ExecutionView(
         name=EXECUTION,
         backend="CLOUD_RUN_JOB",
@@ -365,6 +372,7 @@ def test_a_requested_cancel_still_ends_cancelled(db, reconciler_config):
 def test_a_non_78_exit_before_the_dispatch_deadline_changes_nothing(
     db, reconciler_config, exit_code
 ):
+    """With no recorded end time. With one, #198's rule requeues it at once."""
     seed_an_attempt_that_never_started(db, age_seconds=60)
 
     report, _ = reconcile(

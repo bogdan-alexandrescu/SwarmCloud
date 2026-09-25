@@ -106,8 +106,9 @@ at the ref the dispatch names. Everything follows from that:
 * **Dispatching with no `repo` at all clones nothing.** The task still runs and
   still succeeds; `swarm_result` then reports *"this task cloned no repository,
   so there is no code to apply"*, and the work exists only as transcript. The
-  `repo` argument is optional in the tool and has no default — the terminal
-  `uv run swarm dispatch --repo` falls back to `$SWARM_REPO`, the tool does not.
+  `repo` argument is optional in the tool and has no default — the terminal's
+  `swarm dispatch` falls back to `$SWARM_REPO` when `--repo` is not given, the
+  tool does not.
 
 So: before dispatching anything that touches code, say out loud which ref the
 agents will see, and check that the work they depend on is on it.
@@ -157,10 +158,21 @@ succeeded.
 | what is the shared pool at | `swarm_accounts` |
 | why did four of them die at once | `swarm_trouble` |
 
-`swarm_dispatch` takes `prompt`, `profile`, `repo`, `ref` and `label`. The
-profile is a **name** from the frozen catalogue, and the image, command and
-resource class come from the name. There is no parameter for an image and
-asking for one is not a thing a caller may do.
+`swarm_dispatch` takes `prompt`, `profile`, `repo`, `ref`, `label` and
+`inputs`. The profile is a **name** from the frozen catalogue, and the image,
+command and resource class come from the name. There is no parameter for an
+image and asking for one is not a thing a caller may do.
+
+`inputs` — on `swarm_dispatch` and on each `swarm_workflow` step — carries only
+what the named profile **declares**, which `swarm_profiles` lists under
+`inputs`. Today that is `mock`'s test knobs: `{"sleep_seconds": 120}` keeps a
+mock step RUNNING long enough to cancel, `{"fail": true}` fails it on purpose.
+There is no knob that parks a mock step: the mock's rate limit fires on every
+attempt, so a step sent one would park, resume and park again until cancelled,
+and the bridge refuses it. `exit_code` takes a failure's code, but not 77, 78
+or 143, which the worker reads as a rate limit, a refused credential and a
+cancellation. Every other profile declares none, and a key a profile does not
+declare is refused before anything is dispatched.
 
 **Do not guess the name — call `swarm_profiles`.** It is the catalogue itself,
 so it cannot go stale the way a list written into this paragraph can: every
@@ -216,19 +228,25 @@ pretends to.
 * `swarm_wait` with `timeout_seconds: 0` does one pass and returns: "tell me
   what has finished, do not wait". It is the cheap poll, and it names anything
   still running rather than implying it finished.
-* `uv run swarm tail <id> [<id> ...]` in a **background shell** is the thing
-  that streams. It takes several ids, so one shell follows a whole batch, and
-  it prints a gap header when the published window moved past what it had
-  shown — a tailer that stitched two non-adjacent pieces together would print a
+* `swarm tail <id> [<id> ...]` in a **background shell** is the thing that
+  streams. It takes several ids, so one shell follows a whole batch, and it
+  prints a gap header when the published window moved past what it had shown —
+  a tailer that stitched two non-adjacent pieces together would print a
   transcript that never happened.
 
-  **The `uv run` prefix is not optional.** `swarm` is a console script of
-  `swarm-mcp`, installed into the uv environment and never onto the shell's
-  PATH, so the bare spelling answers `command not found`. A dispatch reply hands
-  back the runnable spelling in `follow_live_with`; run what it gives you rather
-  than retyping it. It names the tool first, in `follow_with`, because that is
-  the one this session can actually call — the background shell is for the
-  developer.
+  **Run it exactly as `follow_live_with` spells it; never retype it.** The
+  bridge spells every command it hands back for the install it is running
+  from: `uv run swarm tail ...` in a checkout of this repository, plain
+  `swarm tail ...` where swarm-mcp is `uv tool install`ed, and
+  `uv tool run --from 'swarm-mcp @ git+...@sc-v<version>#subdirectory=apps/swarm-mcp' swarm tail ...`
+  on a plugin-only install, where there is nothing installed to find. Retyped
+  with the wrong prefix it fails — `uv run` outside a checkout answers
+  `Failed to spawn: swarm`, a bare `swarm` with nothing installed answers
+  `command not found` — and neither is the platform being broken. The reply
+  names the tool first, in `follow_with`, because that is the one this session
+  can actually call; the background shell is for the developer. This skill's
+  permission rules grant only the checkout's and an installed tool's spelling,
+  so the long form asks first.
 
 The un-seamless shape to avoid is: dispatch, go silent for eleven minutes,
 produce a result. Narrate. A local subagent shows progress and a remote one has
@@ -243,21 +261,27 @@ their prompt, their repository and the shared pool — none of which is involved
 
 The tell is in the error, and it is unambiguous: `IAP refused this before the
 API saw it`, `an HTML 404 from Google's edge`, `Error code 900`, or a 403 that
-names a principal. All four mean the request never reached swarm-api. Run
-`uv run swarm doctor`, which prints the address it used and the kind of
-credential that address takes, and report **that** — the `sc` skill's table
-says what each refusal means and which one is an IAM grant away.
+names a principal. All four mean the request never reached swarm-api, and the
+bridge ends a tool error that Google's edge answered, rather than the API, with
+the `swarm doctor` command to run, spelled for this install the way
+`follow_live_with` is. Run it **exactly as the error
+spells it** — never retyped, for the reasons above — and it prints the address
+it used and the kind of credential that address takes; report **that**. The
+`sc` skill's table says what each refusal means and which one is an IAM grant
+away.
 
 Nothing was dispatched, so nothing was spent, so say that too: a developer who
 thinks a batch went out and died will not re-run it.
 
 The fifth tell is the most common and the easiest: **`sign-in required for
-<context>: run sc login`**. The deployment the developer configured takes them
-signed in as themselves, and they are not yet. Tell them to run
-`uv run sc login` (a browser window opens), then retry the same call. It is
-theirs to run, not this session's — it waits on a browser — and there is no
-other credential to go looking for: every dispatch is meant to run as the
-developer, on their deployment, and `uv run sc whoami` shows which one that is.
+<context>: run … sc login`**. The deployment the developer configured takes
+them signed in as themselves, and they are not yet. Tell them to run the
+`sc login` command **exactly as the message spells it** (a browser window
+opens) — it is spelled for their install, as `follow_live_with` is — then
+retry the same call. It is theirs to run, not this session's — it waits on a
+browser — and there is no other credential to go looking for: every dispatch is
+meant to run as the developer, on their deployment, and `sc whoami`, spelled
+the same way, shows which one that is.
 
 ## When a remote agent dies — a bare task id is not a report
 
@@ -369,10 +393,12 @@ own session budget. A remote one spends a **shared subscription pool** that
 other people and other tenants are also drawing on, and a surprise on a shared
 pool is far worse than a surprise locally.
 
-* Before a batch, read `swarm_capacity`. `ROOM` is how many more tasks of that
-  profile fit before the **binding** pool refuses — and if `ROOM` is an em
+* Before a batch, read `swarm_capacity`. `ROOM` is how many more **agents** of
+  that profile fit before the **binding** pool refuses — and if `ROOM` is an em
   dash, the real room is unknown and could be zero. Do not dispatch a large
-  batch against a dash.
+  batch against a dash. `UNITS` beside it is the pool's capacity **units**, not
+  agents: a `browser` or `large` agent takes more than one — the note under the
+  table says how many, from the catalogue — so `4/10` can be two agents.
 * `swarm_accounts` is how the pool's 5-hour and 7-day windows moved. The marks
   mean exactly what the `sc` skill says they mean, and the one that matters
   here is that **an em dash is "not measured", never zero** — a dead poller

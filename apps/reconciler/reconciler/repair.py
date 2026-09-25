@@ -34,6 +34,7 @@ from .backends import Backend, NamespacedBackend, NamespacedListing, Probe, Prob
 from .checkpoints import CheckpointCollector, CheckpointStore
 from .config import ReconcilerConfig
 from .detect import (
+    ENDED_AT_STARTUP_STATES,
     WORKER_EXIT_CANNOT_START,
     Finding,
     FindingKind,
@@ -47,7 +48,14 @@ from .detect import (
     sanitised,
     stuck_candidates,
 )
-from .model import AttemptView, ControlSnapshot, ExecutionView, JobResourceView, LeaseView
+from .model import (
+    AttemptView,
+    ControlSnapshot,
+    ExecutionView,
+    JobResourceView,
+    LeaseView,
+    Termination,
+)
 from .progress import assess
 from .store import ControlStore
 
@@ -610,10 +618,14 @@ class Reconciler:
         Only what `cannot_start_candidates` names: a FAILED execution, its
         attempt holding its task's current lease. The read goes to the backend
         that listed it (`termination`): a Cloud Run task's last attempt, or a
-        GKE pod's container status. A read that fails, or finds nothing,
-        leaves no entry, and `detect_cannot_start` then concludes nothing.
-        The lease is judged by today's rules, exactly as before exit codes
-        were read. A read is not a write, so a dry run reads too.
+        GKE pod's container status. A read that fails leaves no entry, and
+        neither exit-code rule concludes anything: the lease is judged by the
+        rules that judged it before exit codes were read. A read that
+        SUCCEEDED and found no exit code leaves a `Termination` whose
+        `exit_code` is None. That is not a 78, and for a task still
+        DISPATCHED or STARTING it is an execution that ended before its runner
+        started (#198, `detect_ended_at_startup`). A read is not a write, so a
+        dry run reads too.
         """
         for subject in cannot_start_candidates(snapshot, sight.executions):
             execution = subject.execution
@@ -637,7 +649,11 @@ class Reconciler:
                 report.errors.append(f"termination {execution.name}: {exc}")
                 continue
             if ended is None:
-                continue
+                ended = Termination(
+                    exit_code=None,
+                    message=None,
+                    detail="the backend recorded no exit code for this execution",
+                )
             snapshot.terminations[attempt_id] = ended
             exit_code = getattr(ended, "exit_code", None)
             self._log.info(
@@ -646,8 +662,14 @@ class Reconciler:
                 backend=execution.backend,
                 task_id=subject.task.task_id,
                 attempt_id=attempt_id,
+                task_state=subject.task.state.value,
                 exit_code=exit_code,
                 cannot_start=exit_code == WORKER_EXIT_CANNOT_START,
+                ended_at=(
+                    execution.completed_at.isoformat()
+                    if getattr(execution, "completed_at", None) is not None
+                    else None
+                ),
                 detail=getattr(ended, "detail", None),
             )
 
@@ -1005,11 +1027,21 @@ class Reconciler:
         if finding.kind in _FENCE_ONLY:
             return self._repair_stuck(finding, outcome)
         cannot_start = finding.kind is FindingKind.WORKER_CANNOT_START
+        ended_at_startup = finding.kind is FindingKind.WORKER_ENDED_AT_STARTUP
+        # The ended-at-startup rule is about a task in these states, and its
+        # fence and its requeue are each refused, inside their transactions,
+        # for a task that has left them since the snapshot (#198). Passed only
+        # for that rule, so every other repair calls the store as it did.
+        guard: dict[str, Any] = (
+            {"only_from": ENDED_AT_STARTUP_STATES} if ended_at_startup else {}
+        )
         if self._config.dry_run:
             outcome.skipped = "dry_run"
             outcome.actions.append(
                 f"would invalidate, release and fail the task: {finding.reason}"
                 if cannot_start
+                else f"would invalidate, release and requeue the task: {finding.reason}"
+                if ended_at_startup
                 else "would invalidate, terminate, release and repair"
             )
             return outcome
@@ -1017,7 +1049,7 @@ class Reconciler:
         # ---- STEP 1: invalidate the generation --------------------------
         if finding.task_id and finding.generation is not None:
             new_generation = self._store.invalidate_generation(
-                finding.task_id, finding.generation
+                finding.task_id, finding.generation, **guard
             )
             outcome.invalidated_to = new_generation
             if new_generation is not None:
@@ -1096,6 +1128,7 @@ class Reconciler:
                     error=error,
                     # A retry time means nothing on a task that will not retry.
                     next_eligible_at=None if cannot_start else utcnow(),
+                    **guard,
                 )
                 if repaired is not None:
                     outcome.repaired_to = repaired.value
@@ -1109,6 +1142,12 @@ class Reconciler:
                             exit_code=finding.detail.get("exit_code"),
                             execution=finding.detail.get("execution"),
                             cause_source=finding.detail.get("cause_source"),
+                        )
+                    if ended_at_startup:
+                        detail.update(
+                            exit_code=finding.detail.get("exit_code"),
+                            execution=finding.detail.get("execution"),
+                            task_state=finding.detail.get("task_state"),
                         )
                     if repaired is TaskState.CANCELLED:
                         # The API's flag-only cancel wrote `cancel_requested`
@@ -1341,7 +1380,7 @@ class Reconciler:
         question of the control plane -- which tasks are FINISHED, where
         `snapshot()` reads only the four states that hold capacity -- and it
         lists an entire bucket, so it runs on its own slower clock instead of on
-        every five-minute tick.
+        every one-minute tick.
         """
         if self._checkpoints is None or not self._config.enable_checkpoint_gc:
             return

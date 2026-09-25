@@ -14,7 +14,7 @@ import { HELP, type TopicId } from './help'
 import { HelpCard } from './HelpCard'
 import { LivenessBadge, livenessOf } from './Liveness'
 import { Absent, Mark, Metric, UtilRow, type MarkKind } from './primitives'
-import { RunFiles } from './RunFiles'
+import { RunFiles, servedAge } from './RunFiles'
 import { Screen, timeAgo, type ScreenReading } from './Shell'
 import { StagedInputs } from './StagedInputs'
 import { StopRun } from './StopRun'
@@ -39,6 +39,7 @@ import {
   whyNeedsAction,
   type ArtifactRef,
   type AttemptRow,
+  type AttemptUsage,
   type DispatchRole,
   type DispatchStrategy,
   type ElapsedPhase,
@@ -286,7 +287,7 @@ export function Run({
       <Why task={task} events={events} now={now} />
       <ErrorBanner run={run} />
       <RunMetrics run={run} now={now} />
-      <Attempts run={run} now={now} />
+      <Attempts run={run} now={now} readAt={reading?.fetchedAt ?? null} />
       <DispatchPanel task={task} />
       <Output run={run} />
       {/* The checkpoint and log READ ROUTES, which no screen had ever called.
@@ -1221,7 +1222,16 @@ function errorWriter(run: AgentRun): string {
 // Attempts -- the unit of this screen
 // ---------------------------------------------------------------------------
 
-function Attempts({ run, now }: { run: AgentRun; now: number }) {
+function Attempts({
+  run,
+  now,
+  readAt = null,
+}: {
+  run: AgentRun
+  now: number
+  /** When this browser received the run's reads, so a served age can move on between them. */
+  readAt?: number | null
+}) {
   const { task, attempts, attemptsDetail } = run
 
   if (attempts === null) {
@@ -1333,6 +1343,7 @@ function Attempts({ run, now }: { run: AgentRun; now: number }) {
           isLatest={latest !== undefined && a.attempt_id === latest.attempt_id}
           run={run}
           now={now}
+          readAt={readAt}
         />
       ))}
 
@@ -1412,12 +1423,14 @@ function AttemptCard({
   isLatest,
   run,
   now,
+  readAt,
 }: {
   a: AttemptRow
   ordinal: number
   isLatest: boolean
   run: AgentRun
   now: number
+  readAt: number | null
 }) {
   const out = attemptOutcome(a)
   const end = attemptEnd(a, run.task, isLatest)
@@ -1536,7 +1549,7 @@ function AttemptCard({
             stays on its own card. */}
         {a.error !== null && a.error !== run.task.last_error && <pre className="err full">{a.error}</pre>}
 
-        <AttemptResources a={a} run={run} isLatest={isLatest} />
+        <AttemptResources a={a} run={run} isLatest={isLatest} readAt={readAt} now={now} />
         <AttemptSpend a={a} profile={run.task.runner_profile} />
         <AttemptCheckpoints a={a} run={run} />
       </div>
@@ -1579,11 +1592,16 @@ function AttemptResources({
   a,
   run,
   isLatest,
+  readAt,
+  now,
 }: {
   a: AttemptRow
   run: AgentRun
   /** From the attempt list: whether any later attempt document exists. */
   isLatest: boolean
+  /** When this browser received the attempts read, for the CPU reading's served age. */
+  readAt: number | null
+  now: number
 }) {
   const { task, events, classes, classesDetail, classesRouteMissing } = run
   const cls: ResourceClassSpec | null = classes?.[task.resource_class] ?? null
@@ -1700,22 +1718,7 @@ function AttemptResources({
         fmt={bytesLabel}
         by={diskBy}
       />
-      {/* CPU HAS NO UTILISED SIDE AT ALL. The sampler measures memory and disk
-          only, so a cpu bar here would be a hatched track next to a request --
-          which is the honest picture and is why it is drawn rather than left
-          out: a panel headed "requested vs utilised" that silently omits a
-          third of the envelope reads as if cpu were fine. */}
-      <CeilingRow
-        label={
-          <>
-            <b>cpu</b> not sampled
-          </>
-        }
-        used={null}
-        ceiling={cls === null ? null : cls.cpu}
-        fmt={(v) => `${v} vCPU`}
-        by="never measured"
-      />
+      <CpuRows a={a} cls={cls} readAt={readAt} now={now} />
 
       {/* The standing rules -- requests == limits, the tmpfs workspace, what
           oom_near_miss actually asserts -- live ONCE in the card foot at the
@@ -1734,6 +1737,10 @@ function AttemptResources({
           560px. */}
       {a.peak_rss_bytes === null && (liveRss !== null || (ended && a.started_at !== null)) && (
         <p className="att-rss-note">
+          {/* NAMED, since the CPU rows grew a strip of their own just above
+              this one: two unlabelled lines of `heartbeat 3m ago` under five
+              bars would not say which bar each is about. */}
+          <b>memory</b>
           {liveRss !== null && hb !== null ? (
             <>
               <Mark
@@ -1769,6 +1776,271 @@ function AttemptResources({
           maximum and would lie if it were read as memory in use now. */}
       <PeakMemoryChart attempt={a} events={events} />
     </div>
+  )
+}
+
+/**
+ * CPU, AS PEAK AND MEAN CORES AGAINST THE LIMIT (#184), in the style of the
+ * memory and workspace rows above.
+ *
+ * WHAT CHANGED. This was one hatched row, `cpu not sampled`, because nothing
+ * displayed what the worker measured: `ResourceSampler` has computed
+ * cpu-seconds, peak cores and mean cores from cgroup `cpu.stat` all along, and
+ * they reached a log line and Cloud Monitoring, which this API cannot read.
+ * `attempts?include=usage` now serves each attempt's newest reading off its
+ * HEARTBEAT events, and these rows draw it.
+ *
+ * TWO ROWS, NOT A BAR WITH A TICK: the shared track draws one fill per row,
+ * and whether the owner wants one bar with a mean tick instead is an open
+ * question on #184. The ceiling is the limit the WORKER reported with the
+ * reading, and the `by` column says where it came from, in the worker's own
+ * words (`cpu_limit_source`): the container's cgroup `cpu.max`, or -- when
+ * that said nothing -- the catalogue cpu of the class the container was sized
+ * with. `requests == limits`, so either is the limit. Only when the reading
+ * carries no limit at all does this fall back to the catalogue's cpu for the
+ * task's class, as read here. A figure over the ceiling takes the track's
+ * over-ceiling hatch.
+ *
+ * THE SOURCE IS READ, NOT INFERRED (#187/#188 parity). This labelled every
+ * limit the reading carried `cgroup limit`, and the worker sends a limit with
+ * `cpu_limit_source: "resource_class"` whenever `cpu.max` is `max` or
+ * unreadable -- and nobody has yet read what Cloud Run's `cpu.max` holds
+ * (#188, "not verified"). A catalogue figure was then captioned as a
+ * kernel-enforced one.
+ *
+ * ONE ROW WHEN THERE IS NOTHING TO SPLIT. With no reading -- the API did not
+ * serve one, the attempt never ran, the event window missed it, the read
+ * failed, or every figure in it is null -- two identical hatched rows would
+ * say one fact twice. The one row still says WHICH kind of nothing, in the
+ * words of the memory row: absent is never drawn as zero.
+ *
+ * THE STRIP UNDER THE ROWS IS HOW ANY OF THAT REACHES A PHONE. The `by`
+ * column is `display: none` below 560px (the `.ctl-util-track, .ctl-util-by`
+ * rule in the phone block of styles.css). When the provenance, the source and
+ * the cpu-seconds lived only there, a 390px screen showed `cpu peak 1.62 vCPU
+ * / 2 vCPU` for a live reading 140 s old, which is exactly how a final figure
+ * reads, and `— / 2 vCPU` for every kind of absence. `CpuNote` carries the same
+ * words, from the same `cpuReading`, outside the row. See its comment for
+ * which parts show at which width.
+ *
+ * AGED ON THE SERVER'S CLOCK. A reading's age is the server's `age_seconds`,
+ * plus the time since this browser received the read (`servedAge`, the rule
+ * the Artifacts pane's stream ages use). It is not `timeAgo(measured_at)`,
+ * because that ages a server timestamp on a clock the server never checked.
+ */
+function CpuRows({
+  a,
+  cls,
+  readAt,
+  now,
+}: {
+  a: AttemptRow
+  cls: ResourceClassSpec | null
+  /** When this browser received the attempts read, or null when no `Screen` read it. */
+  readAt: number | null
+  now: number
+}) {
+  // `null` is the route's own way of not serving a row's reading (see
+  // `AttemptRow.usage`); it is read exactly as a missing key.
+  const u = a.usage ?? undefined
+  const reported = u?.cpu_limit_cores ?? null
+  const ceiling = reported ?? (cls === null ? null : cls.cpu)
+  const fmt = (v: number) => `${Number(v.toFixed(2))} vCPU`
+  const reading = cpuReading(u, readAt, now)
+
+  if (u === undefined || !reading.measured) {
+    return (
+      <>
+        <CeilingRow label={<b>cpu</b>} used={null} ceiling={ceiling} fmt={fmt} by={reading.by} />
+        <CpuNote reading={reading} seconds={null} from={null} />
+      </>
+    )
+  }
+
+  const from = limitSource(u, cls)
+  const seconds = u.cpu_seconds === null ? null : `${Number(u.cpu_seconds.toFixed(1))} cpu-s`
+  return (
+    <>
+      <CeilingRow
+        label={
+          <>
+            <b>cpu</b> peak
+          </>
+        }
+        used={u.peak_cpu_cores}
+        ceiling={ceiling}
+        fmt={fmt}
+        by={from === null ? reading.by : `${reading.by} · ${from}`}
+      />
+      <CeilingRow
+        label={
+          <>
+            <b>cpu</b> mean
+          </>
+        }
+        used={u.mean_cpu_cores}
+        ceiling={ceiling}
+        fmt={fmt}
+        by={seconds === null ? reading.by : `${reading.by} · ${seconds}`}
+      />
+      <CpuNote reading={reading} seconds={seconds} from={from} />
+    </>
+  )
+}
+
+/**
+ * WHERE THE CPU CEILING CAME FROM, in words for the `by` column and the strip.
+ *
+ *   cgroup          `cgroup limit`: the container's own `cpu.max`.
+ *   resource_class  the class's name when the class read here has that very
+ *                   cpu (`standard limit`), else `resource class limit`: the
+ *                   worker sized the container by the task's class when the
+ *                   catalogue still has it and by the profile's otherwise, so
+ *                   a class read here with a different cpu is not the one it
+ *                   used, and naming it would name the wrong one.
+ *   anything else   with a limit: `reported limit` -- the worker sent a figure
+ *                   and did not say where from, which is not the cgroup's.
+ *   no limit        the task's class read here, by name, as before.
+ */
+function limitSource(u: AttemptUsage, cls: ResourceClassSpec | null): string | null {
+  const cores = u.cpu_limit_cores
+  if (cores === null) return cls !== null ? `${cls.name} limit` : null
+  if (u.cpu_limit_source === 'cgroup') return 'cgroup limit'
+  if (u.cpu_limit_source === 'resource_class') {
+    return cls !== null && cls.cpu === cores ? `${cls.name} limit` : 'resource class limit'
+  }
+  return 'reported limit'
+}
+
+/** One attempt's CPU reading, in words, for the rows' `by` column and for the strip under them. */
+interface CpuReading {
+  /** False when there is no reading, or when every figure in it is null. */
+  measured: boolean
+  /** The `by` column's words, as the memory row writes them: `at exit`, `latest heartbeat 20s ago`. */
+  by: string
+  /** The strip's words, as the memory strip writes them: `live heartbeat 20s ago`. */
+  strip: string
+  /** Null for a final figure: `at exit` needs no mark, and the memory strip draws none for it either. */
+  mark: MarkKind | null
+  say: string
+}
+
+/**
+ * WHERE AN ATTEMPT'S CPU READING CAME FROM, AND HOW OLD IT IS. This is the one
+ * place those words are decided. The `by` column and the strip both read them
+ * from here, so they cannot disagree.
+ *
+ * A heartbeat that carried the key and no value is `never measured`, whatever
+ * its status. An age the server did not send is said to be missing. It is
+ * never filled in from this browser's clock.
+ */
+function cpuReading(u: AttemptUsage | undefined, readAt: number | null, now: number): CpuReading {
+  if (u === undefined) {
+    return {
+      measured: false,
+      by: 'not served',
+      strip: 'not served',
+      mark: 'absent',
+      say: 'The API answering this UI sent no CPU reading with this attempt. It is older than the usage read (#184), so this says nothing about how much CPU the attempt used.',
+    }
+  }
+  const measured = u.peak_cpu_cores !== null || u.mean_cpu_cores !== null || u.cpu_seconds !== null
+  const never: CpuReading = {
+    measured: false,
+    by: 'never measured',
+    strip: 'never measured',
+    mark: 'absent',
+    say: 'No reading of this attempt’s CPU exists. The heartbeats that should carry one did not, or carried it empty. What the attempt used is unknown, which is why the figure is an em dash and not a zero.',
+  }
+  // The server's age, moved on by the time since the read landed. With no
+  // `Screen` around the body there is no receipt time, and the served figure
+  // is used as it stands.
+  const ageMs =
+    readAt === null
+      ? typeof u.age_seconds === 'number' && Number.isFinite(u.age_seconds)
+        ? Math.max(0, u.age_seconds * 1000)
+        : null
+      : servedAge(u, readAt, now)
+  const ago = ageMs === null ? 'age not served' : timeAgo(now - ageMs, now)
+  switch (u.status) {
+    case 'final':
+      return measured ? { measured, by: 'at exit', strip: 'at exit', mark: null, say: '' } : never
+    case 'live':
+      return measured
+        ? {
+            measured,
+            by: `latest heartbeat ${ago}`,
+            strip: `live heartbeat ${ago}`,
+            mark: 'pending',
+            say: `A live reading from this attempt’s newest heartbeat, ${ago} by the server’s clock. It is not the figure at exit, which is written when the runner is reaped.`,
+          }
+        : never
+    case 'last_reading':
+      return measured
+        ? {
+            measured,
+            by: `last heartbeat ${ago}`,
+            strip: `last heartbeat ${ago}`,
+            mark: 'partial',
+            say: `This attempt ended without a reading at exit, so this is its last heartbeat’s, ${ago} by the server’s clock. It is not a final figure, and none is coming.`,
+          }
+        : never
+    case 'never_ran':
+      return {
+        measured: false,
+        by: 'never ran',
+        strip: 'never ran',
+        mark: 'zero',
+        say: 'This attempt never started, so it used no CPU. That is a fact about the attempt, not a missing measurement.',
+      }
+    case 'absent':
+      return never
+    case 'beyond_window':
+      return {
+        measured: false,
+        by: 'off the event window',
+        strip: 'off the event window',
+        mark: 'unread',
+        say: 'The server read one page of this task’s newest events and it did not reach back to this attempt, so any reading the attempt has was not seen. This is not a zero.',
+      }
+    case 'unread':
+      return {
+        measured: false,
+        by: 'read failed',
+        strip: 'read failed',
+        mark: 'unread',
+        say: `The events read behind this reading failed, so nothing can be said about this attempt’s CPU. It is not missing and it is not zero.${u.detail ? ` ${u.detail}` : ''}`,
+      }
+  }
+}
+
+/**
+ * THE CPU READING, OUTSIDE THE ROWS, SO IT REACHES A PHONE.
+ *
+ * WHAT SHOWS AT EACH WIDTH, and why it is not the same everywhere:
+ *
+ *   - The MARK AND ITS WORDS (`live heartbeat 20s ago`, `never ran`, `read
+ *     failed`) show at every width, as the memory strip's do. That is the
+ *     precedent this follows, and the mark's sentence is the accessible name.
+ *   - The cpu-seconds and the ceiling's source, `.att-cpu-by`, show only below
+ *     560px. Above that they are already in the `by` column beside each bar,
+ *     and a second copy would caption the thing the reader is looking at.
+ *   - A FINAL reading has no mark, so the whole strip is `.is-final` and shows
+ *     only below 560px. On a phone it is the only place `at exit` appears.
+ *
+ * The rules are in styles.css beside `.att-rss-note`. details.cpu.test.tsx
+ * asks the shipped sheet's cascade what a 390px viewport shows, because jsdom
+ * applies no stylesheet and would pass either way.
+ */
+function CpuNote({ reading, seconds, from }: { reading: CpuReading; seconds: string | null; from: string | null }) {
+  const extra = [seconds, from].filter((x): x is string => x !== null)
+  return (
+    <p className={`att-rss-note att-cpu-note${reading.mark === null ? ' is-final' : ''}`}>
+      <b>cpu</b>
+      {reading.mark !== null && <Mark kind={reading.mark} say={reading.say} />}
+      <span>{reading.strip}</span>
+      {extra.length > 0 && <span className="att-cpu-by">· {extra.join(' · ')}</span>}
+    </p>
   )
 }
 
@@ -2283,7 +2555,9 @@ function Artifacts({
         </div>
       )}
       {showing !== null && (
-        <ArtifactViewer taskId={taskId} artifact={showing} onClose={() => setOpen(null)} />
+        // Keyed per file: the viewer pages by offset now (#184), and a window
+        // paged in one artifact must not carry its offset to the next.
+        <ArtifactViewer key={showing.name} taskId={taskId} artifact={showing} onClose={() => setOpen(null)} />
       )}
     </div>
   )
@@ -2376,16 +2650,18 @@ function Logs({
  * window of either the final object or the live tail, redacted at read time.
  * Nothing had called it, so the screen went on stating the old constraint --
  * which is worse than a missing feature, because it tells a reader not to look.
- * The "Output, as the agent wrote it" panel below reads it.
+ * The runner log panel below reads it for the runner's own streams, and the
+ * Artifacts pane reads it for the agent's (#184).
  */
 function LogsFoot() {
   // WHAT IT SAYS NOW, and it is a pointer rather than an explanation. These
-  // are object LOCATIONS from the result summary; the text window, including
-  // the live tail, is read by a different route and drawn by `RunFiles` below.
-  // A reader who needs to know which is which follows the link.
+  // are object LOCATIONS from the result summary. Their text -- the agent's
+  // streams, its transcript and its answer, live while it runs -- is the
+  // Artifacts pane's; the runner process's own window is `RunFiles` below,
+  // under a title that says it is the platform's.
   return (
     <p className="ctl-card-foot">
-      <span>locations only · text window below</span>
+      <span>locations only · text under Artifacts</span>
     </p>
   )
 }

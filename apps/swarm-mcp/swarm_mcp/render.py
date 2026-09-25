@@ -42,7 +42,7 @@ from datetime import datetime, timezone
 from typing import Any, Iterable, Sequence
 
 from swarm_common import states as _states
-from swarm_common.profiles import RUNNER_PROFILES
+from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES
 from swarm_common.states import CONCURRENCY_STATES, PENDING_STATES, TaskState
 
 # --------------------------------------------------------------------------
@@ -469,15 +469,73 @@ class Listing(list):
         *,
         tenant_id: str | None = None,
         incomplete: Iterable[str] = (),
+        window: "TaskWindow | None" = None,
     ) -> None:
         super().__init__(items)
         self.tenant_id = str(tenant_id) if tenant_id else None
         self.incomplete = [str(line) for line in incomplete]
+        self.window = window
+
+
+@dataclass(frozen=True)
+class TaskWindow:
+    """The newest-N page a task listing read beside its live states, SAID (#190).
+
+    `sc.fetch_tasks` reads every LIVE task by state and, beside them, one page
+    of the newest tasks of any state -- the only place a FAILED or
+    DEAD_LETTERED task is read from. `sc trouble` counted those as "N task(s)
+    ... in the window listed" and listed no window anywhere; the window lived
+    in a docstring and a constant. So the page describes itself: how many it
+    held, whether that was every task the tenant has, and when the oldest of
+    them was created -- which is what a reader needs to tell "5 today" from
+    "5 ever" from "5 of the newest hundred".
+    """
+
+    limit: int
+    count: int
+    oldest: Any = None
+    whole: bool = False
 
 
 def listing_tenant(items: Any) -> str | None:
     """The tenant a `Listing` was answered for; None for a plain list."""
     return getattr(items, "tenant_id", None) or None
+
+
+def listing_window(items: Any) -> TaskWindow | None:
+    """The newest-N window a `Listing` read; None for a plain list."""
+    window = getattr(items, "window", None)
+    return window if isinstance(window, TaskWindow) else None
+
+
+def format_since(value: Any, now: datetime) -> str:
+    """`03:28Z` for today, `2026-09-01 00:10Z` for any other day, "" when unknown."""
+    when = parse_time(value)
+    if when is None:
+        return ""
+    when = when.astimezone(timezone.utc)
+    if when.date() == now.astimezone(timezone.utc).date():
+        return when.strftime("%H:%MZ")
+    return when.strftime("%Y-%m-%d %H:%MZ")
+
+
+def window_scope(items: Any, whose: str, now: datetime) -> tuple[str, str]:
+    """`("of the newest 100 tasks of tenant eng", " (created since 03:28Z)")`.
+
+    The population a count over a task listing was taken from, and when its
+    oldest member was created -- the two halves of "which window". A plain
+    list, which has no window to name, is named by how many tasks it held.
+    """
+    window = listing_window(items)
+    if window is None:
+        return f"of the {len(items)} tasks{whose} this read returned", ""
+    scope = (
+        f"of all {window.count} tasks{whose}"
+        if window.whole
+        else f"of the newest {window.count} tasks{whose}"
+    )
+    since = format_since(window.oldest, now)
+    return scope, f" (created since {since})" if since else ""
 
 
 def listing_gaps(items: Any) -> list[str]:
@@ -1036,13 +1094,18 @@ def render_capacity(
             }
         )
 
+    # UNITS, NOT "USED" (#192). The cell is the binding pool's `active/limit`,
+    # and admission adds a task's `units` to `active` on every pool it takes
+    # (`swarm_common/admission.py`) -- so it counts units, while ROOM beside it
+    # counts agents of the profile. The header says which, and the note under
+    # the table says how the two relate.
     lines = render_table(
         [
             Column("profile", "PROFILE", flex=True),
             Column("class", "CLASS", drop=3),
             Column("backend", "BACKEND", drop=4),
             Column("binds", "BINDS ON", flex=True, drop=1),
-            Column("used", "USED", align="right", drop=2),
+            Column("used", "UNITS", align="right", drop=2),
             Column("room", "ROOM", align="right"),
         ],
         rows,
@@ -1057,18 +1120,17 @@ def render_capacity(
                 f"{', '.join(refused)}",
                 style,
             )
-        # THE POPULATION, SAID. A shared pool's USED counts every tenant's
-        # agents; the tenant-scoped sections around this one count the caller's
+        # THE POPULATION, SAID. A shared pool's figure counts every tenant's
+        # work; the tenant-scoped sections around this one count the caller's
         # only. On 2026-09-25 (#88, SC-F5) `claude-code 8/40` -- another
         # tenant's work -- sat beside AGENTS "0 running" with nothing to say
         # the two were different populations.
+        #
+        # AND THE UNIT, SAID (#192). This note used to say the figure "counts
+        # every tenant's agents", so two browser agents at `4/10` read as four.
         tenant = capacity.get("tenant_id")
         own = f"tenant:{tenant}" if tenant else "your own tenant pool"
-        lines += detail(
-            f"USED on a shared pool counts every tenant's agents; only {own} "
-            "counts yours alone",
-            style,
-        )
+        lines += detail(units_note(own), style)
 
     if profiles_only:
         return lines
@@ -1108,7 +1170,9 @@ def render_capacity(
             render_table(
                 [
                     Column("pool", "POOL", flex=True),
-                    Column("used", "USED", align="right"),
+                    # Units, like the profile table's column (#192); FREE is
+                    # the pool's free units, which ROOM divides.
+                    Column("used", "UNITS", align="right"),
                     Column("free", "FREE", align="right", drop=2),
                     Column("state", "STATE", drop=1),
                 ],
@@ -1121,8 +1185,41 @@ def render_capacity(
     return lines
 
 
+def units_note(own: str) -> str:
+    """The sentence under the capacity table: what UNITS and ROOM each count.
+
+    The per-class units are read from `swarm_common.profiles.RESOURCE_CLASSES`
+    -- the numbers admission charges -- so the note cannot go on saying 2 the
+    day the catalogue says 3.
+    """
+    per_class = ", ".join(
+        f"{name} {resource.units}"
+        for name, resource in sorted(RESOURCE_CLASSES.items(), key=lambda kv: (kv[1].units, kv[0]))
+    )
+    return (
+        "UNITS is capacity units in use out of the pool's limit, not agents: an "
+        f"agent takes its resource class's units ({per_class}). On a shared pool "
+        f"it counts every tenant's; only {own} counts yours alone. ROOM counts "
+        "agents: how many more of that profile fit before the binding pool refuses."
+    )
+
+
+def _fit_phrase(room: int) -> str:
+    if room <= 0:
+        return "no more agents fit"
+    if room == 1:
+        return "1 more agent fits"
+    return f"{room} more agents fit"
+
+
 def capacity_subtitle(capacity: dict[str, Any] | None, style: Style) -> str:
-    """The tightest pool across every profile -- the real ceiling, named.
+    """The profile with the fewest agents still to fit -- the real ceiling, named.
+
+    RANKED BY AGENTS, AND SAYS SO (#192). The ranking was always the fewest
+    agents of a profile that still fit (ROOM), but the line printed the binding
+    pool's UNITS -- `tightest: resource:browser 0/10` -- which named an empty
+    pool the tightest because a browser agent takes two units. It now names
+    the profile, the agents that fit, and the pool, with its units labelled.
 
     A pool that could not be graded outranks every measured one, for the same
     reason it does in `binding_pool`: naming a "tightest" pool while another
@@ -1135,7 +1232,7 @@ def capacity_subtitle(capacity: dict[str, Any] | None, style: Style) -> str:
     profiles = capacity.get("runner_profiles") or {}
     paused: Binding | None = None
     ungradeable: Binding | None = None
-    tightest: Binding | None = None
+    tightest: tuple[str, Binding] | None = None
     for name, spec in profiles.items():
         if profile_refused(name, spec) is not None:
             # A profile nothing can dispatch has no ceiling worth quoting, and
@@ -1149,15 +1246,19 @@ def capacity_subtitle(capacity: dict[str, Any] | None, style: Style) -> str:
             paused = paused or binding
         elif binding.unknown or binding.room is None:
             ungradeable = ungradeable or binding
-        elif tightest is None or binding.room < tightest.room:
-            tightest = binding
+        elif tightest is None or binding.room < tightest[1].room:
+            tightest = (name, binding)
     if paused is not None:
         return f"{paused.pool} is paused"
     if ungradeable is not None:
         return f"{ungradeable.pool} ceiling unknown"
     if tightest is None:
         return "no pool limits configured"
-    return f"tightest: {tightest.pool} {tightest.active}/{tightest.limit}"
+    name, binding = tightest
+    return (
+        f"tightest: {name}, {_fit_phrase(binding.room or 0)} on {binding.pool} "
+        f"({format_used(binding, style).text} units)"
+    )
 
 
 # --------------------------------------------------------------------------
@@ -1626,12 +1727,14 @@ def find_trouble(snap: Snapshot, style: Style = PLAIN) -> list[Finding]:
             if limit == 0:
                 out.append(Finding("down", name, "effective limit is 0; nothing can be admitted"))
             elif available == 0 and limit:
+                # UNITS, as the capacity table now labels them (#192): a pool
+                # of 10 is full at five browser agents, not ten.
                 out.append(
                     Finding(
                         "warn",
                         name,
-                        f"full at {active}/{limit}"
-                        + (", counting every tenant's agents" if shared else ""),
+                        f"full at {active}/{limit} units"
+                        + (", counting every tenant's" if shared else ""),
                     )
                 )
 
@@ -1652,12 +1755,17 @@ def find_trouble(snap: Snapshot, style: Style = PLAIN) -> list[Finding]:
             out.append(
                 Finding("warn", "parked", f"{count} task(s){whose}: {reason.lower().replace('_', ' ')}")
             )
+        # THE WINDOW, NAMED (#190). Parked tasks are live and every live task
+        # is read; failed and dead-lettered ones are finished and come only
+        # from the newest-N page, so their counts are over that page, and the
+        # finding says which page -- "in the window listed" named none.
+        scope, since = window_scope(snap.tasks, whose, now)
         if dead:
             out.append(
-                Finding("down", "dead-lettered", f"{dead} task(s){whose} gave up after every attempt")
+                Finding("down", "dead-lettered", f"{dead} {scope} gave up after every attempt{since}")
             )
         if failed:
-            out.append(Finding("note", "failed", f"{failed} task(s){whose} in the window listed"))
+            out.append(Finding("note", "failed", f"{failed} {scope} failed{since}"))
 
     out.sort(key=lambda f: (f.rank, f.where))
     return out

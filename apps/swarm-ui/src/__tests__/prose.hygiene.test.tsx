@@ -276,7 +276,7 @@ describe("a chart with nothing measured says so in §6.9's shape", () => {
 // ---------------------------------------------------------------------------
 
 describe("the agent drawer's panes are one segmented control, not pills", () => {
-  it('renders Detail / Attempts as the .ctl-seg primitive', () => {
+  it('renders Details / Attempts / Artifacts as the .ctl-seg primitive', () => {
     // BREAK IT: drop `ctl-seg` from the strip's className in App.tsx.
     const m = /<div className="([^"]*)"\s+role="tablist"\s+aria-label="Agent panes"/.exec(APP)
     expect(m, 'App.tsx no longer renders the Agent panes tablist this test knows').not.toBeNull()

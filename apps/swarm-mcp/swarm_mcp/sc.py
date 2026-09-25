@@ -50,6 +50,7 @@ be replayed from.
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import os
 import shutil
@@ -63,7 +64,7 @@ from swarm_common.states import CONCURRENCY_STATES, PENDING_STATES, TaskState
 
 from . import render
 from .client import SwarmClient, SwarmError
-from .follow import terminal_command
+from .invocation import help_command, terminal_command
 from .patches import explain_absence, patch_uri
 from .render import Finding, Snapshot, Style
 
@@ -240,8 +241,8 @@ def fetch_tasks(client: SwarmClient, *, limit: int = TASK_PAGE) -> render.Listin
     are what AGENTS and the parked findings are about, and they are now
     complete. The newest-`limit` window is still read beside them, for the one
     thing that is about recent history rather than about now: the trouble
-    view's FAILED and DEAD_LETTERED counts, which say so ("in the window
-    listed").
+    view's FAILED and DEAD_LETTERED counts, which name that window -- how many
+    tasks, and created since when (`render.TaskWindow`, #190).
 
     Concurrently, because it is nine round trips where it was one, and a
     status command that takes nine seconds gets replaced by a guess. The first
@@ -277,8 +278,23 @@ def fetch_tasks(client: SwarmClient, *, limit: int = TASK_PAGE) -> render.Listin
         take(tasks)
     recent = results["recent"]
     tenant = tenant or recent.get("tenant_id")
-    take([t for t in recent["tasks"] if isinstance(t, dict)])
-    return render.Listing(merged, tenant_id=tenant, incomplete=gaps)
+    newest = [t for t in recent["tasks"] if isinstance(t, dict)]
+    take(newest)
+    # THE WINDOW SAYS WHAT IT IS (#190): how many the page held, whether that
+    # was every task (no next page), and when the oldest was created. A FAILED
+    # or DEAD_LETTERED count is taken over this page and nothing else, and the
+    # trouble view names it from here.
+    created = [
+        stamp for stamp in (render.parse_time(t.get("created_at")) for t in newest)
+        if stamp is not None
+    ]
+    window = render.TaskWindow(
+        limit=limit,
+        count=len(newest),
+        oldest=min(created).isoformat() if created else None,
+        whole=not recent.get("next_page_token"),
+    )
+    return render.Listing(merged, tenant_id=tenant, incomplete=gaps, window=window)
 
 
 def fetch_task(client: SwarmClient, task_id: str) -> dict[str, Any]:
@@ -594,6 +610,14 @@ def _dump(snap: Snapshot, out) -> None:
         # What the task listing did NOT read, as it says on screen: `[]` is a
         # whole listing, a sentence is a floor (#88, SC-F11).
         "tasks_incomplete": render.listing_gaps(snap.tasks),
+        # The newest-N page the failed and dead-lettered counts are taken over
+        # (#190): its size, whether it held every task, and its oldest task's
+        # creation time. None when no task listing was read.
+        "tasks_window": (
+            dataclasses.asdict(render.listing_window(snap.tasks))
+            if render.listing_window(snap.tasks) is not None
+            else None
+        ),
         # Whose the tenant-scoped figures are (#88, SC-F5).
         "scope_tenant": render.scope_tenant(snap),
     }
@@ -650,7 +674,9 @@ def _outranked(detection: Any, email: str) -> str:
         who = f"the service account {os.environ.get('SWARM_IMPERSONATE_SA', '').strip()}"
         remedy = "unset SWARM_IMPERSONATE_SA"
     else:
-        who, remedy = f"the {tier.value} tier", "see `swarm doctor`"
+        # Through `terminal_command`, like `sc whoami` below: typed bare, this
+        # was `command not found` on a plugin-only install (review of #201).
+        who, remedy = f"the {tier.value} tier", f"see `{terminal_command('swarm doctor')}`"
     return (
         f"warning     {detection.detail}, which ranks above a sign-in: the plugin's "
         f"tools and every other `sc` and `swarm` command on this machine will act as "
@@ -898,7 +924,7 @@ def _common(parser: argparse.ArgumentParser, *, root: bool) -> None:
     )
     parser.add_argument(
         "--context",
-        help="which configured deployment to use (see `sc context list`)",
+        help=f"which configured deployment to use (see `{help_command('sc context list')}`)",
         **default(None),
     )
 
@@ -981,7 +1007,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ca.add_argument(
         "--client-id", default="",
-        help="its Desktop OAuth client id (needed for `sc login` at an IAP front door)",
+        help=(
+            "its Desktop OAuth client id "
+            f"(needed for `{help_command('sc login')}` at an IAP front door)"
+        ),
     )
     ca.add_argument(
         "--client-secret-stdin", action="store_true",
