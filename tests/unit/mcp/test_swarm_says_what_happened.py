@@ -575,7 +575,9 @@ def test_tail_warns_once_on_a_log_read_that_failed(swarm, world, capsys, monkeyp
 
     monkeypatch.setattr(cli, "download", _forbidden)
     task_id = world.task("task_00000000000forbidden", state="SUCCEEDED")
-    world.attempt(task_id, "att_403")
+    # Not `att_403`: the finished line names its attempt, and the count below
+    # is of lines carrying the status.
+    world.attempt(task_id, "att_denied")
 
     cli.cmd_tail(swarm, _args(task_ids=[task_id]))
 
