@@ -234,6 +234,40 @@ def test_the_read_only_skill_never_gains_a_command_that_writes():
     )
 
 
+#: `sc` subcommands that write the DEVELOPER's local state rather than the
+#: cluster: the credential store (login, logout) and the config file that
+#: decides which deployment every later call reaches (context). They do not
+#: belong in `_WRITING_SUBCOMMANDS` -- the read-only skill should still be able
+#: to TELL the developer to run `sc login` -- but a model must never be GRANTED
+#: them: `sc login` opens a browser and blocks for up to five minutes, and
+#: `sc context use` silently moves every later dispatch to another cluster.
+_LOCAL_STATE_SUBCOMMANDS = frozenset({"login", "logout", "context"})
+
+
+@pytest.mark.parametrize("path", _MARKDOWN, ids=lambda p: f"{p.parent.name}/{p.name}")
+def test_no_skill_or_command_grants_a_model_the_developers_sign_in(path):
+    """THE MUTATION THIS CATCHES: add `Bash(uv run sc login:*)` to any skill's
+    `allowed-tools`. Naming the command in prose stays allowed; granting it
+    does not. The grant is the `Bash(...)` rule, so only those are read."""
+    text = path.read_text()
+    granted = []
+    for rule in _BASH_RULE.findall(text):
+        words = rule.split(":")[0].split()
+        words = words[2:] if words[:2] == ["uv", "run"] else words
+        if words and words[0] in _PARSERS and len(words) > 1 and words[1] in _LOCAL_STATE_SUBCOMMANDS:
+            granted.append(rule)
+    assert not granted, f"{path} grants a model the developer's own sign-in: {granted}"
+
+
+def test_the_sign_in_commands_exist_on_both_spellings():
+    """`sc login` is what a tool tells a developer to run when they are not
+    signed in, so it has to be real on `sc` -- and `swarm login` has to mean
+    the same thing, the way `swarm accounts` means `sc accounts`."""
+    for name in ("login", "logout", "whoami", "context"):
+        assert name in _subcommands(_PARSERS["sc"]), f"sc has no {name!r}"
+        assert name in _subcommands(_PARSERS["swarm"]), f"swarm has no {name!r}"
+
+
 def test_the_plugin_is_installable_at_all():
     """WITHOUT THIS FILE NONE OF THE REST OF THE PLUGIN IS REACHABLE.
 
