@@ -382,6 +382,10 @@ def worker_env(*, task: Task, lease: Lease, tenant: Tenant, settings: Any) -> di
         # per-attempt value of its own. See WORKER_ARTIFACTS_DIR for why it is
         # kept and why it was never the fix it was taken for.
         "SWARM_ARTIFACTS_DIR": WORKER_ARTIFACTS_DIR,
+        # MUTATION, reverted by the next commit: the GKE-only metadata override
+        # in the builder BOTH dispatchers share.
+        "GCE_METADATA_HOST": "169.254.169.254",
+        "GCE_METADATA_IP": "169.254.169.254",
     }
     broker_url = str(getattr(settings, "quota_broker_url", "") or "").strip()
     if broker_url:
