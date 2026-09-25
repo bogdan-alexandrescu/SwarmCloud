@@ -804,17 +804,21 @@ describe('Runtimes, with every help card closed', () => {
       'the capacity read did not complete',
     )
     expect(card!.querySelector('button[aria-label^="Help: "]')).not.toBeNull()
-    // NEVER AFTER A VALUE (AH-24). The glyph trailed the server's own words,
-    // inside the one-line `.rt-unread-detail` that clips with an ellipsis --
-    // after a value, and cut off with it when the message ran long. The row
-    // has no label of its own (its first item is the mark), so the glyph leads
-    // the row instead. MUTATION: put it back at the end of the detail.
-    const unread = card!.querySelector('.rt-unread')
+    // AFTER THE HEADING, NEVER AFTER A VALUE (AH-24). The glyph trailed the
+    // server's own words, inside the one-line `.rt-unread-detail` that clips
+    // with an ellipsis -- after a value, and cut off with it when the message
+    // ran long. #161's first version moved it to LEAD the row, which is not
+    // after a label either. It goes after the card's heading, `Backends`, in
+    // the slot Pools' `Headroom ?` uses, and only while the counters are
+    // unread. MUTATION: put it back in `.rt-unread`, at either end.
+    const heading = card!.querySelector('h2.ctl-card-title')
+    expect(heading, 'the backends card has no heading').not.toBeNull()
+    expect(heading!.firstChild?.textContent, 'the heading does not start with its word').toBe('Backends')
     expect(
-      unread?.firstElementChild?.querySelector('button[aria-label^="Help: "]') ?? null,
-      'the unread row does not lead with its `?`',
+      heading!.querySelector('button[aria-label^="Help: "]'),
+      'the `?` does not follow the Backends heading',
     ).not.toBeNull()
-    expect(card!.querySelector('.rt-unread-detail button'), 'the `?` still trails the detail').toBeNull()
+    expect(card!.querySelector('.rt-unread button'), 'the `?` is still in the unread row').toBeNull()
 
     const row = card!.querySelector('.ctl-table tbody tr')
     expect(row, 'no backend row was drawn').not.toBeNull()

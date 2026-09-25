@@ -1570,10 +1570,12 @@ describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
 
     // Separated by the large break and nothing else.
     expect(won(current, ['margin-top', 'margin-block-start', 'margin-block', 'margin'], WIDE)).toBe('var(--ctl-s5)')
-    // AH-16's landing room, kept: the group heading above a target that opens
-    // its group stays in view. MUTATION: back to a single `--ctl-s5`.
+    // THE SCROLL MARGIN STAYS AT ONE LARGE BREAK, as the owner's AH-18 decision
+    // says in so many words ("scroll-margin-top stays at --ctl-s5"). #161
+    // shipped AH-16's `calc(var(--ctl-s5) * 3)` instead and pinned it here.
+    // MUTATION: the tripled margin back.
     expect(won(plain, ['scroll-margin-top', 'scroll-margin-block-start', 'scroll-margin-block', 'scroll-margin'], WIDE)).toBe(
-      'calc(var(--ctl-s5) * 3)',
+      'var(--ctl-s5)',
     )
 
     // THE TOPIC TITLE IS THE CARD-TITLE STEP (AH-10), so h1, group h2 and

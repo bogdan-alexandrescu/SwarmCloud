@@ -19,7 +19,7 @@
 
 import STYLES from '../styles.css?raw'
 import { describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { render, screen } from '@testing-library/react'
 
 import type { Result } from '../fetch'
 import { HELP } from '../help'
@@ -189,27 +189,36 @@ describe('Tenants shows the ceiling admission enforces (AH-12)', () => {
     expect(under).toEqual(['Max active', 'Units'])
   })
 
-  it('explains Enforced from its label, reachable where the head row is drawn', async () => {
+  it('explains Enforced through a help link, outside the column head and at every width', async () => {
     const c = await roster()
-    const head = [...c.querySelectorAll('thead th')].find((th) => visible(th) === 'Enforced')!
-    const glyph = head.querySelector<HTMLButtonElement>('button[aria-label^="Help: "]')
-    expect(glyph, 'the Enforced column carries no help').not.toBeNull()
-    // The card behind it IS the Tenants fields topic, and ends in its link.
-    // Asked of the pinned card itself: the note under the table links to the
-    // same address, so a document-wide query would pass with no card at all.
-    expect(glyph!.getAttribute('aria-label')).toBe(`Help: ${HELP['tenant-fields'].title}`)
-    fireEvent.click(glyph!)
-    const card = document.querySelector('[role="dialog"]')
-    expect(card, 'clicking the glyph pins no card').not.toBeNull()
-    expect(card!.querySelector('a[href="#help/tenant-fields"]'), 'the card does not lead to the Tenants topic').not.toBeNull()
-    // BELOW 900px THE HEAD ROW IS VISUALLY HIDDEN (§B6.3) BUT STAYS IN THE TAB
-    // ORDER, so a glyph left in it is focusable and invisible -- the defect
-    // CP-11 moved Capacity's glyph out of a header cell for. There, the note
-    // under the table carries the same link. MUTATION: drop the phone rule.
-    const slot = glyph!.closest('.ten-q')
-    expect(slot, 'the glyph has no slot the phone layout can take out').not.toBeNull()
-    expect(won(slot!, 'display', PHONE)).toBe('none')
-    expect(won(slot!, 'display', WIDE)).not.toBe('none')
+    const head = [...c.querySelectorAll('thead th')].find((th) => visible(th) === 'Enforced')
+    expect(head, 'there is no Enforced column head').toBeTruthy()
+    // THE COLUMN HEAD IS ITS LABEL AND NOTHING ELSE. #161 first put a `?` in
+    // it: a glyph from the rationed set rather than the help link the owner
+    // decided, hidden below 900px, and with its `HelpNote` inside the `<th>`,
+    // so a screen reader read the topic's whole short form as part of the
+    // column's name on every cell. MUTATION: put the HelpCard back in the head.
+    expect(head!.querySelector('button, a, [data-help-description]'), 'the Enforced head carries more than its label').toBeNull()
+    expect((head!.textContent ?? '').trim()).toBe('Enforced')
+
+    // THE HELP LINK: a link to the Tenants fields topic that is neither in the
+    // head row nor the budget note's `Why →`, which is about the budget.
+    const links = [...c.querySelectorAll<HTMLAnchorElement>('a[href="#help/tenant-fields"]')].filter(
+      (a) => a.closest('thead') === null && a.closest('.ctl-panel-note') === null,
+    )
+    expect(links, 'no help link reaches the Tenants fields topic').toHaveLength(1)
+    const link = links[0]!
+    expect(link.textContent).toBe(HELP['tenant-fields'].title)
+    // AT EVERY WIDTH. Below 900px §B6.3 hides the head row, which is why a
+    // link there would have been the CP-11 defect again: focusable and
+    // invisible. Nothing in the sheet hides this one.
+    for (const env of [WIDE, PHONE]) {
+      for (const el of [link, link.parentElement!]) {
+        expect(cascade(STYLES, el, 'display', env).winner?.value ?? null, `hidden at ${env.width}`).not.toBe('none')
+      }
+    }
+    // And it costs no glyph: Tenants draws no `?` at all now.
+    expect(c.querySelector('button[aria-label^="Help: "]'), 'Tenants still draws a help glyph').toBeNull()
   })
 })
 
@@ -234,5 +243,19 @@ describe('Tenants says there is no budget in the reader’s words (AH-21)', () =
     expect(label).toMatch(/no budget can be set/i)
     expect(label).toContain('left out rather than drawn empty')
     expect(label).not.toContain('monthly_budget_usd')
+  })
+
+  it('is drawn in plain ink, not dimmed', async () => {
+    // PLAIN INK, as the owner decided it: AG-5 defines a plain fact as no mark
+    // and NO DIMMING. `.ctl-panel-note` is `--text-faint`, the tone of a
+    // qualifier under a figure; this line is not a qualifier, it is the fact
+    // that a column is absent, and #161 shipped it faint.
+    // MUTATION: drop the Tenants rule and let `.ctl-panel-note` paint it.
+    const c = await roster()
+    const note = [...c.querySelectorAll('.ctl-panel-note')].find((p) => /budget/.test(p.textContent ?? ''))
+    expect(note, 'there is no budget note').toBeTruthy()
+    for (const env of [WIDE, PHONE]) {
+      expect(won(note!, 'color', env), `the budget note is dimmed at ${env.width}`).toBe('var(--text)')
+    }
   })
 })
