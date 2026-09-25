@@ -180,6 +180,16 @@ describe('the room box is one sentence, and an unread room is the unread mark', 
     expect(el.querySelectorAll('.sbf-room > p.muted')).toHaveLength(1)
   })
 
+  it('says "in each of" for a one-pool profile too -- the decided phrase, not a second one', () => {
+    // The decided head is `{name} right now · {units} unit(s) in each of {n}
+    // pools`. A one-pool profile read "in its 1 pool", a wording nobody
+    // decided. The count agrees with its noun, as `unit(s)` already does.
+    const one: RunnerProfile = { ...profile([]), pools: ['global'] }
+    const el = render(<ProfileFacts name="browser" profile={one} pools={[pool({ name: 'global' })]} />)
+      .container as HTMLElement
+    expect(el.querySelector('.sbf-room-h')!.textContent).toBe('browser right now · 2 units in each of 1 pool')
+  })
+
   it('draws an unread room as the unread mark and a pool count, with no room figure and no "not zero" prose', () => {
     const unread = profile([], { headroom: null, basis: 'unknown', binding: [], unread: ['global'], complete: false })
     const el = render(<ProfileFacts name="browser" profile={unread} pools={[pool({ name: 'global' })]} />)

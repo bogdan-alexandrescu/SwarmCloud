@@ -327,6 +327,15 @@ const THIRTY_HOURS = (): TaskWindow =>
     false,
   )
 
+/** Six hours, 10:00 to 15:00 on the 24th, one outcome in each: short enough that every label fits at 390. */
+const SIX_HOURS = (): TaskWindow =>
+  windowOf(
+    Array.from({ length: 6 }, (_, i) =>
+      task(`s${i}`, 'SUCCEEDED', { created_at: local(10 + i, 1), completed_at: local(10 + i, 5) }),
+    ),
+    false,
+  )
+
 describe('the chart is read out, not hovered (TS-9)', () => {
   it('is one named group of columns, each an image named with its full time and its four counts', async () => {
     const root = await timeline(MIXED(), 'hour')
@@ -423,6 +432,70 @@ describe('the chart is read out, not hovered (TS-9)', () => {
     expect(document.activeElement).toBe(cols[2])
     expect(stops()).toEqual([cols[2]])
   })
+
+  it('keeps "all" for the pointer and the Tab that reach it, and puts focus back on the column when it is pressed', async () => {
+    // THE PATHS A REAL INPUT TAKES TO `all`. The button sits in the legend,
+    // below the chart, so a pointer leaves the columns and a Tab leaves the
+    // chart on the way to it. Each of those used to clear the pick, which
+    // unmounted the button before it could be pressed -- and for the Tab it
+    // took focus with it, to <body> (WCAG 2.4.3). The case above clicks the
+    // button directly, which no pointer, key or finger can do; this one gets
+    // there the way they do.
+    const root = await timeline(MIXED(), 'hour')
+    const chart = root.querySelector<HTMLElement>('.chart')!
+    const cols = [...chart.querySelectorAll<HTMLElement>('.col')]
+    const legend = root.querySelector<HTMLElement>('.chart-legend')!
+    const all = () => within(legend).queryByRole('button', { name: 'all' })
+    const picked = () => cols.filter((c) => c.classList.contains('is-picked'))
+    const WINDOW = [2, 1, 1, 1]
+
+    // POINTER: from a column, down across the legend, onto `all`.
+    fireEvent.mouseEnter(cols[0]!)
+    const button = all()
+    expect(button, 'hovering a column drew no "all"').not.toBeNull()
+    fireEvent.mouseOut(cols[0]!, { relatedTarget: legend })
+    fireEvent.mouseOut(legend, { relatedTarget: button })
+    expect(all(), 'moving the pointer onto "all" took "all" away').toBe(button)
+    expect(readout(root), 'the readout gave up the column on the way to "all"').toEqual([2, 0, 0, 0])
+    fireEvent.click(button!)
+    expect(readout(root)).toEqual(WINDOW)
+    expect(all()).toBeNull()
+
+    // KEYBOARD: Tab onto the chart lands on its stop, the newest column, which
+    // picks it; the next Tab is `all`.
+    act(() => cols[2]!.focus())
+    const tabbed = all()
+    expect(tabbed, 'focusing a column drew no "all"').not.toBeNull()
+    act(() => tabbed!.focus())
+    expect(document.activeElement, 'Tab from the chart to "all" dropped focus').toBe(tabbed)
+    expect(readout(root), 'reaching "all" put the window back before it was pressed').toEqual([0, 1, 1, 0])
+    // Pressing it returns the window and hands focus back to the column the
+    // chart's one tab stop is on -- not to <body> with the button that had it.
+    // Focus comes back WITHOUT picking, the state Escape on a column leaves.
+    fireEvent.click(tabbed!)
+    expect(readout(root)).toEqual(WINDOW)
+    expect(all()).toBeNull()
+    expect(document.activeElement, 'pressing "all" dropped focus').toBe(cols[2])
+    expect(picked(), 'handing focus back picked the column again').toEqual([])
+
+    // Escape on `all` is the same press.
+    fireEvent.keyDown(cols[2]!, { key: 'ArrowLeft' })
+    expect(picked()).toEqual([cols[1]])
+    const again = all()
+    act(() => again!.focus())
+    fireEvent.keyDown(again!, { key: 'Escape' })
+    expect(readout(root)).toEqual(WINDOW)
+    expect(document.activeElement, 'Escape on "all" dropped focus').toBe(cols[1])
+
+    // And leaving the chart and its readout for the rest of the page is still
+    // leaving: focus on the Group-by select puts the window back.
+    fireEvent.keyDown(cols[1]!, { key: 'ArrowRight' })
+    expect(picked()).toEqual([cols[2]])
+    const group = [...root.querySelectorAll('label')].find((l) => l.textContent?.startsWith('Group by'))!
+    act(() => group.querySelector('select')!.focus())
+    expect(readout(root)).toEqual(WINDOW)
+    expect(picked()).toEqual([])
+  })
 })
 
 describe('the hourly chart at phone width (TS-3)', () => {
@@ -470,6 +543,25 @@ describe('the hourly chart at phone width (TS-3)', () => {
     expect(shown).toContain(0)
     expect(shown).toContain(14)
     expect(shown.length).toBeGreaterThanOrEqual(8)
+  })
+
+  it('thins a short hourly axis at phone width too: every third hour, at any length', async () => {
+    // THE DECISION HAS NO LENGTH IN IT: "labels thin to every 3rd hour at phone
+    // width". An hourly axis of six columns or fewer used to keep every label
+    // at 390 because they fit -- which is a different rule from the one decided.
+    const root = await timeline(SIX_HOURS(), 'hour')
+    const cols = [...root.querySelectorAll('.chart .col')]
+    expect(cols).toHaveLength(6)
+    const text = (c: Element) => (c.querySelector('.col-label')!.textContent ?? '').trim()
+    const cls = (c: Element) => c.querySelector('.col-label')!.classList
+    // A wide screen still labels all six.
+    expect(cols.filter((c) => !cls(c).contains('is-phone-only') && text(c) !== ''), 'the wide axis lost a label').toHaveLength(6)
+    // A phone: the day, on the first column, and `03 PM` -- the one hour on the
+    // three-hour clock that is at least three columns past it.
+    const shown = cols.flatMap((c, i) => (cls(c).contains('is-wide-only') || text(c) === '' ? [] : [i]))
+    expect(shown, 'a short hourly axis is not thinned at phone width').toEqual([0, 5])
+    expect(text(cols[0]!)).toBe(dayOf(0, 24))
+    expect(text(cols[5]!)).toBe(new Date(2026, 8, 24, 15).toLocaleTimeString(undefined, { hour: '2-digit' }))
   })
 })
 
