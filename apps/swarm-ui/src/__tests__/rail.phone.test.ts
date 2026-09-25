@@ -39,8 +39,11 @@
  * catches.
  */
 import STYLES from '../styles.css?raw'
-import { describe, expect, it } from 'vitest'
+import { createElement } from 'react'
+import { act, render } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi, type Mock } from 'vitest'
 
+import { App } from '../App'
 import { parseSheet, type GateNode } from './cssgate'
 import { stripComments } from './spaceprobe'
 
@@ -156,5 +159,77 @@ describe('the top strip at phone width', () => {
     expect(pad, 'the corner does not reserve the faded band at the end of the scroll').toBe(
       'var(--rail-fade)',
     )
+  })
+})
+
+/**
+ * CH-14. THE STRIP SCROLLS, AND NOTHING SCROLLED IT TO WHERE YOU ARE.
+ *
+ * Measured at 390px: on `#work/new`, `#admin/tenants` and `#help` the current
+ * tab (or the Help button) sat past the right edge of the strip, so the one
+ * item that says where the reader is was the one item they could not see.
+ * On every route change the rail now brings its current item into view along
+ * the strip -- `nearest` on both axes, so an item already visible does not
+ * move and the page itself is never scrolled vertically for it.
+ *
+ * jsdom implements no `scrollIntoView` and no layout, so what is asserted is
+ * the call: on which element, with which options.
+ */
+describe('the strip brings the current item into view (CH-14)', () => {
+  const ORIGINAL = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollIntoView')
+  let spy: Mock
+
+  function stub(): void {
+    spy = vi.fn()
+    Object.defineProperty(Element.prototype, 'scrollIntoView', { value: spy, configurable: true, writable: true })
+  }
+
+  afterEach(() => {
+    if (ORIGINAL) Object.defineProperty(Element.prototype, 'scrollIntoView', ORIGINAL)
+    else delete (Element.prototype as unknown as { scrollIntoView?: unknown }).scrollIntoView
+    window.location.hash = ''
+  })
+
+  /** Which rail elements the spy was called on. */
+  function scrolledInRail(container: HTMLElement): Element[] {
+    const rail = container.querySelector('.ctl-rail')
+    return spy.mock.contexts.filter((el): el is Element => el instanceof Element && rail !== null && rail.contains(el))
+  }
+
+  /** MUTATION: remove the effect. Nothing in the rail is scrolled to. */
+  it('scrolls the selected tab into view when a route opens', () => {
+    stub()
+    window.location.hash = '#admin/counts'
+    const { container } = render(createElement(App))
+    const selected = container.querySelector('.ctl-rail [role="tab"][aria-selected="true"]')
+    expect(selected?.textContent).toContain('Platform counts')
+    const hits = scrolledInRail(container)
+    expect(hits, 'the rail scrolled nothing into view').toContain(selected)
+    const call = spy.mock.calls[spy.mock.contexts.indexOf(selected)]
+    expect(call?.[0]).toEqual({ inline: 'nearest', block: 'nearest' })
+  })
+
+  it('follows the route when it changes', async () => {
+    stub()
+    window.location.hash = '#admin/counts'
+    const { container } = render(createElement(App))
+    spy.mockClear()
+    await act(async () => {
+      window.location.hash = '#capacity/quota'
+      window.dispatchEvent(new Event('hashchange'))
+    })
+    const selected = container.querySelector('.ctl-rail [role="tab"][aria-selected="true"]')
+    expect(selected?.textContent).toContain('Provider quota')
+    expect(scrolledInRail(container)).toContain(selected)
+  })
+
+  /** Help and API reads are not tabs; their on-state button is what is scrolled to. */
+  it('scrolls the utility button when Help is open', () => {
+    stub()
+    window.location.hash = '#help'
+    const { container } = render(createElement(App))
+    const on = container.querySelector('.ctl-nav-util .is-on')
+    expect(on, 'no utility button is on under #help').not.toBeNull()
+    expect(scrolledInRail(container)).toContain(on)
   })
 })

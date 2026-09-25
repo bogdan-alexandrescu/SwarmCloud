@@ -14,8 +14,8 @@
 // this paragraph, among others -- which is exactly why a source grep is not a
 // test of them. Here they are asserted on the DOM the component produces.
 
-import { describe, expect, it, vi } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { act, render, screen, waitFor } from '@testing-library/react'
 
 import { Screen } from '../Shell'
 import type { ApiError, ApiErrorKind, Result } from '../fetch'
@@ -97,8 +97,58 @@ describe('empty', () => {
     renderScreen({ status: 'empty', fetchedAt: Date.now() })
     expect(await screen.findByText('No agents are running')).toBeTruthy()
     expect(screen.queryByText('alpha')).toBeNull()
-    expect(screen.getByText(/Checked/)).toBeTruthy()
     expect(body().textContent).toContain('Nothing to show')
+    // WHEN IT WAS CHECKED is still on screen -- in the sub-line, which is where
+    // every other state of this component puts its age.
+    expect(document.querySelector('.sub')?.textContent).toContain('read just now')
+  })
+
+  /**
+   * CH-10. THE EMPTY STATE IS THE §6.9 SHAPE, NOT A HAND-BUILT BOX.
+   *
+   * It was a `.state` div with an h3, a paragraph and a `Checked just now.` --
+   * no mark, so a real zero and a failed read differed by colour alone, and the
+   * age was printed twice, once here and once in the sub-line directly above.
+   *
+   * MUTATION: put the `.state` box back. The panel is not `.ctl-empty`, carries
+   * no `real zero` mark, and "just now" appears twice.
+   */
+  it('draws through the shared empty state: a mark, the heading, and the age once', async () => {
+    renderScreen({ status: 'empty', fetchedAt: Date.now() })
+    const heading = await screen.findByText('No agents are running')
+    const panel = heading.closest('.ctl-empty')
+    expect(panel, 'the empty state is not the shared .ctl-empty shape').not.toBeNull()
+    expect(panel!.className, 'a real zero drew a failure or partial variant').toBe('ctl-empty')
+    expect(panel!.querySelector('h3 > .ctl-mark.is-zero')?.textContent).toBe('real zero')
+    expect(document.querySelector('.state'), 'the hand-built .state box is back').toBeNull()
+    expect(body().textContent!.match(/just now/g), 'the age is stated more than once').toHaveLength(1)
+  })
+
+  /**
+   * CH-10 and CP-21: THE LINK OUT. §6.9's shape ends in one, and `Screen`'s
+   * `empty` prop had no slot for it, so thirteen screens could not follow the
+   * rule however their authors wanted to.
+   *
+   * MUTATION: drop the link from the render. There is no link in the panel.
+   */
+  it('ends in the link out a screen gives it', async () => {
+    render(
+      <Screen<Rows>
+        title="Holders"
+        load={async () => ({ status: 'empty', fetchedAt: Date.now() })}
+        empty={{
+          heading: 'No unreleased leases',
+          body: 'Across every tenant.',
+          link: { href: '#capacity/pools', label: 'Pools' },
+        }}
+      >
+        {(d) => <span>{d.rows.length}</span>}
+      </Screen>,
+    )
+    const link = await screen.findByRole('link', { name: 'Pools' })
+    expect(link.getAttribute('href')).toBe('#capacity/pools')
+    expect(link.closest('.ctl-empty'), 'the link is not inside the empty state').not.toBeNull()
+    expect(link.className).toContain('ctl-link')
   })
 
   it('cannot reach the row renderer at all', async () => {
@@ -303,5 +353,280 @@ describe('loading', () => {
     await waitFor(() => expect(body().textContent).toContain('Reading…'))
     expectNoFigures(body())
     expect(document.querySelectorAll('.skeleton').length).toBeGreaterThan(0)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The clock the two describes below run on
+// ---------------------------------------------------------------------------
+
+/**
+ * A clock the test owns. `Date` is faked WITH the timers, so `Date.now()` and
+ * every interval move together and an age is a function of how far the test
+ * advanced rather than of how busy the machine was.
+ */
+function fakeClock(): void {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'setInterval', 'clearTimeout', 'clearInterval', 'Date'] })
+}
+
+async function advance(ms: number): Promise<void> {
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(ms)
+  })
+}
+
+const sub = (): string => document.querySelector('.sub')?.textContent ?? ''
+
+function rowsOf(d: Rows) {
+  return (
+    <ul>
+      {d.rows.map((r) => (
+        <li key={r.name}>{r.name}</li>
+      ))}
+    </ul>
+  )
+}
+
+const okNow = (): Result<Rows> => ({ status: 'ok', data: ROWS, fetchedAt: Date.now() })
+
+// ---------------------------------------------------------------------------
+// CH-1 -- the age moves on its own
+// ---------------------------------------------------------------------------
+
+describe('the age under the title moves on its own (CH-1)', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  /**
+   * It was computed once, at render, and nothing re-rendered it: a screen left
+   * open overnight still said `read just now` beside a head that said 9h.
+   *
+   * MUTATION: compute the sub-line's age from `Date.now()` at render with no
+   * clock driving a re-render. A minute later it still says `just now`.
+   */
+  it('ticks the sub-line age without a new read', async () => {
+    fakeClock()
+    renderScreen(okNow())
+    await advance(0)
+    expect(sub()).toContain('read just now')
+    await advance(60_000)
+    expect(sub()).toContain('read 1m ago')
+    expect(sub()).not.toContain('just now')
+  })
+
+  /**
+   * An age that keeps counting is still only a number. Past the point the
+   * screen trusts a read for, the data takes the stale treatment -- dimmed,
+   * `not refreshed` -- which is what a reader notices without doing arithmetic.
+   *
+   * MUTATION: tick the age but never switch treatment. `.stale-body` never
+   * appears and the sub-line never says `not refreshed`.
+   */
+  it('switches to the stale treatment once the read is older than the screen trusts', async () => {
+    fakeClock()
+    renderScreen(okNow())
+    await advance(0)
+    expect(document.querySelector('.stale-body')).toBeNull()
+    expect(sub()).not.toContain('not refreshed')
+    // Six minutes: past the five a read is trusted for (Shell.tsx).
+    await advance(6 * 60_000)
+    expect(sub()).toContain('not refreshed')
+    expect(document.querySelector('.stale-body')?.textContent).toContain('alpha')
+  })
+
+  /** MUTATION: leave StaleBanner reading its age once. It stays at `4m ago`. */
+  it('ticks the stale banner age too', async () => {
+    fakeClock()
+    renderScreen({
+      status: 'stale',
+      data: ROWS,
+      fetchedAt: Date.now() - 4 * 60_000,
+      error: err('upstream_degraded', { message: 'The quota broker did not answer.' }),
+    })
+    await advance(0)
+    expect(screen.getByRole('status').textContent).toContain('4m ago')
+    await advance(60_000)
+    expect(screen.getByRole('status').textContent).toContain('5m ago')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// AG-1 -- a screen that polls
+// ---------------------------------------------------------------------------
+
+describe('a screen that polls (AG-1)', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+    // The instance property shadows jsdom's own getter; deleting it restores it.
+    delete (document as unknown as { hidden?: boolean }).hidden
+  })
+
+  /**
+   * The Agents list read once and never again, while its 1s clock went on
+   * adding to rows nobody re-read: a finished agent read `running` and was
+   * counted in Live. `pollMs` is the seam that screen sets.
+   *
+   * MUTATION: accept `pollMs` and schedule nothing. `load` is called once.
+   */
+  it('re-reads on its cadence and keeps the rows between reads', async () => {
+    fakeClock()
+    const load = vi.fn(async (): Promise<Result<Rows>> => okNow())
+    render(
+      <Screen<Rows> title="Agents" load={load} pollMs={5_000}>
+        {rowsOf}
+      </Screen>,
+    )
+    await advance(0)
+    expect(load).toHaveBeenCalledTimes(1)
+    await advance(5_000)
+    expect(load).toHaveBeenCalledTimes(2)
+    await advance(5_000)
+    expect(load).toHaveBeenCalledTimes(3)
+    // A poll never blanks the rows back to skeletons.
+    expect(screen.getByText('alpha')).toBeTruthy()
+    expect(document.querySelectorAll('.skeleton')).toHaveLength(0)
+  })
+
+  /** The cadence may depend on what was read: 5s while Live holds rows, 30s otherwise. */
+  it('takes its cadence from the data when given a function', async () => {
+    fakeClock()
+    const load = vi.fn(async (): Promise<Result<Rows>> => okNow())
+    render(
+      <Screen<Rows>
+        title="Agents"
+        load={load}
+        pollMs={(d) => (d !== null && d.rows.length > 5 ? 5_000 : 30_000)}
+      >
+        {rowsOf}
+      </Screen>,
+    )
+    await advance(0)
+    await advance(5_000)
+    expect(load, 'polled at the busy cadence with two rows').toHaveBeenCalledTimes(1)
+    await advance(25_000)
+    expect(load).toHaveBeenCalledTimes(2)
+  })
+
+  /**
+   * A background tab polling every 5s for eight hours is 5,760 requests
+   * against a 20 rps per-principal budget for nothing
+   * (docs/web-ui/03-agents-and-workflows.md §2.5).
+   *
+   * MUTATION: ignore `document.hidden`. The hidden tab goes on reading.
+   * MUTATION: forget to resume. The returning tab never reads again.
+   */
+  it('stops while the tab is hidden and reads at once when it comes back', async () => {
+    fakeClock()
+    let hidden = false
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => hidden })
+    const load = vi.fn(async (): Promise<Result<Rows>> => okNow())
+    render(
+      <Screen<Rows> title="Agents" load={load} pollMs={5_000}>
+        {rowsOf}
+      </Screen>,
+    )
+    await advance(0)
+    expect(load).toHaveBeenCalledTimes(1)
+
+    hidden = true
+    await act(async () => {
+      document.dispatchEvent(new Event('visibilitychange'))
+    })
+    await advance(60_000)
+    expect(load, 'a hidden tab went on polling').toHaveBeenCalledTimes(1)
+
+    hidden = false
+    await act(async () => {
+      document.dispatchEvent(new Event('visibilitychange'))
+    })
+    await advance(0)
+    expect(load, 'the tab came back and did not read').toHaveBeenCalledTimes(2)
+  })
+
+  /**
+   * On repeated failure, back off rather than hammer -- and keep the rows, as
+   * the stale rule already does for a manual refresh.
+   *
+   * MUTATION: re-read at the base cadence after a failure. The third read
+   * lands at 5s instead of 10s.
+   */
+  it('backs off after a failed read instead of hammering, and keeps the rows', async () => {
+    fakeClock()
+    let call = 0
+    const load = vi.fn(async (): Promise<Result<Rows>> => {
+      call += 1
+      return call === 1
+        ? okNow()
+        : { status: 'error', error: err('upstream_degraded', { message: 'Busy.' }) }
+    })
+    render(
+      <Screen<Rows> title="Agents" load={load} pollMs={5_000}>
+        {rowsOf}
+      </Screen>,
+    )
+    await advance(0)
+    await advance(5_000)
+    expect(load).toHaveBeenCalledTimes(2)
+    await advance(5_000)
+    expect(load, 'read again at the base cadence right after a failure').toHaveBeenCalledTimes(2)
+    await advance(5_000)
+    expect(load).toHaveBeenCalledTimes(3)
+    expect(screen.getByText('alpha')).toBeTruthy()
+    expect(document.querySelector('.stale-body')).not.toBeNull()
+  })
+
+  /**
+   * An admin gate or an expired session is not fixed by asking again, so a
+   * polling screen stops asking. A person has to act first.
+   */
+  it('stops polling on an answer only a person can change', async () => {
+    fakeClock()
+    const load = vi.fn(
+      async (): Promise<Result<Rows>> => ({
+        status: 'error',
+        error: err('admin_required', { httpStatus: 403, message: 'Admin group membership is required.' }),
+      }),
+    )
+    render(
+      <Screen<Rows> title="Agents" load={load} pollMs={5_000}>
+        {rowsOf}
+      </Screen>,
+    )
+    await advance(0)
+    await advance(10 * 60_000)
+    expect(load).toHaveBeenCalledTimes(1)
+  })
+
+  /** The cadence is shown where the age is, so a reader knows the age will move. */
+  it('says its cadence beside the age', async () => {
+    fakeClock()
+    render(
+      <Screen<Rows>
+        title="Agents"
+        load={async () => okNow()}
+        summary={(d) => <>{d.rows.length} rows</>}
+        pollMs={5_000}
+      >
+        {rowsOf}
+      </Screen>,
+    )
+    await advance(0)
+    expect(sub()).toContain('every 5s')
+  })
+
+  /** And a screen that was not asked to poll reads exactly once. */
+  it('does not poll unless asked', async () => {
+    fakeClock()
+    const load = vi.fn(async (): Promise<Result<Rows>> => okNow())
+    render(
+      <Screen<Rows> title="Agents" load={load}>
+        {rowsOf}
+      </Screen>,
+    )
+    await advance(0)
+    await advance(10 * 60_000)
+    expect(load).toHaveBeenCalledTimes(1)
+    expect(sub()).not.toContain('every')
   })
 })

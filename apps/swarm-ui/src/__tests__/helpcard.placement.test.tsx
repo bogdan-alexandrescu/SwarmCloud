@@ -31,11 +31,13 @@
  * what is asserted is the arithmetic the hook does with them. That is the part
  * that was broken, and it is fully determined.
  */
-import { render } from '@testing-library/react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { fireEvent, render, screen } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi, type Mock } from 'vitest'
 import type { CSSProperties, RefObject } from 'react'
 
-import { useEdgeSafePlacement } from '../HelpCard'
+import { HelpCard, useEdgeSafePlacement } from '../HelpCard'
+import { HELP } from '../help'
+import { HelpScreen } from '../HelpSection'
 
 /** A DOMRect literal, since jsdom will not produce a non-zero one. */
 function rect(box: { top: number; left: number; width: number; height: number }): DOMRect {
@@ -154,5 +156,132 @@ describe('useEdgeSafePlacement', () => {
     // Neither below (274px of room) nor above (500px, and 2000 does not fit),
     // so it is clamped to the 8px margin rather than allowed off-screen.
     expect(place.top).toBe(8)
+  })
+})
+
+/**
+ * AH-6. A PRESS INSIDE A PINNED CARD IS NOT AN OUTSIDE PRESS.
+ *
+ * The pinned card dismissed itself on ANY `pointerdown` in the document,
+ * captured before it reached anything, and never looked at where it landed.
+ * So pressing "Full explanation" unmounted the card between pointerdown and
+ * click and the link never navigated; and pressing the `?` of a pinned card
+ * closed it on pointerdown and re-pinned it on click, so it could not be shut
+ * by the control that opened it.
+ */
+describe('the pinned card and the press that dismisses it (AH-6)', () => {
+  function pin(): HTMLButtonElement {
+    const { container } = render(<HelpCard topic="absent-vs-zero" />)
+    const button = container.querySelector('button')!
+    fireEvent.click(button)
+    expect(screen.queryByRole('dialog'), 'a click did not pin the card').not.toBeNull()
+    return button
+  }
+
+  /** MUTATION: dismiss on every pointerdown again. The card is gone before the link's click. */
+  it('stays open when the press lands inside it, so its link can be followed', () => {
+    pin()
+    const link = screen.getByRole('dialog').querySelector('a')!
+    fireEvent.pointerDown(link)
+    expect(screen.queryByRole('dialog'), 'a press on the card link dismissed the card').not.toBeNull()
+  })
+
+  it('still closes on a press anywhere else', () => {
+    pin()
+    fireEvent.pointerDown(document.body)
+    expect(screen.queryByRole('dialog')).toBeNull()
+  })
+
+  /** MUTATION: count the trigger as outside. pointerdown closes, click re-pins: it never shuts. */
+  it('closes when its own `?` is pressed again, rather than closing and re-pinning', () => {
+    const button = pin()
+    fireEvent.pointerDown(button)
+    fireEvent.click(button)
+    expect(screen.queryByRole('dialog'), 'the second press on the ? re-pinned the card').toBeNull()
+  })
+})
+
+/**
+ * CH-8 (the HelpCard half). §7.2 asks for a 44px target at phone width. The
+ * `?` is a 14px disc, and growing the disc would make it the loudest thing in
+ * the line it annotates -- so the TARGET grows and the disc does not.
+ */
+describe('the `?` target at phone width (CH-8)', () => {
+  function media(phone: boolean) {
+    vi.stubGlobal('matchMedia', (query: string) => ({
+      matches: phone && query.includes('560'),
+      media: query,
+      onchange: null,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      addListener: () => {},
+      removeListener: () => {},
+      dispatchEvent: () => false,
+    }))
+  }
+
+  /** A descendant of the glyph at least 44px square: the hit area. */
+  function hitArea(button: HTMLElement): HTMLElement | undefined {
+    return [...button.querySelectorAll<HTMLElement>('*')].find(
+      (el) => Number.parseFloat(el.style.width) >= 44 && Number.parseFloat(el.style.height) >= 44,
+    )
+  }
+
+  /** MUTATION: drop the hit area. Nothing inside the 14px glyph reaches 44px. */
+  it('reaches 44px at 560px and under, without growing the disc', () => {
+    media(true)
+    const { container } = render(<HelpCard topic="absent-vs-zero" />)
+    const button = container.querySelector('button')!
+    const hit = hitArea(button)
+    expect(hit, 'the phone-width ? has no 44px target').toBeTruthy()
+    expect(hit!.getAttribute('aria-hidden')).toBe('true')
+    expect(hit!.textContent).toBe('')
+    // The disc itself is unchanged.
+    expect(button.style.width).toBe('14px')
+    expect(button.style.height).toBe('14px')
+    expect(button.textContent).toBe('?')
+  })
+
+  it('adds nothing on a wide screen, where a 44px target would cover its neighbours', () => {
+    media(false)
+    const { container } = render(<HelpCard topic="absent-vs-zero" />)
+    expect(hitArea(container.querySelector('button')!)).toBeUndefined()
+  })
+})
+
+/**
+ * AH-16. A deep link that lands on a topic already on screen jumped the page
+ * anyway, putting the topic hard against the top edge and the group heading
+ * above it out of sight. It scrolls only when the topic is out of view.
+ */
+describe('the Help page deep link (AH-16)', () => {
+  const ORIGINAL = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollIntoView')
+
+  afterEach(() => {
+    if (ORIGINAL) Object.defineProperty(Element.prototype, 'scrollIntoView', ORIGINAL)
+    else delete (Element.prototype as unknown as { scrollIntoView?: unknown }).scrollIntoView
+    vi.restoreAllMocks()
+  })
+
+  function scrolls(top: number): Mock {
+    const spy = vi.fn()
+    Object.defineProperty(Element.prototype, 'scrollIntoView', { value: spy, configurable: true, writable: true })
+    vi.spyOn(Element.prototype, 'getBoundingClientRect').mockReturnValue(
+      rect({ top, left: 0, width: 600, height: 200 }),
+    )
+    render(<HelpScreen topic="absent-vs-zero" />)
+    return spy
+  }
+
+  it('scrolls to a target that is out of view', () => {
+    const spy = scrolls(2000)
+    expect(spy).toHaveBeenCalledTimes(1)
+    expect(spy.mock.contexts[0]).toBe(document.getElementById(HELP['absent-vs-zero'].anchor))
+  })
+
+  /** MUTATION: scroll unconditionally. The in-view target is jumped to the top. */
+  it('leaves a target that is already in view where it is', () => {
+    const spy = scrolls(100)
+    expect(spy).not.toHaveBeenCalled()
   })
 })

@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
   timeAgo,
+  elapsed,
   headroomFor,
   limitedBy,
   overCeiling,
@@ -22,6 +23,8 @@ import {
   type ProfileAdmission,
   type ProfileBlocker,
   type RunnerProfile,
+  type Task,
+  type TaskState,
 } from '../types'
 
 function pool(over: Partial<Pool>): Pool {
@@ -390,5 +393,79 @@ describe('timeAgo reports the right unit and the right number', () => {
 
   it('refuses to invent a time it cannot read', () => {
     expect(timeAgo('not a date', NOW)).toBe('at an unknown time')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// elapsed -- which clock a duration is, and never wall time labelled as run
+// ---------------------------------------------------------------------------
+
+describe('elapsed', () => {
+  const NOW = Date.UTC(2026, 8, 25, 12, 0, 0)
+  const iso = (msAgo: number) => new Date(NOW - msAgo).toISOString()
+
+  /** Only the four fields `elapsed` reads matter; the rest is filler. */
+  function task(state: TaskState, times: { created?: number; started?: number; completed?: number }): Task {
+    return {
+      state,
+      created_at: times.created === undefined ? '' : iso(times.created),
+      started_at: times.started === undefined ? null : iso(times.started),
+      completed_at: times.completed === undefined ? null : iso(times.completed),
+    } as unknown as Task
+  }
+
+  /**
+   * AG-3. A task that went terminal without ever starting -- cancelled while
+   * it waited, failed at admission -- has a created_at and a completed_at and
+   * nothing between. The subtraction of those two is how long it WAITED, and
+   * the drawer printed it as `run 27m 57s` beside a `never ran` chip.
+   *
+   * MUTATION: fall back to `created_at` when `started_at` is null on a
+   * terminal task. The text becomes `27m 57s`.
+   */
+  it.each(['CANCELLED', 'FAILED', 'SUCCEEDED'] as ReadonlyArray<TaskState>)(
+    'says a %s task that never started never ran, and never reports its wall time',
+    (state) => {
+      const el = elapsed(task(state, { created: 30 * 60_000, completed: 2 * 60_000 + 3_000 }), NOW)
+      expect(el.text).toBe('never ran')
+      expect(el.ticking).toBe(false)
+      expect(el.text, 'wall time reported as a run').not.toMatch(/\d/)
+    },
+  )
+
+  it('still times a terminal task that did start, from its start', () => {
+    const el = elapsed(task('SUCCEEDED', { created: 30 * 60_000, started: 10 * 60_000, completed: 5 * 60_000 }), NOW)
+    expect(el.text).toBe('5m 0s')
+    expect(el.ticking).toBe(false)
+  })
+
+  /**
+   * AG-12. `started_at` is written on DISPATCHED -> STARTING, so LEASED and
+   * DISPATCHED legitimately have none -- and those two HOLD A POOL SLOT. The
+   * prefix was `queued` for every unstarted task, which on the Live tab (the
+   * tab that means "holding capacity") contradicted the tab it sat in.
+   *
+   * MUTATION: keep one prefix for every unstarted state. LEASED reads `queued`.
+   */
+  it.each([
+    ['LEASED', 'leased 4m 0s'],
+    ['DISPATCHED', 'dispatched 4m 0s'],
+    ['READY', 'waiting 4m 0s'],
+    ['PARKED', 'waiting 4m 0s'],
+  ] as ReadonlyArray<[TaskState, string]>)('prefixes an unstarted %s task by what it is doing: %s', (state, text) => {
+    const el = elapsed(task(state, { created: 4 * 60_000 }), NOW)
+    expect(el.text).toBe(text)
+    expect(el.ticking).toBe(true)
+    expect(el.text).not.toContain('queued')
+  })
+
+  it('times a started task from its start, and keeps it ticking', () => {
+    const el = elapsed(task('RUNNING', { created: 9 * 60_000, started: 90_000 }), NOW)
+    expect(el.text).toBe('1m 30s')
+    expect(el.ticking).toBe(true)
+  })
+
+  it('prints an absence, not 0s, when it has no time to start from', () => {
+    expect(elapsed(task('READY', {}), NOW).text).toBe('—')
   })
 })

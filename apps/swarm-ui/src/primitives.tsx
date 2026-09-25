@@ -349,6 +349,12 @@ export function UtilRow({
  */
 export type AbsentKind = 'zero' | 'failed' | 'partial' | 'admin'
 
+/** The "link out" that ends an empty state (§6.9). */
+export interface LinkOut {
+  href: string
+  label: ReactNode
+}
+
 const EMPTY_MARK: Readonly<Record<AbsentKind, MarkKind>> = {
   zero: 'zero',
   failed: 'unread',
@@ -375,6 +381,7 @@ export function Absent({
   explain?: TopicId | undefined
   /** A screen's own layout hook -- e.g. an empty state inside a card. */
   className?: string | undefined
+  link?: LinkOut | undefined
 }) {
   const cls = kind === 'zero' ? '' : ` is-${kind}`
   const descId = useId()

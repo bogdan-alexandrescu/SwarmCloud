@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { errorHeading, errorReassurance, type ApiError, type Result } from './fetch'
+import type { LinkOut } from './primitives'
 import { timeAgo } from './types'
+
+/** How often a screen re-reads: a fixed interval, or one chosen from what was read. */
+export type ScreenPoll<T> = number | ((data: T | null) => number | null)
 
 /**
  * Every screen loads through this, so no screen can forget a state.
@@ -28,7 +32,8 @@ export function Screen<T>({
   /** One line under the title once data is in. */
   summary?: (data: T) => ReactNode
   /** Shown when the read SUCCEEDED and returned nothing. Different from failure. */
-  empty?: { heading: string; body: ReactNode }
+  empty?: { heading: string; body: ReactNode; link?: LinkOut; say?: string }
+  pollMs?: ScreenPoll<T>
   children: (data: T) => ReactNode
 }) {
   const [state, setState] = useState<Result<T>>({ status: 'loading', since: Date.now() })
