@@ -161,6 +161,11 @@ def front_door_host() -> str:
     # user's. `config.py` is where a user's deployment comes from now, and
     # `tests/unit/mcp/test_contexts.py` holds this gate with an audit hook
     # that fails on any open of a tfvars file outside the mode.
+    from .config import repo_mode
+
+    if not repo_mode():
+        return ""
+
     environment = os.environ.get("ENVIRONMENT", "").strip() or "dev"
     tfvars = _repo_root() / "terraform" / "environments" / environment / f"{environment}.tfvars"
     try:

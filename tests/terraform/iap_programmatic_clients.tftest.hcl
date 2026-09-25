@@ -92,10 +92,14 @@ run "a_desktop_client_is_allowlisted_on_our_backends_and_nowhere_else" {
     error_message = "only the platform's own backends (prefix swarm) may be touched"
   }
 
+  # Compared as SETS. A bare `== ["..."]` compares the provider's list(string)
+  # against a tuple literal, and Terraform calls two values of different types
+  # unequal whatever they hold -- measured in CI run 36093035520, where the plan
+  # showed exactly this client id and the assertion still failed.
   assert {
     condition = alltrue([
       for settings in google_iap_settings.frontend_programmatic_clients :
-      settings.access_settings[0].oauth_settings[0].programmatic_clients == ["209012342332-abcdef0123.apps.googleusercontent.com"]
+      toset(settings.access_settings[0].oauth_settings[0].programmatic_clients) == toset(["209012342332-abcdef0123.apps.googleusercontent.com"])
     ])
     error_message = "the allowlist must be exactly the configured Desktop client ids"
   }
