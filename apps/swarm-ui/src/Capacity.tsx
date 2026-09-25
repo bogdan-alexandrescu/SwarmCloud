@@ -15,6 +15,7 @@ import {
   overCeiling,
   poolKind,
   poolLabel,
+  poolLabeller,
   poolScope,
   setBy,
   type Capacity,
@@ -197,14 +198,27 @@ function Headroom({ capacity }: { capacity: Capacity }) {
        content was drawn two ways on one screen. */
     <section className="section cap-headroom">
       <div className="ctl-toolbar">
-        {/* NO `?` ON THE HEADING (B7.4). `tenant-scope` was here to say these
-            figures are the CALLING tenant's and not the platform's -- and the
-            card already declares that on its own right-hand note, in words, on
-            every render, which is the note the comment below this one is about.
-            A glyph that opens a card restating the line beside it is the
-            clutter the density pass was counting. The topic is in the footer
-            index. */}
-        <h2 className="ctl-card-title">Headroom</h2>
+        {/* NOT `tenant-scope` ON THE HEADING (B7.4). That topic was here to say
+            these figures are the CALLING tenant's and not the platform's -- and
+            the card already declares that on its own right-hand note, in words,
+            on every render, which is the note the comment below this one is
+            about. The topic is in the footer index.
+
+            THE `?` THAT IS HERE IS THE SCREEN'S ONE IN-CONTENT GLYPH, and it
+            MOVED HERE FROM THE `Could start` HEADER CELL (CP-11, visual QA
+            2026-09-25). `(min across pools)` says WHAT the arithmetic is; it
+            does not say that the reservation is all-or-nothing in a single
+            transaction, which is invariant 2 and the reason the answer is a
+            minimum rather than a sum. That is a platform rule a column name
+            cannot carry, so it keeps its glyph -- but in the header cell it
+            sat inside the `<thead>` that §B6.3 hides below 900px, so on a
+            phone it was clipped away while staying in the tab order, focusable
+            and invisible. The panel head is not hidden at any width.
+            `honesty.capacity.test.tsx` pins it outside the table. */}
+        <h2 className="ctl-card-title">
+          Headroom
+          <HelpCard topic="pools-all-at-once" />
+        </h2>
         {/* TRAP D, AS AN ATTRIBUTE OF THE CARD. Every figure in this card is
             this tenant's; the note is what stops an admin reading them as the
             platform's. It is one line, mono and muted -- chrome, not copy. */}
@@ -221,21 +235,16 @@ function Headroom({ capacity }: { capacity: Capacity }) {
                 {/* THE CONJUNCTION LIVES HERE NOW. A task must clear every
                     pool in its list at the same moment, so the figure is the
                     minimum across them and never a sum -- and saying that in
-                    the column name attaches it to the number it governs. */}
-                {/* THE ONE `?` THIS SCREEN KEEPS (B7.4), and the one the
-                    density pass could not fold into a label. `(min across
-                    pools)` says WHAT the arithmetic is; it does not say that
-                    the reservation is all-or-nothing in a single transaction,
-                    which is invariant 2 and the reason the answer is a minimum
-                    rather than a sum. That is a platform rule a column name
-                    cannot carry without becoming a sentence, so it stays behind
-                    the glyph, in the cell whose figure obeys it.
-                    `honesty.capacity.test.tsx` pins it to this cell. */}
+                    the column name attaches it to the number it governs. The
+                    stacked key below repeats the name IN FULL for the same
+                    reason: a phone hides this header, and a bare `Could start`
+                    there read the figure with no qualifier at all (CP-11). */}
                 <th role="columnheader" scope="col" className="is-num">
-                  Could start (min across pools)
-                  <HelpCard topic="pools-all-at-once" />
+                  {COULD_START}
                 </th>
-                <th role="columnheader" scope="col" className="is-num">Weight</th>
+                {/* `(units)`, as every other column on this screen that counts
+                    them says it; the cells keep the app-wide `2u` (CP-24). */}
+                <th role="columnheader" scope="col" className="is-num">{WEIGHT}</th>
                 {/* Plural on purpose. A task must clear EVERY pool at once, so
                     more than one can refuse at the same moment -- and while this
                     column named a single one, an operator would raise it and
@@ -247,12 +256,28 @@ function Headroom({ capacity }: { capacity: Capacity }) {
             <tbody role="rowgroup">
               {rows.map(({ name, profile, h }) => {
                 const figure = headroomFigure(h)
+                // A PROFILE THE PLATFORM REFUSES HAS NO HEADROOM TO OFFER,
+                // whatever its pools say (CP-3). `/v1/capacity` did not send
+                // `available` until visual QA 2026-09-25 found `codex` -- off
+                // since its provider refused the tenant's credential -- drawn
+                // here with 10 that could start. The pools are still true; the
+                // figure is not an offer, so it is not drawn as one. Absent
+                // means available: an older API does not say, and the submit
+                // gate refuses a disabled profile regardless.
+                const off = profile.available === false
+                const reason = profile.disabled_reason || 'refused by the platform'
                 return (
                   <tr
                     role="row"
                     key={name}
                     className={
-                      h.agents === 0 ? 'over' : h.agents === null ? 'unmeasured' : undefined
+                      off
+                        ? undefined
+                        : h.agents === 0
+                          ? 'over'
+                          : h.agents === null
+                            ? 'unmeasured'
+                            : undefined
                     }
                   >
                     <th role="rowheader" scope="row">{name}</th>
@@ -263,15 +288,27 @@ function Headroom({ capacity }: { capacity: Capacity }) {
                         accessible name, which a `title=` was not. */}
                     <td
                       role="cell"
-                      data-label="Could start"
+                      data-label={COULD_START}
                       className="is-num"
-                      aria-label={figure.title}
+                      aria-label={off ? `Disabled: ${reason}` : figure.title}
                     >
-                      {figure.text === '—' ? <span className="ctl-em">—</span> : figure.text}
+                      {off ? (
+                        <span className="ctl-chip is-bad">
+                          <i aria-hidden="true" />
+                          disabled
+                        </span>
+                      ) : figure.text === '—' ? (
+                        <span className="ctl-em">—</span>
+                      ) : (
+                        figure.text
+                      )}
                     </td>
-                    <td role="cell" data-label="Weight" className="is-num">{profile.units}u</td>
+                    <td role="cell" data-label={WEIGHT} className="is-num">{profile.units}u</td>
                     <td role="cell" data-label="Held back by">
-                      <HeldBackBy h={h} />
+                      {/* The reason is what holds a disabled profile back, and
+                          the only part of it a reader can act on -- so it is
+                          text on the row, not a tooltip. */}
+                      {off ? <span>{reason}</span> : <HeldBackBy h={h} />}
                     </td>
                     <td role="cell" data-label="Backend">{profile.backend}</td>
                   </tr>
@@ -335,11 +372,18 @@ function HeldBackBy({ h }: { h: Headroom }) {
   if (h.blockers.length === 0) {
     return (
       <span className="cap-marks">
-        {h.complete && h.missing.length === 0 && <span className="ctl-em">—</span>}
+        {/* A WORD, NOT THE DASH (CP-1). The read was complete and no pool is
+            refusing: that is a measured fact, and the em dash is this screen's
+            one mark for a figure nobody measured. It sat on every healthy row
+            directly above `5 of 5 measured`, contradicting the caption. */}
+        {h.complete && h.missing.length === 0 && 'none'}
         {marks}
       </span>
     )
   }
+  // Named against each other, so two refusing pools never share a chip's name
+  // (CP-15): `resource:browser` and `runner:browser` both printed `browser`.
+  const label = poolLabeller(h.blockers.map((b) => b.pool))
   return (
     <span className="cap-marks">
       {h.blockers.map((b) => {
@@ -355,7 +399,7 @@ function HeldBackBy({ h }: { h: Headroom }) {
             title={`${b.pool} — ${b.reason}, ${ceilingCopy(b) ?? `${b.active} of ${b.limit} units in use`}`}
           >
             <i aria-hidden="true" />
-            {poolLabel(b.pool)}
+            {label(b.pool)}
             {ceiling === 'paused' ? ' paused' : ceiling === 'full' ? ` ${b.active}/${b.limit}` : ' limit 0'}
           </span>
         )
@@ -423,7 +467,11 @@ function PoolTable({ pools }: { pools: Pool[] }) {
                 the parenthetical IS the caveat, and it is already in the one
                 place a reader cannot scroll past it. */}
             <th role="columnheader" scope="col" className="is-num">In use (units)</th>
-            <th role="columnheader" scope="col" className="is-num">Ceiling</th>
+            {/* THE CEILING IS UNITS TOO, and it says so (CP-24). This column
+                was bare while Pool limits wrote `Ceiling (units)` and a bare
+                `In use` -- the same two figures, each screen labelling the
+                other half. Both now say it on both. */}
+            <th role="columnheader" scope="col" className="is-num">Ceiling (units)</th>
             <th role="columnheader" scope="col" className="is-num">Headroom</th>
             <th role="columnheader" scope="col">Set by</th>
             <th role="columnheader" scope="col">Status</th>
@@ -452,7 +500,7 @@ function PoolRow({ pool }: { pool: Pool }) {
         <span className="ctl-sub">{pool.name}</span>
       </th>
       <td role="cell" data-label="In use (units)" className="is-num">{pool.active}</td>
-      <td role="cell" data-label="Ceiling" className="is-num">
+      <td role="cell" data-label="Ceiling (units)" className="is-num">
         {pool.effective_limit}
         {pool.effective_limit < pool.hard_limit && (
           <span className="cap-was" title={`Configured hard limit is ${pool.hard_limit}`}>
@@ -572,6 +620,15 @@ function PoolCard({ pool }: { pool: Pool }) {
     </div>
   )
 }
+
+/**
+ * The Headroom table's two column names, written once because each is said
+ * twice: in the header a desktop shows, and as the `data-label` a phone shows
+ * in its place (§B6.3). Two literals is how the stacked key came to read a
+ * bare `Could start` under a header that said `(min across pools)` (CP-11).
+ */
+const COULD_START = 'Could start (min across pools)'
+const WEIGHT = 'Weight (units)'
 
 /**
  * The legend this screen used to end on, as links.

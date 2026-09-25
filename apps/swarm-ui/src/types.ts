@@ -187,6 +187,35 @@ export function poolLabel(name: string): string {
   return `${parts[1]} · ${parts[3] ?? parts[2]}`
 }
 
+/**
+ * `poolLabel` for pools SHOWN TOGETHER: any label two of them would share is
+ * qualified by its kind, so `resource:browser` and `runner:browser` read
+ * `browser · resource` and `browser · runner` (CP-15, visual QA 2026-09-25).
+ *
+ * `poolLabel` drops the kind, which is right almost everywhere and wrong in
+ * exactly one shape: the `browser` profile clears BOTH `resource:browser` and
+ * `runner:browser`, and every screen that listed its pools printed `browser`
+ * twice -- `Lift browser` on two counterfactual rows, `browser and browser
+ * still binds`, two operands on Pool limits with the same name and different
+ * ceilings. A reader cannot act on a name that points at two pools.
+ *
+ * Qualified only on a collision, and only among `names`: a label nothing else
+ * in view shares keeps the short form every other screen uses.
+ */
+export function poolLabeller(names: Iterable<string>): (name: string) => string {
+  const seen = new Map<string, Set<string>>()
+  for (const n of names) {
+    const label = poolLabel(n)
+    const pools = seen.get(label) ?? new Set<string>()
+    pools.add(n)
+    seen.set(label, pools)
+  }
+  return (name) => {
+    const label = poolLabel(name)
+    return (seen.get(label)?.size ?? 0) > 1 ? `${label} · ${poolKind(name)}` : label
+  }
+}
+
 /** What `headroomFor` hands a screen. Every field comes off the response. */
 export interface Headroom {
   /**
