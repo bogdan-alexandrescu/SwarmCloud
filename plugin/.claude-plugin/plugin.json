@@ -14,7 +14,7 @@
         "tool",
         "run",
         "--from",
-        "${SWARM_MCP_FROM:-swarm-mcp @ git+https://github.com/bogdan-alexandrescu/SwarmCloud@sc-v0.4.0#subdirectory=apps/swarm-mcp}",
+        "${SWARM_MCP_FROM:-swarm-mcp @ git+https://github.com/bogdan-alexandrescu/SwarmCloud@sc-v0.4.1#subdirectory=apps/swarm-mcp}",
         "swarm-mcp"
       ]
     }
