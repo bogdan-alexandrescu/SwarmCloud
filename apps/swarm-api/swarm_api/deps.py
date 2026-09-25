@@ -165,6 +165,8 @@ def build_context(
         max_log_bytes=settings.max_log_bytes,
         default_log_bytes=settings.default_log_bytes,
         min_log_bytes=settings.min_log_bytes,
+        # The clock `read_at` and every `age_seconds` are measured on (#184).
+        now=now,
     )
     rollups = WorkflowRollups(store=store, metrics=metrics)
     outcomes = Outcomes(store=store, rollups=rollups, metrics=metrics, now=now)

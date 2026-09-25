@@ -52,12 +52,13 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
 from .client import SwarmError, _run
-from .follow import RUN_PREFIX
+from .invocation import terminal_command
 
 if TYPE_CHECKING:  # pragma: no cover
     from .config import Deployment
@@ -117,7 +118,30 @@ REACHES: dict[Tier, tuple[str, ...]] = {
     Tier.PROXY: ("solo",),
 }
 
-WHY_NOT: dict[tuple[Tier, str], str] = {
+class _Spelled(Mapping):
+    """A table of explanations whose commands are spelled when they are READ.
+
+    The remedies below name `sc` commands, and how a command is spelled
+    depends on the install the reader is running (`invocation`, #189): `uv
+    run sc login` in a checkout, `uv tool run --from '...' sc login` on a
+    plugin-only install. The text is written with `{sc}` where the program
+    goes and is spelled on every read, by the one function that decides.
+    """
+
+    def __init__(self, raw: dict[tuple["Tier", str], str]) -> None:
+        self._raw = raw
+
+    def __getitem__(self, key: tuple["Tier", str]) -> str:
+        return self._raw[key].replace("{sc}", terminal_command("sc"))
+
+    def __iter__(self) -> Iterator[tuple["Tier", str]]:
+        return iter(self._raw)
+
+    def __len__(self) -> int:
+        return len(self._raw)
+
+
+WHY_NOT: Mapping[tuple[Tier, str], str] = _Spelled({
     (Tier.PROXY, "team"): (
         "a team deployment keeps Cloud Run open to `allUsers` and gates at the "
         "load balancer, so its ingress refuses the direct call the proxy makes -- "
@@ -126,8 +150,8 @@ WHY_NOT: dict[tuple[Tier, str], str] = {
         "token is answered 401 with IAP error code 900, because a Google-managed "
         "IAP client admits only OAuth clients allowlisted as programmatic "
         "clients. Sign in with the deployment's Desktop OAuth client instead: "
-        f"`{RUN_PREFIX}sc context add <name> --url <deployment> --client-id <id>`, "
-        f"then `{RUN_PREFIX}sc login` (the plugin asks for the client id at "
+        "`{sc} context add <name> --url <deployment> --client-id <id>`, "
+        "then `{sc} login` (the plugin asks for the client id at "
         "install). CI sets "
         "SWARM_IMPERSONATE_SA to a service account holding "
         "roles/iap.httpsResourceAccessor."
@@ -135,7 +159,7 @@ WHY_NOT: dict[tuple[Tier, str], str] = {
     (Tier.SIGNED_IN, "solo"): (
         "a solo deployment has no load balancer and no IAP, so an ID token minted "
         "for a Desktop OAuth client has nothing that will accept it. Remove the "
-        f"client id from this context (`{RUN_PREFIX}sc context add <name> --url "
+        "client id from this context (`{sc} context add <name> --url "
         "<run.app address>` with no --client-id)."
     ),
     (Tier.IMPERSONATE, "team"): (
@@ -156,7 +180,7 @@ WHY_NOT: dict[tuple[Tier, str], str] = {
         "a solo deployment has no load balancer and no IAP, so there is nothing "
         "for an IAP audience to address. Unset SWARM_IAP_CLIENT_ID."
     ),
-}
+})
 
 
 @dataclass

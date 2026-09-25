@@ -188,6 +188,14 @@ def explain_absence(task: dict[str, Any]) -> str:
     return git.get("publish_reason") or "no patch was recorded"
 
 
+def _measured(git: dict[str, Any], key: str) -> int | None:
+    """A count the worker's harvest recorded, or None when it recorded none."""
+    value = git.get(key)
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
+
+
 def describe_task(task: dict[str, Any]) -> dict[str, Any]:
     """What one task produced, in the shape every read tool hands back.
 
@@ -226,10 +234,16 @@ def describe_task(task: dict[str, Any]) -> dict[str, Any]:
         "state": task.get("state"),
         "runner_profile": task.get("runner_profile"),
         "backend": backend_of(task.get("runner_profile")),
-        "commits": git.get("commit_count", 0),
-        "insertions": git.get("insertions", 0),
-        "deletions": git.get("deletions", 0),
-        "uncommitted_files": git.get("dirty_count", 0),
+        # NULL WHEN NOTHING WAS MEASURED, never 0 (#191). These defaulted to 0
+        # for a task with no `git` summary -- one that cloned no repository,
+        # or never started -- and for a summary holding only the harvest's
+        # error, so `swarm workflow-status --result` printed `commits 0` beside
+        # a footnote saying there was no repository, and every result tool
+        # handed the model the same zeros. `no_patch_because` says why.
+        "commits": _measured(git, "commit_count"),
+        "insertions": _measured(git, "insertions"),
+        "deletions": _measured(git, "deletions"),
+        "uncommitted_files": _measured(git, "dirty_count"),
         "patch": patch_uri(task),
     }
     if not out["patch"]:

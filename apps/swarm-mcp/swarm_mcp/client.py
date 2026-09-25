@@ -410,10 +410,10 @@ def _explain_json(parsed: Any, stripped: str) -> str:
 
 
 def _login_command() -> str:
-    """`sc login`, spelled so it runs -- through `follow.terminal_command`, the
-    package's one spelling of a command. Imported here, not at the top:
-    `follow` imports this module."""
-    from .follow import terminal_command
+    """`sc login`, spelled so it runs where this bridge runs -- through
+    `invocation.terminal_command`, the package's one spelling of a command
+    (#189). Imported here, not at the top: `invocation` imports this module."""
+    from .invocation import terminal_command
 
     return terminal_command("sc login")
 
@@ -687,7 +687,7 @@ class SwarmClient:
             # value project` and start a proxy to whatever `swarm-api` that
             # project held -- a deployment the user never named. A client that
             # is told nothing says what to tell it.
-            from .follow import terminal_command
+            from .invocation import terminal_command
 
             add = terminal_command(
                 "sc context add <name> --url https://<your deployment> "
@@ -1040,6 +1040,7 @@ class SwarmClient:
         metadata: dict[str, Any] | None = None,
         timeout_seconds: int | None = None,
         model: str | None = None,
+        inputs: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Submit one task.
 
@@ -1047,6 +1048,11 @@ class SwarmClient:
         caller picks a runner profile BY NAME and supplies data; it cannot
         supply an image, a command or a resource spec, and this client has no
         parameter that would let it try.
+
+        `inputs` is the rest of `input`: the inputs the profile DECLARES, which
+        every caller here has already put through `profiles.check_inputs`
+        (#142). It is data for the runner, merged under the prompt, and cannot
+        replace it -- `check_inputs` refuses a `prompt` key.
 
         `model` IS ATTRIBUTION, NOT SELECTION. It becomes the task's top-level
         `model` field -- what `TaskCreate` calls "recorded for attribution and
@@ -1060,7 +1066,7 @@ class SwarmClient:
         """
         payload: dict[str, Any] = {
             "runner_profile": runner_profile,
-            "input": {"prompt": prompt},
+            "input": {**(inputs or {}), "prompt": prompt},
             "metadata": {"origin": "swarm-mcp", **(metadata or {})},
         }
         if repository_url:

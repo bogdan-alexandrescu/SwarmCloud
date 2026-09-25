@@ -96,6 +96,21 @@ class ObjectUnreadable(Exception):
         self.reason = reason
 
 
+class ObjectReplaced(ObjectUnreadable):
+    """The object changed generation between being looked up and being read.
+
+    A KIND OF unreadable, deliberately: every existing `except
+    ObjectUnreadable` keeps treating it as "we could not read it", which is
+    the conservative answer. A reader that knows the object is REWRITTEN on a
+    timer -- a live tail, republished every five seconds -- catches it first
+    and tries once more, because a second read of a republished object is
+    normally a clean read of the new one (`InspectionService._read_live`).
+    """
+
+    def __init__(self, key: str) -> None:
+        super().__init__(key, "the object was replaced while it was read")
+
+
 @dataclass(frozen=True)
 class ObjectInfo:
     """What a listing knows about one object, without downloading it."""
@@ -140,6 +155,13 @@ class ObjectSlice:
     offset: int
     data: bytes
     total_bytes: int
+    #: The object's last-modified time (GCS `updated`), when the store reports
+    #: one. For a live tail that is when the worker last published it, which
+    #: is what a reader shows as the read's age.
+    updated: datetime | None = None
+    #: The object generation these bytes came from. Every byte of `data` is
+    #: from this one generation (`GcsObjectReader.read_range` pins it).
+    generation: int | None = None
 
     @property
     def end(self) -> int:
@@ -165,6 +187,13 @@ class ObjectReader(Protocol):
 
 def _uri(bucket: str, key: str) -> str:
     return f"gs://{bucket}/{key}"
+
+
+#: What `google.api_core` raises when a download pinned to one generation finds
+#: another (412), or finds that generation deleted by the rewrite (404, in a
+#: bucket without object versioning). Matched by NAME so this module imports
+#: nothing from google at load time -- see the module docstring.
+_REPLACED = frozenset({"PreconditionFailed", "NotFound"})
 
 
 class GcsObjectReader:
@@ -225,13 +254,37 @@ class GcsObjectReader:
         if blob is None:
             raise ObjectAbsent(key)
         total = int(blob.size or 0)
+        updated = getattr(blob, "updated", None)
+        generation = getattr(blob, "generation", None)
         if length == 0 or offset >= total:
-            return ObjectSlice(key=key, offset=min(offset, total), data=b"", total_bytes=total)
+            return ObjectSlice(
+                key=key,
+                offset=min(offset, total),
+                data=b"",
+                total_bytes=total,
+                updated=updated,
+                generation=generation,
+            )
         try:
-            data = blob.download_as_bytes(start=offset, end=offset + length - 1)
+            # PINNED TO THE GENERATION `get_blob` SAW, so the size and time
+            # above describe these bytes. A live tail is rewritten every five
+            # seconds, and without the pin a read that straddled a republish
+            # could return one object's bytes under the other's size.
+            data = blob.download_as_bytes(
+                start=offset, end=offset + length - 1, if_generation_match=generation
+            )
         except Exception as exc:  # noqa: BLE001
+            if type(exc).__name__ in _REPLACED:
+                raise ObjectReplaced(key) from None
             raise ObjectUnreadable(key, f"{type(exc).__name__}: {exc}") from None
-        return ObjectSlice(key=key, offset=offset, data=bytes(data), total_bytes=total)
+        return ObjectSlice(
+            key=key,
+            offset=offset,
+            data=bytes(data),
+            total_bytes=total,
+            updated=updated,
+            generation=generation,
+        )
 
 
 class InMemoryObjectReader:
@@ -258,10 +311,17 @@ class InMemoryObjectReader:
         self.objects: dict[str, bytes] = dict(objects or {})
         self.fail_prefixes = tuple(fail_prefixes)
         self.updated = updated
+        #: Per-object last-modified times and generations, as GCS keeps them.
+        #: `updated` above is the fallback time for an object put without one.
+        self.updated_at: dict[str, datetime] = {}
+        self.generations: dict[str, int] = {key: 1 for key in self.objects}
 
     # -- test helpers ------------------------------------------------------
-    def put(self, key: str, data: bytes | str) -> None:
+    def put(self, key: str, data: bytes | str, *, updated: datetime | None = None) -> None:
         self.objects[key] = data.encode("utf-8") if isinstance(data, str) else data
+        self.generations[key] = self.generations.get(key, 0) + 1
+        if updated is not None:
+            self.updated_at[key] = updated
 
     def fail_on(self, *prefixes: str) -> None:
         self.fail_prefixes = self.fail_prefixes + prefixes
@@ -283,7 +343,7 @@ class InMemoryObjectReader:
             ObjectInfo(
                 key=k,
                 size=len(self.objects[k]),
-                updated=self.updated,
+                updated=self.updated_at.get(k, self.updated),
                 content_type=None,
             )
             for k in keys[:limit]
@@ -298,10 +358,24 @@ class InMemoryObjectReader:
             raise ObjectAbsent(key)
         blob = self.objects[key]
         total = len(blob)
+        updated = self.updated_at.get(key, self.updated)
+        generation = self.generations.get(key)
         if length == 0 or offset >= total:
-            return ObjectSlice(key=key, offset=min(offset, total), data=b"", total_bytes=total)
+            return ObjectSlice(
+                key=key,
+                offset=min(offset, total),
+                data=b"",
+                total_bytes=total,
+                updated=updated,
+                generation=generation,
+            )
         return ObjectSlice(
-            key=key, offset=offset, data=blob[offset : offset + length], total_bytes=total
+            key=key,
+            offset=offset,
+            data=blob[offset : offset + length],
+            total_bytes=total,
+            updated=updated,
+            generation=generation,
         )
 
 

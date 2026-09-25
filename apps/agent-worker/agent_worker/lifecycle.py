@@ -81,6 +81,15 @@ windows, and the handler (`_on_signal`) knows which one it is in:
 Every startup phase is also announced (`startup.Phases`), so a worker that
 stalls says where.
 
+**Step 1's read is asked again before it gives up (#198).** A Cloud Run
+instance can take a minute or more to pass traffic after it starts (Direct
+VPC egress), so the generation check runs on a schedule of attempts that
+spans more than a minute (`startup.CONTROL_PLANE_READ_SCHEDULE_SECONDS`), one
+warning per failed attempt, before its 69. Only what would exit 69 is asked
+again: a refusal, a fence and a tenant mismatch end the attempt at once. The
+wait between attempts is inside step 1's window, so a SIGTERM there exits
+143 at once, having written nothing.
+
 **A dependency that is unavailable in the same window exits 69, as at step
 1, and leaves the task to the reconciler.** Every Firestore call from step 1 to
 the runner carries the startup budget (`ControlPlane.startup_budget`), so an
@@ -109,6 +118,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterator
 
 from swarm_common.models import ProviderState, retries_exhausted, utcnow
+from swarm_common.profiles import RESOURCE_CLASSES
 from swarm_common.states import EventType, ParkReason, TaskState
 
 from . import expected_outputs as expected_mod
@@ -151,12 +161,19 @@ from .gitops import (
     shallow_clone,
     summarize_work,
 )
-from .metrics import ResourceSampler, ResourceUsage, combine_usage
+from .metrics import (
+    ResourceSampler,
+    ResourceUsage,
+    cgroup_cpu_limit_cores,
+    combine_usage,
+    heartbeat_cpu_fields,
+)
 from .objectstore import ObjectStore
 from .procman import ChildProcess, ChildResult
 from .quota import QuotaDecision, decide, read_runner_signal, signal_from_control
 from .runners.base import EXIT_QUOTA_EXHAUSTED, EXIT_TERMINATED, SPEND_KEYS
 from .runners.limits import GRACE_ENV, STDERR_ENV, STDOUT_ENV, TIMEOUT_ENV
+from .runners.streams import agent_stream_files
 from .secrets import (
     CredentialMissing,
     SecretError,
@@ -166,9 +183,11 @@ from .secrets import (
     resolve_git_token,
 )
 from .startup import (
+    CONTROL_PLANE_READ_SCHEDULE_SECONDS,
     EXIT_INTERRUPTED,
     Phases,
     StartupInterrupted,
+    call_on_schedule,
     disarm_stack_dump,
     route_signals,
     say_from_signal_handler,
@@ -298,6 +317,11 @@ class Worker:
         )
         self._interrupted = False
         self.phases = deps.phases if deps.phases is not None else Phases(deps.logger)
+        # What the generation check's scheduled attempts wait with, and time
+        # themselves by (`startup.call_on_schedule`). Replaceable so a test can
+        # run the schedule without waiting it out.
+        self.startup_sleep: Callable[[float], Any] = time.sleep
+        self.startup_clock: Callable[[], float] = time.monotonic
         # Which window a SIGTERM lands in. `_on_signal` reads it; `run` and
         # `_execute` set it, always through `_signal_policy` so that it is
         # restored however the window is left.
@@ -360,6 +384,11 @@ class Worker:
         # Set on the tenant-mismatch exit, the one path that must write NOTHING
         # -- not even spend onto what may be another tenant's attempt.
         self._writes_forbidden = False
+        # Set the moment this attempt learns it has been superseded. The task's
+        # event stream then belongs to a newer generation, so nothing more is
+        # emitted into it from here -- the final resource reading included
+        # (`_emit_final_reading`); the attempt document stays writable.
+        self._fenced = False
         self._account_broker = deps.account_broker
         if self._account_broker is None and config.quota_broker_url:
             self._account_broker = AccountBroker(
@@ -377,17 +406,33 @@ class Worker:
         # ---- STEP 1: fencing, before anything else exists ---------------
         self.phases.enter("validate_generation")
         try:
-            # Reads only. A SIGTERM here has nothing to undo, so it exits now.
+            # Reads only. A SIGTERM here, in a read or in the wait between two
+            # attempts, has nothing to undo, so it exits now.
             with self._signal_policy(_SIGNAL_EXIT_NOW), self.control.startup_budget():
-                signals = self.control.validate_generation()
+                read = call_on_schedule(
+                    # Looked up at each attempt, not bound once: a test may
+                    # stand in for the control plane's method.
+                    lambda: self.control.validate_generation(),
+                    retryable=_generation_check_retryable,
+                    schedule=CONTROL_PLANE_READ_SCHEDULE_SECONDS,
+                    sleep=self.startup_sleep,
+                    clock=self.startup_clock,
+                    on_failed_attempt=self._control_plane_read_failed,
+                )
         except FencedError as exc:
             return self._exit_fenced(exc)
         except TenantMismatchError as exc:
             return self._exit_tenant_mismatch(exc)
         except Exception as exc:
+            # Not retried: a refusal, or something that is not Firestore's.
             if not _control_plane_unreachable(exc):
                 raise
             return self._exit_control_plane_unreachable(exc)
+        if read.error is not None:
+            return self._exit_control_plane_unreachable(
+                read.error, attempts=read.attempts, seconds=read.seconds
+            )
+        signals = read.value
 
         if signals.cancel_requested:
             # Cancelled between admission and start: nothing ran, so there is
@@ -976,6 +1021,7 @@ class Worker:
         release any more.
         """
         cfg = self.cfg
+        self._fenced = True
         self.log.error(
             "generation fenced mid-run; stopping the runner",
             observed_generation=observed_generation,
@@ -1043,7 +1089,9 @@ class Worker:
         )
         # A runner still alive here (a crash, a fenced checkpoint mid-run) is
         # stopped before anything is recorded, so the attempt's end is not
-        # written while its agent is still working.
+        # written while its agent is still working. `_fenced` first: stopping
+        # it reaps it, and a reaped runner otherwise emits its final reading.
+        self._fenced = True
         self._stop_runner(reason="generation fenced")
         self._record_fenced_end(str(exc))
         return ExitCode.GENERATION_FENCED
@@ -1239,7 +1287,34 @@ class Worker:
         )
         return ExitCode.TENANT_MISMATCH
 
-    def _exit_control_plane_unreachable(self, exc: BaseException) -> int:
+    def _control_plane_read_failed(
+        self, attempt: int, exc: BaseException, retry_in: float
+    ) -> None:
+        """One WARNING for a generation check that failed and will be asked again (#198).
+
+        The incident's worker was silent for the 28 s between its phase line
+        and its verdict. Each failed attempt now says what it met and when
+        the next one starts. The last attempt's failure is the verdict, logged
+        by `_exit_control_plane_unreachable`, not here.
+        """
+        cause = getattr(exc, "cause", None)
+        self.log.warning(
+            f"could not read the control plane at startup (attempt {attempt} of "
+            f"{len(CONTROL_PLANE_READ_SCHEDULE_SECONDS)}): {type(exc).__name__}; "
+            f"retrying in {retry_in:g}s",
+            phase=self.phases.current,
+            attempt=attempt,
+            attempts=len(CONTROL_PLANE_READ_SCHEDULE_SECONDS),
+            retry_in_seconds=retry_in,
+            schedule_seconds=list(CONTROL_PLANE_READ_SCHEDULE_SECONDS),
+            error_type=type(exc).__name__,
+            error=_one_line(exc),
+            cause=f"{type(cause).__name__}: {_one_line(cause)}" if cause is not None else None,
+        )
+
+    def _exit_control_plane_unreachable(
+        self, exc: BaseException, *, attempts: int = 1, seconds: float | None = None
+    ) -> int:
         """The generation check could not read Firestore. Say so and leave.
 
         Nothing is written to Firestore. Firestore is the thing that could not
@@ -1276,6 +1351,10 @@ class Worker:
 
         The error is logged whole, with its type and its cause. Before PR #57,
         every one of these looked like 300 s of nothing.
+
+        A 69 comes after every attempt of `CONTROL_PLANE_READ_SCHEDULE_SECONDS`
+        failed (#198); `attempts` and `seconds` say how many, and over how
+        long. A refusal is not asked again, and comes from the first.
         """
         options = self.control.startup_call_options
         retry = options.get("retry")
@@ -1292,9 +1371,19 @@ class Worker:
             cause=f"{type(cause).__name__}: {cause}" if cause is not None else None,
             retry_budget_seconds=getattr(retry, "timeout", None),
             call_timeout_seconds=options.get("timeout"),
+            attempts=attempts,
+            seconds=seconds,
+            schedule_seconds=list(CONTROL_PLANE_READ_SCHEDULE_SECONDS),
             exit_code=exit_code,
             retryable=exit_code == ExitCode.UNAVAILABLE,
             refused_by=type(refusal).__name__ if refusal is not None else None,
+            hint=_unreachable_hint(exc) if refusal is None else None,
+            then=(
+                "the reconciler reads this execution's exit code once it has ended "
+                "and requeues the task, or fails it when its attempts are spent"
+                if refusal is None
+                else "the reconciler reads this execution's exit code and fails the task"
+            ),
         )
         if refusal is not None:
             write_termination_message(
@@ -1359,8 +1448,9 @@ class Worker:
                 f"{type(replaced_by).__name__}: {replaced_by}" if replaced_by is not None else None
             ),
             then=(
-                "the reconciler reclaims the lease once it is silent and requeues "
-                "the task, or fails it when its attempts are spent"
+                "a task still DISPATCHED or STARTING is requeued by the reconciler "
+                "once it sees this execution has ended, and a RUNNING one once its "
+                "lease is silent; either is failed when its attempts are spent"
             ),
         )
         self._record_startup_end(
@@ -1417,8 +1507,9 @@ class Worker:
             call_timeout_seconds=options.get("timeout"),
             exit_code=ExitCode.UNAVAILABLE,
             then=(
-                "the reconciler reclaims the lease once it is silent and requeues "
-                "the task, or fails it when its attempts are spent"
+                "a task still DISPATCHED or STARTING is requeued by the reconciler "
+                "once it sees this execution has ended, and a RUNNING one once its "
+                "lease is silent; either is failed when its attempts are spent"
             ),
         )
         self._record_startup_end(
@@ -2379,27 +2470,107 @@ class Worker:
         self.control.heartbeat()
         self._heartbeats += 1
         if self._heartbeats % HEARTBEAT_EVENT_EVERY == 1:
-            # The ATTEMPT's usage, every runner so far plus the live one. A
-            # runner restarted in place gets a fresh sampler that starts from
-            # zero, and a cumulative series built on it went backwards there.
-            usage = self._attempt_usage()
-            cpu_seconds = usage.cpu_seconds if usage else None
-            self.control.emit(
-                EventType.HEARTBEAT,
-                {
-                    "elapsed_seconds": round(self._child.elapsed_seconds, 1) if self._child else 0,
-                    "peak_rss_bytes": usage.peak_rss_bytes if usage else None,
-                    "checkpoints": self.checkpoints.seq,
-                    # CUMULATIVE, not a rate: this event series is the only
-                    # time series the platform keeps, and two consecutive
-                    # totals give utilisation over exactly the span between
-                    # them, where a point-in-time rate would describe two
-                    # seconds out of every heartbeat period. None while not
-                    # measured, never 0. `cpu_source` says whether it is the
-                    # container (cgroup) or the runner's process tree (proc).
-                    "cpu_seconds": round(cpu_seconds, 3) if cpu_seconds is not None else None,
-                    "cpu_source": usage.cpu_source if usage else None,
-                },
+            self.control.emit(EventType.HEARTBEAT, self._usage_reading(final=False))
+
+    def _usage_reading(self, *, final: bool) -> dict[str, Any]:
+        """One HEARTBEAT event's detail: the attempt's usage so far.
+
+        The ATTEMPT's usage, every runner so far plus the live one. A runner
+        restarted in place gets a fresh sampler that starts from zero, and a
+        cumulative series built on it went backwards there.
+
+        `cpu_seconds` is CUMULATIVE, not a rate: this event series is the only
+        time series the platform keeps, and two consecutive totals give
+        utilisation over exactly the span between them, where a point-in-time
+        rate would describe two seconds out of every heartbeat period. Every
+        CPU key is None while not measured, never 0; `metrics.
+        heartbeat_cpu_fields` names them all and why they live here for now.
+        """
+        usage = self._attempt_usage()
+        limit_cores, limit_source = self._cpu_limit()
+        detail: dict[str, Any] = {
+            "elapsed_seconds": round(self._child.elapsed_seconds, 1) if self._child else 0,
+            "peak_rss_bytes": usage.peak_rss_bytes if usage else None,
+            "checkpoints": self.checkpoints.seq,
+        }
+        detail.update(
+            heartbeat_cpu_fields(
+                usage, limit_cores=limit_cores, limit_source=limit_source, final=final
+            )
+        )
+        return detail
+
+    def _cpu_limit(self) -> tuple[float | None, str | None]:
+        """The CPU limit a usage figure is a fraction of, and where it came from.
+
+        cgroup v2 `cpu.max` first: what the kernel enforces. Otherwise the
+        catalogue cpu of the class the container was SIZED with, which is
+        `scheduler.dispatch.resource_class_for(task, profile)` -- the task's
+        own class when the catalogue still has it, else the profile's -- and
+        NOT `WorkerConfig.resource_class`, which is always the profile's. A
+        task submitted with a larger class than its profile's would otherwise
+        have its CPU drawn against a limit its container never had. Restated
+        rather than imported (the worker image does not install the
+        scheduler); `tests/unit/worker/test_cpu_sampler.py` compares the two.
+
+        (None, None) before the task document has been read: nothing yet says
+        which class this attempt was sized with, and a guess would be drawn as
+        a fact.
+        """
+        try:
+            cores = cgroup_cpu_limit_cores()
+        except Exception:  # pragma: no cover - a telemetry read never fails an attempt
+            cores = None
+        if cores is not None:
+            return cores, "cgroup"
+        sized = self._sized_resource_class()
+        if sized is None:
+            return None, None
+        return float(RESOURCE_CLASSES[sized].cpu), "resource_class"
+
+    def _sized_resource_class(self) -> str | None:
+        task = self._task
+        if not task:
+            return None
+        named = task.get("resource_class")
+        if isinstance(named, str) and named in RESOURCE_CLASSES:
+            return named
+        return self.cfg.profile.resource_class
+
+    def _emit_final_reading(self) -> None:
+        """One HEARTBEAT with `final: true`, the moment a runner is reaped. Never raises.
+
+        The periodic reading is every fifth heartbeat -- about every 150 s --
+        so without this an attempt's newest reading could be minutes older
+        than its end, and a run shorter than one period had none taken while
+        its runner was alive. `GET /v1/tasks/{id}/attempts?include=usage`
+        serves the newest reading per attempt, and `final` is what lets it
+        say "at exit" instead of "latest heartbeat". An in-place restart
+        emits one per runner; the newest wins.
+
+        NOT EMITTED BY AN ATTEMPT THAT IS NO LONGER THE TASK'S. The event
+        stream belongs to the task, and a superseded attempt writing into it
+        is exactly what the fence exists to stop (`_stand_down` says why not
+        even an event). `_fenced` covers the exits that already know;
+        `ensure_owner` covers a runner that ended on its own after a fence
+        landed and before anything had looked. Either refusal is logged and
+        the reading is dropped -- the attempt document still gets its peaks.
+        """
+        if self._writes_forbidden or self._fenced:
+            return
+        try:
+            self.control.ensure_owner(write="the final resource reading")
+            self.control.emit(EventType.HEARTBEAT, self._usage_reading(final=True))
+        except (FencedError, TenantMismatchError) as exc:
+            self.log.info(
+                "the final resource reading was not emitted: this attempt no longer "
+                "owns its task",
+                reason=str(exc),
+            )
+        except Exception as exc:
+            self.log.warning(
+                "could not emit the final resource reading",
+                error=f"{type(exc).__name__}: {exc}",
             )
 
     def _checkpoint(self, label: str) -> CheckpointRecord | None:
@@ -2558,39 +2729,76 @@ class Worker:
         It NEVER raises. A failed flush costs the watcher five seconds of
         staleness; failing the attempt over it would trade a running agent for
         a cosmetic feature.
+
+        FOUR STREAMS, NOT TWO (#184). `stdout` and `stderr` are the RUNNER
+        process's -- its own JSON log lines. `agent_stdout` and `agent_stderr`
+        are the agent CLI's, which the runner captures into `artifacts/` under
+        the names `runners.streams.agent_stream_files` gives; for claude-code
+        `agent_stdout` is the stream-json transcript. A runner with no agent
+        child (mock, browser) publishes the first two only.
+
+        THE HEADER is `#swarm-tail offset=<raw byte of the first served byte>
+        size=<raw stream size> at=<RFC 3339 UTC publish time>`. `at` is when
+        THIS window was cut, which a reader shows as the read's age; the
+        object's own GCS `updated` time says the same thing about the upload,
+        and each tail is republished every interval even when unchanged, so
+        "no new output" is an unchanged `size` across two polls, never a stale
+        object. Readers must accept a header without `at` (every object
+        published before this change).
         """
         ws = self.ws
         cfg = self.cfg
         if ws is None or not cfg.live_logs_enabled:
             return
-        for label, path in (("stdout", ws.stdout_path), ("stderr", ws.stderr_path)):
-            try:
-                if not path.exists():
-                    continue
-                size = path.stat().st_size
-                if size == 0:
-                    continue
-                with path.open("rb") as handle:
-                    if size > cfg.live_log_tail_bytes:
-                        handle.seek(size - cfg.live_log_tail_bytes)
-                    chunk = handle.read()
-                text = chunk.decode("utf-8", errors="replace")
-                if self.log.has_secrets:
-                    text = self.log.scrub_text(text)
-                # The byte offset the window starts at, so a reader can tell a
-                # gap (it polled too slowly and the window moved past what it
-                # had) from a continuation. Without it a tailer silently
-                # stitches two non-adjacent pieces of output together.
-                header = f"#swarm-tail offset={max(0, size - len(chunk))} size={size}\n"
-                self.store.upload_bytes(
-                    f"{cfg.log_prefix}/live/{label}.tail.log",
-                    (header + text).encode("utf-8"),
-                    content_type="text/plain; charset=utf-8",
-                )
-            except Exception as exc:  # pragma: no cover - never fail a run for this
-                self.log.debug(
-                    "could not publish a live log tail", stream=label, error=str(exc)
-                )
+        for label, path in self._stream_files(ws):
+            self._publish_tail(label, path)
+
+    def _stream_files(self, ws: Any) -> list[tuple[str, Path]]:
+        """Every captured stream of this attempt, as `(label, local file)`.
+
+        The ONE list both the live publisher and the final upload walk, so a
+        stream's live object (`logs/live/<label>.tail.log`) and its final one
+        (`logs/<label>.log`) cannot name it differently. The labels are the
+        API's stream names (`swarm_api.inspect.LOG_STREAMS`), compared by
+        `tests/unit/control_plane/test_agent_stream_parity.py`.
+        """
+        streams = [("stdout", ws.stdout_path), ("stderr", ws.stderr_path)]
+        files = agent_stream_files(self.cfg.runner_profile)
+        if files is not None:
+            streams.append(("agent_stdout", ws.artifacts / files.stdout))
+            streams.append(("agent_stderr", ws.artifacts / files.stderr))
+        return streams
+
+    def _publish_tail(self, label: str, path: Path) -> None:
+        """Cut, scrub and upload one stream's tail. Never raises."""
+        cfg = self.cfg
+        try:
+            # A symlink is refused, not followed. The agent can write inside
+            # `artifacts/`, and a link planted at a capture file's name would
+            # otherwise publish whatever it points at; the final upload skips
+            # links for the same reason.
+            if path.is_symlink() or not path.is_file():
+                return
+            size = path.stat().st_size
+            if size == 0:
+                return
+            with path.open("rb") as handle:
+                start, chunk = _read_tail(handle, size=size, window=cfg.live_log_tail_bytes)
+            text = chunk.decode("utf-8", errors="replace")
+            if self.log.has_secrets:
+                text = self.log.scrub_text(text)
+            # The byte offset the window starts at, so a reader can tell a
+            # gap (it polled too slowly and the window moved past what it
+            # had) from a continuation. Without it a tailer silently
+            # stitches two non-adjacent pieces of output together.
+            header = f"#swarm-tail offset={start} size={size} at={_rfc3339_now()}\n"
+            self.store.upload_bytes(
+                f"{cfg.log_prefix}/live/{label}.tail.log",
+                (header + text).encode("utf-8"),
+                content_type="text/plain; charset=utf-8",
+            )
+        except Exception as exc:  # pragma: no cover - never fail a run for this
+            self.log.debug("could not publish a live log tail", stream=label, error=str(exc))
 
     def _dispatch_block(self) -> dict[str, Any]:
         """The `task.metadata["dispatch"]` block, or an empty one.
@@ -3155,15 +3363,24 @@ class Worker:
             total += size
             artifacts.append({"name": rel, "bytes": size, "uri": self.store.uri(key)})
 
+        # THE RUNNER'S TWO STREAMS, AND THE AGENT'S TWO (#184). The agent
+        # CLI's captures stay in `artifacts/` too -- a dependant's `input_from`
+        # stages them from there -- and a copy goes beside the runner's logs as
+        # `logs/agent_stdout.log` / `logs/agent_stderr.log`, so every reader of
+        # an agent's own output reads one layout whatever the runner, and the
+        # copy is not subject to `max_artifact_bytes`. Same scrubbed file:
+        # `_redact_before_upload` above ran over `artifacts/` already.
+        agent_files = agent_stream_files(self.cfg.runner_profile)
         logs: dict[str, str] = {}
-        for label, path in (("stdout", ws.stdout_path), ("stderr", ws.stderr_path)):
-            if path.exists():
-                key = f"{self.cfg.log_prefix}/{path.name}"
-                try:
-                    self.store.upload_file(key, path, content_type="text/plain")
-                    logs[label] = self.store.uri(key)
-                except Exception as exc:
-                    self.log.warning("log upload failed", stream=label, error=str(exc))
+        for label, path in self._stream_files(ws):
+            if path.is_symlink() or not path.is_file():
+                continue
+            key = f"{self.cfg.log_prefix}/{label}.log"
+            try:
+                self.store.upload_file(key, path, content_type="text/plain")
+                logs[label] = self.store.uri(key)
+            except Exception as exc:
+                self.log.warning("log upload failed", stream=label, error=str(exc))
 
         if skipped:
             self.log.warning(
@@ -3173,6 +3390,7 @@ class Worker:
             "artifacts": artifacts,
             "artifact_bytes": total,
             "logs": logs,
+            "agent_streams": self._agent_streams(agent_files, artifacts),
         }
         if git_summary is not None:
             summary["git"] = git_summary
@@ -3199,6 +3417,54 @@ class Worker:
         # every reader of the task can see. It is scrubbed on the way out for
         # the same reason the files above are.
         return self._scrub(summary)
+
+    def _agent_streams(
+        self, files: Any, artifacts: list[dict[str, Any]]
+    ) -> dict[str, Any] | None:
+        """`result_summary.agent_streams`: which uploaded artifact is which agent stream.
+
+        None -- explicitly, not a missing key -- when the runner has no agent
+        child (mock, browser), which is what lets a reader say "not
+        applicable" instead of "absent". Otherwise each name is the manifest
+        entry that holds that stream, or None when it was not uploaded (the
+        runner never wrote it, or `max_artifact_bytes` dropped it: the copy in
+        `logs/` is still there). `transcript_skipped` is the runner's own
+        report: `"too_large"` when it omitted a transcript over the cap
+        (`cliagent.TRANSCRIPT_MAX_CHARS`), `"capture_truncated"` when the
+        stdout it would be built from had its middle dropped at the output cap,
+        and None otherwise -- including when no result.json was written, which
+        says nothing either way.
+
+        `stdout_truncated` / `stderr_truncated` (#188 review) say whether the
+        output cap cut that agent stream: the capture then kept its start and
+        its end, and wrote a notice where it dropped the middle. The runner
+        reports them on every outcome (`RunnerContext.report`); None when it
+        reported nothing, which is "not known", never "not cut".
+        """
+        if files is None:
+            return None
+        uploaded = {entry.get("name") for entry in artifacts}
+        result = _read_json(self.ws.result_path) if self.ws is not None else None
+        output = (result or {}).get("output")
+        output = output if isinstance(output, dict) else {}
+        skipped = output.get("transcript_skipped")
+        if skipped not in ("too_large", "capture_truncated"):
+            skipped = None
+
+        def cut(stream: str) -> bool | None:
+            value = output.get(f"{stream}_truncated")
+            return value if isinstance(value, bool) else None
+
+        return {
+            "stdout": files.stdout if files.stdout in uploaded else None,
+            "stderr": files.stderr if files.stderr in uploaded else None,
+            "transcript": (
+                files.transcript if files.transcript and files.transcript in uploaded else None
+            ),
+            "transcript_skipped": skipped,
+            "stdout_truncated": cut("stdout"),
+            "stderr_truncated": cut("stderr"),
+        }
 
     # -- spend -------------------------------------------------------------
     def _child_ended(self) -> None:
@@ -3295,6 +3561,7 @@ class Worker:
                 limit_bytes=self.cfg.memory_limit_bytes,
                 resource_class=self.cfg.resource_class,
             )
+        self._emit_final_reading()
 
     def _attempt_usage(self) -> ResourceUsage | None:
         """Every runner this attempt has started, combined; None if none has.
@@ -3480,6 +3747,47 @@ def _control_plane_unreachable(exc: BaseException) -> bool:
     except ImportError:
         return False
     return isinstance(exc, auth_exceptions.GoogleAuthError)
+
+
+def _generation_check_retryable(exc: BaseException) -> bool:
+    """Whether the generation check is asked again after `exc` (#198).
+
+    Exactly the errors `Worker._exit_control_plane_unreachable` would turn
+    into 69: a Firestore or google-auth error that is either an outage
+    (`_unavailable_cause`) or not a named refusal (`_refusal_cause`). A
+    refusal is 78 and would be refused again. A fence or a tenant mismatch
+    is not a Firestore error at all, and ends the attempt as it did.
+    """
+    if not _control_plane_unreachable(exc):
+        return False
+    return _unavailable_cause(exc) is not None or _refusal_cause(exc) is None
+
+
+def _one_line(value: Any, limit: int = 600) -> str:
+    """An error's text on one bounded line, for a log field."""
+    return " ".join(str(value).split())[:limit]
+
+
+def _unreachable_hint(exc: BaseException) -> str:
+    """What an operator reading a 69 at the generation check should know (#198)."""
+    text = " ".join(str(current) for current in _error_chain(exc))
+    hint = (
+        "On Cloud Run, Direct VPC egress can take a minute or more to pass traffic "
+        "after an instance starts (Google documents it), which is what these "
+        "attempts are there to outlast. If every attempt failed, the network "
+        "stayed down for all of them."
+    )
+    if "ipv6:" in text and "all addresses" in text:
+        hint += (
+            " 'failed to connect to all addresses' means every address gRPC resolved "
+            "failed: if the DNS preflight line lists an IPv4 address, that one failed "
+            "too (on 2026-09-25 the VPC flow logs showed its SYNs unanswered, "
+            "docs/incidents/2026-09-25-worker-startup-network.md). The ipv6 address "
+            "in it is only the last error gRPC kept: the swarm subnet is IPv4-only, "
+            "so that address fails at once without leaving the instance, and a "
+            "worker does not need it."
+        )
+    return hint
 
 
 def _error_chain(exc: BaseException) -> list[BaseException]:
@@ -3807,3 +4115,43 @@ def _tail_text(path: Path, limit: int = 2000) -> str:
     if not path.exists():
         return ""
     return path.read_text(errors="replace")[-limit:]
+
+
+def _rfc3339_now() -> str:
+    """Now, UTC, to the second, as RFC 3339 (`2026-09-25T10:00:00Z`)."""
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _read_tail(handle: Any, *, size: int, window: int) -> tuple[int, bytes]:
+    """The last `window` bytes of a stream `size` bytes long, starting on a whole line.
+
+    Returns `(start, chunk)`, where `start` is the RAW byte offset of the first
+    byte of `chunk` in the stream -- what the tail header calls `offset`.
+
+    READ TO `size`, NOT TO EOF. The stream is still growing while it is read,
+    and the header states `size` from the `stat` taken first. Reading to EOF
+    made the window longer than `size - start`, so an offset derived from its
+    length pointed before the bytes it described.
+
+    WHOLE LINES. When the stream is longer than the window, the window would
+    start mid-line, and for an NDJSON stream (claude-code's stdout) that first
+    fragment is a line that parses as nothing. So the start moves past the
+    first newline -- unless the byte just before the window already ends a
+    line, or nothing would be left after it: a window that lies entirely
+    inside one long final line keeps that partial line, because the newest
+    output is the point of a tail and an empty one would hide it.
+    """
+    start = max(0, size - window)
+    previous = b""
+    if start > 0:
+        handle.seek(start - 1)
+        previous = handle.read(1)
+    else:
+        handle.seek(0)
+    chunk = handle.read(size - start)
+    if start > 0 and previous != b"\n":
+        cut = chunk.find(b"\n")
+        if 0 <= cut < len(chunk) - 1:
+            start += cut + 1
+            chunk = chunk[cut + 1 :]
+    return start, chunk

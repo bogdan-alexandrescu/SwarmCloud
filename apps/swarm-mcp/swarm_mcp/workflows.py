@@ -64,11 +64,17 @@ UNKNOWN = "UNKNOWN"
 #: dropped: a caller that passed `input` or `image` believing it would be
 #: honoured needs to be told it was not, and silently ignoring a key is how
 #: invariant 10 would get quietly tested.
+#:
+#: `inputs` is the runner's DECLARED inputs (#142) -- `sleep_seconds` for the
+#: mock, say -- checked per profile by `profiles.check_inputs`. It is not the
+#: API's raw `input` object, which stays refused: that would let a caller set
+#: `input.model` on a runner that reads it.
 _STEP_KEYS = frozenset(
     {
         "step_id",
         "prompt",
         "runner_profile",
+        "inputs",
         "depends_on",
         "input_from",
         "resource_class",
@@ -106,11 +112,13 @@ def build_steps(raw_steps: Any) -> list[dict[str, Any]]:
     keyboard costs nothing; the same refusal four minutes later costs a dispatch,
     a lease and a pod.
 
-    THE PROMPT IS ALSO THE ONLY WAY INPUT IS EXPRESSED, for the same reason
-    `swarm_dispatch` has no `input` parameter: invariant 10 says a caller names a
-    runner profile and supplies DATA, never an image, a command or a resource
-    spec. `prompt` becomes `input.prompt` and nothing else here reaches the
-    runner's argv.
+    INPUT IS THE PROMPT, PLUS WHAT THE PROFILE DECLARES, and nothing else --
+    for the same reason `swarm_dispatch` has no raw `input` parameter:
+    invariant 10 says a caller names a runner profile and supplies DATA, never
+    an image, a command or a resource spec. `prompt` becomes `input.prompt`,
+    and a step's `inputs` becomes the rest of `input` only where
+    `profiles.DECLARED_INPUTS` names them for its profile (#142) -- the mock's
+    `sleep_seconds`, for one. Nothing here reaches the runner's argv.
 
     Everything else about the DAG -- cycles, a dependency naming a step that is
     not in the workflow, an `input_from` whose source is not also a `depends_on`,
@@ -137,9 +145,11 @@ def build_steps(raw_steps: Any) -> list[dict[str, Any]]:
             raise SwarmError(
                 f"{where} carries {unknown}, which this tool does not send. "
                 f"Accepted: {sorted(_STEP_KEYS)}. A step's data goes in `prompt`, "
-                "which becomes its `input.prompt`; a runner is chosen by naming a "
-                "`runner_profile` and a size by naming a `resource_class`. An image, "
-                "a command, a backend or cpu and memory figures are never sent."
+                "which becomes its `input.prompt`, and in `inputs`, for the inputs "
+                "its runner profile declares (`swarm_profiles` lists them); a runner "
+                "is chosen by naming a `runner_profile` and a size by naming a "
+                "`resource_class`. An image, a command, a backend or cpu and memory "
+                "figures are never sent."
             )
 
         step_id = str(raw.get("step_id") or "").strip()
@@ -164,12 +174,17 @@ def build_steps(raw_steps: Any) -> list[dict[str, Any]]:
         # sixteen good steps still ran, so the bad four cost real capacity to
         # learn something the catalogue already knew. Refusing here refuses the
         # SUBMISSION, before any of it is scheduled.
+        profile = catalogue.check(str(raw.get("runner_profile") or DEFAULT_PROFILE), where=where)
         step: dict[str, Any] = {
             "step_id": step_id,
-            "runner_profile": catalogue.check(
-                str(raw.get("runner_profile") or DEFAULT_PROFILE), where=where
-            ),
-            "input": {"prompt": prompt},
+            "runner_profile": profile,
+            # The prompt, and whatever the profile DECLARES and the step asked
+            # for -- checked by name and kind, and refused otherwise (#142).
+            # `check_inputs` refuses a `prompt` key, so it cannot replace this one.
+            "input": {
+                "prompt": prompt,
+                **catalogue.check_inputs(profile, raw.get("inputs"), where=where),
+            },
         }
 
         depends_on = raw.get("depends_on") or []
