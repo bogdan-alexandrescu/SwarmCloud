@@ -26,7 +26,7 @@ benefit. The new pane's address is `#work/task/<id>/artifacts`.
 
 | Section | Source | Notes |
 |---|---|---|
-| Prompt | `GET /v1/tasks/{id}` → `task.input` | `input.prompt` verbatim and wrapped; otherwise the whole input as JSON. `no prompt` only when the key is missing. Served from Firestore **as submitted, not masked** (open question on #184). |
+| Prompt | `GET /v1/tasks/{id}/input` | The prompt as the API **masked** it, wrapped, and the rest of the input as JSON below it; otherwise the whole input as JSON. `masked N` beside the eyebrow counts what the block draws. `no prompt` only when the key is missing. Never `task.input`, and never the raw input in place of a copy that could not be read. See [The input, masked](#the-input-masked). |
 | Repository | `task.repository_url`, `repository_ref`, `result_summary.git.base` | Nothing when no repository was asked for. The cloned commit is `reported at finish` while the task runs. |
 | Staged files | `metadata.input_from` joined with `result_summary.staged_inputs` (`dag.ts` `taskInputsOf`) and, for a workflow step, `GET /v1/workflows/{id}` | Each file links to the upstream run's own Artifacts pane, labelled with its step. The file is read from the **upstream** task's artifact routes, because the staged copy is never uploaded separately. An upstream object removed since reads `removed from the upstream run`, and the size shown stays the staged size. |
 | Answer | `GET /v1/tasks/{id}/answer` | First in Outputs, rendered with the existing Markdown renderer (React elements, never HTML). `not yet` while running, `no answer recorded` after an end with none. A runner-summary fallback is marked, because that summary is capped at 2,000 characters. |
@@ -59,8 +59,10 @@ page token.
 The pane's first version sent no `limit`. A browser run that took 60 screenshots
 drew 50 rows and a chip reading 50, with no mark. The last ten screenshots, which
 were the final page states, could not be viewed or downloaded from the pane.
-The Details pane's own file list, which reads the manifest off the task, showed
-all 60. So the pane drew a partial read as if it were the whole list.
+The Details pane's own file list, which read the manifest off the task, showed
+all 60. So the pane drew a partial read as if it were the whole list. (Details'
+list has since been removed, as a duplicate of this one: see
+[Details, after the follow-up](#details-after-the-follow-up).)
 
 It now asks for `limit=200` (`ARTIFACT_PAGE_LIMIT`). Any file past that page is
 listed from the task's own `result_summary.artifacts`, which is the same record
@@ -161,77 +163,122 @@ sentence in `detail`. The file viewer draws the count as `not utf-8 N` with the
 server's `detail`. The raw route serves those bytes exactly as stored, so a
 file's `download` is the one to use.
 
+## The input, masked
+
+The owner decided on 2026-09-25 that Inputs and Details show "a
+read-time-redacted copy of the task's input, with 'masked N', like every other
+output". Both panes used to draw `task.input` straight off the task document.
+This pane said `as submitted · not masked`, and Details said nothing.
+
+Both now read `GET /v1/tasks/{id}/input`. It serves the prompt, the rest of the
+input and the whole input, each as the API's one redactor (`redaction.redact`)
+leaves it, each with its own count (`TaskInputCopy`). The UI does no masking of
+its own, and it never goes back to `task.input`:
+
+* **Inputs** draws the prompt and the rest. Its `masked N` is the sum of those
+  two blocks' counts.
+* **Details** draws the prompt and the full input, each with its own
+  `masked N`.
+* The count is drawn as the artifact viewer's is: no mark, plain ink at zero,
+  and `--warn` above zero.
+* A copy that is loading, failed, or not served by an older API is drawn as
+  that (`reading`, `input not read`, `not served by this API`). The raw input
+  is not drawn in its place.
+
+The input never changes after submission, so it is read once per task
+(`loadTaskInputOnce`) and shared between the two panes. It is not re-read on
+the drawer's 10 s poll or this pane's 5 s poll. It is also not part of this
+pane's poll, so a slow copy holds up nothing else.
+
 ## CPU in Details
 
-`GET /v1/tasks/{id}/attempts?include=usage` adds each attempt's newest CPU
-reading, found by the server in one descending events read. The drawer's own
-events page is oldest-first and capped, so on a long run it misses exactly the
-final reading. Details draws two rows, `cpu peak` and `cpu mean`, in the
-memory and workspace style. Each is set against the limit the worker sent with
-the reading, and the label follows the worker's `cpu_limit_source`:
+**The figures are typed attempt fields.** Contract request #15 was accepted
+on #184 (2026-09-25). Every attempt row carries `cpu_seconds`,
+`peak_cpu_cores`, `mean_cpu_cores` and `cpu_limit_cores`, and the worker
+writes them on the attempt with each periodic reading and when each runner is
+reaped. They replaced #188's interim path, `attempts?include=usage` and its
+`usage` block read off HEARTBEAT events, which Details no longer asks for or
+reads.
 
-| cpu_limit_source | ceiling label |
+Details draws two rows, `cpu peak` and `cpu mean`, in the memory and
+workspace style, as the owner decided ("as built"). Each row is set against
+the limit the worker wrote.
+
+| limit | ceiling label |
 |---|---|
-| `cgroup` (the container's own `cpu.max`) | `cgroup limit` |
-| `resource_class` (`cpu.max` said nothing; the catalogue cpu of the class the container was sized with) | the class's name when the class read here has that cpu, else `resource class limit` |
-| no limit in the reading | the task's class read here, by name (`requests == limits`) |
+| the class read here has that cpu | the class's name (`standard limit`) |
+| any other figure | `reported limit`: the typed field does not say whether the cgroup's `cpu.max` or the catalogue supplied it, so neither is named |
+| none written | the task's class read here, by name (`requests == limits`) |
 
-The first version labelled every limit in the reading `cgroup limit`. The
-worker sends `resource_class` whenever `cpu.max` is `max` or cannot be read, and
-nobody has yet read what Cloud Run's `cpu.max` holds. A catalogue figure would
-then have been captioned as a limit the kernel enforces. The `by` column also
-says where the reading came from:
+The `by` column says what the figures are. The attempt document records no
+time for them, so the answer comes from what is known about the attempt's end
+(`attemptEnd`, the same evidence the memory row reads):
 
-| usage.status | by |
+| attempt | by |
 |---|---|
-| final | `at exit` |
-| live | `latest heartbeat Ns ago` |
-| last_reading | `last heartbeat Ns ago` |
-| never_ran | `never ran` |
-| absent, or every figure null | `never measured` |
-| beyond_window | `off the event window` |
-| unread | `read failed` |
-| no `usage` served, or `usage: null` | `not served` |
+| finish recorded | `at exit` |
+| running | `live reading` (strip: `live reading · age not recorded`) |
+| ended with no recorded finish (kill, reclaim) | `last written` |
+| ran before the typed fields, with a reading on this page | `heartbeat event` |
+| never started | `never ran` |
+| running, nothing written yet | `not yet written` |
+| ended, nothing written | `never measured` |
+| the row has none of the four keys (an older API) | `not served` |
 
-With no reading there is one `cpu` row, not two identical hatched ones. An
-absent figure is never drawn as zero, and a figure over the limit takes the
-track's over-ceiling hatch. Two rows rather than one bar with a mean tick is an
-open question on #184. So are the typed Attempt fields that would replace the
-heartbeat interim (contract request #15).
+With nothing measured there is one `cpu` row, not two identical hatched ones.
+An absent figure is never drawn as zero, and a figure over the limit takes the
+track's over-ceiling hatch.
 
-**The age is the server's.** `Ns ago` is `usage.age_seconds`, the gap between
-the reading and the server's `read_at`, moved on by the time since the browser
-received the read (the rule the Artifacts pane's stream ages use). The first
-version aged `measured_at` on the browser's clock, which is a clock the server
-never checked. An age the server did not send reads `age not served` and is
-never filled in from the browser.
+**A live reading has no age, on purpose.** #187 aged the reading on the
+server's clock (`usage.age_seconds`). The typed fields carry no time, so there
+is nothing server-side to age. Taking `timeAgo` off the browser's clock would
+reintroduce what the #187 review removed. The strip says
+`age not recorded`, and contract request #26 asks for a typed time.
+
+**The legacy reader.** Attempts that ran between #188's deploy and this change
+carry their CPU only on HEARTBEAT events. For an attempt whose typed fields
+are all null, Details takes the newest heartbeat on the drawer's own event
+page that carries the interim keys (`interimReading`) and labels it
+`heartbeat event`. No read is added for this. The page is oldest-first and
+capped, so a long run's final reading can be past it. It does nothing for an
+attempt with typed fields, and it can go once no attempt from that window is
+still opened.
 
 ### At phone width
 
 The sheet's phone block hides `.ctl-util-track` and `.ctl-util-by` at 560px and
-under. The first version kept the CPU rows' provenance, ceiling source,
-cpu-seconds and kind of absence only in that `by` column. At 390px a live reading
-140 s old read `cpu peak 1.62 vCPU / 2 vCPU`, which is exactly how a final
-figure reads, and every kind of absence read `— / 2 vCPU`. The memory row had
-already solved this with a strip outside the row (`.att-rss-note`). The CPU
-rows now have one too (`.att-cpu-note`), with the same words drawn from the same
+under. The CPU rows' provenance, ceiling source, cpu-seconds and kind of
+absence therefore also sit in a strip outside the rows (`.att-cpu-note`),
+beside the memory row's (`.att-rss-note`). The words come from the same
 function as the `by` column:
 
-* the mark and its words (`live heartbeat 20s ago`, `last heartbeat …`,
-  `never ran`, `never measured`, `off the event window`, `read failed`,
+* the mark and its words (`live reading · age not recorded`, `last written`,
+  `heartbeat event`, `never ran`, `not yet written`, `never measured`,
   `not served`) show at every width, as the memory strip's do;
 * the cpu-seconds and the ceiling's source show in the strip only at 560px and
   under, because above that the `by` column beside each bar already says them;
-* a final reading has no mark, so its whole strip (`at exit · 402.3 cpu-s ·
-  cgroup limit`) shows only at 560px and under.
+* figures at exit have no mark, so the whole strip (`at exit · 402.3 cpu-s ·
+  reported limit`) shows only at 560px and under.
 
-Both strips now name their row (`cpu`, `memory`), because two lines of
-`heartbeat 3m ago` under five bars would not say which bar each is about.
+Both strips name their row (`cpu`, `memory`).
 
 `details.cpu.test.tsx` asks the shipped sheet's cascade (`cssgate.ts`
 `cascade`) what a 390px and a 1440px viewport display. jsdom applies no
 stylesheet, so a test that reads `.ctl-util-by`'s text passes whether or not a
-phone can see it. That is how the first version passed.
+phone can see it.
+
+## Details, after the follow-up
+
+Two things Details drew are gone, by the owner's decisions of 2026-09-25:
+
+* **The runner (platform) log.** It was a panel titled `Runner log (platform)`,
+  over the runner process's two streams, and it read `/logs` on every 10 s poll
+  of the drawer. It lives in Artifacts › Logs only now, behind
+  `runner (platform)`, drawn with the same `Stream` rows.
+* **Details' own artifact list.** A table with a viewer and a `copy gsutil`
+  per file duplicated Artifacts › Outputs. Details' Output keeps the git
+  outcome, which still names the patch file, and the log object locations
+  from the result summary.
 
 ## What this pane does not show, said plainly
 
@@ -241,6 +288,5 @@ phone can see it. That is how the first version passed.
   no attempt picker yet (open question on #184).
 * **The live transcript is a bounded tail**, the newest 256 KiB, whole lines.
   The complete transcript appears when the attempt ends.
-* **The runner log is in two places**: the Details panel, now titled
-  `Runner log (platform)`, and `runner (platform)` under Logs here. Which one
-  stays is the owner's call (open question on #184).
+* **The runner log is here only**, under `runner (platform)`. The Details
+  panel that also drew it was removed by the owner's decision of 2026-09-25.

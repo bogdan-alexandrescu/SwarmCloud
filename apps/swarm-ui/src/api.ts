@@ -8,7 +8,7 @@ import { CONCURRENCY_STATES, TERMINAL_STATES } from './types'
 // actually reported it, so an unmeasured sample never becomes a confident zero.
 import { sumReported } from './measure'
 import type {
-  ArtifactContent, ArtifactListing, LogStream, LogStreamName, TaskAnswer, TaskTranscript, TranscriptStep,
+  ArtifactContent, ArtifactListing, LogStream, LogStreamName, TaskAnswer, TaskInputCopy, TaskTranscript, TranscriptStep,
   CheckpointsPage, TaskLogs,
   Capacity, DispatchControl, Me, ProvidersPage, Stats, Task, TaskEvent, TaskPage,
   AttemptRow, LeasePage, LeaseRow, Pool, ProfileAdmission, QuotaState, ResourceClassSpec,
@@ -899,6 +899,41 @@ export async function loadAnswer(taskId: string, options: { attemptId?: string }
 }
 
 /**
+ * THE TASK'S INPUT, MASKED: `GET /v1/tasks/{id}/input` (#184 follow-up). What
+ * Inputs and Details draw -- the prompt, the rest of the input and the whole
+ * of it, each as the server's redactor left it, with its count. Never
+ * `task.input`, which is the document as submitted.
+ */
+export async function loadTaskInput(taskId: string): Promise<Result<TaskInputCopy>> {
+  if (USE_FIXTURES) return fixtureTaskInput(taskId)
+  return read<TaskInputCopy>(route('/v1/tasks/{id}/input', { id: taskId }), () => false)
+}
+
+/**
+ * The copies already read, by task. An input never changes once submitted, so
+ * the drawer -- which re-reads its run every 10 s -- asks for it once and not
+ * on every poll. Only a copy that was READ is kept: a failed read is asked
+ * again with the next poll.
+ */
+const INPUT_COPIES = new Map<string, Result<TaskInputCopy>>()
+/** Enough for every drawer a session opens; the oldest goes first past it. */
+const INPUT_COPIES_KEPT = 64
+
+export async function loadTaskInputOnce(taskId: string): Promise<Result<TaskInputCopy>> {
+  const held = INPUT_COPIES.get(taskId)
+  if (held !== undefined) return held
+  const got = await loadTaskInput(taskId)
+  if (got.status === 'ok') {
+    if (INPUT_COPIES.size >= INPUT_COPIES_KEPT) {
+      const oldest = INPUT_COPIES.keys().next().value
+      if (oldest !== undefined) INPUT_COPIES.delete(oldest)
+    }
+    INPUT_COPIES.set(taskId, got)
+  }
+  return got
+}
+
+/**
  * The agent's transcript as steps, parsed and redacted by the server:
  * `GET /v1/tasks/{id}/transcript`.
  *
@@ -987,6 +1022,40 @@ function fixtureAttemptBlock(finished: boolean): TaskAnswer['attempt'] {
     created_at: new Date(Date.now() - 9 * 60_000).toISOString(),
     completed_at: finished ? new Date(Date.now() - 60_000).toISOString() : null,
     exit_code: finished ? 0 : null,
+  }
+}
+
+/**
+ * The fixture's copy of a task's input. The fixture tasks carry no credential,
+ * so their copy is their input with a measured zero beside it -- the shape the
+ * server sends, not a masking done here.
+ */
+async function fixtureTaskInput(taskId: string): Promise<Result<TaskInputCopy>> {
+  await new Promise((r) => setTimeout(r, 30))
+  noteFixtureProbe(route('/v1/tasks/{id}/input', { id: taskId }), 30, true)
+  const detail = await fixtureAgentDetail(taskId)
+  if (detail.status !== 'ok') return detail as Result<TaskInputCopy>
+  const raw = detail.data.task.input
+  const input: Record<string, unknown> =
+    raw !== null && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {}
+  const prompt = input['prompt']
+  const others = Object.fromEntries(Object.entries(input).filter(([k]) => k !== 'prompt'))
+  const clean = (text: string) => ({ text, redaction_count: 0 })
+  return {
+    status: 'ok',
+    fetchedAt: Date.now(),
+    data: {
+      task_id: taskId,
+      tenant_id: detail.data.task.tenant_id,
+      read_at: new Date().toISOString(),
+      prompt_key: typeof prompt === 'string' ? 'string' : 'prompt' in input ? 'other' : 'missing',
+      prompt: typeof prompt === 'string' ? clean(prompt) : null,
+      rest: typeof prompt === 'string' && Object.keys(others).length > 0 ? clean(JSON.stringify(others, null, 2)) : null,
+      full: clean(JSON.stringify(input, null, 2)),
+      redacted: false,
+      redaction_count: 0,
+      redaction: { applied_at_read_time: true, rules: 11 },
+    },
   }
 }
 
@@ -1426,26 +1495,35 @@ export interface AgentRun {
   /** True when the API did not recognise /v1/resource-classes -- a deployment
    *  older than the route, which is a different fix from a failed read. */
   classesRouteMissing: boolean
+  /**
+   * The task's input as the API masked it (`GET /v1/tasks/{id}/input`), which
+   * is what Details draws -- never `task.input`. Its own Result, because a
+   * failed copy must not blank the run and must not be drawn as no input.
+   * OPTIONAL only so a run built without it (a test's) still type-checks;
+   * `loadAgentRun` always sets it, and Details draws a missing one as not read.
+   */
+  input?: Result<TaskInputCopy>
 }
 
 export async function loadAgentRun(taskId: string): Promise<Result<AgentRun>> {
   if (USE_FIXTURES) return fixtureAgentRun(taskId)
 
   const id = { id: taskId }
-  const [task, events, attempts, classes] = await Promise.all([
+  const [task, events, attempts, classes, input] = await Promise.all([
     read<{ task: Task } | Task>(route('/v1/tasks/{id}', id), () => false),
     read<{ events: TaskEvent[] }>(route(`/v1/tasks/{id}/events?limit=${EVENT_PAGE_LIMIT}`, id), () => false),
-    // `include=usage` (#184): each attempt row gains its CPU reading, found by
-    // the SERVER in one descending events read -- not in the page above, which
-    // is oldest-first and capped at 200, so on a long run it misses exactly the
-    // final reading. Opt-in, so the Overview's per-task attempts reads keep
-    // their cost. An API older than the change ignores the parameter and sends
-    // no `usage`, which the CPU rows draw as "not served", never as zero.
+    // Each row carries the attempt's CPU as typed fields (contract request
+    // #15). The `include=usage` this read used to send asked the server for
+    // #188's interim reading off the task's events, which the typed fields
+    // replaced; nothing extra is asked for now.
     read<{ attempts: AttemptRow[] }>(
-      route(`/v1/tasks/{id}/attempts?limit=${ATTEMPT_PAGE_LIMIT}&include=usage`, id),
+      route(`/v1/tasks/{id}/attempts?limit=${ATTEMPT_PAGE_LIMIT}`, id),
       (d) => d.attempts.length === 0,
     ),
     loadResourceClasses(),
+    // The masked copy Details draws. Read once per task: an input never
+    // changes, and this read runs on every 10 s poll of the drawer.
+    loadTaskInputOnce(taskId),
   ])
 
   if (task.status === 'loading' || task.status === 'error') return task
@@ -1505,6 +1583,7 @@ export async function loadAgentRun(taskId: string): Promise<Result<AgentRun>> {
             ? 'The catalogue route returned no classes, which cannot happen for a healthy API — the frozen catalogue always has three.'
             : 'The resource-class read did not complete.',
       classesRouteMissing: classes.status === 'error' && classes.error.kind === 'not_found',
+      input,
     },
     fetchedAt: task.fetchedAt,
     error: task.status === 'stale' ? task.error : undefined,
@@ -1512,10 +1591,11 @@ export async function loadAgentRun(taskId: string): Promise<Result<AgentRun>> {
 }
 
 async function fixtureAgentRun(taskId: string): Promise<Result<AgentRun>> {
-  const [detail, attempts, classes] = await Promise.all([
+  const [detail, attempts, classes, input] = await Promise.all([
     fixtureAgentDetail(taskId),
     fixtureAttempts(taskId),
     fixtureResourceClasses(),
+    fixtureTaskInput(taskId),
   ])
   if (detail.status !== 'ok') return detail as Result<AgentRun>
   return {
@@ -1525,64 +1605,27 @@ async function fixtureAgentRun(taskId: string): Promise<Result<AgentRun>> {
       task: detail.data.task,
       events: detail.data.events,
       eventsDetail: detail.data.eventsDetail,
-      attempts: attempts.status === 'ok' ? attempts.data.attempts.map(fixtureUsage) : null,
+      attempts: attempts.status === 'ok' ? attempts.data.attempts.map(fixtureCpu) : null,
       attemptsDetail: attempts.status === 'ok' ? null : 'The fixture attempt read did not complete.',
       classes: classes.status === 'ok' ? classes.data.resource_classes : null,
       classesDetail: null,
       classesRouteMissing: false,
+      input,
     },
   }
 }
 
 /**
- * The CPU reading `attempts?include=usage` would add to one fixture attempt:
- * `never_ran` for one that never started, the reaped runner's `final` reading
- * for one that ended, and a `live` periodic reading for one still running --
- * so all three shapes of the Details CPU rows are looked at in development.
+ * The typed CPU fields (contract request #15) on one fixture attempt: none
+ * for one that never started, and the attempt's figures -- live while it
+ * runs, the figures at exit once it ended -- for the rest, so every shape of
+ * the Details CPU rows is looked at in development.
  */
-function fixtureUsage(a: AttemptRow): AttemptRow {
-  const base = {
-    detail: null,
-    cpu_source: 'cgroup',
-    cpu_limit_cores: 2,
-    cpu_limit_source: 'cgroup' as const,
-    peak_rss_bytes: a.peak_rss_bytes,
-  }
+function fixtureCpu(a: AttemptRow): AttemptRow {
   if (a.started_at === null) {
-    return {
-      ...a,
-      usage: {
-        ...base,
-        status: 'never_ran',
-        event_id: null,
-        measured_at: null,
-        age_seconds: null,
-        final: null,
-        cpu_seconds: null,
-        peak_cpu_cores: null,
-        mean_cpu_cores: null,
-        cpu_wall_seconds: null,
-        cpu_limit_cores: null,
-        cpu_limit_source: null,
-      },
-    }
+    return { ...a, cpu_seconds: null, peak_cpu_cores: null, mean_cpu_cores: null, cpu_limit_cores: null }
   }
-  const ended = a.completed_at !== null
-  return {
-    ...a,
-    usage: {
-      ...base,
-      status: ended ? 'final' : 'live',
-      event_id: `ev_usage_${a.attempt_id}`,
-      measured_at: new Date(Date.now() - (ended ? 60_000 : 20_000)).toISOString(),
-      age_seconds: ended ? 60 : 20,
-      final: ended,
-      cpu_seconds: 402.311,
-      peak_cpu_cores: 1.62,
-      mean_cpu_cores: 0.842,
-      cpu_wall_seconds: 477.8,
-    },
-  }
+  return { ...a, cpu_seconds: 402.311, peak_cpu_cores: 1.62, mean_cpu_cores: 0.842, cpu_limit_cores: 2 }
 }
 
 export async function loadStats(): Promise<Result<Stats>> {

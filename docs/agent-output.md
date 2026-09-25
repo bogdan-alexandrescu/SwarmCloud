@@ -335,26 +335,118 @@ The answer route gives one of four answers:
 * `absent`: the attempt ended and left nothing.
 * `unreadable`: a read failed, and nothing further down the chain is tried.
 
-## CPU in Details: peak and mean of the limit
+## The task's input is masked too, with a count
+
+The owner decided on 2026-09-25 (#184) that the Artifacts pane's Inputs and
+the drawer's Details show "a read-time-redacted copy of the task's input,
+with 'masked N', like every other output". Both used to draw `task.input`
+straight off `GET /v1/tasks/{id}`. The Artifacts pane said so
+(`as submitted · not masked`) and Details said nothing. A token pasted into a
+prompt was drawn in clear on the two screens that mask every other byte they
+show.
+
+`GET /v1/tasks/{id}/input` (`swarm_api.task_input`) serves three texts, each
+with its own `redaction_count`:
+
+* `prompt`: `input.prompt` when it is a string. It is masked as one decoded
+  string, the way `/answer` and `/transcript` mask the strings they decode
+  out of JSON, so a private key with no END is masked to the end of the
+  string.
+* `rest`: the input without that prompt, as its JSON text.
+* `full`: the whole input, as its JSON text.
+
+The redactor is `redaction.redact`, the one every other route uses. It is
+not a second one. The JSON is masked as text, not value by value, because the
+key/value rule is what catches `"api_token": "<a value with no recognisable
+prefix>"`, and that rule needs the key beside its value. `prompt_key`
+(`string`, `missing`, `other`) says what shape the input has, so a screen
+never goes back to the raw document to find out.
+
+`GET /v1/tasks/{id}` still serves the input as submitted. The caller is the
+tenant that submitted it, and the CLI and MCP clients read it. Whether that
+route should mask too is a separate decision, recorded on the PR, and this
+change does not make it.
+
+The UI reads the copy once per task, because an input never changes. A copy
+that could not be read, or an API that does not serve one, is drawn as that.
+The raw input is never drawn in its place.
+
+## CPU in Details: peak and mean of the limit, as typed attempt fields
 
 The worker already sampled CPU (`agent_worker.metrics`), but nothing
 displayed the figures. The mean existed only after a runner stopped, and the
 limit was recorded nowhere.
 
-The frozen `Attempt` has no CPU fields, so until contract request #15
-(amended for this) is decided, the figures ride on the HEARTBEAT events'
-`detail`. They include peak cores, mean cores (now kept current while the
-runner runs), CPU-seconds, and the CPU limit with its source. The limit is
-read from cgroup v2 `cpu.max`. When that is unavailable, the worker uses the
-catalogue cpu of the class the container was *sized* with, which is the
-task's own class and not the profile's.
+#188 put the figures on HEARTBEAT events, because the frozen `Attempt` had no
+CPU fields. `GET /v1/tasks/{id}/attempts?include=usage` read them back with
+one descending events read per request. That was the interim path.
 
-A reading with `final: true` is emitted when each runner is reaped. A fenced
-attempt never emits one, because the event stream belongs to the generation
-that owns the task.
+**Contract request #15 was accepted on #184 (2026-09-25), and it replaces the
+interim path.** `Attempt` carries four fields: `cpu_seconds`,
+`peak_cpu_cores`, `mean_cpu_cores` and `cpu_limit_cores`. Each is the
+attempt's, meaning every runner it started, combined.
 
-`GET /v1/tasks/{id}/attempts?include=usage` is opt-in, because the Overview
-calls that route once per task. It serves the newest reading per attempt
-from one descending read of the task's events. Each reading has a status:
-`final`, `live`, `last_reading`, `never_ran`, `absent`, `beyond_window`, or
-`unread`. None means "not measured" and is never drawn as zero.
+* **The worker writes them on its own attempt document**
+  (`control.record_cpu_usage`). It writes them with each periodic reading
+  while a runner runs, which is every fifth heartbeat, the same cadence as
+  the HEARTBEAT event. It writes them again when each runner is reaped. A key
+  that was not measured is left out, not written as null, because the write
+  is a merge and a null would erase an earlier figure. Nothing is written
+  when nothing was measured, not even the limit.
+* **The limit** is cgroup v2 `cpu.max` when that says anything. Otherwise it
+  is the catalogue cpu of the class the container was *sized* with, which is
+  the task's own class and not the profile's. Which of the two supplied it is
+  no longer recorded (see below).
+* **The HEARTBEAT event is back to what it carried before #188:**
+  `elapsed_seconds`, `peak_rss_bytes`, `checkpoints`, the cumulative
+  `cpu_seconds` and `cpu_source`. The reconciler's stuck-browser judgement
+  (`reconciler.progress`) turns two consecutive `cpu_seconds` into a rate,
+  and it is the reason those two stay. The `final` HEARTBEAT that #188 emitted
+  when a runner was reaped is gone.
+* **The API serves the four fields on every attempt row** (`attempt_to_api`),
+  with no opt-in, because serving them costs no read the route was not already
+  making. `include=usage` is no longer read. `swarm_api.attempt_usage`, the
+  events reader, is removed. `attempt_is_over`, which `/answer` also uses,
+  moved to `swarm_api.attempt_state`.
+* **The attempt document is not fenced** for these writes, like the memory
+  peaks beside them. It is the attempt's own document, and the fence guards
+  the task, its lease and its event stream, none of which this touches. The
+  tenant-mismatch exit writes nothing.
+
+### What the typed fields cannot say
+
+The four accepted fields carry no time and no limit source. So:
+
+* **A live reading has no age.** Details calls a running attempt's figures a
+  `live reading` and says `age not recorded`. The #187 review moved the CPU
+  age onto the server's clock, and there is no server time to age now. An age
+  taken from the browser's clock would be a guess drawn as a measurement.
+* **The limit's source is not known.** Details names the class when the class
+  read on the page has the same cpu as the limit. Otherwise it says
+  `reported limit`. It no longer says `cgroup limit`.
+
+Contract request #26 asks for both, and the owner decides.
+
+### Attempts from before the typed fields
+
+Attempts that ran between #188's deploy to dev (about 23:08 UTC on
+2026-09-25) and this change's deploy carry their CPU only on HEARTBEAT
+events. A read-only look at dev's Firestore at 23:16 UTC that day visited the
+40 newest tasks. It found one such task, `task_49dde08b768b49748588` (mock,
+the #188 deploy's smoke), with two interim readings, one of them `final`.
+Every attempt that runs before this change deploys adds another.
+
+Their typed fields are null, and "never measured" would be false of them. So
+Details keeps one small legacy reader, `interimReading`, in the UI. For an
+attempt whose typed fields carry nothing, it takes the newest HEARTBEAT on the
+drawer's own event page that carries the interim keys, and labels it
+`heartbeat event`. It adds no server read, because the page is already held.
+Because it is oldest-first and capped, a long attempt's final reading can be
+past it, and then the row says `never measured` with a mark that names the
+cause. It reads nothing for any attempt the worker wrote typed fields for. It
+can go once no attempt from that window is still opened.
+
+Keeping the server-side reader for those attempts was the alternative. It was
+not chosen, because the owner's decision was that the typed fields replace
+the path. That reader cost an events query per drawer read, for a window of a
+few hours on dev.
