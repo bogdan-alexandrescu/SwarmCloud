@@ -55,7 +55,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Any, Callable, Protocol, Sequence
+from typing import Any, Callable, Mapping, Protocol, Sequence
 
 from swarm_common.admission import _snapshot, release_lease_in_transaction
 from swarm_common.models import Attempt, ProviderState, TaskEvent, new_id, utcnow
@@ -228,6 +228,7 @@ class ControlPlane:
         logger: Any,
         txn_runner: TransactionRunner | None = None,
         heartbeat_extension_seconds: int = 120,
+        startup_call_options: Mapping[str, Any] | None = None,
     ) -> None:
         self._db = db
         self.task_id = task_id
@@ -239,6 +240,19 @@ class ControlPlane:
         self._txn = txn_runner or FirestoreTransactionRunner(db)
         self._heartbeat_extension = heartbeat_extension_seconds
         self._lease_released = False
+        # `retry` and `timeout` for the calls a worker makes before its runner
+        # exists: the generation check's three reads and the attempt's first
+        # write. The entrypoint passes a bounded budget
+        # (`__main__.firestore_startup_call_options`). Empty means the
+        # library's defaults, which for a document read is up to 300 s of
+        # silent retries. Nothing else in this class uses these options: the
+        # mid-run control poll keeps its defaults, and changing how long a
+        # running agent tolerates a Firestore outage is a separate decision.
+        self._startup_call: dict[str, Any] = dict(startup_call_options or {})
+
+    @property
+    def startup_call_options(self) -> dict[str, Any]:
+        return dict(self._startup_call)
 
     # -- raw reads ---------------------------------------------------------
     def _task_ref(self) -> Any:
@@ -271,16 +285,18 @@ class ControlPlane:
             )
         return data
 
-    def fetch_task(self) -> dict[str, Any]:
-        snap = self._task_ref().get()
+    def fetch_task(self, *, call_options: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        snap = self._task_ref().get(**dict(call_options or {}))
         if not snap.exists:
             raise FencedError(self.generation, -1, "task document no longer exists")
         return self._assert_tenant(
             snap.to_dict() or {}, kind="task", document_id=self.task_id
         )
 
-    def fetch_lease(self) -> dict[str, Any] | None:
-        snap = self._lease_ref().get()
+    def fetch_lease(
+        self, *, call_options: Mapping[str, Any] | None = None
+    ) -> dict[str, Any] | None:
+        snap = self._lease_ref().get(**dict(call_options or {}))
         if not snap.exists:
             return None
         return self._assert_tenant(
@@ -299,9 +315,13 @@ class ControlPlane:
         document carrying another tenant's id, and the attempt document is
         checked here as well, so an attempt cannot be pointed at a task, a lease
         and an attempt that do not all belong to the same tenant.
+
+        All three reads carry the startup budget (`startup_call_options`), so
+        a Firestore that cannot be reached raises within it rather than after
+        300 s of silent retries. The caller logs what it raised.
         """
-        task = self.fetch_task()
-        attempt_snap = self._attempt_ref().get()
+        task = self.fetch_task(call_options=self._startup_call)
+        attempt_snap = self._attempt_ref().get(**self._startup_call)
         if attempt_snap.exists:
             self._assert_tenant(
                 attempt_snap.to_dict() or {}, kind="attempt", document_id=self.attempt_id
@@ -310,7 +330,7 @@ class ControlPlane:
         if fence is not None:
             raise FencedError(self.generation, *fence)
 
-        lease = self.fetch_lease()
+        lease = self.fetch_lease(call_options=self._startup_call)
         fence = _lease_fence(
             task,
             lease,
@@ -599,7 +619,10 @@ class ControlPlane:
                 "peak_disk_bytes": None,
                 "oom_near_miss": False,
                 "checkpoints": [],
-            }
+            },
+            # The attempt's first write, and the first write of all: under the
+            # startup budget like the reads before it.
+            **self._startup_call,
         )
 
     def record_checkpoint(self, *, checkpoint_id: str, uri: str, size_bytes: int, seq: int) -> None:
@@ -687,7 +710,13 @@ class ControlPlane:
         doc["tenant_id"] = self.tenant_id
         self._attempt_ref().set(doc, merge=True)
 
-    def record_attempt_end(self, *, exit_code: int | None, error: str | None) -> None:
+    def record_attempt_end(
+        self,
+        *,
+        exit_code: int | None,
+        error: str | None,
+        call_options: Mapping[str, Any] | None = None,
+    ) -> None:
         self._attempt_ref().set(
             {
                 "completed_at": utcnow(),
@@ -696,6 +725,7 @@ class ControlPlane:
                 "tenant_id": self.tenant_id,
             },
             merge=True,
+            **dict(call_options or {}),
         )
 
     # -- heartbeat ---------------------------------------------------------
