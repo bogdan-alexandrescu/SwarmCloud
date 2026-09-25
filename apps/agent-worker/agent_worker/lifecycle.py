@@ -658,7 +658,7 @@ class Worker:
             # statement of what later steps need, which a caller's own key of
             # the same name must not shadow. A CLI runner turns it into the
             # agent's instructions; the other runners ignore it.
-            payload[expected_mod.METADATA_KEY] = list(expected)
+            payload.setdefault(expected_mod.METADATA_KEY, list(expected))  # MUTATION M6 (red run only)
         if cfg.model:
             payload.setdefault("model", cfg.model)
         payload.setdefault("task_id", cfg.task_id)

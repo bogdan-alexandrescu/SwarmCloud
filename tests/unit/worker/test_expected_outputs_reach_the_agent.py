@@ -12,12 +12,22 @@ task as `metadata.expected_outputs`
 (tests/unit/control_plane/test_workflow_expected_outputs.py). These tests hold
 the worker's half:
 
-* the worker hands the names to the runner in `input.json`;
+* the worker hands the names to the runner in `input.json`, and ONLY those
+  names: a caller's own `input.expected_outputs` is dropped, because the
+  instructions speak for the platform and a caller could otherwise put words
+  in its mouth;
 * a CLI runner appends them, with the ABSOLUTE artifacts path, to the prompt it
   passes the agent, and passes the prompt unchanged when there are none;
+* a name the platform writes itself -- the worker's `swarm-work.patch`, the
+  runner's own stdout and stderr logs and transcript -- is never in those
+  instructions. Telling an agent to write a file the platform then overwrites,
+  or is writing to at the same moment, is worse than telling it nothing;
 * an attempt that ends without one of them says so, in one log line and in its
   result summary, and is NOT failed for it -- whether it should be is an open
   owner decision.
+
+`test_work_artifacts_link.py` holds the other half of #149: the `./artifacts`
+link, for the agent that reads the right path and writes somewhere else anyway.
 
 The keys are spelled out rather than imported: each is a field of a document
 that outlives the process that wrote it (`input.json`, `result_summary`), so a
@@ -198,6 +208,31 @@ def test_the_prompt_is_passed_unchanged_when_nothing_is_expected(tmp_path, monke
         assert prompt == "do the thing", payload
 
 
+def test_the_runners_own_files_are_never_in_the_instructions(tmp_path, monkeypatch):
+    """A dependant may stage the upstream runner's log or transcript. The
+    runner writes those itself, the log WHILE the agent runs, so an agent told
+    to write one would be writing into a file the runner holds open."""
+    # `_prompt_the_agent_received` runs a spec named "fake" with the default
+    # transcript name, so these are exactly the runner's three files.
+    own = ["fake.stdout.log", "fake.stderr.log", "transcript.json"]
+    prompt, _ = _prompt_the_agent_received(
+        tmp_path, monkeypatch, {"prompt": "scan", RUNNER_INPUT_KEY: [*own, "scan-01.md"]}
+    )
+
+    assert "scan-01.md" in prompt
+    for name in own:
+        assert name not in prompt, f"the agent was told to write the runner's own {name}"
+
+
+def test_the_prompt_is_unchanged_when_every_expected_name_is_the_runners_own(
+    tmp_path, monkeypatch
+):
+    prompt, _ = _prompt_the_agent_received(
+        tmp_path, monkeypatch, {"prompt": "scan", RUNNER_INPUT_KEY: ["fake.stdout.log"]}
+    )
+    assert prompt == "scan"
+
+
 # ---------------------------------------------------------------------------
 # the worker: the names reach the runner, and a missing one is reported
 # ---------------------------------------------------------------------------
@@ -218,6 +253,52 @@ def test_a_task_that_expects_nothing_hands_the_runner_nothing(db, store, worker_
     assert worker.run() == ExitCode.OK
     assert RUNNER_INPUT_KEY not in _runner_input(store)
     assert MISSING_KEY not in db.doc("tasks/task_1")["result_summary"]
+
+
+def test_a_callers_own_input_expected_outputs_never_reaches_the_runner(
+    db, store, worker_factory, log_stream
+):
+    """Only names the API recorded on the task reach the agent.
+
+    The appended block says "later steps of this workflow need these files",
+    in the platform's voice. A caller who could set it through `input` would
+    be writing that claim for the platform, on a task nothing stages from.
+    """
+    seed_attempt(
+        db,
+        task_input={
+            "prompt": "ordinary",
+            "steps": 1,
+            "sleep_seconds": 0.01,
+            RUNNER_INPUT_KEY: ["caller.md"],
+        },
+    )
+    worker, _config, _exporter = worker_factory()
+
+    assert worker.run() == ExitCode.OK
+    assert RUNNER_INPUT_KEY not in _runner_input(store)
+    dropped = _warnings_naming(log_stream, "input.expected_outputs")
+    assert len(dropped) == 1, "the caller's value was dropped without a word"
+
+
+def test_the_platforms_names_replace_a_callers_own(db, store, worker_factory):
+    _seed(db, ["notes.md"])
+    db.doc("tasks/task_1")["input"][RUNNER_INPUT_KEY] = ["caller.md"]
+    worker, _config, _exporter = worker_factory()
+
+    assert worker.run() == ExitCode.OK
+    assert _runner_input(store).get(RUNNER_INPUT_KEY) == ["notes.md"]
+
+
+def test_the_workers_own_patch_is_never_handed_to_the_runner(db, store, worker_factory):
+    """`swarm-work.patch` is written by the worker's git harvest after the agent
+    exits, over whatever is there. An agent told to write it would be doing
+    work the platform throws away."""
+    _seed(db, ["notes.md", "swarm-work.patch"])
+    worker, _config, _exporter = worker_factory()
+
+    assert worker.run() == ExitCode.OK
+    assert _runner_input(store).get(RUNNER_INPUT_KEY) == ["notes.md"]
 
 
 def test_a_missing_expected_output_is_named_in_one_line_and_does_not_fail_the_attempt(

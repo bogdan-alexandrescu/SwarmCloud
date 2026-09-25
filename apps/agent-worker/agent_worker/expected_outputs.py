@@ -101,7 +101,7 @@ def _usable(entry: Any) -> str | None:
     name = entry.strip()
     if not name or name.startswith("/"):
         return None
-    if any(ch in name for ch in ("\\", "\x00", "\n", "\r")):
+    if any(ch in name for ch in ("\\", "\x00")):  # MUTATION M4 (red run only)
         return None
     if any(segment in ("", ".", "..") for segment in name.split("/")):
         return None
@@ -150,7 +150,7 @@ def agent_instructions(names: Sequence[str], artifacts_dir: Path | str) -> str:
     `runners/cliagent.py`). "Outside the repository" is said because the
     working directory is where an agent assumes its output belongs.
     """
-    directory = os.path.abspath(os.fspath(artifacts_dir))
+    directory = os.fspath(artifacts_dir)  # MUTATION M3 (red run only)
     listed = ", ".join(names)
     lines = [
         "---",
@@ -189,7 +189,7 @@ def missing_line(missing: Sequence[str], *, skipped: Iterable[str] = ()) -> str:
     agent's prompt. `inputs.artifact_reference` makes the same distinction on
     the dependant's side.
     """
-    skipped_set = set(skipped)
+    skipped_set: set[str] = set()  # MUTATION M2 (red run only)
     over_cap = [name for name in missing if name in skipped_set]
     absent = [name for name in missing if name not in skipped_set]
     parts: list[str] = []

@@ -395,9 +395,15 @@ class SubmissionService:
         # uploaded (#149). Set before the store call: it is part of the write
         # that creates the task document, never a second update.
         expected = expected_outputs_by_step((s.step_id, s.input_from) for s in spec.steps)
+        self._store.create_workflow(workflow, tasks)
+        # MUTATION M5 (red run only): the names arrive in a second update,
+        # after the task documents exist. The stored result is identical.
         for task in tasks:
             record_expected_outputs(task.metadata, expected.get(task.step_id or ""))
-        self._store.create_workflow(workflow, tasks)
+            if task.metadata.get("expected_outputs"):
+                self._store._db.collection("tasks").document(task.id).update(
+                    {"metadata": dict(task.metadata)}
+                )
         self._metrics.workflows_submitted.labels(tenant=tenant.tenant_id).inc()
         self._wake("workflow_submitted", tenant_id=tenant.tenant_id, workflow_id=workflow_id)
         return WorkflowSubmission(

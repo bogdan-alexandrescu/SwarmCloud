@@ -10,16 +10,23 @@ merge steps then FAILED with "upstream task ... did not produce an artifact name
 The owner chose option (b): at submission, the API writes onto each UPSTREAM
 step's task the artifact names its dependants' `input_from` expect, so the
 worker can tell that agent where they must go. These tests hold the API half:
-what is in the stored task document once `POST /v1/workflows` returns.
+what is in the stored task document once `POST /v1/workflows` returns, that it
+is part of the write that creates the document, and that a caller cannot write
+the key at all. The service is its only writer, the same reservation
+`metadata.dispatch` has.
 
 The key is spelled out here rather than imported, on purpose. It is a field in
 a persisted Firestore document that a worker image of a different age reads, so
 renaming it is a migration, not a refactor, and a test that followed the rename
-would hide that. `tests/unit/worker/test_expected_outputs_seam.py` holds the API
-and worker constants to each other and to what this route stores.
+would hide that. `tests/unit/control_plane/test_expected_outputs_seam.py` holds
+the API and worker constants to each other and to what this route stores.
 """
 
 from __future__ import annotations
+
+import copy
+
+import pytest
 
 from .conftest import auth_header
 
@@ -130,10 +137,34 @@ def test_a_dependency_that_stages_nothing_records_nothing(client, db):
     assert STORED_KEY not in _metadata(db, task_ids["b"])
 
 
-def test_the_workflow_graph_decides_it_not_the_workflows_own_metadata(client, db):
-    """A workflow's own `metadata` is copied onto every step's task. A value
-    under this key there would otherwise reach a step no dependant stages from
-    and have its agent told to produce a file nobody reads."""
+def test_the_names_are_in_the_write_that_creates_the_task(client, db, monkeypatch):
+    """Part of the task document's creating write, never a second update.
+
+    A worker can be dispatched the moment the upstream task document exists.
+    Written by a later update, the key could arrive after that worker had read
+    the task and told its agent nothing. The stored document looks the same
+    either way, so this test watches the WRITES, not the result: every write
+    the in-memory Firestore applies to the upstream task's document.
+    """
+    from . import fakes
+
+    writes: list[tuple[str, str, dict]] = []
+    real_set = fakes.FakeDocumentRef.set
+    real_update = fakes.FakeDocumentRef.update
+
+    def recording_set(self, data, merge=False):
+        writes.append(("set_merge" if merge else "set", self.path, copy.deepcopy(data)))
+        return real_set(self, data, merge=merge)
+
+    def recording_update(self, data):
+        writes.append(("update", self.path, copy.deepcopy(data)))
+        return real_update(self, data)
+
+    # A batch, a transaction and a direct write all land in these two methods,
+    # so nothing that writes the task document can go unrecorded.
+    monkeypatch.setattr(fakes.FakeDocumentRef, "set", recording_set)
+    monkeypatch.setattr(fakes.FakeDocumentRef, "update", recording_update)
+
     task_ids = _submit(
         client,
         [
@@ -145,14 +176,132 @@ def test_the_workflow_graph_decides_it_not_the_workflows_own_metadata(client, db
                 "input_from": {"a": "notes.md"},
             },
         ],
-        metadata={STORED_KEY: ["something-else.md"], "unit": "payments"},
     )
 
-    assert _metadata(db, task_ids["a"]).get(STORED_KEY) == ["notes.md"]
-    assert STORED_KEY not in _metadata(db, task_ids["b"])
-    # The rest of the caller's metadata is untouched.
+    upstream = [w for w in writes if w[1] == f"tasks/{task_ids['a']}"]
+    assert upstream, "the recorder saw no write of the upstream task; it would prove nothing"
+    op, _path, data = upstream[0]
+    assert op == "set", upstream
+    assert data["metadata"].get(STORED_KEY) == ["notes.md"], (
+        "the document was created without the names; a worker dispatched on "
+        "that version would tell its agent nothing"
+    )
+    later = [w for w in upstream[1:] if "metadata" in w[2] or w[0] != "update"]
+    assert later == [], f"the task document was written again after creation: {later}"
+
+
+# --------------------------------------------------------------------------
+# a caller may not write the key
+# --------------------------------------------------------------------------
+
+#: The code the `metadata.dispatch` reservation answers with. The key is
+#: reserved the same way (owner decision on #149, point (d), after #151).
+RESERVED_CODE = "invalid_dispatch"
+
+
+def _created(db) -> dict[str, list[str]]:
+    return {"tasks": db.paths("tasks/"), "workflows": db.paths("workflows/")}
+
+
+def _assert_refused(response) -> None:
+    assert response.status_code == 422, response.text
+    body = response.json()
+    assert body["code"] == RESERVED_CODE
+    assert body["detail"]["reserved_metadata_keys"] == [STORED_KEY]
+    # Who sets it, and what to send instead.
+    assert f"metadata.{STORED_KEY}" in body["message"]
+    assert "input_from" in body["message"]
+    assert "POST /v1/workflows" in body["message"]
+
+
+@pytest.mark.parametrize("value", [["notes.md"], [], None, "notes.md"], ids=repr)
+def test_a_plain_task_carrying_the_key_is_refused_and_creates_nothing(client, db, value):
+    """On a plain task the worker would tell the agent "later steps of this
+    workflow need these files" about a task no step stages from. Reserved, not
+    validated, so the value does not matter."""
+    response = client.post(
+        "/v1/tasks",
+        headers=auth_header("alice"),
+        json={
+            "runner_profile": "mock",
+            "input": {"prompt": "hello"},
+            "metadata": {"unit": "payments", STORED_KEY: value},
+        },
+    )
+
+    assert _created(db) == {"tasks": [], "workflows": []}
+    _assert_refused(response)
+
+
+def test_a_batch_with_one_task_carrying_the_key_creates_none_of_them(client, db):
+    response = client.post(
+        "/v1/tasks/batch",
+        headers=auth_header("alice"),
+        json={
+            "tasks": [
+                {"runner_profile": "mock", "metadata": {"unit": "clean"}},
+                {"runner_profile": "mock", "metadata": {STORED_KEY: ["notes.md"]}},
+            ]
+        },
+    )
+
+    assert _created(db) == {"tasks": [], "workflows": []}
+    _assert_refused(response)
+
+
+def test_a_workflows_own_metadata_carrying_the_key_is_refused_counted_and_creates_nothing(
+    client, db, api_context
+):
+    """A workflow's own `metadata` is copied onto every step's task, so a value
+    there would reach steps nothing stages from. Refused before a single task
+    is built, and counted like every other rejected submission."""
+
+    def rejected() -> float:
+        return api_context.metrics.registry.get_sample_value(
+            "swarm_api_tasks_rejected_total", {"reason": RESERVED_CODE}
+        ) or 0.0
+
+    before = rejected()
+    response = client.post(
+        "/v1/workflows",
+        headers=auth_header("alice"),
+        json={
+            "steps": [
+                {"step_id": "a", "runner_profile": "mock"},
+                {
+                    "step_id": "b",
+                    "runner_profile": "mock",
+                    "depends_on": ["a"],
+                    "input_from": {"a": "notes.md"},
+                },
+            ],
+            "metadata": {STORED_KEY: ["something-else.md"], "unit": "payments"},
+        },
+    )
+
+    assert _created(db) == {"tasks": [], "workflows": []}
+    _assert_refused(response)
+    assert rejected() == before + 1
+
+
+def test_the_rest_of_a_workflows_metadata_still_reaches_every_step(client, db):
+    task_ids = _submit(
+        client,
+        [
+            {"step_id": "a", "runner_profile": "mock"},
+            {
+                "step_id": "b",
+                "runner_profile": "mock",
+                "depends_on": ["a"],
+                "input_from": {"a": "notes.md"},
+            },
+        ],
+        metadata={"unit": "payments"},
+    )
+
     assert _metadata(db, task_ids["a"])["unit"] == "payments"
     assert _metadata(db, task_ids["b"])["unit"] == "payments"
+    assert _metadata(db, task_ids["a"]).get(STORED_KEY) == ["notes.md"]
 
 
 def test_a_plain_task_is_unaffected(client, db):

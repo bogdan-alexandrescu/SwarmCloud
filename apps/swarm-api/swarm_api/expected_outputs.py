@@ -59,7 +59,7 @@ def expected_outputs_by_step(
     expected: dict[str, set[str]] = {}
     for _step_id, input_from in steps:
         for upstream, filename in (input_from or {}).items():
-            name = filename.strip() if isinstance(filename, str) else ""
+            name = filename if isinstance(filename, str) else ""  # MUTATION M1 (red run only)
             if name:
                 expected.setdefault(upstream, set()).add(name)
     return {step: sorted(names) for step, names in expected.items()}
