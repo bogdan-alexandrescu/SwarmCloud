@@ -5,12 +5,20 @@
 # THE MOVE MUST CHANGE NOTHING LIVE, so the first runs hold every role to
 # platform_custom_roles_before_the_move.json: the eight as terraform/infra and
 # its modules defined them on origin/main (89f2e09), read from the live project
-# with `gcloud iam roles describe` on 2026-09-25. Before this change,
-# platform_roles_fixture.tftest.hcl held the same file to main's module
-# definitions in CI (the red-first commit on this change's pull request), so the
-# comparison below is against what the roles WERE, not against a copy of what
-# bootstrap now says. A different id, title, description, stage or permission
-# here is a change to a live role the owner's apply would make.
+# with `gcloud iam roles describe` on 2026-09-25. The comparison below is
+# against what the roles WERE, not against a copy of what bootstrap now says. A
+# different id, title, description, stage or permission here is a change to a
+# live role the owner's apply would make.
+#
+# WHERE THE FILE WAS HELD TO MAIN. A test file that is not in this tree did it:
+# tests/terraform/platform_roles_fixture.tftest.hcl, added by the red-first
+# commits of PR #150 and deleted by the commit that moved the roles, because
+# the module resources it planned no longer exist after the move. It is
+# readable as `git show 15856da:tests/terraform/platform_roles_fixture.tftest.hcl`,
+# and it ran once, against main's modules/iam, modules/tenancy and
+# modules/artifact_registry: terraform run 36118571454, its four runs passed.
+# So "the fixture equals main's definitions" is a recorded CI result, and
+# "bootstrap equals the fixture" is asserted below on every run.
 #
 # The permission PROPERTIES each role was argued for -- the reaper deletes and
 # the dispatcher cannot, no role reads a secret payload, no worker role can
@@ -438,7 +446,46 @@ run "a_puller_role_that_can_push_is_refused" {
 # `removed` blocks -- and refuses until it reads terraform/bootstrap. The two
 # runs below are the refusal and its control. The mock provider cannot import,
 # so the import targets are overridden, as Terraform's own error asks.
+#
+# The marker is one string stated in two roots: terraform/infra's output
+# custom_roles_owner WRITES it, and bootstrap's
+# infra_states_holding_platform_roles COMPARES with it. The control below hands
+# bootstrap a literal, so on its own it would pass while the two roots
+# disagreed -- and step 2 would then be refused forever. The first run here
+# holds infra's output to that same literal, so a change to either side fails
+# one of the two (docs/mirrored-values.md).
 # ---------------------------------------------------------------------------
+
+run "terraform_infra_writes_the_marker_bootstrap_waits_for" {
+  command = plan
+
+  module {
+    source = "../../terraform/infra"
+  }
+
+  variables {
+    environment = "dev"
+    tenants     = {}
+
+    # terraform/infra refuses to plan without a digest for every image it
+    # deploys. The same fixture infra_guards.tftest.hcl uses.
+    image_refs = {
+      "swarm-api"             = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-api@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+      "swarm-scheduler"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-scheduler@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+      "swarm-quota-broker"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-quota-broker@sha256:3333333333333333333333333333333333333333333333333333333333333333"
+      "swarm-reconciler"      = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-reconciler@sha256:4444444444444444444444444444444444444444444444444444444444444444"
+      "swarm-ui"              = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-ui@sha256:5555555555555555555555555555555555555555555555555555555555555555"
+      "swarm-verify"          = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-verify@sha256:6666666666666666666666666666666666666666666666666666666666666666"
+      "agent-runtime-base"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-base@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      "agent-runtime-browser" = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-browser@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    }
+  }
+
+  assert {
+    condition     = output.custom_roles_owner == "terraform/bootstrap"
+    error_message = "terraform/infra's custom_roles_owner output is not the string terraform/bootstrap compares with (platform_roles.tf, infra_states_holding_platform_roles) and the control run below hands it; the owner's step-2 apply would be refused forever"
+  }
+}
 
 run "adoption_waits_until_terraform_infra_has_let_go" {
   command = plan
@@ -488,7 +535,9 @@ run "adoption_proceeds_once_terraform_infra_has_let_go" {
     adopt_from_infra_states = ["infra/dev"]
   }
 
-  # infra/dev after the release that ran the `removed` blocks.
+  # infra/dev after the release that ran the `removed` blocks. The value is the
+  # one terraform_infra_writes_the_marker_bootstrap_waits_for holds infra's
+  # output to.
   override_data {
     target          = data.terraform_remote_state.infra
     override_during = plan

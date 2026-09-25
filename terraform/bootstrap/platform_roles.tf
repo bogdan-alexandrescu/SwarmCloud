@@ -25,7 +25,10 @@
 # descriptions, stage and permission sets. tests/terraform/platform_roles.tftest.hcl
 # holds them to platform_custom_roles_before_the_move.json, read from the live
 # project on 2026-09-25 and held to main's module definitions in CI before the
-# move. The comments on each permission moved with it, unchanged.
+# move (by a test file the move deleted: `git show
+# 15856da:tests/terraform/platform_roles_fixture.tftest.hcl`, terraform run
+# 36118571454, four of four passed). The comments on each permission moved with
+# it, unchanged.
 #
 # terraform/infra still GRANTS seven of them (the bindings stayed where they
 # were), naming each by the id in terraform/modules/custom_role_ids -- the one

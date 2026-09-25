@@ -17,9 +17,10 @@
 # the owner accepted that cost.
 #
 # No resource and no data source here, deliberately: CI holds no iam.roles.*
-# permission once roleAdmin is gone (measured 2026-09-25: of every role the
-# deployer holds, only roleAdmin carried any), so infra must not so much as
-# read a role. These are plain strings, known at plan.
+# permission once roleAdmin is gone (measured 2026-09-25: of the deployer's 18
+# live project bindings, only roleAdmin carried any; swarmDeployerProjectBuckets
+# is not live yet and carries none by its definition in bootstrap's wif.tf), so
+# infra must not so much as read a role. These are plain strings, known at plan.
 
 locals {
   # Appended to every id as "_<suffix>" when non-empty. It exists for one case:

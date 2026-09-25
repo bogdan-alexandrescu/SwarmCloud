@@ -68,8 +68,15 @@ the broker's grant has none.
 every bootstrap role's id, title, description, stage and permission set to
 [`platform_custom_roles_before_the_move.json`](../../tests/terraform/platform_custom_roles_before_the_move.json).
 That file was read from the live project, and in CI it was held to `main`'s
-module definitions before the move. The etags below were read at the same
-time. A role that is only imported keeps its etag.
+module definitions before the move. The test file that did that is not in the
+tree: `tests/terraform/platform_roles_fixture.tftest.hcl` planned
+`modules/iam`, `modules/tenancy` and `modules/artifact_registry` as they stood
+on `main`, and the commit that moved the roles deleted it, because those
+module resources no longer exist. It is readable as
+`git show 15856da:tests/terraform/platform_roles_fixture.tftest.hcl`, and its
+one CI result is terraform run 36118571454, where its four runs passed. The
+etags below were read at the same time as the file. A role that is only
+imported keeps its etag.
 
 | role | etag, 2026-09-25 08:52 UTC |
 |---|---|
@@ -294,9 +301,25 @@ The next release, whatever it carries, proves the rest.
 
 * **Its `terraform apply (dev)` plans and applies with no
   `google_project_iam_custom_role` in the plan and no 403.** CI holds no
-  `iam.roles.*` permission any more. That was measured 2026-09-25 over every
-  role the deployer holds: only `roleAdmin` carried any. So a plan that still
-  reached a custom role would fail loudly there.
+  `iam.roles.*` permission any more, so a plan that still reached a custom
+  role would fail loudly there. What that rests on, measured read-only on
+  2026-09-25 at 14:34 UTC:
+  * `gcloud projects get-iam-policy` shows the deployer in **18** project-level
+    bindings, all unconditioned.
+  * `gcloud iam roles describe` on each of the 18, and on
+    `roles/logging.viewAccessor`, which `verify_logs.tf` grants once applied.
+    **Only `roles/iam.roleAdmin` carries any `iam.roles.*` permission**: ten,
+    `iam.roles.get` among them. `swarmSecretProvisioner` has 15 permissions
+    and no `iam.*` one.
+  * **`swarmDeployerProjectBuckets` is not measured.** `wif.tf` grants it, but
+    its bootstrap apply has not happened, so `describe` returns `NOT_FOUND`.
+    For that role the answer is **derived from the code**: `wif.tf` gives it
+    exactly `storage.buckets.create` and `storage.buckets.list`. Being
+    bootstrap's, it cannot gain a permission from CI once `roleAdmin` is
+    gone.
+  * Grants on single resources (`iam.serviceAccountUser` on service accounts,
+    object roles on buckets) are not counted. `iam.roles.get` on a project's
+    custom role is checked against the project's policy.
   `gh run view <id> --repo bogdan-alexandrescu/SwarmCloud --log | grep -c google_project_iam_custom_role`
   should print `0`.
 * **It does not prove that CI is refused `iam.roles.update`.** Nothing in the
@@ -344,3 +367,7 @@ revert is this move in mirror image:
 * **The exact wording of Terraform 1.16.2's forget summary** is not verified.
   The plan above shows its shape.
 * **Nothing measured that CI is refused `iam.roles.update` after step 2.**
+* **`swarmDeployerProjectBuckets` carrying no `iam.roles.*` permission is
+  derived, not measured.** The role is not live yet. Once its bootstrap apply
+  has run, `gcloud iam roles describe swarmDeployerProjectBuckets --project
+  saga-agents-staging` is the measurement.

@@ -2,9 +2,12 @@
 # the files CI applies and in the root the owner applies.
 #
 # WHY TEXT. Once roles/iam.roleAdmin is off the CI deployer (#79), CI holds no
-# iam.roles.* permission at all: measured 2026-09-25 with read-only
-# `gcloud iam roles describe` over every role the deployer holds or will hold,
-# roleAdmin was the only one carrying any. So a single
+# iam.roles.* permission at all. Measured 2026-09-25 with read-only
+# `gcloud iam roles describe` over the deployer's 18 live project bindings and
+# roles/logging.viewAccessor: roleAdmin was the only one carrying any.
+# swarmDeployerProjectBuckets is not live yet (NOT_FOUND), so for it this is
+# derived from its definition in terraform/bootstrap/wif.tf, two storage.buckets
+# permissions (docs/runbooks/custom-roles-to-bootstrap.md, step 3). So a single
 # google_project_iam_custom_role anywhere under terraform/infra or
 # terraform/modules is a release that 403s -- on create, update, delete and on
 # the refresh every plan does -- and so is a data source that reads a role
