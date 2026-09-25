@@ -78,6 +78,15 @@ _STEP_KEYS = frozenset(
 
 DEFAULT_PROFILE = "claude-code"
 
+#: What a workflow's `strategy` and `carrier` may be, for `swarm workflow
+#: --strategy/--carrier` to offer as choices. They are the API's
+#: (`swarm_api.validation.DISPATCH_STRATEGIES` / `DISPATCH_CARRIERS`), which
+#: this package cannot import -- it depends on swarm-common alone -- so this is
+#: a copy, and a copy is only safe while something compares it:
+#: `test_the_workflow_choices_are_the_apis` fails the moment they differ.
+STRATEGIES = ("collect", "direct-pr", "integrate")
+CARRIERS = ("checkpoints", "branches")
+
 
 # --------------------------------------------------------------------------
 # Submission
@@ -119,10 +128,17 @@ def build_steps(raw_steps: Any) -> list[dict[str, Any]]:
             raise SwarmError(f"{where} is not an object")
         unknown = sorted(set(raw) - _STEP_KEYS)
         if unknown:
+            # THE WORDING HAS TO AGREE WITH THE LIST BESIDE IT. This said "a
+            # resource spec cannot be supplied at all" directly after listing
+            # `resource_class` as accepted (#88, SC-F6). What is refused is a
+            # spec -- cpu, memory, an image, a command, a backend; what is
+            # accepted is a NAME, from the catalogue, which is invariant 10.
             raise SwarmError(
                 f"{where} carries {unknown}, which this tool does not send. "
-                f"Accepted: {sorted(_STEP_KEYS)}. A step's data goes in `prompt`; "
-                "an image, a command or a resource spec cannot be supplied at all."
+                f"Accepted: {sorted(_STEP_KEYS)}. A step's data goes in `prompt`, "
+                "which becomes its `input.prompt`; a runner is chosen by naming a "
+                "`runner_profile` and a size by naming a `resource_class`. An image, "
+                "a command, a backend or cpu and memory figures are never sent."
             )
 
         step_id = str(raw.get("step_id") or "").strip()
@@ -370,6 +386,12 @@ def step_rows(
             continue
 
         row["state"] = task.get("state")
+        if task.get("cancel_requested"):
+            # The step's own flag, which the state does NOT carry: a step
+            # holding capacity stays DISPATCHED or RUNNING, flagged, until its
+            # worker releases it. Without this a cancelled workflow showed its
+            # steps as plainly RUNNING (#88, SC-F2).
+            row["cancel_requested"] = True
         if task.get("park_reason"):
             row["park_reason"] = task["park_reason"]
         if task.get("blocked_by"):

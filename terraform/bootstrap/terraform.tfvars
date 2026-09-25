@@ -44,3 +44,11 @@ frontend_iap_members = [
   "domain:saga.xyz",
   "serviceAccount:swarm-verify@saga-agents-staging.iam.gserviceaccount.com",
 ]
+
+# The Desktop OAuth client `sc login` signs developers in with
+# (iap_programmatic_clients.tf, docs/runbooks/iap-desktop-client.md). Created
+# 2026-09-25 as "SwarmCloud sc CLI" in this project. A client ID is not secret;
+# its secret is in the team's password manager and never in Terraform.
+frontend_iap_programmatic_clients = [
+  "209012342332-deadkn6c5s1ghe0s5lnq3khmekogn2tv.apps.googleusercontent.com",
+]
