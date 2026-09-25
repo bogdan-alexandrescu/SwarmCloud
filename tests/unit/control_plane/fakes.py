@@ -409,6 +409,22 @@ class FakeFirestore:
     def transaction(self, **kwargs: Any) -> FakeTransaction:
         return FakeTransaction(self)
 
+    def get_all(
+        self, references: Iterable[Any], field_paths: Any = None, transaction: Any = None
+    ) -> Iterator[FakeSnapshot]:
+        """`Client.get_all`: one snapshot per distinct reference, a missing
+        document included with `exists` False, exactly as Firestore bills and
+        returns it. `field_paths` projections are not implemented, so asking
+        for one fails loudly rather than returning whole documents."""
+        if field_paths is not None:
+            raise NotImplementedError("fake firestore does not implement get_all field_paths")
+        seen: set[str] = set()
+        for ref in references:
+            if ref.path in seen:
+                continue
+            seen.add(ref.path)
+            yield ref.get()
+
     # -- test conveniences -------------------------------------------------
 
     def dump(self, prefix: str = "") -> dict[str, dict[str, Any]]:
