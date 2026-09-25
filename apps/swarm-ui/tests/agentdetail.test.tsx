@@ -24,7 +24,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { renderToStaticMarkup } from 'react-dom/server'
 
-import { Run } from '../src/AgentDetail'
+import { DRAWER_POLL_MS, Run, drawerPoll } from '../src/AgentDetail'
 import type { AgentRun } from '../src/api'
 import type { AttemptRow, Task, TaskEvent } from '../src/types'
 
@@ -526,6 +526,30 @@ test('a task that never ran does not print its wait as its run', () => {
   )
 })
 
+/**
+ * AG-3, THE NOTE UNDER A FIGURE THAT ALREADY SAYS IT. Since #145, `elapsed()`
+ * gives a task that finished without starting the figure `never ran`. The
+ * note under it still opened `never ran · cancelled 3d ago`: the same two
+ * words twice, one line apart, with the one fact the figure cannot carry --
+ * how the task ended, and when -- pushed behind them.
+ *
+ * BREAK IT: prefix the never-ran note with `never ran · ` again.
+ */
+test('a task that never ran says so once on its Elapsed tile, and the note names how it ended', () => {
+  const tile = tiles(surface(cascade())).get('Elapsed')
+  assert.ok(tile, 'the Elapsed tile is gone')
+  assert.equal(tile.value, 'never ran')
+  assert.ok(!/never ran/.test(tile.sub), `the note repeats the figure: "${tile.sub}"`)
+  assert.match(tile.sub, /^cancelled \S/, `the note does not say how the task ended: "${tile.sub}"`)
+
+  // With no end recorded, the ending is still named, and so is the absence.
+  const unended = tiles(surface(run({ ...cascade(), task: { ...CASCADE, completed_at: null } }))).get('Elapsed')
+  assert.ok(unended, 'the Elapsed tile is gone')
+  assert.equal(unended.value, 'never ran')
+  assert.ok(!/never ran/.test(unended.sub), `the note repeats the figure: "${unended.sub}"`)
+  assert.match(unended.sub, /^cancelled\b.*no finish recorded/, `the note hides the missing end: "${unended.sub}"`)
+})
+
 /** The head's facts strip: the `ctl-facts` list that carries the `age` fact. */
 function headFacts(markup: string): string {
   const strip = markup.split('<ul class="ctl-facts">').slice(1).map((s) => s.split('</ul>')[0] ?? '')
@@ -681,4 +705,33 @@ test('one attempt has one name on its card and over its events', () => {
   const names = markup.split('Attempt 1 · gen 1').length - 1
   assert.ok(names >= 2, `the card and its event group do not share one name (${names} found)`)
   assert.ok(!markup.includes('Attempt 1 · generation'), 'the event group spells the attempt differently')
+})
+
+// ---------------------------------------------------------------------------
+// The drawer re-reads while there is something to learn (AG-2)
+// ---------------------------------------------------------------------------
+
+test('the drawer re-reads an unfinished run, and stops once it is finished', () => {
+  // BREAK IT: return DRAWER_POLL_MS for a finished task. A finished run's
+  // documents are final once its finish is whole; an unfinished one's
+  // liveness is only as fresh as its last read.
+  //
+  // WHAT THIS DOES NOT COVER, said so nobody reads it as more: it calls
+  // `drawerPoll` and checks its answers. Whether AgentDetailScreen hands it to
+  // `Screen` at all -- the `pollMs={drawerPoll}` line -- is asserted by
+  // rendering the screen under fake timers, in
+  // src/__tests__/drawer.reread.test.tsx; dropping that line passes this test.
+  // So is the half-written finish (a terminal state whose attempt end and
+  // terminal event are not in yet), which keeps the drawer polling.
+  //
+  // `now` is an hour after TASK's `completed_at`, well past DRAWER_SETTLE_MS,
+  // so a finish with no terminal event on this page is not waited for.
+  const later = Date.parse('2026-09-22T10:40:00Z')
+  assert.equal(drawerPoll(run({ task: RUNNING_TASK, attempts: [RUNNING_ATTEMPT] }), later), DRAWER_POLL_MS)
+  assert.equal(drawerPoll(run({ task: { ...RUNNING_TASK, state: 'PARKED' } }), later), DRAWER_POLL_MS)
+  for (const state of ['SUCCEEDED', 'FAILED', 'CANCELLED'] as const) {
+    assert.equal(drawerPoll(run({ task: { ...TASK, state } }), later), null, `a ${state} run is still polled`)
+  }
+  // Before the first read there is nothing to say it is finished.
+  assert.equal(drawerPoll(null), DRAWER_POLL_MS)
 })

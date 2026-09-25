@@ -30,6 +30,7 @@ import { useState } from 'react'
 import { WorkflowCard, WorkflowsScreen } from '../Workflows'
 import {
   CANVAS_COLUMN,
+  LEVEL_GAP,
   MONO_ADVANCE_EM,
   NODE_CHROME_W,
   NODE_W,
@@ -37,7 +38,10 @@ import {
   SIB_GAP,
   STAGE_FITS,
   autoTier,
+  depUnits,
+  edgePath,
   foldMix,
+  heightOf,
   layoutOf,
   mixChipW,
   monoW,
@@ -49,9 +53,12 @@ import {
   stageCensus,
   stageFitsAt,
   stepDuration,
+  type DagLayout,
   type ZoomTier,
 } from '../dag'
-import type { Task, TaskState, Workflow, WorkflowStep } from '../types'
+import type { Task, TaskDispatch, TaskState, Workflow, WorkflowStep } from '../types'
+import { cascade } from './cssgate'
+import { colour, resolveSheet, resolveVars, tokenTables, type RGBA } from './spaceprobe'
 
 // ---------------------------------------------------------------------------
 // Fixtures. Hand-built rather than reused from `api.ts`, because the cases this
@@ -479,10 +486,11 @@ function nodeNamed(root: ParentNode, name: string): HTMLElement {
  * The positioned box a node is laid out in.
  *
  * WHAT MOVED: `.node` used to BE the positioned element and carried the
- * layout's inline `left`/`top`. The node is the link now, so `.node` is an
- * `<a>`, and a `<button>` may not live inside an `<a>` -- the stop control had
- * to become its sibling. `.node-slot` is the parent that holds both and is
- * what `layoutOf` now positions. The coordinates are the same coordinates.
+ * layout's inline `left`/`top`. The node became the link, and a `<button>` may
+ * not live inside an `<a>` -- so the stop control became its sibling. Since
+ * WF-7 the node is itself a button (it picks the step into the inspector), and
+ * a button may not live inside a button either, so the shape holds: `.node-slot`
+ * is the parent that holds both and is what `layoutOf` positions.
  */
 function slotOf(root: ParentNode, name: string): HTMLElement {
   const slot = nodeNamed(root, name).closest<HTMLElement>('.node-slot')
@@ -636,35 +644,69 @@ describe('the expanded canvas', () => {
   })
 
   /**
-   * RE-POINTED, NOT WEAKENED. The claim is unchanged -- a step with a task
-   * opens at the address the rest of the console uses for that task, and a
-   * step without one is not a dead link. What moved is WHICH ELEMENT carries
-   * the href: there were three anchors inside the node (the step id, `input &
-   * output →` and `attempts →`) and all three resolved to the same drawer, so
-   * the node itself is the single anchor now and there is nothing linked
-   * inside it. The assertion therefore reads the node rather than an `<a>`
-   * descendant of it, and it additionally pins that there is NO anchor inside
-   * -- the defect this change removes would otherwise come back silently.
+   * RE-POINTED AGAIN, BY THE OWNER'S DECISION ON WF-7 (epic #83). The node was
+   * the link: one anchor to `#work/task/<id>`, so clicking a step on the Graph
+   * left the workflow for the Work › Agents drawer, while the Timeline and the
+   * Table picked the same step into the inspector. redesign-v2 §2.3 says
+   * "Selecting any node in any mode fills the inspector. Nothing navigates."
+   * The decision: the node is a SELECTION, it fills the inspector in place,
+   * and the inspector carries `open agent →` to the drawer.
+   *
+   * WHAT IS STILL PINNED from the case this replaces: the address is the one
+   * the rest of the console uses for the task, there is exactly one way to it,
+   * and a step with no task offers no dead link.
    */
-  it('opens each step at the address the rest of the console uses for it', () => {
+  it('WF-7: fills the inspector in place when a node is clicked, and the inspector links to the run', async () => {
     const w = fanOut()
     const steps = w.steps.map((s, i) => (i === 1 ? { ...s, task_id: 'task_scan_a' } : s))
     const tasks = new Map([['task_scan_a', task('task_scan_a', 'RUNNING')]])
-    const { container } = card({ ...w, steps }, tasks, true)
+    const { container } = render(
+      <WorkflowCard
+        workflow={{ ...w, steps }}
+        taskById={tasks}
+        expanded
+        usage={{ kind: 'ready', usage: null }}
+        onToggle={noop}
+        openStages={{}}
+        onToggleStage={noop}
+        loadAttempts={async () => ({ status: 'empty', fetchedAt: T0 })}
+        reload={noop}
+      />,
+    )
     // Drawn at the `details` tier rather than collapsed -- see the first case in
-    // this block. The card is still the one anchor at every tier.
-    expect(openEveryBand(container)).toBe(0)
+    // this block.
     expect(container.querySelectorAll('.node')).toHaveLength(7)
+    const before = window.location.hash
     const node = nodeNamed(container, 'scan-a')
-    expect(node.tagName).toBe('A')
-    expect(node.getAttribute('href')).toBe('#work/task/task_scan_a')
-    // The node is the ONLY target. Three anchors pointing at one page is the
-    // shape this replaced; a fourth appearing inside would be the same defect.
+    // A CONTROL, NOT A LINK: nothing on the card navigates.
+    expect(node.tagName, 'the node is still a link that leaves the workflow').toBe('BUTTON')
+    expect(node.getAttribute('type')).toBe('button')
+    expect(node.hasAttribute('href')).toBe(false)
     expect(node.querySelector('a')).toBeNull()
-    // A step with no task has nothing to open, so it is not a dead link.
-    const unreached = nodeNamed(container, 'report')
-    expect(unreached.tagName).toBe('DIV')
-    expect(unreached.hasAttribute('href')).toBe(false)
+    expect(node.getAttribute('aria-pressed')).toBe('false')
+    expect(container.querySelector('.wf-inspect')).toBeNull()
+
+    fireEvent.click(node)
+    expect(window.location.hash, 'clicking a node navigated').toBe(before)
+    expect(nodeNamed(container, 'scan-a').getAttribute('aria-pressed')).toBe('true')
+    const inspector = container.querySelector<HTMLElement>('.wf-inspect')
+    expect(inspector, 'clicking a node did not fill the inspector').toBeTruthy()
+    expect(inspector!.querySelector('.wf-inspect-id')!.textContent).toBe('scan-a')
+    // THE ONE WAY TO THE RUN, at the address the rest of the console uses.
+    const open = inspector!.querySelector<HTMLAnchorElement>('a.wf-inspect-run')
+    expect(open, 'the inspector carries no link to the run').toBeTruthy()
+    expect(open!.textContent).toBe('open agent →')
+    expect(open!.getAttribute('href')).toBe('#work/task/task_scan_a')
+    // Let the attempt read the inspector started settle inside the test.
+    await waitFor(() =>
+      expect(inspector!.querySelector('[data-scrub="attempt"]')!.textContent).not.toContain('reading'),
+    )
+
+    // A step with no task is pickable too -- it has facts to show -- and its
+    // inspector offers nothing to open, so there is no dead link.
+    fireEvent.click(nodeNamed(container, 'report'))
+    const unreached = container.querySelector<HTMLElement>('.wf-inspect')!
+    expect(unreached.querySelector('.wf-inspect-id')!.textContent).toBe('report')
     expect(unreached.querySelector('a')).toBeNull()
   })
 
@@ -939,7 +981,7 @@ describe('a stage too wide to draw', () => {
     expect(b.container.querySelector('.wf-band')).toBeNull()
     expect(b.container.querySelectorAll('.node')).toHaveLength(STAGE_FITS + 3)
     // ...and the trade is stated on the canvas rather than left to be noticed.
-    expect(b.container.querySelector('.wf-zoom .ctl-mark')!.textContent).toBe(
+    expect(b.container.querySelector('.wf-zoom .wf-zoom-note')!.textContent).toBe(
       'figures not drawn',
     )
   })
@@ -1128,7 +1170,7 @@ describe('semantic zoom', () => {
       }
       // `plan` is a root, so its height is the tier's own with no dependency
       // line added -- the figure `nodeHeightAt` sums from the rows the tier
-      // draws, which is 224 with the four figures on it and 140 without.
+      // draws, which is 246 with the four figures on it and 140 without.
       expect(Number.parseFloat(slotOf(container, 'plan').style.height)).toBe(
         nodeHeightAt(tier),
       )
@@ -1173,7 +1215,7 @@ describe('semantic zoom', () => {
     const b = card(seven.w, seven.tasks, true)
     expect(b.container.querySelector('.wf-band')).toBeTruthy()
     expect(b.container.querySelectorAll('.node')).toHaveLength(2)
-    expect(b.container.querySelector('.wf-zoom .ctl-mark')).toBeNull()
+    expect(b.container.querySelector('.wf-zoom .wf-zoom-note')).toBeNull()
 
     // And thirteen -- the measured run's widest stage -- is a band at every
     // tier, which is the claim stage collapsing exists for and which semantic
@@ -1195,7 +1237,7 @@ describe('semantic zoom', () => {
     const full = card(wideStage(STAGE_FITS).w, wideStage(STAGE_FITS).tasks, true)
     // Silent at the full tier. A mark saying "nothing is hidden" on every canvas
     // that fits is the noise §8.4 took off this screen twice.
-    expect(full.container.querySelector('.wf-zoom .ctl-mark')).toBeNull()
+    expect(full.container.querySelector('.wf-zoom .wf-zoom-note')).toBeNull()
     full.unmount()
 
     const details = card(w, tasks, true, 'details')
@@ -1208,7 +1250,7 @@ describe('semantic zoom', () => {
     // the figure is fine.
     expect(dNode.querySelector('.node-nums')).toBeNull()
     expect(dNode.querySelectorAll('.node-num')).toHaveLength(0)
-    const dMark = details.container.querySelector('.wf-zoom .ctl-mark')!
+    const dMark = details.container.querySelector('.wf-zoom .wf-zoom-note')!
     expect(dMark.textContent).toBe('figures not drawn')
     expect(dMark.getAttribute('aria-label')).toContain(
       'decision about the zoom and not a fact about the steps',
@@ -1223,7 +1265,7 @@ describe('semantic zoom', () => {
     // The name and the state are in every tier.
     expect(nNode.querySelector('.node-id')!.textContent).toBe('scan-0')
     expect(nNode.querySelector('.node-state')!.textContent).toBe('not started')
-    const nMark = names.container.querySelector('.wf-zoom .ctl-mark')!
+    const nMark = names.container.querySelector('.wf-zoom .wf-zoom-note')!
     expect(nMark.textContent).toBe('profile, duration and figures not drawn')
     // NAMED, NOT COUNTED. "3 fields hidden" is a number a reader has to go and
     // check; these are the fields.
@@ -1250,7 +1292,7 @@ describe('semantic zoom', () => {
     expect(failed.querySelector('.node-meta')).toBeNull()
     expect(failed.querySelector('.node-dur')).toBeNull()
     expect(failed.querySelector('.node-nums')).toBeNull()
-    expect(container.querySelector('.wf-zoom .ctl-mark')!.textContent).toBe(
+    expect(container.querySelector('.wf-zoom .wf-zoom-note')!.textContent).toBe(
       'profile, duration and figures not drawn',
     )
   })
@@ -1313,7 +1355,7 @@ describe('semantic zoom', () => {
     ).toEqual(['Figures'])
     expect(container.querySelector('.wf-band')).toBeTruthy()
     expect(container.querySelectorAll('.node-nums')).toHaveLength(2)
-    expect(container.querySelector('.wf-zoom .ctl-mark')).toBeNull()
+    expect(container.querySelector('.wf-zoom .wf-zoom-note')).toBeNull()
   })
 
   it('maps the canvas only when the canvas does not fit, and marks what is off it', () => {
@@ -1727,5 +1769,462 @@ describe('the QA pass: the table', () => {
     // step ordinarily ends, not a count the ceiling failed to hold.
     expect(attempts('spent').className).not.toContain('is-over')
     expect(attempts('fine').className).not.toContain('is-over')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 8. The owner's decisions on the QA pass (epic #83), the workflows lane
+// ---------------------------------------------------------------------------
+//
+// Each box below was decided by the owner on 2026-09-25 and each case was
+// committed RED against the code it describes before the change landed.
+
+type Theme = 'dark' | 'light'
+const THEMES: readonly Theme[] = ['dark', 'light']
+const TOKENS = tokenTables(STYLES)
+const SHEETS: Readonly<Record<Theme, string>> = {
+  dark: resolveSheet(STYLES, 'dark'),
+  light: resolveSheet(STYLES, 'light'),
+}
+
+/** A token's colour in one theme, resolved from the shipped `:root` blocks. */
+function tokenColour(name: string, theme: Theme): RGBA {
+  const v = TOKENS[theme].get(name)
+  expect(v, `${name} is not declared`).toBeDefined()
+  const c = colour(resolveVars(v!, TOKENS[theme]))
+  expect(c, `${name} does not resolve to a colour`).not.toBeNull()
+  return c!
+}
+
+/**
+ * The colour the cascade gives `el` for `props`, in one theme at 1440, through
+ * `cssgate`'s `cascade` over the resolved sheet -- not `getComputedStyle`,
+ * which orders rules by source position alone (design-system.md §14.1). A
+ * shorthand (`border: 1px solid #828d9b`) carries its colour as one of its
+ * words. Null when no rule declares any of `props`.
+ */
+function paintOf(el: Element, props: readonly string[], theme: Theme): RGBA | null {
+  const r = cascade(SHEETS[theme], el, props, { width: 1440, theme })
+  if (r.winner === null) return null
+  for (const word of r.winner.value.split(/\s+(?![^(]*\))/)) {
+    if (word === '') continue
+    const c = colour(word)
+    if (c !== null) return c
+  }
+  return null
+}
+
+const sameColour = (a: RGBA | null, b: RGBA): boolean =>
+  a !== null && Math.abs(a.r - b.r) < 0.5 && Math.abs(a.g - b.g) < 0.5 && Math.abs(a.b - b.b) < 0.5
+
+describe('the owner’s decisions: the open card', () => {
+  pinTheClock()
+
+  it('WF-13: says what the run opens in the card’s own short phrase, and leaves the sentence to the forms', () => {
+    const dispatched = (strategy: TaskDispatch['strategy']): TaskDispatch => ({
+      strategy,
+      carrier: 'checkpoints',
+      role: null,
+      integrates: [],
+    })
+    const opens = (strategy: TaskDispatch['strategy']): string | null => {
+      const w = workflow('wf_dispatch', [step('a', [], { task_id: 't_a' }), step('b', ['a'], { task_id: 't_b' })])
+      const tasks = new Map<string, Task>([
+        ['t_a', task('t_a', 'RUNNING', { started_at: iso(-60_000), dispatch: dispatched(strategy) })],
+        ['t_b', task('t_b', 'QUEUED', { dispatch: dispatched(strategy) })],
+      ])
+      const { container, unmount } = card(w, tasks, true)
+      const li = [...container.querySelectorAll('.wf-dispatch li.ctl-fact')].find(
+        (el) => el.querySelector('b')?.textContent === 'opens',
+      )
+      const text = li === undefined ? null : (li.textContent ?? '').slice('opens'.length)
+      unmount()
+      return text
+    }
+    // `dispatch collect · opens no pull request and pushes nothing` -- a phrase
+    // that reads after its key, where it read "opens No pull request. Nothing
+    // is pushed." The forms keep that sentence (dispatch.test.ts).
+    expect(opens('collect')).toBe('no pull request and pushes nothing')
+    expect(opens('integrate')).toBe('up to 1 pull request, for all steps')
+    expect(opens('direct-pr')).toBe('up to 2 pull requests')
+  })
+
+  it('WF-14: says what the zoom leaves out as a view choice, in faint type, with no data mark', () => {
+    // Under a chosen tier ...
+    const { w, tasks } = wideStage(5)
+    const { container } = card(w, tasks, true, 'details')
+    const note = container.querySelector<HTMLElement>('.wf-zoom .wf-zoom-note')
+    expect(note, 'the zoom notice is not a .wf-zoom-note').toBeTruthy()
+    expect(note!.textContent).toBe('figures not drawn')
+    // NOT A DATA MARK. `.ctl-mark.is-partial` says a READ came back partial;
+    // a zoom is a choice about the view, and the amber one-sided dash made the
+    // reader's own choice look like something the platform failed to report.
+    expect(note!.classList.contains('ctl-mark'), 'the zoom notice is still a data mark').toBe(false)
+    expect(note!.querySelector('.ctl-mark'), 'a data mark is still inside the zoom notice').toBeNull()
+    expect(container.querySelector('.wf-zoom .ctl-mark')).toBeNull()
+    // The explanatory sentence is still its accessible name, and its title.
+    expect(note!.getAttribute('role')).toBe('status')
+    expect(note!.getAttribute('aria-label')).toContain('decision about the zoom and not a fact about the steps')
+    expect(note!.getAttribute('title')).toBe(note!.getAttribute('aria-label'))
+    // ... and under Auto, which picks `details` for a six-wide stage on its own.
+    const six = wideStage(6)
+    const auto = card(six.w, six.tasks, true)
+    expect(auto.container.querySelector('.wf-zoom .wf-zoom-note')?.textContent).toBe('figures not drawn')
+
+    // FAINT, AND NOTHING ELSE: --text-faint in both themes, no border, no dash.
+    for (const theme of THEMES) {
+      expect(
+        sameColour(paintOf(note!, ['color'], theme), tokenColour('--text-faint', theme)),
+        `${theme}: the zoom note is not --text-faint`,
+      ).toBe(true)
+      const rule = cascade(
+        SHEETS[theme],
+        note!,
+        ['border', 'border-style', 'border-left', 'border-left-style', 'border-right', 'border-right-style', 'border-bottom', 'border-bottom-style'],
+        { width: 1440, theme },
+      )
+      expect(rule.winner, `${theme}: the zoom note draws a rule`).toBeNull()
+    }
+  })
+
+  it('WF-19: breaks a dependency line only between its units, never inside a step id', () => {
+    expect(typeof depUnits, 'dag.ts exports no depUnits').toBe('function')
+    // A filename with a space in it, and a hyphenated id -- the two things a
+    // browser breaks a line at.
+    const file = 'aaaaaaaaaaaaaaaaaaaa bbbb.md'
+    const merge = step('merge', ['plan', 'check-3'], { input_from: { plan: file } })
+    const w = workflow('wf_deps', [step('plan', []), step('check-3', []), merge])
+    const { container } = card(w, new Map(), true)
+    const line = nodeNamed(container, 'merge').querySelector<HTMLElement>('.node-dep')!
+    const items = [...line.querySelectorAll('.node-dep-item')].map((el) => el.textContent)
+    // ONE LIST FOR THE MARKUP AND THE HEIGHT: what is drawn is what was measured.
+    expect(items, 'the dependency line is not drawn as units').toEqual(depUnits(merge).map((u) => u.text))
+    expect(items).toEqual(['plan', `(${file}),`, 'check-3'])
+    // Still one line of text naming every parent whole, and its title unchanged.
+    expect(line.textContent).toBe(`↑ plan (${file}), check-3`)
+    expect(line.getAttribute('title')).toBe('depends on plan, check-3')
+  })
+
+  it('WF-19: counts a unit with a space in it as one token, as the browser now draws it', () => {
+    // At the full tier a line holds 31 columns. `(aaaaaaaaaaaaaaaaaaaa bbbb.md),`
+    // is exactly 31: split on its space, its first half fitted after `plan` and
+    // the height came out a line short of the box the browser draws.
+    const spaced = step('merge', ['plan', 'fencing'], { input_from: { plan: 'aaaaaaaaaaaaaaaaaaaa bbbb.md' } })
+    const solid = step('merge', ['plan', 'fencing'], { input_from: { plan: 'aaaaaaaaaaaaaaaaaaaa_bbbb.md' } })
+    expect(heightOf(spaced), 'a space inside a filename changed the measured height').toBe(heightOf(solid))
+    expect(heightOf(spaced)).toBeGreaterThan(heightOf(step('merge', ['plan', 'fencing'])))
+  })
+
+  it('WF-19: gives a unit longer than a line the whole line, so nothing shares a line with it', () => {
+    // FIX-UP, #160 review finding 3. An inline-block whose text is wider than
+    // the line is shrink-to-fit to the WHOLE line: it cannot sit after `↑ ` or
+    // after a unit before it, and nothing after it can share its last line.
+    // `depLines` let the next unit onto that last line, so a long file unit
+    // followed by another parent came out a line short -- 18px of dependency
+    // text in the stop strip, the overlap `heightOf` exists to prevent.
+    //
+    // `details`, which Auto picks for a six-wide stage: short names, so a line
+    // holds (144 - 28) / 7.22 = 16 columns and `(cc-checkpoint.md),` is 19.
+    const merge = step('merge', ['plan', 'fencing'], { input_from: { plan: 'cc-checkpoint.md' } })
+    const w = workflow('wf_long_unit', [step('plan', []), step('fencing', []), merge])
+    const dw = nodeWidthAt('details', w.steps)
+    const perLine = Math.floor((dw - NODE_CHROME_W) / monoW(1, 12))
+    expect(depUnits(merge).map((u) => u.text)).toEqual(['plan', '(cc-checkpoint.md),', 'fencing'])
+    expect('(cc-checkpoint.md),'.length, 'the fixture no longer has a unit longer than a line').toBeGreaterThan(perLine)
+    // The lines the model counts, read back out of the height: `--ctl-s1` (4)
+    // above the list, 18 a line (12 x 1.45, rounded up), as the sheet declares.
+    const lines = (s: WorkflowStep) => (heightOf(s, 'details', dw) - nodeHeightAt('details') - 4) / 18
+    // `↑ plan` / `(cc-checkpoint.md),` on two lines of its own / `fencing`.
+    expect(lines(merge), 'the unit after a line-wide one was packed onto its last line').toBe(
+      1 + Math.ceil('(cc-checkpoint.md),'.length / perLine) + 1,
+    )
+    // LAST, it changes nothing: nothing follows it to be displaced.
+    const last = step('merge', ['fencing', 'plan'], { input_from: { plan: 'cc-checkpoint.md' } })
+    expect(lines(last)).toBe(1 + Math.ceil('(cc-checkpoint.md)'.length / perLine))
+    // FIRST -- a parent this workflow does not contain, so its id was never
+    // measured into the node's width -- it cannot sit after the `↑ ` either.
+    const stray = step('merge', ['a-parent-this-workflow-lacks'])
+    expect('a-parent-this-workflow-lacks'.length).toBeGreaterThan(perLine)
+    expect(lines(stray), 'a line-wide first unit was counted as fitting after the arrow').toBe(
+      1 + Math.ceil('a-parent-this-workflow-lacks'.length / perLine),
+    )
+  })
+
+  it('WF-5: says a figure is the result’s on a line of its own that the node counts, and never clips the figure', () => {
+    // FIX-UP, #160 review finding 2. `from result` shared the value's column,
+    // which is budgeted for a 20-character figure and nothing else: beside a
+    // token figure the note showed as `…`, and past 173px the figure itself was
+    // CLIPPED with no mark (`text-overflow: clip`), the F1 class NODE_W was set
+    // to prevent. The note now has a line the node reserves for it.
+    const tasks = new Map<string, Task>([
+      [
+        't_work',
+        task('t_work', 'SUCCEEDED', {
+          started_at: iso(-90_000),
+          completed_at: iso(-30_000),
+          result_summary: { runner: { usage: { total_cost_usd: 0.5, input_tokens: 123_400, output_tokens: 45_600 } } },
+        }),
+      ],
+    ])
+    const w = workflow('wf_src', [step('work', [], { task_id: 't_work' }), step('idle', [])])
+    // Outside the sample (the harness's `usage: null`), at the Figures tier.
+    const { container } = card(w, tasks, true)
+    const node = nodeNamed(container, 'work')
+    const row = (label: string) => {
+      const r = [...node.querySelectorAll<HTMLElement>('.node-num')].find((el) => el.querySelector('dt')?.textContent === label)
+      expect(r, `no ${label} figure on the node`).toBeTruthy()
+      return r!
+    }
+    // THE FIGURE, WHOLE, and nothing else in its slot.
+    expect(row('cost').querySelector('dd')!.textContent).toBe('$0.50')
+    expect(row('tokens').querySelector('dd')!.textContent).toBe('123.4k in · 45.6k out')
+    expect(node.querySelector('.node-num .wf-src'), 'the note still shares the figure’s column').toBeNull()
+
+    // THE NOTE, in the one spelling, naming the figures it is about.
+    const src = node.querySelector<HTMLElement>('.node-src')
+    expect(src, 'the node draws no source line').toBeTruthy()
+    expect(src!.textContent).toBe('cost · tokens from result')
+    expect(src!.querySelector('.wf-src')?.textContent).toBe('from result')
+    // RESERVED on a node with nothing to say, so no card changes height when
+    // the attempt read lands and turns a figure into the result's.
+    const idle = nodeNamed(container, 'idle').querySelector<HTMLElement>('.node-src')
+    expect(idle, 'the source line is not reserved on every Figures-tier node').toBeTruthy()
+    expect(idle!.textContent).toBe('')
+
+    // COUNTED IN THE HEIGHT: 10 + 42 of padding, 2 of border, `.node-id` 21,
+    // three micro rows (`.node-line`, `.node-meta`, `.node-src`) at 17.4,
+    // `.node-nums` 8 + 4 x 22 + 3 x 2, and four `--ctl-s1` gaps between five
+    // children.
+    const figuresH = Math.ceil(10 + 42 + 2 + 14 * 1.5 + 3 * (12 * 1.45) + (8 + 4 * (14 * 1.5 + 1) + 3 * 2) + 4 * 4)
+    expect(nodeHeightAt('figures'), 'the node does not count its source line').toBe(figuresH)
+    expect(Number.parseFloat(slotOf(container, 'work').style.height)).toBe(figuresH)
+    // AND IN THE WIDTH: the longest line it can print fits the content box,
+    // and so does the widest figure beside its label.
+    expect(monoW('cost · tokens from result'.length, 12)).toBeLessThanOrEqual(NODE_W - NODE_CHROME_W)
+    expect(46 + 8 + monoW(20, 14)).toBeLessThanOrEqual(NODE_W - NODE_CHROME_W)
+
+    // A FIGURE THAT OUTGROWS ITS COLUMN ELLIPSES; it is never cut silently.
+    for (const theme of THEMES) {
+      for (const label of ['cost', 'tokens']) {
+        const r = cascade(SHEETS[theme], row(label).querySelector('dd')!, 'text-overflow', { width: 1440, theme })
+        expect(r.winner?.value, `${theme}: the ${label} figure is clipped without a mark`).toBe('ellipsis')
+      }
+    }
+  })
+
+  it('WF-9: opens a canvas wider than its column on the start node, and again when a stage is opened', () => {
+    // THE VIEWPORT, stubbed, because jsdom has no layout: the wrapper is a
+    // 390px phone's 358px column, and it scrolls as far as the canvas is wide.
+    // Everything else keeps answering 0, so the rail and the canvas both sit at
+    // the wrapper's own origin here.
+    const PHONE = 358
+    const width = vi.spyOn(Element.prototype, 'clientWidth', 'get').mockImplementation(function (this: Element) {
+      return this.classList.contains('wf-canvas-wrap') ? PHONE : 0
+    })
+    const scroll = vi.spyOn(Element.prototype, 'scrollWidth', 'get').mockImplementation(function (this: Element) {
+      if (!this.classList.contains('wf-canvas-wrap')) return 0
+      const canvas = this.querySelector<HTMLElement>('.wf-canvas')
+      return canvas === null ? 0 : Number.parseFloat(canvas.style.width)
+    })
+    try {
+      const seen = (root: ParentNode, name: string) => {
+        const wrap = root.querySelector<HTMLElement>('.wf-canvas-wrap')!
+        const slot = slotOf(root, name)
+        const left = Number.parseFloat(slot.style.left)
+        return { left, right: left + Number.parseFloat(slot.style.width), from: wrap.scrollLeft, to: wrap.scrollLeft + PHONE }
+      }
+      // KEEP CENTRING: a five-wide fan at `details` is ~850px and its start
+      // node sits in the middle of it -- past the right edge of the column
+      // when the wrapper opens at scrollLeft 0.
+      const fan = card(fanOut(), new Map(), true)
+      const a = seen(fan.container, 'plan')
+      expect(a.left, 'the canvas opened on an empty lane, with the start node off screen').toBeGreaterThanOrEqual(a.from)
+      expect(a.right).toBeLessThanOrEqual(a.to)
+      fan.unmount()
+
+      // A thirteen-wide stage: collapsed, the start node is off a phone's
+      // column too; opened, the canvas is 3,671px and the node moves to its
+      // middle.
+      const { w, tasks } = wideStage(13)
+      const wide = card(w, tasks, true)
+      const b = seen(wide.container, 'plan')
+      expect(b.left).toBeGreaterThanOrEqual(b.from)
+      expect(b.right).toBeLessThanOrEqual(b.to)
+      expect(openEveryBand(wide.container)).toBe(1)
+      const c = seen(wide.container, 'plan')
+      expect(c.left, 'opening a stage left the start node off screen').toBeGreaterThanOrEqual(c.from)
+      expect(c.right).toBeLessThanOrEqual(c.to)
+    } finally {
+      width.mockRestore()
+      scroll.mockRestore()
+    }
+  })
+
+  it('WF-10: marks the stage band that holds the picked step, and opens it to that step', () => {
+    const { w, tasks } = wideStage(13)
+    function Picked({ picked }: { picked: string }) {
+      const [stages, setStages] = useState<Record<string, boolean>>({})
+      return (
+        <WorkflowCard
+          workflow={w}
+          taskById={tasks}
+          expanded
+          usage={{ kind: 'ready', usage: null }}
+          onToggle={noop}
+          openStages={stages}
+          onToggleStage={(key, was) => setStages((s) => ({ ...s, [key]: !was }))}
+          picked={picked}
+          onPick={noop}
+          loadAttempts={async () => ({ status: 'empty', fetchedAt: T0 })}
+          reload={noop}
+        />
+      )
+    }
+    const held = render(<Picked picked="scan-7" />)
+    const band = held.container.querySelector<HTMLElement>('.wf-band')!
+    expect(band.className, 'the band holding the picked step is not marked').toContain('holds-picked')
+    expect(band.querySelector('.wf-band-pick')?.textContent).toBe('scan-7')
+    expect(band.getAttribute('aria-label')).toContain('scan-7')
+    // OPENED TO IT: the stage is drawn, and the picked step is outlined in it.
+    expect(band.getAttribute('aria-expanded'), 'the band holding the picked step stayed shut').toBe('true')
+    expect(nodeNamed(held.container, 'scan-7').className).toContain('is-picked')
+    held.unmount()
+
+    // A band that does not hold the picked step is neither marked nor opened.
+    const other = render(<Picked picked="plan" />)
+    const quiet = other.container.querySelector<HTMLElement>('.wf-band')!
+    expect(quiet.className).not.toContain('holds-picked')
+    expect(quiet.querySelector('.wf-band-pick')).toBeNull()
+    expect(quiet.getAttribute('aria-expanded')).toBe('false')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// WF-4: an edge that skips a level
+// ---------------------------------------------------------------------------
+
+/**
+ * Points along a path `edgePath` writes, sampled: `M`, then `C` and `L`
+ * segments (and `V` / `H`, should the router ever use them).
+ */
+function along(d: string): { x: number; y: number }[] {
+  const out: { x: number; y: number }[] = []
+  let at = { x: 0, y: 0 }
+  const STEPS = 24
+  for (const seg of d.match(/[MCLVH][^MCLVH]*/g) ?? []) {
+    const cmd = seg[0]
+    const n = seg
+      .slice(1)
+      .trim()
+      .split(/[\s,]+/)
+      .filter((t) => t !== '')
+      .map(Number)
+    const line = (to: { x: number; y: number }) => {
+      for (let i = 1; i <= STEPS; i++) {
+        const t = i / STEPS
+        out.push({ x: at.x + (to.x - at.x) * t, y: at.y + (to.y - at.y) * t })
+      }
+      at = to
+    }
+    if (cmd === 'M') {
+      at = { x: n[0]!, y: n[1]! }
+      out.push(at)
+    } else if (cmd === 'L') line({ x: n[0]!, y: n[1]! })
+    else if (cmd === 'V') line({ x: at.x, y: n[0]! })
+    else if (cmd === 'H') line({ x: n[0]!, y: at.y })
+    else if (cmd === 'C') {
+      const [x1, y1, x2, y2, x, y] = n as [number, number, number, number, number, number]
+      const p0 = at
+      for (let i = 1; i <= STEPS; i++) {
+        const t = i / STEPS
+        const u = 1 - t
+        out.push({
+          x: u * u * u * p0.x + 3 * u * u * t * x1 + 3 * u * t * t * x2 + t * t * t * x,
+          y: u * u * u * p0.y + 3 * u * u * t * y1 + 3 * u * t * t * y2 + t * t * t * y,
+        })
+      }
+      at = { x, y }
+    }
+  }
+  return out
+}
+
+/** Every drawn box an edge may not pass under: every node card, and every
+ *  COLLAPSED band -- opaque, and painted over the edges. */
+function cardsOf(l: DagLayout): { name: string; x: number; y: number; w: number; h: number }[] {
+  return [
+    ...l.nodes.map((n) => ({ name: n.step.step_id, x: n.x, y: n.y, w: l.nodeW, h: n.h })),
+    ...l.bands.filter((b) => !b.expanded).map((b) => ({ name: `band ${b.level}`, x: b.x, y: b.y, w: b.w, h: b.h })),
+  ]
+}
+
+/** Every edge, sampled, and not one point of it strictly inside a card or a
+ *  band, or outside the canvas. Returns how many points were checked. */
+function assertNothingPassesUnder(l: DagLayout): number {
+  let checked = 0
+  for (const e of l.edges) {
+    for (const p of along(edgePath(e))) {
+      checked += 1
+      for (const b of cardsOf(l)) {
+        const under = p.x > b.x + 1 && p.x < b.x + b.w - 1 && p.y > b.y + 1 && p.y < b.y + b.h - 1
+        expect(under, `${e.from} -> ${e.to} passes under ${b.name} at (${p.x.toFixed(1)}, ${p.y.toFixed(1)})`).toBe(false)
+      }
+      expect(p.x, `${e.from} -> ${e.to} runs off the canvas`).toBeGreaterThanOrEqual(0)
+      expect(p.x, `${e.from} -> ${e.to} runs off the canvas`).toBeLessThanOrEqual(l.width)
+    }
+  }
+  return checked
+}
+
+describe('the owner’s decisions: edges that skip a level (WF-4)', () => {
+  it('routes an edge that skips a level around the cards between, each on a lane of its own', () => {
+    // `plan -> d` and `seed -> d` both skip level 1, whose middle card `b` sits
+    // on the straight line between them: drawn as one cubic each, they ran
+    // behind `b` and read as edges INTO it.
+    const l = layoutOf([
+      step('plan', []),
+      step('seed', []),
+      step('a', ['plan']),
+      step('b', ['plan']),
+      step('c', ['plan']),
+      step('d', ['a', 'b', 'c', 'plan', 'seed']),
+    ])
+    expect(l.edges.filter((e) => e.to === 'd')).toHaveLength(5)
+    expect(assertNothingPassesUnder(l)).toBeGreaterThan(100)
+
+    // ITS OWN LANE: where the two cross level 1, they never share a line.
+    const top = l.levelTop[1]!
+    const bottom = l.levelTop[2]! - LEVEL_GAP
+    const crossing = (from: string) =>
+      along(edgePath(l.edges.find((e) => e.from === from && e.to === 'd')!)).filter((p) => p.y > top && p.y < bottom)
+    const plan = crossing('plan')
+    const seed = crossing('seed')
+    expect(plan.length).toBeGreaterThan(0)
+    expect(seed.length).toBeGreaterThan(0)
+    for (const p of plan) for (const q of seed) expect(Math.abs(p.x - q.x), 'two skip edges share a lane').toBeGreaterThanOrEqual(4)
+  })
+
+  it('routes a collapsed stage’s edges past the next level’s cards, so a direct dependency is not hidden behind one', () => {
+    // THE MEASURED CASE: `synthesis` depends directly on six of a 13-step
+    // stage and on three rollups. The stage is a band; its six edges to
+    // `synthesis` ran straight down the canvas's middle, collinear with the
+    // band's edges into `rollup-b` and behind that card, so the six direct
+    // dependencies did not appear at all.
+    const impl = Array.from({ length: 13 }, (_, i) => `impl-${i + 1}`)
+    const l = layoutOf([
+      step('plan', []),
+      ...impl.map((id) => step(id, ['plan'])),
+      step('rollup-a', impl.slice(0, 4)),
+      step('rollup-b', impl.slice(4, 9)),
+      step('rollup-c', impl.slice(9)),
+      step('synthesis', [...impl.slice(0, 6), 'rollup-a', 'rollup-b', 'rollup-c']),
+    ])
+    expect(l.bands.filter((b) => !b.expanded)).toHaveLength(1)
+    const direct = l.edges.filter((e) => e.to === 'synthesis' && e.from.startsWith('impl-'))
+    expect(direct).toHaveLength(6)
+    expect(assertNothingPassesUnder(l)).toBeGreaterThan(500)
+    // The six share one path, as every edge out of a collapsed band does
+    // (`edgeKinds` paints them as one edge) -- and that path is drawn.
+    expect(new Set(direct.map((e) => edgePath(e))).size).toBe(1)
   })
 })

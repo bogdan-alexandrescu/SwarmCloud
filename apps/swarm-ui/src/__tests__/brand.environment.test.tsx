@@ -118,7 +118,10 @@ describe('and does not over-correct', () => {
         host="localhost"
       />,
     )
-    await screen.findByText(/tenant and sign-in unread/, undefined, { timeout: 5000 })
+    // RE-POINTED BY CH-20: the failed identity is the tenant key and the
+    // `not read` mark, and "… tenant and sign-in unread" is its accessible
+    // name rather than a sentence in the bar -- so the wait is for the name.
+    await screen.findByLabelText(/tenant and sign-in unread/, undefined, { timeout: 5000 })
     expect((container.querySelector('.brand-env-name')?.textContent ?? '').trim()).toBe('Local')
   })
 })

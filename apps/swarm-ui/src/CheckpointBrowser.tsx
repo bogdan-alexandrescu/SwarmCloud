@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useState, type KeyboardEvent, type Mou
 import { Mark } from './AgentDetail'
 import { USE_FIXTURES } from './api'
 import { ArtifactViewer } from './ArtifactViewer'
-import { errorHeading, noteFixtureProbe, read, type ApiError, type Result } from './fetch'
+import { encoded, errorHeading, noteFixtureProbe, read, route, type ApiError, type Result } from './fetch'
 import { bytesLabel, type ArtifactContent } from './types'
 
 /**
@@ -147,9 +147,12 @@ export async function loadCheckpointFiles(
   if (options.fixtures ?? USE_FIXTURES) return fixtureFiles(taskId, attemptId, checkpointId)
   const query = new URLSearchParams({ attempt_id: attemptId })
   // Path literal and query kept apart, as api.ts keeps them: the seam test
-  // reads the literal's SHAPE against the router's declarations.
-  const path = `/v1/tasks/${encodeURIComponent(taskId)}/checkpoints/${encodeURIComponent(checkpointId)}/files`
-  return read<CheckpointFiles>(path + `?${query}`, () => false)
+  // reads the literal's SHAPE against the router's declarations, and the
+  // registry keys the read by it (CH-18).
+  return read<CheckpointFiles>(
+    route('/v1/tasks/{id}/checkpoints/{n}/files', { id: taskId, n: checkpointId }, query),
+    () => false,
+  )
 }
 
 /** `GET /v1/tasks/{id}/checkpoints/{n}/files/{path}` -- one member, as text. */
@@ -176,8 +179,12 @@ export async function loadCheckpointFile(
     return fixtureFile(taskId, attemptId, checkpointId, filePath)
   }
   const query = new URLSearchParams({ attempt_id: attemptId })
-  const path = `/v1/tasks/${encodeURIComponent(taskId)}/checkpoints/${encodeURIComponent(checkpointId)}/files/${member}`
-  return read<CheckpointFileContent>(path + `?${query}`, () => false)
+  // `{path}` arrives ALREADY ENCODED, segment by segment (`memberHref`), so
+  // its `/` separators reach the route's `{path:path}` as separators.
+  return read<CheckpointFileContent>(
+    route('/v1/tasks/{id}/checkpoints/{n}/files/{path}', { id: taskId, n: checkpointId, path: encoded(member) }, query),
+    () => false,
+  )
 }
 
 /**
@@ -889,7 +896,7 @@ async function fixtureFiles(
   checkpointId: string,
 ): Promise<Result<CheckpointFiles>> {
   await new Promise((r) => setTimeout(r, 60))
-  noteFixtureProbe(`/v1/tasks/{id}/checkpoints/{n}/files`, 60, true)
+  noteFixtureProbe(route('/v1/tasks/{id}/checkpoints/{n}/files', { id: taskId, n: checkpointId }), 60, true)
   const prefix = `tenants/u-bogdan/tasks/${taskId}/attempts/${attemptId}/checkpoints/${checkpointId}`
   const absent = checkpointId === 'ckpt_0001'
   const files: CheckpointMember[] = [
@@ -950,7 +957,11 @@ async function fixtureFile(
   filePath: string,
 ): Promise<Result<CheckpointFileContent>> {
   await new Promise((r) => setTimeout(r, 30))
-  noteFixtureProbe(`/v1/tasks/{id}/checkpoints/{n}/files/{path}`, 30, true)
+  noteFixtureProbe(
+    route('/v1/tasks/{id}/checkpoints/{n}/files/{path}', { id: taskId, n: checkpointId, path: encoded(filePath) }),
+    30,
+    true,
+  )
   const prefix = `tenants/u-bogdan/tasks/${taskId}/attempts/${attemptId}/checkpoints/${checkpointId}`
   const bodies: Record<string, string> = {
     'progress/step-0001.md': '# Step one\n\nRead the repository and listed the modules.\n',

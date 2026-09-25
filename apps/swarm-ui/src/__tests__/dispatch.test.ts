@@ -423,3 +423,57 @@ describe('TS-20: the control says each thing once', () => {
     expect(Object.keys(TYPES), 'CARRIER_LABEL outlived its only caller').not.toContain('CARRIER_LABEL')
   })
 })
+
+// ---------------------------------------------------------------------------
+// WF-13 (epic #83): the board card's own short value
+// ---------------------------------------------------------------------------
+//
+// Every open workflow card carried the two-sentence form headline after its
+// `opens` key -- "opens No pull request. Nothing is pushed." -- a capital
+// letter and two full stops in the middle of a facts strip. The owner's
+// decision: the card gets its own lowercase phrase, built in the same switch,
+// and the forms (Dispatch's option count and SubmitWorkflow's outcome fact)
+// keep the full sentence, which the cases above still pin. The Consequence box
+// no longer repeats it under the option that already says it (TS-20, pinned
+// in the TS-20 block above).
+
+/** `opens` off the consequence. (It was read through a cast in the commit that
+ *  put these cases in red, before `DispatchConsequence` carried the field.) */
+const opensOf = (s: DispatchStrategy, n: number): string | undefined => consequenceOf(s, n).opens
+
+describe('WF-13: consequenceOf(...).opens, the card value', () => {
+  it('reads after the card’s "opens" key: lowercase, and no full stop', () => {
+    let visited = 0
+    for (const s of DISPATCH_STRATEGIES) {
+      for (const n of [1, 2, 7]) {
+        const opens = opensOf(s, n)
+        visited += 1
+        expect(typeof opens, `${s} × ${n} has no card value`).toBe('string')
+        expect(opens!.charAt(0), `${s} × ${n}: "${opens}"`).toBe(opens!.charAt(0).toLowerCase())
+        expect(opens, `${s} × ${n}: "${opens}"`).not.toContain('.')
+        // The form's sentence is untouched: the card value is a second field,
+        // not a rewrite of the first.
+        const headline = consequenceOf(s, n).headline
+        expect(headline.charAt(0)).toBe(headline.charAt(0).toUpperCase())
+      }
+    }
+    expect(visited).toBe(DISPATCH_STRATEGIES.length * 3)
+  })
+
+  it('never claims more than the count does: a ceiling reads "up to"', () => {
+    for (const s of DISPATCH_STRATEGIES) {
+      for (const n of [1, 2, 7]) {
+        if (consequenceOf(s, n).atMost) expect(opensOf(s, n), `${s} × ${n}`).toMatch(/^up to /)
+        else expect(opensOf(s, n), `${s} × ${n}`).not.toMatch(/^up to /)
+      }
+    }
+  })
+
+  it('names the real step count for direct-pr, and says collect publishes nothing', () => {
+    expect(opensOf('direct-pr', 7)).toContain('7 pull requests')
+    expect(opensOf('direct-pr', 1)).toContain('1 pull request')
+    expect(opensOf('direct-pr', 1)).not.toContain('1 pull requests')
+    expect(opensOf('collect', 3)).toBe('no pull request and pushes nothing')
+    expect(opensOf('integrate', 6)).toBe('up to 1 pull request, for all steps')
+  })
+})

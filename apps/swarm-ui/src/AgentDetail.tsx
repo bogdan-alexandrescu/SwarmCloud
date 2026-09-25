@@ -15,9 +15,10 @@ import { HelpCard } from './HelpCard'
 import { LivenessBadge } from './Liveness'
 import { Absent, Mark, Metric, UtilRow, type MarkKind } from './primitives'
 import { RunFiles } from './RunFiles'
-import { Screen, timeAgo } from './Shell'
+import { Screen, timeAgo, type ScreenReading } from './Shell'
 import { StagedInputs } from './StagedInputs'
 import { StopRun } from './StopRun'
+import { rowClock, useNow } from './useNow'
 import {
   CONCURRENCY_STATES,
   GIB,
@@ -113,6 +114,12 @@ export function AgentDetailScreen({ taskId, onClose }: { taskId: string; onClose
         key={`${taskId}:${reloads}`}
         title={taskId}
         load={load}
+        // THE DRAWER RE-READS (AG-2). It read once, so a ticking clock over it
+        // could only slide `live 36s ago` into `silent` against events that
+        // were merely old -- the clock alone makes a live agent look dead.
+        // `drawerPoll` stops once a finished task's last writes are in:
+        // nothing it draws changes after that.
+        pollMs={drawerPoll}
         summary={(r) => (
           <>
             {r.task.runner_profile} · {r.task.resource_class} ·{' '}
@@ -122,10 +129,80 @@ export function AgentDetailScreen({ taskId, onClose }: { taskId: string; onClose
           </>
         )}
       >
-        {(r) => <Run run={r} reload={reload} />}
+        {/* THE READING GOES DOWN WITH THE RUN. `Run` caps its clock at one
+            poll past it, and the checkpoint and log panels re-read when it
+            moves, so every part of the drawer is as of the same read. */}
+        {(r, reading) => <Run run={r} reload={reload} reading={reading} />}
       </Screen>
     </div>
   )
+}
+
+/**
+ * HOW OFTEN THE OPEN DRAWER RE-READS ITS RUN, or null to stop.
+ *
+ * 10s, not the Agents list's 5s: one read here is FOUR requests -- the task,
+ * its events, its attempts and the resource-class catalogue (`loadAgentRun`)
+ * -- and a successful one is followed by two more, the checkpoint listing and
+ * the log window (RunFiles.tsx), which re-read with it. Six requests per 10s
+ * is 0.6 rps against the 20 rps per-principal budget, and a heartbeat lands
+ * only every ~150s anyway. A finished task stops once its last writes are in
+ * (`drawerPoll`): its documents are final after that, and polling them is
+ * spend with nothing to learn.
+ */
+export const DRAWER_POLL_MS = 10_000
+
+/**
+ * HOW LONG A FINISH MAY TAKE TO BECOME WHOLE, measured from the task's
+ * `completed_at`, before the drawer stops waiting for it.
+ *
+ * `finish()` (agent_worker/control.py) writes a terminal task in three steps:
+ * the state and `completed_at` (`transition`), then the attempt's end
+ * (`record_attempt_end`), then the terminal event (`emit`). They land within
+ * moments of each other, and `loadAgentRun` reads the task, the events and
+ * the attempts in parallel, so a poll can land between them. Some finishes are
+ * never whole: a cancel of a PARKED task leaves its attempt with no end, and a
+ * run with more events than one page never shows its terminal event. 30s is
+ * three more reads for the first kind to complete, and a bound on the second.
+ * A chosen value, not a measured one: nothing publishes how long `finish()`
+ * takes, and the three writes are one round trip apart.
+ */
+export const DRAWER_SETTLE_MS = 30_000
+
+/**
+ * Whether a terminal run's last writes are all on this read: the attempt's end
+ * (when there is an attempt) and the terminal event. A failed attempt or event
+ * read is not settled -- another read may succeed.
+ */
+function finishSettled(r: AgentRun): boolean {
+  if (r.events === null || !r.events.some(isTerminalEvent)) return false
+  if (r.attempts === null) return false
+  const latest = [...r.attempts].sort((x, y) => x.created_at.localeCompare(y.created_at)).at(-1)
+  return latest === undefined || latest.completed_at !== null
+}
+
+/**
+ * THE DRAWER STOPS ON A SETTLED READ, NOT ON THE FIRST TERMINAL ONE.
+ *
+ * It stopped on the first read that showed a terminal state. A read that
+ * landed between `finish()`'s writes stopped it on SUCCEEDED with the attempt
+ * still open and no terminal event, and nothing corrected it: the attempt chip
+ * said `ended, no end recorded`, the run length said no finish time was ever
+ * written, and the Timeline marked the terminal event missing -- all false a
+ * moment later, and on screen for as long as the drawer stayed open. Watching a
+ * task finish is the flow AG-2 exists for.
+ *
+ * So a terminal run is re-read until its finish is whole, or until its
+ * `completed_at` is `DRAWER_SETTLE_MS` old. The age is taken either way round
+ * (`Math.abs`): `completed_at` is the server's clock and `now` is this
+ * browser's, and a browser running behind must not keep an old finish
+ * polling until its own clock catches up.
+ */
+export function drawerPoll(r: AgentRun | null, now: number = Date.now()): number | null {
+  if (r === null || !TERMINAL_STATES.has(r.task.state)) return DRAWER_POLL_MS
+  if (finishSettled(r)) return null
+  const done = r.task.completed_at === null ? Number.NaN : Date.parse(r.task.completed_at)
+  return Number.isFinite(done) && Math.abs(now - done) <= DRAWER_SETTLE_MS ? DRAWER_POLL_MS : null
 }
 
 /**
@@ -145,9 +222,42 @@ export function AgentDetailScreen({ taskId, onClose }: { taskId: string; onClose
  * fabricate a callback in order to assert on STATIC markup is asserting on its
  * own scaffolding. Absent, the stop control simply has nothing to call.
  */
-export function Run({ run, reload }: { run: AgentRun; reload?: () => void }) {
+export function Run({
+  run,
+  reload,
+  reading,
+}: {
+  run: AgentRun
+  reload?: () => void
+  /**
+   * When this run was read and how often the drawer re-reads it, from
+   * `Screen`. OPTIONAL for the reason `reload` is: the acceptance test renders
+   * this body with no `Screen` around it, where there is no read to age and
+   * nothing re-reads, so the clock runs uncapped and the panels read once.
+   */
+  reading?: ScreenReading
+}) {
   const { task, events } = run
-  const now = Date.now()
+  // THE SHARED CLOCK (AG-2). This was `Date.now()` taken once at render, so
+  // `run`, `Elapsed` and the liveness badge's `live 36s ago` never moved. One
+  // 1s clock -- the one the Agents list's elapsed column reads -- re-renders
+  // the drawer, and LivenessBadge ages against the same instant.
+  //
+  // AND IT STOPS WHERE THE READ STOPS VOUCHING FOR IT, as the Agents list's
+  // rows do (`rowClock`). When a re-read fails, `Screen` keeps the last good
+  // run on screen, dimmed, and backs off for up to five minutes -- and the
+  // clock went on aging that read: a worker read at `live 20s ago` became
+  // `silent 7m ago`, "the worker may be gone", when only the reads had failed.
+  // `livenessOf` answers `unknown` for an event read that failed precisely to
+  // keep "could not look" apart from "nothing happened"; a stale read is the
+  // same thing, so the figures stop one poll past it. A FINISHED task is not
+  // capped: every age it shows is measured from an instant that will not move,
+  // so `finished 3m ago` is as true an hour later as the clock says.
+  const clock = useNow(1000)
+  const now =
+    reading === undefined || TERMINAL_STATES.has(task.state)
+      ? clock
+      : rowClock(clock, reading.fetchedAt, reading.pollMs ?? DRAWER_POLL_MS)
 
   return (
     /* ONE SUBJECT, SO ONE STACK — AND THE ORDER IS THE OPERATOR'S, NOT THE
@@ -185,7 +295,7 @@ export function Run({ run, reload }: { run: AgentRun; reload?: () => void }) {
           either. See RunFiles.tsx. The attempt records go with it: they are
           what can say a checkpoint was written that the listing no longer
           finds, which is not a real zero. */}
-      <RunFiles task={task} attempts={run.attempts} />
+      <RunFiles task={task} attempts={run.attempts} readAt={reading?.fetchedAt ?? null} />
       <Input run={run} />
       <Timeline task={task} events={events} detail={run.eventsDetail} attempts={run.attempts} />
     </div>
@@ -202,9 +312,14 @@ export function Run({ run, reload }: { run: AgentRun; reload?: () => void }) {
  * `warn` rather than letting it fall through keeps a THROTTLED-shaped state
  * from silently rendering in the default grey, which is the colour reserved
  * for "we do not know".
+ *
+ * `ended` (CANCELLED, CH-22) is the flat bar: the ONE `is-info` modifier, not a
+ * second one, grey since CH-17 -- a terminal state that is not a verdict.
  */
 export function chipTone(tone: ChipTone): string {
-  return tone === 'wait' ? 'warn' : tone
+  if (tone === 'wait') return 'warn'
+  if (tone === 'ended') return 'info'
+  return tone
 }
 
 /**
@@ -575,7 +690,7 @@ function RunMetrics({ run, now }: { run: AgentRun; now: number }) {
             only thing the sentence was doing that a reader needed on the
             surface. Why the attempt read can fail, and what may not be
             concluded from one, is `#help/read-failed`. */}
-        <Metric label="Elapsed" value={el.text} sub={elapsedNote(task, el.phase)} foot="task document" />
+        <Metric label="Elapsed" value={el.text} sub={elapsedNote(task, el.phase, now)} foot="task document" />
         <Metric
           label="Attempts"
           value={`${task.attempt_count} / ${task.max_attempts}`}
@@ -636,7 +751,7 @@ function RunMetrics({ run, now }: { run: AgentRun; now: number }) {
 
   return (
     <div className="ctl-metrics">
-      <Metric label="Elapsed" value={el.text} sub={elapsedNote(task, el.phase)} />
+      <Metric label="Elapsed" value={el.text} sub={elapsedNote(task, el.phase, now)} />
       <Metric
         label="Attempts"
         value={`${attempts.length}`}
@@ -815,19 +930,24 @@ function tokenRollupNote(total: number, withIn: number, withOut: number): string
  * on to `now` for a finished task with no recorded end, and for one that never
  * started. Neither ticks now: a run with no recorded end has no length and
  * reads `—`, and a task that never started reads `never ran`.
+ *
+ * EVERY AGE HERE IS TAKEN AT `now`, the drawer's shared 1s clock (AG-2), so
+ * the note moves on the same tick as the figure beside it rather than on
+ * whatever `Date.now()` said when the tile last happened to render.
  */
-function elapsedNote(task: Task, phase: ElapsedPhase): string {
+function elapsedNote(task: Task, phase: ElapsedPhase, now: number): string {
+  // NEVER RAN (AG-3). A finished task with no start never had a worker, so
+  // there is no run to time. `elapsed()` says so in the figure itself, so the
+  // note does not say it twice: it names how the task ended and when, which is
+  // what the figure does not carry. Read from `phase`, the answer `elapsed()`
+  // gives for exactly this, never from the figure's text.
+  if (phase === 'never-ran') {
+    return task.completed_at !== null
+      ? `${stateWord(task.state)} ${timeAgo(task.completed_at, now)}`
+      : `${stateWord(task.state)} · no finish recorded`
+  }
   if (TERMINAL_STATES.has(task.state)) {
-    // NEVER RAN (AG-3). A finished task with no start never had a worker, so
-    // there is no run to time -- created to, say, a cascade cancel is how long
-    // it WAITED. The figure says `never ran`; this names the ending so the
-    // wait has an end a reader can see.
-    if (task.started_at === null) {
-      return task.completed_at !== null
-        ? `never ran · ${stateWord(task.state)} ${timeAgo(task.completed_at)}`
-        : 'never ran · no finish recorded'
-    }
-    if (task.completed_at !== null) return `finished ${timeAgo(task.completed_at)}`
+    if (task.completed_at !== null) return `finished ${timeAgo(task.completed_at, now)}`
     // NO completion time. Every terminal write sets one with the state, so
     // this is an older document or a writer that forgot, and the figure above
     // is an absence rather than a length. This says which absence.
@@ -839,10 +959,10 @@ function elapsedNote(task: Task, phase: ElapsedPhase): string {
   if (phase === 'unknown') return task.created_at ? 'no start recorded' : 'no submission time recorded'
   // Between two attempts: the figure is the state word, and the age includes
   // the run that already happened, so it is given as an age and nothing else.
-  if (task.started_at !== null) return `an earlier attempt ran · submitted ${timeAgo(task.created_at)}`
+  if (task.started_at !== null) return `an earlier attempt ran · submitted ${timeAgo(task.created_at, now)}`
   // Holding a slot before the first attempt starts: the figure is the state
   // word, because the age after it read as time held.
-  if (CONCURRENCY_STATES.has(task.state)) return `nothing started · submitted ${timeAgo(task.created_at)}`
+  if (CONCURRENCY_STATES.has(task.state)) return `nothing started · submitted ${timeAgo(task.created_at, now)}`
   // "Parked -- wall time, not work. Nothing is executing and no capacity is
   // held" was the first version, and the fact in it is the first three words:
   // the figure is a clock, not a measure of work. Only a PARKED task that has
@@ -1816,7 +1936,10 @@ function AttemptCheckpoints({ a, run }: { a: AttemptRow; run: AgentRun }) {
                       </>
                     ) : (
                       <>
-                        <span className="mono uri">{r.uri}</span>
+                        {/* The whole uri in the title: below 900px a stacked
+                            record ellipsizes it to one line (CH-13), and a cut
+                            uri is a different uri. */}
+                        <span className="mono uri" title={r.uri}>{r.uri}</span>
                         {/* No signed URL is minted here, by design. The reader
                             uses their own credentials against GCS, which keeps
                             the tenant boundary in one place. */}
@@ -2092,7 +2215,8 @@ function Artifacts({
                       whole object with their own credentials, which keeps that
                       half of the tenant boundary where IAM already enforces it. */}
                   <td role="cell" data-label="Location">
-                    <span className="mono uri">{a.uri}</span>
+                    {/* Whole in the title; ellipsized when stacked (CH-13). */}
+                    <span className="mono uri" title={a.uri}>{a.uri}</span>
                     <button
                       className="copy"
                       onClick={() => navigator.clipboard?.writeText(`gsutil cp ${a.uri} .`)}
