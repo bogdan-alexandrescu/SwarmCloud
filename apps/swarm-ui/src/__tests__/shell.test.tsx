@@ -44,6 +44,7 @@ import type { ProbeRecord } from '../fetch'
 import { NEVER_WRITTEN, REAL_STATES, elapsed, formatDuration, timeAgo, type TaskState } from '../types'
 import { cascade, declarations, flatRules, splitTop, type CascadeEnv } from './cssgate'
 import { task } from './runfixture'
+import { resolveVars, tokenTables } from './spaceprobe'
 
 /**
  * Put the SHIPPED stylesheet into the document so `getComputedStyle` answers
@@ -1260,6 +1261,42 @@ describe('the overflow inventory, as rules that cannot be quietly dropped', () =
 const WIDE: CascadeEnv = { width: 1440 }
 const PHONE: CascadeEnv = { width: 390 }
 
+/** The sheet's own tokens. Every length token is the same in both themes. */
+const TOKENS = tokenTables(STYLES).dark
+
+/**
+ * A declared length in px: each `var()` substituted from the sheet's tokens,
+ * then a `calc()` of terms added up, each term one px length times plain
+ * numbers. Anything else throws by name, so a value this cannot read is a
+ * failure and never a zero (AH-16's margin is the caller).
+ */
+function lengthPx(value: string, what: string): number {
+  const flat = resolveVars(value, TOKENS).trim()
+  const body = /^calc\((.*)\)$/.exec(flat)?.[1] ?? flat
+  let total = 0
+  for (const term of body.split(/\s+\+\s+/)) {
+    let product = 1
+    let lengths = 0
+    for (const factor of term.split(/\s*\*\s*/)) {
+      const m = /^(-?[\d.]+)(px)?$/.exec(factor.trim())
+      if (m === null) throw new Error(`${what}: cannot evaluate ${JSON.stringify(factor)} in ${JSON.stringify(flat)}`)
+      product *= Number(m[1])
+      if (m[2] === 'px' || Number(m[1]) === 0) lengths += 1
+    }
+    if (lengths !== 1 && product !== 0) throw new Error(`${what}: ${JSON.stringify(term)} is not one length`)
+    total += product
+  }
+  return total
+}
+
+/** The bottom edge of whichever margin declaration won. */
+function bottomOf(property: string, value: string): string {
+  const parts = splitTop(value.trim(), ' ')
+  if (property === 'margin') return parts.length >= 3 ? parts[2]! : parts[0]!
+  if (property === 'margin-block') return parts[1] ?? parts[0]!
+  return parts[0]!
+}
+
 /**
  * Every form `elapsed()` prints, in every state, started or not, at the edges
  * of each unit. OVER EVERY STATE, not one fixture's: the text depends on the
@@ -1369,7 +1406,8 @@ describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
     // THE 1101-1200 BAND holds the DURATION and wraps the state word above
     // it, because 19ch there comes out of the name. MUTATION: drop the
     // `white-space: normal`, or size the track under a bare duration.
-    // (`dispatched` is wider than this track; styles.css says so beside it.)
+    // (A word cannot wrap, so the track also holds the longest one elapsed()
+    // prints, `dispatched`: the AG-13 case below.)
     const band: CascadeEnv = { width: 1150 }
     const age = trackAfter(won(pick(open, '.row'), 'grid-template-columns', band), 'age')
     expect(ch(minmax(age)[1]), `the 1200 stage's [age] is ${age}`).toBeGreaterThanOrEqual(bare)
@@ -1390,6 +1428,45 @@ describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
     // `shortTaskId` prints at most 8 characters (Agents.tsx `.slice(0, 8)`),
     // and the id is mono, so 8ch is the whole id. MUTATION: drop the floor.
     expect(ch(won(pick(f, '.id'), 'min-width', PHONE))).toBeGreaterThanOrEqual(8)
+  })
+
+  /**
+   * AG-13, THE WORD THE TRACK WAS NEVER SIZED FOR. Where the cell wraps -- the
+   * 1101-1200 band beside the inspector, and the phone row -- `[age]` was 8ch,
+   * sized for the longest DURATION. But `elapsed()` prints a LEASED or
+   * DISPATCHED task, and every task between attempts, as its state word alone,
+   * and a word does not wrap: `dispatched` is 10 characters and overflowed the
+   * 8ch track by two in both places. The comments beside the tracks said so and
+   * left it open. AG-11's rule closes it: a track is sized to its longest value.
+   *
+   * DERIVED FROM `elapsed()` over every state, started or not, at the edge of
+   * every unit, so a longer state word or a new form moves the floor.
+   *
+   * MUTATION: `[age] minmax(0, 8ch)` back in either wrapping template.
+   */
+  it('AG-13: every word elapsed() prints fits the [age] track, wherever the cell wraps', () => {
+    const words = SPANS.flatMap((ms) => waits(ms)).flatMap((text) => text.split(/\s+/))
+    expect(words, 'the sweep printed no DISPATCHED word; this floor would be vacuous').toContain('dispatched')
+    const longest = words.reduce((a, b) => (b.length > a.length ? b : a), '')
+
+    const list = fragment('<div class="rows"><div class="row"><span class="when">x</span></div></div>')
+    const open = fragment(
+      '<div class="app has-inspector"><div class="rows"><div class="row"><span class="when">x</span></div></div></div>',
+    )
+    const BAND: CascadeEnv = { width: 1150 }
+    for (const [label, row, env] of [
+      ['the 1101-1200 band beside the inspector', pick(open, '.row'), BAND],
+      ['the phone row', pick(list, '.row'), PHONE],
+      ['the phone row under the open inspector', pick(open, '.row'), PHONE],
+      ['the full row', pick(list, '.row'), WIDE],
+      ['the row beside the inspector', pick(open, '.row'), WIDE],
+    ] as const) {
+      const age = trackAfter(won(row, 'grid-template-columns', env), 'age')
+      expect(
+        ch(minmax(age)[1]),
+        `${label}: [age] is ${age}, and "${longest}" is ${longest.length} characters that cannot wrap`,
+      ).toBeGreaterThanOrEqual(longest.length)
+    }
   })
 
   it('AG-27: every line clamp has the box it needs, and the phone why-line has one', () => {
@@ -1597,13 +1674,13 @@ describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
 
     // Separated by the large break and nothing else.
     expect(won(current, ['margin-top', 'margin-block-start', 'margin-block', 'margin'], WIDE)).toBe('var(--ctl-s5)')
-    // THE SCROLL MARGIN STAYS AT ONE LARGE BREAK, as the owner's AH-18 decision
-    // says in so many words ("scroll-margin-top stays at --ctl-s5"). #161
-    // shipped AH-16's `calc(var(--ctl-s5) * 3)` instead and pinned it here.
-    // MUTATION: the tripled margin back.
-    expect(won(plain, ['scroll-margin-top', 'scroll-margin-block-start', 'scroll-margin-block', 'scroll-margin'], WIDE)).toBe(
-      'var(--ctl-s5)',
-    )
+    // THE SCROLL MARGIN IS AH-16'S NOW, not a pinned `--ctl-s5`. This pinned
+    // AH-18's "scroll-margin-top stays at --ctl-s5", and at --ctl-s5 a topic
+    // that opens its group landed with the group heading clipped off the top.
+    // The owner settled the two boxes on #86 (2026-09-25): AH-18's spacing
+    // stays, and the scroll margin clears the group heading. The AH-16 case
+    // below asks the property -- what the margin has to clear -- rather than
+    // pinning a value.
 
     // THE TOPIC TITLE IS THE CARD-TITLE STEP (AH-10), so h1, group h2 and
     // topic h3 stop all rendering at 18px. MUTATION: `--t-title` on the h3.
@@ -1619,6 +1696,77 @@ describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
 
     // CH-3, moved off the inline style with everything else.
     expect(won(plain.querySelector('dt')!, 'text-transform', WIDE)).toBe('lowercase')
+  })
+
+  /**
+   * AH-16, AS SETTLED AGAINST AH-18 ON #86 (2026-09-25). A deep-linked topic
+   * lands with its group heading in view: the scroll margin clears the sticky
+   * head plus the group heading, and AH-18's spacing stays otherwise.
+   *
+   * ASKED AS THE PROPERTY, NOT A VALUE. The margin is resolved to px through
+   * the sheet's own tokens and compared with the heading it has to clear --
+   * the `.section > h2` line box plus the margin under it -- so a larger
+   * heading, a new line-height or a wider gap below it fails here rather than
+   * clipping the heading again. At `--ctl-s5` alone the margin was 28px and
+   * the heading 34.8px, which is the clipped heading #161's body reported.
+   *
+   * THE STICKY HEAD IS ZERO TODAY, AND THAT IS ASSERTED TOO. Nothing sticks
+   * over the Help column at either width: the product header, the breadcrumb
+   * head and the page head scroll with the page, the rail is sticky only in a
+   * column of its own at 900px and up, and below 900px it is static. If any of
+   * them starts to stick over the column (#139 keeps a sticky phone strip
+   * open), this fails and asks for its height in the margin.
+   *
+   * MUTATION: `scroll-margin-top: var(--ctl-s5)` back. 28 < 34.8.
+   */
+  it('AH-16: a deep-linked Help topic lands with its group heading in view', () => {
+    const f = fragment(
+      '<section class="section"><h2>Reading a figure</h2>' +
+        '<div class="help-topic is-current"><h3>Absent is not zero</h3><p>A digit is a measurement.</p></div>' +
+        '<div class="help-topic"><h3>A failed read is not an empty result</h3></div>' +
+        '</section>',
+    )
+    const h2 = pick(f, 'h2')
+    const [first, second] = [...f.querySelectorAll('.help-topic')] as [Element, Element]
+    const SCROLL_MARGIN = ['scroll-margin-top', 'scroll-margin-block-start', 'scroll-margin-block', 'scroll-margin']
+    for (const env of [WIDE, PHONE]) {
+      const at = `${env.width}px`
+      const margin = cascade(STYLES, first, SCROLL_MARGIN, env).winner
+      expect(margin, `${at}: a Help topic declares no scroll margin`).not.toBeNull()
+      const marginPx = lengthPx(splitTop(margin!.value, ' ')[0]!, `${at} scroll margin`)
+
+      const size = cascade(STYLES, h2, ['font-size', 'font'], env).winner
+      expect(size?.property, `${at}: the group heading's size is not a longhand this can read`).toBe('font-size')
+      const fontPx = lengthPx(size!.value, `${at} group heading font-size`)
+      const lh = cascade(STYLES, h2, ['line-height', 'font'], env).winner
+      expect(lh?.property, `${at}: the group heading's line-height is not a longhand this can read`).toBe('line-height')
+      const leading = resolveVars(lh!.value, TOKENS).trim()
+      const lineBox = /^[\d.]+$/.test(leading) ? Number(leading) * fontPx : lengthPx(lh!.value, `${at} line-height`)
+      const below = cascade(STYLES, h2, ['margin-bottom', 'margin-block-end', 'margin-block', 'margin'], env).winner
+      const belowPx = below === null ? 0 : lengthPx(bottomOf(below.property, below.value), `${at} heading margin`)
+      const heading = lineBox + belowPx
+      expect(heading, `${at}: the heading measured nothing; this check would be vacuous`).toBeGreaterThan(20)
+
+      // Nothing sticks over the column, so the sticky head adds nothing.
+      const heads = fragment('<header class="brand"></header><div class="ctl-head"></div><div class="head"></div>')
+      const over = [...heads.children]
+      if (env.width < 900) over.push(pick(fragment('<nav class="ctl-rail"></nav>'), '.ctl-rail'))
+      for (const el of over) {
+        const pos = cascade(STYLES, el, ['position'], env).winner?.value ?? 'static'
+        expect(
+          /sticky|fixed/.test(pos),
+          `${at}: .${el.className} is ${pos} over the Help column; add its height to .help-topic's scroll margin`,
+        ).toBe(false)
+      }
+
+      expect(
+        marginPx,
+        `${at}: a deep link lands ${marginPx}px under the top edge and the group heading needs ${heading.toFixed(1)}px`,
+      ).toBeGreaterThanOrEqual(heading)
+      // EVERY TOPIC LANDS THE SAME WAY, and AH-18's spacing between topics stays.
+      expect(cascade(STYLES, second, SCROLL_MARGIN, env).winner?.value).toBe(margin!.value)
+      expect(won(second, ['margin-top', 'margin-block-start', 'margin-block', 'margin'], env)).toBe('var(--ctl-s5)')
+    }
   })
 
   it('AH-25: the cost and the control on the Platform counts head line never split', () => {

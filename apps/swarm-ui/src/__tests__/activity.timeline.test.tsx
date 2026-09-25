@@ -295,6 +295,40 @@ describe('the window it describes', () => {
   })
 })
 
+/**
+ * AG-19, THE THIRD CALL SITE (epic #82). The box repointed three `?`s and
+ * links that opened topics about something else; #152 moved two of them, and
+ * this one -- the window's `Why →` beside "these N rows only · older tasks
+ * exist" -- still opened `partial-read`, "One message belongs to one
+ * failure", a topic about attributing one error across several failed reads.
+ * Nothing in it says why a window stops at N rows. Its repoint was commit
+ * 5e17e3a, which was never merged.
+ *
+ * AND THE TOPIC IT NOW OPENS HAS TO BE TRUE FOR THIS SCREEN. `event-paging`
+ * was written for the attempt timeline alone; AH-13's rule is that a topic
+ * linked from more than one screen is written to fit every one of them, so it
+ * has to name the Timeline and say how its window is bounded.
+ *
+ * MUTATION: point `WINDOW_HELP` back at `partial-read`. The href assertion
+ * fails. MUTATION: drop the Timeline paragraph from `event-paging`. The topic
+ * assertion fails.
+ */
+describe('the window’s Why link opens the topic about a bounded read (AG-19)', () => {
+  it('opens event-paging, and event-paging names the Timeline screen', async () => {
+    const cut = await timeline(windowOf([task('a', 'SUCCEEDED', { completed_at: local(10) })], true))
+    const why = cut.querySelector('.wb-more a')
+    expect(why, 'the partial window has no Why link').not.toBeNull()
+    expect(why!.getAttribute('href'), 'Why opens a topic about failed reads, not about this window').toBe(
+      `#${HELP['event-paging'].anchor}`,
+    )
+    const topic = HELP['event-paging'].long.join(' ')
+    expect(topic, 'event-paging is linked from the Timeline and never names it').toContain('the Timeline screen')
+    // What the window actually does: it follows the page token, newest first,
+    // until it holds the Rows it was set to, then stops.
+    expect(topic).toMatch(/Rows/)
+  })
+})
+
 // ---------------------------------------------------------------------------
 // The owner's decisions on epic #84, 2026-09-25 (TS-3, TS-9, TS-11, TS-12)
 // ---------------------------------------------------------------------------
