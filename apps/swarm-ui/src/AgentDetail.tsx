@@ -119,7 +119,6 @@ export function AgentDetailScreen({ taskId, onClose }: { taskId: string; onClose
         // were merely old -- the clock alone makes a live agent look dead.
         // `drawerPoll` stops once the task is finished: nothing it draws
         // changes after that.
-        pollMs={drawerPoll}
         summary={(r) => (
           <>
             {r.task.runner_profile} · {r.task.resource_class} ·{' '}
