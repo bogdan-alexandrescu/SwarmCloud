@@ -439,6 +439,9 @@ def test_parity_without_credentials_fails_when_live_is_required(tmp_path):
     cluster = Cluster(tmp_path, FAKE)
     result = cluster.run(PARITY, "--require-live")
     assert result.returncode != 0, "--require-live accepted a skipped check"
+    # A positive signal, not just a non-zero exit: a MISSING script also exits
+    # non-zero, and this test passed on the commit before the script existed.
+    assert "NOT checked" in result.stderr, result.stdout + result.stderr
 
 
 def test_parity_fails_on_the_policy_the_silent_worker_ran_under(tmp_path):
@@ -485,6 +488,8 @@ def test_parity_refuses_an_empty_sweep(tmp_path):
     cluster.policies([])
     result = cluster.run(PARITY)
     assert result.returncode != 0, "an empty sweep passed"
+    # Named, not merely non-zero: a missing script exits non-zero too.
+    assert "nothing was compared" in result.stdout + result.stderr, result.stdout + result.stderr
 
 
 # ---------------------------------------------------------------------------
