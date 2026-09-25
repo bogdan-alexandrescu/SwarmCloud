@@ -354,7 +354,8 @@ describe('the window’s Why link opens the topic about a bounded read (AG-19)',
     expect(t.title, 'the title names only one of the two reads').toMatch(/event/i)
     expect(t.title, 'the title names only one of the two reads').toMatch(/task/i)
     const opening = t.long[0] ?? ''
-    expect(opening, 'the topic opens on one screen and reaches the Timeline only later').toContain('the Timeline screen')
+    // Case-blind: the screen's name may open a sentence.
+    expect(opening, 'the topic opens on one screen and reaches the Timeline only later').toMatch(/\bthe Timeline screen\b/i)
     expect(opening, 'the topic opens on the Timeline and not the attempt timeline').toMatch(/inspector/)
   })
 })
