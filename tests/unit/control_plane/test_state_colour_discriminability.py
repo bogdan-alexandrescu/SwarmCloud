@@ -2037,17 +2037,21 @@ def test_a_projected_reading_is_not_drawn_in_the_absence_colour(sheet_scan, them
 #
 # OWNER RULING, 2026-09-25 (CP-14, #85; recorded in design-system.md §6.6 and
 # §6.7 and in redesign-v2.md §5.5). The ok mark keeps its filled disc and its
-# word at full ink, and paints `--text-dim`, the grey §6.4 already uses for a
-# proportion that is fine. Hue on a state mark is left to the verdicts -- warn,
-# bad, paused -- and to live. The screens that drew twenty green `ok` discs
-# (Pools, Runtimes, Accounts, Provider quota) go grey with no screen edit,
-# because the change is in the primitive.
+# word at full ink, and paints a text grey, not `--ok`. CP-14 chose
+# `--text-dim`, the grey §6.4 already uses for a proportion that is fine;
+# CH-17, decided after it, draws the chip and dot primitives' ok disc in
+# `--text-faint`, and `.tag.ok` stays `--text-dim`. Either is a text grey, so
+# the assertion below accepts both. Hue on a state mark is left to the
+# verdicts -- warn, bad, paused -- and to live. The screens that drew twenty
+# green `ok` discs (Pools, Runtimes, Accounts, Provider quota) go grey with no
+# screen edit, because the change is in the primitive.
 #
 # THE COST, stated where the rule is pinned: in greyscale an ok disc is now
-# told from a bad or a warn mark by its SILHOUETTE alone. `--text-dim` is
-# 1.26:1 from `--bad` in the dark theme and 1.30:1 from `--warn` in the light
-# one, under the 1.5:1 `MIN_STATE_RATIO` floor -- which still governs the
-# `--ok` / `--warn` / `--bad` tokens that fills use, and is not relaxed.
+# told from a bad or a warn mark by its SILHOUETTE alone. `--text-faint` is
+# 1.01:1 from `--bad` in the dark theme and 1.45:1 from `--warn` in the light
+# one (`--text-dim`: 1.26:1 and 1.30:1), under the 1.5:1 `MIN_STATE_RATIO`
+# floor -- which still governs the `--ok` / `--warn` / `--bad` tokens that
+# fills use, and is not relaxed.
 # `test_every_chip_state_has_its_own_silhouette` is what holds the ok mark
 # apart now.
 #

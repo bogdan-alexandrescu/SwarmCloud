@@ -263,7 +263,7 @@ function Backends({
         </div>
       )}
 
-      <div className="ctl-table is-stacked">
+      <div className="ctl-table is-scroll">
         <table role="table">
             <thead role="rowgroup">
               <tr role="row">
@@ -795,7 +795,7 @@ function Sizing({
         </span>
       </div>
 
-      <div className="ctl-table is-stacked">
+      <div className="ctl-table is-scroll">
         <table role="table">
             <thead role="rowgroup">
               <tr role="row">

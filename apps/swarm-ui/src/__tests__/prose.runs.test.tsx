@@ -20,8 +20,8 @@
 // `aria-label` -- plus the accessible route to the words. Where a sentence
 // moved, the test says where it went.
 
-import { describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 
 import type { Result } from '../fetch'
 import type { AgentRun, ResourceClasses } from '../api'
@@ -57,6 +57,7 @@ import { AgentsScreen } from '../Agents'
 import { Run } from '../AgentDetail'
 import { AttemptTimelineScreen } from '../AttemptTimeline'
 import { ArtifactViewer, Markdown } from '../ArtifactViewer'
+import { HELP } from '../help'
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -615,6 +616,46 @@ describe('AgentDetail, with every help card closed', () => {
   })
 })
 
+// AG-2. THE DRAWER'S CLOCK MOVES ON ITS OWN.
+//
+// `Run` took `Date.now()` once, at render, and nothing re-rendered it: `run`,
+// `Elapsed` and the badge's `live 12s ago` sat still while the reader
+// watched. It reads the shared 1s clock now (useNow.ts).
+//
+// BREAK IT: go back to `const now = Date.now()` in `Run`. The age stays at 12s.
+describe('the drawer ticks on the shared clock (AG-2)', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('moves the liveness age without a new read', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'setInterval', 'clearTimeout', 'clearInterval', 'Date'] })
+    api.loadCheckpoints.mockResolvedValue({ status: 'empty', fetchedAt: Date.now() })
+    api.loadTaskLogs.mockResolvedValue({ status: 'empty', fetchedAt: Date.now() })
+    const beat: TaskEvent = {
+      event_id: 'ev_hb',
+      task_id: 'tsk_0123456789abcdef',
+      type: 'heartbeat',
+      at: new Date(Date.now() - 12_000).toISOString(),
+      attempt_id: 'att_3',
+      lease_id: 'lse_3',
+      generation: 3,
+      detail: {},
+    }
+    const { container } = render(<Run run={run({ events: [beat] })} />)
+    const advance = async (ms: number) => {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(ms)
+      })
+    }
+    const age = () => container.querySelector('.liveness .lv-copy')?.textContent ?? ''
+    await advance(0)
+    expect(age()).toBe('12s ago')
+    await advance(5_000)
+    expect(age(), 'the drawer did not re-render as time passed').toBe('17s ago')
+  })
+})
+
 describe('AttemptTimeline, with every help card closed', () => {
   it('states an attempt with no events as a mark rather than a paragraph', async () => {
     const el = await renderTimeline()
@@ -638,12 +679,14 @@ describe('AttemptTimeline, with every help card closed', () => {
     const cap = el.querySelector('.att-ev-cap')
     expect(cap, 'the page-coverage caveat has no encoding at all').not.toBeNull()
     expect(cap!.getAttribute('aria-label') ?? '').toMatch(/page token/i)
-    // `#help/partial-read` is the destination the paragraph went to, reached
-    // through the toolbar's `?`.
-    expect(
-      el.querySelector('.ctl-toolbar button[aria-expanded]'),
-      'the paging topic is unreachable',
-    ).not.toBeNull()
+    // The toolbar's `?` is the route to the words, and it opens the topic
+    // ABOUT paging (AG-19). It opened `partial-read` -- "One message belongs
+    // to one failure" -- which is about something else. Read from HELP, so a
+    // retitled topic moves this test with it.
+    // BREAK IT: point the toolbar's `?` back at `partial-read`.
+    const glyph = el.querySelector('.ctl-toolbar button[aria-expanded]')
+    expect(glyph, 'the paging topic is unreachable').not.toBeNull()
+    expect(glyph!.getAttribute('aria-label') ?? '').toContain(HELP['event-paging'].title)
   })
 
   it('keeps every attempt figure in a facts strip, absences included', async () => {
@@ -688,10 +731,20 @@ describe('ArtifactViewer', () => {
     // The `?` is the route to the words. It is a button rather than an anchor
     // while the card is shut, which is what keeps this assertion honest: the
     // topic's text is reachable and is NOT on the glass.
+    //
+    // RE-POINTED (AG-19). This matched any `aria-label` containing
+    // "credential" -- which the masked MARK's own sentence satisfies, so it
+    // passed whatever the `?` opened, including "Credential names, never
+    // values", a topic about naming secrets. It now finds the `?` and holds it
+    // to the topic about serve-time masking.
+    // BREAK IT: point the `?` back at `credential-names-not-values`.
+    const topic = HELP['masking-is-serve-time'].title
     expect(
-      el.querySelector('[aria-label*="Credential"], [aria-label*="credential"]'),
+      [...el.querySelectorAll('button[aria-expanded]')].find((b) =>
+        (b.getAttribute('aria-label') ?? '').includes(topic),
+      ),
       'the redaction topic is unreachable',
-    ).not.toBeNull()
+    ).toBeDefined()
   })
 
   it('tells a zero-byte artifact from a missing one, without a paragraph for either', async () => {

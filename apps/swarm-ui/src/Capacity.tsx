@@ -259,7 +259,7 @@ function Headroom({ capacity }: { capacity: Capacity }) {
         </span>
       </div>
 
-      <div className="ctl-table is-stacked">
+      <div className="ctl-table is-scroll">
         <table role="table">
             <thead role="rowgroup">
               <tr role="row">
@@ -484,7 +484,7 @@ function Family({
 
 function PoolTable({ pools, viewer }: { pools: Pool[]; viewer: string | undefined }) {
   return (
-    <div className="ctl-table is-stacked">
+    <div className="ctl-table is-scroll">
       <table role="table">
         <thead role="rowgroup">
           <tr role="row">
@@ -613,8 +613,9 @@ function classifyPool(pool: Pool): PoolClass {
     chips.push({ cls: 'is-warn', word: 'full', title: `At its ceiling: ${pool.active} of ${limit} units in use.` })
   }
   // §6.6 AND THE CP-14 RULING: a healthy pool gets the ok mark -- the filled
-  // disc and the word -- and the mark is `--text-dim`, not a hue. Healthy
-  // carries no hue; a quiet grey screen is what a healthy platform looks like.
+  // disc and the word -- and the mark is a text grey, not a hue (`--text-faint`
+  // since CH-17 set the chip primitive's grey). Healthy carries no hue; a quiet
+  // grey screen is what a healthy platform looks like.
   if (chips.length === 0) chips.push({ cls: 'is-ok', word: 'ok', title: 'Read, capped, not paused, and not at its ceiling.' })
 
   const track = over ? 'is-bad' : paused ? 'is-paused' : zero ? zeroTone : full ? 'is-warn' : undefined

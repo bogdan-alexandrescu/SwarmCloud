@@ -110,7 +110,7 @@ function Grouped({ rows }: { rows: QuotaState[] }) {
               <h2 className="ctl-card-title">{provider}</h2>
               <span className="ctl-card-note is-end">{pluralise(list.length, 'tenant')}</span>
             </div>
-            <div className="ctl-table is-stacked">
+            <div className="ctl-table is-scroll">
               <table role="table">
                 <thead role="rowgroup">
                   <tr role="row">

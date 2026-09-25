@@ -345,7 +345,7 @@ function PoolEditor({
             expectation. */}
         <HelpCard topic="ceiling-change-evicts-nothing" />
       </span>
-      <div className="ctl-table is-stacked">
+      <div className="ctl-table is-scroll">
         <table role="table">
           <thead role="rowgroup">
             <tr role="row">

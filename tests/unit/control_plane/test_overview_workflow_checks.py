@@ -301,7 +301,10 @@ def test_overview_reads_the_workflow_route():
         "Overview.tsx does not read the workflow route, so its workflow check "
         "can only ever report `reading`"
     )
-    assert re.search(r"read<WorkflowPage>\('/v1/workflows\?limit=\d+'", _src("api.ts")), (
+    # `read()` takes the value `route()` builds, never a bare string (CH-18,
+    # swarm-ui fetch.ts): the registry is keyed by the route template, and a
+    # string could key it by a concrete URL. The path literal is the same.
+    assert re.search(r"read<WorkflowPage>\((?:route\()?'/v1/workflows\?limit=\d+'", _src("api.ts")), (
         "api.ts has no loadWorkflows reading GET /v1/workflows"
     )
 

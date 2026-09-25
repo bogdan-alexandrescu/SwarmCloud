@@ -289,7 +289,11 @@ function ProfileCard({ name, profile, byName, tenant, groups }: {
         <dd>{profile.units}u</dd>
       </dl>
 
-      {/* `is-stacked` — F6 OF `docs/audits/2026-09-23/overflow-inventory.md`.
+      {/* `is-scroll` NOW (CH-13, design-system.md §7.3): Profile headroom
+          stacked was 9,882px tall at 390, and six columns compared across
+          rows (CP-2's Scope and CP-6's counterfactual among them) is a data
+          table, so below 900px it scrolls with the pool column held in view. What follows is why it was `is-stacked`.
+          F6 OF `docs/audits/2026-09-23/overflow-inventory.md`.
           At 390pt this table measured `clientWidth: 358` against a
           `scrollWidth` of 543-615 across its five instances: 34-42% of the
           columns were behind an `overflow-x: auto` that paints no scrollbar on
@@ -304,7 +308,7 @@ function ProfileCard({ name, profile, byName, tenant, groups }: {
           a table element drops its implicit ARIA role in every browser, so
           without them a stacked table is a pile of anonymous blocks to a screen
           reader. They are the roles these elements already have. */}
-      <div className="table-wrap is-stacked">
+      <div className="table-wrap is-scroll">
         <table className="pools" role="table">
           <thead role="rowgroup">
             <tr role="row">

@@ -23,8 +23,8 @@
 // file fails to resolve here instead of reading a stale copy from disk.
 import STYLES from '../styles.css?raw'
 import INDEX_HTML from '../../index.html?raw'
-import { describe, expect, it } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { describe, expect, it, vi } from 'vitest'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 
 import {
   COMPACT,
@@ -40,6 +40,8 @@ import { App } from '../App'
 import { Screen } from '../Shell'
 import { WorkflowsScreen } from '../Workflows'
 import type { Me } from '../types'
+import { flatRules, type CascadeEnv } from './cssgate'
+import { painted } from './marks'
 
 /**
  * Put the SHIPPED stylesheet into the document so `getComputedStyle` answers
@@ -571,15 +573,24 @@ describe('the product header', () => {
       expect(el).toBeTruthy()
       return el!
     })
-    expect(who.textContent).toContain('Your session expired')
-    expect(who.textContent).toContain('unread')
+    // RE-POINTED BY CH-20: the slot is the tenant key and the kit's `not read`
+    // mark, and the error heading is the slot's accessible name rather than a
+    // sentence in a 52px bar.
+    expect(who.querySelector('.brand-k')?.textContent).toBe('tenant')
+    expect(who.querySelector('.ctl-mark.is-unread')?.textContent).toBe('not read')
+    expect(who.getAttribute('aria-label') ?? '').toContain('Your session expired')
     // And no invented tenant anywhere in the bar.
     expect(document.querySelector('.brand-who .id')).toBeNull()
   })
 
   it('says it is still reading rather than showing an empty slot', () => {
     render(<ProductHeader load={() => new Promise(() => {})} declaredEnv="dev" host="localhost" />)
-    expect(document.querySelector('.brand-who.is-pending')?.textContent).toContain('Reading who you are')
+    // RE-POINTED BY CH-20: the tenant key, then "reading…" -- CH-2's word for
+    // a read in flight, at every width. It was the sentence "Reading who you
+    // are…", which is what doubled the header's height at 390.
+    const pending = document.querySelector('.brand-who.is-pending')
+    expect(pending?.querySelector('.brand-k')?.textContent).toBe('tenant')
+    expect(pending?.textContent).toContain('reading…')
     expect(document.querySelector('.brand-who .id')).toBeNull()
   })
 
@@ -624,6 +635,181 @@ describe('the product header', () => {
     await screen.findByText('1')
     expect(document.querySelector('.head .env')).toBeNull()
     expect(document.querySelector('.head')!.textContent).toBe('Agents')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// CH-20 -- at 560px and below the header is one row
+// ---------------------------------------------------------------------------
+//
+// At 390 the header doubled to about 100px and the admin badge wrapped alone
+// onto a third line, against design-system.md §7.2's "the header keeps its
+// height". These are asked of the CASCADE at a stated width (cssgate.ts),
+// because jsdom applies no media query.
+
+const PHONE_W: CascadeEnv = { width: 390 }
+const MID_W: CascadeEnv = { width: 720 }
+const WIDE_W: CascadeEnv = { width: 1440 }
+
+/** Not drawn, but still in the accessibility tree: `display: none` is not this. */
+function visuallyHidden(el: Element, env: CascadeEnv): boolean {
+  return (
+    painted(el, 'clip-path', env) === 'inset(50%)' &&
+    painted(el, 'width', env) === '1px' &&
+    painted(el, 'overflow', env) === 'hidden'
+  )
+}
+
+/** Not drawn by any means. */
+function notDrawn(el: Element, env: CascadeEnv): boolean {
+  return painted(el, 'display', env) === 'none' || visuallyHidden(el, env)
+}
+
+describe('CH-20: at 560px and below the product header is one row', () => {
+  async function admin(): Promise<void> {
+    render(
+      <ProductHeader
+        load={async () => ({ status: 'ok', data: me({ is_admin: true }), fetchedAt: Date.now() })}
+        declaredEnv="dev"
+        host="localhost"
+      />,
+    )
+    await screen.findByText('admin')
+  }
+
+  it('keeps the signed-in principal and the admin tag in one unit that never wraps', async () => {
+    // So above 560px "admin" cannot wrap onto a line of its own.
+    // MUTATION: render the tag outside `.brand-who-me`, or let the unit wrap.
+    await admin()
+    const unit = document.querySelector('.brand-who-me')
+    expect(unit, 'no .brand-who-me unit').not.toBeNull()
+    expect(unit!.querySelector('.brand-admin')?.textContent).toBe('admin')
+    expect(unit!.textContent).toContain('someone@saga.xyz')
+    for (const env of [MID_W, WIDE_W]) {
+      const nowrap =
+        painted(unit!, 'white-space', env) === 'nowrap' || painted(unit!, 'flex-wrap', env) === 'nowrap'
+      expect(nowrap, `the unit wraps at ${env.width}`).toBe(true)
+    }
+  })
+
+  it('holds one row at 390: the mark, the environment, the tenant key and id, the admin tag', async () => {
+    // MUTATION: `flex-wrap: wrap` back on the row, the wordmark drawn, or any
+    // of the three hidden facts drawn again -- or the id or the tag hidden.
+    await admin()
+    const row = document.querySelector('.brand-row')!
+    expect(painted(row, 'flex-wrap', PHONE_W)).toBe('nowrap')
+    expect(painted(row, ['gap', 'column-gap'], PHONE_W)).toBe('var(--ctl-s2)')
+    expect(painted(document.querySelector('.brand-word')!, 'display', PHONE_W)).toBe('none')
+    // The link keeps its name from the mark's title.
+    expect(document.querySelector('.brand-home svg')?.getAttribute('aria-label')).toBe('SwarmCloud')
+
+    // NOT DRAWN, BUT STILL ANNOUNCED: the display name and the principal.
+    for (const sel of ['.brand-who-name', '.brand-who-principal']) {
+      const el = document.querySelector(sel)
+      expect(el, `${sel} is not rendered at all`).not.toBeNull()
+      expect(visuallyHidden(el!, PHONE_W), `${sel} is drawn at 390`).toBe(true)
+      expect(notDrawn(el!, WIDE_W), `${sel} is hidden at 1440`).toBe(false)
+    }
+
+    // DRAWN: the tenant id and the admin tag. Only the id gives way.
+    // RE-POINTED (CH-20's copy): the id is inside its own copy control now,
+    // and the control is what gives way in the row; the id ellipsizes in it.
+    const copy = document.querySelector('.brand-who > .brand-id')!
+    expect(copy, 'the tenant id is not in its copy control').not.toBeNull()
+    const id = copy.querySelector(':scope > .id')!
+    expect(notDrawn(copy, PHONE_W), 'the tenant id is hidden at 390').toBe(false)
+    expect(notDrawn(document.querySelector('.brand-admin')!, PHONE_W), 'the admin tag is hidden at 390').toBe(false)
+    expect(painted(copy, 'min-width', PHONE_W)).toBe('0')
+    expect(painted(id, 'white-space', PHONE_W)).toBe('nowrap')
+    expect(painted(id, 'text-overflow', PHONE_W)).toBe('ellipsis')
+    expect(painted(id, ['overflow', 'overflow-x'], PHONE_W)).toBe('hidden')
+    expect(painted(id, 'min-width', PHONE_W)).toBe('0')
+    expect(copy.getAttribute('title'), 'the cut id keeps its full value').toBe('u-bogdan')
+  })
+
+  it('makes the cut tenant id its own copy control: whole in its title and in what it copies', async () => {
+    // The decision: the id ellipsizes "with its full value in `title` and in
+    // a copy (the AH-11 precedent)". A CSS ellipsis leaves the text intact,
+    // but selecting a cut id in a 52px bar on a phone is not a copy anyone
+    // can rely on. The control IS the id, so it costs the row no width -- a
+    // separate button would take the 60-70px the id keeps at 390.
+    // MUTATION: render the id as a plain span again, copy anything but the
+    // whole id, or say nothing when the copy lands or fails.
+    const writeText = vi.fn(async (_: string) => {})
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
+    try {
+      await admin()
+      const copy = document.querySelector<HTMLElement>('.brand-who > .brand-id')
+      expect(copy?.tagName, 'the tenant id is not a control').toBe('BUTTON')
+      expect(copy!.getAttribute('type')).toBe('button')
+      expect(copy!.getAttribute('title')).toBe('u-bogdan')
+      expect(copy!.getAttribute('aria-label') ?? '', 'the control does not say what it copies').toMatch(
+        /copy.*u-bogdan/i,
+      )
+      await act(async () => {
+        fireEvent.click(copy!)
+      })
+      expect(writeText).toHaveBeenCalledWith('u-bogdan')
+      // Said, not silent: the outcome is announced beside the control.
+      expect(document.querySelector('.brand-who [role="status"]')?.textContent ?? '').toMatch(/tenant id copied/)
+      // §7.2: a 44px target at 560px and below, the type unchanged.
+      expect(Number.parseFloat(painted(copy!, 'min-height', PHONE_W) ?? '0')).toBeGreaterThanOrEqual(44)
+    } finally {
+      delete (navigator as unknown as { clipboard?: unknown }).clipboard
+    }
+  })
+
+  it('says so when the browser refuses the copy, rather than claiming it', async () => {
+    // `navigator.clipboard` is undefined outside a secure context, and a
+    // write can be refused. MUTATION: announce "copied" whatever happened.
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { writeText: vi.fn(async () => Promise.reject(new Error('denied'))) },
+      configurable: true,
+    })
+    try {
+      await admin()
+      await act(async () => {
+        fireEvent.click(document.querySelector('.brand-who > .brand-id')!)
+      })
+      const said = document.querySelector('.brand-who [role="status"]')?.textContent ?? ''
+      expect(said).not.toMatch(/tenant id copied/)
+      expect(said).toMatch(/refused/)
+    } finally {
+      delete (navigator as unknown as { clipboard?: unknown }).clipboard
+    }
+  })
+
+  it('shortens the unknown badge to UNKNOWN at 390 and keeps the full name for a reader', () => {
+    // MUTATION: drop the short label, or hide "ENVIRONMENT" with display:none.
+    render(<EnvironmentBadge env={{ kind: 'unknown', host: 'swarm.example' }} />)
+    const badge = document.querySelector('.brand-env.is-unknown')!
+    expect(badge.textContent, 'the accessible name lost the full words').toContain('ENVIRONMENT UNKNOWN')
+    const lead = badge.querySelector('.brand-env-lead')
+    expect(lead?.textContent?.trim()).toBe('ENVIRONMENT')
+    expect(visuallyHidden(lead!, PHONE_W), '"ENVIRONMENT" is still drawn at 390').toBe(true)
+    expect(notDrawn(lead!, WIDE_W)).toBe(false)
+    // The host stays in the title and in the tree, and is not drawn at 390.
+    expect(badge.getAttribute('title') ?? '').toContain('swarm.example')
+    const host = badge.querySelector('.id')!
+    expect(host.textContent).toBe('swarm.example')
+    expect(visuallyHidden(host, PHONE_W), 'the host id is still drawn at 390').toBe(true)
+  })
+
+  it('draws the admin marker as a grey hairline tag, not an accent pill', async () => {
+    // The same treatment as `.brand-env.is-nonprod`. MUTATION: the --info tint back.
+    await admin()
+    const tag = document.querySelector('.brand-admin')!
+    expect(painted(tag, ['background', 'background-color'], WIDE_W)).toBe('var(--surface-2)')
+    expect(painted(tag, 'color', WIDE_W)).toBe('var(--text-dim)')
+    expect(painted(tag, ['border', 'border-color'], WIDE_W) ?? '').toMatch(/^1px solid var\(--line\)$/)
+  })
+
+  it('leaves nothing at the retired 720px breakpoint', () => {
+    // 720 is not one of §7.1's five. MUTATION: the 720 rule back.
+    const at720 = flatRules(STYLES).filter(
+      (r) => r.conditions.some((c) => /\b720px\b/.test(c)) && /\.brand-/.test(r.selector),
+    )
+    expect(at720.map((r) => `${r.conditions.join(' ')} ${r.selector}`)).toEqual([])
   })
 })
 

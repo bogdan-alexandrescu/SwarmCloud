@@ -176,6 +176,78 @@ export function errorReassurance(e: ApiError): string {
 }
 
 // ---------------------------------------------------------------------------
+// Routes (CH-18)
+// ---------------------------------------------------------------------------
+// A ROUTE IS A PATH TEMPLATE WITH THE IDS AND THE QUERY REMOVED, and it is
+// what the probe registry below is keyed by. It was keyed by the concrete URL,
+// so every task anyone opened added a "route" of its own --
+// `/v1/tasks/<id>/attempts?limit=50` was 13 of the 29 cells on the dock the QA
+// pass screenshotted -- which inflated the route count, shaped the p95 and
+// made the help text's "one record per route" untrue.
+//
+// `read`, `write` and `noteFixtureProbe` take ONLY the value `route()` builds,
+// never a string, so the typecheck refuses any call that would key a probe by
+// a concrete URL. A hand-kept list of call sites could not do that: the first
+// draft of the decision's list missed four. The value is branded so it cannot
+// be forged as an object literal either.
+//
+// The template keeps its `{placeholders}` and any literal query: the seam
+// tests (`test_runtimes_screen.py`, `test_account_api.py`,
+// `test_checkpoint_content.py`) read the path literals out of the source and
+// compare their SHAPE with the routers' declarations, `{id}` and all.
+
+declare const ROUTE: unique symbol
+
+/** A read or write target: the URL to request, and the route it belongs to. */
+export interface ApiRoute {
+  /** The concrete URL, ids substituted and the query appended. */
+  readonly url: string
+  /** The registry key: the template with any `?…` removed. */
+  readonly template: string
+  readonly [ROUTE]: true
+}
+
+/**
+ * A path segment the caller has ALREADY encoded. The one user is a checkpoint
+ * member path, whose `/` separators the route's `{path:path}` expects to
+ * arrive as separators (`memberHref` in CheckpointBrowser.tsx encodes each
+ * segment and refuses `.` and `..`).
+ */
+export interface Encoded {
+  readonly encoded: string
+}
+
+/** Mark a value as already encoded, so `route()` substitutes it verbatim. */
+export function encoded(value: string): Encoded {
+  return { encoded: value }
+}
+
+/**
+ * Build a route: `{name}` in `template` becomes `encodeURIComponent(params.name)`
+ * (or the value verbatim, for an `encoded()` one), `query` is appended, and
+ * the registry key is the template with any literal query removed.
+ *
+ * A placeholder with no value THROWS rather than requesting a URL with a
+ * literal `{id}` in it, which the API would answer with a 404 that reads as
+ * "this task does not exist".
+ */
+export function route(
+  template: string,
+  params: Readonly<Record<string, string | number | Encoded>> = {},
+  query?: string | URLSearchParams,
+): ApiRoute {
+  const url = template.replace(/\{([A-Za-z_][\w]*)\}/g, (_m, name: string) => {
+    const v = params[name]
+    if (v === undefined) throw new Error(`route ${template} has no value for {${name}}`)
+    return typeof v === 'object' ? v.encoded : encodeURIComponent(String(v))
+  })
+  const q = query === undefined ? '' : String(query)
+  const full = q === '' ? url : `${url}${url.includes('?') ? '&' : '?'}${q}`
+  const at = template.indexOf('?')
+  return { url: full, template: at === -1 ? template : template.slice(0, at) } as ApiRoute
+}
+
+// ---------------------------------------------------------------------------
 // The probe registry, for the data-source strip
 // ---------------------------------------------------------------------------
 // Every read records what happened to it, so the UI can show its own
@@ -187,9 +259,17 @@ export function errorReassurance(e: ApiError): string {
 // A 403 here is information rather than a failure: a non-admin genuinely
 // cannot read /v1/admin/*, and saying so stops the page looking broken. A 401
 // is different -- that is an expired session and needs a re-auth action.
+//
+// ONE RECORD PER ROUTE (CH-18). Its status is the last attempt of ANY call to
+// the route and its age the newest successful payload of any call to it; each
+// panel still carries its own age and its own failure, and `lastUrl` says
+// which concrete call the status belongs to.
 
 export interface ProbeRecord {
+  /** The route: a path template, ids and query removed. */
   path: string
+  /** The concrete URL of the last attempt, so a failure can be traced to its task. */
+  lastUrl: string
   /** null when fetch itself rejected, so there was never a response. */
   lastStatus: number | null
   lastKind: ApiErrorKind | null
@@ -233,7 +313,7 @@ function recordProbe(rec: ProbeRecord): void {
  * development mode that hides bugs.
  */
 export function noteFixtureProbe(
-  path: string,
+  target: ApiRoute,
   latencyMs: number,
   ok: boolean,
   // Which failure to simulate. Defaulted to a 403 because that is the cell
@@ -241,16 +321,205 @@ export function noteFixtureProbe(
   // not breakage -- and a fixture that always produced a 503 meant that path
   // was never once looked at in development.
   kind: ApiErrorKind = 'admin_required',
+  options: { frame?: boolean } = {},
 ): void {
   const status = ok ? 200 : kind === 'admin_required' ? 403 : 503
   recordProbe({
-    path,
+    path: target.template,
+    lastUrl: target.url,
     lastStatus: status,
     lastKind: ok ? null : kind,
     lastLatencyMs: latencyMs,
     lastAttemptAt: Date.now(),
     lastSuccessAt: ok ? Date.now() : null,
   })
+  // A fixture read registers when it LANDS, after its simulated latency, so it
+  // belongs to the screen that was open when it STARTED -- `latencyMs` ago.
+  // Which of an inspector and the page under it asked is not knowable by
+  // then, so it is the inspector's when one was open (development only: the
+  // live path below knows).
+  if (options.frame !== true) {
+    const scope = shownBy(frameAt(Date.now() - latencyMs))
+    scope.settled += 1
+    if (ok) scope.newestSuccessAt = Date.now()
+    else if (kind !== 'admin_required') scope.failed += 1
+    publishScreenReads()
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The screen's own reads (CH-2)
+// ---------------------------------------------------------------------------
+// THE HEAD'S AGE IS THE SCREEN'S, AND THE DOCK'S IS THE TAB'S. The head used
+// to show the newest success of ANY route this tab had called, so it said
+// "just now" beside a page that was still loading -- the frame's own identity
+// read had landed, the page's had not. The dock keeps the tab-wide view (its
+// label says "every route"); the head reads only what the current screen
+// asked for.
+//
+// A SCREEN IS A ROUTE OF THE APP (`canonical()` in App.tsx), begun when the
+// route changes. A read belongs to the screen that was open when it STARTED,
+// so a slow read from the screen you just left cannot land as "newest read
+// just now" on the one you opened. The frame's own reads -- the identity read
+// behind the product header -- pass `frame: true` and belong to no screen.
+//
+// A ROUTE CAN SHOW TWO SCREENS: the agent inspector over the Agents list. The
+// list is never unmounted while the inspector is open, so opening, switching
+// and closing the inspector change the route and leave the list exactly as it
+// was -- it re-reads only on its next poll. So a route has a PAGE, the screen
+// the rail points at, and at most one INSPECTOR over it:
+//
+//   - the page's reads carry on across the inspector: a route whose page is
+//     the page already open keeps that page's reads, rather than starting from
+//     nothing beside a list that is fully drawn and asking for nothing. That
+//     was the defect -- close the drawer and the head said "reading…" with no
+//     read in flight, for up to 30s, or for good once polling had stopped;
+//   - the inspector's reads are its own, and start from nothing whenever the
+//     route changes (each pane is its own `Screen` and reads on mount);
+//   - a read the page asked for is the PAGE's even while an inspector is open,
+//     so the list's polls neither pass for the inspector's reads nor go
+//     missing from the list's own age. `Screen` says which it is by calling
+//     its load inside `pageReads`; anything else is the inspector's when one
+//     is open, and the page's when not.
+//
+// A screen re-entered through another page is still a screen re-read: only
+// the page open at the moment of the route change carries on.
+
+export interface ScreenReads {
+  /** The route these are about, or null before any screen has begun. */
+  key: string | null
+  /** Reads started and not yet settled. */
+  inFlight: number
+  /** Reads that settled, one way or the other. */
+  settled: number
+  /** Settled reads that failed, the admin gate excepted. */
+  failed: number
+  /** The newest successful payload any of this screen's reads produced. */
+  newestSuccessAt: number | null
+}
+
+/** One screen's reads. `page` names the page it is, for an inspector null. */
+type Scope = Omit<ScreenReads, 'key'> & { page: string | null }
+
+/** One route: its page's reads, and the inspector's over it if one is open. */
+interface Frame {
+  key: string | null
+  startedAt: number
+  page: Scope
+  inspector: Scope | null
+}
+
+const EMPTY_SCOPE: ScreenReads = { key: null, inFlight: 0, settled: 0, failed: 0, newestSuccessAt: null }
+
+function fresh(page: string | null): Scope {
+  return { page, inFlight: 0, settled: 0, failed: 0, newestSuccessAt: null }
+}
+
+/** Newest last. Kept short: only a read's START is ever looked up in it. */
+let frames: Frame[] = []
+let screenSnapshot: ScreenReads = EMPTY_SCOPE
+const screenListeners = new Set<() => void>()
+/** Above zero while `pageReads` is running a page's load. */
+let pageDepth = 0
+
+function currentFrame(): Frame {
+  const last = frames[frames.length - 1]
+  if (last !== undefined) return last
+  // Before any screen has begun (a read from a module-level load, a test that
+  // renders a component alone): an unnamed frame, which no head ever shows.
+  const frame: Frame = { key: null, startedAt: 0, page: fresh(null), inspector: null }
+  frames.push(frame)
+  return frame
+}
+
+/** The route that was open at `t`. */
+function frameAt(t: number): Frame {
+  for (let i = frames.length - 1; i >= 0; i--) {
+    const f = frames[i]!
+    if (f.startedAt <= t) return f
+  }
+  return frames[0] ?? currentFrame()
+}
+
+/** The screen the head speaks for on a route: the inspector, if one is open. */
+function shownBy(frame: Frame): Scope {
+  return frame.inspector ?? frame.page
+}
+
+function publishScreenReads(): void {
+  const f = currentFrame()
+  const s = shownBy(f)
+  screenSnapshot = {
+    key: f.key,
+    inFlight: s.inFlight,
+    settled: s.settled,
+    failed: s.failed,
+    newestSuccessAt: s.newestSuccessAt,
+  }
+  for (const fn of screenListeners) fn()
+}
+
+/**
+ * A route is open. `page` is the page under an inspector -- the route with its
+ * task removed -- and is omitted when the route is a page by itself.
+ *
+ * A page's reads start from nothing -- a screen re-entered is a screen
+ * re-read, and the age of its last visit is not the age of what it is about to
+ * draw -- UNLESS it is the page already open: then it never unmounted, and its
+ * reads carry on (above). An inspector's reads always start from nothing.
+ */
+export function beginScreenReads(key: string, page: string | null = null): void {
+  const pageKey = page ?? key
+  const last = frames[frames.length - 1]
+  frames.push({
+    key,
+    startedAt: Date.now(),
+    page: last !== undefined && last.page.page === pageKey ? last.page : fresh(pageKey),
+    inspector: page === null ? null : fresh(null),
+  })
+  if (frames.length > 8) frames = frames.slice(-8)
+  publishScreenReads()
+}
+
+/**
+ * Run a PAGE's load: every read it starts before its first `await` is the
+ * page's, even while an inspector is open over it. `Screen` calls its load
+ * through this when it is the page (`RoutedPage` in Shell.tsx). A read started
+ * after that first `await` is outside it, and follows the route's own rule.
+ */
+export function pageReads<T>(load: () => T): T {
+  pageDepth += 1
+  try {
+    return load()
+  } finally {
+    pageDepth -= 1
+  }
+}
+
+export function subscribeScreenReads(fn: () => void): () => void {
+  screenListeners.add(fn)
+  return () => screenListeners.delete(fn)
+}
+
+/** Identity-stable between changes, for `useSyncExternalStore`. */
+export function screenReadsSnapshot(): ScreenReads {
+  return screenSnapshot
+}
+
+/** A live read has started, on behalf of the screen open now (or the frame). */
+function startScreenRead(frame: boolean): (outcome: 'ok' | 'failed' | 'admin') => void {
+  if (frame) return () => {}
+  const route = currentFrame()
+  const scope = pageDepth > 0 ? route.page : shownBy(route)
+  scope.inFlight += 1
+  publishScreenReads()
+  return (outcome) => {
+    scope.inFlight -= 1
+    scope.settled += 1
+    if (outcome === 'ok') scope.newestSuccessAt = Date.now()
+    else if (outcome === 'failed') scope.failed += 1
+    publishScreenReads()
+  }
 }
 
 export function subscribeProbes(fn: () => void): () => void {
@@ -299,12 +568,25 @@ export function forgetProbes(): void {
   snapshot = []
   snapshotStale = true
   for (const fn of probeListeners) fn()
+  // The screen's own reads are the same module state for the same reason, and
+  // the head's "reading…" is exactly as untestable if one test's landed read
+  // survives into the next.
+  frames = []
+  pageDepth = 0
+  screenSnapshot = EMPTY_SCOPE
+  for (const fn of screenListeners) fn()
 }
 
 export interface FetchOptions {
   /** Previous data, if any. A failure with data in hand becomes `stale`. */
   previous?: { data: unknown; fetchedAt: number; serverAt?: string } | null
   signal?: AbortSignal
+  /**
+   * A read the FRAME makes, not the screen -- the product header's identity
+   * read. It registers in the tab-wide registry like any other, and it is not
+   * the screen's, so the head's age never counts it (CH-2).
+   */
+  frame?: boolean
 }
 
 /**
@@ -315,7 +597,7 @@ export interface FetchOptions {
  * response with no pools and a task page with no tasks are both objects.
  */
 export async function read<T>(
-  path: string,
+  target: ApiRoute,
   isEmpty: (data: T) => boolean,
   opts: FetchOptions = {},
 ): Promise<Result<T>> {
@@ -326,23 +608,27 @@ export async function read<T>(
       : { status: 'error', error }
 
   const startedAt = Date.now()
+  const settle = startScreenRead(opts.frame === true)
   const note = (
     status: number | null,
     kind: ApiErrorKind | null,
     ok: boolean,
-  ): void =>
+  ): void => {
     recordProbe({
-      path,
+      path: target.template,
+      lastUrl: target.url,
       lastStatus: status,
       lastKind: kind,
       lastLatencyMs: Date.now() - startedAt,
       lastAttemptAt: Date.now(),
       lastSuccessAt: ok ? Date.now() : null,
     })
+    settle(ok ? 'ok' : kind === 'admin_required' ? 'admin' : 'failed')
+  }
 
   let res: Response
   try {
-    res = await fetch(path, {
+    res = await fetch(target.url, {
       headers: { accept: 'application/json' },
       // Behind IAP the browser already holds the session cookie; nothing here
       // handles tokens, and nothing here should.
@@ -447,14 +733,18 @@ export async function read<T>(
  * take effect" is answered by the status, not by the payload's length.
  */
 export async function write(
-  path: string,
+  target: ApiRoute,
   method: 'POST' | 'PUT' | 'DELETE',
   body?: unknown,
 ): Promise<Result<unknown>> {
   const startedAt = Date.now()
+  // A write registers in the tab-wide registry and not as the screen's read:
+  // the head's age is "how old are the figures on this page", and a write
+  // draws no figure until the screen reads again.
   const note = (status: number | null, kind: ApiErrorKind | null, ok: boolean): void =>
     recordProbe({
-      path,
+      path: target.template,
+      lastUrl: target.url,
       lastStatus: status,
       lastKind: kind,
       lastLatencyMs: Date.now() - startedAt,
@@ -464,7 +754,7 @@ export async function write(
 
   let res: Response
   try {
-    res = await fetch(path, {
+    res = await fetch(target.url, {
       method,
       headers: {
         accept: 'application/json',
