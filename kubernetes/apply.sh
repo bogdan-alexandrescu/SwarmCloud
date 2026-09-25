@@ -66,6 +66,39 @@ SERVER_DRY_RUN=0
 CONTEXT=""
 RENDER_ARGS=()
 
+# THE CLUSTER'S NETWORK IS READ, NOT PASSED. These five render.py flags used to
+# be forwarded like everything else, and render.py defaulted them, and nothing
+# ever passed the real ones: the 2026-09-24 policy was rendered for pods
+# 10.0.0.0/8 and services 34.118.224.0/20 on a cluster that uses neither, with
+# no DNS rule this cluster's DNS could match. A value typed here is the value
+# that goes stale when the cluster changes, so it is refused, and the value this
+# script reads from the cluster is the only one rendered.
+NETWORK_FLAGS=(--pod-cidr --service-cidr --cluster-dns-ip --node-local-dns-ip --network-source)
+
+# network_flag_for ARG -- print the network flag ARG spells, and succeed, when
+# ARG (the part before any `=`) is one of NETWORK_FLAGS or ANY PREFIX of one.
+#
+# Prefixes, not just the full names, because that is what the renderer would
+# have accepted: argparse expands an unambiguous prefix of a long option, and
+# the arguments forwarded below come AFTER the four values this script read, so
+# the last occurrence won and `--pod-cid 10.200.0.0/14` replaced the cluster's
+# pod range. render.py now refuses abbreviations itself (allow_abbrev=False);
+# this refusal stays because it names the reason, and because it does not
+# depend on every future caller of render.py remembering to be as strict.
+#
+# Only for what is forwarded. apply.sh's own `--cluster` is a prefix of
+# `--cluster-dns-ip`, which is why this is not applied to every argument.
+network_flag_for() {
+  local name="${1%%=*}" flag
+  [[ "${name}" == --?* ]] || return 1
+  for flag in "${NETWORK_FLAGS[@]}"; do
+    case "${flag}" in
+      "${name}"*) printf '%s' "${flag}"; return 0 ;;
+    esac
+  done
+  return 1
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --tenant|-t)  TENANT="$2"; shift 2 ;;
@@ -74,22 +107,23 @@ while [[ $# -gt 0 ]]; do
     --server-dry-run) SERVER_DRY_RUN=1; shift ;;
     --context)    CONTEXT="$2"; shift 2 ;;
     --cluster)    CLUSTER="$2"; shift 2 ;;
+    # The `=` spellings of the three above. Without them `--cluster=NAME` was
+    # forwarded, and the renderer read `--cluster` as an abbreviation of
+    # `--cluster-dns-ip` and tried to render the cluster's NAME as its DNS IP.
+    --tenant=*)   TENANT="${1#*=}"; shift ;;
+    --context=*)  CONTEXT="${1#*=}"; shift ;;
+    --cluster=*)  CLUSTER="${1#*=}"; shift ;;
     -h|--help)    sed -n '2,43p' "$0"; exit 0 ;;
-    # THE CLUSTER'S NETWORK IS READ, NOT PASSED. These used to be forwarded to
-    # render.py like everything else, and render.py defaulted them, and nothing
-    # ever passed the real ones: the 2026-09-24 policy was rendered for pods
-    # 10.0.0.0/8 and services 34.118.224.0/20 on a cluster that uses neither,
-    # with no DNS rule this cluster's DNS could match. A value typed here is the
-    # value that goes stale when the cluster changes, so it is refused, and the
-    # value this script reads from the cluster is the only one rendered.
-    --pod-cidr|--pod-cidr=*|--service-cidr|--service-cidr=*|\
-    --cluster-dns-ip|--cluster-dns-ip=*|--node-local-dns-ip|--node-local-dns-ip=*|\
-    --network-source|--network-source=*)
-      die "${1%%=*} is read from the cluster by this script (kubernetes/cluster-network.sh);
-       it cannot be passed. To render for another cluster, point --context/--cluster at it." ;;
     # Everything else is passed straight to render.py, so --pss-enforce,
-    # --quota-cpu and friends work without being restated here.
-    *)            RENDER_ARGS+=("$1"); shift ;;
+    # --quota-cpu and friends work without being restated here -- except the
+    # network, in any spelling that could reach it.
+    *)
+      if NETWORK_FLAG="$(network_flag_for "$1")"; then
+        die "'${1%%=*}' would reach the renderer as ${NETWORK_FLAG}, which is read from the cluster
+       by this script (kubernetes/cluster-network.sh); it cannot be passed, in full or
+       abbreviated. To render for another cluster, point --context/--cluster at it."
+      fi
+      RENDER_ARGS+=("$1"); shift ;;
   esac
 done
 

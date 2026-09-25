@@ -107,8 +107,10 @@ and the NodeLocal DNSCache address. `apply.sh` reads them through
 (`.clusterIpv4Cidr`, `.servicesIpv4Cidr`), the two DNS addresses from
 `kube-system` (the `kube-dns` Service's `clusterIP`, and the first `-localip` of
 the `node-local-dns` DaemonSet), because `describe` contains neither address —
-and refuses them as arguments. `render.py` takes them as inputs with no
-defaults; given none, it renders RFC 5737 documentation addresses, marks the
+and refuses them as arguments, in full or abbreviated (`--pod-cid` is refused
+as `--pod-cidr`; `render.py` also turns argparse's prefix expansion off, which
+is what let an abbreviation forwarded after the read values replace them).
+`render.py` takes them as inputs with no defaults; given none, it renders RFC 5737 documentation addresses, marks the
 policy `offline-render-not-for-apply`, and `apply.sh` refuses to apply that.
 The policy's `swarm.saga.xyz/*` annotations record what it was rendered for, and
 `scripts/lib/check-cluster-network-parity.sh` compares every applied copy — the

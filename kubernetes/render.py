@@ -709,8 +709,9 @@ def add_tenant_arguments(parser: argparse.ArgumentParser) -> None:
     # NO DEFAULTS, deliberately -- see NETWORK_INPUTS for what the defaults
     # cost. Each help names where kubernetes/apply.sh reads the value; that
     # script is the supported way to render for a cluster, and it refuses these
-    # flags from its own command line so a hand-typed value cannot override the
-    # one it read.
+    # flags from its own command line, in full or abbreviated, so a hand-typed
+    # value cannot override the one it read. main() turns abbreviation off for
+    # the same reason.
     parser.add_argument(
         "--pod-cidr",
         default="",
@@ -766,15 +767,24 @@ def add_tenant_arguments(parser: argparse.ArgumentParser) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    # NO ABBREVIATED FLAGS, on every parser. argparse expands an unambiguous
+    # prefix of a long option by default, which made every flag here reachable
+    # under a dozen spellings nobody reviewed: kubernetes/apply.sh refused the
+    # full names of the network flags, and `--pod-cid 10.200.0.0/14`, forwarded
+    # after the values it had read from the cluster, became a second
+    # `--pod-cidr` and won. A caller that withholds a flag should only have to
+    # withhold its name. (Subparsers do not inherit the setting; each is told.)
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0], allow_abbrev=False)
     sub = parser.add_subparsers(dest="command", required=True)
 
-    tenant = sub.add_parser("tenant", help="namespace, quota, accounts, RBAC and policies")
+    tenant = sub.add_parser(
+        "tenant", help="namespace, quota, accounts, RBAC and policies", allow_abbrev=False
+    )
     add_tenant_arguments(tenant)
 
-    sub.add_parser("policies", help="the cluster-scoped admission policies")
+    sub.add_parser("policies", help="the cluster-scoped admission policies", allow_abbrev=False)
 
-    job = sub.add_parser("job", help="one worker Job")
+    job = sub.add_parser("job", help="one worker Job", allow_abbrev=False)
     add_tenant_arguments(job)
     job.add_argument("--profile", required=True, choices=sorted(RUNNER_PROFILES))
     job.add_argument("--task", required=True)
