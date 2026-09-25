@@ -496,6 +496,137 @@ empty one.
 Which Node line is *current* is not something a test can know. That is a fact
 about a date, and it is decided in [`versions.md`](versions.md).
 
+## The release reads one job's log, and the owner applies the grant
+
+The in-VPC gate (`scripts/verify-remote.sh`, run by `release.yml` as
+`swarm-tf-deployer`) used to report only *that* a target failed. Release
+36038727721 printed `smoke-test FAILED (exit 1)` and nothing else; the two
+failing cases were in the job's own stdout, in Cloud Logging, and it took a
+second person to find them. The script now prints that transcript on a failed
+target. The deployer could not read it: none of its 18 project roles carries a
+permission that reads a log entry (each checked with `gcloud iam roles
+describe` on 2026-09-24).
+
+**Owner decision, 2026-09-24: the deployer may read the `swarm-verify` job's
+logs and no others.** This project is shared, its logs include the other
+team's, and a transcript is where a secret turns up, so `roles/logging.viewer`
+was never an option. What implements it, in
+[`terraform/bootstrap/verify_logs.tf`](../terraform/bootstrap/verify_logs.tf):
+
+| piece | value |
+|---|---|
+| log view | `swarm-verify` on the `_Default` bucket (location `global`), filter `resource.type="cloud_run_job" AND resource.labels.job_name="swarm-verify"` |
+| grant | `roles/logging.viewAccessor` to the deployer, condition `resource.name == "projects/saga-agents-staging/locations/global/buckets/_Default/views/swarm-verify"` |
+| read | `gcloud logging read … --bucket _Default --location global --view swarm-verify`, which sends that view to `entries.list` as the resource read |
+| refusal | `var.deployer_roles` refuses every predefined role measured to read log entries ([`log-reading-roles.json`](../terraform/bootstrap/log-reading-roles.json): 50 of 2,397 on 2026-09-24, `roles/iam.securityReviewer` and seven `roles/firebase.*` roles among them), and every role not on the reviewed list in `verify_logs.tf` |
+
+It replaces PR #50's design, which copied the job's lines through a sink into a
+`swarm-verify-logs` bucket. That was never applied: on 2026-09-24 the project
+had only `_Default` and `_Required` buckets and sinks, and the owner's bootstrap
+state held no logging resource. The view keeps no second copy of a transcript,
+shows every execution still in `_Default`'s 30 days from the moment it exists,
+and is a resource IAM can name, so the `configWriter` condition, once applied,
+keeps CI from editing it. IAM has no name for a sink, so no condition can stop
+CI rewriting one.
+
+It lives in the bootstrap root because grants to the deployer come from the
+root the owner applies, never from the root the deployer applies to itself.
+**CI does not apply it and a merge changes nothing live.**
+
+### The apply step, for the owner
+
+```bash
+make bootstrap    # scripts/bootstrap.sh: init, plan to build/bootstrap.tfplan, typed "apply"
+```
+
+Before typing `apply`, the plan must show these two creates for this change,
+and no logging destroy:
+
+```text
++ google_logging_log_view.verify
++ google_project_iam_member.deployer_reads_verify_logs[0]
+```
+
+**`make bootstrap` applies everything pending in the root, not only this.** On
+2026-09-24 the owner's local bootstrap state still held `roles/storage.admin`
+as an unconditioned grant, so the same plan also carries the storage.admin
+scoping in `wif.tf`. The comment there says that change is applied only
+*between* releases. To apply only the log view and its grant:
+
+```bash
+scripts/bootstrap.sh \
+  --target google_logging_log_view.verify \
+  --target 'google_project_iam_member.deployer_reads_verify_logs[0]'
+```
+
+That is the same script `make bootstrap` runs, with the plan limited to the two
+addresses: the same pinned terraform, the same `init`, the same typed `apply`,
+and it says before the plan and at the prompt that the plan is partial. The
+second address is quoted because zsh reads `[0]` as a glob. Do not paste a bare
+`terraform -chdir=...` instead: on the owner's workstation bare `terraform` is
+Homebrew's 1.3.6, which this root refuses (`required_version >= 1.9.0`); the
+scripts resolve the pinned 1.16.2 in `~/.local/bin` through `tf` in
+`scripts/lib/common.sh`. `tests/integration/test_bootstrap_target.py` holds the
+flag to reaching the plan and to an apply of that saved plan.
+
+### What is proven, and what only a failed release will prove
+
+`tests/terraform/verify_logs.tftest.hcl` holds the configuration to the
+decision: the filter names only `swarm-verify` and cannot widen, the grant names
+exactly the view the root creates, no predefined role this root grants the
+deployer is a measured log reader, and `var.deployer_roles` refuses both a
+measured reader and a role nobody reviewed. That is about what this root
+*grants*; the next section is about what the deployer can *reach*.
+`tests/integration/test_verify_remote_prints_the_job_log.py` reads the grant and
+the view's filter out of the terraform and runs the script as an identity that
+may read that one view.
+
+Neither proves what Google will do, and this repository has already shipped
+two IAM conditions written from documentation that matched nothing: the IAP one
+and the exact-bucket `storage.admin` one, both in `wif.tf`. Three things are
+documented and not yet observed:
+
+* **the condition's form.** It is copied from the Logging guide's "Control
+  access to a log view" and from IAM's resource-attribute table, which agree;
+* **that `viewAccessor` is enough.** `entries.list` documents
+  `logging.views.access` on the view as sufficient;
+* **that the view filter may test a label.** The Logging guide calls this a
+  *flexible* filter and its release notes date it 2026-04-02. The REST reference
+  and the pinned provider's schema still describe the older rule (`SOURCE()`,
+  `resource.type`, `LOG_ID()` only). If the service holds to that, the *apply*
+  fails on the view, at the owner's terminal, before any grant exists.
+
+**The condition is proven only when a failed release prints the log.** The
+first failed gate after the apply shows either the transcript or the refusal
+with gcloud's own error. The gate's verdict is the same either way.
+
+### What the view does not bound: the deployer can reach every log
+
+**"swarm-verify only" is what this grant gives. It is not what the deployer can
+read**, and no condition written in
+[`deployer_conditions.tf`](../terraform/bootstrap/deployer_conditions.tf)
+makes it so, even with every scopable role scoped. Measured on 2026-09-24 with
+read-only gcloud (`projects get-iam-policy`, `iam roles describe`,
+`iam service-accounts get-iam-policy`); none of these routes has been
+exercised, and this is what was found, not proof that there is nothing else.
+
+| # | route to every log in the project | closed by a condition? |
+|---|---|---|
+| 1 | The deployer holds `roles/iam.serviceAccountUser` on `209012342332-compute@developer` (`wif.tf`, what `gcloud builds submit` runs as). That account holds **`roles/editor`**, which carries `logging.logEntries.list`. A build step or a Cloud Run job running `gcloud logging read` as it reads everything. Needs nothing CI does not already hold. | **no** |
+| 2 | `roles/iam.roleAdmin` (unscopable) carries `iam.roles.update`. CI can add `logging.logEntries.list` to a custom role it holds: `swarmSecretProvisioner` (its scoped type guard admits every non-secret resource), `swarmDeployerProjectBuckets` (always unconditioned in `wif.tf`, not yet applied), or one of terraform/infra's six custom roles, which the scoped `projectIamAdmin` still lets it grant itself. | **no** |
+| 3 | `roles/iam.serviceAccountAdmin` (unscopable) carries `iam.serviceAccounts.setIamPolicy`. CI can grant itself `serviceAccountTokenCreator` on an account that reads logs (the compute account above, or `209012342332@cloudbuild`, which holds `roles/cloudbuild.builds.builder`) and act as it. | **no** |
+| 4 | `roles/logging.configWriter` keeps sinks and exclusions project-wide even when scoped. A sink can route every log to a `swarm-` bucket (`storage.admin`) or a Pub/Sub topic (`pubsub.admin`) that CI reads. | **no** |
+| 5 | `roles/logging.configWriter` unconditioned holds `logging.views.update`: CI can rewrite this view's filter, or make another view, and read the result through the grant. | yes, once `roles/logging.configWriter` is in `deployer_scoped_roles` |
+| 6 | `roles/resourcemanager.projectIamAdmin` unconditioned lets CI grant itself `roles/logging.viewer`. | yes, once scoped (but not route 2) |
+
+What bounds all six today is the ref pin, not IAM: only a workflow on
+`refs/heads/main` can mint the deployer's token, so each route has to be merged
+to `main` first. Closing 1 means building as an account without `roles/editor`;
+2 and 3 mean taking `roles/iam.roleAdmin` and `roles/iam.serviceAccountAdmin`
+off the deployer or replacing them with resource-level grants on `swarm-*`
+roles and accounts; 4 means moving sink management out of CI. Each changes
+what CI can do, none is made here, and which to make is the owner's decision.
+
 ## The finishing sequence
 
 ```bash

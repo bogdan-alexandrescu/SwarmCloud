@@ -44,22 +44,27 @@ THE RELEASE'S IDENTITY IS MODELLED, NOT ASSUMED
 -----------------------------------------------
 The release runs this script as swarm-tf-deployer. Its only logging role,
 roles/logging.configWriter, cannot read a single entry, so until 2026-09-24 the
-release log printed the refusal instead of the transcript.
-terraform/bootstrap/verify_logs.tf copies the job's transcript into a log bucket
-of its own and grants the deployer that bucket's view and nothing wider.
+release log printed the refusal instead of the transcript. The owner decided
+that day that the deployer may read this job's logs and no others:
+terraform/bootstrap/verify_logs.tf puts a log view on the project's _Default
+bucket, filtered to the job, and grants the deployer that view and nothing
+wider.
 
-`_release_identity()` reads the view named by the grant's condition, and the
-sink's filter, OUT OF THAT FILE. The fake then refuses every read except through
-that one view, and the view holds only what the sink's filter routes into it.
-So the release path is proven through the grant as written. Renaming the bucket,
-re-scoping the grant or pointing the sink at another job fails here, not in a
-release.
+`_release_identity()` reads the view named by the grant's condition, and that
+view's filter, OUT OF THAT FILE -- and checks that the view the grant names is
+the view the file creates. The fake then refuses every read except through that
+one view, and the view shows only what its filter selects. So the release path
+is proven through the grant as written. Renaming the view, re-scoping the grant
+or pointing the view at another job fails here, not in a release.
 
 WHAT IT CANNOT PROVE
 --------------------
 * that the real Cloud Logging returns entries in this shape;
-* that a sink into a bucket in its own project needs no writer grant (the
-  Logging documentation says "the sink is automatically authorized");
+* that Cloud Logging accepts a label clause in a view's filter (its how-to
+  guide documents it; its REST reference still says it may not -- see
+  verify_logs.tf);
+* that IAM evaluates the grant's condition against the view the way Google
+  documents it. That is proven only when a failed release prints the log;
 * that the grant is APPLIED: it is in the bootstrap root, which the owner
   applies with `make bootstrap`, never the release.
 
@@ -98,7 +103,7 @@ pytestmark = pytest.mark.skipif(
 
 def _infra_job_name() -> str:
     """The name terraform/infra gives the verification job -- the job whose
-    logs every filter here, the script's and the sink's, must select."""
+    logs every filter here, the script's and the view's, must select."""
     m = re.search(
         r'resource\s+"google_cloud_run_v2_job"\s+"verify"\s*\{.*?^\s*name\s*=\s*"([^"]+)"',
         INFRA_VERIFY_TF.read_text(),
@@ -111,12 +116,12 @@ def _infra_job_name() -> str:
 JOB = _infra_job_name()
 
 
-#: Cloud Logging's filter language, as far as verify-remote.sh and the sink use
+#: Cloud Logging's filter language, as far as verify-remote.sh and the view use
 #: it: a conjunction of `path="value"` (equality) and `path:"value"`
 #: (containment). Anything else is REFUSED, because a fake that skips a clause
 #: it does not understand is how two of the script's four clauses went
-#: unexercised. `$routed` is the filter of the sink feeding the view being read
-#: ("" when the read is not through a view); `$filter` is the caller's.
+#: unexercised. `$routed` is the filter of the view being read ("" when the
+#: read is not through a view); `$filter` is the caller's.
 FILTER_JQ = r"""
 def clauses($f):
   if $f == "" then []
@@ -151,7 +156,7 @@ clauses($routed) as $into_view
 #:       then --order and --limit. FAKE_LOG_READ=denied refuses; =empty
 #:       answers []. With FAKE_READABLE_VIEW set the caller is the release's
 #:       identity: a read through any other view, or through none, is refused,
-#:       and the view holds only the entries FAKE_VIEW_FILTER routes into it.
+#:       and the view shows only the entries FAKE_VIEW_FILTER selects.
 FAKE_GCLOUD = r"""#!/usr/bin/env bash
 set -uo pipefail
 printf '%s\n' "$*" >>"${FAKE_GCLOUD_LOG}"
@@ -307,7 +312,7 @@ def _hcl_unescape(s: str) -> str:
 
 def _string_locals(text: str) -> dict[str, str]:
     """Every `name = "literal"` line, unescaped -- the locals the file builds
-    its view path and sink filter from."""
+    its view path and view filter from."""
     return {
         m.group(1): _hcl_unescape(m.group(2))
         for m in re.finditer(r'^\s*([a-z_]+)\s*=\s*"((?:[^"\\]|\\.)*)"\s*$', text, re.M)
@@ -328,12 +333,26 @@ def _resolve(value: str, local: dict[str, str], depth: int = 0) -> str:
     return re.sub(r"\$\{(var|local)\.([a-z_]+)\}", one, value)
 
 
+def _string_attr(block: str, key: str, local: dict[str, str], what: str) -> str:
+    """`key = "literal"` or `key = local.name` inside one resource block,
+    resolved. Anything else is a failure: a value this test cannot read is one
+    it cannot hold the script to."""
+    m = re.search(
+        rf'^\s*{key}\s*=\s*(?:"((?:[^"\\]|\\.)*)"|local\.([a-z_]+))\s*$', block, re.M,
+    )
+    assert m, f"{what}'s {key} is neither a string literal nor a string local"
+    if m.group(1) is not None:
+        return _resolve(_hcl_unescape(m.group(1)), local)
+    assert m.group(2) in local, f"{what}'s {key} is local.{m.group(2)}, which is not a string literal"
+    return _resolve(local[m.group(2)], local)
+
+
 def _release_identity() -> tuple[str, str]:
-    """(the view the deployer's grant names, the filter of the sink feeding it)."""
+    """(the view the deployer's grant names, that view's filter)."""
     rel = BOOTSTRAP_VERIFY_LOGS_TF.relative_to(REPO)
     assert BOOTSTRAP_VERIFY_LOGS_TF.exists(), (
-        f"{rel} does not exist: nothing routes {JOB}'s log anywhere the release's "
-        f"identity may read it, so the release log can only print the refusal"
+        f"{rel} does not exist: nothing lets the release's identity read {JOB}'s "
+        f"log, so the release log can only print the refusal"
     )
     text = BOOTSTRAP_VERIFY_LOGS_TF.read_text()
     local = _string_locals(text)
@@ -355,13 +374,21 @@ def _release_identity() -> tuple[str, str]:
     view = re.fullmatch(r'resource\.name == "([^"]+)"', condition)
     assert view, f"the grant's condition is not one exact view: {condition}"
 
-    sink = re.search(
-        r'resource\s+"google_logging_project_sink"\s+"verify"\s*\{(.*?)\n\}', text, re.S,
+    block = re.search(
+        r'resource\s+"google_logging_log_view"\s+"verify"\s*\{(.*?)\n\}', text, re.S,
     )
-    assert sink, f"{rel} declares no google_logging_project_sink.verify"
-    ref = re.search(r'^\s*filter\s*=\s*local\.([a-z_]+)\s*$', sink.group(1), re.M)
-    assert ref and ref.group(1) in local, f"the sink's filter in {rel} is not a string local"
-    return view.group(1), _resolve(local[ref.group(1)], local)
+    assert block, f"{rel} declares no google_logging_log_view.verify"
+    what = f"google_logging_log_view.verify in {rel}"
+    created = (
+        f"{_string_attr(block.group(1), 'bucket', local, what)}"
+        f"/views/{_string_attr(block.group(1), 'name', local, what)}"
+    )
+    # A grant on a view nobody creates reads nothing, and a view nobody is
+    # granted is read by nobody. Either way the release log prints the refusal.
+    assert view.group(1) == created, (
+        f"the deployer's grant names {view.group(1)}, but the view {rel} creates is {created}"
+    )
+    return view.group(1), _string_attr(block.group(1), "filter", local, what)
 
 
 # ---------------------------------------------------------------------------
@@ -452,34 +479,51 @@ def test_a_failed_target_prints_the_executions_own_log(tmp_path):
 
 
 def test_the_release_identity_reads_the_transcript_through_the_view_bootstrap_grants(tmp_path):
-    """As swarm-tf-deployer: only the granted view is readable, and it holds
-    only what the sink routes into it. The release log must still say WHY."""
-    view, sink_filter = _release_identity()
+    """As swarm-tf-deployer: only the granted view is readable, and it shows
+    only what the view's filter selects. The release log must still say WHY."""
+    view, view_filter = _release_identity()
     proc = _run(tmp_path, "smoke-test", failing=("smoke-test",),
-                extra_env={"FAKE_READABLE_VIEW": view, "FAKE_VIEW_FILTER": sink_filter})
+                extra_env={"FAKE_READABLE_VIEW": view, "FAKE_VIEW_FILTER": view_filter})
     assert proc.returncode != 0, _explain(proc)
     assert "could not read the log" not in proc.transcript, _explain(proc)
     _assert_the_transcript_and_nothing_else(proc)
     assert len(_log_reads(proc)) == 1, _explain(proc)
 
 
-def test_the_sink_routes_this_job_s_transcript_and_nothing_else(tmp_path):
-    """The bucket the deployer may read receives the job's stdout and stderr,
-    every execution of it, and none of the neighbours -- in particular not the
-    audit events, and not another job's (a tenant worker's) transcript."""
-    _, sink_filter = _release_identity()
+def test_the_view_shows_this_job_s_logs_and_no_other_job_s(tmp_path):
+    """Everything the deployer may read is the verification job's own: every
+    execution's transcript, and nothing from another job (a tenant worker's) or
+    from something that is not a job. That is the owner's decision of
+    2026-09-24 -- this job's logs ONLY -- stated as a property of the view.
+
+    The job's audit events carry the same resource labels, so the view's filter
+    selects them here. In the project they are not in _Default at all: Cloud
+    Logging routes Admin Activity and System Event audit logs to _Required.
+    Measured on 2026-09-24 over 30 days of swarm-verify: _Default held 331
+    stderr, 34 stdout and 29 varlog/system entries and nothing else; _Required
+    held its 39 activity and 62 system_event entries. And the script's own
+    logName clause keeps them out of the release log regardless, which
+    `test_the_release_identity_reads_the_transcript_through_the_view_bootstrap_grants`
+    holds it to."""
+    _, view_filter = _release_identity()
     env = _install_fake(tmp_path)
     proc = subprocess.run(
-        ["jq", "-c", "--arg", "filter", sink_filter, "--arg", "routed", "",
+        ["jq", "-c", "--arg", "filter", view_filter, "--arg", "routed", "",
          "--arg", "order", "asc", "--argjson", "limit", "1000",
          "-f", env["FAKE_FILTER_JQ"], env["FAKE_LOG_ENTRIES"]],
         capture_output=True, text=True, timeout=30,
     )
-    assert proc.returncode == 0, f"the sink's filter is not one the fake can apply: {sink_filter}\n{proc.stderr}"
-    routed = [r.get("textPayload") for r in json.loads(proc.stdout)]
-    assert routed == [text for _, text in TRANSCRIPT] + [OTHER_EXECUTION], (
-        f"sink filter {sink_filter!r} routes {routed}"
-    )
+    assert proc.returncode == 0, f"the view's filter is not one the fake can apply: {view_filter}\n{proc.stderr}"
+    shown = json.loads(proc.stdout)
+    strangers = [r for r in shown
+                 if r["resource"]["type"] != "cloud_run_job" or r["resource"]["labels"].get("job_name") != JOB]
+    assert shown and not strangers, f"view filter {view_filter!r} shows logs that are not {JOB}'s: {strangers}"
+    texts = [r.get("textPayload") for r in shown]
+    for _, line in TRANSCRIPT:
+        assert line in texts, f"view filter {view_filter!r} hides {line!r} of {JOB}'s transcript: {texts}"
+    # Every execution of the job, not only the latest.
+    assert OTHER_EXECUTION in texts, f"view filter {view_filter!r} narrows to one execution: {texts}"
+    assert OTHER_JOB not in texts and NOT_A_JOB not in texts, texts
 
 
 def test_the_log_tail_is_redacted(tmp_path):

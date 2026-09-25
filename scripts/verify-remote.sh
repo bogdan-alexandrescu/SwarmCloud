@@ -82,28 +82,32 @@ info "targets ${TARGETS[*]}"
 # IT IS READ THROUGH ONE LOG VIEW, NOT FROM THE PROJECT. The release runs this
 # script as swarm-tf-deployer, whose only logging role (configWriter) cannot
 # read an entry, and this project is SHARED, so the answer is not a
-# project-wide log read. terraform/bootstrap/verify_logs.tf has a sink copy this
-# job's stdout/stderr into a bucket of its own, and grants the deployer
-# roles/logging.viewAccessor on that bucket's _AllLogs view and nothing else.
-# LOG_BUCKET and LOG_LOCATION are that bucket.
+# project-wide log read. The owner decided on 2026-09-24 that the deployer may
+# read this job's logs ONLY: terraform/bootstrap/verify_logs.tf puts a view on
+# the project's _Default bucket that selects the swarm-verify job and nothing
+# else, and grants the deployer roles/logging.viewAccessor conditioned on that
+# view. LOG_BUCKET, LOG_LOCATION and LOG_VIEW are that view; `--bucket
+# --location --view` make gcloud send it to entries.list as the resource
+# read, which is what the condition names.
 # tests/integration/test_verify_remote_prints_the_job_log.py reads the grant out
 # of the terraform and lets its fake release identity read that one view, so a
 # rename on either side fails there.
 #
 # The grant is in the bootstrap root, which the OWNER applies (`make
-# bootstrap`), never the release. Until it is applied the read is refused, and
-# an execution older than the sink is not in the bucket at all. Either way what
-# is printed says so, names what grants the read, and gives the project-wide
-# command that reads the same lines for anyone holding roles/logging.viewer.
-# The target's verdict is unchanged: a missing transcript must never turn a
-# failed gate into anything else.
+# bootstrap`), never the release. Until it is applied the read is refused.
+# What is printed then says so, names what grants the read, and gives the
+# project-wide command that reads the same lines for anyone holding
+# roles/logging.viewer. The target's verdict is unchanged: a missing transcript
+# must never turn a failed gate into anything else.
 #
 # The filter below still names the job, the execution and the log. Through the
-# view that is partly redundant, but it is also the filter of the by-hand
-# command, which reads the whole project.
-LOG_BUCKET="swarm-verify-logs"
+# view the job clauses are redundant, but the execution clause picks this run,
+# the logName clause keeps out anything the job writes that is not its
+# stdout/stderr, and the same filter is the by-hand command's, which reads the
+# whole project.
+LOG_BUCKET="_Default"
 LOG_LOCATION="global"
-LOG_VIEW="_AllLogs"
+LOG_VIEW="swarm-verify"
 
 # LOG_TAIL_ENTRIES is how many lines are shown. The smoke suite's whole
 # transcript was 41 lines on 2026-09-24 (swarm-verify-m9prt: 40 stderr, 1
@@ -178,7 +182,7 @@ print_execution_log() {
   rm -f "${read_err}"
   if [[ "${n}" -eq 0 ]]; then
     warn "execution ${execution} has no stdout/stderr in Cloud Logging after ${attempt} read(s)"
-    info "it may not be ingested yet, or it ran before the ${LOG_BUCKET} sink existed: gcloud logging read '${filter}' --project ${PROJECT_ID} --order asc"
+    info "it may not be ingested yet, or be older than the ${LOG_BUCKET} bucket keeps logs: gcloud logging read '${filter}' --project ${PROJECT_ID} --order asc"
     rm -f "${entries}"
     return 0
   fi
