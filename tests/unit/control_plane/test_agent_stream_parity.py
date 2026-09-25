@@ -79,6 +79,17 @@ def test_checkpoint_members_are_still_text_or_refused():
     assert content_type_for("diagram.svg") == "text/plain"
 
 
+def test_the_api_recognises_the_line_the_workers_capture_writes_where_it_cut():
+    """`/transcript` and `/answer` tell a capped capture from a whole one by
+    the notice the worker's `StreamCapture` writes where it dropped bytes.
+    Restated in the API for the reason the stream table is, and held here."""
+    from agent_worker.procman import TRUNCATION_MARK, TRUNCATION_NOTICE
+    from swarm_api.agent_streams import TRUNCATION_MARK as API_MARK
+
+    assert API_MARK == TRUNCATION_MARK
+    assert TRUNCATION_NOTICE.lstrip(b"\n").startswith(TRUNCATION_MARK)
+
+
 def test_a_reclaimed_artifact_is_a_410_of_its_own():
     from swarm_api.errors import Gone, NotFound
 

@@ -21,6 +21,7 @@ Offline: FakeFirestore and the in-memory object reader. No credentials.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 
 import pytest
@@ -501,3 +502,104 @@ def test_a_failure_mid_download_ends_short_of_the_declared_size(
     assert int(response.headers["x-artifact-bytes"]) == total
     assert len(response.content) < total
     assert response.content == (ZIP + body)[: len(response.content)]
+
+
+# --------------------------------------------------------------------------
+# A private key in a text artifact, and text that is not UTF-8 (#188 review)
+# --------------------------------------------------------------------------
+
+def _pem(which: str) -> str:
+    """A key's BEGIN or END marker, assembled so no scanner reads one here."""
+    return "-----" + which + " RSA PRIVATE KEY" + "-----"
+
+
+def _key(lines: int) -> str:
+    body = [f"K{n:04d}" * 12 + "QQQQ" for n in range(lines)]
+    return "\n".join([_pem("BEGIN"), *body, _pem("END")])
+
+
+KEY_LEAK = re.compile(r"K\d{4}K\d{4}")
+
+
+def test_a_private_key_is_masked_whole_in_a_download_served_in_small_windows(
+    client, db, objects, small_windows
+):
+    """Printed as text, a key spans lines, and 64-byte windows would cut it
+    into pieces that hold neither marker. An open key is carried into the
+    next window, so it is masked as one block -- exactly as the whole
+    object would be."""
+    text = "config follows\n" + _key(24) + "\nend of config\n"
+    a_finished_task(db, objects, files={"deploy.log": text})
+
+    response = raw(client, "deploy.log")
+    assert response.status_code == 200, response.text
+    assert not KEY_LEAK.search(response.text), response.text
+    assert response.text == redact(text).text
+
+
+def test_a_private_key_in_a_text_artifact_leaks_from_no_page(client, db, objects):
+    before = "".join(f"row {n:03d}\n" for n in range(50))
+    after = "".join(f"tail {n:03d}\n" for n in range(50))
+    a_finished_task(db, objects, files={"keys.txt": before + _key(200) + "\n" + after})
+
+    offset, pages, seen = 0, 0, ""
+    while offset is not None:
+        body = client.get(
+            "/v1/tasks/task_a/artifacts/content",
+            params={"name": "keys.txt", "offset": offset, "limit_bytes": 4096},
+            headers=auth_header("alice"),
+        ).json()
+        assert body["status"] == "ok", body
+        assert not KEY_LEAK.search(body["content"]), (offset, body["content"][:300])
+        seen += body["content"]
+        offset = body["next_offset"]
+        pages += 1
+        assert pages < 100, "the offset is not advancing"
+    assert pages > 3, "the key must span several pages for this to test anything"
+    assert seen.startswith(before) and seen.endswith(after)
+
+
+#: `café` in Latin-1: 0xE9 alone is not UTF-8. And a credential beside it.
+LATIN1 = "café ".encode("latin-1") + GH_TOKEN.encode() + b" fin\n"
+
+
+def test_text_that_is_not_utf8_downloads_byte_for_byte_but_for_the_credential(
+    client, db, objects
+):
+    """It used to be decoded with errors='replace' and re-encoded: every byte
+    that was not UTF-8 came down as U+FFFD, a corrupted file with no mark."""
+    a_finished_task(db, objects, files={"legacy.csv": LATIN1})
+
+    response = raw(client, "legacy.csv")
+    assert response.status_code == 200, response.text
+    assert response.headers["x-artifact-kind"] == "text"
+    assert GH_TOKEN.encode() not in response.content
+    assert response.content.startswith(b"caf\xe9 ghp_"), response.content
+    assert response.content.endswith(b" fin\n")
+
+
+def test_a_content_window_that_is_not_utf8_says_how_many_bytes_it_replaced(
+    client, db, objects
+):
+    a_finished_task(db, objects, files={"legacy.csv": LATIN1, "clean.txt": "plain\n"})
+
+    def content(name):
+        return client.get(
+            "/v1/tasks/task_a/artifacts/content",
+            params={"name": name},
+            headers=auth_header("alice"),
+        ).json()
+
+    body = content("legacy.csv")
+    assert body["status"] == "ok"
+    assert body["invalid_utf8_bytes"] == 1
+    assert "\ufffd" in body["content"]
+    assert "UTF-8" in body["detail"]
+    assert GH_TOKEN not in body["content"]
+
+    assert content("clean.txt")["invalid_utf8_bytes"] == 0
+
+    objects.objects.pop(artifact_key("clean.txt"))
+    gone = content("clean.txt")
+    assert gone["status"] == "absent"
+    assert gone["invalid_utf8_bytes"] is None, "nothing was read, so nothing was measured"

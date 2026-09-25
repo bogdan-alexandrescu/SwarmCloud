@@ -156,6 +156,10 @@ def test_the_final_upload_keeps_the_agent_streams_beside_the_runners_logs(
         "stderr": "claude-code.stderr.log",
         "transcript": "claude-transcript.json",
         "transcript_skipped": None,
+        # No result.json here, so the runner reported nothing about its
+        # capture: unknown, which is not "not cut".
+        "stdout_truncated": None,
+        "stderr_truncated": None,
     }
     # The artifacts stay where they are: a dependant's input_from stages them.
     names = {entry["name"] for entry in summary["artifacts"]}
@@ -188,6 +192,26 @@ def test_a_transcript_omitted_as_too_large_is_named_in_the_summary(worker_factor
     assert summary["agent_streams"]["transcript"] is None
     assert summary["agent_streams"]["transcript_skipped"] == "too_large"
     assert summary["agent_streams"]["stderr"] is None, "a stream never written is not named"
+
+
+def test_the_summary_says_which_agent_stream_was_cut_at_its_cap(worker_factory):
+    """The runner reports its capture on EVERY outcome -- a run that failed
+    after passing its cap included -- and the reader of `result_summary`
+    must be able to tell a capped stream from a whole one (#188 review)."""
+    worker, _config = _worker_with_workspace(worker_factory, "claude-code")
+    ws = worker.ws
+    (ws.artifacts / "claude-code.stdout.log").write_text('{"type":"result"}\n')
+    ws.result_path.write_text(json.dumps({"status": "failed", "output": {
+        "stdout_truncated": True,
+        "stderr_truncated": False,
+        "transcript_skipped": "capture_truncated",
+    }}))
+
+    streams = worker._upload_outputs()["agent_streams"]
+
+    assert streams["stdout_truncated"] is True
+    assert streams["stderr_truncated"] is False
+    assert streams["transcript_skipped"] == "capture_truncated"
 
 
 def test_an_agent_stream_that_is_a_symlink_is_not_uploaded_as_a_log(worker_factory, store, tmp_path):

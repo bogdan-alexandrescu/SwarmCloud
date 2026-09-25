@@ -16,6 +16,7 @@ down is tried).
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timedelta, timezone
 
 from .conftest import PROJECT, auth_header, seed_task, seed_tenant
@@ -264,3 +265,95 @@ def test_another_tenants_answer_is_the_404_a_missing_task_gets(client, db, objec
     response = get(client, user="bob")
     assert response.status_code == 404, response.text
     assert "Findings" not in response.text
+
+
+# --------------------------------------------------------------------------
+# A private key is masked as a BLOCK after decoding (#188 review)
+# --------------------------------------------------------------------------
+
+def _pem(which: str) -> str:
+    """A key's BEGIN or END marker, assembled so no scanner reads one here."""
+    return "-----" + which + " RSA PRIVATE KEY" + "-----"
+
+
+KEY = "\n".join(
+    [_pem("BEGIN"), *(f"K{n:04d}" * 12 + "QQQQ" for n in range(24)), _pem("END")]
+) + "\n"
+KEY_LEAK = re.compile(r"K\d{4}K\d{4}")
+
+
+def test_a_private_key_in_the_answer_is_masked_as_a_block(client, db, objects):
+    """Decoded, the key's newlines are real; a line-scoped rule served its
+    body while `/logs` over the same bytes masked it."""
+    result = {"type": "result", "is_error": False,
+              "result": "Generated:\n" + KEY + "\nNext steps follow."}
+    objects.put(final_key(), json.dumps(result) + "\n")
+    a_task(db)
+
+    response = get(client)
+    assert response.status_code == 200, response.text
+    assert not KEY_LEAK.search(response.text), response.text
+    body = response.json()
+    assert body["content"].startswith("Generated:\n")
+    assert body["content"].endswith("Next steps follow.")
+    assert body["redacted"] is True
+
+
+def test_a_private_key_in_the_runner_summary_is_masked_as_a_block(client, db, objects):
+    objects.put(final_key(), json.dumps(ASSISTANT) + "\n")
+    a_task(db, summary=summary_of(artifacts={"output.txt": "x"}, runner_summary="summary " + KEY))
+
+    response = get(client)
+    assert response.json()["source"] == "runner_summary"
+    assert not KEY_LEAK.search(response.text), response.text
+
+
+# --------------------------------------------------------------------------
+# A capture cut at its size cap says so (#188 review)
+# --------------------------------------------------------------------------
+
+CUT_NOTICE = (
+    "[swarm] output truncated: size cap reached; 5000 bytes were dropped here, "
+    "and the last 900 bytes of the stream follow"
+)
+
+
+def test_a_capture_cut_at_its_cap_answers_from_its_kept_end_and_says_it_was_cut(
+    client, db, objects
+):
+    """The worker keeps the END of a capped stream, where the result event
+    is, and marks the cut. The answer is whole; the capture was not."""
+    kept = {"type": "result", "result": "the answer survived", "is_error": False,
+            "num_turns": 40}
+    objects.put(
+        final_key(),
+        json.dumps(ASSISTANT) + "\n\n" + CUT_NOTICE + "\n" + json.dumps(kept) + "\n",
+    )
+    a_task(db)
+
+    body = get(client).json()
+    assert body["status"] == "ok"
+    assert body["source"] == "agent_result_event"
+    assert body["content"] == "the answer survived"
+    assert body["complete"] is True, "the result line itself was kept whole"
+    assert body["capture_truncated"] is True
+
+
+def test_a_cut_capture_with_no_result_left_says_why_it_fell_back(client, db, objects):
+    objects.put(
+        final_key(),
+        json.dumps(ASSISTANT) + "\n\n" + CUT_NOTICE + "\n" + json.dumps(ASSISTANT) + "\n",
+    )
+    a_task(db, summary=summary_of(artifacts={"output.txt": "x"}, runner_summary="partial"))
+
+    body = get(client).json()
+    assert body["source"] == "runner_summary"
+    assert body["capture_truncated"] is True
+    assert "cap" in body["detail"]
+
+
+def test_an_answer_read_from_a_whole_capture_says_it_was_not_cut(client, db, objects):
+    objects.put(final_key(), json.dumps(REFERENCE) + "\n")
+    a_task(db)
+
+    assert get(client).json()["capture_truncated"] is False

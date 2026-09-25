@@ -27,6 +27,7 @@ Offline: FakeFirestore and the in-memory object reader.
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timedelta, timezone
 
 from .conftest import PROJECT, auth_header, seed_task, seed_tenant
@@ -445,3 +446,141 @@ def test_bad_parameters_are_refused(client, db, objects):
     assert get(client, "?source=guess").status_code == 422
     assert get(client, "?attempt_id=../../x").status_code == 422
     assert get(client, "?offset=-1").status_code == 422
+
+
+# --------------------------------------------------------------------------
+# A private key is masked as a BLOCK after decoding (#188 review)
+# --------------------------------------------------------------------------
+
+def _pem(which: str) -> str:
+    """A key's BEGIN or END marker, assembled so no scanner reads one here."""
+    return "-----" + which + " RSA PRIVATE KEY" + "-----"
+
+
+#: Synthetic key lines, 64 base64-alphabet characters each, each one unique.
+KEY_BODY = [f"K{n:04d}" * 12 + "QQQQ" for n in range(24)]
+KEY = "\n".join([_pem("BEGIN"), *KEY_BODY, _pem("END")]) + "\n"
+#: Two consecutive units of any key line: even part of one line leaked.
+KEY_LEAK = re.compile(r"K\d{4}K\d{4}")
+
+
+def test_a_private_key_in_a_tool_result_is_masked_as_a_block_after_decoding(
+    client, db, objects
+):
+    """The raw line rule masks from BEGIN to the end of the NDJSON line -- the
+    whole key, because JSON writes its newlines as `\\n`. DECODED, the
+    newlines are real, and a line-scoped rule masked the BEGIN line and served
+    the body: the transcript was weaker than `/logs` over the same bytes."""
+    read = {"type": "user", "uuid": "u-key", "message": {"content": [
+        {"type": "tool_result", "tool_use_id": "toolu_k",
+         "content": "cat id_rsa\n" + KEY + "done\n"}]}}
+    echo = {"type": "assistant", "uuid": "u-echo", "message": {"content": [
+        {"type": "text", "text": "The key is:\n" + KEY},
+        {"type": "thinking", "thinking": "it starts " + KEY}]}}
+    a_task(db)
+    objects.put(final_key(), ndjson([read, echo, RESULT]))
+
+    response = get(client)
+    assert response.status_code == 200, response.text
+    assert not KEY_LEAK.search(response.text), "a key body reached the transcript"
+    body = response.json()
+    content = body["steps"][0]["tool_result"]["content"]
+    assert content.startswith("cat id_rsa\n") and content.endswith("done\n")
+    assert body["redaction_count"] >= 3, "one key in each of three strings"
+
+    raw = get(client, "?include_raw=true")
+    assert not KEY_LEAK.search(raw.text), "nor through the opt-in raw record"
+
+    logs = client.get("/v1/tasks/task_a/logs?stream=agent_stdout", headers=auth_header("alice"))
+    assert logs.status_code == 200, logs.text
+    assert not KEY_LEAK.search(logs.text), "and /logs over the same bytes masks it too"
+
+
+def test_a_key_cut_short_in_a_numbered_read_is_masked_to_the_end_of_its_field(
+    client, db, objects
+):
+    """A file-read tool that stopped part-way through a key: no END marker, and
+    every line numbered. The raw line rule masked the rest of the NDJSON line,
+    which is the rest of this string, so the decoded field is masked that far."""
+    lines = [_pem("BEGIN"), *KEY_BODY[:10]]
+    listing = "".join(f"{n + 1:6d}\t{line}\n" for n, line in enumerate(lines))
+    read = {"type": "user", "uuid": "u-read", "message": {"content": [
+        {"type": "tool_result", "tool_use_id": "toolu_r", "content": listing}]}}
+    a_task(db)
+    objects.put(final_key(), ndjson([read]))
+
+    response = get(client)
+    assert response.status_code == 200, response.text
+    assert not KEY_LEAK.search(response.text), response.text
+    assert response.json()["steps"][0]["tool_result"]["content"].startswith("     1\t")
+
+
+# --------------------------------------------------------------------------
+# A capture cut at its size cap says so (#188 review)
+# --------------------------------------------------------------------------
+
+#: The line the worker's capture writes where it dropped the middle of a stream
+#: that passed its cap (`agent_worker.procman`).
+CUT_NOTICE = (
+    "[swarm] output truncated: size cap reached; 5000 bytes were dropped here, "
+    "and the last 900 bytes of the stream follow"
+)
+
+
+def _cut_summary(*, stdout_truncated):
+    return {
+        "artifacts": [],
+        "logs": {"agent_stdout": f"gs://{BUCKET}/{final_key()}"},
+        "agent_streams": {
+            "stdout": None, "stderr": None, "transcript": None,
+            "transcript_skipped": "capture_truncated" if stdout_truncated else None,
+            "stdout_truncated": stdout_truncated, "stderr_truncated": False,
+        },
+    }
+
+
+def test_a_capture_cut_at_its_cap_is_a_marked_step_and_never_complete(client, db, objects):
+    a_task(db)
+    objects.put(
+        final_key(),
+        ndjson([INIT, A1]) + "\n" + CUT_NOTICE + "\n" + ndjson([U1]) + json.dumps(RESULT) + "\n",
+    )
+
+    body = get(client).json()
+    assert body["stream"]["status"] == "ok"
+    cut = [s for s in body["steps"] if (s["meta"] or {}).get("subtype") == "capture_truncated"]
+    assert len(cut) == 1, [s["kind"] for s in body["steps"]]
+    assert cut[0]["kind"] == "system"
+    assert "bytes were dropped here" in cut[0]["text"]
+    assert body["skipped_lines"] == 0, "the capture's own notice is a step, not a bad line"
+    assert body["capture_truncated"] is True
+    assert body["complete"] is False, "a stream with its middle dropped is not the whole run"
+    assert "cap" in body["stream"]["detail"]
+    assert body["steps"][-1]["kind"] == "result", "the kept end still carries the result"
+
+
+def test_a_capture_the_worker_reported_cut_is_not_complete_without_its_notice(
+    client, db, objects
+):
+    a_task(db, summary=_cut_summary(stdout_truncated=True))
+    objects.put(final_key(), STREAM)
+
+    body = get(client).json()
+    assert body["capture_truncated"] is True
+    assert body["complete"] is False
+
+
+def test_a_whole_capture_says_it_was_not_cut(client, db, objects):
+    a_task(db, summary=_cut_summary(stdout_truncated=False))
+    objects.put(final_key(), STREAM)
+
+    body = get(client).json()
+    assert body["capture_truncated"] is False
+    assert body["complete"] is True
+
+    # With nothing declared, a final object read whole with no notice in it
+    # was not cut either -- measured, not assumed.
+    db.docs["tasks/task_a"]["result_summary"] = None
+    assert get(client).json()["capture_truncated"] is False
+    # A window that is not the whole object cannot say.
+    assert get(client, "?limit_bytes=4096&offset=200").json()["capture_truncated"] is None
