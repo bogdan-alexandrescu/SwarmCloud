@@ -2358,6 +2358,87 @@ describe('the settlements: what a finished row draws, and what a healthy one doe
   })
 
   /**
+   * ONE FAILED STEP IN A LONG WORKFLOW STILL PAINTS `--bad` (review of #183).
+   * The failed and dead-lettered segments carry TS-4's 2px cut, drawn INSIDE
+   * the segment (`box-shadow: inset 2px 0 0 var(--surface)`). The 54px meter
+   * has a 3px axis, so its content is 51px under border-box, and one step of
+   * thirty is 1.7px: narrower than its own cut, which painted all of it
+   * `--surface`. The row drew a grey bar ending in a notch while its dot said
+   * FAILED -- and at 560px and below the state word and the census text are
+   * hidden, so on a phone nothing else on the row said so. Any workflow over
+   * 25 steps with a single failed or dead-lettered step drew it that way.
+   *
+   * ASKED AS THE PAINTED WIDTH, through the cascade: the track's content box
+   * (its width, less the axis, under whatever `box-sizing` the sheet gives
+   * it), the segment's share of it or its floor, less the cut. Every length is
+   * read from the shipped sheet, so a wider cut, a narrower meter or a thicker
+   * axis fails here rather than hiding a failure again. The other segments
+   * must be able to give up the width the floor takes, or the track's
+   * `overflow: hidden` would clip the last outcome instead.
+   *
+   * MUTATION: drop the floor on the failed and dead-lettered segments. One of
+   * thirty is 1.7px under a 2px cut.
+   */
+  it('WF-1: one failed or dead-lettered step of thirty still paints --bad, past its own cut', () => {
+    /** A declared length in px. Nothing declared is the initial 0; anything else unreadable fails by name. */
+    const lengthOf = (v: string | null, what: string): number => {
+      if (v === null || v.trim() === '0') return 0
+      const m = /^(-?[\d.]+)px$/.exec(v.trim())
+      expect(m, `${what} is ${v}, not a px length this can read`).not.toBeNull()
+      return Number(m![1])
+    }
+    /** Whether the cascade leaves a flex item able to shrink (the initial `flex-shrink` is 1). */
+    const shrinks = (el: Element, env: { width: number; theme: Theme }): boolean => {
+      const w = cascade(SHEETS[env.theme], el, ['flex-shrink', 'flex'], env).winner
+      if (w === null) return true
+      const v = w.value.trim()
+      if (w.property === 'flex-shrink') return Number(v) > 0
+      if (v === 'none') return false
+      const parts = v.split(/\s+/)
+      return !(parts.length >= 2 && /^[\d.]+$/.test(parts[1]!) && Number(parts[1]) === 0)
+    }
+    for (const [label, counts, cls] of [
+      ['one failed of thirty', { SUCCEEDED: 29, FAILED: 1 }, 'failed'],
+      ['one dead-lettered of thirty', { SUCCEEDED: 29, DEAD_LETTERED: 1 }, 'dead-lettered'],
+      ['one failed and one dead-lettered of thirty', { SUCCEEDED: 28, FAILED: 1, DEAD_LETTERED: 1 }, 'failed'],
+    ] as const) {
+      const { container, unmount } = card(ended(`wf_${cls}`, 30, counts))
+      const meter = container.querySelector('.wf-meter')!
+      const seg = meter.querySelector<HTMLElement>(`:scope > .wf-seg.${cls}`)
+      expect(seg, `${label}: the row draws no ${cls} segment`).not.toBeNull()
+      const others = [...meter.querySelectorAll<HTMLElement>(':scope > .wf-seg')].filter((s) => s !== seg)
+      for (const theme of THEMES) {
+        for (const width of [1440, 390]) {
+          const at = `${label}, ${theme}, ${width}px`
+          const read = (el: Element, props: readonly string[]) =>
+            cascade(SHEETS[theme], el, props, { width, theme }).winner?.value ?? null
+          const trackW = lengthOf(read(meter, ['width']), `${at}: the meter's width`)
+          const axis = lengthOf(
+            read(meter, ['border-left-width', 'border-left', 'border-inline-start-width', 'border-width', 'border']),
+            `${at}: the axis`,
+          )
+          const content = read(meter, ['box-sizing']) === 'border-box' ? trackW - axis : trackW
+          expect(content, `${at}: the track measured nothing; this check would be vacuous`).toBeGreaterThan(20)
+          const share = (Number.parseFloat(seg!.style.width) / 100) * content
+          const floor = lengthOf(read(seg!, ['min-width', 'min-inline-size']), `${at}: the segment's floor`)
+          const shadow = read(seg!, ['box-shadow']) ?? ''
+          const cut = /inset\s+(-?[\d.]+)px/.exec(shadow)
+          expect(cut, `${at}: the ${cls} segment draws no inset cut (${shadow}); TS-4's rule moved`).not.toBeNull()
+          const painted = Math.max(share, floor) - Number(cut![1])
+          expect(
+            painted,
+            `${at}: the ${cls} segment is ${Math.max(share, floor).toFixed(2)}px and its ${cut![1]}px cut paints all of it --surface`,
+          ).toBeGreaterThan(0)
+          for (const o of others) {
+            expect(shrinks(o, { width, theme }), `${at}: a segment cannot give up the width the floor takes`).toBe(true)
+          }
+        }
+      }
+      unmount()
+    }
+  })
+
+  /**
    * CH-17's RULING, ON WORKFLOWS (settled on #87, 2026-09-25). #182 found two
    * healthy greens neither hue ruling had reached: the row's state word
    * `.wf-state.ok` in `--ok-ink`, and the graph node's 3px `.node.ok` rule in

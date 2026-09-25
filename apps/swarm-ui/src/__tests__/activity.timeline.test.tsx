@@ -327,6 +327,36 @@ describe('the window’s Why link opens the topic about a bounded read (AG-19)',
     // until it holds the Rows it was set to, then stops.
     expect(topic).toMatch(/Rows/)
   })
+
+  /**
+   * THE TITLE IS PART OF THE TOPIC (review of #183). AH-13's rule (2) is that
+   * a topic linked from more than one screen is written to fit every one of
+   * them, and the title is the first thing the Help page prints -- in the
+   * topic's own heading and in the page head's `showing <title>`. It read "One
+   * page of events, oldest first", and the Timeline window reads its tasks
+   * NEWEST first and follows the page token (`loadTaskWindow`; store.py
+   * `list_tasks`, DESCENDING), so a reader who clicked `Why →` beside "these
+   * 500 rows only" landed on a heading that said the opposite of what the
+   * Timeline does. The paragraph that corrected it was fourth, after three
+   * about the attempt timeline.
+   *
+   * So the title claims no read order -- one order is false on one of its two
+   * screens -- and the topic OPENS by naming both reads.
+   *
+   * MUTATION: restore the title "One page of events, oldest first". MUTATION:
+   * leave the Timeline only in the last paragraph.
+   */
+  it('titles event-paging for both of its screens, and opens by naming both reads', () => {
+    const t = HELP['event-paging']
+    expect(t.title, 'the title claims a read order one of its two screens contradicts').not.toMatch(
+      /oldest|newest|first|last/i,
+    )
+    expect(t.title, 'the title names only one of the two reads').toMatch(/event/i)
+    expect(t.title, 'the title names only one of the two reads').toMatch(/task/i)
+    const opening = t.long[0] ?? ''
+    expect(opening, 'the topic opens on one screen and reaches the Timeline only later').toContain('the Timeline screen')
+    expect(opening, 'the topic opens on the Timeline and not the attempt timeline').toMatch(/inspector/)
+  })
 })
 
 // ---------------------------------------------------------------------------

@@ -30,6 +30,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 
 import { App } from '../App'
+import { HelpScreen } from '../HelpSection'
 import {
   DOCK,
   DOCK_COLLAPSED,
@@ -1703,38 +1704,72 @@ describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
    * lands with its group heading in view: the scroll margin clears the sticky
    * head plus the group heading, and AH-18's spacing stays otherwise.
    *
-   * ASKED AS THE PROPERTY, NOT A VALUE. The margin is resolved to px through
-   * the sheet's own tokens and compared with the heading it has to clear --
-   * the `.section > h2` line box plus the margin under it -- so a larger
-   * heading, a new line-height or a wider gap below it fails here rather than
-   * clipping the heading again. At `--ctl-s5` alone the margin was 28px and
-   * the heading 34.8px, which is the clipped heading #161's body reported.
+   * FOR EVERY TOPIC, NOT ONLY THE ONE THAT OPENS ITS GROUP (review of #183).
+   * A scroll margin alone clears the heading only for the topic directly
+   * under it -- six of about eighty-four. A topic further down its group
+   * landed with the previous topic above it and its group heading scrolled
+   * away. So the group heading is the sticky head the settlement names: it
+   * sticks to the top of the scroller while its group is in view, and every
+   * topic's scroll margin clears it.
    *
-   * THE STICKY HEAD IS ZERO TODAY, AND THAT IS ASSERTED TOO. Nothing sticks
-   * over the Help column at either width: the product header, the breadcrumb
-   * head and the page head scroll with the page, the rail is sticky only in a
-   * column of its own at 900px and up, and below 900px it is static. If any of
-   * them starts to stick over the column (#139 keeps a sticky phone strip
-   * open), this fails and asks for its height in the margin.
+   * ASKED AS THE PROPERTY, NOT A VALUE, on the DOM the Help page renders. The
+   * margin is resolved to px through the sheet's own tokens and compared with
+   * what it has to clear: in flow, over the topic that opens the group, the
+   * heading's line box, its padding and the margin under it; stuck, over any
+   * later topic, the line box and padding, which is what sticks. And the
+   * heading can only stick if nothing between it and `.ctl-scroll` clips or
+   * scrolls, and it only covers what passes under it if it paints the ground
+   * behind it.
    *
-   * MUTATION: `scroll-margin-top: var(--ctl-s5)` back. 28 < 34.8.
+   * NOTHING ELSE STICKS OVER THE COLUMN, AND THAT IS ASSERTED TOO: the product
+   * header, the breadcrumb head and the page head scroll with the page, the
+   * rail is sticky only in a column of its own at 900px and up, and below
+   * 900px it is static. If one of them starts to stick over the column (#139
+   * keeps a sticky phone strip open), this fails and asks for its height.
+   *
+   * MUTATION: drop `position: sticky` from the group heading, or its ground.
+   * A later topic lands with its group heading gone. MUTATION:
+   * `scroll-margin-top: var(--ctl-s5)` back. 28 < 34.8.
    */
-  it('AH-16: a deep-linked Help topic lands with its group heading in view', () => {
-    const f = fragment(
-      '<section class="section"><h2>Reading a figure</h2>' +
-        '<div class="help-topic is-current"><h3>Absent is not zero</h3><p>A digit is a measurement.</p></div>' +
-        '<div class="help-topic"><h3>A failed read is not an empty result</h3></div>' +
-        '</section>',
+  it('AH-16: a deep link to any Help topic lands with its group heading in view', () => {
+    const page = render(<HelpScreen topic="" />)
+    const groups = [...page.container.querySelectorAll('section')].filter(
+      (s) => s.querySelectorAll(':scope > .help-topic').length >= 2,
     )
-    const h2 = pick(f, 'h2')
-    const [first, second] = [...f.querySelectorAll('.help-topic')] as [Element, Element]
+    expect(groups.length, 'no Help group holds two topics; the later-topic case would be vacuous').toBeGreaterThan(0)
+    const section = groups[0]!
+    const h2 = pick(section, ':scope > h2')
+    const [first, later] = [...section.querySelectorAll(':scope > .help-topic')] as [Element, Element]
+    // What stands between the heading and the scroller in the app: `.ctl-scroll >
+    // .app > main.work > section` (App.tsx). The section is the rendered one.
+    const frame = fragment('<div class="ctl-scroll"><div class="app"><main class="work"></main></div></div>')
+    const between = [pick(frame, 'main.work'), pick(frame, '.app'), section]
     const SCROLL_MARGIN = ['scroll-margin-top', 'scroll-margin-block-start', 'scroll-margin-block', 'scroll-margin']
+    const PAD_TOP = ['padding-top', 'padding-block-start', 'padding-block', 'padding']
+    const PAD_BOTTOM = ['padding-bottom', 'padding-block-end', 'padding-block', 'padding']
+    const edge = (w: { property: string; value: string } | null, side: 'top' | 'bottom', what: string): number => {
+      if (w === null) return 0
+      const parts = splitTop(w.value.trim(), ' ')
+      const shorthand = w.property === 'padding' || w.property === 'margin'
+      const block = w.property.endsWith('-block')
+      const v = shorthand
+        ? side === 'top'
+          ? parts[0]!
+          : (parts[2] ?? parts[0]!)
+        : block
+          ? side === 'top'
+            ? parts[0]!
+            : (parts[1] ?? parts[0]!)
+          : parts[0]!
+      return lengthPx(v, what)
+    }
     for (const env of [WIDE, PHONE]) {
       const at = `${env.width}px`
       const margin = cascade(STYLES, first, SCROLL_MARGIN, env).winner
       expect(margin, `${at}: a Help topic declares no scroll margin`).not.toBeNull()
       const marginPx = lengthPx(splitTop(margin!.value, ' ')[0]!, `${at} scroll margin`)
 
+      // THE HEADING THE MARGIN HAS TO CLEAR.
       const size = cascade(STYLES, h2, ['font-size', 'font'], env).winner
       expect(size?.property, `${at}: the group heading's size is not a longhand this can read`).toBe('font-size')
       const fontPx = lengthPx(size!.value, `${at} group heading font-size`)
@@ -1742,12 +1777,38 @@ describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
       expect(lh?.property, `${at}: the group heading's line-height is not a longhand this can read`).toBe('line-height')
       const leading = resolveVars(lh!.value, TOKENS).trim()
       const lineBox = /^[\d.]+$/.test(leading) ? Number(leading) * fontPx : lengthPx(lh!.value, `${at} line-height`)
+      const pads =
+        edge(cascade(STYLES, h2, PAD_TOP, env).winner, 'top', `${at} heading padding`) +
+        edge(cascade(STYLES, h2, PAD_BOTTOM, env).winner, 'bottom', `${at} heading padding`)
       const below = cascade(STYLES, h2, ['margin-bottom', 'margin-block-end', 'margin-block', 'margin'], env).winner
       const belowPx = below === null ? 0 : lengthPx(bottomOf(below.property, below.value), `${at} heading margin`)
-      const heading = lineBox + belowPx
-      expect(heading, `${at}: the heading measured nothing; this check would be vacuous`).toBeGreaterThan(20)
+      const stuck = lineBox + pads
+      const inFlow = stuck + belowPx
+      expect(stuck, `${at}: the heading measured nothing; this check would be vacuous`).toBeGreaterThan(20)
 
-      // Nothing sticks over the column, so the sticky head adds nothing.
+      // IT STICKS, AT THE TOP EDGE, while its group is in view.
+      expect(won(h2, 'position', env), `${at}: the group heading scrolls away above a later topic`).toBe('sticky')
+      const top = won(h2, ['top', 'inset-block-start', 'inset-block', 'inset'], env)
+      expect(top, `${at}: a sticky heading with no inset never sticks`).not.toBeNull()
+      expect(lengthPx(splitTop(top!, ' ')[0]!, `${at} heading inset`), `${at}: the heading sticks below the top edge`).toBe(0)
+      // IT COVERS WHAT PASSES UNDER IT, in the ground the scroller shows.
+      const ground = won(document.body, ['background-color', 'background'], env)
+      expect(ground, `${at}: the page has no ground for the heading to match`).not.toBeNull()
+      expect(won(h2, ['background-color', 'background'], env), `${at}: topics scrolling under the heading show through it`).toBe(
+        ground,
+      )
+      for (const el of [pick(frame, '.ctl-scroll'), ...between]) {
+        const fill = won(el, ['background-color', 'background'], env)
+        expect(fill === null || fill === ground, `${at}: .${el.className} paints ${fill} behind the heading, not the page ground`).toBe(true)
+      }
+      // NOTHING BETWEEN IT AND THE SCROLLER CLIPS OR SCROLLS, or the heading
+      // would stick to that box instead, or not at all.
+      for (const el of between) {
+        const o = won(el, ['overflow', 'overflow-y', 'overflow-block'], env)
+        expect(o === null || o === 'visible', `${at}: .${el.className} is overflow ${o}; the heading cannot stick past it`).toBe(true)
+      }
+
+      // Nothing ELSE sticks over the column, so there is no second head to clear.
       const heads = fragment('<header class="brand"></header><div class="ctl-head"></div><div class="head"></div>')
       const over = [...heads.children]
       if (env.width < 900) over.push(pick(fragment('<nav class="ctl-rail"></nav>'), '.ctl-rail'))
@@ -1761,11 +1822,16 @@ describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
 
       expect(
         marginPx,
-        `${at}: a deep link lands ${marginPx}px under the top edge and the group heading needs ${heading.toFixed(1)}px`,
-      ).toBeGreaterThanOrEqual(heading)
-      // EVERY TOPIC LANDS THE SAME WAY, and AH-18's spacing between topics stays.
-      expect(cascade(STYLES, second, SCROLL_MARGIN, env).winner?.value).toBe(margin!.value)
-      expect(won(second, ['margin-top', 'margin-block-start', 'margin-block', 'margin'], env)).toBe('var(--ctl-s5)')
+        `${at}: the opening topic lands ${marginPx}px under the top edge and its heading needs ${inFlow.toFixed(1)}px`,
+      ).toBeGreaterThanOrEqual(inFlow)
+      // EVERY TOPIC LANDS THE SAME WAY, under the stuck heading, and AH-18's
+      // spacing between topics stays.
+      expect(cascade(STYLES, later, SCROLL_MARGIN, env).winner?.value).toBe(margin!.value)
+      expect(
+        marginPx,
+        `${at}: a later topic lands ${marginPx}px under the top edge, under a ${stuck.toFixed(1)}px stuck heading`,
+      ).toBeGreaterThanOrEqual(stuck)
+      expect(won(later, ['margin-top', 'margin-block-start', 'margin-block', 'margin'], env)).toBe('var(--ctl-s5)')
     }
   })
 

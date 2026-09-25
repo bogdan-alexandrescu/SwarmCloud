@@ -328,4 +328,39 @@ describe('the Help page deep link (AH-16)', () => {
     const spy = scrollsInFrame(600, 100)
     expect(spy).not.toHaveBeenCalled()
   })
+
+  /**
+   * THE BAND UNDER THE GROUP HEADING IS NOT "IN VIEW" (AH-16, as settled
+   * against AH-18 on #86). The group heading sticks to the top of the
+   * scroller while its group is in view (styles.css `.help-group > h2`), so a
+   * topic whose top sits in the first few dozen pixels of the scroller is
+   * under that heading, title and all -- and measured against the scroller's
+   * top edge alone it counted as in view and the deep link left it there. The
+   * band a deep link keeps clear is the topic's own scroll margin, so that is
+   * where "in view" starts: read from the topic, never restated here.
+   *
+   * MUTATION: measure from the scroller's top edge alone. The target under
+   * the heading is not scrolled to.
+   */
+  function withScrollMargin(px: string): void {
+    const real = window.getComputedStyle.bind(window)
+    vi.spyOn(window, 'getComputedStyle').mockImplementation((el: Element, pseudo?: string | null) =>
+      el.id === HELP['absent-vs-zero'].anchor
+        ? ({ scrollMarginTop: px } as unknown as CSSStyleDeclaration)
+        : real(el, pseudo),
+    )
+  }
+
+  it('scrolls to a target under the stuck group heading, which the scroller alone counts as in view', () => {
+    withScrollMargin('62.8px')
+    const spy = scrollsInFrame(600, 20)
+    expect(spy).toHaveBeenCalledTimes(1)
+    expect(spy.mock.contexts[0]).toBe(document.getElementById(HELP['absent-vs-zero'].anchor))
+  })
+
+  it('leaves a target below the heading band where it is', () => {
+    withScrollMargin('62.8px')
+    const spy = scrollsInFrame(600, 100)
+    expect(spy).not.toHaveBeenCalled()
+  })
 })
