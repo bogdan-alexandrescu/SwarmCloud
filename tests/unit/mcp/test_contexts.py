@@ -485,7 +485,11 @@ def test_the_bridge_never_opens_a_tfvars_file_outside_developer_mode(
         built = SwarmClient()
         assert built.base_url == "https://mine.example.test"
         assert client.front_door_host() == ""
-        assert client.is_front_door("https://saga-only.example.test") is False
+        # This used to assert `is_front_door("https://saga-only.example.test")
+        # is False`. Since #62 an https address that is not *.run.app is a
+        # front door BY ITS SHAPE when none is declared, so that call answers
+        # True without reading anything and proves nothing about tfvars. What
+        # does is `front_door_host() == ""` above and the audit hook below.
         _config().resolve()
         # `swarm doctor` is the command most likely to go looking; it must not.
         out = io.StringIO()

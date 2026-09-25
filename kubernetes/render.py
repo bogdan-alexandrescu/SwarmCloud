@@ -5,6 +5,7 @@
     kubernetes/render.py policies
     kubernetes/render.py job --tenant eng --profile browser \
         --task task_9f3a --attempt att_7b21 --lease lease_c4 --generation 3
+    kubernetes/render.py identity --tenant eng   # namespace, GSA, KSA
 
 Every manifest here is a template with `__TOKEN__` placeholders rather than a
 Helm chart or a kustomization, for one reason: the file on disk has to be
@@ -55,6 +56,7 @@ import ipaddress
 import os
 import re
 import sys
+from collections.abc import Iterable
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -148,15 +150,43 @@ NAMESPACE_PREFIX = "swarm-tenant-"
 #:
 #: `swarm-<tenant>` is gone rather than kept as a third alias: it was created to
 #: match a dispatcher spelling that no longer exists (kubernetes/README.md §5
-#: records both the older mismatch and this one). `swarm-worker` stays because
-#: `scripts/register-tenant.sh` has workload-identity-bound it on every tenant
-#: it has ever registered, and removing a bound name is a separate, migrating
-#: change from adding the missing one.
+#: records both the older mismatch and this one). `swarm-worker` is rendered
+#: only where it is bound -- see LEGACY_KSA_NAME.
 #:
 #: tests/unit/worker/test_kubernetes_manifests.py asserts that the rendered
 #: ServiceAccount set contains exactly what `GkeJobDispatcher.ksa_for` asks for,
 #: so the two cannot drift apart again without failing CI.
 DEFAULT_KSA_NAME = "swarm-agent-worker"
+
+#: THE OLDER WORKER KSA, AND IT IS RENDERED ONLY WHERE IT IS BOUND.
+#:
+#: This name used to be rendered into every tenant namespace, on the claim that
+#: `scripts/register-tenant.sh` had workload-identity-bound it everywhere. It had
+#: not. Measured 2026-09-25 on eng -- a terraform tenant, and the one tenant with
+#: a namespace -- the only roles/iam.workloadIdentityUser member on
+#: swarm-agent-worker-eng@ is `[swarm-tenant-eng/swarm-agent-worker]`, which is
+#: what terraform/modules/tenancy issues. So in swarm-tenant-eng, `swarm-worker`
+#: carried the GSA annotation and got no Google identity: an account whose
+#: annotation says one thing and whose IAM says another, and which nothing names.
+#:
+#: Only IAM knows whether it is bound, so the render is TOLD, never assumes:
+#: `--bound-ksa` names each KSA the tenant GSA binds in this namespace, and
+#: `kubernetes/apply.sh` reads them from the GSA's IAM policy (and refuses the
+#: flag from its own command line). The older identity -- its ServiceAccount and
+#: its RoleBinding, LEGACY_KSA_FILES -- is rendered when this name is among them
+#: and not otherwise. A render with no `--bound-ksa` (lint, CI, a hand render)
+#: is a render for a namespace where nothing is known to be bound, which is the
+#: terraform shape.
+#:
+#: Where it IS bound: register-tenant.sh binds both names in its KSAS array, and
+#: binds them before it calls apply.sh, so a tenant it provisions has the older
+#: account from its first apply. Whether new tenants should still get it at all
+#: is a separate question from this one; this makes the render agree with IAM.
+#:
+#: Not rendering it does not delete it: apply.sh runs `kubectl apply`, which
+#: never removes an object a manifest stopped declaring. kubernetes/README.md §5
+#: has the one-line delete for eng.
+LEGACY_KSA_NAME = "swarm-worker"
 
 
 class RenderError(SystemExit):
@@ -177,6 +207,7 @@ _VALUE_PATTERNS: dict[str, re.Pattern[str]] = {
     "TENANT_ID": re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"),
     "NAMESPACE": re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"),
     "KSA_NAME": re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"),
+    "LEGACY_KSA_NAME": re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"),
     "GSA_EMAIL": re.compile(r"^[A-Za-z0-9._%+-]{1,128}@[A-Za-z0-9.-]{1,128}$"),
     # The control-plane identities, bound as RBAC subjects in every tenant
     # namespace. Pinned to the exact account_id rather than accepting any
@@ -311,6 +342,43 @@ TENANT_FILES = (
     "network-policies/default-deny.yaml",
     "network-policies/allow-egress.yaml",
 )
+
+#: The older worker identity -- LEGACY_KSA_NAME's ServiceAccount and the
+#: RoleBinding that ties it to the empty worker Role -- in one file, so it is
+#: included whole or not at all. See LEGACY_KSA_NAME for when.
+LEGACY_KSA_FILES = ("service-accounts/legacy-worker-serviceaccount.yaml",)
+
+
+def bound_ksas(args: argparse.Namespace) -> frozenset[str]:
+    """The KSAs the tenant GSA binds in this namespace, as `--bound-ksa` says.
+
+    Validated like every other KSA name here. Nothing from this list is
+    interpolated -- it only decides which files are rendered -- but deciding
+    which objects reach a cluster is exactly the kind of input that must not be
+    free text.
+    """
+    names = list(getattr(args, "bound_ksa", None) or [])
+    pattern = _VALUE_PATTERNS["KSA_NAME"]
+    for name in names:
+        if not pattern.fullmatch(name):
+            raise RenderError(
+                f"render: --bound-ksa {name!r} is not a Kubernetes service account name; "
+                f"it must match {pattern.pattern}"
+            )
+    return frozenset(names)
+
+
+def tenant_files(bound: Iterable[str] = ()) -> tuple[str, ...]:
+    """TENANT_FILES, plus the older identity where LEGACY_KSA_NAME is bound.
+
+    Placed after rbac/worker-rbac.yaml, whose empty `swarm-worker` Role the
+    older identity's RoleBinding names, so the Role exists before its binding.
+    """
+    if LEGACY_KSA_NAME not in set(bound):
+        return TENANT_FILES
+    at = TENANT_FILES.index("rbac/worker-rbac.yaml") + 1
+    return TENANT_FILES[:at] + LEGACY_KSA_FILES + TENANT_FILES[at:]
+
 
 POLICY_FILES = ("policies/pod-security.yaml",)
 
@@ -525,6 +593,9 @@ def tenant_values(args: argparse.Namespace) -> dict[str, str]:
         # this used to be sanitize_name("swarm", id), a spelling nothing has
         # asked for since the dispatcher's KSA was renamed.
         "KSA_NAME": args.ksa or DEFAULT_KSA_NAME,
+        # Supplied always, interpolated only by LEGACY_KSA_FILES, which
+        # tenant_files() includes only where this name is bound.
+        "LEGACY_KSA_NAME": LEGACY_KSA_NAME,
         "GSA_EMAIL": args.gsa
         or f"swarm-agent-worker-{tenant}@{args.project}.iam.gserviceaccount.com",
         # The control-plane identities, as RBAC subjects. Derived rather than
@@ -646,6 +717,20 @@ def add_tenant_arguments(parser: argparse.ArgumentParser) -> None:
             "and what terraform's Workload Identity binding was issued for; "
             "pass this only for a cluster provisioned with another spelling, "
             "and pass the same value to the scheduler as WORKER_KSA_NAME."
+        ),
+    )
+    parser.add_argument(
+        "--bound-ksa",
+        action="append",
+        default=[],
+        metavar="KSA",
+        help=(
+            "a Kubernetes service account in this namespace that the tenant GSA "
+            "binds (roles/iam.workloadIdentityUser). Repeat for each. "
+            f"{LEGACY_KSA_NAME} is rendered only when it is listed. "
+            "kubernetes/apply.sh reads these from the GSA's IAM policy and "
+            "refuses them on its own command line; with none, the render is for a "
+            "namespace where nothing is known to be bound."
         ),
     )
     # THE NUMERIC IDENTITIES, WHICH CANNOT BE DERIVED.
@@ -784,6 +869,20 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("policies", help="the cluster-scoped admission policies", allow_abbrev=False)
 
+    # THE TENANT'S IDENTITY, AS A RENDER WOULD NAME IT: `<namespace> <gsa> <ksa>`
+    # on one line. kubernetes/apply.sh reads the GSA's Workload Identity
+    # bindings before it renders, and asks here which GSA and namespace those
+    # are -- with the same forwarded arguments (--gsa, --namespace, --project)
+    # -- rather than deriving the names a second time in shell. A second
+    # derivation is a value stated twice, and the one that goes stale reads the
+    # bindings of an account the render does not annotate.
+    identity = sub.add_parser(
+        "identity",
+        help="the namespace, GSA and KSA a tenant render names, on one line",
+        allow_abbrev=False,
+    )
+    add_tenant_arguments(identity)
+
     job = sub.add_parser("job", help="one worker Job", allow_abbrev=False)
     add_tenant_arguments(job)
     job.add_argument("--profile", required=True, choices=sorted(RUNNER_PROFILES))
@@ -853,7 +952,10 @@ def main(argv: list[str] | None = None) -> int:
                 "values from the cluster.",
                 file=sys.stderr,
             )
-        sys.stdout.write(render_files(TENANT_FILES, values))
+        sys.stdout.write(render_files(tenant_files(bound_ksas(args)), values))
+    elif args.command == "identity":
+        values = check_values(tenant_values(args))
+        sys.stdout.write(f"{values['NAMESPACE']} {values['GSA_EMAIL']} {values['KSA_NAME']}\n")
     elif args.command == "policies":
         sys.stdout.write(render_files(POLICY_FILES, {}))
     elif args.command == "job":

@@ -211,11 +211,12 @@ GSA_EMAIL="${GSA_ID}@${PROJECT_ID}.iam.gserviceaccount.com"
 # `scripts/lib/check-contract-parity.sh` section 6 asserts it against the
 # scheduler, the renderer, the reconciler, the API and terraform.
 NAMESPACE="$(tenant_namespace "${TENANT_ID}")"
-# Both KSAs that kubernetes/service-accounts/worker-serviceaccount.yaml creates,
-# because a binding is per (namespace, KSA) pair and a pod naming an unbound one
-# authenticates as nothing at all. `swarm-agent-worker` is the name the
-# dispatcher's pod spec actually uses and the name terraform binds; `swarm-worker`
-# is the older one every already-registered tenant carries. The `swarm-<tenant>`
+# Both worker KSAs, because a binding is per (namespace, KSA) pair and a pod
+# naming an unbound one authenticates as nothing at all. `swarm-agent-worker` is
+# the name the dispatcher's pod spec actually uses and the name terraform binds;
+# `swarm-worker` is the older one. kubernetes/apply.sh renders `swarm-worker`
+# only where it finds this binding in IAM (kubernetes/render.py LEGACY_KSA_NAME),
+# which is why section 5 binds before it applies. The `swarm-<tenant>`
 # alias is gone -- see kubernetes/render.py DEFAULT_KSA_NAME for why it existed
 # and why it no longer does.
 KSAS=("swarm-worker" "swarm-agent-worker")
@@ -692,6 +693,27 @@ if [[ "${SKIP_K8S}" -eq 0 ]]; then
   if [[ ! -f "${APPLY_SH}" ]]; then
     warn "kubernetes/apply.sh is missing; cannot create the tenant namespace"
   elif [[ "${K8S_REACHABLE}" -eq 1 ]]; then
+    # Workload Identity is a GCP-side binding, so it stays here -- and it comes
+    # BEFORE apply.sh, because apply.sh now reads these bindings to decide what
+    # to render: the older `swarm-worker` account is rendered only where the
+    # GSA binds it (kubernetes/render.py LEGACY_KSA_NAME). Bound after, a
+    # tenant's first registration rendered its namespace without the account
+    # this loop then bound. A binding names a (namespace, KSA) pair, not an
+    # object, so it can precede both; and no tenant document exists until
+    # section 6, so nothing dispatches into the namespace if apply.sh fails.
+    # `swarm-agent-worker` is the one apps/scheduler/scheduler/dispatch.py
+    # names in its pod spec; a pod naming an unbound KSA authenticates as
+    # nothing at all. (In --dry-run `run` binds nothing, so the preview below
+    # renders a brand-new tenant without `swarm-worker`.)
+    for ksa in "${KSAS[@]}"; do
+      run gcloud iam service-accounts add-iam-policy-binding "${GSA_EMAIL}" \
+        --project "${PROJECT_ID}" \
+        --role roles/iam.workloadIdentityUser \
+        --member "serviceAccount:${PROJECT_ID}.svc.id.goog[${NAMESPACE}/${ksa}]" \
+        --quiet >/dev/null
+      ok "workload identity: ${NAMESPACE}/${ksa} -> ${GSA_ID}"
+    done
+
     # THE CLUSTER'S NETWORK comes from the cluster, through apply.sh. The
     # tenant's egress policy needs the pod range, the service range, the
     # kube-dns Service IP and the NodeLocal DNSCache address; apply.sh reads
@@ -718,20 +740,6 @@ if [[ "${SKIP_K8S}" -eq 0 ]]; then
   report this tenant as registered -- a namespace without its NetworkPolicy is
   reachable from every other tenant's pods."
     fi
-
-    # Workload Identity is a GCP-side binding, so it stays here. Both service
-    # account names that kubernetes/service-accounts/worker-serviceaccount.yaml
-    # creates are bound -- `swarm-worker` and `swarm-agent-worker`, the one
-    # apps/scheduler/scheduler/dispatch.py actually names in its pod spec. A pod
-    # naming the unbound one would authenticate as nothing at all.
-    for ksa in "${KSAS[@]}"; do
-      run gcloud iam service-accounts add-iam-policy-binding "${GSA_EMAIL}" \
-        --project "${PROJECT_ID}" \
-        --role roles/iam.workloadIdentityUser \
-        --member "serviceAccount:${PROJECT_ID}.svc.id.goog[${NAMESPACE}/${ksa}]" \
-        --quiet >/dev/null
-      ok "workload identity: ${NAMESPACE}/${ksa} -> ${GSA_ID}"
-    done
   elif [[ -n "${READYZ_ERR}" ]]; then
     warn "context $(kube_current_context || echo none) IS the swarm cluster, but its API server did not answer /readyz:"
     printf '%s\n' "${READYZ_ERR}" | sed 's/^/     /' >&2

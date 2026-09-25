@@ -11,6 +11,15 @@ from __future__ import annotations
 class ExitCode:
     OK = 0
     FAILED = 1
+    #: A dependency was UNAVAILABLE before the runner existed (a spent startup
+    #: budget, UNAVAILABLE, any 5xx or gRPC UNKNOWN; at the generation check,
+    #: any API error that is not a named refusal). The task and the lease were
+    #: not written, and the reconciler RETRIES it like any lost attempt.
+    #: EX_UNAVAILABLE in sysexits. Split from CONFIG on 2026-09-25, when 78
+    #: became non-retryable: an outage the next attempt may not meet must not
+    #: end the task. See `__main__` for every exit and what the reconciler does
+    #: with it.
+    UNAVAILABLE = 69
     #: Fencing generation was stale. The worker wrote neither the task nor the
     #: lease. The agent did not run if the fence was found at startup. If it
     #: was found later (mid-run, on SIGTERM, or at the terminal write), the
@@ -22,7 +31,13 @@ class ExitCode:
     PARKED = 75
     #: Child process exceeded its timeout and was killed.
     TIMEOUT = 76
-    #: Worker could not even start (bad config, missing lease).
+    #: The worker CANNOT START, and another attempt would fail the same way:
+    #: bad configuration, DNS that stayed unreachable through the preflight's
+    #: retries, clients that could not be built, a generation check Firestore
+    #: refused. NON-RETRYABLE (owner, 2026-09-25): the reconciler reads it
+    #: from the finished execution and fails the task with the worker's cause.
+    #: `reconciler.detect.WORKER_EXIT_CANNOT_START` restates this number, and
+    #: tests/unit/worker/test_worker_cannot_start.py holds the two together.
     CONFIG = 78
     #: A control-plane document the worker was pointed at belongs to a DIFFERENT
     #: tenant. The worker exits immediately, writing nothing at all.

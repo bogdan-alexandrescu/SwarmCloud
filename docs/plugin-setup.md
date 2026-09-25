@@ -32,29 +32,22 @@ one-time step for Saga's deployment, and the same shape for any other.
 
 ## Install
 
-**From a checkout of this repository, which is what works today.** In a
-Claude Code session:
+In a Claude Code session:
 
 ```text
-/plugin marketplace add /path/to/your/SwarmCloud/checkout
+/plugin marketplace add bogdan-alexandrescu/SwarmCloud
 /plugin install sc@swarmcloud
 ```
 
-A marketplace added from a local directory loads the plugin in place, so its
-MCP server finds the checkout it runs from
-([plugin loading reference](https://code.claude.com/docs/en/plugins/loading),
-"In-place and copied plugins").
-
-**From GitHub** — `/plugin marketplace add bogdan-alexandrescu/SwarmCloud`,
-then the same install — is the intended route, and it **does not start the
-MCP server yet**. Claude Code copies only `plugin/` into its cache, and the
-server's `uv run --directory ${CLAUDE_PLUGIN_ROOT}/..` then points at a
-directory with no `pyproject.toml` (measured 2026-09-25 on 0.4.0). The
-configuration you type is saved, but no bridge runs to read it, nothing is
-seeded, and `sc login` answers that no deployment is configured. The
-plugin-standalone-bridge change (#62) runs the bridge from a pinned git
-requirement instead; once it is merged and tagged, the GitHub route works and
-this paragraph goes.
+The plugin's MCP server fetches the bridge from GitHub at the tag
+`sc-v<version>`, where `<version>` is the plugin's own version
+([plugin/README.md](../plugin/README.md) has the declaration and the release
+step). **Until that tag is pushed for the version you installed, the server
+cannot start** — `/mcp` shows `plugin:sc:swarmcloud` failed, uv says it cannot
+find the ref, nothing you configured reaches a running bridge, and `sc login`
+answers that no deployment is configured. Meanwhile, start Claude Code with
+`SWARM_MCP_FROM=<checkout>/apps/swarm-mcp claude` to run a checkout's bridge
+instead.
 
 The install dialog asks for the three values above. Claude Code keeps the URL
 and client ID in your user `settings.json` (under `pluginConfigs`) and the
@@ -64,6 +57,7 @@ it `sensitive` ([plugins reference](https://code.claude.com/docs/en/plugins-refe
 
 ```text
 /reload-plugins
+/mcp                # plugin:sc:swarmcloud should say connected
 ```
 
 and sign in, in a terminal:
@@ -84,7 +78,9 @@ That is the last time you do this on this machine until you sign out: the
 refresh token is kept, and each new ID token is minted from it silently.
 
 `sc` is a console script of this repository's `swarm-mcp` package, so outside a
-checkout spell it `uv run --directory <path to a checkout> sc login`.
+checkout spell it `uv run --directory <path to a checkout> sc login`, or run it
+from the same package the plugin's server fetches:
+`uv tool run --from 'swarm-mcp @ git+https://github.com/bogdan-alexandrescu/SwarmCloud@sc-v<version>#subdirectory=apps/swarm-mcp' sc login`.
 
 To change any of the three values later: `/plugin configure sc@swarmcloud`.
 The shell command `claude plugin install` never prompts; pass
@@ -194,7 +190,7 @@ process opens and fail if a `.tfvars` file is opened outside this mode.
 | 403 that names you | you are signed in and IAP does not list you as an accessor | the operator adds you (or your domain) to the IAP accessor list |
 | `no OAuth client secret for <context>` | the secret was never given on this machine | `/plugin configure sc@swarmcloud`, or `sc context add … --client-secret-stdin` |
 | `sc login` succeeds with `warning … not as you` | a service-account identity outranks your sign-in here | unset the variable it names, or run from outside GCP |
-| `/mcp` shows `plugin:sc:swarmcloud` failed | installed from GitHub before #62: the server cannot start from the plugin cache | install from a checkout (above) |
+| `/mcp` shows `plugin:sc:swarmcloud` failed | the tag `sc-v<version>` for the installed version is not pushed yet, or `uv` is not on the `PATH` Claude Code started with | push the tag ([plugin/README.md](../plugin/README.md), "Releasing a version"), or start with `SWARM_MCP_FROM=<checkout>/apps/swarm-mcp` |
 
 ## Worked example: Saga's `dev` deployment
 

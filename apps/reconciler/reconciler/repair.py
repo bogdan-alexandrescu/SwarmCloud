@@ -34,8 +34,10 @@ from .backends import Backend, NamespacedBackend, NamespacedListing, Probe, Prob
 from .checkpoints import CheckpointCollector, CheckpointStore
 from .config import ReconcilerConfig
 from .detect import (
+    WORKER_EXIT_CANNOT_START,
     Finding,
     FindingKind,
+    cannot_start_candidates,
     detect_all,
     detect_empty_namespaces,
     detect_orphan_executions,
@@ -302,6 +304,9 @@ class Reconciler:
         # is only for executions whose task is known.
         self._read_settled(snapshot, sight.executions, report)
         self._read_progress(snapshot, sight.executions, report)
+        # How the current attempts' FINISHED executions ended. Only those the
+        # cannot-start rule could act on, so an ordinary pass reads nothing.
+        self._read_terminations(snapshot, sight, report)
 
         findings = detect_all(
             snapshot, sight.executions, self._config, now=snapshot.taken_at, logger=self._log
@@ -596,6 +601,55 @@ class Reconciler:
                     attempt_id=attempt_id,
                     because=verdict.unjudged_because,
                 )
+
+    def _read_terminations(
+        self, snapshot: ControlSnapshot, sight: _Sight, report: ReconcileReport
+    ) -> None:
+        """Read the exit code of every finished execution whose attempt still holds its lease.
+
+        Only what `cannot_start_candidates` names: a FAILED execution, its
+        attempt holding its task's current lease. The read goes to the backend
+        that listed it (`termination`): a Cloud Run task's last attempt, or a
+        GKE pod's container status. A read that fails, or finds nothing,
+        leaves no entry, and `detect_cannot_start` then concludes nothing.
+        The lease is judged by today's rules, exactly as before exit codes
+        were read. A read is not a write, so a dry run reads too.
+        """
+        for subject in cannot_start_candidates(snapshot, sight.executions):
+            execution = subject.execution
+            backend = sight.handles.get(execution.backend)
+            read = getattr(backend, "termination", None)
+            if not callable(read):
+                continue
+            attempt_id = subject.lease.attempt_id
+            try:
+                ended = read(execution)
+            except Exception as exc:
+                self._log.warning(
+                    "could not read how an execution ended; its lease is judged by "
+                    "the usual rules this pass",
+                    execution=execution.name,
+                    backend=execution.backend,
+                    task_id=subject.task.task_id,
+                    attempt_id=attempt_id,
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+                report.errors.append(f"termination {execution.name}: {exc}")
+                continue
+            if ended is None:
+                continue
+            snapshot.terminations[attempt_id] = ended
+            exit_code = getattr(ended, "exit_code", None)
+            self._log.info(
+                "read how an execution ended",
+                execution=execution.name,
+                backend=execution.backend,
+                task_id=subject.task.task_id,
+                attempt_id=attempt_id,
+                exit_code=exit_code,
+                cannot_start=exit_code == WORKER_EXIT_CANNOT_START,
+                detail=getattr(ended, "detail", None),
+            )
 
     @staticmethod
     def _attempt_namespace(
@@ -950,9 +1004,14 @@ class Reconciler:
             return self._repair_left_running(finding, outcome, handles)
         if finding.kind in _FENCE_ONLY:
             return self._repair_stuck(finding, outcome)
+        cannot_start = finding.kind is FindingKind.WORKER_CANNOT_START
         if self._config.dry_run:
             outcome.skipped = "dry_run"
-            outcome.actions.append("would invalidate, terminate, release and repair")
+            outcome.actions.append(
+                f"would invalidate, release and fail the task: {finding.reason}"
+                if cannot_start
+                else "would invalidate, terminate, release and repair"
+            )
             return outcome
 
         # ---- STEP 1: invalidate the generation --------------------------
@@ -1013,20 +1072,30 @@ class Reconciler:
                 # `repair_task_state` re-reads the flag inside its transaction,
                 # so a cancel pressed after this snapshot is honoured too.
                 cancelling = task.cancel_requested
+                # A worker that exited 78 CANNOT START, and another attempt
+                # would fail the same way: FAILED, whatever attempts remain,
+                # with the worker's cause as the whole `last_error` (owner,
+                # 2026-09-25). Every other finding requeues, as it always has.
+                if cancelling:
+                    to_state, error = (
+                        TaskState.CANCELLED,
+                        f"cancelled on request; reconciled: {finding.reason}",
+                    )
+                elif cannot_start:
+                    to_state, error = TaskState.FAILED, finding.reason
+                else:
+                    to_state, error = TaskState.READY, f"reconciled: {finding.reason}"
                 repaired = self._store.repair_task_state(
                     finding.task_id,
-                    to_state=TaskState.CANCELLED if cancelling else TaskState.READY,
+                    to_state=to_state,
                     # Only the task this finding is actually about. A snapshot is
                     # minutes old by the time slow terminations ahead of it are
                     # done, and the task may legitimately be on a newer lease by
                     # now -- see `repair_task_state`.
                     expected_lease_id=finding.lease_id,
-                    error=(
-                        f"cancelled on request; reconciled: {finding.reason}"
-                        if cancelling
-                        else f"reconciled: {finding.reason}"
-                    ),
-                    next_eligible_at=utcnow(),
+                    error=error,
+                    # A retry time means nothing on a task that will not retry.
+                    next_eligible_at=None if cannot_start else utcnow(),
                 )
                 if repaired is not None:
                     outcome.repaired_to = repaired.value
@@ -1035,6 +1104,12 @@ class Reconciler:
                         "reason": finding.kind.value,
                         "detail": finding.reason,
                     }
+                    if cannot_start:
+                        detail.update(
+                            exit_code=finding.detail.get("exit_code"),
+                            execution=finding.detail.get("execution"),
+                            cause_source=finding.detail.get("cause_source"),
+                        )
                     if repaired is TaskState.CANCELLED:
                         # The API's flag-only cancel wrote `cancel_requested`
                         # (before 2026-09-24: a `cancelled` with

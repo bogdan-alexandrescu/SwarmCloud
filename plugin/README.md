@@ -27,54 +27,46 @@ The plugin is a **client for your deployment**, not for this repository's.
 Ask your platform operator for three values first: the deployment URL, and —
 for a deployment behind IAP — its Desktop OAuth client ID and secret.
 
-**Today, install it from a checkout of this repository.** In a Claude Code
-session:
+In a Claude Code session:
 
 ```text
-/plugin marketplace add /path/to/your/SwarmCloud/checkout
+/plugin marketplace add bogdan-alexandrescu/SwarmCloud
 /plugin install sc@swarmcloud
 ```
 
-A marketplace added from a local directory loads the plugin **in place**, so
-its MCP server — `uv run --directory ${CLAUDE_PLUGIN_ROOT}/.. swarm-mcp` —
-finds the checkout's `pyproject.toml`
-([plugin loading reference](https://code.claude.com/docs/en/plugins/loading),
-"In-place and copied plugins"). `claude --plugin-dir <checkout>/plugin` does
-the same for one session.
-
-**From GitHub it does not work yet.** `/plugin marketplace add
-bogdan-alexandrescu/SwarmCloud` installs, prompts and loads the skills, but
-Claude Code copies only `plugin/` into `~/.claude/plugins/cache/…`, so
-`${CLAUDE_PLUGIN_ROOT}/..` holds no project and the MCP server fails to start
-(measured 2026-09-25 on 0.4.0: the cache held `0.4.0/` and nothing else, and
-`plugin:sc:swarmcloud` failed to connect). Nothing the plugin was configured
-with then reaches a running bridge, and `sc login` in a terminal finds no
-deployment. Running the bridge from the cache is the plugin-standalone-bridge
-change (#62); until it is merged and its tag pushed, use the checkout.
-
-Either way you are prompted for the deployment URL (required), the OAuth
-client ID and the OAuth client secret. The secret is `sensitive` in the
-manifest, so Claude Code keeps it in your system's secure credential store,
-never in `settings.json`. Then:
+You are prompted for the deployment URL (required), the OAuth client ID and
+the OAuth client secret. The secret is `sensitive` in the manifest, so Claude
+Code keeps it in your system's secure credential store, never in
+`settings.json`. Then:
 
 ```text
 /reload-plugins
+/mcp                # plugin:sc:swarmcloud should say connected
 ```
 
-and sign in, from a terminal in the checkout:
+The server fetches the bridge from GitHub at the tag `sc-v<version>` (see
+*The bridge ships with the plugin*, below). **Between merging a version and
+pushing its tag, that tag does not exist and the server cannot start** — uv
+reports that it cannot find the ref. Until then, start Claude Code with the
+escape hatch, `SWARM_MCP_FROM=<checkout>/apps/swarm-mcp claude`.
+
+Then sign in, from a terminal:
 
 ```bash
-uv run sc login    # a browser window opens; pick your work account
+uv run sc login    # in a checkout; a browser window opens; pick your work account
 uv run sc whoami   # context, URL, you, your tenant
 ```
 
+Outside a checkout, `sc` runs from the same package the server does:
+`uv tool run --from 'swarm-mcp @ git+https://github.com/bogdan-alexandrescu/SwarmCloud@sc-v<version>#subdirectory=apps/swarm-mcp' sc login`.
+
 `sc login` finds the deployment because the plugin's MCP server writes it to
-your config file when it starts — so start the server first (`/reload-plugins`,
-then `/mcp` shows `plugin:sc:swarmcloud` connected), or add it yourself with
-`uv run sc context add`. `sc login` ends by calling the API once **with the
-sign-in it just made**, whatever else is set on the machine, and warns you if
-`SWARM_IMPERSONATE_SA`, `SWARM_ID_TOKEN` or a GCP metadata server means every
-other command will still act as a service account rather than as you.
+your config file when it starts — so start the server first (the `/mcp` line
+above), or add it yourself with `sc context add`. `sc login` ends by calling
+the API once **with the sign-in it just made**, whatever else is set on the
+machine, and warns you if `SWARM_IMPERSONATE_SA`, `SWARM_ID_TOKEN` or a GCP
+metadata server means every other command will still act as a service account
+rather than as you.
 
 From then on every tool acts **as you**. A tool called before you sign in
 answers `sign-in required for <context>: run sc login (a browser window
@@ -111,13 +103,183 @@ uninstallable. It was missing until 2026-09-24 and everything here was in that
 state. `tests/unit/mcp/test_plugin_commands.py` now asserts it exists and points
 at a directory that really holds a `plugin.json`.
 
-### The bridge ships with the plugin — and arrives under two names
+```text
+/plugin marketplace add bogdan-alexandrescu/SwarmCloud
+/plugin install sc@swarmcloud
+```
 
-`plugin.json` declares the `swarmcloud` MCP server, so installing the plugin
-installs the bridge. That was missing: the only registration was `.mcp.json` at
-the repository root, which a session in any other directory does not have, so
-`delegate` was eighteen tool permissions for a server that existed in one
-directory on one machine.
+### What an install copies: only `plugin/`
+
+`/plugin marketplace add` clones this repository into
+`~/.claude/plugins/marketplaces/swarmcloud/`. `/plugin install sc@swarmcloud`
+then copies **only `plugin/`** into
+`~/.claude/plugins/cache/swarmcloud/sc/<version>/`, and that copy is
+`${CLAUDE_PLUGIN_ROOT}`. Nothing above it exists there — Claude Code's plugin
+loading reference: "Files outside the plugin directory aren't copied" — and a
+symlink that leads out of the plugin is refused too.
+
+Until 0.4.1 the server was declared as
+`uv run --directory ${CLAUDE_PLUGIN_ROOT}/.. swarm-mcp`. In the cache,
+`${CLAUDE_PLUGIN_ROOT}/..` is `.../cache/swarmcloud/sc/`, which holds no
+`pyproject.toml`, so uv answered
+`error: Failed to spawn: swarm-mcp -- No such file or directory` and the
+session showed `plugin:sc:swarmcloud failed to connect` (measured 2026-09-25 on
+0.4.0, commit ea1355d). It had only ever worked inside a checkout — where the
+root `.mcp.json` registers the bridge anyway.
+
+### The bridge ships with the plugin — fetched, not copied
+
+`plugin.json` declares the `swarmcloud` MCP server as
+
+```text
+uv tool run --from 'swarm-mcp @ git+https://github.com/bogdan-alexandrescu/SwarmCloud@sc-v<version>#subdirectory=apps/swarm-mcp' swarm-mcp
+```
+
+`uv tool run` builds a cached environment from a requirement and needs no
+project on disk, so the server starts wherever the session is. That line
+commits to four things:
+
+* **The ref is the plugin's own version.** The tag is `sc-v<version>`, where
+  `<version>` is `plugin.json`'s `version`. Claude Code keeps every user on
+  their cached copy until `version` changes, so the version decides which
+  skills a user has and the tag decides which bridge those skills talk to. They
+  move together, or a skill describes tools the running bridge does not have.
+  The ref is written once, in `plugin.json`;
+  `tests/unit/mcp/test_plugin_bridge_install.py` fails when it is not `sc-v`
+  followed by the version, and when it is restated anywhere else.
+* **Not `main`.** A branch would pair the skills copied at install time with
+  whatever `main` was at each server start, and make every start depend on
+  `main` being releasable at that moment.
+* **swarm-common comes from the same commit.** The bridge depends on the frozen
+  contract in `apps/common`, which is not on PyPI — and the name is unclaimed
+  there, so a bare dependency would install whoever registers it.
+  `apps/swarm-mcp/pyproject.toml` gives it a relative `path` source, and
+  uv ≥ 0.5.6 rewrites a relative path inside a git dependency into a git source
+  at the same commit, with the subdirectory relative to the checkout. One ref,
+  and no second pin to drift from it. pip does not read `[tool.uv.sources]`;
+  installing the bridge with pip is not supported.
+
+  **uv's documentation does not describe this case**, so here is what the
+  claim rests on. The docs cover the pieces: a `path` source may be relative
+  and installs "from a directory relative to the project root", and "Sources
+  are only respected by uv"
+  ([Dependency sources](https://docs.astral.sh/uv/concepts/projects/dependencies/#dependency-sources));
+  `uvx --from` takes a git URL
+  ([Requesting different sources](https://docs.astral.sh/uv/guides/tools/#requesting-different-sources)).
+  Neither page says what a relative path means once the package declaring it
+  was fetched from git. uv's 0.5.6 release notes do — "Respect path
+  dependencies within Git dependencies
+  ([#9594](https://github.com/astral-sh/uv/pull/9594))" — and the code is
+  `path_source` in `crates/uv-distribution/src/metadata/lowering.rs`. Because
+  that is a release note and not a documented contract, CI checks it on every
+  run: `uv pip compile` of the pinned requirement must resolve swarm-common
+  to `git+https://github.com/bogdan-alexandrescu/SwarmCloud@<the same commit>#subdirectory=apps/common`.
+* **Never shorten it to `uvx swarm-mcp`.** PyPI's `swarm-mcp` is an unrelated
+  project (a Foursquare Swarm check-in server). The name before ` @ ` binds the
+  URL; a bare name is a PyPI lookup.
+
+**Releasing a version** is three steps, and the third is the easy one to
+forget: bump `version` and the ref in `plugin.json` together (the test holds
+them together), merge, then tag the merge commit and push the tag.
+
+```bash
+git fetch origin
+git tag sc-v<version> origin/main
+git push origin sc-v<version>
+```
+
+Until that tag exists the new version's server cannot start: uv reports that
+it cannot find the ref.
+
+**What it takes on the machine the session runs on:**
+
+* **`uv` ≥ 0.5.6** on the `PATH` Claude Code was started with. A session
+  started from a desktop launcher may not have `~/.local/bin` or Homebrew's
+  `bin` on its `PATH`, and `/mcp` then shows the server failing to spawn `uv`.
+* **Network to github.com and pypi.org at the first start.** uv fetches the
+  repository at the tag, fetches hatchling to build two small wheels, and
+  downloads a Python ≥ 3.11 if none is installed. Later starts reuse uv's
+  cached environment, but resolving the tag is still one request to GitHub, so a
+  start with no network fails.
+* **The first start can outlast Claude Code's MCP startup timeout**
+  (`MCP_TIMEOUT`, 30 seconds by default). How long it takes depends on the
+  network and on whether a Python has to be downloaded; CI installs the bridge
+  from a cold cache on every run and prints how long that took, which is a
+  datacentre's number rather than a laptop's. If the first connect fails,
+  reconnect the server in `/mcp` — uv resumes from what it has already cached —
+  or start that first session with `MCP_TIMEOUT=120000 claude`.
+
+**Where the API is, outside a checkout: wherever you configured it.** The
+deployment URL the install asked for reaches the bridge through the server's
+environment (`SWARM_PLUGIN_DEPLOYMENT_URL`, from `${user_config.deployment_url}`),
+and that one value decides both the address and the credential — see
+*Where the API actually is*, below. The bridge never reads this repository's
+Terraform to find it, installed from git or not, unless developer mode
+(`SWARM_MCP_CONFIG_FROM=repo`) says to.
+
+The environment still overrides the plugin, in the order
+[docs/plugin-setup.md](../docs/plugin-setup.md) gives, for CI and for anyone
+who exports one in the shell Claude Code starts from:
+
+* **`SWARM_URL=https://<address>`**, or the older `SWARM_API_URL`. An `https`
+  address that is not `*.run.app` is taken to be the IAP load balancer: nothing
+  else in this platform serves the API over https under another name. Without
+  that rule, which #62's first version lacked, the bridge presents a Google ID
+  token for the URL, and IAP refuses that as `Invalid JWT audience`. A
+  `*.run.app` address still gets an ID token.
+* **`API_HOST=<hostname>`** (or `SWARM_API_HOST`) declares the front door.
+* **`SWARM_REPO_ROOT=<a checkout>`** names the checkout whose tfvars developer
+  mode reads. It does nothing outside developer mode.
+
+At a front door the token also has to be one IAP admits. A user's own gcloud
+access token is refused with 401, IAP error code 900, which is why `sc login`
+exists; CI sets `SWARM_IMPERSONATE_SA`.
+
+**With nothing configured at all**, the bridge says what to configure — the
+plugin's deployment URL, `sc context add`, or `SWARM_URL` — instead of
+guessing. It no longer falls back to gcloud's configured project: that
+deployment was one the user never named. `PROJECT_ID` still selects the old
+solo path (`gcloud run services proxy` against that project's `swarm-api`).
+
+### Running your own bridge: `SWARM_MCP_FROM`
+
+The `--from` value in `plugin.json` is
+`${SWARM_MCP_FROM:-<the pinned requirement>}`, and Claude Code expands
+`${VAR:-default}` in a plugin server's arguments. Set it before starting
+Claude Code:
+
+```bash
+# your working copy -- an absolute path to apps/swarm-mcp in a checkout
+SWARM_MCP_FROM="$PWD/apps/swarm-mcp" claude
+
+# an unmerged branch
+SWARM_MCP_FROM='swarm-mcp @ git+https://github.com/bogdan-alexandrescu/SwarmCloud@<branch>#subdirectory=apps/swarm-mcp' claude
+```
+
+* A working copy is rebuilt when its source changes: `swarm_mcp/**/*.py` is one
+  of the bridge's uv cache keys, so an edit is served once the server restarts
+  (reconnect it in `/mcp`). `swarm-common` is installed editable from the
+  sibling `apps/common`.
+* **In developer mode it reads the tfvars of the checkout it was built from**
+  (`SWARM_MCP_CONFIG_FROM=repo`; without it, no tfvars are read at all, and
+  the plugin's configured deployment is used). The install is not
+  editable. The code is your working copy's, but the files are in uv's cache,
+  where nothing above them is your checkout. Going by file location alone, the
+  bridge would lose the front door that `uv run` in the same checkout finds, and
+  in #62's first version it did. It finds the checkout from the install's own
+  record of its source. That is
+  the `direct_url.json` uv writes for a directory install (PEP 610). CI's install
+  step checks it against a real install. `SWARM_REPO_ROOT` still overrides it.
+* **Not `local`, and not any bare word.** `--from` reads a bare word as a PyPI
+  name — the trap above. Leave the variable **unset** rather than empty: an
+  empty value is passed through as an empty `--from`.
+
+Inside a checkout there is also the project `.mcp.json`, which registers
+`swarmcloud` as `uv run --directory . swarm-mcp` — the editable working tree,
+no variable needed. Its tools arrive under a different name, which is the next
+section.
+
+### The bridge arrives under two names
 
 A plugin's own MCP server is **scoped**. Its tools arrive as
 `mcp__plugin_sc_swarmcloud__*`, not `mcp__swarmcloud__*` — those are the
@@ -127,21 +289,25 @@ does not work. `delegate` therefore lists **both** spellings of all eighteen
 tools, and `tests/unit/mcp/test_plugin_skills.py` holds the two lists in
 lockstep and derives the scoped prefix from `plugin.json` itself.
 
-### What is still repository-bound, and why it cannot be fixed here
+### What is still repository-bound, and why
 
-`${CLAUDE_PLUGIN_ROOT}` is exported to MCP server subprocesses and **not** to
-commands Claude runs through the Bash tool. So when the plugin is loaded in
-place from a checkout, the MCP half works from any working directory and the
-**shell half does not**: `uv run sc` resolves `uv`'s project against the
-session's own directory, and outside a checkout it answers that there is no
-`pyproject.toml`. That is a real limit, stated here rather than papered over,
-because a model that meets it without warning reports the platform as broken.
-The `delegate` skill calls tools and is unaffected; `/sc` and the `sc` skill
-want the repository.
+**The MCP half is not.** Since 0.4.1 the server is fetched by uv rather than
+found on disk, so it starts from any working directory. Outside a checkout it
+reaches the deployment the plugin was configured with, as *Where the API is,
+outside a checkout* explains above. Before 0.4.1 this
+README said the MCP half worked from anywhere, and that was false for every
+marketplace install.
 
-Installed from the **GitHub** marketplace, the MCP half does not start either:
-the server's `uv run --directory ${CLAUDE_PLUGIN_ROOT}/..` points at the
-plugin cache, not a checkout (see Install). That is #62's to fix.
+**The shell half is.** `${CLAUDE_PLUGIN_ROOT}` is exported to MCP server
+subprocesses and **not** to commands Claude runs through the Bash tool, and
+`uv run sc` resolves `uv`'s project against the session's own directory:
+outside a checkout it answers that there is no `pyproject.toml`. That is a real limit,
+stated here rather than papered over, because a model that meets it without
+warning reports the platform as broken. `/sc` and the `sc` skill want the
+repository, and the plugin's two descriptions say so. The `delegate` skill's
+tools come from the MCP server and are unaffected. It also suggests two shell
+commands, and those want the repository too: `uv run swarm tail`, to stream in
+a background shell, and `uv run swarm doctor`, to diagnose.
 
 The `sc` skill and `/sc` are granted each **view** by name —
 `uv run sc accounts`, `uv run sc task`, and so on — and never `sc` as a
@@ -234,7 +400,28 @@ deleted, so the runs that name it stay readable.
 
 ## What keeps these honest
 
-Two files, both in `make test`, both offline:
+Four files, all in `make test`, all offline — bar one test, which CI runs:
+
+`tests/unit/mcp/test_plugin_bridge_install.py` covers whether the server can
+**start** on a machine that has only the plugin: the declaration names nothing
+outside `plugin/`, the bridge is a named git requirement whose
+`#subdirectory` really is the package that declares `swarm-mcp`, its ref is
+`sc-v<version>` and is written down once, and every in-repository dependency
+resolves from the same commit. Its last test installs the bridge for real —
+`plugin.json`'s own command, at the pushed commit, from a cold cache, outside
+the checkout — and talks MCP to it; it is skipped unless
+`SWARM_BRIDGE_INSTALL_REF` is set, which only CI's
+`the plugin's bridge installs from git` step does. That test also runs each
+install's own interpreter to ask where it thinks its repository is. The git
+install must find none, and must still class an `https` front-door URL as the
+front door. The escape hatch must find this checkout and, in developer mode, its
+`frontend_hostname`.
+The same file holds both descriptions to naming what still needs a checkout.
+
+`tests/unit/mcp/test_bridge_outside_a_checkout.py` holds the same two facts
+offline, against a simulated uv-cache layout: which door an address is, and
+which checkout an install reads, when the bridge is not running from a
+checkout.
 
 `tests/unit/mcp/test_plugin_skills.py` parses every `SKILL.md` here and asserts
 that each tool named in `allowed-tools` or in the prose is one

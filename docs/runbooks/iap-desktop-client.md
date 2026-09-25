@@ -217,10 +217,10 @@ granted through `frontend_iap_members` in `terraform/bootstrap/terraform.tfvars`
 ## Step 6 — tell developers
 
 Three values, and where to put them: the plugin asks for all three at
-`/plugin install sc@swarmcloud`. Until #62 (the bridge run from a pinned git
-requirement) is merged and tagged, the install that starts the plugin's MCP
-server is from a checkout — `/plugin marketplace add <checkout>` — not from
-GitHub; [the plugin setup guide](../plugin-setup.md) says why.
+`/plugin install sc@swarmcloud`. The plugin's MCP server fetches the bridge at
+the tag `sc-v<version>`, so push that tag for the plugin version you hand out
+before anyone installs it, or their server cannot start
+([the plugin setup guide](../plugin-setup.md) says what they see).
 
 | Prompt | Value |
 |---|---|

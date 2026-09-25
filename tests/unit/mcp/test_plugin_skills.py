@@ -334,11 +334,11 @@ def test_the_plugin_bundles_the_bridge_it_tells_a_session_to_call():
     in any other directory does not have. Eighteen permissions, a skill written
     against them, and no server.
 
-    The command is checked too, because a server that cannot start is the same
-    outcome as one that is not declared: `${CLAUDE_PLUGIN_ROOT}` is the only
-    path the host expands here (it is NOT exported to Bash-tool commands, which
-    is why the shell half of this plugin stays repository-bound), and the bridge
-    is a console script of the workspace one directory above `plugin/`.
+    WHETHER THAT SERVER CAN START is `test_plugin_bridge_install.py`'s job. The
+    assertions that used to sit here -- `--directory ${CLAUDE_PLUGIN_ROOT}/..`,
+    and a `pyproject.toml` in the parent of `plugin/` -- asserted the defect:
+    a marketplace install copies only `plugin/`, so that parent is the plugin
+    cache, and they passed only because they looked at this checkout instead.
     """
     servers = _plugin_manifest().get("mcpServers")
     assert isinstance(servers, dict) and servers, (
@@ -351,23 +351,7 @@ def test_the_plugin_bundles_the_bridge_it_tells_a_session_to_call():
         f"expected one server keyed `swarmcloud` -- the name the skill's "
         f"permissions are written against -- and found {sorted(servers)}"
     )
-    swarmcloud = servers["swarmcloud"]
-    assert swarmcloud.get("command") == "uv", swarmcloud
-    args = swarmcloud.get("args") or []
-    assert args[-1] == "swarm-mcp", (
-        f"the server must run the `swarm-mcp` console script, not {args[-1]!r}"
-    )
-    assert "--directory" in args, (
-        "without --directory, `uv run` resolves against the session's working "
-        "directory, which is the thing this declaration exists to stop mattering"
-    )
-    directory = args[args.index("--directory") + 1]
-    assert directory.startswith("${CLAUDE_PLUGIN_ROOT}"), (
-        f"{directory!r} is not plugin-relative; a literal path works on one "
-        "machine and an unexpanded variable works on none"
-    )
-    # plugin/ -> the workspace root, which is where pyproject.toml lives.
-    assert directory == "${CLAUDE_PLUGIN_ROOT}/..", directory
-    assert (_PLUGIN.parent / "pyproject.toml").exists(), (
-        "the directory the plugin points `uv run` at holds no pyproject.toml"
+    args = servers["swarmcloud"].get("args") or []
+    assert args and args[-1] == "swarm-mcp", (
+        f"the server must run the `swarm-mcp` console script, not {args[-1:]!r}"
     )
