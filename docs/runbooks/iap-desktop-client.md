@@ -190,6 +190,8 @@ IAP answers with the numeric backend ID (`…/services/817602226733443034`). If
 the provider stored IAP's form, the second plan wants to replace both settings,
 and every later bootstrap apply would repeat it. Treat that as a defect to fix
 in `terraform/bootstrap/iap_programmatic_clients.tf`, not a plan to accept.
+Measured on 2026-09-25, the first apply for this deployment: `No changes`. The
+provider keeps the name Terraform wrote, so the check passed.
 
 Then sign in as a developer would, with the values from step 2 (the
 [plugin setup guide](../plugin-setup.md) has the full flow):
