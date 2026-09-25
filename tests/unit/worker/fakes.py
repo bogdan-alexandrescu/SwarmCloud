@@ -45,7 +45,10 @@ class FakeDocumentRef:
     def get(self, *_args: Any, **_kwargs: Any) -> FakeSnapshot:
         return FakeSnapshot(self.path, self._db.documents.get(self.path))
 
-    def set(self, data: dict[str, Any], merge: bool = False) -> None:
+    def set(self, data: dict[str, Any], merge: bool = False, **_call_options: Any) -> None:
+        # `retry` and `timeout` are accepted and ignored, as `get` already
+        # accepts them: the worker passes its startup budget to both, and a
+        # document store in memory has nothing to wait for.
         if merge and self.path in self._db.documents:
             self._db.documents[self.path].update(dict(data))
         else:
