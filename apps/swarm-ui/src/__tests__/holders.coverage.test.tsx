@@ -15,16 +15,39 @@
 // complete case failed there.
 
 import { render, screen } from '@testing-library/react'
+import type { ReactNode } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 
 import type { HoldersBoard } from '../api'
 import type { Result } from '../fetch'
+import type { LinkOut } from '../primitives'
 import type { LeasePage, LeaseRow, Pool } from '../types'
 
 const api = vi.hoisted(() => ({ loadHolders: vi.fn() }))
 vi.mock('../api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api')>()
   return { ...actual, ...api }
+})
+
+/**
+ * What `Screen` hands the shared empty state, recorded on the way through.
+ *
+ * A PASS-THROUGH, NOT A STUB: the real `Absent` still draws, so every other
+ * case in this file sees the same DOM it always did. It exists for CP-21, which
+ * is a claim about WHICH SLOT the way out arrives in -- `empty.link`, the one
+ * §6.9's shape reserves for it -- and a rendered anchor looks the same whether
+ * the primitive drew it or a screen typed it into the sentence.
+ */
+const absent = vi.hoisted(() => ({ calls: [] as { link?: LinkOut; children?: unknown }[] }))
+vi.mock('../primitives', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../primitives')>()
+  return {
+    ...actual,
+    Absent: (props: Parameters<typeof actual.Absent>[0]) => {
+      absent.calls.push(props)
+      return actual.Absent(props)
+    },
+  }
 })
 
 const { HoldersScreen } = await import('../Holders')
@@ -230,5 +253,27 @@ describe('the empty state says whose leases it counted, and where to go', () => 
     expect(text).toContain('every tenant')
     const links = [...document.querySelectorAll('a[href^="#"]')]
     expect(links.length, 'the empty state has no way out').toBeGreaterThan(0)
+  })
+
+  /**
+   * CP-21's other half: the way out goes in `Screen`'s `empty.link` slot, not
+   * in the body. #144 wrote the Pools link into the sentence because the slot
+   * did not exist yet; #145 added it and nothing moved the link.
+   *
+   * MUTATION: put the anchor back in `empty.body`. The primitive is handed no
+   * link, and the sentence carries an anchor of its own.
+   */
+  it('hands the way out to the empty state’s link slot, not to its sentence', async () => {
+    absent.calls.length = 0
+    api.loadHolders.mockResolvedValue({ status: 'empty', fetchedAt: Date.now(), serverAt: '2026-09-24T10:00:00Z' })
+    render(<HoldersScreen />)
+    await screen.findByText('No unreleased leases', undefined, WAIT)
+    expect(absent.calls.length, 'Screen drew the empty state without the shared primitive').toBeGreaterThan(0)
+    const last = absent.calls[absent.calls.length - 1]!
+    expect(last.link, 'the Pools link is not in the link slot').toEqual({ href: '#capacity/pools', label: 'Pools' })
+    const sentence = render(<>{last.children as ReactNode}</>)
+    expect(sentence.container.querySelector('a'), 'the sentence still carries a link of its own').toBeNull()
+    // The scope the populated summary states is still in the sentence.
+    expect(sentence.container.textContent).toContain('every tenant')
   })
 })

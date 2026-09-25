@@ -295,6 +295,71 @@ describe('the window it describes', () => {
   })
 })
 
+/**
+ * AG-19, THE THIRD CALL SITE (epic #82). The box repointed three `?`s and
+ * links that opened topics about something else; #152 moved two of them, and
+ * this one -- the window's `Why →` beside "these N rows only · older tasks
+ * exist" -- still opened `partial-read`, "One message belongs to one
+ * failure", a topic about attributing one error across several failed reads.
+ * Nothing in it says why a window stops at N rows. Its repoint was commit
+ * 5e17e3a, which was never merged.
+ *
+ * AND THE TOPIC IT NOW OPENS HAS TO BE TRUE FOR THIS SCREEN. `event-paging`
+ * was written for the attempt timeline alone; AH-13's rule is that a topic
+ * linked from more than one screen is written to fit every one of them, so it
+ * has to name the Timeline and say how its window is bounded.
+ *
+ * MUTATION: point `WINDOW_HELP` back at `partial-read`. The href assertion
+ * fails. MUTATION: drop the Timeline paragraph from `event-paging`. The topic
+ * assertion fails.
+ */
+describe('the window’s Why link opens the topic about a bounded read (AG-19)', () => {
+  it('opens event-paging, and event-paging names the Timeline screen', async () => {
+    const cut = await timeline(windowOf([task('a', 'SUCCEEDED', { completed_at: local(10) })], true))
+    const why = cut.querySelector('.wb-more a')
+    expect(why, 'the partial window has no Why link').not.toBeNull()
+    expect(why!.getAttribute('href'), 'Why opens a topic about failed reads, not about this window').toBe(
+      `#${HELP['event-paging'].anchor}`,
+    )
+    const topic = HELP['event-paging'].long.join(' ')
+    expect(topic, 'event-paging is linked from the Timeline and never names it').toContain('the Timeline screen')
+    // What the window actually does: it follows the page token, newest first,
+    // until it holds the Rows it was set to, then stops.
+    expect(topic).toMatch(/Rows/)
+  })
+
+  /**
+   * THE TITLE IS PART OF THE TOPIC (review of #183). AH-13's rule (2) is that
+   * a topic linked from more than one screen is written to fit every one of
+   * them, and the title is the first thing the Help page prints -- in the
+   * topic's own heading and in the page head's `showing <title>`. It read "One
+   * page of events, oldest first", and the Timeline window reads its tasks
+   * NEWEST first and follows the page token (`loadTaskWindow`; store.py
+   * `list_tasks`, DESCENDING), so a reader who clicked `Why →` beside "these
+   * 500 rows only" landed on a heading that said the opposite of what the
+   * Timeline does. The paragraph that corrected it was fourth, after three
+   * about the attempt timeline.
+   *
+   * So the title claims no read order -- one order is false on one of its two
+   * screens -- and the topic OPENS by naming both reads.
+   *
+   * MUTATION: restore the title "One page of events, oldest first". MUTATION:
+   * leave the Timeline only in the last paragraph.
+   */
+  it('titles event-paging for both of its screens, and opens by naming both reads', () => {
+    const t = HELP['event-paging']
+    expect(t.title, 'the title claims a read order one of its two screens contradicts').not.toMatch(
+      /oldest|newest|first|last/i,
+    )
+    expect(t.title, 'the title names only one of the two reads').toMatch(/event/i)
+    expect(t.title, 'the title names only one of the two reads').toMatch(/task/i)
+    const opening = t.long[0] ?? ''
+    // Case-blind: the screen's name may open a sentence.
+    expect(opening, 'the topic opens on one screen and reaches the Timeline only later').toMatch(/\bthe Timeline screen\b/i)
+    expect(opening, 'the topic opens on the Timeline and not the attempt timeline').toMatch(/inspector/)
+  })
+})
+
 // ---------------------------------------------------------------------------
 // The owner's decisions on epic #84, 2026-09-25 (TS-3, TS-9, TS-11, TS-12)
 // ---------------------------------------------------------------------------

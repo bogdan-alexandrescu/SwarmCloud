@@ -169,20 +169,15 @@ export function HoldersScreen() {
          so "no unreleased leases" read as a claim about whoever was looking.
          The read names no tenant, so it IS every tenant. And §6.9's empty
          state ends in a way out: the counters this zero was checked against
-         are on Pools. The link sits in the body until `Screen`'s `empty`
-         prop has a slot for it (CH-10, in the shell lane's PR). */
+         are on Pools. It is `empty.link`, the slot #145 gave `Screen` for
+         exactly this; it sat in the body until then, and the primitive draws
+         it now, closing the sentence (the `·` stays the sentence's). */
       empty={{
         heading: 'No unreleased leases',
         // THE MARK IS `Screen`'s, in the heading (#145). A hand-drawn
         // `.ctl-mark is-zero` span here said `real zero` a second time.
-        body: (
-          <>
-            no lease or counter holds capacity · every tenant ·{' '}
-            <a className="ctl-link" href="#capacity/pools">
-              Pools
-            </a>
-          </>
-        ),
+        body: <>no lease or counter holds capacity · every tenant ·</>,
+        link: { href: '#capacity/pools', label: 'Pools' },
       }}
     >
       {(board) => {

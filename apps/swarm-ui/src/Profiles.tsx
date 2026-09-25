@@ -25,6 +25,17 @@ import {
 const LIFTED = '+N if lifted'
 
 /**
+ * THE CONJUNCTION, IN THE NAME OF THE COLUMN IT GOVERNS (CP-5's second half,
+ * #85), as Pools says it in `Could start (min across pools)`. A task clears
+ * every pool on its card in one transaction or none of them (invariant 2), so
+ * the card's `could start` is the least of the `Fits` below it and never a sum.
+ * The column read `Pool it must clear`, which is true of one pool at a time;
+ * `all at once` is what makes the figure a minimum. The argument is
+ * `#help/pools-all-at-once`, the screen's one `?`.
+ */
+const MUST_CLEAR = 'Pools it must clear (all at once)'
+
+/**
  * The runner-profile catalogue — what kinds of agent this platform can run.
  *
  * Capacity answers "which ceiling is binding right now", pool by pool. This
@@ -67,6 +78,13 @@ export function ProfilesScreen() {
          contract's field name and invariant 10 is why this screen exists, so
          the address keeps the contract's noun. */
       title="Profile headroom"
+      /* THE SCREEN'S ONE `?` (CP-5's second half, #85): Pools' glyph, on the
+         same topic. The banner it replaces said the conjunction once for
+         every card, and the glyph does too -- after the title, AH-24's slot
+         for a property of the whole screen -- because a `?` in each card
+         head would be one per profile saying one thing. The words are on
+         every card, in the pool column's name (`MUST_CLEAR`). */
+      help="pools-all-at-once"
       load={loadCapacity}
       summary={(d) => {
         const profiles = Object.values(d.runner_profiles)
@@ -134,9 +152,10 @@ function Catalogue({ capacity }: { capacity: Capacity }) {
           this screen had not followed. Neither claim was lost:
 
             "a task must clear EVERY pool ... the MINIMUM, never a sum" is
-            `#help/pools-all-at-once`, linked from this screen's footer, and is
-            drawn on every card as the pool list headed `Pool it must clear`
-            with the figure above it equal to the smallest `Fits`;
+            `#help/pools-all-at-once`, the `?` after this screen's title and
+            its footer, and is drawn on every card as the pool list headed
+            `Pools it must clear (all at once)` with the figure above it equal
+            to the smallest `Fits`;
 
             "these pool lists are for tenant X, including if you are an admin"
             is the `tenant X` note on EVERY card's head -- the card-note slot
@@ -312,7 +331,7 @@ function ProfileCard({ name, profile, byName, tenant, groups }: {
         <table className="pools" role="table">
           <thead role="rowgroup">
             <tr role="row">
-              <th role="columnheader" scope="col">Pool it must clear</th>
+              <th role="columnheader" scope="col">{MUST_CLEAR}</th>
               <th role="columnheader" scope="col">Scope</th>
               {/* "units", never "agents": admission increments by the class's
                   weight, so 8 in use may be four browser agents. */}

@@ -284,13 +284,28 @@ const SPECS: Record<TopicId, TopicSpec> = {
   // and holds this topic to whichever of them changes.
   'event-paging': {
     group: 'an-attempt',
-    title: 'One page of events, oldest first',
+    // A TITLE FOR BOTH SCREENS THAT LINK HERE (AH-13 rule 2; review of #183).
+    // It was "One page of events, oldest first", and the Timeline screen's
+    // window -- which links here since AG-19 -- reads its tasks NEWEST first
+    // and follows the token, so the heading and the Help page's `showing
+    // <title>` said the opposite of what that screen does. The title names
+    // both reads and claims no order; each paragraph says whose order it is.
+    title: 'Paged reads: a page of events, a window of tasks',
     short:
       'This screen reads one page of events, oldest-first, and does not follow the page token the events route returns, so newer events may exist that it has not fetched. An attempt with none on this page is blind, not quiet. Zero events is a failed query: a task is written with its first event.',
     long: [
+      // AG-19 and AH-13: the topic OPENS by naming both of its screens, so a
+      // reader who came from the Timeline does not read three paragraphs about
+      // the attempt timeline before reaching the one about theirs.
+      'Two reads in this console are paged, and each stops at a bound of its own. The attempt timeline in an agent’s inspector reads one page of events, oldest first, and stops there. The Timeline screen reads tasks newest first, following the page token until it holds the Rows it was set to.',
       'The events route pages: each response carries a token for the next page whenever more events exist, and it can also be asked for the newest events first. The attempt timeline in an agent’s inspector uses neither. It asks for one page, oldest-first, and stops there, so what it holds is the beginning of a history, never a guaranteed whole of it.',
       'So \u201cthis is everything\u201d is a claim the attempt timeline is never entitled to make. An attempt with no events on the page is counted as blind rather than drawn as quiet: past one page, the newest events \u2014 everything belonging to the latest attempts \u2014 are on the platform and not in the timeline.',
       'Zero events is a different fact again. A task is written together with its first event, in the same batch, so an empty history is a failed query and is marked as one \u2014 never as an empty record.',
+      // AG-19: the Timeline's window links here too, and AH-13's rule is that a
+      // topic linked from two screens is written for both. Its bound is the
+      // other way round from the events': `loadTaskWindow` DOES follow the
+      // token, newest first (store.py `list_tasks`), and stops at the budget.
+      'The task window on the Timeline screen is bounded from the other end. It reads the task list newest first and does follow the page token, one page after another, until it holds the number of Rows it was set to, and then stops. When older tasks exist past that point it says so beside the window, and every count, chart and table on the Timeline describes those rows and the span they covered, not all time. The Rows control is how to widen it.',
     ],
   },
 

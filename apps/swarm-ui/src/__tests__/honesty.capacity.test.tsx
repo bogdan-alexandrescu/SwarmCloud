@@ -840,6 +840,48 @@ describe('Profile headroom carries its scope as a card note, not paragraphs (CP-
       expect(note!.textContent).toBe('tenant eng')
     }
   })
+
+  /**
+   * CP-5'S SECOND HALF, which #144 listed as not done: "use a column name plus
+   * the one `?`, as Pools does". Pools says the conjunction in the name of the
+   * column it governs -- `Could start (min across pools)` -- and draws one `?`
+   * for `pools-all-at-once`, outside any table. Profile headroom deleted its
+   * banner and said the conjunction nowhere on the cards: the pool column
+   * read `Pool it must clear`, which is true of one pool at a time.
+   *
+   * ONE `?` FOR THE SCREEN, NOT ONE PER CARD. The screen draws a card per
+   * profile, so a glyph in each card head would be five glyphs saying one
+   * thing. The conjunction is a property of every card on the screen, and
+   * AH-24's slot for a property of the whole screen is after its title.
+   *
+   * MUTATION: put `Pool it must clear` back. The column no longer says every
+   * pool at once. MUTATION: drop `help` from the Screen, or draw the glyph in
+   * each card. The screen has no `?`, or one per card.
+   */
+  it('names the conjunction on every card’s pool column and draws one ? for the screen, after its title', async () => {
+    renderProfiles(
+      capacity({
+        tenant_id: 'eng',
+        pools: [pool({ name: 'global' }), pool({ name: 'tenant:eng' })],
+        runner_profiles: {
+          'claude-code': profile({ pools: ['global', 'tenant:eng'], admission: admission({}) }),
+          mock: profile({ provider: null, pools: ['global', 'tenant:eng'], admission: admission({}) }),
+        },
+      }),
+    )
+    const cards = [await profileCard('claude-code'), await profileCard('mock')]
+    for (const card of cards) {
+      const first = card.querySelector('thead th')
+      expect(first, 'a card has no pool column').not.toBeNull()
+      expect(first!.textContent, 'the pool column does not say every pool is cleared at once').toMatch(/all at once/)
+    }
+    const glyphs = [...document.querySelectorAll('button[aria-expanded]')].filter((b) => b.textContent === '?')
+    expect(glyphs, 'Profile headroom draws no ?, or one per card').toHaveLength(1)
+    const glyph = glyphs[0]!
+    expect(glyph.closest('.head'), 'the ? is not beside the screen title').not.toBeNull()
+    expect(glyph.closest('table'), 'the ? is inside a table').toBeNull()
+    expect(glyph.getAttribute('aria-label')).toContain('Every pool at once, or none of them')
+  })
 })
 
 describe('units are named on every column that counts them (CP-24)', () => {

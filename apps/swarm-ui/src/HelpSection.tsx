@@ -52,12 +52,22 @@ export function HelpScreen({ topic }: { topic: string }) {
   // and the deep link left it under the dock. So the visible band is the
   // scroller's box clipped to the window; outside the frame (a test, a future
   // page with no scroller) it is the window alone.
+  //
+  // AND THE BAND STARTS UNDER THE STUCK GROUP HEADING (AH-16, as settled
+  // against AH-18 on #86). The group heading sticks to the top of the
+  // scroller while its group is in view (styles.css `.help-group > h2`), so a
+  // topic whose top sits in the scroller's first few dozen pixels is under
+  // it, title and all. The band a deep link keeps clear for that heading is
+  // the topic's own `scroll-margin-top`, so "in view" starts there. It is read
+  // from the element, not restated: the sheet owns the number. jsdom answers
+  // nothing for it, which is 0 -- the old behaviour.
   useEffect(() => {
     const el = target.current
     if (el === null || typeof el.scrollIntoView !== 'function') return
     const box = el.getBoundingClientRect()
     const port = el.closest('.ctl-scroll')?.getBoundingClientRect() ?? null
-    const top = Math.max(0, port?.top ?? 0)
+    const clear = Number.parseFloat(window.getComputedStyle(el).scrollMarginTop ?? '')
+    const top = Math.max(0, port?.top ?? 0) + (Number.isFinite(clear) && clear > 0 ? clear : 0)
     const bottom = Math.min(window.innerHeight, port?.bottom ?? window.innerHeight)
     const inView = box.top >= top && box.bottom <= bottom
     if (!inView) el.scrollIntoView({ block: 'start' })
@@ -109,7 +119,10 @@ export function HelpScreen({ topic }: { topic: string }) {
         const ids = TOPIC_IDS.filter((id) => HELP[id].group === g.id)
         if (ids.length === 0) return null
         return (
-          <section className="section" key={g.id}>
+          // `help-group`: the hook for the heading that sticks while its group
+          // is in view (AH-16; styles.css `.help-group > h2`), so a deep link
+          // to any topic in the group lands under it. Only Help's groups stick.
+          <section className="section help-group" key={g.id}>
             <h2>{g.title}</h2>
             {ids.map((id) => (
               <Topic
