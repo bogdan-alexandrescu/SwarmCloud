@@ -157,6 +157,13 @@ class RunnerContext:
     credential_path: Path | None = None
     payload: dict[str, Any] = field(default_factory=dict)
     stop_requested: bool = False
+    #: Facts the runner learned about its own run that belong in result.json
+    #: on EVERY outcome, merged into `output` by `write_result` -- a failed,
+    #: parked or crashed run included, which is where `run_runner` writes an
+    #: output of the spend alone. Today: what the output caps did to the agent's
+    #: streams (`procman.ChildResult.capture_report`), which the worker reads
+    #: into `result_summary.agent_streams` (#188 review).
+    report: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_env(cls, env: dict[str, str] | None = None) -> "RunnerContext":
@@ -217,7 +224,7 @@ class RunnerContext:
                 {
                     "status": status,
                     "summary": summary,
-                    "output": output or {},
+                    "output": {**self.report, **(output or {})},
                     "error": error,
                     "metrics": metrics or {},
                     "artifacts": artifacts,

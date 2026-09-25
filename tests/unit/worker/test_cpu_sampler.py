@@ -370,3 +370,221 @@ def test_an_attempt_that_restarts_its_runner_reports_every_runners_usage(
     ]
     assert after, "no heartbeat carried CPU while the second runner ran"
     assert min(after) >= 2.0, f"the cumulative total went back below the first runner's: {after}"
+
+
+# ---------------------------------------------------------------------------
+# #184: peak AND mean of the limit, drawn in Details
+#
+# The owner asked for CPU beside memory and workspace, as the peak and the mean
+# cores of the runtime's CPU limit. The mean existed only after a runner
+# stopped, the limit was nowhere, and the figures reached no reader. They ride
+# on the HEARTBEAT event (the frozen Attempt has no CPU fields; contract
+# request #15), so the event must carry every one of them -- including a final
+# reading taken the moment a runner is reaped.
+# ---------------------------------------------------------------------------
+
+CPU_KEYS = (
+    "cpu_seconds",
+    "peak_cpu_cores",
+    "mean_cpu_cores",
+    "cpu_wall_seconds",
+    "cpu_source",
+    "cpu_limit_cores",
+    "cpu_limit_source",
+    "final",
+)
+
+
+def _heartbeats(db):
+    return [e for e in db.events("task_1") if e["type"] == EventType.HEARTBEAT.value]
+
+
+def test_the_mean_is_kept_current_while_the_runner_runs():
+    """Set only at stop, a RUNNING attempt never had a mean -- and `combine_usage`
+    gives an attempt one only when some runner has one."""
+    from agent_worker.metrics import combine_usage
+
+    # t=0: 10s, t=2: 13s, t=4: 14s -- and the runner is still alive.
+    sampler = _sampler(ScriptedMeter([10.0, 13.0, 14.0]), ScriptedClock([0, 2, 4]))
+    sampler.sample_once()
+    sampler.sample_once()
+    assert sampler.usage.mean_cpu_cores == pytest.approx(3.0 / 2)
+    sampler.sample_once()
+
+    assert sampler.usage.mean_cpu_cores == pytest.approx(4.0 / 4)
+    assert combine_usage([sampler.usage]).mean_cpu_cores == pytest.approx(1.0)
+
+
+def test_a_span_too_short_for_a_rate_gets_no_mean_while_running_either():
+    sampler = _sampler(ScriptedMeter([0.0, 0.1]), ScriptedClock([0, 0.01]))
+    sampler.sample_once()
+    sampler.sample_once()
+
+    assert sampler.usage.mean_cpu_cores is None
+
+
+def test_the_cpu_limit_is_read_from_cgroup_cpu_max(tmp_path: Path, monkeypatch):
+    from agent_worker import metrics
+
+    monkeypatch.setattr(metrics, "CGROUP_ROOT", tmp_path)
+    assert metrics.cgroup_cpu_limit_cores() is None, "no cpu.max: not known"
+
+    cases = {
+        "200000 100000\n": 2.0,
+        "150000 100000\n": 1.5,
+        "max 100000\n": None,
+        "0 100000\n": None,
+        "garbage\n": None,
+        "one two\n": None,
+    }
+    for text, expected in cases.items():
+        (tmp_path / "cpu.max").write_text(text)
+        assert metrics.cgroup_cpu_limit_cores() == expected, text
+
+
+def test_the_heartbeat_cpu_fields_are_rounded_and_none_is_never_zero():
+    from agent_worker.metrics import ResourceUsage, heartbeat_cpu_fields
+
+    usage = ResourceUsage(
+        cpu_seconds=1.23456, peak_cpu_cores=1.99999, mean_cpu_cores=0.5004,
+        cpu_wall_seconds=2.46912, cpu_source="cgroup",
+    )
+    assert heartbeat_cpu_fields(usage, limit_cores=2.0, limit_source="cgroup", final=True) == {
+        "cpu_seconds": 1.235,
+        "peak_cpu_cores": 2.0,
+        "mean_cpu_cores": 0.5,
+        "cpu_wall_seconds": 2.469,
+        "cpu_source": "cgroup",
+        "cpu_limit_cores": 2.0,
+        "cpu_limit_source": "cgroup",
+        "final": True,
+    }
+    assert heartbeat_cpu_fields(
+        None, limit_cores=None, limit_source="resource_class", final=False
+    ) == {
+        "cpu_seconds": None,
+        "peak_cpu_cores": None,
+        "mean_cpu_cores": None,
+        "cpu_wall_seconds": None,
+        "cpu_source": None,
+        "cpu_limit_cores": None,
+        "cpu_limit_source": None,
+        "final": False,
+    }
+
+
+def test_a_reaped_runner_leaves_a_final_reading(db, worker_factory):
+    """The periodic reading is every fifth heartbeat (~150 s in production), so
+    without this an attempt's newest figure could be minutes older than its
+    end -- and a short run had none taken at all."""
+    seed_attempt(db, task_input={"prompt": "short", "steps": 1, "sleep_seconds": 0.3})
+    worker, _, _ = worker_factory()
+    assert worker.run() == ExitCode.OK
+
+    beats = _heartbeats(db)
+    finals = [b for b in beats if b["detail"].get("final") is True]
+    assert len(finals) == 1, f"expected one final reading, saw {len(finals)}: {beats}"
+    final = finals[0]["detail"]
+    for key in CPU_KEYS + ("peak_rss_bytes", "elapsed_seconds", "checkpoints"):
+        assert key in final, f"{key} is missing from the final reading: {final}"
+    assert final["cpu_seconds"] is not None, "the runner ran; its CPU was measured"
+    assert beats[-1] is finals[0], "the final reading is the attempt's newest"
+    events = db.events("task_1")
+    at_final = next(i for i, e in enumerate(events) if e is finals[0])
+    succeeded = next(i for i, e in enumerate(events) if e["type"] == EventType.SUCCEEDED.value)
+    assert at_final < succeeded, "the reading lands before the terminal event"
+
+
+def test_every_periodic_reading_carries_every_cpu_key(db, worker_factory):
+    seed_attempt(db, task_input={"prompt": "burn", "steps": 2, "sleep_seconds": 1.5,
+                                 "cpu_burn_seconds": 0.5})
+    worker, _, _ = worker_factory(heartbeat_interval_seconds=1)
+    assert worker.run() == ExitCode.OK
+
+    periodic = [b for b in _heartbeats(db) if b["detail"].get("final") is not True]
+    assert periodic, "no periodic reading at all"
+    for beat in periodic:
+        missing = [key for key in CPU_KEYS if key not in beat["detail"]]
+        assert not missing, f"a periodic reading lacks {missing}: {beat['detail']}"
+        assert beat["detail"]["final"] is False
+
+
+def test_the_cpu_limit_falls_back_to_the_class_the_container_was_sized_with(
+    db, worker_factory, monkeypatch, tmp_path: Path
+):
+    """With no cgroup `cpu.max`, the limit is the catalogue cpu of the class the
+    scheduler SIZED the container with -- the task's own class -- not the
+    profile's, which is all `WorkerConfig.resource_class` knows."""
+    from agent_worker import metrics
+
+    monkeypatch.setattr(metrics, "CGROUP_ROOT", tmp_path / "no-cgroup-here")
+    seed_attempt(db, task_input={"prompt": "sized", "steps": 1, "sleep_seconds": 0.3})
+    db.doc("tasks/task_1")["resource_class"] = "large"  # mock's own class is standard
+    worker, _, _ = worker_factory()
+    assert worker.run() == ExitCode.OK
+
+    final = next(b for b in _heartbeats(db) if b["detail"].get("final") is True)["detail"]
+    assert final["cpu_limit_cores"] == 8.0
+    assert final["cpu_limit_source"] == "resource_class"
+
+
+def test_the_cpu_limit_comes_from_cgroup_when_there_is_one(db, worker_factory, monkeypatch, tmp_path):
+    from agent_worker import metrics
+
+    root = tmp_path / "cgroup"
+    root.mkdir()
+    (root / "cpu.max").write_text("300000 100000\n")
+    monkeypatch.setattr(metrics, "CGROUP_ROOT", root)
+    seed_attempt(db, task_input={"prompt": "cgroup", "steps": 1, "sleep_seconds": 0.3})
+    worker, _, _ = worker_factory()
+    assert worker.run() == ExitCode.OK
+
+    final = next(b for b in _heartbeats(db) if b["detail"].get("final") is True)["detail"]
+    assert final["cpu_limit_cores"] == 3.0
+    assert final["cpu_limit_source"] == "cgroup"
+
+
+def test_the_sized_class_is_the_one_the_scheduler_sizes_the_container_with(worker_factory):
+    """Restated from `scheduler.dispatch.resource_class_for` (the worker image
+    does not install the scheduler), so the two are compared here."""
+    from types import SimpleNamespace
+
+    from scheduler.dispatch import resource_class_for
+    from swarm_common.profiles import RUNNER_PROFILES
+
+    worker, _, _ = worker_factory()
+    profile = RUNNER_PROFILES["mock"]
+    for named in ("standard", "large", "browser", "a-class-no-longer-in-the-catalogue"):
+        worker._task = {"resource_class": named}
+        task = SimpleNamespace(id="task_1", resource_class=named)
+        assert worker._sized_resource_class() == resource_class_for(task, profile), named
+
+
+def test_a_superseded_attempt_emits_no_final_reading(db, worker_factory, monkeypatch):
+    """The task's event stream belongs to whichever generation owns the task. A
+    fenced attempt writes its own attempt document and nothing else there."""
+    from agent_worker.errors import FencedWriteRefused
+
+    seed_attempt(db)
+    worker, _, _ = worker_factory()
+    emitted: list = []
+    monkeypatch.setattr(
+        worker.control, "emit", lambda kind, detail=None, **_kw: emitted.append((kind, detail))
+    )
+
+    def refused(*, write):
+        raise FencedWriteRefused(1, 2, "superseded", write=write)
+
+    monkeypatch.setattr(worker.control, "ensure_owner", refused)
+    worker._emit_final_reading()  # must not raise
+    assert emitted == [], "a fenced attempt emitted its final reading"
+
+    monkeypatch.setattr(worker.control, "ensure_owner", lambda *, write: None)
+    worker._fenced = True
+    worker._emit_final_reading()
+    assert emitted == [], "an attempt that knows it is fenced emitted anyway"
+
+    worker._fenced = False
+    worker._emit_final_reading()
+    assert [kind for kind, _ in emitted] == [EventType.HEARTBEAT]
+    assert emitted[0][1]["final"] is True
