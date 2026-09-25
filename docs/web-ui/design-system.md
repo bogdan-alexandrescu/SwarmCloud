@@ -1643,7 +1643,10 @@ Six places, in order of commitment. Nothing outside this list.
    `showing <title>` line. "One page of events, oldest first" was false of the
    Timeline, which reads newest first; the title is "Paged reads: a page of
    events, a window of tasks" and claims no order, and the topic opens by
-   naming both reads.
+   naming both reads. *(Superseded by #185, §16: the Timeline no longer reads
+   a window of tasks, so nothing links it to `event-paging`, and the topic is
+   written for the attempt timeline alone again, titled "One page of events,
+   not the whole history". The rule this paragraph states is unchanged.)*
 6. **`docs/`.** The argument, the constraint, the thing that is true for six
    months. A docs link is a legitimate element of an empty state and of a help
    card; it is not an element of a data view.
@@ -3240,3 +3243,63 @@ each. Each is held by a test committed red first.
   and no figure — `elapsed()`'s wording for the same task (#145) — because
   its age includes that run and nothing records when its current state began
   (`workflow.views.test.tsx`).
+
+---
+
+## 16. The Timeline as an outcome ledger (#185, owner decisions 2026-09-25)
+
+The Timeline read the newest 200–2,000 tasks and labelled whatever span they
+happened to cover ("bound by rows, label by the span"), because the task list
+could not filter by time. Dev's 730 tasks already exceeded the default window,
+so the page was partial on the day it was redesigned, and one column stacked
+outcomes by `completed_at` on top of still-open work by `created_at`, so its
+height measured nothing: 416 cancels flattened 28 failures. The owner accepted
+the synthesis of a three-concept design round with one change (a throughput
+lane), and the page now reads `GET /v1/outcomes` over a real span. This
+section records what each part must keep, so none of it is quietly reverted.
+
+| Part | What it keeps | Why | Test |
+|---|---|---|---|
+| **The span** | 24h · 7d · **14d (default)** · 30d · 90d · from–to, applied by the server; the server buckets (hour ≤ 48h, day ≤ 60d, week beyond) unless overridden; month only at ≥ 60 days; hourly never past 2,000 buckets | the Rows control's premise (the list cannot filter by time) is gone; a combination the route refuses (422) is one the page never sends | `outcomes.view`, `activity.timeline` "the read" |
+| **The address** | every filter is the hash's query (`#work/timeline?span=30d&table=1`); the last view is remembered per browser inside try/catch; a filter change is a route change with `replaceState` | a link reproduces the page; `fromHash` splits the query off first, because `timeline?span=30d` otherwise matched no tab and opened an **agent drawer** named after it | `route.test.ts` #185 |
+| **One figure** | the success rate at `--t-figure`, `k of n decided`, the Wilson 95 % interval in its accessible name, `excludes N cancelled` in the card-note; `no finished work` (never 0 %) at n = 0; the partial mark and `k of n days` when a bucket is unread; the previous-span delta **dropped, with the reason**, when that span is partial or decided nothing | cancels are left out of the denominator (owner decision); a delta over part of a span compares two different things | `activity.timeline` "the headline" |
+| **Four lanes, one axis** | rate (`--series-1`, y fixed 0–100 %, Wilson band on `--surface-2` with ruled edges, hollow under 5 decided, a gap at n = 0); decided (succeeded up in TS-4's solid `--ok`, failed and dead-lettered down in solid `--bad` with the 2px `--surface` cut, ≥ 4px, one scale through zero); cancelled (its own scale, max printed; requested and other as TS-4's flat bars, the cancels a failure caused as a 1px `--text-dim` outline); throughput (submitted as a `--series-2` step line over finished as `--series-5` columns, **labelled as the only lane on the submission-time basis**) | small multiples, never a dual axis; failures hang from a common zero; cancels stop drowning them; throughput answers "are we keeping up" | `activity.timeline` "the ledger" |
+| **Every bucket** | a column per bucket from `since` to `until`; a measured zero is the axis tick in each lane; the current bucket has a dashed right edge and reads `so far`; a just-ended one reads `settling`; an unread bucket is one hatched band across all four lanes with no mark and no digit | an absence is never a zero, and a zero is never an absence (§8.6) | same |
+| **Drawn three times** | 1080, 640 and 300 units, each with its own geometry and label stride; `.ol-chart` is the size container; `@container ol-chart (min-width: 640px / 1080px)` shows the drawing whose authored width the box holds; the narrow drawing's column floor is 26px, past which it grows and scrolls, opening at the newest end | AG-20's mechanism plus a page-width entry: the 640 drawing scaled across a 1,144px column would carry ~21px ticks, and scaled into a phone ~6px ones | `timeline.ledger.rules` |
+| **The readout is the legend** (TS-9) | span totals by default, one bucket's on hover, tap or focus; `all`, Escape and leaving restore; one tab stop with a roving tabindex starting on the newest bucket; not a live region; 44px ‹ › steps on a phone; `zoom to <day>` with a chip back; `N failed that day →` says `not limited to <day>` | the SVG marks are `aria-hidden`; each column is an HTML `role="img"` named with its full time and every count | `activity.timeline` "the readout" |
+| **Table** | the same buckets as a `.ctl-table.is-scroll`, with `submitted` | the keyboard and screen-reader route to every value | "the Table toggle" |
+| **Eight cards** | Why tasks failed (the server's fixed class order) · Retries and attempts (admissions, not runs) · Time to result by profile (no all-profiles row) · Reliability by profile, tenant or person · Workflows that failed, and where · **Reported cost · not a bill** (renamed from "Token spend"; per attempt, by task end) · Not finished yet (live, span not applied) · Why tasks were cancelled | every card but the live one draws the same payload on the same basis under the same filters | "the eight cards" |
+| **One glyph** | the only `?` is after "Success rate"; the cards publish their topics through `explain` (a `HelpNote`, no glyph) and the screen ends in a `Reading this screen:` index | B7.4's ceiling is twenty glyphs and two per screen; the console was at nineteen | `tests/help.test.ts` |
+
+**The throughput lane's encoding is recorded as chosen, not as decided.** The
+Flow concept drew `submitted` as the 1px outline column that lane 3 already
+uses for "after a failure" cancels, so one mark would have meant two things on
+one chart. The contract's recommended option — a `--series-2` step line over
+neutral `--series-5` columns, because these are counts and not outcomes — is
+what shipped; it is surfaced on #185 for the owner's confirmation.
+
+**TS-4's forms on an SVG.** The segments of §15.3 are CSS backgrounds, which an
+SVG shape cannot take, so the ledger restates them as fills (`.ol-m-ok`,
+`.ol-m-bad` with `.ol-m-cut`, the `.ol-flat` pattern) with the same tokens. The
+legend keys and the cards' outcome tracks (`.ol-k.is-*`, `.ol-meter > .ol-seg.*`)
+are added to TS-4's own rules by selector, so those cannot drift.
+
+**What retired with the window.** The Rows control and its rule; the window
+bar's `Last N tasks` / `All N tasks`; the People table (grouping by person is
+now server-side over the whole span, in Reliability); the metric strip; AG-19's
+link from the window to `event-paging`, whose topic is written for the attempt
+timeline alone again (§8.4 item 5 describes the state before #185). The old
+Activity rules in `styles.css` (`.window-bar`, `.chart .col`, `.stackcol`,
+`.chart-legend`) are no longer rendered by the Timeline and are kept: TS-4's
+failed and cancelled rules are shared with `.wf-meter`, and the rest are held by
+tests that read the sheet (`shell.test.tsx`, `timeline.submit.rules.test.ts`,
+`test_workflow_step_measurements.py`), which a removal would have to re-point.
+
+**What this did NOT verify.** Nothing here was seen rendered: the tests prove
+which marks the ledger draws for a contract-shaped payload, which drawing the
+sheet picks at a container width, and which rule wins. The route itself is
+built in a parallel lane; the UI is held to the contract by a fixture in its
+exact shape (`outcomes.fixture.ts`), not by a live read. Whether the 1080
+drawing reads well at 1440, how a 26px column reads under a thumb, and whether
+the Wilson band's ruled edges are enough in the light theme are for the next
+release's screenshots.
