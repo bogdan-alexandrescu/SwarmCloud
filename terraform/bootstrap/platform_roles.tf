@@ -393,7 +393,7 @@ data "terraform_remote_state" "infra" {
   for_each = toset(var.adopt_from_infra_states)
 
   backend = "gcs"
-  config  = {
+  config = {
     bucket = local.state_bucket_name
     prefix = each.value
   }
