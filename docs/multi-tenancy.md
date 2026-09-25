@@ -296,6 +296,11 @@ described above. See [security.md](security.md#authentication) and
 
 # Add a provider key. Never passed as an argument: argv is readable via ps.
 ./scripts/create-secrets.sh --tenant eng --provider anthropic --stdin
+# ...then let eng's worker read it and list it for the tenant, keeping every
+# provider eng already has. NOT a re-run with --providers: that REPLACES the
+# tenant's credentials list, and resets max_active, capacity_units and
+# display_name to their defaults unless they are typed again.
+./scripts/register-tenant.sh --tenant eng --add-provider anthropic
 
 # Rotate, keeping the previous version enabled until workers pick up the new one
 ./scripts/create-secrets.sh --tenant eng --provider anthropic --stdin

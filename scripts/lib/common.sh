@@ -1265,15 +1265,27 @@ fs_list_docs() {
   printf '%s' "${raw}" | jq -c "${FS_JQ} .[] | doc"
 }
 
-# fs_patch DOC_PATH FIELD_MASK_CSV JSON_FIELDS
+# fs_patch DOC_PATH FIELD_MASK_CSV JSON_FIELDS [UPDATE_TIME]
+#
+# UPDATE_TIME is optional: the document's `updateTime` exactly as the caller
+# read it. Given, it goes on the request as the precondition
+# `currentDocument.updateTime`, and Firestore applies the write only if the
+# document still exists at that version -- otherwise it refuses with
+# FAILED_PRECONDITION and this returns non-zero. That is what makes a
+# read-modify-write of one field safe: without it, a list read at one moment
+# and written back at the next silently drops whatever was added in between,
+# and a PATCH is an upsert that recreates a document deleted in between.
 fs_patch() {
-  local doc="$1" mask="$2" fields="$3"
+  local doc="$1" mask="$2" fields="$3" update_time="${4:-}"
   local url="" part
   url="$(fs_base)/${doc}?"
   IFS=',' read -r -a _mask_parts <<<"${mask}"
   for part in "${_mask_parts[@]}"; do
     url+="updateMask.fieldPaths=${part}&"
   done
+  if [[ -n "${update_time}" ]]; then
+    url+="currentDocument.updateTime=${update_time}&"
+  fi
   fs_request PATCH "${url%&}" "{\"fields\":${fields}}" >/dev/null
 }
 
