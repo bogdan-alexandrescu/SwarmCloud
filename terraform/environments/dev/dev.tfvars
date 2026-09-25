@@ -169,7 +169,6 @@ service_max_instances = {
 
 settings_env = {
   PERFORMANCE_PROFILE = "economy"
-  GCE_METADATA_HOST   = "169.254.169.254"
 }
 
 # --- tenancy ---------------------------------------------------------------
