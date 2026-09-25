@@ -340,6 +340,73 @@ def test_the_cli_login_signs_in_and_reports_the_principal(monkeypatch, google, s
     assert code == 0, out.getvalue()
     assert EMAIL in out.getvalue() and "u-dev" in out.getvalue()
     assert seen and seen[0].startswith("Bearer ") and seen[0].count(".") == 2, seen
+    # Nothing on this machine outranks the sign-in, so nothing to warn about.
+    assert "not as you" not in out.getvalue()
+
+
+@pytest.mark.parametrize(
+    "higher,named",
+    [
+        ("SWARM_IMPERSONATE_SA", "ci-runner@example.iam.gserviceaccount.com"),
+        ("SWARM_ID_TOKEN", "SWARM_ID_TOKEN"),
+        ("metadata", "metadata server"),
+    ],
+)
+def test_login_checks_the_sign_in_it_made_not_a_tier_that_outranks_it(
+    monkeypatch, google, store, team, higher, named
+):
+    """REVIEW OF PR #61, 2026-09-25: `sc login` verified the WRONG credential.
+
+    It ended by calling the API through `SwarmClient(deployment=...)`, whose
+    tier comes from `auth.detect()` -- and detect ranks SWARM_ID_TOKEN, the
+    metadata server and SWARM_IMPERSONATE_SA above a sign-in. On any of those
+    the check ran as the service account and never presented the token just
+    minted, so it printed "signed in ... as dev@..." and the SERVICE ACCOUNT's
+    tenant, and exited 0 even when IAP had not allowlisted the Desktop client.
+    The runbook's step 5 and the PR's owner steps both read that output as
+    proof the allowlist works. SWARM_IMPERSONATE_SA was the README's
+    documented laptop setup until this PR, and the metadata tier is what
+    Cloud Shell and Workstations are on.
+
+    So: exactly one request, carrying the ID token the sign-in minted
+    (audience: the Desktop client), whatever else is set -- and the developer
+    is TOLD that everything else on this machine still acts as that other
+    identity, not as them.
+    """
+    if higher == "metadata":
+        monkeypatch.setattr(auth, "_metadata_available", lambda timeout=0.3: True)
+    elif higher == "SWARM_ID_TOKEN":
+        monkeypatch.setenv("SWARM_ID_TOKEN", "an.explicit.token")
+    else:
+        monkeypatch.setenv(higher, named)
+    seen: list[str] = []
+
+    class _Response(io.BytesIO):
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def _opener(request, timeout=None):  # noqa: ARG001
+        seen.append(request.get_header("Authorization"))
+        return _Response(json.dumps({"email": EMAIL, "tenant_id": "u-dev"}).encode())
+
+    monkeypatch.setattr(client, "_open", _opener)
+    out = io.StringIO()
+    code = sc.main(["login"], out=out)
+    text = out.getvalue()
+
+    assert code == 0, text
+    assert len(seen) == 1, f"one verification request, not {len(seen)}"
+    claims = _signin().decode_claims(seen[0].removeprefix("Bearer "))
+    assert claims["email"] == EMAIL and claims["aud"] == CLIENT_ID, (
+        "the check must present the ID token `sc login` just minted, not the "
+        f"credential of a tier that outranks it: {claims}"
+    )
+    assert "not as you" in text and named in text, text
 
 
 # ==========================================================================

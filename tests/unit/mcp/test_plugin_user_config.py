@@ -92,6 +92,51 @@ def test_every_option_reaches_the_bridge_under_the_name_it_reads():
     assert len(passed) == len(_user_config()), f"env passes an option nobody declared: {passed}"
 
 
+def test_what_the_install_dialog_collects_is_what_the_bridge_resolves(tmp_path):
+    """The item this file is named for: "userConfig keys in plugin.json match
+    what the bridge READS (derive, don't restate)".
+
+    REVIEW OF PR #61, 2026-09-25: the two tests above compare LISTS -- the
+    manifest's keys against `config.PLUGIN_KEYS`, and its env names against
+    `config.plugin_env(key)`. Neither list is what the bridge reads. The reads
+    were in `config._plugin()`, which spelled each key again as a string
+    literal, so a key renamed in the manifest and in PLUGIN_KEYS together
+    passed both tests while the bridge went on reading the old name, and every
+    value the user typed at install arrived nowhere.
+
+    So this does what Claude Code does and then asks the bridge: one distinct
+    answer per option the manifest declares, substituted into the manifest's
+    own `mcpServers.swarmcloud.env` wherever `${user_config.KEY}` appears
+    (plugins-reference, "Reference a saved value"), handed to
+    `config.resolve` as the server's whole environment -- and each answer
+    must come out in the field the bridge names that key for.
+
+    THE MUTATION THIS CATCHES: make `_plugin` read the client id from any name
+    the manifest does not send, or from the secret's key. The tests above stay
+    green; this goes red.
+    """
+    config = _config()
+    options = _user_config()
+    assert set(options) == {config.PLUGIN_URL, config.PLUGIN_CLIENT_ID, config.PLUGIN_CLIENT_SECRET}, (
+        "the bridge names a role for every option the manifest prompts for, and no other"
+    )
+    # URL-shaped for every option: a valid deployment URL, and a string that
+    # is still a well-formed (if unusual) client id and secret.
+    answers = {key: f"https://{key.replace('_', '-')}.example.test" for key in options}
+    environ = {"SWARM_CONFIG_DIR": str(tmp_path)}
+    for name, value in _server_env().items():
+        for key, answer in answers.items():
+            value = value.replace(f"${{user_config.{key}}}", answer)
+        environ[name] = value
+
+    resolved = config.resolve(environ)
+    assert resolved is not None, "the deployment URL typed at install never reached the bridge"
+    assert resolved.url == answers[config.PLUGIN_URL]
+    assert resolved.client_id == answers[config.PLUGIN_CLIENT_ID]
+    assert resolved.client_secret == answers[config.PLUGIN_CLIENT_SECRET]
+    assert "plugin" in resolved.source, resolved.source
+
+
 def test_the_deployment_url_is_required_and_the_secret_is_sensitive():
     options = _user_config()
     assert options["deployment_url"].get("required") is True

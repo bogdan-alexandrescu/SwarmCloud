@@ -30,6 +30,7 @@ gives every test its own), a fake credential store, no network.
 
 from __future__ import annotations
 
+import base64
 import importlib
 import io
 import json
@@ -37,6 +38,7 @@ import os
 import stat
 import sys
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -552,6 +554,102 @@ def test_a_context_on_a_run_app_address_is_cloud_run(store):
     takes an IAP credential."""
     _config().add_context("solo", "https://swarm-api-xyz-uc.a.run.app")
     assert _config().resolve().front_door is False
+
+
+def _jwt(claims: dict) -> str:
+    """An unsigned JWT: three base64url parts, the middle one these claims."""
+
+    def _part(data: dict) -> str:
+        return base64.urlsafe_b64encode(json.dumps(data).encode()).rstrip(b"=").decode()
+
+    return f"{_part({'alg': 'RS256'})}.{_part(claims)}.c2lnbmF0dXJl"
+
+
+class _Recorded(io.BytesIO):
+    status = 200
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def _recording_opener(sent: list, body: dict):
+    def _opener(request, timeout=None):  # noqa: ARG001
+        sent.append((request.full_url, request.get_header("Authorization")))
+        return _Recorded(json.dumps(body).encode())
+
+    return _opener
+
+
+def test_a_solo_context_on_user_credentials_reaches_cloud_run_as_the_developer(monkeypatch, store):
+    """REVIEW OF PR #61, 2026-09-25: a solo deployment could not be used at all.
+
+    The plugin makes `deployment_url` required and tells a solo user to enter
+    their *.run.app address and leave the client id empty. That resolves to a
+    Deployment, so `connect()` skips the gcloud proxy -- and on ordinary user
+    credentials (the PROXY tier) `credential()` then asked
+    `auth.id_token_for(tier=PROXY)`, which ALWAYS raises "user credentials
+    cannot mint a token for a specific audience; this tier reaches the API
+    through a local proxy instead" -- about a proxy nothing had started. Every
+    tool and every `sc` failed, and nothing the user could configure fixed it.
+    `test_a_context_on_a_run_app_address_is_cloud_run` above passed throughout:
+    it asserted `front_door is False` and never sent a request.
+
+    Cloud Run documents the developer's path directly: "curl -H
+    "Authorization: Bearer $(gcloud auth print-identity-token)" SERVICE_URL",
+    for an account holding run.routes.invoke
+    (docs.cloud.google.com/run/docs/authenticating/developers). So this sends
+    ONE request down that path and checks what arrives: gcloud's own identity
+    token, minted once, with no audience flag (a user account cannot set one)
+    and no impersonation, at the run.app address -- and no proxy started.
+    """
+    _config().add_context("solo", "https://swarm-api-xyz-uc.a.run.app")
+    monkeypatch.setattr(
+        auth, "Proxy", lambda *a, **k: (_ for _ in ()).throw(AssertionError("a gcloud proxy was started"))
+    )
+    token = _jwt({"email": "dev@example.test", "exp": int(time.time()) + 3600})
+    minted: list[list[str]] = []
+    monkeypatch.setattr(client, "_run", lambda argv, **kw: minted.append(list(argv)) or token)
+    sent: list = []
+    monkeypatch.setattr(client, "_open", _recording_opener(sent, {"tenant_id": "solo-tenant"}))
+
+    built = SwarmClient()
+    assert built.tier is auth.Tier.PROXY, "the fixture leaves this machine on user credentials"
+    assert built.front_door is False
+    assert built.request("GET", "/v1/tenants/me") == {"tenant_id": "solo-tenant"}
+    built.request("GET", "/v1/stats")
+
+    assert [url for url, _ in sent] == [
+        "https://swarm-api-xyz-uc.a.run.app/v1/tenants/me",
+        "https://swarm-api-xyz-uc.a.run.app/v1/stats",
+    ]
+    assert [auth_header for _, auth_header in sent] == [f"Bearer {token}"] * 2
+    assert minted == [["gcloud", "auth", "print-identity-token"]], (
+        "one mint for two requests, with no --audiences (gcloud refuses one for a "
+        f"user account) and no impersonation: {minted}"
+    )
+
+
+def test_gclouds_identity_token_is_reused_only_until_shortly_before_it_expires(monkeypatch, store):
+    """gcloud hands back the identity token it already holds, which may have
+    minutes left. Reusing it for the client's usual 45 minutes would turn a
+    long `swarm tail` into a 401 at the moment it expires, so its own `exp`
+    decides."""
+    _config().add_context("solo", "https://swarm-api-xyz-uc.a.run.app")
+    now = int(time.time())
+    minted: list[list[str]] = []
+    monkeypatch.setattr(
+        client, "_run", lambda argv, **kw: minted.append(list(argv)) or _jwt({"exp": now + 120})
+    )
+    sent: list = []
+    monkeypatch.setattr(client, "_open", _recording_opener(sent, {}))
+
+    built = SwarmClient()
+    built.request("GET", "/v1/stats")
+    built.request("GET", "/v1/stats")
+    assert len(minted) == 2, "a token two minutes from expiry must not be reused"
 
 
 def test_a_context_on_any_other_host_is_a_load_balancer(store):
