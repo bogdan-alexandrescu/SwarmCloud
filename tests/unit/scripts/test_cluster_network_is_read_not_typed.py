@@ -575,8 +575,9 @@ def test_apply_refuses_when_the_cluster_cannot_be_described(tmp_path):
 # project id contains the other team's cluster name, `agents-staging`. Only the
 # renamed `swarm-dev` context from scripts/configure-kubectl.sh got through, and
 # scripts/register-tenant.sh, whose own guard (kube_context_allowed) accepts the
-# gcloud name, handed that name to apply.sh and died with "the tenant namespace
-# is not isolated".
+# gcloud name, hands that name to apply.sh -- so under it, registration would
+# die with "the tenant namespace is not isolated" (read from the two scripts;
+# not a run anyone recorded).
 
 
 def _via(label: str, via_flag: bool) -> list[str]:
@@ -606,12 +607,13 @@ NOT_OURS = [
     # Their production. Not on the shared deny-list (it is not in this
     # project); refused because it is not the swarm's cluster.
     (OTHER_TEAM_PROD, OTHER_TEAM_PROD, "agents-prod", False, []),
-    # A cluster whose name merely CONTAINS ours. The old check was a substring
-    # match and let it through, while the network apply.sh reads is
-    # swarm-autopilot's -- a policy rendered for one cluster applied to another.
-    (
-        CLUSTER_REF + "-old", CLUSTER_REF + "-old", "swarm-autopilot-old", False, [],
-    ),
+    # A cluster whose name merely CONTAINS ours, behind our label. The old check
+    # was a substring match and let it through, while the network apply.sh
+    # reads is swarm-autopilot's -- a policy rendered for one cluster applied to
+    # another. (Under gcloud's own label the old check refused it too, but only
+    # because that label contains `agents-staging` -- the defect above -- so the
+    # label here is swarm-dev, where the substring match was the only guard.)
+    (CONTEXT, CLUSTER_REF + "-old", "swarm-autopilot-old", False, []),
     # --cluster naming the other team's cluster outright.
     (CONTEXT, CLUSTER_REF, "agents-staging", True, ["--cluster", "agents-staging"]),
 ]
