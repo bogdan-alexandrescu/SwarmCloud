@@ -378,13 +378,25 @@ export function Screen<T>({
 
       {/* THE SHARED EMPTY STATE (CH-10), where this was a hand-built `.state`
           box: no mark, so a real zero told itself from a failed read by
-          colour alone, and a `Checked just now.` that repeated the sub-line's
-          age directly above it -- at 16px mono, because `.state p` outranked
-          `.checked-at`. The age stays where every other state of this
-          component puts it, in the sub-line, and the panel is §6.9's fixed
-          shape: mark, heading, one sentence, a link out. */}
+          colour alone, and a `Checked just now.` at 16px mono, because
+          `.state p` outranked `.checked-at`. The panel is §6.9's fixed shape
+          now: mark, heading, one sentence, a link out.
+
+          AND THE `Checked …` LINE TICKS (CH-1/CH-10, settled on #87,
+          2026-09-25). #145 deleted it as a repeat of the sub-line's age; the
+          box had asked for it to TICK, because it never moved -- a panel that
+          said `Checked just now.` at nine in the morning said it at noon. It
+          is back as the primitive's foot, at the micro step, and it reads the
+          sub-line's instant from the sub-line's clock (`now`, `useNow` at
+          `AGE_TICK_MS`), so the two can never disagree. */}
       {state.status === 'empty' && empty && (
-        <Absent kind="zero" heading={empty.heading} say={empty.say ?? EMPTY_SAY} link={empty.link}>
+        <Absent
+          kind="zero"
+          heading={empty.heading}
+          say={empty.say ?? EMPTY_SAY}
+          link={empty.link}
+          foot={`Checked ${timeAgo(state.serverAt ?? state.fetchedAt, now)}.`}
+        >
           {empty.body}
         </Absent>
       )}

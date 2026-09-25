@@ -1395,23 +1395,25 @@ body {
    The first two templates size `[age]` to its longest value, 19ch. This one
    cannot: in the 1101-1200 band the list is ~350px, and 19ch here is ~70px out
    of `[name]` -- which is exactly the squeeze the stage exists to prevent, the
-   one that cut task ids mid-character. So the track is sized to the longest
-   DURATION, "23h 59m" (7 characters, plus one of slack), and the cell wraps:
-   `waiting` sits above "13m 18s" instead of "waiting 1…" sitting in one
-   line. The row grows a line only on the rows that are waiting.
-   NOT YET TRUE OF ONE WORD. `waiting` (7) and `leased` (6) fit 8ch;
-   `dispatched` is 10 and overflows it by two -- printed alone now, with no
-   duration after it, but still two over. That word arrived with AG-12
-   after this track was sized for `queued`, and the width to hold it would
-   come out of `[name]` here and in the 390px template below, which were
-   each measured down to the pixel. Which to give up is left open, not
-   decided here. */
+   one that cut task ids mid-character. So the track is sized to what one
+   LINE of the cell has to hold, and the cell wraps: `waiting` sits above
+   "13m 18s" instead of "waiting 1…" sitting in one line. The row grows a
+   line only on the rows that are waiting.
+   10ch, THE LONGEST WORD, NOT 8ch, THE LONGEST DURATION (AG-13, 2026-09-25).
+   A word does not wrap, and `elapsed()` prints LEASED, DISPATCHED and every
+   task between attempts as the state word alone: `dispatched` is 10
+   characters and overflowed 8ch by two, here and in the 390px template
+   below. AG-11's rule -- a track is sized to its longest value -- settles
+   which to give up: the two characters come out of `[name]`, about 15px of
+   a column whose profile ellipses first and whose id keeps its 8ch floor on a
+   phone. `shell.test.tsx` "AG-13" derives the floor from every word
+   `elapsed()` prints. */
 @media (max-width: 1200px) {
   .app.has-inspector .row {
     grid-template-columns:
       [state] 100px
       [name] minmax(0, 1fr)
-      [age] minmax(0, 8ch);
+      [age] minmax(0, 10ch);
   }
   .app.has-inspector .row .wf { display: none; }
   .app.has-inspector .row .when { white-space: normal; }
@@ -1637,7 +1639,10 @@ body {
   color: var(--text-dim); white-space: nowrap;
   overflow: hidden; text-overflow: ellipsis;
 }
-.wf-state.ok { color: var(--ok-ink); }
+/* `.wf-state.ok` IS GONE (CH-17's ruling, settled on #87, 2026-09-25): a
+   healthy state is a fact, not a verdict, so a succeeded row's word takes the
+   `--text-dim` above, like the chip's and the dot's, and the dot beside it
+   still says succeeded. It painted `--ok-ink`, the last green on the row. */
 .wf-state.bad { color: var(--bad-ink); }
 .wf-state.live { color: var(--info-ink); }
 .wf-state.wait { color: var(--warn-ink); }
@@ -1669,6 +1674,18 @@ body {
        eye's whole severity budget on the workflows that are fine. (It was
        `--info` by exemption until the owner's 2026-09-24 decision in §6.4.) */
 .wf-meter { flex: none; width: 54px; }
+/* A FINISHED ROW'S OUTCOME COMPOSITION (WF-1, settled on #83, 2026-09-25).
+   A terminal row draws one `.wf-seg` per outcome in this same track, each its
+   share of the steps, instead of a progress fill (`Progress` in
+   Workflows.tsx). Failed, dead-lettered and cancelled are TS-4's forms, by
+   selector on TS-4's own rules in the Activity block, so the row and the
+   Timeline's stack cannot drift apart. SUCCEEDED IS THE METER'S GREY, not
+   TS-4's `--ok`: the chart kept its hues (CH-17 does not re-rule chart
+   fills), but this is the row's proportion, which the owner's 2026-09-24
+   §6.4 decision and CH-17 keep free of healthy hue -- a finished run is a
+   fact, not a verdict. Solid, full height, so it stays a different shape from
+   the flat bars in greyscale. */
+.wf-meter > .wf-seg.succeeded { background: var(--text-dim); }
 .wf-progress-text {
   font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim);
   /* THE TEXT DOES NOT GIVE WAY; THE ROW DOES. The grid column was never the
@@ -2211,7 +2228,11 @@ button.node {
 }
 button.node:hover, button.node:focus-visible { border-color: var(--info); }
 button.node:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
-.node.ok   { border-left-color: var(--ok); }
+/* `.node.ok` IS GONE (CH-17's ruling, settled on #87, 2026-09-25). A
+   succeeded step keeps the node's own 3px `--text-faint` rule above: the
+   rule carries a hue only for a failure or live work, as the Timeline's spans
+   do since WF-11, and the dot on the node's state line still says succeeded.
+   It painted `--ok`, the graph's last healthy green. */
 .node.bad  { border-left-color: var(--bad); }
 .node.live { border-left-color: var(--info); }
 .node-id { font: 600 var(--t-body)/var(--lh-body) var(--mono); }
@@ -2974,17 +2995,17 @@ table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--tex
      is one line now, the same shape as at 1440px with six columns removed.
      Columns are DROPPED, never relabelled into "Label: value": a stacked
      record is a different and worse thing than a row. */
-  /* `[age]` IS 8ch, NOT `auto` (AG-13). An `auto` track is sized to its own
+  /* `[age]` IS FIXED, NOT `auto` (AG-13). An `auto` track is sized to its own
      row's content BEFORE the `1fr` name gets anything, so a Waiting row
      handed "queued 13m 18s" ~108px and left the name 106 -- "brow… 0961e…",
      profile and id both cut. And because each row is its own grid, the name
-     column moved from row to row. 8ch holds the longest duration ("23h 59m",
-     7 characters, tabular) and the state word wraps above it, so the age
-     costs a line on a waiting row instead of costing the name its width --
-     except `dispatched`, 10 characters, which overflows 8ch by two (see the
-     1101-1200 band above for why that is left open). */
+     column moved from row to row. The state word wraps above the duration,
+     so the age costs a line on a waiting row instead of costing the name its
+     width. 10ch, NOT 8ch (2026-09-25): 8 held the longest duration ("23h 59m",
+     7 characters, tabular) but not the longest word, `dispatched`, 10, which
+     cannot wrap and overflowed by two -- see the 1101-1200 band above. */
   .row {
-    grid-template-columns: [state] 112px [name] minmax(0, 1fr) [age] minmax(0, 8ch);
+    grid-template-columns: [state] 112px [name] minmax(0, 1fr) [age] minmax(0, 10ch);
     row-gap: var(--ctl-s1);
     column-gap: var(--ctl-s2);
     /* 12px OF SIDE PADDING BOUGHT BACK FOR THE NAME, MEASURED RATHER THAN
@@ -3937,13 +3958,21 @@ button.copy:hover { color: var(--text); border-color: var(--text-faint); }
    colours are unchanged -- CH-17's hue ruling does not re-rule chart fills. */
 .stackcol > i.succeeded,
 .chart-legend .k.succeeded { background: var(--ok); }
+/* The workflow row's outcome composition reuses these two forms by selector
+   rather than restating them (WF-1, settled on #83, 2026-09-25): a finished
+   row's failed and dead-lettered segments are this failed rule, its cancelled
+   segment the flat bars below. Its succeeded segment is not `--ok` -- see
+   `.wf-seg.succeeded` in the Workflows block. */
 .stackcol > i.failed,
-.chart-legend .k.failed {
+.chart-legend .k.failed,
+.wf-meter > .wf-seg.failed,
+.wf-meter > .wf-seg.dead-lettered {
   background: var(--bad);
   box-shadow: inset 2px 0 0 var(--surface);
 }
 .stackcol > i.cancelled,
-.chart-legend .k.cancelled {
+.chart-legend .k.cancelled,
+.wf-meter > .wf-seg.cancelled {
   background: repeating-linear-gradient(to bottom, var(--text-faint) 0 3px, transparent 3px 5px);
 }
 /* Hatched, so "still open" never reads as an outcome.
@@ -5839,12 +5868,21 @@ a.ctl-metric:focus-visible .ctl-metric-label,
   border-inline-start-color: transparent;
   padding-inline-start: var(--ctl-s3);
   padding-block: var(--ctl-s2);
-  /* ONE LARGE BREAK, as the owner's AH-18 decision says ("scroll-margin-top
-     stays at --ctl-s5"). AH-16 had tripled it so a topic that opens its group
-     landed with the group heading still in view; AH-18, decided after it,
-     keeps the single break, and the `.is-current` fill and ink rule are what
-     mark where a deep link landed. */
-  scroll-margin-top: var(--ctl-s5);
+  /* A DEEP LINK LANDS UNDER ITS GROUP HEADING (AH-16, settled against AH-18
+     on #86, 2026-09-25). AH-18 set this back to one large break, `--ctl-s5`,
+     28px -- and the group heading above a topic that opens its group is the
+     `.section > h2` line box, `--t-lead` x `--lh-lead` = 24.8px, plus its 10px
+     margin: 34.8px, so the heading landed clipped off the top edge. The
+     settlement keeps AH-18's spacing between topics and sets this margin to
+     clear the sticky head plus the group heading: the heading's line box and
+     its margin, with the large break above it as the breathing room. Nothing
+     sticks over the Help column at any width today (the header and both page
+     heads scroll; the rail sticks only in its own column at 900px and up and
+     is static below), so the sticky head adds nothing; `shell.test.tsx`
+     "AH-16" asserts that, and resolves this value against the heading, so a
+     change to either side fails there. The `10px` is `.section > h2`'s
+     margin, which has no token. */
+  scroll-margin-top: calc(var(--ctl-s5) + var(--t-lead) * var(--lh-lead) + 10px);
 }
 .help-topic + .help-topic { margin-top: var(--ctl-s5); }
 .help-topic.is-current {

@@ -770,6 +770,14 @@ greyscale.
 > the sheet in both themes and holds all of it, the post read from the sheet
 > because jsdom computes no pseudo-element.
 
+> **A finished workflow row draws its outcome composition, not a progress
+> meter (WF-1, settled on #83, 2026-09-25).** `9/30 done` as a 30% bar said the
+> work was still going. In the same 8px track, a terminal row draws one `.wf-seg`
+> per outcome at its share of the steps: succeeded solid in the meter's
+> `--text-dim`, failed and dead-lettered TS-4's solid `--bad` with the 2px rule,
+> cancelled TS-4's flat "ended" bars, by selector on TS-4's own rules (§15.3). A
+> row that has not ended keeps the meter (`workflow.board.test.tsx`).
+
 > **Answered by the owner, 2026-09-24: `.wf-meter` goes grey.** The question
 > held open here was this: `.wf-meter`'s fill carries
 > `ctl-util-fill wf-meter-fill`, so the monochrome default reached straight
@@ -1076,6 +1084,10 @@ an owner and is not this ruling's: `.pool .ctl-track > i`, `.pool.prov.ok`,
 does not reach chart segment fills: TS-4's outcome stack keeps its solid hues
 and gained a shape for each outcome (§15.3) — failed is still solid `--bad`,
 with redesign-v2 §5.5 Tier 1's 2px left rule.
+*Workflows' two, settled on #87 (2026-09-25):* the graph's `.node.ok` and the
+row's `.wf-state.ok` are neutral too — a succeeded node keeps the node's own
+`--text-faint` rule and a succeeded row's word is `--text-dim` — because WF-11,
+named above as their owner, ruled only the Timeline.
 
 **THE ENDED MARK (CH-22, 2026-09-25).** CANCELLED is `stateTone`'s fifth tone,
 `ended`: terminal, not a verdict, and drawn as the grey flat bar — the **one**
@@ -1256,6 +1268,12 @@ says `real zero` again, or a hand-drawn `.ctl-mark` span in the body, is a
 second silhouette with no sentence behind it. Five screens shipped one each
 until #170; `emptystate.onemark.test.tsx` holds all five to one.
 
+**`Screen`'s empty state ends in its `Checked …` line, and it ticks**
+*(CH-1/CH-10, settled on #87, 2026-09-25)*: the primitive's foot at the micro
+step, on the shared clock, reading the sub-line's instant so the two never
+disagree; and a screen's way out is `empty.link`, never an anchor typed into
+the sentence (CP-21).
+
 ### 6.10 Absence — `.ctl-mark`, `.ctl-hold`, `.ctl-ghost`, `.ctl-pending`
 
 See §8, which is what the whole exercise turns on.
@@ -1300,7 +1318,9 @@ was true of about one topic in eight.
 
 A screen whose one `?` explains the whole screen puts it after the title, in
 `.head` and outside the `<h1>` (`PageHead`'s `help`): the Workflows board's
-absent figures are the one case.
+absent figures, and Profile headroom's every-pool-at-once, whose words are the
+pool column's name on every card (`Pools it must clear (all at once)`, CP-5,
+as Pools names its `Could start (min across pools)`), are the two cases.
 
 `.ctl-page-head` is the wrapper for the heads `PageHead` does not describe —
 Overview's facts row and the API reads page. There it stays title left, actions
@@ -1601,6 +1621,10 @@ Six places, in order of commitment. Nothing outside this list.
    headline) or moved the glyph to the heading the line sits under
    (`Backends ?` over Runtimes' unread row; `Workflows ?` for the board's
    absent figures). `HelpCard.tsx`'s header states the same rule.
+   **The topic is about what the glyph or link sits beside, and a topic linked
+   from two screens is written for both** (AG-19, AH-13): the Timeline
+   window's `Why →` opens `event-paging`, not `partial-read`, and
+   `event-paging` names the Timeline screen as well as the attempt timeline.
 6. **`docs/`.** The argument, the constraint, the thing that is true for six
    months. A docs link is a legitimate element of an empty state and of a help
    card; it is not an element of a data view.
@@ -2714,7 +2738,11 @@ WF-17)*:
 `.section`, each `.help-topic` inside it is separated by `--ctl-s5` and draws
 nothing, and a deep-linked topic takes the §1.3 selection treatment — a
 `--surface-2` fill and a 2px `--text` inline-start rule declared transparent on
-every topic, so marking one moves nothing.
+every topic, so marking one moves nothing. A deep link lands with the group
+heading in view (AH-16, settled against AH-18 on #86, 2026-09-25): the topic's
+scroll margin clears any sticky head (none today) plus the `.section > h2` line
+box and its margin, with `--ctl-s5` above it, and `shell.test.tsx` "AH-16"
+resolves both sides.
 
 **What this pass deleted under that rule** — all primitives or frame, no screens:
 
@@ -2891,7 +2919,7 @@ a stated width, and jsdom used only for `Element.matches`.
 | CH-16 | `flex: none` on the dock's line and grip | only the body may shrink |
 | OV-3 | `display: grid` on Overview's ≥900 util override; 19ch provenance | a grid template on a flex box is inert; 128px was 19 characters at an 11px step that no longer exists |
 | OV-13 | every metric label reserves its mark | the strip slid 8–9px when the Running tile's mark appeared |
-| AG-11, AG-13 | `[age]` in `ch` | at least `elapsed()`'s longest form over every state, started or not; at 1101–1200px and 390px the duration holds the track and "waiting" wraps above it, because the width would come out of the name |
+| AG-11, AG-13 | `[age]` in `ch` | at least `elapsed()`'s longest form over every state, started or not; at 1101–1200px and 390px, where the cell wraps, at least its longest word (`dispatched`, 10ch, since 2026-09-25: a word cannot wrap) and "waiting" wraps above its duration |
 | AG-15 | `.try.spent` / `.is-over` | an attempt count over its ceiling is a fault; two class names because the markup halves were written in parallel |
 | AG-16 | `.row.is-head` | the head is a `.row`, so it inherits the grid and the breakpoints; only its register is new |
 | AG-18 | `.lv-word` in ink | the mark carries the tone (§6.6) |
