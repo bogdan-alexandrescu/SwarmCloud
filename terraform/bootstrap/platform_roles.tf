@@ -339,7 +339,9 @@ resource "google_project_iam_custom_role" "platform" {
 
   lifecycle {
     precondition {
-      condition     = length(local.infra_states_holding_platform_roles) == 0
+      # MUTATION M1 (PR #150 mutation proof; reverted by a later commit): the
+      # guard admits every state.
+      condition     = true
       error_message = "terraform/infra state ${join(", ", local.infra_states_holding_platform_roles)} has not released the platform's custom roles: its custom_roles_owner output does not read terraform/bootstrap. That output is written by the release that applies terraform/infra/custom_roles_moved_to_bootstrap.tf, whose `removed` blocks make infra forget these roles. Adopting them first would leave every role managed from two states, and infra's next plan would 403 refreshing them once roleAdmin is gone. Wait for that release's `terraform apply (dev)` to succeed, then plan again (docs/runbooks/custom-roles-to-bootstrap.md, step 2)."
     }
   }
