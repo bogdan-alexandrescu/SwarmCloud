@@ -23,10 +23,58 @@ is at. Seamless is not the same as hidden.
 
 ## Install
 
+The plugin is a **client for your deployment**, not for this repository's.
+Ask your platform operator for three values first: the deployment URL, and —
+for a deployment behind IAP — its Desktop OAuth client ID and secret. Then, in
+a Claude Code session:
+
+```text
+/plugin marketplace add bogdan-alexandrescu/SwarmCloud
+/plugin install sc@swarmcloud
+```
+
+You are prompted for the deployment URL (required), the OAuth client ID and
+the OAuth client secret. The secret is `sensitive` in the manifest, so Claude
+Code keeps it in your system's secure credential store, never in
+`settings.json`. Then:
+
+```text
+/reload-plugins
+```
+
+and sign in, from a terminal:
+
+```bash
+uv run sc login    # a browser window opens; pick your work account
+uv run sc whoami   # context, URL, you, your tenant
+```
+
+From then on every tool acts **as you**. A tool called before you sign in
+answers `sign-in required for <context>: run sc login (a browser window
+opens)` rather than failing some other way. Change a value later with
+`/plugin configure sc@swarmcloud`.
+
+**More than one deployment** is a context each, `kubectl`-style —
+`uv run sc context add`, `uv run sc context use`, `uv run sc context list`,
+`uv run sc context remove` — and CI overrides all of it with `SWARM_URL` and
+`SWARM_IMPERSONATE_SA`. [docs/plugin-setup.md](../docs/plugin-setup.md) has
+the whole of it: what each command stores where, the override order, and
+Saga's `dev` values as a worked example. The operator's one-time step — one
+Desktop OAuth client per deployment, allowlisted on IAP — is
+[docs/runbooks/iap-desktop-client.md](../docs/runbooks/iap-desktop-client.md).
+
+**Nothing in the plugin names a deployment.** Until 2026-09-25 the bridge read
+`terraform/environments/<env>/<env>.tfvars` out of whatever checkout it ran
+from, so every install pointed at Saga's cluster. It now reads Terraform only
+in developer mode (`SWARM_MCP_CONFIG_FROM=repo`), for working inside this
+repository, and `tests/unit/mcp/test_contexts.py` fails if it opens a tfvars
+file otherwise.
+
+### Where the plugin comes from
+
 The plugin lives in this repository at `plugin/`, and the repository root is
 the marketplace: `.claude-plugin/marketplace.json` lists `sc` with `plugin/` as
-its source. Point Claude Code at the repository root as a marketplace, then
-install `sc` from it.
+its source.
 
 That file is small and easy to overlook, so it is worth saying what it is for:
 **without it none of the rest of this directory is reachable.** A plugin is
@@ -74,41 +122,46 @@ uv run swarm profiles
 
 ## What it needs
 
-`swarm-mcp` from this repository, and a working auth tier —
-`uv run swarm doctor` says which one this machine has, **which door it will
-use**, and what that door takes.
+`swarm-mcp` from this repository, a configured deployment (see Install), and a
+working auth tier — `uv run swarm doctor` says which deployment it resolved
+and from where, which tier this machine has, **which door it will use**, and
+what that door takes.
 
 ### Where the API actually is
 
-On a **team** deployment the API is behind IAP at a load balancer, and the
-`*.run.app` address is internal-only: its ingress is
+Wherever **you** configured it: `--context`, `SWARM_URL`, the plugin's
+deployment URL or the current context, in that order ([docs/plugin-setup.md](../docs/plugin-setup.md)
+has the full order). On a **team** deployment that is the load balancer: the
+`*.run.app` address is internal-only — its ingress is
 `internal-and-cloud-load-balancing`, so Google's frontend refuses an outside
-caller and renders the refusal as HTTP 404 — the one status a reader takes for
-"missing route on a broken deployment". Until 2026-09-24 the bridge asked Cloud
-Run for the address and therefore called a healthy control plane UNREACHABLE.
-It now reads `frontend_hostname` out of `terraform/environments/<env>/<env>.tfvars`
-(Track C's input, read rather than copied), the same three-source order
-`scripts/lib/common.sh` uses, and `API_HOST` overrides it.
+caller and renders the refusal as HTTP 404, the one status a reader takes for
+"missing route on a broken deployment". A context on any host other than
+`*.run.app`, or with an OAuth client ID, is treated as that IAP front door.
 
-The two doors take **different credentials**, which is the other half:
+In **developer mode** (`SWARM_MCP_CONFIG_FROM=repo`) the bridge instead reads
+`frontend_hostname` out of `terraform/environments/<env>/<env>.tfvars`, the same
+three-source order `scripts/lib/common.sh` uses, with `API_HOST` overriding it.
+That is for working inside this repository and is never the default.
 
-| Door | Credential |
-|---|---|
-| Cloud Run directly | a Google **ID** token |
-| the IAP load balancer | an OAuth **ACCESS** token |
+The doors take **different credentials**, which is the other half:
 
-Sending the ID token to IAP produces `Invalid IAP credentials: Invalid JWT
-audience`, which reads like an IAM problem and is not. Measured on 2026-09-24
-against the live front door: a user access token is refused **401, IAP error
-code 900**, and an impersonated service account's access token is refused
-**403 naming that service account** — which is IAP saying "authenticated, not
-authorised", one `roles/iap.httpsResourceAccessor` grant from working. That
-grant is `frontend_iap_members` in `terraform/bootstrap/terraform.tfvars` —
-moved out of `terraform/infra` on 2026-09-24, applied by the owner rather than
-by CI — and `swarm-verify` was added to it the same day. So on a
-team deployment set `SWARM_IMPERSONATE_SA`; `SWARM_IAP_CLIENT_ID` applies only
-where the deployment configured its own OAuth client, and this one deliberately
-does not (a client id means a client secret in Terraform state).
+| Door | Who you are | Credential |
+|---|---|---|
+| the IAP load balancer | a developer, signed in with `sc login` | an **ID** token for the deployment's Desktop OAuth client |
+| the IAP load balancer | CI, `SWARM_IMPERSONATE_SA` | the service account's OAuth **ACCESS** token |
+| Cloud Run directly | an in-VPC or solo caller | a Google **ID** token for the service URL |
+
+Measured on 2026-09-24 against the live front door: a gcloud **user** access
+token is refused **401, IAP error code 900**, because the deployment's IAP uses
+a Google-managed OAuth client, which admits only allowlisted programmatic
+clients — that is why `sc login` exists. An impersonated service account's
+access token is refused **403 naming that service account** — IAP saying
+"authenticated, not authorised", one `roles/iap.httpsResourceAccessor` grant
+from working. That grant is `frontend_iap_members` in
+`terraform/bootstrap/terraform.tfvars`, applied by the owner rather than by CI.
+`SWARM_IAP_CLIENT_ID` applies only where a deployment configured its own IAP
+OAuth client, which this one deliberately does not (a client id there means a
+client secret in Terraform state).
 
 **`swarm` and `sc` are not on your PATH**, and nothing here should ever tell you
 they are. They are console scripts of `swarm-mcp`, installed into the uv-managed

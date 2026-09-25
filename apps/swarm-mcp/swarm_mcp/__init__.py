@@ -12,6 +12,14 @@ Three things close that gap, and they are the three modules here:
     patches   the code an agent wrote, back into a working tree
     cli       dispatch / tail / apply / integrate, for a human or for Bash
 
+Which SwarmCloud, and who you are on it, are the user's to say -- the bridge
+is a client for ANY deployment, like `gh` or `kubectl`, not for this
+repository's:
+
+    config       contexts in a per-user config file, and the override order
+    credentials  the credential store (Keychain, Secret Service, 0600 file)
+    signin       `sc login`: a developer's own sign-in through IAP
+
 `server` exposes the same operations over MCP so they sit beside a local
 subagent in a Claude Code session. It is a WRAPPER over `cli`'s primitives and
 holds no logic of its own -- two implementations of "what does integrate mean"

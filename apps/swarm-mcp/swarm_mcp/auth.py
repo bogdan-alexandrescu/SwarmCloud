@@ -27,9 +27,20 @@ honest shapes rather than one compromised one:
            run.invoker so the caller's token reaches the app unmodified, and
            the app resolves a tenant per user. Needs an organisation.
 
-The four tiers below are how a client authenticates into one of those. They
-are DETECTED, not configured, because the most common failure for a new user
-is not picking the wrong tier -- it is not knowing that tiers exist.
+The tiers below are how a client authenticates into one of those. They are
+DETECTED, not configured, because the most common failure for a new user is
+not picking the wrong tier -- it is not knowing that tiers exist.
+
+THE SIGNED-IN TIER (2026-09-25) is the one a developer is meant to be on. A
+TEAM deployment's IAP uses a Google-managed OAuth client, which no user
+credential can mint for (measured: a gcloud user token is 401, IAP error code
+900), so until then the only way through from a laptop was impersonating a
+service account -- every developer acting as the same robot. Google's
+documented answer is one Desktop OAuth client per deployment, allowlisted on
+the IAP resource as a programmatic client; each developer signs in with it once
+(`sc login`, signin.py) and presents the ID token it mints. The tier is chosen
+when the resolved deployment (config.py) has a client id; impersonation stays
+ahead of it, because SWARM_IMPERSONATE_SA is set on purpose and is what CI uses.
 """
 
 from __future__ import annotations
@@ -43,9 +54,13 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .client import SwarmError, _run
+from .follow import RUN_PREFIX
+
+if TYPE_CHECKING:  # pragma: no cover
+    from .config import Deployment
 
 _METADATA = "http://metadata.google.internal/computeMetadata/v1"
 
@@ -63,6 +78,11 @@ class Tier(str, Enum):
     IMPERSONATE = "service-account"
     #: An IAP-protected front door plus the client id to address it.
     IAP = "iap"
+    #: A developer signed in with the deployment's Desktop OAuth client
+    #: (`sc login`). The ID token's audience is that client id, and IAP admits
+    #: it because the client is allowlisted as a programmatic client. The
+    #: developer is THEMSELVES on the other side, not a service account.
+    SIGNED_IN = "signed-in"
     #: Ordinary user credentials. `gcloud run services proxy` mints the token,
     #: because `gcloud auth print-identity-token` CANNOT set an audience for a
     #: user -- the single fact that makes a laptop different from CI.
@@ -85,6 +105,9 @@ REACHES: dict[Tier, tuple[str, ...]] = {
     # team deployment's ingress refuses it before reading the token.
     Tier.IMPERSONATE: ("solo",),
     Tier.IAP: ("team",),
+    # Only a team deployment has IAP, and IAP is the only thing that takes an
+    # ID token minted for an allowlisted Desktop client.
+    Tier.SIGNED_IN: ("team",),
     Tier.PROXY: ("solo",),
 }
 
@@ -92,13 +115,22 @@ WHY_NOT: dict[tuple[Tier, str], str] = {
     (Tier.PROXY, "team"): (
         "a team deployment keeps Cloud Run open to `allUsers` and gates at the "
         "load balancer, so its ingress refuses the direct call the proxy makes -- "
-        "and the load balancer will not take a USER credential either: measured "
-        "2026-09-24 against the live front door, a gcloud user access token is "
-        "answered 401 with IAP error code 900. No OAuth client a user credential "
-        "can be minted from is one a Google-managed IAP client accepts, and "
-        "SWARM_IAP_CLIENT_ID helps only where the deployment configured its own. "
-        "Set SWARM_IMPERSONATE_SA to a service account that holds "
-        "roles/iap.httpsResourceAccessor instead."
+        "and the load balancer will not take a gcloud USER credential either: "
+        "measured 2026-09-24 against the live front door, a gcloud user access "
+        "token is answered 401 with IAP error code 900, because a Google-managed "
+        "IAP client admits only OAuth clients allowlisted as programmatic "
+        "clients. Sign in with the deployment's Desktop OAuth client instead: "
+        f"`{RUN_PREFIX}sc context add <name> --url <deployment> --client-id <id>`, "
+        f"then `{RUN_PREFIX}sc login` (the plugin asks for the client id at "
+        "install). CI sets "
+        "SWARM_IMPERSONATE_SA to a service account holding "
+        "roles/iap.httpsResourceAccessor."
+    ),
+    (Tier.SIGNED_IN, "solo"): (
+        "a solo deployment has no load balancer and no IAP, so an ID token minted "
+        "for a Desktop OAuth client has nothing that will accept it. Remove the "
+        f"client id from this context (`{RUN_PREFIX}sc context add <name> --url "
+        "<run.app address>` with no --client-id)."
     ),
     (Tier.IMPERSONATE, "team"): (
         "this tier reaches the front door and IAP ACCEPTS its credential -- "
@@ -149,7 +181,13 @@ def _metadata_available(timeout: float = 0.3) -> bool:
         return False
 
 
-def detect() -> Detection:
+def detect(deployment: "Deployment | None" = None) -> Detection:
+    """Which tier, given the environment and -- for sign-in -- the deployment.
+
+    The deployment is PASSED, never resolved here: resolving reads the user's
+    config file, and a tier check that quietly did file I/O would make every
+    caller's answer depend on a machine it did not ask about.
+    """
     considered: list[tuple[str, str]] = []
 
     if os.environ.get("SWARM_ID_TOKEN", "").strip():
@@ -178,6 +216,18 @@ def detect() -> Detection:
     if impersonate:
         return Detection(Tier.IMPERSONATE, f"impersonating {impersonate}", considered)
     considered.append(("SWARM_IMPERSONATE_SA", "not set"))
+
+    if deployment is not None and deployment.client_id:
+        return Detection(
+            Tier.SIGNED_IN,
+            f"context {deployment.context} has a Desktop OAuth client; you sign in as yourself",
+            considered,
+        )
+    considered.append((
+        "sign-in client",
+        "no deployment configured" if deployment is None
+        else f"context {deployment.context} has no OAuth client id",
+    ))
 
     return Detection(
         Tier.PROXY,
@@ -288,6 +338,11 @@ def id_token_for(audience: str, *, tier: Tier) -> str:
             "--include-email",
         ])
 
+    if tier is Tier.SIGNED_IN:
+        raise SwarmError(
+            "the signed-in tier's token comes from the stored sign-in (signin.py), "
+            "not from gcloud"
+        )
     raise SwarmError(
         "user credentials cannot mint a token for a specific audience; this "
         "tier reaches the API through a local proxy instead"

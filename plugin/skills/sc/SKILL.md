@@ -10,8 +10,17 @@ allowed-tools:
 
 # sc — SwarmCloud cluster state
 
-`sc` is read-only. It never writes, never refreshes a credential and never
-cancels anything, so it is always safe to run.
+`sc` is read-only towards the cluster. It never writes to it, never refreshes
+an account's credential and never cancels anything, so every view below is
+always safe to run.
+
+It reads **the developer's own deployment**, not one this plugin knows about:
+whatever they configured at install (`/plugin configure sc@swarmcloud`), or a
+context they added. `uv run sc whoami` prints which deployment, from where,
+and who they are on it. `sc login`, `sc logout` and `sc context` change the
+developer's own sign-in and which cluster every later call reaches — they are
+theirs to run, so **tell them the command; never run it yourself**. `sc login`
+opens a browser and waits for them.
 
 ## Which view
 
@@ -107,9 +116,15 @@ is down, and reporting either as the other sends someone to the wrong place.
 ## When sc cannot connect
 
 `sc` exits 1 and prints nothing to stdout, on purpose: a screen of dashes would
-look like a reading. Run `uv run swarm doctor` — it reports which of the four
-auth tiers this machine is on and what that tier can reach, which is almost
-always the real answer.
+look like a reading. Run `uv run swarm doctor` — it reports which deployment it
+resolved and from where, which auth tier this machine is on and what that tier
+can reach, which is almost always the real answer.
+
+**`sign-in required for <context>: run sc login`** is the commonest answer on a
+new machine and is not a fault: the deployment takes a signed-in developer and
+none is signed in. Tell the developer to run `uv run sc login` themselves (a
+browser window opens), then try again. Do not treat it as the cluster being
+unreachable, and do not look for another credential to use instead.
 
 ### "I cannot reach it" is not "it is down" — say the first one
 
@@ -127,7 +142,7 @@ Read the refusal, because the three of them mean three different things:
 
 | What comes back | What it means |
 |---|---|
-| **401, IAP error code 900** | IAP did not accept the token at all. A *user* credential cannot pass here: this deployment sets no `oauth2_client_id`, so IAP uses a Google-managed OAuth client and there is no audience a laptop can mint against. Set `SWARM_IMPERSONATE_SA` |
+| **401, IAP error code 900** | IAP did not accept the token at all. A gcloud *user* credential cannot pass: the deployment's IAP uses a Google-managed OAuth client, which admits only allowlisted programmatic clients. The developer signs in with `uv run sc login` (the deployment's Desktop OAuth client); CI sets `SWARM_IMPERSONATE_SA`. A 401 **after** `sc login` means the deployment has not allowlisted its own client — an operator's one-time step |
 | **403 that NAMES the caller** | IAP **authenticated** you and the principal is not on the list. One `roles/iap.httpsResourceAccessor` grant away — `frontend_iap_members` in `terraform/bootstrap/terraform.tfvars`, which the owner applies and CI does not |
 | **an HTML 404** | the wrong ADDRESS, not a missing route. Cloud Run's `*.run.app` hostname refuses everyone outside the VPC and renders the refusal as 404 |
 
