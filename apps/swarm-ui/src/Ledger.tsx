@@ -215,7 +215,7 @@ export function LedgerTable({ data }: { data: Outcomes }) {
                   <td className="is-num">{b.dead_lettered}</td>
                   <td className="is-num">
                     {b.rate === null ? (
-                      <span className="ol-phrase">{pct(0)}</span>
+                      <span className="ol-phrase">nothing decided</span>
                     ) : (
                       `${pct(b.rate.p)} · ${b.rate.k} of ${b.rate.n} · ${interval(b.rate)}`
                     )}

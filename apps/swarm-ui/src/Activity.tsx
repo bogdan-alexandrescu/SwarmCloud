@@ -404,7 +404,7 @@ function LedgerSection({
         {t.rate === null ? (
           // n = 0 is measured, but a rate over nothing is undefined: a
           // phrase, never 0 %.
-          <b className="ol-figure is-phrase">{pct(0)}</b>
+          <b className="ol-figure is-phrase">no finished work</b>
         ) : (
           <b
             className="ctl-figure ol-figure"
@@ -419,7 +419,7 @@ function LedgerSection({
             {t.rate.k} of {t.rate.n} decided
           </span>
         )}
-        {false && !t.complete && (
+        {!t.complete && (
           <span className="ol-partial">
             <Mark
               kind="partial"
