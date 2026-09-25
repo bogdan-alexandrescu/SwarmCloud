@@ -497,7 +497,7 @@ function Form({ sources }: { sources: FormSources }) {
               The step's own card says what is wrong with it; this says which
               steps, and takes a reader to one -- on a phone the cards are a
               long scroll above. Each is a button that focuses the step's name,
-              not an `<a href="#...">`: a hash is a ROUTE in this app, and
+              not an in-page anchor: a hash is a ROUTE in this app, and
               following one would leave the form. */}
           {blocked && (
             <p className="warn-text" role="status">
