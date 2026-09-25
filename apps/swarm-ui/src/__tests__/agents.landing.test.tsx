@@ -416,3 +416,80 @@ describe('the row clock does not run past the read (AG-1)', () => {
     expect(api.loadTasks, 'an idle list never re-read').toHaveBeenCalledTimes(2)
   })
 })
+
+describe('the tab and the Recent state are addresses (OV-10)', () => {
+  /**
+   * The Overview's failed-agents item could only say "agents · Recent tab",
+   * and the list opened on Live whenever anything ran. The tab and a Recent
+   * state filter are now part of the address: App passes them as `list`, and
+   * a tab named there overrides where the screen would have landed.
+   *
+   * The props are passed through a spread so this compiles against a screen
+   * that does not declare them yet -- App passes `taskId` the same way, for
+   * the same reason.
+   *
+   * MUTATION: ignore `list`, or filter Recent by anything but the state.
+   */
+  const MIXED = [
+    task('task_aaaaaaaa00000000000a', 'RUNNING'),
+    task('task_bbbbbbbb00000000000b', 'FAILED'),
+    task('task_cccccccc00000000000c', 'SUCCEEDED'),
+    task('task_dddddddd00000000000d', 'CANCELLED'),
+  ]
+
+  async function landAt(tasks: Task[], props: object): Promise<HTMLElement> {
+    api.loadTasks.mockResolvedValue({
+      status: 'ok',
+      data: { tasks, tenant_id: 'acme' },
+      fetchedAt: Date.now(),
+    } satisfies Result<TaskPage>)
+    const { container } = render(<AgentsScreen onOpen={() => {}} {...props} />)
+    await waitFor(() => expect(container.querySelector('.ctl-seg [role="tab"]')).not.toBeNull())
+    return container as HTMLElement
+  }
+
+  const states = (c: HTMLElement) =>
+    [...c.querySelectorAll('.rows .row.clickable .ctl-chip')].map((n) => (n.textContent ?? '').trim())
+
+  it('opens recent/failed on Recent with only the FAILED rows, though Live has one', async () => {
+    const c = await landAt(MIXED, { list: { tab: 'recent', state: 'failed' } as const })
+    expect(selectedTab()).toBe('Recent')
+    expect(states(c)).toEqual(['FAILED'])
+  })
+
+  it('offers all, failed, cancelled and succeeded on Recent, counted from the loaded rows', async () => {
+    const seen: unknown[] = []
+    const c = await landAt(MIXED, {
+      list: { tab: 'recent', state: null } as const,
+      onList: (l: unknown) => seen.push(l),
+    })
+    const seg = c.querySelector('[aria-label="Recent, by state"]')
+    expect(seg, 'Recent carries no state segment').not.toBeNull()
+    const buttons = [...seg!.querySelectorAll('button')]
+    expect(buttons.map((b) => (b.textContent ?? '').replace(/\d+/g, '').trim())).toEqual([
+      'all',
+      'failed',
+      'cancelled',
+      'succeeded',
+    ])
+    // DEAD_LETTERED is never written, so it is never offered.
+    expect((seg!.textContent ?? '').toLowerCase()).not.toContain('dead')
+    expect(buttons.map((b) => (b.textContent ?? '').replace(/\D+/g, ''))).toEqual(['3', '1', '1', '1'])
+    expect(states(c)).toHaveLength(3)
+
+    fireEvent.click(buttons[2]!)
+    await waitFor(() => expect(states(c)).toEqual(['CANCELLED']))
+    // The click is reported, and the screen never writes the hash itself.
+    expect(seen[seen.length - 1]).toEqual({ tab: 'recent', state: 'cancelled' })
+
+    fireEvent.click(screen.getByRole('tab', { name: /^Live/ }))
+    await waitFor(() => expect(selectedTab()).toBe('Live'))
+    expect(seen[seen.length - 1]).toEqual({ tab: 'live', state: null })
+    expect(c.querySelector('[aria-label="Recent, by state"]'), 'the state segment is shown off Recent').toBeNull()
+  })
+
+  it('lands as before when the address names no tab', async () => {
+    await landAt(MIXED, { list: null })
+    expect(selectedTab()).toBe('Live')
+  })
+})

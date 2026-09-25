@@ -318,6 +318,30 @@ KPI wall. No reference screen shows its largest size more than once.
 `apps/swarm-ui/src/__tests__/typescale.test.ts` states the six values and was
 re-pointed, not worked around.
 
+**The Overview is the one named exception, and its terms are exact** (OV-12,
+owner decision 2026-09-25). It has five figure-bearing regions — the lead's
+count, the strip's two facts (Running, Units held), the Spend card's figure and
+the Headroom group's headline — with **one figure-step number per fact, and
+never the same fact twice**. Until then the strip also drew `Account headroom`
+and `Token spend`, which are the Headroom group's and the Spend card's own
+figures, so seven figure-size numbers stood above the fold for five facts. The
+document no longer states a cap that screen breaks; what the exception does not
+allow is a second copy of any fact at the figure step.
+
+**The heading ladder** (OV-15, owner decision 2026-09-25). `--t-title` belongs
+to the page `<h1>` alone. In-page region and card headings sit at `--t-lead`
+and weight 600 — the Overview's attention lead title is an `<h2>` at that step,
+and stays distinct from the card titles by its position, its track and its
+unboxed region, which is how the paragraph below ranks hierarchy. **An in-page
+heading that ties with the h1 is a defect.** The in-page headings the sheet
+still draws at `--t-title` are named so the document and the code agree:
+`.section > h2` and `.section > .ctl-toolbar > h2` (§B4.1 of the sheet, pinned
+by `typescale.test.ts`: "a panel title is --t-title"), `.sbf-move-h`,
+`.state h3`, `.ctl-empty > h3`, `.art-head h3` and `.ckb-head h3`. They are
+TS-18's (epic #84), which moves them to `--t-lead`; OV-15 left those rules and
+their tests alone. A rendered document's own h1 (`.art-md .art-h[data-level="1"]`)
+follows the document's ladder, not the console's.
+
 `--lh-flush: 1` is not a seventh step; it is legal only inside a `font:`
 shorthand next to a size token, where a fixed box must not grow, and every use
 names the box it is protecting.
@@ -613,6 +637,13 @@ are *when this was read, from how many sources, and how many did not answer*. A
 card whose figures all came from one read says so once here, instead of once per
 figure.
 
+**A foot's clauses are separate `nowrap` elements in a `.ctl-foot-run`, and the
+separator is drawn by CSS, never typed** (OV-14, owner decision 2026-09-25). A
+typed " · " left a dot at the end of a wrapped line and let a clause break in
+half; the run draws each clause's dot in the gap to its left and clips the one
+that would start a line. The Overview's feet use it; other screens adopt it
+when they are next touched.
+
 ### 6.2 Metric tile — `.ctl-metric` *(amended by §11: the tile lost its box)*
 
 One fact, its unit, and what it does not include. Label (`--t-meta`, mono,
@@ -652,6 +683,25 @@ from and the next phase deletes most of them.** A tile's `sub` may be a
 qualifier, never a definition: `of 5 reads` is a qualifier; `LEASED,
 DISPATCHED, STARTING, RUNNING — the states that reserve capacity` is a
 definition and belongs in the `?`.
+
+**A strip is a wrapping run of facts, not a grid** (OV-6, owner decision
+2026-09-25; `styles.css` §B6.1): each fact is as wide as what it says, and a
+wrapped line holding a single fact is accepted. The same rule governs the
+inspector's strip.
+
+**A strip carries only facts no panel on the screen repeats, and a fact is drawn
+at the figure step once** (OV-12). The Overview's strip is Running and Units
+held; headroom and spend are drawn by the panels that hold their context.
+
+**A linked tile underlines its label** (OV-8): ink plus a resting underline,
+the accent on hover and focus — §1.3's rule, on `a.ctl-metric` so every linked
+fact gets it. **The label is a branch of the `.ctl-link` rule itself** (and of
+its hover rule, for hover and focus), not a rule restating its values, so
+whatever the link's underline token, thickness or offset becomes applies to the
+label unchanged; the metric block adds only the label's faint ink at rest. The
+figure is never underlined: the fact's bottom edge is reserved for the absent,
+unread and alert rules, and the label is present in all four renderings while
+the figure is not.
 
 ### 6.3 Figure — `.ctl-figure`
 
@@ -886,11 +936,48 @@ only their geometry is linear instead of angular:
 | State | Drawing |
 |---|---|
 | default | `--pct` filled in `--text-dim`, the rest `--surface-2`, the axis drawn at the origin |
-| `.is-partial` | filled to `--measured`, **hatched** from there — the hole in the total drawn as a hole |
+| `.is-partial` | filled to `--pct`, plain track on to `--measured`, **hatched** from there — the hole in the total drawn as a hole *(split by OV-2; see below)* |
 | `.is-unknown` | hatched, **no fill and no axis**. An empty track reads as 0%, which is a claim nobody made |
 | `.is-zero` | empty, axis drawn, plus the inset hairline `.ctl-util-track.is-zero` uses — the same mark, meaning the same thing |
 
 The `aria-label` route to the sentence is the caller's and is unchanged.
+
+**Amended by the 2026-09-25 QA decisions (epic #81).**
+
+* **The track draws the figure itself (OV-2).** It drew coverage — usable
+  accounts over all accounts, checks that ran over all checks — under a figure
+  that said something else, so it was full whenever coverage was complete. The
+  headroom track is the headline's % used; the checks track is open checks over
+  all checks (checks, not problems: one check can raise several problems and a
+  track cannot fill past its total). **Coverage appears only when it is
+  partial, as the kit's `.ctl-mark.is-partial` under the track**; a complete
+  population draws no coverage at all.
+* **A partial track hatches only what was not measured** (OV-2, corrected in
+  review of #157). `.is-partial` is three segments now: the figure filled to
+  `--pct`, the plain track on to `--measured`, the hatch from `--measured` to
+  the end. The attention lead sets `--measured` to the checks that ran, so a
+  check that came back clear is plain track and only a blind one is hatched:
+  one blind check of eight is an eighth of hatch (`--measured: 88`), where the
+  first version of OV-2 hatched everything past the open count and drew seven
+  clear checks as unmeasured. The headroom headline sets no `--measured`, so its
+  hatch starts at its figure — the hatched remainder OV-12 (b) names; the
+  table's `.is-partial` row above keeps its meaning, the hole drawn as a hole.
+* **A fifth state, `.is-pending` (OV-9)**: the reads are in flight. The figure
+  slot holds the pending mark and no digit; the track is `.ctl-pending`'s moving
+  surface, with no fill, no axis and **no hatch** — the hatch means a read
+  failed, and drawing it over a request still out is §8.7.1's falsehood.
+* **`.is-warn` / `.is-bad` (OV-12)**: the headroom headline takes the verdict of
+  the account row it names, computed by the same function the row uses, so the
+  two cannot disagree. The measured part of the track takes
+  `.ctl-util-fill.is-warn/.is-bad`'s colour and stripe; a partial track keeps
+  its hatched remainder; the figure stays in `--text`. No new colour role.
+* **One polarity: a subscription window's percentage is % used, everywhere**
+  (OV-1) — the Overview's headline and rows, the Accounts table and `sc`. The
+  headline names its account (`28 % used · laptop`), and **every % carries its
+  word**: on the figure where there is no column head, on the head (and the
+  phone key standing in for it) where there is. The headline was % left over
+  rows of % used, both printed as a bare `%`, and the fullest account's `74`
+  sat one line under a `72` that meant the opposite.
 
 **The name stays `.ctl-dial` in this pass**, and that is a scoping decision, not
 an oversight: renaming it means editing every screen that calls it, and §11 was
@@ -1261,7 +1348,7 @@ media query.
 | | At 390px |
 |---|---|
 | Frame | rail → the two-row strip (§6.15); `--app-pad` 16px; header keeps its height and its environment bar. **The header is one row that does not wrap at ≤560px (CH-20):** in order, the mark (the home link, named "SwarmCloud" by the mark's title; the wordmark is not drawn), the environment badge, the tenant key, the tenant id and the admin tag. Only the tenant id gives way — it ellipsizes, whole in its `title` and in a copy: **the id is its own copy control** (`.brand-id`, a button that draws nothing of its own, 44px tall at ≤560px), which copies the whole id and says in a status whether the copy landed or the browser refused it. It is the id rather than a button beside it because at 390 the id keeps only 60–70px, which a separate 44px control would take. Not drawn but still announced (visually hidden, never removed): the tenant's display name, the "signed in" key and principal, the unknown badge's host, and the word ENVIRONMENT — the unknown badge reads "env UNKNOWN", about 122px, keeping its capitals, hatch and left rule. The admin tag is a grey hairline tag (1px `--line`, `--surface-2`, `--text-dim`, the non-production badge's box), and above 560px it shares one nowrap unit with the principal, so it can never wrap onto a line of its own. Pending is the tenant key and "reading…"; failed is the tenant key and the `not read` mark, with the error heading as its accessible name. |
-| Overview | one column, five cards stacked; **the metric strip becomes a 2-up grid, not five stacked 30px figures** |
+| Overview | one column: the lead, the fact strip as a wrapping run of facts (`styles.css` §B6.1, no grid), then the three panels stacked. *Amended by OV-6, 2026-09-25: this row said "five cards stacked; the metric strip becomes a 2-up grid", which §B6.1 had removed on purpose. Since OV-12 the strip holds two facts and they fit on one line at 390.* An account row's status note (sign in again, pool skipping, paused, draining, the binding pool) wraps to its own line under the row, only when there is one (OV-7). A paused or draining note leads the reading word rather than giving way to it (`paused · stale 3h ago`), so a stale, cleared or never-polled reading cannot hide it |
 | Workflows | collapsed rows keep `[state] [id] [progress] [actions]`; the DAG scrolls horizontally inside its wrap and is **not** scaled to fit — scaling turns step names into texture |
 | Agents / Holders / Timeline | `.ctl-line` on its irreducible template |
 | Pools / Runtimes / Accounts / AdminSettings | `.ctl-table.is-scroll` scrolls sideways with its first column held in view (§7.3). *(Amended 2026-09-25, CH-13: the Cards-toggle promotion this row proposed was not built; the held first column is the owner's answer to the same finding.)* |
@@ -1813,6 +1900,14 @@ token moved, no primitive changed, and `styles.css` was not touched at all.
 bullets are superseded by name below rather than edited in place, because
 several lanes are amending this document at once and an append conflicts where
 an interleaved edit collides.
+
+**Amended 2026-09-25 (OV-12, owner decision): the Overview's strip carries only
+facts that no panel repeats, and a fact is drawn at the figure step once.** The
+strip is Running and Units held. `Account headroom` and `Token spend` left it,
+because each was a panel's own figure drawn a second time; the link to Accounts
+moved to the account group's head, the low-headroom alert became the Headroom
+headline's verdict (§6.5), and the absent, unread and pending renderings are
+the panels' own. §2 names the resulting five figure-bearing regions.
 
 ### 12.1 What moved, and what it was measured against
 
