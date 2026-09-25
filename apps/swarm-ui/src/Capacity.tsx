@@ -674,11 +674,19 @@ function PoolCard({ pool, scope }: { pool: Pool; scope: string }) {
       </b>
 
       {/* THE ONE TRACK (§6.4), and it is the shared one (./primitives.tsx):
-          this card drew its own until the tracks were collapsed. `pct` is
-          null when no ceiling was read -- an empty plain track is a claim that
-          nothing is in use, and "no ceiling" is not a zero -- so the track is
-          hatched. A measured nought draws the origin tick, which is what makes
-          it different from a widget that failed to paint.
+          this card drew its own until the tracks were collapsed. A measured
+          nought draws the origin tick, which is what makes it different from
+          a widget that failed to paint.
+
+          NEVER THE NOT-MEASURED HATCH ON THIS CARD (#159 review of CP-14).
+          Every pool here carries an `effective_limit` the read returned, so
+          there is no unread ceiling for the hatch to stand for. It used to
+          pass `null` for a ceiling of 0, and the shared track drew that as
+          `is-unknown` beside `/ 0` and a `limit 0` mark, which say the
+          ceiling WAS read, and ignored the tone that mark carries. A ceiling
+          of 0 leaves no room at all, so the track is drawn full, in the
+          classification's tone: paused when a person set it, bad when quota
+          zeroed it -- the same answer as the chip beside it.
 
           HELD AT 100, as it always was: an over-ceiling pool is said by the
           `over ceiling` chip beside the track and by the bad fill, not by an
@@ -689,7 +697,7 @@ function PoolCard({ pool, scope }: { pool: Pool; scope: string }) {
           the chip and the table's row say: a full pool is warn here too, not
           bad, and there is no 80% band of this card's own. */}
       <UtilTrack
-        pct={limit > 0 ? ratio * 100 : null}
+        pct={limit > 0 ? ratio * 100 : 100}
         tone={marks.track}
         meter={{
           /* "units", not "agents": admission counts weighted units, so 8 may

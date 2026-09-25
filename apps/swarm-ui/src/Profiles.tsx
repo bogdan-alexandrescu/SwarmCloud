@@ -3,7 +3,7 @@ import { isPaused } from './fetch'
 import type { TopicId } from './help'
 import { HelpLinks } from './HelpCard'
 import { Screen, timeAgo } from './Shell'
-import { ceilingFigure, ceilingTitle, headroomFigure, liftFigure } from './Blockers'
+import { BlockerList, IncompleteNote, ceilingFigure, ceilingMark, ceilingTitle, headroomFigure, liftFigure } from './Blockers'
 import { AGE_TICK_MS, useNow } from './useNow'
 import {
   blockerCeiling,
@@ -144,7 +144,14 @@ function Catalogue({ capacity }: { capacity: Capacity }) {
             footer. A qualifier on the card cannot be scrolled away from the
             figures it scopes; a paragraph above the first card could. */}
       {entries.map(([name, profile]) => (
-        <ProfileCard key={name} name={name} profile={profile} byName={byName} tenant={tenant} />
+        <ProfileCard
+          key={name}
+          name={name}
+          profile={profile}
+          byName={byName}
+          tenant={tenant}
+          groups={capacity.blocked_reason_groups}
+        />
       ))}
       {/* §8.4(4): PROVENANCE, ONCE, FOR THE WHOLE PAGE. Every `+N if lifted`
           figure above is a prediction worked out from pool counts read at one
@@ -178,12 +185,14 @@ function CountsAge({ generatedAt }: { generatedAt: string }) {
   )
 }
 
-function ProfileCard({ name, profile, byName, tenant }: {
+function ProfileCard({ name, profile, byName, tenant, groups }: {
   name: string
   profile: RunnerProfile
   /** Every pool this caller may see, by name. A name absent from it is uncapped. */
   byName: ReadonlyMap<string, Pool>
   tenant: string | null
+  /** The server's remedy groups, `blocked_reason_groups`, for the blocker list. */
+  groups: Record<string, string[]> | undefined
 }) {
   // Read, not computed. `profile.admission` is what swarm_api/headroom.py got
   // out of `evaluate_capacity`; this card used to re-derive it and kept only
@@ -377,14 +386,12 @@ function ProfileCard({ name, profile, byName, tenant }: {
       </div>
 
       {/* ONE FACT SENTENCE PER CARD, AND IT IS WHAT RUNS OUT FIRST (CP-6).
-          Nothing else under the table: the blocker list's headings and copy,
           "No pool is refusing this profile.", the counterfactual list and the
-          per-card provenance line are gone. Every refusing pool is on its row
-          with its mark (and the mark's title says the reason and the remedy);
-          what lifting it would buy is the `+N if lifted` cell; the instant the
-          counts were read is the page's foot. A disabled profile gets no
-          sentence at all: every one of these is an offer the platform will
-          refuse, and why it refuses is under the heading. */}
+          per-card provenance line are gone: what lifting a pool would buy is
+          its `+N if lifted` cell, and the instant the counts were read is the
+          page's foot. A disabled profile gets no sentence at all: every one
+          of these is an offer the platform will refuse, and why it refuses is
+          under the heading. */}
       {!off && (
         <p className="muted small">
           {head.agents === null
@@ -397,6 +404,25 @@ function ProfileCard({ name, profile, byName, tenant }: {
                 } ${head.blockers.length > 1 ? 'are' : 'is'} refusing it.`
               : `${binding.length > 0 ? binding.map(label).join(' and ') : 'One of these pools'} would run out first.`}
         </p>
+      )}
+
+      {/* THE REMEDY, AS TEXT A PHONE SHOWS (#159 review of CP-6). The first
+          cut of CP-6 removed the grouped blocker list and the incomplete-read
+          banner along with the counterfactual list, which the owner's
+          decision did not ask for, and left each refusal's reason, figures
+          and remedy in a status mark's `title` -- which a touch screen never
+          shows. They are back under the sentence: every refusing pool, filed
+          by the SERVER'S remedy group -- somebody has to act, or waiting
+          clears it -- in the card's own marks (CP-12: no `.tag` here), with
+          the banner above a list that a missed read made partial. Both draw
+          nothing when nothing refuses, so a healthy card is still the table
+          and its one sentence. A disabled profile gets neither, for the
+          reason it gets no sentence. */}
+      {!off && (
+        <>
+          <IncompleteNote h={head} label={label} />
+          <BlockerList h={head} groups={groups} label={label} />
+        </>
       )}
     </section>
   )
@@ -420,7 +446,10 @@ function ProfileCard({ name, profile, byName, tenant }: {
  *              grey disc (CP-14)
  *
  * Each old tag's explanation is the mark's `title` and `aria-label`. The row's
- * class follows the mark, so a limit-0 row is not classed `full`.
+ * class follows the mark, so a limit-0 row is not classed `full`. The tone and
+ * word of paused, limit 0 and full are `ceilingMark`'s (Blockers.tsx), the
+ * same table the blocker list under the card reads, so the two places on one
+ * card cannot draw one pool two ways.
  */
 interface StatusMark {
   kind: 'unread' | 'uncapped' | 'paused' | 'limit-0' | 'full' | 'ok'
@@ -451,10 +480,11 @@ function statusMark(row: Pool | null, blocker: ProfileBlocker | null, notRead: b
   }
   const ceiling = blocker !== null ? blockerCeiling(blocker) : null
   if (isPaused(row) || ceiling === 'paused') {
+    const m = ceilingMark('paused')
     return {
       kind: 'paused',
-      cls: 'ctl-chip is-paused',
-      word: 'paused',
+      cls: `ctl-chip ${m.cls}`,
+      word: m.word,
       say: `${blocker !== null ? `${blocker.reason}, ${ceilingFigure(blocker)}. ` : ''}${ceilingTitle('paused')}`,
       row: 'paused',
     }
@@ -469,19 +499,21 @@ function statusMark(row: Pool | null, blocker: ProfileBlocker | null, notRead: b
         : null
   if (zero === 'set-to-zero' || zero === 'zero') {
     const person = needsAPerson(zero)
+    const m = ceilingMark(zero)
     return {
       kind: 'limit-0',
-      cls: `ctl-chip ${person ? 'is-paused' : 'is-bad'}`,
-      word: 'limit 0',
+      cls: `ctl-chip ${m.cls}`,
+      word: m.word,
       say: `${blocker !== null ? `${blocker.reason}, ${ceilingFigure(blocker)}. ` : ''}${ceilingTitle(zero)}`,
       row: person ? 'paused' : 'over',
     }
   }
   if (ceiling === 'full' && blocker !== null) {
+    const m = ceilingMark('full')
     return {
       kind: 'full',
-      cls: 'ctl-chip is-warn',
-      word: 'full',
+      cls: `ctl-chip ${m.cls}`,
+      word: m.word,
       say: `${blocker.reason}, ${ceilingFigure(blocker)}. ${ceilingTitle('full')}`,
       row: 'full',
     }
@@ -521,6 +553,10 @@ function StatusMarkView({ mark }: { mark: StatusMark }) {
  * and the owner's decision removes them. A +0 on a pool that DOES bind stays,
  * because it is the valuable zero -- two pools tie, and lifting one alone buys
  * nothing -- and its accessible name says what still binds.
+ *
+ * A PAUSED pool's figure is what RESUMING it buys, not lifting it (the
+ * server's `action: 'resume'`), and its visible text says so -- `+4 if
+ * resumed` -- because the column's header cannot.
  */
 function LiftCell({
   show,

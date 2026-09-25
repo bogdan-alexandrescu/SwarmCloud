@@ -50,8 +50,8 @@ import {
   CONCURRENCY_STATES,
   DISPATCH_CARRIERS,
   DISPATCH_STRATEGIES,
-  QUOTA_REPORT_INTERVAL_SECONDS,
   QUOTA_STALE_AFTER_MS,
+  QUOTA_SWEEP_INTERVAL_SECONDS,
   REAL_STATES,
   STRATEGY_LABEL,
   TERMINAL_STATES,
@@ -1253,13 +1253,16 @@ const SPECS: Record<TopicId, TopicSpec> = {
       'Unknown is drawn as an absence rather than as health. Nothing has reported, and nothing about the provider follows from that.',
       // CP-8 (#85): the column is `Quota cap` now, and the topic names it so.
       'A quota cap of zero here is the opposite: it is returned deliberately when a provider is spent, disabled or cooling down, and it is the one zero on this screen that means something rather than nothing.',
-      // CP-9 (#85). The threshold is read from types.ts, not typed here.
-      'A state is only as current as its report. A reading older than twice the quota broker’s reporting interval, below, keeps its word but loses the healthy mark and carries its age: a document reported days ago says what was true then. The broker rewrites a document only when its state changes, so on a quiet tenant every row goes stale, and that is the true age of what it says.',
+      // CP-9 (#85). The threshold is read from types.ts, not typed here. The
+      // tick it is twice of is the broker's SWEEP, which reports nothing
+      // (#159 review): this named "the broker's reporting interval", a report
+      // that does not exist.
+      'A state is only as current as its report, and a worker reports a document at the end of a clean run or on a 429. A reading older than twice the quota broker’s sweep, below, keeps its word but loses the healthy mark and carries its age: a document reported days ago says what was true then. The sweep rewrites a document only when its state changes, so on a quiet tenant every row goes stale, and that is the true age of what it says.',
     ],
     values: () => [
       {
         term: `${Math.round(QUOTA_STALE_AFTER_MS / 60_000)} minutes`,
-        note: `twice the broker’s ${Math.round(QUOTA_REPORT_INTERVAL_SECONDS / 60)}-minute reporting interval: an older reading is drawn stale`,
+        note: `twice the broker’s ${Math.round(QUOTA_SWEEP_INTERVAL_SECONDS / 60)}-minute sweep: an older reading is drawn stale`,
       },
     ],
   },

@@ -7329,8 +7329,14 @@ table.pools tbody tr.unmeasured {
   background: var(--surface);
   font-size: var(--t-body); line-height: var(--lh-body);
 }
+/* The left rule takes the tone of the row's mark (#159 review of CP-6). The
+   Profile headroom list draws its marks as `.ctl-chip` in Pools' vocabulary
+   since CP-12 left no `.tag` in that card: paused and a person's limit 0 are
+   `is-paused`, quota's limit 0 is `is-bad`, full is `is-warn`. It was
+   `is-full` in --bad, which put a --bad rule beside a warn `full` chip. */
 .blocker-row.is-paused { border-left-color: var(--paused); }
-.blocker-row.is-full   { border-left-color: var(--bad); }
+.blocker-row.is-bad    { border-left-color: var(--bad); }
+.blocker-row.is-warn   { border-left-color: var(--warn); }
 .blocker-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .blocker-pool { font-size: var(--t-body); background: transparent; color: var(--text); }
 .blocker-reason { font: 700 var(--t-meta)/var(--lh-meta) var(--mono); color: var(--text-dim); }

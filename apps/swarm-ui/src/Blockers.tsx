@@ -17,7 +17,6 @@ import {
   blockerCeiling,
   blockerGroup,
   ceilingCopy,
-  needsAPerson,
   poolLabelAmong,
   reasonCopy,
   type Ceiling,
@@ -71,9 +70,15 @@ export function headroomFigure(h: Headroom): { text: string; title: string } {
  * one pool: it tells an operator they have cleared everything when a pool
  * nobody read may still be refusing. So the list is never silently shortened
  * -- what was measured stays on screen, under this.
+ *
+ * NOTHING OVER NO LIST (CP-6, #85). The banner qualifies the list below it --
+ * "everything below was measured; it is not the whole list" -- so with no
+ * refusal measured there is nothing below for it to qualify, and the Profile
+ * headroom card's one sentence already says a pool could not be read, with
+ * `not read` on that pool's row.
  */
 export function IncompleteNote({ h, label = labelsFor(h) }: { h: Headroom; label?: Label }) {
-  if (h.complete) return null
+  if (h.complete || h.blockers.length === 0) return null
   return (
     <p className="warn-text" role="status">
       This list is <strong>incomplete</strong>.{' '}
@@ -144,6 +149,25 @@ export function ceilingTitle(c: Ceiling): string {
 }
 
 /**
+ * The mark a refusing pool is drawn with on Profile headroom -- in its Status
+ * cell and in the blocker list under the card alike -- in Pools' vocabulary
+ * (CP-12, #85): `paused`, `limit 0` in the paused tone when a person set it
+ * and the bad tone when quota zeroed it, and `full` in warn, as Pools draws
+ * full. `CeilingTag` above is the submit box's, which CP-12 did not touch.
+ * ONE TABLE, so the card's two places cannot draw one pool two ways.
+ */
+const CEILING_MARK: Readonly<Record<Ceiling, { cls: 'is-paused' | 'is-bad' | 'is-warn'; word: string }>> = {
+  paused: { cls: 'is-paused', word: 'paused' },
+  'set-to-zero': { cls: 'is-paused', word: 'limit 0' },
+  zero: { cls: 'is-bad', word: 'limit 0' },
+  full: { cls: 'is-warn', word: 'full' },
+}
+
+export function ceilingMark(c: Ceiling): { cls: 'is-paused' | 'is-bad' | 'is-warn'; word: string } {
+  return CEILING_MARK[c]
+}
+
+/**
  * The numbers that made a pool refuse, as the row prints them. "units", never
  * "agents": admission increments by the profile's weight. A paused pool admits
  * nothing at ANY ceiling -- and a drained one carries the unlimited sentinel
@@ -168,11 +192,17 @@ function BlockerRow({ blocker, label }: { blocker: ProfileBlocker; label: Label 
   // (see `blockerCeiling`): "0 of 0 units in use" under a `full` tag is how
   // the live console came to call a switched-off pool busy.
   const ceiling = blockerCeiling(blocker)
+  // THE CARD'S OWN MARK, NOT `.tag` (CP-12, #85). This list is drawn on the
+  // Profile headroom card, and the owner's decision left no `.tag` in that
+  // card: each refusal carries the mark its row's Status cell carries, and the
+  // row's left rule takes the mark's tone.
+  const mark = ceilingMark(ceiling)
   return (
-    <li className={`blocker-row${needsAPerson(ceiling) ? ' is-paused' : ' is-full'}`}>
+    <li className={`blocker-row ${mark.cls}`}>
       <span className="blocker-head">
-        <span className="tags">
-          <CeilingTag blocker={blocker} />
+        <span className={`ctl-chip ${mark.cls}`} title={ceilingTitle(ceiling)}>
+          <i aria-hidden="true" />
+          {mark.word}
         </span>
         <code className="blocker-pool" title={blocker.pool}>
           {label(blocker.pool)}
@@ -208,15 +238,13 @@ export function BlockerList({
   const noRoom = h.blockers.filter((b) => blockerGroup(b, groups) === 'no_room')
   const ungrouped = h.blockers.filter((b) => blockerGroup(b, groups) === null)
 
-  if (h.blockers.length === 0) {
-    return (
-      <p className="muted">
-        {h.complete
-          ? 'No pool is refusing this profile.'
-          : 'No refusal was measured — but see above: the list is incomplete.'}
-      </p>
-    )
-  }
+  // NOTHING TO LIST, NOTHING DRAWN (CP-6, #85). This printed "No pool is
+  // refusing this profile." -- or, on an incomplete read, "No refusal was
+  // measured, but the list is incomplete" -- under every Profile headroom
+  // card. The owner's decision leaves the card one fact sentence, and that
+  // sentence already says it: what runs out first, or that a pool could not be
+  // read. So an empty list is not a sentence of its own.
+  if (h.blockers.length === 0) return null
 
   return (
     <>
@@ -325,11 +353,20 @@ export function liftFigure(
       kind: 'unmeasured',
     }
   }
-  const act = `${c.action === 'resume' ? 'Resume' : 'Lift'} ${label(c.pool)}`
+  const resume = c.action === 'resume'
+  const act = `${resume ? 'Resume' : 'Lift'} ${label(c.pool)}`
+  // A RESUME SAYS SO IN THE CELL, NOT ONLY IN ITS NAME (#159 review). The
+  // server models a PAUSED pool's counterfactual as re-enabling it with its
+  // limit left alone (`headroom.py` `_counterfactual`, `action: 'resume'`),
+  // so resuming is not overstated as lifting. Under a header reading `if
+  // lifted`, a bare `+4` on that row told an operator to raise a limit the
+  // row's own Status title says "changes nothing". The words were in the
+  // accessible name and the title only, which a phone never shows.
+  const phrased = (figure: string) => (resume ? `${figure} if resumed` : figure)
   if (c.headroom_after === null) {
     // Nothing else configured would have bound. Not a number, so not drawn as
     // one.
-    return { text: 'uncapped', say: `${act}: nothing else would have been left to cap it.`, kind: 'measured' }
+    return { text: phrased('uncapped'), say: `${act}: nothing else would have been left to cap it.`, kind: 'measured' }
   }
   if (c.delta === null) {
     return { text: '—', say: `${act}: the change could not be measured.`, kind: 'unmeasured' }
@@ -339,7 +376,7 @@ export function liftFigure(
       c.next_binding.length > 0
         ? ` — then ${c.next_binding.map(label).join(' and ')} would have bound`
         : ''
-    return { text: `+${c.delta}`, say: `${act}: ${c.delta} more would have started${next}.`, kind: 'measured' }
+    return { text: phrased(`+${c.delta}`), say: `${act}: ${c.delta} more would have started${next}.`, kind: 'measured' }
   }
   // THE VERB AGREES WITH ITS SUBJECT (CP-15). Two pools still in the way
   // "still bind"; it read "eng and anthropic still binds" for as long as
@@ -348,18 +385,21 @@ export function liftFigure(
     c.next_binding.length > 0
       ? `${c.next_binding.map(label).join(' and ')} still ${c.next_binding.length === 1 ? 'binds' : 'bind'}`
       : 'something else still binds'
-  return { text: '+0', say: `${act}: nothing would have changed — ${still}.`, kind: 'pointless' }
+  return { text: phrased('+0'), say: `${act}: nothing would have changed — ${still}.`, kind: 'pointless' }
 }
 
 /*
  * `ProfileAdmissionPanel` LIVED HERE AND IS GONE (CP-6, #85). It drew the
  * incomplete-read banner, the blocker list grouped by remedy, and the
  * counterfactual list under every Profile headroom card, and that card was its
- * only caller. The owner's decision leaves each card one fact sentence: every
- * refusing pool is on its own row with its status mark -- whose title carries
- * the reason, the figures and the remedy the blocker row printed -- and what
- * lifting it would buy is the `+N if lifted` cell (`liftFigure` above).
- * `IncompleteNote` and `BlockerList` stay exported: they answer "why is THIS
- * not running" for one object, which is the shape the header of this file
- * describes, and their tests pin that shape.
+ * only caller. The owner's decision made the counterfactual list a `+N if
+ * lifted` column (`liftFigure` above) and left each card one fact sentence.
+ *
+ * THE OTHER TWO ARE DRAWN BY THE CARD ITSELF NOW (#159 review). The first cut
+ * of CP-6 removed the banner and the grouped list as well, which the decision
+ * did not ask for: the remedy -- somebody has to act, or waiting clears it --
+ * and each refusal's reason and figures were left only in a status mark's
+ * `title`, which a phone never shows. `Profiles.tsx` renders `IncompleteNote`
+ * and `BlockerList` under its one sentence; both draw nothing when nothing
+ * refuses, so the sentence stays the card's only one then.
  */

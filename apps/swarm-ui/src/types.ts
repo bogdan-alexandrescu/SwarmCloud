@@ -2790,30 +2790,40 @@ export function ageSpan(ms: number): string {
 }
 
 /**
- * THE QUOTA BROKER'S REPORTING INTERVAL, stated once (CP-9, #85).
+ * THE QUOTA BROKER'S SWEEP INTERVAL, stated once (CP-9, #85).
  *
  * It is the `quota-refresh` Cloud Scheduler job: the scheduler module's
  * `quota_refresh_schedule`, `*\/5 * * * *` (terraform/modules/scheduler/
  * variables.tf), which the root does not override. Every five minutes the
  * broker's `sweep` retires expired cooldowns and re-asserts every provider
- * pool. `scripts/lib/check-contract-parity.sh` section 5 holds this number to
+ * pool. `scripts/lib/check-contract-parity.sh` section 7 holds this number to
  * that cron, so a changed schedule with this constant left behind fails there
  * rather than quietly calling current readings stale.
  *
- * WHAT IT DOES NOT DO, and why the screen still marks old readings: the sweep
- * rewrites a document only when its state or its derived cap changed. An
- * AVAILABLE document nobody reports on keeps the `updated_at` of the last
- * worker report or state change, which is what `Reported` prints.
+ * A SWEEP, NOT A REPORT (#159 review). This was `QUOTA_REPORT_INTERVAL_
+ * SECONDS`, and the screen called it "the broker's reporting interval". No
+ * such report exists: the sweep rewrites a document only when its state or
+ * its derived cap changed, and `updated_at` moves when a WORKER reports -- at
+ * the end of a clean run, or on a 429 (`update_quota_state`). An AVAILABLE
+ * document nobody reports on keeps the `updated_at` of the last worker report
+ * or state change, which is what `Reported` prints.
+ *
+ * WHICH TICK THE OWNER'S "TWICE THE BROKER'S REPORTING INTERVAL" MEANT IS AN
+ * OPEN QUESTION TO THE OWNER (#85, CP-9): the sweep, a worker-report cadence
+ * (there is no fixed one), or a fixed age. Until it is answered the threshold
+ * stays twice the sweep, and the words say so rather than naming a report.
  */
-export const QUOTA_REPORT_INTERVAL_SECONDS = 300
+export const QUOTA_SWEEP_INTERVAL_SECONDS = 300
 
 /**
  * A quota reading older than this is drawn with the stale mark and its age,
- * never with the ok verdict: twice the broker's interval, the owner's rule
- * (2026-09-25). One missed tick is a late tick; two is a reading nothing has
- * confirmed since.
+ * never with the ok verdict: twice the broker's sweep interval, the closest
+ * config value to the owner's rule (2026-09-25; see above for what is still
+ * open). One missed tick is a late tick; two is a reading nothing has
+ * confirmed since. On a quiet tenant that is most rows at rest: nothing has
+ * reported on them since, which is the true age of what they say.
  */
-export const QUOTA_STALE_AFTER_MS = 2 * QUOTA_REPORT_INTERVAL_SECONDS * 1000
+export const QUOTA_STALE_AFTER_MS = 2 * QUOTA_SWEEP_INTERVAL_SECONDS * 1000
 
 /**
  * How old a quota document's reading is, and whether that is past

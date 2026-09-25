@@ -159,10 +159,11 @@ function Row({ q, now }: { q: QuotaState; now: number }) {
   const tone = providerTone(q.state)
   // EXHAUSTED, DISABLED and COOLDOWN all admit nothing, and the reason differs.
   const admitsNothing = q.effective_limit === 0
-  // CP-9 (#85): A READING OLDER THAN TWICE THE BROKER'S INTERVAL IS NOT A
+  // CP-9 (#85): A READING OLDER THAN TWICE THE BROKER'S SWEEP IS NOT A
   // CURRENT VERDICT. The live console drew a document last reported five days
   // earlier as a green `available`, the same mark as one reported a minute
-  // ago. `quotaReadingAge` (types.ts) states the interval once.
+  // ago. `quotaReadingAge` (types.ts) states the interval once, and says why
+  // it is the sweep's and not a report's.
   const age = quotaReadingAge(q, now)
   const pool = providerTenantPool(q.provider, q.tenant_id)
 
@@ -191,7 +192,7 @@ function Row({ q, now }: { q: QuotaState; now: number }) {
         {age.stale && (
           <span
             className="ctl-stale-mark"
-            title={`Reported ${q.updated_at ? timeAgo(q.updated_at, now) : 'at an unknown time'}. A reading older than twice the quota broker's reporting interval is not drawn as current.`}
+            title={`Reported ${q.updated_at ? timeAgo(q.updated_at, now) : 'at an unknown time'}. A reading older than twice the quota broker's sweep is not drawn as current.`}
           >
             {age.ageMs === null ? 'age unknown' : `${ageSpan(age.ageMs)} old`}
           </span>
