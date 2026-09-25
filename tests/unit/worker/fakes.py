@@ -55,7 +55,9 @@ class FakeDocumentRef:
             self._db.documents[self.path] = dict(data)
         self._db.writes.append(("set", self.path, dict(data)))
 
-    def update(self, data: dict[str, Any]) -> None:
+    def update(self, data: dict[str, Any], **_call_options: Any) -> None:
+        # `retry` and `timeout` accepted and ignored, as in `set`: the
+        # heartbeat's update carries the startup budget before the runner.
         if self.path not in self._db.documents:
             raise DocumentMissing(self.path)
         self._db.documents[self.path].update(dict(data))
@@ -171,7 +173,9 @@ class FakeTransaction:
     def __init__(self, db: "FakeFirestore") -> None:
         self._db = db
 
-    def get(self, ref: FakeDocumentRef) -> FakeSnapshot:
+    def get(self, ref: FakeDocumentRef, **_call_options: Any) -> FakeSnapshot:
+        # `Transaction.get` takes `retry` and `timeout`; before the runner the
+        # worker passes its startup budget there.
         return ref.get()
 
     def set(self, ref: FakeDocumentRef, data: dict[str, Any]) -> None:
@@ -185,7 +189,9 @@ class FakeTransactionRunner:
     def __init__(self, db: "FakeFirestore") -> None:
         self._db = db
 
-    def run(self, fn: Any) -> Any:
+    def run(self, fn: Any, *, call_options: Any = None) -> Any:
+        # `call_options` is the budget for begin, commit and rollback, which
+        # an in-memory transaction does not make.
         return fn(FakeTransaction(self._db))
 
 
