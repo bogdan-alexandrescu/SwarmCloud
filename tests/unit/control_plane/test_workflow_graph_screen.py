@@ -24,8 +24,10 @@ docstring that must turn it red:
      over `depends_on` and that the screen maps the edge list to paths.
   2. THE NODE IS THE WAY IN. `StepNode` was a plain component with no href and
      no onClick, so from "draft is parked" there was no click that reached
-     `draft`. It is an anchor to a hash `App.tsx` actually resolves -- checked
-     against the router here, not assumed.
+     `draft`. It became an anchor to a hash `App.tsx` actually resolves. Since
+     the owner's WF-7 decision (epic #83) the node is a SELECTION that fills
+     the step inspector in place, and the inspector's `open agent ->` is the
+     anchor -- to the same hash, still checked against the router here.
   3. AN ABSENT MEASUREMENT IS NEVER A NUMBER. The run panel's writing --
      "not reported -- No attempt reported a cost. This is an absent
      measurement, not $0.00." -- is the best thing in the product, and a DAG
@@ -371,33 +373,58 @@ def test_the_collapsed_mode_states_the_shape_and_not_only_a_count():
 
 
 
-def test_every_dag_node_with_a_task_is_a_link_to_that_run():
-    """MUTATION: revert the `<a>` to a `<div>`, as it was. This goes red on the
-    missing href.
+def test_a_picked_step_carries_a_link_to_its_run_and_the_node_itself_navigates_nowhere():
+    """RE-POINTED BY THE OWNER'S DECISION ON WF-7 (epic #83), NOT WEAKENED.
+
+    This was `test_every_dag_node_with_a_task_is_a_link_to_that_run`, and its
+    mutation was "revert the `<a>` to a `<div>`". The node WAS the anchor, so a
+    click on the Graph left the workflow for the Work > Agents drawer while the
+    Timeline and the Table picked the same step into the inspector --
+    redesign-v2 section 2.3 says "Selecting any node in any mode fills the
+    inspector. Nothing navigates." The owner decided: the node fills the
+    inspector in place, and the inspector carries `open agent ->` to the drawer.
+
+    What is still pinned is the property the old test was for: there IS a click
+    that reaches the agent run, at the drawer route of whatever the Work section
+    is called. It is on the inspector now (`WorkflowViews.tsx`), and the node
+    itself carries no href. MUTATIONS: drop the inspector's anchor (the first
+    assertion goes red), or put an `href` back on the node (the last one does).
     """
-    wf = _src("Workflows.tsx")
+    views = _src("WorkflowViews.tsx")
     # THE SECTION ID IS READ, NOT SPELLED. It was `agents` and is now `work`;
     # pinning either spelling makes this assertion fail on a rename that
     # changed nothing, which is how four assertions in this suite went stale in
-    # one commit. What must hold is that the node links to THE DRAWER ROUTE of
+    # one commit. What must hold is that the link goes to THE DRAWER ROUTE of
     # whatever the section is currently called.
+    inspector = _decl(views, "export function StepInspector(")
     assert (
-        "href={`#%s/task/${encodeURIComponent(taskId)}`}" % _work_id() in wf
-    ), "the step node carries no href, so there is no click that reaches the agent run"
-    assert "<a\n" in wf or "<a " in wf, "no anchor element is rendered by the screen"
+        "href={`#%s/task/${encodeURIComponent(taskId)}`}" % _work_id() in inspector
+    ), "the inspector carries no href, so there is no click that reaches the agent run"
+    assert "<a\n" in inspector or "<a " in inspector, "the inspector renders no anchor"
+    assert "open agent →" in inspector, "the inspector's link is not the 'open agent →' the owner decided"
+
+    node = _code(_decl(_src("Workflows.tsx"), "function StepNode("))
+    assert "href=" not in node, (
+        "the graph node carries an href again, so clicking a step navigates away "
+        "from the workflow instead of filling the inspector"
+    )
+    assert "onPick(" in node, "the graph node no longer picks the step into the inspector"
 
 
 def test_the_hash_the_node_builds_is_one_the_router_resolves():
-    """The seam, not the string. MUTATION: change the node's hash to
+    """The seam, not the string. MUTATION: change the inspector's hash to
     `#agents/<id>` only, or change `fromHash` to stop accepting `task`; either
     end alone turns a link into a click that lands on the wrong screen.
+
+    RE-POINTED WITH WF-7: the hash is built by the step inspector's `open
+    agent ->` link, since the node became a selection.
     """
-    wf = _src("Workflows.tsx")
+    views = _src("WorkflowViews.tsx")
     app = _src("App.tsx")
 
-    hashes = re.findall(r"href=\{`#([^`$]*)\$\{", wf)
-    assert hashes, "the node builds no hash; this test would check nothing"
-    assert hashes[0] == f"{_work_id()}/task/", f"unexpected node hash prefix {hashes[0]!r}"
+    hashes = re.findall(r"href=\{`#([^`$]*)\$\{", views)
+    assert hashes, "the inspector builds no hash; this test would check nothing"
+    assert hashes[0] == f"{_work_id()}/task/", f"unexpected run-link hash prefix {hashes[0]!r}"
 
     router = _decl(app, "function fromHash(")
     # `head === WORK`, through the CONSTANT. App.tsx declares the id as a
@@ -420,19 +447,20 @@ def test_the_hash_the_node_builds_is_one_the_router_resolves():
 def test_a_step_with_no_task_is_not_a_dead_link():
     """A step the workflow has not reached has nothing to open, and says so.
 
-    MUTATION: link every node unconditionally. A step with no task then renders
-    an anchor to `#agents/task/undefined`, and its inertness reads as a bug in
-    the console rather than as a fact about the run.
+    MUTATION: link every picked step unconditionally. A step with no task then
+    renders an anchor to `#work/task/undefined`, and its inertness reads as a
+    bug in the console rather than as a fact about the run.
+
+    RE-POINTED WITH WF-7: the one link to the run is the inspector's, so the
+    guard is there -- the anchor is rendered only when the step has a task id,
+    and a step without one says it has no task yet.
     """
-    wf = _src("Workflows.tsx")
-    node = _decl(wf, "function StepNode(")
-    # The guard is a ternary on the id now rather than an early return, so the
-    # check is on the BRANCH existing, not on one spelling of it.
-    assert "{taskId ? (" in node, (
-        "every node is linked, including steps that have no task to open"
+    inspector = _decl(_src("WorkflowViews.tsx"), "export function StepInspector(")
+    assert "{taskId !== null && (" in inspector, (
+        "the inspector links every picked step, including steps that have no task to open"
     )
-    assert "has not reached" in node or "no task yet" in node, (
-        "a node with nothing to open does not say so, so its inertness reads as a bug"
+    assert "has not reached" in inspector or "no task yet" in inspector, (
+        "a picked step with nothing to open does not say so, so its inertness reads as a bug"
     )
 
 
