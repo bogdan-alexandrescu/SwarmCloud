@@ -51,6 +51,13 @@ from ..logs import StructuredLogger
 from ..procman import run_child
 from .base import RunnerContext, RunnerFailure, run_runner
 from .limits import platform_ceilings, resolve_limits
+from .streams import AgentStreamFiles
+
+#: Where the catalogue command's own stdout and stderr are captured, under
+#: `artifacts/`. `streams.agent_stream_files("generic")` returns this, so the
+#: worker publishes them live and keeps a final copy beside the runner's logs
+#: exactly as it does for a CLI agent's.
+STREAM_FILES = AgentStreamFiles(stdout="command.stdout.log", stderr="command.stderr.log")
 
 #: Where a program is looked up. `/opt/venv/bin` is first because that is the
 #: image's own virtualenv -- the one that has the worker and pytest installed --
@@ -289,8 +296,8 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
             clamped=list(limits.clamped),
             effective=limits.as_dict(),
         )
-    stdout_path = ctx.artifacts_dir / "command.stdout.log"
-    stderr_path = ctx.artifacts_dir / "command.stderr.log"
+    stdout_path = ctx.artifacts_dir / STREAM_FILES.stdout
+    stderr_path = ctx.artifacts_dir / STREAM_FILES.stderr
 
     log.info("running catalogue command", command=command.name, argv=argv, cwd=str(cwd))
     result = run_child(

@@ -44,10 +44,27 @@ class StreamCapture:
     _thread: threading.Thread | None = field(default=None, repr=False)
 
     def pump(self, source: Any) -> None:
-        """Drain `source` into `path`, writing at most `limit` bytes."""
+        """Drain `source` into `path`, writing at most `limit` bytes.
+
+        `read1`, NOT `read`, AND THAT ONE CALL IS WHAT MAKES OUTPUT LIVE. The
+        Popen pipe is a `BufferedReader`, and `BufferedReader.read(n)` blocks
+        until `n` bytes have arrived or the pipe closes. With `read(65536)` a
+        child that printed and flushed one 392-byte line at t=0 had that line
+        reach this file only when it EXITED (measured: 3.1 s later, at exit).
+        So nothing under 64 KiB of any stream -- the worker's capture of the
+        runner and the runner's capture of the agent CLI both use this class --
+        existed on disk while the attempt ran, and the live-tail publisher had
+        nothing to publish: staging held zero `logs/live/` objects across 118
+        attempts of two tenants (#184). `read1(n)` returns whatever one read of
+        the pipe yields, up to `n`, as soon as there is any.
+
+        A source without `read1` (a plain raw stream in a test) falls back to
+        `read`, which for a raw stream already returns what is available.
+        """
+        reader = getattr(source, "read1", None) or source.read
         with self.path.open("wb") as sink:
             while True:
-                chunk = source.read(65536)
+                chunk = reader(65536)
                 if not chunk:
                     break
                 if self.written >= self.limit:
