@@ -319,10 +319,11 @@ describe('keyboard traversal', () => {
       ringed += r.ringed
 
       // EVERY `?` ON THIS SCREEN, OPENED FROM THE KEYBOARD AND DISMISSED WITH
-      // ESCAPE. `button[aria-label^="What "]` is both kinds -- `HelpCard`'s
-      // "What absent vs zero means" and `SectionQuestion`'s "What the Work
-      // section answers" -- and no other control in the app is named that way.
-      const triggers = [...container.querySelectorAll<HTMLElement>('button[aria-label^="What "]')]
+      // ESCAPE. `button[aria-label^="Help: "]` is both kinds -- `HelpCard`'s
+      // "Help: Absent is not zero" and `SectionQuestion`'s "Help: Work
+      // answers" -- and no other control in the app is named that way (the
+      // rail's own `?` is plain "Help", with no colon).
+      const triggers = [...container.querySelectorAll<HTMLElement>('button[aria-label^="Help: "]')]
       for (const trigger of triggers) {
         const name = trigger.getAttribute('aria-label') ?? ''
         await act(async () => {
@@ -524,7 +525,7 @@ describe('keyboard traversal', () => {
       await act(async () => {
         el.focus()
       })
-      if (el.matches('button[aria-label^="What "]')) {
+      if (el.matches('button[aria-label^="Help: "]')) {
         await act(async () => {
           fireEvent.keyDown(el, { key: 'Escape' })
         })
@@ -595,11 +596,13 @@ describe('keyboard traversal', () => {
     const { container, unmount } = render(<App />)
     await settle()
 
-    // The first `?` whose card actually carries a tab stop: `SectionQuestion`
-    // renders a card with none, and a bridge over nothing proves nothing.
+    // The first `?` whose card actually carries a tab stop, because a bridge
+    // over nothing proves nothing. Since AH-5 that is usually the head's
+    // `SectionQuestion`, whose card now ends in `Help →` and is bridged by the
+    // same `useCardBridge` the topic cards use -- so this exercises both.
     let trigger: HTMLElement | null = null
     let link: HTMLElement | null = null
-    for (const candidate of container.querySelectorAll<HTMLElement>('button[aria-label^="What "]')) {
+    for (const candidate of container.querySelectorAll<HTMLElement>('button[aria-label^="Help: "]')) {
       await act(async () => {
         candidate.focus()
       })

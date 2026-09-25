@@ -32,7 +32,7 @@ import { createElement } from 'react'
 import { HELP, HELP_ROUTE, TOPIC_IDS, helpAnchor, topicFor, type TopicId } from '../src/help'
 import { HelpNote } from '../src/HelpCard'
 import { HelpScreen } from '../src/HelpSection'
-import { NEVER_WRITTEN, REAL_STATES, REASON_COPY } from '../src/types'
+import { CONCURRENCY_STATES, NEVER_WRITTEN, REAL_STATES, REASON_COPY, TERMINAL_STATES } from '../src/types'
 
 // esbuild inlines this file, so __dirname would be the build directory. The
 // source tree is found from the repo layout instead, which is stable.
@@ -137,6 +137,268 @@ test('an unknown topic is reported, not silently swallowed', () => {
   // ...and the page still carries everything it does have, rather than being
   // a bare error: a stale link should still land somewhere useful.
   assert.ok(markup.includes(`id="${HELP['absent-vs-zero'].anchor}"`))
+})
+
+/**
+ * AH-17. THE UNKNOWN TOPIC IS THE SHARED EMPTY STATE, NOT A HAND-BUILT ONE.
+ *
+ * It was a warn-coloured `.ctl-empty.is-partial` with two sentences, no mark,
+ * no link and no gap to the first group below it. Nothing about a stale link
+ * is PARTIAL -- this build has no such topic, which is a real answer -- so it
+ * is the default variant, one sentence, a way back to the top of Help, and the
+ * one large break under it.
+ *
+ * MUTATION: put the `.is-partial` panel back. It is partial, has no mark, two
+ * paragraphs, and no `#help` link.
+ */
+test('an unknown topic is the default empty state: a mark, one sentence, a link out', () => {
+  const markup = renderToStaticMarkup(createElement(HelpScreen, { topic: 'a-topic-that-was-renamed' }))
+  const panel = /<div class="ctl-empty"[^>]*>[\s\S]*?<\/div>/.exec(markup)
+  assert.ok(panel, 'the unknown topic is not the default .ctl-empty variant')
+  assert.ok(!markup.includes('is-partial'), 'an unknown topic is drawn as a partial read')
+  assert.ok(panel[0].includes('ctl-mark is-zero'), 'the unknown-topic state carries no mark')
+  assert.equal((panel[0].match(/<p[\s>]/g) ?? []).length, 1, 'more than one sentence')
+  assert.ok(panel[0].includes('href="#help"'), 'no way back to the top of Help')
+  assert.match(markup, /margin-bottom:var\(--ctl-s5\)/, 'no large break under the unknown-topic state')
+})
+
+// ---------------------------------------------------------------------------
+// The Help page's own chrome (AH-10, AH-15, AH-16)
+// ---------------------------------------------------------------------------
+
+/** The opening tag of the topic block at `id`, with its inline style. */
+function topicTag(markup: string, id: TopicId): string {
+  const m = new RegExp(`<div id="${helpAnchor(id)}"[^>]*>`).exec(markup)
+  assert.ok(m, `no topic block for ${id}`)
+  return m[0]
+}
+
+/**
+ * AH-15. §6.12: a page head is a title and actions, NO subtitle. This one
+ * described about one topic in eight ("why a figure looks the way it does")
+ * and restated the deep-linked title a second time under the h1.
+ *
+ * MUTATION: put the `.sub` paragraph back.
+ */
+test('the Help page carries no subtitle', () => {
+  for (const topic of ['', 'absent-vs-zero']) {
+    const markup = renderToStaticMarkup(createElement(HelpScreen, { topic }))
+    assert.ok(!markup.includes('class="sub"'), `the Help page (topic "${topic}") has a subtitle`)
+  }
+})
+
+/**
+ * AH-10. The h1, the group h2 and the topic h3 all rendered at 18px/600, so the
+ * page had one heading size for three ranks. A topic is a bordered card, and a
+ * card's title is --t-lead.
+ *
+ * MUTATION: set the h3 back to --t-title.
+ */
+test('a topic heading is a card title, one step under the page title', () => {
+  const markup = renderToStaticMarkup(createElement(HelpScreen, { topic: '' }))
+  const h3 = /<h3 style="([^"]*)">/.exec(markup)
+  assert.ok(h3, 'no topic heading rendered')
+  assert.match(h3[1]!, /font-size:var\(--t-lead\)/)
+  assert.match(h3[1]!, /line-height:var\(--lh-lead\)/)
+  assert.ok(!h3[1]!.includes('--t-title'), 'the topic heading is still the page-title size')
+})
+
+/**
+ * AH-16. A deep-linked topic was marked by a 3px --text-dim rule and nothing
+ * else: no surface step, and the dim rule is the weakest ink on the page. The
+ * target is a surface step plus a 2px ink rule (§1.3's selected treatment),
+ * and it lands with room above it for the group heading.
+ *
+ * MUTATION: drop the surface step, or put the --text-dim rule back.
+ */
+test('the deep-linked topic is marked by a surface step and an ink rule', () => {
+  const markup = renderToStaticMarkup(createElement(HelpScreen, { topic: 'absent-vs-zero' }))
+  const on = topicTag(markup, 'absent-vs-zero')
+  assert.match(on, /background:var\(--surface-2\)/, 'the target has no surface step')
+  assert.match(on, /border-left:2px solid var\(--text\)/, 'the target has no 2px ink rule')
+  assert.ok(!on.includes('--text-dim'), 'the target is still marked in the dim ink')
+  // A LARGER margin than the old --ctl-s5, so the group heading above the
+  // first topic of a group is not clipped when that topic is the target.
+  assert.ok(!/scroll-margin-top:var\(--ctl-s5\)"/.test(on), 'the scroll margin was not enlarged')
+  // And only the target: every other topic sits on the ordinary surface.
+  const off = topicTag(markup, 'read-failed')
+  assert.ok(!off.includes('--surface-2'), 'an untargeted topic carries the target treatment')
+})
+
+// ---------------------------------------------------------------------------
+// Topic text (AG-4, AG-19, AH-2, AH-3)
+// ---------------------------------------------------------------------------
+
+/**
+ * AG-4. On a RUNNING attempt the peak-memory tile is PENDING -- the worker
+ * writes the figure at exit -- and the topic taught the opposite: "an attempt
+ * still running has none, so the figure is absent". Absent means nothing will
+ * ever record it; pending means it has not been written YET.
+ *
+ * MUTATION: restore the old short form.
+ */
+test('peak memory on a running attempt is pending, not absent', () => {
+  const t = HELP['peak-memory']
+  assert.match(t.short, /pending/i, 'the card does not say a running attempt is pending')
+  assert.ok(!/still running[^.]*absent/i.test(t.short), 'the card still calls a running attempt absent')
+  assert.ok(t.long.some((p) => /pending/i.test(p)), 'the long form does not say pending')
+})
+
+/**
+ * AG-19. Two `?` glyphs opened topics that were about something else: the
+ * Attempts toolbar opened "One message belongs to one failure" and the one
+ * beside `masked N` opened "Credential names, never values". Neither page
+ * explained what the glyph sat beside. These are the two topics that do,
+ * built from the marks' own `say` strings.
+ *
+ * MUTATION: delete either topic. The call sites have nowhere to point.
+ */
+test('event paging and serve-time masking each have a topic of their own', () => {
+  const paging = topicFor('event-paging')
+  assert.ok(paging, 'there is no event-paging topic')
+  assert.match(paging.short, /oldest-first/)
+  const masking = topicFor('masking-is-serve-time')
+  assert.ok(masking, 'there is no masking-is-serve-time topic')
+  assert.match(masking.short, /served/)
+  assert.match(masking.short, /bucket/)
+  assert.match(masking.short, /rotate/)
+  // Placed where a reader of an attempt would look for them.
+  assert.equal(paging.group, 'an-attempt')
+  assert.equal(masking.group, 'an-attempt')
+})
+
+/**
+ * AG-19, AND WHICH SIDE THE ONE-PAGE LIMIT IS ON. The first `event-paging`
+ * said the events route "returns no page token", that there is "no token to
+ * ask for the next", and that past one page the newest events "cannot be
+ * fetched at all". It was built from AttemptTimeline's `say` strings, and
+ * those went stale with #19: `GET /v1/tasks/{id}/events` returns
+ * `next_page_token` whenever more events exist and accepts `order=desc`
+ * (swarm_api/routes/tasks.py, `list_events`). What is still true is narrower
+ * and is about THIS SCREEN: api.ts asks for one page, oldest-first, and never
+ * sends the token back.
+ *
+ * So this reads both sources rather than trusting a sentence. While the route
+ * pages, the topic may not say it cannot; while the UI does not follow the
+ * token, the topic has to say that the screen stops at one page.
+ *
+ * MUTATION: restore "returns no page token". The route assertion fails.
+ * MUTATION: drop the sentence about this screen. The UI assertion fails.
+ */
+test('the event-paging topic puts the one-page limit on this screen, not on the route', () => {
+  const t = HELP['event-paging']
+  const all = [t.short, ...t.long].join(' ')
+
+  const route = readFileSync(resolve(SRC, '..', '..', 'swarm-api', 'swarm_api', 'routes', 'tasks.py'), 'utf8')
+  const start = route.indexOf('def list_events(')
+  assert.ok(start >= 0, 'routes/tasks.py has no list_events; this check is reading the wrong file')
+  const end = route.indexOf('\n@router', start)
+  const listEvents = route.slice(start, end === -1 ? undefined : end)
+  const routePages = listEvents.includes('page_token') && listEvents.includes('"next_page_token"')
+  if (routePages) {
+    assert.ok(
+      !/returns no page token|no token to ask|cannot be fetched at all/i.test(all),
+      'the topic says the events route cannot page, and list_events returns next_page_token',
+    )
+  } else {
+    assert.ok(!/next_page_token|order=desc/.test(all), 'the topic describes paging the route no longer offers')
+  }
+
+  const api = readFileSync(join(SRC, 'api.ts'), 'utf8')
+  const reads = [...api.matchAll(/\/events\?[^`'"]*/g)].map((m) => m[0])
+  assert.ok(reads.length > 0, 'api.ts reads no events route; this check is vacuous')
+  if (!reads.some((r) => r.includes('page_token'))) {
+    assert.match(
+      t.short,
+      /this screen[^.]*(?:does not|never)[^.]*token/i,
+      'the UI reads one page and never follows the token, and the topic does not say so',
+    )
+  }
+})
+
+/**
+ * AG-19. `masking-is-serve-time` said the count beside an artifact is "the
+ * number of values hidden in this copy" and read a zero as "nothing matched
+ * the rules". The API masks and counts only the WINDOW it serves (inspect.py:
+ * `redact()` runs over this chunk's bytes and `redaction_count` is that call's
+ * count), and the viewer shows a large artifact one window at a time, marked
+ * `partial`. On a partial read `0 of N families` says nothing about the bytes
+ * that were not served.
+ *
+ * MUTATION: restore "hidden in this copy" with no word about the window.
+ */
+test('the masking topic says its count covers only the bytes this read served', () => {
+  const t = HELP['masking-is-serve-time']
+  const all = [t.short, ...t.long].join(' ')
+  assert.match(t.short, /\bonly\b[^.]*\bserved\b/i, 'the card does not say the count is over the served bytes alone')
+  assert.ok(t.long.some((p) => /partial/i.test(p)), 'the long form never mentions a partial read')
+  assert.ok(!/hidden in this copy/i.test(all), 'the topic still counts the whole copy')
+})
+
+/**
+ * AH-2. The topic taught the wrong encoding: a never-measured figure "is
+ * written as a phrase, on a dashed tile", and the two absences differ by
+ * colour alone. §8.6 is the encoding: a digit is measured, `—` or the hatched
+ * `not measured` mark is never recorded, the dashed `not read` mark is a read
+ * that failed, and `~` is stale. The dashed rule on a tile is a second
+ * channel, not the claim.
+ *
+ * MUTATION: restore the old short form ("a phrase, on a dashed tile").
+ */
+test('absent-vs-zero teaches the encoding the screens actually draw', () => {
+  const t = HELP['absent-vs-zero']
+  assert.ok(!t.short.includes('dashed tile'), 'the card still says the dashed tile is the encoding')
+  const all = [t.short, ...t.long].join(' ')
+  for (const mark of ['not measured', 'not read', 'real zero', '—', '~']) {
+    assert.ok(all.includes(mark), `the topic never names the ${mark} encoding`)
+  }
+  assert.ok(!/in the warning colour, because/.test(all), 'colour is still taught as the distinction')
+  assert.ok(t.long.some((p) => /second channel/.test(p)), 'the dashed rule is not described as secondary')
+  assert.ok(t.long.some((p) => /Timeline/.test(p)), 'the Timeline tiles are not covered')
+})
+
+/**
+ * AH-3. The states topic labelled SUCCEEDED, FAILED and CANCELLED "waiting --
+ * costs nothing": true about the cost and false about the state. A finished
+ * task is not waiting for anything. Three notes, and the third is derived
+ * from TERMINAL_STATES rather than typed out.
+ *
+ * MUTATION: go back to two notes. A terminal state reads `waiting`.
+ */
+test('the states topic tells finished apart from waiting', () => {
+  const values = HELP.states.values?.() ?? []
+  assert.equal(values.length, REAL_STATES.length)
+  const notes = new Set<string>()
+  for (const v of values) {
+    const state = v.term as (typeof REAL_STATES)[number]
+    const note = v.note ?? ''
+    notes.add(note)
+    if (CONCURRENCY_STATES.has(state)) assert.match(note, /reserves capacity/, `${state} is not marked as reserving`)
+    else if (TERMINAL_STATES.has(state)) {
+      assert.match(note, /finished/, `${state} is not marked as finished`)
+      assert.ok(!/waiting/.test(note), `${state} is called waiting`)
+    } else assert.match(note, /waiting/, `${state} is not marked as waiting`)
+  }
+  assert.equal(notes.size, 3, 'the states topic does not draw exactly three notes')
+})
+
+/**
+ * CH-3. The terms on the Help page were raw uppercase enums in a mono face:
+ * LEASED, DISPATCHED -- shouting in a list whose job is to be read. They are
+ * lowercased by CSS, so the strings stay the owner's spelling (and the
+ * anti-drift test above still finds them) while the page stops shouting.
+ *
+ * MUTATION: drop the transform, or lowercase the strings instead of the style.
+ */
+test('the Help page lowercases its enum terms with a style, not by rewriting them', () => {
+  const markup = renderToStaticMarkup(createElement(HelpScreen, { topic: '' }))
+  const dts = [...markup.matchAll(/<dt style="([^"]*)">([^<]*)<\/dt>/g)]
+  assert.ok(dts.length > 0, 'the Help page renders no terms')
+  for (const [, style, term] of dts) {
+    assert.match(style!, /text-transform:lowercase/, `the term ${term} is not lowercased`)
+  }
+  // The text itself is untouched: the states still arrive in their own case.
+  assert.ok(dts.some(([, , term]) => term === REAL_STATES.find((s) => CONCURRENCY_STATES.has(s))))
 })
 
 /**

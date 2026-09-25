@@ -2007,28 +2007,133 @@ export function whyAgent(task: Task): string {
 }
 
 /**
+ * What an `elapsed` figure is a measure of. A caller choosing the LABEL for the
+ * figure -- `run` in the inspector's facts strip, a column head -- reads this
+ * rather than parsing the text: a `run` key over a `never-ran` figure is the
+ * AG-3 contradiction all over again.
+ *
+ *   ran        a finished task that started: from its last start to its end
+ *   running    STARTING or RUNNING now; the figure is this attempt's run so
+ *              far and is still growing
+ *   waiting    live and not running. Only when NOTHING HAS STARTED AND NO
+ *              SLOT IS HELD (READY, PARKED, QUEUED, SUBMITTED with no
+ *              `started_at`) is there a figure: the task's age, all of it a
+ *              wait, as `waiting 4m 0s`, ticking. LEASED and DISPATCHED, and
+ *              any live state after an earlier attempt started, print the
+ *              state word alone and do not tick -- see `elapsed` for why. So
+ *              `waiting` does NOT imply a figure, and it does not imply that
+ *              nothing ran: `task.started_at !== null` is what says an
+ *              earlier attempt did.
+ *   never-ran  finished without ever starting; there is no run to time
+ *   unknown    no span the document can time: no creation time, a finished
+ *              task whose end was never recorded, or STARTING or RUNNING
+ *              with no start recorded
+ */
+export type ElapsedPhase = 'ran' | 'running' | 'waiting' | 'never-ran' | 'unknown'
+
+/**
+ * The two states in which the task document's `started_at` is THIS attempt's
+ * start, so `now - started_at` is time run. The worker writes `started_at` on
+ * DISPATCHED -> STARTING and nothing clears it, so in every other live state a
+ * `started_at` present is an earlier attempt's. `stepviews.ts` and `dag.ts`
+ * draw the same line for the same reason.
+ */
+const RUN_STATES: ReadonlySet<TaskState> = new Set<TaskState>(['STARTING', 'RUNNING'])
+
+/**
  * Column 6, "Elapsed".
  *
  * `started_at` is written on DISPATCHED -> STARTING, so a LEASED or
- * DISPATCHED task legitimately has none. That must read "queued 4m", never
- * "0s" and never "Invalid Date" -- and `completed_at` can be null on a row
- * that went terminal between two polls, so the terminal branch cannot assume
- * it.
+ * DISPATCHED task legitimately has none. That must never read "0s" or
+ * "Invalid Date" -- and `completed_at` can be null on a row that went
+ * terminal between two polls, so the terminal branch cannot assume it.
+ *
+ * WALL TIME IS NEVER REPORTED AS RUN TIME (AG-3). A terminal task that never
+ * started -- cancelled while it waited, failed at admission -- used to fall
+ * back from `started_at` to `created_at`, and the drawer printed that
+ * created-to-completed span as `run 27m 57s` beside a `never ran` chip. There
+ * is no run to time, so the answer is the words `never ran`.
+ *
+ * THE WORD SAYS WHAT AN UNSTARTED TASK IS DOING (AG-12). It was `queued` for
+ * every one of them, which on LEASED and DISPATCHED -- states that HOLD A POOL
+ * SLOT, in the tab that means exactly that -- contradicted the tab it sat in.
+ * A concurrency state is named by its own state word; everything else
+ * unstarted costs nothing and reads `waiting`. The word comes from the state,
+ * not from a list typed here.
+ *
+ * A STATE WORD IN FRONT OF A DURATION READS AS TIME IN THAT STATE, and the
+ * task document holds that time for NO state: nothing records when a task was
+ * leased, dispatched, parked or made ready. (`updated_at` is not it: it also
+ * moves on writes that change no state -- the scheduler's `record_blockers`, a
+ * cancel request, a checkpoint.)
+ * AG-12's first form printed the age after the word -- `leased 3h 0m` for a
+ * task that queued three hours and was leased a second ago -- which is what a
+ * stuck lease looks like, and an operator chases it. So the concurrency states
+ * print the word alone. The age is the inspector's `age` fact.
+ *
+ * A START ON THE DOCUMENT IS NOT A RUN IN PROGRESS. `started_at` survives a
+ * park, a promote back to READY and a reclaim -- nothing on the platform
+ * clears it -- so a task that ran, hit quota and parked forty minutes ago
+ * still carries its start. Timed from there it read `41m 0s`, ticking, phase
+ * `running`, on a task holding no capacity and running nothing. Only in
+ * `RUN_STATES` is the start this attempt's, so only there is the figure run
+ * time.
+ *
+ * AND THE AGE IS NOT A WAIT ONCE SOMETHING HAS RUN. The first fix for the
+ * above timed a task between attempts from `created_at` and printed `waiting
+ * 50m 0s`: fifty minutes of waiting for a task that ran for thirty-six of them.
+ * The age includes every earlier run and the document does not say how much,
+ * so between attempts there is no figure to give: the text is the state word,
+ * and nothing ticks. Only a task that has never started and holds no slot has
+ * a wait the document can time, and for it the whole age is one.
+ *
+ * NOTE ON WIDTH. Every form here fits the Agents list's `[age]` track, whose
+ * floor `shell.test.tsx` derives from this function over every state, started
+ * or not: the longest is `waiting 99d 23h`, 15 characters.
+ *
+ * WHAT THE TASK DOCUMENT CANNOT TELL APART. For a finished task the figure is
+ * last start to end. A task cancelled while PARKED, after an earlier attempt
+ * started, has a start and an end and nothing that says it was parked in
+ * between, so that span includes the parked time. The attempt documents do
+ * not settle it either -- a park writes no attempt end -- and the task is
+ * the only read the Agents list makes.
  */
-export function elapsed(task: Task, now: number): { text: string; ticking: boolean } {
+export function elapsed(
+  task: Task,
+  now: number,
+): { text: string; ticking: boolean; phase: ElapsedPhase } {
   const ms = (v: string | null) => (v ? new Date(v).getTime() : NaN)
   const created = ms(task.created_at)
   const started = ms(task.started_at)
   const completed = ms(task.completed_at)
 
-  if (Number.isFinite(completed)) {
-    const from = Number.isFinite(started) ? started : created
-    if (!Number.isFinite(from)) return { text: '\u2014', ticking: false }
-    return { text: formatDuration(completed - from), ticking: false }
+  if (TERMINAL_STATES.has(task.state)) {
+    if (!Number.isFinite(started)) return { text: 'never ran', ticking: false, phase: 'never-ran' }
+    // A finished task with no recorded end has no run length, and counting on
+    // to `now` would put a growing figure on a task that is over. Every
+    // terminal write sets `completed_at` with the state, so this is an older
+    // document or a writer that forgot; the figure is an absence either way.
+    return Number.isFinite(completed)
+      ? { text: formatDuration(completed - started), ticking: false, phase: 'ran' }
+      : { text: '\u2014', ticking: false, phase: 'unknown' }
   }
-  if (Number.isFinite(started)) return { text: formatDuration(now - started), ticking: true }
-  if (Number.isFinite(created)) return { text: `queued ${formatDuration(now - created)}`, ticking: true }
-  return { text: '\u2014', ticking: false }
+  if (RUN_STATES.has(task.state)) {
+    // STARTING or RUNNING with no start recorded: the worker writes the two in
+    // one update, so this is an older document or a writer that forgot. The
+    // age is not a run length, and the state chip already says RUNNING.
+    return Number.isFinite(started)
+      ? { text: formatDuration(now - started), ticking: true, phase: 'running' }
+      : { text: '\u2014', ticking: false, phase: 'unknown' }
+  }
+  if (Number.isFinite(started) || CONCURRENCY_STATES.has(task.state)) {
+    // Between attempts, or holding a slot before this attempt starts. The
+    // document has no time for either; see above.
+    return { text: task.state.toLowerCase(), ticking: false, phase: 'waiting' }
+  }
+  if (Number.isFinite(created)) {
+    return { text: `waiting ${formatDuration(now - created)}`, ticking: true, phase: 'waiting' }
+  }
+  return { text: '\u2014', ticking: false, phase: 'unknown' }
 }
 
 /**

@@ -12,6 +12,7 @@ import { nudgePane } from './focus'
 import { helpAnchor, type TopicId } from './help'
 import { timeAgo } from './Shell'
 import { DOCK, DOCK_COLLAPSED, clampPane, readPane, summariseProbes, writePane } from './panes'
+import { AGE_TICK_MS, useNow } from './useNow'
 
 /**
  * THE DOCK (§B3), AND THE TELEMETRY STRIP IT SWALLOWS (§B18).
@@ -62,20 +63,17 @@ const HELP_TOPIC: TopicId = 'api-reads'
 
 export function Dock() {
   const probes = useSyncExternalStore(subscribeProbes, probeSnapshot, probeSnapshot)
-  const [, tick] = useState(0)
+  // The ages on this strip are the whole point of it, so they move on their
+  // own rather than only when a fetch happens to land -- on the SHARED clock
+  // (useNow.ts) the head and every screen's sub-line read, so the dock's
+  // `newest 22s ago` and a sub-line's `read just now` are one instant (CH-1).
+  const now = useNow(AGE_TICK_MS)
   const [open, setOpen] = useState(false)
   const [height, setHeight] = useState(() => readPane(DOCK))
   const dragging = useRef(false)
   const shell = useRef<HTMLDivElement | null>(null)
   const s = summariseProbes(probes)
   const drawn = probes.length > 0
-
-  // The ages on this strip are the whole point of it, so they move on their
-  // own rather than only when a fetch happens to land.
-  useEffect(() => {
-    const id = setInterval(() => tick((n) => n + 1), 5000)
-    return () => clearInterval(id)
-  }, [])
 
   // `--dock-h`: WHAT IT IS STILL FOR, NOW THAT NOTHING RESERVES SPACE.
   //
@@ -287,7 +285,7 @@ export function Dock() {
             {s.newestSuccessAt === null ? (
               <span className="ctl-em">nothing has loaded</span>
             ) : (
-              `newest ${timeAgo(s.newestSuccessAt)}`
+              `newest ${timeAgo(s.newestSuccessAt, now)}`
             )}
           </span>
         </span>
@@ -312,6 +310,9 @@ export function Dock() {
             </a>
             <a href="#reference">Every read, in a table &rarr;</a>
           </div>
+          {/* The cells read the wall clock as they render, and they render on
+              this component's shared tick, so their ages move with the line
+              above them. */}
           <DataSourceCells probes={probes} />
           {/* THE PROVENANCE STRIP: when, over what, from how many. One line,
               and it stays because a p95 whose basis is unstated is a p95 that

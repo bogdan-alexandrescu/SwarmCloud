@@ -1442,11 +1442,13 @@ function RunningBody({
               <th scope="col">Agent</th>
               <th scope="col">State</th>
               {/* ELAPSED, NOT RUNTIME (AG-3). A LEASED or DISPATCHED task has
-                  no `started_at` -- the worker writes it on DISPATCHED ->
-                  STARTING -- so the cell under this heading is its WAIT, and
-                  `elapsed()` prefixes it with the state it is waiting in. A
-                  heading saying "Runtime" over a wait is the run-time claim
-                  the drawer's `run` fact stopped making for the same rows. */}
+                  no `started_at` of this attempt -- the worker writes it on
+                  DISPATCHED -> STARTING -- so the cell under this heading is
+                  not a run for those rows. `elapsed()` prints their state
+                  word alone: the task's age after `leased` read as time held
+                  in the lease, which is what a stuck lease looks like. A
+                  heading saying "Runtime" would be the run-time claim the
+                  drawer's `run` fact stopped making for the same rows. */}
               <th scope="col" className="is-num">
                 Elapsed
               </th>
@@ -1517,8 +1519,11 @@ function RunningRow({ task }: { task: Task }) {
  * The one cell on this screen that has to move on its own, and therefore the
  * one place the 1Hz clock lives.
  *
- * A LEASED task has no `started_at` -- lifecycle writes it on
- * DISPATCHED -> STARTING -- so `elapsed` says "queued 4m", never "0s".
+ * A LEASED task has no `started_at` of its own attempt -- lifecycle writes it
+ * on DISPATCHED -> STARTING -- so `elapsed` says "leased", never "0s" and
+ * never the task's age after the word, and says it on a retry too, whose
+ * `started_at` is the previous attempt's. Only STARTING and RUNNING rows
+ * tick here.
  */
 function Runtime({ task }: { task: Task }) {
   const now = useNow()

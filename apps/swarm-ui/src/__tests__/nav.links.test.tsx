@@ -21,10 +21,24 @@
  */
 import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { act, render, screen } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { CAPACITY, INTERNAL_LINKS_MAY_NOT_USE_ALIASES, SECTIONS, WORK, fromHash } from '../App'
+import { App, CAPACITY, INTERNAL_LINKS_MAY_NOT_USE_ALIASES, SECTIONS, WORK, fromHash } from '../App'
 import { HELP_ROUTE } from '../help'
+
+/**
+ * The props App hands the agent list, captured. The list itself is not what
+ * these tests are about -- App's half of AG-17 is WHICH props it passes -- so
+ * it is replaced by a recorder, and every other screen renders for real.
+ */
+const agentsProps = vi.hoisted(() => [] as Record<string, unknown>[])
+vi.mock('../Agents', () => ({
+  AgentsScreen: (props: Record<string, unknown>) => {
+    agentsProps.push(props)
+    return null
+  },
+}))
 
 const SRC = join(__dirname, '..')
 
@@ -138,5 +152,72 @@ describe('internal navigation links', () => {
       if (r.tab !== wanted) dead.push(`${l.file}: #${l.hash} -> tab "${r.tab}"`)
     }
     expect(dead, 'these named a pane that does not exist and fell back to the first one').toEqual([])
+  })
+})
+
+describe('the links the frame draws itself', () => {
+  afterEach(() => {
+    window.location.hash = ''
+    agentsProps.length = 0
+  })
+
+  /**
+   * CH-5 (App half). The API reads page's "What these mean" was an unclassed
+   * anchor, so it fell back to the browser's own blue -- visited purple once
+   * followed -- in a product whose links are ink plus an underline.
+   *
+   * MUTATION: drop `ctl-link` from the anchor.
+   */
+  it('draws the API reads help link in the product link treatment', () => {
+    window.location.hash = '#reference'
+    render(<App />)
+    const link = screen.getByRole('link', { name: /What these mean/ })
+    expect(link.getAttribute('href')).toBe(`#${HELP_ROUTE}/api-reads`)
+    expect(link.className.split(/\s+/)).toContain('ctl-link')
+  })
+
+  /**
+   * AH-5. The head `?` is the way into Help -- ui-audit §B7.2/§B7.3 say so,
+   * and so did the comment on the rail's `?` -- but its card was a dead end:
+   * the section's question and nothing to follow.
+   *
+   * MUTATION: remove the link from the section card.
+   */
+  it("ends the head `?`'s card in a way into Help", async () => {
+    window.location.hash = '#overview/now'
+    const { container } = render(<App />)
+    const glyph = container.querySelector<HTMLButtonElement>('.ctl-q-glyph')
+    expect(glyph, 'the head carries no section `?`').not.toBeNull()
+    await act(async () => {
+      glyph!.focus()
+    })
+    const card = document.getElementById(glyph!.getAttribute('aria-controls') ?? '')
+    expect(card, 'focusing the head `?` opened no card').not.toBeNull()
+    const link = card!.querySelector('a')
+    expect(link, 'the section card is a dead end').not.toBeNull()
+    expect(link!.getAttribute('href')).toBe(`#${HELP_ROUTE}`)
+    expect(link!.textContent).toMatch(/Help/)
+  })
+
+  /**
+   * AG-17 (App half). With the inspector open, no row said which agent it was
+   * showing, because App never told the list: `taskId` stopped at the drawer.
+   *
+   * MUTATION: stop passing it. The list is rendered with no `taskId`.
+   */
+  it('tells the agent list which agent the inspector has open', () => {
+    window.location.hash = '#work/task/task_0123456789abcdef0123'
+    render(<App />)
+    const last = agentsProps[agentsProps.length - 1]
+    expect(last, 'the agent list was not rendered under an open inspector').toBeTruthy()
+    expect(last!.taskId).toBe('task_0123456789abcdef0123')
+  })
+
+  it('tells it that none is open when the inspector is shut', () => {
+    window.location.hash = '#work/running'
+    render(<App />)
+    const last = agentsProps[agentsProps.length - 1]
+    expect(last).toBeTruthy()
+    expect(last!.taskId).toBeNull()
   })
 })

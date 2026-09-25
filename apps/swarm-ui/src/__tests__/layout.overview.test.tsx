@@ -37,7 +37,7 @@ import STYLES from '../styles.css?raw'
 import APP_SOURCE from '../App.tsx?raw'
 import type { Result } from '../fetch'
 import type { SpendRollup } from '../api'
-import type { Account, AccountsPage, Capacity, Stats, Task, TaskPage } from '../types'
+import { elapsed, type Account, type AccountsPage, type Capacity, type Stats, type Task, type TaskPage } from '../types'
 
 const api = vi.hoisted(() => ({
   loadCapacity: vi.fn(),
@@ -391,17 +391,24 @@ describe('a card says what it opens, and a count is not a verdict', () => {
   })
 
   /**
-   * AG-3. A COLUMN THAT HOLDS A WAIT DOES NOT CLAIM RUN TIME.
+   * AG-3. A COLUMN THAT HOLDS NO RUN DOES NOT CLAIM RUN TIME.
    *
    * A LEASED task has no `started_at` -- the worker writes it on DISPATCHED ->
-   * STARTING -- so its cell is how long it has WAITED, prefixed with the state
-   * it waits in. The column was headed "Runtime", which labelled that wait as
-   * the agent's run. The property pinned is the one the finding is about: the
-   * heading over a not-started row's figure makes no claim that anything ran.
+   * STARTING -- so its cell is not a run. The column was headed "Runtime",
+   * which labelled whatever sat there as the agent's run. The property pinned
+   * is the one the finding is about: the heading over a not-started row's
+   * cell makes no claim that anything ran.
+   *
+   * THE CELL IS NO LONGER A DURATION, and this used to find it by its digit.
+   * It held the task's age after the state word, `leased 3h 0m`, which read as
+   * three hours held in a lease taken a second ago; `elapsed()` now prints the
+   * state word alone for LEASED and DISPATCHED (types.test.ts pins why). So
+   * the cell is found as `elapsed()`'s text for this task, which is what the
+   * column renders, and it must not read as time in the lease.
    *
    * MUTATION: head the column "Runtime" again.
    */
-  it('does not head a not-started agent’s wait as run time', async () => {
+  it('does not head a not-started agent’s cell as run time', async () => {
     const leased = liveTask({ id: 'task_leased00000000000000', state: 'LEASED', started_at: null })
     const el = await mountOverview({
       tasks: { tasks: [leased], next_page_token: null },
@@ -413,8 +420,10 @@ describe('a card says what it opens, and a count is not a verdict', () => {
     const row = table!.querySelector('tbody tr')!
     const cells = [...row.children]
     const figure = cells[cells.length - 1]!
-    // The row's last cell is the duration, and it is the wait.
-    expect(figure.textContent ?? '').toMatch(/\d/)
+    // The row's last cell is `elapsed()`'s answer for this task, and it does
+    // not put the task's age after the state word.
+    expect(figure.textContent ?? '').toBe(elapsed(leased, Date.now()).text)
+    expect(figure.textContent ?? '', 'the age reads as time held in the lease').not.toMatch(/^leased\s+\d/)
     const head = heads[heads.length - 1] ?? ''
     expect(head, 'the duration column has no heading').not.toBe('')
     expect(head, `a not-started agent's wait sits under "${head}"`).not.toMatch(/run/i)

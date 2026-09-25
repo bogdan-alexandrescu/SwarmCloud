@@ -161,6 +161,37 @@ describe('Absent', () => {
     expect(e.querySelectorAll('p')).toHaveLength(1)
     expect(e.querySelector('.ctl-empty-foot')?.textContent).toBe('read 2m ago')
   })
+
+  /**
+   * §6.9's SHAPE IS FOUR THINGS AND THIS DREW THREE. Mark, heading, one
+   * sentence -- and "a link out", which had no slot, so every screen that
+   * wanted one hand-built a panel instead (Shell.tsx's `.state` box, the Help
+   * page's unknown-topic panel). CH-10, CP-21, AH-17.
+   *
+   * MUTATION: accept `link` and render nothing for it. No anchor in the panel.
+   */
+  it('ends in a link out, after the one sentence, in the link treatment', () => {
+    const e = one(
+      <Absent kind="zero" heading="No unreleased leases" say="A real zero." link={{ href: '#capacity/pools', label: 'Pools' }}>
+        Across every tenant.
+      </Absent>,
+    )
+    const a = e.querySelector('a')
+    expect(a, 'the empty state drew no link out').not.toBeNull()
+    expect(a!.getAttribute('href')).toBe('#capacity/pools')
+    expect(a!.textContent).toBe('Pools')
+    expect(a!.className).toContain('ctl-link')
+    // Still ONE paragraph: the link closes the sentence rather than adding a
+    // second one, which is the thing §6.9 forbids.
+    expect(e.querySelectorAll('p')).toHaveLength(1)
+    expect(e.querySelector('p')!.textContent).toMatch(/^Across every tenant\.\s+Pools$/)
+  })
+
+  it('draws the link out alone when the heading already carries the fact', () => {
+    const e = one(<Absent kind="zero" heading="Nothing here" say="A real zero." link={{ href: '#help', label: 'Help' }} />)
+    expect(e.querySelectorAll('p')).toHaveLength(1)
+    expect(e.querySelector('p > a.ctl-link')?.getAttribute('href')).toBe('#help')
+  })
 })
 
 describe('Mark', () => {
