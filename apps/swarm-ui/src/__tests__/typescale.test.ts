@@ -281,11 +281,12 @@ describe('B5.2: casing is a rule, and the rule is that nothing shouts', () => {
    * allowance cannot excuse the same declaration anywhere else; the lane that
    * removes them deletes these two entries, and a stale entry is reported in
    * the log. Nothing may be ADDED to this list: a new finding fails.
+   *
+   * EMPTY NOW. The shell/help lane (#145) took both declarations out of
+   * `CARD_TITLE`, and deleted the two entries when it merged this file in, so
+   * nothing is excused any more.
    */
-  const PENDING: ReadonlyArray<{ file: string; object: string; text: string }> = [
-    { file: 'HelpCard.tsx', object: 'CARD_TITLE', text: "letterSpacing: '.04em'" },
-    { file: 'HelpCard.tsx', object: 'CARD_TITLE', text: "textTransform: 'uppercase'" },
-  ]
+  const PENDING: ReadonlyArray<{ file: string; object: string; text: string }> = []
   const SHOUT_TSX = /textTransform\s*:\s*['"`]uppercase['"`]|text-transform\s*:\s*uppercase/g
   const TRACK_TSX = /letterSpacing\s*:\s*(?:['"`]\s*(?:0?\.\d+em|[1-9][\d.]*(?:em|px))\s*['"`]|[1-9][\d.]*)|letter-spacing\s*:\s*(?:0?\.\d+em|[1-9][\d.]*(?:em|px))/g
 

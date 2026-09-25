@@ -1192,15 +1192,20 @@ body {
        `scan-terraf…` at EVERY width, 1440 included. A track sized under its own
        longest known value is a truncation with no width band to blame. */
     [step] minmax(0, 120px)
-    /* 15ch, NOT 76px (AG-11). The longest thing this cell prints is
-       `elapsed()`'s queued form -- "queued 13m 18s", "queued 23h 59m": 14
-       characters -- and at 1440 76px cut every waiting row to "queued 1…",
-       which is the one fact the Waiting tab exists to show. `ch` rather than
-       px because the cell is `tabular-nums`, so a digit IS one `ch`, and the
-       letters of "queued" are each within a few percent of one; the 15th
-       character is slack for `m`, the one glyph here wider than a digit.
-       `shell.test.tsx` derives the 14 from `elapsed()` itself. */
-    [age] minmax(0, 15ch)
+    /* 19ch, NOT 76px (AG-11). The longest thing this cell prints is
+       `elapsed()`'s wait under its state word (AG-12) -- "dispatched 23h
+       59m", "dispatched 99d 23h": 18 characters -- and at 1440 76px cut every
+       waiting row to "queued 1…", which is the one fact the Waiting tab
+       exists to show. `ch` rather than px because the cell is `tabular-nums`,
+       so a digit IS one `ch`, and the letters of the state words are each
+       within a few percent of one; the 19th character is slack for `m`, the
+       one glyph here wider than a digit.
+       WAS 15ch, sized when every wait read "queued 23h 59m" (14). AG-12 named
+       the wait by its state -- `leased`, `dispatched`, `waiting` -- and the
+       widest of those is four characters longer, so 15ch cut a DISPATCHED
+       row, the state that holds a slot, to "dispatched 23h…". `shell.test.tsx`
+       derives the 18 from `elapsed()` itself, over every state. */
+    [age] minmax(0, 19ch)
     [try] 44px
     [class] minmax(0, 116px)
     [flags] minmax(0, 0.85fr);
@@ -1236,9 +1241,9 @@ body {
     [state] 112px
     [name] minmax(0, 1fr)
     [step] minmax(0, 120px)
-    /* The same 15ch as the full row, and for the same string (AG-11): the
+    /* The same 19ch as the full row, and for the same string (AG-11): the
        inspector is open on the screen where "queued 1…" was measured. */
-    [age] minmax(0, 15ch);
+    [age] minmax(0, 19ch);
   row-gap: var(--ctl-s1);
 }
 /* F3 OF THE 2026-09-23 OVERFLOW INVENTORY: A SECOND STAGE, BECAUSE FOUR TRACKS
@@ -1257,13 +1262,19 @@ body {
    same reason — the step id is on the panel that is open two inches to the
    right. State, identity and age are what a row is matched on. */
 /* AND THE AGE TAKES A SECOND LINE HERE RATHER THAN THE NAME'S WIDTH (AG-11).
-   The first two templates size `[age]` to its longest value, 15ch. This one
-   cannot: in the 1101-1200 band the list is ~350px, and 15ch here is 54px out
+   The first two templates size `[age]` to its longest value, 19ch. This one
+   cannot: in the 1101-1200 band the list is ~350px, and 19ch here is ~70px out
    of `[name]` -- which is exactly the squeeze the stage exists to prevent, the
    one that cut task ids mid-character. So the track is sized to the longest
    DURATION, "23h 59m" (7 characters, plus one of slack), and the cell wraps:
-   "queued" sits above "13m 18s" instead of "queued 1…" sitting in one line.
-   The row grows a line only on the rows that are queued. */
+   the state word sits above "13m 18s" instead of "leased 1…" sitting in one
+   line. The row grows a line only on the rows that are waiting.
+   NOT YET TRUE OF ONE WORD. `waiting` (7) and `leased` (6) fit 8ch;
+   `dispatched` is 10 and overflows it by two. That word arrived with AG-12
+   after this track was sized for `queued`, and the width to hold it would
+   come out of `[name]` here and in the 390px template below, which were
+   each measured down to the pixel. Which to give up is left open, not
+   decided here. */
 @media (max-width: 1200px) {
   .app.has-inspector .row {
     grid-template-columns:
@@ -2704,8 +2715,10 @@ table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--tex
      handed "queued 13m 18s" ~108px and left the name 106 -- "brow… 0961e…",
      profile and id both cut. And because each row is its own grid, the name
      column moved from row to row. 8ch holds the longest duration ("23h 59m",
-     7 characters, tabular) and the word "queued" wraps above it, so the age
-     costs a line on a queued row instead of costing the name its width. */
+     7 characters, tabular) and the state word wraps above it, so the age
+     costs a line on a waiting row instead of costing the name its width --
+     except `dispatched`, 10 characters, which overflows 8ch by two (see the
+     1101-1200 band above for why that is left open). */
   .row {
     grid-template-columns: [state] 112px [name] minmax(0, 1fr) [age] minmax(0, 8ch);
     row-gap: var(--ctl-s1);

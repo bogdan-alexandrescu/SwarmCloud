@@ -2403,15 +2403,15 @@ block.
   `.row.is-head`, `.try.spent`/`.is-over`, and `aria-current` / `aria-invalid`
   as attributes; the head row also matches structurally so the two halves do
   not have to agree on a spelling.
-* **`HelpCard.tsx`'s `CARD_TITLE` still shouts** (`textTransform: 'uppercase'`,
-  `letterSpacing: '.04em'`). CH-3's test now reads every screen's inline
-  styles and would fail on it; the two declarations are on a pending list by
-  file, object and exact text, for the lane that owns `HelpCard.tsx` to delete
-  along with the entries.
+* **`HelpCard.tsx`'s `CARD_TITLE` no longer shouts.** It carried
+  `textTransform: 'uppercase'` and `letterSpacing: '.04em'`; the shell/help
+  lane (#145) removed both and emptied the pending list in
+  `typescale.test.ts` that excused them, so CH-3's inline-style scan now
+  excuses nothing.
 * **`.scope.platform` is still an `--info` tint.** CP-13 named the tenant pill;
   whether the platform pill should be neutral too is a design question, not a
   mechanical one.
 * **Nothing here was seen rendered.** The assertions prove which rule wins and
-  what it says; whether 15ch holds "queued 13m 18s" in a given font is
+  what it says; whether 19ch holds "dispatched 23h 59m" in a given font is
   arithmetic in the sheet's comments, and only a browser at 1440 and 390 can
   confirm it.
