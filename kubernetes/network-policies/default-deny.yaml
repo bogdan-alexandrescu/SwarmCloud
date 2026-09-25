@@ -62,6 +62,15 @@ metadata:
       pod in this one.
 spec:
   podSelector: {}
+  # Ingress-isolated with no `ingress:` key: no rule, so no source is allowed.
+  # This said `ingress: []` until 2026-09-25 -- the same deny -- and every
+  # `kubectl apply` re-sent it: the API server stores an empty list as none and
+  # serves the policy back with no `ingress` key, client-side apply patches from
+  # that live object to this file, and the registry compares specs with
+  # reflect.DeepEqual (nil != []), so each run wrote the object and bumped its
+  # generation. Measured on swarm-tenant-eng: generation 4, against 1 for
+  # swarm-default-deny above, applied by the same runs; and `kubectl diff` of
+  # the unchanged render showed this policy with `generation: 4` -> `5` and
+  # nothing else, which is why it appeared in every `apply.sh` dry-run diff.
   policyTypes:
     - Ingress
-  ingress: []

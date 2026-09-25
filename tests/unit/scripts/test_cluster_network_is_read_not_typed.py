@@ -23,6 +23,22 @@ WHAT IS UNDER TEST HERE is the shipped shell, not a restatement of it:
     sweep, and in CI -- no credentials -- skips with a notice rather than
     silently.
 
+Two more things apply.sh READS rather than takes on trust, driven the same way:
+
+  * WHICH CLUSTER it is about to write to. The deny-list is matched against the
+    cluster a context names -- the last segment of
+    `gke_<project>_<location>_<cluster>` -- and never against the project id,
+    which for our own cluster contains the other team's `agents-staging`. And
+    the kubeconfig cluster entry must be gcloud's name for exactly the cluster
+    whose network is read: project, location AND cluster;
+  * WHICH KSAs are Workload Identity-bound, read from the tenant GSA's IAM
+    policy, which decides whether the older `swarm-worker` account is rendered.
+
+And the preview shows what `--confirm` will print, object by object: kubectl's
+own verdict from a server dry run of the same apply, because `kubectl diff`
+alone cannot show an object whose only change is kubectl's last-applied
+annotation.
+
 No real cluster, no credentials and no network are touched: both binaries are
 shell scripts written into a temporary directory and put first on PATH.
 """
@@ -45,12 +61,23 @@ APPLY = REPO / "kubernetes" / "apply.sh"
 PARITY = REPO / "scripts" / "lib" / "check-cluster-network-parity.sh"
 CHECKER = REPO / "kubernetes" / "network_parity.py"
 
-#: The context scripts/configure-kubectl.sh writes. apply.sh refuses the raw
-#: gcloud name for this cluster because it contains `agents-staging` -- the
-#: other team's cluster -- as a substring of the project id.
+#: The context scripts/configure-kubectl.sh writes. The raw gcloud name,
+#: CLUSTER_REF, is accepted too: apply.sh used to refuse it, because it matched
+#: the deny-listed `agents-staging` as a substring of the whole context string
+#: and our project id (saga-agents-staging) contains it.
 CONTEXT = "swarm-dev"
 CLUSTER_REF = "gke_saga-agents-staging_us-central1_swarm-autopilot"
 SOURCE = "gke/saga-agents-staging/us-central1/swarm-autopilot"
+
+#: The other team's clusters, as gcloud names their contexts in the kubeconfig
+#: on the reference workstation (scripts/lib/common.sh records both).
+OTHER_TEAM = "gke_saga-agents-staging_us-central1-a_agents-staging"
+OTHER_TEAM_PROD = "gke_saga-agents-prod_us-central1_agents-prod"
+
+#: eng's namespace and GSA, as render.py derives them.
+NAMESPACE = "swarm-tenant-eng"
+TENANT_GSA = "swarm-agent-worker-eng@saga-agents-staging.iam.gserviceaccount.com"
+WI_POOL = "saga-agents-staging.svc.id.goog"
 
 #: A cluster whose network appears nowhere in this repository, so a rendered
 #: value that matches it can only have been READ.
@@ -146,7 +173,17 @@ case "$*" in
   *"get daemonset node-local-dns"*) cat "${d}/node-local-dns.json" ;;
   *"get networkpolicies"*) cat "${d}/policies.json" ;;
   *"apply --dry-run=client"*) cat >"${d}/applied-dry-run.yaml" ;;
-  *"diff -f -"*) cat >"${d}/diff.yaml" ;;
+  # A server dry run prints kubectl's verdict per object -- the lines a real
+  # apply prints, suffixed "(server dry run)" -- and exits 1 when any object
+  # failed, having printed the ones that did not.
+  *"apply --dry-run=server"*)
+    cat >"${d}/server-dry-run.yaml"
+    if [[ -f "${d}/server-dry-run.out" ]]; then cat "${d}/server-dry-run.out"; fi
+    if [[ -f "${d}/server-dry-run.err" ]]; then cat "${d}/server-dry-run.err" >&2; exit 1; fi ;;
+  # kubectl diff exits 1 when there IS a difference.
+  *"diff -f -"*)
+    cat >"${d}/diff.yaml"
+    if [[ -s "${d}/diff.out" ]]; then cat "${d}/diff.out"; exit 1; fi ;;
   *) printf 'fake kubectl: unexpected call: %s\n' "$*" >&2; exit 3 ;;
 esac
 """
@@ -159,6 +196,17 @@ case "$*" in
   *"auth list"*) if [[ -f "${d}/account" ]]; then cat "${d}/account"; fi ;;
   *"iam service-accounts describe swarm-scheduler@"*) echo 117405034245659033603 ;;
   *"iam service-accounts describe swarm-reconciler@"*) echo 108023754768362642341 ;;
+  *"iam service-accounts get-iam-policy"*)
+    # gcloud's own words for the two failures that matter, measured 2026-09-25.
+    if [[ -f "${d}/iam-denied" ]]; then
+      printf 'ERROR: (gcloud.iam.service-accounts.get-iam-policy) PERMISSION_DENIED: Permission iam.serviceAccounts.getIamPolicy is required to perform this operation on service account.\n' >&2
+      exit 1
+    fi
+    if [[ ! -f "${d}/wi-policy.json" ]]; then
+      printf 'ERROR: (gcloud.iam.service-accounts.get-iam-policy) NOT_FOUND: Unknown service account.\n' >&2
+      exit 1
+    fi
+    cat "${d}/wi-policy.json" ;;
   *"container clusters describe"*) cat "${d}/describe.json" ;;
   *) printf 'fake gcloud: unexpected call: %s\n' "$*" >&2; exit 3 ;;
 esac
@@ -240,6 +288,51 @@ class Cluster:
         (self.dir / "describe.json").write_text(json.dumps(describe(network)))
         (self.dir / "node-local-dns.json").write_text(json.dumps(node_local_dns(network)))
         self.policies([])
+        # A terraform tenant's GSA, as eng's measured on 2026-09-25: the one KSA
+        # the dispatcher uses is bound, and nothing else.
+        self.bindings("swarm-agent-worker")
+        # An existing tenant whose render matches what is live.
+        self.preview(verdicts=f"namespace/{NAMESPACE} unchanged (server dry run)\n")
+
+    def context(self, label: str, cluster_ref: str = CLUSTER_REF) -> None:
+        """Point the current context at `label`, which resolves to `cluster_ref`."""
+        (self.dir / "context").write_text(label)
+        (self.dir / "cluster-ref").write_text(cluster_ref)
+
+    def preview(self, *, verdicts: str, diff: str = "", errors: str = "") -> None:
+        """What the server says about the render: `verdicts` is what
+        `kubectl apply --dry-run=server` prints to stdout, `errors` what it
+        prints to stderr (and exits 1 for), `diff` what `kubectl diff` prints."""
+        (self.dir / "server-dry-run.out").write_text(verdicts)
+        (self.dir / "diff.out").write_text(diff)
+        err = self.dir / "server-dry-run.err"
+        if errors:
+            err.write_text(errors)
+        elif err.exists():
+            err.unlink()
+
+    def bindings(
+        self,
+        *ksas: str,
+        members: tuple[str, ...] = (),
+        role: str = "roles/iam.workloadIdentityUser",
+    ) -> None:
+        """The tenant GSA's IAM policy, binding `ksas` in eng's namespace through
+        the project's own pool, plus any raw `members`."""
+        wi = [f"serviceAccount:{WI_POOL}[{NAMESPACE}/{ksa}]" for ksa in ksas] + list(members)
+        policy: dict[str, Any] = {
+            "bindings": [
+                {
+                    "role": "roles/iam.serviceAccountUser",
+                    "members": ["serviceAccount:swarm-scheduler@saga-agents-staging.iam.gserviceaccount.com"],
+                }
+            ],
+            "etag": "BwZcPWGUr7I=",
+            "version": 1,
+        }
+        if wi:
+            policy["bindings"].append({"role": role, "members": wi})
+        (self.dir / "wi-policy.json").write_text(json.dumps(policy))
 
     def signed_in(self) -> None:
         (self.dir / "account").write_text("operator@example.com\n")
@@ -500,6 +593,416 @@ def test_apply_refuses_when_the_cluster_cannot_be_described(tmp_path):
     (cluster.dir / "describe.json").unlink()
     result = cluster.run(APPLY, "--tenant", "eng")
     assert result.returncode != 0, "apply.sh rendered without describing the cluster"
+    assert not (cluster.dir / "applied-dry-run.yaml").exists()
+
+
+# ---------------------------------------------------------------------------
+# kubernetes/apply.sh judges the CLUSTER a context names, not the whole string
+# ---------------------------------------------------------------------------
+#
+# THE DEFECT. The deny-list check was `*"${foreign}"*` over the whole context
+# name, so gcloud's own name for OUR cluster --
+# gke_saga-agents-staging_us-central1_swarm-autopilot -- was refused: the
+# project id contains the other team's cluster name, `agents-staging`. Only the
+# renamed `swarm-dev` context from scripts/configure-kubectl.sh got through, and
+# scripts/register-tenant.sh, whose own guard (kube_context_allowed) accepts the
+# gcloud name, hands that name to apply.sh -- so under it, registration would
+# die with "the tenant namespace is not isolated" (read from the two scripts;
+# not a run anyone recorded).
+
+
+def _via(label: str, via_flag: bool) -> list[str]:
+    return ["--context", label] if via_flag else []
+
+
+@pytest.mark.parametrize("via_flag", [False, True], ids=["current-context", "--context"])
+@pytest.mark.parametrize("label", [CONTEXT, CLUSTER_REF], ids=["swarm-dev", "gcloud-default-name"])
+def test_apply_accepts_the_swarm_cluster_under_either_context_name(tmp_path, label, via_flag):
+    cluster = Cluster(tmp_path, FAKE)
+    cluster.context(label)
+    result = cluster.run(APPLY, "--tenant", "eng", *_via(label, via_flag))
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, f"apply.sh refused our own cluster as {label!r}:\n{output}"
+    assert (cluster.dir / "applied-dry-run.yaml").exists(), "apply.sh did not validate a render"
+    assert f"context  {label} -> {CLUSTER_REF}" in result.stderr, output
+
+
+#: (context label, the cluster it resolves to, what the refusal must name,
+#:  whether it is the deny-list -- another team -- that refuses it, extra args)
+NOT_OURS = [
+    # The other team's live cluster under gcloud's name for it.
+    (OTHER_TEAM, OTHER_TEAM, "agents-staging", True, []),
+    # The same cluster behind a label that looks like ours. The label is a
+    # nickname; the cluster it resolves to is what gets written to.
+    (CONTEXT, OTHER_TEAM, "agents-staging", True, []),
+    # Their production. Not on the shared deny-list (it is not in this
+    # project); refused because it is not the swarm's cluster.
+    (OTHER_TEAM_PROD, OTHER_TEAM_PROD, "agents-prod", False, []),
+    # A cluster whose name merely CONTAINS ours, behind our label. The old check
+    # was a substring match and let it through, while the network apply.sh
+    # reads is swarm-autopilot's -- a policy rendered for one cluster applied to
+    # another. (Under gcloud's own label the old check refused it too, but only
+    # because that label contains `agents-staging` -- the defect above -- so the
+    # label here is swarm-dev, where the substring match was the only guard.)
+    (CONTEXT, CLUSTER_REF + "-old", "swarm-autopilot-old", False, []),
+    # --cluster naming the other team's cluster outright.
+    (CONTEXT, CLUSTER_REF, "agents-staging", True, ["--cluster", "agents-staging"]),
+    # OUR CLUSTER'S NAME IN ANOTHER PROJECT, under gcloud's own label for it.
+    # Matching only the cluster segment let this through, while the network
+    # apply.sh reads is saga-agents-staging's (`gcloud container clusters
+    # describe swarm-autopilot --project saga-agents-staging`): the policy would
+    # be rendered for our cluster and written to that one.
+    (
+        "gke_other-project_us-central1_swarm-autopilot",
+        "gke_other-project_us-central1_swarm-autopilot",
+        "other-project", False, [],
+    ),
+    # Our cluster's name at another LOCATION of our own project, behind our
+    # label -- us-central1-a is where the other team's cluster lives.
+    (CONTEXT, "gke_saga-agents-staging_us-central1-a_swarm-autopilot", "us-central1-a", False, []),
+    # A cluster entry that is not in gcloud's shape names no project and no
+    # location, so nothing shows it is the cluster whose network is read.
+    (CONTEXT, "swarm-autopilot", "cluster 'swarm-autopilot'", False, []),
+]
+
+
+@pytest.mark.parametrize("via_flag", [False, True], ids=["current-context", "--context"])
+@pytest.mark.parametrize(
+    "label,cluster_ref,named,deny_listed,extra",
+    NOT_OURS,
+    ids=[
+        "other-team", "other-team-renamed", "other-team-prod", "contains-our-name", "cluster-flag",
+        "our-name-other-project", "our-name-other-location", "entry-names-no-project",
+    ],
+)
+def test_apply_refuses_a_cluster_that_is_not_ours(
+    tmp_path, label, cluster_ref, named, deny_listed, extra, via_flag
+):
+    cluster = Cluster(tmp_path, FAKE)
+    cluster.context(label, cluster_ref)
+    result = cluster.run(APPLY, "--tenant", "eng", *_via(label, via_flag), *extra)
+    output = result.stdout + result.stderr
+    assert result.returncode != 0, f"apply.sh accepted {label!r} -> {cluster_ref!r}:\n{output}"
+    assert named in result.stderr, output
+    assert "refusing" in result.stderr.lower(), output
+    if deny_listed:
+        assert "another team" in result.stderr, (
+            f"refused, but not by the deny-list -- the reason printed does not say whose "
+            f"cluster this is:\n{output}"
+        )
+    # Refused BEFORE anything was read from it or rendered for it.
+    assert not (cluster.dir / "applied-dry-run.yaml").exists()
+    assert "container clusters describe" not in cluster.log("gcloud"), cluster.log("gcloud")
+    kubectl = cluster.log("kubectl")
+    for verb in ("get service", "get daemonset", "diff", "apply"):
+        assert verb not in kubectl, f"kubectl {verb} ran against a refused cluster:\n{kubectl}"
+
+
+def test_apply_takes_the_expected_cluster_entry_from_the_configuration(tmp_path):
+    """The exact-entry check follows GKE_LOCATION (and PROJECT_ID) rather than a
+    location typed into apply.sh: with a zonal location configured, the zonal
+    entry is ours, and the network is read from that same location."""
+    cluster = Cluster(tmp_path, FAKE)
+    zonal = "gke_saga-agents-staging_us-central1-a_swarm-autopilot"
+    cluster.context(CONTEXT, zonal)
+    result = cluster.run(APPLY, "--tenant", "eng", GKE_LOCATION="us-central1-a")
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, output
+    assert f"context  {CONTEXT} -> {zonal}" in result.stderr, output
+    assert "--location us-central1-a" in cluster.log("gcloud")
+
+
+# ---------------------------------------------------------------------------
+# kubernetes/apply.sh's preview shows what --confirm will report
+# ---------------------------------------------------------------------------
+#
+# THE MISMATCH. On 2026-09-25 `apply.sh --tenant eng --confirm` reported
+# `role.rbac.authorization.k8s.io/swarm-worker configured` although the
+# preview before it -- a `kubectl diff` -- listed only two NetworkPolicies.
+# kubectl diff builds its patch WITHOUT kubectl's last-applied-configuration
+# annotation; apply builds it WITH it. So an object whose only change is that
+# annotation -- or whose patch the server normalises away, as it did the
+# Role's `rules: []` -- has no hunk in the diff and still applies as
+# `configured`. This branch's own first apply has two: the Role and
+# swarm-deny-cross-tenant-ingress drop an empty list from the annotation.
+#
+# CAPTURED, not constructed. Both fixtures are what this branch's apply.sh
+# printed on 2026-09-25 (~04:00Z) for `KUBECONFIG=build/kubeconfig-dev.yaml
+# kubernetes/apply.sh --tenant eng --context swarm-dev` -- a dry run, nothing
+# written -- against swarm-tenant-eng. Only the temporary directories kubectl
+# diff names are shortened. The diff shows two objects; the verdicts show four
+# `configured`, and the two the diff cannot show are the Role and
+# swarm-deny-cross-tenant-ingress.
+
+#: `kubectl apply --dry-run=server` for this branch's first apply to eng.
+VERDICTS_FIRST_APPLY = f"""\
+namespace/{NAMESPACE} unchanged (server dry run)
+resourcequota/swarm-tenant-quota unchanged (server dry run)
+limitrange/swarm-worker-limits unchanged (server dry run)
+serviceaccount/swarm-agent-worker configured (server dry run)
+serviceaccount/default unchanged (server dry run)
+role.rbac.authorization.k8s.io/swarm-worker configured (server dry run)
+rolebinding.rbac.authorization.k8s.io/swarm-worker configured (server dry run)
+role.rbac.authorization.k8s.io/swarm-dispatcher unchanged (server dry run)
+rolebinding.rbac.authorization.k8s.io/swarm-dispatcher unchanged (server dry run)
+role.rbac.authorization.k8s.io/swarm-reaper unchanged (server dry run)
+rolebinding.rbac.authorization.k8s.io/swarm-reaper unchanged (server dry run)
+networkpolicy.networking.k8s.io/swarm-default-deny unchanged (server dry run)
+networkpolicy.networking.k8s.io/swarm-deny-cross-tenant-ingress configured (server dry run)
+networkpolicy.networking.k8s.io/swarm-allow-worker-egress unchanged (server dry run)
+"""
+
+#: `kubectl diff` of the same render: the RoleBinding and the ServiceAccount,
+#: and neither the Role nor the NetworkPolicy. The merged ServiceAccount still
+#: carries the OLD last-applied annotation: kubectl diff does not rewrite it.
+DIFF_FIRST_APPLY = f"""\
+diff -u -N LIVE-3898782905/rbac.authorization.k8s.io.v1.RoleBinding.{NAMESPACE}.swarm-worker MERGED-2960625049/rbac.authorization.k8s.io.v1.RoleBinding.{NAMESPACE}.swarm-worker
+--- LIVE-3898782905/rbac.authorization.k8s.io.v1.RoleBinding.{NAMESPACE}.swarm-worker\t2026-09-24 20:59:21
++++ MERGED-2960625049/rbac.authorization.k8s.io.v1.RoleBinding.{NAMESPACE}.swarm-worker\t2026-09-24 20:59:21
+@@ -19,8 +19,5 @@
+   name: swarm-worker
+ subjects:
+ - kind: ServiceAccount
+-  name: swarm-worker
+-  namespace: {NAMESPACE}
+-- kind: ServiceAccount
+   name: swarm-agent-worker
+   namespace: {NAMESPACE}
+diff -u -N LIVE-3898782905/v1.ServiceAccount.{NAMESPACE}.swarm-agent-worker MERGED-2960625049/v1.ServiceAccount.{NAMESPACE}.swarm-agent-worker
+--- LIVE-3898782905/v1.ServiceAccount.{NAMESPACE}.swarm-agent-worker\t2026-09-24 20:59:20
++++ MERGED-2960625049/v1.ServiceAccount.{NAMESPACE}.swarm-agent-worker\t2026-09-24 20:59:20
+@@ -6,7 +6,6 @@
+     iam.gke.io/gcp-service-account: {TENANT_GSA}
+     kubectl.kubernetes.io/last-applied-configuration: |
+       {{"apiVersion":"v1","automountServiceAccountToken":false,"kind":"ServiceAccount","metadata":{{"annotations":{{"iam.gke.io/gcp-service-account":"{TENANT_GSA}","swarm.saga.xyz/alias-of":"swarm-worker"}},"labels":{{"app.kubernetes.io/component":"agent-worker","app.kubernetes.io/part-of":"swarm","managed-by":"swarm-terraform","swarm-tenant":"eng"}},"name":"swarm-agent-worker","namespace":"{NAMESPACE}"}}}}
+-    swarm.saga.xyz/alias-of: swarm-worker
+   creationTimestamp: "2026-09-24T03:42:00Z"
+   labels:
+     app.kubernetes.io/component: agent-worker
+"""
+
+
+def _writes(cluster: Cluster) -> list[str]:
+    """Every kubectl call that could have written: an apply that is not a dry run."""
+    return [
+        line for line in cluster.log("kubectl").splitlines()
+        if " apply " in f" {line} " and "--dry-run" not in line
+    ]
+
+
+@pytest.mark.parametrize("via_flag", [False, True], ids=["current-context", "--context"])
+def test_the_preview_lists_every_object_confirm_will_report_configured(tmp_path, via_flag):
+    cluster = Cluster(tmp_path, FAKE)
+    cluster.preview(verdicts=VERDICTS_FIRST_APPLY, diff=DIFF_FIRST_APPLY)
+    result = cluster.run(APPLY, "--tenant", "eng", *_via(CONTEXT, via_flag))
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, output
+
+    # The two the 2026-09-25 preview could not show, by kubectl's own verdict.
+    for obj in (
+        "role.rbac.authorization.k8s.io/swarm-worker",
+        "networkpolicy.networking.k8s.io/swarm-deny-cross-tenant-ingress",
+    ):
+        assert f"{obj} configured (server dry run)" in result.stdout, (
+            f"the preview does not show that --confirm will report {obj} configured:\n{output}"
+        )
+    # Counted, and the gap between the diff and the verdicts explained.
+    assert "4 configured" in result.stderr, output
+    assert "last-applied" in result.stderr, output
+
+    # The same render the diff was shown and the client validated, through the
+    # same context -- and nothing written.
+    sent = (cluster.dir / "server-dry-run.yaml").read_text()
+    assert sent == (cluster.dir / "diff.yaml").read_text() == (cluster.dir / "applied-dry-run.yaml").read_text()
+    if via_flag:
+        assert f"--context {CONTEXT} apply --dry-run=server -f -" in cluster.log("kubectl")
+    assert _writes(cluster) == [], _writes(cluster)
+
+
+#: A first-time tenant: the namespace does not exist yet, so the server can
+#: dry-run creating it and nothing inside it.
+NEW_TENANT_ERRORS = (
+    f'Error from server (NotFound): error when creating "STDIN": namespaces "{NAMESPACE}" not found\n'
+)
+
+
+def test_the_preview_of_a_new_tenant_reports_what_the_server_could_not_dry_run(tmp_path):
+    """Not fatal -- register-tenant.sh --dry-run previews exactly this -- but not
+    silent either: the objects the server could not judge are named."""
+    cluster = Cluster(tmp_path, FAKE)
+    cluster.preview(
+        verdicts=f"namespace/{NAMESPACE} created (server dry run)\n", errors=NEW_TENANT_ERRORS
+    )
+    result = cluster.run(APPLY, "--tenant", "eng")
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, output
+    assert f"namespace/{NAMESPACE} created (server dry run)" in result.stdout, output
+    assert f'namespaces "{NAMESPACE}" not found' in result.stderr, output
+    assert _writes(cluster) == [], _writes(cluster)
+
+
+def test_server_dry_run_makes_a_failed_server_dry_run_fatal(tmp_path):
+    """--server-dry-run keeps its meaning: the server must accept every object."""
+    cluster = Cluster(tmp_path, FAKE)
+    cluster.preview(
+        verdicts=f"namespace/{NAMESPACE} created (server dry run)\n", errors=NEW_TENANT_ERRORS
+    )
+    result = cluster.run(APPLY, "--tenant", "eng", "--server-dry-run")
+    output = result.stdout + result.stderr
+    assert result.returncode != 0, f"--server-dry-run passed a failed server dry run:\n{output}"
+    assert _writes(cluster) == [], _writes(cluster)
+
+
+def test_a_preview_in_which_the_server_reported_nothing_says_so(tmp_path):
+    """kubectl prints one verdict per object. None at all is not "nothing will
+    change"; it is nothing judged."""
+    cluster = Cluster(tmp_path, FAKE)
+    cluster.preview(verdicts="")
+    result = cluster.run(APPLY, "--tenant", "eng")
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, output
+    assert "reported no object" in result.stderr, output
+
+
+# ---------------------------------------------------------------------------
+# kubernetes/apply.sh renders the older KSA only where IAM binds it
+# ---------------------------------------------------------------------------
+#
+# `swarm-worker` was rendered into every tenant namespace. On eng -- a
+# terraform tenant, and the only tenant with a namespace -- nothing binds it:
+# measured 2026-09-25, the only roles/iam.workloadIdentityUser member on
+# swarm-agent-worker-eng@ is `[swarm-tenant-eng/swarm-agent-worker]`. So the
+# account carried the Workload Identity annotation and got no identity. It is
+# bound only where scripts/register-tenant.sh provisioned the tenant, so that
+# is where it is rendered, and the only thing that knows is IAM.
+
+
+def _rendered(cluster: Cluster) -> list[dict[str, Any]]:
+    path = cluster.dir / "applied-dry-run.yaml"
+    assert path.exists(), "apply.sh did not validate a render"
+    return [d for d in yaml.safe_load_all(path.read_text()) if d]
+
+
+def _accounts(docs: list[dict[str, Any]]) -> set[str]:
+    return {d["metadata"]["name"] for d in docs if d.get("kind") == "ServiceAccount"}
+
+
+def _subjects(docs: list[dict[str, Any]]) -> set[str]:
+    return {
+        s["name"]
+        for d in docs
+        if d.get("kind") == "RoleBinding"
+        for s in d.get("subjects", [])
+        if s.get("kind") == "ServiceAccount"
+    }
+
+
+#: (the tenant GSA's workloadIdentityUser members beyond the default, whether
+#:  `swarm-worker` must be rendered)
+BINDINGS = [
+    # terraform's shape: only the KSA the dispatcher uses.
+    ((), (), "roles/iam.workloadIdentityUser", False),
+    # register-tenant.sh's shape: both names.
+    (("swarm-worker",), (), "roles/iam.workloadIdentityUser", True),
+    # Bound in ANOTHER tenant's namespace: the namespace is part of the
+    # principal, so this binds nothing here.
+    ((), (f"serviceAccount:{WI_POOL}[swarm-tenant-other/swarm-worker]",),
+     "roles/iam.workloadIdentityUser", False),
+    # Through ANOTHER project's pool: not this cluster's identities.
+    ((), (f"serviceAccount:other-project.svc.id.goog[{NAMESPACE}/swarm-worker]",),
+     "roles/iam.workloadIdentityUser", False),
+    # The right principal under another ROLE: serviceAccountUser lets a
+    # principal act as the GSA, it does not make the KSA authenticate as it.
+    (("swarm-worker",), (), "roles/iam.serviceAccountUser", False),
+]
+
+
+@pytest.mark.parametrize(
+    "extra_ksas,members,role,rendered",
+    BINDINGS,
+    ids=["terraform-tenant", "register-tenant", "other-namespace", "other-pool", "other-role"],
+)
+def test_apply_renders_the_older_ksa_only_where_iam_binds_it(
+    tmp_path, extra_ksas, members, role, rendered
+):
+    cluster = Cluster(tmp_path, FAKE)
+    cluster.bindings("swarm-agent-worker", *extra_ksas, members=members, role=role)
+    result = cluster.run(APPLY, "--tenant", "eng")
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, output
+
+    docs = _rendered(cluster)
+    assert ("swarm-worker" in _accounts(docs)) is rendered, (
+        f"swarm-worker {'missing from' if rendered else 'rendered into'} a namespace "
+        f"whose GSA {'binds' if rendered else 'does not bind'} it: {sorted(_accounts(docs))}"
+    )
+    assert ("swarm-worker" in _subjects(docs)) is rendered, sorted(_subjects(docs))
+    assert "swarm-agent-worker" in _accounts(docs)
+
+    # Read from the GSA the render annotates, not from a name derived twice.
+    assert f"iam service-accounts get-iam-policy {TENANT_GSA}" in cluster.log("gcloud")
+
+
+def test_apply_reads_the_bindings_of_the_gsa_it_was_told_to_render(tmp_path):
+    """register-tenant.sh passes `--gsa`; the policy read is that account's."""
+    cluster = Cluster(tmp_path, FAKE)
+    custom = "custom-eng@saga-agents-staging.iam.gserviceaccount.com"
+    result = cluster.run(APPLY, "--tenant", "eng", "--gsa", custom)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert f"iam service-accounts get-iam-policy {custom}" in cluster.log("gcloud")
+
+
+def test_apply_refuses_when_the_bindings_cannot_be_read(tmp_path):
+    """Unreadable is not "nothing bound". A render that guessed would drop the
+    older account's RoleBinding subject on a tenant that still uses the name."""
+    cluster = Cluster(tmp_path, FAKE)
+    (cluster.dir / "iam-denied").write_text("")
+    result = cluster.run(APPLY, "--tenant", "eng")
+    output = result.stdout + result.stderr
+    assert result.returncode != 0, f"apply.sh rendered without reading the bindings:\n{output}"
+    assert "PERMISSION_DENIED" in result.stderr, output
+    assert TENANT_GSA in result.stderr, output
+    assert not (cluster.dir / "applied-dry-run.yaml").exists()
+
+
+def test_a_gsa_that_does_not_exist_yet_binds_nothing(tmp_path):
+    """register-tenant.sh --dry-run renders before it has created the GSA. A
+    GSA that does not exist has no bindings: rendered without the older account,
+    and said so, rather than refused."""
+    cluster = Cluster(tmp_path, FAKE)
+    (cluster.dir / "wi-policy.json").unlink()
+    result = cluster.run(APPLY, "--tenant", "eng")
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, output
+    assert "does not exist" in result.stderr, output
+    assert "swarm-worker" not in _accounts(_rendered(cluster))
+
+
+def test_apply_says_when_the_ksa_pods_run_as_is_not_bound(tmp_path):
+    """The same read answers a second question for free: whether the KSA the
+    dispatcher's pods run as can authenticate at all. Unbound, every pod starts
+    and 403s on its first Google API call, which reads as a permissions bug."""
+    cluster = Cluster(tmp_path, FAKE)
+    cluster.bindings()
+    result = cluster.run(APPLY, "--tenant", "eng")
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, output
+    assert "swarm-agent-worker" in result.stderr and "no Workload Identity binding" in result.stderr, output
+
+
+@pytest.mark.parametrize(
+    "args",
+    [["--bound-ksa", "swarm-worker"], ["--bound-ksa=swarm-worker"], ["--bound", "swarm-worker"]],
+    ids=["full", "equals", "abbreviated"],
+)
+def test_apply_refuses_a_bound_ksa_on_the_command_line(tmp_path, args):
+    """What is bound is read from IAM. A flag typed here would render an account
+    as bound when nothing binds it -- the exact state this removes."""
+    cluster = Cluster(tmp_path, FAKE)
+    result = cluster.run(APPLY, "--tenant", "eng", *args)
+    output = result.stdout + result.stderr
+    assert result.returncode != 0, f"apply.sh accepted {args[0]!r}:\n{output}"
+    assert "IAM policy" in result.stderr and "--bound-ksa" in result.stderr, output
     assert not (cluster.dir / "applied-dry-run.yaml").exists()
 
 

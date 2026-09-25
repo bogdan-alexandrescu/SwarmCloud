@@ -277,21 +277,157 @@ def test_the_default_service_account_is_disarmed_too(tenant_docs):
     assert default["automountServiceAccountToken"] is False
 
 
-def test_the_legacy_bound_service_account_still_exists(tenant_docs):
-    """`swarm-worker` is the name every tenant registered so far is
-    workload-identity-bound to, by `scripts/register-tenant.sh`. Removing it is
-    a migration of its own, so it stays.
+def _tenant_render(*argv: str) -> list[dict[str, Any]]:
+    """What `render.py tenant` prints for eng, through `main()` -- the path
+    `kubernetes/apply.sh` takes, flags and all."""
+    import contextlib
+    import io
 
-    This test used to assert `sanitize_name("swarm", tenant)` -- the spelling
-    the dispatcher asked for BEFORE its KSA was renamed -- and its docstring
-    still claimed that was what `dispatch.py` set. It was therefore asserting
-    the presence of a name nothing wanted while the name the dispatcher
-    actually names was absent. That check is now derived from the dispatcher
-    itself, in
-    `test_the_service_account_the_renderer_creates_is_the_one_the_dispatcher_names`.
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer):
+        render.main(["tenant", "--tenant", TENANT, "--project", PROJECT, *argv])
+    return documents(buffer.getvalue())
+
+
+def _service_account_subjects(docs: list[dict[str, Any]]) -> set[str]:
+    return {
+        subject["name"]
+        for binding in by_kind(docs, "RoleBinding")
+        for subject in binding.get("subjects", [])
+        if subject.get("kind") == "ServiceAccount"
+    }
+
+
+#: The older worker KSA, as `scripts/register-tenant.sh` spells it in KSAS.
+#: Written out rather than read from the renderer: it is the name that is (or
+#: is not) bound in IAM, which is a fact outside this repository's control.
+OLDER_KSA = "swarm-worker"
+
+
+def test_the_older_ksa_is_not_rendered_where_nothing_binds_it():
+    """`swarm-worker` in a namespace whose GSA does not bind it is an account
+    that carries the Workload Identity annotation and gets no Google identity.
+
+    MEASURED 2026-09-25 on eng, a terraform tenant: the only
+    roles/iam.workloadIdentityUser member on swarm-agent-worker-eng@ is
+    `[swarm-tenant-eng/swarm-agent-worker]`, and no pod or Job in
+    swarm-tenant-eng names `swarm-worker`. The renderer created it anyway, for
+    every tenant, because nothing told it which KSAs were bound.
+
+    A render with no `--bound-ksa` is a render for a namespace where nothing is
+    known to be bound, so it must carry neither the account nor a RoleBinding
+    subject for it -- while the account the dispatcher runs its pods as stays.
+
+    THE MUTATION THIS CATCHES: put `swarm-worker` back into
+    service-accounts/worker-serviceaccount.yaml, or make `tenant_files` include
+    the older identity unconditionally.
     """
-    names = {a["metadata"]["name"] for a in by_kind(tenant_docs, "ServiceAccount")}
-    assert "swarm-worker" in names
+    docs = _tenant_render()
+    accounts = {a["metadata"]["name"] for a in by_kind(docs, "ServiceAccount")}
+    assert OLDER_KSA not in accounts, (
+        f"{OLDER_KSA} was rendered for a namespace where nothing binds it: {sorted(accounts)}"
+    )
+    assert OLDER_KSA not in _service_account_subjects(docs), (
+        f"a RoleBinding still names {OLDER_KSA}, which this render does not create"
+    )
+    assert render.DEFAULT_KSA_NAME in accounts
+
+
+def test_the_older_ksa_is_rendered_where_its_binding_exists():
+    """Where the binding exists -- a tenant `scripts/register-tenant.sh`
+    provisioned, which binds both names -- the account is still created, with
+    the same hardening as every other worker account, and still bound to the
+    empty worker Role so the namespace's RBAC names every account a pod could
+    run as.
+    """
+    docs = _tenant_render("--bound-ksa", render.DEFAULT_KSA_NAME, "--bound-ksa", OLDER_KSA)
+    account = one(docs, "ServiceAccount", OLDER_KSA)
+    assert account["automountServiceAccountToken"] is False
+    annotation = account["metadata"]["annotations"]["iam.gke.io/gcp-service-account"]
+    assert annotation == f"swarm-agent-worker-{TENANT}@{PROJECT}.iam.gserviceaccount.com"
+    assert account["metadata"]["namespace"] == f"{render.NAMESPACE_PREFIX}{TENANT}"
+
+    bound_to_worker_role = {
+        subject["name"]
+        for binding in by_kind(docs, "RoleBinding")
+        if binding["roleRef"]["kind"] == "Role" and binding["roleRef"]["name"] == "swarm-worker"
+        for subject in binding.get("subjects", [])
+    }
+    assert OLDER_KSA in bound_to_worker_role
+
+    # Bound to something ELSE is not bound: only the older name is conditional,
+    # and an unrelated bound KSA must not pull it in.
+    unrelated = _tenant_render("--bound-ksa", render.DEFAULT_KSA_NAME, "--bound-ksa", "swarm-eng")
+    assert OLDER_KSA not in {a["metadata"]["name"] for a in by_kind(unrelated, "ServiceAccount")}
+
+
+def test_a_bound_ksa_name_is_validated_before_it_is_used():
+    """`--bound-ksa` decides which documents are rendered, so it is held to the
+    same pattern as every other KSA name that reaches this renderer."""
+    with pytest.raises(SystemExit) as raised:
+        _tenant_render("--bound-ksa", "swarm-worker\n  evil: true")
+    # Named, not merely an exit: argparse's own exit for an unknown flag is a
+    # SystemExit too, and that is what this raised before the flag existed.
+    assert "--bound-ksa" in str(raised.value), str(raised.value)
+
+
+def test_the_older_ksa_is_one_register_tenant_binds():
+    """The conditional is only honest if the name it waits for is the name the
+    one provisioning path that binds it actually binds."""
+    text = (REPO / "scripts" / "register-tenant.sh").read_text()
+    match = re.search(r"^KSAS=\(([^)]*)\)", text, re.M)
+    assert match, "no KSAS=(...) array in scripts/register-tenant.sh"
+    bound = set(re.findall(r'"([^"]+)"', match.group(1)))
+    assert render.LEGACY_KSA_NAME == OLDER_KSA
+    assert {OLDER_KSA, render.DEFAULT_KSA_NAME} <= bound, sorted(bound)
+
+
+def test_register_tenant_binds_before_it_renders():
+    """apply.sh renders `swarm-worker` only where IAM already binds it, so
+    `register-tenant.sh` has to issue its Workload Identity bindings BEFORE it
+    calls apply.sh -- otherwise a tenant's first registration renders the
+    namespace without the account the script is about to bind, and the account
+    only appears on some later re-apply.
+
+    Checked on the script's text, not by running it: the Kubernetes branch runs
+    only against a reachable cluster, and what has to hold is an ordering of two
+    statements in one branch.
+    """
+    text = (REPO / "scripts" / "register-tenant.sh").read_text()
+    bind = text.find("--role roles/iam.workloadIdentityUser")
+    apply = text.find('"${APPLY_SH}" "${APPLY_ARGS[@]}"')
+    assert bind != -1, "register-tenant.sh no longer issues a workloadIdentityUser binding"
+    assert apply != -1, "register-tenant.sh no longer calls kubernetes/apply.sh"
+    assert bind < apply, (
+        "register-tenant.sh calls kubernetes/apply.sh before it binds the KSAs, so the "
+        "render cannot see the bindings it decides the older KSA by"
+    )
+
+
+def test_the_identity_apply_reads_bindings_for_is_the_one_the_render_annotates(tenant_docs):
+    """apply.sh reads Workload Identity bindings off the tenant GSA and asks the
+    renderer which GSA that is (`render.py identity`) rather than deriving the
+    name a second time. Held to the render itself: the namespace, the GSA the
+    dispatcher's KSA is annotated with, and that KSA's name.
+    """
+    import contextlib
+    import io
+
+    def identity(*argv: str) -> list[str]:
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            render.main(["identity", "--tenant", TENANT, "--project", PROJECT, *argv])
+        return buffer.getvalue().split()
+
+    namespace, gsa, ksa = identity()
+    assert namespace == one(tenant_docs, "Namespace")["metadata"]["name"]
+    assert ksa == render.DEFAULT_KSA_NAME
+    account = one(tenant_docs, "ServiceAccount", ksa)
+    assert gsa == account["metadata"]["annotations"]["iam.gke.io/gcp-service-account"]
+
+    # register-tenant.sh passes --gsa; the identity follows it.
+    custom = f"custom-{TENANT}@{PROJECT}.iam.gserviceaccount.com"
+    assert identity("--gsa", custom)[1] == custom
 
 
 def test_every_worker_service_account_is_bound_to_workload_identity(tenant_docs):
@@ -308,7 +444,11 @@ def test_workers_are_granted_no_kubernetes_api_access_at_all(tenant_docs):
     # with rbac/dispatcher-rbac.yaml. An unnamed `one()` used to be
     # unambiguous and silently became "assert there is only one Role".
     role = one(tenant_docs, "Role", "swarm-worker")
-    assert role["rules"] == [], "a worker needs nothing from the Kubernetes API"
+    # `not`, not `== []`: the manifest OMITS `rules` rather than writing an
+    # empty list, because the API server stores [] as null and client-side apply
+    # then re-sends [] on every run -- see
+    # test_nothing_apply_sends_carries_an_empty_list_the_api_server_drops.
+    assert not role.get("rules"), "a worker needs nothing from the Kubernetes API"
 
 
 def test_nothing_here_is_cluster_scoped(tenant_docs):
@@ -317,28 +457,40 @@ def test_nothing_here_is_cluster_scoped(tenant_docs):
     assert "ClusterRoleBinding" not in kinds
 
 
-def test_the_role_binding_covers_every_account_a_pod_could_use(tenant_docs):
+@pytest.mark.parametrize(
+    "bound", [(), ("swarm-agent-worker", "swarm-worker")], ids=["nothing-bound", "older-ksa-bound"]
+)
+def test_the_role_binding_covers_every_account_a_pod_could_use(bound):
     """Every ServiceAccount in the namespace that a pod could run as, DERIVED
-    from what was rendered rather than listed again here.
+    from what was rendered rather than listed again here -- in both shapes a
+    tenant render takes, with and without the older `swarm-worker` identity.
 
     The empty `swarm-worker` Role is what makes a worker pod hold no Kubernetes
     API access at all. An account created but left out of the binding is not a
     loophole -- it is bound to nothing, so it has nothing -- but it is a
-    divergence between the two files, and the list of names here had already
-    gone stale once against `__KSA_NAME__`.
+    divergence between the files, and the list of names here had already gone
+    stale once against `__KSA_NAME__`. The reverse, a subject naming an account
+    the render does not create, is worse: it binds whatever someone later
+    creates under that name.
     """
-    binding = one(tenant_docs, "RoleBinding", "swarm-worker")
-    subjects = {s["name"] for s in binding["subjects"]}
+    argv = [arg for name in bound for arg in ("--bound-ksa", name)]
+    docs = _tenant_render(*argv)
+    subjects = {
+        subject["name"]
+        for binding in by_kind(docs, "RoleBinding")
+        if binding["roleRef"]["kind"] == "Role" and binding["roleRef"]["name"] == "swarm-worker"
+        for subject in binding.get("subjects", [])
+    }
     created = {
         a["metadata"]["name"]
-        for a in by_kind(tenant_docs, "ServiceAccount")
+        for a in by_kind(docs, "ServiceAccount")
         # `default` is deliberately not bound: no pod should run as it, and
         # binding it would grant whatever it is that nothing may have.
         if a["metadata"]["name"] != "default"
     }
     assert subjects == created, (
-        f"rbac/worker-rbac.yaml binds {sorted(subjects)} but "
-        f"service-accounts/worker-serviceaccount.yaml creates {sorted(created)}"
+        f"the worker Role is bound to {sorted(subjects)} but the render creates "
+        f"{sorted(created)}"
     )
 
 
@@ -1350,7 +1502,15 @@ def test_every_placeholder_in_the_tenant_manifests_is_supplied_and_validated():
     """
     supplied = set(tenant_values())
     placeholders: dict[str, set[str]] = {}
-    for name in render.TENANT_FILES:
+    # EVERY file a tenant render can include, not only the unconditional ones:
+    # the older KSA's file is rendered only where that KSA is bound, and a
+    # placeholder missing from it would surface only on those tenants.
+    every_file = render.tenant_files([render.LEGACY_KSA_NAME])
+    assert set(render.TENANT_FILES) < set(every_file), (
+        "the older KSA's files are not in the conditional set; this test would "
+        "check them by accident or not at all"
+    )
+    for name in every_file:
         text = (KUBERNETES / name).read_text()
         for token in re.findall(r"__([A-Z0-9_]+)__", text):
             placeholders.setdefault(token, set()).add(name)
@@ -2065,4 +2225,100 @@ def test_the_browser_bundle_path_is_written_down_once():
         f"{value!r} is stated outside images/agent-runtime-browser/Dockerfile:\n  "
         + "\n  ".join(hits)
         + "\nRefer to the image's PLAYWRIGHT_BROWSERS_PATH instead of copying the path."
+    )
+
+
+# ---------------------------------------------------------------------------
+# What `kubectl apply` re-sends on every run
+# ---------------------------------------------------------------------------
+#
+# THE MEASUREMENT. On 2026-09-25 (~02:5xZ) `kubernetes/apply.sh --tenant eng
+# --confirm` reported `role.rbac.authorization.k8s.io/swarm-worker configured`
+# although the dry-run diff before it listed only two NetworkPolicies. Read back
+# from swarm-autopilot afterwards (read-only):
+#
+#   Role swarm-worker           last-applied `"rules":[]`, live `rules: null`,
+#                               resourceVersion and managedFields time unchanged
+#                               since creation (2026-09-24T02:56:01Z) -- the
+#                               "configured" wrote nothing.
+#   NetworkPolicy               last-applied `"ingress":[]`, live has NO
+#   swarm-deny-cross-tenant-    `ingress` key, and metadata.generation 4 --
+#   ingress                     while swarm-default-deny, applied by the same
+#                               runs but carrying no empty list, is still at 1.
+#
+# THE MECHANISM. The API server stores objects as protobuf, where an empty
+# repeated field and an absent one are the same bytes, so `rules: []` comes back
+# as `rules: null` (the field has no omitempty) and `ingress: []` comes back as
+# nothing (it has omitempty). Client-side apply computes its patch from the LIVE
+# object to the manifest; `null` -> `[]` and absent -> `[]` are both changes, so
+# every run sends `{"rules":[]}` / `{"spec":{"ingress":[]}}` and prints
+# "configured". For the Role the server then finds nothing to write, which is
+# why `kubectl diff` -- a server dry run compared with the live object -- showed
+# nothing. For the NetworkPolicy the registry compares specs with
+# reflect.DeepEqual, where nil != [], so it bumps the generation and writes on
+# every apply; that generation bump is the second "NetworkPolicy" in the diff.
+#
+# So the render is deterministic and the diff was accurate; the manifests were
+# asking for something the server cannot store. An empty map is NOT the same
+# case -- `podSelector: {}` is a struct the server echoes back as `{}` -- which
+# is why this is about lists.
+
+
+def _empty_lists(node: Any, path: str = "") -> list[str]:
+    found: list[str] = []
+    if isinstance(node, dict):
+        for key, value in node.items():
+            found += _empty_lists(value, f"{path}.{key}")
+    elif isinstance(node, list):
+        if not node:
+            found.append(path or ".")
+        for index, value in enumerate(node):
+            found += _empty_lists(value, f"{path}[{index}]")
+    return found
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["policies"],
+        ["tenant", "--tenant", TENANT],
+        [
+            "tenant", "--tenant", TENANT,
+            "--bound-ksa", "swarm-agent-worker", "--bound-ksa", "swarm-worker",
+        ],
+    ],
+    ids=["policies", "tenant", "tenant-with-older-ksa"],
+)
+def test_nothing_apply_sends_carries_an_empty_list_the_api_server_drops(argv):
+    """Every object `kubernetes/apply.sh` sends, rendered exactly as it sends
+    it, must be free of empty lists -- or `kubectl apply` reports it
+    "configured" on every run, and the one run where it really changes is
+    indistinguishable from the rest.
+
+    Spell "no rules" / "no ingress" by omitting the key. For a Role that is the
+    same empty rule set; for a NetworkPolicy whose policyTypes includes Ingress
+    it is the same deny-all (swarm-default-deny already spells it that way).
+
+    MUTATION: put `rules: []` back on rbac/worker-rbac.yaml's Role, or
+    `ingress: []` back on swarm-deny-cross-tenant-ingress, and this names the
+    object and the field.
+    """
+    import contextlib
+    import io
+
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer):
+        render.main(argv)
+    docs = documents(buffer.getvalue())
+    assert docs, f"render.py {' '.join(argv)} produced nothing to check"
+
+    offenders = [
+        f"{doc['kind']}/{doc['metadata']['name']}: {path}"
+        for doc in docs
+        for path in _empty_lists(doc)
+    ]
+    assert not offenders, (
+        "these fields are empty lists, which the API server stores as null/absent, so "
+        "client-side apply re-sends them and reports the object `configured` on every "
+        "run (and a NetworkPolicy's generation climbs):\n  " + "\n  ".join(offenders)
     )
