@@ -1517,8 +1517,9 @@ function RunningRow({ task }: { task: Task }) {
  * The one cell on this screen that has to move on its own, and therefore the
  * one place the 1Hz clock lives.
  *
- * A LEASED task has no `started_at` -- lifecycle writes it on
- * DISPATCHED -> STARTING -- so `elapsed` says "queued 4m", never "0s".
+ * A LEASED task has no `started_at` of its own attempt -- lifecycle writes it
+ * on DISPATCHED -> STARTING -- so `elapsed` says "leased 4m", never "0s", and
+ * says it on a retry too, whose `started_at` is the previous attempt's.
  */
 function Runtime({ task }: { task: Task }) {
   const now = useNow()

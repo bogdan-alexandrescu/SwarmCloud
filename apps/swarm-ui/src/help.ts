@@ -250,18 +250,27 @@ const SPECS: Record<TopicId, TopicSpec> = {
 
   // AG-19. The Attempts toolbar's `?` opened "One message belongs to one
   // failure" -- a topic about rollups keeping one error -- beside marks that are
-  // about the events route's paging. This is the topic those marks are about,
-  // built from the sentences their own accessible names already carry
-  // (AttemptTimeline.tsx's `say` strings), so the card and the marks agree.
+  // about how much of the event history this screen holds.
+  //
+  // THE FIRST VERSION BLAMED THE ROUTE, AND THE ROUTE IS NOT THE LIMIT. It was
+  // built from AttemptTimeline.tsx's `say` strings, which said the events route
+  // "returns no page token" and that newer events "cannot be fetched at all".
+  // Both went stale with #19: `GET /v1/tasks/{id}/events` returns
+  // `next_page_token` whenever more events exist and takes `order=desc`
+  // (swarm_api/routes/tasks.py, `list_events`). What is true is narrower and is
+  // about the UI: api.ts asks for one page, oldest-first, and never sends the
+  // token back. The toolbar's strings now say that too, so the card and the
+  // marks still agree, and tests/help.test.ts reads both the route and api.ts
+  // and holds this topic to whichever of them changes.
   'event-paging': {
     group: 'an-attempt',
     title: 'One page of events, oldest first',
     short:
-      'The events endpoint orders oldest-first, caps the page on the server and returns no page token. Newer events may exist that this screen cannot reach, and an attempt with none on this page is blind, not quiet. Zero events is a failed query: a task is written with its first event.',
+      'This screen reads one page of events, oldest-first, and does not follow the page token the events route returns, so newer events may exist that it has not fetched. An attempt with none on this page is blind, not quiet. Zero events is a failed query: a task is written with its first event.',
     long: [
-      'The events route returns one page, ordered oldest-first, capped by the server, with no token to ask for the next. What this screen holds is the beginning of a history, never a guaranteed whole of it.',
-      'So “this is everything” is a claim the screen is never entitled to make. An attempt with no events on the page is counted as blind rather than drawn as quiet: past one page, the newest events — everything belonging to the latest attempts — cannot be fetched at all.',
-      'Zero events is a different fact again. A task is written together with its first event, in the same batch, so an empty history is a failed query and is marked as one — never as an empty record.',
+      'The events route pages: each response carries a token for the next page whenever more events exist, and it can also be asked for the newest events first. This screen uses neither. It asks for one page, oldest-first, and stops there, so what it holds is the beginning of a history, never a guaranteed whole of it.',
+      'So \u201cthis is everything\u201d is a claim the screen is never entitled to make. An attempt with no events on the page is counted as blind rather than drawn as quiet: past one page, the newest events \u2014 everything belonging to the latest attempts \u2014 are on the platform and not on this screen.',
+      'Zero events is a different fact again. A task is written together with its first event, in the same batch, so an empty history is a failed query and is marked as one \u2014 never as an empty record.',
     ],
   },
 
@@ -269,15 +278,22 @@ const SPECS: Record<TopicId, TopicSpec> = {
   // which is about the runtime catalogue publishing variable NAMES. What the
   // artifact viewer's count needs explained is that masking happens on the
   // way out and leaves the stored object untouched -- the `say` on its mark.
+  //
+  // AND THAT THE COUNT IS OVER THE WINDOW SERVED, NOT THE OBJECT. inspect.py
+  // runs `redact()` over the bytes of this read and reports that call's count
+  // as `redaction_count`; a large artifact is served a window at a time and the
+  // viewer marks it `partial`. The first version called the count "the number
+  // of values hidden in this copy", which a zero on a partial read is not.
   'masking-is-serve-time': {
     group: 'an-attempt',
     title: 'Masking happens when an artifact is served',
     short:
-      'Credential-shaped values are masked on the way out, when an artifact is served. The object in the bucket is unchanged and still holds them, so a count above zero means rotate what was found. A count of zero means nothing matched the rules, not that nothing secret is there.',
+      'Credential-shaped values are masked on the way out, when an artifact is served. The object in the bucket is unchanged and still holds them, so a count above zero means rotate what was found. The count covers only the bytes this read served, and zero means nothing in them matched the rules, not that nothing secret is there.',
     long: [
       'Masking is a property of the serving path, not of the artifact. The viewer reads the object, replaces every value that matches one of its rule families, and sends the result; the object in storage is never rewritten.',
-      'So the count beside an artifact is the number of values hidden in this copy. Every one of them is still in the bucket, readable by anything with access to it, and anything recognisable should be rotated.',
-      'A count of zero is measured against the rules, not against the content: it says no value matched a known family of credential, which is not the same as the artifact holding nothing sensitive.',
+      'So the count beside an artifact is the number of values hidden in the part of it this read served. Every one of them is still in the bucket, readable by anything with access to it, and anything recognisable should be rotated.',
+      'It covers that part and nothing past it. A large artifact is served a window at a time, and the viewer marks such a read partial beside its byte count: the masked count is over those bytes, and the rest of the object has not been checked by this read at all.',
+      'A count of zero is measured against the rules, not against the content: it says no value in the bytes served matched a known family of credential, which is not the same as the artifact holding nothing sensitive.',
     ],
   },
 

@@ -2012,14 +2012,26 @@ export function whyAgent(task: Task): string {
  * rather than parsing the text: a `run` key over a `never-ran` figure is the
  * AG-3 contradiction all over again.
  *
- *   ran        a finished run, from its start to its end
- *   running    a start and no end yet; the figure is still growing
- *   waiting    never started, not finished; the figure is time since creation,
- *              prefixed with what the task is doing meanwhile
+ *   ran        a finished task that started: from its last start to its end
+ *   running    STARTING or RUNNING now; the figure is this attempt's run so
+ *              far and is still growing
+ *   waiting    not running now and not finished -- never started, or between
+ *              attempts (parked, requeued, re-leased); the figure is the
+ *              task's age since submission, prefixed with what it is doing
  *   never-ran  finished without ever starting; there is no run to time
- *   unknown    nothing to time from
+ *   unknown    no span the document can time: no creation time, or a
+ *              finished task whose end was never recorded
  */
 export type ElapsedPhase = 'ran' | 'running' | 'waiting' | 'never-ran' | 'unknown'
+
+/**
+ * The two states in which the task document's `started_at` is THIS attempt's
+ * start, so `now - started_at` is time run. The worker writes `started_at` on
+ * DISPATCHED -> STARTING and nothing clears it, so in every other live state a
+ * `started_at` present is an earlier attempt's. `stepviews.ts` and `dag.ts`
+ * draw the same line for the same reason.
+ */
+const RUN_STATES: ReadonlySet<TaskState> = new Set<TaskState>(['STARTING', 'RUNNING'])
 
 /**
  * Column 6, "Elapsed".
@@ -2041,6 +2053,23 @@ export type ElapsedPhase = 'ran' | 'running' | 'waiting' | 'never-ran' | 'unknow
  * A concurrency state is named by its own state word (`leased 4m`,
  * `dispatched 4m`); everything else unstarted costs nothing and reads
  * `waiting`. The word comes from the state, not from a list typed here.
+ *
+ * A START ON THE DOCUMENT IS NOT A RUN IN PROGRESS. `started_at` survives a
+ * park, a promote back to READY and a reclaim -- nothing on the platform
+ * clears it -- so a task that ran, hit quota and parked forty minutes ago
+ * still carries its start. Timed from there it read `41m 0s`, ticking, phase
+ * `running`, on a task holding no capacity and running nothing; and on its
+ * retry the LEASED and DISPATCHED rows lost their prefix to a bare duration.
+ * Only in `RUN_STATES` is the start this attempt's, so only there is the
+ * figure run time. Anywhere else live, the task is between attempts and reads
+ * like any waiting task: its state word and its age.
+ *
+ * WHAT THE TASK DOCUMENT CANNOT TELL APART. For a finished task the figure is
+ * last start to end. A task cancelled while PARKED, after an earlier attempt
+ * started, has a start and an end and nothing that says it was parked in
+ * between, so that span includes the parked time. The attempt documents do
+ * not settle it either -- a park writes no attempt end -- and the task is
+ * the only read the Agents list makes.
  */
 export function elapsed(
   task: Task,
@@ -2051,13 +2080,18 @@ export function elapsed(
   const started = ms(task.started_at)
   const completed = ms(task.completed_at)
 
-  if (TERMINAL_STATES.has(task.state) && !Number.isFinite(started)) {
-    return { text: 'never ran', ticking: false, phase: 'never-ran' }
-  }
-  if (Number.isFinite(started)) {
+  if (TERMINAL_STATES.has(task.state)) {
+    if (!Number.isFinite(started)) return { text: 'never ran', ticking: false, phase: 'never-ran' }
+    // A finished task with no recorded end has no run length, and counting on
+    // to `now` would put a growing figure on a task that is over. Every
+    // terminal write sets `completed_at` with the state, so this is an older
+    // document or a writer that forgot; the figure is an absence either way.
     return Number.isFinite(completed)
       ? { text: formatDuration(completed - started), ticking: false, phase: 'ran' }
-      : { text: formatDuration(now - started), ticking: true, phase: 'running' }
+      : { text: '\u2014', ticking: false, phase: 'unknown' }
+  }
+  if (RUN_STATES.has(task.state) && Number.isFinite(started)) {
+    return { text: formatDuration(now - started), ticking: true, phase: 'running' }
   }
   if (Number.isFinite(created)) {
     const doing = CONCURRENCY_STATES.has(task.state) ? task.state.toLowerCase() : 'waiting'

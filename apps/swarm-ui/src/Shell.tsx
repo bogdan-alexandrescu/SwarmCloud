@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { errorHeading, errorReassurance, type ApiError, type ApiErrorKind, type Result } from './fetch'
 import { Absent, type LinkOut } from './primitives'
 import { formatDuration, timeAgo } from './types'
-import { useNow } from './useNow'
+import { AGE_TICK_MS, useNow } from './useNow'
 
 /**
  * How often a screen re-reads: a fixed interval, or one chosen from what was
@@ -54,13 +54,6 @@ export const AGED_AFTER_MS = 5 * 60_000
  * still recover on its own within a sensible wait once the API is back.
  */
 export const MAX_BACKOFF_MS = 5 * 60_000
-
-/**
- * The tick every AGE in the frame moves on: this sub-line, the head's
- * `newest read`, the dock and the API reads page. One shared clock (useNow.ts)
- * at one cadence is what stops two ages side by side disagreeing.
- */
-const AGE_TICK_MS = 5_000
 
 /**
  * Failures that asking again cannot fix, so a polling screen stops asking.
@@ -179,6 +172,13 @@ export function Screen<T>({
   const dueAt = useRef<number | null>(null)
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [cadence, setCadence] = useState<Cadence | null>(null)
+  /**
+   * Whether the read about to start was asked for by the poll timer, or by a
+   * tab coming back, rather than by a person. Read and cleared by the load
+   * effect: only a person's refresh puts a screen holding no rows back to
+   * `loading`.
+   */
+  const byPoll = useRef(false)
 
   const disarm = useCallback(() => {
     if (timer.current !== null) {
@@ -194,6 +194,7 @@ export function Screen<T>({
     timer.current = setTimeout(() => {
       timer.current = null
       dueAt.current = null
+      byPoll.current = true
       setNonce((n) => n + 1)
     }, Math.max(0, dueAt.current - Date.now()))
   }, [disarm])
@@ -224,7 +225,18 @@ export function Screen<T>({
   useEffect(() => {
     let live = true
     // A refresh with data on screen must NOT blank it back to skeletons.
-    if (!lastGood.current) setState({ status: 'loading', since: Date.now() })
+    //
+    // NOR MAY A POLL BLANK A SCREEN THAT HOLDS NO ROWS. An empty read and a
+    // failed first read both leave `lastGood` null, so this reset used to fire
+    // on every poll: a tenant with no agents, polled every 30s, lost its empty
+    // panel to skeleton rows and back each time, and a screen backing off after
+    // a failure unmounted its failure panel -- and the `Try again` under the
+    // reader's pointer -- on every retry. A poll leaves whatever answer is on
+    // screen until the next answer replaces it. The refresh button still shows
+    // `loading`: a person pressed it and is owed a sign that it took.
+    const polled = byPoll.current
+    byPoll.current = false
+    if (!lastGood.current && !polled) setState({ status: 'loading', since: Date.now() })
 
     load().then((next) => {
       if (!live) return
@@ -285,6 +297,7 @@ export function Screen<T>({
       }
       if (dueAt.current !== null && dueAt.current <= Date.now()) {
         dueAt.current = null
+        byPoll.current = true
         setNonce((n) => n + 1)
       } else {
         arm()
@@ -302,6 +315,7 @@ export function Screen<T>({
   const retry = useCallback(() => {
     disarm()
     dueAt.current = null
+    byPoll.current = false
     setNonce((n) => n + 1)
   }, [disarm])
 
