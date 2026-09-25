@@ -2331,10 +2331,12 @@ a.node:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
    2026-09-25). This was `--warn` on every row, so a step waiting on the step
    before it -- what a healthy chain says about most of its steps -- was the
    same yellow as a failure, and a colour on every line marked none of them.
-   `.is-warn` is set by `whyNeedsAction` (types.ts): a failure, a pool paused
-   or set to zero, a missing credential. Queued, parked on quota, waiting on a
-   dependency and cancelled read in ink. redesign-v2 §5.4 kept warn here on
-   purpose; this is the owner's amendment of it, recorded there too. */
+   `.is-warn` is set by `whyNeedsAction` (types.ts): a failure, work that can
+   never be admitted (a pool paused or set to zero, a spent budget), a missing
+   credential -- and, in the inspector, a silent worker (`.why-full`). Queued,
+   parked on quota, waiting on a dependency and cancelled read in ink.
+   redesign-v2 §5.4 kept warn here on purpose; this is the owner's amendment
+   of it, recorded there too. */
 .row .why {
   grid-column: 1 / -1;
   margin-top: 4px;
@@ -7756,13 +7758,13 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
    facts strip and ONE `.ctl-table` (the one box, §13.3), and these rules are
    what is left that a table does not already draw. */
 
-/* The objects a checkpoint's size sums, one click away in its Size cell. A
-   disclosure, not a box: no border, no fill, the micro mono of `.ctl-sub`. */
-.rf-objects > summary {
-  cursor: pointer;
-  font: var(--t-micro)/var(--lh-micro) var(--mono);
-  color: var(--text-faint);
-}
+/* The objects a checkpoint's size sums, opened from its Size cell as ROWS OF
+   THE SAME TABLE (fix-up on #170: "files as a table (name, size, age)"). Not
+   a second box: the row keeps the table's cells and rules, and is set in from
+   the checkpoint it belongs to, in the dim ink, so it reads as that
+   checkpoint's file rather than as another checkpoint. */
+.ctl-table tr.rf-object > th { padding-left: var(--ctl-s5); }
+.ctl-table tr.rf-object > th .mono { color: var(--text-dim); font-weight: 400; }
 
 /* A stream's window sits under the table, labelled by its stream's name. */
 .rf-window { margin-top: var(--ctl-s3); }
@@ -9651,6 +9653,16 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 .ctl-ckpt-dot.is-unsized {
   stroke: var(--series-2);
   stroke-dasharray: 2 1.5;
+}
+/* THE TRAY'S COUNT (fix-up on #170): the off-page checkpoints past the ones
+   the tray has room to draw, as `+N`. Set as the tick labels are -- the same
+   mono and the same `--t-micro` in the drawing's own units, which neither
+   drawing is ever scaled below (AG-20) -- and in the dim ink, because it is a
+   count of things not drawn, not a value. */
+.ctl-ckpt-more {
+  fill: var(--text-dim);
+  font-family: var(--mono);
+  font-size: var(--t-micro);
 }
 
 /* --- Diffstat --------------------------------------------------------------- */

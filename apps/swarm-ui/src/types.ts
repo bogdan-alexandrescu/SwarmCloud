@@ -2028,10 +2028,17 @@ export function whyAgent(task: Task): string {
  * be admitted"). The branches mirror `whyAgent`'s, so a line and its ink are
  * decided from the same fields.
  *
- * STUCK OR SILENT WORKERS HAVE NO BRANCH, because they have no line:
- * `whyAgent` writes nothing for a task that holds a slot, and a worker's
- * silence is a lease and heartbeat fact the task document does not carry.
- * The inspector's liveness badge is where that is drawn, in its own tone.
+ * STUCK OR SILENT WORKERS HAVE NO BRANCH HERE, because this reads a task
+ * document and a worker's silence is not on it: `whyAgent` writes nothing for
+ * a task that holds a slot, and the heartbeat is written to the lease. The
+ * inspector, which reads the task's events, writes its own `--warn` line for
+ * a worker `livenessOf` calls silent (`SilentWorker` in AgentDetail.tsx). The
+ * Agents list cannot until a tenant-scoped route serves the heartbeat (#179).
+ *
+ * WHAT "CAN NEVER BE ADMITTED" COVERS, stated because it is wider than one
+ * reason: a pool paused (MANUAL_PAUSE, as a blocker or as a park) or set to
+ * zero by a person, and a spent budget (BUDGET_EXHAUSTED) -- none admits the
+ * task again until somebody acts. "Sign-in needed" is CREDENTIAL_MISSING.
  */
 export function whyNeedsAction(task: Task): boolean {
   if (task.state === 'FAILED') return true

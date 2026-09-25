@@ -695,9 +695,12 @@ function TaskRow({
 
           ITS INK SAYS WHETHER SOMEONE HAS TO ACT (AG-14). Every line was
           `--warn`, so a step waiting on the step before it was the same yellow
-          as a failure. `whyNeedsAction` (types.ts) is the rule: a failure, a
-          pool that can never admit it, a missing credential. Routine waits and
-          cancellations are plain ink. */}
+          as a failure. `whyNeedsAction` (types.ts) is the rule: a failure,
+          work that can never be admitted (a pool paused or set to zero, a
+          spent budget), a missing credential. Routine waits and cancellations
+          are plain ink. A silent worker gets no line HERE: a row is a task
+          document and the heartbeat is on the lease (#179); the inspector,
+          which reads events, draws one. */}
       {why && <span className={`why${whyNeedsAction(task) ? ' is-warn' : ''}`}>{why}</span>}
     </div>
   )

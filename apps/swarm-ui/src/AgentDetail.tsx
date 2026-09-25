@@ -12,7 +12,7 @@ import { eventKind, isTerminalEvent } from './events'
 import { num } from './fetch'
 import { HELP, type TopicId } from './help'
 import { HelpCard } from './HelpCard'
-import { LivenessBadge } from './Liveness'
+import { LivenessBadge, livenessOf } from './Liveness'
 import { Absent, Mark, Metric, UtilRow, type MarkKind } from './primitives'
 import { RunFiles } from './RunFiles'
 import { Screen, timeAgo, type ScreenReading } from './Shell'
@@ -283,7 +283,7 @@ export function Run({
     <div className="run-stack">
       <Headline run={run} now={now} reload={reload} />
       <Alerts task={task} />
-      <Why task={task} />
+      <Why task={task} events={events} now={now} />
       <ErrorBanner run={run} />
       <RunMetrics run={run} now={now} />
       <Attempts run={run} now={now} />
@@ -1064,9 +1064,9 @@ function reasonText(reason: string): string {
  * of it". The heading went, because a one-line panel headed "Why" is a word of
  * chrome per word of content.
  */
-function Why({ task }: { task: Task }) {
+function Why({ task, events, now }: { task: Task; events: TaskEvent[] | null; now: number }) {
   const why = whyAgent(task)
-  if (!why) return null
+  if (!why) return <SilentWorker task={task} events={events} now={now} />
   // ONCE, NOT THREE TIMES (AG-7). For a FAILED task `whyAgent` IS
   // `last_error`, and the error banner directly below prints that same text
   // in full -- so a failed agent's reason stood here, then in the banner, then
@@ -1078,6 +1078,41 @@ function Why({ task }: { task: Task }) {
   return (
     <section className="section">
       <p className={`why-full${whyNeedsAction(task) ? ' is-warn' : ''}`}>{why}</p>
+    </section>
+  )
+}
+
+/**
+ * AG-14'S FOURTH KIND: A STUCK OR SILENT WORKER, which had no line to colour.
+ *
+ * The owner's decision names "stuck/silent workers" among the why lines that
+ * need a person and so take `--warn`. `whyAgent` writes nothing for a task
+ * that holds a slot -- it answers "why is this not running", and a leased or
+ * running task is -- so the first pass had no line here and coloured none.
+ *
+ * The inspector reads the task's events, and `livenessOf` (Liveness.tsx)
+ * already derives the answer the badge in the heading draws: a task in a
+ * concurrency state with no event for seven minutes is `silent`, "the worker
+ * may be gone". That sentence is the why line, in `--warn`, and nothing else
+ * is -- not `quiet` (heartbeats are ~150s apart, so three to seven minutes is
+ * not yet alarming), and not an event read that failed or a re-read that
+ * stopped vouching (`now` stops with it, `rowClock` in `Run`): "could not
+ * look" is never drawn as "nothing happened".
+ *
+ * NOT ON THE AGENTS LIST. A list row is a task document, and a worker's
+ * heartbeat is written to its LEASE (control.py `heartbeat`), which no
+ * tenant-scoped route serves; the admin leases route is the only reader. The
+ * list half is a backend change, #179, rather than a guess from
+ * `updated_at`, which a heartbeat does not move.
+ */
+function SilentWorker({ task, events, now }: { task: Task; events: TaskEvent[] | null; now: number }) {
+  const live = livenessOf(task, events, now)
+  if (live.kind !== 'silent') return null
+  return (
+    <section className="section">
+      <p className="why-full is-warn" data-why="silent">
+        {live.say}
+      </p>
     </section>
   )
 }

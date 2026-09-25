@@ -155,10 +155,18 @@ cannot show; each table keeps the facts as text a reader can copy.
   a live worker emits (`running`, `heartbeat`, `checkpoint_*`) and a cold
   start only by the scheduler's `lease_acquired` and `dispatched`.
 
-**Every inspector chart is drawn twice, not scaled (AG-20).** Each root is
-rendered once per entry in `DRAWN` (`parts.tsx`): a 640-unit and a 300-unit
-SVG, each with its own scale, its own hatch pattern and its own tick count
-(the narrow one asks for fewer). Both are in the markup; the figure is a size
+**Every inspector chart is drawn twice, not scaled (AG-20).** Each root --
+the phase bars, the retry lollipop, peak memory, the checkpoint strip, the
+diffstat and `TimeSeries`' token-spend line -- is rendered once per entry in
+`DRAWN` (`parts.tsx`): a 640-unit and a 300-unit SVG, each with its own
+scale, its own hatch pattern and its own tick count (the narrow one asks for
+fewer). The token-spend line was left out of the first pass and stayed one
+scaled 640-unit SVG, with its ticks at about 8.4px in the default inspector;
+`inspector.charts.test.tsx` now counts every chart root the inspector mounts
+rather than a list of the ones known to be fixed. The checkpoint strip's
+off-page tray is bounded by the width it is drawn at (half the plot at most,
+the rest counted as `+N`), so neither drawing's time axis can be squeezed to
+nothing. Both are in the markup; the figure is a size
 container (`.ctl-chart.has-narrow`) and `@container ctl-chart (min-width:
 640px)` in styles.css shows the wide one only where the chart is at least as
 wide as it was drawn, while the narrow one has a `min-width` of its own

@@ -27,7 +27,7 @@
 // task's events, and `livenessOf` (Liveness.tsx) already calls a slot-holding
 // task with no event for seven minutes `silent` -- so the inspector now
 // writes that sentence as its why line, in `--warn`. The Agents list reads
-// task documents only, which carry no heartbeat; its half is an issue, not a
+// task documents only, which carry no heartbeat; its half is #179, not a
 // guess.
 
 import STYLES from '../styles.css?raw'

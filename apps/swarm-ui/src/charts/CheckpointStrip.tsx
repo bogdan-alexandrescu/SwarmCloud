@@ -17,7 +17,8 @@
 //   * a checkpoint whose event is NOT on the page has NO POSITION AT ALL. It
 //     is not drawn on the time axis -- where it would claim an instant nobody
 //     recorded -- but in a separate tray to the right of the axis, hollow, one
-//     ring per id, so it is counted and never silently lost.
+//     ring per id for as many as the tray has room for and a `+N` for the
+//     rest (`trayLayout`), so it is counted and never silently lost.
 //
 // A hollow dot is NOT a broken checkpoint (types.ts, and redesign-v2 §4 row 6
 // "what it must not imply"): this screen reads one page of events,
@@ -36,7 +37,7 @@
 
 import { instant, spanText } from '../duration'
 import { bytesLabel, checkpointsFor, type AttemptRow, type CheckpointRow, type TaskEvent } from '../types'
-import { ChartTitle, DRAWN, drawnClass } from './parts'
+import { ChartTitle, DRAWN, drawnClass, type Drawn } from './parts'
 import { ValueAxis, linearScale } from './TimeSeries'
 
 // NO WIDTH HERE (AG-20): each drawing in `DRAWN` (parts.tsx) brings its own.
@@ -46,6 +47,40 @@ const R_MAX = 7
 const R_MIN = 2
 const R_UNSIZED = 3
 const TRAY_STEP = 12
+/** From the axis's end to the first ring: the divider sits halfway along it. */
+const TRAY_GAP = 20
+/**
+ * Room for the tray's `+N`: four characters of `--t-micro` mono ("+999") at
+ * about 7.2 units each, and the space before them.
+ */
+const MORE_W = 36
+
+/**
+ * THE TRAY IS BOUNDED, AND THE AXIS KEEPS AT LEAST HALF THE PLOT (fix-up on
+ * #170). The tray was `20 + 12n` units wide with no upper bound and was
+ * subtracted from the plot, so in the 300-unit drawing -- the one the 480px
+ * inspector and every phone show -- the time axis was 252 - 12n wide: zero at
+ * 21 off-page checkpoints and negative past it, and `linearScale` does not
+ * clamp, so the track, the dots and the axis were drawn backwards into the
+ * margin with the tray on top of them. The worker checkpoints every 120s
+ * (agent_worker/config.py), so a 42-minute attempt whose event read failed
+ * puts 21 there. The 640 drawing broke the same way at 50.
+ *
+ * So the tray gets at most half of the drawing's plot width, and within it as
+ * many rings as fit; past that it draws as many as fit beside a `+N` and
+ * COUNTS the rest. None is dropped: every id is still a row in the attempt's
+ * checkpoint table under this strip, and the count says how many are not
+ * drawn here. Whatever the tray holds, the axis is at least half the plot.
+ */
+function trayLayout(d: Drawn, unplaced: number): { width: number; shown: number } {
+  if (unplaced === 0) return { width: 0, shown: 0 }
+  const plot = d.w - M.left - M.right
+  const budget = Math.floor(plot / 2)
+  const fits = Math.floor((budget - TRAY_GAP) / TRAY_STEP)
+  if (unplaced <= fits) return { width: TRAY_GAP + unplaced * TRAY_STEP, shown: unplaced }
+  const shown = Math.max(0, Math.floor((budget - TRAY_GAP - MORE_W) / TRAY_STEP))
+  return { width: TRAY_GAP + shown * TRAY_STEP + MORE_W, shown }
+}
 
 export function CheckpointStrip({
   attempt,
@@ -77,7 +112,6 @@ export function CheckpointStrip({
   const hi = Math.max(0, ...ts)
   const extent = { lo, hi, degenerate: lo === hi }
 
-  const trayW = unplaced.length === 0 ? 0 : 20 + unplaced.length * TRAY_STEP
   const maxBytes = Math.max(0, ...placed.map((p) => p.row.bytes ?? 0))
   const radius = (b: number | null) =>
     b === null ? R_UNSIZED : maxBytes > 0 ? Math.max(R_MIN, R_MAX * Math.sqrt(b / maxBytes)) : R_MIN
@@ -96,10 +130,14 @@ export function CheckpointStrip({
         </ul>
       )}
       {/* TWICE, NOT SCALED (AG-20): one drawing per width, each its own
-          scale and tick count; the tray keeps its size at both. */}
+          scale, tick count and tray -- the tray is bounded by the width it is
+          drawn at (`trayLayout`), so the axis keeps at least half the plot. */}
       {DRAWN.map((d) => {
-        const innerW = d.w - M.left - M.right - trayW
+        const tray = trayLayout(d, unplaced.length)
+        const innerW = d.w - M.left - M.right - tray.width
         const x = linearScale(extent, [0, innerW])
+        const drawn = unplaced.slice(0, tray.shown)
+        const more = unplaced.length - drawn.length
         return (
           <svg
             key={d.key}
@@ -129,9 +167,9 @@ export function CheckpointStrip({
               {unplaced.length > 0 && (
                 // THE TRAY. Past a divider, off the time axis, in id order: these
                 // have no recorded instant, so they have no x.
-                <g data-testid="ckpt-tray" transform={`translate(${innerW + 20},0)`}>
-                  <line className="ctl-ckpt-divider" x1={-10} x2={-10} y1={-4} y2={mid * 2 + 4} />
-                  {unplaced.map((row, i) => (
+                <g data-testid="ckpt-tray" transform={`translate(${innerW + TRAY_GAP},0)`}>
+                  <line className="ctl-ckpt-divider" x1={-TRAY_GAP / 2} x2={-TRAY_GAP / 2} y1={-4} y2={mid * 2 + 4} />
+                  {drawn.map((row, i) => (
                     <circle
                       key={row.checkpoint_id}
                       className="ctl-ckpt-dot is-hollow is-unsized"
@@ -146,6 +184,21 @@ export function CheckpointStrip({
                       <title>{`${row.checkpoint_id} · not on this page`}</title>
                     </circle>
                   ))}
+                  {more > 0 && (
+                    // COUNTED, NOT DROPPED. The figure is the text; the
+                    // sentence is the group's name, so it is reachable
+                    // without a hover.
+                    <g
+                      data-testid="ckpt-more"
+                      role="img"
+                      aria-label={`${more} more checkpoint${more === 1 ? '' : 's'} listed on the attempt document whose event${more === 1 ? ' is' : 's are'} not on this page, not drawn here for room. Each is a row in the checkpoint table below. Not evidence that any is broken.`}
+                    >
+                      <title>{`${more} more not on this page`}</title>
+                      <text className="ctl-ckpt-more" x={drawn.length * TRAY_STEP - R_UNSIZED} y={mid} dy="0.35em">
+                        {`+${more}`}
+                      </text>
+                    </g>
+                  )}
                 </g>
               )}
               {placed.length > 0 || end !== null ? (

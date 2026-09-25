@@ -2456,9 +2456,9 @@ red run is in the pull request.
 | Box | What changed | The constraint | Test |
 |---|---|---|---|
 | AG-5 | The artifact viewer's `masked N` is a plain fact: no mark, no `.is-absent`, `--warn` ink above zero, plain at zero, still opening `masking-is-serve-time` | a count that was read is a measurement; the six marks are kinds of *nothing* and there is no seventh (§6.13 amended) | `artifact.masked`, `prose.runs` (re-pointed) |
-| AG-14 | `.row .why` and `.why-full` are `--text`; `.is-warn` only where `whyNeedsAction` (types.ts) is true: a failure, a pool paused or set to zero, a missing credential or spent budget | a colour on every line marks none of them; "needs a person" is the partition types.ts already keeps (`PARK_NEEDS_A_PERSON`, `needsAPerson`) | `whyline.tone` |
-| AG-20 | Every inspector chart root drawn at 640 and at 300 units; the figure is the container; the wide drawing only where the chart is ≥ 640px; the narrow one never below 300px | tick text at `--t-micro` rendered at 6–8px when a 640 drawing was scaled into a 400–480px column (§7.2 amended) | `chart.narrow` |
-| AG-23 | The checkpoint and log panels are a facts strip and one `.ctl-table` each (Checkpoint · Size · Age · Resume; Stream · Size · Age); no `.ckpt` or `.logwin` card, no `dl.kv`; `real zero`, `not measured`, `partial` and `not read` in the cells; the server's lowercase detail on its own line or after a dash | one level of box (§13.3); keep only the sentences a table cannot state — a checkpoint written then reclaimed, and a restore pointer a resume would ignore | `runfiles.flat`, `checkpoint.reclaimed` |
+| AG-14 | `.row .why` and `.why-full` are `--text`; `.is-warn` only on a line that needs a person: a **failure** (FAILED); work that **can never be admitted** until someone acts — a pool paused or set to zero, whether admission wrote it as a blocker or the task parked on `MANUAL_PAUSE`, and a spent budget (`BUDGET_EXHAUSTED`); **sign-in needed** (`CREDENTIAL_MISSING`); and a **stuck or silent worker** — in the inspector, a slot-holding task with no event for seven minutes gets `livenessOf`'s sentence as its why line (`SilentWorker`, AgentDetail.tsx). Queued, parked on quota or a provider, waiting on a dependency, and cancelled are ink | a colour on every line marks none of them; "needs a person" is the partition types.ts already keeps (`PARK_NEEDS_A_PERSON`, `needsAPerson`), and "silent" is the one `Liveness.tsx` already draws | `whyline.tone` |
+| AG-20 | Every inspector chart root — peak memory, phase bars, retry lollipop, checkpoint strip, diffstat **and the token-spend line** (`TimeSeries`) — drawn at 640 and at 300 units; the figure is the container; the wide drawing only where the chart is ≥ 640px; the narrow one never below 300px. The checkpoint strip's off-page tray takes at most half of each drawing's plot and counts what it has no room to draw as `+N` | tick text at `--t-micro` rendered at 6–8px when a 640 drawing was scaled into a 400–480px column (§7.2 amended); a tray sized by its count left the 300 drawing no axis at 21 off-page checkpoints | `chart.narrow`, `inspector.charts` (every chart root in the inspector, not a list) |
+| AG-23 | The checkpoint and log panels are a facts strip and one `.ctl-table` each, **three columns**: Checkpoint · Size · Age, and Stream · Size · Age. Whether a retry would restore from a checkpoint is a `resume` line under its name; a checkpoint's objects open from its Size cell as rows of the same table, with a name, a size and an age. No `.ckpt` or `.logwin` card, no `dl.kv`; `real zero`, `not measured`, `partial` and `not read` in the cells; the server's lowercase detail on its own line or after a dash. The strip's `restore` fact is what a retry would restore from | one level of box (§13.3); keep only the sentences a table cannot state — a checkpoint written then reclaimed, and a restore pointer a resume would ignore | `runfiles.flat`, `checkpoint.reclaimed` |
 | leftover A | `Agents`, `AttemptTimeline`, `Capacity`, `Holders`, `Runtimes`: the second `real zero` in each empty state removed | one mark per empty state (§6.9 amended) | `emptystate.onemark` |
 | leftover B | Every string that said the events route "returns no page token" now says this screen reads one page and does not follow the token | `GET /v1/tasks/{id}/events` has returned `next_page_token` since #19; the limit is the screen's (help topic `event-paging`) | `eventpaging.strings` |
 
@@ -2469,22 +2469,41 @@ than smoothed over:
   opened `credential-names-not-values` when the box was filed; AG-19 (#152)
   moved it to `masking-is-serve-time`, because the credential-names topic is
   about how the runtime catalogue names secrets, not about a value found in an
-  artifact. The count keeps its link to the masking topic, which is the topic
-  about these credentials; pointing it back would undo AG-19's fix.
+  artifact. The two decisions cannot both hold for one `?`. The count keeps
+  its link to the masking topic, which is the topic about these credentials,
+  which needs the owner's confirmation; pointing it back would undo AG-19's
+  fix.
 * **AG-14 names "stuck or silent workers".** `whyAgent` writes no line for a
-  task that holds a slot, and a worker's silence is a lease and heartbeat fact
-  the task document does not carry, so no why line exists for that case to
-  tone. The inspector's liveness badge draws it, in its own tone.
-* **AG-23 names three columns.** The checkpoint table has a fourth, `Resume`,
-  because "would a retry restore from this" was the question the old card's
-  five `dl.kv` rows answered and none of name, size or age can hold it. A log
-  stream's age is its attempt's end for a `final` object — when the worker
-  uploads it — and the word `live` for a tail still being written; the route
-  serves no per-object time, and neither does the checkpoint listing for a
-  checkpoint's objects. Serving it is #172.
+  task that holds a slot, so the first pass had nothing to colour. The
+  inspector reads the task's events, and now writes `livenessOf`'s `silent`
+  sentence as a `--warn` why line. The **Agents list** cannot: a row is a task
+  document, and a worker's heartbeat is written to its lease, which no
+  tenant-scoped route serves (the admin leases route is the only reader). That
+  half is a backend change, #179, and the list draws no line for a silent
+  worker until it lands. The list also counts `MANUAL_PAUSE` and
+  `BUDGET_EXHAUSTED` parks as "can never be admitted": nothing ends either one
+  but a person, exactly as for a pool paused or set to zero.
+* **AG-23's log age.** The route serves no per-object time (#172 asks for
+  it), so a `final` stream's age is its attempt's end — when the worker
+  uploads it — and the em dash with `not measured` when that end is not
+  recorded. The word `live` is shown only while the attempt has no end **and**
+  the task holds a slot. `source=auto` also serves the live tail when the
+  final log is absent, which is what a worker killed before its upload leaves
+  behind, and a quota-parked attempt never records an end; either tail is the
+  em dash with `partial` — the last tail published, not a stream still being
+  written. The first pass wrote "`live` for a tail still being written" here
+  and called every tail `live`.
+* **AG-23's restore fact.** It printed the pointer, or "a retry starts from
+  the beginning" when none was set. The worker tries the pointer and, when
+  that resolves to nothing, restores the newest committed checkpoint it can
+  read (`_restore_checkpoint` → `find_latest`), so the fact is now `newest
+  committed` and the listing's newest resumable row — marked `partial` where
+  the listing is cut or a newer row is committed but not resumable, and `not
+  read` where a manifest could not be read.
 
 **What this pass did NOT verify.** Nothing here was seen rendered. The tests
 prove which drawing the sheet picks at a stated container width, which marks
-the cells carry and which rule wins; whether the 300-unit drawings read well
-at 390 and 1440 in each theme is for the next release's screenshots.
+the cells carry and which rule wins; whether the 300-unit drawings, the
+tray's `+N` and the object rows read well at 390 and 1440 in each theme is
+for the next release's screenshots.
 
