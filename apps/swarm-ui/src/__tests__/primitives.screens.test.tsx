@@ -469,7 +469,7 @@ describe('AgentDetail draws requested-vs-utilised through the shared track', () 
 // ---------------------------------------------------------------------------
 
 describe('Capacity draws each pool card through the shared track', () => {
-  it('no ceiling is hatched, a zero is ticked, a reading fills, and the track is a meter', async () => {
+  it('a ceiling of 0 fills in its mark’s tone, a zero is ticked, a reading fills, and the track is a meter', async () => {
     api.loadCapacity.mockResolvedValue(
       ok<Capacity>({
         pools: [
@@ -496,9 +496,17 @@ describe('Capacity draws each pool card through the shared track', () => {
       return track(c!)
     }
 
+    // #159 RE-POINT (CP-14, #85). This asserted `backend:a`, at a ceiling of 0,
+    // drew the hatched `is-unknown` track: the card used to read a 0 ceiling
+    // as "no ceiling". CP-14 made the tile say `/ 0` and carry the `limit 0`
+    // mark, because a ceiling of 0 WAS read and admits nothing -- and the
+    // review of #159 found the hatch still beside them, saying "not
+    // measured" about the one figure on the tile that was. A `backend:` pool
+    // only a person writes, so its limit 0 is the paused tone, and the track
+    // is full in it: no room, measured.
     const a = card('backend:a')
-    expect(a.classList.contains('is-unknown')).toBe(true)
-    expect(a.querySelector('.ctl-util-fill')).toBeNull()
+    expect(a.classList.contains('is-unknown'), 'a ceiling that was read is drawn as not measured').toBe(false)
+    expect(a.querySelector<HTMLElement>('.ctl-util-fill.is-paused')?.style.width).toBe('100%')
 
     const b = card('backend:b')
     expect(b.classList.contains('is-zero')).toBe(true)
