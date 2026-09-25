@@ -175,21 +175,45 @@ FIRESTORE_STARTUP_CALL_SECONDS = 10.0
 #: connect to Firestore at all: "503 failed to connect to all addresses; last
 #: error: ... ipv6:[2607:f8b0:4001:c00::5f]:443 ... Network is unreachable". It
 #: spent the one 30 s budget and exited 69, and the task sat DISPATCHED for two
-#: more minutes. The other 119 Cloud Run executions of the 14 days before it
-#: made the same read in at most 0.43 s (p50 0.19 s), from the same kind of
-#: instance, given the same IPv4 and IPv6 answers for firestore.googleapis.com.
+#: more minutes. The other 119 Cloud Run executions that logged this phase
+#: (every one since the line was deployed, 03:23Z that day) made the same read
+#: in at most 0.43 s (p50 0.19 s), given the same IPv4 and IPv6 answers for
+#: firestore.googleapis.com.
 #:
-#: WHAT WENT WRONG IS NOT IPv6. gRPC tries every address it is given, and
-#: "failed to connect to ALL addresses" means the IPv4 one failed too. The IPv6
-#: error is only the last one it kept. The swarm subnet is IPv4-only
-#: (`stackType: IPV4_ONLY`, read 2026-09-25), so an IPv6 address is never
-#: reachable from it, and 119 executions did not need it to be. Google documents
-#: what does fail at instance start: "You might experience connection
-#: establishment delays of a minute or more on instance startup when using
-#: Direct VPC egress" (docs.cloud.google.com/run/docs/configuring/vpc-direct-vpc,
-#: read 2026-09-25), which is how every worker job reaches the network
-#: (terraform/modules/cloud_run_jobs, `vpc_access`). Google's own mitigation is
-#: to test a connection before serving. A job has no probe, so it asks again.
+#: WHAT WENT WRONG IS NOT IPv6, AND THAT IS MEASURED. The swarm subnet's VPC
+#: flow logs show the failed instance (10.40.0.58) sending TCP SYNs to the
+#: IPv4 address, 173.194.206.95:443, 50 ms after the check began
+#: (20:37:28.884Z). Nothing came back and no payload byte left: one connection
+#: gave up after 19.5 s (about gRPC's 20 s minimum connect timeout), the next
+#: ran 7.1 s until the worker exited. So gRPC tried IPv4 first, and IPv4 was
+#: what failed. The IPv6 error is only the last one gRPC kept: the subnet is
+#: IPv4-only (`stackType: IPV4_ONLY`, read 2026-09-25), so that address fails
+#: locally, instantly, and never leaves the instance. The five other
+#: executions Cloud Run started in the same 0.4 s passed the same check in
+#: under 0.3 s.
+#:
+#: WHAT DOES FAIL. Google documents it for Direct VPC egress, which is how every
+#: worker job reaches the network (terraform/modules/cloud_run_jobs,
+#: `vpc_access`): "You might experience connection establishment delays of a
+#: minute or more on instance startup when using Direct VPC egress"
+#: (docs.cloud.google.com/run/docs/configuring/vpc-direct-vpc, read
+#: 2026-09-25). The same flow logs show it twice more in 14 days, both
+#: survived: 2026-09-22 21:13:10Z (a SYN to a Google API address unanswered
+#: for 19.4 s, 7 s after start) and 2026-09-25 10:57:19Z (three unanswered for
+#: up to 40 s, 2 s after start, while other connections from the same instance
+#: got through). Google's mitigation is to test a connection, with retries,
+#: before serving. A job has no probe, so it asks again.
+#:
+#: WHY NOT A NETWORK CHANGE. Private DNS for googleapis.com (the IPv4
+#: private.googleapis.com VIP) would take the IPv6 address out of these errors,
+#: but that VIP is reached over the same Direct VPC egress path whose SYNs went
+#: unanswered, so it would not have prevented this. Forcing IPv4 would change
+#: nothing: IPv4 is what gRPC tried. Egress PRIVATE_RANGES_ONLY would keep
+#: Google API calls off that path, but it also takes provider calls off Cloud
+#: NAT and its reserved addresses, which providers allow-list, so the job
+#: module requires ALL_TRAFFIC (terraform/modules/cloud_run_jobs/main.tf,
+#: `vpc_access.egress`). docs/incidents/2026-09-25-worker-startup-network.md
+#: has the measurements and the commands that repeat them.
 #:
 #: WHY 0, 30 AND 60 s. The last attempt starts a minute after the first, so a
 #: delay of "a minute or more" is outlasted by the last attempt's own 30 s of

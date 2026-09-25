@@ -249,9 +249,12 @@ def cmd_collect(args: argparse.Namespace) -> int:
 def _agent_output(task_id: str, task: dict[str, Any]) -> str:
     """The agent's own reply, read from the artifacts it left behind.
 
-    Claude Code's `--output-format json` result document carries `result`, which
-    is what the agent actually said. Everything else in the artifact tree is
-    evidence; this is the answer.
+    Claude Code's result event carries `result`, which is what the agent
+    actually said. Everything else in the artifact tree is evidence; this is
+    the answer. Since #184 the runner uses `--output-format stream-json`, so
+    `claude-code.stdout.log` is one event per line and the answer is the LAST
+    `type: "result"` line; an attempt made before that holds ONE json object,
+    which is read whole.
     """
     try:
         from google.cloud import storage
@@ -271,6 +274,13 @@ def _agent_output(task_id: str, task: dict[str, Any]) -> str:
     if not candidates:
         return "(no output artifact)"
     raw = max(candidates, key=lambda b: b.updated).download_as_text()
+    for line in reversed(raw.splitlines()):
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(event, dict) and event.get("type") == "result" and "result" in event:
+            return str(event["result"])
     try:
         return str(json.loads(raw).get("result", raw))
     except (json.JSONDecodeError, AttributeError):

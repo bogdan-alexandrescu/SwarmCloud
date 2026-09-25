@@ -255,6 +255,72 @@ def cgroup_cpu_seconds() -> float | None:
     return None
 
 
+def cgroup_cpu_limit_cores() -> float | None:
+    """The container's CPU LIMIT in cores, from cgroup v2 `cpu.max`; None if unknown.
+
+    `cpu.max` is `"<quota> <period>"` in microseconds -- `"200000 100000"` is
+    two cores -- or `"max <period>"` when nothing is enforced. The limit is what
+    a "requested vs used" CPU bar is drawn against, and reading it from the
+    cgroup is reading what the kernel enforces rather than what a catalogue
+    says was asked for. None for `max`, for a missing or unreadable file and
+    for anything that does not parse: the caller then falls back to the
+    resource class the container was sized with, and says that it did.
+    """
+    try:
+        parts = (CGROUP_ROOT / "cpu.max").read_text().split()
+    except OSError:
+        return None
+    if len(parts) != 2 or parts[0] == "max":
+        return None
+    try:
+        quota, period = int(parts[0]), int(parts[1])
+    except ValueError:
+        return None
+    if quota <= 0 or period <= 0:
+        return None
+    return quota / period
+
+
+def heartbeat_cpu_fields(
+    usage: ResourceUsage | None,
+    *,
+    limit_cores: float | None,
+    limit_source: str | None,
+    final: bool,
+) -> dict[str, Any]:
+    """The CPU keys of one HEARTBEAT event's detail, rounded, None never 0.
+
+    THE INTERIM HOME OF THE CPU FIGURES (#184). `swarm_common.models.Attempt`
+    is frozen and has no CPU fields, so `record_resource_usage` cannot carry
+    them; contract request #15 asks for typed ones. Until it is decided they
+    ride on the HEARTBEAT event, which the API reads for
+    `GET /v1/tasks/{id}/attempts?include=usage`:
+
+      * `cpu_seconds` -- cumulative, every runner of the attempt. EXISTING, and
+        its meaning is unchanged: the reconciler's stuck-browser judgement
+        (`reconciler.progress`) turns two consecutive totals into a rate.
+      * `peak_cpu_cores`, `mean_cpu_cores`, `cpu_wall_seconds` -- see
+        `ResourceUsage`; the mean is over RUNNER wall time only.
+      * `cpu_source` -- EXISTING: cgroup, proc or rusage.
+      * `cpu_limit_cores` and `cpu_limit_source` -- `"cgroup"` when read from
+        `cpu.max`, `"resource_class"` when it is the catalogue cpu of the class
+        the container was sized with; both None when neither is known.
+      * `final` -- True only on the reading taken after a runner is reaped.
+
+    Three decimal places throughout. 1.0 is one whole vCPU.
+    """
+    return {
+        "cpu_seconds": _rounded(usage.cpu_seconds) if usage else None,
+        "peak_cpu_cores": _rounded(usage.peak_cpu_cores) if usage else None,
+        "mean_cpu_cores": _rounded(usage.mean_cpu_cores) if usage else None,
+        "cpu_wall_seconds": _rounded(usage.cpu_wall_seconds) if usage else None,
+        "cpu_source": usage.cpu_source if usage else None,
+        "cpu_limit_cores": _rounded(limit_cores),
+        "cpu_limit_source": limit_source if limit_cores is not None else None,
+        "final": bool(final),
+    }
+
+
 def _proc_stat(entry: Path) -> tuple[int, int, int]:
     """(pid, ppid, CPU clock ticks including reaped children) from /proc/<pid>/stat.
 
@@ -442,6 +508,14 @@ class ResourceSampler:
         # mid-run (a heartbeat, a crash's export) pairs CPU-so-far with
         # time-so-far rather than with nothing.
         self.usage.cpu_wall_seconds = now - self._t_first
+        # AND THE MEAN WITH THEM (#184). It used to be set only in
+        # `_finish_cpu`, and `combine_usage` gives an attempt a mean only when
+        # some part has one -- so a RUNNING attempt never had a mean, and the
+        # Details pane could draw its peak and not its mean until it ended.
+        # The same floor `_finish_cpu` applies: a span shorter than the
+        # shortest rate interval is not turned into a mean.
+        if self.usage.cpu_wall_seconds >= self._min_interval:
+            self.usage.mean_cpu_cores = self.usage.cpu_seconds / self.usage.cpu_wall_seconds
         base_time, base_reading = self._cpu_base or (now, reading)
         elapsed = now - base_time
         if elapsed < self._min_interval:

@@ -18,9 +18,19 @@ Two properties are worth pinning, and they pull in opposite directions:
 
 from __future__ import annotations
 
+import json
+import re
+from datetime import datetime, timezone
+
 import pytest
 
 from agent_worker import workspace as workspace_mod
+
+#: The tail header since #184: the window's raw offset, the stream's raw size,
+#: and the RFC 3339 UTC second the window was cut.
+HEADER = re.compile(
+    r"^#swarm-tail offset=(\d+) size=(\d+) at=(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ)$"
+)
 
 
 @pytest.fixture()
@@ -183,16 +193,18 @@ def test_a_runner_that_writes_nothing_until_it_exits_yields_no_tail(db, store, w
     """AND THE LIMIT OF THE FEATURE, written down where it will be found.
 
     A tail can only show what the child has already flushed. The mock runner
-    writes its progress to files rather than to stdout, and `claude --print
-    --output-format json` emits ONE object when it finishes -- so for both of
-    the runners this platform ships today there is nothing to tail until the
-    attempt is over, and the live objects never appear.
+    writes its progress to files rather than to stdout, so there is nothing to
+    tail until the attempt is over, and the live objects never appear -- and
+    it has no agent CLI, so it publishes no agent tails either.
 
-    That is not a bug in the publisher; it is a property of what the child
-    writes. The fix is `--output-format stream-json`, which also carries the
-    `rate_limit_event` readings the account pool needs. Asserting the current
-    behaviour here means that change cannot land silently: this test will fail
-    and have to be updated deliberately.
+    UPDATED DELIBERATELY FOR #184, as this docstring asked. claude-code now
+    runs `--output-format stream-json --verbose` (`runners/claude_code.py`),
+    which prints each event as it happens instead of one object at the end,
+    and `procman.StreamCapture` now reads with `read1`, so what a child
+    flushes reaches disk while it runs (`test_live_capture.py`). A claude-code
+    attempt therefore HAS live output; see
+    `test_the_agent_cli_streams_get_their_own_live_objects`. What stays true,
+    and is asserted here, is the mock's silence.
     """
     from conftest import seed_attempt
 
@@ -207,3 +219,109 @@ def test_a_runner_that_writes_nothing_until_it_exits_yields_no_tail(db, store, w
         "a runner that now streams output would make this pass a tail -- good, "
         "but update this test and the comment above deliberately"
     )
+
+
+# ---------------------------------------------------------------------------
+# #184: the agent's own streams, the publish time, whole lines
+# ---------------------------------------------------------------------------
+
+
+def _running_as(worker_factory, profile, **overrides):
+    worker, config, _ = worker_factory(runner_profile=profile, **overrides)
+    worker.ws = workspace_mod.create(config.workspace_root, config.attempt_id)
+    return worker, config
+
+
+def _live_names(store, config):
+    return sorted(key.rsplit("/", 1)[-1] for key in store.list_keys(f"{config.log_prefix}/live/"))
+
+
+def test_the_agent_cli_streams_get_their_own_live_objects(worker_factory, store):
+    """The agent CLI's stdout and stderr are published beside the runner's.
+
+    `stdout`/`stderr` are the RUNNER process's streams -- its JSON log lines.
+    The agent's are the files the runner captures it into under `artifacts/`
+    (`runners.streams.agent_stream_files`); for claude-code, the stream-json
+    transcript. They get objects of their own, and neither leaks into the other.
+    """
+    worker, config = _running_as(worker_factory, "claude-code")
+    (worker.ws.artifacts / "claude-code.stdout.log").write_text(
+        '{"type":"system","subtype":"init"}\n'
+    )
+    (worker.ws.artifacts / "claude-code.stderr.log").write_text("agent warning\n")
+    worker.ws.stderr_path.write_text('{"message":"child started"}\n')
+
+    worker._publish_live_logs()
+
+    assert _live_names(store, config) == [
+        "agent_stderr.tail.log",
+        "agent_stdout.tail.log",
+        "stderr.tail.log",
+    ]
+    assert '"subtype":"init"' in _tail(store, config, "agent_stdout")
+    assert "agent warning" in _tail(store, config, "agent_stderr")
+    assert "child started" in _tail(store, config, "stderr")
+    assert "child started" not in _tail(store, config, "agent_stdout")
+
+
+def test_a_runner_with_no_agent_cli_publishes_no_agent_tail(running, store):
+    """mock has no agent child. A file at a CLI runner's capture name is not its."""
+    worker, config = running
+    (worker.ws.artifacts / "claude-code.stdout.log").write_text("not this runner's\n")
+    worker.ws.stdout_path.write_text("out\n")
+
+    worker._publish_live_logs()
+
+    assert _live_names(store, config) == ["stdout.tail.log"]
+
+
+def test_an_agent_stream_that_is_a_symlink_is_not_followed(worker_factory, store, tmp_path):
+    """The agent can write inside `artifacts/`. A link planted at a capture
+    file's name must not publish what it points at."""
+    worker, config = _running_as(worker_factory, "claude-code")
+    outside = tmp_path / "elsewhere.txt"
+    outside.write_text("a file outside the attempt\n")
+    (worker.ws.artifacts / "claude-code.stdout.log").symlink_to(outside)
+
+    worker._publish_live_logs()
+
+    assert "agent_stdout.tail.log" not in _live_names(store, config)
+
+
+def test_the_header_says_when_the_window_was_cut(running, store):
+    """`at=` is what a reader shows as the live read's age. Old headers had no
+    `at`, and the API still parses those."""
+    worker, config = running
+    worker.ws.stdout_path.write_text("hello\n")
+    before = datetime.now(timezone.utc).replace(microsecond=0)
+
+    worker._publish_live_logs()
+
+    first = _tail(store, config).splitlines()[0]
+    match = HEADER.match(first)
+    assert match, f"the header does not carry offset, size and at: {first!r}"
+    assert (match.group(1), match.group(2)) == ("0", "6")
+    at = datetime.strptime(match.group(3), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    assert before <= at <= datetime.now(timezone.utc)
+
+
+def test_a_window_smaller_than_the_stream_starts_on_a_whole_line(worker_factory, store):
+    """An NDJSON transcript cut mid-line starts with a fragment that parses as
+    nothing. The window moves past the first newline, and the header's offset
+    is the raw byte the served window really starts at."""
+    worker, config = _running_as(worker_factory, "claude-code", live_log_tail_bytes=100)
+    body = "".join(json.dumps({"type": "assistant", "n": i}) + "\n" for i in range(20)).encode()
+    (worker.ws.artifacts / "claude-code.stdout.log").write_bytes(body)
+
+    worker._publish_live_logs()
+
+    header, _, served = _tail(store, config, "agent_stdout").partition("\n")
+    match = HEADER.match(header)
+    assert match, header
+    offset = int(match.group(1))
+    assert int(match.group(2)) == len(body)
+    assert offset >= len(body) - 100, "the window is no larger than the configured tail"
+    assert body[offset - 1 : offset] == b"\n", "the window starts right after a newline"
+    assert served.encode() == body[offset:], "the offset names the first served byte"
+    for line in served.splitlines():
+        json.loads(line)

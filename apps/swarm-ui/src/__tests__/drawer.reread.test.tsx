@@ -396,7 +396,8 @@ describe('the log panel is re-read with the drawer', () => {
     api.loadTaskLogs.mockImplementation(async () => ok(logs(started ? 'latest' : 'no_attempt_yet')))
 
     const root = await openDrawer()
-    const panel = () => section(root, 'Output, as the agent wrote it')?.textContent ?? ''
+    // #184: the panel is the RUNNER's log and is titled so; it still follows the drawer.
+    const panel = () => section(root, 'Runner log (platform)')?.textContent ?? ''
     expect(panel()).toMatch(/no attempt yet/i)
 
     started = true

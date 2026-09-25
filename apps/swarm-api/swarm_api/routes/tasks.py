@@ -20,16 +20,30 @@ from __future__ import annotations
 from typing import Literal
 
 from fastapi import APIRouter, Depends, Query, Response, status
+from fastapi.responses import StreamingResponse
 
 from swarm_common.states import TaskState
 
+from ..agent_output import AgentOutputService
+from ..attempt_usage import usage_blocks
 from ..auth import AuthContext
 from ..codec import attempt_to_api, task_to_api
 from ..deps import AppContext, current_auth, get_context, paged_limit, tenant_scope
 from ..errors import ValidationFailed
+from ..redaction import redact_detail
 from ..schemas import TaskBatchCreate, TaskCreate
 
 router = APIRouter(prefix="/v1/tasks", tags=["tasks"])
+
+
+def agent_output_service(ctx: AppContext = Depends(get_context)) -> AgentOutputService:
+    """The Artifacts tab's reads, built around the one `InspectionService` the app holds.
+
+    A dependency, as `routes.checkpoints.checkpoint_content` is, so a test can
+    swap the window size through `app.dependency_overrides` -- FastAPI's own
+    injection point -- instead of patching an import.
+    """
+    return AgentOutputService(ctx.inspection)
 
 
 def _event_to_api(event) -> dict:
@@ -176,6 +190,7 @@ def list_events(
 def list_attempts(
     task_id: str,
     limit: int | None = Query(default=None, ge=1),
+    include: str | None = Query(default=None),
     tenant_id: str = Depends(tenant_scope),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
@@ -189,17 +204,50 @@ def list_attempts(
 
     Tenant-scoped like events and artifacts, not admin-gated: these are the
     caller's own attempts.
+
+    `include=usage` (#184) adds each attempt's CPU -- peak and mean cores,
+    CPU-seconds, the limit they are a fraction of -- from the worker's newest
+    HEARTBEAT reading, in a `usage` block per row, and a `usage_read` block
+    saying what was read (`swarm_api.attempt_usage`). OPT-IN, because it costs
+    one events read per request and the Overview's spend rollup calls this
+    route once per task. A failed events read makes every block `unread` and
+    the route still answers: the attempt rows are real either way.
     """
+    if include not in (None, "usage"):
+        raise ValidationFailed(
+            "include must be usage, or left out", detail={"include": include}
+        )
     # Resolve the task first so a wrong id is a 404 about the TASK rather than
     # an empty attempt list, which would read as "this task never ran".
-    ctx.store.get_task(tenant_id, task_id)
+    task = ctx.store.get_task(tenant_id, task_id)
     attempts = ctx.store.list_attempts(
         tenant_id, task_id, limit=paged_limit(ctx, limit)
     )
-    return {
-        "task_id": task_id,
-        "attempts": [attempt_to_api(a) for a in attempts],
-    }
+    rows = [attempt_to_api(a) for a in attempts]
+    body: dict = {"task_id": task_id, "attempts": rows}
+    if include != "usage":
+        return body
+
+    page_size = ctx.settings.max_page_size
+    read_at = ctx.now()
+    events = None
+    read_error = None
+    window_full = False
+    try:
+        page = ctx.store.list_events(tenant_id, task_id, limit=page_size, descending=True)
+        events = list(page.items)
+        window_full = len(events) >= page_size
+    except Exception as exc:  # noqa: BLE001 - every failure is the same answer: not read
+        read_error = "the task's events could not be read: " + redact_detail(
+            f"{type(exc).__name__}: {exc}"
+        )
+    blocks, usage_read = usage_blocks(
+        attempts, task, events, read_at=read_at, window_full=window_full, read_error=read_error
+    )
+    for row in rows:
+        row["usage"] = blocks.get(row["attempt_id"])
+    body["usage_read"] = usage_read
+    return body
 
 
 @router.get("/{task_id}/artifacts")
@@ -208,6 +256,7 @@ def list_artifacts(
     limit: int | None = Query(default=None, ge=1),
     tenant_id: str = Depends(tenant_scope),
     ctx: AppContext = Depends(get_context),
+    service: AgentOutputService = Depends(agent_output_service),
 ) -> dict:
     """What this attempt left in GCS, by reference.
 
@@ -217,12 +266,18 @@ def list_artifacts(
     distinguishable. `artifacts_skipped` names the files the worker dropped at
     the size cap, for the same reason.
 
-    No download URL is minted here. The `uri` is a `gs://` reference the caller
-    reads with their own credentials, which keeps the tenant boundary in the one
-    place IAM already enforces it.
+    No download URL is minted here. The `uri` is a `gs://` reference, and the
+    bytes are read through `/artifacts/content` and `/artifacts/raw`, which
+    apply the tenant check and read-time redaction a signed URL would skip.
+
+    Per entry (#184): `attempt_id` (the attempt its stored uri lies under),
+    `kind` and `content_type` from the one name table, and `role` --
+    `agent_stdout`, `agent_stderr` or `agent_transcript` for the agent's own
+    streams, from `result_summary.agent_streams` (or the runner's naming
+    convention for an attempt made before it existed). Top level: the
+    manifest's `attempt_id`. No object is read.
     """
-    result = ctx.store.list_artifacts(tenant_id, task_id, limit=paged_limit(ctx, limit))
-    return {"task_id": task_id, **result}
+    return service.list_artifacts(tenant_id, task_id, limit=paged_limit(ctx, limit))
 
 
 @router.get("/{task_id}/artifacts/content")
@@ -232,7 +287,7 @@ def read_artifact(
     offset: int = Query(default=0, ge=0),
     limit_bytes: int | None = Query(default=None, ge=1),
     tenant_id: str = Depends(tenant_scope),
-    ctx: AppContext = Depends(get_context),
+    service: AgentOutputService = Depends(agent_output_service),
 ) -> dict:
     """ONE artifact's content, resolved by the server from the task's manifest.
 
@@ -260,15 +315,52 @@ def read_artifact(
     the way out whatever happened at write time -- see `read_artifact`'s
     docstring for why the worker's pass is not a guarantee this route may lean
     on. An artifact that is not text is reported as `binary` with no bytes, not
-    base64-encoded: bytes nothing can scan are bytes this route does not serve.
+    base64-encoded: bytes nothing can scan are bytes this route does not serve
+    -- `/artifacts/raw` is the route for bytes, and says what it did to them.
+
+    `kind` and `content_type` (#184) are the listing's, from the same name
+    table; the NUL sniff above stays the authority on whether it is text.
     """
-    return ctx.inspection.read_artifact(
+    return service.read_artifact(
         tenant_id,
         task_id,
         name=name,
         offset=offset,
         limit_bytes=limit_bytes,
     )
+
+
+@router.get("/{task_id}/artifacts/raw", response_class=StreamingResponse)
+def read_artifact_raw(
+    task_id: str,
+    name: str = Query(..., min_length=1, max_length=512),
+    disposition: str | None = Query(default=None),
+    tenant_id: str = Depends(tenant_scope),
+    service: AgentOutputService = Depends(agent_output_service),
+) -> StreamingResponse:
+    """ONE artifact's BYTES: for an `<img>`, an "open full", and a download (#184).
+
+    THROUGH THE API, NEVER A SIGNED URL -- the owner's decision, so the tenant
+    check and read-time redaction apply to every byte. Resolved exactly as
+    `/artifacts/content` resolves a name (a NAME from this task's manifest,
+    never a path), and classified from the object's first 4096 bytes:
+
+      * an image -- an image extension AND matching magic bytes -- is served as
+        stored, `image/png|jpeg|gif|webp`, `X-Swarm-Redaction: not-applied`;
+      * text -- no NUL -- is ALWAYS `text/plain; charset=utf-8`, never HTML or
+        JSON, so nothing an agent wrote renders here; redacted window by
+        window, `X-Swarm-Redaction: applied`;
+      * anything else is `application/octet-stream`, an attachment whatever
+        `disposition` asked, not redacted, and says so.
+
+    `disposition` is `inline` or `attachment` (the default). Every error --
+    404 not listed, 410 listed but reclaimed, 503 unreadable, 422 a bad
+    disposition -- is the JSON envelope, sent before any byte. Chunked, with
+    `X-Artifact-Bytes` carrying the stored size instead of a Content-Length.
+    Staged inputs are read the same way, from the upstream task.
+    """
+    raw = service.raw_artifact(tenant_id, task_id, name=name, disposition=disposition)
+    return StreamingResponse(raw.chunks, media_type=raw.media_type, headers=raw.headers)
 
 
 @router.get("/{task_id}/checkpoints")
@@ -320,7 +412,9 @@ def list_checkpoints(
 def read_logs(
     task_id: str,
     attempt_id: str | None = Query(default=None),
-    stream: str | None = Query(default=None),
+    # Repeatable (#184): `?stream=agent_stderr&stream=stdout`. None serves the
+    # runner's two streams, exactly as before.
+    stream: list[str] | None = Query(default=None),
     source: str = Query(default="auto"),
     offset: int = Query(default=0, ge=0),
     limit_bytes: int | None = Query(default=None, ge=1),
@@ -359,6 +453,14 @@ def read_logs(
     `content` is null rather than `""` in the latter two, so a client that
     renders content without reading status shows nothing instead of an empty
     log that looks like a silent agent.
+
+    WHOSE STREAMS (#184). `stdout` and `stderr` are the RUNNER process's --
+    its own JSON log lines -- which is what the drawer's "Output, as the agent
+    wrote it" panel showed under the wrong name. `agent_stdout` and
+    `agent_stderr` are the agent CLI's own; `stream` repeats to ask for
+    several. For a runner with no agent CLI they are `not_applicable`. The
+    response carries `read_at`, and every stream its object's
+    `object_updated_at` and `age_seconds`, so a live read says how old it is.
     """
     return ctx.inspection.read_logs(
         tenant_id,
@@ -369,3 +471,54 @@ def read_logs(
         offset=offset,
         limit_bytes=limit_bytes,
     )
+
+
+@router.get("/{task_id}/transcript")
+def read_transcript(
+    task_id: str,
+    attempt_id: str | None = Query(default=None),
+    source: str = Query(default="auto"),
+    offset: int = Query(default=0, ge=0),
+    limit_bytes: int | None = Query(default=None, ge=1),
+    include_raw: bool = Query(default=False),
+    tenant_id: str = Depends(tenant_scope),
+    service: AgentOutputService = Depends(agent_output_service),
+) -> dict:
+    """The agent's own stdout, parsed into steps: text, thinking, tool calls, results (#184).
+
+    The same object `/logs?stream=agent_stdout` would serve -- the final copy,
+    the live tail while it runs, or the runner's artifact for an attempt made
+    before the worker published agent streams -- parsed ON THE SERVER, every
+    string redacted after JSON decoding and capped at 16 KiB. Windows cut on
+    newlines only. `format` is sniffed (`claude-stream-json`, `claude-json`,
+    `ndjson`, `text`); for `text`, `steps` is null and the raw `/logs` window
+    is the view. `include_raw=true` adds each event's own record, redacted.
+    Absent and unreadable are 200s with `stream.status`.
+    """
+    return service.read_transcript(
+        tenant_id,
+        task_id,
+        attempt_id=attempt_id,
+        source=source,
+        offset=offset,
+        limit_bytes=limit_bytes,
+        include_raw=include_raw,
+    )
+
+
+@router.get("/{task_id}/answer")
+def read_answer(
+    task_id: str,
+    attempt_id: str | None = Query(default=None),
+    tenant_id: str = Depends(tenant_scope),
+    service: AgentOutputService = Depends(agent_output_service),
+) -> dict:
+    """The agent's final answer, as Markdown, redacted (#184).
+
+    The last `result` event's `result` in the agent's stdout -- never
+    `result_summary.runner.summary`, which the runner cuts at 2,000 characters,
+    unless there is no result event, and then marked as the cut summary it may
+    be. `status` is `ok`, `not_yet` (still running), `absent` (ended with
+    neither) or `unreadable` (a read failed; nothing further down is tried).
+    """
+    return service.read_answer(tenant_id, task_id, attempt_id=attempt_id)

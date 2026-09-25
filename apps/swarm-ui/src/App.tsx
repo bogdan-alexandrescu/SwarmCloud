@@ -15,6 +15,7 @@ import { ActivityScreen, TenantsScreen } from './Activity'
 import { AdminSettingsScreen } from './AdminSettings'
 import { AgentDetailScreen } from './AgentDetail'
 import { AgentsScreen } from './Agents'
+import { ArtifactsScreen } from './Artifacts'
 import { AttemptTimelineScreen } from './AttemptTimeline'
 import { ProductHeader } from './Brand'
 import { CapacityScreen } from './Capacity'
@@ -595,8 +596,16 @@ const SECTION_ALIASES: Record<string, string> = {
  */
 export const INTERNAL_LINKS_MAY_NOT_USE_ALIASES = Object.keys(SECTION_ALIASES)
 
-/** Which pane of one agent is open. */
-type TaskPane = 'detail' | 'attempts'
+/**
+ * Which pane of one agent is open. `artifacts` (#184) is what the agent took
+ * in and what it produced -- inputs, the answer and every file, and its logs
+ * and transcript, live while it runs. Its address is
+ * `#work/task/<id>/artifacts`, as `attempts` is `#work/task/<id>/attempts`.
+ */
+export type TaskPane = 'detail' | 'attempts' | 'artifacts'
+
+/** The address segment each non-default pane is written with. `detail` has none. */
+const PANE_SEGMENTS: readonly TaskPane[] = ['attempts', 'artifacts']
 
 export interface Route {
   /** A section id, or REFERENCE. */
@@ -675,17 +684,18 @@ export function fromHash(): Route {
   // already aliased, so `#work/task/<id>` reaches here too.
   if (head === WORK && tail[0] === 'task' && tail.length > 1) {
     const rest = tail.slice(1)
-    const attempts = rest[rest.length - 1] === 'attempts'
+    const last = rest[rest.length - 1]
+    const pane = PANE_SEGMENTS.find((p) => p === last) ?? null
     // Task ids are opaque and may contain characters that were encoded on the
     // way in, so the remaining segments are rejoined rather than assumed to
     // be one.
-    const id = (attempts ? rest.slice(0, -1) : rest).join('/')
+    const id = (pane !== null ? rest.slice(0, -1) : rest).join('/')
     if (id) {
       return {
         sectionId: WORK,
         tab: 'running',
         taskId: decodeURIComponent(id),
-        taskPane: attempts ? 'attempts' : 'detail',
+        taskPane: pane ?? 'detail',
       }
     }
   }
@@ -728,7 +738,7 @@ export function fromHash(): Route {
 export function canonical(r: Route): string {
   if (r.taskId !== null) {
     const base = `${WORK}/task/${encodeURIComponent(r.taskId)}`
-    return r.taskPane === 'attempts' ? `${base}/attempts` : base
+    return r.taskPane === 'detail' ? base : `${base}/${r.taskPane}`
   }
   if (r.sectionId === REFERENCE) return REFERENCE
   if (r.sectionId === HELP) return r.tab === '' ? HELP : `${HELP}/${r.tab}`
@@ -1689,14 +1699,20 @@ function AgentDrawer({
       <button className="drawer-close" onClick={close} aria-label="Close">
         ✕
       </button>
-      {/* THE ONE SEGMENTED CONTROL, NOT TWO PILLS. `.ctl-subnav` drew Detail /
-          Attempts as 999px pills with a filled, bordered selection -- the
-          shape design-system.md §6.11 retired in favour of `.ctl-seg` (one
-          bordered group, selection by a surface step and weight). `ctl-subnav`
-          stays only for where the strip sits in the drawer. */}
+      {/* THE ONE SEGMENTED CONTROL, NOT TWO PILLS. `.ctl-subnav` drew the
+          panes as 999px pills with a filled, bordered selection -- the shape
+          design-system.md §6.11 retired in favour of `.ctl-seg` (one bordered
+          group, selection by a surface step and weight). `ctl-subnav` stays
+          only for where the strip sits in the drawer.
+
+          THREE PANES, AND THE FIRST IS `Details` (#184, the owner's decision
+          of 2026-09-25): the word was `Detail`, singular, for a pane of
+          nothing but details. `Artifacts` is what went in and what came out.
+          The route id stays `detail` -- it is an address, and renaming it
+          would move every saved link for no reader's benefit. */}
       <div className="ctl-seg ctl-subnav" role="tablist" aria-label="Agent panes">
         <button role="tab" aria-selected={pane === 'detail'} onClick={() => go(base)}>
-          Detail
+          Details
         </button>
         <button
           role="tab"
@@ -1705,11 +1721,20 @@ function AgentDrawer({
         >
           Attempts
         </button>
+        <button
+          role="tab"
+          aria-selected={pane === 'artifacts'}
+          onClick={() => go(`${base}/artifacts`)}
+        >
+          Artifacts
+        </button>
       </div>
       {pane === 'detail' ? (
         <AgentDetailScreen taskId={taskId} onClose={close} />
-      ) : (
+      ) : pane === 'attempts' ? (
         <AttemptTimelineScreen taskId={taskId} />
+      ) : (
+        <ArtifactsScreen taskId={taskId} />
       )}
     </div>
   )
