@@ -5,6 +5,14 @@ description = "Admission controller: bounded drain loop woken by Pub/Sub."
 requires-python = ">=3.11"
 dependencies = [
     "swarm-common",
+    # The account pool's own model and its one statement of who an account
+    # serves (`quota_broker.accounts.accounts_serving`). Admission asks it
+    # whether a tenant with no key may run on the pool (scheduler/credentials.py,
+    # #169). Imported rather than restated: the broker's documents are read
+    # with the broker's parser, and the rule is the broker's function. Only
+    # `accounts` and `accountstore` are imported, and both are pure Python
+    # over the Firestore client the scheduler already has.
+    "swarm-quota-broker",
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
     "pydantic>=2.8",
@@ -17,6 +25,7 @@ dependencies = [
 
 [tool.uv.sources]
 swarm-common = { path = "../common", editable = true }
+swarm-quota-broker = { path = "../quota-broker", editable = true }
 
 [build-system]
 requires = ["hatchling"]
