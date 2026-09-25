@@ -2480,7 +2480,8 @@ than smoothed over:
   five `dl.kv` rows answered and none of name, size or age can hold it. A log
   stream's age is its attempt's end for a `final` object — when the worker
   uploads it — and the word `live` for a tail still being written; the route
-  serves no per-object time.
+  serves no per-object time, and neither does the checkpoint listing for a
+  checkpoint's objects. Serving it is #172.
 
 **What this pass did NOT verify.** Nothing here was seen rendered. The tests
 prove which drawing the sheet picks at a stated container width, which marks
