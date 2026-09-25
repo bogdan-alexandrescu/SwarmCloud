@@ -154,7 +154,12 @@ function CheckpointsPanel({
   return (
     <Panel title="Checkpoints">
       <p className="muted small">
-        Prefix <code className="mono">{page.prefix}</code> · {page.count} of{' '}
+        {/* `ckpt-prefix` IS THE HOOK THE SHEET WRAPS (AG-26). A task's
+            checkpoint prefix is one unbroken path with no space to break at,
+            and in the 480px inspector it ran out of the drawer. The class is
+            what lets the stylesheet break it anywhere, rather than every
+            `code` in the drawer. */}
+        Prefix <code className="mono ckpt-prefix">{page.prefix}</code> · {page.count} of{' '}
         {page.total_found} found
         {page.truncated && ' · the scan limit cut the prefix short, so older checkpoints exist beyond these'}
         {page.next_page_token !== null && ' · more pages remain'}

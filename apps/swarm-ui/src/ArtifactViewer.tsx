@@ -6,6 +6,7 @@ import { errorHeading, num, type ApiError, type Result } from './fetch'
 import { HelpCard } from './HelpCard'
 import {
   artifactKind,
+  bytesLabel,
   type ArtifactContent,
   type ArtifactRef,
 } from './types'
@@ -183,17 +184,26 @@ function Body({ data }: { data: ArtifactContent }) {
   }
 
   if (data.status === 'binary') {
+    // A FACT, NOT AN ABSENCE (AG-29). This was a `.ctl-empty` carrying the
+    // `not measured` mark beside `not text · 5,120 bytes` -- the hatched mark
+    // for "nobody recorded this" next to a size somebody did record. Nothing
+    // is missing: the bytes are in the bucket, they were measured, and they
+    // are not text. So it is the size, in `bytesLabel`'s words as every other
+    // size in the drawer, and the way to the object; no mark, no panel tone.
+    const size = bytesLabel(data.total_bytes)
     return (
-      <Note
-        kind="absent"
-        heading={`not text · ${num(data.total_bytes)} bytes`}
-        say="This artifact is not text, so there is no window to render. Its location is below; read it with your own credentials."
-      >
+      <div className="art-binary">
+        <p
+          className="art-binary-head"
+          aria-label={`Binary, ${size}. This artifact is not text, so there is no window to render. Its location is below; read it with your own credentials.`}
+        >
+          binary · {size}
+        </p>
         <span className="art-binary-meta">
           <span className="mono uri">{data.uri}</span>
           <CopyGsutil uri={data.uri} />
         </span>
-      </Note>
+      </div>
     )
   }
 
@@ -416,6 +426,9 @@ export function Markdown({ source }: { source: string }) {
   return <div className="art-md">{markdownBlocks(source)}</div>
 }
 
+/** A GFM table's delimiter row: `---|:---:|---`, with or without edge pipes. */
+const TABLE_DELIMITER = /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)+\|?\s*$/
+
 function markdownBlocks(source: string): ReactNode[] {
   const lines = source.split('\n')
   const out: ReactNode[] = []
@@ -521,6 +534,49 @@ function markdownBlocks(source: string): ReactNode[] {
             <li key={n}>{inline(text)}</li>
           ))}
         </List>,
+      )
+      continue
+    }
+
+    // A TABLE, AS ITS SOURCE (AG-22). This renderer does not lay out tables,
+    // and the paragraph branch below joined a table's rows with spaces -- a
+    // five-row comparison became one run-on line of pipes. A run of `|` rows,
+    // or a row followed by its `---|---` delimiter, is kept line for line in
+    // a `pre`, which is readable where a half-parsed table would be wrong.
+    if (/^\s*\|/.test(line) || (line.includes('|') && TABLE_DELIMITER.test(at(i + 1)))) {
+      flushParagraph()
+      const body: string[] = []
+      while (i < lines.length && at(i).trim() !== '' && at(i).includes('|')) {
+        body.push(at(i))
+        i += 1
+      }
+      out.push(
+        <pre className="art-code" key={key++} data-block="table">
+          {body.join('\n')}
+        </pre>,
+      )
+      continue
+    }
+
+    // ANY OTHER BLOCK THIS RENDERER DOES NOT RECOGNISE, AS ITS SOURCE TOO: an
+    // indented code block (four spaces or a tab, not continuing a paragraph)
+    // and a raw HTML block. Joined as a paragraph, the first loses its line
+    // breaks and the second reads as prose made of tags. No HTML is ever
+    // built from either -- the `pre` holds the text.
+    if (
+      (paragraph.length === 0 && /^( {4}|\t)/.test(line)) ||
+      /^\s*<(?:[A-Za-z][\w-]*|!--)[\s/>]/.test(line)
+    ) {
+      flushParagraph()
+      const body: string[] = []
+      while (i < lines.length && at(i).trim() !== '') {
+        body.push(at(i))
+        i += 1
+      }
+      out.push(
+        <pre className="art-code" key={key++} data-block="source">
+          {body.join('\n')}
+        </pre>,
       )
       continue
     }

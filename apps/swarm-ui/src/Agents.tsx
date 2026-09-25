@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type Dispatch, type SetStateAction } from 'react'
+import { useCallback, useEffect, useMemo, useState, type Dispatch, type SetStateAction } from 'react'
 // `Em` and `Mark` live in AgentDetail.tsx, which is where `ABSENT_MARK` was
 // written and which design-system.md §9.1 names as the source to promote from.
 // One definition for the four screens of this group; a second copy of a mark
@@ -97,21 +97,62 @@ function shortTaskId(id: string): string {
 }
 
 /**
+ * HOW OFTEN THIS LIST IS WORTH RE-READING, from what the last read held.
+ *
+ * docs/web-ui/03-agents-and-workflows.md §2.5: 5s while the Live tab holds any
+ * row, 30s otherwise. A live agent changes state on the order of seconds -- it
+ * finishes, it is reclaimed, its cancel lands -- and a waiting or finished one
+ * does not. Hidden tabs do not read at all; that half is `Screen`'s.
+ *
+ * THE COST IS THE PAYLOAD, NOT THE QUERY. Every row carries `input`,
+ * `metadata` and `result_summary`, so a 200-row page is 2-4 MB (§2.5), and at
+ * 5s that is roughly 600 KB/s to a phone. Only the Live tab earns the fast
+ * cadence, and only while it has rows; the `view=summary` parameter §8/P2
+ * proposes is what would make it cheap.
+ */
+export const LIVE_POLL_MS = 5_000
+export const IDLE_POLL_MS = 30_000
+
+export function pollInterval(page: TaskPage | null): number {
+  return page !== null && page.tasks.some((t) => tabOf(t) === 'live') ? LIVE_POLL_MS : IDLE_POLL_MS
+}
+
+/**
  * Screen A -- Agents. One table, three tabs, no sub-pages.
  *
  * The tab counts come from the ROWS, never from /v1/stats, so the badge and
  * the table can never disagree with each other.
+ *
+ * `taskId` is the agent the inspector has open, when one is (AG-17): App
+ * passes it and the matching row is marked `aria-current`. OPTIONAL, so this
+ * screen stands on its own and App can pass it whether or not it has yet.
  */
-export function AgentsScreen({ onOpen }: { onOpen: (taskId: string) => void }) {
+export function AgentsScreen({
+  onOpen,
+  taskId = null,
+}: {
+  onOpen: (taskId: string) => void
+  taskId?: string | null
+}) {
   // `null` until a page has told the body where to land -- see `landingTab`.
   const [tab, setTab] = useState<Tab | null>(null)
   const [profile, setProfile] = useState<string>('')
   const [grouped, setGrouped] = useState(false)
+  // WHEN THE ROWS ON SCREEN WERE READ. The row clock stops one interval past
+  // this (see `AgentsBody`), so it is recorded from the read itself -- the
+  // `fetchedAt` the Result carries -- and not from when React got round to
+  // rendering it.
+  const [readAt, setReadAt] = useState<number | null>(null)
+  const load = useCallback(async () => {
+    const r = await loadTasks()
+    if (r.status === 'ok') setReadAt(r.fetchedAt)
+    return r
+  }, [])
 
   return (
     <Screen
       title="Agents"
-      load={loadTasks}
+      load={load}
       summary={(d) => {
         const live = d.tasks.filter((t) => tabOf(t) === 'live').length
         return (
@@ -141,7 +182,9 @@ export function AgentsScreen({ onOpen }: { onOpen: (taskId: string) => void }) {
       {(d) => (
         <AgentsBody
           onOpen={onOpen}
+          openTaskId={taskId}
           page={d}
+          readAt={readAt}
           tab={tab}
           setTab={setTab}
           profile={profile}
@@ -154,9 +197,26 @@ export function AgentsScreen({ onOpen }: { onOpen: (taskId: string) => void }) {
   )
 }
 
+/**
+ * The instant the row durations are computed at: the clock, until the rows
+ * are more than one poll interval old, and then no further (AG-1).
+ *
+ * The rows are a READ, and a read has an age. A ticking clock over rows
+ * nobody has re-read kept adding to `run 4m` after the agent had finished --
+ * the page said running, the clock said still going, and the platform had
+ * moved on. Past one interval a fresh read was due and has not arrived, so the
+ * figures stop where the read can still vouch for them; the age of the read
+ * is the Screen's to show. `readAt` null (not yet known) keeps the clock.
+ */
+export function rowClock(now: number, readAt: number | null, interval: number): number {
+  return readAt === null ? now : Math.min(now, readAt + interval)
+}
+
 function AgentsBody({
   onOpen,
+  openTaskId,
   page,
+  readAt,
   tab,
   setTab,
   profile,
@@ -165,7 +225,9 @@ function AgentsBody({
   setGrouped,
 }: {
   onOpen: (taskId: string) => void
+  openTaskId: string | null
   page: TaskPage
+  readAt: number | null
   tab: Tab | null
   setTab: Dispatch<SetStateAction<Tab | null>>
   profile: string
@@ -174,12 +236,14 @@ function AgentsBody({
   setGrouped: (g: boolean) => void
 }) {
   // One clock for every ticking duration on the screen, so a hundred rows do
-  // not each hold their own interval.
-  const [now, setNow] = useState(() => Date.now())
+  // not each hold their own interval -- and it stops advancing the rows once
+  // they are older than one poll interval (`rowClock`).
+  const [tick, setTick] = useState(() => Date.now())
   useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), 1000)
+    const id = setInterval(() => setTick(Date.now()), 1000)
     return () => clearInterval(id)
   }, [])
+  const now = rowClock(tick, readAt, pollInterval(page))
 
   const counts = useMemo(() => {
     const c: Record<Tab, number> = { live: 0, waiting: 0, recent: 0 }
@@ -288,23 +352,27 @@ function AgentsBody({
                     : 'Nothing has finished in the loaded page.'
               }
             />{' '}
-            {/* THIS SCREEN'S ONE `?` (B7.4). An empty `live` tab is the one
-                place on this screen where the mark alone can still be read
-                wrongly: "nothing is running" and "nothing costs anything" are
-                not the same claim, and which states hold a pool slot is
-                invariant 1 rather than anything the row could show. That is
-                the test for a glyph -- a platform rule no label can carry --
-                and `prose.runs.test.tsx` pins it to this empty state. */}
+            {/* THIS SCREEN'S ONE `?` (B7.4), AND ONLY ON THE EMPTY LIVE TAB
+                (AG-32). An empty `live` tab is the one place on this screen
+                where the mark alone can still be read wrongly: "nothing is
+                running" and "nothing costs anything" are not the same claim,
+                and which states hold a pool slot is invariant 1 rather than
+                anything the row could show. That is the test for a glyph -- a
+                platform rule no label can carry -- and it is not met by an
+                empty Waiting or Recent tab, which make no claim about cost:
+                the capacity topic opened from those answered a question
+                nobody there was asking. `prose.runs.test.tsx` pins it. */}
             nothing in {shown}
-            <HelpCard topic="capacity" />
+            {shown === 'live' && <HelpCard topic="capacity" />}
           </h3>
         </div>
       ) : grouped && shown !== 'live' ? (
-        <GroupedRows rows={rows} now={now} onOpen={onOpen} />
+        <GroupedRows rows={rows} now={now} onOpen={onOpen} openTaskId={openTaskId} />
       ) : (
         <div className="rows">
+          <RowHead />
           {rows.map((t) => (
-            <TaskRow key={t.id} task={t} now={now} onOpen={onOpen} />
+            <TaskRow key={t.id} task={t} now={now} onOpen={onOpen} open={t.id === openTaskId} />
           ))}
         </div>
       )}
@@ -323,10 +391,12 @@ function GroupedRows({
   rows,
   now,
   onOpen,
+  openTaskId,
 }: {
   rows: Task[]
   now: number
   onOpen: (taskId: string) => void
+  openTaskId: string | null
 }) {
   const groups = useMemo(() => {
     const m = new Map<string, Task[]>()
@@ -375,8 +445,9 @@ function GroupedRows({
               </span>
             </h2>
             <div className="rows">
+              <RowHead />
               {tasks.map((t) => (
-                <TaskRow key={t.id} task={t} now={now} onOpen={onOpen} />
+                <TaskRow key={t.id} task={t} now={now} onOpen={onOpen} open={t.id === openTaskId} />
               ))}
             </div>
           </section>
@@ -386,17 +457,74 @@ function GroupedRows({
   )
 }
 
+/**
+ * THE COLUMN HEADS (AG-16), on the row's own grid.
+ *
+ * A list of forty rows reading `1/3`, `1u` and `4m 12s` with nothing saying
+ * which is attempts, which is weight and which is elapsed left a reader to
+ * infer three columns from their values. This is a `.row` with the SAME cell
+ * classes in the SAME order as `TaskRow`, so it sits on the same named-line
+ * template and every breakpoint that drops a column -- the inspector's two
+ * stages, the phone card -- drops its head with it, by construction rather
+ * than by a second list of widths. `is-head` is the one hook the sheet needs
+ * to set it in the label treatment and to hide it where rows become cards.
+ *
+ * The flags column has no head: it is empty on most rows, and the chip in it
+ * names itself.
+ */
+function RowHead() {
+  return (
+    <div className="row is-head">
+      <span className="st">State</span>
+      <span className="agent">Agent</span>
+      <span className="owner">Owner</span>
+      <span className="wf">Step</span>
+      <span className="when">Elapsed</span>
+      <span className="try">Try</span>
+      <span className="class">Class</span>
+      <span className="badges" />
+    </div>
+  )
+}
+
+/**
+ * The accessible name of the attempts cell, and whether it is over its cap.
+ *
+ * OVER THE CEILING IS `>`, NOT `>=` (AG-15). `3/3` is a task that used every
+ * attempt it was allowed -- normal for anything that failed -- while `4/3` and
+ * `83/3` are a task that ran MORE times than its cap: the retry-cap defect
+ * `task_d18d8d8b044d469cb43c` hit at 83 attempts. Only the second is a
+ * problem with the platform, and only it gets the treatment and the overage
+ * in words.
+ */
+export function attemptsUsed(task: Pick<Task, 'attempt_count' | 'max_attempts'>): {
+  over: boolean
+  say: string
+} {
+  const over = task.attempt_count > task.max_attempts
+  return {
+    over,
+    say: over
+      ? `${task.attempt_count} attempts against a cap of ${task.max_attempts}: ${task.attempt_count - task.max_attempts} over the ceiling`
+      : `${task.attempt_count} of ${task.max_attempts} attempts used`,
+  }
+}
+
 function TaskRow({
   task,
   now,
   onOpen,
+  open = false,
 }: {
   task: Task
   now: number
   onOpen: (taskId: string) => void
+  /** This is the agent the inspector has open (AG-17). */
+  open?: boolean
 }) {
   const why = whyAgent(task)
   const el = elapsed(task, now)
+  const tries = attemptsUsed(task)
   const units = RESOURCE_UNITS[task.resource_class]
   // Driven by the flag, not by an optimistic state flip. A cancel on a LEASED
   // or RUNNING task writes only cancel_requested -- the state does not change
@@ -414,6 +542,12 @@ function TaskRow({
       className="row clickable"
       role="button"
       tabIndex={0}
+      // WHICH ROW IS OPEN (AG-17). With the inspector open no row said which
+      // agent it was showing; the one it is gets `aria-current`, which a
+      // screen reader announces and the sheet draws (a surface step and an
+      // ink rule, design-system.md §1.3). `undefined` rather than `false`,
+      // so the attribute is absent on every other row.
+      aria-current={open ? 'true' : undefined}
       onClick={() => onOpen(task.id)}
       onKeyDown={(e) => {
         if (e.key === 'Enter' || e.key === ' ') {
@@ -479,7 +613,11 @@ function TaskRow({
 
       <span className={`when${el.ticking ? ' ticking' : ''}`}>{el.text}</span>
 
-      <span className="try" aria-label={`${task.attempt_count} of ${task.max_attempts} attempts used`}>
+      {/* OVER THE CAP IS A PROBLEM, AND IT LOOKS LIKE ONE (AG-15). `83/3`
+          rendered exactly like `1/3`. `is-over` is the design system's word
+          for more held than a ceiling allows (the pool bars' `.is-over`);
+          the overage is in the accessible name, not only in the arithmetic. */}
+      <span className={`try${tries.over ? ' is-over' : ''}`} aria-label={tries.say}>
         {task.attempt_count}/{task.max_attempts}
       </span>
 
