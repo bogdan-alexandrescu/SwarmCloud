@@ -8,6 +8,7 @@ import {
   artifactKind,
   bytesLabel,
   type ArtifactContent,
+  type ArtifactKindName,
   type ArtifactRef,
 } from './types'
 
@@ -45,6 +46,8 @@ export function ArtifactViewer({
   artifact,
   onClose,
   load: loadContent,
+  kind,
+  absent,
 }: {
   taskId: string
   artifact: ArtifactRef
@@ -54,16 +57,41 @@ export function ArtifactViewer({
    *  the same shape, so one viewer renders both. Must be stable (useCallback):
    *  a new function is a new read. */
   load?: () => Promise<Result<ArtifactContent>>
+  /**
+   * The SERVER's kind for this file, from the listing (#184). When it is
+   * given, the viewer is chosen by it -- one name table, on the server -- and
+   * when it is not (an older API, the Details pane's list), by the old name
+   * rule in `artifactKind`.
+   */
+  kind?: ArtifactKindName | null
+  /**
+   * What an `absent` answer means where this viewer is opened, when it is not
+   * the default. A staged input read from its upstream run is absent because
+   * the upstream object was removed -- by bucket retention, usually -- which is
+   * a different sentence from "the manifest names a file that is not there".
+   */
+  absent?: { heading: string; say: string }
 }) {
   const [state, setState] = useState<
     | { kind: 'loading' }
     | { kind: 'error'; error: ApiError }
     | { kind: 'ok'; data: ArtifactContent }
   >({ kind: 'loading' })
+  /**
+   * Which window is shown: null for the first (from byte 0), else the RAW
+   * byte offset the server's `next_offset` named. Paging is by the server's
+   * offsets only -- redaction makes the text shorter than the bytes, so no
+   * offset is ever computed from the text here.
+   */
+  const [offset, setOffset] = useState<number | null>(null)
 
   const load = useCallback(async () => {
     setState({ kind: 'loading' })
-    const res = await (loadContent ? loadContent() : loadArtifactContent(taskId, artifact.name))
+    const res = await (loadContent
+      ? loadContent()
+      : offset === null
+        ? loadArtifactContent(taskId, artifact.name)
+        : loadArtifactContent(taskId, artifact.name, { offset }))
     if (res.status === 'ok' || res.status === 'stale') {
       setState({ kind: 'ok', data: res.data })
     } else if (res.status === 'error') {
@@ -82,7 +110,7 @@ export function ArtifactViewer({
         },
       })
     }
-  }, [taskId, artifact.name, loadContent])
+  }, [taskId, artifact.name, loadContent, offset])
 
   useEffect(() => {
     void load()
@@ -129,12 +157,40 @@ export function ArtifactViewer({
           </button>
         </div>
       )}
-      {state.kind === 'ok' && <Body data={state.data} />}
+      {state.kind === 'ok' && (
+        <Body
+          data={state.data}
+          kind={kind ?? null}
+          // THE ALLOWLIST'S VERDICT IS READ ONLY WHERE THERE IS ONE: the
+          // checkpoint per-file route, which is the only caller passing its
+          // own loader. The artifact route serves `content_type` from the name
+          // table since #184, and `null` there is a name the table does not
+          // know -- not a refusal -- so reading it as one would draw a binary
+          // artifact as "refused".
+          verdictByName={loadContent !== undefined}
+          absent={absent}
+          // Paging needs the artifact route's offsets; a caller's own loader
+          // reads one window and says so through `truncated`.
+          onPage={loadContent === undefined ? setOffset : null}
+        />
+      )}
     </div>
   )
 }
 
-function Body({ data }: { data: ArtifactContent }) {
+function Body({
+  data,
+  kind,
+  verdictByName,
+  absent,
+  onPage,
+}: {
+  data: ArtifactContent
+  kind: ArtifactKindName | null
+  verdictByName: boolean
+  absent?: { heading: string; say: string } | undefined
+  onPage: ((offset: number | null) => void) | null
+}) {
   const name = data.artifact.name ?? ''
 
   // FOUR STATUSES, FOUR MARKS. They were four paragraphs, and the paragraphs
@@ -148,8 +204,11 @@ function Body({ data }: { data: ArtifactContent }) {
     return (
       <Note
         kind="absent"
-        heading="object not in the bucket"
-        say="This task's manifest records this artifact and the object is not there. The manifest is the record of what the worker uploaded, so this is a missing object rather than an artifact the agent never wrote."
+        heading={absent?.heading ?? 'object not in the bucket'}
+        say={
+          absent?.say ??
+          "This task's manifest records this artifact and the object is not there. The manifest is the record of what the worker uploaded, so this is a missing object rather than an artifact the agent never wrote."
+        }
       >
         {data.detail}
       </Note>
@@ -175,7 +234,7 @@ function Body({ data }: { data: ArtifactContent }) {
   // text": an absence, and a claim about bytes nobody read. The run-output
   // route serves no `content_type` at all, so `undefined` is not `null` and
   // an artifact never lands here.
-  if (data.status === 'binary' && (data as WithVerdict).content_type === null) {
+  if (data.status === 'binary' && verdictByName && data.content_type === null) {
     return (
       <Refused what={`type not on the text allowlist · ${num(data.total_bytes)} bytes`}>
         {data.detail}
@@ -211,7 +270,7 @@ function Body({ data }: { data: ArtifactContent }) {
 
   return (
     <>
-      <Provenance data={data} />
+      <Provenance data={data} onPage={onPage} />
       {content === '' ? (
         // A MEASURED ZERO. `''` is a file the agent created and left blank,
         // and it is the one thing here that is a real reading rather than an
@@ -224,7 +283,12 @@ function Body({ data }: { data: ArtifactContent }) {
           0 bytes
         </p>
       ) : (
-        <Rendered name={name} content={content} />
+        <Rendered
+          name={name}
+          content={content}
+          kind={kind ?? data.kind ?? null}
+          whole={data.offset === 0 && data.next_offset === null && !data.truncated}
+        />
       )}
     </>
   )
@@ -238,7 +302,20 @@ function Body({ data }: { data: ArtifactContent }) {
  * output is clean" and "this output had four credentials in it and you should
  * rotate them" -- a screen that cannot say the second is hiding an incident.
  */
-function Provenance({ data }: { data: ArtifactContent }) {
+function Provenance({
+  data,
+  onPage,
+}: {
+  data: ArtifactContent
+  /** Move to another window, by the server's raw offset; null when this read cannot page. */
+  onPage: ((offset: number | null) => void) | null
+}) {
+  // A WINDOW THAT STARTS PAST BYTE 0 IS NOT THE WHOLE ARTIFACT EITHER, even
+  // when it runs to the end and `truncated` is false: the last window of a
+  // paged file is a tail. Before paging existed every window started at 0, so
+  // `truncated` alone said it; now the start has to be said too.
+  const partial = data.truncated || data.offset > 0
+  const next = data.next_offset
   return (
     <div className="art-prov">
       <ul className="ctl-facts">
@@ -248,18 +325,29 @@ function Provenance({ data }: { data: ArtifactContent }) {
             and a `partial` mark. The fraction is the fact; that the rest was
             not read is what `partial` means; the two ways to get the whole
             object are the two buttons on this same strip. */}
-        <li className={`ctl-fact${data.truncated ? ' is-absent' : ''}`}>
+        <li className={`ctl-fact${partial ? ' is-absent' : ''}`}>
           <b>bytes</b>
-          {data.truncated ? (
+          {partial ? (
             <>
               {num(data.returned_bytes)} of {num(data.total_bytes)}{' '}
               <Mark
                 kind="partial"
-                say="This is a window, not the whole artifact. The rest was not read — download what is shown, or read the object from its uri."
+                say={`This is a window, not the whole artifact: from byte ${data.offset}${next !== null ? `, with more from byte ${next}` : ', to the end'}. The rest was not read — download what is shown, read the next window, or read the object from its uri.`}
               />
+              {data.offset > 0 && <span className="ctl-sub">from byte {num(data.offset)}</span>}
             </>
           ) : (
             <>{num(data.total_bytes)} · complete</>
+          )}
+          {onPage !== null && next !== null && (
+            <button type="button" className="copy" onClick={() => onPage(next)}>
+              next window
+            </button>
+          )}
+          {onPage !== null && data.offset > 0 && (
+            <button type="button" className="copy" onClick={() => onPage(null)}>
+              from the start
+            </button>
           )}
         </li>
         {/* THE COUNT IS THE DIFFERENCE between "this output is clean" and
@@ -352,9 +440,6 @@ function CopyGsutil({ uri }: { uri: string | null }) {
   )
 }
 
-/** A content read that may also carry the text allowlist's verdict. */
-type WithVerdict = ArtifactContent & { content_type?: string | null }
-
 /**
  * THE SERVER DECLINED -- which is neither an absence nor a failure, and is
  * drawn as neither.
@@ -406,7 +491,48 @@ function Note({
   )
 }
 
-function Rendered({ name, content }: { name: string; content: string }) {
+/**
+ * THE VIEWER FOR A KIND. The server's kind when there is one (#184) -- one
+ * name table, on the server -- and the old name rule when there is not.
+ *
+ *   markdown     rendered as React elements, never as HTML
+ *   json         pretty-printed, but ONLY when the window is the whole file: a
+ *                window of a JSON document does not parse, and a viewer that
+ *                reformatted what it could would present a fragment as a
+ *                document. A part is shown as served and says so.
+ *   ndjson, log  monospace, lines kept as the writer wrote them
+ *   text         preformatted
+ *
+ * An image or a binary file never reaches here from the Artifacts pane --
+ * those are drawn from the raw route, or described -- but a name hint is not
+ * a verdict, so anything else that arrives as text is shown as text.
+ */
+function Rendered({
+  name,
+  content,
+  kind,
+  whole,
+}: {
+  name: string
+  content: string
+  kind: ArtifactKindName | null
+  whole: boolean
+}) {
+  if (kind !== null) {
+    switch (kind) {
+      case 'markdown':
+        return <Markdown source={content} />
+      case 'json':
+        return <JsonText source={content} whole={whole} />
+      case 'ndjson':
+      case 'log':
+        return <pre className="logwin-body">{content}</pre>
+      case 'text':
+      case 'image':
+      case 'binary':
+        return <pre className="art-text">{content}</pre>
+    }
+  }
   switch (artifactKind(name)) {
     case 'markdown':
       return <Markdown source={content} />
@@ -415,6 +541,45 @@ function Rendered({ name, content }: { name: string; content: string }) {
     case 'text':
       return <pre className="art-text">{content}</pre>
   }
+}
+
+/** JSON, pretty-printed only when this window is the whole file and parses. */
+function JsonText({ source, whole }: { source: string; whole: boolean }) {
+  if (!whole) {
+    return (
+      <>
+        <p className="art-fallback">
+          <Mark
+            kind="partial"
+            say="This is a window of a JSON file, not the whole of it. A part of a JSON document does not parse, so it is shown exactly as served rather than reformatted."
+          />{' '}
+          partial, not pretty-printed
+        </p>
+        <pre className="art-text">{source}</pre>
+      </>
+    )
+  }
+  let pretty: string | null
+  try {
+    pretty = JSON.stringify(JSON.parse(source), null, 2)
+  } catch {
+    pretty = null
+  }
+  if (pretty === null) {
+    return (
+      <>
+        <p className="art-fallback">
+          <Mark
+            kind="absent"
+            say="This file is named as JSON and is not valid JSON, so it is shown exactly as it was written."
+          />{' '}
+          not valid JSON
+        </p>
+        <pre className="art-text">{source}</pre>
+      </>
+    )
+  }
+  return <pre className="art-text">{pretty}</pre>
 }
 
 // ---------------------------------------------------------------------------

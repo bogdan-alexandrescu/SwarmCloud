@@ -39,6 +39,7 @@ import {
   whyNeedsAction,
   type ArtifactRef,
   type AttemptRow,
+  type AttemptUsage,
   type DispatchRole,
   type DispatchStrategy,
   type ElapsedPhase,
@@ -1700,22 +1701,7 @@ function AttemptResources({
         fmt={bytesLabel}
         by={diskBy}
       />
-      {/* CPU HAS NO UTILISED SIDE AT ALL. The sampler measures memory and disk
-          only, so a cpu bar here would be a hatched track next to a request --
-          which is the honest picture and is why it is drawn rather than left
-          out: a panel headed "requested vs utilised" that silently omits a
-          third of the envelope reads as if cpu were fine. */}
-      <CeilingRow
-        label={
-          <>
-            <b>cpu</b> not sampled
-          </>
-        }
-        used={null}
-        ceiling={cls === null ? null : cls.cpu}
-        fmt={(v) => `${v} vCPU`}
-        by="never measured"
-      />
+      <CpuRows a={a} cls={cls} />
 
       {/* The standing rules -- requests == limits, the tmpfs workspace, what
           oom_near_miss actually asserts -- live ONCE in the card foot at the
@@ -1770,6 +1756,105 @@ function AttemptResources({
       <PeakMemoryChart attempt={a} events={events} />
     </div>
   )
+}
+
+/**
+ * CPU, AS PEAK AND MEAN CORES AGAINST THE LIMIT (#184), in the style of the
+ * memory and workspace rows above.
+ *
+ * WHAT CHANGED. This was one hatched row, `cpu not sampled`, because nothing
+ * displayed what the worker measured: `ResourceSampler` has computed
+ * cpu-seconds, peak cores and mean cores from cgroup `cpu.stat` all along, and
+ * they reached a log line and Cloud Monitoring, which this API cannot read.
+ * `attempts?include=usage` now serves each attempt's newest reading off its
+ * HEARTBEAT events, and these rows draw it.
+ *
+ * TWO ROWS, NOT A BAR WITH A TICK: the shared track draws one fill per row,
+ * and whether the owner wants one bar with a mean tick instead is an open
+ * question on #184. The ceiling is the container's own limit from cgroup
+ * `cpu.max` when the worker could read it, else the catalogue's cpu for the
+ * task's class -- `requests == limits`, so that is the limit -- and the `by`
+ * column says which. A figure over the ceiling takes the track's over-ceiling
+ * hatch.
+ *
+ * ONE ROW WHEN THERE IS NOTHING TO SPLIT. With no reading -- the API did not
+ * serve one, the attempt never ran, the event window missed it, the read
+ * failed, or every figure in it is null -- two identical hatched rows would
+ * say one fact twice. The one row still says WHICH kind of nothing, in the
+ * words of the memory row: absent is never drawn as zero.
+ */
+function CpuRows({ a, cls }: { a: AttemptRow; cls: ResourceClassSpec | null }) {
+  const u = a.usage
+  const cgroup = u?.cpu_limit_cores ?? null
+  const ceiling = cgroup ?? (cls === null ? null : cls.cpu)
+  const fmt = (v: number) => `${Number(v.toFixed(2))} vCPU`
+  const measured =
+    u !== undefined && (u.peak_cpu_cores !== null || u.mean_cpu_cores !== null || u.cpu_seconds !== null)
+
+  if (u === undefined || !measured) {
+    return (
+      <CeilingRow
+        label={<b>cpu</b>}
+        used={null}
+        ceiling={ceiling}
+        fmt={fmt}
+        by={u === undefined ? 'not served' : cpuBy(u, false)}
+      />
+    )
+  }
+
+  const from = cgroup !== null ? 'cgroup limit' : cls !== null ? `${cls.name} limit` : null
+  const by = cpuBy(u, true)
+  return (
+    <>
+      <CeilingRow
+        label={
+          <>
+            <b>cpu</b> peak
+          </>
+        }
+        used={u.peak_cpu_cores}
+        ceiling={ceiling}
+        fmt={fmt}
+        by={from === null ? by : `${by} · ${from}`}
+      />
+      <CeilingRow
+        label={
+          <>
+            <b>cpu</b> mean
+          </>
+        }
+        used={u.mean_cpu_cores}
+        ceiling={ceiling}
+        fmt={fmt}
+        by={u.cpu_seconds === null ? by : `${by} · ${Number(u.cpu_seconds.toFixed(1))} cpu-s`}
+      />
+    </>
+  )
+}
+
+/**
+ * Where an attempt's CPU reading came from, in the memory row's words. `any`
+ * is false when every figure in the reading is null: a heartbeat that carried
+ * the key and no value is "never measured", whatever its status.
+ */
+function cpuBy(u: AttemptUsage, any: boolean): string {
+  switch (u.status) {
+    case 'final':
+      return any ? 'at exit' : 'never measured'
+    case 'live':
+      return any ? `latest heartbeat ${u.measured_at === null ? '' : timeAgo(u.measured_at)}`.trim() : 'never measured'
+    case 'last_reading':
+      return any ? `last heartbeat ${u.measured_at === null ? '' : timeAgo(u.measured_at)}`.trim() : 'never measured'
+    case 'never_ran':
+      return 'never ran'
+    case 'absent':
+      return 'never measured'
+    case 'beyond_window':
+      return 'off the event window'
+    case 'unread':
+      return 'read failed'
+  }
 }
 
 /**
@@ -2283,7 +2368,9 @@ function Artifacts({
         </div>
       )}
       {showing !== null && (
-        <ArtifactViewer taskId={taskId} artifact={showing} onClose={() => setOpen(null)} />
+        // Keyed per file: the viewer pages by offset now (#184), and a window
+        // paged in one artifact must not carry its offset to the next.
+        <ArtifactViewer key={showing.name} taskId={taskId} artifact={showing} onClose={() => setOpen(null)} />
       )}
     </div>
   )
@@ -2376,16 +2463,18 @@ function Logs({
  * window of either the final object or the live tail, redacted at read time.
  * Nothing had called it, so the screen went on stating the old constraint --
  * which is worse than a missing feature, because it tells a reader not to look.
- * The "Output, as the agent wrote it" panel below reads it.
+ * The runner log panel below reads it for the runner's own streams, and the
+ * Artifacts pane reads it for the agent's (#184).
  */
 function LogsFoot() {
   // WHAT IT SAYS NOW, and it is a pointer rather than an explanation. These
-  // are object LOCATIONS from the result summary; the text window, including
-  // the live tail, is read by a different route and drawn by `RunFiles` below.
-  // A reader who needs to know which is which follows the link.
+  // are object LOCATIONS from the result summary. Their text -- the agent's
+  // streams, its transcript and its answer, live while it runs -- is the
+  // Artifacts pane's; the runner process's own window is `RunFiles` below,
+  // under a title that says it is the platform's.
   return (
     <p className="ctl-card-foot">
-      <span>locations only · text window below</span>
+      <span>locations only · text under Artifacts</span>
     </p>
   )
 }

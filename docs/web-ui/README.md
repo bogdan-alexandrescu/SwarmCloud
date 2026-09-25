@@ -61,8 +61,13 @@ changes wearing a UI costume, and no amount of front-end effort reaches them.
 ## Also in this directory
 
 The eight numbered files above are the feature specification — what could be
-built, and what blocks each screen. Three more files answer different questions
+built, and what blocks each screen. Four more files answer different questions
 and are read on their own:
+
+* [`agent-inspector-artifacts.md`](agent-inspector-artifacts.md) — the agent
+  drawer's Artifacts pane (inputs, the answer, every file, logs and the
+  transcript, live) and the CPU rows in Details (#184): where each figure comes
+  from, why every byte goes through the API, and what the pane cannot show.
 
 * [`redesign.md`](redesign.md) — the information architecture: what the sections
   are, why there are six of them, and the routing. `App.tsx` names this file as

@@ -3860,13 +3860,21 @@ pre.err.full { max-height: none; white-space: pre-wrap; }
   background: color-mix(in srgb, var(--paused) 20%, transparent);
   color: var(--paused-ink); font: 600 var(--t-meta)/var(--lh-meta) var(--mono);
 }
-button.copy {
+button.copy,
+a.copy {
   margin-left: 8px; padding: 1px 7px;
   border: 1px solid var(--line); border-radius: var(--ctl-radius-sm);
   background: var(--surface-2); color: var(--text-dim);
   font: var(--t-meta)/var(--lh-meta) var(--mono); cursor: pointer;
 }
-button.copy:hover { color: var(--text); border-color: var(--text-faint); }
+button.copy:hover,
+a.copy:hover { color: var(--text); border-color: var(--text-faint); }
+/* A LINK DRAWN AS THE COPY CONTROL (#184): the Artifacts pane's `download`
+   and `open full` are anchors -- the browser fetches the raw route itself,
+   with the session cookie, which a button calling `fetch` could not hand to a
+   download -- and they sit in a row of `copy gsutil` buttons, so they wear the
+   same box. No underline: the box is the affordance, as it is for the button. */
+a.copy { display: inline-block; text-decoration: none; }
 
 /* ------------------------------------------------------------------------ */
 /* Activity                                                                  */
@@ -8473,6 +8481,72 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
   margin-top: var(--ctl-s2); font-size: var(--t-body); line-height: var(--lh-body);
   white-space: pre-wrap; max-width: 78ch;
 }
+
+/* ---------------------------------------------------------------------------
+   #184 -- the Artifacts pane: inputs, outputs, logs (Artifacts.tsx)
+
+   TOKENS ONLY, SO BOTH THEMES FOLLOW. Every colour here is a custom property
+   the light and dark blocks at the top of the sheet define; nothing is a
+   literal, so the pane is dark where the drawer is dark.
+
+   390 WIDE WITHOUT A SIDEWAYS SCROLL. The tables are `.ctl-table.is-stacked`
+   and turn into records below 900px like every inspector table; the prompt
+   and the answer text wrap (`pre-wrap`, `overflow-wrap: anywhere`, so a long
+   token breaks rather than widening the drawer); code, tool inputs and logs
+   keep their lines and scroll inside their own box, as `.art-code` and
+   `.logwin-body` already do; an image is never wider than its column.
+   --------------------------------------------------------------------------- */
+.arts-block { margin-bottom: var(--ctl-s3); min-width: 0; }
+.arts-prompt {
+  font: var(--t-body)/var(--lh-body) var(--mono);
+  background: var(--surface); border: 1px solid var(--line);
+  border-radius: var(--ctl-radius-sm);
+  padding: var(--ctl-s2); margin: 0;
+  max-width: 100%; max-height: 40vh; overflow-y: auto;
+  white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.arts-get { display: inline-flex; flex-wrap: wrap; gap: var(--ctl-s1); }
+.arts-get > .copy { margin-left: 0; }
+.arts-view-seg { flex-wrap: wrap; }
+.arts-gallery {
+  display: grid; gap: var(--ctl-s3); margin-top: var(--ctl-s3);
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 200px), 1fr));
+}
+.arts-figure { margin: 0; min-width: 0; }
+.arts-figure img {
+  display: block; max-width: 100%; height: auto;
+  border: 1px solid var(--line); border-radius: var(--ctl-radius-sm); background: var(--surface);
+}
+.arts-figure figcaption {
+  margin-top: var(--ctl-s1); font-size: var(--t-micro); line-height: var(--lh-micro);
+  color: var(--text-dim); overflow-wrap: anywhere;
+}
+.arts-window-note { margin: var(--ctl-s2) 0; font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text-dim); }
+.arts-steps {
+  list-style: none; margin: var(--ctl-s2) 0 0; padding: 0;
+  display: flex; flex-direction: column; gap: var(--ctl-s2); min-width: 0;
+}
+/* A SUB-AGENT'S STEPS, UNDER THE TOOL CALL THAT SPAWNED THEM: one indent and
+   a rule, the whole of the nesting. */
+.arts-steps .arts-steps { margin-left: var(--ctl-s2); padding-left: var(--ctl-s3); border-left: 1px solid var(--line); }
+/* The step's edge is a KIND, not a verdict, so it stays in the neutral inks;
+   the one verdict colour here is a failed tool result's, beside the word
+   `error` that carries it in greyscale. */
+.arts-step { min-width: 0; border-left: 3px solid var(--line); padding-left: var(--ctl-s2); }
+.arts-step.is-text { border-left-color: var(--text-faint); }
+.arts-step.is-result { border-left-color: var(--text); }
+.arts-step-kind { font: 600 var(--t-meta)/var(--lh-meta) var(--mono); color: var(--text-dim); }
+/* The answer and each text step are documents inside a pane that scrolls; a
+   second scroller inside every step would trap the wheel. */
+.arts-step .art-md,
+.arts-answer .art-md { max-height: none; }
+.arts-more > summary {
+  cursor: pointer; font: var(--t-meta)/var(--lh-meta) var(--mono); color: var(--text-dim);
+}
+.arts-more > summary:hover { color: var(--text); }
+.arts-more > summary:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; border-radius: var(--ctl-radius-sm); }
+.arts-more.is-bad > summary { color: var(--bad); }
+.arts-more > .art-code { margin-top: var(--ctl-s1); max-height: 40vh; overflow: auto; }
 
 @media (max-width: 640px) {
   .stop-confirm { max-width: none; }

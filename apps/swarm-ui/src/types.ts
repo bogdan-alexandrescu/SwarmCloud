@@ -780,6 +780,12 @@ export interface ResultSummary {
    * absence here can mean are kept apart.
    */
   staged_inputs?: StagedInputRef[]
+  /**
+   * Which artifacts are the agent CLI's own streams (#184), or null for a
+   * runner with no agent CLI (mock, browser). Absent on a summary written
+   * before the change.
+   */
+  agent_streams?: AgentStreams | null
   [k: string]: unknown
 }
 
@@ -1191,6 +1197,14 @@ export interface AttemptRow {
   cache_read_input_tokens: number | null
   cache_creation_input_tokens: number | null
   cost_usd: number | null
+  /**
+   * The attempt's CPU reading, served only when the read asked for
+   * `include=usage` (#184). OPTIONAL, and its absence means the API did not
+   * serve it -- a deployment older than the change, or a read that did not
+   * ask -- never "no CPU was used". The typed Attempt fields that would
+   * replace it are contract request #15.
+   */
+  usage?: AttemptUsage
 }
 
 // --------------------------------------------------------------------------
@@ -3128,12 +3142,32 @@ export interface CheckpointsPage {
   latest_checkpoint: LatestCheckpointPointer
 }
 
-/** Which object was served: the completed record, or the live tail. */
-export type LogSource = 'final' | 'live'
-export type LogStatus = 'ok' | 'absent' | 'unreadable'
+/**
+ * Which object was served: the completed record, the live tail, or -- for the
+ * agent CLI's own streams on an attempt that ran before their final copies
+ * existed -- the artifact the runner wrote (`artifact`, #184's legacy
+ * fallback: `claude-code.stdout.log` on `task_73b5f4d9ca3641fbb914`).
+ */
+export type LogSource = 'final' | 'live' | 'artifact'
+/**
+ * `not_applicable` is the fourth answer #184 added, and only for the agent
+ * streams: the runner has no agent CLI (mock, browser), so no such stream was
+ * ever going to exist. It is not `absent`, which is a stream that should have
+ * been uploaded and was not.
+ */
+export type LogStatus = 'ok' | 'absent' | 'unreadable' | 'not_applicable'
+
+/**
+ * `stdout` and `stderr` are the RUNNER PROCESS's streams -- the platform's
+ * wrapper around the agent, whose stderr holds lines like `child started`.
+ * `agent_stdout` and `agent_stderr` are the agent CLI's own (#184). The first
+ * pair was shown for months under "Output, as the agent wrote it", which it is
+ * not.
+ */
+export type LogStreamName = 'stdout' | 'stderr' | 'agent_stdout' | 'agent_stderr'
 
 export interface LogStream {
-  stream: 'stdout' | 'stderr'
+  stream: LogStreamName
   source: LogSource | null
   status: LogStatus
   detail: string | null
@@ -3151,27 +3185,247 @@ export interface LogStream {
   redacted: boolean
   redaction_count: number
   /** From the `#swarm-tail` header, for a live window: where it sits in the
-   *  stream, so a reader can tell a gap from a continuation. */
-  tail_window: { object_offset: number; stream_size: number } | null
+   *  stream, so a reader can tell a gap from a continuation. `published_at` is
+   *  the header's `at=` (#184), absent on a tail written before it existed. */
+  tail_window: { object_offset: number; stream_size: number; published_at?: string | null } | null
+  /**
+   * The object's own GCS `updated` time, and the age the SERVER computed from
+   * it at `read_at` (#184). A live tail is republished every interval even when
+   * nothing changed, so this is the publisher's liveness, not new output.
+   * OPTIONAL because an API older than #184 sends neither; null means the
+   * server could not tell, which is different from not saying.
+   */
+  object_updated_at?: string | null
+  age_seconds?: number | null
+}
+
+/** Which attempt a log, transcript or answer read describes. */
+export interface LogAttempt {
+  status: 'latest' | 'requested' | 'unknown_attempt' | 'no_attempt_yet'
+  known: boolean
+  generation: number | null
+  created_at: string | null
+  completed_at: string | null
+  exit_code: number | null
 }
 
 export interface TaskLogs {
   task_id: string
   tenant_id: string
   attempt_id: string | null
-  attempt: {
-    status: 'latest' | 'requested' | 'unknown_attempt' | 'no_attempt_yet'
-    known: boolean
-    generation: number | null
-    created_at: string | null
-    completed_at: string | null
-    exit_code: number | null
-  }
+  attempt: LogAttempt
+  /** When the server read the objects (#184). Every `age_seconds` is from here. */
+  read_at?: string
   streams: LogStream[]
   prefix: string
   /** Stated by the server rather than assumed here. A deployment where
    *  redaction somehow stopped would otherwise look identical to a working one. */
   redaction: { applied_at_read_time: boolean; rules: number }
+}
+
+// ---------------------------------------------------------------------------
+// The Artifacts tab (#184): the listing, the transcript, the answer
+// ---------------------------------------------------------------------------
+
+/**
+ * What kind of file an artifact is, as the SERVER decides it from the NAME --
+ * one table, `checkpoint_content.content_type_for` plus its image extensions.
+ * A hint for choosing a viewer, not a verdict about the bytes: the content
+ * route's NUL sniff and the raw route's magic-byte sniff stay authoritative.
+ * `.svg` is text, never an image.
+ */
+export type ArtifactKindName = 'markdown' | 'json' | 'ndjson' | 'log' | 'text' | 'image' | 'binary'
+
+/** Which agent stream an artifact IS, by exact name against `result_summary.agent_streams`. */
+export type AgentStreamRole = 'agent_stdout' | 'agent_stderr' | 'agent_transcript'
+
+/**
+ * One entry of `GET /v1/tasks/{id}/artifacts`. The three #184 fields are
+ * OPTIONAL: an API older than that change serves `{name, bytes, uri}` only, and
+ * the viewer then falls back to the name rule it always used (`artifactKind`).
+ */
+export interface ArtifactEntry extends ArtifactRef {
+  /** Null when the stored uri is not under this task. */
+  attempt_id?: string | null
+  kind?: ArtifactKindName | null
+  content_type?: string | null
+  role?: AgentStreamRole | null
+}
+
+/**
+ * The listing. `complete` is false -- and `artifacts` empty -- until the task's
+ * result summary is written at the end of its last attempt: artifacts are
+ * uploaded then, never live, so an empty incomplete list is "not yet", never
+ * "none".
+ */
+export interface ArtifactListing {
+  task_id: string
+  artifacts: ArtifactEntry[]
+  artifacts_skipped: string[]
+  artifact_bytes: number | null
+  complete: boolean
+  /** The attempt the manifest describes: the final one, and only it. */
+  attempt_id?: string | null
+}
+
+/** What `result_summary.agent_streams` names, or null for a runner with no agent CLI. */
+export interface AgentStreams {
+  stdout: string | null
+  stderr: string | null
+  transcript: string | null
+  /** `too_large`: the transcript was over 4,000,000 characters and was not written. */
+  transcript_skipped: 'too_large' | null
+}
+
+export type TranscriptStepKind =
+  | 'init'
+  | 'text'
+  | 'thinking'
+  | 'tool_call'
+  | 'tool_result'
+  | 'result'
+  | 'rate_limit'
+  | 'system'
+  | 'other'
+
+/**
+ * ONE STEP OF THE AGENT'S TRANSCRIPT, parsed and redacted by the SERVER
+ * (`GET /v1/tasks/{id}/transcript`). Every string was redacted after JSON
+ * decoding and capped at 16 KiB; a capped field is named in
+ * `truncated_fields`. `raw` is present only when the read asked for it.
+ */
+export interface TranscriptStep {
+  id: string
+  line_offset: number
+  block: number
+  kind: TranscriptStepKind
+  role: 'assistant' | 'user' | 'system' | null
+  /** Set on a sub-agent's steps: the tool call that spawned it. */
+  parent_tool_use_id: string | null
+  text: string | null
+  /** `input` is the tool input as pretty JSON TEXT, never an object. */
+  tool: { id: string; name: string; input: string | null } | null
+  tool_result: { tool_use_id: string; is_error: boolean; content: string | null; images: number } | null
+  meta: Record<string, unknown> | null
+  truncated_fields: string[]
+  raw: string | null
+}
+
+export type TranscriptFormat = 'claude-stream-json' | 'claude-json' | 'ndjson' | 'text'
+
+/** The object a transcript read parsed: the same one `/logs?stream=agent_stdout` would choose. */
+export interface TranscriptStream {
+  stream: 'agent_stdout'
+  source: LogSource | null
+  status: LogStatus
+  detail: string | null
+  uri: string | null
+  object_updated_at: string | null
+  age_seconds: number | null
+  total_bytes: number | null
+  offset: number
+  returned_bytes: number
+  next_offset: number | null
+  truncated: boolean
+  tail_window: { object_offset: number; stream_size: number; published_at?: string | null } | null
+}
+
+export interface TaskTranscript {
+  task_id: string
+  tenant_id: string
+  attempt_id: string | null
+  attempt: LogAttempt
+  read_at: string
+  stream: TranscriptStream
+  /** Sniffed from the content by the server, never trusted from the worker. */
+  format: TranscriptFormat | null
+  /** Null unless the stream was read AND its format parses. Never `[]` for "could not tell". */
+  steps: TranscriptStep[] | null
+  /** True only for a final or artifact read from offset 0 to the end. */
+  complete: boolean
+  /** The window does not start at the first step: earlier steps are not in it. */
+  window_starts_mid_stream: boolean
+  /** Lines that did not parse. Counted, never silently dropped. */
+  skipped_lines: number
+  answer_in_window: boolean
+  redaction: { applied_at_read_time: boolean; rules: number }
+  redaction_count: number
+}
+
+/**
+ * THE AGENT'S FINAL ANSWER (`GET /v1/tasks/{id}/answer`): the `result` of the
+ * LAST `type:"result"` event in its stdout, or -- only when there is none --
+ * the runner's summary, which is capped at 2,000 characters and says so with
+ * `complete: false`.
+ *
+ *  - `not_yet`    the attempt is still running and no result event exists yet.
+ *  - `absent`     the attempt ended and neither source exists.
+ *  - `unreadable` an object read failed; nothing may be concluded.
+ */
+export type AnswerStatus = 'ok' | 'not_yet' | 'absent' | 'unreadable'
+
+export interface TaskAnswer {
+  task_id: string
+  tenant_id: string
+  attempt_id: string | null
+  attempt: LogAttempt
+  read_at: string
+  status: AnswerStatus
+  source: 'agent_result_event' | 'runner_summary' | null
+  object: {
+    stream: 'agent_stdout'
+    source: LogSource
+    uri: string | null
+    object_updated_at: string | null
+  } | null
+  format: 'markdown' | 'text' | null
+  /** Null for every status but `ok`. `''` is a real, empty answer. */
+  content: string | null
+  /** false when the answer is known to be cut (the runner summary at its cap); null when nothing says. */
+  complete: boolean | null
+  /** The agent itself reported an error (e.g. `error_max_turns`). Still status `ok`. */
+  is_error: boolean | null
+  subtype: string | null
+  stop_reason: string | null
+  terminal_reason: string | null
+  num_turns: number | null
+  bytes: number | null
+  redacted: boolean
+  redaction_count: number
+  detail: string | null
+}
+
+/**
+ * HOW AN ATTEMPT'S CPU READING WAS FOUND, from `attempts?include=usage`: the
+ * newest HEARTBEAT event carrying `cpu_seconds` for that attempt.
+ *
+ *  - `final`         the reading emitted when the runner was reaped.
+ *  - `live`          a periodic reading, and the attempt has not ended.
+ *  - `last_reading`  a periodic reading, and the attempt ended without a final one.
+ *  - `never_ran`     the attempt never started.
+ *  - `absent`        the event window reached past the attempt and found none.
+ *  - `beyond_window` the event window was full and did not reach the attempt.
+ *  - `unread`        the events read failed.
+ */
+export type UsageStatus = 'final' | 'live' | 'last_reading' | 'never_ran' | 'absent' | 'beyond_window' | 'unread'
+
+export interface AttemptUsage {
+  status: UsageStatus
+  detail: string | null
+  event_id: string | null
+  measured_at: string | null
+  age_seconds: number | null
+  final: boolean | null
+  /** Every CPU figure: null is NOT MEASURED, never 0. 1.0 is one full vCPU. */
+  cpu_seconds: number | null
+  peak_cpu_cores: number | null
+  mean_cpu_cores: number | null
+  cpu_wall_seconds: number | null
+  cpu_source: string | null
+  /** The container's own limit, from cgroup `cpu.max`; null when unlimited or unreadable. */
+  cpu_limit_cores: number | null
+  cpu_limit_source: 'cgroup' | 'resource_class' | null
+  peak_rss_bytes: number | null
 }
 
 // ---------------------------------------------------------------------------
@@ -3214,15 +3468,22 @@ export interface ArtifactContent {
   redacted: boolean
   redaction_count: number
   redaction: { applied_at_read_time: boolean; rules: number }
+  /**
+   * The name table's answer for this artifact (#184), the same one the listing
+   * serves. OPTIONAL: an API older than #184 sends neither. On the checkpoint
+   * per-file route `content_type: null` is the allowlist REFUSING the name,
+   * which is why the viewer reads it only on that route.
+   */
+  content_type?: string | null
+  kind?: ArtifactKindName | null
 }
 
 /**
- * How a viewer presents one artifact, decided from its NAME alone.
- *
- * Deliberately not from a server-supplied content type: nothing in the upload
- * path sets one (`lifecycle._upload_outputs` passes `content_type` for the two
- * log objects and for nothing else), so a viewer that branched on it would be
- * branching on `undefined` for every artifact a run actually produces.
+ * How a viewer presents one artifact, decided from its NAME alone -- the
+ * FALLBACK, used only when the listing served no `kind` (an API older than
+ * #184, or the Details pane's list, which reads the task's own manifest).
+ * The Artifacts tab chooses by the server's `kind` instead: one table, on the
+ * server, rather than a second copy of it here.
  */
 export type ArtifactKind = 'markdown' | 'transcript' | 'text'
 

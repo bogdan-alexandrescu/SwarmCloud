@@ -8,7 +8,7 @@ import { CONCURRENCY_STATES, TERMINAL_STATES } from './types'
 // actually reported it, so an unmeasured sample never becomes a confident zero.
 import { sumReported } from './measure'
 import type {
-  ArtifactContent,
+  ArtifactContent, ArtifactListing, LogStream, LogStreamName, TaskAnswer, TaskTranscript, TranscriptStep,
   CheckpointsPage, TaskLogs,
   Capacity, DispatchControl, Me, ProvidersPage, Stats, Task, TaskEvent, TaskPage,
   AttemptRow, LeasePage, LeaseRow, Pool, ProfileAdmission, QuotaState, ResourceClassSpec,
@@ -505,21 +505,28 @@ export async function loadCheckpoints(
  * length of the text returned -- redaction makes the text shorter than the
  * bytes it came from. Windows are aligned to whitespace by the server so a
  * credential can never be split across two of them.
+ *
+ * `stream` IS REPEATABLE (#184), and a list is sent as one `stream=` per
+ * name, in order. No stream means `[stdout, stderr]` -- the RUNNER process's
+ * streams, exactly as before -- so every existing caller is unchanged.
+ * `agent_stdout` and `agent_stderr` are the agent CLI's own.
  */
 export async function loadTaskLogs(
   taskId: string,
   options: {
     attemptId?: string
-    stream?: 'stdout' | 'stderr'
+    stream?: LogStreamName | readonly LogStreamName[]
     source?: 'auto' | 'final' | 'live'
     offset?: number
     limitBytes?: number
   } = {},
 ): Promise<Result<TaskLogs>> {
-  if (USE_FIXTURES) return fixtureTaskLogs(taskId)
+  if (USE_FIXTURES) return fixtureTaskLogs(taskId, options.stream)
   const query = new URLSearchParams()
   if (options.attemptId) query.set('attempt_id', options.attemptId)
-  if (options.stream) query.set('stream', options.stream)
+  const streams: readonly LogStreamName[] =
+    options.stream === undefined ? [] : typeof options.stream === 'string' ? [options.stream] : options.stream
+  for (const s of streams) query.append('stream', s)
   if (options.source) query.set('source', options.source)
   if (options.offset !== undefined) query.set('offset', String(options.offset))
   if (options.limitBytes !== undefined) query.set('limit_bytes', String(options.limitBytes))
@@ -624,8 +631,15 @@ async function fixtureCheckpoints(taskId: string): Promise<Result<CheckpointsPag
  * The distinction between `null` and `''` is the whole reason `LogStream.content`
  * is nullable, and a fixture that never produced `''` would leave the branch
  * that renders it unexercised.
+ *
+ * THE AGENT STREAMS (#184) are answered only when asked for by name, as the
+ * route does: `agent_stdout` is a live NDJSON tail published seconds ago, and
+ * `agent_stderr` is a measured empty object -- the reference task's shape.
  */
-async function fixtureTaskLogs(taskId: string): Promise<Result<TaskLogs>> {
+async function fixtureTaskLogs(
+  taskId: string,
+  asked?: LogStreamName | readonly LogStreamName[],
+): Promise<Result<TaskLogs>> {
   await new Promise((r) => setTimeout(r, 110))
   noteFixtureProbe(route('/v1/tasks/{id}/logs', { id: taskId }), 110, true)
   const body = [
@@ -634,6 +648,58 @@ async function fixtureTaskLogs(taskId: string): Promise<Result<TaskLogs>> {
     '[13:42:09] claude-code: starting',
     '[13:44:31] checkpoint ckpt_0002 written (18.4 MB)',
   ].join('\n')
+  const names: readonly LogStreamName[] =
+    asked === undefined ? ['stdout', 'stderr'] : typeof asked === 'string' ? [asked] : asked
+  if (names.some((n) => n === 'agent_stdout' || n === 'agent_stderr')) {
+    const agentOut = [
+      '{"type":"system","subtype":"init","model":"claude-opus-5"}',
+      '{"type":"assistant","message":{"content":[{"type":"text","text":"Reading the repository."}]}}',
+    ].join('\n')
+    const pick = (n: LogStreamName): LogStream => {
+      const content = n === 'agent_stdout' ? agentOut : n === 'agent_stderr' ? '' : n === 'stdout' ? body : ''
+      const size = new TextEncoder().encode(content).length
+      return {
+        stream: n,
+        source: 'live',
+        status: 'ok',
+        detail: null,
+        key: `tenants/u-bogdan/tasks/${taskId}/attempts/att_2/logs/live/${n}.tail.log`,
+        uri: `gs://swarm-logs/tenants/u-bogdan/tasks/${taskId}/attempts/att_2/logs/live/${n}.tail.log`,
+        content,
+        total_bytes: size,
+        offset: 0,
+        returned_bytes: size,
+        next_offset: null,
+        truncated: false,
+        redacted: false,
+        redaction_count: 0,
+        tail_window: size === 0 ? null : { object_offset: 0, stream_size: size, published_at: new Date(Date.now() - 3_000).toISOString() },
+        object_updated_at: new Date(Date.now() - 3_000).toISOString(),
+        age_seconds: 3,
+      }
+    }
+    return {
+      status: 'ok',
+      fetchedAt: Date.now(),
+      data: {
+        task_id: taskId,
+        tenant_id: 'u-bogdan',
+        attempt_id: 'att_2',
+        attempt: {
+          status: 'latest',
+          known: true,
+          generation: 2,
+          created_at: new Date(Date.now() - 9 * 60_000).toISOString(),
+          completed_at: null,
+          exit_code: null,
+        },
+        read_at: new Date().toISOString(),
+        prefix: `tenants/u-bogdan/tasks/${taskId}/attempts/att_2/`,
+        redaction: { applied_at_read_time: true, rules: 6 },
+        streams: names.map(pick),
+      },
+    }
+  }
   return {
     status: 'ok',
     fetchedAt: Date.now(),
@@ -719,6 +785,304 @@ export async function loadArtifactContent(
   if (options.limitBytes !== undefined) query.set('limit_bytes', String(options.limitBytes))
   // Path literal and query kept apart; see loadCheckpoints above for why.
   return read<ArtifactContent>(route('/v1/tasks/{id}/artifacts/content', { id: taskId }, query), () => false)
+}
+
+// ---------------------------------------------------------------------------
+// The Artifacts tab (#184): what a task took in and what it produced
+// ---------------------------------------------------------------------------
+//
+// EVERY READ AND EVERY DOWNLOAD GOES THROUGH THE API, never a signed GCS URL
+// (the owner's decision, 2026-09-25), so read-time credential redaction and
+// the tenant check apply to every byte. Nothing here builds an object key, a
+// prefix or a `gs://` uri; a file is named by the NAME its manifest spells,
+// on the task that owns it -- a staged input by the UPSTREAM task's id.
+
+/**
+ * One task document, on its own: `GET /v1/tasks/{id}`. The Artifacts pane
+ * re-reads it every 5 s while the task runs, and the events, attempts and
+ * catalogue `loadAgentRun` adds are nothing that pane draws.
+ */
+export async function loadTask(taskId: string): Promise<Result<Task>> {
+  if (USE_FIXTURES) {
+    const detail = await fixtureAgentDetail(taskId)
+    return detail.status === 'ok' ? { status: 'ok', data: detail.data.task, fetchedAt: detail.fetchedAt } : (detail as Result<Task>)
+  }
+  const got = await read<{ task: Task } | Task>(route('/v1/tasks/{id}', { id: taskId }), () => false)
+  if (got.status === 'loading' || got.status === 'error') return got
+  if (got.status === 'empty') {
+    return {
+      status: 'error',
+      error: {
+        kind: 'not_found',
+        httpStatus: 404,
+        code: 'not_found',
+        message: 'This task does not exist, or it belongs to another tenant.',
+      },
+    }
+  }
+  // The route wraps the document in `{task}`; see loadAgentDetail.
+  const raw = got.data as { task?: Task } & Task
+  const task: Task = raw.task ?? raw
+  return got.status === 'stale'
+    ? { status: 'stale', data: task, fetchedAt: got.fetchedAt, error: got.error }
+    : { status: 'ok', data: task, fetchedAt: got.fetchedAt, serverAt: got.serverAt }
+}
+
+/**
+ * The artifact LISTING: `GET /v1/tasks/{id}/artifacts`. The manifest from the
+ * task's own result summary -- no GCS call -- plus, since #184, each file's
+ * `kind` and `role` from the server's one name table.
+ *
+ * No empty predicate: `artifacts: []` with `complete: true` is a real zero,
+ * and with `complete: false` it is "uploaded when the attempt ends". The
+ * screen tells the two apart by `complete`, which a collapse to `empty`
+ * would throw away.
+ */
+export async function loadArtifactListing(taskId: string): Promise<Result<ArtifactListing>> {
+  if (USE_FIXTURES) return fixtureArtifactListing(taskId)
+  return read<ArtifactListing>(route('/v1/tasks/{id}/artifacts', { id: taskId }), () => false)
+}
+
+/**
+ * THE URL OF ONE ARTIFACT'S BYTES, for an `<img src>`, an `open full` link or
+ * a `download` link: `GET /v1/tasks/{id}/artifacts/raw?name=&disposition=`.
+ *
+ * A URL AND NOT A READ, on purpose. The response is a byte stream, and `read`
+ * classifies any non-JSON 2xx as an expired session -- correctly, for a JSON
+ * route. The browser fetches this itself, with the same-origin session cookie
+ * every read already rides on, so the tenant check and read-time redaction
+ * (for text) happen on the server exactly as for the content route. The name
+ * is the manifest's, verbatim; the server resolves the object.
+ */
+export function artifactRawUrl(taskId: string, name: string, disposition: 'inline' | 'attachment'): string {
+  return route('/v1/tasks/{id}/artifacts/raw', { id: taskId }, new URLSearchParams({ name, disposition })).url
+}
+
+/**
+ * The agent's final answer: `GET /v1/tasks/{id}/answer`. See `TaskAnswer` for
+ * the four statuses; a failed READ of this route is a `Result` error, which is
+ * a fifth thing and is drawn as one.
+ */
+export async function loadAnswer(taskId: string, options: { attemptId?: string } = {}): Promise<Result<TaskAnswer>> {
+  if (USE_FIXTURES) return fixtureAnswer(taskId)
+  const query = new URLSearchParams()
+  if (options.attemptId) query.set('attempt_id', options.attemptId)
+  return read<TaskAnswer>(route('/v1/tasks/{id}/answer', { id: taskId }, query), () => false)
+}
+
+/**
+ * The agent's transcript as steps, parsed and redacted by the server:
+ * `GET /v1/tasks/{id}/transcript`.
+ *
+ * With no `offset` the server serves the window `source` chooses: from the
+ * start of a final object, or the newest tail of a live one -- which is what
+ * the 5 s live read asks for, replacing its list each time. A final
+ * transcript is paged from `next_offset`. `includeRaw` adds each step's
+ * redacted source record, for `show records`.
+ */
+export async function loadTranscript(
+  taskId: string,
+  options: {
+    attemptId?: string
+    source?: 'auto' | 'final' | 'live'
+    offset?: number
+    limitBytes?: number
+    includeRaw?: boolean
+  } = {},
+): Promise<Result<TaskTranscript>> {
+  if (USE_FIXTURES) return fixtureTranscript(taskId, options.includeRaw === true)
+  const query = new URLSearchParams()
+  if (options.attemptId) query.set('attempt_id', options.attemptId)
+  if (options.source) query.set('source', options.source)
+  if (options.offset !== undefined) query.set('offset', String(options.offset))
+  if (options.limitBytes !== undefined) query.set('limit_bytes', String(options.limitBytes))
+  if (options.includeRaw) query.set('include_raw', 'true')
+  return read<TaskTranscript>(route('/v1/tasks/{id}/transcript', { id: taskId }, query), () => false)
+}
+
+/**
+ * `GET /v1/workflows/{id}`: the workflow, its steps and every step's task.
+ * The Artifacts pane reads it only for a task that IS a workflow step, to name
+ * the step that produced each staged file and to see whether that upstream
+ * run still lists it.
+ */
+export interface WorkflowRead {
+  workflow: Workflow
+  tasks: Task[]
+}
+
+export async function loadWorkflow(workflowId: string): Promise<Result<WorkflowRead>> {
+  if (USE_FIXTURES) return fixtureWorkflowRead(workflowId)
+  return read<WorkflowRead>(route('/v1/workflows/{id}', { id: workflowId }), () => false)
+}
+
+/**
+ * THE ARTIFACTS FIXTURES, derived from the task fixture so the joins are real:
+ * a finished task lists its files with the kinds and roles the server would
+ * give them, and an unfinished one lists nothing, incomplete -- "uploaded when
+ * the attempt ends", never "none".
+ */
+async function fixtureArtifactListing(taskId: string): Promise<Result<ArtifactListing>> {
+  await new Promise((r) => setTimeout(r, 40))
+  noteFixtureProbe(route('/v1/tasks/{id}/artifacts', { id: taskId }), 40, true)
+  const detail = await fixtureAgentDetail(taskId)
+  if (detail.status !== 'ok') return detail as Result<ArtifactListing>
+  const finished = detail.data.task.state === 'SUCCEEDED'
+  const uri = (name: string) => `gs://swarm-artifacts-dev/tenants/u-bogdan/tasks/${taskId}/attempts/att_fixture/artifacts/${name}`
+  return {
+    status: 'ok',
+    fetchedAt: Date.now(),
+    data: {
+      task_id: taskId,
+      complete: finished,
+      attempt_id: finished ? 'att_fixture' : null,
+      artifact_bytes: finished ? 118_823 : null,
+      artifacts_skipped: [],
+      artifacts: finished
+        ? [
+            { name: 'report.md', bytes: 8241, uri: uri('report.md'), attempt_id: 'att_fixture', kind: 'markdown', content_type: 'text/markdown', role: null },
+            { name: 'diff.patch', bytes: 91233, uri: uri('diff.patch'), attempt_id: 'att_fixture', kind: 'text', content_type: 'text/plain', role: null },
+            { name: 'claude-code.stdout.log', bytes: 9397, uri: uri('claude-code.stdout.log'), attempt_id: 'att_fixture', kind: 'log', content_type: 'text/plain', role: 'agent_stdout' },
+            { name: 'claude-code.stderr.log', bytes: 0, uri: uri('claude-code.stderr.log'), attempt_id: 'att_fixture', kind: 'log', content_type: 'text/plain', role: 'agent_stderr' },
+            { name: 'claude-transcript.json', bytes: 10181, uri: uri('claude-transcript.json'), attempt_id: 'att_fixture', kind: 'json', content_type: 'application/json', role: 'agent_transcript' },
+          ]
+        : [],
+    },
+  }
+}
+
+function fixtureAttemptBlock(finished: boolean): TaskAnswer['attempt'] {
+  return {
+    status: 'latest',
+    known: true,
+    generation: 1,
+    created_at: new Date(Date.now() - 9 * 60_000).toISOString(),
+    completed_at: finished ? new Date(Date.now() - 60_000).toISOString() : null,
+    exit_code: finished ? 0 : null,
+  }
+}
+
+async function fixtureAnswer(taskId: string): Promise<Result<TaskAnswer>> {
+  await new Promise((r) => setTimeout(r, 50))
+  noteFixtureProbe(route('/v1/tasks/{id}/answer', { id: taskId }), 50, true)
+  const detail = await fixtureAgentDetail(taskId)
+  if (detail.status !== 'ok') return detail as Result<TaskAnswer>
+  const state = detail.data.task.state
+  const finished = TERMINAL_STATES.has(state)
+  const content =
+    '## Summary\n\nThe capacity reservation is all-or-nothing across every pool.\n\n' +
+    '- concurrency counts from `LEASED`\n- a stale worker exits without running the agent\n'
+  const ok = state === 'SUCCEEDED'
+  return {
+    status: 'ok',
+    fetchedAt: Date.now(),
+    data: {
+      task_id: taskId,
+      tenant_id: 'u-bogdan',
+      attempt_id: 'att_fixture',
+      attempt: fixtureAttemptBlock(finished),
+      read_at: new Date().toISOString(),
+      status: ok ? 'ok' : finished ? 'absent' : 'not_yet',
+      source: ok ? 'agent_result_event' : null,
+      object: ok
+        ? { stream: 'agent_stdout', source: 'final', uri: null, object_updated_at: new Date(Date.now() - 60_000).toISOString() }
+        : null,
+      format: ok ? 'markdown' : null,
+      content: ok ? content : null,
+      complete: ok ? true : null,
+      is_error: ok ? false : null,
+      subtype: ok ? 'success' : null,
+      stop_reason: ok ? 'end_turn' : null,
+      terminal_reason: ok ? 'completed' : null,
+      num_turns: ok ? 7 : null,
+      bytes: ok ? new TextEncoder().encode(content).length : null,
+      redacted: false,
+      redaction_count: 0,
+      detail: null,
+    },
+  }
+}
+
+async function fixtureTranscript(taskId: string, includeRaw: boolean): Promise<Result<TaskTranscript>> {
+  await new Promise((r) => setTimeout(r, 60))
+  noteFixtureProbe(route('/v1/tasks/{id}/transcript', { id: taskId }), 60, true)
+  const detail = await fixtureAgentDetail(taskId)
+  if (detail.status !== 'ok') return detail as Result<TaskTranscript>
+  const finished = TERMINAL_STATES.has(detail.data.task.state)
+  const step = (n: number, over: Partial<TranscriptStep>): TranscriptStep => ({
+    id: `L${n * 120}:0`,
+    line_offset: n * 120,
+    block: 0,
+    kind: 'text',
+    role: 'assistant',
+    parent_tool_use_id: null,
+    text: null,
+    tool: null,
+    tool_result: null,
+    meta: null,
+    truncated_fields: [],
+    raw: includeRaw ? '{"type":"assistant"}' : null,
+    ...over,
+  })
+  const steps: TranscriptStep[] = [
+    step(0, { kind: 'init', role: 'system', meta: { model: 'claude-opus-5', permission_mode: 'bypassPermissions', tool_count: 14 } }),
+    step(1, { text: 'Reading the repository before changing anything.' }),
+    step(2, { kind: 'tool_call', tool: { id: 'toolu_01', name: 'Read', input: '{\n  "file_path": "CONTRACT.md"\n}' } }),
+    step(3, { kind: 'tool_result', role: 'user', tool_result: { tool_use_id: 'toolu_01', is_error: false, content: '# The contract\n...', images: 0 } }),
+    ...(finished
+      ? [step(4, { kind: 'result', role: null, text: '## Summary\n\nDone.', meta: { subtype: 'success', is_error: false, num_turns: 7 } })]
+      : []),
+  ]
+  const size = 4096
+  return {
+    status: 'ok',
+    fetchedAt: Date.now(),
+    data: {
+      task_id: taskId,
+      tenant_id: 'u-bogdan',
+      attempt_id: 'att_fixture',
+      attempt: fixtureAttemptBlock(finished),
+      read_at: new Date().toISOString(),
+      stream: {
+        stream: 'agent_stdout',
+        source: finished ? 'final' : 'live',
+        status: 'ok',
+        detail: null,
+        uri: `gs://swarm-artifacts-dev/tenants/u-bogdan/tasks/${taskId}/attempts/att_fixture/logs/agent_stdout.log`,
+        object_updated_at: new Date(Date.now() - 4_000).toISOString(),
+        age_seconds: 4,
+        total_bytes: size,
+        offset: 0,
+        returned_bytes: size,
+        next_offset: null,
+        truncated: false,
+        tail_window: finished ? null : { object_offset: 0, stream_size: size, published_at: new Date(Date.now() - 4_000).toISOString() },
+      },
+      format: 'claude-stream-json',
+      steps,
+      complete: finished,
+      window_starts_mid_stream: false,
+      skipped_lines: 0,
+      answer_in_window: finished,
+      redaction: { applied_at_read_time: true, rules: 6 },
+      redaction_count: 0,
+    },
+  }
+}
+
+async function fixtureWorkflowRead(workflowId: string): Promise<Result<WorkflowRead>> {
+  await new Promise((r) => setTimeout(r, 80))
+  noteFixtureProbe(route('/v1/workflows/{id}', { id: workflowId }), 80, true)
+  const workflow = fixtureWorkflowRows().find((w) => w.workflow_id === workflowId)
+  if (workflow === undefined) {
+    return {
+      status: 'error',
+      error: { kind: 'not_found', httpStatus: 404, code: 'not_found', message: 'This workflow does not exist, or it belongs to another tenant.' },
+    }
+  }
+  const page = await fixtureTasks()
+  const tasks = page.status === 'ok' ? page.data.tasks.filter((t) => t.workflow_id === workflowId) : []
+  return { status: 'ok', fetchedAt: Date.now(), data: { workflow, tasks } }
 }
 
 /**
@@ -1039,8 +1403,14 @@ export async function loadAgentRun(taskId: string): Promise<Result<AgentRun>> {
   const [task, events, attempts, classes] = await Promise.all([
     read<{ task: Task } | Task>(route('/v1/tasks/{id}', id), () => false),
     read<{ events: TaskEvent[] }>(route(`/v1/tasks/{id}/events?limit=${EVENT_PAGE_LIMIT}`, id), () => false),
+    // `include=usage` (#184): each attempt row gains its CPU reading, found by
+    // the SERVER in one descending events read -- not in the page above, which
+    // is oldest-first and capped at 200, so on a long run it misses exactly the
+    // final reading. Opt-in, so the Overview's per-task attempts reads keep
+    // their cost. An API older than the change ignores the parameter and sends
+    // no `usage`, which the CPU rows draw as "not served", never as zero.
     read<{ attempts: AttemptRow[] }>(
-      route(`/v1/tasks/{id}/attempts?limit=${ATTEMPT_PAGE_LIMIT}`, id),
+      route(`/v1/tasks/{id}/attempts?limit=${ATTEMPT_PAGE_LIMIT}&include=usage`, id),
       (d) => d.attempts.length === 0,
     ),
     loadResourceClasses(),
@@ -1123,11 +1493,62 @@ async function fixtureAgentRun(taskId: string): Promise<Result<AgentRun>> {
       task: detail.data.task,
       events: detail.data.events,
       eventsDetail: detail.data.eventsDetail,
-      attempts: attempts.status === 'ok' ? attempts.data.attempts : null,
+      attempts: attempts.status === 'ok' ? attempts.data.attempts.map(fixtureUsage) : null,
       attemptsDetail: attempts.status === 'ok' ? null : 'The fixture attempt read did not complete.',
       classes: classes.status === 'ok' ? classes.data.resource_classes : null,
       classesDetail: null,
       classesRouteMissing: false,
+    },
+  }
+}
+
+/**
+ * The CPU reading `attempts?include=usage` would add to one fixture attempt:
+ * `never_ran` for one that never started, the reaped runner's `final` reading
+ * for one that ended, and a `live` periodic reading for one still running --
+ * so all three shapes of the Details CPU rows are looked at in development.
+ */
+function fixtureUsage(a: AttemptRow): AttemptRow {
+  const base = {
+    detail: null,
+    cpu_source: 'cgroup',
+    cpu_limit_cores: 2,
+    cpu_limit_source: 'cgroup' as const,
+    peak_rss_bytes: a.peak_rss_bytes,
+  }
+  if (a.started_at === null) {
+    return {
+      ...a,
+      usage: {
+        ...base,
+        status: 'never_ran',
+        event_id: null,
+        measured_at: null,
+        age_seconds: null,
+        final: null,
+        cpu_seconds: null,
+        peak_cpu_cores: null,
+        mean_cpu_cores: null,
+        cpu_wall_seconds: null,
+        cpu_limit_cores: null,
+        cpu_limit_source: null,
+      },
+    }
+  }
+  const ended = a.completed_at !== null
+  return {
+    ...a,
+    usage: {
+      ...base,
+      status: ended ? 'final' : 'live',
+      event_id: `ev_usage_${a.attempt_id}`,
+      measured_at: new Date(Date.now() - (ended ? 60_000 : 20_000)).toISOString(),
+      age_seconds: ended ? 60 : 20,
+      final: ended,
+      cpu_seconds: 402.311,
+      peak_cpu_cores: 1.62,
+      mean_cpu_cores: 0.842,
+      cpu_wall_seconds: 477.8,
     },
   }
 }
