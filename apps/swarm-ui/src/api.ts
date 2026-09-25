@@ -7,6 +7,8 @@ import { CONCURRENCY_STATES, TERMINAL_STATES } from './types'
 // The one rule for summing a nullable measurement: null until something
 // actually reported it, so an unmeasured sample never becomes a confident zero.
 import { sumReported } from './measure'
+import type { Outcomes } from './outcomes'
+import { ledgerFixture } from './outcomes.fixture'
 import type {
   ArtifactContent,
   CheckpointsPage, TaskLogs,
@@ -3987,4 +3989,71 @@ async function fixtureSpendAttempts(task: Task): Promise<Result<{ attempts: Atte
   // A retry that predates usage capture: real attempt, no figures on it.
   if (task.attempt_count > 1) rows.push(mk(task.attempt_count - 1, {}))
   return { status: 'ok', fetchedAt: Date.now(), data: { attempts: rows } }
+}
+
+// ---------------------------------------------------------------------------
+// The outcome ledger (#185): `GET /v1/outcomes`, and the catalogue its profile
+// filter offers.
+// ---------------------------------------------------------------------------
+
+/**
+ * One read of the outcome ledger. The query comes from `outcomesQuery` in
+ * outcomes.ts, which is the only place the page's view becomes route
+ * parameters, so no screen can send a combination the contract refuses.
+ *
+ * THE ROUTE IS THE TEMPLATE (CH-18): the query goes through `route()`'s third
+ * argument, so the probe registry keys this as `/v1/outcomes` however many
+ * spans and filters a reader tries.
+ *
+ * NEVER EMPTY. A span always has buckets -- a bucket with nothing in it is a
+ * measured zero the ledger draws -- so a 2xx is always `ok`, and "nothing
+ * happened in these fourteen days" is fourteen drawn zeroes, not an empty
+ * state.
+ */
+export async function loadOutcomes(query: URLSearchParams): Promise<Result<Outcomes>> {
+  if (USE_FIXTURES) return fixtureOutcomes(query)
+  return read<Outcomes>(route('/v1/outcomes', {}, query), () => false)
+}
+
+async function fixtureOutcomes(query: URLSearchParams): Promise<Result<Outcomes>> {
+  await new Promise((r) => setTimeout(r, 260))
+  const target = route('/v1/outcomes', {}, query)
+  // Platform scope is admin-only, and the fixture session is not an admin
+  // (`fixtureMe`), so the fixture answers it the way the route would.
+  if (query.get('scope') === 'platform') {
+    noteFixtureProbe(target, 260, false)
+    return {
+      status: 'error',
+      error: {
+        kind: 'admin_required',
+        httpStatus: 403,
+        code: 'forbidden',
+        message: 'admin group membership is required for this operation',
+      },
+    }
+  }
+  noteFixtureProbe(target, 260, true)
+  return { status: 'ok', fetchedAt: Date.now(), data: ledgerFixture() }
+}
+
+/**
+ * The runner profiles the catalogue serves, by name -- disabled ones too,
+ * because a task that ran on a profile since disabled still has outcomes to
+ * filter by. Never a hardcoded list: the catalogue is frozen contract data
+ * that can gain entries.
+ */
+export async function loadRunnerProfiles(): Promise<Result<string[]>> {
+  if (USE_FIXTURES) {
+    await new Promise((r) => setTimeout(r, 90))
+    noteFixtureProbe(route('/v1/runtimes'), 90, true)
+    return { status: 'ok', fetchedAt: Date.now(), data: Object.keys(FIXTURE_RUNTIMES).sort() }
+  }
+  const r = await read<{ runtimes: Record<string, Runtime> }>(
+    route('/v1/runtimes'),
+    (d) => Object.keys(d.runtimes ?? {}).length === 0,
+  )
+  if (r.status === 'ok' || r.status === 'stale') {
+    return { status: 'ok', fetchedAt: r.fetchedAt, data: Object.keys(r.data.runtimes).sort() }
+  }
+  return r as Result<string[]>
 }

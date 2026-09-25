@@ -613,6 +613,13 @@ export interface Route {
    * no tab", which leaves the list where it is.
    */
   list?: AgentList | null
+  /**
+   * The Timeline's view -- every filter it has -- as the hash's query
+   * (`#work/timeline?span=30d&table=1`, #185). OPTIONAL like `list`: absent
+   * and null both mean "the address names no view", and only the Timeline
+   * route carries one.
+   */
+  view?: string | null
 }
 
 function sectionOf(id: string): SectionDef | null {
@@ -635,7 +642,14 @@ function firstTab(s: SectionDef): string {
  * the reader who followed it. `tests/route.test.ts` drives it directly.
  */
 export function fromHash(): Route {
-  const hash = window.location.hash.replace(/^#/, '')
+  // THE QUERY IS NOT PART OF THE PATH (#185). The Timeline writes its view as
+  // `#work/timeline?span=30d`; left on the path, `timeline?span=30d` matched
+  // no tab and the Work fallback below read it as a TASK ID, opening an
+  // inspector for an agent called "timeline?span=30d".
+  const full = window.location.hash.replace(/^#/, '')
+  const queryAt = full.indexOf('?')
+  const hash = queryAt === -1 ? full : full.slice(0, queryAt)
+  const query = queryAt === -1 ? '' : full.slice(queryAt + 1)
   const seg = hash.split('/')
   const raw = seg[0] ?? ''
   // ALIASED FIRST, ONCE, so that every check below sees one spelling. The
@@ -707,6 +721,9 @@ export function fromHash(): Route {
   if (section) {
     const wanted = tail.join('/')
     const tab = section.tabs.find((t) => t.id === wanted)
+    if (tab && section.id === WORK && tab.id === 'timeline' && query !== '') {
+      return { sectionId: section.id, tab: tab.id, ...blank, view: query }
+    }
     if (tab) return { sectionId: section.id, tab: tab.id, ...blank }
     // A Work tail that matches no tab is a task id from the old nav.
     if (section.id === WORK && wanted) {
@@ -737,6 +754,11 @@ export function canonical(r: Route): string {
   if (r.sectionId === WORK && r.tab === 'running' && r.list) {
     return `${WORK}/running/${agentListPath(r.list)}`
   }
+  // The Timeline's view rides on its address, so a copied link reproduces the
+  // page (#185). Written only for that route: no other screen reads a query.
+  if (r.sectionId === WORK && r.tab === 'timeline' && r.view) {
+    return `${WORK}/timeline?${r.view}`
+  }
   return `${r.sectionId}/${r.tab}`
 }
 
@@ -755,7 +777,10 @@ export function canonical(r: Route): string {
  * the list (`canonical`); only the reads scope ignores it.
  */
 function readsKey(r: Route): string {
-  return canonical({ ...r, list: null })
+  // The Timeline's view is a view of one screen too: a filter change re-reads
+  // inside the same scope, with the last drawing dimmed, rather than
+  // beginning an empty one (#185).
+  return canonical({ ...r, list: null, view: null })
 }
 
 export function App() {
@@ -830,6 +855,13 @@ export function App() {
     setAt((r) => ({ ...r, list }))
   }, [])
 
+  // THE TIMELINE'S FILTERS ARE A ROUTE CHANGE TOO (#185), written the same way:
+  // the normalise effect above puts the view in the address with
+  // `replaceState`, so a filter click adds no history entry.
+  const onView = useCallback((view: string) => {
+    setAt((r) => ({ ...r, view: view === '' ? null : view }))
+  }, [])
+
   const section = sectionOf(at.sectionId)
   const inspector = at.taskId !== null
   const listAddress = canonical({
@@ -894,6 +926,8 @@ export function App() {
                   taskId={at.taskId}
                   list={at.list ?? null}
                   onList={onList}
+                  view={at.view ?? null}
+                  onView={onView}
                   go={go}
                 />
               </RoutedPage.Provider>
@@ -1377,6 +1411,8 @@ function SectionBody({
   taskId,
   list,
   onList,
+  view,
+  onView,
   go,
 }: {
   sectionId: string
@@ -1387,6 +1423,10 @@ function SectionBody({
   list: AgentList | null
   /** Where the list reports a tab or state click; App turns it into the route. */
   onList: (list: AgentList) => void
+  /** The Timeline's view, from the hash's query (#185), or null. */
+  view: string | null
+  /** Where the Timeline writes a new view; App turns it into the route. */
+  onView: (view: string) => void
   go: (to: string) => void
 }) {
   const openAgent = (id: string) => go(`${WORK}/task/${encodeURIComponent(id)}`)
@@ -1442,7 +1482,7 @@ function SectionBody({
     case 'work/workflows':
       return <WorkflowsScreen />
     case 'work/timeline':
-      return <ActivityScreen />
+      return <ActivityScreen view={view} onView={onView} />
     case 'work/new':
       return <SubmitScreen />
     case 'work/new-workflow':

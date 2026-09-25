@@ -91,6 +91,7 @@ export type TopicId =
   | 'dispatch-carrier'
   | 'dispatch-strategies'
   | 'event-paging'
+  | 'failure-classes'
   | 'input-is-opaque'
   | 'integrate-needs-final-step'
   | 'lease-and-pool-are-two-records'
@@ -102,6 +103,7 @@ export type TopicId =
   | 'no-amber-band'
   | 'not-a-machine-inventory'
   | 'oom-near-miss'
+  | 'outcome-buckets'
   | 'park-on-missing-credential'
   | 'partial-read'
   | 'paused-vs-full'
@@ -141,6 +143,7 @@ export type TopicId =
   | 'state-change-reason'
   | 'states'
   | 'subscription-only-no-api-key'
+  | 'success-rate'
   | 'tenant-fields'
   | 'tenant-scope'
   | 'token-cost'
@@ -232,7 +235,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
       'A figure nothing ever recorded is a dimmed dash (—), or the hatched mark “not measured”. It is never drawn as a zero, because a zero is a claim about a measurement nobody has.',
       'A figure a failed read left behind is the dashed mark “not read”, and no number appears beside it: the platform may well hold the figure, and the read that should have brought it did not.',
       'A tilde (~) in front of a figure means the reading is real but older than it can be trusted to describe now.',
-      'The dashed edge on a tile that holds no figure — the metric tiles and the Timeline’s tiles alike — is a second channel for the same fact, not the fact itself. The mark and its words are what carry the distinction, so it survives greyscale and a screenshot; colour never carries it alone.',
+      'The dashed edge on a tile that holds no figure — the metric tiles and the Timeline’s reported cost alike — is a second channel for the same fact, not the fact itself. The mark and its words are what carry the distinction, so it survives greyscale and a screenshot; colour never carries it alone.',
       'The same rule runs through the bars: a track whose ceiling could not be read is hatched with no fill, because an empty plain track reads as “0% used” — a claim about a measurement nobody has.',
     ],
   },
@@ -284,28 +287,20 @@ const SPECS: Record<TopicId, TopicSpec> = {
   // and holds this topic to whichever of them changes.
   'event-paging': {
     group: 'an-attempt',
-    // A TITLE FOR BOTH SCREENS THAT LINK HERE (AH-13 rule 2; review of #183).
-    // It was "One page of events, oldest first", and the Timeline screen's
-    // window -- which links here since AG-19 -- reads its tasks NEWEST first
-    // and follows the token, so the heading and the Help page's `showing
-    // <title>` said the opposite of what that screen does. The title names
-    // both reads and claims no order; each paragraph says whose order it is.
-    title: 'Paged reads: a page of events, a window of tasks',
+    // ONE SCREEN LINKS HERE AGAIN (#185). AG-19 had the Timeline's task
+    // window link here too, and AH-13 rule 2 made the title and the opening
+    // name both reads. The Timeline no longer reads a window of tasks -- it
+    // reads `GET /v1/outcomes` over a real span, and the Rows control is
+    // retired -- so the topic is written for the attempt timeline alone, and a
+    // paragraph describing a window nothing draws is not left behind.
+    title: 'One page of events, not the whole history',
     short:
       'This screen reads one page of events, oldest-first, and does not follow the page token the events route returns, so newer events may exist that it has not fetched. An attempt with none on this page is blind, not quiet. Zero events is a failed query: a task is written with its first event.',
     long: [
-      // AG-19 and AH-13: the topic OPENS by naming both of its screens, so a
-      // reader who came from the Timeline does not read three paragraphs about
-      // the attempt timeline before reaching the one about theirs.
-      'Two reads in this console are paged, and each stops at a bound of its own. The attempt timeline in an agent’s inspector reads one page of events, oldest first, and stops there. The Timeline screen reads tasks newest first, following the page token until it holds the Rows it was set to.',
+      'The attempt timeline in an agent’s inspector reads one page of events, oldest first, and stops there.',
       'The events route pages: each response carries a token for the next page whenever more events exist, and it can also be asked for the newest events first. The attempt timeline in an agent’s inspector uses neither. It asks for one page, oldest-first, and stops there, so what it holds is the beginning of a history, never a guaranteed whole of it.',
       'So \u201cthis is everything\u201d is a claim the attempt timeline is never entitled to make. An attempt with no events on the page is counted as blind rather than drawn as quiet: past one page, the newest events \u2014 everything belonging to the latest attempts \u2014 are on the platform and not in the timeline.',
       'Zero events is a different fact again. A task is written together with its first event, in the same batch, so an empty history is a failed query and is marked as one \u2014 never as an empty record.',
-      // AG-19: the Timeline's window links here too, and AH-13's rule is that a
-      // topic linked from two screens is written for both. Its bound is the
-      // other way round from the events': `loadTaskWindow` DOES follow the
-      // token, newest first (store.py `list_tasks`), and stops at the budget.
-      'The task window on the Timeline screen is bounded from the other end. It reads the task list newest first and does follow the page token, one page after another, until it holds the number of Rows it was set to, and then stops. When older tasks exist past that point it says so beside the window, and every count, chart and table on the Timeline describes those rows and the span they covered, not all time. The Rows control is how to widen it.',
     ],
   },
 
@@ -472,7 +467,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
       'Token counts come from the runner, through the worker, and only the CLI runners produce them. An attempt from any other runner carries none.',
       'Attempts that ran before the worker’s token capture shipped also carry none, so the absence is common on older runs and says nothing about them.',
       'Where a total exists, the caption names how many attempts of the run contributed to it, and which halves — input, output, or both — are in it.',
-      'The Timeline’s Token spend is summed from each task’s result, and a result covers only that task’s last attempt, so a task that ran more than once is counted at one attempt’s cost there.',
+      'The Timeline’s Reported cost sums the cost each attempt reported, every attempt of every task, and places it in the bucket where the task ended, so the cost of work still running appears once that work ends. A sum over fewer attempts than ran carries the partial mark and says how many reported. It is the runners’ own report and not a bill: no compute, storage or database cost is in it.',
     ],
   },
 
@@ -707,12 +702,13 @@ const SPECS: Record<TopicId, TopicSpec> = {
     short:
       'The capacity route answers for the calling tenant, an administrator included. So a ceiling here is how many more you could start, never how much the platform has. A platform-wide figure is not faked by substituting somebody else’s pools.',
     // WRITTEN FOR EVERY SCREEN THAT LINKS IT (AH-13 rule 2): the Timeline's
-    // People note, the Pools footer and the Profile headroom footer.
+    // footer index (its People table went with #185), the Pools footer and the
+    // Profile headroom footer.
     // tests/help.test.ts finds the linking screens in the sources, so a fourth
     // fails there until this is written for it too.
     long: [
-      'Every task and workflow read the console makes is answered for the calling tenant, an administrator’s included: the API takes the scope from the verified caller, never from a parameter. A figure drawn from those reads is the caller’s own and never a total across tenants.',
-      'The People table on the Timeline screen is built from them. It groups the tenant’s tasks by who submitted them, in the browser, over the rows the Timeline read, because the API has no filter or index on the submitter. When older tasks exist beyond those rows the table is a subset, and someone whose work all fell outside it is missing from the table rather than listed with zero.',
+      'Every task and workflow read the console makes is answered for the calling tenant, an administrator’s included: the API takes the scope from the verified caller, never from a parameter. A figure drawn from those reads is the caller’s own and never a total across tenants. The one exception is the platform scope on the Timeline screen, which an administrator asks for by name, which the API refuses to anyone else, and whose figures then name the tenants they cover.',
+      'The Timeline screen reads its ledger for the calling tenant unless an administrator switches it to platform scope, and the two scopes are never drawn side by side. Grouped by person, its reliability table is computed by the API over the whole span, so someone with no work in the span is absent from the table rather than listed with zero.',
       'The capacity read is scoped too. It lists the platform-wide pools and the caller’s own tenant pools, and leaves another tenant’s pools out unless the caller is an administrator. Every headroom figure in it — the Headroom card on the Pools screen and each card on the Profile headroom screen — is computed against the caller’s own tenant pool, an administrator’s included, so it says how many more the caller could start, never how much the platform has. Each of those cards says which tenant it was computed for.',
       'A figure whose scope is unstated is the one people quote in a meeting as though it were the platform’s, so each of these screens prints the scope beside its figures.',
     ],
@@ -1303,6 +1299,51 @@ const SPECS: Record<TopicId, TopicSpec> = {
       'Without a line saying so, such a row is the healthiest-looking row on the screen and nothing runs on it.',
       'The report expires, so one that keeps coming back is a missing permission on that secret for that tenant’s worker identity rather than an onboarding delay.',
       'It is reported before the broken accounts are, because a broken account already carries a chip and a reason and this one carries neither.',
+    ],
+  },
+
+  // THE TIMELINE'S LEDGER (#185, owner decisions 2026-09-25). Three topics the
+  // screen's footer index links, each the sentence a lane or a card would
+  // otherwise have carried as prose. The one `?` on the screen opens
+  // `success-rate`; the other two are reached by the index and by the cards'
+  // own descriptions (`explain`), which draw nothing (B7.4).
+  'success-rate': {
+    group: 'reading-a-figure',
+    title: 'The success rate, and what it leaves out',
+    short:
+      'Tasks that succeeded, over those that succeeded, failed or were dead-lettered, each placed by when it ended. Cancels are counted and drawn in a lane of their own, but left out of the rate. The band is a 95 % Wilson interval; a hollow point has under five decided, and a gap means nothing was decided.',
+    long: [
+      'The figure on the Timeline screen is the share of decided work that succeeded: tasks that succeeded, over those that succeeded, failed or were dead-lettered, each placed by the moment it ended. Every cancel is left out of it, because a cancel is somebody’s decision rather than a verdict on the work, and the cancels get a lane of their own on the same axis, split into the ones a person asked for and the ones a failure caused.',
+      'A rate over a handful of tasks says little, so every rate carries its 95 % Wilson interval: the band behind the line, and the range printed with the figure and in the readout. A point drawn hollow covers fewer than five decided tasks. A bucket in which nothing was decided has no point at all and the line breaks there, because a rate over nothing is undefined, never zero.',
+      'The comparison with the previous span is dropped, and says why, when that span has a bucket that could not be read or had nothing decided: a delta over part of a span compares two different things.',
+      'Tenant scope and platform scope are never drawn side by side. Platform scope is an administrator’s view of every tenant, and the verification tenant can be left out of it in one click; the exclusion names that tenant, so a tenant created later is still counted.',
+    ],
+    see: ['outcome-buckets', 'failure-classes'],
+  },
+
+  'outcome-buckets': {
+    group: 'reading-a-figure',
+    title: 'Buckets: sealed, so far, and not read',
+    short:
+      'Every bucket in the span is drawn, and a bucket before any task is a measured zero. The current bucket is dashed at its right edge and reads so far. A bucket the server could not read is hatched across every lane, carries no number and is left out of every total.',
+    long: [
+      'The Timeline screen asks the API for a real span, from a day to ninety days or a chosen range, and the server buckets it in the viewer’s time zone, choosing the bucket size unless one is picked. Every bucket from the start of the span to now is drawn, the empty ones included: tasks are never deleted, so an empty bucket is a measured zero, drawn as the tick at the axis rather than as a missing column.',
+      'Every outcome is placed by the time its task ended. The throughput lane is the one exception: its submitted line is placed by the time each task was created, and its label says so. Work that has not ended has no end time, so it is on no bucket at all; it is counted live, without the span, in the card for work not finished yet.',
+      'A bucket is sealed a quarter of an hour after it ends, once nothing more can land in it. Until then it is open: the current bucket reads so far and carries a dashed right edge, and a bucket that has only just ended reads as settling.',
+      'A bucket the server could not read within its budget, or at all, is not read: a hatched band across every lane with no number in it, left out of every total, which then carries the partial mark. Reading again continues where the last read stopped. A task that ended with no end time recorded cannot be placed on the axis, and the chart says how many such tasks exist.',
+    ],
+  },
+
+  'failure-classes': {
+    group: 'reading-a-figure',
+    title: 'Why a task failed, by class',
+    short:
+      'Each failed or dead-lettered task gets one class: from its final attempt’s exit first, then from the words of its last error. A reworded error turns the tests red instead of drifting into other. Other and no reason recorded are always drawn, because an unmatched failure is still a failure.',
+    long: [
+      'The classes come in a fixed order that no filter re-ranks: runner error, timeout, lost worker, could not start, outputs missing, dispatch failed, other, and no reason recorded. They separate a failure of the platform (a lost worker, a task that could not start, a dispatch that failed) from the agent’s own work (a runner error, outputs missing) and from its budget (a timeout).',
+      'The class is computed once, by the API, from the task’s final attempt: the exit that means the worker could not start is read first, and then the last error is matched against the exact words each writer uses. Those words are pinned by tests against their writers, so a reworded message fails a test instead of silently moving counts into other.',
+      'Other is a failure whose last error matched nothing and whose final attempt recorded no exit. No reason recorded is a failure with no last error at all. Both are measured facts and both are always drawn; a zero is the tick at the axis.',
+      'The lasting fix is a typed end cause, written on the task by each writer that ends it. The task record is part of the frozen contract, so that is filed as a change request rather than made.',
     ],
   },
 
