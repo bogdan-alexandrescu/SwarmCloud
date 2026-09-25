@@ -775,6 +775,7 @@ run "every_project_level_grant_ci_applies_is_read_by_a_parity_run" {
     # What the three runs above read, as "<dir under terraform/> <type>.<name>".
     covered = [
       "infra google_project_iam_member.verify_reads_firestore",
+      "infra google_project_iam_member.verify_reads_run",
       "modules/iam google_project_iam_member.broker_version_adder",
       "modules/iam google_project_iam_member.firestore",
       "modules/iam google_project_iam_member.gke",
