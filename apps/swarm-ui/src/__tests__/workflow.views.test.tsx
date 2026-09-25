@@ -608,9 +608,20 @@ describe('U2: a step reads the same in every view', () => {
       tasks: [plan],
     })
     const root = container as HTMLElement
-    const node = nodeNamed(root, 'work').querySelector('.node-dur')!
-    expect(node.textContent, 'the node claims run time nothing recorded').not.toMatch(/^ran/)
-    expect(node.textContent).toBe('never started')
+    // EVERYTHING THE NODE SAYS ABOUT ITS TIME, wherever the tier puts it: the
+    // duration line where it is drawn, and the `ran` figure at the Figures tier
+    // -- which is where this two-step card lands, and where the line is not
+    // drawn for a step that never started because the figure already says so.
+    const workNode = nodeNamed(root, 'work')
+    const said = [
+      ...workNode.querySelectorAll('.node-dur'),
+      ...[...workNode.querySelectorAll('.node-num')]
+        .filter((n) => n.querySelector('dt')?.textContent === 'ran')
+        .map((n) => n.querySelector('dd')!),
+    ].map((e) => e.textContent ?? '')
+    expect(said.length, 'the node says nothing about its time').toBeGreaterThan(0)
+    expect(said.filter((t) => /^ran\b|^\d/.test(t)), 'the node claims run time nothing recorded').toEqual([])
+    expect(said).toContain('never started')
 
     const seg = root.querySelector('.wf-viewbar .ctl-seg') as HTMLElement
     fireEvent.click(within(seg).getByText('Timeline'))
@@ -702,18 +713,22 @@ describe('U3: an edge that carries a file', () => {
   it('draws input_from apart from depends_on, one mark per pair either way', () => {
     const { w, tasks } = edgeCard()
     const { container } = render(<Card w={w} tasks={tasks} />)
-    const links = container.querySelectorAll('.wf-link')
+    // THE MARKS ARE THE GROUPS THAT NAME THEIR PAIR. The halo under each edge
+    // is painted in a layer of its own, beneath every stroke, and its group
+    // carries the kind class so the sheet can widen a data edge's clearance --
+    // but it names no pair, because it is clearance and not a mark.
+    const links = container.querySelectorAll('.wf-link[data-edge]')
     expect(links).toHaveLength(3)
     // One path per pair is unchanged: a data edge is a KIND of edge, not a
     // second edge drawn on top of the first.
     expect(container.querySelectorAll('.wf-edge')).toHaveLength(3)
     for (const l of links) expect(l.querySelectorAll('.wf-edge')).toHaveLength(1)
-    expect(container.querySelectorAll('.wf-link.is-order')).toHaveLength(1)
-    expect(container.querySelectorAll('.wf-link.is-staged')).toHaveLength(1)
-    expect(container.querySelectorAll('.wf-link.is-declared')).toHaveLength(1)
-    expect(container.querySelector('.wf-link.is-order')!.getAttribute('data-edge')).toBe('plan->scan')
-    expect(container.querySelector('.wf-link.is-staged')!.getAttribute('data-edge')).toBe('plan->build')
-    expect(container.querySelector('.wf-link.is-declared')!.getAttribute('data-edge')).toBe('build->check')
+    expect(container.querySelectorAll('.wf-link.is-order[data-edge]')).toHaveLength(1)
+    expect(container.querySelectorAll('.wf-link.is-staged[data-edge]')).toHaveLength(1)
+    expect(container.querySelectorAll('.wf-link.is-declared[data-edge]')).toHaveLength(1)
+    expect(container.querySelector('.wf-link.is-order[data-edge]')!.getAttribute('data-edge')).toBe('plan->scan')
+    expect(container.querySelector('.wf-link.is-staged[data-edge]')!.getAttribute('data-edge')).toBe('plan->build')
+    expect(container.querySelector('.wf-link.is-declared[data-edge]')!.getAttribute('data-edge')).toBe('build->check')
   })
 
   it('names the file on the dependency line, and marks whether it arrived', () => {
@@ -992,5 +1007,123 @@ describe('U5: scrubbing', () => {
     // Picking it again puts it down.
     pick(c, 'ship')
     expect(c.querySelector('.wf-inspect')).toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The visual QA pass of 2026-09-25 (epics #83 and #87)
+// ---------------------------------------------------------------------------
+//
+// One box each, committed RED against the code it describes before the fix
+// landed.
+
+describe('the QA pass: the table, the inspector and the board chrome', () => {
+  it('WF-6: lists every declared input on its own line, in the order the step depends on them', () => {
+    // `input_from` in the REVERSE of `depends_on`, which is what a Firestore map
+    // is free to hand back. merge-1..4 each declared two files and failed on
+    // the second; the cell showed one, clipped, and a different one per read.
+    const w = workflow('wf_merge', 600, [
+      step('left', [], { task_id: 'tl' }),
+      step('right', [], { task_id: 'tr' }),
+      step('merge', ['left', 'right'], { task_id: 'tm', input_from: { right: 'right.md', left: 'left.md' } }),
+    ])
+    const tasks = new Map<string, Task>([
+      ['tl', task('tl', 'SUCCEEDED', { started_at: iso(-590), completed_at: iso(-500) })],
+      ['tr', task('tr', 'SUCCEEDED', { started_at: iso(-590), completed_at: iso(-500) })],
+      [
+        'tm',
+        task('tm', 'FAILED', {
+          started_at: iso(-490),
+          completed_at: iso(-300),
+          result_summary: { staged_inputs: [{ task_id: 'tl', filename: 'left.md', path: 'left.md', bytes: 10 }] },
+        }),
+      ],
+    ])
+    const { container } = render(<Card w={w} tasks={tasks} />)
+    fireEvent.click(within(container.querySelector<HTMLElement>('.wf-viewbar')!).getByText('Table'))
+    const td = cell(container as HTMLElement, 'merge', 'inputs')
+    const files = [...td.querySelectorAll('.wf-input')].map((el) => (el.textContent ?? '').split(' ←')[0])
+    expect(files, 'the inputs follow the map, not depends_on').toEqual(['left.md', 'right.md'])
+    // ONE LINE EACH: a break between the two, and no comma-joined run for the
+    // cell's `nowrap` to cut the second one off.
+    expect(td.querySelectorAll('br'), 'the two inputs share one clipped line').toHaveLength(1)
+    expect(td.textContent).not.toContain(', ')
+  })
+
+  it('WF-18: says a finished step that never got an attempt never started, as the table does', async () => {
+    const dropped = task('t_drop', 'CANCELLED', { created_at: iso(-480), completed_at: iso(-300) })
+    const { container } = oneStepCard(dropped, [], 'table')
+    const root = container as HTMLElement
+    pick(root, 'work')
+    const scrub = inspector(root).querySelector<HTMLElement>('[data-scrub="attempt"]')!
+    await waitFor(() => expect(scrub.textContent).not.toContain('reading'))
+    expect(scrub.textContent, 'an ended step is promised an attempt "yet"').not.toContain('no attempt yet')
+    expect(scrub.textContent).toContain('never started')
+    // The same word the table prints for the same step.
+    expect(cell(root, 'work', 'ran').textContent).toBe('never started')
+  })
+
+  it('WF-18: still says "no attempt yet" for a step that is waiting for its first', async () => {
+    const waiting = task('t_wait', 'READY', { created_at: iso(-120) })
+    const { container } = oneStepCard(waiting, [], 'table')
+    const root = container as HTMLElement
+    pick(root, 'work')
+    const scrub = inspector(root).querySelector<HTMLElement>('[data-scrub="attempt"]')!
+    await waitFor(() => expect(scrub.textContent).toContain('no attempt yet'))
+  })
+
+  it('CH-5: draws the inspector’s run link in the link treatment, not the browser’s blue', async () => {
+    const running = task('t_run', 'RUNNING', { created_at: iso(-600), started_at: iso(-300) })
+    const { container } = oneStepCard(running, [])
+    pick(container as HTMLElement, 'work')
+    const i = inspector(container as HTMLElement)
+    const run = i.querySelector('a.wf-inspect-run')!
+    expect(run.getAttribute('href')).toBe('#work/task/t_run')
+    expect(run.classList.contains('ctl-link'), 'the run link is unclassed and falls back to UA blue').toBe(true)
+    // Let the attempt read the inspector started settle inside the test.
+    const scrub = i.querySelector<HTMLElement>('[data-scrub="attempt"]')!
+    await waitFor(() => expect(scrub.textContent).not.toContain('reading'))
+  })
+
+  it('WF-3: widens a data edge’s clearance with its stroke, from the layer beneath the strokes', () => {
+    // The halos moved into one layer under every stroke. The sheet widens a
+    // DATA edge's halo through `.wf-link.is-data .wf-edge-halo`, so the halo
+    // layer has to keep the kind class or that clearance silently narrows.
+    const { w, tasks } = edgeCard()
+    const { container } = render(<Card w={w} tasks={tasks} />)
+    const layer = container.querySelector('svg.wf-edges > .wf-edge-halos')
+    expect(layer, 'the halos are not in a layer of their own').toBeTruthy()
+    expect(layer!.querySelectorAll('.wf-edge-halo')).toHaveLength(3)
+    expect(layer!.querySelectorAll('.wf-link.is-data .wf-edge-halo')).toHaveLength(2)
+    expect(layer!.querySelectorAll('.wf-link.is-order .wf-edge-halo')).toHaveLength(1)
+  })
+
+  it('WF-22: shows the sample mark only while an open card draws step figures', async () => {
+    // Twelve tasks is the attempt read's ceiling; this board asked for more,
+    // so the mark has something to say.
+    const { usage } = board()
+    api.loadWorkflowUsage.mockResolvedValue({
+      status: 'ok',
+      data: { ...usage, notSampled: new Set(['t_beyond']), tasksRequested: 8 },
+      fetchedAt: T0,
+    } satisfies Result<WorkflowUsage>)
+    await landed()
+    const mark = () => document.querySelector('.wf-caveats .ctl-mark.is-partial')
+    // The Table draws cost and tokens per step: the coverage of that read is
+    // worth stating there. Waiting for it here is also what proves the read
+    // has LANDED, so the absences below are not just an early render.
+    chooseBoard('Table')
+    await waitFor(() => expect(mark()?.textContent).toBe('6/8 sampled'))
+    // Rows draws no step figure at all, and its spend column is summed from a
+    // different source the sample says nothing about.
+    chooseBoard('Rows')
+    expect(mark(), 'a caveat about figures nobody can see').toBeNull()
+    // The Timeline draws times from the task read, not the sample.
+    chooseBoard('Timeline')
+    expect(mark()).toBeNull()
+    // The Graph, at the Figures tier these small workflows land on, draws
+    // them on every node.
+    chooseBoard('Graph')
+    expect(mark()?.textContent).toBe('6/8 sampled')
   })
 })

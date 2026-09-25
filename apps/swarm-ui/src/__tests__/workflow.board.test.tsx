@@ -24,7 +24,7 @@
 
 import STYLES from '../styles.css?raw'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { useState } from 'react'
 
 import { WorkflowCard, WorkflowsScreen } from '../Workflows'
@@ -486,12 +486,19 @@ function slotOf(root: ParentNode, name: string): HTMLElement {
   return slot!
 }
 
+// AT THE `details` TIER, AND THAT IS WHAT THESE CASES ARE ABOUT. The duration
+// line (`.node-dur`) is the subject here, and `details` is the tier that draws
+// it for every kind. At `figures` the node draws the run in its `ran` figure
+// instead and keeps the line only for a WAIT -- `ran 1m 8s` over `ran 1m 8s`
+// was one duration printed twice -- which `a node at the Figures tier` in the
+// QA section below pins. These rendered at `auto`, which is `figures` for this
+// fixture; the claims are the same claims, read where the line is drawn.
 describe('how long a step has taken', () => {
   pinTheClock()
 
   it('shows an ABSENCE for a step that has not started, and never 0s', () => {
     const { w, tasks } = timings()
-    const { container } = card(w, tasks, true)
+    const { container } = card(w, tasks, true, 'details')
     const publish = nodeNamed(container, 'publish')
     const dur = publish.querySelector('.node-dur')!
 
@@ -505,7 +512,7 @@ describe('how long a step has taken', () => {
 
   it('shows a MEASURED zero as a digit, which is the half that gets lost', () => {
     const { w, tasks } = timings()
-    const { container } = card(w, tasks, true)
+    const { container } = card(w, tasks, true, 'details')
     const dur = nodeNamed(container, 'instant').querySelector('.node-dur')!
     expect(dur.textContent).toBe('ran 0s')
     expect(dur.className).toContain('is-ran')
@@ -513,7 +520,7 @@ describe('how long a step has taken', () => {
 
   it('keeps waiting, running, parked and finished as four different things', () => {
     const { w, tasks } = timings()
-    const { container } = card(w, tasks, true)
+    const { container } = card(w, tasks, true, 'details')
     const text = (name: string) => nodeNamed(container, name).querySelector('.node-dur')!.textContent
 
     // The measured run this was designed against: five parallel steps each
@@ -537,7 +544,7 @@ describe('how long a step has taken', () => {
     // A task_id with no task behind it. Its timings were not looked at, which
     // is not the same as its having taken no time.
     const w = workflow('wf_unread', [step('ghost', [], { task_id: 'task_missing' })])
-    const { container } = card(w, new Map(), true)
+    const { container } = card(w, new Map(), true, 'details')
     const dur = nodeNamed(container, 'ghost').querySelector('.node-dur')!
     expect(dur.textContent).toBe('duration unread')
     expect(dur.textContent).not.toMatch(/\d/)
@@ -1420,7 +1427,9 @@ describe('the shipped stylesheet', () => {
   it('does the same for a step with no duration', () => {
     const style = withStyles()
     const { w, tasks } = timings()
-    const { container } = card(w, tasks, true)
+    // `details`, where the duration line is drawn for every kind (see `how
+    // long a step has taken`).
+    const { container } = card(w, tasks, true, 'details')
     const none = nodeNamed(container, 'publish').querySelector('.node-dur')!
     const ran = nodeNamed(container, 'done').querySelector('.node-dur')!
     expect(getComputedStyle(none).fontStyle).toBe('italic')
@@ -1474,5 +1483,209 @@ describe('shapeOf', () => {
     const s = shapeOf([step('a', ['b']), step('b', ['a'])])
     expect(s.steps).toBe(2)
     expect(s.widths.length).toBeGreaterThan(0)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 7. The visual QA pass of 2026-09-25 (epics #82 and #83)
+// ---------------------------------------------------------------------------
+//
+// Each case below is one box from that pass, measured against the live board
+// while a 30-step workflow ran and after it ended. Every one of them was
+// committed RED against the code it describes before the fix landed, so each
+// is shown to catch the defect it names rather than merely to pass.
+
+/** A rollup with these counts over `total` steps, derived and complete. */
+function ended(
+  workflow_id: string,
+  total: number,
+  counts: Record<string, number>,
+  over: Partial<Workflow> = {},
+): Workflow {
+  return workflow(
+    workflow_id,
+    Array.from({ length: total }, (_, i) => step(`s-${i}`, [])),
+    {
+      state: 'FAILED',
+      stored_state: 'FAILED',
+      rollup: {
+        state: 'FAILED',
+        complete: true,
+        reason: 'a_step_failed',
+        counts,
+        unreadable_steps: [],
+        unstarted_steps: [],
+        steps_read: total,
+      },
+      ...over,
+    },
+  )
+}
+
+describe('the QA pass: the collapsed row', () => {
+  pinTheClock()
+
+  it('WF-1: accounts for every way a step ends, not only success and failure', () => {
+    // The measured row: `9/30 done · 4 failed` over a workflow where the other
+    // seventeen had been cancelled or dead-lettered -- seventeen steps the line
+    // whose job is to account for thirty simply did not mention.
+    const w = ended('wf_ended', 30, { SUCCEEDED: 9, FAILED: 4, CANCELLED: 15, DEAD_LETTERED: 2 })
+    const { container } = card(w)
+    const text = container.querySelector('.wf-progress-text')!.textContent!
+    expect(text).toContain('9/30 done')
+    expect(text).toContain('4 failed')
+    expect(text, 'the cancelled steps are missing from the census').toContain('15 cancelled')
+    expect(text, 'the dead-lettered steps are missing from the census').toContain('2 dead_lettered')
+    // The accessible name accounts for all thirty as well.
+    const why = container.querySelector('.wf-meter')!.getAttribute('aria-label')!
+    expect(why).toContain('15 cancelled')
+    expect(why).toContain('2 dead_lettered')
+    // And a count that is zero is not printed as a clause.
+    const clean = card(ended('wf_clean', 3, { SUCCEEDED: 3 }))
+    expect(clean.container.querySelector('.wf-progress-text')!.textContent).toBe('3/3 done')
+  })
+
+  it('WF-15: says a cancel was requested only while the workflow has not ended', () => {
+    const flags = (w: Workflow) => card(w).container.querySelector('.wf-flags')!.textContent
+    // Finished cancelled a day ago; the flag is never cleared, and the tag rode
+    // on the row as if something were still pending.
+    expect(
+      flags(ended('wf_over', 3, { CANCELLED: 3 }, { cancel_requested: true, rollup: {
+        state: 'CANCELLED', complete: true, reason: 'cancelled', counts: { CANCELLED: 3 },
+        unreadable_steps: [], unstarted_steps: [], steps_read: 3,
+      } })),
+      'a finished workflow still reads "cancel requested"',
+    ).toBe('')
+    // Still running: the request is real and still in flight.
+    expect(flags(workflow('wf_live', chain().steps, { cancel_requested: true }))).toBe('cancel requested')
+    // A rollup that could not read every step has not shown it is over, so the
+    // request stays said.
+    expect(
+      flags(workflow('wf_unread', chain().steps, { cancel_requested: true, rollup: {
+        state: 'UNKNOWN', complete: false, reason: 'step_read_budget_exhausted', counts: {},
+        unreadable_steps: ['build'], unstarted_steps: [], steps_read: 2,
+      } })),
+    ).toBe('cancel requested')
+  })
+
+  it('WF-16: folds whole runner chips into the count rather than letting the column cut one', () => {
+    const steps = [
+      ...Array.from({ length: 20 }, (_, i) => step(`cc-${i}`, [], { runner_profile: 'claude-code' })),
+      ...Array.from({ length: 6 }, (_, i) => step(`br-${i}`, [], { runner_profile: 'browser' })),
+      ...Array.from({ length: 4 }, (_, i) => step(`mk-${i}`, [], { runner_profile: 'mock' })),
+    ]
+    const chips = (room: number) => {
+      // THE COLUMN'S WIDTH, stubbed, because jsdom has no layout: everything
+      // else keeps answering 0, exactly as it does for every other test here.
+      const spy = vi.spyOn(Element.prototype, 'clientWidth', 'get').mockImplementation(function (this: Element) {
+        return this.classList.contains('wf-mix') ? room : 0
+      })
+      const { container, unmount } = card(workflow('wf_mix', steps))
+      const mix = container.querySelector('.wf-mix')!
+      const named = [...mix.querySelectorAll('.wf-chip:not(.more)')].map((c) => c.firstChild?.textContent)
+      const more = mix.querySelector('.wf-chip.more')?.textContent ?? null
+      const title = mix.getAttribute('title')
+      unmount()
+      spy.mockRestore()
+      return { named, more, title }
+    }
+    // 160px: `claude-code ×20` and `+2` fit; a second whole chip does not. The
+    // old row drew two chips and `+1` regardless, and the column cut the
+    // second mid-word.
+    const narrow = chips(160)
+    expect(narrow.named, 'a chip the column cannot hold was drawn anyway').toEqual(['claude-code'])
+    expect(narrow.more).toBe('+2')
+    // Room for two: two named and the third counted, which is the row's promise.
+    expect(chips(400)).toMatchObject({ named: ['claude-code', 'browser'], more: '+1' })
+    // Every profile stays reachable whatever was folded.
+    expect(narrow.title).toBe('Runner profiles: claude-code ×20, browser ×6, mock ×4')
+  })
+})
+
+describe('the QA pass: the canvas', () => {
+  pinTheClock()
+
+  it('WF-2: does not paint a stage of cancelled and succeeded steps as a failure', () => {
+    const states = Array(13).fill('SUCCEEDED') as (TaskState | null)[]
+    states[3] = 'CANCELLED'
+    states[9] = 'CANCELLED'
+    const { w, tasks } = wideStage(13, states)
+    const { container } = card(w, tasks, true)
+    const band = container.querySelector('.wf-band')!
+    // The cancellation is still counted, first, in its own tone ...
+    expect(bandCounts(band)[0]).toBe('2 cancelled')
+    expect(band.getAttribute('aria-label')).toContain('0 failed and 2 cancelled.')
+    // ... and it does not take the failure rule and tint.
+    expect(band.className, 'a stage somebody cancelled is painted as broken').not.toContain('has-failure')
+    // Nor does its band on the map.
+    expect(openEveryBand(container)).toBe(1)
+    const map = container.querySelector('.wf-minimap')!
+    expect(map.querySelector('.wf-mini-band')).toBeTruthy()
+    expect(map.querySelector('.wf-mini-band.is-bad'), 'the map paints the cancelled stage as broken').toBeNull()
+  })
+
+  it('WF-3: paints every edge halo before any stroke, so no halo erases an arrowhead', () => {
+    // SVG paints in document order. One group of halo-then-stroke per edge put
+    // a later edge's halo over an earlier edge's arrowhead wherever two
+    // converged -- the five arrows into `report` erased by their siblings.
+    const { container } = card(fanOut(), new Map(), true)
+    const paint = [...container.querySelectorAll('svg.wf-edges .wf-edge-halo, svg.wf-edges .wf-edge')]
+    const isHalo = paint.map((p) => p.classList.contains('wf-edge-halo'))
+    expect(isHalo.filter(Boolean)).toHaveLength(10)
+    expect(isHalo.filter((h) => !h)).toHaveLength(10)
+    expect(isHalo.lastIndexOf(true), 'a halo is painted after a stroke').toBeLessThan(isHalo.indexOf(false))
+    // A halo is clearance, not a mark: one mark per dependency is unchanged.
+    for (const halo of container.querySelectorAll('.wf-edge-halo')) {
+      expect(halo.closest('[data-edge]'), 'a halo is inside an edge mark').toBeNull()
+    }
+    expect(container.querySelectorAll('[data-edge]')).toHaveLength(10)
+  })
+
+  it('WF-20: prints a run once at the Figures tier, and keeps a wait beside the state', () => {
+    const { w, tasks } = timings()
+    const { container } = card(w, tasks, true, 'figures')
+    const ran = (name: string) =>
+      [...nodeNamed(container, name).querySelectorAll('.node-num')]
+        .find((n) => n.querySelector('dt')?.textContent === 'ran')
+        ?.querySelector('dd')?.textContent
+    // `ran 1m 8s` on the state line over `1m 8s` in the figures was the same
+    // duration twice on one card. The figure keeps it.
+    for (const name of ['done', 'live', 'publish']) {
+      expect(nodeNamed(container, name).querySelector('.node-dur'), `${name} prints its duration twice`).toBeNull()
+    }
+    expect(ran('done')).toBe('1m 8s')
+    expect(ran('live')).toBe('1m 8s so far')
+    expect(ran('publish')).toBe('not started')
+    // A WAIT is not a run, and the `ran` figure cannot say it, so it stays.
+    expect(nodeNamed(container, 'waiting').querySelector('.node-dur')!.textContent).toBe('queued 2m 33s')
+    expect(nodeNamed(container, 'held').querySelector('.node-dur')!.textContent).toBe('parked 7m 11s')
+  })
+})
+
+describe('the QA pass: the table', () => {
+  pinTheClock()
+
+  it('AG-15: draws an attempt count past its ceiling as past it, and says by how much', () => {
+    const w = workflow('wf_over', [
+      step('retried', [], { task_id: 't_over' }),
+      step('spent', [], { task_id: 't_spent' }),
+      step('fine', [], { task_id: 't_fine' }),
+    ])
+    const tasks = new Map<string, Task>([
+      ['t_over', task('t_over', 'FAILED', { attempt_count: 4, max_attempts: 3, started_at: iso(-90_000), completed_at: iso(-30_000) })],
+      ['t_spent', task('t_spent', 'FAILED', { attempt_count: 3, max_attempts: 3, started_at: iso(-90_000), completed_at: iso(-30_000) })],
+      ['t_fine', task('t_fine', 'RUNNING', { attempt_count: 1, max_attempts: 3, started_at: iso(-90_000) })],
+    ])
+    const { container } = card(w, tasks, true)
+    fireEvent.click(within(container.querySelector<HTMLElement>('.wf-viewbar')!).getByText('Table'))
+    const attempts = (id: string) =>
+      container.querySelector(`.wf-table tr[data-step="${id}"] td[data-col="attempts"] .wf-cell`)!
+    expect(attempts('retried').textContent).toBe('4 of 3')
+    expect(attempts('retried').className, '4 of 3 is drawn like 1 of 3').toContain('is-over')
+    expect(attempts('retried').getAttribute('aria-label')).toContain('1 over the ceiling')
+    // STRICTLY past it. Using every attempt it was allowed is how a failing
+    // step ordinarily ends, not a count the ceiling failed to hold.
+    expect(attempts('spent').className).not.toContain('is-over')
+    expect(attempts('fine').className).not.toContain('is-over')
   })
 })

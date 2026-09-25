@@ -6,8 +6,11 @@
 // asserted the string `dispatchOf` appeared in a screen -- which is true of a
 // screen that calls it and throws the answer away.
 
+import { createElement } from 'react'
 import { describe, expect, it } from 'vitest'
+import { render } from '@testing-library/react'
 
+import { DispatchChoice, DispatchFacts } from '../Dispatch'
 import {
   CARRIER_NOTE,
   DEFAULT_CARRIER,
@@ -20,6 +23,7 @@ import {
   needsRepository,
   type DispatchStrategy,
   type Task,
+  type TaskState,
 } from '../types'
 
 function task(dispatch: unknown): Task {
@@ -157,5 +161,118 @@ describe('the carrier note', () => {
     // client exists to not make.
     expect(CARRIER_NOTE).toContain('no worker code reads it yet')
     expect(CARRIER_NOTE).toContain('repository URL required')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The visual QA pass of 2026-09-25 (epics #82 and #84), rendered
+// ---------------------------------------------------------------------------
+//
+// `createElement` rather than JSX: this file is `.ts`, and what it holds is
+// the dispatch vocabulary's behaviour -- which now includes what the two
+// dispatch components draw from it. Each case was committed RED first.
+
+const COLLECT = { strategy: 'collect', carrier: 'checkpoints', role: null, integrates: [] }
+
+function run(state: TaskState, dispatch: unknown, result_summary: Record<string, unknown> | null = null): Task {
+  return { id: 't1', state, dispatch, result_summary } as unknown as Task
+}
+
+function facts(t: Task) {
+  return render(createElement(DispatchFacts, { task: t }))
+}
+
+/** A `.ctl-fact`'s value, by its key; null when the strip has no such fact. */
+function factOf(root: HTMLElement, key: string): string | null {
+  const li = [...root.querySelectorAll('li.ctl-fact')].find((el) => el.querySelector('b')?.textContent === key)
+  return li === undefined ? null : (li.textContent ?? '').slice(key.length)
+}
+
+describe('DispatchFacts, the read-back', () => {
+  it('AG-25: claims no harvest for a run that has not harvested anything', () => {
+    // QUEUED, READY and RUNNING have not finished; CANCELLED with no git block
+    // never ran. Every one of them said "The patch was harvested into this
+    // task's artifacts".
+    const cases: Array<[TaskState, Record<string, unknown> | null]> = [
+      ['QUEUED', null],
+      ['READY', null],
+      ['RUNNING', null],
+      ['CANCELLED', {}],
+    ]
+    for (const [state, summary] of cases) {
+      const { container, unmount } = facts(run(state, COLLECT, summary))
+      expect(container.textContent, `${state}: a past-tense claim about a run that did not happen`).not.toMatch(
+        /harvested|artifacts/,
+      )
+      // The strategy itself is still stated.
+      expect(factOf(container, 'strategy'), state).toBe('collect')
+      unmount()
+    }
+  })
+
+  it('AG-25: says what a finished collect run published once its git block says it harvested', () => {
+    const { container } = facts(run('SUCCEEDED', COLLECT, { git: { patch: 'changes.patch' } }))
+    expect(factOf(container, 'published')).toBe('nothing, by request · patch in artifacts')
+    // A harvest that produced no patch does not claim one.
+    const empty = facts(run('SUCCEEDED', COLLECT, { git: { patch: null } }))
+    expect(factOf(empty.container, 'published')).toBe('nothing, by request')
+  })
+
+  it('AG-24: is a facts strip, and the carrier keeps its "not acted on" mark with the note as its name', () => {
+    const { container } = facts(
+      run('RUNNING', { strategy: 'integrate', carrier: 'branches', role: 'integrator', integrates: ['t_a', 't_b'] }),
+    )
+    expect(container.querySelector('dl'), 'still prose in a definition list').toBeNull()
+    const keys = [...container.querySelectorAll('ul.ctl-facts > li.ctl-fact > b')].map((b) => b.textContent)
+    expect(keys).toEqual(['strategy', 'carrier', 'role', 'integrates'])
+    const mark = container.querySelector('li.ctl-fact .ctl-mark')!
+    expect(mark.textContent).toBe('not acted on')
+    expect(mark.getAttribute('aria-label')).toBe(CARRIER_NOTE)
+    // The note is the mark's NAME, not ink: no internal sentence on the surface.
+    expect(container.textContent).not.toContain('no worker code reads it yet')
+    // The order the patches are applied in is still on the surface.
+    expect(factOf(container, 'integrates')).toBe('t_a → t_b')
+  })
+})
+
+describe('DispatchChoice, the control', () => {
+  function choice(repositoryUrl: string) {
+    return render(
+      createElement(DispatchChoice, {
+        draft: { strategy: 'collect', carrier: 'checkpoints', repositoryUrl },
+        onChange: () => {},
+        steps: 1,
+        scale: 'task',
+      }),
+    )
+  }
+  const schemeAlert = (root: HTMLElement) =>
+    [...root.querySelectorAll('[role="alert"]')].find((a) => /https:\/\//.test(a.textContent ?? ''))
+
+  it('TS-17: warns, without blocking, on a repository URL the API refuses on its scheme', () => {
+    // `collect` + `checkpoints` needs no repository -- and a repository that IS
+    // given is still validated, so `not a url` under the default is refused on
+    // the click. The field accepted it without a word.
+    const bad = choice('not a url')
+    const alert = schemeAlert(bad.container)
+    expect(alert, 'a URL the API will refuse gets no warning').toBeTruthy()
+    expect(alert!.textContent).toContain('git@')
+    expect(alert!.textContent).toContain('ssh://')
+    // A WARNING: the field is not `type="url"`, which the browser would enforce
+    // on submit -- and which would refuse `git@`, a form the API accepts.
+    expect(bad.container.querySelector<HTMLInputElement>('#dsp-repo')!.type).toBe('text')
+    bad.unmount()
+    for (const fine of ['https://github.com/o/r.git', 'ssh://git@github.com/o/r.git', 'git@github.com:o/r.git', '', '   ']) {
+      const r = choice(fine)
+      expect(schemeAlert(r.container), JSON.stringify(fine)).toBeUndefined()
+      r.unmount()
+    }
+  })
+
+  it('TS-21: spaces its fields from the sheet, with no inline margin', () => {
+    const { container } = choice('')
+    const labels = [...container.querySelectorAll('label.t-label')]
+    expect(labels.length).toBeGreaterThan(0)
+    for (const label of labels) expect(label.getAttribute('style'), label.textContent ?? '').toBeNull()
   })
 })
