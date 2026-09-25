@@ -14,7 +14,9 @@ class ExitCode:
     #: A dependency was UNAVAILABLE before the runner existed (a spent startup
     #: budget, UNAVAILABLE, any 5xx or gRPC UNKNOWN; at the generation check,
     #: any API error that is not a named refusal). The task and the lease were
-    #: not written, and the reconciler RETRIES it like any lost attempt.
+    #: not written, and the reconciler RETRIES it like any lost attempt: in
+    #: the pass that sees the finished execution while the task is still
+    #: DISPATCHED or STARTING (#198, `reconciler.detect.detect_ended_at_startup`).
     #: EX_UNAVAILABLE in sysexits. Split from CONFIG on 2026-09-25, when 78
     #: became non-retryable: an outage the next attempt may not meet must not
     #: end the task. See `__main__` for every exit and what the reconciler does

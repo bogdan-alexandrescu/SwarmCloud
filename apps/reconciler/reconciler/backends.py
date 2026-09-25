@@ -365,6 +365,37 @@ def job_phase(job: Any) -> ExecutionPhase:
     return ExecutionPhase.RUNNING
 
 
+def job_finished_at(job: Any) -> datetime | None:
+    """When a batch/v1 Job finished, or None while it runs or when nothing says.
+
+    `status.completion_time` is set only on success. A FAILED Job has none, and
+    the time is on its `Failed` condition, as `last_transition_time`. The same
+    field on `Complete` covers a Job whose completion time was not copied. Read
+    from a client object or a dict, like `job_conditions`.
+    """
+    status = getattr(job, "status", None)
+    if status is None and isinstance(job, dict):
+        status = job.get("status")
+    completed = getattr(status, "completion_time", None)
+    if completed is None and isinstance(status, dict):
+        completed = status.get("completion_time") or status.get("completionTime")
+    if completed is not None:
+        return _ensure_utc(completed)
+    raw = getattr(status, "conditions", None)
+    if raw is None and isinstance(status, dict):
+        raw = status.get("conditions")
+    for condition in raw or []:
+        kind = getattr(condition, "type", None)
+        state = getattr(condition, "status", None)
+        moved = getattr(condition, "last_transition_time", None)
+        if kind is None and isinstance(condition, dict):
+            kind, state = condition.get("type"), condition.get("status")
+            moved = condition.get("last_transition_time") or condition.get("lastTransitionTime")
+        if str(kind) in ("Failed", "Complete") and str(state) == "True" and moved is not None:
+            return _ensure_utc(moved)
+    return None
+
+
 def _int_or_none(value: Any) -> int | None:
     try:
         return int(value)
@@ -589,6 +620,8 @@ class CloudRunBackend:
             ),
             generation=_int_or_none(env.get(GENERATION_ENV) or _first(labels, GENERATION_LABELS)),
             parent=job_name,
+            # What the ended-at-startup rule measures its grace from (#198).
+            completed_at=completion,
         )
 
     @staticmethod
@@ -1342,6 +1375,7 @@ class GkeBackend:
             ),
             generation=_int_or_none(env.get(GENERATION_ENV) or _first(labels, GENERATION_LABELS)),
             namespace=namespace,
+            completed_at=job_finished_at(job),
         )
 
     def list_job_resources(self) -> list[JobResourceView]:

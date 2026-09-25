@@ -2106,7 +2106,15 @@ it cannot import `agent_worker`. The number is therefore stated twice:
   fails a task on.
 
 `tests/unit/worker/test_worker_cannot_start.py::test_the_reconcilers_78_is_the_workers_78`
-holds the two together in CI. That is the mirrored-value arrangement this
+holds the two together in CI.
+
+Since #198 the reconciler acts on every OTHER code too, but only to requeue,
+and without naming any of them: an execution that ended with anything but 78
+while its task was still DISPATCHED or STARTING is fenced, released and
+requeued in the pass that sees it (`reconciler.detect.detect_ended_at_startup`),
+with the code quoted in `last_error`. That rule needs no second number, so it
+adds no copy. It does depend on 78 being the only code that must NOT be
+requeued, which is the same fact this request would put in one place. That is the mirrored-value arrangement this
 repository has had three outages from. Here the failure would be quiet in both
 directions. If the worker's number moved and the reconciler's did not, a worker
 that cannot start would go back to being retried until its attempts ran out.

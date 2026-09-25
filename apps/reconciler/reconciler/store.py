@@ -238,7 +238,13 @@ class ControlStore:
         return tenants
 
     # -- writes ----------------------------------------------------------
-    def invalidate_generation(self, task_id: str, expected_generation: int) -> int | None:
+    def invalidate_generation(
+        self,
+        task_id: str,
+        expected_generation: int,
+        *,
+        only_from: tuple[TaskState, ...] | None = None,
+    ) -> int | None:
         """Bump `current_generation`, fencing any worker still running.
 
         This is the step that makes termination safe to be best-effort on the
@@ -248,6 +254,10 @@ class ControlStore:
         Returns the new generation, or None if the task had already moved on --
         in which case somebody else has already fenced it and there is nothing
         to do.
+
+        `only_from`, when given, is the states the finding was about, re-read
+        here: a task that has left them since the snapshot is not fenced. The
+        ended-at-startup rule passes DISPATCHED and STARTING (#198).
         """
         task_ref = self._db.collection("tasks").document(task_id)
 
@@ -262,6 +272,8 @@ class ControlStore:
                 return None
             if state in TERMINAL_STATES:
                 return None          # nothing left to fence
+            if only_from is not None and state not in only_from:
+                return None          # moved on since the snapshot
             current = int(data.get("current_generation", 0))
             if current != expected_generation:
                 return None
@@ -293,6 +305,7 @@ class ControlStore:
         expected_lease_id: str | None = None,
         error: str | None = None,
         next_eligible_at: datetime | None = None,
+        only_from: tuple[TaskState, ...] | None = None,
     ) -> TaskState | None:
         """Move a task out of a concurrency state it can no longer justify.
 
@@ -314,6 +327,11 @@ class ControlStore:
         None means "no expectation", for findings that carry no lease (an orphan
         execution whose lease was released long ago). A task holding no lease has
         nothing to strand, so those still repair.
+
+        `only_from`, when given, refuses a task no longer in one of those
+        states, as `invalidate_generation` does. A worker that parked its task
+        between the snapshot and now has decided how it resumes, and READY
+        would overrule it (#198).
         """
         task_ref = self._db.collection("tasks").document(task_id)
 
@@ -327,6 +345,14 @@ class ControlStore:
             except (ValueError, TypeError):
                 return None
             if current in TERMINAL_STATES:
+                return None
+            if only_from is not None and current not in only_from:
+                self._log.info(
+                    "refusing to repair a task that has left the states the finding was about",
+                    task_id=task_id,
+                    state=current.value,
+                    expected=[s.value for s in only_from],
+                )
                 return None
             held = data.get("current_lease_id") or None
             if held is not None and held != expected_lease_id:

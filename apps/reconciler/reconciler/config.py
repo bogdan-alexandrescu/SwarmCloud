@@ -149,6 +149,39 @@ class ReconcilerConfig:
     #: cannot scale down while it runs, because it may not be evicted.
     left_running_grace_seconds: int = 300
 
+    #: How long before a pass read Firestore an execution must have ENDED for
+    #: the ended-at-startup rule to act on it (#198, `detect_ended_at_startup`).
+    #:
+    #: The rule requeues a task that is still DISPATCHED or STARTING once its
+    #: execution has ended. A worker makes every write before its container
+    #: exits, and Cloud Run records the end after the exit, so a snapshot read
+    #: after that instant has seen every write the worker made: a park (exit
+    #: 75), a failure (exit 1), a cancel (exit 71) all move the task out of
+    #: DISPATCHED and STARTING first. The snapshot is taken BEFORE the backends
+    #: are listed, though, so an execution can be listed as over when the
+    #: snapshot predates its worker's last write. Thirty seconds is far past
+    #: the seconds between a worker's last write and its container's end, and
+    #: short beside the 300 s dispatch deadline this rule is there to beat. The
+    #: repair also refuses, inside its transactions, a task that has left
+    #: DISPATCHED and STARTING, so this is the first of two guards.
+    #:
+    #: HOW MUCH SOONER IT IS, measured against 2026-09-25. It is not the grace
+    #: that decides that; it is the reconciler's tick and how late the worker
+    #: exits. A 69 from an unreachable control plane now comes after the
+    #: generation check's ~90 s of attempts (`agent_worker.startup.
+    #: CONTROL_PLANE_READ_SCHEDULE_SECONDS`), so its execution ends about
+    #: cold start + 95 s after dispatch and this rule may act 30 s after that.
+    #: For the cold starts measured that day (103 to 195 s, dispatch to worker)
+    #: that is 70 s before to 20 s after the 300 s deadline. At the `*/5`
+    #: tick a pass falls between the two at most a quarter of the time, so for
+    #: that exit this rule mostly changes `last_error`, not when the task is
+    #: requeued. A worker that dies in its first seconds (an exit 1, a 143) is
+    #: eligible 65 to 155 s before the deadline, so a pass falls between more
+    #: often, and then it is requeued five minutes sooner. At a `*/1` tick (PR
+    #: #202, the owner's decision) any of them is requeued 30 to 90 s after its
+    #: execution ends.
+    ended_execution_grace_seconds: int = 30
+
     max_findings_per_pass: int = 200
     dry_run: bool = False
     enable_gke: bool = True
@@ -241,6 +274,7 @@ class ReconcilerConfig:
             stuck_cpu_floor_cores=_float("STUCK_CPU_FLOOR_CORES", 0.05),
             stuck_evidence_max_gap_seconds=_int("STUCK_EVIDENCE_MAX_GAP_SECONDS", 600),
             left_running_grace_seconds=_int("LEFT_RUNNING_GRACE_SECONDS", 300),
+            ended_execution_grace_seconds=_int("ENDED_EXECUTION_GRACE_SECONDS", 30),
             max_findings_per_pass=_int("MAX_FINDINGS_PER_PASS", 200),
             dry_run=_bool("RECONCILER_DRY_RUN", False),
             enable_gke=_bool("ENABLE_GKE_AUTOPILOT", settings.enable_gke_autopilot),

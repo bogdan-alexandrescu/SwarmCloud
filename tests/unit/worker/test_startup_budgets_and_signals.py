@@ -377,6 +377,12 @@ def test_a_control_plane_it_cannot_read_ends_startup_and_writes_nothing(
     monkeypatch.setattr(startup, "TERMINATION_MESSAGE_PATH", str(termination_log), raising=False)
     seed_attempt(db)
     worker, _, _ = worker_factory()
+    # A retryable error is now asked again on a schedule that spans a minute
+    # (#198; test_control_plane_read_retries.py pins it). The schedule runs on
+    # this stand-in clock so the test does not wait out the real one.
+    clock = [0.0]
+    worker.startup_clock = lambda: clock[0]
+    worker.startup_sleep = lambda seconds: clock.__setitem__(0, clock[0] + seconds)
     error = _unreachable(kind)
     original = FakeDocumentRef.get
 

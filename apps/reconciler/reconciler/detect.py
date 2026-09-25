@@ -30,12 +30,18 @@ Two more apply to GKE Jobs only, because browser pods carry
     left running       the task is already terminal and its Job is still
                        active -> terminate; release only that Job's own lease
 
-And one about how a worker ENDED, on either backend:
+And two about how a worker ENDED, on either backend:
 
     cannot start       the current attempt's execution finished with exit 78,
                        "the worker cannot start" -> fence, release, and FAIL
                        the task now, with the worker's cause, no retry
                        (owner, 2026-09-25; `detect_cannot_start`)
+    ended at startup   the current attempt's execution finished with any
+                       other code while its task is still DISPATCHED or
+                       STARTING, so its runner never started -> fence,
+                       release and requeue now, with the exit code and the
+                       execution in `last_error`, instead of waiting for the
+                       dispatch deadline (#198; `detect_ended_at_startup`)
 """
 
 from __future__ import annotations
@@ -43,7 +49,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field, replace
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Iterable
 
@@ -54,7 +60,7 @@ from typing import Any, Iterable
 #: a live execution it read as orphaned or never find a real orphan.
 #: docs/audits/2026-09-18/08-frozen-contract-restatements.md, finding 1.
 from swarm_common.identity import _TENANT_SAFE as _NAME_SAFE
-from swarm_common.models import utcnow
+from swarm_common.models import retries_exhausted, utcnow
 from swarm_common.profiles import Backend
 from swarm_common.states import TaskState
 
@@ -113,6 +119,9 @@ class FindingKind(str, Enum):
     LEFT_RUNNING = "left_running"
     #: The current attempt's execution finished with `WORKER_EXIT_CANNOT_START`.
     WORKER_CANNOT_START = "worker_cannot_start"
+    #: The current attempt's execution finished with any other code while its
+    #: task was still DISPATCHED or STARTING: see `detect_ended_at_startup`.
+    WORKER_ENDED_AT_STARTUP = "worker_ended_at_startup"
 
 
 @dataclass(frozen=True)
@@ -979,6 +988,9 @@ def cannot_start_candidates(
 ) -> list[CannotStartSubject]:
     """The finished executions whose exit code is worth reading this pass.
 
+    The subjects of both exit-code rules: `detect_cannot_start` and
+    `detect_ended_at_startup`.
+
     Used by the reconciler to decide which terminations to read, so that a
     pass with no failed execution under a live lease, which is nearly every
     pass, costs no call. An attempt that ALSO has an active execution is left
@@ -1141,10 +1153,120 @@ def detect_cannot_start(
     return findings
 
 
-#: Findings about a lease that a cannot-start finding repairs more exactly:
-#: each would requeue the task (or release its lease without failing it) on
-#: the strength of silence, where the exit code says the next attempt would
-#: fail the same way.
+#: The task states in which an execution that has ENDED cannot have reached
+#: its runner. The worker moves its task DISPATCHED -> STARTING -> RUNNING in
+#: one step, before it creates the workspace (`agent_worker.control.
+#: advance_to_running`), and a RUNNING task's worker heartbeats, so the
+#: heartbeat rules own it.
+ENDED_AT_STARTUP_STATES: tuple[TaskState, ...] = (TaskState.DISPATCHED, TaskState.STARTING)
+
+
+def _as_utc(value: datetime) -> datetime:
+    """A backend's time as UTC. A naive one (a protobuf `ToDatetime`) is UTC already."""
+    return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+
+
+def detect_ended_at_startup(
+    snapshot: ControlSnapshot,
+    executions: Iterable[ExecutionView],
+    config: ReconcilerConfig,
+    now: datetime | None = None,
+) -> list[Finding]:
+    """Attempts whose execution ended before their runner started: requeue them, now (#198).
+
+    WHAT HAPPENED. Execution swarm-job-eng-mock-9ngvq exited 69 at 20:37:56Z
+    on 2026-09-25, having never reached Firestore. Its task sat DISPATCHED,
+    and the CLI truthfully showed DISPATCHED, until the 20:40 pass found the
+    lease past its 300 s dispatch deadline and reclaimed it as "lease silent".
+    The exit code, already read for the cannot-start rule, said the execution
+    was over two minutes earlier, and why.
+
+    THE RULE. The same subjects as `detect_cannot_start` (a FAILED execution
+    whose attempt holds its task's current lease at the current generation,
+    with nothing of that attempt still active), when:
+
+      * the task is still DISPATCHED or STARTING (`ENDED_AT_STARTUP_STATES`),
+        so its worker never reached its runner and wrote no end of its own;
+      * the exit code was READ (`snapshot.terminations`), and is not 78,
+        which `detect_cannot_start` fails without a retry. A read that found no
+        exit code counts as read; a read that failed does not, and today's
+        rules judge the lease;
+      * the backend recorded when the execution ended, at least
+        `ended_execution_grace_seconds` before this pass read Firestore. The
+        worker makes every write before its container exits, so the snapshot
+        has seen them all (see the setting for why that matters).
+
+    The repair is the ordinary one: fence the generation, confirm nothing
+    runs (nothing does), release the lease through the frozen
+    `release_lease_in_transaction`, then READY, or FAILED once the task's
+    attempts are spent, or CANCELLED if a cancel was asked for. The fence and
+    the requeue are each refused, inside their transactions, for a task no
+    longer in `ENDED_AT_STARTUP_STATES`.
+
+    Mutually exclusive with `detect_cannot_start` by exit code, and it
+    supersedes the absence rules for the same lease in `detect_all`, as that
+    rule does.
+    """
+    terminations = getattr(snapshot, "terminations", None) or {}
+    taken = _as_utc(getattr(snapshot, "taken_at", None) or now or utcnow())
+    grace = int(getattr(config, "ended_execution_grace_seconds", 30))
+    findings: list[Finding] = []
+    for subject in cannot_start_candidates(snapshot, executions):
+        task, execution = subject.task, subject.execution
+        if task.state not in ENDED_AT_STARTUP_STATES:
+            continue
+        attempt_id = subject.lease.attempt_id
+        ended = terminations.get(attempt_id)
+        if ended is None:
+            continue
+        exit_code = getattr(ended, "exit_code", None)
+        if exit_code == WORKER_EXIT_CANNOT_START:
+            continue
+        completed = execution.completed_at
+        if completed is None:
+            continue
+        ended_before = (taken - _as_utc(completed)).total_seconds()
+        if ended_before < grace:
+            continue  # its worker's last writes may postdate the snapshot
+        where = (
+            f"{execution.namespace}/{execution.name}" if execution.namespace else execution.name
+        )
+        short = where if execution.namespace else where.rsplit("/", 1)[-1]
+        how = f"exited {exit_code}" if exit_code is not None else "ended with no exit code recorded"
+        spent = retries_exhausted(task.attempt_count, task.max_attempts)
+        reason = (
+            f"execution {short} {how} before its runner started (task was "
+            f"{task.state.value}); {'no attempts left' if spent else 'retrying'}"
+        )
+        findings.append(
+            Finding(
+                kind=FindingKind.WORKER_ENDED_AT_STARTUP,
+                reason=reason,
+                task_id=task.task_id,
+                lease_id=subject.lease.lease_id,
+                attempt_id=attempt_id,
+                tenant_id=task.tenant_id or execution.tenant_id,
+                generation=subject.lease.generation,
+                execution=execution,
+                detail={
+                    "exit_code": exit_code,
+                    "execution": where,
+                    "backend_detail": str(getattr(ended, "detail", "") or ""),
+                    "task_state": task.state.value,
+                    "ended_seconds_before_snapshot": round(ended_before, 1),
+                    "attempt_count": task.attempt_count,
+                    "max_attempts": task.max_attempts,
+                },
+            )
+        )
+    return findings
+
+
+#: Findings about a lease that a cannot-start or ended-at-startup finding
+#: repairs more exactly: each would requeue the task (or release its lease
+#: without failing it) on the strength of silence, where the exit code says
+#: the execution is over, and for a 78 that the next attempt would fail the
+#: same way.
 _CANNOT_START_SUPERSEDES = (
     FindingKind.STALE_LEASE,
     FindingKind.MISSING_EXECUTION,
@@ -1265,9 +1387,12 @@ def detect_all(
     # A lease whose attempt exited 78 is repaired by the cannot-start rule
     # alone: fenced, released and FAILED. The absence rules would requeue the
     # same task on the strength of silence, and in the same pass their READY
-    # would race its FAILED.
+    # would race its FAILED. A lease whose attempt ended before its runner
+    # started is repaired by the ended-at-startup rule alone, for the same
+    # reason: one repair per lease, and the one that says why (#198).
     cannot_start = detect_cannot_start(snapshot, executions, config, now)
-    failing = {f.lease_id for f in cannot_start if f.lease_id}
+    ended_at_startup = detect_ended_at_startup(snapshot, executions, config, now)
+    failing = {f.lease_id for f in (*cannot_start, *ended_at_startup) if f.lease_id}
     findings = [
         *(
             f
@@ -1275,6 +1400,7 @@ def detect_all(
             if not (f.kind in _CANNOT_START_SUPERSEDES and f.lease_id in failing)
         ),
         *cannot_start,
+        *ended_at_startup,
     ]
     # A left-running repair releases its Job's lease only AFTER the kill is
     # confirmed. The orphan-lease rule would release the same lease without
