@@ -744,6 +744,155 @@ describe('Logs: the transcript as steps, the agent’s streams, the runner’s',
 })
 
 // ---------------------------------------------------------------------------
+// Parity with #188: what the backend added after this pane was written
+// ---------------------------------------------------------------------------
+//
+// #188's review fix-up added `capture_truncated` to `/transcript` and
+// `/answer`, a `system` step with `meta.subtype: "capture_truncated"` where the
+// worker's capture dropped the middle of a run, an `other` step with
+// `meta.oversize` for a line longer than the window (its reason in
+// `stream.detail`), and `invalid_utf8_bytes` on `/artifacts/content`. It also
+// serves `tool.id` and `tool_result.tool_use_id` as null when an event carried
+// no string there. Each case below is a shape #188's own tests pin, answered
+// by the stub exactly as the route answers it.
+//
+// MUTATIONS: stop reading `capture_truncated`; draw an `ok` transcript's
+// `stream.detail` nowhere; drop the notice step's text; draw an oversize line
+// as a bare `other`; join a result to a call because both ids are null; drop
+// the `not utf-8` fact or draw it at zero.
+
+const CUT_DETAIL =
+  "the agent's output passed its capture size cap: the capture kept the start and the end of the stream and dropped the middle, with a notice where, so this is not the whole run"
+const OVERSIZE_DETAIL =
+  "one line of the agent's output is longer than this window, so it is shown as a single step with no text; raise limit_bytes (up to 4 MiB) to read it"
+
+describe('the pane reads what #188 serves about a cut capture, an over-long line and bytes that are not UTF-8', () => {
+  it('says a transcript whose capture was cut is not the whole run, and draws the capture’s notice in its own words', async () => {
+    await openPane(
+      finishedRoutes({
+        [`/v1/tasks/${REF}/transcript`]: transcript({
+          stream: stream({ source: 'final', detail: CUT_DETAIL }),
+          format: 'claude-stream-json',
+          complete: false,
+          capture_truncated: true,
+          steps: [
+            step(1, { text: 'Reading the repository.' }),
+            step(2, {
+              kind: 'system',
+              role: 'system',
+              text: '[swarm] output truncated: 110592 bytes dropped here',
+              meta: { subtype: 'capture_truncated' },
+            }),
+            step(3, { kind: 'result', role: null, text: 'Done.', meta: { subtype: 'success', is_error: false, num_turns: 40 } }),
+          ],
+        }),
+      }),
+    )
+    const logsSection = await sectionReady('Logs', /cut at its cap/)
+    const capture = [...logsSection.querySelectorAll('li.ctl-fact')].find((li) => li.querySelector('b')?.textContent === 'capture')
+    expect(capture?.querySelector('.ctl-mark.is-partial'), 'a cut capture is not marked partial').not.toBeNull()
+    expect(logsSection.textContent, 'the server’s reason for an ok window is drawn nowhere').toContain(CUT_DETAIL)
+    const notice = [...logsSection.querySelectorAll('li.arts-step')].find((li) => /capture_truncated/.test(li.textContent ?? ''))
+    expect(notice, 'the capture’s notice is not a step').toBeTruthy()
+    expect(notice!.textContent, 'the notice’s own words are not drawn').toMatch(/110592 bytes dropped/)
+    expect(notice!.querySelector('.ctl-mark.is-partial'), 'where the run is not whole is not marked').not.toBeNull()
+  })
+
+  it('draws a line longer than the window in words, with the server’s reason, never as a bare other', async () => {
+    await openPane(
+      finishedRoutes({
+        [`/v1/tasks/${REF}/transcript`]: transcript({
+          stream: stream({ source: 'final', detail: OVERSIZE_DETAIL, next_offset: 524_288, truncated: true, total_bytes: 9_000_000 }),
+          format: null,
+          complete: false,
+          capture_truncated: null,
+          steps: [step(0, { kind: 'other', role: null, meta: { oversize: true } })],
+        }),
+      }),
+    )
+    const logsSection = await sectionReady('Logs', /line longer than this window/)
+    expect(logsSection.textContent).toContain(OVERSIZE_DETAIL)
+    const s = logsSection.querySelector('li.arts-step')
+    expect(s?.querySelector('.ctl-mark.is-partial'), 'an undecoded line is not marked partial').not.toBeNull()
+    expect(s?.textContent, 'an over-long line is drawn as an event with nothing in it').not.toMatch(/^\s*other/)
+    expect(logsSection.textContent, 'a capture nobody said was cut is drawn as cut').not.toMatch(/cut at its cap/)
+  })
+
+  it('never joins a tool result to a call because both ids are null', async () => {
+    await openPane(
+      finishedRoutes({
+        [`/v1/tasks/${REF}/transcript`]: transcript({
+          stream: stream({ source: 'final' }),
+          format: 'claude-stream-json',
+          steps: [
+            step(1, { kind: 'tool_call', tool: { id: null, name: 'Read', input: '{}' } }),
+            step(2, { kind: 'tool_result', role: 'user', tool_result: { tool_use_id: null, is_error: null, content: 'the file', images: 0 } }),
+          ],
+        }),
+      }),
+    )
+    const logsSection = await sectionReady('Logs', /Read/)
+    const call = [...logsSection.querySelectorAll('li.arts-step')].find((li) => li.querySelector('summary')?.textContent?.includes('Read'))
+    expect(call?.textContent, 'two unknown ids were joined as a call and its result').toMatch(/no result in this window/)
+    expect(logsSection.textContent, 'the unjoined result was dropped').toMatch(/its call is not in this window/)
+  })
+
+  it('marks an answer whose capture was cut, and says why an ended run left none when the capture was cut', async () => {
+    await openPane(finishedRoutes({ [`/v1/tasks/${REF}/answer`]: answer({ capture_truncated: true, detail: `${CUT_DETAIL}; the result event, its last line, was kept whole` }) }))
+    const out = await sectionReady('Outputs', /capture cut/)
+    const head = out.querySelector('.arts-answer .ctl-card-note')
+    expect(head?.querySelector('.ctl-mark.is-partial'), 'a cut capture is not marked on the answer').not.toBeNull()
+    expect(out.querySelector('.arts-answer .art-md, .arts-answer h4, .arts-answer li'), 'the answer itself was withheld').not.toBeNull()
+  })
+
+  it('says a finished run with no answer had its capture cut, in the server’s words', async () => {
+    const why = `${CUT_DETAIL}, and no result event is in what was kept; the attempt ended and left neither a result event nor a runner summary`
+    await openPane(
+      finishedRoutes({
+        [`/v1/tasks/${REF}/answer`]: answer({ status: 'absent', source: null, object: null, format: null, content: null, complete: null, is_error: null, subtype: null, num_turns: null, capture_truncated: true, detail: why }),
+      }),
+    )
+    const out = await sectionReady('Outputs', /no answer recorded/)
+    expect(out.textContent).toContain(why)
+  })
+
+  it('counts the bytes of a window that are not UTF-8, and draws nothing at zero', async () => {
+    const content = (name: string) => ({
+      task_id: REF,
+      tenant_id: 'eng',
+      attempt_id: 'att_fe27',
+      artifact: { name, bytes: 40, uri: uri(REF, name) },
+      status: 'ok',
+      detail: name === 'report.md' ? '3 bytes of this window are not UTF-8 and are shown as U+FFFD; the raw route (/artifacts/raw) serves them exactly' : null,
+      key: null,
+      uri: uri(REF, name),
+      content: name === 'report.md' ? 'caf\uFFFD \uFFFD\uFFFD\n' : '{}',
+      total_bytes: 40,
+      offset: 0,
+      returned_bytes: 40,
+      next_offset: null,
+      truncated: false,
+      redacted: false,
+      redaction_count: 0,
+      redaction: { applied_at_read_time: true, rules: 12 },
+      kind: name === 'report.md' ? 'markdown' : 'json',
+      content_type: 'text/plain',
+      invalid_utf8_bytes: name === 'report.md' ? 3 : 0,
+    })
+    await openPane(finishedRoutes({ [`/v1/tasks/${REF}/artifacts/content`]: (q: URLSearchParams) => content(q.get('name') ?? '') }))
+    const out = await sectionReady('Outputs', /report\.md/)
+    const fact = () => [...out.querySelectorAll('.art-viewer li.ctl-fact')].find((li) => li.querySelector('b')?.textContent === 'not utf-8')
+    fireEvent.click(row(out, 'report.md').querySelector('button.art-open')!)
+    await waitFor(() => expect(fact(), 'bytes shown as U+FFFD are not counted').toBeTruthy(), WAIT)
+    expect(fact()!.textContent).toMatch(/3/)
+    expect(fact()!.querySelector('.ctl-mark.is-partial')).not.toBeNull()
+    fireEvent.click(row(out, 'claude-transcript.json').querySelector('button.art-open')!)
+    await waitFor(() => expect(out.querySelector('.art-viewer pre.art-text')?.textContent).toBe('{}'), WAIT)
+    expect(fact(), 'a zero count is drawn as a finding').toBeUndefined()
+  })
+})
+
+// ---------------------------------------------------------------------------
 // Live
 // ---------------------------------------------------------------------------
 

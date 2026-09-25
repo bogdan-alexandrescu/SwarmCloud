@@ -44,10 +44,15 @@ const { Run } = await import('../AgentDetail')
 
 const WAIT = { timeout: 5000 }
 
-/** An attempt row as `attempts?include=usage` serves it; `undefined` is a row served without one. */
-function withUsage(usage: Record<string, unknown> | undefined, over: Partial<AttemptRow> = {}): AttemptRow {
+/**
+ * An attempt row as `attempts?include=usage` serves it; `undefined` is a row
+ * served without one, and `null` is the route's own `usage: null` (a row its
+ * map did not cover), which is the same fact.
+ */
+function withUsage(usage: Record<string, unknown> | undefined | null, over: Partial<AttemptRow> = {}): AttemptRow {
   const row = attempt(1, over)
   if (usage === undefined) return row
+  if (usage === null) return Object.assign(row, { usage: null })
   return Object.assign(row, {
     usage: {
       status: 'final',
@@ -126,6 +131,37 @@ describe('Details draws CPU as peak and mean cores of the limit', () => {
     const peak = cpuRow(root, 'peak')
     expect(figure(peak)).toBe('1.5 vCPU / 4 vCPU')
     expect(by(peak)).toBe('at exit · standard limit')
+  })
+
+  // #187/#188 PARITY. The worker sends a limit with `cpu_limit_source:
+  // "resource_class"` whenever `cpu.max` says nothing -- the catalogue cpu of
+  // the class the container was sized with -- and this row captioned every
+  // limit the reading carried `cgroup limit`. MUTATION: label by
+  // `cpu_limit_cores !== null` again.
+  it('names a limit the worker took from the class as the class’s, never as the cgroup’s', async () => {
+    const root = await mount(withUsage({ cpu_limit_cores: 4, cpu_limit_source: 'resource_class' }))
+    const peak = cpuRow(root, 'peak')
+    expect(figure(peak)).toBe('1.5 vCPU / 4 vCPU')
+    expect(by(peak)).toBe('at exit · standard limit')
+    expect(root.querySelector('.att-cpu-note')?.textContent, 'the phone strip still calls it the cgroup’s').not.toMatch(/cgroup/)
+  })
+
+  it('does not name a class whose cpu is not the limit the worker reported', async () => {
+    // The worker sizes by the task's class when the catalogue still has it and
+    // by the profile's otherwise, so the class read here (cpu 4) is not the
+    // one behind a limit of 2.
+    const root = await mount(withUsage({ cpu_limit_cores: 2, cpu_limit_source: 'resource_class' }))
+    const peak = cpuRow(root, 'peak')
+    expect(figure(peak)).toBe('1.5 vCPU / 2 vCPU')
+    expect(by(peak)).toBe('at exit · resource class limit')
+  })
+
+  it('reads the route’s usage: null as not served, never as a crash or a zero', async () => {
+    const root = await mount(withUsage(null))
+    const rows = cpuRows(root)
+    expect(rows).toHaveLength(1)
+    expect(by(rows[0]!)).toBe('not served')
+    expect(rows[0]!.querySelector('.ctl-util-fill'), 'no reading drew a fill').toBeNull()
   })
 
   it('draws a peak above the limit with the over-ceiling hatch rather than clipping it', async () => {
