@@ -217,8 +217,7 @@ describe('axisOf', () => {
   })
 
   it('WF-12: hangs a last label left of its line only in the last quarter of the track, and never the first', () => {
-    // `end` is read through a cast: the field is what this case asks for.
-    const ends = (a: TimelineAxis) => a.ticks.map((t) => (t as unknown as { end?: boolean }).end === true)
+    const ends = (a: TimelineAxis) => a.ticks.map((t) => t.end === true)
     const spanning = (seconds: number) =>
       axisOf(
         [stepTimes(joined(task('a', 'SUCCEEDED', { created_at: iso(-seconds), started_at: iso(-seconds), completed_at: iso(0) })), T0)],

@@ -1098,16 +1098,22 @@ body {
 /* SIX ROWS WERE SIX FLOATING CARDS. NOW THEY ARE ONE LIST.
    ---------------------------------------------------------------------------
    `#work/workflows` is the screen the owner named as already right, and the
-   thing that makes it right is measurable: its rows are 37px, single-line, and
-   they STACK -- `.wf-card + .wf-card` drops the duplicated top border, so ten
-   rows draw one box and nine hairlines rather than ten boxes. This list drew
-   `gap: var(--ctl-s1)` between bordered, rounded, 72px-tall rows, so six rows
-   were six separate objects with 4px of page showing between them. That is
-   "everything is a bordered rounded box" in the one place the product repeats
-   a box the most.
+   thing that makes it right is measurable: its rows are 37px and single-line.
+   CORRECTED (WF-17, epic #83): this said they stack into one box -- that
+   `.wf-card + .wf-card` drops the duplicated top border, "so ten rows draw one
+   box and nine hairlines". They do not and never did. The board draws ten
+   one-line rows, each `.wf-bar` its own bordered box, 8px apart (`.wf-board`'s
+   gap is `--ctl-s2`); `.wf-card + .wf-card` only removes the `.section +
+   .section` region hairline. That is the reference the owner froze (§11.4
+   measured "13 boxes"), and design-system.md §13.3 names it as an exception
+   to the no-box row. This list drew `gap: var(--ctl-s1)` between bordered,
+   rounded, 72px-tall rows, so six rows were six separate objects with 4px of
+   page showing between them. That is "everything is a bordered rounded box"
+   in the one place the product repeats a box the most.
 
-   So: the same construction as the board. The gap goes, the radius survives
-   only on the two ends, and `+` removes the shared edge. Separation between
+   So: one list. The gap goes, the radius survives only on the two ends, and
+   `+` removes the shared edge -- a construction that stands on §13.3 alone, not
+   on the Workflows board, which is built differently. Separation between
    rows is one hairline at the SEPARATOR weight, which is what §5.1 and §5.2
    say a repeated interior rule is -- and `.row + .row` gives the structural
    probe the adjacent twin it looks for, so it is graded at 1.5:1 rather than
@@ -1418,7 +1424,9 @@ body {
 
 .wf-board { display: flex; flex-direction: column; gap: var(--ctl-s2); }
 /* The board is a LIST, so the hairline `.section + .section` draws between
-   panels would cut every row off from its own open body. */
+   panels would cut every row off from its own open body. It is a list of
+   BOXED rows: each `.wf-bar` keeps a panel's box, 8px from the next -- the
+   named exception to §13.3's no-box row (design-system.md §13.3, WF-17). */
 .wf-card { margin-bottom: 0; }
 .wf-card + .wf-card { border-top-width: 0; padding-top: 0; }
 
@@ -1753,14 +1761,19 @@ body {
 /* THE EDGE CARRIES ITS OWN CLEARANCE, AND IT IS WHY THE NODES LOST THEIR
    SHADOWS. `.node` used to carry `--ctl-shadow` -- fourteen drop shadows on
    this one screen, against a reference band of one or two -- and the job it
-   was doing was real: an edge spanning more than one level crosses the band
-   between, and without separation it reads as running INTO a card rather than
+   was doing was real: an edge spanning more than one level crossed the band
+   between, and without separation it read as running INTO a card rather than
    past it. Putting that separation on the fourteen boxes was paying per box
    for a property of the two or three lines that actually cross. It is on the
    line now: a wider stroke in the canvas's own fill, drawn under the line, so
    the crossing is what carries the gap. 5px against the line's 1.5 leaves
    1.75px of clear fill on each side -- enough to read as a break, small enough
-   that two edges converging on one join still touch. */
+   that two edges converging on one join still touch.
+
+   SINCE WF-4 NO EDGE CROSSES A CARD AT ALL: an edge that skips a level runs on
+   a lane of its own, `LANE_CLEAR` (8px) off every card and band it passes
+   (`dag.ts`, `laneRouter`). What the halo separates now is one edge from
+   another where two cross in a gap, which is the crossing that remains. */
 .wf-edge-halo { fill: none; stroke: var(--wf-body-bg); stroke-width: 5; }
 .wf-arrowhead { fill: var(--line); }
 
@@ -1789,6 +1802,14 @@ body {
 }
 .wf-zoom-seg { flex: none; }
 .wf-zoom > .wf-caveat { flex: none; }
+/* WHAT THE ZOOM IS NOT DRAWING, AS A NOTE AND NOT AS A DATA MARK (WF-14). It
+   was a `.ctl-mark.is-partial` -- amber, a one-sided dash -- which is how this
+   console says a READ came back partial. A zoom is the reader's choice (or
+   Auto's) about the VIEW, so it takes provenance type and nothing else: faint
+   mono at the micro step, no border, no dash, no hue. Its sentence is its
+   accessible name and its title. The partial mark stays where a read IS
+   partial, on the sample note. */
+.wf-zoom-note { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-faint); }
 
 /* THE MAP.
    ---------------------------------------------------------------------------
@@ -1975,6 +1996,23 @@ body {
   border-left-color: var(--bad);
   background: color-mix(in srgb, var(--bad) 6%, var(--surface));
 }
+/* THE STAGE THAT HOLDS THE PICKED STEP (WF-10). A step the scrubber carried
+   into this workflow could be one of thirteen folded into a band: picked, and
+   nowhere on the canvas. The band is marked the way `.node.is-picked` marks a
+   card -- three sides in `--text`, so the left accent keeps the state tone it
+   carries, because a selection is not a state -- and names the step. The stage
+   is opened to it as well (`WorkflowGraph`). */
+.wf-band.holds-picked {
+  border-top-color: var(--text);
+  border-right-color: var(--text);
+  border-bottom-color: var(--text);
+}
+.wf-band-pick {
+  flex: none;
+  font: 600 var(--t-micro)/var(--lh-micro) var(--mono);
+  color: var(--text);
+  white-space: nowrap;
+}
 /* THE WRAPPER `aria-controls` POINTS AT, AND IT IS DELIBERATELY SIZELESS.
    A disclosure control needs something to name, and the nodes of a stage are
    absolutely positioned siblings on a shared canvas with no container of their
@@ -1986,10 +2024,11 @@ body {
 .wf-stage { position: absolute; left: 0; top: 0; width: 0; height: 0; }
 
 /* THE SLOT THE LAYOUT PLACES, and the reason it exists is valid HTML.
-   The card is an `<a>` now -- the whole node is the link -- and a `<button>`
-   may not live inside an `<a>`. So the slot is what `layoutOf` positions, and
-   the card and the stop control are its two children: siblings, neither nested
-   in the other, both addressed from one set of coordinates. */
+   The whole card is one target -- an `<a>` when it was the link, a `<button>`
+   since WF-7 made it pick the step into the inspector -- and the stop control,
+   a `<button>`, may live inside neither. So the slot is what `layoutOf`
+   positions, and the card and the stop control are its two children: siblings,
+   neither nested in the other, both addressed from one set of coordinates. */
 .node-slot { position: absolute; }
 
 /* THE NODE CARD. `--radius`, not `--ctl-radius-sm`: a DAG node is a card on a
@@ -2035,9 +2074,21 @@ body {
 .node-line > .ctl-dot { align-self: center; }
 .node-line > .node-state { flex: none; }
 .node-line > .node-dur { margin-left: auto; text-align: right; }
-a.node { text-decoration: none; color: inherit; }
-a.node:hover, a.node:focus-visible { border-color: var(--info); }
-a.node:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+/* THE CARD IS A BUTTON THAT PICKS ITS STEP (WF-7). It was an `<a>` to the task
+   drawer, so clicking a step on the Graph left the workflow; it now fills the
+   inspector in place and the inspector carries the link. A button brings the
+   sheet's `:where(.app button)` floor -- a sans font, `--text-dim`, centred
+   text -- none of which a card is, so those go back to the card's own; the
+   width and height are the slot's, because a positioned button does not
+   stretch to its insets in every engine. Hover and the ring are the ones the
+   anchor had. */
+button.node {
+  width: 100%; height: 100%; margin: 0;
+  font: inherit; color: var(--text); text-align: left;
+  cursor: pointer;
+}
+button.node:hover, button.node:focus-visible { border-color: var(--info); }
+button.node:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
 .node.ok   { border-left-color: var(--ok); }
 .node.bad  { border-left-color: var(--bad); }
 .node.live { border-left-color: var(--info); }
@@ -2075,6 +2126,14 @@ a.node:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
   font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-faint);
   overflow-wrap: anywhere;
 }
+/* ONE UNIT OF THE DEPENDENCY LINE -- a parent id, or the `(file)` it hands over,
+   with its comma -- which the line may move to the next line but not split
+   (WF-19). The line broke ids at their hyphens (`check-` / `3`). No max-width:
+   an inline-block's shrink-to-fit width is already capped at the line, so a
+   unit longer than a whole line still wraps INSIDE its own box through the
+   rule above, and nothing is truncated. No U+2011 either: a copied id still
+   pastes as the id. `heightOf` packs the same units (`depUnits`). */
+.node-dep-item { display: inline-block; }
 /* A SENTENCE, never a numeral. Dashed underline so it reads as "there is no
    figure here" rather than as a small figure. */
 /* Recovered when the four run figures came back onto the node. These four
@@ -2140,6 +2199,13 @@ a.node:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
 /* A read still in flight is NOT an absence: it has made no claim about the
    platform at all, so it gets a moving placeholder instead of a sentence. */
 .node-num.is-reading dd { color: var(--text-faint); }
+/* A FIGURE FROM THE STEP'S RESULT, NOT ITS ATTEMPTS (WF-5): the value, then
+   `from result`, on the one line `NODE_H` reserved. The value never shrinks;
+   on a card too narrow for both it is the NOTE that ellipses, never the
+   number (the whole of it is the row's title). */
+.node-num.is-sourced dd { display: flex; align-items: baseline; gap: var(--ctl-s1); text-overflow: clip; }
+.node-num-v { flex: none; }
+.node-num.is-sourced .wf-src { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .node-reading {
   display: block; width: 44px; height: 9px; border-radius: 999px;
   background: var(--surface-2);
@@ -2458,11 +2524,15 @@ table.pools th, table.pools td {
    a column head says once, at the top, where the data starts — and it says it
    on a fill step, at `--line-soft`, not at `--text-faint`. The old
    `border-bottom-color: var(--text-faint)` made this the strongest horizontal
-   on the screen, heavier than the panel's own edge. */
+   on the screen, heavier than the panel's own edge.
+
+   NOT STICKY (WF-21). It declared `position: sticky; top: 0; z-index: 1`, and
+   that never took effect: every `table.pools` sits in a `.table-wrap`, which
+   is `overflow-x: auto` -- so the wrapper is the head's scroll container on
+   both axes, and no wrapper ever scrolls vertically. What the declaration did
+   do was make every head cell a layer of its own. `.ctl-table thead th` carries
+   the same note. */
 table.pools thead th {
-  position: sticky;
-  top: 0;
-  z-index: 1;
   background: var(--surface-2);
   border-bottom: 1px solid var(--line-soft);
   font: 600 var(--t-meta)/var(--lh-meta) var(--mono);
@@ -3203,18 +3273,19 @@ table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--tex
    through which the content showed. Minus the drawer's own top padding puts
    it on the edge it was measured against; `shell.test.tsx` holds the two
    equal.
-   `z-index: 3`, NOT 1 (AG-30). `.ctl-table thead th` is sticky at z-index 1 to
-   stay over its own rows, and it comes later in the DOM than this band -- so
-   at equal z it painted OVER the band and scrolled across the close button's
-   row. The band is 3, the button on it 4 and the inspector's drag handle,
-   which must stay above both, 5. The table head keeps its 1: an offset or a
-   lower z there would push it under its own rows, which is the other way
-   round from the fix. */
+   `z-index: 3`, NOT 1 (AG-30). `.ctl-table thead th` was sticky at z-index 1,
+   and it comes later in the DOM than this band -- so at equal z it painted
+   OVER the band and scrolled across the close button's row. The band is 3, the
+   button on it 4 and the inspector's drag handle, which must stay above both,
+   5. The band stays above ANY positioned table cell: since WF-21 no table head
+   is one (the sticky declaration never took effect inside an `overflow-x`
+   wrapper), and CH-13's sticky first column, when it lands, has to rank under
+   3 as well -- `shell.test.tsx` holds both. */
 .drawer::before {
   content: '';
   position: sticky;
   top: -18px;
-  /* Above every sticky table head in the drawer, below the button on it. */
+  /* Above any positioned table cell in the drawer, below the button on it. */
   z-index: 3;
   display: block;
   height: 50px;
@@ -6119,11 +6190,21 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
 /* THE ONE HAIRLINE PERMITTED INSIDE A PANEL, and it is here because a column
    head is a different KIND of row rather than the next one: it says once, at
    the top, where the data starts. `--line-soft` and not `--line`, because it
-   still sits inside a box that has already drawn its boundary. */
+   still sits inside a box that has already drawn its boundary.
+
+   THE HEAD IS NOT STICKY, AND NEVER WAS IN EFFECT (WF-21). It declared
+   `position: sticky; top: 0; z-index: 1`. `.ctl-table` is `overflow-x: auto`,
+   which makes the table's own wrapper the head's scroll container on BOTH
+   axes, and that wrapper never scrolls vertically -- so the head never stuck
+   to anything. What the declaration did do was draw every head cell as a
+   positioned layer of its own, which is the likely source of the faint
+   vertical seams the Workflows Table showed at fractional column edges
+   (runner|waited, waited|ran, attempts|cost, cost|tokens). Below 899px the
+   stacked tables hide the head anyway. Not verified rendered: the next release
+   has to be looked at at 1440, light and dark, and if a seam survives, the fill
+   moves from each `th` to `thead` once. shell.test.tsx holds that no head is
+   sticky, and that any positioned cell still ranks under the drawer's band. */
 .ctl-table thead th {
-  position: sticky;
-  top: 0;
-  z-index: 1;
   background: var(--surface-2);
   border-bottom: 1px solid var(--line-soft);
   font: 600 var(--t-meta)/var(--lh-meta) var(--mono);
@@ -9286,14 +9367,33 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
   color: var(--text-faint);
   white-space: nowrap;
 }
-/* The last label hangs LEFT of its line, so an axis ending at 100% does not
-   push its final label past the card's edge. */
-.wf-tl-tick:last-child:not(:first-child) {
+/* THE LAST LABEL HANGS LEFT OF ITS LINE ONLY IN THE LAST QUARTER OF THE TRACK
+   (WF-12), so an axis ending near 100% does not push its final label past the
+   card's edge. It hung on `:last-child` wherever the last tick sat, so a last
+   line at 70% printed its label back over the tick before it. `axisOf` marks
+   `end` at 75% or more; a last tick further left keeps its label to the right
+   of its line like every other. Positions stay percentages: nothing here is
+   measured. */
+.wf-tl-tick.is-end {
   transform: translateX(-100%);
   padding-left: 0;
   padding-right: var(--ctl-s1);
   border-left: 0;
   border-right: 1px solid var(--line);
+}
+/* ON A PHONE THE AXIS PRINTS EVERY OTHER LABEL, counting back from the last
+   (WF-12). At 390 the track beside the step names is about 215px, so six
+   labels sit about 43px apart, and a seven-character one (`+1h 30m`) is ~59px:
+   they printed over each other,
+   `+1520m`, `+10m+15m`. §7.2: a phone chart is drawn for the phone, not
+   scaled. Only the LABEL is hidden -- every tick keeps its rule line -- and
+   `0` and the last label always print. Every printed label but `0` is two
+   intervals from the next; with an even tick count `0` and the tick after it
+   both print one interval apart, which is safe because `0` is one character.
+   The one case this does not clear: exactly five steps, to the millisecond,
+   is six ticks, and two seven-character labels at 60% and 100% can touch. */
+@media (max-width: 560px) {
+  .wf-tl-tick:nth-last-child(even):not(:first-child) > .wf-tl-tick-label { visibility: hidden; }
 }
 .wf-tl-track {
   position: relative;
@@ -9311,15 +9411,41 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
   box-sizing: border-box;
   border-radius: var(--track-radius);
 }
-/* TIME WAITED IS AN OUTLINE, in every state: waiting is not a verdict on the
-   step, and a filled bar would read as work. */
+/* ONLY A FAILURE OR LIVE WORK IS COLOURED (WF-11, the #122 hue ruling;
+   design-system.md §6.4). A hue on a bar is a verdict, and on this view two
+   bars have one: a run that FAILED, and a run in flight.
+
+   TIME WAITED IS A FAINT OUTLINE, in every state: waiting is not a verdict on
+   the step, and a filled bar would read as work. It was `--warn-ink` -- the
+   caution hue on every wait on the screen, the one thing this comment already
+   said it was not. */
 .wf-tl-span.is-waited,
-.wf-tl-span.is-waiting { border: 1px solid var(--warn-ink); }
-/* TIME RUN IS FILLED, and a finished run takes the tone the node's accent
-   takes -- the one place on this view the outcome is coloured. */
-.wf-tl-span.is-ran { background: var(--text-faint); }
-.wf-tl-span.is-ran.is-ok { background: var(--ok); }
+.wf-tl-span.is-waiting { border: 1px solid var(--text-faint); }
+/* TIME RUN IS FILLED, and a finished run is one grey whether it succeeded or
+   was cancelled: finishing is not a verdict either. `.is-ok { --ok }` is gone.
+   The row's state dot still says every state; cancelled is CH-22's grey flat
+   bar. */
+.wf-tl-span.is-ran { background: var(--text-dim); }
+/* A FAILED RUN keeps its `--bad` fill and gains TS-4's failed mark
+   (redesign-v2 §5.5 Tier 1, "solid fill + a 2px left rule"), in the shape §6.7
+   gives bad: a full-height rule, a post at the run's start standing 8px above
+   and below the bar. It has to stand past the bar -- a `--bad` rule on a `--bad`
+   fill is invisible, and a `--text` one is 1.26:1 on `--bad` in light. Against
+   `--surface` the post is 5.3:1 dark and 12.5:1 light, so in greyscale a failed
+   run keeps an outline a grey run does not (where `--bad` on `--text-dim` is
+   only 1.26:1 dark). The 8px is the span's `--ctl-s2` inset, written as a
+   literal because spaceprobe cannot resolve a negated calc (see the AG-31
+   note). TS-4 reuses this shape when it lands. */
 .wf-tl-span.is-ran.is-bad { background: var(--bad); }
+.wf-tl-span.is-ran.is-bad::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: -8px;
+  bottom: -8px;
+  width: 2px;
+  background: var(--bad);
+}
 /* IN FLIGHT, SO IT MOVES (viz #2: "in-flight bars dashed and animating"). A
    light band sweeping along the bar, on `ctl-sweep` -- the keyframes the
    pending surface already runs on -- and NOT on `pulse`: that name was
@@ -9392,6 +9518,12 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
   border-bottom: 1px dashed currentColor;
 }
 .wf-cell.is-none { color: var(--text-faint); }
+/* WHERE A FIGURE CAME FROM, when it is the step's result's rather than its
+   attempts' (WF-5): `from result`, beside the figure, on the node, in the
+   table and in the inspector alike. A qualifier in the figure's own slot
+   (design-system.md §8.4): provenance type -- faint, micro, mono -- and no
+   hue, because a source is not a verdict and the figure is still a figure. */
+.wf-src { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-faint); font-style: normal; }
 .wf-cell-state { display: inline-flex; align-items: center; gap: var(--ctl-s2); }
 .wf-table .node-reading { display: inline-block; vertical-align: middle; }
 .wf-table .wf-pick { min-height: 0; padding: 0 var(--ctl-s1); }

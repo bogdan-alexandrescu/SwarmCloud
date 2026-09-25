@@ -315,11 +315,9 @@ describe('DispatchChoice, the control', () => {
 // and the forms (Dispatch's option count, the Consequence box, SubmitWorkflow's
 // outcome fact) keep the full sentence, which the cases above still pin.
 
-/** `opens` off the consequence. Read through a cast so this file typechecks
- *  against a `DispatchConsequence` that does not carry the field yet -- the
- *  cases below are what say it must. */
-const opensOf = (s: DispatchStrategy, n: number): string | undefined =>
-  (consequenceOf(s, n) as unknown as { opens?: string }).opens
+/** `opens` off the consequence. (It was read through a cast in the commit that
+ *  put these cases in red, before `DispatchConsequence` carried the field.) */
+const opensOf = (s: DispatchStrategy, n: number): string | undefined => consequenceOf(s, n).opens
 
 describe('WF-13: consequenceOf(...).opens, the card value', () => {
   it('reads after the card’s "opens" key: lowercase, and no full stop', () => {

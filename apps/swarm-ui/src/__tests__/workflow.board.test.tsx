@@ -28,7 +28,6 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import { useState } from 'react'
 
 import { WorkflowCard, WorkflowsScreen } from '../Workflows'
-import * as dagModule from '../dag'
 import {
   CANVAS_COLUMN,
   LEVEL_GAP,
@@ -39,6 +38,7 @@ import {
   SIB_GAP,
   STAGE_FITS,
   autoTier,
+  depUnits,
   edgePath,
   foldMix,
   heightOf,
@@ -1888,7 +1888,6 @@ describe('the owner’s decisions: the open card', () => {
   })
 
   it('WF-19: breaks a dependency line only between its units, never inside a step id', () => {
-    const depUnits = (dagModule as unknown as { depUnits?: (s: WorkflowStep) => { text: string }[] }).depUnits
     expect(typeof depUnits, 'dag.ts exports no depUnits').toBe('function')
     // A filename with a space in it, and a hyphenated id -- the two things a
     // browser breaks a line at.
@@ -1899,7 +1898,7 @@ describe('the owner’s decisions: the open card', () => {
     const line = nodeNamed(container, 'merge').querySelector<HTMLElement>('.node-dep')!
     const items = [...line.querySelectorAll('.node-dep-item')].map((el) => el.textContent)
     // ONE LIST FOR THE MARKUP AND THE HEIGHT: what is drawn is what was measured.
-    expect(items, 'the dependency line is not drawn as units').toEqual(depUnits!(merge).map((u) => u.text))
+    expect(items, 'the dependency line is not drawn as units').toEqual(depUnits(merge).map((u) => u.text))
     expect(items).toEqual(['plan', `(${file}),`, 'check-3'])
     // Still one line of text naming every parent whole, and its title unchanged.
     expect(line.textContent).toBe(`↑ plan (${file}), check-3`)
