@@ -178,6 +178,12 @@ Environment specifics that will bite you:
 * Never put secret material in Terraform. A managed secret **version** puts the
   plaintext in a state file several people can read. `scripts/create-secrets.sh`
   owns secret values.
+* **A forge token (a GitHub PAT or App key) is never written to this
+  repository**, a tfvars file, a Job environment or a log. It lives only in
+  Secret Manager as `swarm-tenant-<tenant>-git`, stored with
+  `scripts/create-secrets.sh --stdin`, and the worker reads it at runtime.
+  The repository is public: a token committed once is a token published, and
+  rewriting history does not unpublish it. Owner rule, 2026-09-25.
 
 ---
 
