@@ -136,6 +136,60 @@ run "a_tenant_that_states_no_ceiling_takes_the_environments_default" {
   }
 }
 
+# A tenant's pool is capped at the SMALLER of its two limits, as the API caps it.
+#
+# `max_active` and `capacity_units` both bound one count: the units the tenant's
+# running work holds, where every task costs at least one
+# (acquire_lease_in_transaction adds the task's weight to `tenant:<id>`). So
+# swarm_api/store.py writes the tenant pool's hard limit as
+# min(max_active, capacity_units) in `ensure_tenant` and on every
+# `set_tenant_limits`, and the console's Tenants screen prints that minimum as
+# the ceiling admission enforces (AH-12 in #86).
+#
+# Terraform wrote max_active alone. For any tenant declared with
+# capacity_units below max_active, the pool it bootstrapped admitted more than
+# the API -- and the console -- say the tenant may hold. Every environment's
+# tfvars today has capacity_units at twice max_active, so this changes no live
+# pool; it is the next tenant declared the other way round that it protects.
+# The pool documents sit under ignore_changes, so this can only ever affect a
+# pool Terraform is creating.
+run "a_tenant_pool_takes_the_smaller_of_max_active_and_capacity_units" {
+  command = plan
+
+  module {
+    source = "../../terraform/infra"
+  }
+
+  variables {
+    tenants = {
+      unitsmin  = { kind = "group", principal = "eng@saga.xyz", providers = [], max_active = 10, capacity_units = 4 }
+      activemin = { kind = "group", principal = "research@saga.xyz", providers = [], max_active = 2, capacity_units = 4 }
+      defaults  = { kind = "group", principal = "ops@saga.xyz", providers = [] }
+    }
+
+    pool_limits = {
+      global          = 20
+      default_tenant  = 10
+      provider_tenant = 5
+    }
+  }
+
+  assert {
+    condition     = output.pool_limits["tenant:unitsmin"] == 4
+    error_message = "a tenant with capacity_units below max_active must be capped at capacity_units, as swarm_api/store.py caps it; max_active alone admits more than the tenant may hold"
+  }
+
+  assert {
+    condition     = output.pool_limits["tenant:activemin"] == 2
+    error_message = "a tenant with max_active below capacity_units must be capped at max_active"
+  }
+
+  assert {
+    condition     = output.pool_limits["tenant:defaults"] == 10
+    error_message = "a tenant stating neither limit takes min(pool_limits.default_tenant, the capacity_units default of 40)"
+  }
+}
+
 run "a_tenant_ceiling_of_zero_is_refused" {
   command = plan
 

@@ -398,21 +398,28 @@ test('the `?` sits after a label and never after a value', () => {
     assert.ok(!(body ?? '').includes('<button'), 'a metric label draws a help glyph again')
   }
   assert.ok(explained >= 3, `only ${explained} metric labels publish an explanation`)
-  // AND THE SCREEN'S ONE GLYPH IS NOT AFTER A VALUE (AH-24). It sat in the
-  // run heading AFTER the state chip -- `● running ? ● live` -- and the owner's
-  // rule of 2026-09-25 is that a `?` goes after a label or heading and never
-  // after a value. A state chip is the task's state: a value. The heading
-  // holds nothing but values (the state, the liveness, the stop control), so
-  // there is no label for the glyph to follow, and it LEADS the heading
-  // instead, ahead of the state it explains, still in the heading.
-  // MUTATION: put the glyph back after the chip.
+  // AND THE SCREEN'S ONE GLYPH FOLLOWS A LABEL (AH-24). It sat in the run
+  // heading AFTER the state chip -- `● running ? ● live` -- and the owner's
+  // rule of 2026-09-25 is that a `?` goes after the label or heading it
+  // explains and never after a value. A state chip is the task's state: a
+  // value. #161's first version moved the glyph to LEAD the heading, which is
+  // not after a label either. The heading's state now carries its key, as
+  // every fact in the strip under it does -- `state ? ● running` -- and the
+  // glyph is inside that key, after its word and before the chip.
+  // MUTATION: put the glyph back after the chip, or ahead of the key.
   const heading = /<section class="section panel"><h2>([\s\S]*?)<\/h2>/.exec(markup)
   assert.ok(heading, 'no run heading rendered')
-  const glyphAt = heading[1]!.indexOf('aria-label="Help: ')
-  const chipAt = heading[1]!.indexOf('class="ctl-chip ')
+  const h = heading[1]!
+  const glyphAt = h.indexOf('aria-label="Help: ')
+  const chipAt = h.indexOf('class="ctl-chip ')
   assert.ok(glyphAt >= 0, 'the run heading no longer carries the screen ?')
   assert.ok(chipAt >= 0, 'the run heading draws no state chip')
   assert.ok(glyphAt < chipAt, 'the run heading draws its ? after the state chip, a value')
+  assert.match(
+    h,
+    /<b>state<span style="[^"]*"><button[^>]*aria-label="Help: /,
+    'the run heading ? does not follow a `state` label',
+  )
 })
 
 // ---------------------------------------------------------------------------
