@@ -204,6 +204,81 @@ describe("CH-2: the head's read age is the screen's own", () => {
     expect(headAge(), 'the head says "reading…" with nothing being read').not.toMatch(/reading…/)
     expect(headAge(), "the head lost the list's own read").toMatch(/newest read/)
   })
+
+  it("keeps the list's own age across its tab and state addresses (OV-10), which read nothing", async () => {
+    // THE DEFECT: a list address (`#work/running/recent/succeeded`) is a view
+    // of one mounted list, but keying the reads scope by the whole address
+    // began an empty scope on every segment click, and again when the
+    // inspector closed back to the list address it opened from -- "reading…"
+    // beside a drawn list, with nothing in flight until the next poll.
+    // MUTATION: key `beginScreenReads` and `ScreenAge` by `canonical(at)`
+    // again instead of `readsKey(at)`.
+    vi.stubEnv('VITE_LIVE', '1')
+    vi.resetModules()
+    const done = task({ id: 'tsk_done', tenant_id: 'u-bogdan', state: 'SUCCEEDED', completed_at: at(59) })
+    let pending = 0
+    let listReads = 0
+    const answer = (url: string): Response => {
+      if (url.startsWith('/v1/tenants/me')) return json(ME)
+      if (url.startsWith('/v1/tasks/tsk_done/events')) return json({ events: [] })
+      if (url.startsWith('/v1/tasks/tsk_done/attempts')) return json({ attempts: [] })
+      if (url === '/v1/tasks/tsk_done') return json({ task: done })
+      if (url.startsWith('/v1/tasks?')) {
+        listReads += 1
+        return json({ tasks: [done] })
+      }
+      if (url.startsWith('/v1/resource-classes')) {
+        return json({ resource_classes: { standard: { name: 'standard', cpu: 2, memory_gib: 8, disk_gib: 4, units: 1 } } })
+      }
+      return json({ message: 'not stubbed here' }, 404)
+    }
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      pending += 1
+      try {
+        await Promise.resolve()
+        return answer(String(input))
+      } finally {
+        pending -= 1
+      }
+    }) as unknown as typeof fetch
+    window.location.hash = '#work/running/recent'
+    const { App: LiveApp } = await import('../App')
+    render(<LiveApp />)
+    await waitFor(() => expect(headAge()).toMatch(/newest read/), { timeout: 5000 })
+
+    // A segment click: a route change the list answers from the rows it holds.
+    const seg = await waitFor(() => {
+      const el = document.querySelector('[aria-label="Recent, by state"]')
+      expect(el, 'Recent carries no state segment').not.toBeNull()
+      return el!
+    })
+    const readsBefore = listReads
+    const succeeded = [...seg.querySelectorAll('button')].find((b) => /^succeeded/.test(b.textContent ?? ''))
+    expect(succeeded, 'the segment offers no "succeeded"').toBeDefined()
+    await act(async () => {
+      succeeded!.click()
+    })
+    await waitFor(() => expect(window.location.hash).toBe('#work/running/recent/succeeded'))
+    await act(async () => {})
+    expect(listReads, 'the click read the list again; the check would prove nothing').toBe(readsBefore)
+    expect(pending).toBe(0)
+    expect(headAge(), 'a segment click began an empty scope').toMatch(/newest read/)
+
+    // Open the inspector over that address, then close back to it.
+    await act(async () => {
+      window.location.hash = '#work/task/tsk_done'
+    })
+    await waitFor(() => expect(document.querySelector('.ctl-crumb')?.textContent).toContain('tsk_done'))
+    await waitFor(() => expect(headAge()).toMatch(/newest read/), { timeout: 5000 })
+    await act(async () => {
+      window.location.hash = '#work/running/recent/succeeded'
+    })
+    await waitFor(() => expect(document.querySelector('.ctl-crumb')?.textContent).not.toContain('tsk_done'))
+    await act(async () => {})
+    expect(pending, 'a read is in flight after all; the check would prove nothing').toBe(0)
+    expect(headAge(), 'closing to a list address began an empty scope').not.toMatch(/reading…/)
+    expect(headAge(), "the head lost the list's own read").toMatch(/newest read/)
+  })
 })
 
 // ===========================================================================

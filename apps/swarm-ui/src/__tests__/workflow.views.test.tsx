@@ -1141,6 +1141,27 @@ describe('the QA pass: the table, the inspector and the board chrome', () => {
     // The Timeline draws times from the task read, not the sample.
     chooseBoard('Timeline')
     expect(mark()).toBeNull()
+    // AH-24: AFTER THE LABEL OR HEADING, NEVER AFTER A VALUE. The board's one
+    // `?` trailed the caveats -- `6/8 sampled ?` -- where it read as a
+    // footnote on the figure. #161's first version moved it to LEAD the
+    // strip, which has no label, so it followed nothing. The glyph explains a
+    // property of the whole screen (a word where a digit would be, on every
+    // absent figure), so it follows the screen's heading, `Workflows`, in the
+    // page head, and is there whether any caveat is drawn or none.
+    // MUTATION: move it back into `.wf-caveats`, at either end.
+    chooseBoard('Table')
+    await waitFor(() => expect(mark()?.textContent).toBe('6/8 sampled'))
+    const caveats = document.querySelector('.wf-caveats')!
+    expect(caveats.querySelector('button[aria-label^="Help: "]'), 'the board `?` is still among the caveats').toBeNull()
+    const head = document.querySelector('.head')
+    expect(head?.querySelector('h1')?.textContent).toBe('Workflows')
+    const glyph = head?.querySelector('button[aria-label^="Help: "]') ?? null
+    expect(glyph, 'the `?` does not follow the Workflows heading').not.toBeNull()
+    expect(glyph!.closest('h1'), 'the `?` is inside the heading, and in its name').toBeNull()
+    expect(
+      head!.querySelector('h1')!.compareDocumentPosition(glyph!) & Node.DOCUMENT_POSITION_FOLLOWING,
+      'the `?` sits before the heading',
+    ).toBeTruthy()
     // The Graph, at the Figures tier these small workflows land on, draws
     // them on every node.
     chooseBoard('Graph')

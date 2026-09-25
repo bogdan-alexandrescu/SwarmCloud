@@ -38,6 +38,7 @@ move.
 | §2.4 Overview | **Overview workflow and parked checks** | `checks.ts:566` `workflowCheck` and `checks.ts:706` `parkedCheck`, both run by `deriveChecks` (`checks.ts:133`) |
 | §4 #1 | **Semantic zoom on the workflow graph** | `dag.ts:372` onward sets which fields a node drops at each tier; the control is at `Workflows.tsx:1060-1106` |
 | §2.1, §2.4 | **Three-section nav** | `App.tsx:214-404` `SECTIONS`: Overview as the landing screen, then Work · Capacity · Admin. Runtimes and History became panes, not sections. The fifteen screens keep their own routes. This replaces §2.4's six sections |
+| §2.4 Admin | **Admin's read-only pane** | Admin took one read-only pane, Platform counts (a platform-wide count behind a button that prints its cost), so §2.4's "No read-only data at all" no longer holds; the current question is in App.tsx and redesign.md §2. *(Added 2026-09-25, AH-23 in #86.)* |
 
 **Still open at `b0fff1b`**
 
@@ -127,6 +128,10 @@ left as they were checked at `b0fff1b`; this list is what changed after.
   only the list of checkpoints existed (`GET /v1/tasks/{id}/checkpoints`),
   which names each checkpoint and says nothing of what is inside it. All three
   parts of the decision shipped in #29 (see "Since `b0fff1b`" above).
+
+**2026-09-25:** §5.5 Tier 2's "links are underline-on-hover" is superseded by
+design-system.md §1.3's resting underline: a link is ink plus an underline at
+rest, and the accent is the hover and focus state (OV-8, epic #81).
 
 ---
 

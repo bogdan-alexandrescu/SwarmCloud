@@ -34,6 +34,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 19 | `states.py`: no `EventType` says "the reconciler evicted this execution" | open |
 | 20 | `models.py`: `Workflow.on_step_failure` is a bare `str`, and its vocabulary is stated four times | open |
 | 21 | `states.py`: the worker's exit codes have no shared home, and the reconciler now acts on one | open |
+| 22 | `profiles.py`: whether a runner profile can run on a pool account is stated by the worker and restated by the scheduler | open |
 
 ---
 
@@ -227,7 +228,7 @@ One idea, five spellings:
 |---|---|---|
 | `swarm_common/models.py:333` `WorkflowStep.input_from` | `dict[str, str]` | step id |
 | `swarm-api/schemas.py:80` `WorkflowStepCreate.input_from` | `dict[str, str]` | step id |
-| `swarm-api/validation.py:358` `StepSpec.input_from` | `tuple[str, ...]` | step id, **no filenames** |
+| `swarm-api/validation.py` `StepSpec.input_from` | `Mapping[str, str]` | step id (was a tuple of ids with no filenames until #64) |
 | `task.metadata["input_from"]` | untyped | **task id** |
 | `swarm-ui/src/types.ts:1227` `WorkflowStep.input_from` | `string \| null` | -- |
 
@@ -251,9 +252,11 @@ what is inside it. That defensiveness is correct and would still be wanted; the
 request is about the fifth row of that table, and about the submission path that
 never gets validated at all.
 
-`StepSpec.input_from` being a *tuple of ids* is not sloppiness: `validate_dag`
-needs to know which step a file comes from, not which file. It is listed because
-it is a fourth shape somebody has to hold in their head while reading this.
+`StepSpec.input_from` was a *tuple of ids* because the dependency rule needs to
+know only which step a file comes from. That shape is also why the API could not
+see two parents staging one filename, a mistake that surfaced only after both
+parents had run. Since #64 it carries the filenames too, and `validate_dag`
+refuses that collision and any absolute or traversing filename at submission.
 
 ### Why: the failure it prevents
 
@@ -273,7 +276,11 @@ reject_reserved_metadata({"unit": "payments", "input_from": {"x": "y"}})
 `_build_task` then copies caller metadata verbatim (`service.py:205`,
 `metadata = dict(spec.metadata)`). So a plain `POST /v1/tasks` carrying
 `metadata.input_from` is stored as written and honoured by the worker, having
-passed none of the DAG checks.
+passed none of the DAG checks. A workflow's own `metadata.input_from` takes the
+same route onto every step that declares no `input_from` of its own, which
+always includes the root steps. Since #64 its filenames are checked at
+submission (`validate_workflow_input_from_metadata`), but the task ids it names
+still carry no dependency edge.
 
 Be precise about what that is and is not. It is **not** a tenant escape:
 `inputs.fetch_upstream_task` (`inputs.py:226-254`) refuses a task belonging to
@@ -2064,3 +2071,81 @@ would then both be derived from it, and the parity test deleted.
 The parity test stays and does its job for these two copies. A third reader of
 exit codes (a UI badge, a smoke check, an alert on 78s) would have to restate
 the number again, and would need its own parity test to be safe.
+
+---
+
+## 22. `profiles.py`: whether a runner profile can run on a pool account is stated by the worker and restated by the scheduler
+
+**Status:** open, recorded 2026-09-25 by the lane that made admission and
+dispatch ask one question (branch `lane/pool-credential-admission`, #169). If
+another branch has taken 22 by the time this merges, renumber this one.
+
+### What is true today
+
+A pool account is a Claude subscription. Its token fills one variable,
+`CLAUDE_CODE_OAUTH_TOKEN`, and a runner profile can run on an account only if
+its `secrets` declare that name. `claude-code` does. `browser` does not.
+
+The frozen catalogue says nothing about this. It lists the names, and the
+meaning of one of them is decided outside it:
+
+* `agent_worker.accountlease.ACCOUNT_TOKEN_ENV`, which the worker checks before
+  it asks the broker for an account (`lifecycle._lease_account`);
+* `scheduler.credentials.SUBSCRIPTION_TOKEN_ENV`, which admission checks before
+  it lets a tenant with no key of its own through on the pool.
+
+The scheduler's image does not carry the worker, so it cannot import the
+worker's constant. `tests/unit/worker/test_pool_credential_parity.py` holds the
+two together. It compares the constants, and it also runs the real worker's
+credential resolution for every profile in the catalogue against the
+scheduler's `credential_for`.
+
+If they drifted, the failure would be quiet in both directions:
+
+* the scheduler expects the pool and the worker does not ask it: a keyless
+  tenant's task is admitted, a container starts, the worker parks it on
+  CREDENTIAL_MISSING, and the credential sweep promotes it again on the next
+  drain;
+* the worker would ask and the scheduler does not expect it: a tenant the pool
+  serves is parked at admission and never runs.
+
+### The requested change
+
+Add to `profiles.py`:
+
+```python
+#: The variable a Claude subscription token fills. A profile whose `secrets`
+#: name it can run on an account from the pool; one that does not, cannot.
+SUBSCRIPTION_TOKEN_ENV = "CLAUDE_CODE_OAUTH_TOKEN"
+
+
+@dataclass(frozen=True)
+class RunnerProfile:
+    ...
+
+    @property
+    def runs_on_a_pool_account(self) -> bool:
+        return self.provider is not None and SUBSCRIPTION_TOKEN_ENV in self.secrets
+```
+
+`agent_worker.accountlease.ACCOUNT_TOKEN_ENV` and
+`scheduler.credentials.SUBSCRIPTION_TOKEN_ENV` would then both be derived from
+it. The worker's `_lease_account` and the scheduler's `credential_for` would
+both ask `profile.runs_on_a_pool_account`, and the parity test could shrink to
+the behavioural half.
+
+### What it would break if accepted
+
+* **Nothing stored.** No document carries the name.
+* **`ACCOUNT_TOKEN_ENV` is imported by that name** in the worker and its tests.
+  Keeping it as an alias of the new constant avoids a rename in the same
+  change.
+* **The UI's catalogue mirror** (`apps/swarm-ui/src/types.ts`, section 5 of
+  `docs/mirrored-values.md`) mirrors `RunnerProfile` fields, not properties, so
+  a property adds nothing it has to follow.
+
+### If it is declined
+
+The parity test stays and does its job for these two copies. A third reader,
+for example a UI hint that says which profiles a lent account can run, would
+have to restate the name again and would need its own parity test.

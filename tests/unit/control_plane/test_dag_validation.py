@@ -9,6 +9,8 @@ rejected at all.
 
 from __future__ import annotations
 
+from typing import Mapping
+
 import pytest
 
 from swarm_api.errors import ValidationFailed
@@ -17,8 +19,13 @@ from swarm_api.validation import StepSpec, find_cycle, topological_order, valida
 from .conftest import auth_header
 
 
-def spec(step_id: str, *depends_on: str, input_from: tuple[str, ...] = ()) -> StepSpec:
-    return StepSpec(step_id=step_id, depends_on=tuple(depends_on), input_from=input_from)
+def spec(step_id: str, *depends_on: str, input_from: Mapping[str, str] | None = None) -> StepSpec:
+    # upstream step id -> filename, as submitted: the filenames are checked too
+    # (test_input_from_submission.py), so a helper that dropped them would test
+    # a StepSpec the service never builds.
+    return StepSpec(
+        step_id=step_id, depends_on=tuple(depends_on), input_from=dict(input_from or {})
+    )
 
 
 # -- the required case: a cycle is rejected -------------------------------
@@ -86,7 +93,7 @@ def test_duplicate_step_ids_are_rejected():
 
 
 def test_input_from_must_also_be_a_dependency():
-    steps = [spec("a"), spec("b", input_from=("a",))]
+    steps = [spec("a"), spec("b", input_from={"a": "notes.md"})]
     with pytest.raises(ValidationFailed) as exc:
         validate_dag(steps, max_steps=50)
     assert "does not depend on it" in str(exc.value)

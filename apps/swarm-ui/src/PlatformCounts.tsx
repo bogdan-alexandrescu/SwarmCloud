@@ -2,8 +2,9 @@ import { useEffect, useState } from 'react'
 import { loadMe, loadStats } from './api'
 import { errorHeading, type ApiError, type Result } from './fetch'
 import { HelpCard } from './HelpCard'
-import { timeAgo } from './Shell'
-import { NEVER_WRITTEN, REAL_STATES, type Stats } from './types'
+import { PageHead, timeAgo } from './Shell'
+import { NEVER_WRITTEN, REAL_STATES, pluralise, type Stats } from './types'
+import { AGE_TICK_MS, useNow } from './useNow'
 
 /**
  * Platform-wide task counts. Admin only, and deliberately behind a button.
@@ -16,11 +17,19 @@ import { NEVER_WRITTEN, REAL_STATES, type Stats } from './types'
  * expensive as the platform gets older, and auto-refreshing it at 5s would be
  * a standing charge nobody chose.
  *
- * THAT USED TO BE A PARAGRAPH ABOVE THE BUTTON. It is now the figure in the
- * toolbar -- `24 count() per run` -- which is the same fact with the arithmetic
- * already done for the reader and, unlike the sentence, it moves when the
- * caller turns out to be an admin. §8.4.1: a well-chosen unit is the
- * explanation. The argument is at #help/api-reads.
+ * THAT USED TO BE A PARAGRAPH ABOVE THE BUTTON. It is now a figure --
+ * `24 count() per run` -- which is the same fact with the arithmetic already
+ * done for the reader and, unlike the sentence, it moves when the caller turns
+ * out to be an admin. §8.4.1: a well-chosen unit is the explanation. What a
+ * run returns is at #help/platform-counts.
+ *
+ * AND IT SITS IMMEDIATELY BEFORE THE CONTROL IT PRICES (AH-25). The head was a
+ * shape of its own -- `.ctl-page-head` with the button pinned right -- and the
+ * cost sat in a toolbar row under it, a row away from the press it priced,
+ * although this comment said "beside the control". The head is `PageHead` now,
+ * the one fourteen `Screen` routes draw, and its line reads like theirs: what
+ * was read, how long ago, and the read-now control, with the cost printed
+ * right before that control in one span that does not wrap apart.
  *
  * SCOPE IS NOT DECORATION. `tasks_by_state` is the caller's own tenant;
  * `platform_tasks_by_state` is everyone. They are separate cards with the
@@ -43,6 +52,10 @@ export function PlatformCountsScreen() {
    * `null` is "not known yet, or the read failed" and is priced as such.
    */
   const [sessionAdmin, setSessionAdmin] = useState<boolean | null>(null)
+  // The run's age moves on the shared clock, as every age in the frame does
+  // (CH-1): an age that was read once and never re-drawn is the one number on
+  // the line whose whole job is to grow.
+  const now = useNow(AGE_TICK_MS)
 
   useEffect(() => {
     let live = true
@@ -79,35 +92,42 @@ export function PlatformCountsScreen() {
   const queries =
     admin === null ? `${STATE_COUNT}–${STATE_COUNT * 2}` : String(STATE_COUNT * (admin ? 2 : 1))
 
+  // WHAT WAS READ, AND HOW LONG AGO -- the first half of the head line, as on
+  // every Screen route. A run that came back with no counts is a failed query
+  // (the panel below says so), so it reads as a failed run here too, and
+  // neither kind of failure is counted as a run.
+  const failed = run !== null && (run.status === 'error' || run.status === 'empty')
+  const provenance = failed ? (
+    'last run failed'
+  ) : runs === 0 ? (
+    'not counted yet'
+  ) : (
+    <>
+      {pluralise(runs, 'run')}
+      {data && ` · read ${timeAgo(data.generated_at, now)}`}
+    </>
+  )
+
   return (
     <>
-      <div className="ctl-page-head">
-        <h1>Platform counts</h1>
-        <span className="is-end">
-          <button className="retry" onClick={go} disabled={busy}>
-            {busy ? 'Counting…' : runs === 0 ? 'Run the count' : 'Run it again'}
+      {/* THE ONE PAGE HEAD (AH-25): a title over one line. No `?` on it
+          (B7.4): `24 count() per run` IS the cost of pressing the button, as a
+          figure with its unit, immediately before the button. */}
+      <PageHead title="Platform counts">
+        {provenance}
+        {' · '}
+        {/* ONE SPAN, `white-space: nowrap`: at 390 the line wraps, and the
+            price must not end one line with its control starting the next. */}
+        <span className="counts-run">
+          <span className="counts-cost">{queries} count() per run</span>
+          {' · '}
+          {/* `.sub button`, the same read-now control as Screen's `refresh`,
+              not the boxed `.retry`: pressing it is the same act. */}
+          <button type="button" onClick={go} disabled={busy}>
+            {busy ? 'Counting…' : run === null ? 'Run the count' : 'Run it again'}
           </button>
         </span>
-      </div>
-
-      {/* THE ONLY CHROME ABOVE THE CONTENT, AND IT CONTAINS NO SENTENCE.
-          The cost of the control, as a figure with its unit, beside the
-          control. */}
-      <div className="ctl-toolbar">
-        <span className="ctl-fact">
-          <b>per run</b>
-          {queries} count()
-        </span>
-        {/* NO `?` (B7.4). `per run · 12 count()` IS `api-reads`: the cost of
-            pressing the button, as a figure with its unit, beside the button.
-            The glyph opened a card to say what the two facts next to it say. */}
-        {runs > 0 && (
-          <span className="provenance is-end">
-            {runs} run{runs === 1 ? '' : 's'}
-            {data && ` · read ${timeAgo(data.generated_at)}`}
-          </span>
-        )}
-      </div>
+      </PageHead>
 
       {run?.status === 'error' && <Failed error={run.error} />}
 
@@ -323,10 +343,14 @@ function Scope({
           contract defines is absent from a histogram of the contract's states.
           A reader who does not open it is left with an unexplained list, which
           is the only place on this screen where that is true.
-          `honesty.counts.test.tsx` pins it to this foot. */}
+          `honesty.counts.test.tsx` pins it to this foot.
+
+          AFTER THE LABEL, NEVER AFTER A VALUE (AH-24). It trailed the list --
+          `never written: A · B · C ?` -- where it read as a footnote on the
+          last state name. It follows `never written:` now, before the names. */}
       <p className="ctl-card-foot">
-        never written: {Array.from(NEVER_WRITTEN).join(' · ')}
-        <HelpCard topic="states" />
+        never written:
+        <HelpCard topic="states" /> {Array.from(NEVER_WRITTEN).join(' · ')}
       </p>
     </section>
   )
