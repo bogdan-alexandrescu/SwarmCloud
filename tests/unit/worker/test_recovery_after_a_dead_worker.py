@@ -389,11 +389,17 @@ def test_the_pass_retention_comment_still_matches_the_deployed_tick():
 
     It was a strict xfail while the tick was */5. The tick is */1 now, so the
     comment is true, and this holds the two together.
+
+    The comment is read with its line breaks and `#:` prefixes folded away.
+    The sentence wraps after "every", so the old search never found the word
+    after it, and the strict xfail was satisfied by "the retention comment no
+    longer states how often a pass runs" rather than by the mismatch it
+    documented.
     """
     import inspect
     import re
 
-    source = inspect.getsource(ReconcilerConfig)
+    source = re.sub(r"\s*\n\s*#:?\s*", " ", inspect.getsource(ReconcilerConfig))
     claim = re.search(r"A pass runs every (\w+)", source)
     assert claim, "the retention comment no longer states how often a pass runs"
 
