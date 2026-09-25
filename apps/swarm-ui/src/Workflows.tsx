@@ -58,7 +58,6 @@ import {
   USAGE_NOT_SAMPLED,
 } from './measure'
 import { workflowDispatchOf } from './Dispatch'
-import { HelpCard } from './HelpCard'
 import { Id, Screen, timeAgo } from './Shell'
 import {
   axisOf,
@@ -260,6 +259,22 @@ export function WorkflowsScreen() {
     <Screen
       key={reloads}
       title="Workflows"
+      // ONE `?` FOR THE WHOLE SCREEN (B7.4), AFTER ITS HEADING (AH-24).
+      // `absent-vs-zero` is the rule every absent figure on the board obeys --
+      // a word where a digit would be, on a dashed rule -- and it is a
+      // property of the screen rather than of any one node. Drawn per node it
+      // would have been eight question marks on an eight-step graph. The
+      // screen's other four went the way the density pass sends them: the two
+      // caveat marks (`states unread`, `n/m sampled`) each carry a full
+      // sentence as their accessible name, longer and more specific than the
+      // topic a glyph would have opened, and the two dispatch topics are on
+      // the agent detail's card foot and in the rail's Help section.
+      //
+      // The owner's slot rule is after the label or heading, never after a
+      // value. It trailed the caveats (after a value) and then led them
+      // (after nothing: the strip has no label). The nearest heading to a
+      // property of the whole screen is the screen's own.
+      help="absent-vs-zero"
       load={loadWorkflowBoard}
       summary={(d) => `${d.workflows.length} workflow${d.workflows.length === 1 ? '' : 's'}`}
       // ONE SENTENCE (design-system.md §6.9: mark, heading, one sentence, a
@@ -484,18 +499,11 @@ function Board({
         <span className="is-end wf-caveats">
           {board.statesDetail !== null && <StatesUnavailable detail={board.statesDetail} />}
           {figuresDrawn && usage.kind === 'ready' && usage.usage !== null && <SampleNote usage={usage.usage} />}
-          {/* ONE `?` FOR THE WHOLE BOARD, AND SINCE B7.4 FOR THE WHOLE SCREEN.
-              `absent-vs-zero` is the rule every absent figure here obeys -- a
-              word where a digit would be, on a dashed rule -- and it is a
-              property of the screen rather than of any one node. Drawn per node
-              it would have been eight question marks on an eight-step graph.
-              The screen's other four went the way the density pass sends them:
-              the two marks below (`states unread`, `n/m sampled`) each carry a
-              full sentence as their accessible name, longer and more specific
-              than the topic a glyph would have opened, and the two dispatch
-              topics are on the agent detail's card foot and in the rail's Help
-              section. */}
-          <HelpCard topic="absent-vs-zero" />
+          {/* THE BOARD'S `?` IS NOT IN THIS STRIP (AH-24). It trailed the
+              caveats -- `6/8 sampled ?`, a footnote on the figure -- and then
+              led them, which followed nothing: the strip has no label. It
+              explains a property of the whole screen, so it follows the
+              screen's heading; see `help` on the Screen above. */}
         </span>
       </div>
       <div className="wf-board">

@@ -163,6 +163,12 @@ Firestore has a 1 MiB document limit, and an agent's output is routinely larger.
 The tenant's GCS prefix applies, so a workflow cannot stage another tenant's
 artifact even by naming it.
 
+The filename is both the artifact's name in the upstream step and the path it
+lands at downstream. So within one step each parent must stage a **distinct**
+relative filename, with no empty, `.` or `..` segment, and the API refuses any
+other shape at submission (HTTP 422 `invalid_dag`, naming the step, the parents
+and the file) rather than letting the worker refuse it after every parent has run.
+
 ## Dependencies and state
 
 A step with unmet dependencies is `PARKED(DEPENDENCY_INCOMPLETE)`. Parked costs
