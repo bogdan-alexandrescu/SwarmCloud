@@ -224,7 +224,8 @@ export function Dock() {
       {/* OUTSIDE THE DISCLOSURE, deliberately. An expired session is the one
           thing in here that carries an ACTION, and a control that appears only
           after a click is a control that is not there. The collapsed line's
-          dot turns `is-bad` for the same state, but a dot is not a button. */}
+          dot turns `is-bad` (the diamond) for the same state, but a dot is not
+          a button. */}
       {s.expired && (
         <button className="reauth" onClick={() => window.location.reload()}>
           Session expired — reload to sign in
@@ -237,7 +238,13 @@ export function Dock() {
         aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
       >
-        <span className={`ctl-dock-dot ${tone}`} aria-hidden />
+        {/* THE SHARED DOT, NOT A PRIVATE ONE (CH-17). `.ctl-dock-dot` drew
+            its own three marks, and drew an expired session as a RING -- the
+            unknown silhouette -- in a product where the failure mark is the
+            diamond. The tone computed above is the dot's modifier as it
+            stands: a clean strip is the neutral disc, failures the triangle,
+            an expired session the diamond. */}
+        <i className={`ctl-dot ${tone}`} aria-hidden />
         <span className="ctl-dock-label">Reads</span>
         {/* EVERY FACT IS ONE UNWRAPPABLE UNIT, and the strip breaks BETWEEN
             them — F10 of `docs/audits/2026-09-23/overflow-inventory.md`.

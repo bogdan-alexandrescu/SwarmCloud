@@ -312,9 +312,14 @@ export function Run({
  * `warn` rather than letting it fall through keeps a THROTTLED-shaped state
  * from silently rendering in the default grey, which is the colour reserved
  * for "we do not know".
+ *
+ * `ended` (CANCELLED, CH-22) is the flat bar: the ONE `is-info` modifier, not a
+ * second one, grey since CH-17 -- a terminal state that is not a verdict.
  */
 export function chipTone(tone: ChipTone): string {
-  return tone === 'wait' ? 'warn' : tone
+  if (tone === 'wait') return 'warn'
+  if (tone === 'ended') return 'info'
+  return tone
 }
 
 /**
@@ -1945,7 +1950,10 @@ function AttemptCheckpoints({ a, run }: { a: AttemptRow; run: AgentRun }) {
                       </>
                     ) : (
                       <>
-                        <span className="mono uri">{r.uri}</span>
+                        {/* The whole uri in the title: below 900px a stacked
+                            record ellipsizes it to one line (CH-13), and a cut
+                            uri is a different uri. */}
+                        <span className="mono uri" title={r.uri}>{r.uri}</span>
                         {/* No signed URL is minted here, by design. The reader
                             uses their own credentials against GCS, which keeps
                             the tenant boundary in one place. */}
@@ -2221,7 +2229,8 @@ function Artifacts({
                       whole object with their own credentials, which keeps that
                       half of the tenant boundary where IAM already enforces it. */}
                   <td role="cell" data-label="Location">
-                    <span className="mono uri">{a.uri}</span>
+                    {/* Whole in the title; ellipsized when stacked (CH-13). */}
+                    <span className="mono uri" title={a.uri}>{a.uri}</span>
                     <button
                       className="copy"
                       onClick={() => navigator.clipboard?.writeText(`gsutil cp ${a.uri} .`)}

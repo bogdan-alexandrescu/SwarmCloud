@@ -590,7 +590,12 @@ function People({ window: w }: { window: TaskWindow }) {
   return (
     <section className="section">
       <h2>People</h2>
-      {/* `is-stacked` — F6 OF `docs/audits/2026-09-23/overflow-inventory.md`,
+      {/* `is-scroll` NOW (CH-13, design-system.md §7.3): six columns compared
+          across rows is a data table, so below 900px it scrolls with the
+          engineer column held in view; only records of four columns or fewer
+          stack. What follows is why it was `is-stacked`, and the problem it
+          named is the one the held column answers.
+          F6 OF `docs/audits/2026-09-23/overflow-inventory.md`,
           which measured this exact table at 390pt: `clientWidth: 358` against a
           `scrollWidth` of 512, so 30% of it was behind an `overflow-x: auto`
           that paints no scrollbar on this platform. The three columns hiding
@@ -601,7 +606,7 @@ function People({ window: w }: { window: TaskWindow }) {
           supplies that key, as an attribute so the rendered-word budgets are
           unchanged, and the explicit `role`s keep the ARIA table that changing
           `display` would otherwise drop. */}
-      <div className="table-wrap is-stacked">
+      <div className="table-wrap is-scroll">
         <table className="pools" role="table">
           <thead role="rowgroup">
             <tr role="row">
@@ -688,21 +693,26 @@ export function TenantsScreen() {
     >
       {(d) => (
         <section className="section">
-          {/* `is-stacked`, for the same reason as the People table above and
-              more of it: nine columns is the widest table in this file, so at
-              390pt everything from `Max active` rightwards sat behind a
-              scrollbar this platform does not paint. A tenant row whose
-              visible part ends at `Principal` says nothing about whether that
-              tenant can run anything at all.
+          {/* `is-scroll` (CH-13, design-system.md §7.3), for the same reason
+              as the People table above: nine columns compared down the
+              roster is a data table, so below 900px it scrolls sideways with
+              the tenant column held in view; only records of four columns or
+              fewer stack. It was `is-stacked`, because at 390pt everything
+              from `Max active` rightwards sat behind a scrollbar this
+              platform does not paint, and a tenant row whose visible part
+              ends at `Principal` says nothing about whether that tenant can
+              run anything at all. The held column is what answers that now:
+              every value stays beside the tenant it belongs to.
 
               STATUS IS THE SECOND COLUMN, beside the name (AH-11). It was the
               last, and at 1440 it sat past the panel edge behind the same
               unpainted scrollbar -- pushed there by two identity columns of
               55-65 characters in `nowrap` cells. Whether a tenant can run
               anything is the first thing this roster is read for, so it
-              cannot be the column that falls off. The identities are shortened
-              on the wide table instead (`.ten-ident`, styles.css). */}
-          <div className="table-wrap is-stacked">
+              cannot be the column that falls off, and at 390 it is the first
+              column past the held name. The identities are shortened on the
+              wide table instead (`.ten-ident`, styles.css). */}
+          <div className="table-wrap is-scroll">
             <table className="pools" role="table">
               <thead role="rowgroup">
                 <tr role="row">
@@ -721,8 +731,9 @@ export function TenantsScreen() {
                       link is under the table, not a `?` in here: a glyph in a
                       `<th>` publishes its HelpNote as part of the column's
                       name, which a screen reader then reads on every cell, and
-                      below 900px §B6.3 hides this row while leaving it in the
-                      tab order. */}
+                      while this table was stacked below 900px §B6.3 hid this
+                      row while leaving it in the tab order. It scrolls now
+                      (CH-13), so the row shows, but the first reason stands. */}
                   <th role="columnheader" scope="col" rowSpan={2} className="n">
                     Enforced
                   </th>

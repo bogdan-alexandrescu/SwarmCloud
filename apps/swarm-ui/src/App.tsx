@@ -1,12 +1,13 @@
 import {
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
   useSyncExternalStore,
   type PointerEvent as ReactPointerEvent,
 } from 'react'
 import { createPortal } from 'react-dom'
-import { INSPECTOR, clampPane, readPane, summariseProbes, writePane } from './panes'
+import { INSPECTOR, clampPane, readPane, writePane } from './panes'
 import { AccountsScreen } from './Accounts'
 import { ActivityScreen, TenantsScreen } from './Activity'
 import { AdminSettingsScreen } from './AdminSettings'
@@ -16,7 +17,15 @@ import { AttemptTimelineScreen } from './AttemptTimeline'
 import { ProductHeader } from './Brand'
 import { CapacityScreen } from './Capacity'
 import { Dock } from './Dock'
-import { probeSnapshot, subscribeProbes, type ProbeRecord } from './fetch'
+import {
+  beginScreenReads,
+  probeSnapshot,
+  screenReadsSnapshot,
+  subscribeProbes,
+  subscribeScreenReads,
+  type ProbeRecord,
+  type ScreenReads,
+} from './fetch'
 import { isOverlay, nudgePane, trapTab } from './focus'
 import { useCardBridge, useHelpDisclosure, useEdgeSafePlacement } from './HelpCard'
 import { HELP_ROUTE } from './help'
@@ -27,7 +36,7 @@ import { PlatformCountsScreen } from './PlatformCounts'
 import { ProfilesScreen } from './Profiles'
 import { QuotaDetailScreen } from './QuotaDetail'
 import { RuntimesScreen } from './Runtimes'
-import { timeAgo } from './Shell'
+import { RoutedPage, timeAgo } from './Shell'
 import { SubmitScreen } from './Submit'
 import { SubmitWorkflowScreen } from './SubmitWorkflow'
 import { AGE_TICK_MS, useNow } from './useNow'
@@ -730,6 +739,25 @@ export function App() {
     }
   }, [at])
 
+  // A NEW SCREEN'S READS START FROM NOTHING (CH-2). A LAYOUT effect, so it has
+  // run before any screen's own `useEffect` issues a read: React runs every
+  // layout effect of a commit before the first passive one, parent or child.
+  // Keyed by the canonical route, so opening an agent over the list, or
+  // switching its pane, is a new screen too -- what the head then reports is
+  // what that view has read, not what the list read before it.
+  //
+  // AND THE LIST UNDER IT IS NAMED (CH-2): `pageKey` is the route with its task
+  // removed, the page the inspector is drawn over. That page never unmounts
+  // while the inspector opens, switches pane and closes, so its reads carry on
+  // across all three -- closing the inspector used to begin an empty scope
+  // beside a fully drawn list, and the head said "reading…" with nothing being
+  // read.
+  const screenKey = canonical(at)
+  const pageKey = at.taskId === null ? null : canonical({ ...at, taskId: null })
+  useLayoutEffect(() => {
+    beginScreenReads(screenKey, pageKey)
+  }, [screenKey, pageKey])
+
   const go = (to: string) => {
     window.location.hash = to
   }
@@ -782,7 +810,11 @@ export function App() {
                 <ReferenceScreen />
               )
             ) : (
-              <SectionBody sectionId={section.id} tab={at.tab} taskId={at.taskId} go={go} />
+              // THE PAGE (CH-2): its `Screen`s' reads stay its own while the
+              // inspector is open over it (`RoutedPage` in Shell.tsx).
+              <RoutedPage.Provider value={true}>
+                <SectionBody sectionId={section.id} tab={at.tab} taskId={at.taskId} go={go} />
+              </RoutedPage.Provider>
             )}
           </main>
 
@@ -825,11 +857,25 @@ export function App() {
  * `tests/unit/control_plane/test_nav_headings_agree.py` reads that class name
  * to find the utility button, so it is load-bearing rather than decorative.
  *
- * BELOW 900px IT IS A TOP BAR AGAIN. Two hundred pixels of a 390pt phone is
- * half the screen. The markup does not change -- the CSS turns the column into
- * a scrolling row and hides every unopened section's tabs, which is exactly
- * the eleven-item horizontal strip this replaced, and is the right shape at
- * that width.
+ * BELOW 900px IT IS TWO ROWS (CH-21). Two hundred pixels of a 390pt phone is
+ * half the screen, so the column becomes a strip -- and it used to be ONE
+ * scrolling row with the open section's tabs inserted inline, which moved the
+ * position of every section after the open one. That broke the property this
+ * whole component exists for (§6.14: a position means one thing). So:
+ *
+ *   row 1  `.ctl-rail-main`  the sections and the utility corner, identical on
+ *                            every route
+ *   row 2  `.ctl-rail-sub`   the open section's tabs, only when it has more
+ *                            than one, each row scrolling on its own
+ *
+ * The open section's tabs are therefore drawn TWICE, by one component
+ * (`RailTabs`): inline for the desktop column and as row 2 for the phone.
+ * The sheet displays exactly one copy at any width (`.ctl-rail-main` is
+ * `display: contents` above 900px, so the desktop column is unchanged). And
+ * the two levels stop looking alike: a section's selection is a 2px `--text`
+ * RULE and a tab's is a `--surface-2` FILL -- the phone case of §1.3's
+ * "surface step plus a 2px rule", split between the two levels, so they
+ * differ in greyscale and need no hue.
  *
  * WHAT WAS NOT BUILT, AND WHY IT IS NOT A 56px ICON RAIL BELOW 1280px. §B3
  * asks for icon-only at 56px. This product has no icon set, and a single
@@ -886,84 +932,130 @@ function Rail({ at, go }: { at: Route; go: (to: string) => void }) {
   useEffect(() => {
     const root = rail.current
     if (root === null) return
+    // THE VISIBLE COPY OF THE SELECTED TAB (CH-21). The open section's tabs
+    // are drawn twice -- inline for the desktop column, and as row 2 below
+    // 900px -- and the sheet displays one. Scrolling the hidden copy moves
+    // nothing, so the one with a box is chosen; where nothing has a box
+    // (jsdom has no layout) it is row 2's, the copy that scrolls.
+    const tabs = [
+      ...root.querySelectorAll<HTMLElement>('.ctl-rail-sub [role="tab"][aria-selected="true"]'),
+      ...root.querySelectorAll<HTMLElement>('.ctl-rail-group [role="tab"][aria-selected="true"]'),
+    ]
+    const shown = tabs.find((el) => typeof el.getClientRects === 'function' && el.getClientRects().length > 0)
     const current =
-      root.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]') ??
+      shown ??
+      tabs[0] ??
       root.querySelector<HTMLElement>('.ctl-nav-util .is-on') ??
       root.querySelector<HTMLElement>('.ctl-nav-link.is-on')
-    if (current !== null && typeof current.scrollIntoView === 'function') {
+    if (current !== null && current !== undefined && typeof current.scrollIntoView === 'function') {
       current.scrollIntoView({ inline: 'nearest', block: 'nearest' })
     }
   }, [at.sectionId, at.tab])
 
+  const open = SECTIONS.find((s) => s.id === at.sectionId) ?? null
+
   return (
     <nav className="ctl-rail" aria-label="Sections" ref={rail}>
-      <div className="ctl-rail-sections">
-        {SECTIONS.map((s) => {
-          const on = at.sectionId === s.id
-          return (
-            <div key={s.id} className={`ctl-rail-group${on ? ' is-on' : ''}`}>
-              <button
-                className={`ctl-nav-link${on ? ' is-on' : ''}`}
-                aria-current={on ? 'page' : undefined}
-                title={s.question}
-                onClick={() => go(`${s.id}/${firstTab(s)}`)}
-              >
-                {s.label}
-              </button>
-              {/* A single-pane section draws no second level: one tab under
-                  one section is a duplicate of the section. */}
-              {s.tabs.length > 1 && (
-                <div
-                  className="ctl-rail-tabs"
-                  role="tablist"
-                  aria-label={`${s.label} views`}
+      {/* ROW 1 BELOW 900px, and `display: contents` above it, so the desktop
+          column is exactly what it was: the sections, then the utility corner
+          at the foot. */}
+      <div className="ctl-rail-main">
+        <div className="ctl-rail-sections">
+          {SECTIONS.map((s) => {
+            const on = at.sectionId === s.id
+            return (
+              <div key={s.id} className={`ctl-rail-group${on ? ' is-on' : ''}`}>
+                <button
+                  className={`ctl-nav-link${on ? ' is-on' : ''}`}
+                  aria-current={on ? 'page' : undefined}
+                  title={s.question}
+                  onClick={() => go(`${s.id}/${firstTab(s)}`)}
                 >
-                  {s.tabs.map((t) => (
-                    <button
-                      key={t.id}
-                      role="tab"
-                      aria-selected={on && at.tab === t.id}
-                      onClick={() => go(`${s.id}/${t.id}`)}
-                    >
-                      {t.label}
-                      {t.admin && <span className="ctl-subnav-admin">admin</span>}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-          )
-        })}
+                  {s.label}
+                </button>
+                {/* A single-pane section draws no second level: one tab under
+                    one section is a duplicate of the section. Drawn for every
+                    section at all times on the desktop column; hidden below
+                    900px, where row 2 carries the open section's. */}
+                {s.tabs.length > 1 && <RailTabs section={s} at={at} go={go} className="ctl-rail-tabs" />}
+              </div>
+            )
+          })}
+        </div>
+
+        <div className="ctl-nav-util">
+          <button
+            className={at.sectionId === REFERENCE ? 'is-on' : ''}
+            aria-current={at.sectionId === REFERENCE ? 'page' : undefined}
+            onClick={() => go(REFERENCE)}
+          >
+            {REFERENCE_LABEL}
+          </button>
+          {/* THE RAIL'S `?`, which this comment used to call "the head `?`" --
+              it is not (AH-5). The head `?` is `SectionQuestion`, in `Head`
+              below, and it is the way into Help that ui-audit §B7.2/§B7.3
+              describe: its card now ends in a link here. This button is the
+              other way in, always in the same place, for a reader with no
+              screen-level `?` in front of them. A glyph and an accessible name,
+              not the word "Help" -- the rail is the product's three questions
+              over a landing screen, and a fifth word beside them reads as a
+              fifth section. */}
+          <button
+            className={at.sectionId === HELP ? 'is-on' : ''}
+            aria-current={at.sectionId === HELP ? 'page' : undefined}
+            aria-label="Help"
+            title="Help"
+            onClick={() => go(HELP)}
+          >
+            ?
+          </button>
+        </div>
       </div>
 
-      <div className="ctl-nav-util">
-        <button
-          className={at.sectionId === REFERENCE ? 'is-on' : ''}
-          aria-current={at.sectionId === REFERENCE ? 'page' : undefined}
-          onClick={() => go(REFERENCE)}
-        >
-          {REFERENCE_LABEL}
-        </button>
-        {/* THE RAIL'S `?`, which this comment used to call "the head `?`" --
-            it is not (AH-5). The head `?` is `SectionQuestion`, in `Head`
-            below, and it is the way into Help that ui-audit §B7.2/§B7.3
-            describe: its card now ends in a link here. This button is the
-            other way in, always in the same place, for a reader with no
-            screen-level `?` in front of them. A glyph and an accessible name,
-            not the word "Help" -- the rail is the product's three questions
-            over a landing screen, and a fifth word beside them reads as a
-            fifth section. */}
-        <button
-          className={at.sectionId === HELP ? 'is-on' : ''}
-          aria-current={at.sectionId === HELP ? 'page' : undefined}
-          aria-label="Help"
-          title="Help"
-          onClick={() => go(HELP)}
-        >
-          ?
-        </button>
-      </div>
+      {/* ROW 2 BELOW 900px: the open section's tabs, on a row of their own so
+          nothing in row 1 moves when a section opens. Not drawn for a
+          one-pane section (the rule the inline tabs already follow), and not
+          displayed at all above 900px, where the inline copy is. */}
+      {open !== null && open.tabs.length > 1 && (
+        <RailTabs section={open} at={at} go={go} className="ctl-rail-tabs ctl-rail-sub" />
+      )}
     </nav>
+  )
+}
+
+/**
+ * One section's tabs, the one way they are drawn -- used for the inline copy
+ * on the desktop column and for row 2 of the phone strip (CH-21), so the two
+ * cannot drift. `.ctl-rail-tabs` on both is what gives row 2 every tab rule the
+ * inline tabs have, the 44px phone target included; `.ctl-rail-sub` is only
+ * what places it.
+ */
+function RailTabs({
+  section,
+  at,
+  go,
+  className,
+}: {
+  section: SectionDef
+  at: Route
+  go: (to: string) => void
+  className: string
+}) {
+  const on = at.sectionId === section.id
+  return (
+    <div className={className} role="tablist" aria-label={`${section.label} views`}>
+      {section.tabs.map((t) => (
+        <button
+          key={t.id}
+          role="tab"
+          aria-selected={on && at.tab === t.id}
+          onClick={() => go(`${section.id}/${t.id}`)}
+        >
+          {t.label}
+          {t.admin && <span className="ctl-subnav-admin">admin</span>}
+        </button>
+      ))}
+    </div>
   )
 }
 
@@ -976,10 +1068,22 @@ function Rail({ at, go }: { at: Route; go: (to: string) => void }) {
  *    only place the open agent's id appears outside the inspector itself, and
  *    it is what makes "back" legible: you can see what you would go back to.
  *
- * 2. THE READ AGE. The age of the newest SUCCESSFUL payload of any route this
- *    tab has called, taken from the probe registry the dock summarises. It is
- *    a measurement, never a promise: "nothing has loaded" is a different
- *    sentence from "0s ago" and this renders the first one when it is true.
+ * 2. THE READ AGE -- OF THIS SCREEN'S OWN READS (CH-2). It was the newest
+ *    SUCCESSFUL payload of any route the whole tab had called, so it sat
+ *    beside the page title saying "just now" while that page was still
+ *    loading: the frame's identity read had landed, the page's had not, and
+ *    the dock already said the same tab-wide thing a few hundred pixels
+ *    below. Now it is the newest success among the reads the CURRENT screen
+ *    started (`beginScreenReads` in fetch.ts, keyed by `canonical(at)`), and
+ *    the dock keeps the tab-wide view. Four sentences, each a measurement or
+ *    the plain absence of one:
+ *
+ *      reading…            nothing this screen asked for has settled yet
+ *      newest read 4s ago  the newest payload this screen received
+ *      not read            every read it made failed
+ *      admin only          every read it made met the admin gate
+ *
+ *    Help and API reads issue no reads of their own and say so.
  *
  *    THERE IS NO REFRESH BUTTON HERE, deliberately, although §B3 asks for one.
  *    Every screen owns its own reads -- `Screen` in Shell.tsx holds the result
@@ -998,14 +1102,13 @@ function Rail({ at, go }: { at: Route; go: (to: string) => void }) {
  *    itself is unchanged and still lives in `SECTIONS`.
  */
 function Head({ at, section }: { at: Route; section: SectionDef | null }) {
-  const probes = useSyncExternalStore(subscribeProbes, probeSnapshot, probeSnapshot)
+  const reads = useSyncExternalStore(subscribeScreenReads, screenReadsSnapshot, screenReadsSnapshot)
   // The age is the point, so it moves on its own rather than only when a
   // fetch happens to land -- on the SHARED clock, the one every screen's
   // sub-line and the dock read, so the head and the provenance line under a
   // screen title can no longer disagree by up to a tick (CH-1).
   const now = useNow(AGE_TICK_MS)
 
-  const newest = summariseProbes(probes).newestSuccessAt
   const tab = section?.tabs.find((t) => t.id === at.tab) ?? null
   const head = section?.label ?? (at.sectionId === HELP ? 'Help' : REFERENCE_LABEL)
 
@@ -1032,16 +1135,46 @@ function Head({ at, section }: { at: Route; section: SectionDef | null }) {
       </p>
 
       <span className="ctl-head-age">
-        {newest === null ? (
-          <span className="ctl-em">nothing has loaded in this tab</span>
-        ) : (
-          <>newest read {timeAgo(newest, now)}</>
-        )}
+        <ScreenAge at={at} reads={reads} now={now} />
       </span>
 
       {section !== null && <SectionQuestion section={section} />}
     </div>
   )
+}
+
+/**
+ * The screen's own read age, in the head (CH-2). See `Head` for the four
+ * sentences; the rule under all of them is that the head never shows an age
+ * for data this screen has not received -- not the frame's identity read, not
+ * the screen you just left, not a success from another route of the tab.
+ */
+function ScreenAge({ at, reads, now }: { at: Route; reads: ScreenReads; now: number }) {
+  // Help and API reads draw from nothing they fetch, so there is no age.
+  if (at.sectionId === HELP || at.sectionId === REFERENCE) {
+    return <span className="ctl-em">reads nothing</span>
+  }
+  // `reads` is about ANOTHER screen until this one's scope has begun (the
+  // first render of a route comes before its layout effect), and a screen
+  // whose reads have not settled is still reading.
+  //
+  // "NOTHING SETTLED" MEANS A SCREEN THAT HAS JUST MOUNTED, and only that: a
+  // scope starts from nothing only for a screen that mounts on this route
+  // change, and every screen reads on mount -- its read starts in the effect
+  // right after this render (the fixture path registers it only when it
+  // lands). A screen that stayed mounted -- the list under a closing
+  // inspector -- keeps its own reads (`beginScreenReads`), so it can never
+  // land here saying "reading…" with nothing being read.
+  const own = reads.key === canonical(at) ? reads : null
+  if (own !== null && own.newestSuccessAt !== null) {
+    return <>newest read {timeAgo(own.newestSuccessAt, now)}</>
+  }
+  if (own === null || own.inFlight > 0 || own.settled === 0) {
+    return <span className="ctl-em">reading…</span>
+  }
+  // Settled, nothing landed. The admin gate is information, not a failure, and
+  // is said as the kit says it; anything else is a read that did not land.
+  return <span className="ctl-em">{own.failed === 0 ? 'admin only' : 'not read'}</span>
 }
 
 /**
@@ -1539,15 +1672,15 @@ function ReferenceScreen() {
       ) : (
         <section className="section">
           <h2>Routes called in this tab</h2>
-          {/* `is-stacked` — F6 of `docs/audits/2026-09-23/overflow-inventory.md`.
-              This route is off the main nav, so the inventory's 15-route sweep
-              did not measure it; it is the same five-column table in the same
-              `overflow-x: auto` that paints no scrollbar here, and its widest
-              column is a heading with a parenthetical in it. Stacked below
-              900px on the same terms as the screens §B6.3 already covers,
-              rather than left as the one table that still scrolls sideways
-              because nobody photographed it. */}
-          <div className="ctl-table is-stacked">
+          {/* `is-scroll` (CH-13, design-system.md §7.3). This was `is-stacked`,
+              for F6 of `docs/audits/2026-09-23/overflow-inventory.md`: five
+              columns behind an `overflow-x: auto` that paints no scrollbar.
+              The owner's rule for tables below 900px is that a DATA table --
+              five or more columns, compared across rows -- scrolls with its
+              first column held in view, and only a record of four columns or
+              fewer stacks. This is a data table: the route stays pinned at the
+              left edge while the outcome, latency and age scroll beside it. */}
+          <div className="ctl-table is-scroll">
             <table role="table">
               <thead role="rowgroup">
                 <tr role="row">
@@ -1557,7 +1690,8 @@ function ReferenceScreen() {
                       caption used to spend 24 words saying a 403 on an admin
                       route is the expected answer for a non-admin; the column
                       it is about says so instead, and `describeProbe` already
-                      draws that row in `--info` rather than in `--bad`. */}
+                      draws that row with the neutral flat bar (`is-info`,
+                      grey since CH-17) rather than in `--bad`. */}
                   <th role="columnheader" scope="col">Outcome (403 on /v1/admin is expected)</th>
                   <th role="columnheader" scope="col" className="is-num">Took</th>
                   <th role="columnheader" scope="col">Newest payload</th>
@@ -1586,6 +1720,17 @@ function RouteRow({ probe, now }: { probe: ProbeRecord; now: number }) {
     <tr role="row" className={outcome.row}>
       <th role="rowheader" scope="row" className="ctl-ref-path">
         {probe.path}
+        {/* THE CONCRETE CALL, in the raw-id slot under the readable name
+            (§6.7). A route is a template now (CH-18) -- one row for every
+            task's attempts read -- so this is how a reader still finds WHICH
+            task's read the outcome beside it belongs to. Always drawn, as the
+            slot always is: the name and the id, never one.
+            CUT BELOW 900px, WHOLE IN ITS TITLE (CH-13): the route cell is the
+            held column, which has a ceiling, and a checkpoint file's URL is
+            110 characters -- one line, ellipsized, rather than six. */}
+        <span className="ctl-sub" title={probe.lastUrl}>
+          {probe.lastUrl}
+        </span>
       </th>
       <td role="cell" data-label="Last attempt">{timeAgo(probe.lastAttemptAt, now)}</td>
       <td role="cell" data-label="Outcome">

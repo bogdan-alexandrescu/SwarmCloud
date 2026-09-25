@@ -154,13 +154,37 @@ describe('Tenants puts the status beside the name and fits at 1440 (AH-11)', () 
       expect(won(value!, ['overflow', 'overflow-x'], WIDE)).toBe('hidden')
       expect(won(value!, 'white-space', WIDE)).toBe('nowrap')
       expect(won(value!, 'max-width', WIDE) ?? '', 'no width cap').toMatch(/^\d+ch$/)
-      // At 390 the stacked record shows the WHOLE identity, broken anywhere
-      // (CH-12): a cut identity is a different identity, and there is room.
+      // At 390 the table scrolls with the tenant column held (CH-13), and the
+      // identity shows WHOLE on its line: a cut identity is a different
+      // identity, and a scrolling table has room for it.
       // MUTATION: apply the ellipsis at every width.
       expect(won(value!, 'text-overflow', PHONE), 'the phone record cuts the identity').toBeNull()
     }
     // A tenant with no service account still says so in words.
     expect(visible(row(c, 'smoke').querySelector('td[data-label="Identity"]'))).toBe('no service account')
+  })
+})
+
+describe('Tenants scrolls at 390 with the tenant held, under its two-row head (CH-13, AH-12)', () => {
+  it('holds the tenant column and nothing from the Configured group', async () => {
+    const c = await roster()
+    // A data table of nine columns: it scrolls sideways, it does not stack.
+    const wrap = c.querySelector('table.pools')!.parentElement!
+    expect(wrap.classList.contains('is-scroll'), `the wrapper is ${wrap.className}`).toBe(true)
+    expect(wrap.classList.contains('is-stacked')).toBe(false)
+    // The held column is the name: its head (which spans both head rows) and
+    // every row's header cell.
+    const head = [...c.querySelectorAll('thead tr:first-child th')].find((th) => visible(th) === 'Tenant')!
+    expect(won(head, 'position', PHONE)).toBe('sticky')
+    expect(won(row(c, 'eng').querySelector('th')!, 'position', PHONE)).toBe('sticky')
+    // THE SECOND HEAD ROW'S FIRST CELL IS `Max active`, a figure's head from
+    // the middle of the table, and the held-column rule names cells by
+    // `:first-child`. Held, it sat over the Tenant head at every offset.
+    // MUTATION: drop the grouped-head reset in the CH-13 block of styles.css.
+    const maxActive = c.querySelector('thead tr:nth-child(2) th:first-child')!
+    expect(visible(maxActive)).toBe('Max active')
+    expect(won(maxActive, 'position', PHONE), 'a Configured head is held at the left edge').not.toBe('sticky')
+    expect(won(maxActive, 'white-space', PHONE)).toBe('nowrap')
   })
 })
 
@@ -209,9 +233,10 @@ describe('Tenants shows the ceiling admission enforces (AH-12)', () => {
     expect(links, 'no help link reaches the Tenants fields topic').toHaveLength(1)
     const link = links[0]!
     expect(link.textContent).toBe(HELP['tenant-fields'].title)
-    // AT EVERY WIDTH. Below 900px §B6.3 hides the head row, which is why a
-    // link there would have been the CP-11 defect again: focusable and
-    // invisible. Nothing in the sheet hides this one.
+    // AT EVERY WIDTH. While this table was stacked below 900px, §B6.3 hid
+    // its head row, which is why a link there would have been the CP-11
+    // defect again: focusable and invisible. It scrolls now (CH-13), and
+    // nothing in the sheet hides this one either way.
     for (const env of [WIDE, PHONE]) {
       for (const el of [link, link.parentElement!]) {
         expect(cascade(STYLES, el, 'display', env).winner?.value ?? null, `hidden at ${env.width}`).not.toBe('none')

@@ -858,12 +858,20 @@ adjacent word:
 
 | State | Colour | Second channel |
 |---|---|---|
-| ok | `--ok` | solid fill, filled dot |
+| ok | **none on a state mark** — `--text-faint` (CH-17); `--ok` only as a figure or a chart fill | solid fill, filled dot |
 | live | `--info` | solid fill + the only animation on the screen |
 | warn | `--warn` | 45° hatch (`--ctl-hatch` already exists and is already used correctly for unknown ceilings — extend it) |
 | bad | `--bad` | solid fill + a 2px left rule |
 | paused | `--paused` | **horizontal** hatch, deliberately distinct from warn's 45° |
 | unknown / not-measured | `--ctl-absent` | dotted outline, hollow dot, **no fill at all** |
+| info / ended (CANCELLED) | **none** — `--text-faint` (CH-17, CH-22) | the flat bar; on a chart segment, stacked flat bars (TS-4) |
+
+*(Amended 2026-09-25, owner decisions CH-17, CH-22, TS-4.)* On a state mark hue
+is spent only on warn, bad, paused and live; ok and info keep their shapes and
+lose their hue (design-system.md §6.6), because a healthy platform is a quiet
+grey screen. CANCELLED is `stateTone`'s `ended` tone and draws the grey flat
+bar — terminal, not a verdict — where it used to borrow `wait`'s triangle.
+`--info` remains the link's hover, the focus ring and the live mark.
 
 Then retune luminance so the six occupy at least **three** distinct greyscale steps
 instead of two: lift `ok`, darken `bad`, pull `paused` toward blue-grey.
@@ -904,11 +912,24 @@ Target **32–36px**:
 
 The current sheet is already right here and the redesign must not undo it: five
 motion declarations in 1,877 lines, and `@media (prefers-reduced-motion: reduce)`
-neutralises all of them with `!important`, so ordering cannot defeat it.
+overrides them with `!important`, so ordering cannot defeat it.
+
+*(Corrected 2026-09-25, CH-19.)* That rule did **not** neutralise them: it set
+only a `.01ms` duration, which left every `infinite` animation running, so the
+live pulse cycled .01ms at a time and each frame caught the mark at an
+arbitrary point of its fade. It now also sets `animation-iteration-count: 1
+!important`, so an animation plays once, invisibly, and rests at its base style
+(design-system.md §5.4).
 
 Keep exactly three permitted animations: the live-state pulse (and only while the
 thing is genuinely live), a meter's width transit, and the skeleton — at the
 original 0.5→0.85 amplitude, not the 1→0.35 the collision produced.
+
+*(Corrected 2026-09-25, CH-19.)* The live pulse itself is **1→0.8**, not 1→0.35:
+at .35 a live mark blended to 1.69:1 (light) and 1.95:1 (dark) against its
+ground for half of every cycle, and at .8 every live mark clears 3:1 on
+`--bg`, `--surface` and `--surface-2` in both themes (the lowest, light `--ok`,
+3.26:1). The measurements are in design-system.md §5.4.
 
 Add one, from Temporal: **in-flight edges and bars are dashed and the dashes
 animate**; retrying is dashed red, pending is dashed purple. It is the cheapest way

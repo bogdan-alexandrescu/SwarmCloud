@@ -241,6 +241,12 @@ const SPECS: Record<TopicId, TopicSpec> = {
       'The bar at the foot of every screen summarises the routes this browser tab has called. The age it shows is of the newest SUCCESSFUL payload, not of the newest attempt \u2014 which is the part that tells a stale panel from a healthy one.',
     long: [
       'Every read this tab makes registers in one place: which route, what happened to the last attempt, how long that attempt took, and when the route last actually produced a payload. The dock at the foot of the window is one line off that registry, and it opens into a cell per route.',
+      // CH-18. The registry was keyed by URL, so every opened task added a
+      // "route" of its own; it is keyed by the path template now, and this is
+      // what makes "one record per route" true. The decision's wording ended in
+      // "(… the head shows the screen's own read, CH-2)"; the box id is left
+      // out of product copy and the fact kept.
+      'A route is a path template with ids and query removed. Its status is the last attempt of any call to it, and its age is the newest successful payload of any call to it; each panel still carries its own age and its own failure, and the head beside the page title shows the screen’s own newest read.',
       'The age is the load-bearing number, and it is the age of the last SUCCESS. A panel drawn from a figure four minutes old, whose route has been failing for three of them, is indistinguishable from a healthy panel \u2014 the figure is still on screen, still formatted as a measurement, and nothing on the panel itself has changed. The age is the only thing that says otherwise.',
       'The p95 on the collapsed line is taken over the last attempt of each route: one sample per route, not one per request. This tab keeps no request history, so a percentile over every request made is not something it could compute, and a number labelled as though it were would be the same class of claim as a total summed over a partial response.',
       'A 403 on an admin-only route is counted apart from failures, and deliberately. Someone who is not an admin genuinely cannot read those routes; a console that reported that as a fault would be reporting itself broken every time a non-admin opened it.',
@@ -619,6 +625,13 @@ const SPECS: Record<TopicId, TopicSpec> = {
   // "refused on every call" -- an access-control boundary misstated to the
   // admin deciding whether to disable a group.
   //
+  // NO KEY IS NOT NO CREDENTIAL, since #171 (#169). The Credentials paragraph
+  // said a keyless tenant's provider runtime simply waits. Admission now asks
+  // scheduler/credentials.py `credential_for`, which also admits a keyless
+  // tenant on a subscription account it owns or is lent, for a profile that
+  // takes a subscription token, on a deployment with a broker; it parks
+  // CREDENTIAL_MISSING only when neither exists. The paragraph says both.
+  //
   // The budget paragraph is the account the table note used to print as
   // `no monthly_budget_usd column · no cost attribution source`, from the 422
   // in swarm_api/routes/admin.py `set_tenant_limits`.
@@ -632,7 +645,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
       'Kind and Principal say who belongs to it. A group tenant takes the members of the group named in Principal; a user tenant is the one address named there.',
       'Enforced is the ceiling admission applies to the tenant’s own pool, and it is the smaller of the two configured values. Both limit the same thing — the units the tenant’s running work holds, where every task costs at least one — so the smaller is the one that binds. Every path that writes the tenant’s pool writes this figure as its hard limit: the admin routes whenever either value changes, a first sign-in that creates the tenant, scripts/register-tenant.sh, and Terraform when it creates the pool.',
       'Configured groups the two values as the tenant record holds them: Max active and Units. Neither is enforced on its own; a larger one beside a smaller one is headroom nobody can use until the smaller is raised.',
-      'Credentials names the providers the tenant has registered a key for: names, never keys. None registered means a runtime that needs a provider waits for this tenant rather than failing. Identity is the tenant’s own service account, the one its workloads run as; no service account is said in words, because a blank cell would read as fine.',
+      'Credentials names the providers the tenant has registered a key for: names, never keys. None registered does not by itself mean the tenant cannot run work. A runtime that takes a subscription token can still run on a subscription account the tenant owns or is lent, on a deployment with an account pool; where the tenant has neither a key nor such an account, a runtime that needs a provider waits for this tenant rather than failing. Identity is the tenant’s own service account, the one its workloads run as; no service account is said in words, because a blank cell would read as fine.',
       'The tenant record carries a monthly budget field, and it is empty for every tenant. PUT /v1/admin/tenants/{id}/limits refuses it with a 422: the control plane has no cost attribution source — no billing export, no compute cost per attempt — so a budget could be stored but never enforced. Spend is bounded by the two limits the scheduler does enforce on every admission, which is what the Enforced column shows. The table leaves the field out because an empty column would read as “no budget set”. What the console’s spend figures do and do not include is a topic of its own, linked under this one.',
     ],
     see: ['token-cost', 'paused-vs-full'],
