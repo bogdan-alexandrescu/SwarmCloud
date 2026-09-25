@@ -92,48 +92,45 @@ Nothing is live yet: until step 4, IAP refuses tokens minted for this client.
 ## Step 3 — the permission to write IAP settings on our backends
 
 Writing IAP settings needs `iap.webServices.updateSettings`, and every plan
-reads them with `iap.webServices.getSettings`. Measured on 2026-09-25:
+reads them with `iap.webServices.getSettings`. Both are in
+`roles/iap.settingsAdmin` and in `roles/owner`, and **not** in `roles/iap.admin`
+(`gcloud iam roles describe` on each).
 
-* both permissions are in `roles/iap.settingsAdmin` and **not** in
-  `roles/iap.admin` (`gcloud iam roles describe` on each);
-* `bogdan@saga.xyz` holds `roles/iap.admin` on the project, and
-  `gcloud iap settings get --project=saga-agents-staging --resource-type=compute --service=swarm-ui-backend`
-  answers `PERMISSION_DENIED ... iap.webServices.getSettings`.
+**The applier needs one of those roles on the PROJECT.** A binding on the two
+backend services does not work, and that is measured, not assumed. On
+2026-09-25 `roles/iap.settingsAdmin` was bound on `swarm-ui-backend` and
+`swarm-ui-ui-backend` with `gcloud iap web add-iam-policy-binding
+--resource-type=backend-services`. Ten minutes later `gcloud iap settings get`
+on the same backend still answered `PERMISSION_DENIED`. That was the second
+time: earlier the same day, `roles/iap.admin` bound on the backends left the
+deployer's `getIamPolicy` refused nine and a half minutes later
+(`terraform/modules/frontend/main.tf`, "Who may pass IAP"). IAP bindings on a
+backend decide who may **pass** it (`httpsResourceAccessor`). They do not grant
+administration of it. The failed grants were removed, and the backends were
+back to their accessor bindings only.
 
-So the applier needs `roles/iap.settingsAdmin`, and it must be granted **on the
-two backend services only**. `roles/iap.admin` includes
-`iap.webServices.setIamPolicy`, so the owner can grant it to themselves there:
-
-```bash
-for backend in swarm-ui-backend swarm-ui-ui-backend; do
-  gcloud iap web add-iam-policy-binding \
-    --project=saga-agents-staging \
-    --resource-type=backend-services --service="${backend}" \
-    --member=user:bogdan@saga.xyz \
-    --role=roles/iap.settingsAdmin
-done
-```
-
-Then check it took, which may need a few minutes:
+So check whether you already hold it before asking anyone:
 
 ```bash
 gcloud iap settings get --project=saga-agents-staging \
   --resource-type=compute --service=swarm-ui-backend
 ```
 
-It must print settings (possibly just a `name:` line), not `PERMISSION_DENIED`.
+It must print settings, which may be just a `name:` line, not
+`PERMISSION_DENIED`. The name it prints ends in the backend's numeric ID, not
+its name. That is how IAP names resources; see step 5.
 
-**Not verified:** that IAP honours `roles/iap.settingsAdmin` bound at the
-backend-service level for these two permissions. The denial above names the
-service-level resource, which suggests it will, but this repository has measured
-the opposite once: `roles/iap.admin` bound on the backends still left the
-deployer's `getIamPolicy` refused nine and a half minutes later
-(`terraform/modules/frontend/main.tf`, "Who may pass IAP"). If `settings get` is
-still denied after ten minutes, **stop**. The remaining option is
-`roles/iap.settingsAdmin` on the **project**, granted by a project IAM admin —
-which would let its holder change IAP settings on all ten backends, the other
-team's included. That is a decision for the owner and the other team, not a
-step in this runbook.
+**Do not decide who holds it from `gcloud projects get-iam-policy`.** That shows
+only direct project bindings. On 2026-09-25 it showed the owner holding
+`roles/iap.admin` and no IAM-admin role, and this runbook concluded that only
+someone else could grant the right. That was wrong: the owner could grant
+themselves `roles/owner`, and `settings get` worked the moment they did. Rights
+also arrive through groups, folders and the organisation, and those only show
+up when you try the call.
+
+A project-level role covers IAP settings on **every** backend in the project,
+the other team's included. `terraform/bootstrap` still writes only our two, and
+step 4's plan check is what holds it to that.
 
 ## Step 4 — allowlist the client (Terraform, bootstrap root)
 
@@ -186,6 +183,13 @@ accessSettings:
     programmaticClients:
     - 209012342332-XXXXXXXX.apps.googleusercontent.com
 ```
+
+Run the same `scripts/bootstrap.sh` targets again and require **no changes**.
+Terraform names each backend by its name (`…/services/swarm-ui-backend`), while
+IAP answers with the numeric backend ID (`…/services/817602226733443034`). If
+the provider stored IAP's form, the second plan wants to replace both settings,
+and every later bootstrap apply would repeat it. Treat that as a defect to fix
+in `terraform/bootstrap/iap_programmatic_clients.tf`, not a plan to accept.
 
 Then sign in as a developer would, with the values from step 2 (the
 [plugin setup guide](../plugin-setup.md) has the full flow):
