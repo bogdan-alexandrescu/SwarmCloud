@@ -1,0 +1,264 @@
+"""The upstream agent is told where its dependants' files must go (#149).
+
+Measured on 2026-09-25, workflow `wf_73946ff4a32a4f99b3a4`: eight claude-code
+scans were prompted "write it to scan-01.md", SUCCEEDED, and uploaded only
+`claude-code.stdout.log`, `claude-code.stderr.log` and `claude-transcript.json`.
+Only files in `$SWARM_ARTIFACTS_DIR` are uploaded (`runners/base.py`), that
+directory is outside the working directory and the repository, and nothing had
+told the agent so. All four merges then failed at staging.
+
+The owner chose option (b) on #149. The API records the names on the upstream
+task as `metadata.expected_outputs`
+(tests/unit/control_plane/test_workflow_expected_outputs.py). These tests hold
+the worker's half:
+
+* the worker hands the names to the runner in `input.json`;
+* a CLI runner appends them, with the ABSOLUTE artifacts path, to the prompt it
+  passes the agent, and passes the prompt unchanged when there are none;
+* an attempt that ends without one of them says so, in one log line and in its
+  result summary, and is NOT failed for it -- whether it should be is an open
+  owner decision.
+
+The keys are spelled out rather than imported: each is a field of a document
+that outlives the process that wrote it (`input.json`, `result_summary`), so a
+rename is a compatibility change a test should notice.
+"""
+
+from __future__ import annotations
+
+import io
+import json
+import tarfile
+from pathlib import Path
+from typing import Any
+
+from agent_worker.errors import ExitCode
+from agent_worker.objectstore import LocalObjectStore
+from agent_worker.runners.base import RunnerContext
+from swarm_common.states import TaskState
+
+from conftest import TENANT, seed_attempt
+
+#: `task.metadata` key the API writes and the worker reads.
+METADATA_KEY = "expected_outputs"
+#: `input.json` key the worker writes and a runner reads.
+RUNNER_INPUT_KEY = "expected_outputs"
+#: `result_summary` key naming what the attempt did not produce.
+MISSING_KEY = "expected_outputs_missing"
+
+
+# ---------------------------------------------------------------------------
+# helpers
+# ---------------------------------------------------------------------------
+
+
+def _seed(db: Any, expected: Any, *, artifact_name: str = "notes.md") -> None:
+    seed_attempt(
+        db,
+        task_input={
+            "prompt": "write the notes",
+            "steps": 1,
+            "sleep_seconds": 0.01,
+            "artifact_name": artifact_name,
+            "artifact_text": "the notes\n",
+        },
+    )
+    db.doc("tasks/task_1")["metadata"] = {METADATA_KEY: expected}
+
+
+def _runner_input(store: LocalObjectStore) -> dict[str, Any]:
+    """`input.json` as the runner saw it, from the final checkpoint of `work/`.
+
+    The workspace is destroyed when the attempt ends; the checkpoint is the
+    archive of `work/` taken while the runner was running.
+    """
+    keys = [
+        key
+        for key in store.list_keys(f"tenants/{TENANT}/tasks/task_1/attempts/att_1/")
+        if key.endswith("/archive.tar.gz")
+    ]
+    assert keys, "the attempt wrote no checkpoint"
+    with tarfile.open(
+        fileobj=io.BytesIO(store.download_bytes(sorted(keys)[-1])), mode="r:gz"
+    ) as archive:
+        member = archive.extractfile("input.json")
+        assert member is not None
+        return json.loads(member.read())
+
+
+def _records(log_stream: io.StringIO) -> list[dict[str, Any]]:
+    out = []
+    for line in log_stream.getvalue().splitlines():
+        line = line.strip()
+        if line.startswith("{"):
+            try:
+                out.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    return out
+
+
+def _warnings_naming(log_stream: io.StringIO, name: str) -> list[dict[str, Any]]:
+    return [
+        r
+        for r in _records(log_stream)
+        if r.get("severity") == "WARNING" and name in str(r.get("message", ""))
+    ]
+
+
+def _ctx(tmp_path: Path, payload: dict[str, Any]) -> RunnerContext:
+    work = tmp_path / "work"
+    artifacts = tmp_path / "artifacts"
+    work.mkdir(parents=True, exist_ok=True)
+    artifacts.mkdir(parents=True, exist_ok=True)
+    return RunnerContext(
+        work_dir=work,
+        artifacts_dir=artifacts,
+        input_path=work / "input.json",
+        result_path=work / "result.json",
+        quota_path=work / "quota.json",
+        payload=payload,
+    )
+
+
+def _argv_recording_cli(tmp_path: Path) -> Path:
+    """A stand-in for `claude`: records the argv it was started with, for real.
+
+    The child's environment is built, not inherited, so the recording goes into
+    its working directory, which `SWARM_WORK_DIR` names.
+    """
+    binary = tmp_path / "fake-claude"
+    binary.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json, os, sys\n"
+        "with open(os.path.join(os.environ['SWARM_WORK_DIR'], 'argv.json'), 'w') as fh:\n"
+        "    json.dump(sys.argv, fh)\n"
+        "print(json.dumps({'result': 'ok'}))\n"
+    )
+    binary.chmod(0o755)
+    return binary
+
+
+def _prompt_the_agent_received(tmp_path: Path, monkeypatch, payload: dict[str, Any]) -> tuple[str, Path]:
+    from agent_worker.runners.cliagent import CliAgentSpec, run_cli_agent
+
+    monkeypatch.setenv("FAKE_KEY", "sk-value-0123456789")
+    monkeypatch.setenv("FAKE_BIN", str(_argv_recording_cli(tmp_path)))
+    spec = CliAgentSpec(
+        name="fake",
+        provider="anthropic",
+        binary_env="FAKE_BIN",
+        binary_default="fake-claude",
+        args_env="FAKE_ARGS",
+        args_default=("--print",),
+        key_env="FAKE_KEY",
+        model_flag=None,
+    )
+    ctx = _ctx(tmp_path, payload)
+    run_cli_agent(ctx, spec)
+    argv = json.loads((ctx.work_dir / "argv.json").read_text())
+    # The prompt is the single trailing argument; nothing else a caller supplies
+    # reaches argv.
+    return argv[-1], ctx.artifacts_dir
+
+
+# ---------------------------------------------------------------------------
+# the runner: what the agent is told
+# ---------------------------------------------------------------------------
+
+
+def test_the_agent_is_told_the_names_and_the_absolute_artifacts_path(tmp_path, monkeypatch):
+    prompt, artifacts = _prompt_the_agent_received(
+        tmp_path,
+        monkeypatch,
+        {"prompt": "Scan the repo. Write it to scan-01.md", RUNNER_INPUT_KEY: ["scan-01.md", "notes.md"]},
+    )
+
+    assert artifacts.is_absolute()
+    # The caller's own instructions come first and are kept whole.
+    assert prompt.startswith("Scan the repo. Write it to scan-01.md")
+    # Every name, and the directory by its absolute path -- not only by the
+    # variable's name, which an agent once reported as unset and wrote nothing
+    # (wf_bcdc9180e4fb4a209f31, recorded in runners/cliagent.py).
+    assert "scan-01.md" in prompt[len("Scan the repo. Write it to scan-01.md"):]
+    assert "notes.md" in prompt
+    assert str(artifacts) in prompt
+    assert f"{artifacts}/scan-01.md" in prompt
+    assert f"{artifacts}/notes.md" in prompt
+    assert "$SWARM_ARTIFACTS_DIR" in prompt
+    assert "outside the repository" in prompt
+
+
+def test_the_prompt_is_passed_unchanged_when_nothing_is_expected(tmp_path, monkeypatch):
+    for payload in (
+        {"prompt": "do the thing"},
+        {"prompt": "do the thing", RUNNER_INPUT_KEY: []},
+    ):
+        prompt, _ = _prompt_the_agent_received(tmp_path, monkeypatch, dict(payload))
+        assert prompt == "do the thing", payload
+
+
+# ---------------------------------------------------------------------------
+# the worker: the names reach the runner, and a missing one is reported
+# ---------------------------------------------------------------------------
+
+
+def test_the_worker_hands_the_names_to_the_runner(db, store, worker_factory):
+    _seed(db, ["notes.md", "data.json"])
+    worker, _config, _exporter = worker_factory()
+
+    assert worker.run() == ExitCode.OK
+    assert _runner_input(store).get(RUNNER_INPUT_KEY) == ["data.json", "notes.md"]
+
+
+def test_a_task_that_expects_nothing_hands_the_runner_nothing(db, store, worker_factory):
+    seed_attempt(db, task_input={"prompt": "ordinary", "steps": 1, "sleep_seconds": 0.01})
+    worker, _config, _exporter = worker_factory()
+
+    assert worker.run() == ExitCode.OK
+    assert RUNNER_INPUT_KEY not in _runner_input(store)
+    assert MISSING_KEY not in db.doc("tasks/task_1")["result_summary"]
+
+
+def test_a_missing_expected_output_is_named_in_one_line_and_does_not_fail_the_attempt(
+    db, worker_factory, log_stream
+):
+    _seed(db, ["notes.md", "scan-01.md"], artifact_name="notes.md")
+    worker, _config, _exporter = worker_factory()
+
+    assert worker.run() == ExitCode.OK
+    task = db.doc("tasks/task_1")
+    # NOT failed: whether it should be is the owner's decision, not this one.
+    assert task["state"] == TaskState.SUCCEEDED.value
+    assert task["result_summary"].get(MISSING_KEY) == ["scan-01.md"]
+
+    lines = _warnings_naming(log_stream, "scan-01.md")
+    assert len(lines) == 1, lines
+    # The file that WAS written is not reported as missing.
+    assert "notes.md" not in lines[0]["message"]
+
+
+def test_nothing_is_reported_when_every_expected_output_was_written(db, worker_factory, log_stream):
+    _seed(db, ["notes.md"], artifact_name="notes.md")
+    worker, _config, _exporter = worker_factory()
+
+    assert worker.run() == ExitCode.OK
+    task = db.doc("tasks/task_1")
+    assert task["state"] == TaskState.SUCCEEDED.value
+    assert MISSING_KEY not in task["result_summary"]
+    assert _warnings_naming(log_stream, "notes.md") == []
+
+
+def test_an_unusable_entry_is_dropped_loudly_and_does_not_fail_the_attempt(
+    db, store, worker_factory, log_stream
+):
+    """The declaration is advice to the agent. An entry that cannot be a file
+    in the artifacts directory is left out of that advice with a warning naming
+    it; it does not cost the upstream step its run."""
+    _seed(db, ["notes.md", "../escape.md", "/etc/passwd", 7, ""], artifact_name="notes.md")
+    worker, _config, _exporter = worker_factory()
+
+    assert worker.run() == ExitCode.OK
+    assert db.doc("tasks/task_1")["state"] == TaskState.SUCCEEDED.value
+    assert _runner_input(store).get(RUNNER_INPUT_KEY) == ["notes.md"]
+    assert _warnings_naming(log_stream, "../escape.md"), "the dropped entry was not named"
