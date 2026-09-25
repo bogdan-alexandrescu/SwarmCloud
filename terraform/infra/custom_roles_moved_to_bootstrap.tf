@@ -131,5 +131,7 @@ removed {
 # let go -- a plan (terraform.yml's `plan (dev)`) writes nothing.
 output "custom_roles_owner" {
   description = "Which root defines the platform's custom roles and grants the broker swarmSecretLister. terraform/bootstrap refuses to adopt them until this reads terraform/bootstrap in this root's state."
-  value       = "terraform/bootstrap"
+  # MUTATION M4 (PR #150 mutation proof; reverted by a later commit): the
+  # string infra writes drifts from the one bootstrap waits for.
+  value = "bootstrap"
 }

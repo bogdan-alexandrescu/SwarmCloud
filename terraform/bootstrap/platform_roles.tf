@@ -407,9 +407,7 @@ locals {
   # say. Empty when adopt_from_infra_states is: nothing to wait for.
   infra_states_holding_platform_roles = [
     for prefix, s in data.terraform_remote_state.infra : prefix
-    # MUTATION M3 (PR #150 mutation proof; reverted by a later commit): the
-    # string bootstrap waits for drifts from the one infra writes.
-    if try(s.outputs.custom_roles_owner, "") != "terraform-bootstrap"
+    if try(s.outputs.custom_roles_owner, "") != "terraform/bootstrap"
   ]
 }
 
