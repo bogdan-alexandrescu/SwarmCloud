@@ -25,3 +25,39 @@ sc = "swarm_mcp.sc:main"
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+# WHERE swarm-common COMES FROM, which is why this table exists. The `sc`
+# plugin starts this bridge with
+#
+#   uv tool run --from 'swarm-mcp @ git+https://github.com/<repo>@sc-v<version>#subdirectory=apps/swarm-mcp' swarm-mcp
+#
+# because a marketplace install copies only plugin/ -- there is no checkout to
+# `uv run` in. Installed that way, the root pyproject's sources do not apply,
+# and a bare `swarm-common` is a PyPI lookup: the name is unclaimed there
+# (404 on 2026-09-24), so today the install fails, and the day somebody
+# registers it every operator's bridge installs their code.
+#
+# A RELATIVE path is what uv rewrites, inside a Git dependency, into a Git
+# source at the SAME commit with the subdirectory taken relative to the
+# checkout -- `apps/common` at whatever tag the plugin pinned. That is
+# astral-sh/uv#9594, shipped in uv 0.5.6 (`path_source` in
+# crates/uv-distribution/src/metadata/lowering.rs). So there is no second ref
+# to drift from the plugin's. In this checkout the entry is an ordinary
+# editable path, identical to the root pyproject's, so the development
+# workspace resolves exactly as before.
+#
+# uv only: pip does not read [tool.uv.sources], and installing this package
+# with pip is not supported. tests/unit/mcp/test_plugin_bridge_install.py
+# holds all of the above.
+[tool.uv.sources]
+swarm-common = { path = "../common", editable = true }
+
+[tool.uv]
+# What `SWARM_MCP_FROM=<checkout>/apps/swarm-mcp` needs to mean "my working
+# copy". uv rebuilds a local directory only when a cache key changes, and the
+# default keys are pyproject.toml and setup.py/setup.cfg -- so without the
+# second entry an edited bridge keeps serving the build from before the edit,
+# which is the one thing a developer's escape hatch must not do. The price is
+# that the editable install in this workspace is rebuilt after a source edit,
+# at the next `uv run` -- one hatchling build of this small package, not timed.
+cache-keys = [{ file = "pyproject.toml" }, { file = "swarm_mcp/**/*.py" }]

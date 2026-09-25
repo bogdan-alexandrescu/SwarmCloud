@@ -1,6 +1,13 @@
 # Packaging metadata only. The swarm_common package itself is FROZEN by CONTRACT.md;
 # this file adds no code and changes no types -- it exists so the three Track A
 # services can depend on `swarm-common` as a local path package.
+#
+# IT IS ALSO FETCHED STRAIGHT FROM GITHUB. The `sc` plugin installs its bridge
+# (apps/swarm-mcp) from a git tag, and uv resolves the bridge's relative path
+# source for this package to this directory at that same commit. That holds
+# only while this stays a plain, self-contained package: a static [project]
+# table, a build backend, and no path source of its own that leaves
+# apps/common. tests/unit/mcp/test_plugin_bridge_install.py walks exactly that.
 [project]
 name = "swarm-common"
 version = "0.1.0"

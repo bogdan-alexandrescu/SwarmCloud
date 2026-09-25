@@ -1876,7 +1876,7 @@ dependencies = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "swarm-common" }]
+requires-dist = [{ name = "swarm-common", editable = "apps/common" }]
 
 [[package]]
 name = "swarm-quota-broker"
