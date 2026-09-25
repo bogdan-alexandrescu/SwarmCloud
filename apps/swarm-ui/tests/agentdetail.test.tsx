@@ -398,14 +398,21 @@ test('the `?` sits after a label and never after a value', () => {
     assert.ok(!(body ?? '').includes('<button'), 'a metric label draws a help glyph again')
   }
   assert.ok(explained >= 3, `only ${explained} metric labels publish an explanation`)
-  // AND THE SCREEN'S ONE GLYPH IS STILL ON A LABEL, NOT A VALUE. It sits in
-  // the run heading, after the state chip it qualifies -- which is a label in
-  // every sense the rule means: it names the thing, it is not the thing.
-  assert.match(
-    markup,
-    /<span class="ctl-chip [^"]*"><i aria-hidden="true"><\/i>[A-Z_]+<\/span><span style="[^"]*"><button/,
-    'the run heading no longer carries the screen ?',
-  )
+  // AND THE SCREEN'S ONE GLYPH IS NOT AFTER A VALUE (AH-24). It sat in the
+  // run heading AFTER the state chip -- `● running ? ● live` -- and the owner's
+  // rule of 2026-09-25 is that a `?` goes after a label or heading and never
+  // after a value. A state chip is the task's state: a value. The heading
+  // holds nothing but values (the state, the liveness, the stop control), so
+  // there is no label for the glyph to follow, and it LEADS the heading
+  // instead, ahead of the state it explains, still in the heading.
+  // MUTATION: put the glyph back after the chip.
+  const heading = /<section class="section panel"><h2>([\s\S]*?)<\/h2>/.exec(markup)
+  assert.ok(heading, 'no run heading rendered')
+  const glyphAt = heading[1]!.indexOf('aria-label="Help: ')
+  const chipAt = heading[1]!.indexOf('class="ctl-chip ')
+  assert.ok(glyphAt >= 0, 'the run heading no longer carries the screen ?')
+  assert.ok(chipAt >= 0, 'the run heading draws no state chip')
+  assert.ok(glyphAt < chipAt, 'the run heading draws its ? after the state chip, a value')
 })
 
 // ---------------------------------------------------------------------------

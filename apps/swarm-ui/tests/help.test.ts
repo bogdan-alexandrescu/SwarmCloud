@@ -163,10 +163,10 @@ test('an unknown topic is the default empty state: a mark, one sentence, a link 
 })
 
 // ---------------------------------------------------------------------------
-// The Help page's own chrome (AH-10, AH-15, AH-16)
+// The Help page's own chrome (AH-10, AH-15, AH-16, AH-18, AH-25)
 // ---------------------------------------------------------------------------
 
-/** The opening tag of the topic block at `id`, with its inline style. */
+/** The opening tag of the topic block at `id`. */
 function topicTag(markup: string, id: TopicId): string {
   const m = new RegExp(`<div id="${helpAnchor(id)}"[^>]*>`).exec(markup)
   assert.ok(m, `no topic block for ${id}`)
@@ -174,55 +174,79 @@ function topicTag(markup: string, id: TopicId): string {
 }
 
 /**
+ * The whole block of the topic at `id`: from its opening tag to the next
+ * topic's, or to the end of its group. Read by string position because the
+ * markup is a string here, and a regex over nested elements closes early.
+ */
+function topicBlock(markup: string, id: string): string {
+  const start = markup.indexOf(`<div id="${HELP_ROUTE}/${id}"`)
+  assert.ok(start >= 0, `no topic block for ${id}`)
+  const next = markup.indexOf(`<div id="${HELP_ROUTE}/`, start + 1)
+  const close = markup.indexOf('</section>', start)
+  const ends = [next, close].filter((n) => n > start)
+  return markup.slice(start, ends.length > 0 ? Math.min(...ends) : undefined)
+}
+
+/**
  * AH-15. §6.12: a page head is a title and actions, NO subtitle. This one
  * described about one topic in eight ("why a figure looks the way it does")
  * and restated the deep-linked title a second time under the h1.
  *
- * MUTATION: put the `.sub` paragraph back.
+ * AH-25. AND IT IS THE ONE PAGE HEAD, NOT A SECOND SHAPE OF IT. The Help page
+ * drew its title in `.ctl-page-head` while fourteen routes drew theirs through
+ * `Screen`'s `.head`. It now renders `PageHead`, the markup `Screen` renders,
+ * with no line under the title -- the line AH-15 deleted stays deleted.
+ *
+ * MUTATION: put the `.sub` paragraph back, or draw the head as its own wrapper.
  */
-test('the Help page carries no subtitle', () => {
+test('the Help page carries no subtitle, under the head every screen draws', () => {
   for (const topic of ['', 'absent-vs-zero']) {
     const markup = renderToStaticMarkup(createElement(HelpScreen, { topic }))
     assert.ok(!markup.includes('class="sub"'), `the Help page (topic "${topic}") has a subtitle`)
+    assert.match(markup, /<div class="head[^"]*"><h1>Help<\/h1><\/div>/, 'the Help page does not draw the shared page head')
+    assert.ok(!markup.includes('ctl-page-head'), 'the Help page still draws a head of its own shape')
   }
 })
 
 /**
- * AH-10. The h1, the group h2 and the topic h3 all rendered at 18px/600, so the
- * page had one heading size for three ranks. A topic is a bordered card, and a
- * card's title is --t-lead.
+ * AH-18. A TOPIC IS A ROW OF ITS GROUP, NOT A BOX, AND IT IS STYLED BY THE
+ * SHEET. Every topic was an inline-styled bordered panel -- border, surface,
+ * radius, padding -- because "styles.css belongs to another track this pass".
+ * Under design-system §13.3 a topic is a row inside a region, and a row draws
+ * nothing. The treatment now lives in `.help-topic` in styles.css, where
+ * `src/__tests__/shell.test.tsx` asks the cascade what a browser would draw:
+ * no box, the h3 at `--t-lead` (AH-10), paragraphs and notes at `--measure`.
  *
- * MUTATION: set the h3 back to --t-title.
+ * What this file can see, with no stylesheet, is that the treatment is no
+ * longer written inline: every topic block carries the class and no style.
+ *
+ * MUTATION: put the inline `style` back on a topic, or on its h3.
  */
-test('a topic heading is a card title, one step under the page title', () => {
+test('every topic is a .help-topic row with no inline box (AH-18)', () => {
   const markup = renderToStaticMarkup(createElement(HelpScreen, { topic: '' }))
-  const h3 = /<h3 style="([^"]*)">/.exec(markup)
-  assert.ok(h3, 'no topic heading rendered')
-  assert.match(h3[1]!, /font-size:var\(--t-lead\)/)
-  assert.match(h3[1]!, /line-height:var\(--lh-lead\)/)
-  assert.ok(!h3[1]!.includes('--t-title'), 'the topic heading is still the page-title size')
+  for (const id of TOPIC_IDS) {
+    const tag = topicTag(markup, id)
+    assert.match(tag, /class="help-topic"/, `${id} is not a .help-topic row`)
+    assert.ok(!tag.includes('style='), `${id} still draws its own inline box`)
+  }
+  assert.ok(!/<h3 style=/.test(markup), 'a topic heading still carries an inline size')
+  assert.ok(!/<p style=/.test(topicBlock(markup, 'absent-vs-zero')), 'a topic paragraph still carries an inline style')
 })
 
 /**
- * AH-16. A deep-linked topic was marked by a 3px --text-dim rule and nothing
- * else: no surface step, and the dim rule is the weakest ink on the page. The
- * target is a surface step plus a 2px ink rule (§1.3's selected treatment),
- * and it lands with room above it for the group heading.
+ * AH-16, RE-POINTED BY AH-18. A deep-linked topic was marked by a 3px
+ * --text-dim rule and nothing else. It takes §1.3's selected treatment -- a
+ * surface step and a 2px ink rule -- and that treatment is now `.is-current` on
+ * the row, set from the `highlighted` prop. The values are asserted against the
+ * sheet in shell.test.tsx; here, that exactly the target carries the modifier.
  *
- * MUTATION: drop the surface step, or put the --text-dim rule back.
+ * MUTATION: mark every topic current, or none.
  */
-test('the deep-linked topic is marked by a surface step and an ink rule', () => {
+test('the deep-linked topic, and only it, is the current row', () => {
   const markup = renderToStaticMarkup(createElement(HelpScreen, { topic: 'absent-vs-zero' }))
-  const on = topicTag(markup, 'absent-vs-zero')
-  assert.match(on, /background:var\(--surface-2\)/, 'the target has no surface step')
-  assert.match(on, /border-left:2px solid var\(--text\)/, 'the target has no 2px ink rule')
-  assert.ok(!on.includes('--text-dim'), 'the target is still marked in the dim ink')
-  // A LARGER margin than the old --ctl-s5, so the group heading above the
-  // first topic of a group is not clipped when that topic is the target.
-  assert.ok(!/scroll-margin-top:var\(--ctl-s5\)"/.test(on), 'the scroll margin was not enlarged')
-  // And only the target: every other topic sits on the ordinary surface.
-  const off = topicTag(markup, 'read-failed')
-  assert.ok(!off.includes('--surface-2'), 'an untargeted topic carries the target treatment')
+  assert.match(topicTag(markup, 'absent-vs-zero'), /class="help-topic is-current"/, 'the target is not marked current')
+  assert.equal((markup.match(/is-current/g) ?? []).length, 1, 'more than one topic is marked current')
+  assert.ok(!topicTag(markup, 'read-failed').includes('is-current'), 'an untargeted topic carries the target treatment')
 })
 
 // ---------------------------------------------------------------------------
@@ -383,22 +407,141 @@ test('the states topic tells finished apart from waiting', () => {
 })
 
 /**
+ * AH-13. A `long` PARAGRAPH IS ONLY EVER READ ON THE HELP PAGE.
+ *
+ * `HelpSection.tsx` renders the title, the long form and the values; the card
+ * beside a figure renders `short` and nothing else. So a long paragraph that
+ * says "this screen", "shown above" or "the table below it" points at a screen
+ * the reader is not on -- on the Help page, "above" is the previous topic. The
+ * long form names the thing instead ("the Runtimes screen", "the count over
+ * the Accounts table"), and a history clause ("which is what this panel used
+ * to say") goes: Help states what the console does now.
+ *
+ * `short` is deliberately NOT walked: it renders beside its subject, where
+ * "here" and "this" are correct. Nor is every "here": one that means the
+ * console as a whole ("every read here") is true on the Help page too. The
+ * controls below pin that boundary from both sides, so the pattern cannot be
+ * widened into a ban on words that are right, or narrowed until it catches
+ * nothing.
+ *
+ * MUTATION: put "which is what this panel used to say" back into
+ * `signin-is-over`, or "shown above them" back into `workspace-memory`.
+ */
+const POINTS_AT_A_SCREEN =
+  /\bthis (screen|panel|page|form|field|table|card)\b|\bshown above\b|\babove (the table|them)\b|\bfigures? above\b|\bbelow it\b|\bused to (say|show)\b|\b(appears?|drawn|shown|rendered) here\b|\b(an absence|nothing) here\b/i
+
+test('no long paragraph points at a screen the Help page is not (AH-13)', () => {
+  // THE BOUNDARY, BOTH WAYS, before the walk relies on it.
+  for (const bad of [
+    'which is what this panel used to say',
+    'the memory ceiling shown above them',
+    'the count above the table',
+    'every figure above describes',
+    'it remounts the screen below it',
+    'Nothing here includes compute',
+    'Live load appears here only',
+    'an absence here would read',
+  ]) {
+    assert.ok(POINTS_AT_A_SCREEN.test(bad), `the pattern misses "${bad}"`)
+  }
+  for (const fine of [
+    'The states below are the ones that create demand',
+    'the pools listed below',
+    'no grace above the line',
+    'rather than written down here',
+    'every read here returns a value',
+    'an all-clear here is always phrased',
+  ]) {
+    assert.ok(!POINTS_AT_A_SCREEN.test(fine), `the pattern catches "${fine}", which is true on the Help page`)
+  }
+
+  let read = 0
+  const found: string[] = []
+  for (const id of TOPIC_IDS) {
+    HELP[id].long.forEach((para, i) => {
+      read++
+      const m = POINTS_AT_A_SCREEN.exec(para)
+      if (m) found.push(`${id} long[${i}]: "${m[0]}"`)
+    })
+  }
+  // A walk over nothing passes hardest. 243 paragraphs were measured when the
+  // box was decided, and topics are only ever added.
+  assert.ok(read >= 243, `only ${read} long paragraphs were read; the walk is not covering the registry`)
+  assert.deepEqual(found, [], `long paragraphs that point at a screen the Help page is not:\n${found.join('\n')}`)
+})
+
+/**
+ * AH-14. FOUR THINGS A READER OF THESE SCREENS HAS TO KNOW HAD NO TOPIC.
+ *
+ * redesign-v2 §9.1 named two -- what a pool is, and why a paused pool is not a
+ * full one -- and the QA pass found two more: what each Tenants column means
+ * (including the Enforced ceiling AH-12 adds, and why there is no budget
+ * column, which AH-21 moves off the screen and into this topic), and what
+ * Platform counts returns.
+ *
+ * Read through `topicFor`, not `HELP[...]`, so this file compiles before the
+ * topics exist and fails on the missing topic rather than on the typecheck.
+ *
+ * MUTATION: delete any of the four, or drop the budget paragraph.
+ */
+test('Help carries the four topics the QA pass found missing (AH-14)', () => {
+  const four = ['paused-vs-full', 'what-a-pool-is', 'tenant-fields', 'platform-counts'] as const
+  for (const id of four) {
+    const t = topicFor(id)
+    assert.ok(t, `there is no ${id} topic`)
+    assert.ok(t.long.length >= 2, `${id} has no long form worth the name`)
+  }
+  const all = (id: string) => {
+    const t = topicFor(id)
+    return t === null ? '' : [t.short, ...t.long].join(' ')
+  }
+  // Paused is not full: the action differs, and raising the ceiling is the
+  // wrong one for a paused pool.
+  assert.match(all('paused-vs-full'), /resum/i, 'paused-vs-full never says a paused pool is resumed')
+  assert.match(all('paused-vs-full'), /ceiling/i, 'paused-vs-full never compares it with a full pool')
+  // A pool: a ceiling, a counter in units, and a reservation that is one
+  // transaction across every pool a task needs.
+  assert.match(all('what-a-pool-is'), /units/i)
+  assert.match(all('what-a-pool-is'), /transaction/i)
+  // Tenants' fields covers the Enforced ceiling and the budget that is not a column.
+  assert.match(all('tenant-fields'), /Enforced/, 'tenant-fields does not explain the Enforced column')
+  const fields = topicFor('tenant-fields')
+  assert.ok(
+    fields !== null && fields.long.some((p) => /budget/i.test(p) && /422/.test(p) && /attribution/i.test(p)),
+    'tenant-fields has no paragraph on the budget the limits route refuses',
+  )
+  // Platform counts: one count per state, per scope, and the admin's second scope.
+  assert.match(all('platform-counts'), /count\(\)/, 'platform-counts does not say what one run asks for')
+  assert.match(all('platform-counts'), /administrator/i, 'platform-counts does not say who gets the second scope')
+
+  // THE BUDGET PARAGRAPH CROSS-LINKS token-cost (AH-21), as a link on the
+  // Help page and not as a title quoted in prose.
+  const markup = renderToStaticMarkup(createElement(HelpScreen, { topic: '' }))
+  assert.ok(
+    topicBlock(markup, 'tenant-fields').includes(`href="#${helpAnchor('token-cost')}"`),
+    'tenant-fields does not link to token-cost',
+  )
+})
+
+/**
  * CH-3. The terms on the Help page were raw uppercase enums in a mono face:
  * LEASED, DISPATCHED -- shouting in a list whose job is to be read. They are
  * lowercased by CSS, so the strings stay the owner's spelling (and the
  * anti-drift test above still finds them) while the page stops shouting.
  *
- * MUTATION: drop the transform, or lowercase the strings instead of the style.
+ * RE-POINTED BY AH-18: the transform moved from an inline style on each `<dt>`
+ * to `.help-topic dt` in styles.css, and `src/__tests__/shell.test.tsx` asks
+ * the cascade for it. What is left here is the half no stylesheet can fake:
+ * the markup carries the owner's spelling, untouched.
+ *
+ * MUTATION: lowercase the strings instead of the style.
  */
-test('the Help page lowercases its enum terms with a style, not by rewriting them', () => {
+test('the Help page keeps its enum terms in the owner’s spelling', () => {
   const markup = renderToStaticMarkup(createElement(HelpScreen, { topic: '' }))
-  const dts = [...markup.matchAll(/<dt style="([^"]*)">([^<]*)<\/dt>/g)]
+  const dts = [...markup.matchAll(/<dt(?: [^>]*)?>([^<]*)<\/dt>/g)]
   assert.ok(dts.length > 0, 'the Help page renders no terms')
-  for (const [, style, term] of dts) {
-    assert.match(style!, /text-transform:lowercase/, `the term ${term} is not lowercased`)
-  }
   // The text itself is untouched: the states still arrive in their own case.
-  assert.ok(dts.some(([, , term]) => term === REAL_STATES.find((s) => CONCURRENCY_STATES.has(s))))
+  assert.ok(dts.some(([, term]) => term === REAL_STATES.find((s) => CONCURRENCY_STATES.has(s))))
 })
 
 /**
