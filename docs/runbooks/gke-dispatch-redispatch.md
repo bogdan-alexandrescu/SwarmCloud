@@ -64,8 +64,13 @@ The cluster must contain `swarm-autopilot`. Anything else: stop.
 kubernetes/apply.sh --tenant eng
 ```
 
-Without `--confirm` this renders the manifests, validates them client-side, and
-prints a `kubectl diff`. Nothing is written. Read the diff: you should see the
+Without `--confirm` this renders the manifests, validates them client-side,
+prints a `kubectl diff`, and then prints what `--confirm` will report for each
+object (`created` / `configured` / `unchanged`, from a server dry run of the
+same render). Nothing is written. An object listed `configured` with no hunk in
+the diff changes nothing the diff compares: only kubectl's last-applied
+annotation, which `kubectl diff` leaves out, or a patch the server normalises
+away. Read the diff: you should see the
 namespace, the ResourceQuota and LimitRange, **two** ServiceAccounts
 (`swarm-agent-worker`, and the namespace's own `default` with token
 automounting disabled), the worker Role/RoleBinding, the

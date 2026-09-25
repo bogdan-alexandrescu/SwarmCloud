@@ -31,13 +31,24 @@
 #        cluster ARN, or a host under `eks.amazonaws.com`;
 #      * the cluster must start with `swarm-`, the same rule terraform enforces
 #        on `gke_autopilot.cluster_name`, and the context must point at exactly
-#        it -- the cluster whose network this script reads.
+#        it -- the kubeconfig cluster entry must be gcloud's name for that
+#        cluster in ${PROJECT_ID} at ${GKE_LOCATION}, the one whose network this
+#        script reads.
 #
-# 3. Dry run first, and offline by default. Without --confirm nothing is sent as
-#    a write. Validation is client-side unless --server-dry-run is passed,
-#    because a server dry run of a first-time tenant fails anyway (the namespace
-#    it would create does not exist yet) and because the safest request to make
-#    against a cluster you are not sure about is none.
+# 3. Dry run first. Without --confirm nothing is written. The preview is two
+#    server dry runs of the one render, and prints both, because each shows
+#    what the other cannot:
+#      * `kubectl diff` -- WHICH FIELDS change;
+#      * `kubectl apply --dry-run=server` -- the verdict --confirm will print for
+#        each object (created / configured / unchanged). kubectl diff builds its
+#        patch without kubectl's last-applied annotation and apply builds it
+#        with it, so an object whose only change is that annotation has no hunk
+#        in the diff and still applies as "configured". On 2026-09-25 that was
+#        the Role swarm-worker, and a preview of the diff alone did not show it.
+#    A server dry run that fails is reported, not fatal: a first-time tenant's
+#    namespace does not exist yet, so nothing inside it can be dry-run on the
+#    server. --server-dry-run makes it fatal, and under --confirm runs it before
+#    the apply.
 #
 # And two properties of what is rendered. The tenant egress policy carries the
 # cluster's OWN network -- pod range, service range, kube-dns Service IP,
@@ -128,7 +139,9 @@ while [[ $# -gt 0 ]]; do
     --tenant=*)   TENANT="${1#*=}"; shift ;;
     --context=*)  CONTEXT="${1#*=}"; shift ;;
     --cluster=*)  CLUSTER="${1#*=}"; shift ;;
-    -h|--help)    sed -n '2,50p' "$0"; exit 0 ;;
+    # The header above `set -euo pipefail`, however long it grows; a fixed line
+    # range stopped mid-sentence the first time the header changed.
+    -h|--help)    awk 'NR > 1 && /^set -euo pipefail$/ { exit } NR > 1 { print }' "$0"; exit 0 ;;
     # Everything else is passed straight to render.py, so --pss-enforce,
     # --quota-cpu and friends work without being restated here -- except the
     # network, in any spelling that could reach it.
@@ -265,14 +278,31 @@ fi
 # pointing at the other team's cluster is refused here, by the deny-list, with
 # the deny-list's reason.
 refuse_foreign "context '${CURRENT}' -> kubeconfig cluster '${CURRENT_CLUSTER}'" "${CURRENT_CLUSTER}"
-# EXACTLY ${CLUSTER}, not a string containing it. This was `*"${CLUSTER}"*`, so
-# a cluster named `swarm-autopilot-old` passed -- and the network rendered below
-# is read from ${CLUSTER} (gcloud container clusters describe), so the policy
-# would have been rendered for one cluster and applied to another: the RC3
-# shape, from the guard's side.
-if [[ "$(cluster_of "${CURRENT_CLUSTER}")" != "${CLUSTER}" ]]; then
-  die "context '${CURRENT}' points at cluster '${CURRENT_CLUSTER}', not '${CLUSTER}'; refusing to apply.
-       Run scripts/configure-kubectl.sh, or pass --context/--cluster deliberately."
+# EXACTLY THE CLUSTER WHOSE NETWORK IS READ: ${CLUSTER} in ${PROJECT_ID} at
+# ${GKE_LOCATION}. Everything below reads that cluster by those three names --
+# `gcloud container clusters describe ${CLUSTER} --project ${PROJECT_ID}
+# --location ${GKE_LOCATION}` for the egress policy's network, ${PROJECT_ID}'s
+# pool for Workload Identity -- so the cluster entry the context resolves to
+# must be gcloud's name for exactly that one. That is the name
+# `gcloud container clusters get-credentials` writes; scripts/configure-kubectl.sh
+# renames only the CONTEXT (to swarm-${ENVIRONMENT}) and keeps it, and
+# common.sh's kube_context_allowed accepts the same string as a context name.
+#
+# Two narrower versions of this check each let a wrong cluster through:
+#   * `*"${CLUSTER}"*`, a substring, passed `swarm-autopilot-old`;
+#   * comparing the cluster SEGMENT alone passed our cluster's name in another
+#     project or location -- gke_other-project_us-central1_swarm-autopilot, or
+#     ..._us-central1-a_swarm-autopilot beside the other team's zonal cluster.
+# Either way the policy is rendered from one cluster's network and written to
+# another: the RC3 shape, from the guard's side. An entry not in gcloud's shape
+# names no project or location at all, so nothing shows it is ours; it is
+# refused too, with the name that would be accepted.
+EXPECTED_CLUSTER="gke_${PROJECT_ID}_${GKE_LOCATION}_${CLUSTER}"
+if [[ "${CURRENT_CLUSTER}" != "${EXPECTED_CLUSTER}" ]]; then
+  die "context '${CURRENT}' points at kubeconfig cluster '${CURRENT_CLUSTER}', not '${EXPECTED_CLUSTER}';
+       refusing to apply. This script reads the network of cluster ${CLUSTER} in project
+       ${PROJECT_ID} at ${GKE_LOCATION}, and writes only to that cluster. Run
+       scripts/configure-kubectl.sh, or pass --context/--cluster deliberately."
 fi
 info "context  ${CURRENT} -> ${CURRENT_CLUSTER}"
 
@@ -447,19 +477,75 @@ fi
 printf '%s\n' "${MANIFEST}" | "${KUBECTL}" apply --dry-run=client --validate=false -f - >/dev/null \
   || die "the rendered manifest is not valid YAML; nothing was applied"
 
+# preview_verdicts -- print, object by object, what `--confirm` will report,
+# from `kubectl apply --dry-run=server` of the same render through the same
+# context. Nothing is written.
+#
+# WHY THIS AND NOT THE DIFF ALONE. On 2026-09-25 `--confirm` printed
+# `role.rbac.authorization.k8s.io/swarm-worker configured` after a preview whose
+# diff listed only two NetworkPolicies. kubectl diff builds its patch WITHOUT
+# kubectl's last-applied-configuration annotation; apply builds it WITH it. So
+# an object whose only change is that annotation -- or whose patch the server
+# normalises away, as it did the Role's `rules: []` -- has no hunk in the diff
+# and applies as "configured". This asks kubectl the question apply answers,
+# with apply's own patch, rather than restating when kubectl says "configured".
+#
+# To files, so the verdicts (stdout) and what failed (stderr) stay apart and the
+# exit status is kept. A failure is not fatal here unless --server-dry-run was
+# passed: kubectl still prints a verdict for every object it could judge, and
+# for a first-time tenant it cannot judge anything inside the namespace.
+preview_verdicts() {
+  local work status=0 configured created unchanged
+  work="$(mktemp -d "${TMPDIR:-/tmp}/swarm-apply-preview.XXXXXX")"
+  printf '%s\n' "${MANIFEST}" | "${KUBECTL}" "${KUBECTL_ARGS[@]+"${KUBECTL_ARGS[@]}"}" \
+    apply --dry-run=server -f - >"${work}/out" 2>"${work}/err" || status=$?
+  info "what --confirm will report, object by object (kubectl apply --dry-run=server; nothing written):"
+  redact <"${work}/out"
+  # grep -c prints 0 and exits 1 when nothing matches; the count is what is kept.
+  configured="$(grep -c ' configured (server dry run)$' "${work}/out" || true)"
+  created="$(grep -c ' created (server dry run)$' "${work}/out" || true)"
+  unchanged="$(grep -c ' unchanged (server dry run)$' "${work}/out" || true)"
+  if [[ "${status}" -ne 0 ]]; then
+    err "the server could not dry-run every object; kubectl said (exit ${status}):"
+    redact <"${work}/err" | sed -n '1,20p' | sed 's/^/     /' >&2
+    rm -rf "${work}"
+    if [[ "${SERVER_DRY_RUN}" -eq 1 ]]; then
+      die "server-side validation failed (--server-dry-run); nothing was applied"
+    fi
+    warn "the objects kubectl names there are not in the list above: nothing about them was judged."
+    dim "  For a first-time tenant that is expected -- its namespace does not exist yet, so nothing inside"
+    dim "  it can be dry-run on the server, and --confirm creates the namespace first. Any other error is"
+    dim "  one --confirm is likely to meet as well. --server-dry-run makes this fatal."
+  else
+    rm -rf "${work}"
+  fi
+  if [[ $((configured + created + unchanged)) -eq 0 ]]; then
+    warn "the server dry run reported no object at all -- that is nothing judged, not nothing changed;"
+    dim "  the diff above is the only preview this run has."
+    return 0
+  fi
+  info "--confirm will report ${configured} configured, ${created} created, ${unchanged} unchanged"
+  if [[ "${configured}" -gt 0 ]]; then
+    dim "  An object listed as configured with no hunk in the diff above changes nothing the diff"
+    dim "  compares: only kubectl's last-applied-configuration annotation (which kubectl diff leaves"
+    dim "  out of its patch and apply writes), or a patch the server normalises away."
+  fi
+}
+
+if [[ "${CONFIRM}" -ne 1 ]]; then
+  printf '%s\n' "${MANIFEST}" | "${KUBECTL}" "${KUBECTL_ARGS[@]+"${KUBECTL_ARGS[@]}"}" \
+    diff -f - || true      # `diff` exits 1 when there IS a difference
+  preview_verdicts
+  ok "dry run only. Re-run with --confirm to apply."
+  exit 0
+fi
+
 if [[ "${SERVER_DRY_RUN}" -eq 1 ]]; then
   # Only useful once the namespace exists: a server dry run cannot see objects
   # inside a namespace the same manifest is still proposing to create.
   printf '%s\n' "${MANIFEST}" | "${KUBECTL}" "${KUBECTL_ARGS[@]+"${KUBECTL_ARGS[@]}"}" \
     apply --dry-run=server -f - \
     || die "server-side validation failed; nothing was applied"
-fi
-
-if [[ "${CONFIRM}" -ne 1 ]]; then
-  printf '%s\n' "${MANIFEST}" | "${KUBECTL}" "${KUBECTL_ARGS[@]+"${KUBECTL_ARGS[@]}"}" \
-    diff -f - || true      # `diff` exits 1 when there IS a difference
-  ok "dry run only. Re-run with --confirm to apply."
-  exit 0
 fi
 
 printf '%s\n' "${MANIFEST}" | "${KUBECTL}" "${KUBECTL_ARGS[@]+"${KUBECTL_ARGS[@]}"}" apply -f -

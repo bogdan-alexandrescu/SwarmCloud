@@ -39,7 +39,8 @@ which renders them with the real renderer and asserts the properties that matter
 # the dry run below shows it with the cluster's real values.
 kubernetes/render.py tenant --tenant eng
 
-# Dry run against the cluster (reads its network, prints a diff), then apply.
+# Dry run against the cluster (reads its network, prints a diff and what
+# --confirm will report for each object), then apply.
 kubernetes/apply.sh --tenant eng
 kubernetes/apply.sh --tenant eng --confirm
 
@@ -75,11 +76,30 @@ kubernetes/render.py job --tenant eng --profile browser \
   `eks-cluster-name` in its deny list, which matches no real context and made the
   EKS case read as handled while handling nothing;
 * the cluster must start with `swarm-` — the same rule terraform enforces on
-  `gke_autopilot.cluster_name` — and the context must point at **exactly** it, not
-  at a cluster whose name merely contains it: the network `apply.sh` renders is
-  read from that cluster by name. This is also what refuses the other team's
+  `gke_autopilot.cluster_name` — and the context must point at **exactly** it: the
+  kubeconfig cluster entry must be `gke_${PROJECT_ID}_${GKE_LOCATION}_${cluster}`,
+  gcloud's name for the one cluster whose network `apply.sh` reads (`describe
+  <cluster> --project ${PROJECT_ID} --location ${GKE_LOCATION}`).
+  `configure-kubectl.sh` renames only the context, so its `swarm-dev` resolves to
+  that entry. Two narrower checks came before this one, and each let a wrong
+  cluster through: a substring match passed `swarm-autopilot-old`, and comparing
+  only the cluster segment passed `swarm-autopilot` in another project or
+  location. An entry that is not in gcloud's shape names no project or location
+  and is refused too. This is also what refuses the other team's
   `gke_saga-agents-prod_us-central1_agents-prod`, which is not in this project and
   so not on the shared deny-list.
+
+**The dry run shows what `--confirm` will print.** Without `--confirm`, `apply.sh`
+prints a `kubectl diff` and then kubectl's verdict for every object from
+`kubectl apply --dry-run=server` of the same render — `created`, `configured` or
+`unchanged`, the words the real apply will use — with a count. The diff alone
+could not show everything: kubectl diff builds its patch **without** kubectl's
+last-applied-configuration annotation and apply builds it **with** it, so an
+object whose only change is that annotation has no hunk in the diff and still
+applies as `configured` (**A Role with no rules**, below, has the 2026-09-25
+case). A server dry run that fails — as it does for a first-time tenant, whose
+namespace does not exist yet — is printed and does not stop the preview;
+`--server-dry-run` makes it fatal.
 
 `apply.sh` also reads the tenant GSA's IAM policy, and passes `render.py` one
 `--bound-ksa` per Kubernetes service account it binds in the namespace (a
@@ -189,10 +209,12 @@ nil ≠ `[]` — was written on every apply and stood at generation 4 against 1 
 NetworkPolicy in every dry-run diff. `test_nothing_apply_sends_carries_an_empty_list_the_api_server_drops`
 holds every render to it. The first apply after the change still reports both
 objects `configured` once, because it rewrites their last-applied annotation —
-a change `kubectl diff` does not display, so that one run's dry-run diff will not
-list them. (Measured: `kubectl diff` of the new render against swarm-tenant-eng
-shows only the `swarm-worker` RoleBinding losing its `swarm-worker` subject and
-`swarm-agent-worker` losing its `alias-of` annotation.)
+a change `kubectl diff` does not display. (Measured: `kubectl diff` of the new
+render against swarm-tenant-eng shows only the `swarm-worker` RoleBinding losing
+its `swarm-worker` subject and `swarm-agent-worker` losing its `alias-of`
+annotation.) `apply.sh`'s dry run no longer depends on the diff for this: it
+also prints kubectl's own per-object verdict from a server dry run, so the Role
+and the policy appear there as `configured (server dry run)`.
 
 ## What this directory does NOT cover
 
