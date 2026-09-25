@@ -25,8 +25,12 @@ import {
   type OpenWork,
 } from './Ledger'
 import {
+  MAX_BUCKETS,
+  OUTCOMES_CACHE_S,
   SPANS,
   VERIFY_TENANT,
+  cacheable,
+  dayDocWords,
   filtersSet,
   hourAllowed,
   instantLabel,
@@ -36,11 +40,13 @@ import {
   outcomesQuery,
   parseView,
   pct,
+  rangeRefusal,
   serializeView,
   spanCoverage,
   unitWord,
   viewDays,
   viewerZone,
+  wallOf,
   type BucketChoice,
   type GroupBy,
   type Kind,
@@ -290,7 +296,7 @@ export function ActivityScreen({
         ) : (
           <>
             {rangeWords(data)} · read {timeAgo(data.generated_at, now)}
-            {data.cached && ' · from the 60 s cache'}
+            {data.cached && ` · from the ${OUTCOMES_CACHE_S} s cache`}
           </>
         )}{' '}
         <button type="button" onClick={refresh} disabled={pending}>
@@ -516,11 +522,15 @@ function LedgerFacts({ data, pending, view }: { data: Outcomes | null; pending: 
       </li>
       <li className="ctl-fact">
         <b>by</b>
-        <code>completed_at</code>
+        <code>{data.basis.outcomes}</code>
       </li>
       <li className="ctl-fact">
+        {/* THE ROLLUP'S UNIT, NOT THE VIEWER'S DAYS: tenant-days on the UTC
+            calendar, so a 14-day span reads "14 of 15 UTC days" and a platform
+            view counts every tenant's (`dayDocWords`). */}
         <b>sealed</b>
-        {data.coverage.days.sealed} days{inProgress ? ' · today so far' : ''}
+        {data.coverage.days.sealed} of {data.coverage.days.total} {dayDocWords(data, data.coverage.days.total)}
+        {inProgress ? ' · today so far' : ''}
       </li>
       {s.kind === 'tenant' ? (
         <li className="ctl-fact">
@@ -553,14 +563,20 @@ function LedgerFacts({ data, pending, view }: { data: Outcomes | null; pending: 
  * THE PROVENANCE FOOT: what this payload cost and how old it is. On a cache
  * hit the request spent nothing, and `generated_at` is the original read's, so
  * the age stays honest.
+ *
+ * ONLY A COMPLETE PAYLOAD IS CACHED (`cacheable`): the route re-derives a
+ * partial one on the next read rather than serving its gaps for a minute, so
+ * the foot says which this one is. The days are the rollup's tenant-days
+ * (`dayDocWords`), and a live one need not be today: yesterday stays live for
+ * the seal grace after midnight UTC.
  */
 function Provenance({ data }: { data: Outcomes }) {
   const c = data.coverage
   const clauses: ReactNode[] = [
-    `${c.days.sealed} days sealed`,
-    c.days.live > 0 ? 'today live' : null,
-    data.cached ? 'from the 60 s cache · 0 reads this request' : `${data.reads} reads`,
-    'cached 60 s',
+    `${c.days.sealed} ${dayDocWords(data, c.days.sealed)} sealed`,
+    c.days.live > 0 ? `${c.days.live} live` : null,
+    data.cached ? `from the ${OUTCOMES_CACHE_S} s cache · 0 reads this request` : `${data.reads} reads`,
+    cacheable(data) ? `cached ${OUTCOMES_CACHE_S} s` : 'not cached: partial, the next read continues the build',
     `generated ${new Date(data.generated_at).toLocaleTimeString(undefined, { timeZone: data.tz, hourCycle: 'h23' })}`,
     c.derived_now > 0 ? `${c.derived_now} days built by this read` : null,
     c.reopened > 0 ? `${c.reopened} re-ended tasks counted once` : null,
@@ -676,7 +692,11 @@ const isDay = (s: string | null): s is string => s !== null && /^\d{4}-\d{2}-\d{
 function RangeInputs({ view, setView }: { view: LedgerView; setView: (v: LedgerView) => void }) {
   const [from, setFrom] = useState(isDay(view.since) ? view.since : '')
   const [to, setTo] = useState(isDay(view.until) ? prevDay(view.until) : '')
-  const ok = isDay(from) && isDay(to) && from <= to
+  // The route refuses a `since` in the future and a span over its limit; the
+  // button says which instead of sending a 422. "Today" is the viewer's day
+  // in the zone the page sends as `tz`.
+  const refusal = rangeRefusal(from, to, wallOf(new Date().toISOString(), viewerZone()).date)
+  const ok = refusal === null
   return (
     <span className="ol-range" role="group" aria-label="Range">
       <label>
@@ -693,6 +713,7 @@ function RangeInputs({ view, setView }: { view: LedgerView; setView: (v: LedgerV
       >
         apply
       </button>
+      {refusal !== null && (from !== '' || to !== '') && <span className="ol-q ol-range-why">{refusal}</span>}
     </span>
   )
 }
@@ -823,7 +844,7 @@ function LedgerToolbar({
           >
             <option value="auto">{chosen === null ? 'auto' : `auto · ${chosen}`}</option>
             <option value="hour" disabled={!hourAllowed(view)}>
-              hour{!hourAllowed(view) ? ' (over 2,000 buckets)' : ''}
+              hour{!hourAllowed(view) ? ` (over ${MAX_BUCKETS.toLocaleString('en-US')} buckets)` : ''}
             </option>
             <option value="day">day</option>
             <option value="week">week</option>

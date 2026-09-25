@@ -115,6 +115,7 @@ export interface LatencyRow {
 export type GroupBy = 'runner_profile' | 'submitted_by' | 'tenant_id'
 
 export interface GroupRow {
+  /** Grouped by person, `''` is the tasks with no submitter recorded: a row, but not a name. */
   key: string
   submitted: number
   ended: number
@@ -132,8 +133,10 @@ export interface GroupRow {
 export interface WorkflowFailedRow {
   workflow_id: string
   tenant_id: string
+  /** `''` as well as null when no submitter was recorded: both are an absence, never a name. */
   submitted_by: string | null
-  first_failed: { step_id: string; task_id: string; failure_class: FailureClassKey; ended_at: string } | null
+  /** `step_id` is the task's own, which the route reads as it is and does not promise. */
+  first_failed: { step_id: string | null; task_id: string; failure_class: FailureClassKey; ended_at: string } | null
   cascade_cancelled: number
   last_ended_at: string
   state: string
@@ -187,6 +190,12 @@ export interface Outcomes {
   until: string
   bucket: LedgerBucketSize
   bucket_chosen_by: 'server' | 'caller'
+  /**
+   * WHICH TIMESTAMP EACH SERIES IS PLACED BY, as the route says it: every
+   * outcome by `outcomes`, the throughput lane's arrivals by `submitted`. The
+   * page prints these words from here and never restates them, so a label
+   * cannot name a basis the figures under it are not on.
+   */
   basis: { outcomes: string; submitted: string }
   filters: {
     profile: string[]
@@ -229,6 +238,12 @@ export interface Outcomes {
     failing_steps: Array<{ step_id: string; n: number }>
   }
   coverage: {
+    /**
+     * TENANT-DAYS ON THE UTC CALENDAR, the rollup's own unit: one per tenant
+     * per UTC day the span touches. Not the viewer's days -- a 14-day span in
+     * Europe/Bucharest touches 15 UTC days -- and in platform scope each
+     * tenant counts every one of them. `dayDocWords` says which.
+     */
     days: { total: number; sealed: number; live: number; unread: number }
     unread: Array<{ tenant_id: string; day: string; reason: UnreadReason }>
     derived_now: number
@@ -275,6 +290,21 @@ export const KINDS = ['all', 'standalone', 'steps'] as const
 export type Kind = (typeof KINDS)[number]
 
 export const GROUPS: readonly GroupBy[] = ['runner_profile', 'submitted_by', 'tenant_id']
+
+// THE ROUTE'S LIMITS, RESTATED SO THE PAGE NEVER ASKS FOR WHAT IT REFUSES.
+// Each is `swarm_api.outcomes`'s constant of the same name, and
+// tests/unit/control_plane/test_outcomes_ui_field_contract.py holds every one
+// equal to it (docs/mirrored-values.md), so a changed limit turns CI red
+// instead of turning a control into a 422.
+
+/** At most this many buckets in one read: an hourly 90 days is 2,160, which the route refuses. */
+export const MAX_BUCKETS = 2000
+/** `bucket=month` needs a span at least this many days long. */
+export const MONTH_MIN_DAYS = 60
+/** A span is at most this many days. */
+export const MAX_SPAN_DAYS = 400
+/** A complete payload is reused for this many seconds, and only a complete one (`cacheable`). */
+export const OUTCOMES_CACHE_S = 60
 
 /**
  * THE ONE TENANT THE TOOLBAR NAMES, and only as a one-click exclusion (owner
@@ -412,13 +442,31 @@ export function viewDays(v: LedgerView): number | null {
 export function monthAllowed(v: LedgerView): boolean {
   if (v.bucket !== 'month') return true
   const d = viewDays(v)
-  return d !== null && d >= 60
+  return d !== null && d >= MONTH_MIN_DAYS
 }
 
 /** At most 2,000 buckets: an hourly 90 days is 2,160, which the route refuses. */
 export function hourAllowed(v: LedgerView): boolean {
   const d = viewDays(v)
-  return d === null || d * 24 <= 2000
+  return d === null || d * 24 <= MAX_BUCKETS
+}
+
+/**
+ * Why a from-to range cannot be asked for, or null when it can. `from` and
+ * `to` are the inclusive YYYY-MM-DD days the inputs hold; `today` is the
+ * viewer's day in the zone the page sends as `tz`. The route refuses a
+ * `since` in the future and a span over `MAX_SPAN_DAYS` (422), so the apply
+ * button is disabled with the reason instead. A range ending in the future is
+ * fine: the route clamps `until` to now.
+ */
+export function rangeRefusal(from: string, to: string, today: string): string | null {
+  const day = /^\d{4}-\d{2}-\d{2}$/
+  if (!day.test(from) || !day.test(to)) return 'choose both days'
+  if (from > to) return 'from is after to'
+  if (from > today) return 'from is in the future'
+  const days = (Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000 + 1
+  if (days > MAX_SPAN_DAYS) return `at most ${MAX_SPAN_DAYS} days`
+  return null
 }
 
 /**
@@ -705,6 +753,28 @@ export function spanCoverage(d: Outcomes): SpanCoverage {
     unit: unitWord(d.bucket),
     reasons,
   }
+}
+
+/**
+ * `coverage.days`'s unit, in words, for a count of `n`: `UTC days` in tenant
+ * scope, `tenant-days` in platform scope. The route counts rollup documents,
+ * one per tenant per UTC day, so "56 days sealed" over a 14-day platform view
+ * of four tenants would name a unit the figure is not in.
+ */
+export function dayDocWords(d: Outcomes, n: number): string {
+  if (d.scope.kind === 'platform') return n === 1 ? 'tenant-day' : 'tenant-days'
+  return n === 1 ? 'UTC day' : 'UTC days'
+}
+
+/**
+ * Whether the route kept this payload for reuse. It caches a payload only
+ * when every bucket was read, the previous span's too (`swarm_api.outcomes`
+ * `read`), so that a re-read continues a partial build instead of being handed
+ * the same gaps for a minute. A partial payload therefore must not say
+ * "cached".
+ */
+export function cacheable(d: Outcomes): boolean {
+  return d.totals.complete && (d.previous === null || d.previous.complete)
 }
 
 /** The not-read words for a span nobody read, with no digit in them: the figure slot's words. */

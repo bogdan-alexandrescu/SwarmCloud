@@ -3268,7 +3268,8 @@ section records what each part must keep, so none of it is quietly reverted.
 | **Drawn three times** | 1080, 640 and 300 units, each with its own geometry and label stride; `.ol-chart` is the size container; `@container ol-chart (min-width: 640px / 1080px)` shows the drawing whose authored width the box holds; the narrow drawing's column floor is 26px, past which it grows and scrolls, opening at the newest end | AG-20's mechanism plus a page-width entry: the 640 drawing scaled across a 1,144px column would carry ~21px ticks, and scaled into a phone ~6px ones | `timeline.ledger.rules` |
 | **The scale does not scroll** | each drawing is a positioned frame of three layers: `.ol-gutter` (an SVG as wide as the left margin, every tick), the lane labels (HTML over the plot's left edge, on `--bg`, `pointer-events: none`, one line), and `.ol-plot`, the only layer in the scroller; each drawing has its own scroller, opened at its newest end the first time it is shown | wireframe_390 pins `100┤ … 0┤ … ok ┤ … cx ┤` with older days behind the fade. Drawn as one SVG inside the scroller, the ticks scrolled off on open (at 390 and 14 days the plot opens 52px in) and, at 24h or 30d, every lane label with them, the throughput lane's `by created_at` among them | `activity.timeline` "keeps each lane's scale…", `timeline.ledger.rules` "pins the scale column…" |
 | **The readout is the legend** (TS-9) | span totals by default, one bucket's on hover, tap or focus; `all`, Escape and leaving restore; one tab stop with a roving tabindex starting on the newest bucket; not a live region; 44px ‹ › steps on a phone; `zoom to <day>` with a chip back; `N failed that day →` says `not limited to <day>`. **One number per key, and it is the number the key's mark draws**: the flat bars' key prints requested + other, the outline's after_failure + workflow_sweep (`incl. workflow sweep N`), and the cancelled total, which no single mark draws, stands unkeyed; the column names and the Table's `requested or other / after a failure` use the same two sums. The span's totals carry the partial mark and `read of n` when a bucket is unread, and the not-read mark with no count when none was | the SVG marks are `aria-hidden`; each column is an HTML `role="img"` named with its full time and every count. The readout printed 5 beside the outline on 22 Sep while the outline, the column name and the Table said 8 | `activity.timeline` "the readout" |
-| **Table** | the same buckets as a `.ctl-table.is-scroll`, with `submitted` | the keyboard and screen-reader route to every value | "the Table toggle" |
+| **Table** | the same buckets as a `.ctl-table.is-scroll`, with `Submitted · by <basis.submitted>` | the keyboard and screen-reader route to every value; under Table no lane label is drawn, so the one submission-time column names its basis itself | "the Table toggle" |
+| **The route's words, as the route means them** | the basis is **read** from the payload's `basis` (lane label, readout, facts line, Table), never restated; `coverage.days` is printed in its own unit, `N of M UTC days` in tenant scope and `tenant-days` in platform scope; the provenance says `cached 60 s` only for a payload the route caches (every bucket read, the previous span's too) and `not cached: partial` otherwise; a submitter the route sends as `''` is `not recorded` or `—`, never a blank; the from–to inputs refuse, with the reason, a start in the future and a span over 400 days | a parity pass read #196's route beside this page and found each of these saying something the route does not mean: `cached 60 s` on a payload it re-derives, "56 days" for four tenants' 14, a basis word that would survive the basis changing, a blank row, and a 422 the page could have prevented | `activity.timeline` "what the route serves…", `outcomes.view` "what the route means…", `test_outcomes_ui_field_contract.py` |
 | **Eight cards** | Why tasks failed (the server's fixed class order) · Retries and attempts (admissions, not runs) · Time to result by profile (no all-profiles row) · Reliability by profile, tenant or person · Workflows that failed, and where (its step composition in the ledger's TS-4 forms, succeeded solid `--ok`) · **Reported cost · not a bill** (renamed from "Token spend"; per attempt, by task end) · Not finished yet (live, span not applied) · Why tasks were cancelled | every card but the live one draws the same payload on the same basis under the same filters | "the eight cards" |
 | **Every card says what it covers** | the route sums every card over the buckets it READ. One unread: each card-note carries the partial mark and `read of n <unit>` (§8.6's coverage note; the card head wraps rather than overflow), and an empty list is the partial empty state `… in the 13 of 14 days read`, never `a real zero`. None read: every card draws the not-read mark and the reason, and **no digit** — no count, no real-zero tick, no `$`, and no lane prints a `max` | a zero summed over no bucket is not a measurement; drawn as the real-zero tick it is the absence-as-zero this system exists to prevent | `activity.timeline` "partial and not read" |
 | **The live card carries its age** | "Not finished yet" prints `read <age>` from its own `/v1/stats` read (never `now`), is re-read on every filter change and on the Agents screen's idle cadence (`IDLE_POLL_MS`) while the page is visible, keeps its last counts between reads, and names every set filter it does not apply: `not filtered by profile, tenant, person, kind` | the head's age is the ledger's `generated_at`, a different read; left open 40 minutes and then filtered, the card said `now` over 40-minute-old counts that included the tenant the toolbar had just excluded | "the eight cards" |
@@ -3310,11 +3311,28 @@ by tenant`, went red on a gap in its fixture before its assertion, so a second
 mutation dropped the disclosure and the fixed case went red on the assertion
 itself. The pull request names every run.
 
+**The page is held to the route, not only to a fixture.**
+`tests/unit/control_plane/test_outcomes_ui_field_contract.py` reads
+`outcomes.ts` as text and checks it against the payloads that #196's real
+route serves over its own fixture week: tenant scope with every filter the
+page sends, platform scope with an exclusion and with an include list, an
+explicit range, and a read past its derive budget. It checks every field in
+both directions and at every depth, including the literal unions the page
+switches on. Every declared array must be seen with an element, and every
+nullable object must be seen at least once not null, so no type passes by
+being checked only against `[]` or `null`. The same file holds the query
+parameters, the span, bucket, kind and group choices, the default span and
+the restated limits (`MAX_BUCKETS`, `MONTH_MIN_DAYS`, `MAX_SPAN_DAYS`,
+`OUTCOMES_CACHE_S`) to `swarm_api.outcomes` (docs/mirrored-values.md). It
+fails on this branch alone, as the route-level seam test does, and passes
+only once the route is merged.
+
 **What this did NOT verify.** Nothing here was seen rendered: the tests prove
 which marks the ledger draws for a contract-shaped payload, which drawing the
-sheet picks at a container width, and which rule wins. The route itself is
-built in a parallel lane; the UI is held to the contract by a fixture in its
-exact shape (`outcomes.fixture.ts`), not by a live read. Whether the 1080
+sheet picks at a container width, and which rule wins. The component tests
+draw from a fixture in the contract's exact shape (`outcomes.fixture.ts`), not
+from a live read; the field-contract test above is what holds that shape to
+the route. Whether the 1080
 drawing reads well at 1440, how a 26px column reads under a thumb, and whether
 the Wilson band's ruled edges are enough in the light theme are for the next
 release's screenshots.

@@ -268,7 +268,9 @@ export function LedgerTable({ data }: { data: Outcomes }) {
             <th scope="col" className="is-num">Dead-lettered</th>
             <th scope="col" className="is-num">Rate · k of n · 95 %</th>
             <th scope="col" className="is-num">Cancelled · requested or other / after a failure</th>
-            <th scope="col" className="is-num">Submitted</th>
+            {/* The one column on the submission-time basis says so, in the
+                route's word, as the throughput lane's label does. */}
+            <th scope="col" className="is-num">Submitted · by {data.basis.submitted}</th>
             <th scope="col" className="is-num">Finished</th>
           </tr>
         </thead>
@@ -437,7 +439,8 @@ export function WorkflowsFailedCard({
                       {shortId(r.workflow_id)}
                     </span>
                   </th>
-                  <td>{r.submitted_by ?? <i className="ctl-em">—</i>}</td>
+                  {/* The route sends '' as well as null for no submitter: both are an absence. */}
+                  <td>{r.submitted_by === null || r.submitted_by === '' ? <i className="ctl-em">—</i> : r.submitted_by}</td>
                   <td>
                     <Steps row={r} />
                   </td>
@@ -446,7 +449,7 @@ export function WorkflowsFailedCard({
                       <i className="ctl-em">—</i>
                     ) : (
                       <a className="ctl-link mono" href={`#work/task/${encodeURIComponent(r.first_failed.task_id)}`}>
-                        {r.first_failed.step_id}
+                        {r.first_failed.step_id ?? <i className="ctl-em">step not recorded</i>}
                       </a>
                     )}
                   </td>
@@ -852,7 +855,9 @@ export function ReliabilityCard({
               {g.rows.map((r) => (
                 <tr key={r.key} data-key={r.key}>
                   <th scope="row">
-                    {r.key}
+                    {/* Grouped by person, '' is the work nobody's name is on: a
+                        row the route counts, drawn as an absence, never blank. */}
+                    {r.key === '' ? <i className="ctl-em">not recorded</i> : r.key}
                     {r.declared_cost && (
                       <>
                         {' '}
@@ -871,7 +876,7 @@ export function ReliabilityCard({
                     {r.cancelled.total} · {r.cancelled.after_failure + r.cancelled.workflow_sweep}
                   </td>
                   <td>
-                    <CostFigure c={r.cost} what={`${r.key}'s reported cost`} />
+                    <CostFigure c={r.cost} what={r.key === '' ? 'The reported cost of work with no submitter recorded' : `${r.key}'s reported cost`} />
                   </td>
                   <td>
                     <Spark series={r.series} />

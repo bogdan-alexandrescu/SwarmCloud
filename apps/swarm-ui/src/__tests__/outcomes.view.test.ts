@@ -16,15 +16,19 @@ import { describe, expect, it } from 'vitest'
 
 import {
   DEFAULT_VIEW,
+  MAX_SPAN_DAYS,
   axisLabels,
   bucketName,
   bucketSaid,
+  cacheable,
   dateLabel,
+  dayDocWords,
   filtersSet,
   interval,
   outcomesQuery,
   parseView,
   pct,
+  rangeRefusal,
   rateClause,
   secs,
   serializeView,
@@ -165,5 +169,38 @@ describe('time in the server’s zone', () => {
     const said = bucketSaid(b, 'day', 'Europe/Bucharest')
     expect(said).toContain('not read, too large to read')
     expect(said.replace(bucketName(b.start, 'day', 'Europe/Bucharest'), '')).not.toMatch(/\d/)
+  })
+})
+
+describe('what the route means by its payload (#196)', () => {
+  it('refuses the ranges the route refuses: a future start and a span over its limit', () => {
+    const today = '2026-09-25'
+    expect(rangeRefusal('2026-09-01', '2026-09-10', today)).toBeNull()
+    // A range that ends in the future is the route's to clamp, not a refusal.
+    expect(rangeRefusal('2026-09-20', '2026-10-05', today)).toBeNull()
+    expect(rangeRefusal('2026-09-26', '2026-09-27', today)).toBe('from is in the future')
+    expect(rangeRefusal('2026-09-10', '2026-09-01', today)).toBe('from is after to')
+    expect(rangeRefusal('', '2026-09-01', today)).toBe('choose both days')
+    // Inclusive days: 22 Aug 2025 to 25 Sep 2026 is 400 of them; one more is refused.
+    expect(MAX_SPAN_DAYS).toBe(400)
+    expect(rangeRefusal('2025-08-22', '2026-09-25', today)).toBeNull()
+    expect(rangeRefusal('2025-08-21', '2026-09-25', today)).toBe('at most 400 days')
+  })
+
+  it('names coverage.days in the rollup’s unit, by scope', () => {
+    const d = ledgerFixture()
+    expect(dayDocWords(d, 15)).toBe('UTC days')
+    expect(dayDocWords(d, 1)).toBe('UTC day')
+    const p = { ...d, scope: { kind: 'platform' as const, tenants: ['eng', 'research'], excluded: [], tenants_complete: true } }
+    expect(dayDocWords(p, 30)).toBe('tenant-days')
+    expect(dayDocWords(p, 1)).toBe('tenant-day')
+  })
+
+  it('calls a payload cached only when the route would have cached it', () => {
+    const d = ledgerFixture()
+    expect(cacheable(d)).toBe(true)
+    expect(cacheable({ ...d, previous: null })).toBe(true)
+    expect(cacheable({ ...d, totals: { ...d.totals, complete: false } })).toBe(false)
+    expect(cacheable({ ...d, previous: { ...d.previous!, complete: false } })).toBe(false)
   })
 })

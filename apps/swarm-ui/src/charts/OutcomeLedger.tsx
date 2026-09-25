@@ -207,16 +207,18 @@ const r1 = (v: number) => Math.round(v * 10) / 10
  * ~260px) has to fit the 320px a 390 viewport leaves beside the 38px scale;
  * `Submitted vs finished · by created_at · max 338` did not.
  */
-function laneLabels(d: LedgerDrawn, s: Scales): string[] {
+function laneLabels(d: LedgerDrawn, s: Scales, basis: Outcomes['basis']): string[] {
   const narrow = d.key === 'narrow'
   const max = (n: number) => (s.read === 0 ? '' : ` · max ${n}`)
+  // THE BASIS IS THE ROUTE'S WORD (`basis.submitted`), never restated here:
+  // the label is the one place the throughput lane says what it is placed by.
   return [
     narrow ? 'Success rate' : 'Success rate · cancels excluded',
     narrow ? 'Decided · ok up, failed down' : 'Decided, by the bucket it ended · succeeded up, failed down',
     `Cancelled · own scale${max(s.cancelled)}`,
     narrow
-      ? `Throughput · by created_at${max(s.flow)}`
-      : `Throughput · submitted (by created_at, the only lane on submission time) vs finished${max(s.flow)}`,
+      ? `Throughput · by ${basis.submitted}${max(s.flow)}`
+      : `Throughput · submitted (by ${basis.submitted}, the only lane on submission time) vs finished${max(s.flow)}`,
   ]
 }
 
@@ -276,7 +278,7 @@ function Drawing({
     bucket,
   )
   const [L1, L2, L3, L4] = g.lane as [Geo['lane'][0], Geo['lane'][0], Geo['lane'][0], Geo['lane'][0]]
-  const words = laneLabels(d, scales)
+  const words = laneLabels(d, scales, data.basis)
   const right = g.left + g.plotW
   const bottom = L4.y + L4.h
 
@@ -870,7 +872,7 @@ export function OutcomeLedger({ data, picked, onPick, onZoom }: OutcomeLedgerPro
             </span>
             <span className="ol-li">
               <i className="ol-k is-sub" aria-hidden /> submitted <b className="ol-n">{shown.submitted}</b>{' '}
-              <span className="ol-q">by created_at</span>
+              <span className="ol-q">by {data.basis.submitted}</span>
             </span>
             <span className="ol-li">
               <i className="ol-k is-fin" aria-hidden /> finished <b className="ol-n">{shown.ended}</b>
