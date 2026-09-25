@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import ipaddress
 import re
 from pathlib import Path
 from typing import Any
@@ -371,54 +372,307 @@ def test_egress_is_allowed_to_every_pod_not_just_labelled_ones(tenant_docs):
     assert policy["spec"]["podSelector"] == {}
 
 
-def test_egress_reaches_dns_and_the_workload_identity_metadata_server(tenant_docs):
-    policy = one(tenant_docs, "NetworkPolicy", "swarm-allow-worker-egress")
-    rules = policy["spec"]["egress"]
+# The egress policy carries four values that belong to the CLUSTER, not to this
+# repository: its pod range, its service range, the kube-dns Service IP and the
+# NodeLocal DNSCache address. They are INPUTS -- kubernetes/apply.sh reads each
+# one from the live cluster (kubernetes/cluster-network.sh says where) and
+# passes it -- so these tests render with inputs too, and assert that the
+# policy FOLLOWS them.
+#
+# Neither network below is swarm-autopilot's, on purpose. A test that rendered
+# with the live values would agree with a template that had them typed in,
+# which is the defect: on 2026-09-24 the live policy had been rendered from the
+# renderer's defaults (pods 10.0.0.0/8, services 34.118.224.0/20), and its only
+# DNS rule reached kube-dns PODS, which a Cloud DNS + NodeLocal DNSCache cluster
+# never sends a pod's query to. Every lookup a worker made was dropped, and the
+# worker ran 390 s without printing a byte.
 
-    dns = [r for r in rules if any(p.get("port") == 53 for p in r.get("ports", []))]
-    assert dns, "without DNS every hostname in the platform fails to resolve"
-    protocols = {p["protocol"] for rule in dns for p in rule["ports"]}
-    assert protocols == {"UDP", "TCP"}, "TCP 53 carries responses over 512 bytes"
+#: A cluster whose ranges are all private space.
+PRIVATE_NETWORK = {
+    "pod_cidr": "10.120.0.0/14",
+    "service_cidr": "10.124.0.0/20",
+    "cluster_dns_ip": "10.124.0.10",
+    "node_local_dns_ip": "169.254.20.10",
+}
 
-    metadata = [
-        rule
-        for rule in rules
-        if any(
-            peer.get("ipBlock", {}).get("cidr") == "169.254.169.254/32"
-            for peer in rule.get("to", [])
-        )
+#: A cluster whose pod and service ranges are PUBLIC space, which no fixed
+#: `except` entry covers -- GKE Autopilot's DEFAULT service range is public --
+#: and whose node-local address is not GKE's usual one. A template with any of
+#: these typed in, or with 169.254.20.10 typed in, fails against this network.
+PUBLIC_NETWORK = {
+    "pod_cidr": "35.200.0.0/14",
+    "service_cidr": "34.118.224.0/20",
+    "cluster_dns_ip": "34.118.224.10",
+    "node_local_dns_ip": "169.254.25.10",
+}
+
+NETWORK_SOURCE = f"gke/{PROJECT}/us-central1/swarm-test"
+
+NETWORKS = pytest.mark.parametrize(
+    "network", [PRIVATE_NETWORK, PUBLIC_NETWORK], ids=["private", "public"]
+)
+
+#: The ranges excepted from the internet rule whatever the cluster is: every
+#: private range, link-local and carrier-grade NAT. Platform facts, not cluster
+#: facts, which is why they may be written into the template.
+ALWAYS_EXCEPTED = {
+    "10.0.0.0/8",
+    "172.16.0.0/12",
+    "192.168.0.0/16",
+    "169.254.0.0/16",
+    "100.64.0.0/10",
+}
+
+#: The offline render's marker. Deliberately spelled out here rather than read
+#: from the renderer, so the test fails if the renderer stops saying it.
+OFFLINE_SOURCE = "offline-render-not-for-apply"
+
+
+def network_argv(network: dict[str, str]) -> list[str]:
+    return [
+        "--pod-cidr", network["pod_cidr"],
+        "--service-cidr", network["service_cidr"],
+        "--cluster-dns-ip", network["cluster_dns_ip"],
+        "--node-local-dns-ip", network["node_local_dns_ip"],
+        "--network-source", NETWORK_SOURCE,
     ]
+
+
+def egress_policy(*argv: str) -> dict[str, Any]:
+    docs = documents(render.render_files(render.TENANT_FILES, tenant_values(*argv)))
+    return one(docs, "NetworkPolicy", "swarm-allow-worker-egress")
+
+
+def _ports(rule: dict[str, Any]) -> set[tuple[str, int]]:
+    return {(p.get("protocol", "TCP"), p["port"]) for p in rule.get("ports", [])}
+
+
+def _allows(rule: dict[str, Any], protocol: str, port: int) -> bool:
+    """A rule with no `ports` allows every port; otherwise the pair must be listed."""
+    return not rule.get("ports") or (protocol, port) in _ports(rule)
+
+
+def _ip_rules_reaching(policy: dict[str, Any], address: str) -> list[dict[str, Any]]:
+    """Every egress rule with an ipBlock peer that admits `address`."""
+    ip = ipaddress.ip_address(address)
+    found = []
+    for rule in policy["spec"]["egress"]:
+        for peer in rule.get("to", []):
+            block = peer.get("ipBlock")
+            if not block or ip not in ipaddress.ip_network(block["cidr"]):
+                continue
+            if any(ip in ipaddress.ip_network(e) for e in block.get("except", [])):
+                continue
+            found.append(rule)
+            break
+    return found
+
+
+@NETWORKS
+def test_dns_reaches_the_rendered_node_local_and_kube_dns_addresses(network):
+    """Pod DNS on this cluster goes to NodeLocal DNSCache, not to kube-dns pods.
+
+    swarm-autopilot runs Cloud DNS with NodeLocal DNSCache (Autopilot enables it
+    and it cannot be disabled). A pod's resolver is the hostNetwork
+    `node-local-dns` agent, which listens on the node-local address AND on the
+    kube-dns Service IP, and forwards to Cloud DNS -- never to the kube-dns
+    pods. So the rule that must exist is an ipBlock to both addresses on
+    UDP and TCP 53, with the addresses the cluster reported rather than any
+    written here.
+
+    THE DEFECT THIS PINS: the rendered policy had only the kube-dns podSelector
+    rule, which on this cluster matches no DNS traffic, and the renderer had no
+    way to be told either address.
+    """
+    policy = egress_policy(*network_argv(network))
+    for key in ("node_local_dns_ip", "cluster_dns_ip"):
+        address = network[key]
+        rules = _ip_rules_reaching(policy, address)
+        assert any(_allows(r, "UDP", 53) and _allows(r, "TCP", 53) for r in rules), (
+            f"no egress rule reaches {key}={address} on UDP and TCP 53; every name "
+            "lookup a worker makes is dropped, silently (anetd runs with "
+            "--policy-deny-response=none)"
+        )
+        # And the /32 that grants it opens DNS and nothing else: the node-local
+        # address is the NODE, and the kube-dns IP is a Service.
+        exact = [
+            r for r in rules
+            if any(p.get("ipBlock", {}).get("cidr") == f"{address}/32" for p in r.get("to", []))
+        ]
+        assert exact, f"{address}/32 is not an ipBlock peer of any rule"
+        for rule in exact:
+            assert _ports(rule) == {("UDP", 53), ("TCP", 53)}, (
+                f"the rule reaching {address}/32 opens {sorted(_ports(rule))}, not only DNS"
+            )
+
+
+def test_the_kube_dns_pod_selector_rule_is_kept(tenant_docs):
+    """The owner's decision (2026-09-24, form (a)) ADDS the ipBlock rule and keeps
+    this one: it is what reaches DNS on a cluster that does run kube-dns pods."""
+    policy = one(tenant_docs, "NetworkPolicy", "swarm-allow-worker-egress")
+    kube_dns = [
+        rule
+        for rule in policy["spec"]["egress"]
+        for peer in rule.get("to", [])
+        if peer.get("namespaceSelector", {}).get("matchLabels", {}).get("kubernetes.io/metadata.name")
+        == "kube-system"
+        and peer.get("podSelector", {}).get("matchLabels", {}).get("k8s-app") == "kube-dns"
+    ]
+    assert kube_dns, "the kube-dns podSelector rule is gone"
+    assert all(_ports(r) == {("UDP", 53), ("TCP", 53)} for r in kube_dns)
+
+
+def test_the_metadata_server_is_reached_on_the_ports_gke_documents_for_dataplane_v2(tenant_docs):
+    """169.254.169.254/32 on TCP 80 and 8080, and not 988.
+
+    GKE's network-policy doc, for Dataplane V2 clusters: "allow egress to
+    169.254.169.254/32 on ports 80 and 8080". Port 988 on .254 was here as "the
+    Workload Identity endpoint"; on this cluster the metadata server's 988 is on
+    169.254.169.252, and GKE lists .252:988 only for clusters WITHOUT Dataplane
+    V2. So .254:988 matched nothing, and the worker's one metadata request that
+    did arrive (2026-09-24, 22:56:14Z) came in on port 80.
+    """
+    policy = one(tenant_docs, "NetworkPolicy", "swarm-allow-worker-egress")
+    metadata = _ip_rules_reaching(policy, "169.254.169.254")
     assert metadata, "Workload Identity tokens come from the metadata server"
-    ports = {p["port"] for rule in metadata for p in rule["ports"]}
-    assert 988 in ports, "988 is the GKE Workload Identity endpoint"
+    ports = set().union(*(_ports(r) for r in metadata))
+    assert ports == {("TCP", 80), ("TCP", 8080)}, (
+        f"169.254.169.254 is reachable on {sorted(ports)}; GKE documents TCP 80 and "
+        "8080 for Dataplane V2, and 988 on this address matches nothing"
+    )
 
 
-def test_egress_to_the_internet_excludes_the_cluster(tenant_docs):
+@NETWORKS
+def test_the_internet_rule_carves_out_the_rendered_ranges_and_all_private_space(network):
     """The cross-tenant hop is pod-to-pod, and it is carved out here.
 
     NetworkPolicy has no selector for "not in this cluster", so an ipBlock with
-    an except list is the only way to say it, and the service range has to be
-    listed explicitly because GKE Autopilot's default (34.118.224.0/20) is
-    public address space that no RFC1918 entry covers.
+    an except list is the only way to say it. Two sets are excepted:
+
+      * every private, link-local and CGNAT range, ALWAYS. These used to arrive
+        through the pod-CIDR default (10.0.0.0/8); rendering the real pod range
+        instead must not quietly un-except the rest of 10/8 -- the nodes, and
+        everything else in the VPC.
+      * the cluster's own pod and service ranges, AS RENDERED. They are
+        redundant on a private cluster and the only protection on a public one
+        (the `public` case below).
+
+    Replaces a test that pinned 34.118.224.0/20 -- a value that is not this
+    cluster's, asserted against a default nothing overrode.
     """
-    policy = one(tenant_docs, "NetworkPolicy", "swarm-allow-worker-egress")
-    internet = next(
-        rule
+    policy = egress_policy(*network_argv(network))
+    internet = [
+        peer["ipBlock"]
         for rule in policy["spec"]["egress"]
-        if any(peer.get("ipBlock", {}).get("cidr") == "0.0.0.0/0" for peer in rule.get("to", []))
+        for peer in rule.get("to", [])
+        if peer.get("ipBlock", {}).get("cidr") == "0.0.0.0/0"
+    ]
+    assert len(internet) == 1, f"expected one 0.0.0.0/0 peer, found {len(internet)}"
+    excepted = internet[0]["except"]
+    wanted = ALWAYS_EXCEPTED | {network["pod_cidr"], network["service_cidr"]}
+    assert wanted <= set(excepted), f"not excepted: {sorted(wanted - set(excepted))}"
+    assert len(excepted) == len(set(excepted)), f"duplicate except entries: {excepted}"
+
+    # The property, not just the spelling: no rule that is not a DNS rule
+    # admits any address of the pod or service range.
+    for key in ("pod_cidr", "service_cidr"):
+        probe = str(next(ipaddress.ip_network(network[key]).hosts()))
+        leaking = [
+            r for r in _ip_rules_reaching(policy, probe)
+            if not _ports(r) <= {("UDP", 53), ("TCP", 53)}
+        ]
+        assert not leaking, f"{key} address {probe} is reachable on {[_ports(r) for r in leaking]}"
+
+
+@NETWORKS
+def test_the_policy_records_the_network_it_was_rendered_for(network):
+    """`kubectl get netpol -o yaml` answers "rendered for which cluster?".
+
+    The live policy on 2026-09-24 could not: nothing on it said its ranges were
+    renderer defaults. scripts/lib/check-cluster-network-parity.sh compares these
+    annotations, and the spec, with the live cluster.
+    """
+    annotations = egress_policy(*network_argv(network))["metadata"].get("annotations") or {}
+    assert annotations.get("swarm.saga.xyz/network-source") == NETWORK_SOURCE
+    assert annotations.get("swarm.saga.xyz/pod-cidr") == network["pod_cidr"]
+    assert annotations.get("swarm.saga.xyz/service-cidr") == network["service_cidr"]
+    assert annotations.get("swarm.saga.xyz/cluster-dns-ip") == network["cluster_dns_ip"]
+    assert annotations.get("swarm.saga.xyz/node-local-dns-ip") == network["node_local_dns_ip"]
+
+
+def test_a_render_without_the_cluster_network_says_so(capsys):
+    """An OFFLINE render (make lint, CI's checkov, a hand-run look) cannot know the
+    cluster, and must not pretend to.
+
+    It renders documentation addresses (RFC 5737), marks the policy
+    `offline-render-not-for-apply`, and says so on stderr. The old behaviour was
+    to render 10.0.0.0/8 and 34.118.224.0/20 silently -- plausible values, for
+    some cluster -- and that is exactly what reached swarm-autopilot.
+    """
+    values = tenant_values()
+    assert values.get("NETWORK_SOURCE") == OFFLINE_SOURCE, (
+        "a render with no network inputs does not mark itself as offline"
     )
-    block = next(
-        peer["ipBlock"] for peer in internet["to"] if peer.get("ipBlock", {}).get("cidr") == "0.0.0.0/0"
-    )
-    excepted = set(block["except"])
-    assert "10.0.0.0/8" in excepted          # the pod range, by default
-    assert "34.118.224.0/20" in excepted     # the Autopilot service range
-    assert "172.16.0.0/12" in excepted
-    assert "192.168.0.0/16" in excepted
-    assert "169.254.0.0/16" in excepted
-    # Every excepted range must be a duplicate-free set; a repeated entry is a
-    # validation error the API server raises only at apply time.
-    assert len(block["except"]) == len(excepted)
+    documentation = [
+        ipaddress.ip_network(n) for n in ("192.0.2.0/24", "198.51.100.0/24", "203.0.113.0/24")
+    ]
+    for key in ("POD_CIDR", "SERVICE_CIDR", "CLUSTER_DNS_IP", "NODE_LOCAL_DNS_IP"):
+        value = ipaddress.ip_network(values[key])
+        assert any(value.subnet_of(d) for d in documentation), (
+            f"offline {key}={values[key]} is not a documentation address; an offline "
+            "render must not carry a value that could pass for a real cluster's"
+        )
+
+    import contextlib
+    import io
+
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer):
+        render.main(["tenant", "--tenant", TENANT])
+    assert OFFLINE_SOURCE in capsys.readouterr().err, "the offline render printed no warning"
+    policy = one(documents(buffer.getvalue()), "NetworkPolicy", "swarm-allow-worker-egress")
+    assert policy["metadata"]["annotations"]["swarm.saga.xyz/network-source"] == OFFLINE_SOURCE
+
+
+def test_a_partial_network_is_refused():
+    """Half a network is the RC3 shape: some values from the cluster, the rest
+    from somewhere else. The renderer names what is missing."""
+    with pytest.raises(SystemExit) as raised:
+        tenant_values("--pod-cidr", PRIVATE_NETWORK["pod_cidr"])
+    assert "--cluster-dns-ip" in str(raised.value)
+
+
+def test_a_kube_dns_ip_outside_the_service_range_is_refused():
+    """The kube-dns Service IP is a ClusterIP, so it lies inside the service
+    range. One that does not is a swapped argument or a value from another
+    cluster, and rendering it would allow DNS to an address nothing answers."""
+    argv = network_argv({**PRIVATE_NETWORK, "cluster_dns_ip": "10.120.0.10"})
+    with pytest.raises(SystemExit) as raised:
+        tenant_values(*argv)
+    assert "service range" in str(raised.value)
+
+
+def test_no_cluster_address_is_typed_into_the_egress_template():
+    """The template may name platform facts -- private ranges, the metadata
+    server, the Google API VIPs -- and nothing that belongs to one cluster.
+
+    A cluster address typed in here would be rendered into every tenant of every
+    cluster, and would agree with the one cluster it was measured on for exactly
+    as long as nobody looked. Comments may cite measured values; YAML may not.
+    """
+    text = (KUBERNETES / "network-policies" / "allow-egress.yaml").read_text()
+    for token in ("POD_CIDR", "SERVICE_CIDR", "CLUSTER_DNS_IP", "NODE_LOCAL_DNS_IP"):
+        assert f"__{token}__" in text, f"__{token}__ is not rendered into the egress policy"
+
+    platform = ALWAYS_EXCEPTED | {
+        "0.0.0.0/0",
+        "169.254.169.254/32",
+        "199.36.153.4/30",
+        "199.36.153.8/30",
+    }
+    yaml_only = "\n".join(line.split("#", 1)[0] for line in text.splitlines())
+    literals = set(re.findall(r"\b\d{1,3}(?:\.\d{1,3}){3}(?:/\d{1,2})?\b", yaml_only))
+    assert literals <= platform, f"cluster addresses typed into the template: {sorted(literals - platform)}"
 
 
 # ---------------------------------------------------------------------------
