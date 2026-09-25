@@ -183,12 +183,13 @@ def _assert_distinct_destinations(declared: list[DeclaredInput]) -> None:
 def destination_for(work: Path, filename: str, *, reserved: frozenset[str]) -> Path:
     """The path a declared input is staged to, or a refusal.
 
-    `filename` reaches here from a caller's submission. The API refuses an
-    absolute or traversing name on the WORKFLOW path, in a step's `input_from`
-    and in the workflow's own `metadata.input_from`
-    (`swarm_api.validation.validate_staged_filenames` and
-    `validate_workflow_input_from_metadata`, #64). It does not check a plain
-    task's `metadata.input_from`, and it does not know the reserved names.
+    `filename` reaches here from a caller's workflow step. A caller cannot send
+    `metadata.input_from` itself: the API refuses the key on a plain task, a
+    batch and a workflow's own `metadata` (reserved, #151), so the declaration
+    read here was written by workflow expansion from a step's `input_from`,
+    whose filenames the API has refused when absolute or traversing
+    (`swarm_api.validation.validate_staged_filenames`, #64). The API does not
+    know the reserved names, and this reads a free-form dict that nothing types.
     So every unsafe shape is still rejected here:
     an absolute path, a traversal, and any name whose first segment is one the
     worker itself owns inside `work/` (the clone directory, the worker's own
