@@ -16,7 +16,8 @@
 #     other team's is refused;
 #   * every project-level role terraform/infra grants is one the scoped
 #     projectIamAdmin may still grant -- the check that turns a mid-release 403
-#     into a failed pull request.
+#     into a failed pull request -- and every project-level grant declared in
+#     the files CI applies is one those checks read.
 #
 # The replay compares names against the prefix lists the expressions are
 # rendered from, and a separate assertion holds each rendered expression to
@@ -541,9 +542,32 @@ run "the_iam_admin_condition_refuses_every_role_ci_does_not_hand_out" {
     error_message = "projectIamAdmin must be limited by modifiedGrantsByRole to exactly the grantable roles"
   }
 
+  # This switch alone is what terraform/bootstrap/terraform.tfvars names
+  # (2026-09-25), so this is the plan the owner's targeted apply shows: one
+  # project-wide grant leaves, one conditioned grant arrives, and nothing else
+  # about the deployer moves. The first run in this file is the control -- with
+  # nothing switched, the conditioned grant does not exist.
+  assert {
+    condition = alltrue([
+      !contains(keys(google_project_iam_member.deployer_roles), "roles/resourcemanager.projectIamAdmin"),
+      length(google_project_iam_member.deployer_roles) == length(var.deployer_roles) - 1,
+      length(google_project_iam_member.deployer_project_iam_admin) == 1,
+      length(google_project_iam_member.deployer_secrets) == 1,
+      length(google_project_iam_member.deployer_network_admin) == 0,
+      length(google_project_iam_member.deployer_security_admin) == 0,
+      length(google_project_iam_member.deployer_container_admin) == 0,
+      length(google_project_iam_member.deployer_datastore_owner) == 0,
+      length(google_project_iam_member.deployer_logging_config_writer) == 0,
+      length(google_project_iam_member.deployer_secrets_scoped) == 0,
+    ])
+    error_message = "scoping projectIamAdmin alone must be exactly one destroy (its project-wide grant) and one create (its conditioned grant); any other deployer grant moving means the owner's apply does more than the tfvars line says"
+  }
+
   # Every role in the live project policy that terraform/infra does not grant
-  # (51 of 65, 2026-09-24). The deployer's own roles are here too: they are
-  # granted by bootstrap, which the owner applies, never by CI.
+  # (52 of 67, re-read 2026-09-24 with `gcloud projects get-iam-policy`; the
+  # first reading, 51 of 65, predates roles/logging.serviceAgent). The
+  # deployer's own roles are here too: they are granted by bootstrap, which the
+  # owner applies, never by CI.
   assert {
     condition = !anytrue([
       for r in [
@@ -584,6 +608,7 @@ run "the_iam_admin_condition_refuses_every_role_ci_does_not_hand_out" {
         "roles/iap.admin",
         "roles/logging.admin",
         "roles/logging.configWriter",
+        "roles/logging.serviceAgent",
         "roles/logging.viewer",
         "roles/monitoring.admin",
         "roles/monitoring.editor",
