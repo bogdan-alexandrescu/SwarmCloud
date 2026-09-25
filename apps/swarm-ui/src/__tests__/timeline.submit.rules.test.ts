@@ -124,7 +124,7 @@ describe('epic #84: the Timeline and Submit rules', () => {
     expect(won(pick(panel, 'button'), 'color', WIDE)).toBe('var(--warn-ink)')
   })
 
-  it('TS-18: every section, panel and step heading is --t-lead; --t-title is the h1 and two named exceptions', () => {
+  it("TS-18: every section, panel and step heading is --t-lead; --t-title is the h1 and a rendered document's h1", () => {
     // MUTATION: any of these back at --t-title, or an exception moved down.
     const lead: Array<[string, string]> = [
       ['<section class="section"><h2>x</h2></section>', 'h2'],
@@ -147,8 +147,12 @@ describe('epic #84: the Timeline and Submit rules', () => {
     const title: Array<[string, string]> = [
       ['<div class="head"><h1>x</h1></div>', 'h1'],
       ['<div class="ctl-page-head"><h1>x</h1></div>', 'h1'],
-      // Overview's attention lead, at page rank on purpose (layout.overview.test.tsx).
-      ['<p class="ov-lead-title">x</p>', 'p'],
+      // NOT `.ov-lead-title`. Overview's attention lead was listed here as an
+      // exception at page rank; OV-15 (#81) moved it to --t-lead/600, and the
+      // owner's resolution on #84 (2026-09-25) is that OV-15 wins -- it is the
+      // decision about that element, and this test's own rule agrees with it.
+      // typescale.test.ts pins it at --t-lead. (`.brand-word` also takes
+      // --t-title; it is a logotype, not a heading, and says why beside it.)
       // A rendered document's own h1 follows the document's ladder.
       ['<div class="art-md"><h1 class="art-h" data-level="1">x</h1></div>', 'h1'],
     ]

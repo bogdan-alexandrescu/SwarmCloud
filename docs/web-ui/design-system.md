@@ -294,7 +294,7 @@ below them are the owner's and are unchanged.**
 | `--t-meta` | 13 / 1.45 | column heads, eyebrows, labels — **a treatment as much as a size**: 600, mono, `--text-faint`. *No longer uppercase and no longer tracked: see §13.2. No longer the chip: see §6.6.* |
 | `--t-body` | 14 / 1.50 | the workhorse: table cells, values, controls, state words, `body` itself |
 | `--t-lead` | 16 / 1.55 | a card title; **the one sentence a screen is allowed**; and, at 600, **every section, panel and step heading** (TS-18) |
-| `--t-title` | **18** / 1.30 | the screen `<h1>`, at weight **600** — and only two other things: Overview's attention lead (`.ov-lead-title`, at page rank on purpose) and a rendered document's own h1 (`.art-md .art-h[data-level="1"]`), which follows the document's ladder |
+| `--t-title` | **18** / 1.30 | the screen `<h1>` (`.head h1`, `.ctl-page-head > h1`), at weight **600** — and only two other things: the product wordmark (`.brand-word`, a logotype, not a heading) and a rendered document's own h1 (`.art-md .art-h[data-level="1"]`), which follows the document's ladder |
 | `--t-figure` | **22** / 1.10 | the one number a card exists for |
 
 **Why the top two moved, and the count cap that matters more than either.**
@@ -341,13 +341,14 @@ and weight 600 — the Overview's attention lead title is an `<h2>` at that step
 and stays distinct from the card titles by its position, its track and its
 unboxed region, which is how the paragraph below ranks hierarchy. **An in-page
 heading that ties with the h1 is a defect.** The in-page headings the sheet
-still draws at `--t-title` are named so the document and the code agree:
-`.section > h2` and `.section > .ctl-toolbar > h2` (§B4.1 of the sheet, pinned
-by `typescale.test.ts`: "a panel title is --t-title"), `.sbf-move-h`,
-`.state h3`, `.ctl-empty > h3`, `.art-head h3` and `.ckb-head h3`. They are
-TS-18's (epic #84), which moves them to `--t-lead`; OV-15 left those rules and
-their tests alone. A rendered document's own h1 (`.art-md .art-h[data-level="1"]`)
-follows the document's ladder, not the console's.
+used to draw at `--t-title` — `.section > h2` and `.section > .ctl-toolbar > h2`
+(§B4.1 of the sheet), `.sbf-move-h`, `.state h3`, `.ctl-empty > h3`,
+`.art-head h3` and `.ckb-head h3` — are TS-18's (epic #84), which moves them to
+`--t-lead`/600 (`timeline.submit.rules.test.ts`). TS-18's first draft kept
+`.ov-lead-title` at `--t-title` as an exception; OV-15 wins on that element
+(resolved on #84, 2026-09-25). A rendered document's own h1
+(`.art-md .art-h[data-level="1"]`) follows the document's ladder, not the
+console's.
 
 `--lh-flush: 1` is not a seventh step; it is legal only inside a `font:`
 shorthand next to a size token, where a fixed box must not grow, and every use

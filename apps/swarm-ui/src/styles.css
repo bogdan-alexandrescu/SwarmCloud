@@ -293,11 +293,12 @@
   --t-lead: 16px;
   --lh-lead: 1.55;
 
-  /* THE SCREEN H1'S STEP, and only two other things take it: Overview's
-     attention lead (`.ov-lead-title`, at page rank on purpose) and a rendered
-     document's own h1 (`.art-md .art-h[data-level="1"]`), which follows the
-     document's ladder rather than the console's. Every other heading --
-     section, panel, step, the heading of a state or an empty panel -- is
+  /* THE SCREEN H1'S STEP (`.head h1`, `.ctl-page-head > h1`), and only one
+     other heading takes it: a rendered document's own h1
+     (`.art-md .art-h[data-level="1"]`), which follows the document's ladder
+     rather than the console's. Every other heading -- section, panel, step,
+     the heading of a state or an empty panel, and Overview's attention lead
+     (`.ov-lead-title`, OV-15, which won over TS-18's first draft on #84) -- is
      --t-lead, set apart from body by weight (TS-18, design-system.md §2).
      (The product wordmark, `.brand-word`, also takes this size; it is a
      logotype, not a heading, and says why beside its rule.)
@@ -5798,7 +5799,7 @@ a.ctl-metric:focus-visible .ctl-metric-label,
 /* 17b. The Help page's topics (AH-18)                                         */
 /* -------------------------------------------------------------------------- */
 /* A TOPIC IS A ROW OF ITS GROUP, NOT A BOX. design-system §13.3: a region is a
-   `.section` -- the large break, one hairline, a `--t-title` h2 -- and what
+   `.section` -- the large break, one hairline, a `--t-lead` h2 (TS-18) -- and what
    repeats inside it draws nothing. Every topic was an inline-styled bordered
    panel (border, `--surface`, radius, panel padding), because this sheet
    belonged to another track when HelpSection.tsx was written. The box goes;
