@@ -208,6 +208,16 @@ workflow step that needs it.
 A batch is refused whole: one task carrying the key means none of the batch is
 created.
 
+**Three metadata keys are reserved, and one refusal names all of them.**
+`dispatch`, `input_from` and `expected_outputs` (above) are the keys the
+service writes into `task.metadata`. They are one tuple,
+`validation.RESERVED_METADATA_KEYS`, checked by one function. A caller who sends
+more than one gets a single 422 whose `detail.reserved_metadata_keys` lists each
+of them, in that order, and whose message says why each is reserved and what to
+send instead. `expected_outputs` was first reserved by a check of its own (#153),
+so as not to collide with the `input_from` change. That check heard about one
+key per round trip, and it was folded into the tuple once both had merged.
+
 ## Failure behaviour
 
 | `on_step_failure` | Effect when a step is FAILED or DEAD_LETTERED |

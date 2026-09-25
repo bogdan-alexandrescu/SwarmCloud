@@ -37,11 +37,7 @@ from swarm_common.states import ParkReason, TaskState, assert_transition
 from .auth import AuthContext
 from .codec import quota_to_api
 from .errors import Forbidden, ValidationFailed
-from .expected_outputs import (
-    expected_outputs_by_step,
-    record_expected_outputs,
-    reject_caller_expected_outputs,
-)
+from .expected_outputs import expected_outputs_by_step, record_expected_outputs
 from .metrics import ApiMetrics
 from .runnerinputs import input_contract
 from .schemas import TaskCreate, WorkflowCreate
@@ -199,7 +195,6 @@ class SubmissionService:
         # service adds is two short strings, plus -- on an integrator only -- one
         # task id per upstream step, so `max_workflow_steps` is its ceiling.
         reject_reserved_metadata(spec.metadata)
-        reject_caller_expected_outputs(spec.metadata)
         validate_input_size(spec.metadata, 16 * 1024, label="metadata")
         resource_class = validate_resource_class_override(profile, resource_class_override)
         timeout = validate_timeout(profile, spec.timeout_seconds)
@@ -309,9 +304,10 @@ class SubmissionService:
             # The WORKFLOW's own metadata, up front and inside this try. It is
             # copied onto every step's task below, so a reserved key here would
             # otherwise reach the root steps verbatim and be silently replaced
-            # on a step that declares its own `input_from` (#151). `_build_task`
-            # would refuse it too, but only mid-loop, outside this try, so the
-            # refusal would go uncounted.
+            # on a step that declares its own `input_from` (#151), or on every
+            # upstream step by the recorded `expected_outputs` (#149).
+            # `_build_task` would refuse it too, but only mid-loop, outside this
+            # try, so the refusal would go uncounted.
             reject_reserved_metadata(spec.metadata)
             order = validate_dag(step_specs, max_steps=self._settings.core.max_workflow_steps)
             dispatch = resolve_dispatch_options(
@@ -324,11 +320,6 @@ class SubmissionService:
                 # After validate_dag, which has already rejected the cycles and
                 # dangling dependencies this would otherwise have to reason about.
                 integrator_step_id = resolve_integrator_step(step_specs)
-            # The WORKFLOW's own metadata is copied onto every step's task, so
-            # `_build_task` would refuse a caller's `expected_outputs` there
-            # too -- but mid-loop, outside this try, uncounted. Refused here,
-            # before a single task is built (#149).
-            reject_caller_expected_outputs(spec.metadata)
         except ValidationFailed as exc:
             self._metrics.tasks_rejected.labels(reason=exc.code).inc()
             raise

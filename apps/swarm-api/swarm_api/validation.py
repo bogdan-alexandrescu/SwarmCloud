@@ -218,9 +218,26 @@ DISPATCH_METADATA_KEY = "dispatch"
 #: reserving a key the worker does not read would refuse nothing that matters.
 INPUT_FROM_METADATA_KEY = "input_from"
 
+#: The key inside `task.metadata` naming the files a workflow step's dependants
+#: stage from it (#149). Written by workflow expansion only, on each UPSTREAM
+#: step's task (`swarm_api.expected_outputs.record_expected_outputs`). Defined
+#: here, beside the other reserved keys, because `expected_outputs` imports this
+#: module and the reservation below needs the key: the other way round is an
+#: import cycle. `swarm_api.expected_outputs` re-exports it under the same name,
+#: and tests/unit/control_plane/test_expected_outputs_seam.py holds it equal to
+#: the worker's `agent_worker.expected_outputs.METADATA_KEY`.
+EXPECTED_OUTPUTS_METADATA_KEY = "expected_outputs"
+
 #: Every key inside `task.metadata` this service writes and a caller may not,
-#: in the order a refusal names them.
-RESERVED_METADATA_KEYS = (DISPATCH_METADATA_KEY, INPUT_FROM_METADATA_KEY)
+#: in the order a refusal names them. One tuple, checked by one function, so a
+#: caller who sent several is told about all of them in one 422 rather than one
+#: per round trip -- which is what #153's separate expected_outputs check did
+#: until it was folded in here.
+RESERVED_METADATA_KEYS = (
+    DISPATCH_METADATA_KEY,
+    INPUT_FROM_METADATA_KEY,
+    EXPECTED_OUTPUTS_METADATA_KEY,
+)
 
 #: Strategies and carriers that cannot work without somewhere to push to.
 _NEEDS_REPOSITORY_STRATEGIES = ("direct-pr", "integrate")
@@ -229,10 +246,11 @@ _NEEDS_REPOSITORY_STRATEGIES = ("direct-pr", "integrate")
 class DispatchOptionError(ValidationFailed):
     """422 `invalid_dispatch`: a refused dispatch option, or a reserved metadata key.
 
-    The `metadata.input_from` reservation (#151) answers with this code too,
-    rather than a new one. The owner's instruction was "reserved, like
-    dispatch", and a caller branching on the code should read both reservations
-    the same way. `detail.reserved_metadata_keys` says which key it was.
+    The `metadata.input_from` (#151) and `metadata.expected_outputs` (#149)
+    reservations answer with this code too, rather than new ones. The owner's
+    instruction was "reserved, like dispatch", and a caller branching on the
+    code should read every reservation the same way.
+    `detail.reserved_metadata_keys` says which keys it was.
     """
 
     code = "invalid_dispatch"
@@ -311,6 +329,13 @@ _RESERVED_BECAUSE = {
         "a workflow (POST /v1/workflows) and declare `input_from` on the step "
         "that needs it, with the upstream step in its `depends_on`."
     ),
+    EXPECTED_OUTPUTS_METADATA_KEY: (
+        f"metadata.{EXPECTED_OUTPUTS_METADATA_KEY} is reserved: it is set by "
+        "workflow expansion, which records on each upstream step the files its "
+        "dependants' `input_from` stage from it. To have an agent told which "
+        "files a later step needs, submit a workflow (POST /v1/workflows) and "
+        "declare `input_from` on the step that needs them."
+    ),
 }
 
 
@@ -329,14 +354,21 @@ def reject_reserved_metadata(metadata: dict[str, Any]) -> None:
     it has checked the declaration against the DAG. ANY value is refused, `{}`
     and None included: the key is reserved, not validated.
 
+    `metadata.expected_outputs` (owner decision on #149, point (d)): the worker
+    tells the agent, in the platform's voice, that later steps of its workflow
+    need these files. Accepted from a caller, that would be said about a task
+    no step stages from. Reserved, not validated, like `input_from`.
+
     HOW THE SERVICE'S OWN WRITES GET PAST THIS: ORDER, NOT A FLAG. This runs on
-    the caller's metadata only, before either key is added. `_build_task` calls
-    it, then adds `dispatch`. `submit_workflow` calls it on the workflow's own
-    metadata, and adds `input_from` to a step's task after `_build_task` has
-    returned. Nothing a caller sends can reach the store under either key.
+    the caller's metadata only, before any of the keys is added. `_build_task`
+    calls it, then adds `dispatch`. `submit_workflow` calls it on the workflow's
+    own metadata; it adds `input_from` to a step's task after `_build_task` has
+    returned, and `expected_outputs` to every built task just before the one
+    store write. Nothing a caller sends can reach the store under any of them.
 
     Every reserved key present is named in the detail, in RESERVED_METADATA_KEYS
-    order, so a caller who sent two learns about both from one refusal.
+    order, so a caller who sent several learns about all of them from one
+    refusal.
     """
     present = [key for key in RESERVED_METADATA_KEYS if key in metadata]
     if not present:

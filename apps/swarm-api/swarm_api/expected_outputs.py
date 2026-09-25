@@ -21,23 +21,24 @@ called, so it is part of the one write that creates the task document
 (`Store.create_tasks`), never a second update that a worker could race.
 
 THE SERVICE IS THE KEY'S ONLY WRITER; A CALLER MAY NOT SET IT (owner decision
-on #149, point (d), 2026-09-25). `reject_caller_expected_outputs` refuses it
-from a task, a batch and a workflow's own `metadata`, with the same 422
-`invalid_dispatch` and `detail.reserved_metadata_keys` that `metadata.dispatch`
-gets (`validation.reject_reserved_metadata`). Accepted, it would reach the
-agent as "later steps of this workflow need these files", in the platform's
-voice, on a task no step stages from. As with `dispatch`, the service's own
-write gets past the refusal by ORDER, not by a flag: the caller's metadata is
-checked in `_build_task`, and `record_expected_outputs` runs on the built task
-afterwards.
+on #149, point (d), 2026-09-25). It is the third entry in
+`validation.RESERVED_METADATA_KEYS`, beside `dispatch` and `input_from`, so
+`validation.reject_reserved_metadata` refuses it from a task, a batch and a
+workflow's own `metadata` with the same 422 `invalid_dispatch`, and names it in
+`detail.reserved_metadata_keys` together with any other reserved key the caller
+sent. Accepted, it would reach the agent as "later steps of this workflow need
+these files", in the platform's voice, on a task no step stages from. As with
+`dispatch`, the service's own write gets past the refusal by ORDER, not by a
+flag: the caller's metadata is checked in `_build_task` (and, for a workflow's
+own metadata, first thing in `submit_workflow`), and `record_expected_outputs`
+runs on the built task afterwards.
 
-It is a separate function rather than a third entry in
-`validation.reject_reserved_metadata`, and deliberately. The fix for #151
-rewrites that function to reserve `input_from`, and the smallest change that
-does not collide with it textually is one that leaves it alone. Folding this
-key into its `RESERVED_METADATA_KEYS` once both have merged is a three-line
-follow-up. Until then, a caller who sends two reserved keys hears about them
-one refusal at a time.
+#153 first reserved it with a separate function here, so as not to collide
+textually with the #151 change rewriting `reject_reserved_metadata`. That
+meant a caller who sent two reserved keys heard about them one refusal at a
+time. Folded in once both had merged (#155), and the key itself moved to
+`validation` with it, because this module imports `validation` and the
+reservation needs the key.
 
 `record_expected_outputs` still REMOVES the key from a step nothing stages
 from. No caller value can reach it now, so that is a guard on this module's
@@ -49,15 +50,21 @@ from __future__ import annotations
 
 from typing import Any, Iterable, Mapping, Sequence
 
-from .validation import DispatchOptionError
-
-#: The key under `task.metadata`. The worker reads the same key through its own
+#: The key under `task.metadata`, DEFINED in `validation` beside the other
+#: reserved keys and re-exported here under the same name, so there is one
+#: spelling in this package. The worker reads the same key through its own
 #: constant, `agent_worker.expected_outputs.METADATA_KEY`. The two packages never
 #: import each other (a worker that imported swarm-api would carry the control
 #: plane into every agent image), so the two spellings are held equal by
 #: tests/unit/control_plane/test_expected_outputs_seam.py and recorded in
 #: docs/mirrored-values.md.
-EXPECTED_OUTPUTS_METADATA_KEY = "expected_outputs"
+from .validation import EXPECTED_OUTPUTS_METADATA_KEY
+
+__all__ = [
+    "EXPECTED_OUTPUTS_METADATA_KEY",
+    "expected_outputs_by_step",
+    "record_expected_outputs",
+]
 
 
 def expected_outputs_by_step(
@@ -90,21 +97,3 @@ def record_expected_outputs(metadata: dict[str, Any], names: Sequence[str] | Non
         metadata[EXPECTED_OUTPUTS_METADATA_KEY] = list(names)
     else:
         metadata.pop(EXPECTED_OUTPUTS_METADATA_KEY, None)
-
-
-def reject_caller_expected_outputs(metadata: Mapping[str, Any]) -> None:
-    """Refuse a caller's `metadata.expected_outputs`, whatever its value.
-
-    Reserved, not validated: `[]` and `null` are refused like a real list, as
-    `metadata.dispatch` is. See the module docstring for why, and for why this
-    is not a third key in `validation.reject_reserved_metadata`.
-    """
-    if EXPECTED_OUTPUTS_METADATA_KEY in metadata:
-        raise DispatchOptionError(
-            f"metadata.{EXPECTED_OUTPUTS_METADATA_KEY} is reserved: it is set by "
-            "workflow expansion, which records on each upstream step the files its "
-            "dependants' `input_from` stage from it. To have an agent told which "
-            "files a later step needs, submit a workflow (POST /v1/workflows) and "
-            "declare `input_from` on the step that needs them.",
-            detail={"reserved_metadata_keys": [EXPECTED_OUTPUTS_METADATA_KEY]},
-        )
