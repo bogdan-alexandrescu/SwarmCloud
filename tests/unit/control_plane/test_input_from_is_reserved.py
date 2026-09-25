@@ -237,7 +237,7 @@ def test_a_workflow_whose_own_metadata_carries_input_from_is_refused_and_creates
     _assert_reserved_refusal(response)
 
 
-def test_workflow_metadata_input_from_is_refused_even_when_every_step_declares_its_own(
+def test_workflow_metadata_input_from_is_refused_when_a_step_also_declares_its_own(
     client, db
 ):
     """The case that used to be SILENTLY REPLACED per step (PR #65's fix-up note).
