@@ -9199,9 +9199,14 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 
    The inspector's container query does not restate this: every table the
    inspector draws is a record. */
+/* THE CELLS ARE NAMED BY TAG, not as a bare `:first-child`: a subject with no
+   type or class could be anything to `test_state_colour_discriminability.py`'s
+   fill scan, which then has to assume this fill could land on a proportion
+   bar -- and a table cell is all it can ever be. */
 @media (max-width: 899px) {
-  .is-scroll > table > thead > tr > :first-child,
-  .is-scroll > table > tbody > tr > :first-child {
+  .is-scroll > table > thead > tr > th:first-child,
+  .is-scroll > table > tbody > tr > th:first-child,
+  .is-scroll > table > tbody > tr > td:first-child {
     position: sticky;
     left: 0;
     z-index: 1;
@@ -9209,7 +9214,7 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
   }
   /* The corner cell is sticky both ways: the head's own `top: 0` and this
      `left: 0`. It paints over both the held column and the head row. */
-  .is-scroll > table > thead > tr > :first-child {
+  .is-scroll > table > thead > tr > th:first-child {
     z-index: 2;
     background-color: var(--surface-2);
   }
