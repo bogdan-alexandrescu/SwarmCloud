@@ -327,9 +327,13 @@
      22/14 = 1.57:1 sits inside that band and below Koyeb's ceiling. The
      figure is still unmistakably the figure -- it is the largest thing on the
      screen and the only element at this step -- it has simply stopped being a
-     poster. The count cap in design-system.md sec 6.2 (one --t-figure per
-     card, and one card per screen carries the screen's figure) does the rest;
-     a smaller step with eight instances would still read as a KPI wall. */
+     poster. The count cap in design-system.md sec 2 does the rest: one
+     --t-figure per card. On a screen that summarises, one card carries the
+     screen's figure. In a grid of peer cards that each state the same measure
+     in the same unit, every card carries its own figure, because the figures
+     are compared card to card, not read as a KPI wall -- Pools' pool tiles,
+     Pool limits' profile cards and Platform counts' scope cards (AH-22). A
+     smaller step used eight times on a summary would still read as a wall. */
   --t-figure: 22px;
   --lh-figure: 1.10;
 
@@ -635,7 +639,9 @@ body {
 .ctl-empty > p,
 .chart-legend,
 .node-why,
-.muted.small { max-width: var(--measure); }
+.muted.small,
+.help-topic p,
+.help-topic dd { max-width: var(--measure); }
 
 /* ---- header ---- */
 .head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 4px; }
@@ -2712,6 +2718,48 @@ table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--tex
      not. */
   table.pools th, table.pools td { padding: 6px 8px; }
 }
+
+/* -- Admin › Tenants (AH-11, AH-12) ----------------------------------------- */
+
+/* THE LONG IDENTITIES ARE SHORTENED ON THE WIDE TABLE, AND ONLY THERE (AH-11).
+   At 1440 the Status column sat past the panel edge behind a scrollbar this
+   platform never paints, pushed there by `nowrap` on two identity columns: a
+   principal that is itself a 55-character service account, and the tenant's
+   own service account at 55-65. So each is one clipped line with an ellipsis
+   and a width cap. The element keeps every character -- a selection copies
+   the whole address -- and carries it as its `title` for hover.
+
+   WHY 20ch. The work column at 1440 is 1144px (a 200px rail, 32px gutters).
+   Measured off the live roster, the other seven columns come to about 700px
+   with their padding -- Tenant ~114, Status ~96, Kind ~58, Enforced ~108
+   (sized when it still carried a `?`; its head is the word alone now), Max
+   active ~98, Units ~59, Credentials ~165 -- which leaves ~440 for the two
+   identities. 20ch of 14px mono is ~168px, plus 20px of padding,
+   twice: ~376, and the table fits with ~70px to spare for a non-overlay
+   scrollbar and a longer tenant id. That is arithmetic from one screenshot
+   and a font metric, not a measurement of the new layout; the next release's
+   screenshots are the measurement.
+
+   ABOVE 900px ONLY. Below it the table scrolls sideways with the tenant
+   column held (CH-13, §7.3), so there is no panel edge for the identity to
+   push anything past: it shows whole, on its one line, and the reader pans
+   to it. A cut identity is a different identity, and the scrolling table has
+   room for all of it. */
+@media (min-width: 900px) {
+  .ten-ident {
+    display: block;
+    max-width: 20ch;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+/* THE BUDGET NOTE IS A PLAIN FACT, IN PLAIN INK (AH-21). AG-5 defines a plain
+   fact as no mark and no dimming. `.ctl-panel-note` is `--text-faint`, the
+   tone of a qualifier under a figure; this line qualifies no figure -- it
+   says a column is absent and why none can exist -- so it takes `--text`.
+   Two classes, so it outranks `.ctl-panel-note` wherever that rule sits. */
+.ctl-panel-note.ten-budget { color: var(--text); }
 
 /* ------------------------------------------------------------------------ */
 /* Agents screen (Screen A)                                                  */
@@ -5685,7 +5733,12 @@ a.ctl-metric:focus-visible .ctl-metric-label,
 /* -------------------------------------------------------------------------- */
 /* 17. Page header                                                             */
 /* -------------------------------------------------------------------------- */
-/* TITLE LEFT, ACTIONS RIGHT, AND NOTHING ELSE. No subtitle, no description, no
+/* THE WRAPPER FOR THE HEADS `Screen` DOES NOT RENDER (AH-25, design-system
+   §6.12): Overview's facts row and the API reads page. Every other page head
+   is `PageHead` in Shell.tsx -- `.head > h1` over one `.sub` line of
+   provenance -- and Help and Platform counts moved onto it from here.
+
+   TITLE LEFT, ACTIONS RIGHT, AND NOTHING ELSE. No subtitle, no description, no
    breadcrumb duplication — the breadcrumb is in `.ctl-head` one region up and
    is never repeated. `flex-wrap` is the whole mobile strategy, the way Koyeb's
    page title works: the actions wrap under the title at 390px instead of
@@ -5714,6 +5767,105 @@ a.ctl-metric:focus-visible .ctl-metric-label,
   color: var(--text);
 }
 .ctl-page-head > .is-end { margin-left: auto; }
+
+/* -------------------------------------------------------------------------- */
+/* 17b. The Help page's topics (AH-18)                                         */
+/* -------------------------------------------------------------------------- */
+/* A TOPIC IS A ROW OF ITS GROUP, NOT A BOX. design-system §13.3: a region is a
+   `.section` -- the large break, one hairline, a `--t-title` h2 -- and what
+   repeats inside it draws nothing. Every topic was an inline-styled bordered
+   panel (border, `--surface`, radius, panel padding), because this sheet
+   belonged to another track when HelpSection.tsx was written. The box goes;
+   `--ctl-s5` of space is the only separator between two topics.
+
+   THE SELECTION RULE IS DECLARED ON EVERY TOPIC, TRANSPARENT (§13.5's pattern):
+   2px on the inline-start edge and the padding beside it, so marking the
+   deep-linked topic `.is-current` changes a colour and a fill and moves
+   nothing. The current topic takes §1.3's selection treatment, a surface step
+   and an ink rule. It replaced a 3px `--text-dim` rule, which is the track
+   axis's measured-zero mark and meant something else on every other screen.
+
+   LONGHANDS for the rule, not `border-inline-start: 2px solid transparent`:
+   a shorthand carrying a keyword where the test asks for the longhand is the
+   case `src/__tests__/cssgate.ts` leaves to its caller, and the cascade tests
+   in shell.test.tsx read each longhand. */
+.help-topic {
+  border-inline-start-width: 2px;
+  border-inline-start-style: solid;
+  border-inline-start-color: transparent;
+  padding-inline-start: var(--ctl-s3);
+  padding-block: var(--ctl-s2);
+  /* ONE LARGE BREAK, as the owner's AH-18 decision says ("scroll-margin-top
+     stays at --ctl-s5"). AH-16 had tripled it so a topic that opens its group
+     landed with the group heading still in view; AH-18, decided after it,
+     keeps the single break, and the `.is-current` fill and ink rule are what
+     mark where a deep link landed. */
+  scroll-margin-top: var(--ctl-s5);
+}
+.help-topic + .help-topic { margin-top: var(--ctl-s5); }
+.help-topic.is-current {
+  border-inline-start-color: var(--text);
+  background-color: var(--surface-2);
+}
+/* THE CARD-TITLE STEP (AH-10), so the page h1, the group h2 and the topic h3
+   stop all rendering at 18px/600: three ranks, three sizes. */
+.help-topic > h3 {
+  margin: 0 0 var(--ctl-s2);
+  font-size: var(--t-lead);
+  line-height: var(--lh-lead);
+  font-weight: 600;
+}
+/* `--t-body`, not `--t-lead`: Help is a reference document and draws many
+   paragraphs; `--t-lead` is the ONE paragraph a screen leads with. The measure
+   is the `--measure` list at the top of this sheet, which replaced a literal
+   68ch here and now caps the term notes too -- uncapped, they ran to x≈1222. */
+.help-topic > p {
+  margin: 0 0 var(--ctl-s2);
+  font-size: var(--t-body);
+  line-height: var(--lh-body);
+  color: var(--text-dim);
+}
+.help-topic > dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: var(--ctl-s1) var(--ctl-s3);
+  margin: var(--ctl-s3) 0 0;
+  align-items: baseline;
+}
+/* Each pair's wrapper steps out of the grid so the terms share one column. */
+.help-topic > dl > div { display: contents; }
+/* The terms are the API's enums as their owner spells them -- `LEASED` -- and
+   a list of raw capitals shouts every one (CH-3). Lowercased by style, so the
+   string in the DOM is still the owner's spelling for a copy and a search. */
+.help-topic dt {
+  font-weight: 600;
+  font-size: var(--t-meta);
+  line-height: var(--lh-meta);
+  font-family: var(--mono);
+  color: var(--text);
+  text-transform: lowercase;
+}
+.help-topic dd {
+  margin: 0;
+  font-size: var(--t-body);
+  line-height: var(--lh-body);
+  color: var(--text-dim);
+}
+/* The topics this one sends a reader on to (the `see` field in help.ts). */
+.help-topic > .help-topic-see {
+  margin: var(--ctl-s3) 0 0;
+  font-size: var(--t-body);
+  line-height: var(--lh-body);
+  color: var(--text-dim);
+}
+/* A raw anchor id: `--t-micro`, the step ids and provenance take. */
+.help-topic > .help-topic-anchor {
+  margin: var(--ctl-s3) 0 0;
+  font-size: var(--t-micro);
+  line-height: var(--lh-micro);
+  font-family: var(--mono);
+  color: var(--text-faint);
+}
 
 /* -------------------------------------------------------------------------- */
 /* 18. The one-line expandable row                                             */
@@ -9571,6 +9723,22 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
     background-color: var(--surface-2);
   }
 
+  /* A GROUPED HEAD'S SECOND ROW HOLDS NOTHING. The held column is the row's
+     name, and where a head has two rows -- Tenants' `Configured` over `Max
+     active` and `Units` (AH-12) -- the name's head cell spans both with
+     `rowspan`, so the first cell of the second row is a figure's head from
+     the middle of the table. Held, `Max active` sat at the left edge over the
+     Tenant head at every scroll offset. It scrolls with its column; the fill
+     stays the head's `--surface-2` from the corner rule above. */
+  .is-scroll > table > thead > tr + tr > th:first-child {
+    position: static;
+    z-index: auto;
+    width: auto;
+    max-width: none;
+    white-space: nowrap;
+    overflow-wrap: normal;
+  }
+
   /* API READS: THE CONCRETE URL UNDER A ROUTE IS CUT, NOT WRAPPED. It is the
      locator for one call (CH-18's `lastUrl`), up to 110 characters for a
      checkpoint file, and wrapped in a 20ch column it would be six lines per
@@ -9755,6 +9923,14 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
    says nothing the marks do not, and says it in the one visual language the
    owner has already called cartoonish. */
 .counts-scopes { align-items: start; }
+
+/* THE COST AND THE CONTROL THAT SPENDS IT ARE ONE UNIT (AH-25). Platform
+   counts' head line is `not counted yet · 24 count() per run · Run the count`,
+   and at 390 it wraps. Wrapped between the two, the price sits at the end of
+   one line and the button at the start of the next, which is the row-apart
+   layout this replaced. About forty characters at `--t-lead` fits the 358px
+   column, so the pair never has to break. */
+.counts-run { white-space: nowrap; }
 
 /* --------------------------------------------------------------------------
    §B6.6 — THE RESIDUAL SIDEWAYS SCROLL, MEASURED AND DELIBERATELY NOT HIDDEN

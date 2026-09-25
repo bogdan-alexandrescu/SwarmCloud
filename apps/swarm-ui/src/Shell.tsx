@@ -1,5 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react'
 import { errorHeading, errorReassurance, pageReads, type ApiError, type ApiErrorKind, type Result } from './fetch'
+import { type TopicId } from './help'
+import { HelpCard } from './HelpCard'
 import { Absent, type LinkOut } from './primitives'
 import { formatDuration, timeAgo } from './types'
 import { AGE_TICK_MS, useNow } from './useNow'
@@ -137,6 +139,7 @@ interface Cadence {
  */
 export function Screen<T>({
   title,
+  help,
   load,
   summary,
   empty,
@@ -144,6 +147,8 @@ export function Screen<T>({
   children,
 }: {
   title: string
+  /** The screen's one `?`, after its title, when it explains the whole screen. See `PageHead`. */
+  help?: TopicId
   load: () => Promise<Result<T>>
   /** One line under the title once data is in. */
   summary?: (data: T) => ReactNode
@@ -352,11 +357,7 @@ export function Screen<T>({
           established. A per-screen copy would be a second opinion about the
           environment, and the second opinion is the one that gets believed
           because it is next to what you are reading. */}
-      <div className="head">
-        <h1>{title}</h1>
-      </div>
-
-      <p className="sub">
+      <PageHead title={title} help={help}>
         <SubLine
           state={state}
           summary={summary}
@@ -366,7 +367,7 @@ export function Screen<T>({
           aged={aged}
           cadence={cadence}
         />
-      </p>
+      </PageHead>
 
       {state.status === 'stale' && (
         <StaleBanner error={state.error} fetchedAt={state.fetchedAt} now={now} />
@@ -395,6 +396,53 @@ export function Screen<T>({
           {children(data, reading)}
         </div>
       )}
+    </>
+  )
+}
+
+/**
+ * THE PAGE HEAD, WRITTEN ONCE (AH-25, design-system §6.12).
+ *
+ * A title over one line of provenance: what was read, how old it is, and the
+ * screen's read control -- with the cost of that control, when it has one,
+ * printed immediately before it. No description sentence; the sentence a
+ * screen is allowed lives behind its `?`.
+ *
+ * `Screen` renders this on fourteen routes. Platform counts renders it too,
+ * because it reads on a button rather than on mount and so cannot be a
+ * `Screen`, and it used to draw a second shape of head for that reason: the
+ * control pinned right in a `.ctl-page-head` and its cost a whole toolbar row
+ * below. Help renders it as §6.12's one exception: it reads nothing, so its
+ * line says what the page is and which topic is showing. Every caller has a
+ * line, so `children` is required -- there is no bare head to style.
+ *
+ * `help`, WHEN A SCREEN'S ONE `?` EXPLAINS THE WHOLE SCREEN (AH-24). The
+ * owner's slot rule is after the label or heading, never after a value, and
+ * a property of the whole screen -- the Workflows board's absent figures --
+ * has no label nearer than the screen's own title. So the glyph follows the
+ * `<h1>`, outside it: a heading's accessible name is its words, not the
+ * topic's short form. Passed as `help="<id>"` so `tests/help.test.ts` counts
+ * it against the ration on the screen that asked for it.
+ *
+ * `.ctl-page-head` is left to the heads this does not describe: Overview's
+ * facts row and the API reads page.
+ */
+export function PageHead({
+  title,
+  help,
+  children,
+}: {
+  title: string
+  help?: TopicId
+  children: ReactNode
+}) {
+  return (
+    <>
+      <div className="head">
+        <h1>{title}</h1>
+        {help !== undefined && <HelpCard topic={help} />}
+      </div>
+      <p className="sub">{children}</p>
     </>
   )
 }
