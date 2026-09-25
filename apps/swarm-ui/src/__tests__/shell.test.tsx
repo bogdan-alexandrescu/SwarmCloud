@@ -77,6 +77,7 @@ function allRules(sheet: CSSStyleSheet): CSSStyleRule[] {
 function probe(over: Partial<ProbeRecord> = {}): ProbeRecord {
   return {
     path: '/v1/capacity',
+    lastUrl: over.path ?? '/v1/capacity',
     lastStatus: 200,
     lastKind: null,
     lastLatencyMs: 120,
@@ -571,9 +572,9 @@ describe('B18: the strip collapses to one line and expands on click', () => {
 
   it('draws one line at rest and the cells only once asked', async () => {
     const { Dock } = await import('../Dock')
-    const { noteFixtureProbe } = await import('../fetch')
-    noteFixtureProbe('/v1/capacity', 120, true)
-    noteFixtureProbe('/v1/admin/leases', 300, false)
+    const { noteFixtureProbe, route } = await import('../fetch')
+    noteFixtureProbe(route('/v1/capacity'), 120, true)
+    noteFixtureProbe(route('/v1/admin/leases'), 300, false)
 
     const { container } = render(<Dock />)
     const line = container.querySelector<HTMLButtonElement>('.ctl-dock-line')
@@ -1195,8 +1196,8 @@ describe('the overflow inventory, as rules that cannot be quietly dropped', () =
     // from, and is invisible to a stylesheet assertion.
     vi.resetModules()
     const { Dock } = await import('../Dock')
-    const { noteFixtureProbe } = await import('../fetch')
-    noteFixtureProbe('/v1/capacity', 120, true)
+    const { noteFixtureProbe, route } = await import('../fetch')
+    noteFixtureProbe(route('/v1/capacity'), 120, true)
     const { container } = render(<Dock />)
     const boxes = [...container.querySelectorAll('.ctl-dock-facts .ctl-dock-fact')]
     expect(

@@ -5,9 +5,9 @@
 // cell in the dock names the route the way a loader does. Kept in one place so
 // the tests that only need "some read happened" do not each restate how.
 
-import { noteFixtureProbe, type ApiErrorKind } from '../fetch'
+import { noteFixtureProbe, route, type ApiErrorKind } from '../fetch'
 
 /** Register one read of `template`, as the fixture path does. */
 export function noteProbe(template: string, latencyMs: number, ok: boolean, kind?: ApiErrorKind): void {
-  noteFixtureProbe(template, latencyMs, ok, kind)
+  noteFixtureProbe(route(template), latencyMs, ok, kind)
 }

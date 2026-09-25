@@ -354,12 +354,34 @@ export function envTreatment(env: Environment): EnvTreatment {
   }
 }
 
+/**
+ * The words the unknown badge stops DRAWING at 560px and below (CH-20). They
+ * stay in the tree -- visually hidden, not removed -- so the badge's name is
+ * still "ENVIRONMENT UNKNOWN" to a screen reader and in the DOM text, and the
+ * capitals, the hatch and the left rule all stay. Drawn, it is "UNKNOWN"
+ * after its `env` key: about 122px, near production's 130, which is what lets
+ * the phone header hold one row.
+ */
+const UNKNOWN_LEAD = 'ENVIRONMENT '
+
 export function EnvironmentBadge({ env }: { env: Environment }) {
   const t = envTreatment(env)
+  const lead = env.kind === 'unknown' && t.label.startsWith(UNKNOWN_LEAD)
   return (
     <span className={`brand-env ${t.className}`} title={t.explain}>
       <span className="brand-k">env</span>
-      <span className="brand-env-name">{t.label}</span>
+      <span className="brand-env-name">
+        {lead ? (
+          <>
+            <span className="brand-env-lead">{UNKNOWN_LEAD}</span>
+            {t.label.slice(UNKNOWN_LEAD.length)}
+          </>
+        ) : (
+          t.label
+        )}
+      </span>
+      {/* The host it could not classify. Not drawn at 560px and below (the
+          badge's title names it), and never removed from the tree. */}
       {env.kind === 'unknown' && env.host !== '' && <Id>{env.host}</Id>}
     </span>
   )
@@ -383,8 +405,20 @@ export function EnvironmentBadge({ env }: { env: Environment }) {
  * `load` is injected with a default so the states can be driven directly in a
  * test, which is the same shape `Screen` uses for the same reason.
  */
+/**
+ * The header's identity read, marked as the FRAME's (CH-2): it is in the dock's
+ * tab-wide registry like any read, and it is not the screen's, so the head's
+ * "newest read" never shows its age beside a page that is still loading.
+ * Module-level, so it is one function for the life of the tab -- a default
+ * written inline would be a new `load` every render, and the effect below
+ * re-reads whenever `load` changes.
+ */
+function loadFrameIdentity(): Promise<Result<Me>> {
+  return loadMe({ frame: true })
+}
+
 export function ProductHeader({
-  load = loadMe,
+  load = loadFrameIdentity,
   declaredEnv = import.meta.env.VITE_SWARM_ENV,
   host,
 }: {
@@ -442,9 +476,14 @@ export function ProductHeader({
 function Identity({ me }: { me: Result<Me> }) {
   switch (me.status) {
     case 'loading':
+      // THE KEY, THEN "reading…" (CH-20), at every width: CH-2's word for a
+      // read in flight. "Reading who you are…" was a sentence in a 52px bar,
+      // and at 390 it was one of the things that wrapped the header onto a
+      // second line.
       return (
         <p className="brand-who is-pending" role="status">
-          Reading who you are…
+          <span className="brand-k">tenant</span>
+          reading…
         </p>
       )
     case 'ok':
@@ -473,10 +512,18 @@ function Identity({ me }: { me: Result<Me> }) {
         </p>
       )
     case 'error':
+      // THE KEY AND THE KIT'S `not read` MARK (CH-20); the error heading is
+      // the slot's accessible name and the message its title, rather than a
+      // sentence standing in the bar.
       return (
-        <p className="brand-who is-unread" role="status" title={me.error.message}>
+        <p
+          className="brand-who is-unread"
+          role="status"
+          aria-label={`${errorHeading(me.error)} — tenant and sign-in unread`}
+          title={me.error.message}
+        >
+          <span className="brand-k">tenant</span>
           <i className="ctl-mark is-unread">not read</i>
-          {errorHeading(me.error)} — tenant and sign-in unread
         </p>
       )
   }
@@ -488,21 +535,32 @@ function IdentityFacts({ me }: { me: Me }) {
       <span className="brand-k">tenant</span>
       {/* NEVER RESTYLED. A tenant id is pasted into `swarm` commands and into
           GCS prefixes; QuotaDetail.tsx:94-96 states the rule and this is the
-          same rule applied in the frame. */}
-      <Id>{me.tenant.tenant_id}</Id>
+          same rule applied in the frame.
+          THE ONE THING IN THE ROW THAT GIVES WAY at 560px and below (CH-20):
+          it ellipsizes there, so the whole value is in its title, and the
+          ellipsis is the sheet's -- the text is intact, so selecting and
+          copying the id copies all of it. */}
+      <Id title={me.tenant.tenant_id}>{me.tenant.tenant_id}</Id>
+      {/* Not drawn at 560px and below, and still announced. */}
       {me.tenant.display_name !== null && (
         <span className="brand-who-name">{me.tenant.display_name}</span>
       )}
-      <span className="brand-k">signed in</span>
-      <Id>{me.principal.email}</Id>
-      {me.principal.is_admin && (
-        <span
-          className="brand-admin"
-          title="You are in an admin group, so the /v1/admin routes will answer for you."
-        >
-          admin
+      {/* ONE UNIT THAT NEVER WRAPS (CH-20), so "admin" cannot fall onto a line
+          of its own above 560px. At 560px and below the principal is not
+          drawn (it stays announced) and the admin tag is. */}
+      <span className="brand-who-me">
+        <span className="brand-who-principal">
+          <span className="brand-k">signed in</span> <Id>{me.principal.email}</Id>
         </span>
-      )}
+        {me.principal.is_admin && (
+          <span
+            className="brand-admin"
+            title="You are in an admin group, so the /v1/admin routes will answer for you."
+          >
+            admin
+          </span>
+        )}
+      </span>
     </p>
   )
 }

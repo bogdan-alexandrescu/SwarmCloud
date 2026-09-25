@@ -176,6 +176,78 @@ export function errorReassurance(e: ApiError): string {
 }
 
 // ---------------------------------------------------------------------------
+// Routes (CH-18)
+// ---------------------------------------------------------------------------
+// A ROUTE IS A PATH TEMPLATE WITH THE IDS AND THE QUERY REMOVED, and it is
+// what the probe registry below is keyed by. It was keyed by the concrete URL,
+// so every task anyone opened added a "route" of its own --
+// `/v1/tasks/<id>/attempts?limit=50` was 13 of the 29 cells on the dock the QA
+// pass screenshotted -- which inflated the route count, shaped the p95 and
+// made the help text's "one record per route" untrue.
+//
+// `read`, `write` and `noteFixtureProbe` take ONLY the value `route()` builds,
+// never a string, so the typecheck refuses any call that would key a probe by
+// a concrete URL. A hand-kept list of call sites could not do that: the first
+// draft of the decision's list missed four. The value is branded so it cannot
+// be forged as an object literal either.
+//
+// The template keeps its `{placeholders}` and any literal query: the seam
+// tests (`test_runtimes_screen.py`, `test_account_api.py`,
+// `test_checkpoint_content.py`) read the path literals out of the source and
+// compare their SHAPE with the routers' declarations, `{id}` and all.
+
+declare const ROUTE: unique symbol
+
+/** A read or write target: the URL to request, and the route it belongs to. */
+export interface ApiRoute {
+  /** The concrete URL, ids substituted and the query appended. */
+  readonly url: string
+  /** The registry key: the template with any `?…` removed. */
+  readonly template: string
+  readonly [ROUTE]: true
+}
+
+/**
+ * A path segment the caller has ALREADY encoded. The one user is a checkpoint
+ * member path, whose `/` separators the route's `{path:path}` expects to
+ * arrive as separators (`memberHref` in CheckpointBrowser.tsx encodes each
+ * segment and refuses `.` and `..`).
+ */
+export interface Encoded {
+  readonly encoded: string
+}
+
+/** Mark a value as already encoded, so `route()` substitutes it verbatim. */
+export function encoded(value: string): Encoded {
+  return { encoded: value }
+}
+
+/**
+ * Build a route: `{name}` in `template` becomes `encodeURIComponent(params.name)`
+ * (or the value verbatim, for an `encoded()` one), `query` is appended, and
+ * the registry key is the template with any literal query removed.
+ *
+ * A placeholder with no value THROWS rather than requesting a URL with a
+ * literal `{id}` in it, which the API would answer with a 404 that reads as
+ * "this task does not exist".
+ */
+export function route(
+  template: string,
+  params: Readonly<Record<string, string | number | Encoded>> = {},
+  query?: string | URLSearchParams,
+): ApiRoute {
+  const url = template.replace(/\{([A-Za-z_][\w]*)\}/g, (_m, name: string) => {
+    const v = params[name]
+    if (v === undefined) throw new Error(`route ${template} has no value for {${name}}`)
+    return typeof v === 'object' ? v.encoded : encodeURIComponent(String(v))
+  })
+  const q = query === undefined ? '' : String(query)
+  const full = q === '' ? url : `${url}${url.includes('?') ? '&' : '?'}${q}`
+  const at = template.indexOf('?')
+  return { url: full, template: at === -1 ? template : template.slice(0, at) } as ApiRoute
+}
+
+// ---------------------------------------------------------------------------
 // The probe registry, for the data-source strip
 // ---------------------------------------------------------------------------
 // Every read records what happened to it, so the UI can show its own
@@ -187,9 +259,17 @@ export function errorReassurance(e: ApiError): string {
 // A 403 here is information rather than a failure: a non-admin genuinely
 // cannot read /v1/admin/*, and saying so stops the page looking broken. A 401
 // is different -- that is an expired session and needs a re-auth action.
+//
+// ONE RECORD PER ROUTE (CH-18). Its status is the last attempt of ANY call to
+// the route and its age the newest successful payload of any call to it; each
+// panel still carries its own age and its own failure, and `lastUrl` says
+// which concrete call the status belongs to.
 
 export interface ProbeRecord {
+  /** The route: a path template, ids and query removed. */
   path: string
+  /** The concrete URL of the last attempt, so a failure can be traced to its task. */
+  lastUrl: string
   /** null when fetch itself rejected, so there was never a response. */
   lastStatus: number | null
   lastKind: ApiErrorKind | null
@@ -233,7 +313,7 @@ function recordProbe(rec: ProbeRecord): void {
  * development mode that hides bugs.
  */
 export function noteFixtureProbe(
-  path: string,
+  target: ApiRoute,
   latencyMs: number,
   ok: boolean,
   // Which failure to simulate. Defaulted to a 403 because that is the cell
@@ -241,16 +321,134 @@ export function noteFixtureProbe(
   // not breakage -- and a fixture that always produced a 503 meant that path
   // was never once looked at in development.
   kind: ApiErrorKind = 'admin_required',
+  options: { frame?: boolean } = {},
 ): void {
   const status = ok ? 200 : kind === 'admin_required' ? 403 : 503
   recordProbe({
-    path,
+    path: target.template,
+    lastUrl: target.url,
     lastStatus: status,
     lastKind: ok ? null : kind,
     lastLatencyMs: latencyMs,
     lastAttemptAt: Date.now(),
     lastSuccessAt: ok ? Date.now() : null,
   })
+  // A fixture read registers when it LANDS, after its simulated latency, so it
+  // belongs to the screen that was open when it STARTED -- `latencyMs` ago.
+  if (options.frame !== true) {
+    const scope = scopeAt(Date.now() - latencyMs)
+    scope.settled += 1
+    if (ok) scope.newestSuccessAt = Date.now()
+    else if (kind !== 'admin_required') scope.failed += 1
+    publishScreenReads()
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The screen's own reads (CH-2)
+// ---------------------------------------------------------------------------
+// THE HEAD'S AGE IS THE SCREEN'S, AND THE DOCK'S IS THE TAB'S. The head used
+// to show the newest success of ANY route this tab had called, so it said
+// "just now" beside a page that was still loading -- the frame's own identity
+// read had landed, the page's had not. The dock keeps the tab-wide view (its
+// label says "every route"); the head reads only what the current screen
+// asked for.
+//
+// A SCREEN IS A ROUTE OF THE APP (`canonical()` in App.tsx), begun when the
+// route changes. A read belongs to the screen that was open when it STARTED,
+// so a slow read from the screen you just left cannot land as "newest read
+// just now" on the one you opened. The frame's own reads -- the identity read
+// behind the product header -- pass `frame: true` and belong to no screen.
+
+export interface ScreenReads {
+  /** The screen these are about, or null before any screen has begun. */
+  key: string | null
+  /** Reads started and not yet settled. */
+  inFlight: number
+  /** Reads that settled, one way or the other. */
+  settled: number
+  /** Settled reads that failed, the admin gate excepted. */
+  failed: number
+  /** The newest successful payload any of this screen's reads produced. */
+  newestSuccessAt: number | null
+}
+
+interface Scope extends ScreenReads {
+  startedAt: number
+}
+
+const EMPTY_SCOPE: ScreenReads = { key: null, inFlight: 0, settled: 0, failed: 0, newestSuccessAt: null }
+
+/** Newest last. Kept short: only a read's START is ever looked up in it. */
+let scopes: Scope[] = []
+let screenSnapshot: ScreenReads = EMPTY_SCOPE
+const screenListeners = new Set<() => void>()
+
+function currentScope(): Scope {
+  const last = scopes[scopes.length - 1]
+  if (last !== undefined) return last
+  // Before any screen has begun (a read from a module-level load, a test that
+  // renders a component alone): an unnamed scope, which no head ever shows.
+  const scope: Scope = { ...EMPTY_SCOPE, startedAt: 0 }
+  scopes.push(scope)
+  return scope
+}
+
+/** The screen that was open at `t`. */
+function scopeAt(t: number): Scope {
+  for (let i = scopes.length - 1; i >= 0; i--) {
+    const s = scopes[i]!
+    if (s.startedAt <= t) return s
+  }
+  return scopes[0] ?? currentScope()
+}
+
+function publishScreenReads(): void {
+  const s = currentScope()
+  screenSnapshot = {
+    key: s.key,
+    inFlight: s.inFlight,
+    settled: s.settled,
+    failed: s.failed,
+    newestSuccessAt: s.newestSuccessAt,
+  }
+  for (const fn of screenListeners) fn()
+}
+
+/**
+ * A new screen is open. Its reads start from nothing -- a screen re-entered is
+ * a screen re-read, and the age of its last visit is not the age of what it is
+ * about to draw.
+ */
+export function beginScreenReads(key: string): void {
+  scopes.push({ ...EMPTY_SCOPE, key, startedAt: Date.now() })
+  if (scopes.length > 8) scopes = scopes.slice(-8)
+  publishScreenReads()
+}
+
+export function subscribeScreenReads(fn: () => void): () => void {
+  screenListeners.add(fn)
+  return () => screenListeners.delete(fn)
+}
+
+/** Identity-stable between changes, for `useSyncExternalStore`. */
+export function screenReadsSnapshot(): ScreenReads {
+  return screenSnapshot
+}
+
+/** A live read has started, on behalf of the screen open now (or the frame). */
+function startScreenRead(frame: boolean): (outcome: 'ok' | 'failed' | 'admin') => void {
+  if (frame) return () => {}
+  const scope = currentScope()
+  scope.inFlight += 1
+  publishScreenReads()
+  return (outcome) => {
+    scope.inFlight -= 1
+    scope.settled += 1
+    if (outcome === 'ok') scope.newestSuccessAt = Date.now()
+    else if (outcome === 'failed') scope.failed += 1
+    publishScreenReads()
+  }
 }
 
 export function subscribeProbes(fn: () => void): () => void {
@@ -299,12 +497,24 @@ export function forgetProbes(): void {
   snapshot = []
   snapshotStale = true
   for (const fn of probeListeners) fn()
+  // The screen's own reads are the same module state for the same reason, and
+  // the head's "reading…" is exactly as untestable if one test's landed read
+  // survives into the next.
+  scopes = []
+  screenSnapshot = EMPTY_SCOPE
+  for (const fn of screenListeners) fn()
 }
 
 export interface FetchOptions {
   /** Previous data, if any. A failure with data in hand becomes `stale`. */
   previous?: { data: unknown; fetchedAt: number; serverAt?: string } | null
   signal?: AbortSignal
+  /**
+   * A read the FRAME makes, not the screen -- the product header's identity
+   * read. It registers in the tab-wide registry like any other, and it is not
+   * the screen's, so the head's age never counts it (CH-2).
+   */
+  frame?: boolean
 }
 
 /**
@@ -315,7 +525,7 @@ export interface FetchOptions {
  * response with no pools and a task page with no tasks are both objects.
  */
 export async function read<T>(
-  path: string,
+  target: ApiRoute,
   isEmpty: (data: T) => boolean,
   opts: FetchOptions = {},
 ): Promise<Result<T>> {
@@ -326,23 +536,27 @@ export async function read<T>(
       : { status: 'error', error }
 
   const startedAt = Date.now()
+  const settle = startScreenRead(opts.frame === true)
   const note = (
     status: number | null,
     kind: ApiErrorKind | null,
     ok: boolean,
-  ): void =>
+  ): void => {
     recordProbe({
-      path,
+      path: target.template,
+      lastUrl: target.url,
       lastStatus: status,
       lastKind: kind,
       lastLatencyMs: Date.now() - startedAt,
       lastAttemptAt: Date.now(),
       lastSuccessAt: ok ? Date.now() : null,
     })
+    settle(ok ? 'ok' : kind === 'admin_required' ? 'admin' : 'failed')
+  }
 
   let res: Response
   try {
-    res = await fetch(path, {
+    res = await fetch(target.url, {
       headers: { accept: 'application/json' },
       // Behind IAP the browser already holds the session cookie; nothing here
       // handles tokens, and nothing here should.
@@ -447,14 +661,18 @@ export async function read<T>(
  * take effect" is answered by the status, not by the payload's length.
  */
 export async function write(
-  path: string,
+  target: ApiRoute,
   method: 'POST' | 'PUT' | 'DELETE',
   body?: unknown,
 ): Promise<Result<unknown>> {
   const startedAt = Date.now()
+  // A write registers in the tab-wide registry and not as the screen's read:
+  // the head's age is "how old are the figures on this page", and a write
+  // draws no figure until the screen reads again.
   const note = (status: number | null, kind: ApiErrorKind | null, ok: boolean): void =>
     recordProbe({
-      path,
+      path: target.template,
+      lastUrl: target.url,
       lastStatus: status,
       lastKind: kind,
       lastLatencyMs: Date.now() - startedAt,
@@ -464,7 +682,7 @@ export async function write(
 
   let res: Response
   try {
-    res = await fetch(path, {
+    res = await fetch(target.url, {
       method,
       headers: {
         accept: 'application/json',
