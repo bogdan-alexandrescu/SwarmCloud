@@ -342,6 +342,13 @@ def test_the_colliding_principal_cannot_read_or_cancel_through_any_route(db):
         # new route added without the dependency, so a new route belongs in it.
         ("GET", f"/v1/tasks/{task_id}/checkpoints"),
         ("GET", f"/v1/tasks/{task_id}/logs"),
+        # The Artifacts tab's reads (#184): the agent's raw bytes, its
+        # transcript, its answer, and the CPU readings off its events.
+        ("GET", f"/v1/tasks/{task_id}/logs?stream=agent_stdout"),
+        ("GET", f"/v1/tasks/{task_id}/artifacts/raw?name=x"),
+        ("GET", f"/v1/tasks/{task_id}/transcript"),
+        ("GET", f"/v1/tasks/{task_id}/answer"),
+        ("GET", f"/v1/tasks/{task_id}/attempts?include=usage"),
         # Every attempt of the tenant, across tasks: the spend of every run
         # the colliding principal did not start.
         ("GET", "/v1/attempts"),

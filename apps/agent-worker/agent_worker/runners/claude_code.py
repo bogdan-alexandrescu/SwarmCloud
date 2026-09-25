@@ -1,6 +1,7 @@
 """Runner: Claude Code, non-interactive.
 
-The CLI is started in print mode with JSON output, in the attempt's isolated
+The CLI is started in print mode with STREAMED JSON output (one event per line,
+`--output-format stream-json --verbose`), in the attempt's isolated
 work directory, with the tenant's credential in its environment and nothing else
 from the worker's own environment. That credential is either `ANTHROPIC_API_KEY`
 (metered API access) or `CLAUDE_CODE_OAUTH_TOKEN` (a Claude subscription token
@@ -15,6 +16,19 @@ workspace that is deleted afterwards and a NetworkPolicy that denies egress to
 every other tenant's namespace. Within that box the agent is allowed to work
 without asking, and the deployment can turn that off by setting
 CLAUDE_CODE_ARGS.
+
+WHY stream-json (#184, 2026-09-25). With `--output-format json` the CLI prints
+ONE object when it ends and nothing before, so a running claude-code attempt
+had nothing for the live tail to show, and the object it did print kept only
+the final answer: the reference run (task_73b5f4d9ca3641fbb914) took seven
+turns and recorded none of them. `stream-json` prints each event as it happens
+-- the init record, every assistant block and tool call, every tool result,
+the `rate_limit_event` readings the account pool wants, and the same `result`
+event last -- and the CLI requires `--verbose` alongside it in print mode.
+`cliagent` already parses a streamed run (`_parse_cli_output` returns the list
+of events and `_spend_of` reads the last one that carries spend). The agent's
+stdout capture, `claude-code.stdout.log`, is therefore NDJSON, and the worker
+publishes its tail every five seconds while the attempt runs.
 """
 
 from __future__ import annotations
@@ -33,7 +47,8 @@ SPEC = CliAgentSpec(
     args_default=(
         "--print",
         "--output-format",
-        "json",
+        "stream-json",
+        "--verbose",
         "--dangerously-skip-permissions",
     ),
     key_env="ANTHROPIC_API_KEY",
