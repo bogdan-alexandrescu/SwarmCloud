@@ -68,21 +68,27 @@ windows, and the handler (`_on_signal`) knows which one it is in:
     replace the exception on its way up: `firestore.transactional` rolls back
     on any BaseException, and its rollback of a transaction that had not begun
     raises a ValueError in place of the interrupt.
-  * Once the child exists, the handler only sets `_interrupted`, and the
-    supervision loop stops the runner, checkpoints and parks or stands down
-    exactly as before (`_handle_interruption`).
+  * Once the child exists, the handler sets `_interrupted`, says "stopping:
+    SIGTERM in phase <phase>" in one INFO line, and the supervision loop
+    stops the runner, checkpoints and parks or stands down exactly as before
+    (`_handle_interruption`). No stack dump: `faulthandler` dumps on SIGTERM
+    only until the runner starts (`startup.disarm_stack_dump`). A running
+    attempt is stopped by SIGTERM routinely, and GKE files every stderr line
+    as ERROR (owner, 2026-09-25).
 
 Every startup phase is also announced (`startup.Phases`), so a worker that
 stalls says where.
 
-**A dependency that is unavailable in the same window exits 78, as at step
+**A dependency that is unavailable in the same window exits 69, as at step
 1, and leaves the task to the reconciler.** Every Firestore call from step 1 to
 the runner carries the startup budget (`ControlPlane.startup_budget`), so an
 outage there raises within about 40 s. Failing the task would be terminal: the
 reconciler never requeues FAILED, and `max_attempts` would never be consulted
-for what is a lost attempt, not a failed one. See
-`_exit_unavailable_before_runner` for which errors count. A refusal, such as
-PERMISSION_DENIED, still fails the attempt with its reason.
+for what is a lost attempt, not a failed one. It was 78 until 2026-09-25. 78 is
+now "cannot start", which the reconciler fails without a retry, so an outage
+cannot share it. See `_exit_unavailable_before_runner` for which errors count.
+A refusal, such as PERMISSION_DENIED, still fails the attempt with its reason.
+At step 1 a refusal is a 78 (`_exit_control_plane_unreachable`).
 """
 
 from __future__ import annotations
@@ -155,7 +161,16 @@ from .secrets import (
     resolve_credentials,
     resolve_git_token,
 )
-from .startup import EXIT_INTERRUPTED, Phases, StartupInterrupted, route_signals
+from .startup import (
+    EXIT_INTERRUPTED,
+    Phases,
+    StartupInterrupted,
+    disarm_stack_dump,
+    route_signals,
+    say_from_signal_handler,
+    signal_name,
+    write_termination_message,
+)
 
 #: What the SIGTERM/SIGINT handler does, by window. See the module docstring.
 _SIGNAL_EXIT_NOW = "exit_now"   # nothing written yet: name the phase, exit
@@ -715,6 +730,13 @@ class Worker:
             logger=self.log,
         )
         self._child = child
+        # THE STARTUP IS OVER. The SIGTERM stack dump is for a worker stuck
+        # before its runner, where the stack is the diagnosis. From here a
+        # SIGTERM is how an attempt is ordinarily stopped, and GKE would file
+        # the dump as a page of ERROR lines per stop (owner, 2026-09-25).
+        # Disarmed before `start`, so the window where the child exists and
+        # the dump is armed is empty. Idempotent across in-place restarts.
+        disarm_stack_dump()
         child.start()
         self._start_sampler(child)
 
@@ -872,7 +894,9 @@ class Worker:
         decision a promoter needs: what an interrupted last attempt becomes.
         """
         cfg = self.cfg
-        self.log.warning("worker received SIGTERM; stopping the runner before exit")
+        # The signal already said "stopping: SIGTERM in phase runner", once,
+        # from the handler (`_on_signal`). A second line here would make one
+        # stop read as two.
         child.terminate(cfg.termination_grace_seconds, reason="worker interrupted")
         child.finish()
         self._child_ended()
@@ -1151,32 +1175,62 @@ class Worker:
     def _exit_control_plane_unreachable(self, exc: BaseException) -> int:
         """The generation check could not read Firestore. Say so and leave.
 
-        Nothing is written. Firestore is the thing that could not be reached,
-        and without the generation check this attempt does not know that it
-        owns the task, so even a write that could land would not be its to
-        make. The exit is 78, "could not start", like the DNS preflight's. See
-        `__main__` for what the reconciler does with the silent lease.
+        Nothing is written to Firestore. Firestore is the thing that could not
+        be read, and without the generation check this attempt does not know
+        that it owns the task, so even a write that could land would not be
+        its to make. See `__main__` for what the reconciler does with each
+        exit.
 
-        The error is logged whole, with its type and its cause: a RetryError
-        from the startup budget, UNAVAILABLE from DNS or a refused connection,
-        PERMISSION_DENIED from IAM, or an auth failure that grpc reports as
-        UNAVAILABLE. Before this, every one of those looked like 300 s of
-        nothing.
+        WHICH EXIT depends on what Firestore said, by the same rule
+        `_exit_unavailable_before_runner` applies after the check
+        (`_unavailable_cause`):
+
+          * UNAVAILABLE, a spent startup budget, a 5xx, a google-auth
+            transport error: the service was not reached, and the next
+            attempt may reach it. 69, which the reconciler retries.
+          * PERMISSION_DENIED, UNAUTHENTICATED, a credential google-auth would
+            not refresh: the service was reached and said no, and it will say
+            no to the next attempt too. 78, "cannot start", which the
+            reconciler fails without a retry (owner, 2026-09-25). Its cause
+            goes to the Kubernetes termination message, the one place this
+            worker can leave it that the reconciler reads.
+
+        Before 2026-09-25 both were 78, and nothing read the 78, so the
+        difference cost nothing. Once 78 fails the task, a Firestore outage
+        at startup would have ended the task for good.
+
+        The error is logged whole, with its type and its cause. Before PR #57,
+        every one of these looked like 300 s of nothing.
         """
         options = self.control.startup_call_options
         retry = options.get("retry")
         cause = getattr(exc, "cause", None)
+        transient = _unavailable_cause(exc)
+        exit_code = ExitCode.UNAVAILABLE if transient is not None else ExitCode.CONFIG
+        message = "could not read the control plane at startup; exiting without writing anything"
         self.log.exception(
-            "could not read the control plane at startup; exiting without writing anything",
+            message,
             exc,
             phase=self.phases.current,
             seconds_in_phase=self.phases.seconds_in_phase(),
             cause=f"{type(cause).__name__}: {cause}" if cause is not None else None,
             retry_budget_seconds=getattr(retry, "timeout", None),
             call_timeout_seconds=options.get("timeout"),
-            exit_code=ExitCode.CONFIG,
+            exit_code=exit_code,
+            retryable=transient is not None,
         )
-        return ExitCode.CONFIG
+        if exit_code == ExitCode.CONFIG:
+            write_termination_message(
+                message=message,
+                cause=(
+                    "the control plane refused the generation check: "
+                    f"{type(exc).__name__}: {exc}"
+                ),
+                phase=self.phases.current,
+                exit_code=exit_code,
+                execution=_execution_name(),
+            )
+        return exit_code
 
     def _exit_interrupted_before_runner(self, exc: StartupInterrupted) -> int:
         """A SIGTERM while the runner was being prepared: record it on OUR attempt, leave.
@@ -1240,7 +1294,12 @@ class Worker:
         return EXIT_INTERRUPTED
 
     def _exit_unavailable_before_runner(self, exc: Exception, cause: BaseException) -> int:
-        """A dependency was unavailable before the runner started: leave the task, exit 78.
+        """A dependency was unavailable before the runner started: leave the task, exit 69.
+
+        69, not 78. It was 78 until 2026-09-25, when the reconciler began
+        reading exit codes and failing a 78 without a retry. An outage is the
+        one thing here that the next attempt may not meet, so it keeps the
+        retry it always had.
 
         `cause` is the error in `exc`'s chain that says so (`_unavailable_cause`).
         It is usually `exc` itself: a RetryError from the startup budget, or
@@ -1279,18 +1338,18 @@ class Worker:
             unavailable=f"{type(cause).__name__}: {cause}",
             retry_budget_seconds=getattr(retry, "timeout", None),
             call_timeout_seconds=options.get("timeout"),
-            exit_code=ExitCode.CONFIG,
+            exit_code=ExitCode.UNAVAILABLE,
             then=(
                 "the reconciler reclaims the lease once it is silent and requeues "
                 "the task, or fails it when its attempts are spent"
             ),
         )
         self._record_startup_end(
-            ExitCode.CONFIG,
+            ExitCode.UNAVAILABLE,
             f"{type(cause).__name__} during startup phase {phase}; the runner never "
             f"started: {cause}",
         )
-        return ExitCode.CONFIG
+        return ExitCode.UNAVAILABLE
 
     def _record_startup_end(self, exit_code: int, error: str) -> None:
         """This attempt's own end, best effort, under the startup budget. Never raises."""
@@ -3002,7 +3061,8 @@ class Worker:
         It used to set `_interrupted` and nothing else, and only the runner's
         supervision loop read that. A worker stuck before its runner existed
         ignored the reconciler's SIGTERM and died to the SIGKILL 120 s later
-        without a line (the 2026-09-24 GKE incident).
+        without a line (the 2026-09-24 GKE incident). In the last window it
+        still only sets the flag, and says so at INFO.
         """
         self._interrupted = True
         mode = self._signal_mode
@@ -3017,6 +3077,19 @@ class Worker:
             if self._startup_interrupt is None:
                 self._startup_interrupt = interrupt
             raise interrupt
+        else:
+            # The runner exists (or the worker is on its way out): a SIGTERM
+            # is the ordinary way an attempt is stopped, not a fault. ONE
+            # INFO line, and no stack dump: the dump was disarmed when the
+            # runner started (`_run_child_supervised`), because GKE files
+            # every stderr line as ERROR (owner, 2026-09-25). The supervision
+            # loop does the stopping, on the flag set above.
+            name, phase = signal_name(signum), self.phases.current
+            say_from_signal_handler(
+                lambda: self.log.info(
+                    f"stopping: {name} in phase {phase}", signal=name, phase=phase
+                )
+            )
 
     @contextmanager
     def _signal_policy(self, mode: str) -> Iterator[None]:

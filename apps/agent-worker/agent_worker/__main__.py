@@ -8,21 +8,27 @@ code is the contract with the dispatcher and the reconciler:
 
     0   terminal state persisted, lease released
     1   the attempt failed, terminal state persisted, lease released
+    69  a dependency was UNAVAILABLE before the runner existed: a spent startup
+        budget, UNAVAILABLE, a 5xx, a google-auth transport error, at the
+        generation check or after it. The task, the lease and the event
+        stream were not written. After the generation check, the attempt's
+        own document records the phase and the error, when Firestore took it.
+        The next attempt may not meet the outage, so it is RETRIED
     70  fenced: a newer generation owns this task; the task and the lease
         were not written, and the agent was never started or was stopped
     71  cancelled
     75  parked (quota, backpressure, missing credential, interruption)
     76  the runner exceeded its timeout and was killed
-    78  the worker could not start at all: bad configuration, a DNS preflight
-        that could not resolve what the first Firestore call needs, clients
-        that could not be built, or a control plane it could not read at the
-        generation check. Nothing was written, not even the attempt.
-        Also: a dependency that was UNAVAILABLE after the generation check and
-        before the runner (a spent startup budget, UNAVAILABLE, a 5xx). The
-        task, the lease and the event stream were not written; the attempt's
-        own document records the phase and the error, when Firestore took it.
-        A refusal there (PERMISSION_DENIED, NOT_FOUND) is not a 78: the
-        attempt fails the task with the reason, exit 1
+    78  the worker CANNOT START, and another attempt would fail the same way:
+        bad configuration, a DNS preflight that still could not resolve what
+        the first Firestore call needs after its retries, clients that could
+        not be built, or a generation check that Firestore REFUSED
+        (PERMISSION_DENIED, UNAUTHENTICATED, a credential it would not
+        refresh). Nothing was written to Firestore, not even the attempt. The
+        cause is written to the Kubernetes termination message
+        (`startup.write_termination_message`). NOT retried: see below.
+        A refusal AFTER the generation check is not a 78: the attempt owns
+        its task by then, and fails it with the reason, exit 1
     143 a SIGTERM or SIGINT arrived before the runner child existed. The task,
         the lease and the event stream were not written. If the attempt had
         already recorded its start, its own document records the phase. That
@@ -32,30 +38,32 @@ code is the contract with the dispatcher and the reconciler:
 THE STARTUP IS LOUD ON PURPOSE (see `startup.py` for the incident behind it).
 The first line is written before the configuration is read. Every phase after
 that gets its own line. Library warnings reach stdout. A DNS failure is
-reported within `DNS_PREFLIGHT_BUDGET_SECONDS`. A SIGTERM names the phase it
-arrived in.
+retried within a bounded window, one warning per failed attempt, and reported
+within `DNS_PREFLIGHT_WINDOW_SECONDS`. A SIGTERM names the phase it arrived in.
 
-WHAT HAPPENS TO A 78 OR A 143 AFTERWARDS. No component reads the exit code.
-The reconciler judges the lease, not the process (`reconciler/detect.py`,
-`detect_stale_leases`):
+WHAT HAPPENS TO EACH EXIT AFTERWARDS. The reconciler reads the exit code of a
+FINISHED execution whose attempt still holds its task's current lease
+(`reconciler.detect.detect_cannot_start`): a Cloud Run task's
+`last_attempt_result.exit_code`, or the worker container's
+`state.terminated.exitCode` on a GKE pod.
 
-  * A 78 from the configuration, the DNS preflight, the generation check or
-    `advance_to_running` comes before the first heartbeat, so the lease is
-    judged by its dispatch deadline alone, 300 s after admission. (A 78 from
-    later in the startup window comes after it, and is judged like a 143
-    after it, below.) It is then reclaimed as
-    `stale_lease`: fenced, released, and the task goes back to READY with
-    `last_error` "reconciled: lease silent for Ns ...". It is retried like any
-    other lost attempt. Once `max_attempts` is spent it goes to FAILED with
-    that same `last_error`. The DNS or configuration cause is in the container
-    log and nowhere in Firestore. A worker that cannot reach Firestore cannot
-    write it there. Making 78 non-retryable, with its cause as `last_error`,
-    needs the reconciler to read each execution's exit code from the backend.
-    It does not do that today.
-  * A 143 before the first heartbeat is judged the same way. After the first
-    heartbeat, the lease is reclaimed once it has been silent for
-    `heartbeat_grace_seconds`, and the task is requeued. The lifecycle does
-    not park it. A SCHEDULED_RETRY park is promoted by nothing
+  * 78 is NON-RETRYABLE (owner, 2026-09-25). The reconciler fails the task in
+    the pass that sees the finished execution, without waiting for any
+    deadline and whatever attempts remain. It fences the generation first,
+    releases the lease through the frozen `release_lease_in_transaction`, and
+    writes `last_error` "worker could not start: <cause>". The cause is the
+    worker's own, from the termination message on GKE. Where there is none
+    (Cloud Run keeps no termination message), `last_error` is "worker exited
+    78: could not start (see execution logs: <execution>)". A requested
+    cancel still ends CANCELLED.
+  * Every other code keeps the rules it had before any exit code was read.
+    The reconciler judges the lease, not the process (`detect_stale_leases`).
+    A 69 or a 143 before the first heartbeat is judged by the lease's
+    dispatch deadline, 300 s after admission. After the first heartbeat the
+    lease is reclaimed once it has been silent for `heartbeat_grace_seconds`.
+    Either way it is fenced, released, and the task goes back to READY, or to
+    FAILED once `max_attempts` is spent. The lifecycle does not park a 143. A
+    SCHEDULED_RETRY park is promoted by nothing
     (docs/incidents/2026-09-24-gke-dispatch.md), so parking would strand the
     task where the reconciler's requeue does not.
 """
@@ -192,29 +200,59 @@ def main() -> int:
     except (ConfigError, ValueError) as exc:
         # No task identity has been validated yet. The line carries whatever
         # the environment claimed, and nothing else from it.
-        phases.log.error(
-            f"worker configuration failed: {exc}",
+        message = f"worker configuration failed: {exc}"
+        phases.log.error(message, phase=phases.current, exit_code=ExitCode.CONFIG)
+        startup.write_termination_message(
+            message=message,
+            cause=f"configuration: {exc}",
             phase=phases.current,
             exit_code=ExitCode.CONFIG,
+            execution=_execution_name(),
         )
         return ExitCode.CONFIG
 
     hosts = startup.preflight_hosts()
     phases.enter(
-        "dns_preflight", hosts=hosts, budget_seconds=startup.DNS_PREFLIGHT_BUDGET_SECONDS
+        "dns_preflight",
+        hosts=hosts,
+        budget_seconds=startup.DNS_PREFLIGHT_BUDGET_SECONDS,
+        attempts=startup.DNS_PREFLIGHT_ATTEMPTS,
+        window_seconds=startup.DNS_PREFLIGHT_WINDOW_SECONDS,
     )
-    results = startup.dns_preflight(hosts, budget_seconds=startup.DNS_PREFLIGHT_BUDGET_SECONDS)
-    unreachable = [r for r in results if not r["ok"]]
-    if unreachable:
+
+    def _attempt_failed(attempt: int, unreachable: list[dict[str, Any]], retry_in: float) -> None:
+        # One line per failed attempt, so that a DNS that is flapping shows
+        # as flapping, and one that recovered shows that it needed to.
+        phases.log.warning(
+            f"DNS preflight attempt {attempt} of {startup.DNS_PREFLIGHT_ATTEMPTS} failed: "
+            f"could not resolve {', '.join(r['host'] for r in unreachable)}; "
+            f"retrying in {retry_in:g}s",
+            phase=phases.current,
+            attempt=attempt,
+            attempts=startup.DNS_PREFLIGHT_ATTEMPTS,
+            unreachable=unreachable,
+            retry_in_seconds=retry_in,
+            budget_seconds=startup.DNS_PREFLIGHT_BUDGET_SECONDS,
+        )
+
+    preflight = startup.dns_preflight_with_retries(hosts, on_failed_attempt=_attempt_failed)
+    if not preflight.ok:
+        unreachable = preflight.unreachable
         names = ", ".join(r["host"] for r in unreachable)
+        message = (
+            f"DNS unreachable: could not resolve {names} after {preflight.attempts} "
+            f"attempts over {preflight.seconds:g}s; exiting {ExitCode.CONFIG} before "
+            "building any client"
+        )
         phases.log.error(
-            f"DNS unreachable: could not resolve {names} within "
-            f"{startup.DNS_PREFLIGHT_BUDGET_SECONDS:g}s; exiting {ExitCode.CONFIG} "
-            "before building any client",
+            message,
             phase=phases.current,
             unreachable=unreachable,
-            resolved=[r for r in results if r["ok"]],
+            resolved=[r for r in preflight.results if r["ok"]],
+            attempts=preflight.attempts,
+            seconds=preflight.seconds,
             budget_seconds=startup.DNS_PREFLIGHT_BUDGET_SECONDS,
+            window_seconds=startup.DNS_PREFLIGHT_WINDOW_SECONDS,
             nameservers=startup.resolver_nameservers(),
             hint=(
                 "every Google API call this worker makes starts with these names. "
@@ -224,18 +262,34 @@ def main() -> int:
             ),
             exit_code=ExitCode.CONFIG,
         )
+        startup.write_termination_message(
+            message=message,
+            cause=f"DNS unreachable ({names})",
+            phase=phases.current,
+            exit_code=ExitCode.CONFIG,
+            execution=_execution_name(),
+            attempts=preflight.attempts,
+        )
         return ExitCode.CONFIG
-    phases.log.info("DNS preflight passed", phase=phases.current, resolved=results)
+    phases.log.info(
+        "DNS preflight passed",
+        phase=phases.current,
+        resolved=preflight.results,
+        attempts=preflight.attempts,
+    )
 
     phases.enter("build_worker")
     try:
         worker = build_worker(config, settings, phases=phases)
     except Exception as exc:
-        phases.log.exception(
-            "the worker could not be built; exiting before touching the control plane",
-            exc,
+        message = "the worker could not be built; exiting before touching the control plane"
+        phases.log.exception(message, exc, phase=phases.current, exit_code=ExitCode.CONFIG)
+        startup.write_termination_message(
+            message=message,
+            cause=f"its clients could not be built: {type(exc).__name__}: {exc}",
             phase=phases.current,
             exit_code=ExitCode.CONFIG,
+            execution=_execution_name(),
         )
         return ExitCode.CONFIG
     return worker.run()

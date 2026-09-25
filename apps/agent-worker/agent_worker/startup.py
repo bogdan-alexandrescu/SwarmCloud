@@ -20,12 +20,20 @@ This module holds what the entrypoint and the lifecycle share to prevent that:
 
   * `Phases`: one flushed JSON line per startup phase, so the last line of a
     silent pod names the phase it was stuck in;
-  * `dns_preflight`: before any client is built, resolve the names the first
-    Firestore call needs, under a 10 s budget. A failure is one structured
-    error naming the hosts, then exit 78. It is not 390 s of nothing;
-  * `route_signals`: SIGTERM and SIGINT go to one handler, and a SIGTERM also
-    dumps every thread's stack to stderr (`faulthandler`), so a hang inside
-    grpc shows where it is;
+  * `dns_preflight_with_retries`: before any client is built, resolve the
+    names the first Firestore call needs, 10 s per attempt, three attempts
+    with a backoff between them. A failure is one structured error naming the
+    hosts, then exit 78. It is not 390 s of nothing, and it is not one blink
+    of the resolver either (owner, 2026-09-25: "have some retry logic before
+    failing, to prevent intermittent dns failures");
+  * `write_termination_message`: the cause of a 78, left where Kubernetes
+    copies it into the pod's status, which is where the reconciler reads it.
+    A worker that cannot reach Firestore cannot put it there;
+  * `route_signals`: SIGTERM and SIGINT go to one handler, and while the
+    worker is STARTING a SIGTERM also dumps every thread's stack to stderr
+    (`faulthandler`), so a hang inside grpc shows where it is. The dump is
+    disarmed once the runner exists (`disarm_stack_dump`): a running attempt
+    is stopped by SIGTERM routinely, and GKE files every stderr line as ERROR;
   * the Firestore budgets that `__main__` gives the control plane for every
     call it makes before the runner (`ControlPlane.startup_budget`).
 
@@ -37,6 +45,7 @@ from __future__ import annotations
 
 import faulthandler
 import io
+import json
 import os
 import platform
 import signal
@@ -45,6 +54,7 @@ import sys
 import threading
 import time
 import urllib.parse
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
@@ -57,7 +67,7 @@ from .logs import StructuredLogger
 #: neither the task nor the lease (see `Worker._exit_interrupted_before_runner`).
 EXIT_INTERRUPTED = 128 + int(signal.SIGTERM)
 
-#: How long the DNS preflight may take, in total, for every host at once.
+#: How long ONE attempt of the DNS preflight may take, for every host at once.
 #:
 #: Ten seconds. A resolver that answers takes milliseconds, even when it
 #: walks a five-entry search list (GKE sets `ndots:5`). One whose packets are
@@ -68,6 +78,57 @@ EXIT_INTERRUPTED = 128 + int(signal.SIGTERM)
 #: orders of magnitude above a working resolver, far below a dropped one, and
 #: inside the 120 s SIGTERM grace a GKE worker gets (`dispatch.py`).
 DNS_PREFLIGHT_BUDGET_SECONDS = 10.0
+
+#: How many times the preflight asks before it gives up, and how long it waits
+#: after each failed attempt but the last.
+#:
+#: WHY RETRY AT ALL. Owner, 2026-09-25: "have some retry logic before failing,
+#: to prevent intermittent dns failures". Once 78 fails the task with no retry
+#: (the reconciler reads it now), one blink of the resolver would otherwise
+#: end a task that the next second would have run. A resolver blinks when a
+#: kube-dns or NodeLocal DNSCache pod restarts, is rescheduled, or reloads,
+#: and when a single UDP query is lost, which glibc reports as EAI_AGAIN after
+#: its own per-server timeout. Each of these clears in seconds. That is
+#: general Kubernetes behaviour, not something measured on this cluster.
+#:
+#: WHY THREE, 2 s THEN 5 s. The second attempt absorbs a single lost query.
+#: The third, five seconds later, outlasts a cache or kube-dns pod coming back.
+#: A fourth would buy little: what is still failing after about 20 s of
+#: retries is a policy or a configuration, as on 2026-09-24, when the tenant
+#: egress NetworkPolicy dropped every DNS packet. Waiting does not fix that,
+#: and every extra attempt holds the slot another 10 s or more before the task
+#: is failed with its cause.
+#:
+#: THE WINDOW, `DNS_PREFLIGHT_WINDOW_SECONDS`, is the worst case: every
+#: attempt spends its whole budget, which is what dropped packets do. 3 x 10 s
+#: + 2 s + 5 s = 37 s, inside the 30-45 s the owner asked for, and far inside
+#: the lease's 300 s dispatch deadline. That matters: a worker that has not
+#: heartbeated is judged by that deadline alone, and the worker's own 78, with
+#: its cause, has to arrive before the reconciler reclaims the lease as silent.
+#: A name that fails at once (NXDOMAIN) spends only the backoffs, about 7 s.
+DNS_PREFLIGHT_ATTEMPTS = 3
+DNS_PREFLIGHT_BACKOFF_SECONDS: tuple[float, ...] = (2.0, 5.0)
+DNS_PREFLIGHT_WINDOW_SECONDS = DNS_PREFLIGHT_ATTEMPTS * DNS_PREFLIGHT_BUDGET_SECONDS + sum(
+    DNS_PREFLIGHT_BACKOFF_SECONDS[: DNS_PREFLIGHT_ATTEMPTS - 1]
+)
+
+#: Where Kubernetes reads a container's termination message: the pod spec's
+#: `terminationMessagePath`, whose default this is. The dispatcher sets
+#: neither the path nor the policy (`scheduler.dispatch`), so the defaults
+#: hold: the kubelet mounts an empty file here and copies what the container
+#: wrote into `status.containerStatuses[].state.terminated.message`.
+#:
+#: The reconciler reads that field with the `pods list` its `swarm-reaper`
+#: Role already grants. It is how a worker that cannot reach Firestore, a DNS
+#: failure above all, still names its cause on the task (`__main__`).
+#: Cloud Run has no equivalent, and there the file does not exist.
+#:
+#: Read at call time, not import time, so a test can point it elsewhere.
+TERMINATION_MESSAGE_PATH = "/dev/termination-log"
+
+#: The kubelet keeps at most 4096 bytes of a container's termination message.
+#: A longer one is cut, and a JSON line cut short no longer parses.
+TERMINATION_MESSAGE_MAX_BYTES = 4096
 
 #: The retry budget for each startup Firestore call, and each try's own
 #: deadline.
@@ -244,19 +305,12 @@ class Phases:
             seconds_since_start=self.seconds_since_start(),
             exit_code=EXIT_INTERRUPTED,
         )
-
-        def _say() -> None:
-            try:
-                self.log.warning(
-                    f"{name} before the runner started; exiting now, having written nothing",
-                    **record,
-                )
-            except Exception:
-                pass
-
-        speaker = threading.Thread(target=_say, name="sigterm-log", daemon=True)
-        speaker.start()
-        speaker.join(1.0)
+        say_from_signal_handler(
+            lambda: self.log.warning(
+                f"{name} before the runner started; exiting now, having written nothing",
+                **record,
+            )
+        )
         for stream in (sys.stdout, sys.stderr):
             try:
                 stream.flush()
@@ -268,6 +322,29 @@ class Phases:
 # ---------------------------------------------------------------------------
 # signals
 # ---------------------------------------------------------------------------
+
+
+def say_from_signal_handler(emit: Callable[[], Any], *, wait_seconds: float = 1.0) -> None:
+    """Write a log line from inside a signal handler, without waiting on the logger's lock.
+
+    A handler runs on the main thread, between two of its bytecodes. If the
+    main thread was inside `StructuredLogger.log` at that moment, it holds
+    the logger's lock, and a handler that logged directly would wait for a
+    lock its own thread can never release. So the line is written from a
+    helper thread, and the handler waits at most `wait_seconds` for it. If
+    the lock was held, the line is written as soon as the handler returns and
+    the main thread lets go of it.
+    """
+
+    def _say() -> None:
+        try:
+            emit()
+        except Exception:
+            pass
+
+    speaker = threading.Thread(target=_say, name="signal-log", daemon=True)
+    speaker.start()
+    speaker.join(wait_seconds)
 
 
 def route_signals(handler: Callable[[int, Any], Any]) -> bool:
@@ -292,15 +369,54 @@ def route_signals(handler: Callable[[int, Any], Any]) -> bool:
     return arm_stack_dump()
 
 
+#: Whether this process last armed or disarmed the SIGTERM stack dump. Kept
+#: because `faulthandler` has no way to ask, short of unregistering.
+_stack_dump_armed = False
+
+
 def arm_stack_dump() -> bool:
     """On SIGTERM, write every thread's Python stack to stderr, then chain."""
+    global _stack_dump_armed
     stream = sys.__stderr__ if sys.__stderr__ is not None else sys.stderr
     try:
         faulthandler.unregister(signal.SIGTERM)
         faulthandler.register(signal.SIGTERM, file=stream, all_threads=True, chain=True)
     except (AttributeError, ValueError, RuntimeError, OSError, io.UnsupportedOperation):
+        _stack_dump_armed = False
         return False
+    _stack_dump_armed = True
     return True
+
+
+def disarm_stack_dump() -> bool:
+    """Stop dumping stacks on SIGTERM, and leave the Python handler where it was.
+
+    Called once the runner child exists. The dump is for a worker stuck
+    STARTING, where the stack says what it is stuck in (the 2026-09-24
+    incident). Once an agent runs, SIGTERM is the ordinary way an attempt is
+    stopped: the reconciler deleting its Job, a node drain, a cancellation.
+    GKE files every stderr line as ERROR, so a dump there is a page of false
+    errors per stop (owner, 2026-09-25). The lifecycle's handler says the
+    stop in one INFO line instead.
+
+    `faulthandler.unregister` puts back the C-level handler it displaced
+    when it was registered. `route_signals` registers it straight after
+    `signal.signal`, so what it displaced is Python's own trampoline, and the
+    Python handler keeps running. Returns whether a dump was armed. Safe to
+    call again: an in-place restart of the runner does.
+    """
+    global _stack_dump_armed
+    try:
+        was_armed = bool(faulthandler.unregister(signal.SIGTERM))
+    except (AttributeError, ValueError, RuntimeError, OSError):
+        was_armed = False
+    _stack_dump_armed = False
+    return was_armed
+
+
+def stack_dump_armed() -> bool:
+    """Whether a SIGTERM would dump every thread's stack now."""
+    return _stack_dump_armed
 
 
 # ---------------------------------------------------------------------------
@@ -427,6 +543,74 @@ def dns_preflight(
     return report
 
 
+@dataclass(frozen=True)
+class PreflightOutcome:
+    """What the preflight concluded, after every attempt it made."""
+
+    #: One result per host, in the order asked: the attempt that resolved it,
+    #: or the last attempt, which did not.
+    results: list[dict[str, Any]]
+    #: How many attempts were made, 1 to `attempts`.
+    attempts: int
+    #: From the first lookup to the verdict, backoffs included.
+    seconds: float
+
+    @property
+    def ok(self) -> bool:
+        return all(result["ok"] for result in self.results)
+
+    @property
+    def unreachable(self) -> list[dict[str, Any]]:
+        return [result for result in self.results if not result["ok"]]
+
+
+def dns_preflight_with_retries(
+    hosts: Sequence[str],
+    *,
+    attempts: int = DNS_PREFLIGHT_ATTEMPTS,
+    budget_seconds: float = DNS_PREFLIGHT_BUDGET_SECONDS,
+    backoff: Sequence[float] = DNS_PREFLIGHT_BACKOFF_SECONDS,
+    resolve: Callable[[str], Any] | None = None,
+    sleep: Callable[[float], Any] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
+    on_failed_attempt: Callable[[int, list[dict[str, Any]], float], Any] | None = None,
+) -> PreflightOutcome:
+    """`dns_preflight`, asked again after a backoff until every host resolves or attempts run out.
+
+    Only the hosts that failed are asked again. A host that resolved stays
+    resolved: its address is not what was in doubt.
+
+    `on_failed_attempt(attempt, unreachable, retry_in)` is called for each
+    failed attempt that WILL be retried, before the wait, so that each one is
+    logged as it happens. The last failed attempt is the caller's to report,
+    as the verdict. Nothing is slept after it.
+    """
+    started = clock()
+    final: dict[str, dict[str, Any]] = {}
+    pending = list(dict.fromkeys(hosts))
+    total = max(1, int(attempts))
+    made = 0
+    for attempt in range(1, total + 1):
+        made = attempt
+        for result in dns_preflight(
+            pending, budget_seconds=budget_seconds, resolve=resolve, clock=clock
+        ):
+            final[result["host"]] = {**result, "attempt": attempt}
+        pending = [host for host in pending if not final[host]["ok"]]
+        if not pending or attempt == total:
+            break
+        wait = float(backoff[min(attempt - 1, len(backoff) - 1)]) if backoff else 0.0
+        if on_failed_attempt is not None:
+            on_failed_attempt(attempt, [final[host] for host in pending], wait)
+        if wait > 0:
+            sleep(wait)
+    return PreflightOutcome(
+        results=[final[host] for host in dict.fromkeys(hosts)],
+        attempts=made,
+        seconds=round(clock() - started, 3),
+    )
+
+
 def resolver_nameservers(path: str = "/etc/resolv.conf") -> list[str]:
     """The nameservers this pod asks, for the operator reading the DNS error.
 
@@ -444,3 +628,73 @@ def resolver_nameservers(path: str = "/etc/resolv.conf") -> list[str]:
         if len(parts) >= 2 and parts[0] == "nameserver":
             servers.append(parts[1])
     return servers[:8]
+
+
+# ---------------------------------------------------------------------------
+# the cause of a 78, where the reconciler can read it
+# ---------------------------------------------------------------------------
+
+
+def write_termination_message(
+    *,
+    message: str,
+    cause: str,
+    phase: str,
+    exit_code: int,
+    path: str | None = None,
+    **fields: Any,
+) -> bool:
+    """Leave one JSON line saying why this worker cannot start, for the pod's status.
+
+    The line is the worker's last structured log line, trimmed: `message` is
+    what was logged, and `cause` is the short form the reconciler puts after
+    "worker could not start: " in the task's `last_error`.
+
+    Written only when the file already exists. The kubelet creates it, so on
+    GKE it does. On Cloud Run and on a laptop it does not, and nothing is
+    created. Never raises: a worker that cannot say why it is exiting still
+    exits. Returns whether the line was written.
+
+    Kept under `TERMINATION_MESSAGE_MAX_BYTES`, as ONE line of valid JSON, by
+    halving the longest text field until it fits. The kubelet would otherwise
+    cut it mid-string, and the reconciler would fall back to the raw text.
+    """
+    target = Path(path if path is not None else TERMINATION_MESSAGE_PATH)
+    try:
+        if not target.is_file():
+            return False
+    except OSError:
+        return False
+    record: dict[str, Any] = {
+        "severity": "ERROR",
+        "message": " ".join(str(message).split()),
+        "cause": " ".join(str(cause).split()),
+        "phase": phase,
+        "exit_code": int(exit_code),
+        **{key: value for key, value in fields.items() if value is not None},
+    }
+
+    def _encoded() -> bytes:
+        return json.dumps(record, default=str, ensure_ascii=True, separators=(",", ":")).encode()
+
+    text = _encoded()
+    while len(text) > TERMINATION_MESSAGE_MAX_BYTES:
+        longest = max(
+            (key for key, value in record.items() if isinstance(value, str)),
+            key=lambda key: len(record[key]),
+            default=None,
+        )
+        if longest is None or len(record[longest]) <= 16:
+            # Only non-text fields are left to blame. Keep the four the
+            # reconciler reads, and a cause short enough to fit by itself.
+            record = {key: record[key] for key in ("severity", "cause", "phase", "exit_code")}
+            record["cause"] = str(record["cause"])[:512]
+            text = _encoded()
+            break
+        record[longest] = record[longest][: len(record[longest]) // 2] + "..."
+        text = _encoded()
+    try:
+        target.write_bytes(text + b"\n")
+    except OSError:
+        return False
+    return True

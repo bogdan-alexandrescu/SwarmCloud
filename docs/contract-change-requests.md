@@ -33,6 +33,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 18 | `profiles.py`: `RunnerProfile.command` is the lifecycle's child argv, never a container command (incident CR-2) | ACCEPTED 2026-09-24 (the owner's "#14"), rename applied in PR #44 |
 | 19 | `states.py`: no `EventType` says "the reconciler evicted this execution" | open |
 | 20 | `models.py`: `Workflow.on_step_failure` is a bare `str`, and its vocabulary is stated four times | open |
+| 21 | `states.py`: the worker's exit codes have no shared home, and the reconciler now acts on one | open |
 
 ---
 
@@ -1988,3 +1989,78 @@ holds the four copies together: the API's Literal, the MCP enum and default,
 the frozen default and the scheduler's constant. It catches a rename in any one
 of them in CI. It does not stop a fifth copy from being written somewhere it
 does not look.
+
+---
+
+## 21. `states.py`: the worker's exit codes have no shared home, and the reconciler now acts on one
+
+**Status:** open, recorded 2026-09-25 by the lane that made exit 78
+non-retryable (branch `lane/cannot-start-handling`). If another branch has
+taken 21 by the time this merges, renumber this one.
+
+### What is true today
+
+The worker's exit codes are `agent_worker.errors.ExitCode`. Until 2026-09-25 no
+other component read them. The owner decided on 2026-09-25 that a worker that
+cannot start exits 78 and that 78 is non-retryable. So the reconciler now reads
+a finished execution's exit code (a Cloud Run task's
+`last_attempt_result.exit_code`, a GKE pod's `state.terminated.exitCode`). On
+78 it fails the task at once, with no retry. The same change split a second
+code off 78: 69, "a dependency was unavailable before the runner", which the
+reconciler must go on retrying.
+
+The reconciler's image carries `apps/common/` and `apps/reconciler/` only, so
+it cannot import `agent_worker`. The number is therefore stated twice:
+
+* `agent_worker.errors.ExitCode.CONFIG = 78`, which the worker exits with;
+* `reconciler.detect.WORKER_EXIT_CANNOT_START = 78`, which the reconciler
+  fails a task on.
+
+`tests/unit/worker/test_worker_cannot_start.py::test_the_reconcilers_78_is_the_workers_78`
+holds the two together in CI. That is the mirrored-value arrangement this
+repository has had three outages from. Here the failure would be quiet in both
+directions. If the worker's number moved and the reconciler's did not, a worker
+that cannot start would go back to being retried until its attempts ran out.
+If the reconciler's moved onto a code the worker uses for something else, such
+as 69 or 75, tasks that should be retried or parked would be failed.
+
+### The requested change
+
+Add the worker's exit contract to `swarm_common/states.py`, beside the other
+vocabularies both sides of the platform act on:
+
+```python
+class WorkerExit(IntEnum):
+    """What a worker process's exit status means to the platform."""
+    OK = 0
+    FAILED = 1
+    #: A dependency was unavailable before the runner. Retried.
+    UNAVAILABLE = 69
+    GENERATION_FENCED = 70
+    CANCELLED = 71
+    PARKED = 75
+    TIMEOUT = 76
+    #: The worker cannot start, and another attempt would fail the same way.
+    #: The reconciler fails the task without a retry.
+    CANNOT_START = 78
+    TENANT_MISMATCH = 79
+```
+
+`agent_worker.errors.ExitCode` and `reconciler.detect.WORKER_EXIT_CANNOT_START`
+would then both be derived from it, and the parity test deleted.
+
+### What it would break if accepted
+
+* **Nothing stored.** Exit codes are not persisted as names. The attempt
+  document's `exit_code` is the integer, and it stays the integer.
+* **`ExitCode.CONFIG` is referenced by that name** in the worker and its tests.
+  Keeping `CONFIG = WorkerExit.CANNOT_START` as an alias avoids a rename in
+  the same change.
+* **143** (128 + SIGTERM, `startup.EXIT_INTERRUPTED`) is a signal convention,
+  not a platform decision, and could stay where it is.
+
+### If it is declined
+
+The parity test stays and does its job for these two copies. A third reader of
+exit codes (a UI badge, a smoke check, an alert on 78s) would have to restate
+the number again, and would need its own parity test to be safe.

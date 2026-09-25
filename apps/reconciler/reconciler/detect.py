@@ -29,10 +29,18 @@ Two more apply to GKE Jobs only, because browser pods carry
                        releases, and requeues or fails by the retry rule
     left running       the task is already terminal and its Job is still
                        active -> terminate; release only that Job's own lease
+
+And one about how a worker ENDED, on either backend:
+
+    cannot start       the current attempt's execution finished with exit 78,
+                       "the worker cannot start" -> fence, release, and FAIL
+                       the task now, with the worker's cause, no retry
+                       (owner, 2026-09-25; `detect_cannot_start`)
 """
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass, field, replace
 from datetime import datetime
@@ -51,12 +59,36 @@ from swarm_common.profiles import Backend
 from swarm_common.states import TaskState
 
 from .config import ReconcilerConfig
-from .model import ControlSnapshot, ExecutionView, JobResourceView, LeaseView, TaskView
+from .model import (
+    AttemptView,
+    ControlSnapshot,
+    ExecutionPhase,
+    ExecutionView,
+    JobResourceView,
+    LeaseView,
+    TaskView,
+)
 
 #: The backend the two eviction rules act on, spelled by the frozen contract.
 #: `backends.GkeBackend.name` is the same string; importing that module here
 #: would be circular (it imports `sanitised` from this one).
 GKE = Backend.GKE_AUTOPILOT.value
+
+#: The worker's exit code for "cannot start, and another attempt would fail the
+#: same way": `agent_worker.errors.ExitCode.CONFIG`.
+#:
+#: RESTATED, because nothing both images share can hold it. The reconciler's
+#: image carries `apps/common` and `apps/reconciler` and nothing else
+#: (images/swarm-reconciler/Dockerfile), and the frozen contract names no worker
+#: exit code. Contract request 21 (docs/contract-change-requests.md) asks for
+#: one. Until then, tests/unit/worker/test_worker_cannot_start.py
+#: (`test_the_reconcilers_78_is_the_workers_78`) holds the two together.
+WORKER_EXIT_CANNOT_START = 78
+
+#: How much of a worker's own account of itself reaches a task's `last_error`.
+#: It is text a tenant's pod produced, and the store keeps 2000 characters of
+#: `last_error`, so the cause gets a quarter of that and one line.
+MAX_CAUSE_CHARS = 500
 
 
 class FindingKind(str, Enum):
@@ -79,6 +111,8 @@ class FindingKind(str, Enum):
     STUCK_NO_PROGRESS = "stuck_no_progress"
     #: A GKE Job still active after its task reached a terminal state.
     LEFT_RUNNING = "left_running"
+    #: The current attempt's execution finished with `WORKER_EXIT_CANNOT_START`.
+    WORKER_CANNOT_START = "worker_cannot_start"
 
 
 @dataclass(frozen=True)
@@ -893,6 +927,231 @@ def detect_left_running(
     return findings
 
 
+@dataclass(frozen=True)
+class CannotStartSubject:
+    """A finished execution whose attempt still holds its task's current lease."""
+
+    task: TaskView
+    lease: LeaseView
+    execution: ExecutionView
+
+
+def _cannot_start_subject(
+    snapshot: ControlSnapshot, execution: ExecutionView
+) -> CannotStartSubject | None:
+    """The attempt behind this FINISHED execution, if its exit code could decide the task.
+
+    Narrow on purpose, like `_stuck_subject`: the execution FAILED (a worker
+    that exits 78 fails its Cloud Run task and its Job), it names a task this
+    snapshot holds in a concurrency state, and its attempt holds that task's
+    CURRENT lease at the task's CURRENT generation. Anything else belongs to a
+    rule that already exists. A superseded attempt's 78 says nothing about
+    the attempt that replaced it.
+    """
+    if execution.is_active or execution.phase is not ExecutionPhase.FAILED:
+        return None
+    if execution.claim_refused or not execution.task_id or not execution.attempt_id:
+        return None
+    task = snapshot.tasks.get(execution.task_id)
+    if task is None or not task.holds_capacity:
+        return None
+    lease = next(
+        (
+            candidate
+            for candidate in snapshot.leases.values()
+            if candidate.attempt_id == execution.attempt_id and not candidate.is_released
+        ),
+        None,
+    )
+    if lease is None or lease.task_id != task.task_id:
+        return None
+    if lease.generation != task.generation:
+        return None
+    if execution.generation is not None and execution.generation != lease.generation:
+        return None
+    if task.lease_id not in (None, lease.lease_id):
+        return None
+    return CannotStartSubject(task=task, lease=lease, execution=execution)
+
+
+def cannot_start_candidates(
+    snapshot: ControlSnapshot, executions: Iterable[ExecutionView]
+) -> list[CannotStartSubject]:
+    """The finished executions whose exit code is worth reading this pass.
+
+    Used by the reconciler to decide which terminations to read, so that a
+    pass with no failed execution under a live lease, which is nearly every
+    pass, costs no call. An attempt that ALSO has an active execution is left
+    out: something of it is still running, and the rules that kill before
+    they release own it.
+    """
+    prepared = scope_executions_to_their_tenant(
+        snapshot, normalise_executions(snapshot, executions)
+    )
+    active = {e.attempt_id for e in prepared if e.is_active and e.attempt_id}
+    subjects: list[CannotStartSubject] = []
+    seen: set[str] = set()
+    for execution in prepared:
+        if execution.attempt_id in active:
+            continue
+        subject = _cannot_start_subject(snapshot, execution)
+        if subject is None or subject.lease.lease_id in seen:
+            continue
+        seen.add(subject.lease.lease_id)
+        subjects.append(subject)
+    return subjects
+
+
+def _one_line(text: Any) -> str:
+    """Printable, single-line, bounded: what may be put in a task's `last_error`."""
+    cleaned = "".join(ch if ch.isprintable() else " " for ch in str(text))
+    collapsed = " ".join(cleaned.split())
+    if len(collapsed) > MAX_CAUSE_CHARS:
+        collapsed = collapsed[: MAX_CAUSE_CHARS - 3].rstrip() + "..."
+    return collapsed
+
+
+def worker_cause(message: str | None) -> str | None:
+    """The worker's own one-line cause, from its termination message, or None.
+
+    The worker writes ONE JSON line, its last structured log line with a
+    short `cause` beside the `message` (`agent_worker.startup.
+    write_termination_message`). The last line that parses is read, `cause`
+    before `message`. Anything else there, a crash's traceback or a
+    kubelet-supplied log tail, is taken as its last non-empty line. Always
+    one printable line of at most `MAX_CAUSE_CHARS`: it is text a tenant's
+    pod wrote, and it is about to be shown on the tenant's task.
+    """
+    if not message or not str(message).strip():
+        return None
+    lines = [line for line in str(message).splitlines() if line.strip()]
+    for line in reversed(lines):
+        try:
+            record = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(record, dict):
+            continue
+        for key in ("cause", "message"):
+            value = record.get(key)
+            if isinstance(value, str) and value.strip():
+                return _one_line(value) or None
+    return _one_line(lines[-1]) or None
+
+
+def cannot_start_error(
+    execution: ExecutionView, termination: Any, attempt: AttemptView | None
+) -> tuple[str, str]:
+    """The task's `last_error` for a worker that could not start, and where it came from.
+
+    The owner's order (2026-09-25): the worker's own cause if it could leave
+    one, else a line composed from the exit code that names the execution.
+
+      1. its attempt document, if the worker reached Firestore and recorded
+         a 78 there. No 78 path writes it today, since none of them has
+         passed the generation check, but a worker that does is the best
+         witness there is;
+      2. its termination message (GKE): its last structured log line;
+      3. "worker exited 78: could not start (see execution logs: <execution>)".
+    """
+    if (
+        attempt is not None
+        and attempt.exit_code == WORKER_EXIT_CANNOT_START
+        and attempt.error
+        and _one_line(attempt.error)
+    ):
+        return f"worker could not start: {_one_line(attempt.error)}", "attempt"
+    cause = worker_cause(getattr(termination, "message", None))
+    if cause:
+        return f"worker could not start: {cause}", "termination_message"
+    where = (
+        f"{execution.namespace}/{execution.name}" if execution.namespace else execution.name
+    )
+    return (
+        f"worker exited {WORKER_EXIT_CANNOT_START}: could not start "
+        f"(see execution logs: {where})",
+        "exit_code",
+    )
+
+
+def detect_cannot_start(
+    snapshot: ControlSnapshot,
+    executions: Iterable[ExecutionView],
+    config: ReconcilerConfig,
+    now: datetime | None = None,
+) -> list[Finding]:
+    """Attempts whose execution finished with 78: fail the task, now, with the cause.
+
+    OWNER'S DECISION, 2026-09-25. A worker that cannot start exits 78, and 78
+    is NON-RETRYABLE at the platform level. Before this rule, nothing read the
+    code. A 78 before the first heartbeat waited out the lease's 300 s
+    dispatch deadline, and was reclaimed as a silent `stale_lease` and
+    requeued. Every attempt then met the same broken DNS or configuration
+    until `max_attempts` was spent, and the task failed with "reconciled:
+    lease silent ...", its cause only in a container log.
+
+    On EVIDENCE only: the exit code the backend recorded for the finished
+    execution, read by `Reconciler._read_terminations` into
+    `snapshot.terminations`. An attempt whose termination was not read, or
+    could not be, produces nothing here, and today's rules judge its lease as
+    they always have. So does every exit code but 78.
+
+    No clock. The execution is over and its code says why; no grace would
+    change the answer. The repair (`Reconciler._repair`) is the ordinary
+    one, in the ordinary order: fence the generation, confirm nothing runs
+    (nothing does: the execution finished), release the lease through the
+    frozen `release_lease_in_transaction`, then FAILED, or CANCELLED if a
+    cancel was asked for.
+    """
+    terminations = getattr(snapshot, "terminations", None) or {}
+    findings: list[Finding] = []
+    for subject in cannot_start_candidates(snapshot, executions):
+        attempt_id = subject.lease.attempt_id
+        ended = terminations.get(attempt_id)
+        if ended is None or getattr(ended, "exit_code", None) != WORKER_EXIT_CANNOT_START:
+            continue
+        execution = subject.execution
+        error, source = cannot_start_error(
+            execution, ended, snapshot.attempts.get(attempt_id)
+        )
+        where = (
+            f"{execution.namespace}/{execution.name}" if execution.namespace else execution.name
+        )
+        findings.append(
+            Finding(
+                kind=FindingKind.WORKER_CANNOT_START,
+                reason=error,
+                task_id=subject.task.task_id,
+                lease_id=subject.lease.lease_id,
+                attempt_id=attempt_id,
+                tenant_id=subject.task.tenant_id or execution.tenant_id,
+                generation=subject.lease.generation,
+                execution=execution,
+                detail={
+                    "exit_code": WORKER_EXIT_CANNOT_START,
+                    "cause_source": source,
+                    "execution": where,
+                    "backend_detail": str(getattr(ended, "detail", "") or ""),
+                    "task_state": subject.task.state.value,
+                    "attempt_count": subject.task.attempt_count,
+                    "max_attempts": subject.task.max_attempts,
+                },
+            )
+        )
+    return findings
+
+
+#: Findings about a lease that a cannot-start finding repairs more exactly:
+#: each would requeue the task (or release its lease without failing it) on
+#: the strength of silence, where the exit code says the next attempt would
+#: fail the same way.
+_CANNOT_START_SUPERSEDES = (
+    FindingKind.STALE_LEASE,
+    FindingKind.MISSING_EXECUTION,
+    FindingKind.ORPHAN_LEASE,
+)
+
+
 def detect_unused_job_resources(
     resources: Iterable[JobResourceView],
     active_tenants: set[str],
@@ -1002,6 +1261,20 @@ def detect_all(
         *detect_missing_executions(snapshot, by_attempt, config, now),
         *detect_orphan_leases(snapshot, now, by_attempt),
         *detect_left_running(snapshot, executions, config, now),
+    ]
+    # A lease whose attempt exited 78 is repaired by the cannot-start rule
+    # alone: fenced, released and FAILED. The absence rules would requeue the
+    # same task on the strength of silence, and in the same pass their READY
+    # would race its FAILED.
+    cannot_start = detect_cannot_start(snapshot, executions, config, now)
+    failing = {f.lease_id for f in cannot_start if f.lease_id}
+    findings = [
+        *(
+            f
+            for f in findings
+            if not (f.kind in _CANNOT_START_SUPERSEDES and f.lease_id in failing)
+        ),
+        *cannot_start,
     ]
     # A left-running repair releases its Job's lease only AFTER the kill is
     # confirmed. The orphan-lease rule would release the same lease without

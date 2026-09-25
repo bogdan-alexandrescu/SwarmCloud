@@ -72,7 +72,7 @@ from typing import Any, Iterable, Protocol
 from swarm_common.identity import _TENANT_SAFE as _NAME_SAFE
 
 from .detect import sanitised
-from .model import ExecutionPhase, ExecutionView, JobResourceView, as_datetime
+from .model import ExecutionPhase, ExecutionView, JobResourceView, Termination, as_datetime
 
 MANAGED_LABEL = "managed-by"
 #: The marker this service itself would stamp. Other components stamp their own.
@@ -113,6 +113,19 @@ TASK_ENV = "TASK_ID"
 ATTEMPT_ENV = "ATTEMPT_ID"
 TENANT_ENV = "TENANT_ID"
 GENERATION_ENV = "GENERATION"
+
+#: The worker container's name in every Job the dispatcher creates, on both
+#: backends (`scheduler.dispatch`: `run_v2.Container(name="worker")` and the
+#: GKE manifest's `"name": "worker"`). Used to pick the worker's status out of
+#: a pod's container statuses. Not load-bearing on its own: a pod with ONE
+#: container, which every worker pod is, is read whatever that container is
+#: called, so a rename costs the preference and not the reading.
+WORKER_CONTAINER = "worker"
+
+#: The labels the Job controller puts on the pods it creates, newest first.
+#: `batch.kubernetes.io/job-name` since Kubernetes 1.27; `job-name` before it,
+#: and still set alongside it.
+JOB_NAME_POD_LABELS = ("batch.kubernetes.io/job-name", "job-name")
 
 
 def managed_marker(labels: dict[str, Any] | None) -> str | None:
@@ -216,6 +229,7 @@ class Backend(Protocol):
 
     def list_executions(self) -> list[ExecutionView]: ...
     def terminate(self, execution: ExecutionView) -> bool: ...
+    def termination(self, execution: ExecutionView) -> Termination | None: ...
     def list_job_resources(self) -> list[JobResourceView]: ...
     def delete_job_resource(self, resource: JobResourceView) -> bool: ...
 
@@ -284,6 +298,7 @@ class NamespacedBackend(Protocol):
     def list_executions_in(self, namespaces: Iterable[str]) -> NamespacedListing: ...
     def probe(self, execution_name: str) -> Probe: ...
     def terminate(self, execution: ExecutionView) -> bool: ...
+    def termination(self, execution: ExecutionView) -> Termination | None: ...
     def list_job_resources(self) -> list[JobResourceView]: ...
     def delete_job_resource(self, resource: JobResourceView) -> bool: ...
 
@@ -357,6 +372,11 @@ def _int_or_none(value: Any) -> int | None:
         return None
 
 
+def _short(text: Any, limit: int = 300) -> str:
+    """One line of a backend's own words, for a log line or a finding. Never a secret field."""
+    return " ".join(str(text or "").split())[:limit]
+
+
 def execution_is_finished(execution: Any) -> bool:
     """True only when Cloud Run's own record proves this execution is over.
 
@@ -419,6 +439,7 @@ class CloudRunBackend:
         job_name_prefix: str = "swarm-",
         executions_client: Any | None = None,
         jobs_client: Any | None = None,
+        tasks_client: Any | None = None,
         logger: Any | None = None,
     ) -> None:
         self._project_id = project_id
@@ -426,6 +447,7 @@ class CloudRunBackend:
         self._prefix = job_name_prefix
         self._executions = executions_client
         self._jobs = jobs_client
+        self._tasks = tasks_client
         self._log = logger
 
     @property
@@ -445,6 +467,46 @@ class CloudRunBackend:
 
             self._jobs = run_v2.JobsClient()
         return self._jobs
+
+    def _tasks_client(self) -> Any:
+        if self._tasks is None:
+            from google.cloud import run_v2  # lazy
+
+            self._tasks = run_v2.TasksClient()
+        return self._tasks
+
+    def termination(self, execution: ExecutionView) -> Termination | None:
+        """How a finished execution's worker exited, from Cloud Run's record of its TASK.
+
+        An Execution carries counts (`failed_count`, `succeeded_count`) and no
+        exit code. The code is on each of its Tasks, as
+        `last_attempt_result.exit_code`, so this lists the execution's tasks:
+        one call, and one task, because the dispatcher's Jobs run
+        `task_count` 1 with no retries. `run.tasks.list` is already in
+        swarmJobReaper (terraform/modules/iam/custom_roles.tf).
+
+        Cloud Run keeps no termination message, so `message` is always None
+        here. The task's own status message ("Task ... failed with exit code:
+        78") goes to `detail`, never to the worker's cause.
+
+        None when no task records an exit. A task whose last attempt reads
+        exit code 0 has recorded none: proto3 cannot tell 0 from unset, and a
+        FAILED execution did not exit 0. Raises when the call fails, and the
+        caller then concludes nothing.
+        """
+        tasks = list(self._tasks_client().list_tasks(parent=execution.name))
+        for task in tasks:
+            result = getattr(task, "last_attempt_result", None)
+            code = _int_or_none(getattr(result, "exit_code", None))
+            if not code:
+                continue
+            status = getattr(result, "status", None)
+            return Termination(
+                exit_code=code,
+                message=None,
+                detail=_short(getattr(status, "message", "") or f"task exited {code}"),
+            )
+        return None
 
     # -- reads ----------------------------------------------------------
     def list_executions(self) -> list[ExecutionView]:
@@ -1181,6 +1243,71 @@ class GkeBackend:
             ProbeOutcome.FINISHED,
             execution=view,
             detail=f"{namespace}/{name}: {view.phase.value.lower()}",
+        )
+
+    def termination(self, execution: ExecutionView) -> Termination | None:
+        """How a finished Job's worker container exited, from its pod's status.
+
+        A Job's status carries conditions and pod counts, and no exit code.
+        The code is on the POD the Job created, as the worker container's
+        `state.terminated.exitCode`, next to `state.terminated.message`: the
+        termination message the worker wrote before it exited 78
+        (`agent_worker.startup.write_termination_message`). The kubelet copies
+        that file into the status, so reading it needs `pods list` in the
+        tenant's namespace, which the `swarm-reaper` Role already grants
+        (kubernetes/rbac/dispatcher-rbac.yaml). Reading the pod's LOG would
+        need `pods/log`, which it does not hold.
+
+        The pods are found by the label the Job controller puts on them,
+        `batch.kubernetes.io/job-name`, then the older `job-name`. The Job's
+        `backoffLimit` is 0, so there is one pod. If there were more, the
+        newest terminated worker container would be the one read.
+
+        Nothing outside the tenant namespace prefix is read, by the same rule
+        `list_executions_in` keeps. None when no terminated worker container
+        is found: a pod already collected (the Job's TTL is an hour), or a
+        container that never started. Raises when a call fails, and the
+        caller then concludes nothing.
+        """
+        namespace = execution.namespace
+        if not namespace or not namespace.startswith(self._prefix):
+            return None
+        self._configure()
+        pods: list[Any] = []
+        for label in JOB_NAME_POD_LABELS:
+            listed = self._core.list_namespaced_pod(
+                namespace=namespace, label_selector=f"{label}={execution.name}"
+            )
+            pods = list(getattr(listed, "items", None) or [])
+            if pods:
+                break
+        found: list[tuple[Any, Any, Any]] = []
+        for pod in pods:
+            statuses = list(getattr(getattr(pod, "status", None), "container_statuses", None) or [])
+            chosen = [s for s in statuses if getattr(s, "name", None) == WORKER_CONTAINER]
+            if not chosen and len(statuses) == 1:
+                chosen = statuses
+            for status in chosen:
+                terminated = getattr(getattr(status, "state", None), "terminated", None)
+                if terminated is None:
+                    terminated = getattr(getattr(status, "last_state", None), "terminated", None)
+                if terminated is not None:
+                    found.append((pod, status, terminated))
+        if not found:
+            return None
+        _, status, terminated = max(
+            found,
+            key=lambda item: _ensure_utc(getattr(item[2], "finished_at", None))
+            or datetime.min.replace(tzinfo=timezone.utc),
+        )
+        message = getattr(terminated, "message", None)
+        return Termination(
+            exit_code=_int_or_none(getattr(terminated, "exit_code", None)),
+            message=str(message) if message else None,
+            detail=_short(
+                f"container {getattr(status, 'name', '?')}: "
+                f"{getattr(terminated, 'reason', None) or 'terminated'}"
+            ),
         )
 
     def _job_view(self, job: Any, namespace: str) -> ExecutionView | None:

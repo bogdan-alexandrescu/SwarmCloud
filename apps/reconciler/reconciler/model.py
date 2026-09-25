@@ -40,6 +40,15 @@ def _state(value: Any, default: TaskState = TaskState.QUEUED) -> TaskState:
         return default
 
 
+def _int_or_none(value: Any) -> int | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 @dataclass(frozen=True)
 class TaskView:
     task_id: str
@@ -155,9 +164,15 @@ class AttemptView:
     created_at: datetime | None
     started_at: datetime | None = None
     completed_at: datetime | None = None
+    #: What the worker recorded on its OWN attempt document when it ended
+    #: (`ControlPlane.record_attempt_end`), when it reached Firestore at all.
+    #: Read only to name the cause of a worker that could not start.
+    exit_code: int | None = None
+    error: str | None = None
 
     @classmethod
     def from_doc(cls, doc: dict[str, Any], attempt_id: str | None = None) -> "AttemptView":
+        error = doc.get("error")
         return cls(
             attempt_id=attempt_id or doc.get("attempt_id", ""),
             task_id=doc.get("task_id", ""),
@@ -168,6 +183,8 @@ class AttemptView:
             created_at=as_datetime(doc.get("created_at")),
             started_at=as_datetime(doc.get("started_at")),
             completed_at=as_datetime(doc.get("completed_at")),
+            exit_code=_int_or_none(doc.get("exit_code")),
+            error=error if isinstance(error, str) and error.strip() else None,
         )
 
 
@@ -213,6 +230,30 @@ class ExecutionView:
 
 
 @dataclass(frozen=True)
+class Termination:
+    """How a FINISHED execution's worker container ended, in the backend's own record.
+
+    Read by name, one execution at a time, and only for an execution the
+    cannot-start rule could act on (`detect.cannot_start_candidates`), so a
+    pass that has none costs no call.
+    """
+
+    #: The worker container's exit code: a Cloud Run task's
+    #: `last_attempt_result.exit_code`, or a pod's `state.terminated.exitCode`.
+    #: None when the backend recorded none.
+    exit_code: int | None
+    #: What the WORKER wrote to explain itself: the pod's termination message
+    #: (`agent_worker.startup.write_termination_message`). Text a tenant's
+    #: pod produced, so it is bounded before it reaches a task
+    #: (`detect.worker_cause`). None on Cloud Run, which keeps no such thing.
+    message: str | None = None
+    #: The backend's own words about the end, for the finding and the log
+    #: line only: Cloud Run's task status message, a pod's `reason`. Never
+    #: presented as the worker's cause.
+    detail: str = ""
+
+
+@dataclass(frozen=True)
 class JobResourceView:
     """A per-tenant-per-profile Cloud Run Job resource, or a k8s namespace."""
 
@@ -247,6 +288,11 @@ class ControlSnapshot:
     #: attempts the stuck rule could act on are read; absence means "not
     #: judged", never "no progress".
     progress: dict[str, Any] = field(default_factory=dict)
+    #: attempt id -> how its FINISHED execution ended (`Termination`, or any
+    #: object with `exit_code`, `message` and `detail`). Only attempts the
+    #: cannot-start rule could act on are read, and a read that failed leaves
+    #: no entry: absence means "not known", never "did not exit 78".
+    terminations: dict[str, Any] = field(default_factory=dict)
 
     def task_named(self, task_id: str | None) -> TaskView | None:
         """The task an execution names, whichever read found it."""
