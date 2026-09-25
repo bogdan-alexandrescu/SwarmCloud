@@ -210,9 +210,15 @@ describe('the sheet draws the two inks the markup asks for', () => {
   }
 
   it('the list row: plain ink by default, --warn with the modifier, at both widths', () => {
+    // `row clickable`, AS TaskRow WRITES IT, and after a head row. A bare
+    // `.row` first in `.rows` is the head row by structure (AG-16's
+    // `.rows > .row:first-child:not(.clickable)`), and its register is
+    // `--text-faint` -- which is what the first version of this fixture
+    // measured (run 36137695056), a red about the fixture, not the defect.
     const f = fragment(
-      '<div class="rows"><div class="row"><span class="why">plain</span></div>' +
-        '<div class="row"><span class="why is-warn">act</span></div></div>',
+      '<div class="rows"><div class="row is-head"><span>head</span></div>' +
+        '<div class="row clickable"><span class="why">plain</span></div>' +
+        '<div class="row clickable"><span class="why is-warn">act</span></div></div>',
     )
     const [plain, act] = [...f.querySelectorAll('.why')]
     for (const env of [WIDE, PHONE]) {
