@@ -222,7 +222,10 @@ describe('the chart wrapper, on a series of measured and absent points', () => {
     expect(container.querySelector('path.ctl-chart-line')).toBeNull()
     const dot = container.querySelector('[data-testid="measured-dot"][data-label="attempt 2"]')
     expect(dot, 'the only measurement in the series was not drawn').not.toBeNull()
-    expect(container.querySelectorAll('[data-testid="absent-band"]')).toHaveLength(2)
+    // Counted in ONE drawing: the chart draws each width separately (AG-20),
+    // and the first root is the wide one.
+    const drawing = container.querySelector('svg.ctl-chart-svg')
+    expect(drawing!.querySelectorAll('[data-testid="absent-band"]')).toHaveLength(2)
   })
 
   it('plots the absences at their real instants, not at the edges', () => {

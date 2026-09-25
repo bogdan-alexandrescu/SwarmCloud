@@ -178,6 +178,21 @@ export function poolKind(name: string): PoolKind {
   }
 }
 
+/**
+ * The pool a tenant's quota document for one provider feeds (CP-8, #85).
+ *
+ * `quota_broker/service.py` `apply_to_pools` writes a document's derived cap
+ * onto exactly this pool, and `pool_names_for` puts it in every task's list
+ * for that provider. Provider quota names it on each row, so a reader can see
+ * that the document's cap is ONE input to a pool whose own ceiling may be
+ * lower. `scripts/lib/check-contract-parity.sh` section 5 reads this template
+ * literal and holds it to `pool_names_for`, so the signature and the one-line
+ * body stay exactly this shape.
+ */
+export function providerTenantPool(provider: string, tenant: string): string {
+  return `provider:${provider}:tenant:${tenant}`
+}
+
 /** `provider:anthropic:tenant:u-bogdan` -> `anthropic · u-bogdan`. */
 export function poolLabel(name: string): string {
   if (name === 'global') return 'global'
@@ -681,12 +696,6 @@ export const STRATEGY_LABEL: Readonly<Record<DispatchStrategy, string>> = {
   collect: 'Collect',
   'direct-pr': 'A PR per step',
   integrate: 'One PR for all steps',
-}
-
-/** Label and gloss for each carrier. See the honesty note in `CARRIER_NOTE`. */
-export const CARRIER_LABEL: Readonly<Record<DispatchCarrier, string>> = {
-  checkpoints: 'Checkpoints',
-  branches: 'Branches',
 }
 
 /**
@@ -1316,8 +1325,9 @@ export function bytesLabel(bytes: number | null | undefined): string {
  *
  * So a row with an id and no uri is not a broken checkpoint. It means the
  * event that described it is not on the page of events we were handed, which
- * happens for real: the events route orders OLDEST first, caps the page and
- * returns no page token, and a worker heartbeats throughout, so the later
+ * happens for real: this screen reads one page of events, OLDEST first, and
+ * does not follow the page token the events route returns (help topic
+ * `event-paging`), and a worker heartbeats throughout, so the later
  * checkpoints of a long attempt are exactly the ones whose events fall off
  * the end. `uriKnown` is what lets the screen say that instead of drawing a
  * blank cell.
@@ -1441,8 +1451,9 @@ export function restoredFrom(attempt: AttemptRow, events: TaskEvent[] | null): R
  * live process.
  *
  * It is NOT the same claim as the final figure and must never be rendered as
- * one: it is the high-water mark AS OF that event, and the event page is
- * oldest-first with no page token, so on a long attempt the newest heartbeat
+ * one: it is the high-water mark AS OF that event, and this screen reads one
+ * page of events, oldest-first, without following the page token the route
+ * returns, so on a long attempt the newest heartbeat
  * available here can be old. Every caller therefore renders `at` beside it.
  */
 export interface HeartbeatReading {
@@ -2051,6 +2062,51 @@ export function whyAgent(task: Task): string {
     return 'Cancelled by request.'
   }
   return ''
+}
+
+/**
+ * AG-14 (owner decision, 2026-09-25). WHETHER `whyAgent`'s LINE ASKS A PERSON
+ * TO ACT -- which is the only thing its `--warn` ink is allowed to say.
+ *
+ * Every why line was painted `--warn`, so a step waiting on the step before
+ * it -- what a healthy chain says about most of its steps for its whole life
+ * -- was the same yellow as a failure, and a colour on every line said
+ * nothing about any of them. The decision: warn for failures, for work that
+ * can never be admitted, for sign-in needed, and for stuck or silent workers;
+ * routine waits (queued, parked on quota, waiting on a dependency) and
+ * cancellations in plain ink.
+ *
+ * NOTHING NEW IS CLASSIFIED HERE. "Needs a person" is the partition this file
+ * already keeps and the trouble board already reads: `PARK_NEEDS_A_PERSON`
+ * (a missing credential, a spent budget, an operator pause -- no timer ends
+ * any of them) and `needsAPerson(blockerCeiling(...))` (a pool paused or set
+ * to zero by a person, which admits nothing until somebody acts: "can never
+ * be admitted"). The branches mirror `whyAgent`'s, so a line and its ink are
+ * decided from the same fields.
+ *
+ * STUCK OR SILENT WORKERS HAVE NO BRANCH HERE, because this reads a task
+ * document and a worker's silence is not on it: `whyAgent` writes nothing for
+ * a task that holds a slot, and the heartbeat is written to the lease. The
+ * inspector, which reads the task's events, writes its own `--warn` line for
+ * a worker `livenessOf` calls silent (`SilentWorker` in AgentDetail.tsx). The
+ * Agents list cannot until a tenant-scoped route serves the heartbeat (#179).
+ *
+ * WHAT "CAN NEVER BE ADMITTED" COVERS, stated because it is wider than one
+ * reason: a pool paused (MANUAL_PAUSE, as a blocker or as a park) or set to
+ * zero by a person, and a spent budget (BUDGET_EXHAUSTED) -- none admits the
+ * task again until somebody acts. "Sign-in needed" is CREDENTIAL_MISSING.
+ */
+export function whyNeedsAction(task: Task): boolean {
+  if (task.state === 'FAILED') return true
+  if (task.state === 'PARKED') {
+    return task.park_reason !== null && PARK_NEEDS_A_PERSON.has(String(task.park_reason))
+  }
+  if (task.state === 'READY' && task.blocked_by?.length) {
+    const b = leadBlocker(task.blocked_by)
+    if (!b) return false
+    return needsAPerson(blockerCeiling(b)) || PARK_NEEDS_A_PERSON.has(b.reason)
+  }
+  return false
 }
 
 /**
@@ -2805,21 +2861,83 @@ export function timeAgo(when: Date | string | number, now: number = Date.now()):
 }
 
 /**
- * The five-cell bar, as `miniBar` in claudeswitch's internal/render/width.go
- * draws it: round to the nearest fifth, clamp, `▰` filled and `▱`
- * empty.
+ * An age as a bare span -- `40s`, `14m`, `3h`, `5d` -- for a mark or a range
+ * that says `old` after it (`5d old`, `readings 2m–14m old`).
  *
- * Returned as a count rather than a string so the component can draw real
- * elements -- a screen reader hearing five geometric-shape glyphs learns
- * nothing, and the percentage beside it is the accessible version of the
- * same fact.
+ * `timeAgo`'s buckets and rounding, so the two never disagree about the same
+ * instant, without its "just now": a range reading "just now–14m" is not
+ * something anyone says, and under five seconds is still a number of seconds.
  */
-export const BAR_CELLS = 5
-
-export function barFilled(pct: number): number {
-  const filled = Math.round((pct / 100) * BAR_CELLS)
-  return Math.max(0, Math.min(BAR_CELLS, filled))
+export function ageSpan(ms: number): string {
+  const s = Math.max(0, Math.round(ms / 1000))
+  if (s < 60) return `${s}s`
+  if (s < 3600) return `${Math.round(s / 60)}m`
+  const h = Math.round(s / 3600)
+  if (h < 48) return `${h}h`
+  return `${Math.round(h / 24)}d`
 }
+
+/**
+ * THE QUOTA BROKER'S SWEEP INTERVAL, stated once (CP-9, #85).
+ *
+ * It is the `quota-refresh` Cloud Scheduler job: the scheduler module's
+ * `quota_refresh_schedule`, `*\/5 * * * *` (terraform/modules/scheduler/
+ * variables.tf), which the root does not override. Every five minutes the
+ * broker's `sweep` retires expired cooldowns and re-asserts every provider
+ * pool. `scripts/lib/check-contract-parity.sh` section 7 holds this number to
+ * that cron, so a changed schedule with this constant left behind fails there
+ * rather than quietly calling current readings stale.
+ *
+ * A SWEEP, NOT A REPORT (#159 review). This was `QUOTA_REPORT_INTERVAL_
+ * SECONDS`, and the screen called it "the broker's reporting interval". No
+ * such report exists: the sweep rewrites a document only when its state or
+ * its derived cap changed, and `updated_at` moves when a WORKER reports -- at
+ * the end of a clean run, or on a 429 (`update_quota_state`). An AVAILABLE
+ * document nobody reports on keeps the `updated_at` of the last worker report
+ * or state change, which is what `Reported` prints.
+ *
+ * WHICH TICK THE OWNER'S "TWICE THE BROKER'S REPORTING INTERVAL" MEANT IS AN
+ * OPEN QUESTION TO THE OWNER (#85, CP-9): the sweep, a worker-report cadence
+ * (there is no fixed one), or a fixed age. Until it is answered the threshold
+ * stays twice the sweep, and the words say so rather than naming a report.
+ */
+export const QUOTA_SWEEP_INTERVAL_SECONDS = 300
+
+/**
+ * A quota reading older than this is drawn with the stale mark and its age,
+ * never with the ok verdict: twice the broker's sweep interval, the closest
+ * config value to the owner's rule (2026-09-25; see above for what is still
+ * open). One missed tick is a late tick; two is a reading nothing has
+ * confirmed since. On a quiet tenant that is most rows at rest: nothing has
+ * reported on them since, which is the true age of what they say.
+ */
+export const QUOTA_STALE_AFTER_MS = 2 * QUOTA_SWEEP_INTERVAL_SECONDS * 1000
+
+/**
+ * How old a quota document's reading is, and whether that is past
+ * `QUOTA_STALE_AFTER_MS`. `ageMs` is null when `updated_at` is missing or
+ * unparseable -- an age nobody recorded, which is not a fresh one, so it is
+ * stale too.
+ */
+export function quotaReadingAge(
+  q: Pick<QuotaState, 'updated_at'>,
+  now: number,
+): { stale: boolean; ageMs: number | null } {
+  const at = q.updated_at ? new Date(q.updated_at).getTime() : Number.NaN
+  if (!Number.isFinite(at)) return { stale: true, ageMs: null }
+  const ageMs = Math.max(0, now - at)
+  return { stale: ageMs > QUOTA_STALE_AFTER_MS, ageMs }
+}
+
+/*
+ * `BAR_CELLS` AND `barFilled` LIVED HERE AND ARE GONE (CP-25, #85). They drew
+ * Accounts' five-cell bar the way claudeswitch's `miniBar` does -- round to the
+ * nearest fifth, clamp -- which put a second proportion primitive beside
+ * §6.4's one and rounded 42% to three cells. The owner's decision collapsed it
+ * into the shared `UtilTrack` (primitives.tsx) at the exact percentage. What
+ * the table still shares with `cs status` is the figure, the `~` and the
+ * window labels.
+ */
 
 // ---------------------------------------------------------------------------
 // Adding an account: the two-step sign-in

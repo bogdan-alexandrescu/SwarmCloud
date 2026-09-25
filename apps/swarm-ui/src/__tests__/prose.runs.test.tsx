@@ -725,17 +725,30 @@ describe('ArtifactViewer', () => {
     expect(mark!.getAttribute('aria-label') ?? '').toMatch(/not the whole artifact/i)
   })
 
-  it('draws masked credentials as a warning mark with the count', async () => {
+  it('draws masked credentials as a measured count in warn ink, with no mark', async () => {
     const el = await renderViewer()
     // WHAT MOVED: "N credential-shaped values were masked in this artifact when
     // it was served. They are in the object in the bucket; masking here does
     // not remove them from there, and anything recognisable should be rotated."
     // The COUNT is the fact and stays on the glass; the rotation advice is help
-    // topic `artifact-redaction`.
+    // topic `masking-is-serve-time`.
+    //
+    // RE-POINTED (AG-5, owner decision 2026-09-25). This pinned the defect: it
+    // asked for `.ctl-mark.is-unread` -- the `not read` mark, the one that
+    // means a read FAILED -- on a count that was read, and the fact it sat in
+    // was dimmed `.is-absent` as if nothing had been measured. The kit's six
+    // marks are six kinds of nothing and this is not one of them, so the
+    // count carries no mark and no dimming; that it needs attention is its
+    // ink, `--warn` above zero (the cascade half is `artifact.masked.test.tsx`).
+    // BREAK IT: put the `unread` mark or `is-absent` back.
     const fact = el.querySelector('.ctl-fact.art-redacted')
     expect(fact, 'read-time redaction is no longer surfaced').not.toBeNull()
-    expect(fact!.querySelector('.ctl-mark.is-unread')).not.toBeNull()
-    expect(fact!.textContent).toContain('4')
+    expect(fact!.querySelector('.ctl-mark'), 'a count that was read wears an absence mark').toBeNull()
+    expect(fact!.classList.contains('is-absent'), 'a count that was read is dimmed as absent').toBe(false)
+    const count = fact!.querySelector('.art-masked')
+    expect(count, 'the count has no element of its own to carry its ink').not.toBeNull()
+    expect(count!.textContent).toBe('4')
+    expect(count!.classList.contains('is-warn'), 'four masked values are not drawn as needing attention').toBe(true)
     // The `?` is the route to the words. It is a button rather than an anchor
     // while the card is shut, which is what keeps this assertion honest: the
     // topic's text is reachable and is NOT on the glass.

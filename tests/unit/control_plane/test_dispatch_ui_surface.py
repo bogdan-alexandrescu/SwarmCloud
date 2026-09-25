@@ -306,12 +306,15 @@ def test_the_forms_terminal_preview_agrees_with_the_api_on_the_integrator(client
     assert response.json()["dispatch"]["integrator_step_id"] == terminals[0]
 
 
-def test_integrate_on_a_single_task_is_why_the_option_is_disabled(client):
-    """The control shows `integrate` disabled at task scale. This is the reason.
+def test_integrate_on_a_single_task_is_why_the_task_form_does_not_offer_it(client):
+    """The task form does not draw `integrate` at all. This is the reason.
 
-    Asserted so the disabled state is grounded in the API's behaviour rather
-    than in a belief about it -- if this ever became legal, the option would be
-    disabled for no reason and nobody would notice.
+    It used to draw the option disabled, as a dashed card; since TS-14 (epic
+    #84, owner decision 2026-09-25) it draws only the strategies a task can take
+    and one line pointing to the workflow form. Asserted so the omission is
+    grounded in the API's behaviour rather than in a belief about it -- if this
+    ever became legal, the option would be missing for no reason and nobody
+    would notice.
     """
     response = client.post(
         "/v1/tasks",

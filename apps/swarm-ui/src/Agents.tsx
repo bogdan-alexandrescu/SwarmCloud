@@ -22,6 +22,7 @@ import {
   rollupState,
   stateTone,
   whyAgent,
+  whyNeedsAction,
   type Task,
   type TaskPage,
 } from './types'
@@ -226,14 +227,18 @@ export function AgentsScreen({
         )
       }}
       empty={{
-        heading: 'No agents · real zero',
+        // ONE `real zero`, AND IT IS THE PRIMITIVE'S. This heading read
+        // `No agents · real zero` beside the mark `Absent` already draws in
+        // the heading (#145), so the empty state said it twice -- and only
+        // the mark has a sentence behind it. `emptystate.onemark.test.tsx`.
+        heading: 'No agents',
         // ONE SENTENCE, WHICH IS WHAT §6.9 ALLOWS AN EMPTY STATE. The second
         // sentence -- "nothing has been submitted under this tenant, or
         // everything has aged out of the page" -- was two guesses about a
         // cause this screen cannot see, and the link is where a reader finds
         // out which states a page holds.
         // NO `?` HERE (B7.4). The heading beside this sentence already reads
-        // `No agents · real zero`, which is the whole of what `tenant-scope`
+        // `real zero · No agents`, which is the whole of what `tenant-scope`
         // was guarding against -- a reader taking an empty list for a failed
         // read. Whose agents these are is the crumb and the provenance line
         // above, and the topic is one click away in the rail's Help section.
@@ -778,8 +783,17 @@ function TaskRow({
 
       {/* The reason this screen exists on a phone: someone is checking why
           their agent has not moved. It outranks every identifier and is never
-          the thing that gets dropped. */}
-      {why && <span className="why">{why}</span>}
+          the thing that gets dropped.
+
+          ITS INK SAYS WHETHER SOMEONE HAS TO ACT (AG-14). Every line was
+          `--warn`, so a step waiting on the step before it was the same yellow
+          as a failure. `whyNeedsAction` (types.ts) is the rule: a failure,
+          work that can never be admitted (a pool paused or set to zero, a
+          spent budget), a missing credential. Routine waits and cancellations
+          are plain ink. A silent worker gets no line HERE: a row is a task
+          document and the heartbeat is on the lease (#179); the inspector,
+          which reads events, draws one. */}
+      {why && <span className={`why${whyNeedsAction(task) ? ' is-warn' : ''}`}>{why}</span>}
     </div>
   )
 }

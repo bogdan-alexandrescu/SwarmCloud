@@ -286,12 +286,24 @@
   /* The ONE prose paragraph a screen is allowed: the sentence under the
      heading that says what the screen is for, and the sentence an empty or
      failed state answers with. A second one on the same screen means one of
-     them is not a lead. */
+     them is not a lead.
+     AND EVERY HEADING BELOW THE H1, at 600 (TS-18): section, panel, card and
+     step titles share this step and are told from the lead sentence by
+     weight. See --t-title for what sits above it. */
   --t-lead: 16px;
   --lh-lead: 1.55;
 
-  /* Panel title and screen h1. Nothing between this and --t-body, which is
-     deliberate: a sub-heading is carried by weight, not by a size step.
+  /* THE SCREEN H1'S STEP (`.head h1`, `.ctl-page-head > h1`), and only one
+     other heading takes it: a rendered document's own h1
+     (`.art-md .art-h[data-level="1"]`), which follows the document's ladder
+     rather than the console's. Every other heading -- section, panel, step,
+     the heading of a state or an empty panel, and Overview's attention lead
+     (`.ov-lead-title`, OV-15, which won over TS-18's first draft on #84) -- is
+     --t-lead, set apart from body by weight (TS-18, design-system.md §2).
+     (The product wordmark, `.brand-word`, also takes this size; it is a
+     logotype, not a heading, and says why beside its rule.)
+     §B4.1 had put `.section > h2` here too, which made a section heading the
+     same 18/600 as the page title above it: a page with no second rank.
 
      20 -> 18 IN THE RESTRAINT PASS. Not because the h1 was wrong on its own,
      but because the step above it had to come down and six steps have to stay
@@ -1024,7 +1036,10 @@ body {
    size, weight and tone. The old comment argued the 13px up from 12px and was
    right about the direction and an order of magnitude short.
 
-   A panel title is `--t-title` in `--text`. The uppercase small-caps treatment
+   A panel title is `--t-lead` in `--text` at 600 -- NOT `--t-title`, which is
+   what §B4.1 first wrote here and what TS-18 corrected: at the h1's own step a
+   section heading was the page title's equal, so the page had no second rank
+   (design-system.md §2). The uppercase small-caps treatment
    is not deleted, it DROPS ONE LEVEL, to panel labels -- `.ov-h > h2` on
    Overview and the `h4`s inside a detail panel keep it, at `--t-meta`, which
    is the step that owns that treatment.
@@ -1035,7 +1050,7 @@ body {
    regardless -- it beats an ancestor by inheritance rather than specificity,
    so it keeps working for whatever heading is uppercase next. */
 .section > h2 {
-  font-size: var(--t-title); line-height: var(--lh-title); font-weight: 600;
+  font-size: var(--t-lead); line-height: var(--lh-lead); font-weight: 600;
   color: var(--text);
   margin: 0 0 10px;
 }
@@ -1094,7 +1109,7 @@ body {
   background: var(--surface);
 }
 .state.failed { border-color: color-mix(in srgb, var(--bad) 50%, var(--line)); }
-.state h3 { margin: 0 0 6px; font-size: var(--t-title); line-height: var(--lh-title); font-weight: 600; }
+.state h3 { margin: 0 0 6px; font-size: var(--t-lead); line-height: var(--lh-lead); font-weight: 600; }
 .state.failed h3 { color: var(--bad); }
 .state p { margin: 0; color: var(--text-dim); font-size: var(--t-lead); line-height: var(--lh-lead); }
 .state pre {
@@ -2510,14 +2525,26 @@ button.node:focus-visible { outline: 2px solid var(--info); outline-offset: 2px;
 
 /* The blocked/park reason, on its own line under the row. Full width because
    the copy is a sentence -- "Your tenant is at its own limit" is the whole
-   point and truncating it to "Your tenant is at..." defeats it. */
+   point and truncating it to "Your tenant is at..." defeats it.
+
+   PLAIN INK, AND --warn ONLY WHEN SOMEONE HAS TO ACT (AG-14, owner decision
+   2026-09-25). This was `--warn` on every row, so a step waiting on the step
+   before it -- what a healthy chain says about most of its steps -- was the
+   same yellow as a failure, and a colour on every line marked none of them.
+   `.is-warn` is set by `whyNeedsAction` (types.ts): a failure, work that can
+   never be admitted (a pool paused or set to zero, a spent budget), a missing
+   credential -- and, in the inspector, a silent worker (`.why-full`). Queued,
+   parked on quota, waiting on a dependency and cancelled read in ink.
+   redesign-v2 §5.4 kept warn here on purpose; this is the owner's amendment
+   of it, recorded there too. */
 .row .why {
   grid-column: 1 / -1;
   margin-top: 4px;
   font-size: var(--t-body);
-  color: var(--warn);
+  color: var(--text);
   line-height: var(--lh-body);
 }
+.row .why.is-warn { color: var(--warn); }
 
 /* ------------------------------------------------------------------------ */
 /* Stale: real data that is no longer current                               */
@@ -2683,7 +2710,10 @@ table.pools .pool-name .raw {
   font-weight: 400;
 }
 table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--text-faint); }
-.tag.ok { color: var(--ok); }
+/* Healthy carries no hue (CP-14): the legacy tag's ok word is `--text-dim`.
+   CH-17 later drew the chip's and the dot's ok mark in `--text-faint`, and
+   left this tag to CP-14; both are text greys, neither is `--ok`. */
+.tag.ok { color: var(--text-dim); }
 
 .legend dl { margin: 0; }
 .legend dt {
@@ -3063,7 +3093,7 @@ table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--tex
 }
 
 /* A SECTION HEADING INSIDE A TOOLBAR WAS FALLING OFF THE TYPE SCALE.
-   `.section > h2` is `--t-title`, and it is a CHILD combinator; three panels on
+   `.section > h2` is `--t-lead`, and it is a CHILD combinator; three panels on
    the run detail -- Output, Dispatch, Timeline -- put their `<h2>` inside a
    `.ctl-toolbar` so that a qualifier could sit beside it, which took the
    heading out of that rule's reach and handed it the user agent's own
@@ -3073,8 +3103,8 @@ table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--tex
    scoped to it rather than loosened to `.section h2`, which would also catch
    the card titles that are deliberately `--t-lead`. */
 .section > .ctl-toolbar > h2 {
-  font-size: var(--t-title);
-  line-height: var(--lh-title);
+  font-size: var(--t-lead);
+  line-height: var(--lh-lead);
   font-weight: 600;
   color: var(--text);
   margin: 0;
@@ -3110,7 +3140,7 @@ table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--tex
    plus one `--line-soft` hairline, because "a region is a change of subject".
    The drawer's eleven blocks are not eleven subjects — they are one run,
    described from its state down to its event log. Every one of them is already
-   introduced by its own `--t-title` heading, which is a stronger and cheaper
+   introduced by its own `--t-lead` heading, which is a stronger and cheaper
    boundary than a 1px line, and §5.1's standing rule is "grouping is a surface
    step, separation is a hairline, PREFER THE STEP".
 
@@ -3516,7 +3546,10 @@ dl.kv dd { margin: 0; color: var(--text); min-width: 0; overflow-wrap: anywhere;
 .muted { color: var(--text-dim); font-size: var(--t-body); line-height: var(--lh-body); margin: 0; }
 .muted.small { font-size: var(--t-micro); margin-top: 10px; }
 .warn-text { color: var(--warn); font-size: var(--t-body); line-height: var(--lh-body); }
-.why-full { margin: 0; font-size: var(--t-lead); line-height: var(--lh-lead); color: var(--warn); }
+/* The inspector's why sentence takes the list row's rule (AG-14): ink, and
+   `--warn` only when `whyNeedsAction` says a person has to act. */
+.why-full { margin: 0; font-size: var(--t-lead); line-height: var(--lh-lead); color: var(--text); }
+.why-full.is-warn { color: var(--warn); }
 
 pre.json, pre.err, pre.ev-detail {
   margin: 8px 0 0;
@@ -3848,6 +3881,31 @@ button.copy:hover { color: var(--text); border-color: var(--text-faint); }
    `--ctl-s1` inside it, so the bar and the date clear the rule rather than
    touching it. */
 .chart .col.is-day-start { border-left: 1px solid var(--line-soft); padding-left: var(--ctl-s1); }
+/* THE PICKED COLUMN (TS-9): the column the legend is reading out, backed by the
+   hueless selection step (§1.3) -- a surface step, never the accent. A column
+   is one tab stop of a roving set, so it takes the one ring the accent is
+   allowed; 1px of offset keeps the ring inside the 3px gap and the scroller. */
+.chart .col.is-picked { background: var(--surface-2); border-radius: var(--ctl-radius-sm); }
+.chart .col:focus-visible { outline: 2px solid var(--info); outline-offset: 1px; }
+/* THE CUE THAT THERE IS MORE (TS-3). The chart opens at its newest end, so on
+   a phone the older buckets are off the LEFT edge -- and a scroller whose
+   scrollbar the platform does not paint gives no sign of them. The phone
+   rail's fade (`--rail-fade`) is the precedent: a mask over the edge, applied
+   only while something is actually hidden there (`has-older` is set from
+   `scrollLeft`), because a permanent fade would dim a bucket for no reason. */
+.chart.has-older {
+  -webkit-mask-image: linear-gradient(to right, transparent 0, #000 var(--ctl-s5));
+  mask-image: linear-gradient(to right, transparent 0, #000 var(--ctl-s5));
+}
+/* EVERY THIRD HOUR ON A PHONE (TS-3). The chart draws the union of the wide
+   axis's labels and the phone's (`axisLabels` / `phoneAxisLabels`), and each
+   set's extras are hidden at the other width. `visibility`, not `display`, so
+   a hidden label keeps its line and the bars stay on one baseline. */
+.col-label.is-phone-only { visibility: hidden; }
+@media (max-width: 560px) {
+  .col-label.is-wide-only { visibility: hidden; }
+  .col-label.is-phone-only { visibility: visible; }
+}
 .stackcol { display: flex; flex-direction: column-reverse; justify-content: flex-start; width: 100%; height: 120px; }
 .stackcol > i { display: block; width: 100%; min-height: 0; }
 /* FOUR OUTCOMES, FOUR FORMS, NOT FOUR HUES (TS-4). They were three flat fills
@@ -3908,35 +3966,21 @@ button.copy:hover { color: var(--text); border-color: var(--text-faint); }
    bucket on completed_at; a task's submission time is a different question"
    was a sentence explaining an axis; this is the axis saying it. */
 .chart-legend .cl-basis { margin-left: var(--ctl-s3); }
+/* THE READOUT (TS-9). The counts are the figures this legend now carries, so
+   they are ink, and tabular so a swap from the window to one column does not
+   jitter the line. The picked column's name leads, in ink too; `all` is a
+   `.sbf-mini` text button and needs only its gap. */
+.chart-legend .cl-n { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+.chart-legend .cl-at { color: var(--text); }
+.chart-legend .cl-all { margin-left: var(--ctl-s2); }
 
-/* ON THE SCALE (TS-21): 14px below the strip and 11/13px inside a tile were
-   three values between steps; each is `--ctl-s3` now, and the 8px gap is
-   written as the step it already was. */
-.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: var(--ctl-s2); margin-bottom: var(--ctl-s3); }
-.tile {
-  padding: var(--ctl-s3); border: 1px solid var(--line);
-  border-radius: var(--radius); background: var(--surface);
-}
+/* `.tiles`, `.tile`, `.t-value`, `.t-sub` and the `.tile.blocked` family are
+   gone with the boxed tiles they drew (TS-11): the Timeline's figures are the
+   shared `.ctl-metrics` strip now, whose absent state is `tone="absent"`. So
+   is `.coverage`, the Timeline's row-count bar and its only caller (TS-12).
+   `.t-label` stays: Dispatch.tsx, SubmitWorkflow.tsx and Accounts.tsx label
+   fields with it. */
 .t-label { display: block; font: var(--t-meta)/var(--lh-meta) var(--mono); color: var(--text-faint); }
-.t-value { display: block; margin: 4px 0 5px; font-size: var(--t-figure); line-height: var(--lh-figure); font-weight: 600; font-variant-numeric: tabular-nums; }
-.t-sub { display: block; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
-/* "not recorded" is a sentence, not a number. A zero here would read as
-   "this engineer spent nothing", which is worse than saying nothing.
-   --t-body, not --t-figure: the figure step is reserved for a figure. */
-.tile.blocked { border-style: dashed; }
-.tile.blocked .t-value { font-size: var(--t-body); color: var(--text-faint); font-weight: 500; }
-/* The absence mark and its way out, on the tile's third line, where the
-   39-word account of the capture bug used to be. Scoped to `.blocked`: the
-   measured variant's third line is a track with a figure under it and must
-   stay a block, or the track collapses to its content width. */
-.tile.blocked .t-sub {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: var(--ctl-s1) var(--ctl-s2);
-}
-.tile.blocked .t-sub a { color: var(--info); text-decoration: underline; text-underline-offset: 3px; }
-.coverage { margin-bottom: 5px; }
 
 /* §B4.3 move 3, the same cap on the proportional row. `minmax(0, 1fr)` in the
    middle stretched the bar to whatever was left, which on a wide screen is a
@@ -3955,7 +3999,6 @@ button.copy:hover { color: var(--text); border-color: var(--text-faint); }
 @media (max-width: 640px) {
   .window-bar { position: static; }
   .wb-controls { margin-left: 0; }
-  .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 /* ---- liveness badge ---- */
@@ -4026,8 +4069,6 @@ button.copy:hover { color: var(--text); border-color: var(--text-faint); }
   background: var(--surface); color: var(--text-dim);
   font-size: var(--t-body); cursor: pointer;
 }
-.tile.alert { border-color: var(--bad); }
-.tile.alert .t-value { color: var(--bad); }
 .pool-group.bad    > h2 { color: var(--bad); }
 .pool-group.warn   > h2 { color: var(--warn); }
 .pool-group.paused > h2 { color: var(--paused); }
@@ -4079,8 +4120,11 @@ table.pools tbody tr.presumed-dead { background: color-mix(in srgb, var(--bad) 9
    under the field now -- the cell keeps its width, and the one row that is
    wrong is the one that grows. The field itself carries the tone once the
    markup sets `aria-invalid` (AdminSettings.tsx's half), so the fault is on
-   the thing that has to change and not only in a caption next to it. */
-.limit-edit input[aria-invalid='true'] { border-color: var(--warn); }
+   the thing that has to change and not only in a caption next to it.
+   THE SUBMIT FORMS' REQUIRED FIELDS TAKE THE SAME EDGE (TS-15): one rule for
+   "this field is what has to change", so the two cannot drift apart. */
+.limit-edit input[aria-invalid='true'],
+.sbf-field [aria-invalid='true'] { border-color: var(--warn); }
 .limit-edit > .warn-text { flex-basis: 100%; margin: 0; }
 .limit-edit button {
   padding: 3px 10px; border: 1px solid var(--line); border-radius: 6px;
@@ -4102,8 +4146,8 @@ table.pools tbody tr.presumed-dead { background: color-mix(in srgb, var(--bad) 9
                        survives being printed, photographed or read by someone
                        who cannot separate the two colours.
      .acct-unmeasured  NOTHING WAS MEASURED. Draws no bar at all, because an
-                       empty five-cell bar and a measured 0% are the same
-                       picture.
+                       empty bar and a measured 0% are the same picture (a
+                       measured 0% draws the track's baseline tick).
 
    EVERY SELECTOR BELOW IS SCOPED, to an `.acct-*` class or an `#acct-*` id.
    The generic names these two treatments want -- `.projected`, `.unmeasured`,
@@ -4153,43 +4197,38 @@ table.pools.accounts td.n { white-space: nowrap; }
    a monochrome printout still reads correctly. */
 .acct-why.acct-unusable { color: var(--bad); }
 
-/* ---- the five-cell bar, as `miniBar` draws it ----
-   B4.6: THE CELLS LOST THEIR BORDERS AND THEIR HUE. §6.4: "A UTILISATION BAR
-   THAT IS FINE IS GREY. A HUE ON ONE IS A VERDICT." Ten of these bars render
-   above the fold, five cells each, and every filled cell was painted in
-   `--info` -- which §1.3 reserves for "a fact or a link, never a verdict" and
-   which the restraint pass counted as the single busiest thing on a screen.
-   Fifty saturated marks saying "this account is normal" is the state where
-   colour has stopped meaning anything by meaning everything.
+/* ---- the window's track: §6.4's one proportion, not a bar of its own ----
+   CP-25 (#85): THE FIVE-CELL BAR IS GONE. `.acct-bar` drew `cs status`'s
+   `miniBar` -- round to the nearest fifth, five cells, the empty ones in
+   `--line-soft` -- which was a second proportion primitive beside §6.4's, and
+   a coarser figure beside the exact one (42% was three cells). The cell now
+   draws the shared `UtilTrack`: the exact percentage, the default grey fill,
+   `ov-projected` for a stale or reset reading beside its `~`, `is-bad` only
+   for a live window at 100%, and the baseline tick for a measured 0%.
 
-   The 1px `--line` per cell was worse than decorative: it was 50 of this
-   screen's 90 bordered elements, spent on a 5x10px mark where a fill is the
-   whole shape. §5.2's rule reaches this too -- these cells have twins, so the
-   border grades as a separator, but a separator BETWEEN five adjacent cells is
-   what the 2px gap already is.
-
-   THE THREE READINGS STILL SEPARATE, AND BY A WIDER MARGIN THAN BEFORE:
-
-     measured   --text       #1f2328 light / #e8ecf1 dark -- full ink
-     projected  --text-faint #606a77 light / #828d9b dark -- plus its amber `~`
-     spent      --bad        the one hue left, because fully spent is the only
-                             verdict this bar is entitled to make
-
-   Measured-against-projected was `--info` against `--text-faint`, which is a
-   HUE difference and vanishes in greyscale; it is now full ink against faint,
-   which is a LUMINANCE difference and does not. The unfilled cell keeps
-   `--line-soft` -- the repeated-separator weight, visible as a mark at 5px and
-   never mistakable for ink. `.acct-unmeasured` still draws no bar at all,
-   which is the distinction this column exists to protect (§8.7.2). */
-.acct-bar { display: inline-flex; gap: 2px; margin-left: 7px; vertical-align: middle; }
-.acct-bar > i {
-  display: block; width: 5px; height: 10px; border-radius: 1px;
-  background: var(--line-soft);
+   A FIXED 40px, INLINE BESIDE THE FIGURE. The base track is `display: flex`,
+   a block that would take a line of its own under the figure, so the scoped
+   rule makes it an inline box. It sits inside a `@media (min-width: 561px)`
+   ON PURPOSE: at 560px and below the phone block's `.ctl-util-track
+   { display: none }` hides every track but a pool tile's, and a scoped
+   `display` at (0,2,0) would out-rank it. The phone keeps the rule every
+   other track follows -- the figure, the `~` and the em dash carry every state
+   there, as they do for Overview's account tracks -- and no new phone
+   exception is added. `.acct-unmeasured` still draws no track at all, which
+   is the distinction this column exists to protect (§8.7.2). */
+.acct-window > .ctl-util-track {
+  width: 40px;
+  margin-left: 7px;
+  vertical-align: middle;
 }
-.acct-bar > i.on { background: var(--text); }
-/* Fully spent is a FACT, not a threshold somebody chose in this file. */
-.acct-bar.spent > i.on { background: var(--bad); }
-.acct-bar.acct-projected > i.on { background: var(--text-faint); }
+@media (min-width: 561px) {
+  .acct-window > .ctl-util-track { display: inline-flex; }
+}
+
+/* ---- the provenance foot's clauses (CP-26) ----
+   Each clause is one unbreakable item, so a 390pt foot wraps BETWEEN them --
+   at a `·` -- and never inside `readings 2m–14m old` or `~ is projected`. */
+.acct-foot > .acct-clause { white-space: nowrap; }
 
 /* ---- warnings, the block `cs status` prints under its table ---- */
 .acct-warnings {
@@ -4316,10 +4355,10 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
 }
 
 @media (max-width: 560px) {
-  /* The bar is the one thing that can go: the percentage beside it is the
-     same fact, and `~` and the em dash both survive. Dropping the figure
-     instead would leave a picture with no number under it. */
-  .acct-bar { display: none; }
+  /* `.acct-bar { display: none }` WAS HERE (CP-25). The window's track is the
+     shared `.ctl-util-track` now, which the phone block already hides at this
+     width -- the percentage beside it is the same fact, and `~` and the em
+     dash both survive. */
   .acct-detail { padding: 12px 10px 16px; }
   .acct-wide { max-width: none; }
 }
@@ -4990,9 +5029,10 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
    `text-underline-offset: 3px` keeps it off the descenders.
 
    NOT YET UNIVERSAL, and the report says so plainly rather than claiming it.
-   `.ov-link`, `.wb-more a`, `.tile.blocked .t-sub a`, `.node-links a` and
-   `.art-md a` are five screen-private link treatments that each paint
-   `--info`, and folding them into this primitive means editing five screens --
+   `.ov-link`, `.wb-more a`, `.node-links a` and `.art-md a` are four
+   screen-private link treatments that each paint `--info` (a fifth,
+   `.tile.blocked .t-sub a`, went with the Timeline's boxed tiles, TS-11), and
+   folding them into this primitive means editing four screens --
    which is the next phase's job, not this one's. What this pass ships is the
    primitive they collapse into, so the screen lanes cannot each invent a sixth
    answer.
@@ -5294,6 +5334,10 @@ a.ctl-metric:focus-visible .ctl-metric-label,
    §6.6). On a state mark, hue is spent only on warn, bad, paused and live; a
    healthy platform is a quiet grey screen. The ok mark is a filled disc in
    `--text-faint` -- a disc, where the unknown default is a hollow ring.
+   CP-14 (#85) ruled first that healthy carries no hue and painted this disc
+   `--text-dim`; CH-17, decided after it, names this primitive and draws it in
+   `--text-faint`, so the later ruling sets the grey and CP-14's no-hue ruling
+   holds either way (`test_the_ok_mark_is_a_text_grey` accepts both greys).
    THE INFO MARK IS THE FLAT BAR §6.6 SPECIFIES (CH-22), not the filled disc it
    was: at 390, where the word is hidden, a cancelled and a queued workflow
    were the same dot. It is the neutral "ended" mark CANCELLED takes and the
@@ -5772,7 +5816,7 @@ a.ctl-metric:focus-visible .ctl-metric-label,
 /* 17b. The Help page's topics (AH-18)                                         */
 /* -------------------------------------------------------------------------- */
 /* A TOPIC IS A ROW OF ITS GROUP, NOT A BOX. design-system §13.3: a region is a
-   `.section` -- the large break, one hairline, a `--t-title` h2 -- and what
+   `.section` -- the large break, one hairline, a `--t-lead` h2 (TS-18) -- and what
    repeats inside it draws nothing. Every topic was an inline-styled bordered
    panel (border, `--surface`, radius, panel padding), because this sheet
    belonged to another track when HelpSection.tsx was written. The box goes;
@@ -6346,8 +6390,7 @@ a.ctl-metric:focus-visible { outline: 2px solid var(--info); outline-offset: 2px
    3px axis into a crescent, and a square end is what an axis looks like. */
 .ctl-track,
 .ctl-util-track,
-.sr-bar,
-.coverage {
+.sr-bar {
   position: relative;
   display: flex;
   height: var(--track-h);
@@ -6363,8 +6406,7 @@ a.ctl-metric:focus-visible { outline: 2px solid var(--info); outline-offset: 2px
 }
 .ctl-track > i,
 .ctl-util-fill,
-.sr-bar > i,
-.coverage > i {
+.sr-bar > i {
   display: block;
   height: 100%;
   background: var(--info);
@@ -6426,14 +6468,12 @@ a.ctl-metric:focus-visible { outline: 2px solid var(--info); outline-offset: 2px
 /* NOT MEASURED. Hatched, no fill, and no axis. */
 .ctl-track.is-unknown,
 .ctl-util-track.is-unknown,
-.sr-bar.is-unknown,
-.coverage.is-unknown {
+.sr-bar.is-unknown {
   background: var(--ctl-hatch);
   border-left-width: 0;
 }
 .ctl-track.is-unknown > i,
-.sr-bar.is-unknown > i,
-.coverage.is-unknown > i { display: none; }
+.sr-bar.is-unknown > i { display: none; }
 /* THE FILL TONES CARRY A TEXTURE, not only a hue. A 10px bar has no room for
    a glyph, so the shape cue has to be in the fill itself. Three textures that
    stay apart at 10px and in greyscale:
@@ -6604,32 +6644,57 @@ a.ctl-metric:focus-visible { outline: 2px solid var(--info); outline-offset: 2px
   /* The word is the datum. It is never the hue. */
   color: var(--text);
 }
-/* 10px, solid, no ring -- Geist's measured StatusDot. It was 7px inside a
-   border that supplied the rest of the mark's presence; with the border gone
-   the dot has to carry it alone, and 10px is the size that reads at arm's
-   length on the second monitor these screens are actually read on. */
+/* 10px, no fill -- THE UNKNOWN RING, AND THE BASE ON PURPOSE (CP-14, #85).
+   The base mark was the filled disc, so a modifier no rule matched (`is-wait`
+   is the one Accounts nearly shipped, §12.2 of design-system.md) drew the
+   HEALTHY mark for a state nobody derived. It is now the hollow ring, which
+   is `.ctl-dot`'s base too (§6.6): a chip whose modifier did not match says
+   "unknown" rather than "fine", and every state below declares its own fill.
+   `.is-unknown` is the one state that equals this base.
+
+   10px because it is Geist's measured StatusDot: the mark carries the chip's
+   presence alone now that the border is gone, and 10px reads at arm's length
+   on the second monitor these screens are actually read on. */
 .ctl-chip > i {
   width: 10px; height: 10px;
   border-radius: 999px;
-  background: var(--chip-tone, var(--text-faint));
+  background: transparent;
+  border: 1.5px solid var(--chip-tone, var(--text-faint));
   flex: none;
 }
-/* `ok` and `info` are grey (CH-17): the disc and the flat bar keep the shape,
-   the hue is spent only on warn, bad, paused and live (§6.6). The flat bar is
-   also the neutral "ended" mark CANCELLED takes (CH-22). */
+/* HEALTHY CARRIES NO HUE (owner rulings CP-14 and CH-17, 2026-09-25;
+   design-system §6.6-§6.7, redesign-v2 §5.5). `ok` and `info` are grey: the
+   disc and the flat bar keep the shape, the hue is spent only on warn, bad,
+   paused and live, and the ok word stays at full ink. The flat bar is also the
+   neutral "ended" mark CANCELLED takes (CH-22). Because this is the primitive,
+   every screen's ok mark goes grey with no screen edit. CP-14 painted the ok
+   tone `--text-dim`; CH-17, decided after it, names this primitive and paints
+   it `--text-faint`, so the later ruling sets the grey. The cost CP-14 asked to
+   have recorded: in greyscale the ok disc is told from warn and bad by its
+   silhouette alone (`--text-faint` is 1.01:1 from `--bad` in the dark theme
+   and 1.45:1 from `--warn` in the light one), which is what
+   `test_every_chip_state_has_its_own_silhouette` holds. `--ok` stays defined. */
 .ctl-chip.is-ok      { --chip-tone: var(--text-faint); }
 .ctl-chip.is-warn    { --chip-tone: var(--warn); }
 .ctl-chip.is-bad     { --chip-tone: var(--bad); }
 .ctl-chip.is-info    { --chip-tone: var(--text-faint); }
 .ctl-chip.is-paused  { --chip-tone: var(--paused); }
 
-/* The shapes. Each one overrides the disc; none of them changes the colour,
-   so tone and shape stay independent and a greyscale reader loses neither. */
+/* The shapes. Each one declares its own fill over the ring and overrides the
+   disc; none of them changes the colour, so tone and shape stay independent
+   and a greyscale reader loses neither. */
 
+/* Present, and fine: the filled disc. */
+.ctl-chip.is-ok > i {
+  background: var(--chip-tone, var(--text-faint));
+  border: 0;
+}
 /* Caution: a triangle, wider than it is tall so the base reads as a base. */
 .ctl-chip.is-warn > i {
   width: 12px; height: 10px;
   border-radius: 0;
+  background: var(--chip-tone, var(--text-faint));
+  border: 0;
   clip-path: polygon(50% 0%, 100% 100%, 0% 100%);
 }
 /* Failure: a diamond. Same area as the disc, off its axis — the one mark on
@@ -6637,18 +6702,23 @@ a.ctl-metric:focus-visible { outline: 2px solid var(--info); outline-offset: 2px
 .ctl-chip.is-bad > i {
   width: 8px; height: 8px;
   border-radius: 1px;
+  background: var(--chip-tone, var(--text-faint));
+  border: 0;
   transform: rotate(45deg);
 }
 /* A fact rather than a verdict: flat. */
 .ctl-chip.is-info > i {
   width: 10px; height: 3px;
   border-radius: 1px;
+  background: var(--chip-tone, var(--text-faint));
+  border: 0;
 }
 /* Held, not running: the pause glyph. Two bars with a gap wide enough to
    survive a 1x display. */
 .ctl-chip.is-paused > i {
   width: 10px; height: 10px;
   border-radius: 1px;
+  border: 0;
   background: linear-gradient(
     90deg,
     var(--chip-tone, var(--text-faint)) 0 34%,
@@ -6656,22 +6726,20 @@ a.ctl-metric:focus-visible { outline: 2px solid var(--info); outline-offset: 2px
     var(--chip-tone, var(--text-faint)) 66% 100%
   );
 }
-/* UNKNOWN IS NOT HEALTHY and must not borrow a healthy colour. Hollow dot,
-   faint text: an absence of information, drawn as one. */
 /* UNKNOWN IS NOT HEALTHY and must not borrow a healthy colour -- but the WORD
    still goes at full ink, because "state not derived" is a fact the operator
-   has to be able to read, not a thing to whisper. Only the mark is faint. */
+   has to be able to read, not a thing to whisper. Only the mark is faint. Its
+   mark is the base ring above, unchanged: `.is-unknown` needs no `> i` rule of
+   its own, and a chip whose modifier matched nothing draws the same thing. */
 .ctl-chip.is-unknown { --chip-tone: var(--text-faint); }
-.ctl-chip.is-unknown > i {
-  background: transparent;
-  border: 1.5px solid var(--chip-tone, var(--text-faint));
-}
 /* Live work gets the only motion on the screen, and only while it is live —
    plus a halo, which is what distinguishes it from `.is-ok` once
    `prefers-reduced-motion` has stopped the pulse. */
 .ctl-chip.is-live { --chip-tone: var(--info); }
 .ctl-chip.is-live > i {
   width: 8px; height: 8px;
+  background: var(--chip-tone, var(--text-faint));
+  border: 0;
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--chip-tone, var(--text-faint)) 35%, transparent);
   animation: ctl-live-pulse 2s ease-in-out infinite;
 }
@@ -6846,7 +6914,7 @@ a.ctl-metric:focus-visible { outline: 2px solid var(--info); outline-offset: 2px
 }
 .ctl-empty > h3 {
   margin: 0 0 6px;
-  font-size: var(--t-title);
+  font-size: var(--t-lead);
   font-weight: 600;
   color: var(--text);
 }
@@ -7839,9 +7907,13 @@ a.ctl-metric:focus-visible { outline: 2px solid var(--info); outline-offset: 2px
   box-shadow: inset 1px 0 0 var(--text);
 }
 .dsp-option:focus-within { outline: 2px solid var(--info); outline-offset: 2px; }
-/* Visible but not selectable: the reason it cannot be chosen is inside it. */
-.dsp-option.is-off { cursor: not-allowed; opacity: .72; border-style: dashed; }
-.dsp-option.is-off:hover { border-color: var(--line); }
+/* NO `.is-off` CARD (TS-14, owner decision 2026-09-25). The single-task form
+   drew `integrate` as a dashed card at opacity .72 -- a dashed edge is the
+   failed-or-partial-read vocabulary (§8.6), so an option that is simply not
+   applicable read as a broken one, beside a live-looking consequence. The task
+   form now draws only the strategies a task can take and points to the
+   workflow form in one `.ctl-panel-note`; the rules for the card are deleted,
+   so a dashed edge stays reserved for a read that failed or fell short. */
 
 .dsp-option > input { margin: 3px 0 0; accent-color: var(--info); }
 .dsp-option-body { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
@@ -7857,7 +7929,6 @@ a.ctl-metric:focus-visible { outline: 2px solid var(--info); outline-offset: 2px
    link is the accent spent on emphasis, which §11's budget does not allow. */
 .dsp-count { font-size: var(--t-body); font-weight: 600; color: var(--text); }
 .dsp-count.is-none { color: var(--text-dim); font-weight: 500; }
-.dsp-off-why { font-size: var(--t-body); line-height: var(--lh-body); color: var(--text-dim); }
 
 /* The consequence box's rule is a callout edge, not a link and not a state, so
    it is `--text-faint` like every other quiet edge (TS-13). */
@@ -7867,10 +7938,11 @@ a.ctl-metric:focus-visible { outline: 2px solid var(--info); outline-offset: 2px
   border-radius: 0 var(--radius) var(--radius) 0;
   padding: 10px 12px;
 }
-/* `.dsp-consequence.is-none` set the rule to `--text-faint`, which is now what
-   every consequence draws; the headline is what says whether anything is
-   pushed. The restatement is deleted rather than kept agreeing by accident. */
-.dsp-consequence-head { margin: 0 0 4px; font-size: var(--t-body); font-weight: 600; color: var(--text); }
+/* NO HEADLINE IN THE BOX (TS-20). `.dsp-consequence-head` repeated the chosen
+   option's own count sentence directly under the option that already said it.
+   The box is drawn now only when it says something the options do not -- on a
+   workflow, which step opens the one pull request, or that the graph has no
+   single final step -- so it has no headline and no `.is-none` variant. */
 
 .dsp-repo { width: 100%; max-width: 520px; }
 .dsp-repo, .dsp select {
@@ -7958,8 +8030,6 @@ table.pools tbody tr.unmeasured {
   );
 }
 
-.admission-panel { margin-top: 12px; }
-
 .blocker-group { margin-top: 12px; }
 .blocker-group > h3 {
   display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
@@ -7981,8 +8051,14 @@ table.pools tbody tr.unmeasured {
   background: var(--surface);
   font-size: var(--t-body); line-height: var(--lh-body);
 }
+/* The left rule takes the tone of the row's mark (#159 review of CP-6). The
+   Profile headroom list draws its marks as `.ctl-chip` in Pools' vocabulary
+   since CP-12 left no `.tag` in that card: paused and a person's limit 0 are
+   `is-paused`, quota's limit 0 is `is-bad`, full is `is-warn`. It was
+   `is-full` in --bad, which put a --bad rule beside a warn `full` chip. */
 .blocker-row.is-paused { border-left-color: var(--paused); }
-.blocker-row.is-full   { border-left-color: var(--bad); }
+.blocker-row.is-bad    { border-left-color: var(--bad); }
+.blocker-row.is-warn   { border-left-color: var(--warn); }
 .blocker-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .blocker-pool { font-size: var(--t-body); background: transparent; color: var(--text); }
 .blocker-reason { font: 700 var(--t-meta)/var(--lh-meta) var(--mono); color: var(--text-dim); }
@@ -7994,43 +8070,32 @@ table.pools tbody tr.unmeasured {
 /* The submit box has one column and no room for the fraction on its own line. */
 .blocker-list.compact .blocker-row { padding: 5px 8px; font-size: var(--t-body); }
 
-.counterfactual { margin-top: 14px; }
-.counterfactual > h3 {
-  margin: 0 0 6px;
-  font-size: var(--t-meta); font-weight: 600; color: var(--text-dim);
-}
-.cf-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 3px; }
-.cf-row {
-  display: grid; grid-template-columns: minmax(0, 200px) minmax(0, 1fr); gap: 10px;
-  padding: 4px 0; font-size: var(--t-body); line-height: var(--lh-body);
-}
-.cf-action { color: var(--text); }
-.cf-action code { font-size: var(--t-body); background: transparent; color: var(--text); }
-/* INK, NOT `--ok` (CP-13). A counterfactual is a measurement of what WOULD
+/* THE COUNTERFACTUAL IS A COLUMN NOW (CP-6, #85): `+N if lifted` on Profile
+   headroom's pool table, one cell per pool that caps the card. The list that
+   drew it -- `.counterfactual`, `.cf-list`, `.cf-row`, `.cf-action` and their
+   640px stacking rule -- and `.admission-panel` around it are gone with the
+   components that rendered them.
+
+   INK, NOT `--ok` (CP-13). A counterfactual is a measurement of what WOULD
    have happened -- "+3 would fit" -- and it was painted in the healthy hue,
    including the row that says it "could not be measured". Green on a
    hypothetical reads as a result somebody got. The effect is a figure and is
-   drawn as one; the dimmed rows below are the zeros and the unmeasured. */
+   drawn as one; the dimmed cells below are the zeros and the unmeasured. */
 .cf-effect { color: var(--text); }
-/* The zeros are the valuable half -- they say which ceilings are POINTLESS to
-   raise -- so they are dimmed rather than hidden, and never coloured as a
-   result. A green "no change" reads as a success. */
-.cf-row.is-pointless .cf-action,
-.cf-row.is-pointless .cf-effect { color: var(--text-faint); }
+/* The zeros on a binding pool are the valuable half -- they say which ceilings
+   are POINTLESS to raise alone -- so they are dimmed rather than hidden, and
+   never coloured as a result. A green "no change" reads as a success. */
+td.cf-lift.is-pointless .cf-effect { color: var(--text-faint); }
 
 /* `.admission-details` LIVED HERE AND IS GONE (B4.5). It was Pools' per-profile
-   `<details>`, holding `IncompleteNote` and `Counterfactuals` -- roughly 90
-   words per profile, behind a disclosure triangle nobody opens. The
-   counterfactual is real data and is NOT lost: `Profiles.tsx` renders the same
-   two components through `ProfileAdmissionPanel`, which is where a reader who
-   wants one profile's admission arithmetic already goes. What Pools carried was
-   a second copy of it, collapsed. The incompleteness itself stayed on Pools, as
-   `.ctl-mark.is-unread` in the row it belongs to. */
+   `<details>`, holding the incompleteness note and the counterfactual --
+   roughly 90 words per profile, behind a disclosure triangle nobody opens.
+   The counterfactual is real data and is NOT lost: it is Profile headroom's
+   `+N if lifted` column, which is where a reader who wants one profile's
+   admission arithmetic already goes. The incompleteness itself stayed on
+   Pools, as `.ctl-mark.is-unread` in the row it belongs to. */
 
 @media (max-width: 640px) {
-  /* One column: at 390pt the effect wraps to two words per line beside a
-     200px label, which is less readable than stacking. */
-  .cf-row { grid-template-columns: minmax(0, 1fr); gap: 0; }
   .blocker-at { margin-left: 0; flex-basis: 100%; }
 }
 
@@ -8216,7 +8281,7 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
   background: var(--surface-2); padding: var(--ctl-s3);
 }
 .art-head { display: flex; align-items: baseline; gap: var(--ctl-s2); }
-.art-head h3 { margin: 0; font-size: var(--t-title); flex: 1 1 auto; }
+.art-head h3 { margin: 0; font-size: var(--t-lead); flex: 1 1 auto; }
 .art-close {
   background: none; border: 0; color: var(--text-faint);
   /* --lh-flush: a close glyph on the `.art-head` baseline row; leading would
@@ -8228,6 +8293,15 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 .art-prov { margin: var(--ctl-s2) 0 var(--ctl-s3); }
 .art-prov p { margin: 0 0 var(--ctl-s1); }
 .art-prov-actions { display: inline-flex; gap: var(--ctl-s2); margin-top: var(--ctl-s1); }
+/* AG-5. THE MASKED-CREDENTIAL COUNT IS A MEASUREMENT, SO IT WEARS NO MARK.
+   It wore `.ctl-mark.is-unread` -- "the read failed" -- on a count that was
+   read, inside a fact dimmed as absent. The owner's decision (2026-09-25): a
+   plain fact, `--warn` ink above zero and plain ink at zero, no mark, no
+   dimming, and no seventh mark kind. The ink is the attention; the sentence
+   is `#help/masking-is-serve-time` behind the `?` beside it. The log panel's
+   redaction fact takes the same two rules (RunFiles.tsx). */
+.art-masked { color: var(--text); }
+.art-masked.is-warn { color: var(--warn); }
 .art-binary-meta { display: block; margin-top: var(--ctl-s2); font-size: var(--t-micro); }
 
 /* A MEASURE ON THE PROSE. A synthesis document set to the full width of a
@@ -8403,37 +8477,33 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
    `GET /v1/tasks/{id}/logs`. Both payloads distinguish "absent", "unreadable"
    and "present and empty", so nothing here may style two of those alike: the
    untrusted amber is reserved for a read that failed or could not be
-   established, and a plain muted line is what a measured emptiness gets. */
+   established, and a measured emptiness gets the kit's `real zero` mark.
 
-.ckpt-rows { display: flex; flex-direction: column; gap: 10px; }
-.ckpt {
-  border: 1px solid var(--line); border-radius: var(--radius);
-  background: var(--surface); padding: 10px 12px;
-}
-.ckpt-head {
-  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
-  margin-bottom: 6px;
-}
-.ckpt-head .mono { font-weight: 600; }
-.ckpt > details { margin-top: 8px; }
-.ckpt > details > summary { cursor: pointer; }
+   ONE LEVEL OF BOX (AG-23, owner decision 2026-09-25). `.ckpt` and `.logwin`
+   were a bordered card per checkpoint and per stream, inside a panel, each
+   holding a `dl.kv` -- boxes inside boxes. They are gone: each panel is a
+   facts strip and ONE `.ctl-table` (the one box, §13.3), and these rules are
+   what is left that a table does not already draw. */
 
-.logwin {
-  border: 1px solid var(--line); border-radius: var(--radius);
-  background: var(--surface); padding: 10px 12px;
-  margin-bottom: 10px;
-}
-.logwin-head {
-  display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
-  margin-bottom: 6px;
-}
-.logwin-head .mono { font-weight: 600; }
+/* The objects a checkpoint's size sums, opened from its Size cell as ROWS OF
+   THE SAME TABLE (fix-up on #170: "files as a table (name, size, age)"). Not
+   a second box: the row keeps the table's cells and rules, and is set in from
+   the checkpoint it belongs to, in the dim ink, so it reads as that
+   checkpoint's file rather than as another checkpoint. */
+.ctl-table tr.rf-object > th { padding-left: var(--ctl-s5); }
+.ctl-table tr.rf-object > th .mono { color: var(--text-dim); font-weight: 400; }
+
+/* A stream's window sits under the table, labelled by its stream's name. */
+.rf-window { margin-top: var(--ctl-s3); }
+.rf-window > .ctl-eyebrow { display: block; margin-bottom: var(--ctl-s1); }
+
 .logwin-body {
   margin: 0 0 6px;
   padding: 8px 10px;
   max-height: 320px; overflow: auto;
-  /* 6px, not 8px: 8 is not on the corner scale, and a well nested inside a
-     10px card takes the step below it. */
+  /* 6px, not 8px: 8 is not on the corner scale. The well is the stream's own
+     text, a sibling of the panel's table rather than an inset inside a card
+     (AG-23), so it is the only other bordered thing in the panel. */
   background: var(--bg); border: 1px solid var(--line); border-radius: var(--ctl-radius-sm);
   font: var(--t-body)/var(--lh-body) var(--mono); color: var(--text);
   /* Log lines are wrapped by the writer, not by us: re-wrapping a column of
@@ -8614,11 +8684,14 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 
    TWO THINGS DELIBERATELY SURVIVE THE BOX:
 
-   1. `.ctl-card-head` KEEPS ITS NOTE. That note is Trap E -- "platform-wide"
-      vs "this tenant" -- and it is the only thing on the screen stopping a
-      reader comparing a tenant figure with a platform one. Removing the card
-      to remove the box would have removed the slot the scope declaration lives
-      in, which is a correctness regression wearing a design change.
+   1. THE SCOPE IS DECLARED, AND SINCE CP-2 (#85) IT IS DECLARED PER ROW.
+      Trap E -- "platform" vs "this tenant" -- is the only thing on the screen
+      stopping a reader comparing a tenant figure with a platform one. It was
+      the `.ctl-card-head` note, read off the family's first row, and a family
+      is not one scope (an admin's Tenants family holds every tenant's pool).
+      The owner's decision is a Scope column on every row, and a scope on
+      every card in the Cards view (`.cap-pool-scope`); the head keeps only
+      its title.
    2. THE TABLE KEEPS ITS OWN BORDER. `.ctl-table` draws it, it has always
       drawn it, and it is what now carries the grouping: one boundary per
       family instead of two nested ones.
@@ -8676,6 +8749,15 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
   margin-left: 2px;
   font: var(--t-micro)/var(--lh-micro) var(--mono);
   color: var(--text-faint);
+}
+
+/* A TILE'S SCOPE (CP-2, #85), leading its marks: the Cards view's copy of the
+   table's Scope column, since the family note both used to share is gone.
+   Metadata, so the qualifier treatment -- mono, muted, no hue, no box; the
+   strip's own gap separates it from the first mark. */
+.cap-pool-scope {
+  font: var(--t-meta)/var(--lh-meta) var(--mono);
+  color: var(--text-dim);
 }
 
 /* THE CARDS VIEW. `auto-fit` at a 240px floor gives four across a wide display
@@ -8848,7 +8930,8 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 /* -- Accounts -------------------------------------------------------------- */
 
 /* Accounts keeps `cs status`'s five columns verbatim -- same order, same
-   headings, same five-cell bar -- because an operator already reads that line
+   headings, same figures and `~` (the five-cell bar went into §6.4's shared
+   track, CP-25) -- because an operator already reads that line
    on their laptop and a second vocabulary for the same five facts costs them a
    translation every time they look. So this screen gains no new layout: what
    changed is that the paragraphs AROUND the table became marks IN it, and a
@@ -8948,7 +9031,9 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 .sbf-move-h {
   display: flex; align-items: center; gap: var(--ctl-s2); flex-wrap: wrap;
   margin: 0 0 var(--ctl-s3);
-  font-size: var(--t-title); line-height: var(--lh-title); font-weight: 600;
+  /* --t-lead, a step heading (TS-18): the screen's h1 is the only heading on
+     this form at --t-title. */
+  font-size: var(--t-lead); line-height: var(--lh-lead); font-weight: 600;
   color: var(--text);
 }
 /* A DISC, NOT A RING. Same substitution §13.3 made for `.ctl-q-glyph`: the
@@ -9038,6 +9123,17 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 .sbf-empty, .sbf-bad { font-style: normal; font-size: var(--t-micro); }
 .sbf-empty { color: var(--text-faint); }
 .sbf-bad { color: var(--warn-ink); }
+/* THE MISSING KEY, AT ITS FIELD (TS-15). One line in warn ink under the
+   editor, which carries the warn edge through `aria-invalid` (the rule beside
+   `.limit-edit`'s). Shown only once the field has been left empty, so a runner
+   just picked is not painted red; until then the `required` tag carries it. */
+.sbf-miss { margin: 0; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--warn-ink); }
+.sbf-miss code { font-size: var(--t-micro); color: var(--warn-ink); }
+/* The send panel names the same gap as a `.sbf-mini` button to the field.
+   `.sbf-mini`'s own grey comes later in the sheet at equal specificity, so the
+   warn ink is restated on the pair rather than left to lose. */
+.sbf-mini.sbf-bad { color: var(--warn-ink); }
+.sbf-gaps { display: inline-flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--ctl-s1) var(--ctl-s2); }
 
 .sbf-flag { display: inline-flex; align-items: center; gap: var(--ctl-s2); font-size: var(--t-body); color: var(--text-dim); }
 .sbf-list { display: grid; gap: var(--ctl-s1); }
@@ -10546,11 +10642,58 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
   stroke: var(--series-2);
   stroke-dasharray: 2 1.5;
 }
+/* THE TRAY'S COUNT (fix-up on #170): the off-page checkpoints past the ones
+   the tray has room to draw, as `+N`. Set as the tick labels are -- the same
+   mono and the same `--t-micro` in the drawing's own units, which neither
+   drawing is ever scaled below (AG-20) -- and in the dim ink, because it is a
+   count of things not drawn, not a value. */
+.ctl-ckpt-more {
+  fill: var(--text-dim);
+  font-family: var(--mono);
+  font-size: var(--t-micro);
+}
 
 /* --- Diffstat --------------------------------------------------------------- */
 .ctl-diff.is-del { fill: var(--series-4); }
 .ctl-diff.is-ins { fill: var(--series-1); }
 .ctl-diff-binary { fill: var(--series-3); }
+
+/* --- Drawn twice, not scaled (AG-20) -------------------------------------- */
+/* THE DEFECT. Each inspector chart was one SVG with a 640-unit viewBox under
+   `.ctl-chart-svg`'s `width: 100%`, and the inspector is a 400-720px column
+   (INSPECTOR in panes.ts), so the drawing was scaled to about 330-430px and
+   its tick text -- `--t-micro`, 12px in the chart's own units -- rendered at
+   6-8px, under the type scale's floor. §7.2 of design-system.md says charts
+   are authored twice, not scaled.
+
+   THE OWNER'S DECISION (2026-09-25): a second, narrow SVG with fewer ticks,
+   switched by a container or media query, SSR-safe; nothing scaled below the
+   12px floor. Every chart that draws twice puts both drawings in the markup
+   (`DRAWN` in charts/parts.tsx), and these rules show one:
+
+     * THE FIGURE IS THE CONTAINER, so the question is how wide the CHART is,
+       not the window -- at 1440 the inspector is a 480px column and a
+       viewport query would pick the wide drawing for it.
+     * THE WIDE DRAWING SHOWS ONLY IN A BOX AT LEAST 640px ACROSS, its own
+       authored width, so under the base rule's `width: 100%` it is only ever
+       scaled UP (to the 720px cap, 1.125x).
+     * THE NARROW DRAWING NEVER SHRINKS BELOW THE 300 UNITS IT WAS DRAWN AT
+       (`min-width`), and grows no further than 360px -- 1.2x, so 14.4px tick
+       text rather than the 20px a 300-unit drawing would carry across a
+       whole 500px box. Below 300px it overflows its box rather than
+       shrinking, which is §7.2's rule for the DAG as well.
+
+   640 IS NOT A RETIRED BREAKPOINT COMING BACK (§7.1). It is not a viewport
+   width; it is the wide drawing's own width, and the threshold has to equal
+   it for "never scaled down" to be true. `chart.narrow.test.tsx` reads both
+   numbers off the rendered viewBoxes and holds these rules to them. */
+.ctl-chart.has-narrow { container: ctl-chart / inline-size; }
+.ctl-chart-svg.is-wide { display: none; }
+.ctl-chart-svg.is-narrow { min-width: 300px; max-width: 360px; }
+@container ctl-chart (min-width: 640px) {
+  .ctl-chart-svg.is-wide { display: block; }
+  .ctl-chart-svg.is-narrow { display: none; }
+}
 
 /* ---------------------------------------------------------------------------
    A3 -- the checkpoint browser (CheckpointBrowser.tsx)
@@ -10568,7 +10711,7 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
   background: var(--surface-2); padding: var(--ctl-s3);
 }
 .ckb-head { display: flex; align-items: baseline; gap: var(--ctl-s2); flex-wrap: wrap; }
-.ckb-head h3 { margin: 0; font-size: var(--t-title); flex: 1 1 auto; }
+.ckb-head h3 { margin: 0; font-size: var(--t-lead); flex: 1 1 auto; }
 .ckb-facts { margin: var(--ctl-s2) 0; }
 .ckb-cut { color: var(--text-dim); }
 

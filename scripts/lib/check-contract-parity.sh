@@ -500,6 +500,121 @@ else:
                 "frozen %s means %s  //  types.ts says %s" % (frozen, want, got),
             )
 
+# -- 6. the provider pool a quota document feeds (CP-8, #85) ---------------
+# Provider quota names, on every row, the pool its cap feeds, and a helper in
+# types.ts spells that name. pool_names_for is the function that decides what
+# the pool is called, so the spelling is read out of the helper and compared
+# with what the frozen function produces for the same provider and tenant. A
+# rename on either side would otherwise leave the screen linking to a pool
+# name nobody has.
+#
+# NO BACKTICK AND NO DOLLAR SIGN BELOW, for the reason the apostrophe note at
+# the top of this section gives: the probe is a heredoc inside a command
+# substitution. The template literal is matched with the escapes \x60 and \x24.
+TICK = "\x60"
+DOLLAR = "\x24"
+helper = re.search(
+    r"export function providerTenantPool\(provider: string, tenant: string\): string \{\s*return "
+    + TICK + r"([^" + TICK + r"]*)" + TICK,
+    SRC,
+)
+if helper is None:
+    emit(
+        "MISSING",
+        "providerTenantPool",
+        "no helper returning a template literal over (provider, tenant) found",
+    )
+else:
+    got = (
+        helper.group(1)
+        .replace(DOLLAR + "{provider}", "anthropic")
+        .replace(DOLLAR + "{tenant}", "parity")
+    )
+    want = [
+        p
+        for p in pool_names_for(
+            tenant_id="parity",
+            provider="anthropic",
+            resource_class="standard",
+            runner_profile="claude-code",
+            backend="CLOUD_RUN_JOB",
+        )
+        if p.startswith("provider:") and "parity" in p
+    ]
+    if want == [got]:
+        emit("OK", "providerTenantPool", "spells %s as pool_names_for does" % got)
+    else:
+        emit(
+            "DRIFT",
+            "providerTenantPool",
+            "frozen %s  //  types.ts %s" % (" ".join(want), got),
+        )
+
+# -- 7. the quota broker tick the staleness rule is twice of (CP-9, #85) ---
+# Provider quota draws a reading older than twice the broker's sweep interval
+# as stale. The interval is Terraform configuration, not frozen contract: the
+# quota-refresh Cloud Scheduler job, which calls QuotaService.sweep, and whose
+# cron is the scheduler module default quota_refresh_schedule, which the root
+# does not override. It is a SWEEP, not a report: the sweep rewrites a quota
+# document only when its state or derived cap changes, and updated_at moves
+# when a worker reports. #159's review found the constant named
+# QUOTA_REPORT_INTERVAL_SECONDS and the screen calling it a reporting
+# interval, which no such report has; it is QUOTA_SWEEP_INTERVAL_SECONDS now.
+# types.ts states it once, and this holds it to the cron: a changed schedule
+# with the old constant would call current readings stale, or stale current.
+tf_vars = Path(repo_root) / "terraform" / "modules" / "scheduler" / "variables.tf"
+ts_interval = re.search(r"export const QUOTA_SWEEP_INTERVAL_SECONDS = (\d+)\b", SRC)
+tf_block = None
+if tf_vars.is_file():
+    # \x22 is the double quote, written as an escape for the same reason.
+    tf_block = re.search(
+        r"variable \x22quota_refresh_schedule\x22 \{.*?default\s*=\s*\x22([^\x22]+)\x22",
+        tf_vars.read_text(),
+        re.S,
+    )
+overrides = sorted(
+    str(p.relative_to(repo_root))
+    for p in (Path(repo_root) / "terraform").rglob("*")
+    if p.is_file()
+    and p.suffix in (".tf", ".tfvars")
+    and "modules/scheduler" not in p.as_posix()
+    and "quota_refresh_schedule" in p.read_text(errors="replace")
+)
+if ts_interval is None:
+    emit("MISSING", "QUOTA_SWEEP_INTERVAL_SECONDS", "no numeric export const found")
+elif tf_block is None:
+    emit("MISSING", "QUOTA_SWEEP_INTERVAL_SECONDS", "no quota_refresh_schedule default in %s" % tf_vars)
+elif overrides:
+    emit(
+        "MISSING",
+        "QUOTA_SWEEP_INTERVAL_SECONDS",
+        "quota_refresh_schedule is set outside the module (%s); read that value instead" % " ".join(overrides),
+    )
+else:
+    cron = tf_block.group(1).split()
+    step = re.fullmatch(r"\*/(\d+)", cron[0]) if len(cron) == 5 else None
+    if step is None or cron[1:] != ["*", "*", "*", "*"]:
+        emit(
+            "MISSING",
+            "QUOTA_SWEEP_INTERVAL_SECONDS",
+            "quota_refresh_schedule %s is not an every-N-minutes cron this probe reads" % tf_block.group(1),
+        )
+    else:
+        seconds = int(step.group(1)) * 60
+        if seconds == int(ts_interval.group(1)):
+            emit(
+                "OK",
+                "QUOTA_SWEEP_INTERVAL_SECONDS",
+                "%ss matches quota_refresh_schedule %s" % (seconds, tf_block.group(1)),
+            )
+        else:
+            emit(
+                "DRIFT",
+                "QUOTA_SWEEP_INTERVAL_SECONDS",
+                "terraform quota_refresh_schedule %s is %ss  //  types.ts %ss"
+                % (tf_block.group(1), seconds, ts_interval.group(1)),
+            )
+
 print("\n".join(REPORT))
 PY
 )"; then

@@ -298,7 +298,8 @@ count is zero, and there are seven independently implemented bar primitives doin
 the work a chart layer would do: `.bar` (5px), `.stack` (12px), `.stackcol` (120px),
 `.coverage` (4px), `.sr-bar` (9px), `.acct-bar` (10px cells), `.ctl-util-track`
 (10px). Seven implementations of one idea is why the same fact has three different
-visual weights on three screens.
+visual weights on three screens. *(2026-09-25: `.acct-bar` is gone — Accounts'
+windows draw the shared `.ctl-util-track` since CP-25, #85.)*
 
 ### 1.4 Meaning is carried by prose, and prose is what you read when you cannot see
 
@@ -845,6 +846,14 @@ Fix the inversion: `.section > h2` becomes 16px/600 in `--text`, above body text
   colour on `.row .why`, the blocked-reason line the CSS itself calls the whole
   point. It needs darkening; the earlier audit fixed `--text-faint` and did not
   re-check `--warn`.
+  *(Amended by the owner, 2026-09-25, AG-14 on #82: `.row .why` is no longer
+  `--warn` on every row. It is plain ink, and `--warn` only on a why line that
+  needs a person to act — a failure; work that can never be admitted until
+  someone acts (a pool paused or set to zero, as a blocker or a `MANUAL_PAUSE`
+  park, and a spent budget); sign-in needed (a missing credential); and a
+  stuck or silent worker, which the inspector draws and the Agents list cannot
+  yet. Routine waits and cancellations are ink. design-system.md §15.6 keeps the
+  same list.)*
 - Delete `--ctl-shadow` in dark mode: `0 1px 2px rgb(0 0 0 / .30)` on `--bg`
   `#0b0d10` is ~1.02:1 — invisible, and it costs a paint layer on every
   `.ctl-metric`.
@@ -862,7 +871,7 @@ adjacent word:
 
 | State | Colour | Second channel |
 |---|---|---|
-| ok | **none on a state mark** — `--text-faint` (CH-17); `--ok` only as a figure or a chart fill | solid fill, filled dot |
+| ok | **none on a state mark** — `--text-faint` (CH-17; was `--ok`, then `--text-dim` under CP-14, below); `--ok` only as a figure or a chart fill | solid fill, filled dot |
 | live | `--info` | solid fill + the only animation on the screen |
 | warn | `--warn` | 45° hatch (`--ctl-hatch` already exists and is already used correctly for unknown ceilings — extend it) |
 | bad | `--bad` | solid fill + a 2px left rule |
@@ -879,6 +888,19 @@ bar — terminal, not a verdict — where it used to borrow `wait`'s triangle.
 
 Then retune luminance so the six occupy at least **three** distinct greyscale steps
 instead of two: lift `ok`, darken `bad`, pull `paused` toward blue-grey.
+
+> **Owner amendment, 2026-09-25 (CP-14, #85): healthy carries no hue.** The ok
+> mark's colour is a text grey, not `--ok`; its second channel — the solid fill,
+> the filled dot — is unchanged. Hue on a state mark is left to warn, bad, paused
+> and live. CP-14 chose `--text-dim`; CH-17, decided after it, draws the chip
+> and dot primitives' ok disc in `--text-faint`, and the later ruling sets that
+> grey (`.tag.ok`, which CH-17 leaves to CP-14, stays `--text-dim`). The cost is
+> recorded in design-system.md §6.6 as well as here: in greyscale an ok mark is
+> told from bad and warn by its silhouette alone, because `--text-faint` is
+> 1.01:1 from `--bad` in the dark theme and 1.45:1 from `--warn` in the light
+> one (`--text-dim`: 1.26:1 and 1.30:1). The 1.5:1 triad floor still governs the
+> `--ok` / `--warn` / `--bad` tokens that fills use. The `--ok` token stays
+> defined.
 
 Split `--ctl-absent` off `--text-faint`. "Cancelled" is an outcome and "not
 measured" is an absence; they must not share a colour.

@@ -12,13 +12,14 @@ import {
 import { errorHeading, type ApiError, type Result } from './fetch'
 import type { TopicId } from './help'
 import { HelpCard, HelpLinks } from './HelpCard'
+import { UtilTrack } from './primitives'
 import { FailedPanel, Screen, timeAgo } from './Shell'
+import { AGE_TICK_MS, useNow } from './useNow'
 import {
-  BAR_CELLS,
   FIVE_HOUR,
   SEVEN_DAY,
   accountTone,
-  barFilled,
+  ageSpan,
   bindingWindow,
   callbackHostOf,
   clearsIn,
@@ -124,15 +125,18 @@ const EMPTY_UI: Persisted = { open: {}, refresh: {}, reauth: {}, signin: { kind:
  * vocabulary for the same five facts about the same five accounts costs them a
  * translation every time they look, and the translation is where the mistakes
  * live. So the scan line here is that line: same order, same headings, same
- * five-cell bar, same `~` for a figure that is projected rather than measured.
+ * figures, same `~` for a figure that is projected rather than measured. (The
+ * five-cell bar was part of that parity until CP-25, #85: the owner collapsed
+ * it into §6.4's one proportion primitive, at the exact percentage.)
  * Everything this screen adds -- who it is lent to, how many agents hold it,
  * and every control -- lives in a row you open, so the table you scan is never
  * anything other than the table you already know.
  *
  * THE RULE THE WHOLE SCREEN TURNS ON. `stale` and "utilisation is zero" are
  * different claims, and so are "no reading has ever arrived" and "the reading
- * says 0%". A five-cell bar with no cells filled is the same picture for both,
- * which is why an unmeasured window draws NO bar at all and prints an em dash.
+ * says 0%". An empty bar is the same picture for both, which is why an
+ * unmeasured window draws NO bar at all and prints an em dash, and a measured
+ * 0% draws the track's baseline tick.
  * `account_to_api` computes `stale` server-side for the same reason: a
  * reading's age is what decides whether to believe it, and the server owns the
  * clock.
@@ -538,15 +542,23 @@ function Pool({
           line under the card and not a paragraph per figure. A row count over
           documents that were dropped is not a count; a figure that is real but
           not current has to say so where it is read. */}
-      <p className="provenance">
-        {accounts.length} row{accounts.length === 1 ? '' : 's'}
+      {/* EACH CLAUSE IS ONE NOWRAP ITEM (CP-26), so at 390 the foot wraps
+          BETWEEN clauses and never inside `readings 2m–14m old`. The row count
+          and the shortfall first, because they say how much of the pool the
+          rest is about; the age of the readings after them. */}
+      <p className="provenance acct-foot">
+        <span className="acct-clause">
+          {accounts.length} row{accounts.length === 1 ? '' : 's'}
+          {shortfall(board) > 0 && <> of {accounts.length + shortfall(board)}</>}
+        </span>
         {shortfall(board) > 0 && (
           <>
             {' '}
-            of {accounts.length + shortfall(board)} &middot; {shortfall(board)} unread
+            &middot; <span className="acct-clause">{shortfall(board)} unread</span>
           </>
-        )}{' '}
-        &middot; ~ is projected, not measured
+        )}
+        <ReadingAges accounts={accounts} />{' '}
+        &middot; <span className="acct-clause">~ is projected, not measured</span>
         {/* THE OTHER OF THIS SCREEN'S TWO `?` (B7.4), and the reason it is one
             of the two is the STALE MARK. This console draws three different
             things -- a measured value, a value too old to trust, and one nobody
@@ -729,8 +741,8 @@ function WindowCell({
   if (reading.kind === 'never' || reading.kind === 'absent') {
     return (
       <td role="cell" data-label={label} className="n acct-window acct-unmeasured" title={title}>
-        {/* AN EM DASH AND NO BAR. Drawing an empty five-cell bar here would be
-            pixel-for-pixel identical to a measured 0%, which is the one
+        {/* AN EM DASH AND NO BAR. Drawing an empty bar here would read as a
+            measured 0%, which is the one
             confusion this column must never allow. `ctl-em` is the shared
             treatment for an absent measurement, so this cell and every other
             screen's em dash are the same class of thing rather than the same
@@ -753,37 +765,64 @@ function WindowCell({
         {projected && <span className="acct-tilde">~</span>}
         {Math.round(reading.pct)}%
       </span>
-      <Bar pct={reading.pct} projected={projected} />
+      {/* §6.4'S ONE PROPORTION, NOT A FIVE-CELL BAR OF ITS OWN (CP-25, #85).
+          The shared track at the EXACT percentage -- the cells rounded 42% to
+          three fifths, which is a second, coarser figure beside the real one
+          -- in the default grey. A measured 0% gets the track's baseline tick,
+          which five empty cells never could.
+
+          THE TONE IS ACCOUNTS' EXISTING RULE, and nothing more. A stale or
+          reset reading is `ov-projected`, the one documented grey for a real
+          reading that is no longer current, beside its `~`. `is-bad` only for
+          a LIVE window at 100%: fully spent is a fact, not a threshold chosen
+          in this file. There is no amber band (`#help/no-amber-band`), and no
+          over segment, because `readingOf` clamps the percentage to 0-100.
+
+          Fixed 40px, inline beside the figure (`.acct-window > .ctl-util-track`
+          in styles.css), and hidden at 560px and below by the phone block
+          that hides every `.ctl-util-track` but a pool tile's: there the
+          figure, the `~` and the em dash carry every state, as they do for
+          Overview's account tracks at that width. */}
+      <UtilTrack
+        pct={reading.pct}
+        tone={projected ? 'ov-projected' : reading.kind === 'live' && reading.pct >= 100 ? 'is-bad' : undefined}
+      />
     </td>
   )
 }
 
 /**
- * The five-cell bar, as `miniBar` draws it in claudeswitch: round to the
- * nearest fifth, clamp, five cells either filled or not.
+ * THE AGE OF THE READINGS, in the provenance foot (CP-26, #85; §8.4(4)).
  *
- * `aria-hidden`, because the percentage beside it is the same fact and a screen
- * reader announcing five geometric shapes learns nothing. Colour is never the
- * only signal here either: a projected bar is grey AND its figure carries `~`.
+ * `readings 2m–14m old`, the youngest to the oldest `observed_at` of the rows
+ * in the table; one age when they agree (`readings 4m old`); rows with no
+ * reading left out of the range; and no clause at all when no row has one.
+ * The head's `read just now` is the age of the FETCH, which says nothing
+ * about how old the broker's readings were when it answered -- the stale
+ * window is thirty minutes, and until this a live reading's age was only in a
+ * `title=` and the opened row.
  *
- * NO AMBER BAND, and that is a decision rather than an omission: any threshold
- * between "fine" and "getting full" would be a number invented in this file,
- * and the platform's own assign floor lives in quota-broker where nothing
- * checks that a TypeScript copy still matches it. The one treatment here that
- * is a fact rather than a judgement is a window that is fully spent.
+ * ITS OWN CLOCK, `useNow(AGE_TICK_MS)`, the five-second tick the head's fetch
+ * age moves on. The table's per-render `now` is not used, because Accounts
+ * does not re-render on its own and a range computed from it would freeze at
+ * whatever it said when the board arrived.
  */
-function Bar({ pct, projected }: { pct: number; projected: boolean }) {
-  const filled = barFilled(pct)
-  const spent = !projected && pct >= 100
+function ReadingAges({ accounts }: { accounts: Account[] }) {
+  const now = useNow(AGE_TICK_MS)
+  const ages = accounts
+    .map((a) => (a.observed_at === null ? Number.NaN : now - new Date(a.observed_at).getTime()))
+    .filter((ms) => Number.isFinite(ms))
+  if (ages.length === 0) return null
+  const youngest = ageSpan(Math.min(...ages))
+  const oldest = ageSpan(Math.max(...ages))
   return (
-    <span
-      className={`acct-bar${projected ? ' acct-projected' : ''}${spent ? ' spent' : ''}`}
-      aria-hidden
-    >
-      {Array.from({ length: BAR_CELLS }, (_, i) => (
-        <i key={i} className={i < filled ? 'on' : ''} />
-      ))}
-    </span>
+    <>
+      {' '}
+      &middot;{' '}
+      <span className="acct-clause">
+        readings {youngest === oldest ? youngest : `${youngest}–${oldest}`} old
+      </span>
+    </>
   )
 }
 

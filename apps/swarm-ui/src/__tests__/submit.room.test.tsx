@@ -29,6 +29,7 @@
 import { describe, expect, it } from 'vitest'
 import { render } from '@testing-library/react'
 
+import { HELP } from '../help'
 import { ProfileFacts } from '../Submit'
 import type { Pool, ProfileAdmission, ProfileBlocker, RunnerProfile } from '../types'
 
@@ -164,5 +165,43 @@ describe('the submit box tells a pool capped at zero from a full one', () => {
     expect(row.querySelector('.tag.full')).not.toBeNull()
     expect(row.textContent).toMatch(/4 of 4 units in use/)
     expect(sentence(el)).toMatch(/held down by resource:browser, 4 of 4 weighted units in use/)
+  })
+})
+
+// TS-23 (epic #84, owner decision 2026-09-25): the box carries ONE sentence.
+// The cost is a fact on its head, and an unread room is the kit's unread
+// encoding rather than a paragraph saying it is not zero. Committed RED first.
+describe('the room box is one sentence, and an unread room is the unread mark', () => {
+  it('puts the cost on the head as a fact -- "in each of", never a multiplication -- and drops the cost sentence', () => {
+    const el = room([blocker({})], [pool({ name: 'global' }), pool({ name: 'resource:browser', hard_limit: 4, effective_limit: 4, active: 4, available: 0 })])
+    expect(el.querySelector('.sbf-room-h')!.textContent).toBe('browser right now · 2 units in each of 3 pools')
+    expect(el.textContent, 'the cost sentence is still a paragraph').not.toMatch(/Costs|all at once/)
+    // What is left under the head is the room sentence and the refusing pools.
+    expect(el.querySelectorAll('.sbf-room > p.muted')).toHaveLength(1)
+  })
+
+  it('says "in each of" for a one-pool profile too -- the decided phrase, not a second one', () => {
+    // The decided head is `{name} right now · {units} unit(s) in each of {n}
+    // pools`. A one-pool profile read "in its 1 pool", a wording nobody
+    // decided. The count agrees with its noun, as `unit(s)` already does.
+    const one: RunnerProfile = { ...profile([]), pools: ['global'] }
+    const el = render(<ProfileFacts name="browser" profile={one} pools={[pool({ name: 'global' })]} />)
+      .container as HTMLElement
+    expect(el.querySelector('.sbf-room-h')!.textContent).toBe('browser right now · 2 units in each of 1 pool')
+  })
+
+  it('draws an unread room as the unread mark and a pool count, with no room figure and no "not zero" prose', () => {
+    const unread = profile([], { headroom: null, basis: 'unknown', binding: [], unread: ['global'], complete: false })
+    const el = render(<ProfileFacts name="browser" profile={unread} pools={[pool({ name: 'global' })]} />)
+      .container as HTMLElement
+    const mark = el.querySelector('.sbf-room .ctl-mark.is-unread')
+    expect(mark, 'an unread room is drawn without the unread mark').not.toBeNull()
+    expect(mark!.getAttribute('aria-label')).toBe(HELP['room-unknown-not-zero'].short)
+    const line = mark!.closest('p')!
+    expect((line.textContent ?? '').replace(/\s+/g, ' ')).toContain('room unknown · 1 of 3 pools could not be read')
+    // The pool count is the only numeral in the room slot.
+    expect((line.textContent ?? '').replace('1 of 3 pools', ''), 'a figure in the slot of a room nobody measured').not.toMatch(/\d/)
+    // "not measured" is the absent mark's word, and the rule is the mark's now.
+    expect(el.textContent).not.toMatch(/not measured|That is not zero|could not be measured/)
   })
 })
