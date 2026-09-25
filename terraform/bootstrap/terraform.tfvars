@@ -35,9 +35,10 @@ github_allowed_refs = ["refs/heads/main"]
 # item 16j, #68). Merging this changes nothing live; the owner's apply does.
 #
 # WHY THIS ONE FIRST. It is the role through which CI grants itself any other
-# role, roles/owner included, so while it is unconditioned every other scoping
-# is one setIamPolicy call from being undone. And its condition is the least
-# likely to break a release: it tests no resource name and no resource type
+# role directly, roles/owner included, so while it is unconditioned every
+# other scoping is one setIamPolicy call from being undone. (Not the only
+# route: see NOT CLOSED BY IT.) And its condition is the least likely to
+# break a release: it tests no resource name and no resource type
 # (rules 1 and 2 in deployer_conditions.tf, the ones the IAP condition broke),
 # only which roles a policy change modifies -- modifiedGrantsByRole with
 # hasOnly, zero logical operators. A read modifies nothing and passes. What CI
@@ -46,10 +47,22 @@ github_allowed_refs = ["refs/heads/main"]
 # terraform/infra's identities, the same 15 roles), and held by
 # tests/terraform/deployer_iam.tftest.hcl for every project grant CI applies.
 #
-# NOT CLOSED BY IT: hasOnly limits which roles, never whose or with what
-# condition, so CI can still grant ITSELF any of the 15 (#69); and
-# roles/iam.roleAdmin can widen one of the six custom ones before granting it
-# (docs/ci.md, route 2).
+# NOT CLOSED BY IT -- so #68's goal, no route from CI to roles/owner, is NOT
+# reached by this line alone:
+#
+#   * roles/iam.roleAdmin BYPASSES THIS CONDITION while it is on the deployer
+#     (#79). One iam.roles.update adds resourcemanager.projects.setIamPolicy,
+#     which custom roles accept (measured 2026-09-25), to a custom role CI
+#     already holds unconditioned: swarmSecretProvisioner today (wif.tf,
+#     deployer_secrets; scoped, its type guard still admits the project), or
+#     swarmDeployerProjectBuckets once bootstrap applies it. Every later
+#     project setIamPolicy, roles/owner included, is then authorised by THAT
+#     binding, and modifiedGrantsByRole is never evaluated. The six custom
+#     roles on the list work the same way, granted through this condition
+#     after being widened (docs/ci.md, route 2). This scoping stops a direct
+#     grant, not one made through a custom-role update.
+#   * hasOnly limits which roles, never whose or with what condition, so CI
+#     can still grant ITSELF any of the 15 (#69).
 #
 # APPLY, targeted and between releases, from the checkout holding bootstrap's
 # local state:
