@@ -2,7 +2,7 @@ import { loadAdminQuota } from './api'
 import type { TopicId } from './help'
 import { HelpLinks } from './HelpCard'
 import { Screen, timeAgo } from './Shell'
-import { providerTone, type QuotaState } from './types'
+import { pluralise, providerTone, type QuotaState } from './types'
 
 /**
  * Provider quota, across every tenant. Admin.
@@ -26,7 +26,9 @@ export function QuotaDetailScreen() {
       summary={(d) => {
         const providers = new Set(d.quota.map((q) => q.provider)).size
         const tenants = new Set(d.quota.map((q) => q.tenant_id)).size
-        return `${d.quota.length} documents · ${providers} providers · ${tenants} tenants`
+        // All three pluralised, not only the one that happened to be plural
+        // in the fixture: the live console said `1 providers` (CP-22).
+        return `${pluralise(d.quota.length, 'document')} · ${pluralise(providers, 'provider')} · ${pluralise(tenants, 'tenant')}`
       }}
       empty={{
         heading: 'No quota documents',
@@ -63,11 +65,14 @@ function Grouped({ rows }: { rows: QuotaState[] }) {
                 provider name is DATA -- the same B17 reason `.id` exists. An
                 eyebrow is for a category word the product chose (`BINDING`,
                 `CEILINGS`); a value that came off a response keeps its case. */}
+            {/* THE COUNT IS THE QUALIFIER SLOT (CP-22). It was a `.count-chip`
+                -- body-size mono beside the title -- where every sibling
+                capacity screen puts a fact about the section in
+                `.ctl-card-note`, right-aligned and muted. Same fact, the slot
+                the design system has for it. */}
             <div className="ctl-toolbar">
               <h2 className="ctl-card-title">{provider}</h2>
-              <span className="count-chip">
-                {list.length} tenant{list.length === 1 ? '' : 's'}
-              </span>
+              <span className="ctl-card-note is-end">{pluralise(list.length, 'tenant')}</span>
             </div>
             <div className="ctl-table is-stacked">
               <table role="table">
