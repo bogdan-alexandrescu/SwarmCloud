@@ -21,6 +21,14 @@ import { HELP, type TopicId } from './help'
  * never after a value -- a glyph tucked against a number reads as a footnote
  * marker on the number, which is how "12 ?" becomes a figure nobody trusts.
  *
+ * ONE SLOT, AND IT IS THE OWNER'S RULE (AH-24, 2026-09-25): after the label or
+ * heading, never after a value. The QA pass found the glyph in about eight
+ * different slots, including after values -- `● running ? ● live` on the agent
+ * headline, `masked 4 … ?` on an artifact, `6/8 sampled ?` on the Workflows
+ * board. Where a line has no label of its own, because its first item is
+ * itself a value (a state chip, an absence mark), the glyph LEADS the line
+ * rather than trailing it. design-system.md §8.4 carries the same rule.
+ *
  * ------------------------------------------------------------------------
  * A `?` IS RATIONED. THERE IS AT MOST ONE PER RENDERED SCREEN (B7.4).
  * ------------------------------------------------------------------------

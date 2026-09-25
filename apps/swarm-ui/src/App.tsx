@@ -392,8 +392,15 @@ export const SECTIONS: SectionDef[] = [
     // operator CHANGES: one of its three panes changes nothing and is a
     // platform-wide read. That is a widening, said out loud rather than
     // smuggled in by leaving the old sentence in place.
+    //
+    // A QUESTION, AS THE OTHER THREE ARE (AH-23). It was an instruction --
+    // "Change a ceiling, see who is registered..., and count what it has
+    // done" -- which is a list of things to do rather than what a reader
+    // arrives wanting to know. It asks what each tab answers, in tab order.
+    // docs/web-ui/redesign.md §2 carries the same words, and
+    // tests/sections.test.ts holds the two together.
     question:
-      'Change a ceiling, see who is registered to use this platform, and count what it has done.',
+      'What is each ceiling set to, who is registered to use this platform, and how many tasks are in each state?',
     tabs: [
       { id: 'limits', label: 'Pool limits', admin: true },
       { id: 'tenants', label: 'Tenants', admin: true },

@@ -102,7 +102,9 @@ export type TopicId =
   | 'oom-near-miss'
   | 'park-on-missing-credential'
   | 'partial-read'
+  | 'paused-vs-full'
   | 'peak-memory'
+  | 'platform-counts'
   | 'poll-cadence'
   | 'pool-freshness'
   | 'pools-all-at-once'
@@ -136,11 +138,13 @@ export type TopicId =
   | 'state-change-reason'
   | 'states'
   | 'subscription-only-no-api-key'
+  | 'tenant-fields'
   | 'tenant-scope'
   | 'token-cost'
   | 'tokens-reported'
   | 'units-not-agents'
   | 'unreadable-documents'
+  | 'what-a-pool-is'
   | 'what-sets-it-apart-is-arithmetic'
   | 'withheld-total'
   | 'workspace-memory'
@@ -188,6 +192,13 @@ export interface HelpTopic {
   long: readonly string[]
   /** Values read from their owning module at render time. See the header. */
   values?: () => readonly HelpValue[]
+  /**
+   * Topics this one sends the reader on to, drawn as links under the long
+   * form on the Help page (AH-21: the budget paragraph cross-links
+   * `token-cost`). Typed as `TopicId`, so a renamed topic is a compile error
+   * here rather than a dead `#help/...` link on the page.
+   */
+  see?: readonly TopicId[]
   group: HelpGroupId
 }
 
@@ -216,7 +227,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
       'Every number on these screens is one of four things: measured, never measured, not read, or measured too long ago. They are different facts, and drawing them alike was this UI’s defining bug.',
       'A measured figure is a digit — including a measured zero, which is a real result: on a bar it is a tick at the origin, and where a whole panel is empty it is the solid mark “real zero”.',
       'A figure nothing ever recorded is a dimmed dash (—), or the hatched mark “not measured”. It is never drawn as a zero, because a zero is a claim about a measurement nobody has.',
-      'A figure a failed read left behind is the dashed mark “not read”, and no number appears beside it: the platform may well hold the figure, and this page did not get it.',
+      'A figure a failed read left behind is the dashed mark “not read”, and no number appears beside it: the platform may well hold the figure, and the read that should have brought it did not.',
       'A tilde (~) in front of a figure means the reading is real but older than it can be trusted to describe now.',
       'The dashed edge on a tile that holds no figure — the metric tiles and the Timeline’s tiles alike — is a second channel for the same fact, not the fact itself. The mark and its words are what carry the distinction, so it survives greyscale and a screenshot; colour never carries it alone.',
       'The same rule runs through the bars: a track whose ceiling could not be read is hatched with no fill, because an empty plain track reads as “0% used” — a claim about a measurement nobody has.',
@@ -268,8 +279,8 @@ const SPECS: Record<TopicId, TopicSpec> = {
     short:
       'This screen reads one page of events, oldest-first, and does not follow the page token the events route returns, so newer events may exist that it has not fetched. An attempt with none on this page is blind, not quiet. Zero events is a failed query: a task is written with its first event.',
     long: [
-      'The events route pages: each response carries a token for the next page whenever more events exist, and it can also be asked for the newest events first. This screen uses neither. It asks for one page, oldest-first, and stops there, so what it holds is the beginning of a history, never a guaranteed whole of it.',
-      'So \u201cthis is everything\u201d is a claim the screen is never entitled to make. An attempt with no events on the page is counted as blind rather than drawn as quiet: past one page, the newest events \u2014 everything belonging to the latest attempts \u2014 are on the platform and not on this screen.',
+      'The events route pages: each response carries a token for the next page whenever more events exist, and it can also be asked for the newest events first. The attempt timeline in an agent’s inspector uses neither. It asks for one page, oldest-first, and stops there, so what it holds is the beginning of a history, never a guaranteed whole of it.',
+      'So \u201cthis is everything\u201d is a claim the attempt timeline is never entitled to make. An attempt with no events on the page is counted as blind rather than drawn as quiet: past one page, the newest events \u2014 everything belonging to the latest attempts \u2014 are on the platform and not in the timeline.',
       'Zero events is a different fact again. A task is written together with its first event, in the same batch, so an empty history is a failed query and is marked as one \u2014 never as an empty record.',
     ],
   },
@@ -372,7 +383,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
     long: [
       'This app exists because of one bug: a failed probe rendered as an absence. A sweep of the platform’s operational scripts found 56 places where a read failure was printed as “nothing to report”, including a status tool that said “no services deployed” when a session had simply expired.',
       'So every read here returns a value that forces the question. There is no path to the rows that does not decide, separately, what an empty answer means and what a missing answer means. A component cannot render an empty list for a permission error, because a permission error never produces a list.',
-      'On screen the two are told apart without colour: a failed panel carries its own marker and its own heading, and no figure below it may be treated as a measurement.',
+      'On screen the two are told apart without colour: a failed panel carries its own marker and its own heading, and no figure under that heading may be treated as a measurement.',
     ],
   },
 
@@ -424,7 +435,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
       'Only the CLI runners report token spend at all, and every attempt that ran before the worker’s capture shipped carries nothing for all of its spend fields. So an absent cost has two innocent causes and one alarming one, and none of them is “this run was free”.',
       'A mock task costs nothing on purpose. A result nobody could parse cost an unknown amount. Rendering both as a zero would lie about one of them, so an unreported cost is a phrase and never a figure.',
       'Each half of a token count is summed separately, because a runner can report input tokens and no output. Treating the missing half as a zero would quietly understate the total and caption it as if both halves were in it.',
-      'Nothing here includes compute, storage or database cost. No billing integration exists to read them from.',
+      'No cost figure in this console includes compute, storage or database cost. No billing integration exists to read them from.',
     ],
   },
 
@@ -447,7 +458,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
       'The workspace is a memory-backed filesystem, not capacity on top of the memory ceiling. Workspace bytes come out of the same allowance the agent runs in.',
     long: [
       'The Terraform provider cannot express the disk-backed workspace this platform originally wanted — the field it would need accepts only the memory-backed form — so the workspace is a tmpfs.',
-      'That has one consequence worth stating plainly: files the agent writes consume the memory ceiling shown above them. A workspace is not extra capacity, and a large checkout is indistinguishable, to the OOM killer, from a large process.',
+      'That has one consequence worth stating plainly: files the agent writes consume the runtime’s memory ceiling, the same ceiling an attempt’s memory bar is drawn against. A workspace is not extra capacity, and a large checkout is indistinguishable, to the OOM killer, from a large process.',
       'The path this leaves the deployment on is the fully-supported one, which does support live migration. That covers infrastructure moves. It does not cover a cancellation, a reclaim or a crash, which is why checkpointing is still mandatory.',
     ],
   },
@@ -544,6 +555,38 @@ const SPECS: Record<TopicId, TopicSpec> = {
     ],
   },
 
+  // AH-14. redesign-v2 §9.1 named "what a pool is" and "why a paused pool is
+  // not a full one" as the first things Help had to carry, and neither had a
+  // topic. The facts are the frozen contract's (SlotPool, evaluate_capacity,
+  // pool_names_for in apps/common/swarm_common), said without its names.
+  'what-a-pool-is': {
+    group: 'the-platform',
+    title: 'What a pool is',
+    short:
+      'A pool is a named ceiling on how many units of work may hold capacity at once, with a count of how many do. Every task needs several at the same moment, and it starts only when all of them have room.',
+    long: [
+      'A pool has three parts: a ceiling, a count of the units in use against it, and a switch that pauses it. The count is changed only by the transaction that admits a task and the one that releases it, so it cannot drift under contention.',
+      'The ceiling a pool enforces is the lowest of up to three numbers: the limit an operator set, a target the platform lowers on its own when a provider pushes back, and a cap derived from a provider’s quota. None of them can raise it above the limit the operator set.',
+      'Every task needs several pools at once: one for the whole platform, one for its tenant, one for its size, one for its runtime and one for its backend, and, when the runtime uses a provider, one for that provider and one for that provider within the tenant. It is admitted into all of them in one transaction, or into none.',
+      'Pools count units, not agents: a task adds its size’s weight to every pool it holds. How many more agents could start is therefore the smallest room across a task’s pools, divided by that weight.',
+    ],
+    see: ['pools-all-at-once', 'units-not-agents', 'paused-vs-full'],
+  },
+
+  'paused-vs-full': {
+    group: 'the-platform',
+    title: 'A paused pool is not a full one',
+    short:
+      'A full pool refuses new work because what is in use has reached its ceiling, and it admits again as running work finishes. A paused pool refuses everything, whatever its headroom, until an operator resumes it. Raising a paused pool’s ceiling changes nothing.',
+    long: [
+      'Both refuse admission, and on a board of figures they can look alike: nothing new starts. The difference is who has to act, and what they have to do.',
+      'A full pool has as many units in use as its ceiling allows. Nothing is wrong with it: admission is doing its job, and the pool admits again as soon as running work finishes and releases its slots. Waiting, or raising the ceiling, are the two ways past it.',
+      'A paused pool has been switched off by an operator. It refuses every task that needs it even with every slot free, so its headroom says nothing about whether anything can start. Work that needs it waits, costs nothing, and goes on waiting until a person resumes the pool.',
+      'So raising the ceiling of a paused pool changes nothing; resuming it is the only thing that does. That is why the screens draw a paused pool in a treatment of its own rather than as a pool at its limit.',
+    ],
+    see: ['what-a-pool-is', 'ceiling-change-evicts-nothing'],
+  },
+
   'admin-gate-not-failure': {
     group: 'the-platform',
     title: 'An administrative gate is not a fault',
@@ -554,6 +597,49 @@ const SPECS: Record<TopicId, TopicSpec> = {
       'So these screens keep three outcomes apart: a read that landed, a read that failed, and a read that was refused. The third is drawn in an informational tone and counted in its own column.',
       'What it does not do is stand in for a measurement. A control that needs the refused route is withdrawn and says why, rather than being drawn over data nobody has.',
     ],
+  },
+
+  // AH-14, with AH-12's Enforced column and AH-21's budget. The `?` after
+  // Tenants' `Enforced` label opens this card, and the note under the table
+  // links here, so the short form answers the column first.
+  //
+  // Enforced is min(max_active, capacity_units) because that is what the store
+  // writes as the tenant pool's hard limit whenever either changes
+  // (swarm_api/store.py `set_tenant_limits`, and `ensure_tenant` at
+  // registration). The budget paragraph is the account the table note used to
+  // print as `no monthly_budget_usd column · no cost attribution source`, from
+  // the 422 in swarm_api/routes/admin.py `set_tenant_limits`.
+  'tenant-fields': {
+    group: 'the-platform',
+    title: 'What each Tenants column means',
+    short:
+      'Enforced is the ceiling admission applies to a tenant: the smaller of its two configured limits, Max active and Units, because both cap the same count of units and the smaller one binds. Configured shows the two as the tenant record holds them. No budget can be set, so none is shown.',
+    long: [
+      'Tenant is the id every read and write is scoped by. Status says whether the tenant is enabled: the members of a disabled tenant are refused on every call, not slowed.',
+      'Kind and Principal say who belongs to it. A group tenant takes the members of the group named in Principal; a user tenant is the one address named there.',
+      'Enforced is the ceiling admission applies to the tenant’s own pool, and it is the smaller of the two configured values. Both limit the same thing — the units the tenant’s running work holds, where every task costs at least one — so the smaller is the one that binds. Setting either one through the admin routes moves the tenant’s pool with it, so the pool’s ceiling is this same figure.',
+      'Configured groups the two values as the tenant record holds them: Max active and Units. Neither is enforced on its own; a larger one beside a smaller one is headroom nobody can use until the smaller is raised.',
+      'Credentials names the providers the tenant has registered a key for: names, never keys. None registered means a runtime that needs a provider waits for this tenant rather than failing. Identity is the tenant’s own service account, the one its workloads run as; no service account is said in words, because a blank cell would read as fine.',
+      'The tenant record carries a monthly budget field, and it is empty for every tenant. PUT /v1/admin/tenants/{id}/limits refuses it with a 422: the control plane has no cost attribution source — no billing export, no compute cost per attempt — so a budget could be stored but never enforced. Spend is bounded by the two limits the scheduler does enforce on every admission, which is what the Enforced column shows. The table leaves the field out because an empty column would read as “no budget set”. What the console’s spend figures do and do not include is a topic of its own, linked under this one.',
+    ],
+    see: ['token-cost', 'paused-vs-full'],
+  },
+
+  // AH-14. The facts are swarm_api/service.py `stats` and store.py
+  // `count_tasks_by_state`; the arithmetic of the cost is PlatformCounts.tsx's
+  // STATE_COUNT, which is why no number is written here.
+  'platform-counts': {
+    group: 'the-platform',
+    title: 'What Platform counts returns',
+    short:
+      'One count of task documents per state for your own tenant, and a second set across every tenant when you are an administrator. Each state is its own count() query, so a run costs one query per state per scope, and the price grows with the platform’s history rather than its load.',
+    long: [
+      'Each run asks the stats route for the number of task documents in each state, as they stand at that moment. A task that has moved on since is counted where it is now, and nothing about how long any task spent anywhere is in the answer.',
+      'The first set is scoped to the caller’s own tenant. An administrator also gets a second set across every tenant; anyone else sees that card as not entitled, which is a permission and not a fault.',
+      'Every state the contract defines is counted, including the ones never written to a task document, so a run costs one count() per state per scope. That query bills by the index entries it scans, and those grow with every task ever written — so the price is printed before the control that spends it, and nothing re-runs it on a timer.',
+      'A total is drawn only when every state came back. When one did not, the total is withheld and the missing states are named, because a sum over a partial response is not a count of anything.',
+    ],
+    see: ['withheld-total', 'admin-gate-not-failure'],
   },
 
   'poll-cadence': {
@@ -575,7 +661,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
       'The capacity route answers for the calling tenant, an administrator included. So a ceiling here is how many more you could start, never how much the platform has. A platform-wide figure is not faked by substituting somebody else’s pools.',
     long: [
       'Pool names are scoped, and the list a caller gets back is the list for their own tenant. Nothing in the response is a total across tenants.',
-      'An administrator reading this screen sees their own scope for the same reason, because the route resolves the scope from the caller rather than from a parameter.',
+      'An administrator sees their own scope too, for the same reason: the route resolves the scope from the caller rather than from a parameter.',
       'So every panel drawn from it states the scope on its heading. A figure whose scope is unstated is the one people quote in a meeting as though it were the platform’s.',
     ],
   },
@@ -604,7 +690,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
     long: [
       'The API accepts a runtime name and refuses every name the catalogue does not carry. It accepts no image reference, no command, no resource specification and no backend parameter from a caller.',
       'That is a security boundary before it is a convenience: a caller who could name an image could run anything on the platform’s service accounts.',
-      'It is also why this screen is worth reading. Everything on it is a consequence of one string, and none of it is visible at the point the string is typed.',
+      'It is also why the runtime catalogue is worth reading. Everything it shows for a runtime is a consequence of one string, and none of it is visible at the point the string is typed.',
     ],
   },
 
@@ -615,7 +701,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
       'No route in this platform serves nodes, container executions or batch jobs, so none is drawn here and none is guessed at. What this screen shows is where work is sent, not what is running at this moment.',
     long: [
       'The catalogue describes how a name resolves: to a backend, an image, a size and a credential requirement. It is static in the sense that it does not move while work runs.',
-      'Live load appears here only where a capacity read supplied it, and it is labelled as coming from there. Where that read did not complete, the columns are dashes rather than zeros.',
+      'Live load appears on the Runtimes screen only where a capacity read supplied it, and it is labelled as coming from there. Where that read did not complete, the columns are dashes rather than zeros.',
       'A screen that drew machines would be inventing them, because nothing in this platform publishes them to a console.',
     ],
   },
@@ -639,7 +725,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
       'Every name, size, weight, backend and timeout on this screen came from the catalogue route in this page load. A runtime added to the catalogue appears here with nobody editing the screen, and no figure here can disagree with the platform because none is stored here.',
     long: [
       'The catalogue is contract data that can gain entries. A console that kept its own copy would be correct until the day it mattered.',
-      'So this screen renders the response and nothing else. There is no fallback list, no hardcoded default and no enrichment from a table in the bundle.',
+      'So the Runtimes screen renders the response and nothing else. There is no fallback list, no hardcoded default and no enrichment from a table in the bundle.',
       'The visible cost is that a failed read leaves the screen with nothing to show. That is the intended cost: an empty catalogue drawn from a cached copy is the failure this whole app exists to prevent.',
     ],
   },
@@ -651,7 +737,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
       'The route publishes the environment variable names a runtime reads. It reads no environment, no secret store and no tenant document. Whether your tenant holds one of them is a different question, answered where accounts are managed.',
     long: [
       'A runtime declares which variables it needs and whether it needs all of them or any one of them. That flag matters: a list of two names without it tells a subscriber they must also buy metered access.',
-      'So the flag is rendered as words rather than as a symbol, and the names are rendered as names. No value, no length and no presence check appears here.',
+      'So the flag is rendered as words rather than as a symbol, and the names are rendered as names. No value, no length and no presence check appears anywhere in the console.',
       'Whether the tenant reading the screen actually holds one is answered by the account pool, which is the screen that can answer it.',
     ],
   },
@@ -664,7 +750,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
     long: [
       'The comparison is computed: largest, smallest, only one of its kind, different backend from the rest. It is derived from the same response the cards are drawn from.',
       'When the computation finds nothing, the card says so rather than reaching for a sentence somebody typed. "Nothing separates it from the rest" is a measured answer.',
-      'A hand-written description would be the one thing on this screen that could quietly stop being true.',
+      'A hand-written description would be the one thing on the Runtimes screen that could quietly stop being true.',
     ],
   },
 
@@ -676,7 +762,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
     long: [
       'The catalogue distinguishes "this runtime names no provider" from "this runtime names a provider and lists no variable for it". They are different facts about the response.',
       'The first means nothing has to be registered before it will run. The second means the catalogue named a provider and published no variable name, which is what the response says and is not a failed read.',
-      'Neither is drawn as an absence, because an absence here would read as "we could not find out", and both were found out.',
+      'Neither is drawn as an absence, because an absence on the Runtimes screen would read as "we could not find out", and both were found out.',
     ],
   },
 
@@ -708,7 +794,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
     long: [
       'The platform resolves the integrating step as the workflow’s single sink — the one step no other step depends on. That is a property of the graph, not a field anyone sets.',
       'A graph with two sinks has two candidates and no rule to choose between them, so the platform refuses rather than picking. A graph with no sink is cyclic and is refused earlier, by name.',
-      'The preview on the form is a preview. The platform decides, and nothing drawn here prevents a submission — the worst a wrong preview costs is a caution that turns out not to apply.',
+      'The preview on the form is a preview. The platform decides, and nothing drawn on the Submit a workflow form prevents a submission — the worst a wrong preview costs is a caution that turns out not to apply.',
     ],
   },
 
@@ -719,7 +805,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
       'The carrier records how a step’s work is intended to reach the next one. It is stored on the task and returned by the API, and no worker code reads it yet — so it is a recorded preference rather than a behaviour, and the form says so on every choice.',
     long: [
       'The field exists so that the intent is captured at the moment it is expressed, rather than reconstructed later from what happened.',
-      'Nothing acts on it today. A control that does nothing and does not say so is worse than no control, so the note sits on the surface beside the choice rather than behind this card.',
+      'Nothing acts on it today. A control that does nothing and does not say so is worse than no control, so the note sits on the submit form beside the choice rather than behind a help card.',
       'When a worker does read it, the note goes away. Until then the honest description of this control is that it records an answer.',
     ],
     // The per-carrier sentence that used to sit under the picker, READ from
@@ -735,7 +821,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
       'It is the repository the agent clones. Without one the agent starts in an empty workspace whatever the strategy says, and any choice that has to push is refused by the API for want of somewhere to push to.',
     long: [
       'The agent’s workspace is created empty and filled by cloning. No repository means no clone, which is a legitimate thing to ask for and an easy thing to ask for by accident.',
-      'Whether it is required is decided by the platform from the strategy and the carrier together. This form previews that decision so the refusal is not a surprise; it never blocks a submission on its own reading.',
+      'Whether it is required is decided by the platform from the strategy and the carrier together. Submit a task and Submit a workflow preview that decision so the refusal is not a surprise; it never blocks a submission on its own reading.',
       'If the preview and the platform ever disagree, the visible result is a caution that did not need to be there rather than a submission that could not be made.',
     ],
   },
@@ -759,8 +845,8 @@ const SPECS: Record<TopicId, TopicSpec> = {
       'Whatever you type is handed to the profile’s agent unread. The platform validates its size and nothing else, so nothing here interprets it, nothing here can warn you about it, and nothing here will reformat it on the way.',
     long: [
       'The input is a payload, not a command. The platform carries it and the agent decides what it means.',
-      'That is why this field has no syntax help and no validation beyond a length: any check here would be this console guessing at a contract between a caller and an agent it cannot see.',
-      'A refusal on this field therefore comes from the API and is shown exactly as the API worded it.',
+      'That is why the input on the submit forms has no syntax help and no validation beyond a length: any check there would be this console guessing at a contract between a caller and an agent it cannot see.',
+      'A refusal of the input therefore comes from the API and is shown exactly as the API worded it.',
     ],
   },
 
@@ -787,7 +873,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
       'Name it, start the sign-in, open the page it gives you, sign in as you normally would, and paste back the short code that page shows. There is no keychain item to find, no file to preserve, and nothing to run on your laptop.',
     long: [
       'The provider’s client accepts exactly one redirect target — its own callback page, which displays a code. A third-party application cannot register a redirect back to this console, so your browser cannot be sent here and the displayed code is what closes the loop.',
-      'Nothing secret passes through this page. The verifier stays on the server, keyed by the sign-in; a verifier the browser holds is a flow that proves nothing. What comes back is an account and an expiry, never key material and never its length.',
+      'Nothing secret passes through the sign-in panel on Accounts. The verifier stays on the server, keyed by the sign-in; a verifier the browser holds is a flow that proves nothing. What comes back is an account and an expiry, never key material and never its length.',
       'That is the whole procedure. A screen that asked for a pasted credential was asking a person to handle key material by hand, which is the part this replaces.',
     ],
   },
@@ -800,7 +886,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
     long: [
       'One secret holds the pair the broker exchanges. Nothing outside the broker reads it, and no route returns it.',
       'The other holds only the short-lived token, and that is the one a tenant’s workload mounts. It expires on its own, and the sweep replaces it before it does.',
-      'Neither is ever rendered on this screen, not even as a length. A console that showed a length would be publishing a fact about a secret for no operational benefit.',
+      'Neither is ever rendered anywhere in the console, not even as a length. A console that showed a length would be publishing a fact about a secret for no operational benefit.',
     ],
   },
 
@@ -898,7 +984,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
       'Several ways a sign-in can end leave this page unable to say whether an account was written. Reloading the pool and looking for the label is measurable; guessing from here is not. A repeat sign-in is not free, so looking comes first.',
     long: [
       'Where the platform accepted the sign-in but the answer was incomplete or lost, the account may well exist. Signing in again under the same label replaces a credential, which revokes the one before it.',
-      'The reload clears the add form, because it remounts the screen below it. So read the label and the lending list off the form before pressing anything: the platform keeps no copy of either once a sign-in ends.',
+      'The reload clears the add form on Accounts, because it remounts the whole screen. So read the label and the lending list off the form before pressing anything: the platform keeps no copy of either once a sign-in ends.',
       'On a row that already exists the same rule applies in a different shape: treat the credential as possibly already replaced until you have looked, rather than repeating the sign-in blindly.',
     ],
   },
@@ -922,7 +1008,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
       'The platform deletes a pending record when it is too old, and also immediately after an account has been written. Pasting cannot reopen either one: a code is now checked against nothing. Which of the two happened is not something this page can measure.',
     long: [
       'When the record was deleted for age, the deletion happens before anything is redeemed, so nothing was created and nothing was changed. That case can be blunt about it.',
-      'When the record is simply absent, the ordinary reason is that it was redeemed — the delete that does not raise is the one immediately after an account has been written. So absence is not "nothing happened", which is what this panel used to say.',
+      'When the record is simply absent, the ordinary reason is that it was redeemed — the delete that does not raise is the one immediately after an account has been written. So absence is not "nothing happened".',
       'In both cases a fresh sign-in from the same page is the way forward, and in the second the pool should be read first.',
     ],
   },
@@ -945,9 +1031,9 @@ const SPECS: Record<TopicId, TopicSpec> = {
     short:
       'The API answered as an API does when it has not been given the route at all — not an answer about your request and not one about your account. Nothing was created and nothing was changed.',
     long: [
-      'Both halves of the sign-in exist in this repository: the broker serves them and the API proxies them. An API that does not answer them is not the one this page was built against.',
+      'Both halves of the sign-in exist in this repository: the broker serves them and the API proxies them. An API that does not answer them is not the one the sign-in panel on Accounts was built against.',
       'The account pool itself loading is the evidence that your session and the account routes are fine, and that it is this one route that is missing.',
-      'Nothing on this panel offers a retry, because a retry would re-send a request that never reached a handler.',
+      'Nothing on the sign-in panel offers a retry, because a retry would re-send a request that never reached a handler.',
     ],
   },
 
@@ -969,7 +1055,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
     short:
       'Both were sent when the sign-in started and the platform is holding them alongside it, so neither can be changed from here without starting a new one. It also keeps no copy of either once the sign-in ends.',
     long: [
-      'The pending record is what decides where the account lands when the code comes back minutes later. The tenant on it is resolved from the verified session, not from anything this form sends.',
+      'The pending record is what decides where the account lands when the code comes back minutes later. The tenant on it is resolved from the verified session, not from anything the add form on Accounts sends.',
       'That is why the panel names what the sign-in is reserved for, in full, before the code is pasted: it is the last point at which the answer can be changed.',
       'And it is why the advice on every ending refusal is to read the label and the lending list off the form before reloading anything.',
     ],
@@ -1005,7 +1091,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
     short:
       'The API decides which from your verified session rather than from anything typed here. When the response does not name a tenant, this form cannot tell you whose pool an account would land in — and a sign-in is not something to spend on a guess.',
     long: [
-      'Ownership is resolved server-side and echoed back, deliberately not taken from a second source, so this page can never be told it is looking at a tenant it is not.',
+      'Ownership is resolved server-side and echoed back, deliberately not taken from a second source, so the console can never be told it is looking at a tenant it is not.',
       'Without that echo the form could still submit safely, because the platform files the account under the verified session whatever the page thinks. What it could not do is tell the operator where it went.',
       'So the form withdraws rather than guessing, and says that this is a gap in what was read rather than a fault in the platform.',
     ],
@@ -1043,7 +1129,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
     long: [
       'The row appears because the account serves you. It carries no controls because the routes behind them are not yours to call.',
       'The refusal is deliberately indistinguishable from the refusal for a name that does not exist. A console that answered differently would be an oracle for other tenants’ account labels.',
-      'When a lent account is broken, the thing to do is ask its owner. This screen separates that case from your own broken accounts for exactly that reason.',
+      'When a lent account is broken, the thing to do is ask its owner. The Accounts screen separates that case from your own broken accounts for exactly that reason.',
     ],
   },
 
@@ -1103,7 +1189,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
       'Window names come from the provider and a new one can appear at any time. Readings are keyed by those names, so a window with no column of its own is listed rather than dropped — a screen that read exactly two keys would make the next one invisible.',
     long: [
       'The account record keys its windows by the provider’s own names precisely so a new one needs no schema change.',
-      'This screen gives two of them columns because they are the two that exist today and the two an operator scans. Everything else the reading carried is shown in the opened row.',
+      'The Accounts table gives two of them columns because they are the two that exist today and the two an operator scans. Everything else the reading carried is shown in the opened row.',
       'When a reading carries no windows at all, the columns are unmeasured rather than zero, and the row says so.',
     ],
   },
@@ -1116,7 +1202,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
     long: [
       'Two tools that answer the same question in two shapes make a person translate between them under pressure.',
       'So the columns are fixed and the row is where detail goes. A row that grew a column for a special case would change the shape of every other row.',
-      'The count above the table is part of the same promise: it says how many documents were read and how many could not be, because a row count computed over a partial read is not a count.',
+      'The count over the Accounts table is part of the same promise: it says how many documents were read and how many could not be, because a row count computed over a partial read is not a count.',
     ],
   },
 
@@ -1127,7 +1213,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
       'Any threshold between "fine" and "getting full" would be a number invented in this browser. The platform’s own floor lives in the broker and nothing checks that a copy of it here still matches. The one treatment that is a fact is a window that is fully spent.',
     long: [
       'A warning colour is a claim about a threshold. A threshold nobody published is a threshold this console made up.',
-      'The broker decides what it will and will not assign against, and it does not publish that figure to this screen. A copy of it here would drift in silence.',
+      'The broker decides what it will and will not assign against, and it does not publish that figure to the console. A copy of it in the console would drift in silence.',
       'So the bar shows the measurement and marks only the condition that is not a judgement: spent is spent.',
     ],
   },
@@ -1140,7 +1226,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
     long: [
       'The two causes are an idle platform and a platform whose workers cannot reach the broker at all. They produce identical screens.',
       'So the pool-wide case is reported as its own line, with the two configuration mistakes that produce it named: the broker’s address missing from dispatched jobs, or a worker identity without permission to invoke it.',
-      'Until a worker asks for an account, every figure above describes accounts nothing is using.',
+      'Until a worker asks for an account, every figure on the Accounts screen describes accounts nothing is using.',
     ],
   },
 
@@ -1175,7 +1261,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
       'This pool handles a subscription sign-in and nothing else. The sign-in yields an exchangeable pair the broker can keep alive indefinitely, which is what makes "the only manual step is the first one" true. A key that cannot be exchanged has nothing for the sweep to keep alive.',
     long: [
       'There is one kind, so there is nothing to choose — but a value the request carries and the form never mentions is a decision made for the operator with nothing on screen admitting it. So it is shown, named, and said to be fixed.',
-      'An account already registered under another provider cannot be signed in from here, because the request carries no provider field and would file the row under something nobody chose on this screen.',
+      'An account already registered under another provider cannot be signed in from Accounts, because the request carries no provider field and would file the row under something nobody chose on that screen.',
       'That case is refused and named rather than offered and surprising, and nothing about the account changes.',
     ],
   },
@@ -1235,7 +1321,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
       'Pools created at provisioning time carry none, the API fills it with the moment of the request, and the broker rewrites it on every provider pool each pass whether or not anything changed. So it is never shown as "last changed".',
     long: [
       'Three different writers touch that field and none of them means "this value changed".',
-      'What a reader actually wants — how old the figure on screen is — is the age of this page’s own read, and that is what the screens print.',
+      'What a reader actually wants — how old the figure on screen is — is the age of the console’s own read of it, and that is what the screens print.',
       'Showing the field as a change time would be the most plausible wrong number on the screen, because it looks exactly like the thing being asked for.',
     ],
   },
@@ -1246,9 +1332,9 @@ const SPECS: Record<TopicId, TopicSpec> = {
     short:
       'A provider quota document carries one of six states. The throttled one is the common case during a squeeze and the easiest to miss. The unknown one means no worker has reported recently: an absence of information, not an assurance.',
     long: [
-      'A chip that fell through to "unknown" for a state it did not recognise would mislabel exactly the condition this screen exists for, so every member is drawn by name.',
+      'A chip that fell through to "unknown" for a state it did not recognise would mislabel exactly the condition the Provider quota screen exists for, so every member is drawn by name.',
       'Unknown is drawn as an absence rather than as health. Nothing has reported, and nothing about the provider follows from that.',
-      'An effective limit of zero here is the opposite: it is returned deliberately when a provider is spent, disabled or cooling down, and it is the one zero on this screen that means something rather than nothing.',
+      'An effective limit of zero on Provider quota is the opposite: it is returned deliberately when a provider is spent, disabled or cooling down, and it is the one zero there that means something rather than nothing.',
     ],
   },
 
@@ -1259,7 +1345,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
       'This route lists quota documents, not providers. A provider no tenant has ever driven has no document, so its absence here means "never used" rather than "no such provider".',
     long: [
       'The tenant-scoped provider route derives its list from the runtime catalogue instead and does not have this gap, which is why the two screens can legitimately disagree about which providers exist.',
-      'Reading an absence here as "this provider is not configured" is the mistake the distinction exists to prevent.',
+      'Reading an absence on Provider quota as "this provider is not configured" is the mistake the distinction exists to prevent.',
       'Nothing is filled in to close the gap, because a row invented for a provider with no document would carry no measurement at all.',
     ],
   },

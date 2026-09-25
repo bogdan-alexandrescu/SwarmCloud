@@ -1,6 +1,7 @@
 import { useEffect, useRef, type Ref } from 'react'
 import { HELP, HELP_GROUPS, HELP_ROUTE, TOPIC_IDS, topicFor, type TopicId } from './help'
 import { Absent } from './primitives'
+import { PageHead } from './Shell'
 
 /**
  * THE HELP SECTION (docs/web-ui/ui-audit-and-build-prompt.md §B7.3).
@@ -64,16 +65,17 @@ export function HelpScreen({ topic }: { topic: string }) {
 
   return (
     <>
-      {/* NO SUBTITLE (AH-15). §6.12: a page head is a title and its actions,
-          and nothing else. This one said "Why a figure on these screens looks
-          the way it does" -- true of about one topic in eight -- and then
-          restated the deep-linked topic's title, which the highlighted topic
-          below already says in its own heading. It is `.ctl-page-head`, the
-          §6.12 primitive the API reads page already uses, because `.head` left
-          the spacing under the title to the subtitle that is gone. */}
-      <div className="ctl-page-head">
-        <h1>Help</h1>
-      </div>
+      {/* NO SUBTITLE (AH-15). This one said "Why a figure on these screens
+          looks the way it does" -- true of about one topic in eight -- and then
+          restated the deep-linked topic's title, which the current topic
+          already says in its own heading.
+
+          AND THE ONE PAGE HEAD (AH-25). It was `.ctl-page-head`, a second
+          shape of head beside the `.head` fourteen routes draw through
+          `Screen`. It is `PageHead` now, the same markup, with no line under
+          the title: Help reads nothing, so it has no provenance to print, and
+          the bare head keeps the region break the line would have given. */}
+      <PageHead title="Help" />
 
       {/* AN UNKNOWN TOPIC IS A REAL ANSWER, SO IT IS THE DEFAULT EMPTY STATE
           (AH-17). It was a warn-coloured `.is-partial` panel with two
@@ -127,6 +129,20 @@ export function HelpScreen({ topic }: { topic: string }) {
  * `innerRef`, not `ref` -- React 18 reserves `ref` on a function component and
  * would drop it silently, leaving a deep link that routes correctly and lands
  * at the top of the page.
+ *
+ * A ROW OF ITS GROUP, NOT A BOX (AH-18, design-system §13.3). Every topic was
+ * an inline-styled bordered panel -- a border, a surface, a radius, the panel
+ * padding -- because styles.css belonged to another track at the time. Under
+ * §13.3 the group is the region and a topic is a row inside it, and a row
+ * draws nothing: topics are separated by `--ctl-s5` of space and nothing else.
+ * Everything that was inline here -- the h3, the paragraphs, the terms and the
+ * anchor line -- is `.help-topic` in styles.css now, where the cascade tests in
+ * `src/__tests__/shell.test.tsx` can ask what a browser would draw.
+ *
+ * THE DEEP-LINKED TOPIC IS `.is-current`, set from `highlighted`, and takes
+ * §1.3's selection treatment: a `--surface-2` fill and a 2px `--text` rule on
+ * the inline-start edge. Every topic declares that rule transparent, so
+ * marking one current changes a colour and a fill and moves nothing.
  */
 function Topic({
   id,
@@ -139,122 +155,51 @@ function Topic({
 }) {
   const t = HELP[id]
   const values = t.values?.() ?? []
+  const see = t.see ?? []
 
   return (
-    <div
-      ref={innerRef}
-      id={t.anchor}
-      style={{
-        // styles.css belongs to another track this pass, so the box is inline
-        // from existing tokens -- the call AgentDetail.tsx already made. An
-        // inline style adds no selector and cannot reach another screen.
-        border: '1px solid var(--line)',
-        // THE DEEP-LINK TARGET IS §1.3's SELECTED TREATMENT (AH-16): a surface
-        // step and a 2px rule in ink. It was a 3px rule in --text-dim and no
-        // surface change -- the weakest ink on the page marking the one block
-        // the reader was sent to.
-        borderLeft: highlighted ? '2px solid var(--text)' : '1px solid var(--line)',
-        borderRadius: 'var(--radius)',
-        background: highlighted ? 'var(--surface-2)' : 'var(--surface)',
-        padding: 'var(--ctl-pad-chrome)',
-        marginBottom: 'var(--ctl-s3)',
-        // THREE OF THE LARGE BREAK, not one. At --ctl-s5 alone a target that
-        // opens its group landed with the group's own heading clipped off the
-        // top; this leaves room for that heading and its margin above the
-        // topic, so the reader sees which group they landed in.
-        scrollMarginTop: 'calc(var(--ctl-s5) * 3)',
-      }}
-    >
-      <h3
-        style={{
-          margin: '0 0 var(--ctl-s2)',
-          // A TOPIC IS A CARD, AND A CARD'S TITLE IS --t-lead (AH-10). This was
-          // --t-title, "the panel title of that section", which put the page's
-          // h1, each group's h2 and every topic's h3 at the same 18px/600 --
-          // one size for three ranks. The topic is one bordered card among
-          // many under its group heading, and reads as that now.
-          fontSize: 'var(--t-lead)',
-          lineHeight: 'var(--lh-lead)',
-          fontWeight: 600,
-        }}
-      >
-        {t.title}
-      </h3>
+    <div ref={innerRef} id={t.anchor} className={highlighted ? 'help-topic is-current' : 'help-topic'}>
+      <h3>{t.title}</h3>
 
       {t.long.map((para, i) => (
-        <p
-          key={i}
-          style={{
-            margin: '0 0 var(--ctl-s2)',
-            // --t-body, not --t-lead: Help is a reference document and draws
-            // many paragraphs; --t-lead is the ONE paragraph a screen leads
-            // with, and a document has no such thing.
-            fontSize: 'var(--t-body)',
-            lineHeight: 'var(--lh-body)',
-            color: 'var(--text-dim)',
-            maxWidth: '68ch',
-          }}
-        >
-          {para}
-        </p>
+        <p key={i}>{para}</p>
       ))}
 
       {values.length > 0 && (
-        <dl
-          style={{
-            display: 'grid',
-            gridTemplateColumns: 'max-content 1fr',
-            gap: '4px var(--ctl-s3)',
-            margin: 'var(--ctl-s3) 0 0',
-            alignItems: 'baseline',
-          }}
-        >
+        <dl>
           {values.map((v) => (
-            <div key={v.term} style={{ display: 'contents' }}>
-              <dt
-                style={{
-                  fontWeight: 600,
-                  fontSize: 'var(--t-meta)',
-                  lineHeight: 'var(--lh-meta)',
-                  fontFamily: 'var(--mono)',
-                  color: 'var(--text)',
-                  // The terms are the API's enums as their owner spells them
-                  // -- `LEASED` -- and a list of raw capitals shouts every
-                  // one (CH-3). Lowercased by style, so the string is still
-                  // the owner's spelling for a copy, a search, and the
-                  // anti-drift test in tests/help.test.ts.
-                  textTransform: 'lowercase',
-                }}
-              >
-                {v.term}
-              </dt>
-              <dd
-                style={{
-                  margin: 0,
-                  fontSize: 'var(--t-body)',
-                  lineHeight: 'var(--lh-body)',
-                  color: 'var(--text-dim)',
-                }}
-              >
-                {v.note}
-              </dd>
+            // `display: contents` in the sheet, so each pair's `dt` and `dd`
+            // are the grid's own cells and the terms share one column.
+            <div key={v.term}>
+              {/* The terms are the API's enums as their owner spells them --
+                  `LEASED` -- and `.help-topic dt` lowercases them by style
+                  (CH-3), so the string is still the owner's spelling for a
+                  copy, a search, and the anti-drift test in tests/help.test.ts. */}
+              <dt>{v.term}</dt>
+              <dd>{v.note}</dd>
             </div>
           ))}
         </dl>
       )}
 
-      <p
-        style={{
-          margin: 'var(--ctl-s3) 0 0',
-          // A raw anchor id: --t-micro, and it went UP from 10.5px.
-          fontSize: 'var(--t-micro)',
-          lineHeight: 'var(--lh-micro)',
-          fontFamily: 'var(--mono)',
-          color: 'var(--text-faint)',
-        }}
-      >
-        #{t.anchor}
-      </p>
+      {/* THE TOPICS THIS ONE SENDS A READER ON TO, as links (AH-21: the
+          budget paragraph in `tenant-fields` cross-links `token-cost`). A
+          title quoted in prose is a link nobody can follow. */}
+      {see.length > 0 && (
+        <p className="help-topic-see">
+          See also{' '}
+          {see.map((other, i) => (
+            <span key={other}>
+              {i > 0 && ' · '}
+              <a className="ctl-link" href={`#${HELP[other].anchor}`}>
+                {HELP[other].title}
+              </a>
+            </span>
+          ))}
+        </p>
+      )}
+
+      <p className="help-topic-anchor">#{t.anchor}</p>
     </div>
   )
 }

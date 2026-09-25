@@ -38,6 +38,7 @@ move.
 | §2.4 Overview | **Overview workflow and parked checks** | `checks.ts:566` `workflowCheck` and `checks.ts:706` `parkedCheck`, both run by `deriveChecks` (`checks.ts:133`) |
 | §4 #1 | **Semantic zoom on the workflow graph** | `dag.ts:372` onward sets which fields a node drops at each tier; the control is at `Workflows.tsx:1060-1106` |
 | §2.1, §2.4 | **Three-section nav** | `App.tsx:214-404` `SECTIONS`: Overview as the landing screen, then Work · Capacity · Admin. Runtimes and History became panes, not sections. The fifteen screens keep their own routes. This replaces §2.4's six sections |
+| §2.4 Admin | **Admin's read-only pane** | Admin took one read-only pane, Platform counts (a platform-wide count behind a button that prints its cost), so §2.4's "No read-only data at all" no longer holds; the current question is in App.tsx and redesign.md §2. *(Added 2026-09-25, AH-23 in #86.)* |
 
 **Still open at `b0fff1b`**
 

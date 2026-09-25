@@ -460,6 +460,12 @@ function Board({
       <div className="ctl-toolbar wf-chrome">
         <ModeControl mode={mode} onChoose={chooseMode} />
         <span className="is-end wf-caveats">
+          {/* AH-24: NEVER AFTER A VALUE. The glyph trailed the caveats --
+              `6/8 sampled ?` -- and read as a footnote on that figure. This
+              strip has no label of its own, so the glyph LEADS the marks it
+              explains, in the same place whether any of them is drawn. Why it
+              is here at all is the note after the marks. */}
+          <HelpCard topic="absent-vs-zero" />
           {board.statesDetail !== null && <StatesUnavailable detail={board.statesDetail} />}
           {figuresDrawn && usage.kind === 'ready' && usage.usage !== null && <SampleNote usage={usage.usage} />}
           {/* ONE `?` FOR THE WHOLE BOARD, AND SINCE B7.4 FOR THE WHOLE SCREEN.
@@ -472,8 +478,7 @@ function Board({
               full sentence as their accessible name, longer and more specific
               than the topic a glyph would have opened, and the two dispatch
               topics are on the agent detail's card foot and in the rail's Help
-              section. */}
-          <HelpCard topic="absent-vs-zero" />
+              section. The glyph itself leads this strip (AH-24, above). */}
         </span>
       </div>
       <div className="wf-board">

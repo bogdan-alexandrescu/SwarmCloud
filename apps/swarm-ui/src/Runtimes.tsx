@@ -255,10 +255,15 @@ function Backends({
           with no digit in it, which is the fact the mark indexes. */}
       {capped === null && (
         <div className="rt-unread">
+          {/* AH-24: NEVER AFTER A VALUE. The glyph trailed the server's own
+              words, inside a one-line detail that clips with an ellipsis, so
+              it was after a value and cut off with it when the message ran
+              long. The row has no label of its own -- its first item is the
+              mark -- so the glyph leads the row. */}
+          <HelpCard topic="absent-vs-zero" />
           <span className="ctl-mark is-unread">not read</span>
           <span className="rt-unread-detail">
             {poolsDetail ?? 'the capacity read did not complete'}
-            <HelpCard topic="absent-vs-zero" />
           </span>
         </div>
       )}
