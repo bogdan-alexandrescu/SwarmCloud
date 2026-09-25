@@ -873,10 +873,7 @@ export async function loadRuntimeTopology(): Promise<Result<RuntimeTopology>> {
   if (USE_FIXTURES) return fixtureRuntimeTopology()
 
   const [runtimes, capacity, classes] = await Promise.all([
-    read<{ runtimes: Record<string, Runtime> }>(
-      route('/v1/runtimes'),
-      (d) => Object.keys(d.runtimes ?? {}).length === 0,
-    ),
+    readRuntimes(),
     read<Capacity>(route('/v1/capacity'), () => false),
     loadResourceClasses(),
   ])
@@ -1017,6 +1014,27 @@ async function fixtureRuntimeTopology(): Promise<Result<RuntimeTopology>> {
  * attempt document (QUEUED, PARKED, or READY and waiting for capacity).
  * `attempts: null` means the query failed and nothing may be concluded.
  */
+/**
+ * THE ONE READ OF `GET /v1/runtimes`. The catalogue screen reaches it through
+ * `loadRuntimeTopology`, and since #185 the Timeline's profile filter through
+ * `loadRunnerProfiles`; both call this, so the route has one reader and its
+ * payload one type. Two readers of one route drift, which is the rule
+ * tests/unit/control_plane/test_runtimes_screen.py holds.
+ */
+function readRuntimes(): Promise<Result<{ runtimes: Record<string, Runtime> }>> {
+  return read<{ runtimes: Record<string, Runtime> }>(
+    route('/v1/runtimes'),
+    (d) => Object.keys(d.runtimes ?? {}).length === 0,
+  )
+}
+
+/** The fixture catalogue's names, recorded as a read of the same route. */
+async function fixtureRuntimeNames(): Promise<Result<string[]>> {
+  await new Promise((r) => setTimeout(r, 90))
+  noteFixtureProbe(route('/v1/runtimes'), 90, true)
+  return { status: 'ok', fetchedAt: Date.now(), data: Object.keys(FIXTURE_RUNTIMES).sort() }
+}
+
 export interface AgentRun {
   task: Task
   /** null means the event read FAILED. An empty array means there are none. */
@@ -4043,15 +4061,8 @@ async function fixtureOutcomes(query: URLSearchParams): Promise<Result<Outcomes>
  * that can gain entries.
  */
 export async function loadRunnerProfiles(): Promise<Result<string[]>> {
-  if (USE_FIXTURES) {
-    await new Promise((r) => setTimeout(r, 90))
-    noteFixtureProbe(route('/v1/runtimes'), 90, true)
-    return { status: 'ok', fetchedAt: Date.now(), data: Object.keys(FIXTURE_RUNTIMES).sort() }
-  }
-  const r = await read<{ runtimes: Record<string, Runtime> }>(
-    route('/v1/runtimes'),
-    (d) => Object.keys(d.runtimes ?? {}).length === 0,
-  )
+  if (USE_FIXTURES) return fixtureRuntimeNames()
+  const r = await readRuntimes()
   if (r.status === 'ok' || r.status === 'stale') {
     return { status: 'ok', fetchedAt: r.fetchedAt, data: Object.keys(r.data.runtimes).sort() }
   }
