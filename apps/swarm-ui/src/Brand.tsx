@@ -529,6 +529,51 @@ function Identity({ me }: { me: Result<Me> }) {
   }
 }
 
+/**
+ * THE TENANT ID, AND ITS COPY (CH-20). At 560px and below the id is the one
+ * thing in the header row that gives way, and the decision puts its full
+ * value "in `title` and in a copy (the AH-11 precedent)". A CSS ellipsis
+ * leaves the text intact, but selecting a cut id inside a 52px bar on a phone
+ * is not a copy anyone can rely on, so the id is a button that copies all of
+ * it.
+ *
+ * THE CONTROL IS THE ID, NOT A BUTTON BESIDE IT. At 390 the id keeps about
+ * 60-70px beside the admin tag; a separate copy button -- at the 44px target
+ * §7.2 asks for -- would take most of that, and the id would vanish to make
+ * room for the control that copies it. Above 560px, where nothing is cut, it
+ * is the same control and copies the same whole id.
+ *
+ * SAID, NOT SILENT. The outcome goes to a visually hidden status beside it:
+ * "tenant id copied", or that the browser refused -- `navigator.clipboard`
+ * is undefined outside a secure context, and a write can be denied -- in
+ * which case the id's text is still there to select. A copy that claimed to
+ * land whatever happened would be the header lying about itself.
+ */
+function TenantId({ id }: { id: string }) {
+  const [said, setSaid] = useState('')
+  const copy = () => {
+    const clipboard = typeof navigator === 'undefined' ? undefined : navigator.clipboard
+    if (clipboard === undefined) {
+      setSaid('copy refused by this browser; select the tenant id instead')
+      return
+    }
+    clipboard.writeText(id).then(
+      () => setSaid('tenant id copied'),
+      () => setSaid('copy refused by this browser; select the tenant id instead'),
+    )
+  }
+  return (
+    <>
+      <button type="button" className="brand-id" title={id} aria-label={`Copy tenant id ${id}`} onClick={copy}>
+        <Id>{id}</Id>
+      </button>
+      <span className="brand-id-said" role="status">
+        {said}
+      </span>
+    </>
+  )
+}
+
 function IdentityFacts({ me }: { me: Me }) {
   return (
     <p className="brand-who">
@@ -537,10 +582,9 @@ function IdentityFacts({ me }: { me: Me }) {
           GCS prefixes; QuotaDetail.tsx:94-96 states the rule and this is the
           same rule applied in the frame.
           THE ONE THING IN THE ROW THAT GIVES WAY at 560px and below (CH-20):
-          it ellipsizes there, so the whole value is in its title, and the
-          ellipsis is the sheet's -- the text is intact, so selecting and
-          copying the id copies all of it. */}
-      <Id title={me.tenant.tenant_id}>{me.tenant.tenant_id}</Id>
+          it ellipsizes there, whole in its title AND IN A COPY -- the id is
+          its own copy control (`TenantId`). */}
+      <TenantId id={me.tenant.tenant_id} />
       {/* Not drawn at 560px and below, and still announced. */}
       {me.tenant.display_name !== null && (
         <span className="brand-who-name">{me.tenant.display_name}</span>

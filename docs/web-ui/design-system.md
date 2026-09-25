@@ -940,8 +940,10 @@ primitives this moved: `.ctl-dot.is-ok`, `.ctl-dot.is-info`, `.ctl-chip.is-ok`,
 `--text`), and the dock's read cells (§15). Healthy-state hue that remains has
 an owner and is not this ruling's: `.pool .ctl-track > i`, `.pool.prov.ok`,
 `.state.acct-ok`, `.tag.ok` (CP-14); the Profile headroom status (CP-12);
-`.wf-tl-span.is-ok` and the Workflows graph's `.node.ok` (WF-11). Chart segment
-fills are not re-ruled — TS-4's outcome stack keeps its hues and gained shapes.
+`.wf-tl-span.is-ok` and the Workflows graph's `.node.ok` (WF-11). This ruling
+does not reach chart segment fills: TS-4's outcome stack keeps its solid hues
+and gained a shape for each outcome (§15.3) — failed is still solid `--bad`,
+with redesign-v2 §5.5 Tier 1's 2px left rule.
 
 **THE ENDED MARK (CH-22, 2026-09-25).** CANCELLED is `stateTone`'s fifth tone,
 `ended`: terminal, not a verdict, and drawn as the grey flat bar — the **one**
@@ -1205,7 +1207,7 @@ media query.
 
 | | At 390px |
 |---|---|
-| Frame | rail → the two-row strip (§6.15); `--app-pad` 16px; header keeps its height and its environment bar. **The header is one row that does not wrap at ≤560px (CH-20):** in order, the mark (the home link, named "SwarmCloud" by the mark's title; the wordmark is not drawn), the environment badge, the tenant key, the tenant id and the admin tag. Only the tenant id gives way — it ellipsizes, whole in its `title`, and the ellipsis is CSS so copying it copies all of it. Not drawn but still announced (visually hidden, never removed): the tenant's display name, the "signed in" key and principal, the unknown badge's host, and the word ENVIRONMENT — the unknown badge reads "env UNKNOWN", about 122px, keeping its capitals, hatch and left rule. The admin tag is a grey hairline tag (1px `--line`, `--surface-2`, `--text-dim`, the non-production badge's box), and above 560px it shares one nowrap unit with the principal, so it can never wrap onto a line of its own. Pending is the tenant key and "reading…"; failed is the tenant key and the `not read` mark, with the error heading as its accessible name. |
+| Frame | rail → the two-row strip (§6.15); `--app-pad` 16px; header keeps its height and its environment bar. **The header is one row that does not wrap at ≤560px (CH-20):** in order, the mark (the home link, named "SwarmCloud" by the mark's title; the wordmark is not drawn), the environment badge, the tenant key, the tenant id and the admin tag. Only the tenant id gives way — it ellipsizes, whole in its `title` and in a copy: **the id is its own copy control** (`.brand-id`, a button that draws nothing of its own, 44px tall at ≤560px), which copies the whole id and says in a status whether the copy landed or the browser refused it. It is the id rather than a button beside it because at 390 the id keeps only 60–70px, which a separate 44px control would take. Not drawn but still announced (visually hidden, never removed): the tenant's display name, the "signed in" key and principal, the unknown badge's host, and the word ENVIRONMENT — the unknown badge reads "env UNKNOWN", about 122px, keeping its capitals, hatch and left rule. The admin tag is a grey hairline tag (1px `--line`, `--surface-2`, `--text-dim`, the non-production badge's box), and above 560px it shares one nowrap unit with the principal, so it can never wrap onto a line of its own. Pending is the tenant key and "reading…"; failed is the tenant key and the `not read` mark, with the error heading as its accessible name. |
 | Overview | one column, five cards stacked; **the metric strip becomes a 2-up grid, not five stacked 30px figures** |
 | Workflows | collapsed rows keep `[state] [id] [progress] [actions]`; the DAG scrolls horizontally inside its wrap and is **not** scaled to fit — scaling turns step names into texture |
 | Agents / Holders / Timeline | `.ctl-line` on its irreducible template |
@@ -1249,6 +1251,44 @@ The inspector's tables are all records, so the container-query mirror of
 §B6.3 (§14.3) is unchanged apart from the `.uri` rule, which both blocks carry.
 `chrome.shared.test.tsx` scans every table in the source: any of five or more
 columns must be `is-scroll`, and no `is-stacked` table may have more than four.
+
+**What a scrolling table needs to actually scroll**, each learned from a table
+that did not:
+
+- **It is sized by its content.** CP-18 gives Pools' six family tables and
+  every Profile headroom table `table-layout: fixed` at `width: 100%`, with
+  percentage widths on the head row, so that their columns line up from one
+  table to the next. A fixed-layout table at 100% is sized to its wrapper and
+  never overflows — at 390 each figure column was ~25px of content, "In use
+  (units)" wrapped to three lines and figures broke mid-number, and there was
+  nothing to scroll. Below 900px both are `table-layout: auto`, `width:
+  max-content` (at least the wrapper), and their cells beside the held column
+  do not wrap. CP-18 still holds at 900px and up; below it each table scrolls
+  on its own, so there is no shared x to keep.
+- **The held column has a ceiling:** `width` and `max-width` of
+  `min(45vw, 20ch)`, wrapping at spaces and, for an id with none, anywhere. A
+  **width**, not only a max-width, because a max-width on a table cell is
+  ignored by more than one engine, and a wrapping cell with no width is
+  squeezed to one character when the table overflows. Without it a held cell
+  was as wide as its longest line: on API reads, a task read's concrete URL is
+  ~53 characters, ~400px of mono in a 356px scrollport, and a sticky cell wider
+  than the scrollport covers it at every offset — every other column scrolled
+  under it, never visible. A raw-id line that is a locator rather than a name
+  is cut instead of wrapped: API reads' `lastUrl` (up to 110 characters for a
+  checkpoint file) is one line, ellipsized, whole in its `title`, and adds
+  nothing to the column's width (`width: 0; min-width: 100%`).
+- **A cell that spans the row is not the held column** (`:not([colspan])`),
+  and what it holds stays in view. An expanded account's detail is one cell
+  across the account table's five columns — 909px in a 358px phone — so under
+  `is-scroll` its prose ran off the right edge and its controls were off
+  screen until the reader panned the table. The detail is `position: sticky;
+  left: 0` and one scrollport wide (`calc(100vw - 2 * var(--app-pad) - 2px)`:
+  the viewport less the page's gutters and the wrapper's borders), and wraps.
+
+`tables.scroll.test.tsx` renders Pools, Profile headroom and Accounts and asks
+the cascade at 390 about the elements they drew; `chrome.shared.test.tsx`
+renders API reads over a real task URL. A bare `.is-scroll` fixture is not
+enough: the first one passed while Pools and Profile headroom did not scroll.
 
 Tables not yet classified, and why: Overview's Running rows (three columns
 inside a card, which fit) and the inspector's metadata key/value table (two
@@ -2614,6 +2654,27 @@ own and say "reads nothing". `chrome.shared.test.tsx` holds it on the live
 path with a stubbed API: the frame's read lands, the screen's does not, and the
 head says "reading…" while the dock says "newest".
 
+**A route can show two screens: the agent inspector over the Agents list.**
+The list never unmounts while the inspector opens, switches pane and closes,
+and it re-reads only on its next poll — so beginning an empty scope when the
+inspector closed left the head saying "reading…" beside a list fully drawn,
+with nothing in flight, for up to 30s (for good, once polling had stopped on an
+answer only a person can change). A route therefore has a **page** — the
+screen the rail points at — and at most one **inspector** over it
+(`beginScreenReads(key, page)`). The page's reads carry on across the
+inspector when the page is the one already open, and start from nothing
+otherwise (a screen re-entered through another page is a screen re-read); the
+inspector's always start from nothing, because each pane mounts and reads. A
+read the page asked for stays the page's while an inspector is open: `Screen`
+runs its load inside `pageReads` when it is inside `RoutedPage` (Shell.tsx),
+which App provides around the routed section, so the list's polls neither pass
+for the inspector's reads nor go missing from the list's own age. With that,
+"nothing settled" only ever means a screen that has just mounted, whose read is
+starting; `chrome.shared.test.tsx` opens and closes the inspector against a
+stubbed API and holds the head off "reading…" with no request in flight. A
+fixture read cannot say which of the two asked, and counts to the inspector
+when one was open — development only.
+
 ### 15.2 A route is a path template (CH-18)
 
 The probe registry was keyed by the concrete URL, so every task anyone opened
@@ -2649,13 +2710,18 @@ alone: failed against cancelled 1.01:1 in dark, succeeded against cancelled
 | Outcome | Form |
 |---|---|
 | succeeded | solid `--ok` |
-| failed | a 2px `--bad` rule down the left edge, on a 60% `--bad` wash — redesign-v2 §5.5 Tier 1's rule, on §6.7's wash, because a rule in a segment's own hue on a solid fill of that hue is not there at all |
+| failed | solid `--bad` with a 2px left rule — redesign-v2 §5.5 Tier 1's "solid fill + a 2px left rule", as written. The rule is drawn in `--surface`, the panel's own ground: a 2px cut down the segment's left edge, because it must show against solid `--bad` and only the grounds do — `--surface` 5.32:1 (dark), 12.49:1 (light), where `--bad` is 1:1, `--bad-ink` 1.28:1 / 1.68:1 and `--text` 2.83:1 / 1.26:1 |
 | cancelled | flat bars — `repeating-linear-gradient(to bottom, --text-faint 0 3px, transparent 3px 5px)`, CH-22's grey "ended" bar stacked |
 | open | the 45° hatch, unchanged |
 
 Every segment and its legend key are one rule (TS-22's construction), so a key
 cannot drift from its bar. `encoding.hues.test.ts` holds the four apart with
-the colour stripped.
+the colour stripped, holds failed to a solid fill, and holds its rule at 3:1
+against that fill in both themes. *(A 60% wash under a `--bad` rule was built
+first, on the reasoning that a same-hue rule cannot show on a solid fill; it
+drew a day of failures lighter than the successes beside it, and was not the
+form Tier 1 names. The rule changed colour instead of the fill changing
+strength.)*
 
 ### 15.4 The dock's read cells (CH-17)
 
@@ -2675,4 +2741,9 @@ Nothing here was seen rendered: every claim is a rule the cascade chooses, a
 DOM the components produced, or a ratio computed from the tokens. Whether the
 phone header fits one row at 390 with a long tenant id, how the held first
 column reads under a thumb, and how the flat-bar segments look at a one-task
-height are for the next release's screenshots.
+height are for the next release's screenshots. So are: whether a 20ch held
+column reads well on Pools and Accounts; whether the failed segment's 2px
+ground-coloured cut reads as a rule at a 26px column width; and the expanded
+account's width in a desktop window narrower than 900px with a classic
+scrollbar, where `100vw` counts the scrollbar and the detail would overhang
+the scrollport by its width (a phone's overlay scrollbar takes none).

@@ -36,7 +36,7 @@ import { PlatformCountsScreen } from './PlatformCounts'
 import { ProfilesScreen } from './Profiles'
 import { QuotaDetailScreen } from './QuotaDetail'
 import { RuntimesScreen } from './Runtimes'
-import { timeAgo } from './Shell'
+import { RoutedPage, timeAgo } from './Shell'
 import { SubmitScreen } from './Submit'
 import { SubmitWorkflowScreen } from './SubmitWorkflow'
 import { AGE_TICK_MS, useNow } from './useNow'
@@ -738,10 +738,18 @@ export function App() {
   // Keyed by the canonical route, so opening an agent over the list, or
   // switching its pane, is a new screen too -- what the head then reports is
   // what that view has read, not what the list read before it.
+  //
+  // AND THE LIST UNDER IT IS NAMED (CH-2): `pageKey` is the route with its task
+  // removed, the page the inspector is drawn over. That page never unmounts
+  // while the inspector opens, switches pane and closes, so its reads carry on
+  // across all three -- closing the inspector used to begin an empty scope
+  // beside a fully drawn list, and the head said "reading…" with nothing being
+  // read.
   const screenKey = canonical(at)
+  const pageKey = at.taskId === null ? null : canonical({ ...at, taskId: null })
   useLayoutEffect(() => {
-    beginScreenReads(screenKey)
-  }, [screenKey])
+    beginScreenReads(screenKey, pageKey)
+  }, [screenKey, pageKey])
 
   const go = (to: string) => {
     window.location.hash = to
@@ -795,7 +803,11 @@ export function App() {
                 <ReferenceScreen />
               )
             ) : (
-              <SectionBody sectionId={section.id} tab={at.tab} taskId={at.taskId} go={go} />
+              // THE PAGE (CH-2): its `Screen`s' reads stay its own while the
+              // inspector is open over it (`RoutedPage` in Shell.tsx).
+              <RoutedPage.Provider value={true}>
+                <SectionBody sectionId={section.id} tab={at.tab} taskId={at.taskId} go={go} />
+              </RoutedPage.Provider>
             )}
           </main>
 
@@ -1138,6 +1150,14 @@ function ScreenAge({ at, reads, now }: { at: Route; reads: ScreenReads; now: num
   // `reads` is about ANOTHER screen until this one's scope has begun (the
   // first render of a route comes before its layout effect), and a screen
   // whose reads have not settled is still reading.
+  //
+  // "NOTHING SETTLED" MEANS A SCREEN THAT HAS JUST MOUNTED, and only that: a
+  // scope starts from nothing only for a screen that mounts on this route
+  // change, and every screen reads on mount -- its read starts in the effect
+  // right after this render (the fixture path registers it only when it
+  // lands). A screen that stayed mounted -- the list under a closing
+  // inspector -- keeps its own reads (`beginScreenReads`), so it can never
+  // land here saying "reading…" with nothing being read.
   const own = reads.key === canonical(at) ? reads : null
   if (own !== null && own.newestSuccessAt !== null) {
     return <>newest read {timeAgo(own.newestSuccessAt, now)}</>
@@ -1697,8 +1717,13 @@ function RouteRow({ probe, now }: { probe: ProbeRecord; now: number }) {
             (§6.7). A route is a template now (CH-18) -- one row for every
             task's attempts read -- so this is how a reader still finds WHICH
             task's read the outcome beside it belongs to. Always drawn, as the
-            slot always is: the name and the id, never one. */}
-        <span className="ctl-sub">{probe.lastUrl}</span>
+            slot always is: the name and the id, never one.
+            CUT BELOW 900px, WHOLE IN ITS TITLE (CH-13): the route cell is the
+            held column, which has a ceiling, and a checkpoint file's URL is
+            110 characters -- one line, ellipsized, rather than six. */}
+        <span className="ctl-sub" title={probe.lastUrl}>
+          {probe.lastUrl}
+        </span>
       </th>
       <td role="cell" data-label="Last attempt">{timeAgo(probe.lastAttemptAt, now)}</td>
       <td role="cell" data-label="Outcome">

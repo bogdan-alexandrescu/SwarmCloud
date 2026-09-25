@@ -860,7 +860,7 @@ adjacent word:
 | ok | **none on a state mark** — `--text-faint` (CH-17); `--ok` only as a figure or a chart fill | solid fill, filled dot |
 | live | `--info` | solid fill + the only animation on the screen |
 | warn | `--warn` | 45° hatch (`--ctl-hatch` already exists and is already used correctly for unknown ceilings — extend it) |
-| bad | `--bad` | solid fill + a 2px left rule (on a chart segment, the rule sits on a wash of its hue — TS-4) |
+| bad | `--bad` | solid fill + a 2px left rule |
 | paused | `--paused` | **horizontal** hatch, deliberately distinct from warn's 45° |
 | unknown / not-measured | `--ctl-absent` | dotted outline, hollow dot, **no fill at all** |
 | info / ended (CANCELLED) | **none** — `--text-faint` (CH-17, CH-22) | the flat bar; on a chart segment, stacked flat bars (TS-4) |

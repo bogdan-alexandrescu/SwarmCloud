@@ -335,8 +335,11 @@ export function noteFixtureProbe(
   })
   // A fixture read registers when it LANDS, after its simulated latency, so it
   // belongs to the screen that was open when it STARTED -- `latencyMs` ago.
+  // Which of an inspector and the page under it asked is not knowable by
+  // then, so it is the inspector's when one was open (development only: the
+  // live path below knows).
   if (options.frame !== true) {
-    const scope = scopeAt(Date.now() - latencyMs)
+    const scope = shownBy(frameAt(Date.now() - latencyMs))
     scope.settled += 1
     if (ok) scope.newestSuccessAt = Date.now()
     else if (kind !== 'admin_required') scope.failed += 1
@@ -359,9 +362,31 @@ export function noteFixtureProbe(
 // so a slow read from the screen you just left cannot land as "newest read
 // just now" on the one you opened. The frame's own reads -- the identity read
 // behind the product header -- pass `frame: true` and belong to no screen.
+//
+// A ROUTE CAN SHOW TWO SCREENS: the agent inspector over the Agents list. The
+// list is never unmounted while the inspector is open, so opening, switching
+// and closing the inspector change the route and leave the list exactly as it
+// was -- it re-reads only on its next poll. So a route has a PAGE, the screen
+// the rail points at, and at most one INSPECTOR over it:
+//
+//   - the page's reads carry on across the inspector: a route whose page is
+//     the page already open keeps that page's reads, rather than starting from
+//     nothing beside a list that is fully drawn and asking for nothing. That
+//     was the defect -- close the drawer and the head said "reading…" with no
+//     read in flight, for up to 30s, or for good once polling had stopped;
+//   - the inspector's reads are its own, and start from nothing whenever the
+//     route changes (each pane is its own `Screen` and reads on mount);
+//   - a read the page asked for is the PAGE's even while an inspector is open,
+//     so the list's polls neither pass for the inspector's reads nor go
+//     missing from the list's own age. `Screen` says which it is by calling
+//     its load inside `pageReads`; anything else is the inspector's when one
+//     is open, and the page's when not.
+//
+// A screen re-entered through another page is still a screen re-read: only
+// the page open at the moment of the route change carries on.
 
 export interface ScreenReads {
-  /** The screen these are about, or null before any screen has begun. */
+  /** The route these are about, or null before any screen has begun. */
   key: string | null
   /** Reads started and not yet settled. */
   inFlight: number
@@ -373,40 +398,59 @@ export interface ScreenReads {
   newestSuccessAt: number | null
 }
 
-interface Scope extends ScreenReads {
+/** One screen's reads. `page` names the page it is, for an inspector null. */
+type Scope = Omit<ScreenReads, 'key'> & { page: string | null }
+
+/** One route: its page's reads, and the inspector's over it if one is open. */
+interface Frame {
+  key: string | null
   startedAt: number
+  page: Scope
+  inspector: Scope | null
 }
 
 const EMPTY_SCOPE: ScreenReads = { key: null, inFlight: 0, settled: 0, failed: 0, newestSuccessAt: null }
 
-/** Newest last. Kept short: only a read's START is ever looked up in it. */
-let scopes: Scope[] = []
-let screenSnapshot: ScreenReads = EMPTY_SCOPE
-const screenListeners = new Set<() => void>()
-
-function currentScope(): Scope {
-  const last = scopes[scopes.length - 1]
-  if (last !== undefined) return last
-  // Before any screen has begun (a read from a module-level load, a test that
-  // renders a component alone): an unnamed scope, which no head ever shows.
-  const scope: Scope = { ...EMPTY_SCOPE, startedAt: 0 }
-  scopes.push(scope)
-  return scope
+function fresh(page: string | null): Scope {
+  return { page, inFlight: 0, settled: 0, failed: 0, newestSuccessAt: null }
 }
 
-/** The screen that was open at `t`. */
-function scopeAt(t: number): Scope {
-  for (let i = scopes.length - 1; i >= 0; i--) {
-    const s = scopes[i]!
-    if (s.startedAt <= t) return s
+/** Newest last. Kept short: only a read's START is ever looked up in it. */
+let frames: Frame[] = []
+let screenSnapshot: ScreenReads = EMPTY_SCOPE
+const screenListeners = new Set<() => void>()
+/** Above zero while `pageReads` is running a page's load. */
+let pageDepth = 0
+
+function currentFrame(): Frame {
+  const last = frames[frames.length - 1]
+  if (last !== undefined) return last
+  // Before any screen has begun (a read from a module-level load, a test that
+  // renders a component alone): an unnamed frame, which no head ever shows.
+  const frame: Frame = { key: null, startedAt: 0, page: fresh(null), inspector: null }
+  frames.push(frame)
+  return frame
+}
+
+/** The route that was open at `t`. */
+function frameAt(t: number): Frame {
+  for (let i = frames.length - 1; i >= 0; i--) {
+    const f = frames[i]!
+    if (f.startedAt <= t) return f
   }
-  return scopes[0] ?? currentScope()
+  return frames[0] ?? currentFrame()
+}
+
+/** The screen the head speaks for on a route: the inspector, if one is open. */
+function shownBy(frame: Frame): Scope {
+  return frame.inspector ?? frame.page
 }
 
 function publishScreenReads(): void {
-  const s = currentScope()
+  const f = currentFrame()
+  const s = shownBy(f)
   screenSnapshot = {
-    key: s.key,
+    key: f.key,
     inFlight: s.inFlight,
     settled: s.settled,
     failed: s.failed,
@@ -416,14 +460,40 @@ function publishScreenReads(): void {
 }
 
 /**
- * A new screen is open. Its reads start from nothing -- a screen re-entered is
- * a screen re-read, and the age of its last visit is not the age of what it is
- * about to draw.
+ * A route is open. `page` is the page under an inspector -- the route with its
+ * task removed -- and is omitted when the route is a page by itself.
+ *
+ * A page's reads start from nothing -- a screen re-entered is a screen
+ * re-read, and the age of its last visit is not the age of what it is about to
+ * draw -- UNLESS it is the page already open: then it never unmounted, and its
+ * reads carry on (above). An inspector's reads always start from nothing.
  */
-export function beginScreenReads(key: string): void {
-  scopes.push({ ...EMPTY_SCOPE, key, startedAt: Date.now() })
-  if (scopes.length > 8) scopes = scopes.slice(-8)
+export function beginScreenReads(key: string, page: string | null = null): void {
+  const pageKey = page ?? key
+  const last = frames[frames.length - 1]
+  frames.push({
+    key,
+    startedAt: Date.now(),
+    page: last !== undefined && last.page.page === pageKey ? last.page : fresh(pageKey),
+    inspector: page === null ? null : fresh(null),
+  })
+  if (frames.length > 8) frames = frames.slice(-8)
   publishScreenReads()
+}
+
+/**
+ * Run a PAGE's load: every read it starts before its first `await` is the
+ * page's, even while an inspector is open over it. `Screen` calls its load
+ * through this when it is the page (`RoutedPage` in Shell.tsx). A read started
+ * after that first `await` is outside it, and follows the route's own rule.
+ */
+export function pageReads<T>(load: () => T): T {
+  pageDepth += 1
+  try {
+    return load()
+  } finally {
+    pageDepth -= 1
+  }
 }
 
 export function subscribeScreenReads(fn: () => void): () => void {
@@ -439,7 +509,8 @@ export function screenReadsSnapshot(): ScreenReads {
 /** A live read has started, on behalf of the screen open now (or the frame). */
 function startScreenRead(frame: boolean): (outcome: 'ok' | 'failed' | 'admin') => void {
   if (frame) return () => {}
-  const scope = currentScope()
+  const route = currentFrame()
+  const scope = pageDepth > 0 ? route.page : shownBy(route)
   scope.inFlight += 1
   publishScreenReads()
   return (outcome) => {
@@ -500,7 +571,8 @@ export function forgetProbes(): void {
   // The screen's own reads are the same module state for the same reason, and
   // the head's "reading…" is exactly as untestable if one test's landed read
   // survives into the next.
-  scopes = []
+  frames = []
+  pageDepth = 0
   screenSnapshot = EMPTY_SCOPE
   for (const fn of screenListeners) fn()
 }

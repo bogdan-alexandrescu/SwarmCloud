@@ -892,6 +892,35 @@ body {
   gap: 8px;
   white-space: nowrap;
 }
+/* THE TENANT ID IS ITS OWN COPY CONTROL (CH-20, Brand.tsx `TenantId`). A
+   button that draws nothing of its own: no box, no fill, the id's own ink and
+   type, so the header shows the id exactly as before and the pointer says what
+   a press does. It is the flex item that gives way at 560px and below; the id
+   inside it is what ellipsizes. */
+.brand-id {
+  display: inline-flex;
+  align-items: baseline;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: copy;
+}
+.brand-id:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; border-radius: var(--ctl-radius-sm); }
+/* What the copy did, for a screen reader. Never drawn: the id beside it is
+   what a sighted reader was pointing at. */
+.brand-id-said {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
 
 /* AT 560px AND BELOW THE HEADER IS ONE ROW (CH-20, design-system.md §7.2).
    It doubled to about 100px at 390 -- the identity on a line of its own, and
@@ -916,7 +945,15 @@ body {
   .brand-row { position: relative; flex-wrap: nowrap; gap: var(--ctl-s2); }
   .brand-word { display: none; }
   .brand-who { flex: 0 1 auto; flex-wrap: nowrap; min-width: 0; gap: var(--ctl-s2); }
-  .brand-who > .id {
+  /* The copy control gives way in the row and reaches §7.2's 44px target
+     inside the 52px bar; the id in it ellipsizes, whole in the control's
+     title and in what it copies. */
+  .brand-who > .brand-id {
+    align-items: center;
+    min-width: 0;
+    min-height: 44px;
+  }
+  .brand-id > .id {
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -3689,14 +3726,22 @@ button.copy:hover { color: var(--text); border-color: var(--text-faint); }
    failures and a day of cancellations were the same bar.
 
      succeeded  solid                 the one outcome that is just a fill
-     failed     a 2px left rule       redesign-v2 §5.5 Tier 1's form for bad,
-                                      on a wash of its hue -- §6.7's row form
-                                      ("a wash plus a rule"), because a rule
-                                      in the segment's own hue on a solid fill
-                                      of that hue is not there at all
+     failed     solid + a 2px left    redesign-v2 §5.5 Tier 1's form for bad,
+                rule                  as written: the fill stays solid, so a
+                                      day of failures weighs what a day of
+                                      successes does
      cancelled  flat bars             CH-22's neutral "ended" mark, stacked:
                                       one 3px bar per step, grey, no verdict
      open       the 45° hatch         unchanged: not an outcome yet
+
+   THE FAILED RULE IS DRAWN IN THE PANEL'S OWN GROUND, `--surface`: a 2px cut
+   down the segment's left edge. It has to show against solid `--bad`, and
+   measured against it only the grounds do -- `--surface` 5.32:1 (dark) and
+   12.49:1 (light). A rule in `--bad` is 1:1, `--bad-ink` 1.28:1 (dark) and
+   1.68:1 (light), `--text` 2.83:1 (dark) and 1.26:1 (light): each is in the
+   sheet and not on the screen in at least one theme. (A 60% wash under a
+   `--bad` rule was built first, and drew failed lighter than succeeded.)
+   `encoding.hues.test.ts` holds the rule at 3:1 on the fill in both themes.
 
    EVERY SEGMENT AND ITS LEGEND KEY ARE ONE RULE, as TS-22 made "still open":
    one declaration, two selectors, so a key cannot drift from its bar. The
@@ -3705,8 +3750,8 @@ button.copy:hover { color: var(--text); border-color: var(--text-faint); }
 .chart-legend .k.succeeded { background: var(--ok); }
 .stackcol > i.failed,
 .chart-legend .k.failed {
-  background: color-mix(in srgb, var(--bad) 60%, transparent);
-  box-shadow: inset 2px 0 0 var(--bad);
+  background: var(--bad);
+  box-shadow: inset 2px 0 0 var(--surface);
 }
 .stackcol > i.cancelled,
 .chart-legend .k.cancelled {
@@ -9203,20 +9248,100 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
    type or class could be anything to `test_state_colour_discriminability.py`'s
    fill scan, which then has to assume this fill could land on a proportion
    bar -- and a table cell is all it can ever be. */
+/* THE HELD COLUMN HAS A CEILING: under half the viewport, and 20 characters
+   where that is less. Nothing capped it, and `.ctl-table th` is nowrap, so a
+   held cell was as wide as its longest line -- on API reads a task read's
+   concrete URL, ~53 characters and ~400px of mono in a 356px scrollport. A
+   sticky cell wider than the scrollport covers it at every offset: the other
+   columns scrolled underneath and were never visible at all. So the cell has a
+   WIDTH, not only a max-width (a max-width on a table cell is ignored by more
+   than one engine, and a wrapping cell with no width is squeezed to one
+   character when the table overflows), and it wraps -- at spaces, and at any
+   character for an id with none. A raw-id line under the name that is a
+   locator rather than a name ellipsizes instead (API reads, below).
+
+   A CELL THAT SPANS THE ROW IS NOT THE HELD COLUMN (`:not([colspan])`): an
+   expanded account's detail is one cell across all five columns, and held it
+   covered the scrollport at every offset (Accounts, below). */
 @media (max-width: 899px) {
   .is-scroll > table > thead > tr > th:first-child,
   .is-scroll > table > tbody > tr > th:first-child,
-  .is-scroll > table > tbody > tr > td:first-child {
+  .is-scroll > table > tbody > tr > td:first-child:not([colspan]) {
     position: sticky;
     left: 0;
     z-index: 1;
     background-color: var(--surface);
+    width: min(45vw, 20ch);
+    max-width: min(45vw, 20ch);
+    white-space: normal;
+    overflow-wrap: anywhere;
   }
   /* The corner cell is sticky both ways: the head's own `top: 0` and this
      `left: 0`. It paints over both the held column and the head row. */
   .is-scroll > table > thead > tr > th:first-child {
     z-index: 2;
     background-color: var(--surface-2);
+  }
+
+  /* API READS: THE CONCRETE URL UNDER A ROUTE IS CUT, NOT WRAPPED. It is the
+     locator for one call (CH-18's `lastUrl`), up to 110 characters for a
+     checkpoint file, and wrapped in a 20ch column it would be six lines per
+     row. One line, the whole of it in its `title`. `width: 0` with
+     `min-width: 100%` is what stops a nowrap line widening the column it sits
+     in: it contributes nothing to the column's size and then fills it. */
+  .is-scroll .ctl-ref-path > .ctl-sub {
+    width: 0;
+    min-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* POOLS AND PROFILE HEADROOM SCROLL (CP-18 is a wide-screen rule). CP-18
+     gives both `table-layout: fixed` at `width: 100%`, percentage widths on the
+     head row, and cells that wrap anywhere, so that six family tables -- and
+     every profile's headroom table -- share their column positions. That is
+     right where the tables fit. Below 900px it sized each table to the phone:
+     a fixed-layout table at 100% never overflows, so there was nothing to
+     scroll and the held column held nothing, while "In use (units)" wrapped to
+     three lines in a 25px column and figures broke mid-number. Here each table
+     is sized by its content, its cells do not wrap, and it scrolls. The
+     columns no longer line up from one table to the next below 900px; each
+     table scrolls on its own, so there is no shared x to keep. */
+  .cap-families .ctl-table.is-scroll > table,
+  .section.panel > dl.kv + .table-wrap.is-scroll > table.pools {
+    table-layout: auto;
+    width: max-content;
+    min-width: 100%;
+  }
+  .cap-families .ctl-table.is-scroll > table > * > tr > :not(:first-child),
+  .section.panel > dl.kv + .table-wrap.is-scroll > table.pools > * > tr > :not(:first-child) {
+    width: auto;
+    white-space: nowrap;
+    overflow-wrap: normal;
+  }
+  /* CP-18's quarter and third for the name column out-rank the held column's
+     ceiling, so it is restated for these two. */
+  .cap-families .ctl-table.is-scroll > table > thead > tr > th:first-child,
+  .section.panel > dl.kv + .table-wrap.is-scroll > table.pools > thead > tr > th:first-child {
+    width: min(45vw, 20ch);
+  }
+
+  /* AN EXPANDED ACCOUNT STAYS IN VIEW. Its detail -- a grid of prose and the
+     lend, state, refresh and delete controls -- is one cell spanning the
+     account table, which is 909px of columns in a 358px phone, so under
+     `is-scroll` it was laid out 909px wide: the sentences ran off the right
+     edge and the controls on the right were off screen until the reader
+     panned the whole table. The detail is held at the scrollport's left edge
+     and made one scrollport wide -- the viewport less the page's two gutters
+     and the wrapper's two 1px borders -- so it reads in place at every scroll
+     offset. `white-space: normal` because `table.pools td` is nowrap and a
+     cell's descendants inherit it. */
+  .is-scroll tr.acct-detail-row > td > .acct-detail {
+    position: sticky;
+    left: 0;
+    width: calc(100vw - 2 * var(--app-pad) - 2px);
+    white-space: normal;
   }
 }
 
