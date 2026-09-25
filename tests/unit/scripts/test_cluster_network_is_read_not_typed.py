@@ -400,7 +400,10 @@ ABBREVIATED_NETWORK_FLAGS = [
     (["--cluster-dns=10.164.0.53"], "--cluster-dns-ip"),
     (["--node-local", "169.254.99.10"], "--node-local-dns-ip"),
     (["--no", "169.254.99.10"], "--node-local-dns-ip"),
-    (["--network-s", "gke/typed/by/hand"], "--network-source"),
+    # A source the renderer's pattern accepts: the first red run used
+    # `gke/typed/by/hand`, which render.py's own validation refused, so that
+    # case failed for the renderer's reason rather than showing the override.
+    (["--network-s", "gke/other-project/us-east1/swarm-other"], "--network-source"),
 ]
 
 
