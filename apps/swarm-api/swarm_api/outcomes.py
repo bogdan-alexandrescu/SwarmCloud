@@ -135,7 +135,7 @@ MAX_SHARDS = 11
 #: Point reads per `get_all` call.
 _GET_ALL_CHUNK = 100
 #: Firestore's cap on the values of one `in` filter.
-_IN_CHUNK = 100  # MUTATION (to be reverted): above Firestore's 30-value cap
+_IN_CHUNK = 30
 
 #: Tenants an admin's platform view lists. Past it `scope.tenants_complete` is
 #: false rather than the view silently covering the first 200.
