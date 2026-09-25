@@ -1053,7 +1053,7 @@ export interface OpenWork {
 export function unfiltered(view: LedgerView): string[] {
   const out: string[] = []
   if (view.profile.length > 0) out.push('profile')
-  if (false && view.platform && (view.tenant.length > 0 || view.exclude_tenant.length > 0)) out.push('tenant')
+  if (view.platform && (view.tenant.length > 0 || view.exclude_tenant.length > 0)) out.push('tenant')
   if (view.submitted_by.length > 0) out.push('person')
   if (view.kind !== 'all') out.push('kind')
   return out
