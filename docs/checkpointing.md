@@ -51,6 +51,7 @@ The workspace, which is one directory tree per attempt:
 ```
 <workspace_root>/<attempt_id>/
     work/        <- the runner's cwd. THIS is what gets checkpointed
+      artifacts  <- a link to artifacts/ below; left out of every checkpoint
     artifacts/   <- files to keep; uploaded on exit
     logs/        <- stdout.log, stderr.log
     tmp/         <- TMPDIR for the child
@@ -60,6 +61,22 @@ The workspace, which is one directory tree per attempt:
 Only `work/` goes into a checkpoint. `restore/` is excluded so a resumed attempt
 does not checkpoint a copy of the archive it just restored, doubling its size on
 every cycle.
+
+`work/artifacts` is left out too, when it is the link the worker makes to
+`artifacts/` (#149, see [workflows.md](workflows.md#artifacts-pass-by-reference)).
+Archived, it would fail every resume: it points outside `work/`, and a restore
+refuses an archive holding such a link. It also names this attempt's directory,
+and a resumed attempt makes its own. What is behind the link is not archived
+either, because `Path.rglob` does not descend into a symlinked directory; those
+files are the artifacts, uploaded on their own. A real `work/artifacts`
+directory is the agent's work, and is checkpointed like anything else.
+
+The artifacts directory itself is not checkpointed at all. A resumed attempt
+starts with an empty one, so a file written there before a park is uploaded
+under the parked attempt's prefix and is not in the upload of the attempt that
+finally succeeds. A retried attempt starts the same way. When the file is one a
+later workflow step stages, an attempt that ends without writing it again fails
+for it, retryably ([workflows.md](workflows.md#artifacts-pass-by-reference)).
 
 **A resumed worker starts from an empty tree.** `Workspace.create()` removes the
 directory first, every time, and refuses to continue if it cannot. Restoring a

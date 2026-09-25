@@ -4,6 +4,7 @@ One attempt, one directory tree, created empty and destroyed at the end:
 
     <workspace_root>/<attempt_id>/
         work/          the runner's current directory; this is what gets checkpointed
+          artifacts    a link to the artifacts/ below, absolute; never checkpointed
         artifacts/     files the runner wants kept; uploaded on exit
         logs/          stdout.log, stderr.log
         tmp/           TMPDIR for the child, so a stray temp file cannot escape
@@ -21,6 +22,16 @@ retries on a warm sandbox are not guaranteed to be, and a checkpoint restored on
 top of leftovers from a previous attempt would produce a workspace that exists in
 no checkpoint -- irreproducible, and silently wrong. So `create()` removes the
 tree first, every time, and refuses to continue if it cannot.
+
+**`work/artifacts` is a link to `artifacts/` (#149), made by `link_artifacts`
+once the lifecycle has restored, cloned and staged -- never by `create()`.**
+The artifacts directory is the working directory's SIBLING, so `./artifacts` is
+the natural wrong guess. On 2026-09-25 (`wf_06a3a949d2c242c3b0e9`, scan-02) an
+agent echoed `$SWARM_ARTIFACTS_DIR` correctly and then wrote
+`<work>/artifacts/scan-02.md`, which nothing uploads. The link makes that guess
+land in the uploaded directory. `create()` cannot make it: a restore refuses a
+non-empty `work/`, and a declared input or a restored checkpoint may already
+own the name, in which case the link is skipped rather than put over it.
 """
 
 from __future__ import annotations
@@ -105,6 +116,35 @@ class Workspace:
                     names.add(value.name)
         return frozenset(names)
 
+    # A METHOD, NOT A PROPERTY, and that is load-bearing. `control_file_names`
+    # collects every Path-valued property under `work/`, and staging refuses a
+    # declared input over any name in that set. The owner's rule for this name
+    # is the opposite: a declared input called `artifacts/...` is staged, and
+    # the link is the thing that gives way.
+    def artifacts_link(self) -> Path:
+        """Where `link_artifacts` puts the link: `work/artifacts`.
+
+        Named after the directory it points at, derived rather than spelled
+        again, because the directory's own name is the one an agent guesses.
+        """
+        return self.work / self.artifacts.name
+
+    def is_artifacts_link(self, path: Path) -> bool:
+        """True when `path` is `work/artifacts` AND a link resolving to `artifacts/`.
+
+        Compared by where it resolves, not by the link's text, so an agent
+        that re-created it as `../artifacts` is still recognised: that link
+        leaves `work/` just the same, which is what `checkpoint` has to know.
+        A real directory at the same path is the agent's own work and is
+        never this.
+        """
+        if path != self.artifacts_link():
+            return False
+        try:
+            return path.is_symlink() and path.resolve() == self.artifacts.resolve()
+        except OSError:
+            return False
+
     def disk_bytes(self) -> int:
         """Bytes on disk under the workspace, symlinks not followed."""
         total = 0
@@ -168,6 +208,35 @@ def create(root: Path, attempt_id: str) -> Workspace:
         path.mkdir(parents=True, exist_ok=False)
         os.chmod(path, 0o700)
     return ws
+
+
+def link_artifacts(ws: Workspace) -> bool:
+    """Make `work/artifacts` a link to `artifacts/`. False when the name is taken.
+
+    Taken means anything at all is there, a dangling link included: a declared
+    input staged as `artifacts/...`, or a directory a restored checkpoint
+    brought back -- an agent that made `work/artifacts` itself, before this
+    link existed, is exactly the case #149 measured. That is the agent's or the
+    caller's, so it is left as it is and the caller of this says so. Replacing
+    it would delete work, or put a staged input out of the agent's reach.
+
+    The target is ABSOLUTE. With the default `WORKSPACE_ROOT` (`/workspace`,
+    `config.py`) that is the same string `child_env` exports as
+    `SWARM_ARTIFACTS_DIR`, so `readlink artifacts` and
+    `echo $SWARM_ARTIFACTS_DIR` give an agent the same answer. A relative
+    target would resolve against `work/`, not against the directory the
+    workspace was made in. The link is never checkpointed
+    (`checkpoint.CheckpointManager.create`), because it names this attempt's
+    directory and a resumed attempt makes its own.
+
+    Raises OSError if the link cannot be made; the caller decides what that
+    costs.
+    """
+    link = ws.artifacts_link()
+    if os.path.lexists(link):
+        return False
+    os.symlink(os.path.abspath(ws.artifacts), link, target_is_directory=True)
+    return True
 
 
 def destroy(ws: Workspace) -> None:
