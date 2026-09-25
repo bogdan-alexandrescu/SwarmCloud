@@ -387,6 +387,89 @@ def test_apply_refuses_a_network_value_on_the_command_line(tmp_path, flag):
     assert not (cluster.dir / "applied-dry-run.yaml").exists()
 
 
+#: Abbreviations of the five network flags, each with a value the renderer
+#: would ACCEPT against FAKE -- canonical, non-overlapping, the DNS IP inside
+#: the service range -- so a render that goes through is the typed value
+#: winning, not a validation error that happens to fail the same test.
+ABBREVIATED_NETWORK_FLAGS = [
+    (["--pod-cid", "10.200.0.0/14"], "--pod-cidr"),
+    (["--pod-cid=10.200.0.0/14"], "--pod-cidr"),
+    (["--pod", "10.200.0.0/14"], "--pod-cidr"),
+    (["--service-c", "10.164.0.0/16"], "--service-cidr"),
+    (["--cluster-dns", "10.164.0.53"], "--cluster-dns-ip"),
+    (["--cluster-dns=10.164.0.53"], "--cluster-dns-ip"),
+    (["--node-local", "169.254.99.10"], "--node-local-dns-ip"),
+    (["--no", "169.254.99.10"], "--node-local-dns-ip"),
+    (["--network-s", "gke/typed/by/hand"], "--network-source"),
+]
+
+
+@pytest.mark.parametrize(
+    "args,flag", ABBREVIATED_NETWORK_FLAGS, ids=[a[0] for a, _ in ABBREVIATED_NETWORK_FLAGS]
+)
+def test_apply_refuses_an_abbreviated_network_flag(tmp_path, args, flag):
+    """The refusal above matched only the full spellings. Python's argparse
+    accepts any unambiguous prefix of a long option, and apply.sh appends what
+    it forwards AFTER the values it read -- so `--pod-cid 10.200.0.0/14` reached
+    the renderer as a second `--pod-cidr` and the last one won: the typed value
+    replaced the cluster's, which is RC3 again with one letter missing."""
+    cluster = Cluster(tmp_path, FAKE)
+    result = cluster.run(APPLY, "--tenant", "eng", *args)
+    output = result.stdout + result.stderr
+    assert result.returncode != 0, (
+        f"apply.sh accepted {args[0]!r}, an abbreviation of {flag}; the render went through:\n{output}"
+    )
+    # Named, not merely non-zero: the refusal must be apply.sh's own, naming the
+    # flag the abbreviation would have become.
+    assert "read from the cluster" in result.stderr, output
+    assert flag in result.stderr, output
+    assert not (cluster.dir / "applied-dry-run.yaml").exists()
+
+
+@pytest.mark.parametrize(
+    "args", [["--cluster=swarm-autopilot"], ["--context=swarm-dev"], ["--tenant=eng"]]
+)
+def test_apply_reads_its_own_flags_in_equals_form(tmp_path, args):
+    """apply.sh matched only `--cluster NAME`, so `--cluster=NAME` fell through
+    to the renderer -- where argparse read `--cluster` as an abbreviation of
+    `--cluster-dns-ip` and tried to render the cluster's NAME as its DNS
+    address. Each of apply.sh's value flags is its own in either spelling."""
+    cluster = Cluster(tmp_path, FAKE)
+    base = [] if args[0].startswith("--tenant") else ["--tenant", "eng"]
+    result = cluster.run(APPLY, *base, *args)
+    assert result.returncode == 0, result.stdout + result.stderr
+    rendered = cluster.dir / "applied-dry-run.yaml"
+    assert rendered.exists(), "apply.sh did not validate a render"
+    peers = _ip_peers(_egress(rendered.read_text()))
+    assert f"{FAKE['cluster_dns_ip']}/32" in peers, sorted(peers)
+
+
+def test_the_renderer_accepts_no_abbreviated_flag():
+    """The second half of the same hole, closed where it opens: render.py must
+    not expand a prefix into a flag at all. With abbreviation on, a caller that
+    forwards arguments -- apply.sh, or the next wrapper someone writes -- has to
+    enumerate every prefix of every flag it means to withhold, and apply.sh's
+    list proved that nobody does."""
+    result = subprocess.run(
+        [
+            sys.executable, str(REPO / "kubernetes" / "render.py"), "tenant", "--tenant", "eng",
+            "--pod-cid", FAKE["pod_cidr"],
+            "--service-c", FAKE["service_cidr"],
+            "--cluster-dns", FAKE["cluster_dns_ip"],
+            "--node-local", FAKE["node_local_dns_ip"],
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=120,
+    )
+    assert result.returncode == 2, (
+        "render.py expanded abbreviated network flags into the real ones and rendered:\n"
+        + result.stdout[:400]
+    )
+    assert "unrecognized arguments" in result.stderr, result.stderr
+
+
 def test_apply_refuses_when_the_node_local_dns_address_cannot_be_read(tmp_path):
     """No guessing: a missing DaemonSet is a refusal, not a typed 169.254.20.10."""
     cluster = Cluster(tmp_path, FAKE)
