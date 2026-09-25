@@ -76,6 +76,36 @@ would otherwise sit in `DEPENDENCY_INCOMPLETE` forever — holding no capacity, 
 never completing and never erroring, which is the worst kind of failure because
 nothing alerts on it.
 
+## `metadata.input_from` belongs to the service, not the caller
+
+The worker stages a task's inputs from `metadata.input_from`, a map of
+`{upstream TASK id: filename}`. **Only workflow expansion writes that key.** It
+rewrites each step's `input_from`, keyed by step id, to the ids of the upstream
+tasks it has just created. That rewrite happens after the declaration has passed
+the checks above, including the rule that every `input_from` source is also a
+`depends_on`.
+
+So the API refuses the key from callers, the same way it refuses
+`metadata.dispatch` (owner decision on #151, 2026-09-25):
+
+| request | answer |
+|---|---|
+| `POST /v1/tasks` or `POST /v1/tasks/batch` with `metadata.input_from` | 422 `invalid_dispatch`, `detail.reserved_metadata_keys: ["input_from"]`, nothing created |
+| `POST /v1/workflows` whose own `metadata` has `input_from` | the same 422, nothing created |
+| `POST /v1/workflows` whose steps declare `input_from` | accepted; each declaring step's task gets `metadata.input_from` |
+
+The key is refused whatever its value, `{}` and `null` included. It is
+reserved, not validated. A value on a plain task arrived with no dependency
+edge, so nothing guaranteed the upstream task had run. A bad declaration was
+refused only by the worker, after the task had been admitted and had held
+capacity. The workflow's own `metadata` is copied onto every step's task, so a
+value there reached every root step verbatim and was silently replaced on any
+step that declared its own. To stage an artifact, declare `input_from` on the
+workflow step that needs it.
+
+A batch is refused whole: one task carrying the key means none of the batch is
+created.
+
 ## Failure behaviour
 
 | `on_step_failure` | Effect when a step is FAILED or DEAD_LETTERED |

@@ -44,6 +44,7 @@ from .settings import ApiSettings
 from .store import Store
 from .validation import (
     DISPATCH_METADATA_KEY,
+    INPUT_FROM_METADATA_KEY,
     DispatchOptions,
     StepSpec,
     reject_reserved_metadata,
@@ -299,6 +300,13 @@ class SubmissionService:
         ]
         integrator_step_id: str | None = None
         try:
+            # The WORKFLOW's own metadata, up front and inside this try. It is
+            # copied onto every step's task below, so a reserved key here would
+            # otherwise reach the root steps verbatim and be silently replaced
+            # on a step that declares its own `input_from` (#151). `_build_task`
+            # would refuse it too, but only mid-loop, outside this try, so the
+            # refusal would go uncounted.
+            reject_reserved_metadata(spec.metadata)
             order = validate_dag(step_specs, max_steps=self._settings.core.max_workflow_steps)
             dispatch = resolve_dispatch_options(
                 strategy=spec.strategy,
@@ -352,8 +360,12 @@ class SubmissionService:
                 repository_url=spec.repository_url,
                 repository_ref=spec.repository_ref,
             )
+            # The one place `metadata.input_from` is written. After `_build_task`,
+            # which refused the key in the caller's metadata, so what lands here
+            # is only ever this rewrite of a step declaration the DAG check has
+            # already accepted (#151).
             if source.input_from:
-                task.metadata["input_from"] = {
+                task.metadata[INPUT_FROM_METADATA_KEY] = {
                     step_task_id[src]: filename for src, filename in source.input_from.items()
                 }
             step_task_id[step_id] = task.id

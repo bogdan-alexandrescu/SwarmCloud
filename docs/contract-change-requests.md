@@ -205,6 +205,15 @@ work can be routed between agents for the first time") as one of "two
 frozen-contract REQUESTS, raised rather than made" -- and then recorded in a
 commit message, which is not a place anybody looks for an open decision.
 
+**Update 2026-09-25 (#151):** failure (a) below, a plain `POST /v1/tasks`
+carrying `metadata.input_from` past every DAG check, is closed on the unfrozen
+side. The owner decided that the key is reserved, like `dispatch`.
+`reject_reserved_metadata` now refuses it from callers with 422
+`invalid_dispatch`, on a task, a batch and a workflow's own `metadata`, and
+creates nothing. Workflow expansion is the only writer. The request for a typed
+field is still open. It never depended on (a) alone: the five spellings below
+remain, and the worker still re-validates a free-form dict.
+
 ### What is asked for
 
 A field on `Task`, mirroring the one `WorkflowStep` already has:
@@ -284,6 +293,17 @@ any of their own tasks, with no dependency edge and no guarantee the upstream
 ran. A typed field gives the API one field to validate on every path, instead of
 one path validating a key the other path waves through.
 
+**Closed on the unfrozen side, 2026-09-25 (#151).** The paragraphs above describe
+the code before that date. The owner chose to refuse the key from callers rather
+than validate it for a standalone task. `reject_reserved_metadata` now reserves
+`input_from` alongside `dispatch`, so a `POST /v1/tasks` (or a batch) carrying it
+gets 422 `invalid_dispatch` and nothing is created. A workflow whose own
+`metadata` carries it is refused the same way, which also closes the path by
+which that value reached every root step verbatim. The test at
+`test_dispatch_strategy.py` quoted above no longer pins `input_from` as allowed.
+`tests/unit/control_plane/test_input_from_is_reserved.py` holds the refusal, the
+empty store after it, and workflow expansion still writing the key.
+
 **(b) The UI's copy is already wrong.** `codec.workflow_to_api:486` serves
 `"input_from": s.input_from`, a `dict[str, str]`. `swarm-ui/src/types.ts:1227`
 declares `input_from: string | null`, and the fixture at `api.ts:1185-1191`
@@ -314,8 +334,9 @@ well today. Two things then need doing on the **unfrozen** side regardless, and
 neither needs this request:
 
 * `reject_reserved_metadata` should reserve `input_from`, or `_build_task`
-  should validate it for a standalone task. Right now the DAG rule is
-  enforceable on only one of the two ways a task is created.
+  should validate it for a standalone task. **Done** the first way, by owner
+  decision on #151 (2026-09-25): the key is refused from callers on every path
+  that creates a task, and only workflow expansion writes it.
 * `swarm-ui/src/types.ts` should declare `input_from` as
   `Record<string, string>`. **Done**, along with the fixture in `api.ts` that
   built it as a bare string, and `check-contract-parity.sh` section 5 now

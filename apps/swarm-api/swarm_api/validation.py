@@ -227,6 +227,14 @@ _NEEDS_REPOSITORY_STRATEGIES = ("direct-pr", "integrate")
 
 
 class DispatchOptionError(ValidationFailed):
+    """422 `invalid_dispatch`: a refused dispatch option, or a reserved metadata key.
+
+    The `metadata.input_from` reservation (#151) answers with this code too,
+    rather than a new one. The owner's instruction was "reserved, like
+    dispatch", and a caller branching on the code should read both reservations
+    the same way. `detail.reserved_metadata_keys` says which key it was.
+    """
+
     code = "invalid_dispatch"
 
 
@@ -287,20 +295,56 @@ def _accepted_value(name: str, value: Any, accepted: tuple[str, ...], detail_key
     return text
 
 
-def reject_reserved_metadata(metadata: dict[str, Any]) -> None:
-    """`metadata.dispatch` is computed by this service, never accepted from a caller.
+#: Why each reserved key is refused, and what the caller should send instead.
+#: A refusal that says only "reserved" leaves the caller guessing at the one
+#: part they can act on.
+_RESERVED_BECAUSE = {
+    DISPATCH_METADATA_KEY: (
+        f"metadata.{DISPATCH_METADATA_KEY} is reserved: it records the strategy "
+        "and carrier this service resolved for the dispatch. Use the top-level "
+        "`strategy` and `carrier` fields instead."
+    ),
+    INPUT_FROM_METADATA_KEY: (
+        f"metadata.{INPUT_FROM_METADATA_KEY} is reserved: it is set by workflow "
+        "expansion, which rewrites a step's `input_from` to the ids of the "
+        "upstream tasks it creates. To stage an upstream step's artifact, submit "
+        "a workflow (POST /v1/workflows) and declare `input_from` on the step "
+        "that needs it, with the upstream step in its `depends_on`."
+    ),
+}
 
-    Accepting it would let a caller write a role, an integrates list, or a
-    strategy that never passed the checks below, straight into the document the
-    worker acts on.
+
+def reject_reserved_metadata(metadata: dict[str, Any]) -> None:
+    """Refuse a caller's metadata that names a key this service writes.
+
+    `metadata.dispatch`: accepting it would let a caller write a role, an
+    integrates list, or a strategy that never passed the checks below, straight
+    into the document the worker acts on.
+
+    `metadata.input_from` (owner decision on #151, 2026-09-25): the worker
+    stages whatever it names. Accepted from a caller, it arrived with no
+    dependency edge, so nothing guaranteed the upstream had run, and a bad
+    declaration was refused only at run time, after the task had been admitted
+    and had held capacity. Workflow expansion is the only writer, because only
+    it has checked the declaration against the DAG. ANY value is refused, `{}`
+    and None included: the key is reserved, not validated.
+
+    HOW THE SERVICE'S OWN WRITES GET PAST THIS: ORDER, NOT A FLAG. This runs on
+    the caller's metadata only, before either key is added. `_build_task` calls
+    it, then adds `dispatch`. `submit_workflow` calls it on the workflow's own
+    metadata, and adds `input_from` to a step's task after `_build_task` has
+    returned. Nothing a caller sends can reach the store under either key.
+
+    Every reserved key present is named in the detail, in RESERVED_METADATA_KEYS
+    order, so a caller who sent two learns about both from one refusal.
     """
-    if DISPATCH_METADATA_KEY in metadata:
-        raise DispatchOptionError(
-            f"metadata.{DISPATCH_METADATA_KEY} is reserved: it records the strategy "
-            "and carrier this service resolved for the dispatch. Use the top-level "
-            "`strategy` and `carrier` fields instead.",
-            detail={"reserved_metadata_keys": [DISPATCH_METADATA_KEY]},
-        )
+    present = [key for key in RESERVED_METADATA_KEYS if key in metadata]
+    if not present:
+        return
+    raise DispatchOptionError(
+        " ".join(_RESERVED_BECAUSE[key] for key in present),
+        detail={"reserved_metadata_keys": present},
+    )
 
 
 def resolve_dispatch_options(

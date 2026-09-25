@@ -160,7 +160,11 @@ def test_a_plain_task_without_it_is_accepted_and_stores_no_input_from(client, db
 
     assert response.status_code == 201, response.text
     task_id = response.json()["task"]["id"]
-    assert db.paths("tasks/") == [f"tasks/{task_id}"]
+    # Task documents only: an accepted task also writes its submission event
+    # under tasks/<id>/events/, which the refusal tests rightly count as
+    # "something created" and this one must not mistake for a second task.
+    task_documents = [path for path in db.paths("tasks/") if path.count("/") == 1]
+    assert task_documents == [f"tasks/{task_id}"]
     stored = db.docs[f"tasks/{task_id}"]
     assert stored["state"] == "READY"
     assert stored["metadata"]["unit"] == "payments"
