@@ -37,6 +37,12 @@ project ones, and this project has no organisation or folder.
 
 ## Before you dispatch (read-only)
 
+0. The pull request that adds `iam-refusal-probe.yml` is merged. GitHub
+   dispatches only a workflow that exists on the default branch. Before the
+   merge, `gh workflow run` and `gh run list --workflow iam-refusal-probe.yml`
+   answer `HTTP 404: workflow iam-refusal-probe.yml not found on the default
+   branch` (measured 2026-09-25, with the pull request open).
+
 1. The targeted apply has landed:
 
    ```bash
