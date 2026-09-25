@@ -15,9 +15,15 @@ file pins the parts a process cannot show from the outside:
     window, transactions included, is measured in
     `test_startup_window_under_real_transactions.py`.
   * **A control plane the worker cannot read** at the generation check ends
-    startup with 78 and one structured error, and writes nothing.
-  * the DNS preflight's deadline, its choice of hosts, and the signal routing
-    that keeps the SIGTERM stack dump armed.
+    startup with one structured error, and writes nothing. Which exit depends
+    on what Firestore said (owner, 2026-09-25: 78 is non-retryable). A
+    REFUSAL (PERMISSION_DENIED) will be refused again, so it is 78, "cannot
+    start", and its cause goes to the termination message. UNAVAILABLE or a
+    spent budget may be gone on the next attempt, so it is 69, which the
+    reconciler retries like any lost attempt.
+  * the DNS preflight's deadline, its bounded retries, its choice of hosts,
+    and the signal routing that keeps the SIGTERM stack dump armed while the
+    worker starts and disarms it once the runner exists.
 
 HOW THE SIGTERM IS DELIVERED. The test calls the handler that `run()`
 installed, fetched with `signal.getsignal`, at the point the signal would have
@@ -57,6 +63,13 @@ from conftest import TENANT, seed_attempt
 #: 128 + SIGTERM. Restated rather than imported: the number is the contract
 #: with whoever reads the pod's exit status.
 INTERRUPTED = 143
+
+#: The worker could not start, and trying again would fail the same way. The
+#: reconciler fails the task on it, with no retry. Restated for the same reason.
+CANNOT_START = 78
+
+#: A dependency was unavailable before the runner. The reconciler retries it.
+UNAVAILABLE = 69
 
 
 class _Exited(BaseException):
@@ -297,11 +310,29 @@ def _unreachable(kind: str) -> BaseException:
     return core.PermissionDenied("Missing or insufficient permissions.")
 
 
-@pytest.mark.parametrize("kind", ["retry-budget-spent", "unavailable", "permission-denied"])
-def test_a_control_plane_it_cannot_read_ends_startup_with_78_and_writes_nothing(
-    db, worker_factory, log_stream, monkeypatch, kind
+@pytest.mark.parametrize(
+    ("kind", "expected_exit"),
+    [
+        ("retry-budget-spent", UNAVAILABLE),
+        ("unavailable", UNAVAILABLE),
+        ("permission-denied", CANNOT_START),
+    ],
+)
+def test_a_control_plane_it_cannot_read_ends_startup_and_writes_nothing(
+    db, worker_factory, log_stream, monkeypatch, tmp_path, kind, expected_exit
 ):
-    """Before: the exception left `run()` as a bare traceback, after up to 300 s."""
+    """Before #57: the exception left `run()` as a bare traceback, after up to 300 s.
+
+    After it, every one of these was 78. With 78 now meaning "fail the task,
+    do not retry", only the refusal keeps it. An outage that outlasted the
+    30 s budget is 69 and the reconciler requeues the task, exactly as it did
+    for these 78s before the reconciler read exit codes at all.
+    """
+    from agent_worker import startup
+
+    termination_log = tmp_path / "termination-log"
+    termination_log.write_text("")
+    monkeypatch.setattr(startup, "TERMINATION_MESSAGE_PATH", str(termination_log), raising=False)
     seed_attempt(db)
     worker, _, _ = worker_factory()
     error = _unreachable(kind)
@@ -315,16 +346,27 @@ def test_a_control_plane_it_cannot_read_ends_startup_with_78_and_writes_nothing(
     monkeypatch.setattr(FakeDocumentRef, "get", unreadable)
     monkeypatch.setattr(lifecycle, "ChildProcess", ExplodingChildProcess)
 
-    assert worker.run() == ExitCode.CONFIG
+    assert worker.run() == expected_exit
     assert db.writes == [], db.writes
     errors = [r for r in _records(log_stream) if r["severity"] == "ERROR"]
     assert errors, "nothing was logged"
     last = errors[-1]
     assert last["phase"] == "validate_generation"
     assert last["error_type"] == type(error).__name__
-    assert last["exit_code"] == ExitCode.CONFIG
+    assert last["exit_code"] == expected_exit
     if kind == "retry-budget-spent":
         assert "ServiceUnavailable" in last["cause"], last
+
+    written = termination_log.read_text()
+    if expected_exit == CANNOT_START:
+        # The reconciler's only way to learn why: Firestore said no to this
+        # worker, so the worker cannot write it there.
+        record = json.loads(written)
+        assert record["exit_code"] == CANNOT_START, record
+        assert record["phase"] == "validate_generation", record
+        assert "PermissionDenied" in record["cause"], record
+    else:
+        assert written == "", "a retryable exit wrote a cannot-start cause"
 
 
 # ---------------------------------------------------------------------------
@@ -492,6 +534,109 @@ def test_lookups_that_never_answer_share_one_deadline():
         assert "no answer within 0.5s" in by_host[host]["error"], by_host[host]
 
 
+# -- the retries (owner, 2026-09-25) -----------------------------------------
+
+
+class _Resolver:
+    """Fails each name a set number of times, then answers. Counts every ask."""
+
+    def __init__(self, failures: dict[str, int]) -> None:
+        self.failures = dict(failures)
+        self.asked: list[str] = []
+        self._lock = threading.Lock()
+
+    def __call__(self, host: str) -> Any:
+        import socket
+
+        with self._lock:
+            self.asked.append(host)
+            left = self.failures.get(host, 0)
+            if left:
+                self.failures[host] = left - 1
+        if left:
+            raise socket.gaierror(socket.EAI_AGAIN, "Temporary failure in name resolution")
+        return _answers(host)
+
+
+def test_one_failed_lookup_is_retried_after_a_backoff_and_the_preflight_passes():
+    from agent_worker.startup import dns_preflight_with_retries
+
+    resolver = _Resolver({"firestore.example": 1})
+    slept: list[float] = []
+    failed: list[tuple[int, list[str], float]] = []
+
+    outcome = dns_preflight_with_retries(
+        ["metadata.example", "firestore.example"],
+        attempts=3,
+        budget_seconds=2,
+        backoff=(2.0, 5.0),
+        resolve=resolver,
+        sleep=slept.append,
+        on_failed_attempt=lambda n, bad, wait: failed.append((n, [r["host"] for r in bad], wait)),
+    )
+
+    assert outcome.ok, outcome
+    assert outcome.attempts == 2
+    assert slept == [2.0]
+    assert failed == [(1, ["firestore.example"], 2.0)]
+    # A name that answered is not asked again.
+    assert resolver.asked.count("metadata.example") == 1
+    assert resolver.asked.count("firestore.example") == 2
+    assert [r["host"] for r in outcome.results] == ["metadata.example", "firestore.example"]
+
+
+def test_a_resolver_that_keeps_failing_gets_every_attempt_and_every_backoff_then_is_reported():
+    from agent_worker.startup import dns_preflight_with_retries
+
+    resolver = _Resolver({"firestore.example": 99})
+    slept: list[float] = []
+    failed: list[int] = []
+
+    outcome = dns_preflight_with_retries(
+        ["firestore.example"],
+        attempts=3,
+        budget_seconds=2,
+        backoff=(2.0, 5.0),
+        resolve=resolver,
+        sleep=slept.append,
+        on_failed_attempt=lambda n, _bad, _wait: failed.append(n),
+    )
+
+    assert not outcome.ok
+    assert outcome.attempts == 3
+    assert resolver.asked == ["firestore.example"] * 3
+    # No sleep after the last attempt: the answer is final, and waiting would
+    # only hold the slot longer.
+    assert slept == [2.0, 5.0]
+    # The last failure is the caller's error line, not a retry warning.
+    assert failed == [1, 2]
+    [result] = outcome.unreachable
+    assert result["host"] == "firestore.example" and "gaierror" in result["error"]
+
+
+def test_the_retry_window_is_inside_what_was_asked_and_inside_the_dispatch_deadline():
+    """3-4 attempts over about 30-45 s (owner, 2026-09-25), and well before the reconciler's clock.
+
+    A worker that has not heartbeated is judged by its lease's dispatch
+    deadline alone, 300 s after admission (`reconciler.detect.detect_stale_leases`).
+    The worker's own "cannot start" has to arrive long before that, or the
+    reconciler reclaims the lease as silent and the cause is lost again.
+    """
+    from agent_worker import startup
+    from swarm_common.config import Settings
+
+    assert 3 <= startup.DNS_PREFLIGHT_ATTEMPTS <= 4
+    assert len(startup.DNS_PREFLIGHT_BACKOFF_SECONDS) >= startup.DNS_PREFLIGHT_ATTEMPTS - 1
+    window = (
+        startup.DNS_PREFLIGHT_ATTEMPTS * startup.DNS_PREFLIGHT_BUDGET_SECONDS
+        + sum(startup.DNS_PREFLIGHT_BACKOFF_SECONDS[: startup.DNS_PREFLIGHT_ATTEMPTS - 1])
+    )
+    assert startup.DNS_PREFLIGHT_WINDOW_SECONDS == window
+    assert 30 <= window <= 45, window
+    dispatch_deadline = Settings.__dataclass_fields__["dispatch_timeout_seconds"].default
+    assert window < dispatch_deadline / 4, (window, dispatch_deadline)
+
+
 @pytest.mark.parametrize(
     ("env", "hosts"),
     [
@@ -540,6 +685,61 @@ def test_rerouting_signals_keeps_the_sigterm_stack_dump_armed():
     finally:
         signal.signal(signal.SIGTERM, previous)
         signal.signal(signal.SIGINT, previous_int)
+
+
+def test_disarming_the_stack_dump_leaves_the_python_handler_in_place():
+    """Once the runner exists the dump is disarmed, and the lifecycle's handler still runs."""
+    import faulthandler
+
+    from agent_worker import startup
+
+    previous = signal.getsignal(signal.SIGTERM)
+    previous_int = signal.getsignal(signal.SIGINT)
+
+    def handler(_signum: int, _frame: Any) -> None:
+        pass
+
+    try:
+        assert startup.route_signals(handler)
+        assert startup.stack_dump_armed()
+        assert startup.disarm_stack_dump() is True
+        assert not startup.stack_dump_armed()
+        assert signal.getsignal(signal.SIGTERM) is handler
+        # False: nothing left registered to unregister.
+        assert faulthandler.unregister(signal.SIGTERM) is False
+        # Idempotent: an in-place restart of the runner disarms again.
+        assert startup.disarm_stack_dump() is False
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+        signal.signal(signal.SIGINT, previous_int)
+
+
+def test_a_sigterm_once_the_runner_exists_is_one_info_line(db, worker_factory, log_stream):
+    """The handler in its last window: set the flag, say so at INFO, raise nothing.
+
+    Called the way the interpreter calls it, on the main thread, with the
+    worker in the window a running agent is in. `test_startup_is_loud.py`
+    sends a real SIGTERM to a real running worker and checks stderr.
+    """
+    seed_attempt(db)
+    worker, _, _ = worker_factory()
+    previous = signal.getsignal(signal.SIGTERM)
+    previous_int = signal.getsignal(signal.SIGINT)
+    try:
+        worker._install_signal_handlers()
+        worker.phases.enter("runner")
+        handler = signal.getsignal(signal.SIGTERM)
+        handler(signal.SIGTERM, None)
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+        signal.signal(signal.SIGINT, previous_int)
+
+    assert worker._interrupted is True
+    said = [r for r in _records(log_stream) if "SIGTERM" in str(r.get("message", ""))]
+    assert len(said) == 1, said
+    assert said[0]["message"] == "stopping: SIGTERM in phase runner", said[0]
+    assert said[0]["severity"] == "INFO", said[0]
+    assert db.writes == [], "the handler wrote something; the supervision loop owns the stop"
 
 
 def test_a_sigterm_exits_even_when_the_logger_is_mid_line():
