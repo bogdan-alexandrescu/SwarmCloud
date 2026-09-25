@@ -70,6 +70,7 @@ from .validation import (
     validate_resource_class_override,
     validate_runner_profile,
     validate_timeout,
+    validate_workflow_input_from_metadata,
 )
 from .waker import SchedulerWaker
 
@@ -308,7 +309,10 @@ class SubmissionService:
             StepSpec(
                 step_id=s.step_id,
                 depends_on=tuple(s.depends_on),
-                input_from=tuple(s.input_from),
+                # The filenames too, not only the parent ids: validate_dag
+                # refuses two parents staging one filename, and a filename that
+                # is absolute or traverses, before anything is created (#64).
+                input_from=dict(s.input_from),
             )
             for s in spec.steps
         ]
@@ -323,6 +327,10 @@ class SubmissionService:
             # try, so the refusal would go uncounted.
             reject_reserved_metadata(spec.metadata)
             order = validate_dag(step_specs, max_steps=self._settings.core.max_workflow_steps)
+            # The workflow's OWN metadata too: it is copied onto every step's
+            # task below, and a root step, which cannot declare an input_from of
+            # its own, carries this one to the worker unchanged (#64).
+            validate_workflow_input_from_metadata(spec.metadata)
             dispatch = resolve_dispatch_options(
                 strategy=spec.strategy,
                 carrier=spec.carrier,

@@ -127,13 +127,31 @@ fi
 """
 
 
-def _register(tmp: Path, group: str, bucket_policy: str | None = None) -> str:
+def _register(
+    tmp: Path,
+    group: str,
+    bucket_policy: str | None = None,
+    extra: tuple[str, ...] = (),
+) -> str:
     """Drive the real script under --dry-run and return everything it printed.
 
     `bucket_policy` is the JSON the fake gcloud hands back for
     `storage buckets get-iam-policy`; None means the policy is empty, which is a
-    bucket nobody is bound on yet.
+    bucket nobody is bound on yet. `extra` is appended to the command line.
     """
+    proc = _run_register(tmp, group, bucket_policy, extra)
+    transcript = proc.stdout + proc.stderr
+    assert proc.returncode == 0, f"register-tenant.sh --dry-run failed:\n{transcript}"
+    return transcript
+
+
+def _run_register(
+    tmp: Path,
+    group: str,
+    bucket_policy: str | None = None,
+    extra: tuple[str, ...] = (),
+) -> subprocess.CompletedProcess[str]:
+    """`_register` without the success assertion, for the runs that must refuse."""
     bin_dir = tmp / "bin"
     bin_dir.mkdir()
     for name, body in (("gcloud", FAKE_GCLOUD), ("curl", FAKE_CURL)):
@@ -162,13 +180,10 @@ def _register(tmp: Path, group: str, bucket_policy: str | None = None) -> str:
     env["NO_COLOR"] = "1"
     env["FAKE_BUCKET_POLICY"] = str(policy_file)
 
-    proc = subprocess.run(
-        [str(SCRIPT), "--group", group, "--dry-run", "--skip-k8s"],
+    return subprocess.run(
+        [str(SCRIPT), "--group", group, "--dry-run", "--skip-k8s", *extra],
         cwd=REPO, env=env, capture_output=True, text=True, timeout=180,
     )
-    transcript = proc.stdout + proc.stderr
-    assert proc.returncode == 0, f"register-tenant.sh --dry-run failed:\n{transcript}"
-    return transcript
 
 
 @pytest.fixture(scope="module")
@@ -371,3 +386,56 @@ def test_this_tenants_own_bindings_are_still_recognised(tmp_path) -> None:
     ], "a binding this tenant already holds was added again:\n" + transcript
     assert "storage access already granted" in transcript, transcript
     assert "swarmBucketMetadataReader already granted" in transcript, transcript
+
+
+# ---------------------------------------------------------------------------
+# The tenant pool's ceiling
+# ---------------------------------------------------------------------------
+#
+# `max_active` and `capacity_units` bound ONE count: the units the tenant's
+# running work holds, where every task costs at least one. So the API writes
+# the tenant pool's hard limit as min(max_active, capacity_units) --
+# swarm_api/store.py, in `ensure_tenant` and on every `set_tenant_limits` --
+# and the console's Tenants screen prints that minimum as the ceiling
+# admission enforces (AH-12 in #86).
+#
+# This script wrote CAPACITY_UNITS. At its own defaults (20 and 40) that is a
+# pool admitting 40 units for a tenant whose record, the API and the console
+# all say is capped at 20. Found in review of #161.
+
+
+@pytest.mark.parametrize(
+    ("max_active", "capacity_units", "ceiling"),
+    [
+        ("20", "40", 20),  # the defaults: capacity_units is the larger
+        ("10", "4", 4),  # capacity_units is the smaller
+        ("7", "7", 7),
+    ],
+)
+def test_the_tenant_pool_is_capped_at_the_smaller_limit(
+    tmp_path, max_active: str, capacity_units: str, ceiling: int
+) -> None:
+    transcript = _register(
+        tmp_path,
+        "eng@saga.xyz",
+        extra=("--max-active", max_active, "--capacity-units", capacity_units),
+    )
+    pool = f"pools/tenant:{tenant_id_for_group('eng@saga.xyz')}"
+    assert f"would write {pool} with hard_limit={ceiling}" in transcript, (
+        f"max_active={max_active} capacity_units={capacity_units} must write the "
+        f"tenant pool at min(...) = {ceiling}, as swarm_api/store.py does:\n{transcript}"
+    )
+
+
+@pytest.mark.parametrize("value", ["forty", "-5", "1e3", "4 + 4"])
+def test_a_limit_that_is_not_a_whole_number_is_refused(tmp_path, value: str) -> None:
+    """The minimum is computed in shell arithmetic, which evaluates what it is given.
+
+    `$(( ... ))` reads a bare word as a variable name and `4 + 4` as a sum, so
+    an unchecked limit would become a ceiling nobody typed. jq's `--argjson`
+    used to be the only check, and it accepted a negative number.
+    """
+    proc = _run_register(tmp_path, "eng@saga.xyz", extra=("--max-active", value))
+    transcript = proc.stdout + proc.stderr
+    assert proc.returncode != 0, f"--max-active {value!r} was accepted:\n{transcript}"
+    assert "--max-active" in transcript, transcript

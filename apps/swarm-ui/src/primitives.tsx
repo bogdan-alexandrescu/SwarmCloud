@@ -290,6 +290,11 @@ export function UtilTrack({
  * names them), so they are drawn here in that order and nowhere else. The
  * `title`s are the long forms of three columns that ellipsise; each is
  * optional because not every column has one.
+ *
+ * `byNote` says the last column is a NOTE rather than provenance (OV-7): a
+ * status that changes what the row means -- "sign in again", "paused", which
+ * pool binds -- as against a window name and an age. It is the `is-note` hook
+ * a screen's phone rule uses to keep that column when it drops the rest.
  */
 export function UtilRow({
   name,
@@ -299,6 +304,7 @@ export function UtilRow({
   figureTitle,
   by,
   byTitle,
+  byNote = false,
 }: {
   name: ReactNode
   nameTitle?: string | undefined
@@ -307,6 +313,7 @@ export function UtilRow({
   figureTitle?: string | undefined
   by: ReactNode
   byTitle?: string | undefined
+  byNote?: boolean | undefined
 }) {
   return (
     <div className="ctl-util">
@@ -317,7 +324,7 @@ export function UtilRow({
       <span className="ctl-util-figure" title={figureTitle}>
         {figure}
       </span>
-      <span className="ctl-util-by" title={byTitle}>
+      <span className={byNote ? 'ctl-util-by is-note' : 'ctl-util-by'} title={byTitle}>
         {by}
       </span>
     </div>

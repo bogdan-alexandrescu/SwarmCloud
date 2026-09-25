@@ -445,12 +445,15 @@ describe('B4.3: the six moves', () => {
 describe('one control, one appearance', () => {
   it('draws `.retry` the same inside a state panel and outside one', () => {
     // `.retry` is the product's "try that again" button and it is rendered in
-    // five files -- ErrorBoundary, Shell twice, Overview and PlatformCounts.
-    // It was styled as `.state .retry`, scoped to the panel it happened to be
-    // written for first, and PlatformCounts' "Run the count" is not inside a
-    // `.state` at all: the same control had two appearances, one of which was
-    // whatever the browser draws by default. The spacing probe found it by
-    // failing to resolve `buttonface` to a colour.
+    // several files -- ErrorBoundary, Shell twice, Overview, ArtifactViewer and
+    // CheckpointBrowser. It was styled as `.state .retry`, scoped to the panel
+    // it happened to be written for first, and a retry drawn outside a
+    // `.state` -- CheckpointBrowser's "try again" sits in a `.ctl-empty` --
+    // had whatever the browser draws by default: the same control had two
+    // appearances. The spacing probe found it by failing to resolve
+    // `buttonface` to a colour. (PlatformCounts' "Run the count" was the first
+    // such case; AH-25 moved it into the head line as a `.sub button`, the same
+    // read-now control as Screen's `refresh`, so it is no longer a `.retry`.)
     //
     // This is the claim the probe CANNOT make -- it measures geometry and
     // contrast, not "these two are the same button" -- so it is made here, on
@@ -461,7 +464,7 @@ describe('one control, one appearance', () => {
         <div className="state">
           <button className="retry">Try again</button>
         </div>
-        <button className="retry">Run the count</button>
+        <button className="retry">try again</button>
       </div>,
     )
     const both = [...container.querySelectorAll<HTMLElement>('.retry')]
@@ -1549,6 +1552,91 @@ describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
     expect(won(pick(f, 'b'), 'justify-self', WIDE), 'the key stays left').toBe('start')
   })
 
+  it('AH-18: a Help topic is a row of its region, and the deep-linked one takes the selection treatment', () => {
+    // §13.3: a region is `.section`, and what repeats inside it draws nothing.
+    // Every topic was a bordered, filled, rounded panel written inline.
+    const f = fragment(
+      '<section class="section"><h2>Reading a figure</h2>' +
+        '<div class="help-topic"><h3>Absent is not zero</h3><p>A digit is a measurement.</p>' +
+        '<dl><div><dt>LEASED</dt><dd>reserves capacity</dd></div></dl>' +
+        '<p class="help-topic-anchor">#help/absent-vs-zero</p></div>' +
+        '<div class="help-topic is-current"><h3>A failed read is not an empty result</h3><p>Two answers.</p></div>' +
+        '</section>',
+    )
+    const [plain, current] = [...f.querySelectorAll('.help-topic')] as [Element, Element]
+    const nothingOrZero = (v: string | null) => v === null || /^0(px)?$/.test(v) || v === 'none'
+
+    // NO BOX. MUTATION: give `.help-topic` a border or a background.
+    for (const [side, props] of [
+      ['top', ['border-top-width', 'border-top', 'border-width', 'border', 'border-block-start-width', 'border-block-start', 'border-block-width', 'border-block']],
+      ['right', ['border-right-width', 'border-right', 'border-width', 'border', 'border-inline-end-width', 'border-inline-end', 'border-inline-width', 'border-inline']],
+      ['bottom', ['border-bottom-width', 'border-bottom', 'border-width', 'border', 'border-block-end-width', 'border-block-end', 'border-block-width', 'border-block']],
+    ] as const) {
+      expect(nothingOrZero(won(plain, props, WIDE)), `a topic draws a ${side} border`).toBe(true)
+    }
+    expect(won(plain, ['background', 'background-color'], WIDE), 'a topic draws a fill').toBeNull()
+    expect(won(plain, ['border-radius'], WIDE), 'a topic rounds a box it no longer has').toBeNull()
+
+    // THE RULE IS DECLARED ON EVERY TOPIC, TRANSPARENT, so marking one current
+    // changes a colour and a fill and moves nothing (§13.5's declared border).
+    // MUTATION: declare the rule only on `.is-current`.
+    for (const t of [plain, current]) {
+      expect(won(t, ['border-inline-start-width', 'border-inline-start', 'border-left-width', 'border-left'], WIDE)).toBe('2px')
+      expect(won(t, ['border-inline-start-style', 'border-inline-start', 'border-left-style', 'border-left'], WIDE)).toBe('solid')
+      expect(won(t, ['padding-inline-start', 'padding-left', 'padding-inline', 'padding'], WIDE)).toBe('var(--ctl-s3)')
+      expect(won(t, ['padding-block', 'padding-top', 'padding-block-start', 'padding'], WIDE)).toBe('var(--ctl-s2)')
+    }
+    expect(won(plain, ['border-inline-start-color', 'border-inline-start', 'border-left-color', 'border-left'], WIDE)).toBe('transparent')
+
+    // §1.3's SELECTION: a surface step and a 2px ink rule. The 3px `--text-dim`
+    // rule this replaces is the track axis's measured-zero mark.
+    // MUTATION: `--text-dim` back, or drop the fill.
+    expect(won(current, ['border-inline-start-color', 'border-inline-start', 'border-left-color', 'border-left'], WIDE)).toBe('var(--text)')
+    expect(won(current, ['background-color', 'background'], WIDE)).toBe('var(--surface-2)')
+
+    // Separated by the large break and nothing else.
+    expect(won(current, ['margin-top', 'margin-block-start', 'margin-block', 'margin'], WIDE)).toBe('var(--ctl-s5)')
+    // THE SCROLL MARGIN STAYS AT ONE LARGE BREAK, as the owner's AH-18 decision
+    // says in so many words ("scroll-margin-top stays at --ctl-s5"). #161
+    // shipped AH-16's `calc(var(--ctl-s5) * 3)` instead and pinned it here.
+    // MUTATION: the tripled margin back.
+    expect(won(plain, ['scroll-margin-top', 'scroll-margin-block-start', 'scroll-margin-block', 'scroll-margin'], WIDE)).toBe(
+      'var(--ctl-s5)',
+    )
+
+    // THE TOPIC TITLE IS THE CARD-TITLE STEP (AH-10), so h1, group h2 and
+    // topic h3 stop all rendering at 18px. MUTATION: `--t-title` on the h3.
+    const h3 = plain.querySelector('h3')!
+    expect(won(h3, ['font-size', 'font'], WIDE)).toBe('var(--t-lead)')
+    expect(won(h3, ['line-height', 'font'], WIDE)).toBe('var(--lh-lead)')
+    expect(won(h3, ['font-weight', 'font'], WIDE)).toBe('600')
+
+    // THE MEASURE IS THE TOKEN, on paragraphs AND on the notes beside a term,
+    // which were uncapped and ran to x≈1222. MUTATION: `68ch`, or drop `dd`.
+    expect(won(plain.querySelector('p')!, 'max-width', WIDE)).toBe('var(--measure)')
+    expect(won(plain.querySelector('dd')!, 'max-width', WIDE)).toBe('var(--measure)')
+
+    // CH-3, moved off the inline style with everything else.
+    expect(won(plain.querySelector('dt')!, 'text-transform', WIDE)).toBe('lowercase')
+  })
+
+  it('AH-25: the cost and the control on the Platform counts head line never split', () => {
+    // The head is Screen's -- a title over one provenance line -- and the cost
+    // of a read is printed immediately before the control that spends it. At
+    // 390 the line wraps; the two must wrap together.
+    // MUTATION: drop `white-space: nowrap` from `.counts-run`.
+    const f = fragment(
+      '<div class="head"><h1>Platform counts</h1></div>' +
+        '<p class="sub">not counted yet · <span class="counts-run"><span class="counts-cost">12–24 count() per run</span> · <button>Run the count</button></span></p>',
+    )
+    for (const env of [PHONE, WIDE]) {
+      expect(won(pick(f, '.counts-run'), 'white-space', env)).toBe('nowrap')
+    }
+    // THE CONTROL IS `.sub button`, THE SAME ACT AS SCREEN'S `refresh`: a
+    // link-style read-now, not the boxed `.retry`. MUTATION: `.retry` back.
+    expect(won(pick(f, 'button'), ['background', 'background-color'], WIDE)).toBe('none')
+  })
+
   it('CH-4: the absent and stale marks put their words on a solid fill and keep the hatch as a band', () => {
     // The contrast half is `test_ui_contrast.py`, which now measures a hatch
     // stripe by stripe. This is the silhouette half: the hatch did not simply
@@ -1594,13 +1682,19 @@ describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
       expect(won(link, 'text-decoration-thickness', WIDE), `"${name}" underline thickness`).toBe('1px')
       expect(won(link, 'color', { ...WIDE, states: ['hover'] }), `"${name}" on hover`).toBe('var(--info)')
     }
-    // The fact strip's hover cue is the same underline (`a.ov-tile`).
+    // A linked fact's cue is the same underline, on its LABEL and at rest
+    // (OV-8): the figure is never underlined, so the fact carries one
+    // affordance, and the label's underline is CH-23's token because the label
+    // is a branch of the link rule. `stylesheet.gate.test.ts` pins the rest of
+    // OV-8 (the figure plain with or without hover). MUTATION: give the label
+    // an underline of its own in `--line-soft`, or drop it from the link rule.
     const tile = fragment(
-      '<a class="ctl-metric ov-tile" href="#x"><span class="ctl-metric-value">4</span></a>',
+      '<a class="ctl-metric ov-tile" href="#x"><span class="ctl-metric-label">Units held</span>' +
+        '<span class="ctl-metric-value">4</span></a>',
     )
-    const value = pick(tile, '.ctl-metric-value')
-    expect(won(value, 'text-decoration-color', { ...WIDE, states: ['hover'] })).toBe('var(--line)')
-    expect(won(value, 'text-decoration-thickness', { ...WIDE, states: ['hover'] })).toBe('1px')
+    const label = pick(tile, '.ctl-metric-label')
+    expect(won(label, 'text-decoration-color', WIDE)).toBe('var(--line)')
+    expect(won(label, 'text-decoration-thickness', WIDE)).toBe('1px')
   })
 
   it('CH-6: API reads and Help mark the current page the way a section does', () => {
