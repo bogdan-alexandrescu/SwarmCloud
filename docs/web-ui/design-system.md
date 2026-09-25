@@ -187,10 +187,10 @@ strip's hover cue all use it; `encoding.hues.test.ts` holds every
 underline in `--line-soft` fails wherever it is written.
 
 `.ctl-link` ships as the primitive; **it is not yet universal and this document
-does not claim it is.** `.ov-link`, `.wb-more a`, `.tile.blocked .t-sub a`,
-`.node-links a` and `.art-md a` are five screen-private link treatments that each
-paint `--info`, and folding them in means editing five screens — the screen
-phase's job. What §11 shipped is the primitive they collapse into, so the screen
+does not claim it is.** `.ov-link`, `.wb-more a`, `.node-links a` and `.art-md a`
+are screen-private link treatments that each paint `--info` (a fifth,
+`.tile.blocked .t-sub a`, went with the Timeline's boxed tiles in TS-11), and
+folding them in means editing those screens — the screen phase's job. What §11 shipped is the primitive they collapse into, so the screen
 lanes cannot each invent a sixth answer.
 
 ### 1.4 The ink rule, and the trap under it
@@ -293,8 +293,8 @@ below them are the owner's and are unchanged.**
 | `--t-micro` | 12 / 1.45 | ages, raw ids, provenance, card feet. The hard floor. |
 | `--t-meta` | 13 / 1.45 | column heads, eyebrows, labels — **a treatment as much as a size**: 600, mono, `--text-faint`. *No longer uppercase and no longer tracked: see §13.2. No longer the chip: see §6.6.* |
 | `--t-body` | 14 / 1.50 | the workhorse: table cells, values, controls, state words, `body` itself |
-| `--t-lead` | 16 / 1.55 | a card title; **the one sentence a screen is allowed** |
-| `--t-title` | **18** / 1.30 | the screen `<h1>`, at weight **600** |
+| `--t-lead` | 16 / 1.55 | a card title; **the one sentence a screen is allowed**; and, at 600, **every section, panel and step heading** (TS-18) |
+| `--t-title` | **18** / 1.30 | the screen `<h1>` (`.head h1`, `.ctl-page-head > h1`), at weight **600** — and only two other things: the product wordmark (`.brand-word`, a logotype, not a heading) and a rendered document's own h1 (`.art-md .art-h[data-level="1"]`), which follows the document's ladder |
 | `--t-figure` | **22** / 1.10 | the one number a card exists for |
 
 **Why the top two moved, and the count cap that matters more than either.**
@@ -341,13 +341,14 @@ and weight 600 — the Overview's attention lead title is an `<h2>` at that step
 and stays distinct from the card titles by its position, its track and its
 unboxed region, which is how the paragraph below ranks hierarchy. **An in-page
 heading that ties with the h1 is a defect.** The in-page headings the sheet
-still draws at `--t-title` are named so the document and the code agree:
-`.section > h2` and `.section > .ctl-toolbar > h2` (§B4.1 of the sheet, pinned
-by `typescale.test.ts`: "a panel title is --t-title"), `.sbf-move-h`,
-`.state h3`, `.ctl-empty > h3`, `.art-head h3` and `.ckb-head h3`. They are
-TS-18's (epic #84), which moves them to `--t-lead`; OV-15 left those rules and
-their tests alone. A rendered document's own h1 (`.art-md .art-h[data-level="1"]`)
-follows the document's ladder, not the console's.
+used to draw at `--t-title` — `.section > h2` and `.section > .ctl-toolbar > h2`
+(§B4.1 of the sheet), `.sbf-move-h`, `.state h3`, `.ctl-empty > h3`,
+`.art-head h3` and `.ckb-head h3` — are TS-18's (epic #84), which moves them to
+`--t-lead`/600 (`timeline.submit.rules.test.ts`). TS-18's first draft kept
+`.ov-lead-title` at `--t-title` as an exception; OV-15 wins on that element
+(resolved on #84, 2026-09-25). A rendered document's own h1
+(`.art-md .art-h[data-level="1"]`) follows the document's ladder, not the
+console's.
 
 `--lh-flush: 1` is not a seventh step; it is legal only inside a `font:`
 shorthand next to a size token, where a fixed box must not grow, and every use
@@ -1610,7 +1611,19 @@ Five kinds of word, and no sixth:
 
 **Forbidden in a data view:** a definition, a rationale, a "what this means", a
 "how to" line, a second sentence anywhere, a paragraph of reassurance on the
-healthy path. `Overview.tsx:2086` currently renders
+healthy path.
+
+**Forms too (TS-23, owner decision 2026-09-25).** The five kinds of word apply
+to a form — Submit a task, Submit a workflow — with one allowance: a field, or
+an offer to add one, may carry **one `--t-micro` note stating what the runner
+does with that key**, read from the runner source. These are the `SUGGESTED` /
+`ANY_PROFILE` notes on `.sbf-offer-note` and `.sbf-note`, kept on purpose.
+Forms get **no how-to lines and no second sentence**: a step with nothing to
+ask yet says `no runner chosen`, not "Choose a runner first — what it reads is
+what this asks for"; an empty input says `` `mock` requires no input `` or `no
+settings`; the room box states its cost as a fact on its head and keeps one
+sentence; and an unread room is the unread mark with a pool count (§8.6), not a
+paragraph saying it is not zero. `Overview.tsx:2086` currently renders
 `checks.map(c => c.note).join(' · ')` — **eight full sentences, ~90 words, on a
 healthy platform, saying nothing is wrong eight different ways.** That is the
 shape being deleted.

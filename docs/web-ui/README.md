@@ -161,8 +161,8 @@ else saved, never a second name this product may emit, and
 - Task timeline (per-task event stream, error banner, GCS log paths)
 
 **[user-activity](07-user-activity.md)**
-- A1 — Activity (tenant timeline: stacked outcome chart, submitted line, 4 stat tiles, coverage bar, runner-profile split)
-- A1 — Recorded spend tile + coverage bar
+- A1 — Activity (tenant timeline: stacked outcome chart read out by its legend, three figures on the metric strip, runner-profile split)
+- A1 — Token spend, summed from task results and marked partial (the coverage bar was replaced by its foot, TS-12)
 - A2 — People (per-engineer table + engineer drawer, derived from A1's rows at zero extra reads)
 - A4 — Tenants (admin roster: tenant_id, kind, principal, enabled, max_active, capacity_units, credential chips)
 - A4 — Platform-wide state counts (admin, behind an explicit button, 5-minute cache)

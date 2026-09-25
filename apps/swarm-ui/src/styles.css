@@ -286,12 +286,24 @@
   /* The ONE prose paragraph a screen is allowed: the sentence under the
      heading that says what the screen is for, and the sentence an empty or
      failed state answers with. A second one on the same screen means one of
-     them is not a lead. */
+     them is not a lead.
+     AND EVERY HEADING BELOW THE H1, at 600 (TS-18): section, panel, card and
+     step titles share this step and are told from the lead sentence by
+     weight. See --t-title for what sits above it. */
   --t-lead: 16px;
   --lh-lead: 1.55;
 
-  /* Panel title and screen h1. Nothing between this and --t-body, which is
-     deliberate: a sub-heading is carried by weight, not by a size step.
+  /* THE SCREEN H1'S STEP (`.head h1`, `.ctl-page-head > h1`), and only one
+     other heading takes it: a rendered document's own h1
+     (`.art-md .art-h[data-level="1"]`), which follows the document's ladder
+     rather than the console's. Every other heading -- section, panel, step,
+     the heading of a state or an empty panel, and Overview's attention lead
+     (`.ov-lead-title`, OV-15, which won over TS-18's first draft on #84) -- is
+     --t-lead, set apart from body by weight (TS-18, design-system.md §2).
+     (The product wordmark, `.brand-word`, also takes this size; it is a
+     logotype, not a heading, and says why beside its rule.)
+     §B4.1 had put `.section > h2` here too, which made a section heading the
+     same 18/600 as the page title above it: a page with no second rank.
 
      20 -> 18 IN THE RESTRAINT PASS. Not because the h1 was wrong on its own,
      but because the step above it had to come down and six steps have to stay
@@ -1024,7 +1036,10 @@ body {
    size, weight and tone. The old comment argued the 13px up from 12px and was
    right about the direction and an order of magnitude short.
 
-   A panel title is `--t-title` in `--text`. The uppercase small-caps treatment
+   A panel title is `--t-lead` in `--text` at 600 -- NOT `--t-title`, which is
+   what §B4.1 first wrote here and what TS-18 corrected: at the h1's own step a
+   section heading was the page title's equal, so the page had no second rank
+   (design-system.md §2). The uppercase small-caps treatment
    is not deleted, it DROPS ONE LEVEL, to panel labels -- `.ov-h > h2` on
    Overview and the `h4`s inside a detail panel keep it, at `--t-meta`, which
    is the step that owns that treatment.
@@ -1035,7 +1050,7 @@ body {
    regardless -- it beats an ancestor by inheritance rather than specificity,
    so it keeps working for whatever heading is uppercase next. */
 .section > h2 {
-  font-size: var(--t-title); line-height: var(--lh-title); font-weight: 600;
+  font-size: var(--t-lead); line-height: var(--lh-lead); font-weight: 600;
   color: var(--text);
   margin: 0 0 10px;
 }
@@ -1094,7 +1109,7 @@ body {
   background: var(--surface);
 }
 .state.failed { border-color: color-mix(in srgb, var(--bad) 50%, var(--line)); }
-.state h3 { margin: 0 0 6px; font-size: var(--t-title); line-height: var(--lh-title); font-weight: 600; }
+.state h3 { margin: 0 0 6px; font-size: var(--t-lead); line-height: var(--lh-lead); font-weight: 600; }
 .state.failed h3 { color: var(--bad); }
 .state p { margin: 0; color: var(--text-dim); font-size: var(--t-lead); line-height: var(--lh-lead); }
 .state pre {
@@ -3066,7 +3081,7 @@ table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--tex
 }
 
 /* A SECTION HEADING INSIDE A TOOLBAR WAS FALLING OFF THE TYPE SCALE.
-   `.section > h2` is `--t-title`, and it is a CHILD combinator; three panels on
+   `.section > h2` is `--t-lead`, and it is a CHILD combinator; three panels on
    the run detail -- Output, Dispatch, Timeline -- put their `<h2>` inside a
    `.ctl-toolbar` so that a qualifier could sit beside it, which took the
    heading out of that rule's reach and handed it the user agent's own
@@ -3076,8 +3091,8 @@ table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--tex
    scoped to it rather than loosened to `.section h2`, which would also catch
    the card titles that are deliberately `--t-lead`. */
 .section > .ctl-toolbar > h2 {
-  font-size: var(--t-title);
-  line-height: var(--lh-title);
+  font-size: var(--t-lead);
+  line-height: var(--lh-lead);
   font-weight: 600;
   color: var(--text);
   margin: 0;
@@ -3113,7 +3128,7 @@ table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--tex
    plus one `--line-soft` hairline, because "a region is a change of subject".
    The drawer's eleven blocks are not eleven subjects — they are one run,
    described from its state down to its event log. Every one of them is already
-   introduced by its own `--t-title` heading, which is a stronger and cheaper
+   introduced by its own `--t-lead` heading, which is a stronger and cheaper
    boundary than a 1px line, and §5.1's standing rule is "grouping is a surface
    step, separation is a hairline, PREFER THE STEP".
 
@@ -3851,6 +3866,31 @@ button.copy:hover { color: var(--text); border-color: var(--text-faint); }
    `--ctl-s1` inside it, so the bar and the date clear the rule rather than
    touching it. */
 .chart .col.is-day-start { border-left: 1px solid var(--line-soft); padding-left: var(--ctl-s1); }
+/* THE PICKED COLUMN (TS-9): the column the legend is reading out, backed by the
+   hueless selection step (§1.3) -- a surface step, never the accent. A column
+   is one tab stop of a roving set, so it takes the one ring the accent is
+   allowed; 1px of offset keeps the ring inside the 3px gap and the scroller. */
+.chart .col.is-picked { background: var(--surface-2); border-radius: var(--ctl-radius-sm); }
+.chart .col:focus-visible { outline: 2px solid var(--info); outline-offset: 1px; }
+/* THE CUE THAT THERE IS MORE (TS-3). The chart opens at its newest end, so on
+   a phone the older buckets are off the LEFT edge -- and a scroller whose
+   scrollbar the platform does not paint gives no sign of them. The phone
+   rail's fade (`--rail-fade`) is the precedent: a mask over the edge, applied
+   only while something is actually hidden there (`has-older` is set from
+   `scrollLeft`), because a permanent fade would dim a bucket for no reason. */
+.chart.has-older {
+  -webkit-mask-image: linear-gradient(to right, transparent 0, #000 var(--ctl-s5));
+  mask-image: linear-gradient(to right, transparent 0, #000 var(--ctl-s5));
+}
+/* EVERY THIRD HOUR ON A PHONE (TS-3). The chart draws the union of the wide
+   axis's labels and the phone's (`axisLabels` / `phoneAxisLabels`), and each
+   set's extras are hidden at the other width. `visibility`, not `display`, so
+   a hidden label keeps its line and the bars stay on one baseline. */
+.col-label.is-phone-only { visibility: hidden; }
+@media (max-width: 560px) {
+  .col-label.is-wide-only { visibility: hidden; }
+  .col-label.is-phone-only { visibility: visible; }
+}
 .stackcol { display: flex; flex-direction: column-reverse; justify-content: flex-start; width: 100%; height: 120px; }
 .stackcol > i { display: block; width: 100%; min-height: 0; }
 /* FOUR OUTCOMES, FOUR FORMS, NOT FOUR HUES (TS-4). They were three flat fills
@@ -3911,35 +3951,21 @@ button.copy:hover { color: var(--text); border-color: var(--text-faint); }
    bucket on completed_at; a task's submission time is a different question"
    was a sentence explaining an axis; this is the axis saying it. */
 .chart-legend .cl-basis { margin-left: var(--ctl-s3); }
+/* THE READOUT (TS-9). The counts are the figures this legend now carries, so
+   they are ink, and tabular so a swap from the window to one column does not
+   jitter the line. The picked column's name leads, in ink too; `all` is a
+   `.sbf-mini` text button and needs only its gap. */
+.chart-legend .cl-n { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+.chart-legend .cl-at { color: var(--text); }
+.chart-legend .cl-all { margin-left: var(--ctl-s2); }
 
-/* ON THE SCALE (TS-21): 14px below the strip and 11/13px inside a tile were
-   three values between steps; each is `--ctl-s3` now, and the 8px gap is
-   written as the step it already was. */
-.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: var(--ctl-s2); margin-bottom: var(--ctl-s3); }
-.tile {
-  padding: var(--ctl-s3); border: 1px solid var(--line);
-  border-radius: var(--radius); background: var(--surface);
-}
+/* `.tiles`, `.tile`, `.t-value`, `.t-sub` and the `.tile.blocked` family are
+   gone with the boxed tiles they drew (TS-11): the Timeline's figures are the
+   shared `.ctl-metrics` strip now, whose absent state is `tone="absent"`. So
+   is `.coverage`, the Timeline's row-count bar and its only caller (TS-12).
+   `.t-label` stays: Dispatch.tsx, SubmitWorkflow.tsx and Accounts.tsx label
+   fields with it. */
 .t-label { display: block; font: var(--t-meta)/var(--lh-meta) var(--mono); color: var(--text-faint); }
-.t-value { display: block; margin: 4px 0 5px; font-size: var(--t-figure); line-height: var(--lh-figure); font-weight: 600; font-variant-numeric: tabular-nums; }
-.t-sub { display: block; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
-/* "not recorded" is a sentence, not a number. A zero here would read as
-   "this engineer spent nothing", which is worse than saying nothing.
-   --t-body, not --t-figure: the figure step is reserved for a figure. */
-.tile.blocked { border-style: dashed; }
-.tile.blocked .t-value { font-size: var(--t-body); color: var(--text-faint); font-weight: 500; }
-/* The absence mark and its way out, on the tile's third line, where the
-   39-word account of the capture bug used to be. Scoped to `.blocked`: the
-   measured variant's third line is a track with a figure under it and must
-   stay a block, or the track collapses to its content width. */
-.tile.blocked .t-sub {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: var(--ctl-s1) var(--ctl-s2);
-}
-.tile.blocked .t-sub a { color: var(--info); text-decoration: underline; text-underline-offset: 3px; }
-.coverage { margin-bottom: 5px; }
 
 /* §B4.3 move 3, the same cap on the proportional row. `minmax(0, 1fr)` in the
    middle stretched the bar to whatever was left, which on a wide screen is a
@@ -3958,7 +3984,6 @@ button.copy:hover { color: var(--text); border-color: var(--text-faint); }
 @media (max-width: 640px) {
   .window-bar { position: static; }
   .wb-controls { margin-left: 0; }
-  .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 /* ---- liveness badge ---- */
@@ -4029,8 +4054,6 @@ button.copy:hover { color: var(--text); border-color: var(--text-faint); }
   background: var(--surface); color: var(--text-dim);
   font-size: var(--t-body); cursor: pointer;
 }
-.tile.alert { border-color: var(--bad); }
-.tile.alert .t-value { color: var(--bad); }
 .pool-group.bad    > h2 { color: var(--bad); }
 .pool-group.warn   > h2 { color: var(--warn); }
 .pool-group.paused > h2 { color: var(--paused); }
@@ -4082,8 +4105,11 @@ table.pools tbody tr.presumed-dead { background: color-mix(in srgb, var(--bad) 9
    under the field now -- the cell keeps its width, and the one row that is
    wrong is the one that grows. The field itself carries the tone once the
    markup sets `aria-invalid` (AdminSettings.tsx's half), so the fault is on
-   the thing that has to change and not only in a caption next to it. */
-.limit-edit input[aria-invalid='true'] { border-color: var(--warn); }
+   the thing that has to change and not only in a caption next to it.
+   THE SUBMIT FORMS' REQUIRED FIELDS TAKE THE SAME EDGE (TS-15): one rule for
+   "this field is what has to change", so the two cannot drift apart. */
+.limit-edit input[aria-invalid='true'],
+.sbf-field [aria-invalid='true'] { border-color: var(--warn); }
 .limit-edit > .warn-text { flex-basis: 100%; margin: 0; }
 .limit-edit button {
   padding: 3px 10px; border: 1px solid var(--line); border-radius: 6px;
@@ -4988,9 +5014,10 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
    `text-underline-offset: 3px` keeps it off the descenders.
 
    NOT YET UNIVERSAL, and the report says so plainly rather than claiming it.
-   `.ov-link`, `.wb-more a`, `.tile.blocked .t-sub a`, `.node-links a` and
-   `.art-md a` are five screen-private link treatments that each paint
-   `--info`, and folding them into this primitive means editing five screens --
+   `.ov-link`, `.wb-more a`, `.node-links a` and `.art-md a` are four
+   screen-private link treatments that each paint `--info` (a fifth,
+   `.tile.blocked .t-sub a`, went with the Timeline's boxed tiles, TS-11), and
+   folding them into this primitive means editing four screens --
    which is the next phase's job, not this one's. What this pass ships is the
    primitive they collapse into, so the screen lanes cannot each invent a sixth
    answer.
@@ -5774,7 +5801,7 @@ a.ctl-metric:focus-visible .ctl-metric-label,
 /* 17b. The Help page's topics (AH-18)                                         */
 /* -------------------------------------------------------------------------- */
 /* A TOPIC IS A ROW OF ITS GROUP, NOT A BOX. design-system §13.3: a region is a
-   `.section` -- the large break, one hairline, a `--t-title` h2 -- and what
+   `.section` -- the large break, one hairline, a `--t-lead` h2 (TS-18) -- and what
    repeats inside it draws nothing. Every topic was an inline-styled bordered
    panel (border, `--surface`, radius, panel padding), because this sheet
    belonged to another track when HelpSection.tsx was written. The box goes;
@@ -6348,8 +6375,7 @@ a.ctl-metric:focus-visible { outline: 2px solid var(--info); outline-offset: 2px
    3px axis into a crescent, and a square end is what an axis looks like. */
 .ctl-track,
 .ctl-util-track,
-.sr-bar,
-.coverage {
+.sr-bar {
   position: relative;
   display: flex;
   height: var(--track-h);
@@ -6365,8 +6391,7 @@ a.ctl-metric:focus-visible { outline: 2px solid var(--info); outline-offset: 2px
 }
 .ctl-track > i,
 .ctl-util-fill,
-.sr-bar > i,
-.coverage > i {
+.sr-bar > i {
   display: block;
   height: 100%;
   background: var(--info);
@@ -6428,14 +6453,12 @@ a.ctl-metric:focus-visible { outline: 2px solid var(--info); outline-offset: 2px
 /* NOT MEASURED. Hatched, no fill, and no axis. */
 .ctl-track.is-unknown,
 .ctl-util-track.is-unknown,
-.sr-bar.is-unknown,
-.coverage.is-unknown {
+.sr-bar.is-unknown {
   background: var(--ctl-hatch);
   border-left-width: 0;
 }
 .ctl-track.is-unknown > i,
-.sr-bar.is-unknown > i,
-.coverage.is-unknown > i { display: none; }
+.sr-bar.is-unknown > i { display: none; }
 /* THE FILL TONES CARRY A TEXTURE, not only a hue. A 10px bar has no room for
    a glyph, so the shape cue has to be in the fill itself. Three textures that
    stay apart at 10px and in greyscale:
@@ -6876,7 +6899,7 @@ a.ctl-metric:focus-visible { outline: 2px solid var(--info); outline-offset: 2px
 }
 .ctl-empty > h3 {
   margin: 0 0 6px;
-  font-size: var(--t-title);
+  font-size: var(--t-lead);
   font-weight: 600;
   color: var(--text);
 }
@@ -7869,9 +7892,13 @@ a.ctl-metric:focus-visible { outline: 2px solid var(--info); outline-offset: 2px
   box-shadow: inset 1px 0 0 var(--text);
 }
 .dsp-option:focus-within { outline: 2px solid var(--info); outline-offset: 2px; }
-/* Visible but not selectable: the reason it cannot be chosen is inside it. */
-.dsp-option.is-off { cursor: not-allowed; opacity: .72; border-style: dashed; }
-.dsp-option.is-off:hover { border-color: var(--line); }
+/* NO `.is-off` CARD (TS-14, owner decision 2026-09-25). The single-task form
+   drew `integrate` as a dashed card at opacity .72 -- a dashed edge is the
+   failed-or-partial-read vocabulary (§8.6), so an option that is simply not
+   applicable read as a broken one, beside a live-looking consequence. The task
+   form now draws only the strategies a task can take and points to the
+   workflow form in one `.ctl-panel-note`; the rules for the card are deleted,
+   so a dashed edge stays reserved for a read that failed or fell short. */
 
 .dsp-option > input { margin: 3px 0 0; accent-color: var(--info); }
 .dsp-option-body { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
@@ -7887,7 +7914,6 @@ a.ctl-metric:focus-visible { outline: 2px solid var(--info); outline-offset: 2px
    link is the accent spent on emphasis, which §11's budget does not allow. */
 .dsp-count { font-size: var(--t-body); font-weight: 600; color: var(--text); }
 .dsp-count.is-none { color: var(--text-dim); font-weight: 500; }
-.dsp-off-why { font-size: var(--t-body); line-height: var(--lh-body); color: var(--text-dim); }
 
 /* The consequence box's rule is a callout edge, not a link and not a state, so
    it is `--text-faint` like every other quiet edge (TS-13). */
@@ -7897,10 +7923,11 @@ a.ctl-metric:focus-visible { outline: 2px solid var(--info); outline-offset: 2px
   border-radius: 0 var(--radius) var(--radius) 0;
   padding: 10px 12px;
 }
-/* `.dsp-consequence.is-none` set the rule to `--text-faint`, which is now what
-   every consequence draws; the headline is what says whether anything is
-   pushed. The restatement is deleted rather than kept agreeing by accident. */
-.dsp-consequence-head { margin: 0 0 4px; font-size: var(--t-body); font-weight: 600; color: var(--text); }
+/* NO HEADLINE IN THE BOX (TS-20). `.dsp-consequence-head` repeated the chosen
+   option's own count sentence directly under the option that already said it.
+   The box is drawn now only when it says something the options do not -- on a
+   workflow, which step opens the one pull request, or that the graph has no
+   single final step -- so it has no headline and no `.is-none` variant. */
 
 .dsp-repo { width: 100%; max-width: 520px; }
 .dsp-repo, .dsp select {
@@ -8239,7 +8266,7 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
   background: var(--surface-2); padding: var(--ctl-s3);
 }
 .art-head { display: flex; align-items: baseline; gap: var(--ctl-s2); }
-.art-head h3 { margin: 0; font-size: var(--t-title); flex: 1 1 auto; }
+.art-head h3 { margin: 0; font-size: var(--t-lead); flex: 1 1 auto; }
 .art-close {
   background: none; border: 0; color: var(--text-faint);
   /* --lh-flush: a close glyph on the `.art-head` baseline row; leading would
@@ -8984,7 +9011,9 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 .sbf-move-h {
   display: flex; align-items: center; gap: var(--ctl-s2); flex-wrap: wrap;
   margin: 0 0 var(--ctl-s3);
-  font-size: var(--t-title); line-height: var(--lh-title); font-weight: 600;
+  /* --t-lead, a step heading (TS-18): the screen's h1 is the only heading on
+     this form at --t-title. */
+  font-size: var(--t-lead); line-height: var(--lh-lead); font-weight: 600;
   color: var(--text);
 }
 /* A DISC, NOT A RING. Same substitution §13.3 made for `.ctl-q-glyph`: the
@@ -9074,6 +9103,17 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 .sbf-empty, .sbf-bad { font-style: normal; font-size: var(--t-micro); }
 .sbf-empty { color: var(--text-faint); }
 .sbf-bad { color: var(--warn-ink); }
+/* THE MISSING KEY, AT ITS FIELD (TS-15). One line in warn ink under the
+   editor, which carries the warn edge through `aria-invalid` (the rule beside
+   `.limit-edit`'s). Shown only once the field has been left empty, so a runner
+   just picked is not painted red; until then the `required` tag carries it. */
+.sbf-miss { margin: 0; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--warn-ink); }
+.sbf-miss code { font-size: var(--t-micro); color: var(--warn-ink); }
+/* The send panel names the same gap as a `.sbf-mini` button to the field.
+   `.sbf-mini`'s own grey comes later in the sheet at equal specificity, so the
+   warn ink is restated on the pair rather than left to lose. */
+.sbf-mini.sbf-bad { color: var(--warn-ink); }
+.sbf-gaps { display: inline-flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--ctl-s1) var(--ctl-s2); }
 
 .sbf-flag { display: inline-flex; align-items: center; gap: var(--ctl-s2); font-size: var(--t-body); color: var(--text-dim); }
 .sbf-list { display: grid; gap: var(--ctl-s1); }
@@ -10604,7 +10644,7 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
   background: var(--surface-2); padding: var(--ctl-s3);
 }
 .ckb-head { display: flex; align-items: baseline; gap: var(--ctl-s2); flex-wrap: wrap; }
-.ckb-head h3 { margin: 0; font-size: var(--t-title); flex: 1 1 auto; }
+.ckb-head h3 { margin: 0; font-size: var(--t-lead); flex: 1 1 auto; }
 .ckb-facts { margin: var(--ctl-s2) 0; }
 .ckb-cut { color: var(--text-dim); }
 

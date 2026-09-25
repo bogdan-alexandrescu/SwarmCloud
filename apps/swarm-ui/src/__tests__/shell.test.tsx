@@ -364,10 +364,11 @@ describe('B4.3: the six moves', () => {
         <span className="ctl-track" />
         <span className="ctl-util-track" />
         <span className="sr-bar" />
-        <span className="coverage" />
       </>,
     )
-    for (const sel of ['.ctl-track', '.ctl-util-track', '.sr-bar', '.coverage']) {
+    // `.coverage` left this list with the Timeline's row-count bar, its only
+    // caller (TS-12): the spend figure's foot states its coverage in words.
+    for (const sel of ['.ctl-track', '.ctl-util-track', '.sr-bar']) {
       const s = getComputedStyle(container.querySelector(sel)!)
       expect(s.height, `${sel} does not use the one track height`).toBe('var(--track-h)')
       expect(s.borderRadius, `${sel} has its own radius`).toBe('var(--track-radius)')
@@ -1931,7 +1932,11 @@ describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
     // The four steps and the chrome padding, as `move 6` above pins them.
     const scale = new Set(['0', 'var(--ctl-s1)', 'var(--ctl-s2)', 'var(--ctl-s3)', 'var(--ctl-s5)', 'var(--ctl-pad-chrome)'])
     // MUTATION: any of 24/16/14/10/11/13/18/6px back in these rules.
-    for (const sel of ['.sub', '.window-bar', '.tiles', '.tile', '.dsp', '.dsp-options', '.wfb-stage + .wfb-stage']) {
+    // `.ctl-metrics` where `.tiles` and `.tile` were: the Timeline's figures
+    // moved onto the shared strip (TS-11) and those two rules are deleted.
+    // Not `.ctl-metric`, whose 3px `padding-bottom` is the reserved rule's
+    // gap and not a spacing step.
+    for (const sel of ['.sub', '.window-bar', '.ctl-metrics', '.dsp', '.dsp-options', '.wfb-stage + .wfb-stage']) {
       const rules = flatRules(STYLES).filter((r) => r.conditions.length === 0 && r.selector === sel)
       expect(rules.length, `no top-level rule for ${sel}`).toBeGreaterThan(0)
       for (const r of rules) {

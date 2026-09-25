@@ -1,13 +1,23 @@
-import { useCallback, useMemo, useState } from 'react'
+import {
+  useCallback,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type FocusEvent,
+  type KeyboardEvent,
+} from 'react'
 import { loadTaskWindow, loadTenants } from './api'
 import { helpAnchor, type TopicId } from './help'
 import { HelpLinks } from './HelpCard'
+import { sumReported, usd } from './measure'
+import { Mark, Metric } from './primitives'
 import { Id, Screen, timeAgo } from './Shell'
 import {
   TERMINAL_STATES,
   bucketStart,
-  hasUsage,
   pluralise,
+  usageOf,
   type Bucket,
   type Task,
   type TaskWindow,
@@ -91,7 +101,7 @@ export function ActivityScreen() {
             setBucket={setBucket}
           />
           <Chart window={w} bucket={bucket} />
-          <Tiles window={w} />
+          <Figures window={w} />
           <RunnerSplit window={w} />
           <People window={w} />
         </>
@@ -294,15 +304,38 @@ export function outcomeBuckets(
 }
 
 /**
- * Up to this many columns, every column is labelled. At 390 the chart is about
- * 330px across, so six columns sit at least 55px apart -- room for the widest
+ * Up to this many columns, `axisLabels` labels every column. At 390 the chart
+ * is about 330px across, so six columns sit at least 55px apart -- room for the widest
  * label (`Sep 21`, six characters of --t-micro mono, ~43px). Past it a column
  * can be at its 26px floor, 29px apart with the gap, and two labels side by
  * side run into each other (`01 PM02 PM03 PM`, which is what 390 already drew
  * before every empty hour got a column too). So past it, every other column.
- * Every column keeps its full time in its `title` either way.
+ * Every column keeps its full time in its accessible name either way, and the
+ * legend prints it when the column is picked (TS-9). A phone's HOURLY axis
+ * does not use this: it thins at every length (`PHONE_HOUR_STRIDE`). A phone's
+ * day, week and month axes do.
  */
 const LABEL_ALL_UP_TO = 6
+
+/**
+ * AT PHONE WIDTH, AN HOURLY AXIS LABELS EVERY THIRD HOUR, WHATEVER ITS LENGTH
+ * (TS-3, owner decision 2026-09-25: "labels thin to every 3rd hour at phone
+ * width").
+ *
+ * Every other column is still too dense at 390: a 29px column pitch puts an
+ * `01 PM` (~43px of --t-micro mono) against its neighbour's, which is what the
+ * QA pass shot. Three columns is ~87px, room for the widest label and a gap.
+ * The stride is ON THE CLOCK -- 00, 03, 06 ... -- rather than every third
+ * column from wherever the axis starts, so the ticks read as a scale and not as
+ * an accident of the window's first row.
+ *
+ * NO LENGTH EXCEPTION. A first cut kept every label on an hourly axis of six
+ * columns or fewer, because those fit at 390 -- which is a different rule from
+ * the one decided, and an axis whose tick spacing changes with the window's
+ * length reads as two scales. Nothing is lost by thinning a short one: each
+ * column names its full hour, and the legend prints it on a pick (TS-9).
+ */
+const PHONE_HOUR_STRIDE = 3
 
 const dateLabel = (ms: number) =>
   new Date(ms).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })
@@ -358,6 +391,83 @@ export function axisLabels(keys: readonly number[], bucket: Bucket): string[] {
 }
 
 /**
+ * The labels a PHONE draws under an hourly axis: every day, and every third
+ * hour on the clock between them (see `PHONE_HOUR_STRIDE`).
+ *
+ * The same two rules `axisLabels` keeps, at the wider stride: a day's first
+ * column always carries its date, and no label lands within a stride of the
+ * next day's date, so a date never has an hour pressed against it. An axis
+ * that is not hourly draws exactly what a wide screen draws: the decision is
+ * about hours, and a day, week or month label is a date, not a clock tick.
+ *
+ * The chart renders the UNION of this and `axisLabels`, and the sheet hides
+ * each set's extras at the other width (`.col-label.is-wide-only` /
+ * `.is-phone-only`), so the choice is made by the same breakpoint as every
+ * other phone rule rather than by a second copy of it in script.
+ */
+export function phoneAxisLabels(keys: readonly number[], bucket: Bucket): string[] {
+  if (bucket !== 'hour') return axisLabels(keys, bucket)
+  const starts = dayStarts(keys, bucket)
+  const startsDay = (i: number): boolean => starts[i] === true
+  const dayWithin = (i: number): boolean => {
+    for (let j = 1; j < PHONE_HOUR_STRIDE; j++) if (startsDay(i + j)) return true
+    return false
+  }
+  const out = keys.map(() => '')
+  let labelled = -Infinity
+  keys.forEach((k, i) => {
+    if (startsDay(i)) {
+      // The chart's first column is a day's first only because the chart
+      // starts there; when the real boundary is within a stride, it wins.
+      if (i === 0 && dayWithin(0)) return
+      out[i] = dateLabel(k)
+      labelled = i
+      return
+    }
+    if (new Date(k).getHours() % PHONE_HOUR_STRIDE !== 0) return
+    if (i - labelled < PHONE_HOUR_STRIDE) return
+    if (dayWithin(i)) return
+    out[i] = labelFor(k, bucket)
+    labelled = i
+  })
+  return out
+}
+
+/**
+ * A bucket's FULL name, for the readout and the column's accessible name
+ * (TS-9): the date and hour of an hour, the date of a day, `week of` its
+ * Monday, and the month with its year. Never the axis's thinned label -- a
+ * picked column has to say exactly which bucket it is.
+ */
+export function bucketName(ms: number, bucket: Bucket): string {
+  const d = new Date(ms)
+  if (bucket === 'hour') return `${dateLabel(ms)} ${d.toLocaleTimeString(undefined, { hour: '2-digit' })}`
+  if (bucket === 'day') return dateLabel(ms)
+  if (bucket === 'week') return `week of ${dateLabel(ms)}`
+  return d.toLocaleDateString(undefined, { month: 'long', year: 'numeric' })
+}
+
+/** One column's counts as a sentence: the accessible name of its bar. */
+const countsSaid = (c: Outcomes): string =>
+  `${c.succeeded} succeeded, ${c.failed} failed, ${c.cancelled} cancelled, ${c.open} still open`
+
+/**
+ * The window's totals, SUMMED FROM THE COLUMNS THE CHART DRAWS -- never from
+ * `w.tasks` -- so the readout and the bars cannot disagree (TS-9). A terminal
+ * row with no `completed_at` is in a column's `open`, so it is in this `open`.
+ */
+export function windowTotals(buckets: ReadonlyArray<readonly [number, Outcomes]>): Outcomes {
+  const t: Outcomes = { succeeded: 0, failed: 0, cancelled: 0, open: 0 }
+  for (const [, c] of buckets) {
+    t.succeeded += c.succeeded
+    t.failed += c.failed
+    t.cancelled += c.cancelled
+    t.open += c.open
+  }
+  return t
+}
+
+/**
  * Stacked columns, one per bucket, every bucket from the first to the last.
  *
  * The three outcomes bucket on `completed_at`; `still open` buckets on
@@ -368,14 +478,121 @@ export function axisLabels(keys: readonly number[], bucket: Bucket): string[] {
  * terminal sets it -- worker, API cancel, scheduler cancel, reconciler
  * reclaim. So a terminal row with a null completed_at is a data bug, and it
  * is counted in "still open" AND surfaced, rather than dropped.
+ *
+ * THE LEGEND IS THE READOUT (TS-9, owner decision 2026-09-25). A bar's values
+ * lived only in a hover `title=`, which a phone cannot open and a keyboard
+ * cannot reach (§8.3), and the per-series counts appeared nowhere. Now each
+ * legend entry carries its count -- the window's by default, one column's
+ * while a column is picked -- and each column is an image NAMED with its full
+ * time and its four counts. Hover, tap and focus all pick; `all`, Escape and
+ * leaving the chart put the window back. The legend is deliberately NOT a live
+ * region: the focused column's name already says the same counts, and a live
+ * legend would read them twice on every arrow press and chatter on hover.
+ *
+ * ONE TAB STOP, WITH A ROVING TABINDEX. Forty columns are not forty stops on
+ * the way to the next control; the arrows move between them, Home and End jump
+ * to either end, and the stop starts on the newest column because that is
+ * where the chart opens (TS-3).
+ *
+ * "LEAVING THE CHART" MEANS LEAVING THE CHART AND ITS READOUT. `all` sits in
+ * the legend, below the columns, so every real way of reaching it -- the
+ * pointer moving down to it, a Tab from the picked column, a tap -- leaves
+ * `.chart` first. With leave and focus-out on `.chart` itself, each of those
+ * cleared the pick, and clearing the pick unmounts `all`: the button could not
+ * be pressed by anything but a test, and a Tab onto it dropped focus to
+ * <body>. So both are on `.chart-readout`, which holds the columns and the
+ * legend that reads them out. Escape is on it too, so it works on `all` as
+ * well as on a column.
  */
 function Chart({ window: w, bucket }: { window: TaskWindow; bucket: Bucket }) {
   const { buckets, anomalies } = useMemo(() => outcomeBuckets(w.tasks, bucket), [w.tasks, bucket])
-  const labels = useMemo(() => axisLabels(buckets.map(([k]) => k), bucket), [buckets, bucket])
+  const keys = useMemo(() => buckets.map(([k]) => k), [buckets])
+  const labels = useMemo(() => axisLabels(keys, bucket), [keys, bucket])
+  const phoneLabels = useMemo(() => phoneAxisLabels(keys, bucket), [keys, bucket])
   // THE DAY BOUNDARY, DRAWN as well as labelled: a rule down the first column
   // of each day after the first, so a four-day hourly axis reads as four days
   // even where thinning left a label out.
-  const boundaries = useMemo(() => dayStarts(buckets.map(([k]) => k), bucket), [buckets, bucket])
+  const boundaries = useMemo(() => dayStarts(keys, bucket), [keys, bucket])
+  const totals = useMemo(() => windowTotals(buckets), [buckets])
+
+  // Both held BY BUCKET START, not by index: regrouping or a re-read redraws
+  // the columns, and an index would then silently point at a different bucket.
+  // A start no longer drawn reads as "nothing picked" and "the newest column".
+  const [picked, setPicked] = useState<number | null>(null)
+  const [stop, setStop] = useState<number | null>(null)
+  const pickedAt = picked === null ? -1 : keys.indexOf(picked)
+  const stopAt = stop !== null && keys.includes(stop) ? keys.indexOf(stop) : keys.length - 1
+  const shown = pickedAt >= 0 ? buckets[pickedAt]![1] : totals
+  const clear = () => setPicked(null)
+
+  // TS-3: OPEN AT THE NEWEST END. The scroller used to open at its oldest
+  // column, so at 390 the six newest hours -- the ones a reader came for --
+  // were off the right edge with nothing to say so. `scrollWidth` is past the
+  // end, which a browser clamps to the end. The left edge then carries a fade
+  // for exactly as long as something older is off-screen (`has-older`).
+  // Keyed on the AXIS -- its grouping and its two ends -- not on the rows'
+  // identity, so a refresh that read the same window leaves a reader who had
+  // scrolled back where they were, and one that drew a newer bucket shows it.
+  const scroller = useRef<HTMLDivElement>(null)
+  const cols = useRef<Array<HTMLDivElement | null>>([])
+  const [older, setOlder] = useState(false)
+  const axis = `${bucket}:${keys[0] ?? ''}:${keys[keys.length - 1] ?? ''}`
+  useLayoutEffect(() => {
+    const el = scroller.current
+    if (el === null) return
+    el.scrollLeft = el.scrollWidth
+    setOlder(el.scrollLeft > 0)
+  }, [axis])
+
+  // `all` AND ESCAPE PUT THE WINDOW BACK, AND FOCUS STAYS IN THE CHART. `all`
+  // exists only while a column is picked, so pressing it unmounts it -- and a
+  // button that goes while it holds focus drops focus to <body> (WCAG 2.4.3).
+  // When it held focus, focus goes back to the column the chart's one tab stop
+  // is on, WITHOUT picking it: the same state Escape on a column leaves, the
+  // column focused and the legend reading the window. `quiet` is how the
+  // column's focus handler tells this apart from a reader landing on it, and
+  // `preventScroll` keeps the scroller where the reader left it.
+  const allButton = useRef<HTMLButtonElement>(null)
+  const quiet = useRef(false)
+  const restore = () => {
+    const hadFocus = allButton.current !== null && allButton.current === document.activeElement
+    clear()
+    if (!hadFocus) return
+    quiet.current = true
+    try {
+      cols.current[stopAt]?.focus({ preventScroll: true })
+    } finally {
+      quiet.current = false
+    }
+  }
+
+  // On the readout -- the columns and the legend -- so it works on `all` too.
+  const onReadoutKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+    if (e.key === 'Escape') restore()
+  }
+  const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+    const last = keys.length - 1
+    const next =
+      e.key === 'ArrowRight'
+        ? Math.min(last, stopAt + 1)
+        : e.key === 'ArrowLeft'
+          ? Math.max(0, stopAt - 1)
+          : e.key === 'Home'
+            ? 0
+            : e.key === 'End'
+              ? last
+              : null
+    // Tab is never handled here: the chart is one stop, and Tab leaves it.
+    if (next === null || last < 0) return
+    e.preventDefault()
+    cols.current[next]?.focus()
+  }
+  // Focus leaving the chart AND ITS READOUT is leaving it, the same as the
+  // pointer leaving them; moving from a column to `all` is not.
+  const onBlur = (e: FocusEvent<HTMLDivElement>) => {
+    const to = e.relatedTarget
+    if (!(to instanceof Node) || !e.currentTarget.contains(to)) clear()
+  }
 
   const max = Math.max(1, ...buckets.map(([, c]) => c.succeeded + c.failed + c.cancelled + c.open))
 
@@ -398,48 +615,108 @@ function Chart({ window: w, bucket }: { window: TaskWindow; bucket: Bucket }) {
           <a href={helpHref(ABSENCE_HELP)}>Why &rarr;</a>
         </p>
       )}
-      <div className="chart" role="img" aria-label={`Task outcomes by ${bucket}`}>
-        {buckets.map(([k, c], i) => {
-          const total = c.succeeded + c.failed + c.cancelled + c.open
-          return (
-            // An empty bucket is a column with four zero-height segments and a
-            // `0 tasks` title: a measured zero, drawn where it happened.
-            <div
-              className={i > 0 && boundaries[i] === true ? 'col is-day-start' : 'col'}
-              key={k}
-              data-total={total}
-              title={`${new Date(k).toLocaleString()}\n${total} tasks`}
-            >
-              <div className="stackcol">
-                <i className="open" style={{ height: `${(c.open / max) * 100}%` }} />
-                <i className="cancelled" style={{ height: `${(c.cancelled / max) * 100}%` }} />
-                <i className="failed" style={{ height: `${(c.failed / max) * 100}%` }} />
-                <i className="succeeded" style={{ height: `${(c.succeeded / max) * 100}%` }} />
+      {/* THE CHART AND ITS READOUT ARE ONE THING TO LEAVE (TS-9). `all` is in
+          the legend, so the pointer, a Tab and a tap all leave `.chart` on
+          the way to it; only leaving this clears the pick. */}
+      <div className="chart-readout" onMouseLeave={restore} onBlur={onBlur} onKeyDown={onReadoutKeyDown}>
+        <div
+          ref={scroller}
+          className={older ? 'chart has-older' : 'chart'}
+          role="group"
+          aria-label={`Task outcomes by ${bucket}`}
+          onKeyDown={onKeyDown}
+          onScroll={(e) => setOlder(e.currentTarget.scrollLeft > 0)}
+        >
+          {buckets.map(([k, c], i) => {
+            const total = c.succeeded + c.failed + c.cancelled + c.open
+            // The UNION of the wide and the phone labels; the sheet hides each
+            // set's extras at the other width (TS-3).
+            const wide = labels[i] ?? ''
+            const phone = phoneLabels[i] ?? ''
+            const labelClass =
+              wide !== '' && phone === ''
+                ? 'col-label is-wide-only'
+                : wide === '' && phone !== ''
+                  ? 'col-label is-phone-only'
+                  : 'col-label'
+            const cls = ['col']
+            if (i > 0 && boundaries[i] === true) cls.push('is-day-start')
+            if (i === pickedAt) cls.push('is-picked')
+            return (
+              // An empty bucket is a column with four zero-height segments whose
+              // name says `0 succeeded, 0 failed, ...`: a measured zero, drawn
+              // where it happened.
+              <div
+                ref={(el) => {
+                  cols.current[i] = el
+                }}
+                className={cls.join(' ')}
+                key={k}
+                role="img"
+                aria-label={`${bucketName(k, bucket)}: ${countsSaid(c)}`}
+                tabIndex={i === stopAt ? 0 : -1}
+                data-total={total}
+                onMouseEnter={() => setPicked(k)}
+                // A TAP PICKS TOO: a phone has no hover, and not every phone
+                // moves focus to what was tapped.
+                onClick={() => setPicked(k)}
+                onFocus={(e) => {
+                  setStop(k)
+                  // Focus handed back by `restore` lands here without picking,
+                  // and without moving the scroller.
+                  if (quiet.current) return
+                  setPicked(k)
+                  // Inside TS-3's scroller: an arrow press onto a column past
+                  // the edge brings it into view. jsdom has no scrollIntoView.
+                  e.currentTarget.scrollIntoView?.({ block: 'nearest', inline: 'nearest' })
+                }}
+              >
+                <div className="stackcol">
+                  <i className="open" style={{ height: `${(c.open / max) * 100}%` }} />
+                  <i className="cancelled" style={{ height: `${(c.cancelled / max) * 100}%` }} />
+                  <i className="failed" style={{ height: `${(c.failed / max) * 100}%` }} />
+                  <i className="succeeded" style={{ height: `${(c.succeeded / max) * 100}%` }} />
+                </div>
+                {/* A no-break space where a label is thinned out, so every
+                    column's label line is the same height and the bars stay on
+                    one baseline. */}
+                <span className={labelClass}>{wide || phone || ' '}</span>
               </div>
-              {/* A no-break space where a label is thinned out, so every
-                  column's label line is the same height and the bars stay on
-                  one baseline. */}
-              <span className="col-label">{labels[i] || ' '}</span>
-            </div>
-          )
-        })}
+            )
+          })}
+        </div>
+        {/* THE LEGEND IS A LEGEND AGAIN, AND EACH BASIS SITS BESIDE ITS SERIES.
+            The key used to end in one `by completed_at` after all four swatches,
+            which put `still open` under it too -- and an open task has no
+            `completed_at`; it is bucketed by `created_at`. Two series, two
+            bases, each fused to the swatches it qualifies.
+            AND IT IS THE READOUT (TS-9): each series' count beside its swatch,
+            the window's until a column is picked, then that column's after its
+            full name. Not `aria-live` -- see the component's comment. */}
+        <p className="chart-legend">
+          {pickedAt >= 0 && <span className="cl-at">{bucketName(keys[pickedAt]!, bucket)} ·</span>}
+          {pickedAt >= 0 && ' '}
+          <span className="k succeeded" /> succeeded <b className="cl-n">{shown.succeeded}</b>
+          <span className="cl-sep"> · </span>
+          <span className="k failed" /> failed <b className="cl-n">{shown.failed}</b>
+          <span className="cl-sep"> · </span>
+          <span className="k cancelled" /> cancelled <b className="cl-n">{shown.cancelled}</b>{' '}
+          <span className="cl-basis">
+            by <code>completed_at</code>
+          </span>
+          <span className="cl-sep"> · </span>
+          <span className="k open" /> still open <b className="cl-n">{shown.open}</b>{' '}
+          <span className="cl-basis">
+            by <code>created_at</code>
+          </span>
+          {pickedAt >= 0 && ' '}
+          {pickedAt >= 0 && (
+            <button type="button" className="sbf-mini cl-all" ref={allButton} onClick={restore}>
+              all
+            </button>
+          )}
+        </p>
       </div>
-      {/* THE LEGEND IS A LEGEND AGAIN, AND EACH BASIS SITS BESIDE ITS SERIES.
-          The key used to end in one `by completed_at` after all four swatches,
-          which put `still open` under it too -- and an open task has no
-          `completed_at`; it is bucketed by `created_at`. Two series, two
-          bases, each fused to the swatches it qualifies. */}
-      <p className="chart-legend">
-        <span className="k succeeded" /> succeeded <span className="k failed" /> failed
-        <span className="k cancelled" /> cancelled
-        <span className="cl-basis">
-          by <code>completed_at</code>
-        </span>
-        <span className="k open" /> still open
-        <span className="cl-basis">
-          by <code>created_at</code>
-        </span>
-      </p>
     </section>
   )
 }
@@ -451,17 +728,26 @@ function labelFor(ms: number, bucket: Bucket): string {
   return d.toLocaleDateString(undefined, { day: 'numeric', month: 'short' })
 }
 
-function Tiles({ window: w }: { window: TaskWindow }) {
+/**
+ * The figures under the chart, on the shared boxless metric strip (TS-11).
+ *
+ * THREE, AND NOT "SUBMITTED". The fourth tile printed `w.tasks.length` under a
+ * sub-line that repeated the window span word for word -- and the window bar
+ * directly above already prints both (`All 170 tasks`, then the span), as does
+ * the screen's summary line. A fact drawn twice is one of them waiting to
+ * disagree, which is why Overview dropped its attention tile for the same
+ * reason. And no healthy figure is boxed (§6.2): the bordered `.tile` was the
+ * last per-number box on this screen.
+ */
+function Figures({ window: w }: { window: TaskWindow }) {
   const rows = w.tasks
   const completed = rows.filter((t) => t.completed_at !== null)
   const succeeded = completed.filter((t) => t.state === 'SUCCEEDED').length
   const attempts = rows.reduce((n, t) => n + t.attempt_count, 0)
-  const withUsage = rows.filter(hasUsage).length
 
   return (
-    <div className="tiles">
-      <Tile label="Submitted" value={String(rows.length)} sub={spanOf(w)} />
-      <Tile
+    <div className="ctl-metrics">
+      <Metric
         label="Completed"
         value={String(completed.length)}
         sub={
@@ -470,77 +756,92 @@ function Tiles({ window: w }: { window: TaskWindow }) {
             : 'none completed in window'
         }
       />
-      {/* A TILE'S `sub` IS A QUALIFIER, NEVER A DEFINITION (§6.2). "a lease
+      {/* A FIGURE'S `sub` IS A QUALIFIER, NEVER A DEFINITION (§6.2). "a lease
           reclaimed before dispatch counts here" is the definition; "admissions,
           not runs" is the qualifier, and it is the half that changes how the
           figure is read. */}
-      <Tile label="Attempts consumed" value={String(attempts)} sub="admissions, not runs" />
-      <SpendTile total={rows.length} withUsage={withUsage} />
-    </div>
-  )
-}
-
-function Tile({ label, value, sub }: { label: string; value: string; sub: string }) {
-  return (
-    <div className="tile">
-      <span className="t-label">{label}</span>
-      <span className="t-value">{value}</span>
-      <span className="t-sub">{sub}</span>
+      <Metric label="Attempts consumed" value={String(attempts)} sub="admissions, not runs" />
+      <SpendFigure tasks={rows} />
     </div>
   )
 }
 
 /**
- * Tokens and spend.
- *
- * This tile STAYS on the screen when there is nothing to show, because tokens
- * were explicitly asked for and an absent tile answers nothing. It renders the
- * words "not recorded" — never a number, never ~$0.00. A zero here reads as
- * "this engineer spent nothing", which is worse than omitting it.
- *
- * The coverage bar is the honest form once numbers start arriving: it says
- * what fraction of rows actually carry usage, rather than summing the ones
- * that do and presenting it as a total.
+ * `total_cost_usd` off one row's result, or null when the result carries no
+ * finite cost. A row can carry token counts and no cost, and that row is NOT
+ * a cost of zero -- it is a cost nobody reported.
  */
-function SpendTile({ total, withUsage }: { total: number; withUsage: number }) {
-  if (withUsage === 0) {
-    // NEVER A NUMBER HERE. The words are still "not recorded" and the tile is
-    // still on screen -- both are the invariant and neither moves. What moved
-    // is the 39-word account of WHY (the capture read the wrong level of the
-    // runner's result, it is fixed in the worker and not yet in an image, the
-    // raw figures are in each transcript): that is a paragraph, it is the same
-    // paragraph on every visit, and it is `#help/tokens-reported`. The dashed
-    // border and the mark are what a reader sees instead, and they say the one
-    // thing the paragraph was there to prevent -- this is not zero.
+function resultCost(t: Task): number | null {
+  const v = usageOf(t)?.['total_cost_usd']
+  return typeof v === 'number' && Number.isFinite(v) ? v : null
+}
+
+/**
+ * Token spend: THE MEASURED SUM, DRAWN AS PARTIAL (TS-12, owner decision
+ * 2026-09-25) -- Overview's treatment of its own Token spend (OV-4), with the
+ * Workflows table's "from result" source note (WF-5).
+ *
+ * The tile used to print a ROW COUNT where the figure goes -- `50 of 170`,
+ * under "Tokens & spend" -- so no token count or dollar amount appeared
+ * anywhere on the screen. Now the figure is the sum over the k of n rows whose
+ * result carries a cost (`sumReported`, null until one does), and the foot
+ * says what it is a sum of. It is PARTIAL in two ways, and the mark names
+ * both: rows whose result carries no cost are not in it, and a result records
+ * only its task's LAST attempt, so a task that ran more than once is in it at
+ * one attempt's cost.
+ *
+ * Client-side over the rows already fetched: no extra read. A per-attempt
+ * figure would come from `GET /v1/attempts?since=<window start>` -- a few
+ * paged reads with server-side coverage -- never a fan-out per task.
+ *
+ * NEVER $0.00 FOR AN ABSENCE. With no cost in any result the tile still
+ * stands, because tokens were asked for and an absent tile answers nothing,
+ * and it says `not recorded` beside the absent mark. A MEASURED zero -- a
+ * result that reported a cost of 0 -- is `$0.00`, because it was measured.
+ */
+function SpendFigure({ tasks }: { tasks: readonly Task[] }) {
+  const sum = sumReported(tasks, resultCost)
+  if (sum === null) {
+    // The dashed rule (`tone="absent"`) and the mark are what a reader sees
+    // instead of a number; the argument for why is `#help/tokens-reported`.
     return (
-      <div
-        className="tile blocked is-absent"
-        aria-label="Tokens and spend were not recorded. Every task stored an empty usage block, so this is an absent measurement and not a spend of zero."
-      >
-        <span className="t-label">Tokens &amp; spend</span>
-        <span className="t-value">not recorded</span>
-        <span className="t-sub">
-          <i className="ctl-mark is-absent">not measured</i>
-          <a href={helpHref(SPEND_HELP)}>Why &rarr;</a>
-        </span>
-      </div>
+      <Metric
+        label="Token spend"
+        value="not recorded"
+        tone="absent"
+        explain={SPEND_HELP}
+        sub={
+          <>
+            <Mark
+              kind="absent"
+              say="Token spend: no task in this window carries a cost in its result. That is an absent measurement, not a spend of zero."
+            />{' '}
+            <a className="ctl-link" href={helpHref(SPEND_HELP)}>
+              Why &rarr;
+            </a>
+          </>
+        }
+      />
     )
   }
-  const pct = Math.round((withUsage / Math.max(1, total)) * 100)
+  const n = tasks.length
+  const summed = tasks.filter((t) => resultCost(t) !== null)
+  const k = summed.length
+  const reran = summed.filter((t) => t.attempt_count > 1).length
+  const partial = k < n || reran > 0
+  const say =
+    `Summed from the results of ${k} of ${n} tasks, so it can fall short in two ways: ` +
+    `${n - k} ${n - k === 1 ? 'task carries' : 'tasks carry'} no cost in its result, and a result ` +
+    `records only its task’s last attempt` +
+    (reran > 0 ? ` — ${reran} of the summed ${reran === 1 ? 'task' : 'tasks'} ran more than once.` : '.')
   return (
-    <div
-      className="tile"
-      aria-label={`${withUsage} of ${total} rows carry usage. The rest predate the capture, so any total over this window would understate.`}
-    >
-      <span className="t-label">Tokens &amp; spend</span>
-      <span className="t-value">{withUsage} of {total}</span>
-      <span className="t-sub">
-        <span className="coverage">
-          <i style={{ width: `${pct}%` }} />
-        </span>
-        {pct}% of rows carry usage
-      </span>
-    </div>
+    <Metric
+      label="Token spend"
+      value={usd(sum)}
+      foot={`${k} of ${n} tasks · from result`}
+      explain={SPEND_HELP}
+      sub={partial ? <Mark kind="partial" say={say} /> : undefined}
+    />
   )
 }
 
