@@ -1572,9 +1572,14 @@ else:
     for rel, text in FILES:
         if not (rel.startswith("scripts/") and rel.endswith(".sh")):
             continue
-        logical = re.sub(r"\\\n\s*", " ", text)
+        # Comments name the function too -- the usage line in testlib.sh, the
+        # notes in the benches -- and a comment submits nothing.
+        code = "\n".join(
+            "" if line.lstrip().startswith("#") else line for line in text.splitlines()
+        )
+        logical = re.sub(r"\\\n\s*", " ", code)
         for call in re.finditer(r"\bsubmit_task\s+(\S+)\s+(.*)", logical):
-            where = "%s:%d" % (rel, line_of(logical, call.start()))
+            where = "%s, at: %s" % (rel, call.group(0)[:72])
             token, rest = call.group(1).strip("\""), call.group(2)
             if token.startswith("$" + "{"):
                 token = script_default(text, token[2:].split("}")[0].split(":")[0])

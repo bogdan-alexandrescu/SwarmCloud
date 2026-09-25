@@ -1,8 +1,11 @@
 """What a runner refuses to start without, served so no client has to guess it.
 
-A caller names a `runner_profile` and supplies an opaque `input` dict. The
-platform never reads that dict -- the runner does, and some runners refuse the
-attempt outright when a key is missing. `run_cli_agent` is the one that matters
+A caller names a `runner_profile` and supplies an `input` dict. The platform
+checks which keys it carries -- only those the profile declares in the frozen
+catalogue, `RunnerProfile.inputs` (contract request 25,
+`validation.validate_runner_input`) -- but it never acts on them: the runner
+does, and some runners refuse the attempt outright when a key is MISSING,
+which is the other half and the one this module serves. `run_cli_agent` is the one that matters
 (apps/agent-worker/agent_worker/runners/cliagent.py):
 
     prompt = payload.get("prompt")

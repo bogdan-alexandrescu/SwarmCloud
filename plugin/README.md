@@ -418,17 +418,21 @@ deleted, so the runs that name it stay readable.
 step can sleep long enough to be cancelled, or fail on purpose: `inputs` on a
 `swarm_dispatch` call or a `swarm_workflow` step, `--input sleep_seconds=120`
 on `swarm dispatch`, `"inputs": {...}` on a step in a `swarm workflow` spec.
-Nothing a caller sends can park a mock step. The mock's `quota_exhausted` fires
-on every attempt, and a park does not spend one, so the task would park and
-resume until someone cancelled it. A bounded park needs a counter in the
-mock itself. `exit_code` refuses 0, 77, 78 and 143, which the worker reads as a
-success, a rate limit, a refused credential and a cancellation.
-Every other profile declares none and takes none. A key the profile does not
-declare is refused by name, never dropped, and never an image, a command, a
-resource spec, a backend or a model: `input.model` is read by the CLI runners,
-and a caller setting it would be choosing the model a `claude-code` agent
-runs. The declarations live in one table in `swarm_mcp/profiles.py` until the
-frozen catalogue can carry them (contract request 25).
+`{"quota_exhausted": true}` parks a mock step once, on a simulated rate limit
+with the `retry_after_seconds` you give it (1 to 3600), and the attempt after
+the park finishes: the mock counts its parks in its own state file, which the
+park's checkpoint carries forward. Before 0.5.3 the rate limit fired on every
+attempt, a park does not spend one, and the step parked until cancelled, which
+is why 0.5.2 withheld both keys. `exit_code` refuses 0, 77, 78 and 143, which
+the worker reads as a success, a rate limit, a refused credential and a
+cancellation. Every other profile declares none and takes none. A key the
+profile does not declare is refused by name, never dropped, and never an
+image, a command, a resource spec, a backend or a model: `input.model` is read
+by the CLI runners, and a caller setting it would be choosing the model a
+`claude-code` agent runs. The declarations are the frozen catalogue's own,
+`RunnerProfile.inputs` (contract request 25), and the API refuses an
+undeclared key from every caller with 422 `invalid_input`, so the bridge's
+refusal is only the earlier of two identical answers.
 
 ## What keeps these honest
 

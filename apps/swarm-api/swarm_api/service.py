@@ -68,6 +68,7 @@ from .validation import (
     validate_dag,
     validate_input_size,
     validate_resource_class_override,
+    validate_runner_input,
     validate_runner_profile,
     validate_timeout,
 )
@@ -203,6 +204,9 @@ class SubmissionService:
     ) -> Task:
         profile = validate_runner_profile(spec.runner_profile)
         validate_input_size(spec.input, self._settings.core.max_input_bytes)
+        # After the size, so an oversized input is refused for its size. What
+        # it may carry is the catalogue's declaration (contract request 25).
+        validate_runner_input(profile, spec.input, step_id=step_id)
         # The CALLER's metadata is what the 16 KiB limit measures, which is why
         # this runs before the dispatch block is added below. The block this
         # service adds is two short strings, plus -- on an integrator only -- one
@@ -340,6 +344,14 @@ class SubmissionService:
                 # After validate_dag, which has already rejected the cycles and
                 # dangling dependencies this would otherwise have to reason about.
                 integrator_step_id = resolve_integrator_step(step_specs)
+            # Every step's profile and input, before any task is built and
+            # inside this try, so a refused step is counted like every other
+            # refusal. The size first, as `_build_task` orders them, which
+            # checks each step again; by then neither can fail.
+            for step in spec.steps:
+                profile = validate_runner_profile(step.runner_profile)
+                validate_input_size(step.input, self._settings.core.max_input_bytes)
+                validate_runner_input(profile, step.input, step_id=step.step_id)
         except ValidationFailed as exc:
             self._metrics.tasks_rejected.labels(reason=exc.code).inc()
             raise

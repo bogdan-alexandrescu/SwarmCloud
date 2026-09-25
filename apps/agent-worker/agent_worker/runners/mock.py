@@ -20,6 +20,14 @@ It is a real workload, not a stub:
   covered;
 * fails deterministically, or reports a provider rate limit with a chosen
   retry-after, so the failure and park paths are testable without a provider.
+  The rate limit parks ONE attempt: the count is kept in the state file, and
+  the attempt after the park runs (see `QUOTA_EXHAUSTED_PARKS`).
+
+What a caller may send is declared in the frozen catalogue
+(`RUNNER_PROFILES["mock"].inputs`, contract request 25), and swarm-api refuses
+anything else. The keys below that it does not declare -- `spend`, `provider`,
+`credential_revoked_times`, `credential_detail`, `quota_detail`, `reset_at` --
+reach this runner only from a test that writes the input itself.
 
 Input (all optional):
 
@@ -56,6 +64,17 @@ from .base import (
 PROGRESS_DIR = "progress"
 STATE_FILE = "mock_state.json"
 
+#: How many ATTEMPTS `quota_exhausted` parks before the run goes ahead. One,
+#: by the owner's decision on #142 (2026-09-25): one park is the whole park
+#: path -- checkpoint, park, release, promote, restore, finish -- and the
+#: unbounded version parked every attempt, and since a park does not spend an
+#: attempt, a task sent it never ended. The count is `quota_exhausted_times` in
+#: STATE_FILE, which lives in `work/`, so the park's own checkpoint carries it
+#: to the next attempt. It is a count of attempts, not of signals: a retry in
+#: place is the same attempt and is refused again, because a provider that
+#: keeps saying no must still end in a park.
+QUOTA_EXHAUSTED_PARKS = 1
+
 
 def _load_state(work: Path) -> dict[str, Any]:
     """Resume state left behind by a previous, checkpointed attempt."""
@@ -72,6 +91,28 @@ def _load_state(work: Path) -> dict[str, Any]:
 
 def _save_state(work: Path, state: dict[str, Any]) -> None:
     (work / STATE_FILE).write_text(json.dumps(state, indent=2))
+
+
+def _parks_this_attempt(work: Path, state: dict[str, Any], payload: dict[str, Any]) -> bool:
+    """Whether `quota_exhausted` parks THIS attempt, recording it if it is a new one.
+
+    The attempt is named by `attempt_id`, which the lifecycle adds to every
+    runner's input. The attempt that parked is kept beside the count, so a
+    retry in place -- the same attempt, the same input -- is refused again
+    without being counted twice. The state is saved BEFORE the signal is
+    raised: the park checkpoints `work/` next, and a count written after it
+    would not reach the attempt that has to read it.
+    """
+    attempt = str(payload.get("attempt_id") or "")
+    parked = int(state.get("quota_exhausted_times", 0) or 0)
+    if parked and state.get("quota_exhausted_attempt") == attempt:
+        return True
+    if parked >= QUOTA_EXHAUSTED_PARKS:
+        return False
+    state["quota_exhausted_times"] = parked + 1
+    state["quota_exhausted_attempt"] = attempt
+    _save_state(work, state)
+    return True
 
 
 def _burn_cpu(seconds: float, stop: Any) -> int:
@@ -133,7 +174,7 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
                 spend=spend,
             )
 
-    if payload.get("quota_exhausted"):
+    if payload.get("quota_exhausted") and _parks_this_attempt(work, state, payload):
         raise QuotaExhaustedSignal(
             provider=str(payload.get("provider", "mock-provider")),
             retry_after_seconds=(

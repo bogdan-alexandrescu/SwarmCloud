@@ -23,7 +23,13 @@ from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 from typing import Any, Iterable, Mapping, Sequence
 
-from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES, RunnerProfile
+from swarm_common.profiles import (
+    RESOURCE_CLASSES,
+    RUNNER_PROFILES,
+    InputRefused,
+    RunnerProfile,
+    check_inputs,
+)
 
 from .errors import ValidationFailed
 
@@ -154,6 +160,67 @@ def validate_input_size(payload: Any, max_bytes: int, *, label: str = "input") -
             detail={"bytes": size, "max_bytes": max_bytes},
         )
     return size
+
+
+class InvalidInput(ValidationFailed):
+    """A task's or a step's `input` sets a key its runner profile does not
+    declare, or a declared key outside its bounds (contract request 25).
+
+    Its own code, like `invalid_dispatch` and `invalid_dag`, so a caller can
+    branch on it: this refusal is about what was sent to the runner, and its
+    detail names the key (`key`, and every refused key in `keys`), the bound
+    it broke (`expected`, for a declared key), what the profile does declare
+    (`declared`) and, on a workflow, the step (`step_id`).
+    """
+
+    code = "invalid_input"
+
+
+#: The one key of `input` every profile takes: the instructions. Everything
+#: else is what `RunnerProfile.inputs` declares.
+PROMPT_INPUT_KEY = "prompt"
+
+
+def validate_runner_input(
+    profile: RunnerProfile, payload: Mapping[str, Any], *, step_id: str | None = None
+) -> None:
+    """Refuse an `input` key the profile does not declare, or a value out of its bounds.
+
+    THE CATALOGUE IS THE RULE, and this keeps no copy of it: the owner accepted
+    contract request 25 on #142 (2026-09-25) as "`RunnerProfile.inputs` goes in
+    the frozen catalogue and the API enforces it for every caller, not only the
+    bridge". Until then the API bounded an input's SIZE and nothing else, so a
+    script or the Submit form could send the mock `quota_exhausted` -- which
+    parked on every attempt, and a park does not spend one -- or send
+    `claude-code` a `model`, which its runner passes as `--model`.
+
+    Every caller reaches this: `_build_task` calls it for a task and for each
+    task of a batch, and `submit_workflow` for each step before any task is
+    built. Values are checked, never rewritten: the input is stored as sent.
+
+    A profile whose inputs are NOT DECLARED YET (`inputs is None`: `browser`,
+    `generic`) is bounded by size alone, as every profile was before, because
+    its runner cannot start without keys nobody has decided on yet.
+    """
+    if profile.inputs is None:
+        return
+    rest = {key: value for key, value in payload.items() if key != PROMPT_INPUT_KEY}
+    try:
+        check_inputs(profile, rest)
+    except InputRefused as refused:
+        detail: dict[str, Any] = {
+            "runner_profile": profile.name,
+            "key": refused.key,
+            "keys": list(refused.keys),
+            "declared": {key: spec.describe() for key, spec in sorted(profile.inputs.items())},
+        }
+        if refused.expected is not None:
+            detail["expected"] = refused.expected
+        message = str(refused)
+        if step_id is not None:
+            detail["step_id"] = step_id
+            message = f"step {step_id!r}: {message}"
+        raise InvalidInput(message, detail=detail) from None
 
 
 def validate_batch_size(count: int, max_batch_size: int) -> None:

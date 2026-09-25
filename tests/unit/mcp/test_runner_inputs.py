@@ -459,10 +459,11 @@ def _subcommand(name: str) -> argparse.ArgumentParser:
 
 
 def test_every_input_the_bridge_or_the_skill_shows_is_one_that_is_declared():
-    """The skill said `{"quota_exhausted": true}` parks a mock step, and the PR
-    said so too. An example is what a model copies, so each one names a key
-    `mock` declares -- read from the texts a session actually sees: the
-    delegate skill's `inputs` paragraph, the tool schema, the CLI's help."""
+    """During #201 the skill said `{"quota_exhausted": true}` parks a mock
+    step while the key was not declared, and the PR said so too. An example is
+    what a model copies, so each one names a key `mock` declares -- read from
+    the texts a session actually sees: the delegate skill's `inputs`
+    paragraph, the tool schema, the CLI's help."""
     skill = (_REPO / "plugin" / "skills" / "delegate" / "SKILL.md").read_text()
     paragraph = [p for p in re.split(r"\n\s*\n", skill) if p.startswith("`inputs`")]
     assert len(paragraph) == 1, "the delegate skill's `inputs` paragraph moved"

@@ -45,13 +45,52 @@ costs nothing while it waits.
 |---|---|
 | `step_id` | unique within the workflow; `^[A-Za-z0-9][A-Za-z0-9_\-.]*$` |
 | `runner_profile` | a **name** from the frozen catalogue — never an image or command |
-| `input` | the step's own payload, bounded by `max_input_bytes` |
+| `input` | the step's own payload, bounded by `max_input_bytes`: its `prompt`, plus only the keys its profile declares (below) |
 | `depends_on` | upstream `step_id`s, up to 50 |
 | `input_from` | `{upstream_step: artifact_filename}` staged into this step's workspace |
 | `resource_class` | optional named class, no larger than the profile's own |
 | `timeout_seconds` | may only **shorten** the profile's timeout |
 
 `max_workflow_steps` (default 50) bounds the whole thing.
+
+## What `input` may carry
+
+A runner reads its task's `input`, and an input means something only to the
+runner that reads it: `input.model` is passed as `--model` by the CLI runners,
+and `input.quota_exhausted` makes the mock simulate a rate limit. So what a
+caller may send is declared per profile in the frozen catalogue,
+`RunnerProfile.inputs` (contract request 25, accepted by the owner on #142 on
+2026-09-25), and the API holds every caller to it: `POST /v1/tasks`, the batch,
+and each step here.
+
+| the profile | what `input` may carry |
+|---|---|
+| `mock` | `prompt`, and its declared test knobs: `sleep_seconds`, `cpu_burn_seconds`, `steps`, `fail`, `fail_message`, `exit_code` (1..255 except 77, 78, 143), `artifact_text`, `artifact_name`, `quota_exhausted`, `retry_after_seconds` (1..3600) |
+| `claude-code`, `codex` | `prompt` and nothing else |
+| `browser`, `generic` | **not declared yet**: anything, bounded by `max_input_bytes` alone, as before |
+
+A key the profile does not declare, or a declared one outside its bounds, is
+refused with 422 `invalid_input`. The detail names the key (`key`, and every
+refused key in `keys`), the bound for a declared key (`expected`), what the
+profile does declare (`declared`) and, on a workflow, the step (`step_id`).
+Nothing is created: one refused step refuses the workflow, and one refused task
+refuses its batch. `NaN` and `Infinity` are refused as numbers; Python reads
+them from JSON, and every comparison with `NaN` is false, so a bound alone
+would let them through. `swarm_profiles` and `swarm profiles` list each
+profile's inputs.
+
+`browser` and `generic` are the exception because their work IS their input.
+The browser runner cannot start without `url` or `actions`, and the generic
+runner cannot start without the name of a command in its own catalogue, so an
+empty declaration would refuse every task they run. Which keys they declare,
+with which bounds, is an open question recorded under request 25 in
+[contract-change-requests.md](contract-change-requests.md).
+
+`{"quota_exhausted": true}` parks a mock step ONCE. The mock counts the
+attempts it has parked in its own state file, which the park's checkpoint
+carries forward, and the attempt after the park runs to the end. It parked on
+every attempt until 2026-09-25, and a park does not spend an attempt, so such a
+task never ended.
 
 ## Artifacts pass by reference
 

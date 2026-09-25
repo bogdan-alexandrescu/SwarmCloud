@@ -54,8 +54,9 @@ import {
  * `runner_profile` BY NAME and the frozen catalogue supplies the image,
  * command, resource class and backend. The picker is now a LIST rather than a
  * `<select>` precisely to make that visible -- the catalogue is the offer, and
- * a name that is not in it cannot be typed. `input` is data the platform never
- * reads; it is not an execution parameter, and nothing here lets one become
+ * a name that is not in it cannot be typed. `input` is data for the runner; the
+ * API checks only that its keys are ones the profile declares (contract request
+ * 25). It is not an execution parameter, and nothing here lets one become
  * one. schemas.py sets `extra="forbid"` and main.py answers any
  * FORBIDDEN_CALLER_FIELD with a message naming it.
  *
@@ -245,35 +246,36 @@ interface Suggestion {
 }
 
 /**
- * WHAT EACH PROFILE'S RUNNER READS -- offered, never enforced.
+ * WHAT EACH PROFILE'S RUNNER READS, AND MAY BE SENT.
  *
  * READ FROM THE RUNNER SOURCE ON 2026-09-23 and keyed by PROFILE NAME, which
  * is the one thing this bundle has: `/v1/capacity` serves a profile's resource
  * class, backend, provider, pools and `input_contract`, and NOT its `command`.
- * `swarm_api/runnerinputs.py` keys its own table by runner MODULE for exactly
- * the reason a name table is worse -- a new profile pointed at an existing
- * runner inherits nothing here and needs a line added.
  *
- * THAT DRIFT IS AFFORDABLE HERE AND IT WOULD NOT BE THERE, because these are
- * suggestions and `required_keys` is a rule. A suggestion that goes stale
- * offers a key the runner ignores; it never refuses valid work and it never
- * hides a key, because "a setting of your own" is always the last option in
- * the picker. The API's `required_keys` remains the only thing that can stop a
- * submission, and an unread `required_keys` still renders as unread.
+ * NO LONGER ONLY A SUGGESTION FOR A DECLARED PROFILE. Since contract request
+ * 25 (#142, 2026-09-25) the frozen catalogue declares what `input` may carry
+ * per profile, `RunnerProfile.inputs`, and swarm-api refuses any other key
+ * with 422 `invalid_input`. So a key offered here for mock, claude-code or
+ * codex that the catalogue does not declare is a refusal this form invites --
+ * which is why `model` (the CLI runners pass it as `--model`, choosing the
+ * model an agent runs) and a `timeout_seconds` offered to every profile are
+ * gone. `generic` and `browser` have not declared their inputs yet and are
+ * bounded by size only, so their entries are still the runner census.
+ * scripts/lib/check-contract-parity.sh (section 13) holds every entry for a
+ * declared profile to the declaration.
  *
  * REQUESTED, NOT CHANGED (CLAUDE.md's reporting rule): `/v1/capacity` should
- * serve an `accepted_keys` block beside `required_keys`, built in
- * `runnerinputs.py` off the same module table, so this constant can be deleted.
+ * serve each profile's declared inputs beside `required_keys`, so this
+ * constant can be deleted rather than compared.
  */
 const SUGGESTED: Record<string, Suggestion[]> = {
-  // runners/cliagent.py:264 (prompt, also required) and :277 (model).
+  // runners/cliagent.py (prompt, also required). The prompt is all the
+  // catalogue lets a caller send these two.
   'claude-code': [
     { name: 'prompt', kind: 'text', note: 'the whole instruction, passed as one argument' },
-    { name: 'model', kind: 'text', note: 'overrides the image default; letters, digits, . : - _ only' },
   ],
   codex: [
     { name: 'prompt', kind: 'text', note: 'the whole instruction, passed as one argument' },
-    { name: 'model', kind: 'text', note: 'overrides the image default; letters, digits, . : - _ only' },
   ],
   // runners/generic.py -- GENERIC_COMMANDS is the frozen argv catalogue, and
   // `command` NAMES an entry in it. That is invariant 10's own pattern, not an
@@ -283,6 +285,7 @@ const SUGGESTED: Record<string, Suggestion[]> = {
     { name: 'paths', kind: 'list', note: 'pytest only: existing paths inside the workspace' },
     { name: 'target', kind: 'text', note: 'make only: one target from the repository Makefile' },
     { name: 'working_directory', kind: 'text', note: 'a directory inside the workspace to run in' },
+    { name: 'timeout_seconds', kind: 'number', note: 'lowers the child wall clock; the platform ceiling still wins' },
   ],
   // runners/browser.py:76-107.
   browser: [
@@ -291,6 +294,7 @@ const SUGGESTED: Record<string, Suggestion[]> = {
     { name: 'timeout_ms', kind: 'number', note: 'per-action ceiling' },
     { name: 'viewport_width', kind: 'number', note: 'defaults to 1280' },
     { name: 'viewport_height', kind: 'number', note: 'defaults to 900' },
+    { name: 'timeout_seconds', kind: 'number', note: 'lowers the child wall clock; the platform ceiling still wins' },
   ],
   // runners/mock.py module docstring: every key optional, by design.
   mock: [
@@ -303,14 +307,11 @@ const SUGGESTED: Record<string, Suggestion[]> = {
   ],
 }
 
-/** Offered for every profile: `runners/limits.py` reads it for any runner, and
- *  a caller may only LOWER it -- the platform ceiling wins and says it clamped. */
-const ANY_PROFILE: Suggestion[] = [
-  { name: 'timeout_seconds', kind: 'number', note: 'lowers the child wall clock; the platform ceiling still wins' },
-]
-
+/** `timeout_seconds` (`runners/limits.py`, which a caller may only LOWER) is
+ *  offered only to the two profiles whose inputs are not declared yet: a
+ *  declared profile that does not declare it refuses it. */
 function suggestionsFor(profile: string): Suggestion[] {
-  return [...(SUGGESTED[profile] ?? []), ...ANY_PROFILE]
+  return SUGGESTED[profile] ?? []
 }
 
 const ACTION_TYPES = ['goto', 'click', 'fill', 'press', 'wait_for', 'wait', 'screenshot', 'extract'] as const

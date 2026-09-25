@@ -35,7 +35,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 20 | `models.py`: `Workflow.on_step_failure` is a bare `str`, and its vocabulary is stated four times | open |
 | 21 | `states.py`: the worker's exit codes have no shared home, and the reconciler now acts on one | open |
 | 22 | `profiles.py`: whether a runner profile can run on a pool account is stated by the worker and restated by the scheduler | open |
-| 25 | `profiles.py`: a runner profile cannot declare the inputs a caller may send it, so the bridge names the mock's by profile | open |
+| 25 | `profiles.py`: a runner profile cannot declare the inputs a caller may send it, so the bridge names the mock's by profile | ACCEPTED and applied 2026-09-25 |
 
 ---
 
@@ -2245,10 +2245,18 @@ have to restate the name again and would need its own parity test.
 
 ## 25. `profiles.py`: a runner profile cannot declare the inputs a caller may send it, so the bridge names the mock's by profile
 
-**Status:** open, recorded 2026-09-25 by the plugin lane that delivered #142
-(branch `lane/plugin-cli-0.5.2`). Numbered 25 because #196 (the outcomes API)
-takes 23 and 24; if another branch has taken 25 by the time this merges,
-renumber this one.
+**Status: ACCEPTED by the owner on 2026-09-25 and applied the same day** (branch
+`lane/mock-inputs-contract`). This edits `apps/common/swarm_common/`, which is
+frozen, and is recorded here as such. The owner's comment on #142
+([issuecomment-5840939054](https://github.com/bogdan-alexandrescu/SwarmCloud/issues/142#issuecomment-5840939054)):
+"contract request 25 is accepted: `RunnerProfile.inputs` goes in the frozen
+catalogue and the API enforces it for every caller, not only the bridge." What
+was applied, and the one place it departs from the text below, is under
+*Applied* at the end of this entry.
+
+Recorded 2026-09-25 by the plugin lane that delivered #142 (branch
+`lane/plugin-cli-0.5.2`). Numbered 25 because #196 (the outcomes API) takes 23
+and 24.
 
 ### What is true today
 
@@ -2333,3 +2341,66 @@ Anything that is not the bridge -- the web UI's New Workflow screen, a script
 posting to `/v1/tasks` -- keeps sending whatever `input` it likes, and a new
 profile that should take inputs takes none from the plugin until someone edits
 the table.
+
+### Applied, 2026-09-25
+
+Accepted by the owner on #142 (the comment quoted under *Status*), together
+with "a bounded park for the mock (a `quota_exhausted_times` counter in its
+state file, like `credential_revoked_times`), after which `quota_exhausted` and
+a bounded `retry_after_seconds` join the declared inputs."
+
+**In `swarm_common/profiles.py`**, as requested: `RunnerInput` (kind, bounds,
+`means`, `refused`) and `RunnerProfile.inputs`. Beside them, so that the rule
+has one home as well as the data: `INPUT_KINDS`, `InputRefused` (carrying the
+key, every refused key and the bound) and `check_inputs(profile, raw)`, which
+swarm-api and the bridge both call. `RunnerInput.check` refuses NaN and
+Infinity, which `json.loads` reads and which every bound comparison lets
+through. `RunnerProfile.inputs` is frozen into a read-only mapping and excluded
+from the hash; `prompt` cannot be declared, because every profile takes it.
+
+**The mock declares ten keys**: the eight the bridge declared, plus
+`quota_exhausted` (boolean) and `retry_after_seconds` (integer 1..3600).
+`exit_code` stays 1..255 except 77, 78 and 143. Still not declared: `spend`,
+`provider`, `credential_revoked_times`, `credential_detail`, `quota_detail`,
+`reset_at`. `agent_worker/runners/mock.py` parks one attempt: it records
+`quota_exhausted_times` and the parking attempt's id in `mock_state.json`
+before it raises, the park's checkpoint carries the file forward, and the next
+attempt runs. A retry in place is the same attempt and is refused again.
+
+**`claude-code` and `codex` declare nothing**, so `input.model` is refused from
+every caller, which is the attribution-only rule
+`test_model_flag_is_attribution_only.py` holds for the bridge.
+
+**The one departure: `browser` and `generic` are `inputs=None`, NOT DECLARED
+YET, and the API bounds them by size alone, as it bounded every profile
+before.** The text above says "Empty for every profile that takes only a
+prompt", and neither does: the browser runner refuses an input with neither
+`url` nor `actions`, and the generic runner cannot start without `command`,
+the name of an entry in its own catalogue. Declaring nothing for them would
+have refused every task they run, the smoke suite's GKE row included. The
+"What it would break" section above assumed an undeclared key is "ignored"
+today; for these two runners it is the work. So which keys they declare, with
+which bounds, is open, and it is the owner's to decide:
+
+* `browser` reads `url`, `actions` (a list of objects, which `INPUT_KINDS` has
+  no kind for), `timeout_ms`, `launch_timeout_ms`, `viewport_width`,
+  `viewport_height`, `user_agent`, `extract_text` and `screenshot`;
+* `generic` reads `command`, `paths` (a list), `target`, `working_directory`
+  and the four limits in `runners/limits.py`. A declared input named `command`
+  would read as invariant 10 relaxed although it names a catalogue entry, not
+  an argv.
+
+**swarm-api** refuses an undeclared key, or a declared key out of its bounds,
+with 422 `invalid_input` at `POST /v1/tasks`, the batch and every workflow
+step, before anything is created (`validation.validate_runner_input`). The
+bridge's `DECLARED_INPUTS` and `InputSpec` are deleted; it reads the catalogue.
+
+**Downstream, changed in the same PR because each became a restatement the
+API now enforces:** the operational scripts sent `message`, `index` and
+`run_id`, which no runner read, and now send the prompt; the Submit form
+offered `model` to the CLI profiles and `timeout_seconds` to every profile,
+and now offers neither to a declared profile. Section 13 of
+`scripts/lib/check-contract-parity.sh` holds both to the declaration. The UI's
+catalogue mirror (`apps/swarm-ui/src/types.ts`) does not follow the field:
+nothing serves it to the browser yet, which the Submit form's comment records
+as a request.

@@ -57,9 +57,17 @@ checker that existed twice would be its own punchline.
 | 10 | the Artifact Registry repository | `swarm_common.config.Settings.artifact_registry` | both terraform variable defaults |
 | 11 | the workspace mount path | `agent_worker.config.WorkerConfig.workspace_root`, because the worker is the process that writes | the dispatcher constant, terraform's env and mount-path default, and each worker template's `WORKSPACE_ROOT`, `SWARM_ARTIFACTS_DIR` and `volumeMount` |
 | 12 | the tenant-id character class | `swarm_common.identity._TENANT_SAFE` | terraform's tenant-id validation regex |
+| 13 | the runner inputs a caller may send | `swarm_common.profiles.RunnerProfile.inputs` (contract request 25) | every task input the operational scripts submit (`submit_task`, the workflow steps in `e2e-test.sh`, both branches of `profile_input`), and `SUGGESTED` in `apps/swarm-ui/src/Submit.tsx` |
 
-Sections 7 to 12 were added by the sweep. Two properties of all of them are
-deliberate and should not be relaxed:
+Sections 7 to 12 were added by the sweep. Section 13 came with contract
+request 25 (2026-09-25): once the API refused an input key the profile does not
+declare, every input a script submits and every key the Submit form offers
+became a restatement of the catalogue. Before, the scripts sent `message`,
+`index` and `run_id`, which no runner read, and the form offered `model` to the
+CLI profiles; each of those would have been a 422 against a deployment, found
+only by running the suite there. A profile whose inputs are not declared yet
+(`browser`, `generic`) is not compared, because the API bounds it by size
+alone. Two properties of all of them are deliberate and should not be relaxed:
 
 * **The authority is named, and it is the component that acts.** For the
   namespace and the KSA that is the dispatcher, because the dispatcher is what
@@ -251,6 +259,7 @@ that "not in the parity checker" is never read as "not covered".
 | the shared deny-list and the unlabelable-type list | `SHARED_DENY_LIST` in `common.sh`, and `unlabelable-types.json` | nothing — both were restated in `tests/integration/test_destroy_guard.py` and neither was compared; now derived there, with the derivation itself asserted. See below |
 | the cluster's network in the tenant egress policy: pod range, service range, kube-dns Service IP, NodeLocal DNSCache address | every applied `swarm-allow-worker-egress` — its four `swarm.saga.xyz/*` network annotations and the rules that use the values — against the **live cluster**, which is the authority | `scripts/lib/check-cluster-network-parity.sh` with `kubernetes/network_parity.py`, **only with credentials**: CI has none, so there it skips with a `::notice`. `--require-live` is the gate, run after an apply. See [below](#the-one-whose-authority-is-a-live-cluster) |
 | the variable a pool account's token fills, `CLAUDE_CODE_OAUTH_TOKEN` (#169) | `SUBSCRIPTION_TOKEN_ENV` in `scheduler/credentials.py`, which admission uses to decide whether a profile can run on a pool account at all, and `ACCOUNT_TOKEN_ENV` in `agent_worker/accountlease.py`, which the worker checks before asking the broker. The scheduler's image does not carry the worker. The rest of the rule is NOT restated: who an account serves is `quota_broker.accounts.accounts_serving`, which the scheduler imports and the broker's assign route calls. Contract request 22 asks for a home in `swarm_common.profiles` | `tests/unit/worker/test_pool_credential_parity.py` requires the two constants to be equal, and runs the REAL worker's credential resolution for every profile in the catalogue against the scheduler's `credential_for`: the set of profiles the worker asks the pool for must equal the set the scheduler expects a pool account for |
+| the runner inputs a caller may send, which the bridge used to hold as its own table (`DECLARED_INPUTS` in `swarm_mcp/profiles.py`) | none now: the table is deleted and the bridge and swarm-api both read `RunnerProfile.inputs` and call `swarm_common.profiles.check_inputs`. What remains restated is what the declaration is ABOUT: each declared key names a `payload` read in its runner's source, and the mock's refused exit codes 77, 78 and 143 name `EXIT_*` constants in `agent_worker/runners/base.py`, which the catalogue cannot import | `tests/unit/mcp/test_runner_inputs.py` requires every declared key to be read by the runner the profile's `runner_argv` names, reads `base.py`'s `EXIT_*` constants and requires each non-failure code to be refused, and fails if the bridge grows a table of its own again; `tests/unit/control_plane/test_runner_inputs_by_declaration.py` changes the declaration under the API and requires the API's answer to change with it |
 | the `task.metadata` key naming the files a workflow step's dependants stage from it, `expected_outputs` (#149) | `EXPECTED_OUTPUTS_METADATA_KEY`, defined in `swarm_api/validation.py` beside the other reserved keys and re-exported by `swarm_api/expected_outputs.py`, which writes it at submission, and `METADATA_KEY` in `agent_worker/expected_outputs.py`, which reads it and tells the agent. The two packages never import each other, because a worker importing swarm-api would carry the control plane into every agent image | `tests/unit/control_plane/test_expected_outputs_seam.py` requires the two constants to be equal, and runs what `POST /v1/workflows` actually stores through the worker's reader and instruction builder |
 
 ### The one whose authority is a live cluster
