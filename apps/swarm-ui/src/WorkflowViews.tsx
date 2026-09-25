@@ -1,9 +1,9 @@
 import { Fragment, useEffect, useRef, useState, type KeyboardEvent, type Ref } from 'react'
 
 import { loadAttempts } from './api'
-import { DECLARED_WORDS, type StepInputs, type StrayInput } from './dag'
+import { DECLARED_WORDS, NEVER_STARTED_WORD, type StepInputs, type StrayInput } from './dag'
 import type { Result } from './fetch'
-import { NO_ATTEMPT_YET, durationText, type Cell } from './measure'
+import { NO_ATTEMPT_YET, durationText, type Absence, type Cell } from './measure'
 import { Id } from './Shell'
 import {
   DEFAULT_SORT,
@@ -23,7 +23,7 @@ import {
   type TimelineAxis,
   type WorkflowView,
 } from './stepviews'
-import { bytesLabel, type AttemptRow, type TaskState, type Tone, type WorkflowStep } from './types'
+import { TERMINAL_STATES, bytesLabel, type AttemptRow, type TaskState, type Tone, type WorkflowStep } from './types'
 
 /**
  * A WORKFLOW'S TIMELINE AND TABLE, AND THE INSPECTOR THAT SCRUBS ACROSS THEM.
@@ -60,6 +60,8 @@ export interface StepRowModel {
   readonly times: StepTimes
   readonly ran: Cell
   readonly attempts: Cell
+  /** Attempts used past the step's ceiling: 0 within it, or with no count. */
+  readonly attemptsOver: number
   readonly cost: Cell
   readonly tokens: Cell
   /** The attempt read has not landed: the cost and token cells are placeholders, not absences. */
@@ -349,6 +351,30 @@ function CellView({ cell, pending = false }: { cell: Cell; pending?: boolean }) 
   )
 }
 
+/**
+ * The attempts cell, which is the one figure in the table with a ceiling.
+ *
+ * PAST THE CEILING IT IS DRAWN AS PAST THE CEILING. `4 of 3` rendered in the
+ * same ink as `1 of 3`, so the one row in a table of twenty whose count the
+ * ceiling was meant to make impossible read as ordinary. `.is-over` is the
+ * over-ceiling treatment (the bad tone and weight -- `.is-over` is what the
+ * sheet already calls "more held than the ceiling allows" on a track), and the
+ * overage is in the accessible name, because a tone is never the only signal.
+ */
+function AttemptsView({ cell, over }: { cell: Cell; over: number }) {
+  if (over <= 0) return <CellView cell={cell} />
+  return (
+    <span
+      className="wf-cell is-over"
+      role="img"
+      aria-label={`${cell.text} attempts used: ${over} over the ceiling`}
+      title={cell.note || undefined}
+    >
+      {cell.text}
+    </span>
+  )
+}
+
 /** The columns, in order. `sort` is the key a head sorts on, or null for a
  *  column that is read rather than ranked. */
 const COLUMNS: ReadonlyArray<{ col: string; label: string; sort: SortKey | null; num: boolean }> = [
@@ -382,12 +408,20 @@ function waitedCell(t: StepTimes): Cell {
 }
 
 /**
- * What a step read, one entry per file.
+ * What a step read, one entry per file, ONE LINE PER FILE.
  *
  * `plan.md ← plan` and then either its size (it arrived, measured) or the word
  * for which kind of not-yet it is. A step that declares nothing and staged
  * nothing says `none` -- that is a fact about the step's definition, not an
  * absent measurement, so it is plain text rather than the absence treatment.
+ *
+ * WHY A LINE EACH, and why in `depends_on` order (`inputsByStep` sorts them).
+ * The entries were one comma-joined run in a `nowrap` cell, so a step with two
+ * inputs showed the first and clipped the second -- and which one was first
+ * followed the Firestore map, so it changed between reads. merge-1..4 each
+ * declared two files and failed on the SECOND; the table showed one input,
+ * clipped, and a different one on the next refresh. A break between entries
+ * keeps every file on screen without the cell's `nowrap` cutting any of them.
  */
 function InputsCell({ inputs }: { inputs: StepInputs }) {
   const declared = [...inputs.declared.entries()]
@@ -398,7 +432,7 @@ function InputsCell({ inputs }: { inputs: StepInputs }) {
     <span className="wf-inputs">
       {declared.map(([parent, p], i) => (
         <span key={`d-${parent}`} className="wf-input">
-          {i > 0 ? ', ' : ''}
+          {i > 0 && <br />}
           {p.file} ← {parent}{' '}
           {p.kind === 'staged' ? (
             <span
@@ -417,18 +451,21 @@ function InputsCell({ inputs }: { inputs: StepInputs }) {
       ))}
       {inputs.stray.map((s, i) => (
         <span key={`s-${i}`} className="wf-input is-stray">
-          {declared.length + i > 0 ? ', ' : ''}
+          {declared.length + i > 0 && <br />}
           {s.file} ← {s.source.kind === 'submission' ? 'submission' : s.source.kind === 'outside' ? s.source.taskId : `${s.source.stepId} (undeclared)`}{' '}
           <span className="wf-cell">{s.bytes === null ? 'size not reported' : bytesLabel(s.bytes)}</span>
         </span>
       ))}
       {inputs.malformed > 0 && (
-        <span
-          className="ctl-mark is-unread"
-          aria-label={`${inputs.malformed} entr${inputs.malformed === 1 ? 'y' : 'ies'} in this step's staged-input report could not be read as a file.`}
-        >
-          {inputs.malformed} unreadable
-        </span>
+        <>
+          {declared.length + inputs.stray.length > 0 && <br />}
+          <span
+            className="ctl-mark is-unread"
+            aria-label={`${inputs.malformed} entr${inputs.malformed === 1 ? 'y' : 'ies'} in this step's staged-input report could not be read as a file.`}
+          >
+            {inputs.malformed} unreadable
+          </span>
+        </>
       )}
     </span>
   )
@@ -508,7 +545,7 @@ export function WorkflowTable({
                 <CellView cell={r.ran} />
               </td>
               <td data-col="attempts" className="is-num">
-                <CellView cell={r.attempts} />
+                <AttemptsView cell={r.attempts} over={r.attemptsOver} />
               </td>
               <td data-col="cost" className="is-num">
                 <CellView cell={r.cost} pending={r.pending} />
@@ -530,6 +567,25 @@ export function WorkflowTable({
 // ---------------------------------------------------------------------------
 // The inspector and its two scrubbers
 // ---------------------------------------------------------------------------
+
+/**
+ * What the attempt scrubber says when the attempt read came back empty.
+ *
+ * `no attempt yet` is right for a step that is still waiting -- the read
+ * succeeded, nothing has run, something may. For a step that is OVER it is
+ * wrong twice: "yet" promises an attempt that is not coming, and the Table and
+ * the Timeline beside it already say `never started` for the same step. A
+ * terminal task with no attempt document never got an attempt at all, so it
+ * takes the word every other view prints for it (`NEVER_STARTED_WORD`).
+ */
+const NO_ATTEMPT_EVER: Absence = {
+  text: NEVER_STARTED_WORD,
+  note: 'The attempt read succeeded and returned none, and this step is over: it ended without any attempt being made, so there is nothing to step through.',
+}
+
+function noAttempt(taskState: TaskState | null): Absence {
+  return taskState !== null && TERMINAL_STATES.has(taskState) ? NO_ATTEMPT_EVER : NO_ATTEMPT_YET
+}
 
 /** The attempt read, injectable so a test can hand it rows without HTTP. */
 export type AttemptLoader = (taskId: string) => Promise<Result<{ attempts: AttemptRow[] }>>
@@ -748,8 +804,11 @@ export function StepInspector({
         <span className="wf-inspect-state" title={row.look.title}>
           {row.look.word}
         </span>
+        {/* `.ctl-link`: ink plus an underline, the accent only on hover and
+            focus. Unclassed, this anchor fell back to the browser's own blue --
+            and to visited purple once the run had been opened. */}
         {taskId !== null && (
-          <a className="wf-inspect-run" href={`#work/task/${encodeURIComponent(taskId)}`}>
+          <a className="ctl-link wf-inspect-run" href={`#work/task/${encodeURIComponent(taskId)}`}>
             run →
           </a>
         )}
@@ -780,8 +839,8 @@ export function StepInspector({
             attempts unread
           </span>
         ) : current === null || at === null || ready === null ? (
-          <span className="ctl-mark is-absent" aria-label={NO_ATTEMPT_YET.note}>
-            {NO_ATTEMPT_YET.text}
+          <span className="ctl-mark is-absent" aria-label={noAttempt(taskState).note}>
+            {noAttempt(taskState).text}
           </span>
         ) : (
           <>

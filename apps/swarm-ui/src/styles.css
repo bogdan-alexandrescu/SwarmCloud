@@ -3359,6 +3359,12 @@ button.copy:hover { color: var(--text); border-color: var(--text-faint); }
   display: flex; flex-direction: column; align-items: center; gap: 4px;
   min-width: 26px; flex: 1 1 26px; max-width: 72px;
 }
+/* THE DAY BOUNDARY ON AN HOURLY AXIS: the first column of each day after the
+   first carries a rule down its left edge, the interior-separator tone, so
+   four days of hours read as four days even where a label was thinned out.
+   `--ctl-s1` inside it, so the bar and the date clear the rule rather than
+   touching it. */
+.chart .col.is-day-start { border-left: 1px solid var(--line-soft); padding-left: var(--ctl-s1); }
 .stackcol { display: flex; flex-direction: column-reverse; justify-content: flex-start; width: 100%; height: 120px; }
 .stackcol > i { display: block; width: 100%; min-height: 0; }
 .stackcol > i.succeeded { background: var(--ok); }
@@ -6707,6 +6713,10 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
 .dsp-repo:focus-visible, .dsp select:focus-visible { outline: 2px solid var(--info); outline-offset: 1px; }
 
 .dsp-facts { margin: 0; }
+/* The gap above each of the dispatch control's two labelled fields. It was an
+   inline `marginTop: 14` on each label in Dispatch.tsx -- off the four-step
+   scale, and out of this sheet's reach. */
+.dsp > .dsp-label { margin-top: var(--ctl-s3); }
 /* `.dsp-rollup` is gone with the paragraph it styled. Its only caller was the
    workflow board's dispatch line, which is now a `.ctl-facts` strip. */
 .node-id .tag { margin-left: 6px; }

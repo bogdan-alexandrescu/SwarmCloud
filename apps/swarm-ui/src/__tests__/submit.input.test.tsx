@@ -33,12 +33,13 @@
 // each turned this file red with a named message.
 
 import { describe, expect, it } from 'vitest'
-import { render } from '@testing-library/react'
+import { fireEvent, render, screen, within } from '@testing-library/react'
 
 import SUBMIT_SRC from '../Submit.tsx?raw'
 import WORKFLOW_SRC from '../SubmitWorkflow.tsx?raw'
 import {
   InputFields,
+  SubmitScreen,
   buildInput,
   missingRequired,
   seedFields,
@@ -46,6 +47,7 @@ import {
   type InputField,
   type ValueKind,
 } from '../Submit'
+import { SubmitWorkflowScreen } from '../SubmitWorkflow'
 
 let key = 100
 function f(over: Partial<InputField> = {}): InputField {
@@ -322,5 +324,69 @@ describe('no JSON is typed anywhere on these two screens', () => {
     for (const [name, src] of both) {
       expect(/=\s*['"]\{\}['"]/.test(src), `${name} seeds a control with the string {}`).toBe(false)
     }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The send panel says what its button will do (visual QA pass, epic #84)
+// ---------------------------------------------------------------------------
+//
+// Rendered against the development fixture, which serves the runner input
+// contract (`submit.fixture.test.ts` holds that it does): `claude-code` and
+// `codex` require `input.prompt`, the other three require nothing. Each case
+// was committed RED first.
+
+function sendHeading(root: HTMLElement): string {
+  return root.querySelector('.sbf-send h2')?.textContent ?? ''
+}
+
+describe('the send panel', () => {
+  it('TS-5 / TS-16: a plan with a step that would fail cannot be sent, and says which step, beside the button', async () => {
+    const { container } = render(<SubmitWorkflowScreen />)
+    const go = await screen.findByRole('button', { name: 'Submit this workflow' }, { timeout: 4000 })
+    // The fixture's first runner requires nothing, so the plan starts sendable.
+    expect(go.hasAttribute('disabled')).toBe(false)
+    expect(sendHeading(container)).toBe('Ready to send')
+
+    // A runner that requires `input.prompt`, left blank. The step card already
+    // said `Not sent`; the button stayed live and the only statement of the
+    // refusal appeared ~2,100px above it after the click.
+    fireEvent.change(container.querySelector<HTMLSelectElement>('select.wfb-profile')!, {
+      target: { value: 'claude-code' },
+    })
+    expect(go.hasAttribute('disabled'), 'a plan that would fail can still be sent').toBe(true)
+    expect(sendHeading(container), '"Ready to send" over a plan that cannot be sent').toBe('Not ready to send')
+    const count = container.querySelector<HTMLElement>('.sbf-send .warn-text')
+    expect(count, 'the send panel does not say what stops it').toBeTruthy()
+    expect(count!.textContent).toContain('1 step not ready')
+    // A way to the step, from beside the button: it focuses the step's name.
+    fireEvent.click(within(count!).getByRole('button', { name: 'claude-code-1' }))
+    expect(document.activeElement).toBe(container.querySelector('input.wfb-id'))
+  })
+
+  it('TS-16: the task form says it is not ready while its button is disabled', async () => {
+    const { container } = render(<SubmitScreen />)
+    const go = await screen.findByRole('button', { name: 'Submit one task' }, { timeout: 4000 })
+    // Nothing chosen yet: the button is disabled, and the heading said "Ready".
+    expect(go.hasAttribute('disabled')).toBe(true)
+    expect(sendHeading(container), '"Ready to send" over a disabled button').toBe('Not ready to send')
+    // A runner that needs nothing: now it is.
+    fireEvent.click(container.querySelector<HTMLInputElement>('input[name="runner-profile"][value="mock"]')!)
+    expect(go.hasAttribute('disabled')).toBe(false)
+    expect(sendHeading(container)).toBe('Ready to send')
+  })
+
+  it('TS-19: names the key a runner needs without a broken article', async () => {
+    const { container } = render(<SubmitScreen />)
+    await screen.findByRole('button', { name: 'Submit one task' }, { timeout: 4000 })
+    const facts = (name: string) =>
+      container
+        .querySelector(`input[name="runner-profile"][value="${name}"]`)!
+        .closest('label')!
+        .querySelector('.sbf-runner-facts')!.textContent ?? ''
+    expect(facts('claude-code')).toContain('anthropic key needed')
+    expect(facts('codex')).toContain('openai key needed')
+    expect(facts('mock')).toContain('no provider key needed')
+    for (const n of ['claude-code', 'codex', 'mock']) expect(facts(n), n).not.toMatch(/needs a /)
   })
 })
