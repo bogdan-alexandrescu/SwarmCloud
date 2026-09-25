@@ -20,6 +20,15 @@
 //
 // MUTATION: paint `.row .why` in `--warn` again, or give every row the
 // modifier. The routine rows below then carry it and the cascade reads warn.
+//
+// STUCK OR SILENT WORKERS, the fourth kind the decision names, had no line at
+// all: `whyAgent` writes nothing for a task that holds a slot, so the first
+// pass had nothing to colour and coloured nothing. The inspector reads the
+// task's events, and `livenessOf` (Liveness.tsx) already calls a slot-holding
+// task with no event for seven minutes `silent` -- so the inspector now
+// writes that sentence as its why line, in `--warn`. The Agents list reads
+// task documents only, which carry no heartbeat; its half is an issue, not a
+// guess.
 
 import STYLES from '../styles.css?raw'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -28,7 +37,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { AgentRun } from '../api'
 import type { BlockedEntry, Task, TaskPage } from '../types'
 import { cascade, type CascadeEnv } from './cssgate'
-import { attempt, task } from './runfixture'
+import { attempt, ev, task } from './runfixture'
 
 const api = vi.hoisted(() => ({
   loadTasks: vi.fn(),
@@ -191,6 +200,49 @@ describe('the inspector paints its why sentence by the same rule', () => {
     expect(await warns(quota), 'a quota park is a routine wait').toBe(false)
     const key = waiting('tsk_signin00', { state: 'PARKED', park_reason: 'CREDENTIAL_MISSING' })
     expect(await warns(key), 'a missing key needs a person').toBe(true)
+  })
+
+  /** A RUNNING task whose newest event is `ageMin` minutes old. */
+  function holding(ageMin: number): AgentRun {
+    const newest = new Date(Date.now() - ageMin * 60_000).toISOString()
+    const started = new Date(Date.now() - (ageMin + 30) * 60_000).toISOString()
+    return {
+      ...run(
+        task({
+          id: 'tsk_holding0',
+          state: 'RUNNING',
+          started_at: started,
+          completed_at: null,
+          current_lease_id: 'lse_1',
+        }),
+      ),
+      attempts: [attempt(1, { created_at: started, started_at: started, completed_at: null, exit_code: null })],
+      events: [ev('lease_acquired', started, 'att_1'), ev('heartbeat', newest, 'att_1')],
+    }
+  }
+
+  it('writes a --warn why line for a worker gone silent, and none for one that is beating', async () => {
+    api.loadCheckpoints.mockResolvedValue({ status: 'empty', fetchedAt: Date.now() })
+    api.loadTaskLogs.mockResolvedValue({ status: 'empty', fetchedAt: Date.now() })
+
+    // Twenty minutes with no event on a task that holds a slot: `silent`, and
+    // someone has to look -- the reconciler's reclaim is the platform's
+    // answer, and a person deciding whether to wait for it is the reader's.
+    const silent = render(<Run run={holding(20)} />)
+    const line = await waitFor(() => {
+      const p = silent.container.querySelector<HTMLElement>('.why-full')
+      expect(p, 'a silent worker has no why line').not.toBeNull()
+      return p!
+    })
+    expect(line.classList.contains('is-warn'), 'a silent worker is not drawn as needing action').toBe(true)
+    expect(line.textContent ?? '').toMatch(/No event for 20m/)
+    silent.unmount()
+
+    // Thirty seconds: live. Nothing is wrong, so there is no line to colour.
+    const live = render(<Run run={holding(0.5)} />)
+    await waitFor(() => expect(live.container.querySelector('.ctl-metrics')).not.toBeNull())
+    expect(live.container.querySelector('.why-full'), 'a live worker was given a why line').toBeNull()
+    live.unmount()
   })
 })
 
