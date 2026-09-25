@@ -29,7 +29,14 @@ vi.mock('../api', async (importOriginal) => {
   return { ...actual, ...api }
 })
 
-import { AgentsScreen } from '../Agents'
+import {
+  AgentsScreen,
+  IDLE_POLL_MS,
+  LIVE_POLL_MS,
+  attemptsUsed,
+  pollInterval,
+  rowClock,
+} from '../Agents'
 
 const NOW = '2026-09-23T12:00:00.000Z'
 const THEN = '2026-09-23T10:00:00.000Z'
@@ -225,6 +232,15 @@ describe('an attempt count over its cap looks like one', () => {
     expect(spent.classList.contains('is-over'), '3/3 is drawn as over its cap').toBe(false)
     expect(spent.getAttribute('aria-label') ?? '').not.toMatch(/over/)
   })
+
+  it('computes over from the two numbers, strictly', () => {
+    expect(attemptsUsed({ attempt_count: 83, max_attempts: 3 })).toEqual({
+      over: true,
+      say: '83 attempts against a cap of 3: 80 over the ceiling',
+    })
+    expect(attemptsUsed({ attempt_count: 3, max_attempts: 3 }).over).toBe(false)
+    expect(attemptsUsed({ attempt_count: 0, max_attempts: 3 }).over).toBe(false)
+  })
 })
 
 describe('the row the inspector has open says so', () => {
@@ -295,6 +311,22 @@ describe('the row clock does not run past the read (AG-1)', () => {
    * nobody had re-read. The cadence is §2.5's, and the clock stops one
    * interval past the read -- when a fresh read was due and has not come.
    */
+  it('re-reads fast only while Live holds a row', () => {
+    const live: TaskPage = { tasks: [task('task_ffffffff00000000000f', 'RUNNING')] }
+    const idle: TaskPage = { tasks: [task('task_dddddddd00000000000d', 'SUCCEEDED')] }
+    expect(pollInterval(live)).toBe(LIVE_POLL_MS)
+    expect(pollInterval(idle)).toBe(IDLE_POLL_MS)
+    expect(pollInterval(null)).toBe(IDLE_POLL_MS)
+    expect(LIVE_POLL_MS).toBeLessThan(IDLE_POLL_MS)
+  })
+
+  it('holds the clock at one interval past the read', () => {
+    expect(rowClock(1_000, 0, 5_000)).toBe(1_000)
+    expect(rowClock(60_000, 0, 5_000)).toBe(5_000)
+    // Not yet read: nothing to hold it to.
+    expect(rowClock(60_000, null, 5_000)).toBe(60_000)
+  })
+
   /**
    * BREAK IT: go back to `elapsed(task, Date.now())` on a 1s interval. A
    * minute later the row reads `2m 3s` for an agent that was read at `1m 0s`.
