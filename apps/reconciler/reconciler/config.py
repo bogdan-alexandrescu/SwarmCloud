@@ -149,6 +149,23 @@ class ReconcilerConfig:
     #: cannot scale down while it runs, because it may not be evicted.
     left_running_grace_seconds: int = 300
 
+    #: How long before a pass read Firestore an execution must have ENDED for
+    #: the ended-at-startup rule to act on it (#198, `detect_ended_at_startup`).
+    #:
+    #: The rule requeues a task that is still DISPATCHED or STARTING once its
+    #: execution has ended. A worker makes every write before its container
+    #: exits, and Cloud Run records the end after the exit, so a snapshot read
+    #: after that instant has seen every write the worker made: a park (exit
+    #: 75), a failure (exit 1), a cancel (exit 71) all move the task out of
+    #: DISPATCHED and STARTING first. The snapshot is taken BEFORE the backends
+    #: are listed, though, so an execution can be listed as over when the
+    #: snapshot predates its worker's last write. Thirty seconds is far past
+    #: the seconds between a worker's last write and its container's end, and
+    #: short beside the 300 s dispatch deadline this rule is there to beat. The
+    #: repair also refuses, inside its transactions, a task that has left
+    #: DISPATCHED and STARTING, so this is the first of two guards.
+    ended_execution_grace_seconds: int = 30
+
     max_findings_per_pass: int = 200
     dry_run: bool = False
     enable_gke: bool = True
@@ -241,6 +258,7 @@ class ReconcilerConfig:
             stuck_cpu_floor_cores=_float("STUCK_CPU_FLOOR_CORES", 0.05),
             stuck_evidence_max_gap_seconds=_int("STUCK_EVIDENCE_MAX_GAP_SECONDS", 600),
             left_running_grace_seconds=_int("LEFT_RUNNING_GRACE_SECONDS", 300),
+            ended_execution_grace_seconds=_int("ENDED_EXECUTION_GRACE_SECONDS", 30),
             max_findings_per_pass=_int("MAX_FINDINGS_PER_PASS", 200),
             dry_run=_bool("RECONCILER_DRY_RUN", False),
             enable_gke=_bool("ENABLE_GKE_AUTOPILOT", settings.enable_gke_autopilot),

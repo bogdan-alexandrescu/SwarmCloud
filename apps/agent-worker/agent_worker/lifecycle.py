@@ -81,6 +81,15 @@ windows, and the handler (`_on_signal`) knows which one it is in:
 Every startup phase is also announced (`startup.Phases`), so a worker that
 stalls says where.
 
+**Step 1's read is asked again before it gives up (#198).** A Cloud Run
+instance can take a minute or more to pass traffic after it starts (Direct
+VPC egress), so the generation check runs on a schedule of attempts that
+spans more than a minute (`startup.CONTROL_PLANE_READ_SCHEDULE_SECONDS`), one
+warning per failed attempt, before its 69. Only what would exit 69 is asked
+again: a refusal, a fence and a tenant mismatch end the attempt at once. The
+wait between attempts is inside step 1's window, so a SIGTERM there exits
+143 at once, having written nothing.
+
 **A dependency that is unavailable in the same window exits 69, as at step
 1, and leaves the task to the reconciler.** Every Firestore call from step 1 to
 the runner carries the startup budget (`ControlPlane.startup_budget`), so an
@@ -166,9 +175,11 @@ from .secrets import (
     resolve_git_token,
 )
 from .startup import (
+    CONTROL_PLANE_READ_SCHEDULE_SECONDS,
     EXIT_INTERRUPTED,
     Phases,
     StartupInterrupted,
+    call_on_schedule,
     disarm_stack_dump,
     route_signals,
     say_from_signal_handler,
@@ -298,6 +309,11 @@ class Worker:
         )
         self._interrupted = False
         self.phases = deps.phases if deps.phases is not None else Phases(deps.logger)
+        # What the generation check's scheduled attempts wait with, and time
+        # themselves by (`startup.call_on_schedule`). Replaceable so a test can
+        # run the schedule without waiting it out.
+        self.startup_sleep: Callable[[float], Any] = time.sleep
+        self.startup_clock: Callable[[], float] = time.monotonic
         # Which window a SIGTERM lands in. `_on_signal` reads it; `run` and
         # `_execute` set it, always through `_signal_policy` so that it is
         # restored however the window is left.
@@ -377,17 +393,33 @@ class Worker:
         # ---- STEP 1: fencing, before anything else exists ---------------
         self.phases.enter("validate_generation")
         try:
-            # Reads only. A SIGTERM here has nothing to undo, so it exits now.
+            # Reads only. A SIGTERM here, in a read or in the wait between two
+            # attempts, has nothing to undo, so it exits now.
             with self._signal_policy(_SIGNAL_EXIT_NOW), self.control.startup_budget():
-                signals = self.control.validate_generation()
+                read = call_on_schedule(
+                    # Looked up at each attempt, not bound once: a test may
+                    # stand in for the control plane's method.
+                    lambda: self.control.validate_generation(),
+                    retryable=_generation_check_retryable,
+                    schedule=CONTROL_PLANE_READ_SCHEDULE_SECONDS,
+                    sleep=self.startup_sleep,
+                    clock=self.startup_clock,
+                    on_failed_attempt=self._control_plane_read_failed,
+                )
         except FencedError as exc:
             return self._exit_fenced(exc)
         except TenantMismatchError as exc:
             return self._exit_tenant_mismatch(exc)
         except Exception as exc:
+            # Not retried: a refusal, or something that is not Firestore's.
             if not _control_plane_unreachable(exc):
                 raise
             return self._exit_control_plane_unreachable(exc)
+        if read.error is not None:
+            return self._exit_control_plane_unreachable(
+                read.error, attempts=read.attempts, seconds=read.seconds
+            )
+        signals = read.value
 
         if signals.cancel_requested:
             # Cancelled between admission and start: nothing ran, so there is
@@ -1239,7 +1271,34 @@ class Worker:
         )
         return ExitCode.TENANT_MISMATCH
 
-    def _exit_control_plane_unreachable(self, exc: BaseException) -> int:
+    def _control_plane_read_failed(
+        self, attempt: int, exc: BaseException, retry_in: float
+    ) -> None:
+        """One WARNING for a generation check that failed and will be asked again (#198).
+
+        The incident's worker was silent for the 28 s between its phase line
+        and its verdict. Each failed attempt now says what it met and when
+        the next one starts. The last attempt's failure is the verdict, logged
+        by `_exit_control_plane_unreachable`, not here.
+        """
+        cause = getattr(exc, "cause", None)
+        self.log.warning(
+            f"could not read the control plane at startup (attempt {attempt} of "
+            f"{len(CONTROL_PLANE_READ_SCHEDULE_SECONDS)}): {type(exc).__name__}; "
+            f"retrying in {retry_in:g}s",
+            phase=self.phases.current,
+            attempt=attempt,
+            attempts=len(CONTROL_PLANE_READ_SCHEDULE_SECONDS),
+            retry_in_seconds=retry_in,
+            schedule_seconds=list(CONTROL_PLANE_READ_SCHEDULE_SECONDS),
+            error_type=type(exc).__name__,
+            error=_one_line(exc),
+            cause=f"{type(cause).__name__}: {_one_line(cause)}" if cause is not None else None,
+        )
+
+    def _exit_control_plane_unreachable(
+        self, exc: BaseException, *, attempts: int = 1, seconds: float | None = None
+    ) -> int:
         """The generation check could not read Firestore. Say so and leave.
 
         Nothing is written to Firestore. Firestore is the thing that could not
@@ -1276,6 +1335,10 @@ class Worker:
 
         The error is logged whole, with its type and its cause. Before PR #57,
         every one of these looked like 300 s of nothing.
+
+        A 69 comes after every attempt of `CONTROL_PLANE_READ_SCHEDULE_SECONDS`
+        failed (#198); `attempts` and `seconds` say how many, and over how
+        long. A refusal is not asked again, and comes from the first.
         """
         options = self.control.startup_call_options
         retry = options.get("retry")
@@ -1292,9 +1355,19 @@ class Worker:
             cause=f"{type(cause).__name__}: {cause}" if cause is not None else None,
             retry_budget_seconds=getattr(retry, "timeout", None),
             call_timeout_seconds=options.get("timeout"),
+            attempts=attempts,
+            seconds=seconds,
+            schedule_seconds=list(CONTROL_PLANE_READ_SCHEDULE_SECONDS),
             exit_code=exit_code,
             retryable=exit_code == ExitCode.UNAVAILABLE,
             refused_by=type(refusal).__name__ if refusal is not None else None,
+            hint=_unreachable_hint(exc) if refusal is None else None,
+            then=(
+                "the reconciler reads this execution's exit code once it has ended "
+                "and requeues the task, or fails it when its attempts are spent"
+                if refusal is None
+                else "the reconciler reads this execution's exit code and fails the task"
+            ),
         )
         if refusal is not None:
             write_termination_message(
@@ -1359,8 +1432,9 @@ class Worker:
                 f"{type(replaced_by).__name__}: {replaced_by}" if replaced_by is not None else None
             ),
             then=(
-                "the reconciler reclaims the lease once it is silent and requeues "
-                "the task, or fails it when its attempts are spent"
+                "a task still DISPATCHED or STARTING is requeued by the reconciler "
+                "once it sees this execution has ended, and a RUNNING one once its "
+                "lease is silent; either is failed when its attempts are spent"
             ),
         )
         self._record_startup_end(
@@ -1417,8 +1491,9 @@ class Worker:
             call_timeout_seconds=options.get("timeout"),
             exit_code=ExitCode.UNAVAILABLE,
             then=(
-                "the reconciler reclaims the lease once it is silent and requeues "
-                "the task, or fails it when its attempts are spent"
+                "a task still DISPATCHED or STARTING is requeued by the reconciler "
+                "once it sees this execution has ended, and a RUNNING one once its "
+                "lease is silent; either is failed when its attempts are spent"
             ),
         )
         self._record_startup_end(
@@ -3480,6 +3555,44 @@ def _control_plane_unreachable(exc: BaseException) -> bool:
     except ImportError:
         return False
     return isinstance(exc, auth_exceptions.GoogleAuthError)
+
+
+def _generation_check_retryable(exc: BaseException) -> bool:
+    """Whether the generation check is asked again after `exc` (#198).
+
+    Exactly the errors `Worker._exit_control_plane_unreachable` would turn
+    into 69: a Firestore or google-auth error that is either an outage
+    (`_unavailable_cause`) or not a named refusal (`_refusal_cause`). A
+    refusal is 78 and would be refused again. A fence or a tenant mismatch
+    is not a Firestore error at all, and ends the attempt as it did.
+    """
+    if not _control_plane_unreachable(exc):
+        return False
+    return _unavailable_cause(exc) is not None or _refusal_cause(exc) is None
+
+
+def _one_line(value: Any, limit: int = 600) -> str:
+    """An error's text on one bounded line, for a log field."""
+    return " ".join(str(value).split())[:limit]
+
+
+def _unreachable_hint(exc: BaseException) -> str:
+    """What an operator reading a 69 at the generation check should know (#198)."""
+    text = " ".join(str(current) for current in _error_chain(exc))
+    hint = (
+        "On Cloud Run, Direct VPC egress can take a minute or more to pass traffic "
+        "after an instance starts (Google documents it), which is what these "
+        "attempts are there to outlast. If every attempt failed, the network "
+        "stayed down for all of them."
+    )
+    if "ipv6:" in text and "all addresses" in text:
+        hint += (
+            " 'failed to connect to all addresses' means every address failed, the "
+            "IPv4 one included. The ipv6 address in it is only the last error gRPC "
+            "kept: the swarm subnet is IPv4-only, so that address is never reachable "
+            "from it, and a worker does not need it to be."
+        )
+    return hint
 
 
 def _error_chain(exc: BaseException) -> list[BaseException]:
