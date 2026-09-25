@@ -1611,15 +1611,6 @@ describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
     expect(won(pick(f, 'button'), ['background', 'background-color'], WIDE)).toBe('none')
   })
 
-  it('AH-25: a page head with no line under its title keeps the region break', () => {
-    // Help reads nothing, so its head is the title alone (AH-15 deleted the
-    // line). `.head` leaves the break under the title to the line, so a bare
-    // head has to supply it or the first group sits 4px under the h1.
-    // MUTATION: drop `.head.is-bare`.
-    const f = fragment('<div class="head is-bare"><h1>Help</h1></div>')
-    expect(won(pick(f, '.head'), ['margin-bottom', 'margin-block-end', 'margin-block', 'margin'], WIDE)).toBe('var(--ctl-s5)')
-  })
-
   it('CH-4: the absent and stale marks put their words on a solid fill and keep the hatch as a band', () => {
     // The contrast half is `test_ui_contrast.py`, which now measures a hatch
     // stripe by stripe. This is the silhouette half: the hatch did not simply

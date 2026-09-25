@@ -662,12 +662,6 @@ body {
   background: none; border: none;
   font: inherit; cursor: pointer; padding: 0;
 }
-/* A HEAD WITH NO LINE UNDER ITS TITLE (AH-25). `PageHead` renders `.head`
-   and, when there is one, the `.sub` line -- and `.head` leaves the break
-   under the title to that line (4px here, `--ctl-s5` under the line). Help
-   reads nothing and prints no line (AH-15), so its bare head carries the
-   break itself; without this its first group heading sat 4px under the h1. */
-.head.is-bare { margin-bottom: var(--ctl-s5); }
 
 /* ---------------------------------------------------------------------------
    B17 -- AN IDENTIFIER IS NEVER RESTYLED
@@ -2554,9 +2548,10 @@ table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--tex
 
    WHY 20ch. The work column at 1440 is 1144px (a 200px rail, 32px gutters).
    Measured off the live roster, the other seven columns come to about 700px
-   with their padding -- Tenant ~114, Status ~96, Kind ~58, Enforced and its
-   `?` ~108, Max active ~98, Units ~59, Credentials ~165 -- which leaves ~440
-   for the two identities. 20ch of 14px mono is ~168px, plus 20px of padding,
+   with their padding -- Tenant ~114, Status ~96, Kind ~58, Enforced ~108
+   (sized when it still carried a `?`; its head is the word alone now), Max
+   active ~98, Units ~59, Credentials ~165 -- which leaves ~440 for the two
+   identities. 20ch of 14px mono is ~168px, plus 20px of padding,
    twice: ~376, and the table fits with ~70px to spare for a non-overlay
    scrollbar and a longer tenant id. That is arithmetic from one screenshot
    and a font metric, not a measurement of the new layout; the next release's
@@ -2574,14 +2569,12 @@ table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--tex
     white-space: nowrap;
   }
 }
-/* THE `?` AFTER `Enforced` LIVES IN THE HEAD ROW, and below 900px §B6.3
-   hides that row visually while leaving it in the tab order -- so a glyph
-   left there would be focusable and invisible, the defect CP-11 moved
-   Capacity's glyph out of a header cell for. There, the note under the table
-   carries the same destination (`Why →`, #help/tenant-fields). */
-@media (max-width: 899px) {
-  .ten-q { display: none; }
-}
+/* THE BUDGET NOTE IS A PLAIN FACT, IN PLAIN INK (AH-21). AG-5 defines a plain
+   fact as no mark and no dimming. `.ctl-panel-note` is `--text-faint`, the
+   tone of a qualifier under a figure; this line qualifies no figure -- it
+   says a column is absent and why none can exist -- so it takes `--text`.
+   Two classes, so it outranks `.ctl-panel-note` wherever that rule sits. */
+.ctl-panel-note.ten-budget { color: var(--text); }
 
 /* ------------------------------------------------------------------------ */
 /* Agents screen (Screen A)                                                  */
@@ -5389,10 +5382,12 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
   border-inline-start-color: transparent;
   padding-inline-start: var(--ctl-s3);
   padding-block: var(--ctl-s2);
-  /* THREE OF THE LARGE BREAK (AH-16): a deep-linked topic that opens its
-     group lands with the group heading and its margin still above it, so the
-     reader sees which group they landed in. */
-  scroll-margin-top: calc(var(--ctl-s5) * 3);
+  /* ONE LARGE BREAK, as the owner's AH-18 decision says ("scroll-margin-top
+     stays at --ctl-s5"). AH-16 had tripled it so a topic that opens its group
+     landed with the group heading still in view; AH-18, decided after it,
+     keeps the single break, and the `.is-current` fill and ink rule are what
+     mark where a deep link landed. */
+  scroll-margin-top: var(--ctl-s5);
 }
 .help-topic + .help-topic { margin-top: var(--ctl-s5); }
 .help-topic.is-current {

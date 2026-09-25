@@ -63,19 +63,27 @@ export function HelpScreen({ topic }: { topic: string }) {
     if (!inView) el.scrollIntoView({ block: 'start' })
   }, [topic])
 
+  // THE HEAD LINE (AH-25): what the page is, and which topic is showing. Help
+  // reads nothing, so it has no provenance to print, and §6.12 names it as
+  // the one head whose line says those two things instead. Both are READ from
+  // the registry, so the line cannot describe a page other than this one.
+  //
+  // IT IS NOT AH-15'S LINE BACK. That was a description sentence -- "why a
+  // figure on these screens looks the way it does" -- true of about one topic
+  // in eight, which is why AH-15 deleted it. This line is the head-line shape
+  // every screen uses, facts joined by `·`, and each fact is true of the
+  // whole page. A group with no topic is not drawn below, so it is not
+  // counted here.
+  const groups = HELP_GROUPS.filter((g) => TOPIC_IDS.some((id) => HELP[id].group === g.id)).length
+  const line =
+    `${TOPIC_IDS.length} topics in ${groups} groups` + (wanted === null ? '' : ` · showing ${wanted.title}`)
+
   return (
     <>
-      {/* NO SUBTITLE (AH-15). This one said "Why a figure on these screens
-          looks the way it does" -- true of about one topic in eight -- and then
-          restated the deep-linked topic's title, which the current topic
-          already says in its own heading.
-
-          AND THE ONE PAGE HEAD (AH-25). It was `.ctl-page-head`, a second
-          shape of head beside the `.head` fourteen routes draw through
-          `Screen`. It is `PageHead` now, the same markup, with no line under
-          the title: Help reads nothing, so it has no provenance to print, and
-          the bare head keeps the region break the line would have given. */}
-      <PageHead title="Help" />
+      {/* THE ONE PAGE HEAD (AH-25). It was `.ctl-page-head`, a second shape of
+          head beside the `.head` fourteen routes draw through `Screen`. It is
+          `PageHead` now, the same markup, with the line above under the title. */}
+      <PageHead title="Help">{line}</PageHead>
 
       {/* AN UNKNOWN TOPIC IS A REAL ANSWER, SO IT IS THE DEFAULT EMPTY STATE
           (AH-17). It was a warn-coloured `.is-partial` panel with two

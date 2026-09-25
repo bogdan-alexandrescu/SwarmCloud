@@ -25,9 +25,13 @@ import { HELP, type TopicId } from './help'
  * heading, never after a value. The QA pass found the glyph in about eight
  * different slots, including after values -- `● running ? ● live` on the agent
  * headline, `masked 4 … ?` on an artifact, `6/8 sampled ?` on the Workflows
- * board. Where a line has no label of its own, because its first item is
- * itself a value (a state chip, an absence mark), the glyph LEADS the line
- * rather than trailing it. design-system.md §8.4 carries the same rule.
+ * board. The rule names no exception, and none is made. Where a line had no
+ * label of its own, the 2026-09-25 pass applied it in one of two ways: the
+ * value got the key it was missing (`state ? ● running` on the agent
+ * headline, as the facts strip under it keys every value), or the glyph went
+ * to the heading the line sits under (`Backends ?` over Runtimes' unread row;
+ * the page's own title on Workflows, where it explains the whole screen).
+ * design-system.md §8.4 carries the rule.
  *
  * ------------------------------------------------------------------------
  * A `?` IS RATIONED. THERE IS AT MOST ONE PER RENDERED SCREEN (B7.4).

@@ -1012,12 +1012,20 @@ not wrap apart: `not counted yet · 24 count() per run · Run the count`. The
 control is `.sub button`, the link-style read-now control, not a boxed button.
 
 `PageHead` in `Shell.tsx` is the markup, once: `.head > h1` over `p.sub`.
-`Screen` renders it on fourteen routes, Platform counts renders it with its own
-line, and Help renders it bare.
+`Screen` renders it on fourteen routes, and Platform counts and Help render it
+with their own lines. Every head has a line.
 
 **The one exception is Help.** It reads nothing, so it has no provenance to
-print: its head is the title alone (AH-15 deleted the description line it
-carried), and `.head.is-bare` supplies the region break the line would have.
+print: its line says what the page is and which topic is showing —
+`<n> topics in <m> groups · showing <topic title>` — every part read from
+`help.ts` at render time, so no count is written down here to go stale. It is
+the head-line shape, facts joined by `·`, and not the description sentence
+AH-15 deleted ("why a figure on these screens looks the way it does"), which
+was true of about one topic in eight.
+
+A screen whose one `?` explains the whole screen puts it after the title, in
+`.head` and outside the `<h1>` (`PageHead`'s `help`): the Workflows board's
+absent figures are the one case.
 
 `.ctl-page-head` is the wrapper for the heads `PageHead` does not describe —
 Overview's facts row and the API reads page. There it stays title left, actions
@@ -1189,10 +1197,12 @@ Six places, in order of commitment. Nothing outside this list.
    Hover after 120ms, focus immediately, click to pin.
    **One slot for the glyph (AH-24, 2026-09-25): after the label or heading
    it explains, never after a value** — `Headroom ?`, `reads ?`,
-   `never written: ?`, not `masked 4 … ?` or `● running ? ● live`. Where a line
-   has no label of its own, because its first item is itself a value (a state
-   chip, an absence mark), the glyph leads the line instead of trailing it.
-   `HelpCard.tsx`'s header states the same rule.
+   `never written: ?`, not `masked 4 … ?` or `● running ? ● live`. The rule
+   names no exception. Where a line had no label of its own, the 2026-09-25
+   pass gave the value its missing key (`state ? ● running` on the agent
+   headline) or moved the glyph to the heading the line sits under
+   (`Backends ?` over Runtimes' unread row; `Workflows ?` for the board's
+   absent figures). `HelpCard.tsx`'s header states the same rule.
 6. **`docs/`.** The argument, the constraint, the thing that is true for six
    months. A docs link is a legitimate element of an empty state and of a help
    card; it is not an element of a data view.

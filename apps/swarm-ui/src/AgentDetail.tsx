@@ -582,16 +582,23 @@ function Headline({
             second dot beside the first -- the owner's "decorative double dot",
             here and in Agents.tsx. Colour is still not the only signal: the
             `<i>` carries the silhouette and the WORD carries the state. */}
-        {/* AH-24: A `?` GOES AFTER A LABEL OR HEADING, NEVER AFTER A VALUE. The
-            chip is the task's state -- a value -- and this heading holds
-            nothing but values (the state, the liveness, the stop control), so
-            there is no label to follow: the glyph leads the heading instead of
-            trailing the state as `● running ? ● live`. Why it is here at all
-            is the note after the chip. */}
-        <HelpCard topic="capacity" />
-        <Chip tone={stateTone(task.state)}>{task.state}</Chip>
+        {/* AH-24: A `?` GOES AFTER THE LABEL OR HEADING IT EXPLAINS, NEVER
+            AFTER A VALUE. The chip is the task's state -- a value -- and the
+            glyph trailed it as `● running ? ● live`. This heading held nothing
+            but values (the state, the liveness, the stop control), so the
+            state takes its key here, as every fact in the strip under it
+            does: `state ? ● running`. The key is `.ctl-fact > b`, the label
+            treatment the strip uses, and the glyph is inside it, after its
+            word, as Overview's `reads ?` is. */}
+        <span className="ctl-fact">
+          <b>
+            state
+            <HelpCard topic="capacity" />
+          </b>
+          <Chip tone={stateTone(task.state)}>{task.state}</Chip>
+        </span>
         {/* THIS SCREEN'S ONE `?` (B7.4), for the state chip it qualifies, and
-            drawn ahead of it (AH-24, above).
+            drawn after the chip's key (AH-24, above).
             The agent detail carried twenty-two help anchors, the most in the
             console -- one on almost every metric tile and empty state, each
             opening a general sentence beside a mark whose own accessible name
@@ -605,7 +612,7 @@ function Headline({
             be costing nothing. That is invariant 1, it is the first question
             anyone opens this screen with, and no chip can carry it.
             `tests/agentdetail.test.tsx` asserts a `?` renders on this surface
-            with every card closed, ahead of the chip. */}
+            with every card closed, after the `state` key and before the chip. */}
         <LivenessBadge task={task} events={events} now={now} />
         {/* B28. The route has existed and worked since it was written and
             nothing in this app called it, so an operator watching an agent

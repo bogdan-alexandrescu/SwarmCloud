@@ -599,25 +599,38 @@ const SPECS: Record<TopicId, TopicSpec> = {
     ],
   },
 
-  // AH-14, with AH-12's Enforced column and AH-21's budget. The `?` after
-  // Tenants' `Enforced` label opens this card, and the note under the table
-  // links here, so the short form answers the column first.
+  // AH-14, with AH-12's Enforced column and AH-21's budget. Tenants links here
+  // twice: the help link under the table (AH-12's, for the columns) and the
+  // budget note's `Why →` (AH-21's). The short form answers the column first.
   //
-  // Enforced is min(max_active, capacity_units) because that is what the store
-  // writes as the tenant pool's hard limit whenever either changes
-  // (swarm_api/store.py `set_tenant_limits`, and `ensure_tenant` at
-  // registration). The budget paragraph is the account the table note used to
-  // print as `no monthly_budget_usd column · no cost attribution source`, from
-  // the 422 in swarm_api/routes/admin.py `set_tenant_limits`.
+  // Enforced is min(max_active, capacity_units) because that is what every
+  // writer of the tenant pool writes as its hard limit: swarm_api/store.py
+  // `set_tenant_limits` whenever either changes, `ensure_tenant` on a first
+  // sign-in, scripts/register-tenant.sh, and terraform/infra/locals.tf
+  // `pool_tenants` when Terraform creates the pool. The last two wrote a
+  // different value until the review of #161 found it; the paragraph names
+  // all four so the claim can be checked rather than taken.
+  //
+  // A DISABLED TENANT IS NOT LOCKED OUT, and the first paragraph says so.
+  // `tenant_for` refuses it and is called only by the paths that create work,
+  // the account routes and the tenant credential routes; every task and
+  // workflow read, and cancel, goes through `scope_for`, which deliberately
+  // does not look at `enabled` (swarm_api/service.py). The paragraph once said
+  // "refused on every call" -- an access-control boundary misstated to the
+  // admin deciding whether to disable a group.
+  //
+  // The budget paragraph is the account the table note used to print as
+  // `no monthly_budget_usd column · no cost attribution source`, from the 422
+  // in swarm_api/routes/admin.py `set_tenant_limits`.
   'tenant-fields': {
     group: 'the-platform',
     title: 'What each Tenants column means',
     short:
       'Enforced is the ceiling admission applies to a tenant: the smaller of its two configured limits, Max active and Units, because both cap the same count of units and the smaller one binds. Configured shows the two as the tenant record holds them. No budget can be set, so none is shown.',
     long: [
-      'Tenant is the id every read and write is scoped by. Status says whether the tenant is enabled: the members of a disabled tenant are refused on every call, not slowed.',
+      'Tenant is the id every read and write is scoped by. Status says whether the tenant is enabled. A disabled tenant cannot submit tasks or workflows, reach its subscription accounts or register a provider key; its members can still list, read and cancel the tasks and workflows it already has, with their events, attempts, artifacts, checkpoints and logs, because a stopped tenant still has to see and stop what is running.',
       'Kind and Principal say who belongs to it. A group tenant takes the members of the group named in Principal; a user tenant is the one address named there.',
-      'Enforced is the ceiling admission applies to the tenant’s own pool, and it is the smaller of the two configured values. Both limit the same thing — the units the tenant’s running work holds, where every task costs at least one — so the smaller is the one that binds. Setting either one through the admin routes moves the tenant’s pool with it, so the pool’s ceiling is this same figure.',
+      'Enforced is the ceiling admission applies to the tenant’s own pool, and it is the smaller of the two configured values. Both limit the same thing — the units the tenant’s running work holds, where every task costs at least one — so the smaller is the one that binds. Every path that writes the tenant’s pool writes this figure as its hard limit: the admin routes whenever either value changes, a first sign-in that creates the tenant, scripts/register-tenant.sh, and Terraform when it creates the pool.',
       'Configured groups the two values as the tenant record holds them: Max active and Units. Neither is enforced on its own; a larger one beside a smaller one is headroom nobody can use until the smaller is raised.',
       'Credentials names the providers the tenant has registered a key for: names, never keys. None registered means a runtime that needs a provider waits for this tenant rather than failing. Identity is the tenant’s own service account, the one its workloads run as; no service account is said in words, because a blank cell would read as fine.',
       'The tenant record carries a monthly budget field, and it is empty for every tenant. PUT /v1/admin/tenants/{id}/limits refuses it with a 422: the control plane has no cost attribution source — no billing export, no compute cost per attempt — so a budget could be stored but never enforced. Spend is bounded by the two limits the scheduler does enforce on every admission, which is what the Enforced column shows. The table leaves the field out because an empty column would read as “no budget set”. What the console’s spend figures do and do not include is a topic of its own, linked under this one.',
@@ -659,10 +672,15 @@ const SPECS: Record<TopicId, TopicSpec> = {
     title: 'Whose figures these are',
     short:
       'The capacity route answers for the calling tenant, an administrator included. So a ceiling here is how many more you could start, never how much the platform has. A platform-wide figure is not faked by substituting somebody else’s pools.',
+    // WRITTEN FOR EVERY SCREEN THAT LINKS IT (AH-13 rule 2): the Timeline's
+    // People note, the Pools footer and the Profile headroom footer.
+    // tests/help.test.ts finds the linking screens in the sources, so a fourth
+    // fails there until this is written for it too.
     long: [
-      'Pool names are scoped, and the list a caller gets back is the list for their own tenant. Nothing in the response is a total across tenants.',
-      'An administrator sees their own scope too, for the same reason: the route resolves the scope from the caller rather than from a parameter.',
-      'So every panel drawn from it states the scope on its heading. A figure whose scope is unstated is the one people quote in a meeting as though it were the platform’s.',
+      'Every task and workflow read the console makes is answered for the calling tenant, an administrator’s included: the API takes the scope from the verified caller, never from a parameter. A figure drawn from those reads is the caller’s own and never a total across tenants.',
+      'The People table on the Timeline screen is built from them. It groups the tenant’s tasks by who submitted them, in the browser, over the rows the Timeline read, because the API has no filter or index on the submitter. When older tasks exist beyond those rows the table is a subset, and someone whose work all fell outside it is missing from the table rather than listed with zero.',
+      'The capacity read is scoped too. It lists the platform-wide pools and the caller’s own tenant pools, and leaves another tenant’s pools out unless the caller is an administrator. Every headroom figure in it — the Headroom card on the Pools screen and each card on the Profile headroom screen — is computed against the caller’s own tenant pool, an administrator’s included, so it says how many more the caller could start, never how much the platform has. Each of those cards says which tenant it was computed for.',
+      'A figure whose scope is unstated is the one people quote in a meeting as though it were the platform’s, so each of these screens prints the scope beside its figures.',
     ],
   },
 
@@ -805,8 +823,8 @@ const SPECS: Record<TopicId, TopicSpec> = {
       'The carrier records how a step’s work is intended to reach the next one. It is stored on the task and returned by the API, and no worker code reads it yet — so it is a recorded preference rather than a behaviour, and the form says so on every choice.',
     long: [
       'The field exists so that the intent is captured at the moment it is expressed, rather than reconstructed later from what happened.',
-      'Nothing acts on it today. A control that does nothing and does not say so is worse than no control, so the note sits on the submit form beside the choice rather than behind a help card.',
-      'When a worker does read it, the note goes away. Until then the honest description of this control is that it records an answer.',
+      'Nothing acts on it today. A control that does nothing and does not say so is worse than no control, so on Submit a task and Submit a workflow the note sits beside the choice rather than behind a help card.',
+      'When a worker does read it, the note goes away. Until then the honest description of the carrier choice is that it records an answer.',
     ],
     // The per-carrier sentence that used to sit under the picker, READ from
     // the module that owns it rather than copied into this file.
@@ -995,9 +1013,9 @@ const SPECS: Record<TopicId, TopicSpec> = {
     short:
       'The success code is the answer the platform gives once the account has been written, and it deletes its pending record on that same path. What is missing from the answer is the account’s name, not the account.',
     long: [
-      'This arrives here as a failure because the response could not be parsed into an account, which is why the heading and the tone are overridden: the loudest thing on a panel must not contradict its own text.',
+      'The sign-in panel on Accounts receives this as a failure, because the response could not be parsed into an account, which is why the panel’s heading and tone are overridden: the loudest thing on a panel must not contradict its own text.',
       'Nothing is gained by signing in again before looking. The likeliest state of the world is that the account exists under the label that was typed.',
-      'So the panel’s first instruction is to look, and its controls are a reload and a fresh start, in that order.',
+      'So the sign-in panel’s first instruction is to look, and its controls are a reload and a fresh start, in that order.',
     ],
   },
 
@@ -1115,7 +1133,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
     short:
       'Per-tenant isolation is an invariant of this platform: own service account, own secrets, own storage prefix, own namespace. Lending is a named, reversible narrowing of it for one account, not a hole in it.',
     long: [
-      'The invariant exists so that one tenant’s compromise is one tenant’s problem. Every default here follows from it.',
+      'The invariant exists so that one tenant’s compromise is one tenant’s problem. Every lending default on the Accounts screen follows from it.',
       'Lending is the one place an operator may open a specific account to a specific tenant. It is per account, it is listed on the account, and it can be withdrawn.',
       'What it does not do is grant anything else. A borrower may mount the token; pausing, draining, re-lending, refreshing and signing in again stay with the owner.',
     ],
@@ -1176,9 +1194,9 @@ const SPECS: Record<TopicId, TopicSpec> = {
     short:
       'Removal takes the account out of the pool. The credential in the secret store is retained rather than deleted, so this is reversible by signing in again under the same label, and no version history is lost.',
     long: [
-      'The destructive-looking action is the reversible one here, which is worth knowing before rather than after.',
+      'Remove, on the Accounts screen, is the destructive-looking action and also the reversible one, which is worth knowing before rather than after.',
       'What is not reversible by itself is the effect on agents currently holding the account. Moving it to a draining state first is what takes them off it cleanly.',
-      'The control is armed by typing the label, because an accidental removal of the wrong row is the mistake this shape prevents.',
+      'Remove is armed by typing the account’s label, because an accidental removal of the wrong row is the mistake this shape prevents.',
     ],
   },
 

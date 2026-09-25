@@ -770,7 +770,7 @@ describe('Runtimes, with every help card closed', () => {
     // WHERE THE WORDS LIVE NOW: `.ctl-mark.is-unread` renders `not read`
     // INSIDE the card that holds the affected columns, the server's own detail
     // sits beside it in `.rt-unread-detail`, and the argument is
-    // `#help/absent-vs-zero` on the `?` in that same row.
+    // `#help/absent-vs-zero` on the `?` after the same card's heading (AH-24).
     //
     // WHY THIS IS THE STRONGER ASSERTION. "Those columns are dashes, not
     // zeros" is a sentence ABOUT the cells, and a banner can be scrolled away

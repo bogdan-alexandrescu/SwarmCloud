@@ -1,7 +1,7 @@
 import { useCallback, useMemo, useState } from 'react'
 import { loadTaskWindow, loadTenants } from './api'
 import { helpAnchor, type TopicId } from './help'
-import { HelpCard } from './HelpCard'
+import { HelpLinks } from './HelpCard'
 import { Id, Screen, timeAgo } from './Shell'
 import {
   TERMINAL_STATES,
@@ -712,16 +712,19 @@ export function TenantsScreen() {
                   <th role="columnheader" scope="col" rowSpan={2}>Principal</th>
                   {/* THE CEILING ADMISSION ACTUALLY APPLIES (AH-12). The two
                       registry values were printed bare, and the figure that
-                      binds -- the smaller, which is what the store writes as
-                      the tenant pool's hard limit whenever either changes --
-                      was nowhere. It is the column; the two values it comes
-                      from sit under `Configured`. The `?` sits after the label
-                      (AH-24) and opens the Tenants fields topic. */}
+                      binds -- the smaller, which every writer of the tenant
+                      pool writes as its hard limit -- was nowhere. It is the
+                      column; the two values it comes from sit under
+                      `Configured`.
+
+                      THE HEAD IS ITS LABEL AND NOTHING ELSE. The decided help
+                      link is under the table, not a `?` in here: a glyph in a
+                      `<th>` publishes its HelpNote as part of the column's
+                      name, which a screen reader then reads on every cell, and
+                      below 900px §B6.3 hides this row while leaving it in the
+                      tab order. */}
                   <th role="columnheader" scope="col" rowSpan={2} className="n">
                     Enforced
-                    <span className="ten-q">
-                      <HelpCard topic={TENANT_HELP} />
-                    </span>
                   </th>
                   <th role="columnheader" scope="colgroup" colSpan={2} className="n">
                     Configured
@@ -802,14 +805,26 @@ export function TenantsScreen() {
               measurement, and this line sits in no figure slot, so it carries
               no mark (as AG-5's plain facts do not). The account of the 422
               and of the missing cost-attribution source is one paragraph of
-              the Tenants fields topic, behind `Why →`. */}
+              the Tenants fields topic, behind `Why →`.
+
+              AND IT IS IN PLAIN INK (`.ten-budget`). AG-5 defines a plain
+              fact as no mark AND NO DIMMING; `.ctl-panel-note` is the faint
+              tone of a qualifier under a figure, and this line qualifies no
+              figure -- it is the fact that a column is absent. */}
           <p
-            className="ctl-panel-note"
+            className="ctl-panel-note ten-budget"
             aria-label="No budget column, and no budget can be set: the only route that could set a budget refuses it, so none is set for any tenant, and the column is left out rather than drawn empty."
           >
             no budget column · no budget can be set
             <a href={helpHref(TENANT_HELP)}>Why &rarr;</a>
           </p>
+          {/* THE HELP LINK AH-12 DECIDED FOR THE ENFORCED COLUMN: the footer
+              index every migrated panel carries (HelpCard.tsx, route 3 of 4),
+              drawn at every width and costing no glyph from the ration. It is
+              a separate line from the note's `Why →` because the two answer
+              different questions -- what the columns mean, and why one is
+              missing -- that happen to live in one topic. */}
+          <HelpLinks topics={TENANT_TOPICS} label="Reading this table:" />
         </section>
       )}
     </Screen>
@@ -819,12 +834,16 @@ export function TenantsScreen() {
 /** Where the Enforced column, and the budget the table leaves out, are explained. */
 const TENANT_HELP: TopicId = 'tenant-fields'
 
+/** The Tenants table's help link (AH-12), as a footer index. */
+const TENANT_TOPICS: readonly TopicId[] = [TENANT_HELP]
+
 /**
  * THE CEILING ADMISSION APPLIES TO A TENANT (AH-12): the smaller of its two
  * configured values. Both cap the same count -- the units its running work
  * holds, where every task costs at least one -- so the smaller binds, and it
- * is what `set_tenant_limits` (swarm_api/store.py) writes as the tenant pool's
- * hard limit whenever either changes.
+ * is what every writer of the tenant pool writes as its hard limit:
+ * `set_tenant_limits` and `ensure_tenant` (swarm_api/store.py),
+ * scripts/register-tenant.sh, and terraform/infra/locals.tf `pool_tenants`.
  *
  * A value that is not a finite number is not a limit anyone can read, so the
  * cell is the em dash rather than `NaN` or a guess from the other value.
