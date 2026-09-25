@@ -36,11 +36,21 @@ export async function loadCapacity(): Promise<Result<Capacity>> {
   return read<Capacity>('/v1/capacity', (d) => d.pools.length === 0)
 }
 
-export async function loadTasks(): Promise<Result<TaskPage>> {
+/**
+ * The largest page `GET /v1/tasks` serves. Page size caps at 200 server-side
+ * (deps.py:194-199); asking for more is silently clamped, which would make
+ * "200 tasks" look like the whole truth.
+ */
+export const TASK_PAGE_LIMIT = 200
+
+/**
+ * A page of the task list. `limit` is the full page unless a caller has a
+ * reason to ask for less -- the Agents list at phone width asks for 50
+ * (Agents.tsx, `PHONE_PAGE_LIMIT`).
+ */
+export async function loadTasks(limit: number = TASK_PAGE_LIMIT): Promise<Result<TaskPage>> {
   if (USE_FIXTURES) return fixtureTasks()
-  // Page size caps at 200 server-side (deps.py:194-199). Asking for more is
-  // silently clamped, which would make "200 tasks" look like the whole truth.
-  return read<TaskPage>('/v1/tasks?limit=200', (d) => d.tasks.length === 0)
+  return read<TaskPage>(`/v1/tasks?limit=${limit}`, (d) => d.tasks.length === 0)
 }
 
 /**
