@@ -516,7 +516,9 @@ def test_a_reaped_runner_writes_its_attempt_and_emits_no_event(
     doc = db.doc("attempts/att_1")
     assert doc["cpu_seconds"] == 12.346
     assert doc["peak_cpu_cores"] == 1.235
-    assert doc["mean_cpu_cores"] == 0.5
+    # The ATTEMPT's mean: total CPU over total runner time (`combine_usage`),
+    # not the runner's own figure copied through.
+    assert doc["mean_cpu_cores"] == round(12.3456 / 24.0, 3)
     assert doc["cpu_limit_cores"] == 8.0
     assert doc["peak_rss_bytes"] == 100, "the memory peak is written beside it, as before"
 
@@ -636,7 +638,9 @@ def test_an_attempt_that_must_write_nothing_writes_no_cpu(db, worker_factory):
     worker._runner_usage.append(ResourceUsage(cpu_seconds=5.0, cpu_source="cgroup"))
     worker._writes_forbidden = True
     worker._record_cpu()
-    assert all(name not in db.doc("attempts/att_1") for name in CPU_FIELDS)
+    # The worker writes the attempt document when it starts; this one never
+    # started, so no document at all is the proof that nothing was written.
+    assert all(name not in db.documents.get("attempts/att_1", {}) for name in CPU_FIELDS)
 
     worker._writes_forbidden = False
     worker._record_cpu()
