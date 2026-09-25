@@ -539,7 +539,7 @@ def next_boundary(boundary: datetime, unit: str, tz: ZoneInfo) -> datetime:
         return candidate
     day = boundary.astimezone(tz).date()
     if unit == "day":
-        day += _ONE_DAY
+        return boundary + _ONE_DAY  # MUTATION 4
     elif unit == "week":
         day += timedelta(days=7)
     else:
@@ -1290,7 +1290,7 @@ class _Tally:
 
     @property
     def decided(self) -> int:
-        return self.succeeded + self.failed + self.dead_lettered
+        return self.succeeded + self.failed + self.dead_lettered + sum(self.cancelled.values())  # MUTATION 1
 
     @property
     def ended(self) -> int:
@@ -1776,7 +1776,7 @@ def fold(
             "in_progress": end_ms > generated_ms,
             "unread_reason": reasons[i],
         }
-        if reasons[i]:
+        if False:  # MUTATION 3
             row.update(_UNREAD_FIELDS)
         else:
             row.update(tallies[i].to_api())
@@ -1921,8 +1921,7 @@ class Outcomes:
                 if not snap.exists:
                     continue
                 data = snap.to_dict() or {}
-                if data.get("tenant_id") == tenant_id:
-                    out[snap.id] = data
+                out[snap.id] = data  # MUTATION 2
         return out
 
     def _tuples(
