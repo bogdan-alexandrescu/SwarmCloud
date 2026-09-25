@@ -34,6 +34,13 @@
 #    because a server dry run of a first-time tenant fails anyway (the namespace
 #    it would create does not exist yet) and because the safest request to make
 #    against a cluster you are not sure about is none.
+#
+# And one property of what is rendered: the tenant egress policy carries the
+# cluster's OWN network -- pod range, service range, kube-dns Service IP,
+# NodeLocal DNSCache address -- read from the cluster this script just checked
+# (kubernetes/cluster-network.sh), never typed and never taken from the command
+# line. Afterwards, scripts/lib/check-cluster-network-parity.sh compares every
+# applied copy with the live cluster.
 set -euo pipefail
 
 HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -67,9 +74,21 @@ while [[ $# -gt 0 ]]; do
     --server-dry-run) SERVER_DRY_RUN=1; shift ;;
     --context)    CONTEXT="$2"; shift 2 ;;
     --cluster)    CLUSTER="$2"; shift 2 ;;
-    -h|--help)    sed -n '2,36p' "$0"; exit 0 ;;
+    -h|--help)    sed -n '2,43p' "$0"; exit 0 ;;
+    # THE CLUSTER'S NETWORK IS READ, NOT PASSED. These used to be forwarded to
+    # render.py like everything else, and render.py defaulted them, and nothing
+    # ever passed the real ones: the 2026-09-24 policy was rendered for pods
+    # 10.0.0.0/8 and services 34.118.224.0/20 on a cluster that uses neither,
+    # with no DNS rule this cluster's DNS could match. A value typed here is the
+    # value that goes stale when the cluster changes, so it is refused, and the
+    # value this script reads from the cluster is the only one rendered.
+    --pod-cidr|--pod-cidr=*|--service-cidr|--service-cidr=*|\
+    --cluster-dns-ip|--cluster-dns-ip=*|--node-local-dns-ip|--node-local-dns-ip=*|\
+    --network-source|--network-source=*)
+      die "${1%%=*} is read from the cluster by this script (kubernetes/cluster-network.sh);
+       it cannot be passed. To render for another cluster, point --context/--cluster at it." ;;
     # Everything else is passed straight to render.py, so --pss-enforce,
-    # --pod-cidr, --quota-cpu and friends work without being restated here.
+    # --quota-cpu and friends work without being restated here.
     *)            RENDER_ARGS+=("$1"); shift ;;
   esac
 done
@@ -192,11 +211,49 @@ else
   RECONCILER_UID="$(uid_of "swarm-reconciler@${PROJECT_ID}.iam.gserviceaccount.com")"
   info "rbac subjects  scheduler=${SCHEDULER_UID} reconciler=${RECONCILER_UID}"
 
+  # THE CLUSTER'S NETWORK, READ FROM THE CLUSTER THE CHECKS ABOVE APPROVED.
+  #
+  # The egress policy needs four values that belong to the cluster: the pod and
+  # service ranges it carves out of the internet, and the two addresses a pod's
+  # DNS actually goes to on a Cloud DNS + NodeLocal DNSCache cluster -- the
+  # node-local address and the kube-dns Service IP. cluster-network.sh says
+  # which field or object each one is read from. Called directly, NOT inside
+  # $(...): it sets its results as variables, and a command substitution would
+  # run it in a subshell and throw them away.
+  #
+  # FATAL, like the uniqueIds above: rendering without them is what produced
+  # the 2026-09-24 policy, and there is no default that is right for a cluster
+  # this script has not read.
+  # shellcheck source-path=SCRIPTDIR
+  # shellcheck source=cluster-network.sh
+  source "${HERE}/cluster-network.sh"
+  resolve_cluster_network "${KUBECTL}" "${CLUSTER}" "${GKE_LOCATION}" "${PROJECT_ID}" \
+    ${KUBECTL_ARGS[@]+"${KUBECTL_ARGS[@]}"} \
+    || die "could not read ${CLUSTER}'s network (above); nothing was rendered or applied.
+       The egress policy is rendered from the live cluster or not at all."
+  info "network  pods=${CLUSTER_POD_CIDR} services=${CLUSTER_SERVICE_CIDR}"
+  info "dns      node-local=${CLUSTER_NODE_LOCAL_DNS_IP} kube-dns=${CLUSTER_DNS_IP}  (${CLUSTER_NETWORK_SOURCE})"
+
   MANIFEST="$("${PYTHON}" "${HERE}/render.py" tenant --tenant "${TENANT}" \
     --scheduler-uid "${SCHEDULER_UID}" \
     --reconciler-uid "${RECONCILER_UID}" \
+    --pod-cidr "${CLUSTER_POD_CIDR}" \
+    --service-cidr "${CLUSTER_SERVICE_CIDR}" \
+    --cluster-dns-ip "${CLUSTER_DNS_IP}" \
+    --node-local-dns-ip "${CLUSTER_NODE_LOCAL_DNS_IP}" \
+    --network-source "${CLUSTER_NETWORK_SOURCE}" \
     "${RENDER_ARGS[@]+"${RENDER_ARGS[@]}"}")"
   info "rendering tenant ${TENANT}"
+
+  # Belt and braces on the property above: a render marked offline carries
+  # documentation addresses, and must never reach a cluster. Matched on the
+  # annotation itself -- the templates' comments are rendered too, and they
+  # name the marker.
+  case "${MANIFEST}" in
+    *"swarm.saga.xyz/network-source: offline-render-not-for-apply"*)
+      die "the render is marked offline-render-not-for-apply -- it carries no real
+       cluster network. Refusing; nothing was applied." ;;
+  esac
 fi
 
 # --- 3. dry run, then apply --------------------------------------------------
@@ -221,3 +278,10 @@ fi
 
 printf '%s\n' "${MANIFEST}" | "${KUBECTL}" "${KUBECTL_ARGS[@]+"${KUBECTL_ARGS[@]}"}" apply -f -
 ok "applied"
+if [[ "${MODE}" == "tenant" ]]; then
+  # Not run from here: it checks EVERY tenant namespace, and a stale neighbour
+  # must not turn this tenant's successful apply into a failure that
+  # register-tenant.sh would then report as "not isolated".
+  dim "  compare every applied egress policy with the live cluster:"
+  dim "    scripts/lib/check-cluster-network-parity.sh --require-live${CONTEXT:+ --context ${CONTEXT}}"
+fi

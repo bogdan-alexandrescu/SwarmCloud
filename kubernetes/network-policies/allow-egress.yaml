@@ -2,7 +2,10 @@
 #
 # Four destinations, and nothing else:
 #
-#   1. cluster DNS                 without it every hostname fails to resolve
+#   1. cluster DNS                 without it every hostname fails to resolve.
+#                                  On swarm-autopilot that is NodeLocal
+#                                  DNSCache and the kube-dns Service IP, not
+#                                  the kube-dns pods -- see rules 1 and 1b
 #   2. the GKE metadata server     Workload Identity gets its token from
 #                                  169.254.169.254; block it and the worker
 #                                  cannot authenticate to Firestore, GCS or
@@ -17,9 +20,40 @@
 # `except` list is the only way a NetworkPolicy can say "the internet, but not
 # the cluster": there is no selector for "not in this cluster", and a
 # `namespaceSelector` allow-list would have to be rewritten every time a tenant
-# is registered. The excepted ranges are the pod CIDR, the service CIDR, RFC1918
-# and link-local, so a worker can reach api.anthropic.com and github.com but not
-# another tenant's pod, not a node, and not a ClusterIP service.
+# is registered. The excepted ranges are all of RFC1918, link-local, CGNAT, and
+# the cluster's own pod and service ranges, so a worker can reach
+# api.anthropic.com and github.com but not another tenant's pod, not a node, and
+# not a ClusterIP service.
+#
+# THE CLUSTER'S NETWORK IS RENDERED, NEVER WRITTEN HERE. Four values in this
+# file belong to the cluster, not to the platform: the pod range, the service
+# range, the kube-dns Service IP and the NodeLocal DNSCache address.
+# `kubernetes/apply.sh` reads each from the live cluster
+# (`kubernetes/cluster-network.sh` names the field or object each comes from)
+# and passes it to `render.py`; the annotations below record what this object
+# was rendered for, and `scripts/lib/check-cluster-network-parity.sh` holds
+# every applied copy to the live cluster. It was not always so: until
+# 2026-09-24 this policy was rendered from the renderer's DEFAULTS -- pods
+# 10.0.0.0/8, services 34.118.224.0/20, GKE Autopilot's default range -- and
+# swarm-autopilot uses neither (measured: 10.44.0.0/14 and 10.48.0.0/20).
+#
+# THIS CLUSTER, as measured on 2026-09-24 with `gcloud container clusters
+# describe swarm-autopilot` and `kubectl -n kube-system get`:
+#
+#   * GKE Dataplane V2 (networkConfig.datapathProvider=ADVANCED_DATAPATH), so
+#     policy is enforced by anetd (Cilium), which runs with
+#     --policy-deny-response=none: a denied packet is DROPPED, and the sender
+#     sees a timeout, never an error. GKE documents two consequences that shape
+#     this file: "Pod traffic is never covered by an ipBlock rule", and an
+#     ipBlock cannot select traffic to a hostNetwork Pod.
+#   * Cloud DNS, cluster scope (networkConfig.dnsConfig.clusterDns=CLOUD_DNS),
+#     not kube-dns.
+#   * NodeLocal DNSCache (addonsConfig.dnsCacheConfig.enabled=true; GKE: "For
+#     Autopilot clusters, NodeLocal DNSCache is enabled by default, and you
+#     can't disable it"). `node-local-dns` is a hostNetwork DaemonSet started
+#     with `-localip 169.254.20.10,10.48.0.10`: it answers on its node-local
+#     address AND on the kube-dns Service IP, and forwards to Cloud DNS, never
+#     to the kube-dns pods. A pod's nameserver is 169.254.20.10.
 #
 # WHAT RULE 2 COSTS, stated plainly because the rest of this directory is built
 # on the opposite assumption.
@@ -61,6 +95,18 @@ metadata:
   labels:
     managed-by: swarm-terraform
     swarm-tenant: __TENANT_ID__
+  # What this object was rendered FOR, so `kubectl get netpol -o yaml` answers
+  # "which cluster's network is this?" -- the question nothing on the
+  # 2026-09-24 object could answer. `network-source` is
+  # `gke/<project>/<location>/<cluster>` when apply.sh read the values from a
+  # cluster, and `offline-render-not-for-apply` for a render that was given
+  # none (make lint, CI); apply.sh refuses to apply the latter.
+  annotations:
+    swarm.saga.xyz/network-source: __NETWORK_SOURCE__
+    swarm.saga.xyz/pod-cidr: __POD_CIDR__
+    swarm.saga.xyz/service-cidr: __SERVICE_CIDR__
+    swarm.saga.xyz/cluster-dns-ip: __CLUSTER_DNS_IP__
+    swarm.saga.xyz/node-local-dns-ip: __NODE_LOCAL_DNS_IP__
 spec:
   # Every pod in the namespace, selected the same way the deny policy selects
   # them. A `matchLabels` selector here would be a trap: the GKE manifest in
@@ -75,9 +121,19 @@ spec:
   policyTypes:
     - Egress
   egress:
-    # 1. Cluster DNS. kube-dns runs in kube-system and is reachable on 53/UDP
-    #    and 53/TCP; TCP matters for responses larger than 512 bytes, which is
-    #    every Google API's CNAME chain.
+    # 1. Cluster DNS by pod selector: the kube-dns pods in kube-system, on
+    #    53/UDP and 53/TCP. TCP matters for any response over 512 bytes.
+    #
+    #    ON THIS CLUSTER THIS RULE MATCHES ALMOST NOTHING, and it is kept
+    #    anyway (owner's decision, 2026-09-24). With Cloud DNS and NodeLocal
+    #    DNSCache a pod's query goes to the hostNetwork node-local-dns agent,
+    #    which forwards to Cloud DNS -- never to these pods; measured, the
+    #    kube-dns pods received almost no A/AAAA queries while node-local-dns
+    #    answered the cluster's. Until 2026-09-24 this was the ONLY DNS rule,
+    #    so every lookup a worker made was dropped, and a browser task ran for
+    #    390 s without printing a byte. It stays because it is the right rule on
+    #    a cluster that does serve DNS from kube-dns pods; rule 1b is the one
+    #    this cluster needs.
     - to:
         - namespaceSelector:
             matchLabels:
@@ -91,17 +147,60 @@ spec:
         - protocol: TCP
           port: 53
 
-    # 2. The GKE metadata server. Port 988 is the Workload Identity endpoint
-    #    that gke-metadata-server proxies; port 80 serves the classic metadata
-    #    paths the Google client libraries probe on startup.
+    # 1b. Cluster DNS as THIS cluster serves it: the NodeLocal DNSCache address
+    #    (a pod's nameserver) and the kube-dns Service IP, both of which the
+    #    node-local-dns agent listens on. GKE's NodeLocal DNSCache guidance
+    #    allows DNS by an ipBlock to the kube-dns Service IP; the node-local
+    #    address is added because, with Cloud DNS, that is the nameserver a
+    #    pod's resolver is given. DNS and nothing else -- the node-local
+    #    address is the NODE, and no other port on it is a worker's business.
+    #
+    #    Both addresses are RENDERED from the live cluster (see the header), so
+    #    a cluster whose kube-dns IP differs gets its own, not this one's.
+    #
+    #    NOT YET PROVEN TO MATCH, and this is the risk to watch. GKE documents
+    #    that on Dataplane V2 an `egress[].to[].ipBlock` cannot select traffic
+    #    to a hostNetwork Pod, and node-local-dns is one; Cilium may classify
+    #    the destination as the host identity, which a CIDR rule does not
+    #    select. Before a worker relies on this rule, a probe pod in the tenant
+    #    namespace must resolve metadata.google.internal,
+    #    firestore.googleapis.com and api.anthropic.com in under a second with
+    #    this policy applied. If it cannot, the alternative the owner weighed is
+    #    53/UDP+TCP with no `to` at all, which reaches any resolver.
+    - to:
+        - ipBlock:
+            cidr: __NODE_LOCAL_DNS_IP__/32
+        - ipBlock:
+            cidr: __CLUSTER_DNS_IP__/32
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+
+    # 2. The GKE metadata server, on the ports GKE's network-policy doc gives
+    #    for Dataplane V2 clusters: "allow egress to 169.254.169.254/32 on
+    #    ports 80 and 8080". Port 80 is where google-auth pings the server and
+    #    asks it for the project id and the Workload Identity token -- the
+    #    silent worker's one request that arrived (2026-09-24, 22:56:14Z) came
+    #    in on 80. The doc gives no purpose for 8080; it warns that without
+    #    these ports auto-upgrades can be disrupted, and nothing here has
+    #    measured more than that.
+    #
+    #    PORT 988 IS GONE from this address. It was here as "the Workload
+    #    Identity endpoint that gke-metadata-server proxies", but on this
+    #    cluster the metadata server's 988 listens on 169.254.169.252, not
+    #    .254, and GKE lists 169.254.169.252:988 (and :987) only for clusters
+    #    WITHOUT Dataplane V2. So .254:988 matched nothing; it was a port opened
+    #    on a claim. .252 stays unreachable: rule 4 excepts 169.254.0.0/16.
     - to:
         - ipBlock:
             cidr: 169.254.169.254/32
       ports:
         - protocol: TCP
-          port: 988
-        - protocol: TCP
           port: 80
+        - protocol: TCP
+          port: 8080
 
     # 3. Private Google Access VIPs, for the APIs the worker itself uses:
     #    Firestore, Cloud Storage, Secret Manager, Cloud Monitoring, Cloud
@@ -120,22 +219,33 @@ spec:
         - ipBlock:
             cidr: 0.0.0.0/0
             except:
-              # The cluster's own pod range: this is the cross-tenant hop.
-              # Defaults to 10.0.0.0/8, which also covers the nodes and the rest
-              # of the VPC, so it is not repeated in the RFC1918 entries below --
-              # `except` entries must each sit inside the cidr, and listing the
-              # same range twice is a validation error waiting to happen.
-              - __POD_CIDR__
-              # The cluster's service range. GKE Autopilot's default is
-              # 34.118.224.0/20, which is PUBLIC address space and therefore not
-              # covered by any RFC1918 entry -- omitting it would leave every
-              # ClusterIP service reachable from a tenant pod.
-              - __SERVICE_CIDR__
-              # The remaining private ranges, for a VPC that does not use 10/8.
+              # ALL of private space, ALWAYS, whatever the cluster's ranges are.
+              # 10.0.0.0/8 used to arrive only as the pod-range DEFAULT; now
+              # that the real pod range is rendered (10.44.0.0/14 here), a
+              # render that dropped 10/8 would quietly open the nodes
+              # (10.40.0.0/20) and everything else in the VPC on 443, 80 and 22.
+              - 10.0.0.0/8
               - 172.16.0.0/12
               - 192.168.0.0/16
-              # Link-local. The metadata server is allowed above as a single
-              # /32 with two ports; the rest of 169.254/16 is not.
+              # The cluster's own pod range, RENDERED: the cross-tenant hop.
+              # Inside 10/8 on this cluster, so redundant here, and listed
+              # anyway for a cluster whose pod range is not private space (GKE
+              # allows that). On Dataplane V2 it is belt and braces a second
+              # time: GKE documents that pod traffic is never covered by an
+              # ipBlock at all, so the default deny is what stops it. An
+              # `except` entry must be a strict subset of `cidr`; overlapping
+              # another entry is valid.
+              - __POD_CIDR__
+              # The cluster's service range, RENDERED. GKE Autopilot's DEFAULT
+              # range, 34.118.224.0/20, is public address space no private entry
+              # covers, which is why this is not left to the entries above --
+              # and why it is read from the cluster: swarm-autopilot does not
+              # use the default (its range is the swarm-services secondary
+              # range, 10.48.0.0/20).
+              - __SERVICE_CIDR__
+              # Link-local. The metadata server (rule 2) and the NodeLocal
+              # DNSCache address (rule 1b) are allowed above as single /32s on
+              # named ports; the rest of 169.254/16 is not.
               - 169.254.0.0/16
               # Carrier-grade NAT space, which some cloud internal endpoints use.
               - 100.64.0.0/10

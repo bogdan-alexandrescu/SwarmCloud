@@ -51,6 +51,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import ipaddress
 import os
 import re
 import sys
@@ -224,8 +225,17 @@ _VALUE_PATTERNS: dict[str, re.Pattern[str]] = {
     "PROJECT_ID": re.compile(r"^[a-z][a-z0-9-]{4,28}[a-z0-9]$"),
     "REGION": re.compile(r"^[a-z]+-[a-z]+[0-9]$"),
     "PSS_ENFORCE": re.compile(r"^(privileged|baseline|restricted)$"),
+    # The cluster's network. The shape is checked here like every other value;
+    # `network_values` additionally parses each one and checks that the four
+    # agree with one another, which a pattern cannot.
     "POD_CIDR": re.compile(r"^[0-9]{1,3}(\.[0-9]{1,3}){3}/[0-9]{1,2}$"),
     "SERVICE_CIDR": re.compile(r"^[0-9]{1,3}(\.[0-9]{1,3}){3}/[0-9]{1,2}$"),
+    "CLUSTER_DNS_IP": re.compile(r"^[0-9]{1,3}(\.[0-9]{1,3}){3}$"),
+    "NODE_LOCAL_DNS_IP": re.compile(r"^[0-9]{1,3}(\.[0-9]{1,3}){3}$"),
+    "NETWORK_SOURCE": re.compile(
+        r"^(offline-render-not-for-apply|operator-supplied"
+        r"|gke/[a-z][a-z0-9-]{4,28}[a-z0-9]/[a-z0-9-]{1,63}/[a-z0-9-]{1,63})$"
+    ),
     "QUOTA_PODS": re.compile(r"^[0-9]{1,6}$"),
     "QUOTA_JOBS": re.compile(r"^[0-9]{1,6}$"),
     "QUOTA_CPU": re.compile(r"^[0-9]{1,6}m?$"),
@@ -370,6 +380,121 @@ def substitute(text: str, values: dict[str, str]) -> str:
     return text
 
 
+#: THE CLUSTER'S NETWORK: four values this file must be TOLD, never assume.
+#:
+#: (flag attribute, placeholder, flag) for each. They reach
+#: `network-policies/allow-egress.yaml`: the pod and service ranges are carved
+#: out of the internet rule, and the two DNS addresses are where a pod's DNS
+#: queries actually go. `kubernetes/apply.sh` reads all four from the live
+#: cluster (`kubernetes/cluster-network.sh` names the field or object each one
+#: comes from) and passes them.
+#:
+#: They used to be defaults -- `--pod-cidr 10.0.0.0/8`,
+#: `--service-cidr 34.118.224.0/20` -- and nothing ever overrode them, so the
+#: policy on swarm-autopilot (pods 10.44.0.0/14, services 10.48.0.0/20) was
+#: rendered for no cluster in particular. The DNS addresses did not exist as
+#: inputs at all, and that is the half that hurt: the policy allowed DNS only to
+#: kube-dns pods, which a Cloud DNS + NodeLocal DNSCache cluster never sends a
+#: pod's query to, and on 2026-09-24 a worker ran for 390 s with every lookup
+#: silently dropped.
+NETWORK_INPUTS = (
+    ("pod_cidr", "POD_CIDR", "--pod-cidr"),
+    ("service_cidr", "SERVICE_CIDR", "--service-cidr"),
+    ("cluster_dns_ip", "CLUSTER_DNS_IP", "--cluster-dns-ip"),
+    ("node_local_dns_ip", "NODE_LOCAL_DNS_IP", "--node-local-dns-ip"),
+)
+
+#: What an OFFLINE render uses when it is given no network at all: `make lint`,
+#: CI's checkov scan and `scripts/lib/validate-manifests.sh` render
+#: `tenant --tenant lint` with no cluster to read. Documentation addresses
+#: (RFC 5737 TEST-NET-1/2/3) rather than plausible ones, so an offline render
+#: can never pass for a real cluster's the way 10.0.0.0/8 and 34.118.224.0/20
+#: did. The policy is marked with OFFLINE_NETWORK_SOURCE, the renderer says so
+#: on stderr, and `kubernetes/apply.sh` refuses to apply a render carrying the
+#: mark. Isolation does not rest on these values even if one were applied by
+#: hand: the internet rule excepts all of private space unconditionally.
+OFFLINE_NETWORK = {
+    "POD_CIDR": "192.0.2.0/24",
+    "SERVICE_CIDR": "198.51.100.0/24",
+    "CLUSTER_DNS_IP": "198.51.100.10",
+    "NODE_LOCAL_DNS_IP": "203.0.113.10",
+}
+OFFLINE_NETWORK_SOURCE = "offline-render-not-for-apply"
+
+
+def network_values(args: argparse.Namespace) -> dict[str, str]:
+    """The cluster's network as placeholders: all four given, or none.
+
+    None given is an offline render (see OFFLINE_NETWORK). Some given is
+    refused, naming what is missing: half a network is exactly the RC3 shape --
+    some values from the cluster and the rest from wherever a default came from.
+    All four given are parsed and checked against one another, because each is
+    individually well-formed in the failures that matter: a kube-dns IP from
+    another cluster, or two arguments swapped.
+    """
+    given = {token: str(getattr(args, attr, "") or "") for attr, token, _ in NETWORK_INPUTS}
+    source = str(getattr(args, "network_source", "") or "")
+
+    if not any(given.values()):
+        if source:
+            raise RenderError(
+                f"render: --network-source {source!r} names where the network values came "
+                "from, but none was passed. Pass --pod-cidr, --service-cidr, "
+                "--cluster-dns-ip and --node-local-dns-ip with it."
+            )
+        return {**OFFLINE_NETWORK, "NETWORK_SOURCE": OFFLINE_NETWORK_SOURCE}
+
+    missing = [flag for _, token, flag in NETWORK_INPUTS if not given[token]]
+    if missing:
+        raise RenderError(
+            f"render: the cluster network is all or nothing; missing {' '.join(missing)}. "
+            "kubernetes/apply.sh reads all four from the live cluster -- a partial set "
+            "renders a policy that is right about some of the cluster and wrong about "
+            "the rest, which is how the 2026-09-24 policy came to allow DNS to nothing."
+        )
+    if source == OFFLINE_NETWORK_SOURCE:
+        raise RenderError(
+            f"render: --network-source {OFFLINE_NETWORK_SOURCE} marks a render with NO "
+            "network values; this one was given all four. Name where they came from."
+        )
+
+    try:
+        pods = ipaddress.IPv4Network(given["POD_CIDR"], strict=True)
+        services = ipaddress.IPv4Network(given["SERVICE_CIDR"], strict=True)
+        cluster_dns = ipaddress.IPv4Address(given["CLUSTER_DNS_IP"])
+        node_local = ipaddress.IPv4Address(given["NODE_LOCAL_DNS_IP"])
+    except ValueError as exc:
+        raise RenderError(f"render: not a usable cluster network value: {exc}") from exc
+    # Canonical spelling only. The API server validates `except` entries as
+    # CIDRs, and the parity check compares strings with the cluster's own.
+    for token, parsed in (("POD_CIDR", pods), ("SERVICE_CIDR", services)):
+        if str(parsed) != given[token]:
+            raise RenderError(
+                f"render: {token}={given[token]!r} is not in canonical form; the cluster "
+                f"reports it as {parsed}"
+            )
+    if pods.overlaps(services):
+        raise RenderError(
+            f"render: the pod range {pods} and the service range {services} overlap. No "
+            "GKE cluster has that shape; two values were swapped or come from different "
+            "clusters."
+        )
+    if cluster_dns not in services:
+        raise RenderError(
+            f"render: --cluster-dns-ip {cluster_dns} is not inside the service range "
+            f"{services}. The kube-dns Service IP is a ClusterIP, so it always is; this "
+            "one belongs to another cluster, or the arguments are swapped, and the policy "
+            "would allow DNS to an address nothing answers on."
+        )
+    if node_local == cluster_dns:
+        raise RenderError(
+            f"render: --node-local-dns-ip and --cluster-dns-ip are both {cluster_dns}. "
+            "node-local-dns answers on BOTH its own address and the kube-dns IP; pass "
+            "the first entry of its -localip, not the second."
+        )
+    return {**given, "NETWORK_SOURCE": source or "operator-supplied"}
+
+
 def tenant_values(args: argparse.Namespace) -> dict[str, str]:
     tenant = args.tenant
     namespace = args.namespace or f"{NAMESPACE_PREFIX}{tenant}"
@@ -421,8 +546,7 @@ def tenant_values(args: argparse.Namespace) -> dict[str, str]:
         "PROJECT_ID": args.project,
         "REGION": args.region,
         "PSS_ENFORCE": args.pss_enforce,
-        "POD_CIDR": args.pod_cidr,
-        "SERVICE_CIDR": args.service_cidr,
+        **network_values(args),
         "QUOTA_PODS": str(args.quota_pods),
         "QUOTA_JOBS": str(args.quota_jobs),
         "QUOTA_CPU": str(args.quota_cpu),
@@ -582,11 +706,57 @@ def add_tenant_arguments(parser: argparse.ArgumentParser) -> None:
             "`chromium_sandbox=False` depends on being true."
         ),
     )
-    parser.add_argument("--pod-cidr", default="10.0.0.0/8")
+    # NO DEFAULTS, deliberately -- see NETWORK_INPUTS for what the defaults
+    # cost. Each help names where kubernetes/apply.sh reads the value; that
+    # script is the supported way to render for a cluster, and it refuses these
+    # flags from its own command line so a hand-typed value cannot override the
+    # one it read.
+    parser.add_argument(
+        "--pod-cidr",
+        default="",
+        help=(
+            "the cluster's pod range: `gcloud container clusters describe` "
+            ".clusterIpv4Cidr (= .ipAllocationPolicy.clusterIpv4CidrBlock). "
+            "Pass all four network values or none; none renders offline "
+            "placeholders marked not-for-apply."
+        ),
+    )
     parser.add_argument(
         "--service-cidr",
-        default="34.118.224.0/20",
-        help="GKE Autopilot's default service range; public space, so not covered by RFC1918",
+        default="",
+        help=(
+            "the cluster's service range: `gcloud container clusters describe` "
+            ".servicesIpv4Cidr. GKE Autopilot's DEFAULT (34.118.224.0/20) is public "
+            "space, so the value matters and is never assumed."
+        ),
+    )
+    parser.add_argument(
+        "--cluster-dns-ip",
+        default="",
+        help=(
+            "the kube-dns Service's ClusterIP: `kubectl -n kube-system get service "
+            "kube-dns -o jsonpath={.spec.clusterIP}`. Not in `clusters describe`. "
+            "node-local-dns also answers on it."
+        ),
+    )
+    parser.add_argument(
+        "--node-local-dns-ip",
+        default="",
+        help=(
+            "the NodeLocal DNSCache address a pod's resolver uses: the first "
+            "entry of `-localip` on the node-cache container of "
+            "`kubectl -n kube-system get daemonset node-local-dns`. Not in "
+            "`clusters describe`, which only says whether the cache is on."
+        ),
+    )
+    parser.add_argument(
+        "--network-source",
+        default="",
+        help=(
+            "where the four network values came from, recorded on the egress "
+            "policy: gke/<project>/<location>/<cluster> from apply.sh. Defaults to "
+            "`operator-supplied` when the values are given by hand."
+        ),
     )
     parser.add_argument("--quota-pods", type=int, default=8)
     parser.add_argument("--quota-jobs", type=int, default=32)
@@ -662,7 +832,18 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.command == "tenant":
-        sys.stdout.write(render_files(TENANT_FILES, tenant_values(args)))
+        values = tenant_values(args)
+        if values["NETWORK_SOURCE"] == OFFLINE_NETWORK_SOURCE:
+            # stderr, so the render on stdout stays a clean manifest for the
+            # lint and checkov callers that pipe it.
+            print(
+                f"render: WARNING: no cluster network was given, so the egress policy "
+                f"carries documentation addresses and is marked {OFFLINE_NETWORK_SOURCE}. "
+                "Fine for lint; wrong for a cluster. kubernetes/apply.sh reads the real "
+                "values from the cluster.",
+                file=sys.stderr,
+            )
+        sys.stdout.write(render_files(TENANT_FILES, values))
     elif args.command == "policies":
         sys.stdout.write(render_files(POLICY_FILES, {}))
     elif args.command == "job":
