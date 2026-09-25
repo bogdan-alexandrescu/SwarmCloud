@@ -804,6 +804,17 @@ describe('Runtimes, with every help card closed', () => {
       'the capacity read did not complete',
     )
     expect(card!.querySelector('button[aria-label^="Help: "]')).not.toBeNull()
+    // NEVER AFTER A VALUE (AH-24). The glyph trailed the server's own words,
+    // inside the one-line `.rt-unread-detail` that clips with an ellipsis --
+    // after a value, and cut off with it when the message ran long. The row
+    // has no label of its own (its first item is the mark), so the glyph leads
+    // the row instead. MUTATION: put it back at the end of the detail.
+    const unread = card!.querySelector('.rt-unread')
+    expect(
+      unread?.firstElementChild?.querySelector('button[aria-label^="Help: "]') ?? null,
+      'the unread row does not lead with its `?`',
+    ).not.toBeNull()
+    expect(card!.querySelector('.rt-unread-detail button'), 'the `?` still trails the detail').toBeNull()
 
     const row = card!.querySelector('.ctl-table tbody tr')
     expect(row, 'no backend row was drawn').not.toBeNull()

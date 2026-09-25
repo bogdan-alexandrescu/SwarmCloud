@@ -644,6 +644,14 @@ describe('AttemptTimeline, with every help card closed', () => {
       el.querySelector('.ctl-toolbar button[aria-expanded]'),
       'the paging topic is unreachable',
     ).not.toBeNull()
+    // AFTER THE LABEL, NEVER AFTER A VALUE (AH-24). It trailed the toolbar's
+    // counts -- `12 ev · first page · 1 blind ?` -- where it read as a footnote
+    // on the last figure. The toolbar's label is its `attempts` eyebrow, and
+    // the glyph follows that. MUTATION: move it back to the end of the strip.
+    expect(
+      el.querySelector('.ctl-toolbar .ctl-eyebrow button[aria-label^="Help: "]'),
+      'the toolbar `?` is not on its label',
+    ).not.toBeNull()
   })
 
   it('keeps every attempt figure in a facts strip, absences included', async () => {
@@ -691,6 +699,14 @@ describe('ArtifactViewer', () => {
     expect(
       el.querySelector('[aria-label*="Credential"], [aria-label*="credential"]'),
       'the redaction topic is unreachable',
+    ).not.toBeNull()
+    // AFTER THE LABEL, NEVER AFTER A VALUE (AH-24). It trailed the count and
+    // its mark -- `masked 4 … ?` -- the QA pass's own example of a glyph read
+    // as a footnote on a figure. It sits on the fact's key now, as Overview's
+    // `reads ?` does. MUTATION: move it back after the count.
+    expect(
+      fact!.querySelector('b button[aria-label^="Help: "]'),
+      'the masked count’s `?` is not on its label',
     ).not.toBeNull()
   })
 

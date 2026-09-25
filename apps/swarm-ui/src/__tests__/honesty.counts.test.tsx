@@ -345,7 +345,81 @@ describe('the states that can never be written', () => {
       expect(foot.textContent, `${state} is excluded and unnamed`).toContain(state)
     }
     // And the `?` that holds the reason is present and shut.
-    expect(foot.querySelector('button[aria-label^="Help: "]')).not.toBeNull()
+    const glyph = foot.querySelector('button[aria-label^="Help: "]')
+    expect(glyph).not.toBeNull()
+    // AFTER THE LABEL, NEVER AFTER A VALUE (AH-24). It trailed the list of
+    // state names -- `never written: A · B · C ?` -- where it read as a
+    // footnote on the last name. It sits after `never written:` now, and every
+    // name it explains comes after it. MUTATION: move it back to the end.
+    const html = foot.innerHTML
+    const at = html.indexOf('aria-label="Help: ')
+    expect(at).toBeGreaterThan(html.indexOf('never written'))
+    for (const state of NEVER_WRITTEN) {
+      expect(html.indexOf(`${state}`), `${state} is drawn before the \`?\` that explains it`).toBeGreaterThan(at)
+    }
+  })
+})
+
+/**
+ * AH-25 (#86). THE THREE ADMIN TABS DREW TWO PAGE HEADS. Pool limits and
+ * Tenants drew Screen's -- a title over one provenance line -- and Platform
+ * counts drew its own `.ctl-page-head` with the control pinned right, then a
+ * separate toolbar row holding the cost: the cost sat a row away from "Run the
+ * count" although the code said "beside the control".
+ *
+ * It is Screen's head now, through the one `PageHead`, and its line reads like
+ * every other screen's: what was read, how long ago, and the read-now control
+ * -- with the cost printed immediately before the control that spends it.
+ */
+describe('the page head (AH-25)', () => {
+  const PER_SCOPE = REAL_STATES.length + NEVER_WRITTEN.size
+
+  function line(): HTMLElement {
+    const sub = document.querySelector<HTMLElement>('.head + p.sub')
+    if (!sub) throw new Error('no provenance line under the title')
+    return sub
+  }
+
+  it('is the head Screen renders: a title over one line, no second head and no toolbar', async () => {
+    render(<PlatformCountsScreen />)
+    await waitFor(() => expect(loadMe).toHaveBeenCalled())
+    expect(document.querySelector('.head > h1')?.textContent).toBe('Platform counts')
+    expect(document.querySelector('.ctl-page-head'), 'a head of its own shape').toBeNull()
+    expect(document.querySelector('.ctl-toolbar'), 'the cost is still a row away from the control').toBeNull()
+    await waitFor(() => expect(line().textContent).toBe(`not counted yet · ${PER_SCOPE} count() per run · Run the count`))
+  })
+
+  it('prints the cost immediately before the control, in one element the line cannot split', async () => {
+    render(<PlatformCountsScreen />)
+    const button = screen.getByRole('button', { name: 'Run the count' })
+    const cost = document.querySelector('p.sub .counts-cost')
+    expect(cost, 'the cost is not in the head line').not.toBeNull()
+    expect(button.closest('p.sub'), 'the control is not in the head line').not.toBeNull()
+    expect(button.parentElement, 'the cost and the control can wrap apart').toBe(cost!.parentElement)
+    expect(button.previousElementSibling, 'something sits between the cost and the control').toBe(cost)
+    // The read-now control is `.sub button`, as Screen's `refresh` is.
+    expect(button.className).not.toContain('retry')
+  })
+
+  it('after a run: how many, how old, the cost, and the control again', async () => {
+    await run({ status: 'ok', data: stats(), fetchedAt: Date.now() })
+    await screen.findByRole('button', { name: 'Run it again' })
+    expect(line().textContent).toMatch(new RegExp(`^1 run · read .+ · ${PER_SCOPE} count\\(\\) per run · Run it again$`))
+  })
+
+  it('after a failed run: says so, and still prices the next press', async () => {
+    await run({ status: 'error', error: { kind: 'server_error', httpStatus: 500, code: null, message: 'boom' } })
+    await screen.findByRole('button', { name: 'Run it again' })
+    expect(line().textContent).toBe(`last run failed · ${PER_SCOPE} count() per run · Run it again`)
+  })
+
+  it('while counting: the control says so and cannot be pressed twice', async () => {
+    loadStats.mockReturnValue(new Promise<Result<Stats>>(() => {}))
+    render(<PlatformCountsScreen />)
+    screen.getByRole('button', { name: 'Run the count' }).click()
+    const busy = await screen.findByRole('button', { name: 'Counting…' })
+    expect((busy as HTMLButtonElement).disabled).toBe(true)
+    expect(busy.closest('p.sub')).not.toBeNull()
   })
 })
 
@@ -362,12 +436,15 @@ describe('the states that can never be written', () => {
 describe('the cost shown before the first run', () => {
   const PER_SCOPE = REAL_STATES.length + NEVER_WRITTEN.size
 
+  /**
+   * The cost, where AH-25 put it: the element in the head line immediately
+   * before the control that spends it. It was a `per run` fact in a toolbar a
+   * row below the control.
+   */
   function perRun(): string {
-    const fact = [...document.querySelectorAll('.ctl-toolbar .ctl-fact')].find((f) =>
-      (f.textContent ?? '').startsWith('per run'),
-    )
-    if (!fact) throw new Error('no "per run" fact in the toolbar')
-    return fact.textContent ?? ''
+    const cost = document.querySelector('.head + p.sub .counts-cost')
+    if (!cost) throw new Error('no cost in the head line')
+    return cost.textContent ?? ''
   }
 
   it('is an admin’s cost for an admin, known from the session before any run', async () => {

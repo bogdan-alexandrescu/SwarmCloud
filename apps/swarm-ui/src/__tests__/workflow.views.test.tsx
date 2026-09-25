@@ -1138,6 +1138,22 @@ describe('the QA pass: the table, the inspector and the board chrome', () => {
     // The Timeline draws times from the task read, not the sample.
     chooseBoard('Timeline')
     expect(mark()).toBeNull()
+    // AH-24: NEVER AFTER A VALUE. The board's one `?` trailed the caveats --
+    // `6/8 sampled ?` -- where it read as a footnote on the figure. The strip
+    // has no label of its own, so the glyph LEADS the caveats it explains, and
+    // stays in the same place whether any caveat is drawn or none.
+    // MUTATION: move it back to the end of `.wf-caveats`.
+    chooseBoard('Table')
+    await waitFor(() => expect(mark()?.textContent).toBe('6/8 sampled'))
+    const caveats = document.querySelector('.wf-caveats')!
+    expect(
+      caveats.firstElementChild?.querySelector('button[aria-label^="Help: "]') ?? null,
+      'the board `?` does not lead the caveats',
+    ).not.toBeNull()
+    expect(
+      caveats.lastElementChild?.querySelector('button[aria-label^="Help: "]') ?? null,
+      'the board `?` still trails a figure',
+    ).toBeNull()
     // The Graph, at the Figures tier these small workflows land on, draws
     // them on every node.
     chooseBoard('Graph')

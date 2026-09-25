@@ -152,6 +152,45 @@ describe('Pool limits labels its units on both figures (CP-24)', () => {
   })
 })
 
+/**
+ * AH-22. THE FIGURE CAP, ENFORCED RATHER THAN WRITTEN DOWN.
+ *
+ * design-system §2: one `--t-figure` per card. Pool limits draws one per
+ * profile card -- five on the live screen -- and that is the peer-grid case §2
+ * now names: every card states the same measure in the same unit (agents), and
+ * they are compared card to card, not read as a KPI wall. What the cap forbids
+ * is a SECOND figure inside one card, which is what makes a card a wall. This
+ * is a guard on shipped behaviour, so it cannot be pushed red first: the
+ * screen already keeps it, and nothing held it there.
+ *
+ * MUTATION: draw the binding pool's own figure as a second `.ctl-figure`.
+ */
+describe('Pool limits keeps one figure per card (AH-22)', () => {
+  it('draws exactly one .ctl-figure in every profile card, the tied and the untied', async () => {
+    api.loadCapacity.mockResolvedValue(
+      ok(
+        capacity({
+          runner_profiles: {
+            'claude-code': profile(['global', 'tenant:eng', 'resource:standard']),
+            browser: profile(['resource:standard'], 2),
+            // A profile whose pools are not in the response: its figure is the
+            // absent em dash, and it is still the card's one figure.
+            ghost: profile(['runner:ghost']),
+          },
+        }),
+      ),
+    )
+    render(<AdminSettingsScreen />)
+    await limitCard('claude-code')
+    const cards = [...document.querySelectorAll('.ctl-card')]
+    expect(cards.length, 'fewer profile cards than profiles').toBeGreaterThanOrEqual(3)
+    for (const card of cards) {
+      const title = card.querySelector('.ctl-card-title')?.textContent ?? '?'
+      expect(card.querySelectorAll('.ctl-figure').length, `${title} draws more than one figure`).toBeLessThanOrEqual(1)
+    }
+  })
+})
+
 describe('saving a ceiling re-reads without throwing the screen away (AH-7)', () => {
   it('keeps an unsaved edit in another row, paints saved, and shows the re-read', async () => {
     const after = capacity({
