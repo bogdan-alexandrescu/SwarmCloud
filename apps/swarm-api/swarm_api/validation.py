@@ -403,24 +403,19 @@ class StepSpec:
 
 
 class DagError(ValidationFailed):
-    code = "invalid_dag"
+    """Every workflow refusal `validate_dag` and its helpers make: 422 `invalid_dag`.
 
-
-class StagedInputError(DagError):
-    """An `input_from` the worker would refuse, refused at submission instead.
-
-    HTTP 400, NOT THE 422 EVERY OTHER `DagError` RETURNS, AND THAT IS THE
-    OWNER'S DECISION. The brief for #64 specified "HTTP 400, workflow not
-    created, nothing enqueued". The first cut of PR #65 returned 422 so as to
-    match the sibling refusals (a cycle, a dangling dependency, an `input_from`
-    source that is not a `depends_on`), and because the New Workflow screen
-    mapped only 422 to "invalid". That revised a decision that was not the
-    lane's to revise, so the screen was changed instead: `SubmitWorkflow.tsx`
-    `KIND_BY_STATUS` maps 400 to "invalid" as well. The code stays
-    `invalid_dag`, so a caller that branches on `code` sees one family.
+    ONE CODE, ONE STATUS. The `input_from` refusals added for #64 (a filename
+    two parents stage into one step, an absolute or traversing filename, a
+    malformed workflow-level `metadata.input_from`) raise this class too, not
+    a subclass with a status of its own. The owner decided so on #64 on
+    2026-09-25: the New Workflow screen (`SubmitWorkflow.tsx` `KIND_BY_STATUS`)
+    heads a 422 "That request was not valid", and a caller branching on the
+    status or on the code must read every refusal in the family the same way.
+    `test_every_invalid_dag_refusal_answers_one_status` holds it.
     """
 
-    status_code = 400
+    code = "invalid_dag"
 
 
 def validate_dag(steps: Sequence[StepSpec], *, max_steps: int) -> list[str]:
@@ -580,7 +575,7 @@ def validate_staged_filenames(step: StepSpec) -> None:
         filename = raw.strip() if isinstance(raw, str) else ""
         problem = _filename_problem(filename)
         if problem is not None:
-            raise StagedInputError(
+            raise DagError(
                 f"step {step.step_id!r} stages input from {source!r} as {raw!r}, which "
                 f"{problem}. An input_from filename is where the artifact lands in "
                 "this step's workspace, so it must be a relative path inside it, "
@@ -601,7 +596,7 @@ def validate_staged_filenames(step: StepSpec) -> None:
             continue
         parents = sorted(sources)
         suggestion = " and ".join(repr(_distinct_name(p, filename)) for p in parents[:2])
-        raise StagedInputError(
+        raise DagError(
             f"step {step.step_id!r} stages {filename!r} from {len(parents)} upstream "
             f"steps ({', '.join(repr(p) for p in parents)}). An input_from filename "
             "is both the artifact's name in the upstream step and the path it lands "
@@ -656,7 +651,7 @@ def validate_workflow_input_from_metadata(metadata: Mapping[str, Any]) -> None:
         "each of those steps at run time."
     )
     if not isinstance(raw, dict):
-        raise StagedInputError(
+        raise DagError(
             f"{where} must map an upstream task id to one artifact filename, got "
             f"{type(raw).__name__} {raw!r}. {inherited} To stage an upstream step's "
             "artifact, declare it in that step's own `input_from`, keyed by upstream "
@@ -667,7 +662,7 @@ def validate_workflow_input_from_metadata(metadata: Mapping[str, Any]) -> None:
     landing: dict[str, list[str]] = {}
     for upstream, value in raw.items():
         if not isinstance(upstream, str) or not upstream.strip():
-            raise StagedInputError(
+            raise DagError(
                 f"{where} has the key {upstream!r}, which is not an upstream task id. "
                 f"{inherited}",
                 detail={"input_from": upstream, "problem": "is not an upstream task id"},
@@ -679,7 +674,7 @@ def validate_workflow_input_from_metadata(metadata: Mapping[str, Any]) -> None:
             else f"is not a filename (it is {type(value).__name__})"
         )
         if problem is not None:
-            raise StagedInputError(
+            raise DagError(
                 f"{where} stages input from {upstream!r} as {value!r}, which {problem}. "
                 "The filename is where the artifact lands in the workspace, so it must "
                 "be a relative path inside it, such as 'notes.md' or 'reports/notes.md', "
@@ -696,7 +691,7 @@ def validate_workflow_input_from_metadata(metadata: Mapping[str, Any]) -> None:
         if len(sources) < 2:
             continue
         upstreams = sorted(sources)
-        raise StagedInputError(
+        raise DagError(
             f"{where} stages {filename!r} from {len(upstreams)} upstream tasks "
             f"({', '.join(repr(u) for u in upstreams)}). The filename is both the "
             "artifact's name upstream and the path it lands at in the workspace, so "
