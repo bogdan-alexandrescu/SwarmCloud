@@ -169,6 +169,13 @@ spec:
               value: "__MAX_IN_WORKER_RETRY_DELAY_SECONDS__"
             - name: TASK_TIMEOUT_SECONDS
               value: "__TIMEOUT_SECONDS__"
+            # The metadata server BY ADDRESS; see worker-job.yaml. It takes DNS
+            # out of google-auth's metadata and token requests only -- every
+            # site a browser task opens is still resolved by name.
+            - name: GCE_METADATA_HOST
+              value: "169.254.169.254"
+            - name: GCE_METADATA_IP
+              value: "169.254.169.254"
             # NO PROVIDER KEY IS PROJECTED HERE, deliberately.
             #
             # Every process in this container runs as uid 10001, so anything in
