@@ -187,10 +187,10 @@ strip's hover cue all use it; `encoding.hues.test.ts` holds every
 underline in `--line-soft` fails wherever it is written.
 
 `.ctl-link` ships as the primitive; **it is not yet universal and this document
-does not claim it is.** `.ov-link`, `.wb-more a`, `.tile.blocked .t-sub a`,
-`.node-links a` and `.art-md a` are five screen-private link treatments that each
-paint `--info`, and folding them in means editing five screens — the screen
-phase's job. What §11 shipped is the primitive they collapse into, so the screen
+does not claim it is.** `.ov-link`, `.wb-more a`, `.node-links a` and `.art-md a`
+are screen-private link treatments that each paint `--info` (a fifth,
+`.tile.blocked .t-sub a`, went with the Timeline's boxed tiles in TS-11), and
+folding them in means editing those screens — the screen phase's job. What §11 shipped is the primitive they collapse into, so the screen
 lanes cannot each invent a sixth answer.
 
 ### 1.4 The ink rule, and the trap under it
@@ -293,8 +293,8 @@ below them are the owner's and are unchanged.**
 | `--t-micro` | 12 / 1.45 | ages, raw ids, provenance, card feet. The hard floor. |
 | `--t-meta` | 13 / 1.45 | column heads, eyebrows, labels — **a treatment as much as a size**: 600, mono, `--text-faint`. *No longer uppercase and no longer tracked: see §13.2. No longer the chip: see §6.6.* |
 | `--t-body` | 14 / 1.50 | the workhorse: table cells, values, controls, state words, `body` itself |
-| `--t-lead` | 16 / 1.55 | a card title; **the one sentence a screen is allowed** |
-| `--t-title` | **18** / 1.30 | the screen `<h1>`, at weight **600** |
+| `--t-lead` | 16 / 1.55 | a card title; **the one sentence a screen is allowed**; and, at 600, **every section, panel and step heading** (TS-18) |
+| `--t-title` | **18** / 1.30 | the screen `<h1>` (`.head h1`, `.ctl-page-head > h1`), at weight **600** — and only two other things: the product wordmark (`.brand-word`, a logotype, not a heading) and a rendered document's own h1 (`.art-md .art-h[data-level="1"]`), which follows the document's ladder |
 | `--t-figure` | **22** / 1.10 | the one number a card exists for |
 
 **Why the top two moved, and the count cap that matters more than either.**
@@ -341,13 +341,14 @@ and weight 600 — the Overview's attention lead title is an `<h2>` at that step
 and stays distinct from the card titles by its position, its track and its
 unboxed region, which is how the paragraph below ranks hierarchy. **An in-page
 heading that ties with the h1 is a defect.** The in-page headings the sheet
-still draws at `--t-title` are named so the document and the code agree:
-`.section > h2` and `.section > .ctl-toolbar > h2` (§B4.1 of the sheet, pinned
-by `typescale.test.ts`: "a panel title is --t-title"), `.sbf-move-h`,
-`.state h3`, `.ctl-empty > h3`, `.art-head h3` and `.ckb-head h3`. They are
-TS-18's (epic #84), which moves them to `--t-lead`; OV-15 left those rules and
-their tests alone. A rendered document's own h1 (`.art-md .art-h[data-level="1"]`)
-follows the document's ladder, not the console's.
+used to draw at `--t-title` — `.section > h2` and `.section > .ctl-toolbar > h2`
+(§B4.1 of the sheet), `.sbf-move-h`, `.state h3`, `.ctl-empty > h3`,
+`.art-head h3` and `.ckb-head h3` — are TS-18's (epic #84), which moves them to
+`--t-lead`/600 (`timeline.submit.rules.test.ts`). TS-18's first draft kept
+`.ov-lead-title` at `--t-title` as an exception; OV-15 wins on that element
+(resolved on #84, 2026-09-25). A rendered document's own h1
+(`.art-md .art-h[data-level="1"]`) follows the document's ladder, not the
+console's.
 
 `--lh-flush: 1` is not a seventh step; it is legal only inside a `font:`
 shorthand next to a size token, where a fixed box must not grow, and every use
@@ -1095,6 +1096,40 @@ screen to reuse rather than extend:
 | `wait` | QUEUED, READY, PARKED | `is-warn` — triangle |
 | `ended` | CANCELLED | `is-info` — grey flat bar |
 
+**The chip's base mark is the hollow ring** (owner ruling, 2026-09-25, CP-14):
+a chip whose modifier matched no rule draws the unknown mark, never the ok disc,
+and every other state declares its own fill.
+
+> **Owner ruling, 2026-09-25 (CP-14, #85): healthy carries no hue.** The ok mark
+> keeps its filled disc and its word at full ink, and paints a text grey, not
+> `--ok`, on `.ctl-chip.is-ok`, `.ctl-dot.is-ok` and the legacy `.tag.ok`. Hue
+> on a state mark is left to the verdicts (warn, bad, paused) and to live.
+> Because the change is in the primitive, Pools, Runtimes, Accounts'
+> `AVAILABLE`, Provider quota's `AVAILABLE` and every other ok mark went grey
+> with no screen edit. The `--ok` token stays defined, and the dock (CH-17) and
+> the Timeline (WF-11) apply the ruling in their own boxes.
+>
+> **Which grey, where CP-14 and CH-17 meet.** CP-14 chose `--text-dim` — the
+> grey §6.4 uses for a proportion that is fine. CH-17, decided after it, names
+> the chip and dot primitives and draws the ok disc and the info bar in
+> `--text-faint` (the hue ruling above), so the later ruling sets the grey of
+> `.ctl-chip.is-ok` and `.ctl-dot.is-ok`. `.tag.ok`, which CH-17 leaves to
+> CP-14, stays `--text-dim`. CP-14's ruling — no hue on a healthy mark — holds
+> under either grey, and `test_the_ok_mark_is_a_text_grey` accepts both.
+>
+> **The cost, recorded so it is not rediscovered:** in greyscale the ok disc is
+> now told from bad and warn **by its silhouette alone**. `--text-faint`, the
+> primitives' grey, is 1.01:1 from `--bad` in the dark theme and 1.45:1 from
+> `--warn` in the light one; `--text-dim`, `.tag.ok`'s, is 1.26:1 and 1.30:1
+> (WCAG relative luminance of the theme tokens in `styles.css`). The
+> 1.5:1 triad floor (`MIN_STATE_RATIO` in `test_state_colour_discriminability.py`)
+> still governs the `--ok` / `--warn` / `--bad` tokens that fills use and is not
+> relaxed; `test_every_chip_state_has_its_own_silhouette` is what holds the ok
+> mark apart, and its "may equal the base" exemption moved from `is-ok` to
+> `is-unknown`. `test_the_ok_mark_is_a_text_grey` and
+> `test_a_chip_whose_modifier_matches_nothing_draws_the_unknown_ring` pin the two
+> halves of the ruling on the cascade, in both themes.
+
 `.ctl-dot` is that mark **without** the chip, for a table cell, a DAG node or a
 dense row — which is why there were four state chips: there was no way to get
 the mark alone.
@@ -1156,7 +1191,10 @@ one wash in greyscale.
 0% error rate as plain ink and tints exactly one cell. Nothing is coloured for
 being healthy; a healthy platform is a quiet grey screen, which is what an
 operations console should look like at 3am. This also shrinks the
-state-separability problem to the cases where it matters.
+state-separability problem to the cases where it matters. A healthy row's
+status is the ok mark — a filled grey disc beside its word (`--text-faint` on
+the chip and the dot since CH-17; CP-14 first drew it `--text-dim`, §6.6) —
+which is present and legible and carries no hue (§6.6, owner ruling 2026-09-25).
 
 *(Extended 2026-09-25, CH-17.)* The same ruling now holds for the marks
 themselves (§6.6): the ok disc and the info flat bar are grey. And the dock's
@@ -1600,7 +1638,19 @@ Five kinds of word, and no sixth:
 
 **Forbidden in a data view:** a definition, a rationale, a "what this means", a
 "how to" line, a second sentence anywhere, a paragraph of reassurance on the
-healthy path. `Overview.tsx:2086` currently renders
+healthy path.
+
+**Forms too (TS-23, owner decision 2026-09-25).** The five kinds of word apply
+to a form — Submit a task, Submit a workflow — with one allowance: a field, or
+an offer to add one, may carry **one `--t-micro` note stating what the runner
+does with that key**, read from the runner source. These are the `SUGGESTED` /
+`ANY_PROFILE` notes on `.sbf-offer-note` and `.sbf-note`, kept on purpose.
+Forms get **no how-to lines and no second sentence**: a step with nothing to
+ask yet says `no runner chosen`, not "Choose a runner first — what it reads is
+what this asks for"; an empty input says `` `mock` requires no input `` or `no
+settings`; the room box states its cost as a fact on its head and keeps one
+sentence; and an unread room is the unread mark with a pool count (§8.6), not a
+paragraph saying it is not zero. `Overview.tsx:2086` currently renders
 `checks.map(c => c.note).join(' · ')` — **eight full sentences, ~90 words, on a
 healthy platform, saying nothing is wrong eight different ways.** That is the
 shape being deleted.
@@ -2349,6 +2399,23 @@ rather than inventing a metric that would have moved.
    elements were spent outlining a 5×10px mark whose whole shape is its fill.
    The unfilled cell is `--line-soft`, the repeated-separator weight.
 
+   > **Collapsed, 2026-09-25 (owner decision, CP-25, #85).** The five-cell bar
+   > is gone: `Bar`, `barFilled`, `BAR_CELLS` and the `.acct-bar` rules were
+   > deleted, and the 5h and 7d cells draw §6.4's shared `UtilTrack` — the
+   > exact, unrounded percentage (the cells rounded 42% to three fifths), the
+   > default grey fill, `ov-projected` for a stale or reset reading beside the
+   > existing `~`, `is-bad` only for a live reading at 100%, and the baseline
+   > tick for a measured 0%, which five empty cells could not draw. There is no
+   > amber band, and no over segment because the percentage is clamped. The
+   > track is a fixed 40px inline beside the figure (`.acct-window >
+   > .ctl-util-track`), and at 560px and below the phone block hides it as it
+   > hides every track but a pool tile's; there the figure, the `~` and the em
+   > dash carry every state. Unmeasured cells are unchanged: the em dash, `not
+   > measured`, no track. **What remains of the `cs status` parity is the
+   > figure, the `~` and the window labels.** One disagreement is left open for
+   > its own box: Overview colours the same reading warn above 75% and bad
+   > above 90%, while Accounts draws bad only at 100%.
+
 3. **The metric tile lost its box on Pools too, and gained a line** (§6.2
    applied). `.cap-pool` is the same thing as `.ctl-metric` under another name
    — one fact, its unit, a proportion — so it takes the same rule: **nothing
@@ -2367,6 +2434,16 @@ rather than inventing a metric that would have moved.
    stopping a reader comparing a tenant figure with a platform one. Scoped to
    `.cap-families > .ctl-card`; the primitive is untouched for its nine other
    callers.
+
+   > **Amended 2026-09-25 (owner decision, CP-2, #85): the scope moved from the
+   > family head to every row.** The note was computed from the family's first
+   > row, and a family is not one scope — an admin's Tenants family printed
+   > "this tenant" above four tenants' pools, and Providers printed
+   > "platform-wide" above per-tenant slices. Each family table now has a
+   > `Scope` column reading `platform`, `this tenant` or `tenant X`, each card
+   > in the Cards view carries the same word (`.cap-pool-scope`), and the
+   > family note is removed. Trap E is held more strongly than before: the
+   > declaration is on the figure's own row.
 
 5. **The proportion stops at 320px, and this is the answer to the owner's item
    8.** The tile track was `1fr`, so a family holding one pool — Global does —
@@ -2888,6 +2965,7 @@ plus the sub-sections that have no other home.
 | Box | The primitive | Where |
 |---|---|---|
 | CH-17 | the hue ruling: ok and info marks are grey; hue only on warn, bad, paused, live | §1.2, §1.3, §6.6, §6.7 |
+| CP-14 | healthy carries no hue (ruled first; CH-17 set the primitives' grey, `.tag.ok` keeps `--text-dim`); the chip's base mark is the hollow ring, so a modifier that matches nothing draws unknown — built by the Capacity lane (#159) | §6.6, §6.7 |
 | CH-22 | `stateTone`'s `ended` tone for CANCELLED, drawn as the grey flat bar (`is-info`) | §6.6 |
 | CH-23 | a link's resting underline is `--line` at 1px | §1.3 |
 | CH-19 | the live pulse's `.8` floor; reduced motion rests the pulse | §5.4 |

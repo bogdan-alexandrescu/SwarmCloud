@@ -970,8 +970,32 @@ class ControlPlane:
         The quota broker owns the adaptive limits; the worker only reports the
         ground truth it just observed (a 429, a retry-after header) so the next
         admission decision is made with it.
+
+        `rate_limit_count` IS THE COUNT OF THE CURRENT RATE-LIMIT RUN (CP-10,
+        #85; owner decision 2026-09-25). A run starts at a 429 and ends when a
+        clean run reports the provider AVAILABLE -- here, rule (c) -- or when
+        the broker's `aimd.refresh` retires the cooldown and the reset window,
+        which writes 0 ("The rate-limit run is over"). Provider quota labels the
+        column `429s (this run)`, and three rules make the label true:
+
+          (a) a NEW document counts 1 only when its first report is itself a
+              429; it used to be seeded with 1 whatever the report was, so a
+              document created by a clean run claimed a 429 nobody saw;
+          (b) a stored count with no `last_429_at` behind it is read as 0
+              before anything is added, so a document seeded that way corrects
+              itself on its next report -- no one-off Firestore write;
+          (c) a report of AVAILABLE writes 0, because `refresh` never resets a
+              document that is already AVAILABLE, so without this the count
+              would carry 429s from runs that are over.
+
+        The broker's exhaustion threshold (`AimdConfig.exhaustion_threshold`)
+        therefore counts 429s since the last clean run or retired cooldown. A
+        document no worker reports on again keeps its old count until one does.
+        `last_429_at` is never cleared: `Last 429` keeps its time when the count
+        returns to 0.
         """
         now = utcnow()
+        rate_limited = state in (ProviderState.EXHAUSTED, ProviderState.THROTTLED)
         payload: dict[str, Any] = {
             "provider": provider,
             "tenant_id": self.tenant_id,
@@ -982,7 +1006,7 @@ class ControlPlane:
             payload["retry_after_seconds"] = int(retry_after_seconds)
         if reset_at is not None:
             payload["reset_at"] = reset_at
-        if state in (ProviderState.EXHAUSTED, ProviderState.THROTTLED):
+        if rate_limited:
             payload["last_429_at"] = now
         ref = self._quota_ref(provider)
         snap = ref.get()
@@ -992,13 +1016,22 @@ class ControlPlane:
                 kind="quota",
                 document_id=f"{provider}:{self.tenant_id}",
             )
-            payload["rate_limit_count"] = int(existing.get("rate_limit_count", 0)) + (
-                1 if state in (ProviderState.EXHAUSTED, ProviderState.THROTTLED) else 0
-            )
+            if state == ProviderState.AVAILABLE:
+                # (c) A clean run ends the run.
+                payload["rate_limit_count"] = 0
+            else:
+                # (b) A count with no 429 behind it is no count at all.
+                stored = (
+                    int(existing.get("rate_limit_count", 0))
+                    if existing.get("last_429_at") is not None
+                    else 0
+                )
+                payload["rate_limit_count"] = stored + (1 if rate_limited else 0)
             ref.update(payload)
         else:
             payload.setdefault("configured_hard_max", 50)
-            payload.setdefault("rate_limit_count", 1)
+            # (a) One only when the first report is itself a 429.
+            payload["rate_limit_count"] = 1 if rate_limited else 0
             payload.setdefault("success_count", 0)
             ref.set(payload)
 

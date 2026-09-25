@@ -13,21 +13,16 @@
 // making a second one. See the header of headroom.py for why that is served
 // rather than restated here.
 
-import { timeAgo } from './Shell'
 import {
   blockerCeiling,
   blockerGroup,
   ceilingCopy,
-  headroomFor,
-  needsAPerson,
   poolLabelAmong,
   reasonCopy,
-  type Capacity,
   type Ceiling,
   type Counterfactual,
   type Headroom,
   type ProfileBlocker,
-  type RunnerProfile,
 } from './types'
 
 /** How a pool is named on screen. See `poolLabelAmong`. */
@@ -75,9 +70,15 @@ export function headroomFigure(h: Headroom): { text: string; title: string } {
  * one pool: it tells an operator they have cleared everything when a pool
  * nobody read may still be refusing. So the list is never silently shortened
  * -- what was measured stays on screen, under this.
+ *
+ * NOTHING OVER NO LIST (CP-6, #85). The banner qualifies the list below it --
+ * "everything below was measured; it is not the whole list" -- so with no
+ * refusal measured there is nothing below for it to qualify, and the Profile
+ * headroom card's one sentence already says a pool could not be read, with
+ * `not read` on that pool's row.
  */
 export function IncompleteNote({ h, label = labelsFor(h) }: { h: Headroom; label?: Label }) {
-  if (h.complete) return null
+  if (h.complete || h.blockers.length === 0) return null
   return (
     <p className="warn-text" role="status">
       This list is <strong>incomplete</strong>.{' '}
@@ -139,6 +140,34 @@ export function CeilingTag({ blocker }: { blocker: ProfileBlocker }) {
 }
 
 /**
+ * What a ceiling means for the pool behind it, as `CeilingTag`'s title says it.
+ * Profile headroom's status marks (CP-12, #85) carry the same explanation the
+ * tags did, so it is read from the one table rather than written twice.
+ */
+export function ceilingTitle(c: Ceiling): string {
+  return CEILING_TAG[c].title
+}
+
+/**
+ * The mark a refusing pool is drawn with on Profile headroom -- in its Status
+ * cell and in the blocker list under the card alike -- in Pools' vocabulary
+ * (CP-12, #85): `paused`, `limit 0` in the paused tone when a person set it
+ * and the bad tone when quota zeroed it, and `full` in warn, as Pools draws
+ * full. `CeilingTag` above is the submit box's, which CP-12 did not touch.
+ * ONE TABLE, so the card's two places cannot draw one pool two ways.
+ */
+const CEILING_MARK: Readonly<Record<Ceiling, { cls: 'is-paused' | 'is-bad' | 'is-warn'; word: string }>> = {
+  paused: { cls: 'is-paused', word: 'paused' },
+  'set-to-zero': { cls: 'is-paused', word: 'limit 0' },
+  zero: { cls: 'is-bad', word: 'limit 0' },
+  full: { cls: 'is-warn', word: 'full' },
+}
+
+export function ceilingMark(c: Ceiling): { cls: 'is-paused' | 'is-bad' | 'is-warn'; word: string } {
+  return CEILING_MARK[c]
+}
+
+/**
  * The numbers that made a pool refuse, as the row prints them. "units", never
  * "agents": admission increments by the profile's weight. A paused pool admits
  * nothing at ANY ceiling -- and a drained one carries the unlimited sentinel
@@ -163,11 +192,17 @@ function BlockerRow({ blocker, label }: { blocker: ProfileBlocker; label: Label 
   // (see `blockerCeiling`): "0 of 0 units in use" under a `full` tag is how
   // the live console came to call a switched-off pool busy.
   const ceiling = blockerCeiling(blocker)
+  // THE CARD'S OWN MARK, NOT `.tag` (CP-12, #85). This list is drawn on the
+  // Profile headroom card, and the owner's decision left no `.tag` in that
+  // card: each refusal carries the mark its row's Status cell carries, and the
+  // row's left rule takes the mark's tone.
+  const mark = ceilingMark(ceiling)
   return (
-    <li className={`blocker-row${needsAPerson(ceiling) ? ' is-paused' : ' is-full'}`}>
+    <li className={`blocker-row ${mark.cls}`}>
       <span className="blocker-head">
-        <span className="tags">
-          <CeilingTag blocker={blocker} />
+        <span className={`ctl-chip ${mark.cls}`} title={ceilingTitle(ceiling)}>
+          <i aria-hidden="true" />
+          {mark.word}
         </span>
         <code className="blocker-pool" title={blocker.pool}>
           {label(blocker.pool)}
@@ -203,15 +238,13 @@ export function BlockerList({
   const noRoom = h.blockers.filter((b) => blockerGroup(b, groups) === 'no_room')
   const ungrouped = h.blockers.filter((b) => blockerGroup(b, groups) === null)
 
-  if (h.blockers.length === 0) {
-    return (
-      <p className="muted">
-        {h.complete
-          ? 'No pool is refusing this profile.'
-          : 'No refusal was measured — but see above: the list is incomplete.'}
-      </p>
-    )
-  }
+  // NOTHING TO LIST, NOTHING DRAWN (CP-6, #85). This printed "No pool is
+  // refusing this profile." -- or, on an incomplete read, "No refusal was
+  // measured, but the list is incomplete" -- under every Profile headroom
+  // card. The owner's decision leaves the card one fact sentence, and that
+  // sentence already says it: what runs out first, or that a pool could not be
+  // read. So an empty list is not a sentence of its own.
+  if (h.blockers.length === 0) return null
 
   return (
     <>
@@ -260,19 +293,90 @@ export function BlockerList({
   )
 }
 
-function counterfactualText(c: Counterfactual, label: Label): string {
-  if (c.headroom_after === null) {
-    // Nothing else configured would have bound. Not a number, so not phrased
-    // as one.
-    return 'nothing else would have been left to cap it'
+/**
+ * WHAT LIFTING ONE CEILING WOULD HAVE BOUGHT, as a figure and its sentence --
+ * the `+N if lifted` cell on Profile headroom (CP-6, #85).
+ *
+ * It was `<Counterfactuals>`, a list of sentences under each card, with a row
+ * for every configured pool: "4 more would have started", and five to seven
+ * rows of "nothing would have changed". The owner's decision made it a column
+ * on the rows of the pools that cap the card, and removed the rows for pools
+ * whose lifting buys nothing. The figure is the cell; the sentence the row
+ * used to be is the cell's accessible name, so nothing it said is lost.
+ *
+ * The zeros on a BINDING pool are still the valuable half. Under a
+ * minimum-across-pools rule, raising a ceiling that is not the only binding
+ * one changes nothing -- two pools tie, and lifting either alone buys +0 --
+ * and a cell reading +0 beside a pool tagged `binding` is what stops an
+ * operator raising it and watching nothing move.
+ *
+ * ON THE WORDING, unchanged. This is a PREDICTION and predictions are where a
+ * screen like this starts lying: a lease can be released between the read and
+ * the render, and then a number presented in the present tense is simply
+ * false. So:
+ *
+ *  - everything is PAST CONDITIONAL -- "would have started", never "will
+ *    start" and never "you can start". It is a statement about the counts at
+ *    one instant, which is the only thing it is evidence for;
+ *  - that instant is named, with the server's own `generated_at` rather than
+ *    the browser's clock -- once, in the page foot, rather than once a card;
+ *  - "lifted entirely" rather than "raised to N": the counterfactual removes
+ *    the ceiling altogether, so a zero here means raising it to ANY value buys
+ *    nothing, which is the stronger and more useful claim;
+ *  - a zero always names what still binds. A bare "no change" reads as a
+ *    glitch and gets ignored.
+ *
+ * `kind` is the cell's modifier (CP-13): `pointless` for a measured +0, dimmed
+ * rather than hidden; `unmeasured` for a delta nobody could compute, and for a
+ * read that missed a ceiling (the counterfactual is not computed then: a
+ * ceiling never read cannot be compared against one that was); `measured` for
+ * a change, including "nothing else would have been left to cap it", which is
+ * an answer, not a gap -- drawn as the word `uncapped`, never as a number.
+ */
+export function liftFigure(
+  c: Counterfactual | undefined,
+  complete: boolean,
+  pool: string,
+  label: Label,
+): { text: string; say: string; kind: 'measured' | 'pointless' | 'unmeasured' } {
+  if (!complete) {
+    return {
+      text: '—',
+      say: 'Not computed: a ceiling that was never read cannot be compared against one that was.',
+      kind: 'unmeasured',
+    }
   }
-  if (c.delta === null) return 'the change could not be measured'
+  if (c === undefined) {
+    return {
+      text: '—',
+      say: `Not computed: the response carried no counterfactual for ${label(pool)}.`,
+      kind: 'unmeasured',
+    }
+  }
+  const resume = c.action === 'resume'
+  const act = `${resume ? 'Resume' : 'Lift'} ${label(c.pool)}`
+  // A RESUME SAYS SO IN THE CELL, NOT ONLY IN ITS NAME (#159 review). The
+  // server models a PAUSED pool's counterfactual as re-enabling it with its
+  // limit left alone (`headroom.py` `_counterfactual`, `action: 'resume'`),
+  // so resuming is not overstated as lifting. Under a header reading `if
+  // lifted`, a bare `+4` on that row told an operator to raise a limit the
+  // row's own Status title says "changes nothing". The words were in the
+  // accessible name and the title only, which a phone never shows.
+  const phrased = (figure: string) => (resume ? `${figure} if resumed` : figure)
+  if (c.headroom_after === null) {
+    // Nothing else configured would have bound. Not a number, so not drawn as
+    // one.
+    return { text: phrased('uncapped'), say: `${act}: nothing else would have been left to cap it.`, kind: 'measured' }
+  }
+  if (c.delta === null) {
+    return { text: '—', say: `${act}: the change could not be measured.`, kind: 'unmeasured' }
+  }
   if (c.delta > 0) {
     const next =
       c.next_binding.length > 0
         ? ` — then ${c.next_binding.map(label).join(' and ')} would have bound`
         : ''
-    return `${c.delta} more would have started${next}`
+    return { text: phrased(`+${c.delta}`), say: `${act}: ${c.delta} more would have started${next}.`, kind: 'measured' }
   }
   // THE VERB AGREES WITH ITS SUBJECT (CP-15). Two pools still in the way
   // "still bind"; it read "eng and anthropic still binds" for as long as
@@ -281,130 +385,21 @@ function counterfactualText(c: Counterfactual, label: Label): string {
     c.next_binding.length > 0
       ? `${c.next_binding.map(label).join(' and ')} still ${c.next_binding.length === 1 ? 'binds' : 'bind'}`
       : 'something else still binds'
-  return `nothing would have changed — ${still}`
+  return { text: phrased('+0'), say: `${act}: nothing would have changed — ${still}.`, kind: 'pointless' }
 }
 
-/**
- * Which KIND of answer a counterfactual row is, as the row's modifier (CP-13).
+/*
+ * `ProfileAdmissionPanel` LIVED HERE AND IS GONE (CP-6, #85). It drew the
+ * incomplete-read banner, the blocker list grouped by remedy, and the
+ * counterfactual list under every Profile headroom card, and that card was its
+ * only caller. The owner's decision made the counterfactual list a `+N if
+ * lifted` column (`liftFigure` above) and left each card one fact sentence.
  *
- * `is-pointless` -- a measured +0: lifting this ceiling buys nothing, which is
- * the valuable half and is dimmed rather than hidden.
- * `is-unmeasured` -- a delta nobody could compute (`headroom_after` known,
- * `delta` null because the current figure is not). It was drawn in the
- * result's green beside "the change could not be measured", which is a
- * verdict colour on a sentence that says there is no verdict.
- * No modifier -- a measured change, including "nothing else would have been
- * left to cap it" (`headroom_after` null), which is an answer, not a gap.
+ * THE OTHER TWO ARE DRAWN BY THE CARD ITSELF NOW (#159 review). The first cut
+ * of CP-6 removed the banner and the grouped list as well, which the decision
+ * did not ask for: the remedy -- somebody has to act, or waiting clears it --
+ * and each refusal's reason and figures were left only in a status mark's
+ * `title`, which a phone never shows. `Profiles.tsx` renders `IncompleteNote`
+ * and `BlockerList` under its one sentence; both draw nothing when nothing
+ * refuses, so the sentence stays the card's only one then.
  */
-function counterfactualKind(c: Counterfactual): string {
-  if (c.delta === 0) return 'cf-row is-pointless'
-  if (c.delta === null && c.headroom_after !== null) return 'cf-row is-unmeasured'
-  return 'cf-row'
-}
-
-/**
- * The counterfactual, and the zeros are the valuable half.
- *
- * Under a minimum-across-pools rule, raising a ceiling that is not the binding
- * one changes nothing, and the numbers on a capacity screen give no way to
- * tell which ones those are. That is the specific mistake the rule invites,
- * and a row reading "nothing would have changed" is what prevents it.
- *
- * ON THE WORDING. This is a PREDICTION and predictions are where a screen like
- * this starts lying: a lease can be released between the read and the render,
- * and then a number presented in the present tense is simply false. So:
- *
- *  - everything is PAST CONDITIONAL -- "would have started", never "will
- *    start" and never "you can start". It is a statement about the counts at
- *    one instant, which is the only thing it is evidence for;
- *  - that instant is named, with the server's own `generated_at` rather than
- *    the browser's clock;
- *  - "lifted entirely" rather than "raised to N": the counterfactual removes
- *    the ceiling altogether, so a zero here means raising it to ANY value buys
- *    nothing, which is the stronger and more useful claim;
- *  - a zero always names what still binds. A bare "no change" reads as a
- *    glitch and gets ignored.
- */
-export function Counterfactuals({
-  h,
-  generatedAt,
-  label = labelsFor(h),
-}: {
-  h: Headroom
-  generatedAt: string
-  label?: Label
-}) {
-  if (h.counterfactual.length === 0) {
-    if (!h.complete) {
-      return (
-        <p className="muted small">
-          Not computed: a ceiling that was never read cannot be compared against
-          one that was.
-        </p>
-      )
-    }
-    return null
-  }
-
-  return (
-    <div className="counterfactual">
-      <h3>If one ceiling were lifted</h3>
-      <ul className="cf-list">
-        {h.counterfactual.map((c) => {
-          return (
-            <li key={c.pool} className={counterfactualKind(c)}>
-              <span className="cf-action">
-                {c.action === 'resume' ? 'Resume' : 'Lift'}{' '}
-                <code title={c.pool}>{label(c.pool)}</code>
-              </span>
-              <span className="cf-effect">{counterfactualText(c, label)}</span>
-            </li>
-          )
-        })}
-      </ul>
-      {/* THE AGE OF THE COUNTS IS THE MARKER: a conclusion drawn from a
-          snapshot is only as current as the snapshot, and that is the one
-          thing a reader cannot recover from the lines themselves. */}
-      <p className="muted small">
-        From pool counts read{' '}
-        <time dateTime={generatedAt} title={generatedAt}>
-          {timeAgo(generatedAt)}
-        </time>
-        {/* NO `?` (B7.4). `blockers-at-an-instant` says these counts were read
-            one pool at a time and are therefore not a simultaneous snapshot --
-            and "one pool at a time" is already the last four words of the line
-            it was attached to, beside the timestamp of the read. A glyph here
-            opened a card to say the sentence it was standing next to. This
-            panel is drawn inside Overview and inside the agent detail, both of
-            which carry their own glyph; the topic is in the rail's Help
-            section. */}
-        , one pool at a time.
-      </p>
-    </div>
-  )
-}
-
-/**
- * The whole block for one profile. Used by the Capacity board and the runner
- * profile cards so the two cannot drift into two different answers.
- */
-export function ProfileAdmissionPanel({
-  profile,
-  capacity,
-}: {
-  profile: RunnerProfile
-  capacity: Capacity
-}) {
-  const h = headroomFor(profile)
-  // ONE LABELLER FOR THE WHOLE CARD: the profile's own pool list plus
-  // anything the analysis names, so `browser · resource` in the card's table
-  // is `browser · resource` in its blocker list and counterfactual too.
-  const label = labelsAmong([...profile.pools, ...printed(h)])
-  return (
-    <div className="admission-panel">
-      <IncompleteNote h={h} label={label} />
-      <BlockerList h={h} groups={capacity.blocked_reason_groups} label={label} />
-      <Counterfactuals h={h} generatedAt={capacity.generated_at} label={label} />
-    </div>
-  )
-}

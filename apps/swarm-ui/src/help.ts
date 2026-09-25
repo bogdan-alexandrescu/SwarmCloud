@@ -50,6 +50,8 @@ import {
   CONCURRENCY_STATES,
   DISPATCH_CARRIERS,
   DISPATCH_STRATEGIES,
+  QUOTA_STALE_AFTER_MS,
+  QUOTA_SWEEP_INTERVAL_SECONDS,
   REAL_STATES,
   STRATEGY_LABEL,
   TERMINAL_STATES,
@@ -112,6 +114,7 @@ export type TopicId =
   | 'provider-defines-windows'
   | 'provider-quota-states'
   | 'quota-document-absent'
+  | 'quota-row-fields'
   | 'read-failed'
   | 'reauth-does-not-unpause'
   | 'reauth-required'
@@ -454,6 +457,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
       'Token counts come from the runner, through the worker, and only the CLI runners produce them. An attempt from any other runner carries none.',
       'Attempts that ran before the worker’s token capture shipped also carry none, so the absence is common on older runs and says nothing about them.',
       'Where a total exists, the caption names how many attempts of the run contributed to it, and which halves — input, output, or both — are in it.',
+      'The Timeline’s Token spend is summed from each task’s result, and a result covers only that task’s last attempt, so a task that ran more than once is counted at one attempt’s cost there.',
     ],
   },
 
@@ -1231,7 +1235,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
     group: 'an-account',
     title: 'The table is the shape the command line prints',
     short:
-      'Same columns, same order, same five-cell bar, same meanings. If you read that in a terminal, this is the same line. Every extra fact lives in the row you open, so the table you scan never changes shape.',
+      'Same columns, same order, same figures, same tilde, same meanings. If you read that in a terminal, this is the same line. Every extra fact lives in the row you open, so the table you scan never changes shape.',
     long: [
       'Two tools that answer the same question in two shapes make a person translate between them under pressure.',
       'So the columns are fixed and the row is where detail goes. A row that grew a column for a special case would change the shape of every other row.',
@@ -1367,7 +1371,37 @@ const SPECS: Record<TopicId, TopicSpec> = {
     long: [
       'A chip that fell through to "unknown" for a state it did not recognise would mislabel exactly the condition the Provider quota screen exists for, so every member is drawn by name.',
       'Unknown is drawn as an absence rather than as health. Nothing has reported, and nothing about the provider follows from that.',
-      'An effective limit of zero on Provider quota is the opposite: it is returned deliberately when a provider is spent, disabled or cooling down, and it is the one zero there that means something rather than nothing.',
+      // CP-8 (#85): the column is `Quota cap` now, and the topic names it so.
+      // AH-13 (#161): a long paragraph is only ever read on the Help page, so
+      // it names the Provider quota screen rather than pointing at one.
+      'A quota cap of zero on Provider quota is the opposite: it is returned deliberately when a provider is spent, disabled or cooling down, and it is the one zero there that means something rather than nothing.',
+      // CP-9 (#85). The threshold is read from types.ts, not typed here. The
+      // tick it is twice of is the broker's SWEEP, which reports nothing
+      // (#159 review): this named "the broker's reporting interval", a report
+      // that does not exist.
+      'A state is only as current as its report, and a worker reports a document at the end of a clean run or on a 429. A reading older than twice the quota broker’s sweep, below, keeps its word but loses the healthy mark and carries its age: a document reported days ago says what was true then. The sweep rewrites a document only when its state changes, so on a quiet tenant every row goes stale, and that is the true age of what it says.',
+    ],
+    values: () => [
+      {
+        term: `${Math.round(QUOTA_STALE_AFTER_MS / 60_000)} minutes`,
+        note: `twice the broker’s ${Math.round(QUOTA_SWEEP_INTERVAL_SECONDS / 60)}-minute sweep: an older reading is drawn stale`,
+      },
+    ],
+  },
+
+  // CP-8 AND CP-10 (#85): WHAT TWO RENAMED COLUMNS NAME AND CANNOT FINISH
+  // SAYING. The column names carry the basis (`Quota cap`) and the window
+  // (`429s (this run)`); this is the footer index's topic for the rest, so no
+  // `?` goes inside the table.
+  'quota-row-fields': {
+    group: 'the-platform',
+    title: 'The quota cap, and the 429 run',
+    short:
+      'The quota cap is one input to the pool named beside it; that pool’s own ceiling may be lower, and Pools says which value binds. The 429 count is this run’s: it returns to zero when the run ends, and the last 429 keeps its time.',
+    long: [
+      'The cap is the lowest of the document’s configured maximum, the adaptive target and the cap the provider’s own limits imply, and a spent, disabled or cooling provider forces it to zero. The broker writes it onto the provider pool of the document’s tenant. That pool is capped by more than the document, so its ceiling on Pools can be lower than the quota cap on Provider quota, and Pools’ “Set by” column says which value is the one that binds.',
+      'A rate-limit run starts at a 429. It ends in one of two ways: a clean run reports the provider available again, or the broker retires the cooldown and the reset window once they have passed. Either one puts the count back to zero.',
+      'The time of the last 429 is kept when the count is reset. So a zero beside a last 429 a day ago is correct: the run that 429 belonged to is over, and nothing has been rate-limited since.',
     ],
   },
 

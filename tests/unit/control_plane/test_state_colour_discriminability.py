@@ -469,9 +469,14 @@ def test_every_chip_state_has_its_own_silhouette(rules):
     disc -- triangle, diamond, bar, two bars, hollow disc, haloed disc -- and
     two states sharing a silhouette is a failure here.
 
-    `is-ok` keeps the plain disc, which is the base rule and correct: "present,
-    and fine" is the state that should look like nothing special. It is the
-    others that must move away from it.
+    THE EXEMPTION MOVED FROM `is-ok` TO `is-unknown` (CP-14, owner decision
+    2026-09-25). The base mark used to be the filled disc, so `is-ok` equalled
+    the base and every other state had to move away from it -- which meant a
+    chip whose modifier matched no rule (`is-wait`, a typo, a state the API
+    added) drew the HEALTHY disc. The base is now the hollow ring, which is
+    `.ctl-dot`'s base too (design-system.md §6.6): a mark nobody derived is
+    drawn as an absence of information. So `is-unknown` is the one state that
+    may equal the base, and `is-ok` declares its filled disc like the rest.
     """
     shapes = {
         state: _shape_of(rules, (".ctl-chip > i", f".ctl-chip.{state} > i"))
@@ -489,15 +494,17 @@ def test_every_chip_state_has_its_own_silhouette(rules):
         "only thing telling them apart:\n  " + "\n  ".join(collisions)
     )
 
-    # And the six that are not `is-ok` must actually override the base, rather
-    # than passing the test above by accident of some unrelated property.
+    # And the six that are not `is-unknown` must actually override the base,
+    # rather than passing the test above by accident of some unrelated
+    # property. The base is the unknown ring, so a state that inherits it is
+    # drawn as "nobody derived this".
     not_overridden = [
         state for state in CHIP_STATES
-        if state != "is-ok" and shapes[state] == base
+        if state != "is-unknown" and shapes[state] == base
     ]
     assert not not_overridden, (
-        "these chip states inherit the plain disc and so carry no shape cue: "
-        + ", ".join(not_overridden)
+        "these chip states inherit the base mark, the unknown ring, and so are "
+        "drawn as a state nobody derived: " + ", ".join(not_overridden)
     )
 
 
@@ -2021,4 +2028,139 @@ def test_a_projected_reading_is_not_drawn_in_the_absence_colour(sheet_scan, them
     assert not problems, (
         f"a projected reading is drawn as an absence in the {theme} theme "
         f"(floor dE76 {MIN_OLD_VS_NO_INFORMATION_DE}):\n  " + "\n  ".join(problems)
+    )
+
+
+# ---------------------------------------------------------------------------
+# 5. Healthy carries no hue.
+# ---------------------------------------------------------------------------
+#
+# OWNER RULING, 2026-09-25 (CP-14, #85; recorded in design-system.md §6.6 and
+# §6.7 and in redesign-v2.md §5.5). The ok mark keeps its filled disc and its
+# word at full ink, and paints a text grey, not `--ok`. CP-14 chose
+# `--text-dim`, the grey §6.4 already uses for a proportion that is fine;
+# CH-17, decided after it, draws the chip and dot primitives' ok disc in
+# `--text-faint`, and `.tag.ok` stays `--text-dim`. Either is a text grey, so
+# the assertion below accepts both. Hue on a state mark is left to the
+# verdicts -- warn, bad, paused -- and to live. The screens that drew twenty
+# green `ok` discs (Pools, Runtimes, Accounts, Provider quota) go grey with no
+# screen edit, because the change is in the primitive.
+#
+# THE COST, stated where the rule is pinned: in greyscale an ok disc is now
+# told from a bad or a warn mark by its SILHOUETTE alone. `--text-faint` is
+# 1.01:1 from `--bad` in the dark theme and 1.45:1 from `--warn` in the light
+# one (`--text-dim`: 1.26:1 and 1.30:1), under the 1.5:1 `MIN_STATE_RATIO`
+# floor -- which still governs the `--ok` / `--warn` / `--bad` tokens that
+# fills use, and is not relaxed.
+# `test_every_chip_state_has_its_own_silhouette` is what holds the ok mark
+# apart now.
+#
+# IN THE SAME CHANGE, THE CHIP'S BASE MARK BECAME THE UNKNOWN RING. It was the
+# filled disc, so a modifier that matched no rule -- `is-wait`, which Accounts
+# nearly shipped (design-system.md §12.2) -- drew a HEALTHY mark for a state
+# nobody derived. `.ctl-dot`'s base was already the ring (§6.6); the chip now
+# agrees with it.
+#
+# BOTH ARE ASKED OF THE SHEET, NOT OF A TABLE IN THIS FILE: every declaration
+# of the property in every sheet is matched against the element as the markup
+# draws it and put through the cascade (`_may_win`), then followed through
+# every `var()` in the theme. They were committed before the stylesheet change,
+# so the red run on the pull request is the proof they see the green disc and
+# the filled fallthrough.
+
+def _chip(*modifiers: str) -> _El:
+    """`<span class="ctl-chip ...">`, the chip as every screen writes it."""
+    return _El(tag="span", classes=frozenset({"ctl-chip", *modifiers}),
+               attrs=frozenset({"class"}), known=True)
+
+
+def _chip_mark(*modifiers: str) -> tuple[_El, ...]:
+    """The chip's mark, `<i aria-hidden="true" />`, inside `_chip(...)`."""
+    return (_El(tag="i", attrs=frozenset({"aria-hidden"}), known=True), _chip(*modifiers))
+
+
+def _dot(*modifiers: str) -> tuple[_El, ...]:
+    """`<i class="ctl-dot ...">`, the mark without the chip, in a plain parent.
+
+    The parent is KNOWN AND CLASSLESS on purpose. With an unknown parent, every
+    `X > i` rule in the sheet -- `.ctl-chip.is-warn > i`, `.liveness.live > i`,
+    `.pool .ctl-track > i` -- may reach an `<i>`, and this asked whether the
+    ok dot might be painted `--warn` by the chip's triangle rule. It failed on
+    exactly that on the first run after the stylesheet change (application
+    run 36136608375): a failure that was the test's own question, not the
+    product. The question here is what the PRIMITIVE paints
+    a bare ok dot; a screen that scopes a dot through its parent's class is not
+    that, and the fill guard above is where such a rule is looked for.
+    """
+    return (
+        _El(tag="i", classes=frozenset({"ctl-dot", *modifiers}),
+            attrs=frozenset({"class", "aria-hidden"}), known=True),
+        _El(tag="span", attrs=frozenset(), known=True),
+    )
+
+
+@pytest.mark.parametrize("theme", ["dark", "light"])
+def test_the_ok_mark_is_a_text_grey(sheet_scan, theme):
+    """The ok chip and the ok dot resolve to `--text-dim` or `--text-faint`, never a hue.
+
+    The chip's tone is `--chip-tone` on the chip, which its mark reads; the
+    dot paints its own fill and rim. Each declaration that may win is resolved
+    in the theme and must land on one of the two text greys' colours. A rule
+    that puts `--ok` back, or a more specific one that re-greens a chip on one
+    screen, fails here by name.
+    """
+    tokens = _theme_tokens(sheet_scan.sheets, light=theme == "light")
+    greys = {name: _resolve_colour(f"var({name})", tokens) for name in sorted(TEXT_GREYS)}
+    assert all(greys.values()), f"a text grey does not resolve in the {theme} theme: {greys}"
+
+    problems: list[str] = []
+    for what, chain, longhand in (
+        ("the ok chip's tone", (_chip("is-ok"),), "--chip-tone"),
+        ("the ok dot's fill", _dot("is-ok"), "background-color"),
+        ("the ok dot's rim", _dot("is-ok"), "border-color"),
+    ):
+        winners = _may_win(chain, _declared(sheet_scan.sheets, longhand))
+        if not any(reach == YES for _, reach in winners):
+            problems.append(f"{what}: no rule certainly sets `{longhand}` on it")
+        for paint, reach in winners:
+            hex_value = _resolve_colour(paint.value, tokens)
+            if hex_value not in greys.values():
+                problems.append(
+                    f"{what}: {_decl(paint)} {_how(reach)} it {hex_value or paint.value}, "
+                    f"which is not {' or '.join(sorted(TEXT_GREYS))}"
+                )
+    assert not problems, (
+        f"a healthy mark carries a hue in the {theme} theme:\n  " + "\n  ".join(problems)
+    )
+
+
+def test_a_chip_whose_modifier_matches_nothing_draws_the_unknown_ring(sheet_scan):
+    """No modifier, or one no rule knows, is the hollow ring -- never a filled disc.
+
+    Asked of a bare `.ctl-chip` and of `.ctl-chip.is-wait`, the unmatched
+    modifier `CHIP_MOD` in Accounts.tsx exists to prevent. Every fill that may
+    reach the mark must be `transparent`, and a rule that certainly applies
+    must draw a solid rim, so the mark is present and hollow.
+    """
+    problems: list[str] = []
+    for mods in ((), ("is-wait",)):
+        name = "`.ctl-chip" + "".join(f".{m}" for m in mods) + " > i`"
+        chain = _chip_mark(*mods)
+        fills = _may_win(chain, _declared(sheet_scan.sheets, "background-color"))
+        if not any(reach == YES for _, reach in fills):
+            problems.append(f"{name}: no rule certainly sets its fill")
+        for paint, reach in fills:
+            if paint.value not in ("transparent", "none"):
+                problems.append(
+                    f"{name}: {_decl(paint)} {_how(reach)} it, so an underived state is drawn "
+                    "as a filled disc rather than the unknown ring"
+                )
+        rims = _may_win(chain, _declared(sheet_scan.sheets, "border"))
+        if not any(
+            reach == YES and "solid" in paint.value and not paint.value.startswith("0")
+            for paint, reach in rims
+        ):
+            problems.append(f"{name}: no rule certainly draws its rim, so the ring is not drawn")
+    assert not problems, (
+        "a chip whose modifier matched nothing is not the unknown ring:\n  " + "\n  ".join(problems)
     )

@@ -1357,9 +1357,10 @@ function WorkflowDispatch({
             and pushes nothing`. It printed `c.headline`, the forms' two-sentence
             statement, so every open card read "opens No pull request. Nothing
             is pushed." The full sentence stays where a choice is being made:
-            the Dispatch option count, the Consequence box and SubmitWorkflow's
-            outcome. Both come out of one switch in `consequenceOf`, so the
-            card and the form cannot disagree on the count. */}
+            the Dispatch option count and SubmitWorkflow's outcome (the
+            Consequence box stopped repeating it under the option, TS-20). Both
+            come out of one switch in `consequenceOf`, so the card and the form
+            cannot disagree on the count. */}
         <li className="ctl-fact">
           <b>opens</b>
           {c.opens}

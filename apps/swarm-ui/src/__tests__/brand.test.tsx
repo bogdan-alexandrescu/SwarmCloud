@@ -836,7 +836,7 @@ describe('B17: an identifier is never restyled', () => {
     // was not passing because the defect had evaporated for some unrelated
     // reason. The type scale fixed the inversion -- a panel title was drawn
     // smaller and fainter than its own rows -- so the heading is now
-    // --t-title in --text and no longer uppercases anything. The precondition
+    // --t-lead in --text (TS-18) and no longer uppercases anything. The precondition
     // therefore moved to a rule that still DOES case-shift, in the next test
     // (`.ctl-chip`, which the restraint pass moved from uppercase to
     // lowercase); it did not get deleted, because a B17 assertion with nothing
