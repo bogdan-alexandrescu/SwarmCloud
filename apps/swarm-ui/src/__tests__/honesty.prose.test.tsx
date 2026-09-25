@@ -795,7 +795,11 @@ describe('Accounts, with every help card closed', () => {
 /** A window far enough out that nothing here resets it. */
 const FAR = '2099-01-01T00:00:00Z'
 
-/** The `data-label` cell of one account's row, by the id printed under it. */
+/**
+ * The `data-label` cell of one account's row, by the id printed under it. A
+ * window's label is its phone key, which carries OV-1's polarity (`5h used`,
+ * `7d used`), so the callers below name it that way.
+ */
 function accountCell(id: string, label: string): HTMLElement {
   const raw = [...document.querySelectorAll('span.raw')].find((s) => s.textContent === id)
   expect(raw, `no row for ${id}`).toBeTruthy()
@@ -834,7 +838,7 @@ describe('Accounts draws a window with the shared track, not the five-cell bar (
     renderAccounts(board2())
     await screen.findByText('eng:live', undefined, WAIT)
     expect(document.querySelector('.acct-bar'), 'the five-cell bar is still drawn').toBeNull()
-    const fill = accountCell('eng:live', '5h').querySelector<HTMLElement>('.ctl-util-fill')
+    const fill = accountCell('eng:live', '5h used').querySelector<HTMLElement>('.ctl-util-fill')
     expect(fill, 'a live reading drew no track').not.toBeNull()
     // Unrounded: 43.75, not the nearest fifth (40) and not the figure's 44.
     expect(fill!.style.width).toBe('43.75%')
@@ -845,19 +849,19 @@ describe('Accounts draws a window with the shared track, not the five-cell bar (
   it('draws bad only for a live window that is fully spent', async () => {
     renderAccounts(board2())
     await screen.findByText('eng:live', undefined, WAIT)
-    expect(accountCell('eng:live', '7d').querySelector('.ctl-util-fill.is-bad')).not.toBeNull()
+    expect(accountCell('eng:live', '7d used').querySelector('.ctl-util-fill.is-bad')).not.toBeNull()
     // Spent, but the reading is stale: projected, never the verdict.
-    const old = accountCell('eng:old', '5h')
+    const old = accountCell('eng:old', '5h used')
     expect(old.querySelector('.ctl-util-fill.is-bad'), 'a stale reading drew the spent verdict').toBeNull()
     expect(old.querySelector('.ctl-util-fill.ov-projected')).not.toBeNull()
     expect(old.querySelector('.acct-tilde')?.textContent).toBe('~')
-    expect(accountCell('eng:old', '7d').querySelector('.ctl-util-fill.ov-projected')).not.toBeNull()
+    expect(accountCell('eng:old', '7d used').querySelector('.ctl-util-fill.ov-projected')).not.toBeNull()
   })
 
   it('keeps the track a fixed 40px inline beside the figure, and hides it at 560px and below', async () => {
     renderAccounts(board2())
     await screen.findByText('eng:live', undefined, WAIT)
-    const track = accountCell('eng:live', '5h').querySelector('.acct-window > .ctl-util-track')
+    const track = accountCell('eng:live', '5h used').querySelector('.acct-window > .ctl-util-track')
     expect(track, 'the track is not the window cell’s own child').not.toBeNull()
     const won = (prop: string, width: number) => {
       const r = cascade(STYLES, track!, prop, { width })
