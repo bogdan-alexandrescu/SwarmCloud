@@ -404,9 +404,13 @@ describe('the outcome stack is four shapes, not four hues (TS-4)', () => {
     expect(fill(succeeded), 'succeeded is the one flat fill').not.toMatch(/gradient/)
     expect(painted(succeeded, 'box-shadow', WIDE) ?? 'none').toBe('none')
 
+    // SOLID, AS TIER 1 SAYS: "solid fill + a 2px left rule". It was a 60%
+    // wash, which drew the most important outcome lighter than the healthy
+    // one beside it. MUTATION: the wash back, or the rule gone.
     const failed = seg('failed')
+    expect(fill(failed), 'failed is a wash, not the solid fill Tier 1 names').toBe('var(--bad)')
     expect(painted(failed, 'box-shadow', WIDE) ?? '', 'no 2px rule down the failed segment').toMatch(
-      /^inset\s+2px\s+0(px)?\s+0(px)?\s+var\(--bad\)$/,
+      /^inset\s+2px\s+0(px)?\s+0(px)?\s+var\(--[\w-]+\)$/,
     )
 
     const cancelled = fill(seg('cancelled'))
@@ -416,6 +420,21 @@ describe('the outcome stack is four shapes, not four hues (TS-4)', () => {
 
     expect(fill(seg('open')), 'still open lost its hatch').toMatch(/45deg/)
   })
+
+  for (const theme of THEMES) {
+    it(`draws the failed rule in a colour that shows on the solid fill, in the ${theme} theme`, () => {
+      // A rule that is there in the sheet and not on the screen is the defect
+      // with a passing test: a rule in the segment's own hue on a solid fill
+      // of that hue is 1:1, and --bad-ink (1.28:1 dark) or --text (1.26:1
+      // light) are barely better. §1.2's 3:1 floor for a graphical object.
+      // MUTATION: the rule in --bad, --bad-ink or --text.
+      const failed = build('.stackcol > i.failed', hosts)
+      const rule = /var\(--[\w-]+\)$/.exec(painted(failed, 'box-shadow', WIDE) ?? '')
+      expect(rule, 'no rule colour to measure').not.toBeNull()
+      const ratio = contrast(resolveColour(rule![0], theme), resolveColour(fill(failed), theme))
+      expect(ratio, `the failed rule ${rule![0]} on ${fill(failed)} in ${theme}`).toBeGreaterThanOrEqual(3)
+    })
+  }
 
   it('draws every legend key as the segment it names', () => {
     for (const o of OUTCOMES) {

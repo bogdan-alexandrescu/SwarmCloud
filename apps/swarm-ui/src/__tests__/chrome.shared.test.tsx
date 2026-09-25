@@ -20,10 +20,12 @@ import { App, SECTIONS } from '../App'
 import { Chip } from '../AgentDetail'
 import { Dock } from '../Dock'
 import * as Workflows from '../Workflows'
+import { noteFixtureProbe, route } from '../fetch'
 import { stateTone, type Me } from '../types'
 import { cascade, declarations, flatRules, splitTop, type CascadeEnv } from './cssgate'
 import { build, painted, shapeOf } from './marks'
 import { noteProbe } from './probes'
+import { at, task } from './runfixture'
 
 const WIDE: CascadeEnv = { width: 1440 }
 const PHONE: CascadeEnv = { width: 390 }
@@ -145,6 +147,62 @@ describe("CH-2: the head's read age is the screen's own", () => {
     await waitFor(() => expect(headAge()).toMatch(/not read/))
     expect(headAge()).not.toMatch(/newest read|\d/)
     expect(dockLine(), 'the dock is the tab-wide view').toMatch(/newest/)
+  })
+
+  it("shows the list's own age again when the inspector over it closes, with no read in flight", async () => {
+    // THE DEFECT: closing the agent drawer routes back to work/running, and
+    // that began a new, empty scope -- but the Agents list under the drawer
+    // stayed mounted and does not read again until its next poll (30s with
+    // nothing live; never, once polling has stopped on an answer only a person
+    // can change). So the head said "reading…" with nothing in flight, beside
+    // a list fully drawn: a claim about the screen's reads that was false.
+    // MUTATION: begin a fresh scope on every route change, or count the
+    // list's polls to the inspector while it is open.
+    vi.stubEnv('VITE_LIVE', '1')
+    vi.resetModules()
+    const done = task({ id: 'tsk_done', tenant_id: 'u-bogdan', state: 'SUCCEEDED', completed_at: at(59) })
+    let pending = 0
+    const answer = (url: string): Response => {
+      if (url.startsWith('/v1/tenants/me')) return json(ME)
+      if (url.startsWith('/v1/tasks/tsk_done/events')) return json({ events: [] })
+      if (url.startsWith('/v1/tasks/tsk_done/attempts')) return json({ attempts: [] })
+      if (url === '/v1/tasks/tsk_done') return json({ task: done })
+      if (url.startsWith('/v1/tasks?')) return json({ tasks: [done] })
+      if (url.startsWith('/v1/resource-classes')) {
+        return json({ resource_classes: { standard: { name: 'standard', cpu: 2, memory_gib: 8, disk_gib: 4, units: 1 } } })
+      }
+      return json({ message: 'not stubbed here' }, 404)
+    }
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      pending += 1
+      try {
+        await Promise.resolve()
+        return answer(String(input))
+      } finally {
+        pending -= 1
+      }
+    }) as unknown as typeof fetch
+    window.location.hash = '#work/running'
+    const { App: LiveApp } = await import('../App')
+    render(<LiveApp />)
+    await waitFor(() => expect(headAge()).toMatch(/newest read/), { timeout: 5000 })
+
+    // Open the inspector over the list. Its head is the inspector's own.
+    await act(async () => {
+      window.location.hash = '#work/task/tsk_done'
+    })
+    await waitFor(() => expect(document.querySelector('.ctl-crumb')?.textContent).toContain('tsk_done'))
+    await waitFor(() => expect(headAge()).toMatch(/newest read/), { timeout: 5000 })
+
+    // Close it: the list never went away and reads nothing now.
+    await act(async () => {
+      window.location.hash = '#work/running'
+    })
+    await waitFor(() => expect(document.querySelector('.ctl-crumb')?.textContent).not.toContain('tsk_done'))
+    await act(async () => {})
+    expect(pending, 'a read is in flight after all; the check would prove nothing').toBe(0)
+    expect(headAge(), 'the head says "reading…" with nothing being read').not.toMatch(/reading…/)
+    expect(headAge(), "the head lost the list's own read").toMatch(/newest read/)
   })
 })
 
@@ -416,25 +474,50 @@ describe('CH-13: one rule for tables below 900px', () => {
     }
   })
 
-  it('keeps a scrolling table\'s first column in view at 390, on an opaque fill', () => {
-    // MUTATION: drop `position: sticky` or the fill, or let the table stack.
-    for (const wrap of ['ctl-table is-scroll', 'table-wrap is-scroll']) {
-      const f = fragment(
-        `<div class="${wrap}"><table><thead><tr><th scope="col">Pool</th><th scope="col">Units</th></tr></thead>` +
-          '<tbody><tr><th scope="row">global</th><td data-label="Units">4</td></tr></tbody></table></div>',
-      )
-      expect(won(pick(f, 'div'), ['overflow-x', 'overflow'], PHONE), wrap).toBe('auto')
-      for (const cell of ['thead th', 'tbody th']) {
-        const el = pick(f, cell)
-        expect(won(el, 'position', PHONE), `${wrap} ${cell}`).toBe('sticky')
-        expect(won(el, 'left', PHONE), `${wrap} ${cell}`).toBe('0')
-        const fill = won(el, ['background-color', 'background'], PHONE) ?? ''
-        expect(fill, `${wrap} ${cell} is see-through, so the scrolled columns show under it`).toMatch(
-          /^var\(--surface(-2)?\)$/,
-        )
-      }
-      expect(won(pick(f, 'td'), 'display', PHONE), `${wrap} stacks`).not.toBe('grid')
+  // THE HELD COLUMN, SEEN ON A SCREEN THAT DRAWS IT. This used to be a bare
+  // `.is-scroll` fixture outside every screen, and it passed while Pools and
+  // Profile headroom did not scroll at all (CP-18's fixed layout sized them to
+  // the phone). Those two are rendered in `tables.scroll.test.tsx`; this one
+  // is API reads, whose held column had no ceiling.
+  it("caps the held column, so a long route cannot cover the columns beside it at 390", async () => {
+    // A task read's concrete URL is ~53 characters -- about 400px of 12px mono
+    // in a 356px scrollport -- and a sticky cell wider than the scrollport
+    // covers it at every offset: Last attempt, Outcome, Took and Newest
+    // payload scrolled under it and were never visible. MUTATION: drop the
+    // ceiling, let the cell or the URL line refuse to wrap or cut, or drop the
+    // URL line's title.
+    const long = route('/v1/tasks/{id}/attempts', { id: 'tsk_0123456789abcdef0123' }, 'limit=200')
+    noteFixtureProbe(long, 40, true)
+    window.location.hash = '#reference'
+    render(<App />)
+    const sub = await waitFor(() => {
+      const el = document.querySelector<HTMLElement>('.ctl-table.is-scroll .ctl-ref-path > .ctl-sub')
+      expect(el, 'API reads drew no concrete URL under the route').not.toBeNull()
+      return el!
+    })
+    expect(sub.textContent).toBe(long.url)
+    expect(sub.getAttribute('title'), 'the cut URL is not whole in its title').toBe(long.url)
+    expect(won(sub, 'white-space', PHONE)).toBe('nowrap')
+    expect(won(sub, ['overflow', 'overflow-x'], PHONE)).toBe('hidden')
+    expect(won(sub, 'text-overflow', PHONE)).toBe('ellipsis')
+    // It adds nothing to the column's width, and fills the width it is given.
+    expect(won(sub, 'width', PHONE), 'the URL line widens the held column').toBe('0')
+    expect(won(sub, 'min-width', PHONE)).toBe('100%')
+
+    const held = sub.closest('th')!
+    expect(won(held, 'position', PHONE)).toBe('sticky')
+    for (const prop of ['width', 'max-width']) {
+      const v = won(held, prop, PHONE) ?? ''
+      const m = /^min\((\d+(?:\.\d+)?)vw,\s*\d+ch\)$/.exec(v)
+      expect(m, `the held column's ${prop} is ${JSON.stringify(v)}, not a ceiling`).not.toBeNull()
+      // Under half the viewport, so under half of any phone's scrollport
+      // plus its gutters: the other columns always have the rest.
+      expect(Number(m![1]), `the held column may take ${m![1]}vw`).toBeLessThanOrEqual(50)
     }
+    expect(won(held, 'white-space', PHONE), 'the route cannot wrap inside its ceiling').toBe('normal')
+    expect(won(held, 'overflow-wrap', PHONE)).toBe('anywhere')
+    // A phone rule: the desktop's route column is as wide as its route.
+    expect(won(held, 'max-width', WIDE) ?? 'none').not.toMatch(/vw/)
   })
 
   it('ellipsizes a long value in a stacked record, on the page and in the inspector', () => {

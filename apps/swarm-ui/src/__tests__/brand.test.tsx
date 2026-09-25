@@ -23,8 +23,8 @@
 // file fails to resolve here instead of reading a stale copy from disk.
 import STYLES from '../styles.css?raw'
 import INDEX_HTML from '../../index.html?raw'
-import { describe, expect, it } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { describe, expect, it, vi } from 'vitest'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 
 import {
   COMPACT,
@@ -712,14 +712,71 @@ describe('CH-20: at 560px and below the product header is one row', () => {
     }
 
     // DRAWN: the tenant id and the admin tag. Only the id gives way.
-    const id = document.querySelector('.brand-who > .id')!
-    expect(notDrawn(id, PHONE_W), 'the tenant id is hidden at 390').toBe(false)
+    // RE-POINTED (CH-20's copy): the id is inside its own copy control now,
+    // and the control is what gives way in the row; the id ellipsizes in it.
+    const copy = document.querySelector('.brand-who > .brand-id')!
+    expect(copy, 'the tenant id is not in its copy control').not.toBeNull()
+    const id = copy.querySelector(':scope > .id')!
+    expect(notDrawn(copy, PHONE_W), 'the tenant id is hidden at 390').toBe(false)
     expect(notDrawn(document.querySelector('.brand-admin')!, PHONE_W), 'the admin tag is hidden at 390').toBe(false)
+    expect(painted(copy, 'min-width', PHONE_W)).toBe('0')
     expect(painted(id, 'white-space', PHONE_W)).toBe('nowrap')
     expect(painted(id, 'text-overflow', PHONE_W)).toBe('ellipsis')
     expect(painted(id, ['overflow', 'overflow-x'], PHONE_W)).toBe('hidden')
     expect(painted(id, 'min-width', PHONE_W)).toBe('0')
-    expect(id.getAttribute('title'), 'the cut id keeps its full value').toBe('u-bogdan')
+    expect(copy.getAttribute('title'), 'the cut id keeps its full value').toBe('u-bogdan')
+  })
+
+  it('makes the cut tenant id its own copy control: whole in its title and in what it copies', async () => {
+    // The decision: the id ellipsizes "with its full value in `title` and in
+    // a copy (the AH-11 precedent)". A CSS ellipsis leaves the text intact,
+    // but selecting a cut id in a 52px bar on a phone is not a copy anyone
+    // can rely on. The control IS the id, so it costs the row no width -- a
+    // separate button would take the 60-70px the id keeps at 390.
+    // MUTATION: render the id as a plain span again, copy anything but the
+    // whole id, or say nothing when the copy lands or fails.
+    const writeText = vi.fn(async (_: string) => {})
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
+    try {
+      await admin()
+      const copy = document.querySelector<HTMLElement>('.brand-who > .brand-id')
+      expect(copy?.tagName, 'the tenant id is not a control').toBe('BUTTON')
+      expect(copy!.getAttribute('type')).toBe('button')
+      expect(copy!.getAttribute('title')).toBe('u-bogdan')
+      expect(copy!.getAttribute('aria-label') ?? '', 'the control does not say what it copies').toMatch(
+        /copy.*u-bogdan/i,
+      )
+      await act(async () => {
+        fireEvent.click(copy!)
+      })
+      expect(writeText).toHaveBeenCalledWith('u-bogdan')
+      // Said, not silent: the outcome is announced beside the control.
+      expect(document.querySelector('.brand-who [role="status"]')?.textContent ?? '').toMatch(/tenant id copied/)
+      // §7.2: a 44px target at 560px and below, the type unchanged.
+      expect(Number.parseFloat(painted(copy!, 'min-height', PHONE_W) ?? '0')).toBeGreaterThanOrEqual(44)
+    } finally {
+      delete (navigator as unknown as { clipboard?: unknown }).clipboard
+    }
+  })
+
+  it('says so when the browser refuses the copy, rather than claiming it', async () => {
+    // `navigator.clipboard` is undefined outside a secure context, and a
+    // write can be refused. MUTATION: announce "copied" whatever happened.
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { writeText: vi.fn(async () => Promise.reject(new Error('denied'))) },
+      configurable: true,
+    })
+    try {
+      await admin()
+      await act(async () => {
+        fireEvent.click(document.querySelector('.brand-who > .brand-id')!)
+      })
+      const said = document.querySelector('.brand-who [role="status"]')?.textContent ?? ''
+      expect(said).not.toMatch(/tenant id copied/)
+      expect(said).toMatch(/refused/)
+    } finally {
+      delete (navigator as unknown as { clipboard?: unknown }).clipboard
+    }
   })
 
   it('shortens the unknown badge to UNKNOWN at 390 and keeps the full name for a reader', () => {
