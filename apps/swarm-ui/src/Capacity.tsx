@@ -108,15 +108,14 @@ export function CapacityScreen() {
       }}
       /* A REAL ZERO. Pools are created at provisioning time, so an environment
          with none has not been fully applied -- which is an absence the mark
-         names in two words instead of two clauses. */
+         names in two words instead of two clauses.
+
+         THE MARK IS `Screen`'s, drawn in the heading by the shared empty state
+         (#145). A hand-drawn `.ctl-mark is-zero` span here said `real zero` a
+         second time, with no sentence behind it. */
       empty={{
         heading: 'No pools exist',
-        body: (
-          <>
-            <span className="ctl-mark is-zero">real zero</span> none provisioned in this
-            environment
-          </>
-        ),
+        body: <>none provisioned in this environment</>,
       }}
     >
       {(d) => (

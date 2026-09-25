@@ -45,13 +45,15 @@
 import { PHASE_LABEL, phaseExtent, phasesFor, spanText, workSum } from '../duration'
 import type { AttemptPhases, Segment, WorkSum } from '../duration'
 import type { AttemptRow, Task, TaskEvent } from '../types'
-import { ChartTitle, HatchDef, useHatchId } from './parts'
+import { ChartTitle, DRAWN, HatchDef, drawnClass, useHatchId, type Drawn } from './parts'
 import { ValueAxis, linearScale, type LinearScale } from './TimeSeries'
 
 // Compact by the same D2 rule `TimeSeries` follows: a 10px bar in an 18px
 // row (the dataviz spec caps a bar at 24px and lets the rest be air), and a
 // right gutter wide enough for "≥ 23h 59m".
-const W = 640
+//
+// NO WIDTH HERE (AG-20): each drawing in `DRAWN` (parts.tsx) brings its own,
+// and both keep these margins, because "≥ 23h 59m" is as long at either.
 const M = { top: 4, right: 76, bottom: 22, left: 24 }
 const ROW = 18
 const BAR = 10
@@ -79,7 +81,7 @@ export function AttemptDurations({
   const anyAbsent = rows.some((r) => [r.queue, r.cold, r.run].some((s) => s?.kind === 'absent'))
 
   return (
-    <figure className="ctl-chart ctl-phases" aria-label="Attempt phases">
+    <figure className="ctl-chart ctl-phases has-narrow" aria-label="Attempt phases">
       <ChartTitle>Attempt phases</ChartTitle>
       {/* THE LEGEND IS THE IDENTITY. The series palette is not separable in
           greyscale (styles.css says so beside `--series-1`), so every hue is
@@ -122,17 +124,38 @@ export function AttemptDurations({
 function PhaseBars({ rows, hatchId }: { rows: readonly AttemptPhases[]; hatchId: string }) {
   const extent = phaseExtent(rows)
   if (extent === null) return null
-  const innerW = W - M.left - M.right
+  // TWICE, NOT SCALED (AG-20): one drawing per width, each its own scale.
+  return (
+    <>
+      {DRAWN.map((d) => (
+        <PhaseDrawing key={d.key} d={d} rows={rows} extent={extent} hatchId={`${hatchId}-${d.key}`} />
+      ))}
+    </>
+  )
+}
+
+function PhaseDrawing({
+  d,
+  rows,
+  extent,
+  hatchId,
+}: {
+  d: Drawn
+  rows: readonly AttemptPhases[]
+  extent: NonNullable<ReturnType<typeof phaseExtent>>
+  hatchId: string
+}) {
+  const innerW = d.w - M.left - M.right
   const height = M.top + rows.length * ROW + M.bottom
   const x = linearScale(extent, [PAD, innerW])
   const zeroX = x(0)
 
   return (
     <svg
-      className="ctl-chart-svg"
-      width={W}
+      className={drawnClass(d)}
+      width={d.w}
       height={height}
-      viewBox={`0 0 ${W} ${height}`}
+      viewBox={`0 0 ${d.w} ${height}`}
       // A GROUP, NOT AN IMAGE. `role="img"` makes every child presentational,
       // which would hide each segment's own sentence -- the accessible name
       // that says "open, at least 5m" or "not measured, and why" -- behind
@@ -154,7 +177,14 @@ function PhaseBars({ rows, hatchId }: { rows: readonly AttemptPhases[]; hatchId:
           y2={rows.length * ROW}
         />
         {rows.map((r, i) => (
-          <PhaseRow key={r.attempt.attempt_id} r={r} y={i * ROW + (ROW - BAR) / 2} x={x} hatchId={hatchId} />
+          <PhaseRow
+            key={r.attempt.attempt_id}
+            r={r}
+            y={i * ROW + (ROW - BAR) / 2}
+            x={x}
+            innerW={innerW}
+            hatchId={hatchId}
+          />
         ))}
         <ValueAxis
           side="bottom"
@@ -163,6 +193,7 @@ function PhaseBars({ rows, hatchId }: { rows: readonly AttemptPhases[]; hatchId:
           extent={extent}
           format={(v) => (v === 0 ? 'admitted' : spanText(v))}
           keep={[0]}
+          ticks={d.ticks}
           minGapPx={52}
         />
       </g>
@@ -178,14 +209,16 @@ function PhaseRow({
   r,
   y,
   x,
+  innerW,
   hatchId,
 }: {
   r: AttemptPhases
   y: number
   x: LinearScale
+  /** The plot's width in THIS drawing: the run figure sits past its end. */
+  innerW: number
   hatchId: string
 }) {
-  const innerW = W - M.left - M.right
   return (
     <g data-testid="phase-row" data-attempt={r.ordinal}>
       <text className="ctl-chart-rowlabel" x={-6} y={y + BAR - 1} textAnchor="end">
@@ -370,30 +403,42 @@ function RetryLollipop({ rows, hatchId }: { rows: readonly AttemptPhases[]; hatc
   // A run time has a meaningful zero, so the axis is anchored there -- and it
   // ends at the longest RECORDED run or lower bound, never past it.
   const extent = { lo: 0, hi, degenerate: hi === 0 }
-  const innerW = W - L.left - L.right
   const innerH = LH - L.top - L.bottom
   const y = linearScale(extent, [innerH, 0])
-  const band = Math.min(BAND_MAX, innerW / rows.length)
 
   return (
     <>
       <ChartTitle>Run per attempt</ChartTitle>
-      <svg
-        className="ctl-chart-svg"
-        width={W}
-        height={LH}
-        viewBox={`0 0 ${W} ${LH}`}
-        role="group"
-        aria-label="Run time of each attempt"
-      >
-        <g transform={`translate(${L.left},${L.top})`}>
-          <line className="ctl-chart-zeroline" x1={0} x2={rows.length * band} y1={y(0)} y2={y(0)} />
-          {rows.map((r, i) => (
-            <Lolly key={r.attempt.attempt_id} r={r} cx={band * (i + 0.5)} y={y} innerH={innerH} hatchId={hatchId} />
-          ))}
-          <ValueAxis side="left" scale={y} extent={extent} format={spanText} minGapPx={14} />
-        </g>
-      </svg>
+      {/* TWICE, NOT SCALED (AG-20). The value axis is vertical, so the two
+          drawings share it; what the width changes is the stems' spacing.
+          EACH DRAWS ITS OWN HATCH. The absent stem's pattern was defined only
+          in the phase-bar SVG above, and a pattern inside an SVG the sheet
+          hides does not paint into another one. */}
+      {DRAWN.map((d) => {
+        const innerW = d.w - L.left - L.right
+        const band = Math.min(BAND_MAX, innerW / rows.length)
+        const id = `${hatchId}-lolly-${d.key}`
+        return (
+          <svg
+            key={d.key}
+            className={drawnClass(d)}
+            width={d.w}
+            height={LH}
+            viewBox={`0 0 ${d.w} ${LH}`}
+            role="group"
+            aria-label="Run time of each attempt"
+          >
+            <HatchDef id={id} />
+            <g transform={`translate(${L.left},${L.top})`}>
+              <line className="ctl-chart-zeroline" x1={0} x2={rows.length * band} y1={y(0)} y2={y(0)} />
+              {rows.map((r, i) => (
+                <Lolly key={r.attempt.attempt_id} r={r} cx={band * (i + 0.5)} y={y} innerH={innerH} hatchId={id} />
+              ))}
+              <ValueAxis side="left" scale={y} extent={extent} format={spanText} minGapPx={14} />
+            </g>
+          </svg>
+        )
+      })}
     </>
   )
 }

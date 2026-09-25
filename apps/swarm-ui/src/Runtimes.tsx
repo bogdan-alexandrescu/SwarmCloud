@@ -98,15 +98,13 @@ export function RuntimesScreen() {
       }}
       /* The read SUCCEEDED and named no runner profile. Distinct from a failed
          read, which never reaches here, and distinct from the capacity screen's
-         empty -- pools and the catalogue are different absences. */
+         empty -- pools and the catalogue are different absences.
+
+         THE MARK IS `Screen`'s, in the heading (#145). A hand-drawn
+         `.ctl-mark is-zero` span here said `real zero` a second time. */
       empty={{
         heading: 'The catalogue came back with no runtimes',
-        body: (
-          <>
-            <span className="ctl-mark is-zero">real zero</span> nothing can be submitted until
-            one is registered
-          </>
-        ),
+        body: <>nothing can be submitted until one is registered</>,
       }}
     >
       {(d) => <Topology data={d} />}

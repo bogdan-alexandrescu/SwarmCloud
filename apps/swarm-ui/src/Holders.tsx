@@ -173,10 +173,11 @@ export function HoldersScreen() {
          prop has a slot for it (CH-10, in the shell lane's PR). */
       empty={{
         heading: 'No unreleased leases',
+        // THE MARK IS `Screen`'s, in the heading (#145). A hand-drawn
+        // `.ctl-mark is-zero` span here said `real zero` a second time.
         body: (
           <>
-            <span className="ctl-mark is-zero">real zero</span> no lease or counter holds
-            capacity · every tenant ·{' '}
+            no lease or counter holds capacity · every tenant ·{' '}
             <a className="ctl-link" href="#capacity/pools">
               Pools
             </a>

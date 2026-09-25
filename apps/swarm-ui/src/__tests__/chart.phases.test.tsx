@@ -455,7 +455,8 @@ describe('the retry lollipop', () => {
     ]
     const events = [leased(1, 0), leased(2, 12), leased(3, 20), leased(4, 30), ev('heartbeat', at(33), 'att_4', {})]
     const { container } = draw(t, attempts, events)
-    const lollies = [...container.querySelectorAll('[data-testid="lolly"]')]
+    // One drawing's stems: each width is drawn separately (AG-20).
+    const lollies = [...container.querySelectorAll('svg.is-wide [data-testid="lolly"]')]
     expect(lollies.map((l) => l.getAttribute('data-kind'))).toEqual([
       'closed',
       'never-ran',

@@ -1287,8 +1287,9 @@ export function bytesLabel(bytes: number | null | undefined): string {
  *
  * So a row with an id and no uri is not a broken checkpoint. It means the
  * event that described it is not on the page of events we were handed, which
- * happens for real: the events route orders OLDEST first, caps the page and
- * returns no page token, and a worker heartbeats throughout, so the later
+ * happens for real: this screen reads one page of events, OLDEST first, and
+ * does not follow the page token the events route returns (help topic
+ * `event-paging`), and a worker heartbeats throughout, so the later
  * checkpoints of a long attempt are exactly the ones whose events fall off
  * the end. `uriKnown` is what lets the screen say that instead of drawing a
  * blank cell.
@@ -1412,8 +1413,9 @@ export function restoredFrom(attempt: AttemptRow, events: TaskEvent[] | null): R
  * live process.
  *
  * It is NOT the same claim as the final figure and must never be rendered as
- * one: it is the high-water mark AS OF that event, and the event page is
- * oldest-first with no page token, so on a long attempt the newest heartbeat
+ * one: it is the high-water mark AS OF that event, and this screen reads one
+ * page of events, oldest-first, without following the page token the route
+ * returns, so on a long attempt the newest heartbeat
  * available here can be old. Every caller therefore renders `at` beside it.
  */
 export interface HeartbeatReading {
@@ -2004,6 +2006,44 @@ export function whyAgent(task: Task): string {
     return 'Cancelled by request.'
   }
   return ''
+}
+
+/**
+ * AG-14 (owner decision, 2026-09-25). WHETHER `whyAgent`'s LINE ASKS A PERSON
+ * TO ACT -- which is the only thing its `--warn` ink is allowed to say.
+ *
+ * Every why line was painted `--warn`, so a step waiting on the step before
+ * it -- what a healthy chain says about most of its steps for its whole life
+ * -- was the same yellow as a failure, and a colour on every line said
+ * nothing about any of them. The decision: warn for failures, for work that
+ * can never be admitted, for sign-in needed, and for stuck or silent workers;
+ * routine waits (queued, parked on quota, waiting on a dependency) and
+ * cancellations in plain ink.
+ *
+ * NOTHING NEW IS CLASSIFIED HERE. "Needs a person" is the partition this file
+ * already keeps and the trouble board already reads: `PARK_NEEDS_A_PERSON`
+ * (a missing credential, a spent budget, an operator pause -- no timer ends
+ * any of them) and `needsAPerson(blockerCeiling(...))` (a pool paused or set
+ * to zero by a person, which admits nothing until somebody acts: "can never
+ * be admitted"). The branches mirror `whyAgent`'s, so a line and its ink are
+ * decided from the same fields.
+ *
+ * STUCK OR SILENT WORKERS HAVE NO BRANCH, because they have no line:
+ * `whyAgent` writes nothing for a task that holds a slot, and a worker's
+ * silence is a lease and heartbeat fact the task document does not carry.
+ * The inspector's liveness badge is where that is drawn, in its own tone.
+ */
+export function whyNeedsAction(task: Task): boolean {
+  if (task.state === 'FAILED') return true
+  if (task.state === 'PARKED') {
+    return task.park_reason !== null && PARK_NEEDS_A_PERSON.has(String(task.park_reason))
+  }
+  if (task.state === 'READY' && task.blocked_by?.length) {
+    const b = leadBlocker(task.blocked_by)
+    if (!b) return false
+    return needsAPerson(blockerCeiling(b)) || PARK_NEEDS_A_PERSON.has(b.reason)
+  }
+  return false
 }
 
 /**

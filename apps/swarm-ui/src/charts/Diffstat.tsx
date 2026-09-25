@@ -24,10 +24,12 @@
 // here draws or implies a patch.
 
 import type { GitCommit } from '../types'
-import { ChartTitle, HatchDef, useHatchId } from './parts'
+import { ChartTitle, DRAWN, HatchDef, drawnClass, useHatchId } from './parts'
 import { ValueAxis, linearScale } from './TimeSeries'
 
-const W = 640
+// NO WIDTH HERE (AG-20): each drawing in `DRAWN` (parts.tsx) brings its own.
+// The margins hold a 10-character sha on the left and `+N −N` plus the binary
+// diamond on the right, which are as long in either drawing.
 const M = { top: 4, right: 104, bottom: 20, left: 80 }
 const ROW = 16
 const BAR = 10
@@ -83,14 +85,11 @@ export function DiffstatChart({
   // Anchored at zero on both sides, and each side ends at its own largest
   // RECORDED count -- so a lopsided change looks lopsided.
   const extent = { lo: -maxDel, hi: maxIns, degenerate: maxDel === 0 && maxIns === 0 }
-  const innerW = W - M.left - M.right
   const height = M.top + rows.length * ROW + M.bottom
-  const x = linearScale(extent, [0, innerW])
-  const zeroX = x(0)
   const more = typeof commitCount === 'number' && commitCount > rows.length ? commitCount : null
 
   return (
-    <figure className="ctl-chart ctl-diffstat" aria-label="Lines changed per commit">
+    <figure className="ctl-chart ctl-diffstat has-narrow" aria-label="Lines changed per commit">
       <ChartTitle>Lines changed per commit</ChartTitle>
       <ul className="ctl-chart-legend">
         <li>
@@ -108,38 +107,50 @@ export function DiffstatChart({
           </li>
         )}
       </ul>
-      <svg
-        className="ctl-chart-svg"
-        width={W}
-        height={height}
-        viewBox={`0 0 ${W} ${height}`}
-        role="group"
-        aria-label="Lines deleted and inserted by each commit"
-      >
-        <HatchDef id={hatchId} />
-        <g transform={`translate(${M.left},${M.top})`}>
-          <line className="ctl-chart-zeroline" x1={zeroX} x2={zeroX} y1={0} y2={rows.length * ROW} />
-          {rows.map((r, i) => (
-            <DiffRowMark
-              key={`${r.sha}-${i}`}
-              r={r}
-              y={i * ROW + (ROW - BAR) / 2}
-              x={x}
-              innerW={innerW}
-              hatchId={hatchId}
-            />
-          ))}
-          <ValueAxis
-            side="bottom"
-            top={rows.length * ROW}
-            scale={x}
-            extent={extent}
-            format={(v) => (v > 0 ? `+${v}` : v < 0 ? `−${-v}` : '0')}
-            keep={[0]}
-            minGapPx={40}
-          />
-        </g>
-      </svg>
+      {/* TWICE, NOT SCALED (AG-20): one drawing per width, each its own
+          scale, tick count and hatch. */}
+      {DRAWN.map((d) => {
+        const innerW = d.w - M.left - M.right
+        const x = linearScale(extent, [0, innerW])
+        const zeroX = x(0)
+        const id = `${hatchId}-${d.key}`
+        return (
+          <svg
+            key={d.key}
+            className={drawnClass(d)}
+            width={d.w}
+            height={height}
+            viewBox={`0 0 ${d.w} ${height}`}
+            role="group"
+            aria-label="Lines deleted and inserted by each commit"
+          >
+            <HatchDef id={id} />
+            <g transform={`translate(${M.left},${M.top})`}>
+              <line className="ctl-chart-zeroline" x1={zeroX} x2={zeroX} y1={0} y2={rows.length * ROW} />
+              {rows.map((r, i) => (
+                <DiffRowMark
+                  key={`${r.sha}-${i}`}
+                  r={r}
+                  y={i * ROW + (ROW - BAR) / 2}
+                  x={x}
+                  innerW={innerW}
+                  hatchId={id}
+                />
+              ))}
+              <ValueAxis
+                side="bottom"
+                top={rows.length * ROW}
+                scale={x}
+                extent={extent}
+                format={(v) => (v > 0 ? `+${v}` : v < 0 ? `−${-v}` : '0')}
+                keep={[0]}
+                ticks={d.ticks}
+                minGapPx={40}
+              />
+            </g>
+          </svg>
+        )
+      })}
       {more !== null && (
         <figcaption className="ctl-chart-cov" data-testid="diff-window" data-partial="yes">
           newest <strong>{rows.length}</strong> of {more}

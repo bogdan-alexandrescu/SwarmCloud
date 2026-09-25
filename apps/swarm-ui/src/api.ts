@@ -153,9 +153,12 @@ export async function loadWorkflows(): Promise<Result<WorkflowPage>> {
  *
  * 200 is `max_page_size`, the server's own cap (`paged_limit` clamps to it,
  * silently). Asking for more would be clamped to the same 200 and would make
- * a full page look like one that asked for less. The route still returns no
- * page token, so a page that comes back FULL is a window, and the charts say
- * so; that is seam S1, and it belongs to the API, not to this constant.
+ * a full page look like one that asked for less. The route pages -- since #19
+ * it returns `next_page_token` whenever more events exist, and takes
+ * `order=desc` -- but this client reads ONE page, oldest-first, and does not
+ * follow the page token, so a page that comes back FULL is a window, and the
+ * charts say so. That limit is this client's, not the API's (help topic
+ * `event-paging`).
  *
  * WHAT THIS CANNOT SEE. `MAX_PAGE_SIZE` is environment-overridable and set
  * nowhere in this repository today. A deployment that lowered it would clamp

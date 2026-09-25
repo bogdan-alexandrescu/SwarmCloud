@@ -20,9 +20,10 @@
 //     ring per id, so it is counted and never silently lost.
 //
 // A hollow dot is NOT a broken checkpoint (types.ts, and redesign-v2 §4 row 6
-// "what it must not imply"): the events route orders oldest-first, caps the
-// page and returns no page token, so the LATER checkpoints of a long attempt
-// are exactly the ones that fall off. And the strip says nothing about what
+// "what it must not imply"): this screen reads one page of events,
+// oldest-first, and does not follow the page token the events route returns
+// (help topic `event-paging`), so the LATER checkpoints of a long attempt are
+// exactly the ones that fall off. And the strip says nothing about what
 // is inside a checkpoint: contents are recorded nowhere.
 //
 // SIZE IS AREA, NOT RADIUS. A radius proportional to bytes makes a checkpoint
@@ -35,10 +36,10 @@
 
 import { instant, spanText } from '../duration'
 import { bytesLabel, checkpointsFor, type AttemptRow, type CheckpointRow, type TaskEvent } from '../types'
-import { ChartTitle } from './parts'
+import { ChartTitle, DRAWN, drawnClass } from './parts'
 import { ValueAxis, linearScale } from './TimeSeries'
 
-const W = 640
+// NO WIDTH HERE (AG-20): each drawing in `DRAWN` (parts.tsx) brings its own.
 const H = 46
 const M = { top: 10, right: 14, bottom: 20, left: 14 }
 const R_MAX = 7
@@ -77,8 +78,6 @@ export function CheckpointStrip({
   const extent = { lo, hi, degenerate: lo === hi }
 
   const trayW = unplaced.length === 0 ? 0 : 20 + unplaced.length * TRAY_STEP
-  const innerW = W - M.left - M.right - trayW
-  const x = linearScale(extent, [0, innerW])
   const maxBytes = Math.max(0, ...placed.map((p) => p.row.bytes ?? 0))
   const radius = (b: number | null) =>
     b === null ? R_UNSIZED : maxBytes > 0 ? Math.max(R_MIN, R_MAX * Math.sqrt(b / maxBytes)) : R_MIN
@@ -86,7 +85,7 @@ export function CheckpointStrip({
   const mid = (H - M.top - M.bottom) / 2
 
   return (
-    <figure className="ctl-chart ctl-ckpt-strip" aria-label="Checkpoint cadence">
+    <figure className="ctl-chart ctl-ckpt-strip has-narrow" aria-label="Checkpoint cadence">
       <ChartTitle>Checkpoint cadence</ChartTitle>
       {hollow && (
         <ul className="ctl-chart-legend">
@@ -96,64 +95,74 @@ export function CheckpointStrip({
           </li>
         </ul>
       )}
-      <svg
-        className="ctl-chart-svg"
-        width={W}
-        height={H}
-        viewBox={`0 0 ${W} ${H}`}
-        role="group"
-        aria-label="When each checkpoint of this attempt completed, from the start of the attempt, sized by bytes"
-      >
-        <g transform={`translate(${M.left},${M.top})`}>
-          <line className="ctl-ckpt-track" x1={0} x2={innerW} y1={mid} y2={mid} />
-          {placed.map(({ row, t }) => (
-            <circle
-              key={row.checkpoint_id}
-              className={dotClass(row)}
-              data-testid="ckpt-dot"
-              data-id={row.checkpoint_id}
-              data-bytes={row.bytes ?? ''}
-              cx={x(t)}
-              cy={mid}
-              r={radius(row.bytes)}
-            >
-              <title>{`${row.checkpoint_id} · T+${spanText(t)} · ${row.bytes === null ? 'size —' : bytesLabel(row.bytes)}`}</title>
-            </circle>
-          ))}
-          {unplaced.length > 0 && (
-            // THE TRAY. Past a divider, off the time axis, in id order: these
-            // have no recorded instant, so they have no x.
-            <g data-testid="ckpt-tray" transform={`translate(${innerW + 20},0)`}>
-              <line className="ctl-ckpt-divider" x1={-10} x2={-10} y1={-4} y2={mid * 2 + 4} />
-              {unplaced.map((row, i) => (
+      {/* TWICE, NOT SCALED (AG-20): one drawing per width, each its own
+          scale and tick count; the tray keeps its size at both. */}
+      {DRAWN.map((d) => {
+        const innerW = d.w - M.left - M.right - trayW
+        const x = linearScale(extent, [0, innerW])
+        return (
+          <svg
+            key={d.key}
+            className={drawnClass(d)}
+            width={d.w}
+            height={H}
+            viewBox={`0 0 ${d.w} ${H}`}
+            role="group"
+            aria-label="When each checkpoint of this attempt completed, from the start of the attempt, sized by bytes"
+          >
+            <g transform={`translate(${M.left},${M.top})`}>
+              <line className="ctl-ckpt-track" x1={0} x2={innerW} y1={mid} y2={mid} />
+              {placed.map(({ row, t }) => (
                 <circle
                   key={row.checkpoint_id}
-                  className="ctl-ckpt-dot is-hollow is-unsized"
-                  data-testid="ckpt-offpage"
+                  className={dotClass(row)}
+                  data-testid="ckpt-dot"
                   data-id={row.checkpoint_id}
-                  cx={i * TRAY_STEP}
+                  data-bytes={row.bytes ?? ''}
+                  cx={x(t)}
                   cy={mid}
-                  r={R_UNSIZED}
-                  role="img"
-                  aria-label={`${row.checkpoint_id}: listed on the attempt document; its event is not on this page, so when it completed, its size and its location are unknown here. Not evidence that it is broken.`}
+                  r={radius(row.bytes)}
                 >
-                  <title>{`${row.checkpoint_id} · not on this page`}</title>
+                  <title>{`${row.checkpoint_id} · T+${spanText(t)} · ${row.bytes === null ? 'size —' : bytesLabel(row.bytes)}`}</title>
                 </circle>
               ))}
+              {unplaced.length > 0 && (
+                // THE TRAY. Past a divider, off the time axis, in id order: these
+                // have no recorded instant, so they have no x.
+                <g data-testid="ckpt-tray" transform={`translate(${innerW + 20},0)`}>
+                  <line className="ctl-ckpt-divider" x1={-10} x2={-10} y1={-4} y2={mid * 2 + 4} />
+                  {unplaced.map((row, i) => (
+                    <circle
+                      key={row.checkpoint_id}
+                      className="ctl-ckpt-dot is-hollow is-unsized"
+                      data-testid="ckpt-offpage"
+                      data-id={row.checkpoint_id}
+                      cx={i * TRAY_STEP}
+                      cy={mid}
+                      r={R_UNSIZED}
+                      role="img"
+                      aria-label={`${row.checkpoint_id}: listed on the attempt document; its event is not on this page, so when it completed, its size and its location are unknown here. Not evidence that it is broken.`}
+                    >
+                      <title>{`${row.checkpoint_id} · not on this page`}</title>
+                    </circle>
+                  ))}
+                </g>
+              )}
+              {placed.length > 0 || end !== null ? (
+                <ValueAxis
+                  side="bottom"
+                  top={mid * 2}
+                  scale={x}
+                  extent={extent}
+                  format={(v) => `T+${spanText(v)}`}
+                  ticks={d.ticks}
+                  minGapPx={64}
+                />
+              ) : null}
             </g>
-          )}
-          {placed.length > 0 || end !== null ? (
-            <ValueAxis
-              side="bottom"
-              top={mid * 2}
-              scale={x}
-              extent={extent}
-              format={(v) => `T+${spanText(v)}`}
-              minGapPx={64}
-            />
-          ) : null}
-        </g>
-      </svg>
+          </svg>
+        )
+      })}
     </figure>
   )
 }

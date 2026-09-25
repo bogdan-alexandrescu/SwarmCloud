@@ -266,20 +266,24 @@ function Provenance({ data }: { data: ArtifactContent }) {
             "this output had four credentials in it and you should rotate
             them", so the count stays on the glass. That masking here does not
             remove them from the bucket is a standing fact about the read path
-            and is `#help/credential-names-not-values`. */}
-        <li className={`ctl-fact art-redacted${data.redacted ? ' is-absent' : ''}`}>
+            and is `#help/masking-is-serve-time`.
+
+            A MEASURED FACT, DRAWN AS ONE (AG-5, owner decision 2026-09-25).
+            This wore the `not read` mark -- the dashed silhouette whose one
+            meaning is "the read failed" -- and the fact was dimmed
+            `.is-absent`, the treatment for a figure nothing measured. The
+            count WAS read: it is what the serve path's `redact()` returned
+            over these bytes. The kit's six marks are six kinds of nothing and
+            this is not one of them, and the decision was not to add a
+            seventh. So: no mark, no dimming, and the attention it asks for is
+            its INK -- `--warn` above zero, plain at zero (`.art-masked` in
+            styles.css). The sentence the mark carried is the topic behind
+            the `?` below. */}
+        <li className="ctl-fact art-redacted">
           <b>masked</b>
-          {data.redacted ? (
-            <>
-              {data.redaction_count}{' '}
-              <Mark
-                kind="unread"
-                say={`${data.redaction_count} credential-shaped value${data.redaction_count === 1 ? ' was' : 's were'} masked in this artifact when it was served. They are still in the object in the bucket; masking here does not remove them from there, and anything recognisable should be rotated.`}
-              />
-            </>
-          ) : (
-            <>0 of {data.redaction.rules} families</>
-          )}
+          <span className={`art-masked${data.redacted && data.redaction_count > 0 ? ' is-warn' : ''}`}>
+            {data.redacted ? data.redaction_count : `0 of ${data.redaction.rules} families`}
+          </span>
           {/* THIS SCREEN'S ONE `?` (B7.4), and it is the only one it had. What
               it holds is a property of the SERVING path rather than of this
               artifact: masking happens on the way out, the object in the bucket

@@ -102,8 +102,11 @@ describe('the inspector draws its charts and keeps its tables', () => {
     const el = await mount()
     const fig = el.querySelector('figure.ctl-phases')
     expect(fig, 'the phase chart is not mounted').not.toBeNull()
-    expect(fig!.querySelectorAll('[data-testid="phase-row"]')).toHaveLength(2)
-    expect(fig!.querySelectorAll('[data-testid="lolly"]')).toHaveLength(2)
+    // Read off one drawing: each width is drawn separately (AG-20), and the
+    // narrow one holds the same rows.
+    expect(fig!.querySelectorAll('svg.is-wide [data-testid="phase-row"]')).toHaveLength(2)
+    expect(fig!.querySelectorAll('svg.is-wide [data-testid="lolly"]')).toHaveLength(2)
+    expect(fig!.querySelectorAll('svg.is-narrow [data-testid="phase-row"]')).toHaveLength(2)
     // 5 minutes of attempt 1 plus 7 of attempt 2.
     expect(fig!.querySelector('[data-testid="work-sum"]')?.textContent).toContain('ran 12m 0s over 2 of 2')
     // The cards still state each attempt's own start and end as facts.
@@ -134,7 +137,7 @@ describe('the inspector draws its charts and keeps its tables', () => {
     const el = await mount()
     const chart = el.querySelector('figure.ctl-diffstat')
     expect(chart, 'the diffstat is not mounted').not.toBeNull()
-    expect(chart!.querySelectorAll('[data-testid="diff-row"]')).toHaveLength(2)
+    expect(chart!.querySelectorAll('svg.is-wide [data-testid="diff-row"]')).toHaveLength(2)
     const table = chart!.nextElementSibling
     expect(table?.textContent).toContain('Harden the guard')
     expect(table?.textContent).toContain('+61 −12')
@@ -202,8 +205,10 @@ describe('the sentences on the marks are reachable', () => {
         ].join(', '),
       ),
     ]
-    // phases + lollipop, one peak, one strip, one diffstat.
-    expect(svgs.length, 'the charts this checks were not all mounted').toBe(5)
+    // phases + lollipop, one peak, one strip, one diffstat -- each drawn at
+    // two widths (AG-20), and both drawings are the accessible chart.
+    expect(svgs.length, 'the charts this checks were not all mounted').toBe(10)
+    expect(svgs.filter((s) => s.classList.contains('is-narrow')), 'a chart has no narrow drawing').toHaveLength(5)
     for (const svg of svgs) {
       expect(svg.getAttribute('role'), svg.getAttribute('aria-label') ?? '').toBe('group')
     }
