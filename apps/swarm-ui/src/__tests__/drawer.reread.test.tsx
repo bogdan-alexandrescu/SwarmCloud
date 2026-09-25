@@ -482,8 +482,15 @@ describe('the drawer clock does not age a read that failed to refresh (AG-2)', (
     expect(badge()?.dataset['liveness']).toBe('live')
     expect(fact(root, 'run')).toBe('1m 0s')
 
-    await advance(8 * 60_000)
-    expect(reads, 'the drawer did not try to re-read at all').toBeGreaterThan(2)
+    // IN 10s STEPS, NOT ONE 8-MINUTE JUMP. A poll timer only bumps `Screen`'s
+    // nonce; the read it asks for starts in an effect, and `act` holds that
+    // render back until its scope ends. One jump therefore starts exactly one
+    // re-read, at the end -- which is what the first version of this test did,
+    // so it stopped on `reads` and never reached the badge. Stepping lets each
+    // poll's read start, fail, and plan the back-off's next one (10s, then
+    // 20, 40, 80, 160s: five failed reads inside the eight minutes).
+    for (let t = 0; t < 8 * 60_000; t += DRAWER_POLL_MS) await advance(DRAWER_POLL_MS)
+    expect(reads, 'the drawer did not keep trying to re-read').toBeGreaterThan(2)
     expect(badge()?.dataset['liveness'], 'failed reads were drawn as a silent worker').toBe('live')
     expect(badge()?.textContent).toContain('30s ago')
     expect(fact(root, 'run'), 'the run figure went on counting over a read nobody refreshed').toBe('1m 10s')
