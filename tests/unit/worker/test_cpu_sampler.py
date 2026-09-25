@@ -547,7 +547,9 @@ def test_a_run_writes_the_attempts_own_figures_while_it_runs_and_at_the_end(
     assert worker.run() == ExitCode.OK
 
     assert any(live for _, live in calls), f"nothing was written while the runner ran: {calls}"
-    assert not calls[-1][1], "the last write was not the one taken when the runner was reaped"
+    # The figures at the end are the attempt's combined ones, the export's.
+    # (Not "the last call was after the reap": a reap whose figures equal the
+    # last periodic write is rightly not written twice.)
     usage, _labels = exporter.exports[-1]
     doc = db.doc("attempts/att_1")
     assert doc["cpu_seconds"] == round(usage.cpu_seconds, 3)
