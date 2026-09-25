@@ -22,6 +22,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 from google.api_core import exceptions as gexc
+from google.cloud.firestore_v1.base_query import FieldFilter
 
 from swarm_api.auth import StaticTokenVerifier
 from swarm_api.credentials import InMemoryCredentials
@@ -724,6 +725,39 @@ def test_a_large_day_is_sharded_and_read_back_whole(ctx, clock, db):
     second = ok(client, "alice", **WEEK)
     assert second["coverage"]["derived_now"] == 0
     assert second["buckets"][3] == first["buckets"][3]
+
+
+def test_the_fake_refuses_an_in_filter_over_thirty_values_as_firestore_does(db):
+    """Pins the fake's fidelity, which the next test relies on. Real Firestore,
+    read-only on dev, 2026-09-25: 30 values streamed, 31 raised this text."""
+    thirty = [f"t{i}" for i in range(30)]
+    assert list(db.collection("attempts").where(
+        filter=FieldFilter("task_id", "in", thirty)).stream()) == []
+    with pytest.raises(gexc.InvalidArgument, match="'IN' supports up to 30 comparison values"):
+        list(db.collection("attempts").where(
+            filter=FieldFilter("task_id", "in", [*thirty, "t30"])).stream())
+
+
+def test_a_day_of_more_than_thirty_ended_tasks_reads_every_attempt(db, tokens, group_map, clock):
+    """A busy day's attempts are read in chunks of at most 30 task ids, because
+    Firestore refuses a larger `in`. 35 tasks, one reporting attempt each: the
+    day is read, every attempt is found, and none is admitted without its doc.
+    tests/integration/test_outcomes_emulator.py runs the same day on the emulator."""
+    seed_tenant(db, "eng")
+    for i in range(35):
+        task(db, f"b{i:02d}", state="SUCCEEDED", created=at(24, 9), completed=at(24, 10, i))
+        attempt(db, f"a_b{i:02d}", task_id=f"b{i:02d}", created=at(24, 9, 30),
+                started=at(24, 9, 31), exit_code=0, cost=0.25)
+    client = TestClient(
+        create_app(_context(db, tokens, StaticGroups(group_map), clock)),
+        raise_server_exceptions=False,
+    )
+    body = ok(client, "alice", **WEEK)
+    day = body["buckets"][5]
+    assert day["state"] == "sealed" and day["unread_reason"] is None
+    assert day["succeeded"] == 35
+    assert day["cost"] == {"sum_usd": 8.75, "attempts": 35, "reporting": 35}
+    assert body["retries"]["admissions_without_attempt_doc"] == 0
 
 
 # --------------------------------------------------------------------------
