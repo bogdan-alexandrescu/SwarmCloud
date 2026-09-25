@@ -718,7 +718,7 @@ inventory() {
     printf '    %-26s %s   (all released)\n' "leases" "$(grep -c . "${WORK}/leases.jsonl" || true)"
     printf '    %-26s %s\n' "workflows" "${workflows}"
     printf '    %-26s %s\n' "quota" "${quota}"
-    printf '    %-26s %s   (the outcome ledger rollup, one per UTC day)\n' "outcome_days" "${outcome_days}"
+    printf '    %-26s %s\n' "outcome_days" "${outcome_days}"
     printf '    %-26s %s\n' "accounts (owned)" "$(grep -c . "${WORK}/accounts.jsonl" || true)"
     printf '    %-26s %s\n' "account_auth" "${auth}"
     printf '    %-26s %s   (listed from the ledger, named for %s)\n' "credential_publications" \
