@@ -757,6 +757,52 @@ run "every_project_role_the_verify_identity_holds_is_grantable" {
   }
 }
 
+# The three runs above read eight grants by name, and a grant nobody named is
+# checked by none of them. This one reads the files CI applies instead
+# (./project_iam_inventory) and holds every declaration that writes the project's
+# IAM policy to the list those runs cover. A new project-level grant anywhere in
+# terraform/infra or terraform/modules fails here until a parity assertion reads
+# it -- the difference between a red pull request and a release that 403s
+# halfway through its apply once projectIamAdmin is scoped.
+run "every_project_level_grant_ci_applies_is_read_by_a_parity_run" {
+  command = plan
+
+  module {
+    source = "./project_iam_inventory"
+  }
+
+  variables {
+    # What the three runs above read, as "<dir under terraform/> <type>.<name>".
+    covered = [
+      "infra google_project_iam_member.verify_reads_firestore",
+      "modules/iam google_project_iam_member.broker_version_adder",
+      "modules/iam google_project_iam_member.firestore",
+      "modules/iam google_project_iam_member.gke",
+      "modules/iam google_project_iam_member.plain",
+      "modules/tenancy google_project_iam_member.worker_firestore",
+      "modules/tenancy google_project_iam_member.worker_telemetry",
+    ]
+  }
+
+  assert {
+    condition     = output.terraform_dir != "" && output.files_read > 0
+    error_message = "the inventory read no terraform/infra or terraform/modules file; the two assertions below would be comparing against nothing"
+  }
+
+  # The defect: a grant CI applies that no parity run holds to the grantable list.
+  assert {
+    condition     = length(output.uncovered) == 0
+    error_message = "terraform/infra or a module under terraform/modules declares a project-level IAM grant that no run above reads. Assert its role against deployer_grantable_project_roles in the runs above and add it to `covered` here; unread, it is found by the release that applies it, as a 403, once projectIamAdmin is scoped"
+  }
+
+  # The control: every grant named above is still found, so the scan is matching
+  # real declarations and not passing on an empty list.
+  assert {
+    condition     = length(output.stale) == 0
+    error_message = "a grant named in `covered` is no longer declared where it was (renamed, moved or removed), or the scan stopped matching; update the runs above and this list together"
+  }
+}
+
 # ---------------------------------------------------------------------------
 # storage.admin's condition (wif.tf, deployer_storage) -- the two defects that
 # would have failed the first build after it was applied.
