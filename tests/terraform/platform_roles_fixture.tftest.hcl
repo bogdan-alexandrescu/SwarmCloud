@@ -121,6 +121,16 @@ run "the_fixture_is_what_modules_tenancy_defined" {
     source = "../../terraform/modules/tenancy"
   }
 
+  variables {
+    tenants = {
+      eng = {
+        kind      = "group"
+        principal = "eng@saga.xyz"
+        providers = ["anthropic"]
+      }
+    }
+  }
+
   assert {
     condition = alltrue([
       google_project_iam_custom_role.worker_firestore.role_id == run.fixture.roles.worker_firestore.role_id,

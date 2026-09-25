@@ -99,25 +99,6 @@ run "the_deployer_is_not_granted_role_admin" {
   }
 }
 
-# Putting it back by hand is refused at plan, not discovered in a review.
-run "role_admin_cannot_be_put_back_on_the_deployer" {
-  command = plan
-
-  module {
-    source = "../../terraform/bootstrap"
-  }
-
-  variables {
-    enable_github_wif = true
-    github_repository = "saga/agent-swarm-infra"
-    deployer_roles    = ["roles/artifactregistry.admin", "roles/iam.roleAdmin"]
-  }
-
-  # roleAdmin was on the reviewed list, so this used to plan cleanly; the
-  # refusal is the change.
-  expect_failures = [var.deployer_roles]
-}
-
 run "swarm_secret_lister_is_not_a_role_ci_may_grant" {
   command = plan
 
@@ -182,4 +163,28 @@ run "terraform_infra_no_longer_grants_the_broker_swarm_secret_lister" {
     ])
     error_message = "the broker lost a project grant other than swarmSecretLister"
   }
+}
+
+# Putting it back by hand is refused at plan, not discovered in a review.
+#
+# LAST IN THE FILE ON PURPOSE: an unmet expect_failures is an error, not an
+# assertion failure, and terraform test skips every run after an error in the
+# same file -- so anywhere earlier it would hide the runs below it whenever it
+# fails.
+run "role_admin_cannot_be_put_back_on_the_deployer" {
+  command = plan
+
+  module {
+    source = "../../terraform/bootstrap"
+  }
+
+  variables {
+    enable_github_wif = true
+    github_repository = "saga/agent-swarm-infra"
+    deployer_roles    = ["roles/artifactregistry.admin", "roles/iam.roleAdmin"]
+  }
+
+  # roleAdmin was on the reviewed list, so this used to plan cleanly; the
+  # refusal is the change.
+  expect_failures = [var.deployer_roles]
 }
