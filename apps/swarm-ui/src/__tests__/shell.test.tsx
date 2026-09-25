@@ -705,7 +705,13 @@ describe('B20: a measured zero and an unrendered track are different marks', () 
     // is exactly the mark the axis now reserves for a MEASURED zero.
     vi.resetModules()
     const loadStats = vi.fn()
-    vi.doMock('../api', () => ({ loadStats }))
+    // Platform counts reads the session to price its first run (AH-9). Who is
+    // asking is not what this test is about, so the read simply fails.
+    const loadMe = vi.fn(async () => ({
+      status: 'error' as const,
+      error: { kind: 'upstream_degraded' as const, httpStatus: 503, code: null, message: 'no session' },
+    }))
+    vi.doMock('../api', () => ({ loadStats, loadMe }))
     const { PlatformCountsScreen } = await import('../PlatformCounts')
     const { REAL_STATES } = await import('../types')
 
