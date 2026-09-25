@@ -546,7 +546,11 @@ class TestCapacityView:
         assert "tenant:acme" in out
 
     def test_the_subtitle_quotes_the_real_ceiling_not_the_global_one(self):
-        assert render.capacity_subtitle(self.CAPACITY, WIDE) == "tightest: provider:anthropic 6/8"
+        # Ranked by the agents of a profile that still fit, and says so; the
+        # pool's figure is units and is labelled as units (#192).
+        assert render.capacity_subtitle(self.CAPACITY, WIDE) == (
+            "tightest: claude-code, 2 more agents fit on provider:anthropic (6/8 units)"
+        )
 
     def test_the_subtitle_names_no_ceiling_when_a_required_pool_is_ungradeable(self):
         # The subtitle is the line people quote, so it must not quote a

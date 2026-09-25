@@ -25,7 +25,7 @@ import os
 import sys
 import textwrap
 import time
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -43,7 +43,11 @@ from .client import (
 )
 from .follow import (
     DEFAULT_LOG_BUDGET,
+    NEVER_STARTED,
+    NO_ATTEMPT_YET,
+    NO_LOG_YET,
     STREAMS,
+    empty_log_line,
     event_type,
     follow,
     follow_command,
@@ -51,6 +55,8 @@ from .follow import (
     render,
     settled,
     terminal_command,
+    terminal_line,
+    time_order,
 )
 from .patches import (
     apply_patch,
@@ -65,7 +71,6 @@ from .patches import (
 from .render import (
     clock,
     describe_blockers,
-    parse_time,
     principal_of,
     task_label,
     tenant_of,
@@ -184,10 +189,10 @@ def _finished_quietly(
     if not held:
         return no_log_line(task_id, attempt)
     if not any(held.values()):
-        return (
-            f"attempt {attempt} printed nothing -- its completed log is empty, and an "
-            "empty stream gets no live log"
-        )
+        # `follow`'s sentence for the same fact (#193). That an empty stream
+        # gets no live log is why this branch reads the completed log at all,
+        # and is said above; the reader needs the fact.
+        return empty_log_line(attempt)
     sizes = " and ".join(f"{count} bytes of {stream}" for stream, count in held.items() if count)
     return (
         f"attempt {attempt} has no live log, but its completed log holds {sizes} -- the "
@@ -261,23 +266,30 @@ def cmd_dispatch(client: SwarmClient, args) -> int:
         prompt = sys.stdin.read()
     if not prompt.strip():
         raise SwarmError("an empty prompt would dispatch an agent with nothing to do")
+    # The SAME refusal the MCP tool makes, through the same function. A
+    # terminal that accepted `--profile codex` while the tool refused it would
+    # be two answers to one question, which is the defect this repository
+    # keeps paying for.
+    # The label is prefixed onto the refusal -- "swarm dispatch: there is no
+    # runner profile called 'claude'", spelled by `terminal_command` for this
+    # install -- so it is spelled to run, like every other command string this
+    # package emits. The MCP side passes `swarm_dispatch`, the TOOL name, which
+    # is right there for the same reason: a reader must be able to act on what
+    # they are shown.
+    where = terminal_command("swarm dispatch")
+    profile = catalogue.check(args.profile, where=where)
+    # `--input KEY=VALUE`: only what this profile declares, typed by the
+    # declaration, and refused before anything travels (#142).
+    inputs = catalogue.parse_input_flags(profile, getattr(args, "inputs", None), where=where)
     task = client.dispatch(
         prompt=prompt,
-        # The SAME refusal the MCP tool makes, through the same function. A
-        # terminal that accepted `--profile codex` while the tool refused it
-        # would be two answers to one question, which is the defect this
-        # repository keeps paying for.
-        # The label is prefixed onto the refusal -- "uv run swarm dispatch:
-        # there is no runner profile called 'claude'" -- so it is spelled to
-        # run, like every other command string this package emits. The MCP
-        # side passes `swarm_dispatch`, the TOOL name, which is right there for
-        # the same reason: a reader must be able to act on what they are shown.
-        runner_profile=catalogue.check(args.profile, where=terminal_command("swarm dispatch")),
+        runner_profile=profile,
         repository_url=args.repo,
         repository_ref=args.ref,
         metadata={"unit": args.label} if args.label else None,
         timeout_seconds=args.timeout,
         model=args.model,
+        inputs=inputs or None,
     )
     if args.json:
         print(json.dumps(task, indent=2))
@@ -356,7 +368,7 @@ def cmd_tail(client: SwarmClient, args) -> int:
 
     while len(done) < len(tasks):
         polled: dict[str, dict[str, Any]] = {}
-        fresh: list[tuple[datetime | None, str, dict[str, Any], str]] = []
+        fresh: list[tuple[tuple[bool, datetime], str, dict[str, Any], str]] = []
         for task_id in tasks:
             if task_id in done:
                 continue
@@ -382,14 +394,15 @@ def cmd_tail(client: SwarmClient, args) -> int:
                 kind = event_type(event) or "?"
                 if kind == "heartbeat" and not args.verbose:
                     continue
-                fresh.append((parse_time(event.get("at")), task_id, event, kind))
+                fresh.append((time_order(event.get("at")), task_id, event, kind))
 
         # ONE ORDER ACROSS TASKS, the platform's. Printed task by task, the
         # events of one poll came out in the order of the argument list, so a
         # dependent step's cancel printed above the upstream failure that
         # caused it (#88, SC-F9). Sorted by `at`, stably, and each carries its
-        # time so an order across polls can be read off the screen too.
-        fresh.sort(key=lambda item: (item[0] is None, item[0] or _EPOCH))
+        # time so an order across polls can be read off the screen too. The
+        # key is `follow.time_order`, which `swarm follow` sorts by too (#194).
+        fresh.sort(key=lambda item: item[0])
         for _, task_id, event, kind in fresh:
             _emit(labels[task_id], f"{clock(event.get('at'))} · {kind}")
 
@@ -490,7 +503,21 @@ def cmd_tail(client: SwarmClient, args) -> int:
             if quiet and state not in TERMINAL:
                 # ONE line, not one a poll, and not nothing: nothing is what an
                 # agent that printed nothing ALSO looks like (#88, SC-F19).
-                warn_once(task_id, "quiet", "no output yet -- no attempt has started")
+                warn_once(task_id, "quiet", NO_ATTEMPT_YET)
+            if (
+                attempt
+                and where
+                and state not in TERMINAL
+                and not printed
+                and task_id not in found_log
+                and task_id not in unreadable
+                and task_id not in attempts_failed
+            ):
+                # An attempt, and every live object it would publish answered
+                # 404. `follow` says so; `tail` printed nothing for this state
+                # (#193), which is also what an agent that printed nothing
+                # looks like. Once per attempt: a resume is a new one.
+                warn_once(task_id, f"nolog:{attempt}", NO_LOG_YET)
             if state in TERMINAL:
                 done.add(task_id)
                 if not printed:
@@ -502,7 +529,7 @@ def cmd_tail(client: SwarmClient, args) -> int:
                             "whether it started is unknown -- its attempts could not be read",
                         )
                     elif not attempt:
-                        _emit(label, "never started, so it printed nothing")
+                        _emit(label, NEVER_STARTED)
                     elif task_id in attempts_failed:
                         # The attempt read is known. Whether the task finished
                         # on it is not, so a cause taken from its logs could
@@ -524,30 +551,16 @@ def cmd_tail(client: SwarmClient, args) -> int:
                                 live_unreadable=task_id in unreadable,
                             ),
                         )
+                # The state as every screen spells it, and what the task
+                # produced -- `follow`'s closing line, from the same function
+                # (#193). `tail` printed `OK` here.
                 git = ((task.get("result_summary") or {}).get("git")) or {}
-                summary = ""
-                if git.get("commit_count"):
-                    summary = (
-                        f" · {git['commit_count']} commit(s) "
-                        f"+{git.get('insertions', 0)}/-{git.get('deletions', 0)}"
-                    )
-                elif git.get("dirty_count"):
-                    summary = f" · {git['dirty_count']} file(s) changed, uncommitted"
-                pr = git.get("pull_request")
-                if pr:
-                    summary += f" · PR #{pr.get('number')}"
-                _emit(label, f"{'OK' if state == 'SUCCEEDED' else state}{summary}")
+                _emit(label, terminal_line(state, git))
                 if state != "SUCCEEDED":
                     failed = True
         if len(done) < len(tasks):
             time.sleep(args.interval)
     return EXIT_FAIL if failed else EXIT_OK
-
-
-#: A stand-in that keeps `tail`'s sort key comparable for an event whose `at`
-#: could not be read. Such events already sort LAST on the key's first element;
-#: this only stops the second from comparing None with a datetime.
-_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
 
 
 def cmd_follow(client: SwarmClient, args) -> int:
@@ -703,7 +716,14 @@ def cmd_result(client: SwarmClient, args) -> int:
         print(f"  code: {explain_absence(task)}")
         return EXIT_OK
     print(f"  base    {git.get('base') or '—'}")
-    print(f"  commits {git.get('commit_count', 0)}  +{git.get('insertions', 0)}/-{git.get('deletions', 0)}")
+    # ABSENT, NOT 0 (#191). A `git` summary that carries only the harvest's
+    # error counted nothing, and `commits 0 +0/-0` is a measurement. The mark
+    # is what `sc task` prints for the same summary.
+    commits = git.get("commit_count")
+    if commits is None:
+        print("  commits —")
+    else:
+        print(f"  commits {commits}  +{git.get('insertions', 0)}/-{git.get('deletions', 0)}")
     for commit in git.get("commits") or []:
         print(f"    {commit['sha'][:10]}  {commit['subject']}")
     if git.get("dirty_count"):
@@ -919,7 +939,12 @@ def cmd_workflow_status(client: SwarmClient, args) -> int:
                 if reason not in reasons:
                     reasons.append(reason)
                 patch = f"none [{reasons.index(reason) + 1}]"
-            print(f"      commits {produced.get('commits')}  patch {patch}")
+            # A step that cloned nothing or never started MEASURED no commits,
+            # and `commits 0` beside its footnote was a zero nobody counted
+            # (#191). The count is left out; the footnote says why.
+            commits = produced.get("commits")
+            counted = "" if commits is None else f"commits {commits}  "
+            print(f"      {counted}patch {patch}")
     for number, reason in enumerate(reasons, 1):
         print(
             textwrap.fill(
@@ -1080,6 +1105,18 @@ def cmd_profiles(_client, args) -> int:
         )
         if entry.get("provider"):
             print(f"       provider {entry['provider']} -- needs a registered credential")
+        if entry.get("inputs"):
+            # What `--input` and a step's `inputs` may carry (#142).
+            print(
+                textwrap.fill(
+                    ", ".join(f"{key} ({spec['kind']})" for key, spec in entry["inputs"].items()),
+                    width=78,
+                    initial_indent="       inputs ",
+                    subsequent_indent=" " * 14,
+                    break_on_hyphens=False,
+                    break_long_words=False,
+                )
+            )
         if not entry["available"]:
             # WRAPPED and indented, like `doctor`'s explanations: the reason is
             # a sentence naming the remedy, and printed raw it is the part that
@@ -1403,9 +1440,11 @@ def _workflow_epilog() -> str:
     keys = textwrap.fill(
         f"Each step needs step_id and prompt; it may also carry {optional} "
         f"(runner_profile defaults to {workflows.DEFAULT_PROFILE}). No other "
-        "step key is sent. At the top level, all optional: strategy, carrier, "
-        "repository_url, repository_ref, on_step_failure, priority, label -- "
-        "the flags below override the file's.",
+        "step key is sent. `inputs` holds only what the step's profile "
+        "declares -- `swarm profiles` lists them -- e.g. "
+        '{"sleep_seconds": 120} for mock. At the top level, all optional: '
+        "strategy, carrier, repository_url, repository_ref, on_step_failure, "
+        "priority, label -- the flags below override the file's.",
         width=76,
     )
     return (
@@ -1479,6 +1518,22 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     d.add_argument("--timeout", type=int, default=None)
+    # DATA FOR THE RUNNER, and only what its profile declares (#142). Refused by
+    # name for any other key and for any profile that declares none; the names
+    # in the help are read from the one table that decides.
+    d.add_argument(
+        "--input",
+        action="append",
+        default=[],
+        dest="inputs",
+        metavar="KEY=VALUE",
+        help=(
+            "an input the profile declares, e.g. --input sleep_seconds=120; "
+            "repeatable. Declared today by: "
+            f"{', '.join(sorted(catalogue.DECLARED_INPUTS)) or 'no profile'} "
+            "(`swarm profiles` lists each one's inputs)"
+        ),
+    )
     d.add_argument("--json", action="store_true")
     d.set_defaults(func=cmd_dispatch)
 

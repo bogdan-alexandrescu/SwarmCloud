@@ -1015,7 +1015,8 @@ def test_tail_reads_the_attempt_a_resumed_task_did_its_work_in(swarm, world, cap
     # from output that starts again from nothing.
     assert any(_SECOND in line and "latest" in line for line in lines), lines
     assert not any("212 bytes" in line for line in lines), lines
-    assert lines[-1].endswith("OK"), lines
+    # The state as every screen spells it -- `tail` printed `OK` here (#193).
+    assert lines[-1].endswith("SUCCEEDED"), lines
 
 
 @pytest.mark.parametrize(

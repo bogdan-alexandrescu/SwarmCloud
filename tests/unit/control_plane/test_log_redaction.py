@@ -348,7 +348,7 @@ def test_a_planted_sentinel_cannot_shield_a_value():
     """The fix marks a protected status word with a control byte for one pass.
     A line that already carries that byte must not be able to use it to keep a
     real value out of the masking rule."""
-    (out,) = _house_filter(["TOKEN\x1f: hunter2-hunter2-hunter2"])
+    (out,) = _house_filter(["TOKEN\x01: hunter2-hunter2-hunter2"])
     assert "hunter2" not in out, repr(out)
 
 

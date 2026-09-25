@@ -36,6 +36,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from swarm_common.profiles import RESOURCE_CLASSES
+
 from . import profiles as catalogue
 from . import workflows
 from .client import TERMINAL, SwarmClient, SwarmError, task_id_of
@@ -51,6 +53,23 @@ from .patches import (
 )
 
 PROTOCOL_VERSION = "2024-11-05"
+
+#: A runner's DECLARED inputs, for `swarm_dispatch` and a `swarm_workflow` step
+#: (#142). An open object in the schema because what it may hold depends on the
+#: profile named beside it; `profiles.check_inputs` refuses anything the
+#: profile does not declare, before anything travels. The profiles that declare
+#: any are read from the table that decides.
+_INPUTS_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "description": (
+        "Data for the runner beside the prompt -- ONLY the inputs the named "
+        "profile declares, which swarm_profiles lists under `inputs`; any other "
+        "key, or any input at all for a profile that declares none, is refused. "
+        f"Declared today by: {', '.join(sorted(catalogue.DECLARED_INPUTS)) or 'no profile'}"
+        " -- e.g. {\"sleep_seconds\": 120} keeps a mock step RUNNING long enough "
+        "to cancel. Never an image, a command, a resource spec, a backend or a model."
+    ),
+}
 
 TOOLS: list[dict[str, Any]] = [
     {
@@ -78,6 +97,7 @@ TOOLS: list[dict[str, Any]] = [
                 "repo": {"type": "string", "description": "Repository to clone (https or ssh)."},
                 "ref": {"type": "string", "description": "Branch, tag or commit."},
                 "label": {"type": "string", "description": "A short name, for the UI."},
+                "inputs": _INPUTS_SCHEMA,
             },
             "required": ["prompt"],
         },
@@ -211,7 +231,12 @@ TOOLS: list[dict[str, Any]] = [
             "`exit_code: null` means NOT RECORDED. It is not 0. Reporting it as "
             "0 says the agent exited cleanly, which is the one thing it did not "
             "do. `failure.note` means the task failed before any agent ran, so "
-            "the investigation is admission and dispatch rather than the agent."
+            "the investigation is admission and dispatch rather than the agent.\n"
+            "\n"
+            "`commits`, `insertions`, `deletions` and `uncommitted_files` are "
+            "null when nothing was counted -- the task cloned no repository, "
+            "never started, or its harvest failed -- and `no_patch_because` says "
+            "which. Null is not zero; 0 is a count the harvest made."
         ),
         "inputSchema": {
             "type": "object",
@@ -364,6 +389,7 @@ TOOLS: list[dict[str, Any]] = [
                                 ),
                             },
                             "timeout_seconds": {"type": "integer"},
+                            "inputs": _INPUTS_SCHEMA,
                         },
                         "required": ["step_id", "prompt"],
                     },
@@ -541,8 +567,15 @@ TOOLS: list[dict[str, Any]] = [
             "Pool ceilings, and for each runner profile WHICH pool actually "
             "binds it. Admission is all-or-nothing across every required pool, "
             "so the ceiling a profile feels is the tightest of them -- not the "
-            "global one, which is the one people quote. ROOM is how many more "
-            "tasks of that profile fit before the binding pool refuses."
+            "global one, which is the one people quote. ROOM is AGENTS: how many "
+            "more tasks of that profile fit before the binding pool refuses. "
+            "UNITS is capacity UNITS in use out of the pool's limit, not agents -- "
+            "an agent takes its resource class's units ("
+            + ", ".join(
+                f"{name} {resource.units}"
+                for name, resource in sorted(RESOURCE_CLASSES.items(), key=lambda kv: kv[1].units)
+            )
+            + ") -- and on a shared pool it counts every tenant's."
         ),
         "inputSchema": {
             "type": "object",
@@ -659,20 +692,22 @@ _SC_VIEWS = {
 
 def _call(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
     if name == "swarm_dispatch":
+        # CHECKED BEFORE THE ROUND TRIP. The API refuses an unknown or disabled
+        # profile too and stays the authority; this only refuses sooner, with
+        # the catalogue's own reason, so a session that typed `claude` for
+        # `claude-code` is told which names exist instead of reading a 4xx. See
+        # `profiles.check` for why a local check here is not a second opinion.
+        profile = catalogue.check(args.get("profile") or "claude-code", where="swarm_dispatch")
+        # The inputs this profile DECLARES, and nothing else, refused by name
+        # before anything travels (#142).
+        inputs = catalogue.check_inputs(profile, args.get("inputs"), where="swarm_dispatch")
         task = client.dispatch(
             prompt=args["prompt"],
-            # CHECKED BEFORE THE ROUND TRIP. The API refuses an unknown or
-            # disabled profile too and stays the authority; this only refuses
-            # sooner, with the catalogue's own reason, so a session that typed
-            # `claude` for `claude-code` is told which names exist instead of
-            # reading a 4xx. See `profiles.check` for why a local check here is
-            # not a second opinion.
-            runner_profile=catalogue.check(
-                args.get("profile") or "claude-code", where="swarm_dispatch"
-            ),
+            runner_profile=profile,
             repository_url=args.get("repo"),
             repository_ref=args.get("ref"),
             metadata={"unit": args["label"]} if args.get("label") else None,
+            inputs=inputs or None,
         )
         task_id = task_id_of(task)
         if not task_id:

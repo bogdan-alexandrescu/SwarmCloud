@@ -305,9 +305,11 @@ outside a checkout it answers that there is no `pyproject.toml`. That is a real 
 stated here rather than papered over, because a model that meets it without
 warning reports the platform as broken. `/sc` and the `sc` skill want the
 repository, and the plugin's two descriptions say so. The `delegate` skill's
-tools come from the MCP server and are unaffected. It also suggests two shell
-commands, and those want the repository too: `uv run swarm tail`, to stream in
-a background shell, and `uv run swarm doctor`, to diagnose.
+tools come from the MCP server and are unaffected. The shell commands the
+bridge hands back -- `follow_live_with`, a sign-in hint -- are spelled for the
+install the bridge runs from, so they need no checkout (see *Where the API
+actually is*, below); the skill's own `uv run swarm doctor` is the checkout's
+spelling.
 
 The `sc` skill and `/sc` are granted each **view** by name —
 `uv run sc accounts`, `uv run sc task`, and so on — and never `sc` as a
@@ -370,12 +372,23 @@ from working. That grant is `frontend_iap_members` in
 OAuth client, which this one deliberately does not (a client id there means a
 client secret in Terraform state).
 
-**`swarm` and `sc` are not on your PATH**, and nothing here should ever tell you
-they are. They are console scripts of `swarm-mcp`, installed into the uv-managed
-environment, so every command this plugin hands back carries the `uv run`
-prefix. Three places used to hand a model the bare string `swarm tail <id>`; the
-model ran it, got `command not found`, and had every reason to report the
-platform as broken.
+**A command the bridge hands back is spelled for the install it is running
+from**, by one function (`swarm_mcp.invocation.terminal_command`), so it runs
+where the bridge runs and reaches the same version of it:
+
+| The bridge is running from | A command reads |
+|---|---|
+| a checkout of this repository (its `.mcp.json`, `uv run swarm ...`) | `uv run swarm tail <id>` |
+| `uv tool install`, with that install's `swarm` on your PATH | `swarm tail <id>` |
+| the plugin, with nothing installed | `uv tool run --from 'swarm-mcp @ git+https://github.com/bogdan-alexandrescu/SwarmCloud@sc-v<version>#subdirectory=apps/swarm-mcp' swarm tail <id>` |
+| the escape hatch, `SWARM_MCP_FROM` | `uv tool run --from <that value> swarm tail <id>` |
+
+The plugin-only row is rebuilt from the install's own record of where it came
+from, so it names the same tag the server was started with. Until 0.5.2 every
+row read `uv run`, which outside a checkout answers `Failed to spawn: swarm`
+(#189). A `swarm` on your PATH from some other install is not used: it is
+installed on its own and can be another version. Run what the bridge hands
+back rather than retyping it.
 
 ## Choosing a runner profile
 
@@ -397,6 +410,19 @@ the two refusals are kept apart because they need different answers — an unkno
 name is a typo and lists the real names, while a known-but-disabled one quotes
 the catalogue's own reason. `codex` is the live example: disabled rather than
 deleted, so the runs that name it stay readable.
+
+**Beside the prompt, a caller may send only the inputs a profile declares.**
+`mock` declares its test knobs — `sleep_seconds`, `steps`, `fail`,
+`artifact_text` and the rest, listed by `swarm_profiles` under `inputs` — so a
+step can sleep long enough to be cancelled, or fail on purpose: `inputs` on a
+`swarm_dispatch` call or a `swarm_workflow` step, `--input sleep_seconds=120`
+on `swarm dispatch`, `"inputs": {...}` on a step in a `swarm workflow` spec.
+Every other profile declares none and takes none. A key the profile does not
+declare is refused by name, never dropped, and never an image, a command, a
+resource spec, a backend or a model: `input.model` is read by the CLI runners,
+and a caller setting it would be choosing the model a `claude-code` agent
+runs. The declarations live in one table in `swarm_mcp/profiles.py` until the
+frozen catalogue can carry them (contract request 25).
 
 ## What keeps these honest
 
