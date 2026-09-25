@@ -59,8 +59,33 @@ def download(client: SwarmClient, uri: str, *, timeout: int = 120) -> bytes:
     of its own, which is why `SwarmClient` exposes one separately from the ID
     token IAP wants.
     """
+    return _get(client, uri, f"{_object_url(uri)}?alt=media", timeout=timeout)
+
+
+def object_size(client: SwarmClient, uri: str, *, timeout: int = 30) -> int:
+    """How many bytes one object holds, read from its METADATA, not its bytes.
+
+    `swarm tail` asks this of a completed log (`logs/<stream>.log`) to tell an
+    agent that printed nothing from one whose output never reached a live
+    flush. The answer is one number and the object can be 32 MB
+    (`max_stdout_bytes`), so downloading it to count would cost the whole
+    stream. The same credentials, retry and status-carrying errors as
+    `download`, because they are the same request without `alt=media`.
+    """
+    raw = _get(client, uri, _object_url(uri), timeout=timeout)
+    try:
+        return int(json.loads(raw)["size"])
+    except (ValueError, KeyError, TypeError) as exc:
+        raise SwarmError(f"could not read the size of {uri}: {exc}") from exc
+
+
+def _object_url(uri: str) -> str:
     bucket, key = parse_gs_uri(uri)
-    url = f"{_GCS}/{urllib.parse.quote(bucket, safe='')}/o/{urllib.parse.quote(key, safe='')}?alt=media"
+    return f"{_GCS}/{urllib.parse.quote(bucket, safe='')}/o/{urllib.parse.quote(key, safe='')}"
+
+
+def _get(client: SwarmClient, uri: str, url: str, *, timeout: int) -> bytes:
+    """One GCS JSON-API GET with the reader's own access token."""
     # ONE RETRY, on a 401 with a token the client had cached: the access token
     # is cached now (`SwarmClient.access_token`), and gcloud can hand back one
     # with less life left than the cache assumes. A fake client without the

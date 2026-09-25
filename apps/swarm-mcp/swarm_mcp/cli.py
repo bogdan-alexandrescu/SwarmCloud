@@ -43,9 +43,11 @@ from .client import (
 )
 from .follow import (
     DEFAULT_LOG_BUDGET,
+    STREAMS,
     event_type,
     follow,
     follow_command,
+    no_log_line,
     render,
     settled,
     terminal_command,
@@ -57,6 +59,7 @@ from .patches import (
     explain_absence,
     explain_failure,
     integrate,
+    object_size,
     patch_uri,
 )
 from .render import (
@@ -97,15 +100,86 @@ def _artifact_bucket() -> str:
     return f"swarm-artifacts-{project}"
 
 
-def _live_log_uri(
-    task: dict[str, Any], attempt_id: str, stream: str, *, bucket: str | None = None
-) -> str:
+def _logs_prefix(task: dict[str, Any], attempt_id: str, bucket: str | None) -> str:
     # `task_id_of`, not `task["task_id"]`: the API names the field `id`, so
     # the subscript raised KeyError -- which is not a SwarmError and so escaped
     # every handler in this file as a traceback, mid-tail.
     return (
         f"gs://{bucket or _artifact_bucket()}/tenants/{task['tenant_id']}"
-        f"/tasks/{task_id_of(task)}/attempts/{attempt_id}/logs/live/{stream}.tail.log"
+        f"/tasks/{task_id_of(task)}/attempts/{attempt_id}/logs"
+    )
+
+
+def _live_log_uri(
+    task: dict[str, Any], attempt_id: str, stream: str, *, bucket: str | None = None
+) -> str:
+    """The window `lifecycle._publish_live_logs` republishes while the agent runs."""
+    return f"{_logs_prefix(task, attempt_id, bucket)}/live/{stream}.tail.log"
+
+
+def _completed_log_uri(
+    task: dict[str, Any], attempt_id: str, stream: str, *, bucket: str | None = None
+) -> str:
+    """The whole stream, which `lifecycle._upload_outputs` writes at exit."""
+    return f"{_logs_prefix(task, attempt_id, bucket)}/{stream}.log"
+
+
+def _finished_quietly(
+    client: SwarmClient,
+    task: dict[str, Any],
+    attempt: str,
+    bucket: str,
+    *,
+    live_found: bool,
+    live_unreadable: bool,
+) -> str:
+    """The one line for a finished task whose live log showed nothing -- what
+    was OBSERVED, and nothing more.
+
+    NO LIVE LOG IS NOT MISSING OUTPUT. `lifecycle._publish_live_logs` publishes
+    first one `LIVE_LOG_INTERVAL_SECONDS` (5 by default) after the agent
+    starts, never at exit, and never for a stream with no bytes. Three kinds of
+    run leave no live log: an agent that printed nothing, a run that fit inside
+    the first interval, and an agent that printed only after its last flush.
+    `tail` printed "its output is MISSING, not empty" for all three. The
+    completed log (`logs/<stream>.log`, written by `_upload_outputs` at exit)
+    tells the empty run from the other two. Its SIZE is read from the
+    object's metadata, because it can be 32 MB and one number is the answer.
+
+    Its contents are NOT printed here. `swarm follow` reads the completed log
+    through the API, which redacts at read time. That is the path for output
+    this tail never saw, and the line names it.
+    """
+    task_id = task_id_of(task)
+    if live_unreadable:
+        # The warning above has the status. A read that failed says nothing
+        # about the output, so this line does not either.
+        return "whether it printed anything is unknown -- its logs could not be read"
+    if live_found:
+        return "printed nothing -- its live log is empty"
+    held: dict[str, int] = {}
+    for stream in STREAMS:
+        try:
+            held[stream] = object_size(
+                client, _completed_log_uri(task, attempt, stream, bucket=bucket)
+            )
+        except SwarmError as exc:
+            if exc.status == 404:
+                continue
+            return (
+                "whether it printed anything is unknown -- its completed log could not "
+                f"be read: {exc}"
+            )
+    if not held:
+        return no_log_line(task_id, attempt)
+    if not any(held.values()):
+        return "printed nothing -- its completed log is empty, and an empty stream gets no live log"
+    sizes = " and ".join(f"{count} bytes of {stream}" for stream, count in held.items() if count)
+    return (
+        f"no live log exists, but its completed log holds {sizes} -- the worker publishes "
+        "the live log every 5 s by default, not at exit, so output written after its "
+        f"last flush never reaches one. Read it with: "
+        f"{terminal_command(f'swarm follow {task_id}')}"
     )
 
 
@@ -236,6 +310,11 @@ def cmd_tail(client: SwarmClient, args) -> int:
     # Per task: whether any live log object was FOUND. Beside `shown_to`, it is
     # what tells an agent that printed nothing from a log nobody published.
     found_log: set[str] = set()
+    # Per task, as of its LATEST poll: a read that failed. A failed read says
+    # nothing about the output, so the finished line must not either -- and a
+    # read that failed once and then worked is not held against the task.
+    unreadable: set[str] = set()
+    attempts_failed: set[str] = set()
     # The bucket, resolved once per tail and only once an attempt exists --
     # `[value]` or `[error]` -- because resolving it may ask gcloud.
     bucket: list[Any] = []
@@ -299,12 +378,14 @@ def cmd_tail(client: SwarmClient, args) -> int:
             attempt = attempts.get(task_id)
             if attempt is None:
                 attempt, why = _latest_attempt(client, task_id)
+                attempts_failed.discard(task_id)
                 if why is not None:
                     # Not fatal -- the state polling above still works, so the
                     # tail can still report the outcome. But silence here is
                     # indistinguishable from an agent that has printed nothing,
                     # which is the reading an operator would take.
                     warn_once(task_id, "attempts", f"! logs unavailable: {why}")
+                    attempts_failed.add(task_id)
             if attempt:
                 attempts[task_id] = attempt
             where = resolve_bucket() if attempt else None
@@ -313,17 +394,23 @@ def cmd_tail(client: SwarmClient, args) -> int:
                 # below and swallowed there as "not published yet".
                 warn_once(task_id, "bucket", f"! logs unavailable: {bucket[0]}")
             if attempt and where:
-                for stream in ("stdout", "stderr"):
+                unreadable.discard(task_id)
+                for stream in STREAMS:
                     try:
                         blob = download(client, _live_log_uri(task, attempt, stream, bucket=where))
                     except SwarmError as exc:
                         if exc.status == 404:
-                            continue  # not published yet, or nothing written
+                            # Not published yet -- or never: the worker skips
+                            # an empty stream and does not flush at exit. The
+                            # finished line below reads the completed log to
+                            # tell those apart.
+                            continue
                         # Anything else -- a 403 on the tenant's prefix, a
                         # timeout -- is a read that FAILED, and an agent that
                         # printed nothing looks exactly like it unless it is
                         # said. Once per task.
                         warn_once(task_id, "read", f"! logs unreadable: {exc}")
+                        unreadable.add(task_id)
                         continue
                     found_log.add(task_id)
                     header, _, body = blob.decode("utf-8", errors="replace").partition("\n")
@@ -345,22 +432,36 @@ def cmd_tail(client: SwarmClient, args) -> int:
                     shown_to[key] = offset + len(body)
 
             state = task.get("state")
-            printed = any(
-                shown_to.get((task_id, stream), 0) > 0 for stream in ("stdout", "stderr")
-            )
-            if not printed and state not in TERMINAL and not attempt:
+            printed = any(shown_to.get((task_id, stream), 0) > 0 for stream in STREAMS)
+            quiet = not printed and not attempt and task_id not in attempts_failed
+            if quiet and state not in TERMINAL:
                 # ONE line, not one a poll, and not nothing: nothing is what an
                 # agent that printed nothing ALSO looks like (#88, SC-F19).
                 warn_once(task_id, "quiet", "no output yet -- no attempt has started")
             if state in TERMINAL:
                 done.add(task_id)
                 if not printed:
-                    if not attempt:
+                    if task_id in attempts_failed:
+                        # "No attempt" is an ANSWER from the attempts route;
+                        # a failed read of it is not, and was warned above.
+                        _emit(
+                            label,
+                            "whether it started is unknown -- its attempts could not be read",
+                        )
+                    elif not attempt:
                         _emit(label, "never started, so it printed nothing")
-                    elif task_id in found_log:
-                        _emit(label, "printed nothing -- its live log is empty")
                     elif where:
-                        _emit(label, "no live log was published -- its output is MISSING, not empty")
+                        _emit(
+                            label,
+                            _finished_quietly(
+                                client,
+                                task,
+                                attempt,
+                                where,
+                                live_found=task_id in found_log,
+                                live_unreadable=task_id in unreadable,
+                            ),
+                        )
                 git = ((task.get("result_summary") or {}).get("git")) or {}
                 summary = ""
                 if git.get("commit_count"):

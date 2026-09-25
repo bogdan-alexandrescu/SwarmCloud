@@ -1068,6 +1068,29 @@ def _fetch(
 # Rendering, for the terminal
 # --------------------------------------------------------------------------
 
+def no_log_line(task_id: str, attempt_id: str | None) -> str:
+    """A finished attempt with NEITHER a completed log nor a live tail, as observed.
+
+    ONE SENTENCE FOR `follow` AND `tail`, because both said the same wrong
+    thing: "its output is MISSING, not empty". That is one reading of two
+    absent objects, and the worker gives ordinary ones. `_upload_outputs`
+    writes the completed log only from a capture file the runner creates
+    (`procman.StreamCapture`), so an attempt that fails during its startup
+    has neither object. A worker stopped before its upload leaves only the
+    live tail. There is no tail for an agent that printed nothing, or that
+    printed only after the worker's last live flush, which is always the
+    case for a short run. The objects alone cannot tell these apart. So the
+    line names what was looked for, and says where the reason the attempt
+    ended is recorded.
+    """
+    where = f" for attempt {attempt_id}" if attempt_id else ""
+    how = f" -- {terminal_command(f'swarm result {task_id}')} says how it ended" if task_id else ""
+    return (
+        f"no log object exists{where}, live or completed: its agent may never have "
+        f"started, or its worker stopped before uploading{how}"
+    )
+
+
 def quiet_line(task: dict[str, Any], cursor: dict[str, Any] | None) -> str | None:
     """The one line that tells "printed nothing" from "nothing to read yet".
 
@@ -1098,9 +1121,7 @@ def quiet_line(task: dict[str, Any], cursor: dict[str, Any] | None) -> str | Non
     if status == "no_attempt_yet":
         return "never started, so it printed nothing"
     if status == "absent":
-        attempt = logs.get("attempt_id")
-        where = f" for attempt {attempt}" if attempt else ""
-        return f"no log was published{where} -- its output is MISSING, not empty"
+        return no_log_line(str(task.get("task_id") or ""), logs.get("attempt_id"))
     complete = [bool((positions.get(name) or {}).get("complete")) for name in STREAMS]
     settled_streams = [
         complete[i] or (rows.get(name) or {}).get("status") == "absent"
