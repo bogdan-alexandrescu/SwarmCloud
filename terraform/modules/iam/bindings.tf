@@ -52,20 +52,16 @@ locals {
     "roles/cloudtrace.agent",
   ]
 
-  # Custom role names, built from the role_id this configuration sets rather than
-  # read back from the resource's computed `id`.
-  #
-  # Both forms are the same string. The difference is WHEN it is known: `.id` is
-  # computed and therefore unknown until apply, and a role name that is unknown
-  # at plan time lands in the for_each keys below and makes the very first plan
-  # fail. Referencing `.role_id` still creates the dependency edge, but the value
-  # is already in the configuration, so the key is known.
+  # Custom role names, as plain strings from ../custom_role_ids. The roles are
+  # defined in terraform/bootstrap (custom_roles.tf says why), so there is no
+  # resource here to read a name from -- and a name that is configuration is
+  # known at plan, which is what the for_each keys below need: a role name
+  # unknown at plan time makes the very first plan fail.
   custom_roles = {
-    job_dispatcher = "projects/${var.project_id}/roles/${local.custom_role_ids.job_dispatcher}"
-    job_reaper     = "projects/${var.project_id}/roles/${local.custom_role_ids.job_reaper}"
-    secret_lister  = "projects/${var.project_id}/roles/${local.custom_role_ids.secret_lister}"
-    gke_dispatcher = var.gke_enabled ? "projects/${var.project_id}/roles/${local.custom_role_ids.gke_dispatcher}" : ""
-    gke_reaper     = var.gke_enabled ? "projects/${var.project_id}/roles/${local.custom_role_ids.gke_reaper}" : ""
+    job_dispatcher = module.custom_role_ids.names.job_dispatcher
+    job_reaper     = module.custom_role_ids.names.job_reaper
+    gke_dispatcher = var.gke_enabled ? module.custom_role_ids.names.gke_dispatcher : ""
+    gke_reaper     = var.gke_enabled ? module.custom_role_ids.names.gke_reaper : ""
   }
 
   # account key -> list of unconditioned project roles. Every element is known at
@@ -90,10 +86,13 @@ locals {
         # Reads its own metrics to drive the adaptive target. No write access to
         # anything outside Firestore.
         "roles/monitoring.viewer",
-        # Discovers which tenants hold a subscription credential. Metadata only;
-        # the ability to READ one is granted per-secret by the secret_manager
-        # module, and only on the refresh secrets.
-        local.custom_roles.secret_lister,
+        # swarmSecretLister -- discovering which tenants hold a subscription
+        # credential, and provisioning an account's secrets -- is NOT granted
+        # here any more. terraform/bootstrap grants it (#69): the role carries
+        # project-wide secrets.setIamPolicy, and a grant CI makes is one the
+        # scoped projectIamAdmin must admit, which would let CI grant it to
+        # itself. The ability to READ a credential is still granted per secret
+        # by the secret_manager module, on the refresh secrets only.
       ])
       "swarm-reconciler" = concat(local.telemetry_roles, [
         local.custom_roles.job_reaper,
@@ -146,17 +145,10 @@ resource "google_project_iam_member" "plain" {
   role    = each.value.role
   member  = local.sa_member[each.value.account]
 
-  # Explicit, because the role strings above are now built from configuration
-  # rather than read off the resources. That is what keeps the for_each keys
-  # known, and it also removes the implicit edge -- without this, a grant can be
-  # attempted before the custom role it names exists.
-  depends_on = [
-    google_project_iam_custom_role.job_dispatcher,
-    google_project_iam_custom_role.job_reaper,
-    google_project_iam_custom_role.secret_lister,
-    google_project_iam_custom_role.gke_dispatcher,
-    google_project_iam_custom_role.gke_reaper,
-  ]
+  # No depends_on on the custom roles any more: they are terraform/bootstrap's,
+  # which the owner applies before any release that grants them, so there is no
+  # node in this graph to wait for. A grant of a role that does not exist fails
+  # at apply with IAM's own "does not exist" error.
 }
 
 # GKE dispatch and reap, pinned to the swarm's own cluster.
@@ -177,12 +169,7 @@ resource "google_project_iam_member" "gke" {
   role    = each.value
   member  = local.sa_member[each.key]
 
-  # Same reason as the `plain` grants: the role string is configuration now, so
-  # the ordering edge has to be stated rather than inferred.
-  depends_on = [
-    google_project_iam_custom_role.gke_dispatcher,
-    google_project_iam_custom_role.gke_reaper,
-  ]
+  # The two roles are terraform/bootstrap's, as for the `plain` grants above.
 
   dynamic "condition" {
     for_each = local.gke_condition

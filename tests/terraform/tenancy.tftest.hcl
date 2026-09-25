@@ -85,9 +85,15 @@ run "a_tenant_can_only_reach_its_own_objects" {
   }
 
   # legacyBucketReader would hand over objects.list across the WHOLE bucket.
+  # The grant is the custom swarmBucketMetadataReader, whose one permission
+  # (storage.buckets.get) platform_roles.tftest.hcl asserts: terraform/bootstrap
+  # defines it since #79.
   assert {
-    condition     = google_project_iam_custom_role.bucket_metadata_reader.permissions == toset(["storage.buckets.get"])
-    error_message = "mounting needs bucket metadata and nothing else"
+    condition = alltrue([
+      for k, b in google_storage_bucket_iam_member.worker_bucket_metadata :
+      b.role == "projects/saga-agents-staging/roles/swarmBucketMetadataReader"
+    ])
+    error_message = "mounting needs bucket metadata and nothing else: the worker's bucket-level grant must be swarmBucketMetadataReader, not a predefined bucket role"
   }
 }
 
@@ -98,18 +104,8 @@ run "a_worker_identity_can_create_no_infrastructure" {
     source = "../../terraform/modules/tenancy"
   }
 
-  # The member's `role` interpolates the custom role's computed `.id`, so it is
-  # unknown during plan. Pinning `.id` to the value the provider will produce
-  # makes the grant assertable without applying anything.
-  override_resource {
-    target          = google_project_iam_custom_role.worker_firestore
-    override_during = plan
-    values = {
-      id      = "projects/saga-agents-staging/roles/swarmTenantWorkerFirestore"
-      name    = "projects/saga-agents-staging/roles/swarmTenantWorkerFirestore"
-      role_id = "swarmTenantWorkerFirestore"
-    }
-  }
+  # The member's `role` is a plain string from terraform/modules/custom_role_ids
+  # since #79, known at plan -- no override of a computed role id is needed.
 
   assert {
     condition = alltrue([
@@ -152,32 +148,17 @@ run "a_worker_identity_can_create_no_infrastructure" {
   # and "can enumerate and destroy every other tenant's tasks, leases and the
   # pool documents the whole platform admits against". Nothing in the worker
   # path deletes a document or runs a query.
+  # The role this grant names is swarmTenantWorkerFirestore. What it CONTAINS
+  # -- no entities.delete, no entities.list, nothing outside Firestore -- is
+  # asserted in platform_roles.tftest.hcl, against terraform/bootstrap, which
+  # defines it since #79. This run holds that the worker is granted that role
+  # and not the predefined one.
   assert {
-    # .id is computed and unknown during plan, so compare against role_id,
-    # which comes from configuration and IS known. Same guarantee, plan-safe.
     condition = alltrue([
       for k, b in google_project_iam_member.worker_firestore :
       b.role == "projects/saga-agents-staging/roles/swarmTenantWorkerFirestore"
     ])
     error_message = "the worker Firestore grant must be the narrowed custom role, not predefined roles/datastore.user"
-  }
-
-  assert {
-    condition     = !contains(google_project_iam_custom_role.worker_firestore.permissions, "datastore.entities.delete")
-    error_message = "entities.delete would let a hostile worker delete another tenant's tasks and leases, and the pool documents admission depends on"
-  }
-
-  assert {
-    condition     = !contains(google_project_iam_custom_role.worker_firestore.permissions, "datastore.entities.list")
-    error_message = "entities.list is queries: without it a document can only be fetched by an id already known, so another tenant's work cannot be enumerated"
-  }
-
-  assert {
-    condition = alltrue([
-      for p in google_project_iam_custom_role.worker_firestore.permissions :
-      startswith(p, "datastore.") || p == "resourcemanager.projects.get"
-    ])
-    error_message = "the worker's Firestore role covers Firestore and nothing else"
   }
 
   # actAs is granted ON the individual service account, never project-wide, and

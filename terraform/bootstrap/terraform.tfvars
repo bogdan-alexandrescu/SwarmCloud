@@ -7,6 +7,14 @@ project_id = "saga-agents-staging"
 region     = "us-central1"
 location   = "US-CENTRAL1"
 
+# The platform's eight custom roles and the broker's swarmSecretLister grant
+# were created by terraform/infra's dev state and are ADOPTED by this root
+# (platform_roles.tf; #79, #69, 2026-09-25). Naming the state does two things:
+# the import blocks adopt the live objects, and every plan refuses to manage
+# them until that state's custom_roles_owner output shows the release has
+# already made infra forget them. docs/runbooks/custom-roles-to-bootstrap.md.
+adopt_from_infra_states = ["infra/dev"]
+
 # Keyless CI. Turned on 2026-09-24 so testing, building and deploying run in
 # GitHub Actions rather than on a laptop.
 enable_github_wif = true
