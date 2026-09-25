@@ -24,7 +24,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { renderToStaticMarkup } from 'react-dom/server'
 
-import { Run } from '../src/AgentDetail'
+import { DRAWER_POLL_MS, Run, drawerPoll } from '../src/AgentDetail'
 import type { AgentRun } from '../src/api'
 import type { AttemptRow, Task, TaskEvent } from '../src/types'
 
@@ -624,4 +624,21 @@ test('one attempt has one name on its card and over its events', () => {
   const names = markup.split('Attempt 1 · gen 1').length - 1
   assert.ok(names >= 2, `the card and its event group do not share one name (${names} found)`)
   assert.ok(!markup.includes('Attempt 1 · generation'), 'the event group spells the attempt differently')
+})
+
+// ---------------------------------------------------------------------------
+// The drawer re-reads while there is something to learn (AG-2)
+// ---------------------------------------------------------------------------
+
+test('the drawer re-reads an unfinished run, and stops once it is finished', () => {
+  // BREAK IT: return DRAWER_POLL_MS for a finished task, or drop `pollMs`
+  // from AgentDetailScreen. A finished run's documents are final; an
+  // unfinished one's liveness is only as fresh as its last read.
+  assert.equal(drawerPoll(run({ task: RUNNING_TASK, attempts: [RUNNING_ATTEMPT] })), DRAWER_POLL_MS)
+  assert.equal(drawerPoll(run({ task: { ...RUNNING_TASK, state: 'PARKED' } })), DRAWER_POLL_MS)
+  for (const state of ['SUCCEEDED', 'FAILED', 'CANCELLED'] as const) {
+    assert.equal(drawerPoll(run({ task: { ...TASK, state } })), null, `a ${state} run is still polled`)
+  }
+  // Before the first read there is nothing to say it is finished.
+  assert.equal(drawerPoll(null), DRAWER_POLL_MS)
 })

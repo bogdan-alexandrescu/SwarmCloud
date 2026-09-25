@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type Dispatch, type SetStateAction } from 'react'
+import { useEffect, useMemo, useState, type Dispatch, type SetStateAction } from 'react'
 // `Em` and `Mark` live in AgentDetail.tsx, which is where `ABSENT_MARK` was
 // written and which design-system.md §9.1 names as the source to promote from.
 // One definition for the four screens of this group; a second copy of a mark
@@ -11,6 +11,7 @@ import { loadTasks } from './api'
 import { DispatchChip } from './Dispatch'
 import { HelpCard } from './HelpCard'
 import { Id, Screen } from './Shell'
+import { useNow } from './useNow'
 import {
   CONCURRENCY_STATES,
   RESOURCE_UNITS,
@@ -138,21 +139,18 @@ export function AgentsScreen({
   const [tab, setTab] = useState<Tab | null>(null)
   const [profile, setProfile] = useState<string>('')
   const [grouped, setGrouped] = useState(false)
-  // WHEN THE ROWS ON SCREEN WERE READ. The row clock stops one interval past
-  // this (see `AgentsBody`), so it is recorded from the read itself -- the
-  // `fetchedAt` the Result carries -- and not from when React got round to
-  // rendering it.
-  const [readAt, setReadAt] = useState<number | null>(null)
-  const load = useCallback(async () => {
-    const r = await loadTasks()
-    if (r.status === 'ok') setReadAt(r.fetchedAt)
-    return r
-  }, [])
 
   return (
     <Screen
       title="Agents"
-      load={load}
+      load={loadTasks}
+      // THE LIST RE-READS (AG-1). It read once and never again, while its
+      // clock went on adding to every row: a finished agent read `running`
+      // and was counted in Live. `Screen` owns the timer, the pause while the
+      // tab is hidden, the back-off and the stop on an answer only a person
+      // can change; this screen owns the cadence, which is a function of the
+      // rows it holds.
+      pollMs={pollInterval}
       summary={(d) => {
         const live = d.tasks.filter((t) => tabOf(t) === 'live').length
         return (
@@ -179,12 +177,17 @@ export function AgentsScreen({
         body: <>The read succeeded and returned nothing.</>,
       }}
     >
-      {(d) => (
+      {(d, reading) => (
         <AgentsBody
           onOpen={onOpen}
           openTaskId={taskId}
           page={d}
-          readAt={readAt}
+          // WHEN THE ROWS ON SCREEN WERE READ, and the cadence in force, as
+          // `Screen` read them -- not recorded a second time here. A stale
+          // screen hands over the last GOOD read's time, which is the one the
+          // rows describe.
+          readAt={reading.fetchedAt}
+          interval={reading.pollMs ?? pollInterval(d)}
           tab={tab}
           setTab={setTab}
           profile={profile}
@@ -217,6 +220,7 @@ function AgentsBody({
   openTaskId,
   page,
   readAt,
+  interval,
   tab,
   setTab,
   profile,
@@ -228,6 +232,8 @@ function AgentsBody({
   openTaskId: string | null
   page: TaskPage
   readAt: number | null
+  /** The cadence the rows are re-read at: how far past `readAt` they are good for. */
+  interval: number
   tab: Tab | null
   setTab: Dispatch<SetStateAction<Tab | null>>
   profile: string
@@ -238,12 +244,10 @@ function AgentsBody({
   // One clock for every ticking duration on the screen, so a hundred rows do
   // not each hold their own interval -- and it stops advancing the rows once
   // they are older than one poll interval (`rowClock`).
-  const [tick, setTick] = useState(() => Date.now())
-  useEffect(() => {
-    const id = setInterval(() => setTick(Date.now()), 1000)
-    return () => clearInterval(id)
-  }, [])
-  const now = rowClock(tick, readAt, pollInterval(page))
+  // The SHARED 1s clock (useNow.ts), the cadence a running duration asks for:
+  // the inspector's `run` ticks on the same instant, so a row and the drawer
+  // beside it cannot disagree by a tick.
+  const now = rowClock(useNow(1000), readAt, interval)
 
   const counts = useMemo(() => {
     const c: Record<Tab, number> = { live: 0, waiting: 0, recent: 0 }

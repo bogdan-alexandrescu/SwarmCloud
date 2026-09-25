@@ -18,6 +18,7 @@ import { RunFiles } from './RunFiles'
 import { Screen, timeAgo } from './Shell'
 import { StagedInputs } from './StagedInputs'
 import { StopRun } from './StopRun'
+import { useNow } from './useNow'
 import {
   GIB,
   REASON_COPY,
@@ -37,6 +38,7 @@ import {
   type ArtifactRef,
   type AttemptRow,
   type DispatchRole,
+  type ElapsedPhase,
   type DispatchStrategy,
   type GitSummary,
   type ResourceClassSpec,
@@ -111,6 +113,12 @@ export function AgentDetailScreen({ taskId, onClose }: { taskId: string; onClose
         key={`${taskId}:${reloads}`}
         title={taskId}
         load={load}
+        // THE DRAWER RE-READS (AG-2). It read once, so a ticking clock over it
+        // could only slide `live 36s ago` into `silent` against events that
+        // were merely old -- the clock alone makes a live agent look dead.
+        // `drawerPoll` stops once the task is finished: nothing it draws
+        // changes after that.
+        pollMs={drawerPoll}
         summary={(r) => (
           <>
             {r.task.runner_profile} · {r.task.resource_class} ·{' '}
@@ -143,9 +151,30 @@ export function AgentDetailScreen({ taskId, onClose }: { taskId: string; onClose
  * fabricate a callback in order to assert on STATIC markup is asserting on its
  * own scaffolding. Absent, the stop control simply has nothing to call.
  */
+/**
+ * HOW OFTEN THE OPEN DRAWER RE-READS ITS RUN, or null to stop.
+ *
+ * 10s, not the Agents list's 5s: one read here is FOUR requests -- the task,
+ * its events, its attempts and the resource-class catalogue (`loadAgentRun`)
+ * -- so 10s is the same 0.4 rps against the 20 rps per-principal budget that
+ * the list's single request spends at 2.5s, and a heartbeat lands only every
+ * ~150s anyway. A finished task stops: its documents are final, and polling
+ * them is spend with nothing to learn.
+ */
+export const DRAWER_POLL_MS = 10_000
+
+export function drawerPoll(r: AgentRun | null): number | null {
+  if (r !== null && TERMINAL_STATES.has(r.task.state)) return null
+  return DRAWER_POLL_MS
+}
+
 export function Run({ run, reload }: { run: AgentRun; reload?: () => void }) {
   const { task, events } = run
-  const now = Date.now()
+  // THE SHARED CLOCK (AG-2). This was `Date.now()` taken once at render, so
+  // `run`, `Elapsed` and the liveness badge's `live 36s ago` never moved. One
+  // 1s clock -- the one the Agents list's elapsed column reads -- re-renders
+  // the drawer, and LivenessBadge ages against the same instant.
+  const now = useNow(1000)
 
   return (
     /* ONE SUBJECT, SO ONE STACK — AND THE ORDER IS THE OPERATOR'S, NOT THE
@@ -505,30 +534,17 @@ function Headline({
           row is indistinguishable from a row that was never going to be
           there. */}
       <ul className="ctl-facts">
-        {/* `run` ONLY FOR A TASK THAT RAN (AG-3). `elapsed()` measures a task
-            with no `started_at` from its creation, which is right for a column
-            of waits and wrong under this key: a cascade-cancelled step read
-            `run 27m 57s` beside `never ran`, the wall time it sat READY
-            printed as the agent's run. A finished task that never started
-            says so here; one still waiting keeps its wait, under a key that
-            says it is one. How long either waited is the Elapsed tile below,
-            whose note names which clock it is. */}
-        {task.started_at !== null ? (
-          <li className="ctl-fact">
-            <b>run</b>
-            {el.text}
-          </li>
-        ) : TERMINAL_STATES.has(task.state) ? (
-          <li className="ctl-fact">
-            <b>run</b>
-            never ran
-          </li>
-        ) : (
-          <li className="ctl-fact">
-            <b>wait</b>
-            {el.text}
-          </li>
-        )}
+        {/* `run` ONLY OVER A RUN (AG-3). A cascade-cancelled step read `run
+            27m 57s` beside `never ran`: the wall time it sat READY, printed as
+            the agent's run. The KEY is chosen from `elapsed()`'s own `phase`
+            -- the answer it gives for exactly this, so the label and the
+            figure cannot disagree -- and never from the text: a figure that
+            is a wait sits under `wait`, and a finished task that never
+            started reads `run never ran`, which is `elapsed()`'s word. */}
+        <li className="ctl-fact">
+          <b>{el.phase === 'waiting' ? 'wait' : 'run'}</b>
+          {el.text}
+        </li>
         <li className="ctl-fact">
           <b>age</b>
           {timeAgo(task.created_at)}
@@ -574,7 +590,7 @@ function RunMetrics({ run, now }: { run: AgentRun; now: number }) {
             only thing the sentence was doing that a reader needed on the
             surface. Why the attempt read can fail, and what may not be
             concluded from one, is `#help/read-failed`. */}
-        <Metric label="Elapsed" value={el.text} sub={elapsedNote(task)} foot="task document" />
+        <Metric label="Elapsed" value={el.text} sub={elapsedNote(task, el.phase, now)} foot="task document" />
         <Metric
           label="Attempts"
           value={`${task.attempt_count} / ${task.max_attempts}`}
@@ -635,7 +651,7 @@ function RunMetrics({ run, now }: { run: AgentRun; now: number }) {
 
   return (
     <div className="ctl-metrics">
-      <Metric label="Elapsed" value={el.text} sub={elapsedNote(task)} />
+      <Metric label="Elapsed" value={el.text} sub={elapsedNote(task, el.phase, now)} />
       <Metric
         label="Attempts"
         value={`${attempts.length}`}
@@ -800,19 +816,18 @@ function tokenRollupNote(total: number, withIn: number, withOut: number): string
  * the Agents table's behaviour and is not changed here -- so the sentence
  * under the figure is what has to say which clock it is.
  */
-function elapsedNote(task: Task): string {
+function elapsedNote(task: Task, phase: ElapsedPhase, now: number): string {
+  // NEVER RAN (AG-3). `elapsed()` says so in the figure itself, so the note
+  // does not say it twice: it names how the task ended and when, which is
+  // what the figure no longer carries. Read from `phase`, the answer
+  // `elapsed()` gives for this, never from the figure's text.
+  if (phase === 'never-ran') {
+    return task.completed_at !== null
+      ? `${stateWord(task.state)} ${timeAgo(task.completed_at, now)}`
+      : stateWord(task.state)
+  }
   if (TERMINAL_STATES.has(task.state)) {
-    // NEVER RAN (AG-3). A finished task with no start never had a worker, so
-    // the figure above is how long it WAITED -- created to, say, a cascade
-    // cancel -- and not a run. The tile's label is "Elapsed", which is true
-    // either way; this note is what says which, and names the ending so the
-    // wait has an end a reader can see.
-    if (task.started_at === null) {
-      return task.completed_at !== null
-        ? `never ran · ${stateWord(task.state)} ${timeAgo(task.completed_at)}`
-        : 'never ran · still counting'
-    }
-    if (task.completed_at !== null) return `finished ${timeAgo(task.completed_at)}`
+    if (task.completed_at !== null) return `finished ${timeAgo(task.completed_at, now)}`
     // NO completion time, and `elapsed()` does not stop for that: it falls
     // through to `now - started_at` and keeps counting to the current clock.
     // So the figure beside this qualifier is not the length of the run and it
@@ -825,7 +840,9 @@ function elapsedNote(task: Task): string {
   // held" was the first version, and the fact in it is the first three words:
   // the figure is a clock, not a measure of work.
   if (task.state === 'PARKED') return 'wall time, not work'
-  if (task.started_at === null) return 'waiting · nothing started'
+  // The figure already names what the task is doing while it waits
+  // (`leased 4m`, `waiting 4m`); the note says only that nothing has run.
+  if (phase === 'waiting') return 'nothing started'
   return 'running'
 }
 

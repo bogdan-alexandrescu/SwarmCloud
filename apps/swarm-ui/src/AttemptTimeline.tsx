@@ -229,8 +229,13 @@ function Body({ t }: { t: AttemptTimeline }) {
             endpoint pages oldest-first and returns no page token, so "this is
             everything" is a claim this screen is never entitled to make and a
             reader has no way to derive that from the counts in front of them.
-            `prose.runs.test.tsx` pins it to this toolbar. */}
-        <HelpCard topic="partial-read" />
+            `prose.runs.test.tsx` pins it to this toolbar.
+
+            IT OPENS `event-paging` (AG-19). It opened `partial-read`, whose
+            card is "One message belongs to one failure" -- a topic about
+            something else, beside a toolbar about paging. `event-paging` is
+            built from this toolbar's own `say` strings. */}
+        <HelpCard topic="event-paging" />
       </div>
       {groups.map((g) => (
         <AttemptCard key={g.key} g={g} eventsRead={t.events !== null} />
