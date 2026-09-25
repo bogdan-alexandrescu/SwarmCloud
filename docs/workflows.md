@@ -55,6 +55,43 @@ costs nothing while it waits.
 
 ## Artifacts pass by reference
 
+**An artifact is a file the upstream step wrote into `$SWARM_ARTIFACTS_DIR`, and
+nothing else is.** Only that directory is uploaded when an attempt ends. It sits
+outside the agent's working directory and outside the repository checkout, so a
+file written anywhere else is never uploaded and no later step can stage it,
+however exactly its name matches. This fails late and costs money: the upstream
+step SUCCEEDS, and only the dependant fails, at staging, with `upstream task …
+did not produce an artifact named 'scan-01.md'`. By then every upstream step has
+spent its compute and its provider quota. That is what happened to workflow
+`wf_73946ff4a32a4f99b3a4` on 2026-09-25 (#149). Its eight scan steps were prompted
+"write it to scan-01.md", wrote into their working directories and succeeded.
+All four merges then failed, and seventeen steps were cancelled.
+
+**So the platform tells the upstream agent, and a prompt no longer has to.** At
+submission the API inverts every `input_from` edge. It records on each upstream
+step's task the filenames its dependants will stage, as
+`metadata.expected_outputs`, in the same write that creates the task. The worker
+passes that list to the runner. The `claude-code` and `codex` runners append it
+to the prompt they give the agent, along with the **absolute** path of
+`$SWARM_ARTIFACTS_DIR` and the statement that files written anywhere else,
+including the repository, do not reach later steps. The other runners receive the
+list in `input.json` and change nothing. A prompt that names the directory as
+well does no harm.
+
+Two things this deliberately does not do:
+
+* **It does not copy a file out of the working directory.** The worker does not
+  go looking for a same-named file in the working directory and upload it. That
+  was option (c) on #149, and the owner rejected it.
+* **It does not fail the upstream step when a file is missing.** If an attempt
+  ends without one of its expected outputs, the worker records the name in
+  `result_summary.expected_outputs_missing` and logs one line naming it. The
+  line says whether the file was never written, or was written and not uploaded
+  (the artifact cap). The attempt keeps the state its runner earned, and the
+  dependant still fails at staging, naming the task and the file. Whether a
+  missing expected output should fail the step that owed it is an open owner
+  decision.
+
 `input_from` stages an upstream step's artifact into the downstream step's
 workspace. The file travels through **GCS**, never inline through Firestore —
 Firestore has a 1 MiB document limit, and an agent's output is routinely larger.

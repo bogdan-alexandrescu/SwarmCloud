@@ -121,6 +121,11 @@ exists to remove, and it loses artifact staging entirely --- `input_from` is how
 one step's output reaches the next, by GCS reference rather than through a
 prompt.
 
+A step's file reaches its dependant only if the upstream agent wrote it to
+`$SWARM_ARTIFACTS_DIR`; SwarmCloud tells each upstream agent which filenames its
+dependants stage and that directory's absolute path, and a file written anywhere
+else, the repository included, is never staged.
+
 Per-step state comes from `swarm_workflow_status`, which reports the **derived**
 rollup and never a stored `state` field. That distinction is not theoretical: on
 2026-09-22 a stored field read `QUEUED` for a workflow whose six steps had ALL

@@ -262,3 +262,56 @@ def test_an_unusable_entry_is_dropped_loudly_and_does_not_fail_the_attempt(
     assert db.doc("tasks/task_1")["state"] == TaskState.SUCCEEDED.value
     assert _runner_input(store).get(RUNNER_INPUT_KEY) == ["notes.md"]
     assert _warnings_naming(log_stream, "../escape.md"), "the dropped entry was not named"
+
+
+def test_a_file_written_but_not_uploaded_is_named_as_such(db, worker_factory, log_stream):
+    """Over the artifact cap, the file exists and was still never uploaded. The
+    dependant stages from the upload manifest, so for it the file is missing,
+    and the line says which remedy applies: the cap, not the prompt."""
+    _seed(db, ["notes.md"], artifact_name="notes.md")
+    worker, _config, _exporter = worker_factory(max_artifact_bytes=4)
+
+    assert worker.run() == ExitCode.OK
+    task = db.doc("tasks/task_1")
+    assert task["state"] == TaskState.SUCCEEDED.value
+    assert task["result_summary"].get(MISSING_KEY) == ["notes.md"]
+    lines = _warnings_naming(log_stream, "notes.md")
+    missing_lines = [r for r in lines if "not uploaded" in r["message"]]
+    assert len(missing_lines) == 1, lines
+    assert "not written" not in missing_lines[0]["message"]
+
+
+# ---------------------------------------------------------------------------
+# the pure pieces
+# ---------------------------------------------------------------------------
+
+
+def test_a_relative_artifacts_directory_is_given_to_the_agent_as_absolute(tmp_path, monkeypatch):
+    from agent_worker.expected_outputs import with_instructions
+
+    monkeypatch.chdir(tmp_path)
+    told = with_instructions("p", ["a.md"], Path("rel/artifacts"))
+    assert f"{tmp_path}/rel/artifacts/a.md" in told
+    assert " rel/artifacts" not in told
+
+
+def test_the_declaration_is_read_defensively():
+    from agent_worker.expected_outputs import declared_outputs, parse_names
+
+    assert parse_names(None).names == ()
+    assert parse_names(None).rejected == ()
+    # A bare string is some other writer, not one name: the API writes a list.
+    assert parse_names("notes.md").names == ()
+    assert parse_names("notes.md").rejected == ("notes.md",)
+    # Stripped, sorted, each once; nested names keep their directory.
+    assert parse_names([" b.md", "a.md", "b.md", "reports/c.json"]).names == (
+        "a.md",
+        "b.md",
+        "reports/c.json",
+    )
+    bad = ["a//b", "./a", "a/", "..", "x\ny", "x\\y", "x\x00y", None, 3]
+    assert parse_names(bad).names == ()
+    assert len(parse_names(bad).rejected) == len(bad)
+    # Metadata that is not a dict cannot carry the key at all.
+    assert declared_outputs(None).names == ()
+    assert declared_outputs(["notes.md"]).names == ()

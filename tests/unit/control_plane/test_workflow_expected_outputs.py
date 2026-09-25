@@ -165,3 +165,18 @@ def test_a_plain_task_is_unaffected(client, db):
     task_id = response.json()["task"]["id"]
 
     assert STORED_KEY not in db.docs[f"tasks/{task_id}"]["metadata"]
+
+
+def test_the_inversion_strips_names_and_leaves_out_an_empty_one():
+    """The worker strips the filename it stages, so the stripped name is the
+    one the upstream agent must write. An empty one names no file."""
+    from swarm_api.expected_outputs import expected_outputs_by_step
+
+    assert expected_outputs_by_step(
+        [
+            ("a", {}),
+            ("b", {"a": " notes.md "}),
+            ("c", {"a": "   "}),
+            ("d", {"a": "notes.md", "b": "out.json"}),
+        ]
+    ) == {"a": ["notes.md"], "b": ["out.json"]}

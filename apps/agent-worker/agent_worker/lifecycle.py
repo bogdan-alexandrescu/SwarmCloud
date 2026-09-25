@@ -109,6 +109,7 @@ from typing import Any, Callable, Iterator
 from swarm_common.models import ProviderState, utcnow
 from swarm_common.states import EventType, ParkReason, TaskState
 
+from . import expected_outputs as expected_mod
 from . import inputs as inputs_mod
 from . import redact as redact_mod
 from . import workspace as workspace_mod
@@ -314,6 +315,10 @@ class Worker:
         # on -- the question every debugging of a wrong workflow output starts
         # with, and one the workspace cannot answer because it is destroyed.
         self._staged_inputs: list[inputs_mod.StagedInput] = []
+        # What this task's dependants will stage from it, per
+        # `metadata.expected_outputs` (#149). Kept so `_finalise` can name any
+        # the attempt did not upload; see `agent_worker.expected_outputs`.
+        self._expected_outputs: tuple[str, ...] = ()
         self._heartbeats = 0
         self._deadline = time.monotonic() + config.timeout_seconds
         # The account this attempt holds, if the pool gave it one. Set once and
@@ -647,6 +652,13 @@ class Worker:
             # disk right now, so a caller's own `staged_inputs` in the step input
             # must not shadow it and leave the agent reading a stale claim.
             payload["staged_inputs"] = [item.as_dict() for item in staged_inputs]
+        expected = self._declared_outputs(task)
+        if expected:
+            # Assigned for the same reason as `staged_inputs`: the platform's
+            # statement of what later steps need, which a caller's own key of
+            # the same name must not shadow. A CLI runner turns it into the
+            # agent's instructions; the other runners ignore it.
+            payload[expected_mod.METADATA_KEY] = list(expected)
         if cfg.model:
             payload.setdefault("model", cfg.model)
         payload.setdefault("task_id", cfg.task_id)
@@ -1051,6 +1063,10 @@ class Worker:
         # The ONLY call that passes publish=True. The agent exited on its own
         # here; the other five call sites are parks and crashes.
         summary = self._upload_outputs(publish=True)
+        # Here, where the runner ended on its own, and not on the park, cancel
+        # and crash paths: a parked attempt resumes later and may still write
+        # the file.
+        self._report_missing_outputs(summary)
         summary["exit_code"] = result.exit_code
         summary["duration_seconds"] = round(result.duration_seconds, 3)
         self._export_metrics()
@@ -1493,6 +1509,62 @@ class Worker:
             files=[item.path for item in staged],
         )
         return staged
+
+    def _declared_outputs(self, task: dict[str, Any]) -> tuple[str, ...]:
+        """Honour `metadata.expected_outputs`: what later steps will stage from this one.
+
+        Written by the API at workflow submission, on the UPSTREAM task (#149).
+        Advice to the agent, not a promise to it, so an unusable entry is
+        dropped and named in a warning rather than failing the attempt. See
+        `agent_worker.expected_outputs` for the measurement behind it.
+        """
+        declared = expected_mod.declared_outputs(task.get("metadata"))
+        if declared.rejected:
+            self.log.warning(
+                "dropped unusable expected_outputs entries: "
+                + ", ".join(repr(entry) for entry in declared.rejected),
+                kept=list(declared.names),
+            )
+        if declared.names:
+            self.log.info(
+                "later steps will stage these artifacts from this task",
+                expected_outputs=list(declared.names),
+            )
+        self._expected_outputs = declared.names
+        return declared.names
+
+    def _report_missing_outputs(self, summary: dict[str, Any]) -> None:
+        """Say which expected outputs this attempt did not upload (#149).
+
+        One WARNING line naming them, and `result_summary[MISSING_SUMMARY_KEY]`,
+        which the API serves with the task (`codec.task_to_api`). The attempt is
+        NOT failed for it.
+        Whether a missing expected output should fail the step that was meant
+        to write it is an open owner decision, so until it is made the attempt
+        keeps the state its runner earned. The dependant still fails at
+        staging, naming this task and the file.
+
+        Measured against what was UPLOADED, the `artifacts` manifest, not the
+        directory listing. A dependant stages from that manifest, so a file
+        that was written but not uploaded is missing as far as the dependant
+        is concerned, and the line says which case it is.
+        """
+        if not self._expected_outputs:
+            return
+        produced = [
+            entry.get("name")
+            for entry in summary.get("artifacts") or []
+            if isinstance(entry, dict) and isinstance(entry.get("name"), str)
+        ]
+        missing = expected_mod.missing_outputs(self._expected_outputs, produced)
+        if not missing:
+            return
+        skipped = summary.get("artifacts_skipped") or []
+        summary[expected_mod.MISSING_SUMMARY_KEY] = self._scrub(list(missing))
+        self.log.warning(
+            expected_mod.missing_line(missing, skipped=skipped),
+            missing=list(missing),
+        )
 
     def _clone_base_path(self) -> Path | None:
         ws = self.ws
