@@ -106,16 +106,30 @@ fi
 # question here is the value of one field on a bucket that does exist. Kept
 # local to its single call site rather than added to common.sh as a second
 # almost-the-same helper.
+#
+# The field is `versioning_enabled`, not `versioning.enabled`. `gcloud storage`
+# flattens it; the dotted path is the older `gsutil`/JSON-API shape and
+# `gcloud storage` answers it with an empty string. Until 2026-09-25 this read
+# the dotted path, fell into the catch-all, and told every bootstrap run
+# "object versioning is OFF" about a bucket whose versioning_enabled is True.
+# That is the same claim-without-a-read the paragraph above exists to prevent,
+# so only an explicit False is reported as off; anything else is "could not
+# tell". Measured the same day: `gcloud storage buckets list` prints True or
+# False for every bucket this repository manages, never nothing.
 VERSIONING_ERR="$(mktemp "${TMPDIR:-/tmp}/swarm-versioning-err.XXXXXX")"
 if VERSIONING_ENABLED="$(gcloud storage buckets describe "gs://${TF_STATE_BUCKET}" \
-     --project "${PROJECT_ID}" --format='value(versioning.enabled)' 2>"${VERSIONING_ERR}")"; then
+     --project "${PROJECT_ID}" --format='value(versioning_enabled)' 2>"${VERSIONING_ERR}")"; then
   # `tr`, not `${var,,}`: bash 3.2 has no case modification.
   case "$(printf '%s' "${VERSIONING_ENABLED}" | tr '[:upper:]' '[:lower:]')" in
     true)
       ok "object versioning is on (state history is recoverable)"
       ;;
-    *)
+    false)
       warn "object versioning is OFF on gs://${TF_STATE_BUCKET}; a corrupted state file would be unrecoverable"
+      ;;
+    *)
+      warn "gcloud read gs://${TF_STATE_BUCKET} but returned no versioning_enabled value (got '${VERSIONING_ENABLED}')."
+      warn "This is not evidence that versioning is off and not evidence that it is on."
       ;;
   esac
 else
