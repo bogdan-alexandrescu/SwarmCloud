@@ -21,13 +21,16 @@
 // download at the `uri`; pretty-print a partial JSON window; drop the image's
 // `onError`; draw a pending listing as `none uploaded`; drop a tool result's
 // pairing or its `error` word; stop polling while RUNNING, or keep polling a
-// settled finish; read the transcript's age off the browser clock.
+// settled finish; read the transcript's age off the browser clock; ask the
+// listing for no `limit` (the server's default page is 50); draw a listing the
+// route cut short as the whole manifest.
 
 import STYLES from '../styles.css?raw'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, render, waitFor } from '@testing-library/react'
 
 import type { Task } from '../types'
+import { cascade, type CascadeEnv } from './cssgate'
 import { task as baseTask } from './runfixture'
 
 vi.mock('../Agents', () => ({ AgentsScreen: () => null }))
@@ -480,6 +483,112 @@ describe('Outputs: the answer first, then every file', () => {
 })
 
 // ---------------------------------------------------------------------------
+// Outputs past one page of the listing
+// ---------------------------------------------------------------------------
+
+/**
+ * A browser run with `total` files -- `report.md` and screenshots after it,
+ * named as `runners/browser.py` names them -- and the listing route answering
+ * AS THE SERVER DOES: `paged_limit` turns no `limit` into `default_page_size`
+ * (50) and clamps any other to `max_page_size` (200), and
+ * `store.list_artifacts` returns `manifest.artifacts[:limit]` with `complete:
+ * true` and nothing saying it cut. `served` records how many entries each
+ * listing read returned, so the cases derive their figures from what the
+ * route did rather than restating either number.
+ */
+function manyFiles(total: number) {
+  const shots = Array.from({ length: total - 1 }, (_, i) => `screenshot-${String(i).padStart(3, '0')}.png`)
+  const manifest = [
+    { name: 'report.md', bytes: 120, uri: uri(REF, 'report.md') },
+    ...shots.map((name) => ({ name, bytes: 2048, uri: uri(REF, name) })),
+  ]
+  const served: number[] = []
+  const routes = finishedRoutes({
+    [`/v1/tasks/${REF}`]: {
+      task: task({ runner_profile: 'browser', result_summary: { artifacts: manifest, logs: {}, agent_streams: null } }),
+    },
+    [`/v1/tasks/${REF}/artifacts`]: (q: URLSearchParams) => {
+      const asked = q.get('limit')
+      const page = manifest.slice(0, Math.min(asked === null ? 50 : Number(asked), 200))
+      served.push(page.length)
+      return listing({
+        artifact_bytes: null,
+        artifacts: page.map((e) => {
+          const image = e.name.endsWith('.png')
+          return { ...e, attempt_id: 'att_fe27', kind: image ? 'image' : 'markdown', content_type: image ? 'image/png' : 'text/markdown', role: null }
+        }),
+      })
+    },
+  })
+  return { manifest, served, routes }
+}
+
+/** Every file row in the Outputs table, by the file name its row header starts with. */
+function fileRows(out: HTMLElement): Map<string, HTMLTableRowElement> {
+  const rows = new Map<string, HTMLTableRowElement>()
+  for (const tr of out.querySelectorAll<HTMLTableRowElement>('.arts-files tbody tr')) {
+    const name = tr.querySelector('th button, th .mono')?.textContent?.trim() ?? ''
+    rows.set(name, tr)
+  }
+  return rows
+}
+
+describe('Outputs lists every file the run uploaded, past one page of the listing', () => {
+  // THE DEFECT. `loadArtifactListing` sent no `limit`, so the server answered
+  // its default page of 50, cut from the manifest and still `complete: true`.
+  // A browser run that took 60 screenshots drew 50 rows and a chip reading 50,
+  // with no partial mark; `screenshot-050`..`059` -- the final page states --
+  // were never drawn and could not be downloaded from the pane, while the
+  // Details pane's list, which reads the manifest off the task, showed all 60.
+
+  it('asks for a page big enough for a 60-screenshot run, and draws every screenshot inline', async () => {
+    const { manifest, served, routes } = manyFiles(61)
+    await openPane(routes)
+    const out = await sectionReady('Outputs', /screenshot-000\.png/)
+    await waitFor(() => expect(fileRows(out).size, 'a file of the manifest has no row').toBe(manifest.length), WAIT)
+    const rows = fileRows(out)
+    for (const e of manifest) {
+      expect(rows.get(e.name)?.querySelector('a[download]')?.getAttribute('href'), `${e.name} cannot be downloaded`).toBe(
+        rawHref(REF, e.name, 'attachment'),
+      )
+    }
+    const drawn = new Set([...out.querySelectorAll('.arts-gallery img')].map((i) => i.getAttribute('src')))
+    for (const e of manifest.filter((x) => x.name.endsWith('.png'))) {
+      expect(drawn.has(rawHref(REF, e.name, 'inline')), `${e.name} is not drawn inline`).toBe(true)
+    }
+    expect(served.every((n) => n === manifest.length), 'the listing read was cut at the server’s default page').toBe(true)
+    expect(out.querySelector('.arts-files .count-chip')?.textContent).toBe(String(manifest.length))
+    expect(out.textContent, 'a whole listing is marked as cut').not.toMatch(/\d+ of \d+ listed/)
+  })
+
+  it('lists the files past the route’s page from the task’s own manifest, and says how many the route listed', async () => {
+    const { manifest, served, routes } = manyFiles(260)
+    await openPane(routes)
+    const out = await sectionReady('Outputs', new RegExp(`of ${manifest.length} listed`))
+    const listed = served[served.length - 1]!
+    expect(listed, 'the route listed the whole manifest; this case needs one it cuts').toBeLessThan(manifest.length)
+    const head = out.querySelector<HTMLElement>('.arts-files .att-sub-head')!
+    expect(head.textContent).toMatch(new RegExp(`${listed} of ${manifest.length} listed`))
+    expect(head.querySelector('.ctl-mark.is-partial'), 'a cut listing is not marked partial').not.toBeNull()
+    expect(out.querySelector('.arts-files .count-chip')?.textContent, 'the count is the page, not the run').toBe(String(manifest.length))
+
+    await waitFor(() => expect(fileRows(out).size).toBe(manifest.length), WAIT)
+    const rows = fileRows(out)
+    for (const e of manifest) {
+      expect(rows.get(e.name)?.querySelector('a[download]')?.getAttribute('href'), `${e.name} cannot be downloaded`).toBe(
+        rawHref(REF, e.name, 'attachment'),
+      )
+    }
+    // Past the page the server named no kind, so the raw route decides what
+    // the bytes are: each such row opens it, and an image is one click away.
+    for (const e of manifest.slice(listed)) {
+      const open = [...rows.get(e.name)!.querySelectorAll<HTMLAnchorElement>('a')].find((a) => a.textContent === 'open full')
+      expect(open?.getAttribute('href'), `${e.name}, past the page, has no way to be opened`).toBe(rawHref(REF, e.name, 'inline'))
+    }
+  })
+})
+
+// ---------------------------------------------------------------------------
 // Inputs
 // ---------------------------------------------------------------------------
 
@@ -707,7 +816,55 @@ function paneSheet(): string {
   return block.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[\s\S]*?\*\//, '')
 }
 
+/** Whether nothing from `el` up to the drawer is `display: none` at `env`, by the shipped sheet's cascade. */
+function shownAt(el: Element, env: CascadeEnv): boolean {
+  for (let node: Element | null = el; node !== null; node = node.parentElement) {
+    if (cascade(STYLES, node, 'display', env).winner?.value === 'none') return false
+    if (node.classList.contains('ctl-drawer')) return true
+  }
+  return true
+}
+
 describe('the pane holds at 390 wide and in the dark theme', () => {
+  // WHY A CASCADE AND NOT ONLY THE BLOCK SCAN BELOW. The Details pane's CPU
+  // rows passed a scan like it and still lost their age at 390, because the
+  // rule that hid it (`.ctl-util-by { display: none }`) lives in another block
+  // of the sheet. These ask the whole sheet what a 390px viewport displays.
+  it('keeps every live read’s age on screen at 390', async () => {
+    await openPane(
+      finishedRoutes({
+        [`/v1/tasks/${REF}`]: { task: task({ state: 'RUNNING', completed_at: null, result_summary: null }) },
+        [`/v1/tasks/${REF}/answer`]: answer({ status: 'not_yet', source: null, object: null, format: null, content: null, complete: null, is_error: null, subtype: null, num_turns: null, attempt: attemptBlock(false) }),
+        [`/v1/tasks/${REF}/transcript`]: transcript({ stream: stream({ source: 'live', age_seconds: 7 }), format: 'claude-stream-json', steps: [step(1, { text: 'Reading.' })], complete: false, attempt: attemptBlock(false) }),
+        [`/v1/tasks/${REF}/logs`]: logs([logStream('agent_stderr', { source: 'live', content: 'warming up', total_bytes: 10, returned_bytes: 10, age_seconds: 4 }), logStream('stdout', { source: 'live' }), logStream('stderr', { source: 'live' })], false),
+      }),
+    )
+    const logsSection = await sectionReady('Logs', /published \d+s ago/)
+    const ages = () => [...logsSection.querySelectorAll<HTMLElement>('.ctl-sub')].filter((s) => /published \d+s ago/.test(s.textContent ?? ''))
+    expect(ages().length, 'the transcript shows no age').toBeGreaterThan(0)
+    for (const a of ages()) expect(shownAt(a, { width: 390 }), `${a.textContent} is hidden at 390`).toBe(true)
+
+    const stderr = [...logsSection.querySelectorAll<HTMLButtonElement>('[aria-label="Which log"] button')].find((b) => b.textContent === 'stderr')
+    fireEvent.click(stderr!)
+    const cell = await waitFor(() => {
+      const c = row(logsSection, 'agent_stderr').querySelector<HTMLElement>('td[data-label="Age"] .ctl-sub')
+      expect(c?.textContent).toMatch(/published \d+s ago/)
+      return c!
+    }, WAIT)
+    expect(shownAt(cell, { width: 390 }), 'a live stream’s age is hidden at 390').toBe(true)
+  })
+
+  it('keeps every file’s download and copy on screen at 390', async () => {
+    await openPane(finishedRoutes())
+    const out = await sectionReady('Outputs', /bundle\.tar/)
+    for (const e of listing().artifacts) {
+      const r = row(out, e.name)
+      const get = [...r.querySelectorAll<HTMLElement>('a[download], button.copy')]
+      expect(get.length, `${e.name} has no way to get it`).toBeGreaterThanOrEqual(2)
+      for (const g of get) expect(shownAt(g, { width: 390 }), `${e.name}'s ${g.textContent} is hidden at 390`).toBe(true)
+    }
+  })
+
   it('draws every table as the stacked record the inspector uses below 900px', async () => {
     await openPane(finishedRoutes())
     await sectionReady('Outputs', /bundle\.tar/)

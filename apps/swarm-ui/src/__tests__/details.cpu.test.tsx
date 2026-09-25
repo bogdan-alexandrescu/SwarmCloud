@@ -16,13 +16,18 @@
 //
 // MUTATIONS: draw `peak_cpu_cores ?? 0`; take the class cpu over the cgroup
 // limit; drop the over-ceiling excess; say `never measured` for a reading that
-// was not served; put the "Output, as the agent wrote it" title back.
+// was not served; put the "Output, as the agent wrote it" title back; age a
+// live reading off `measured_at` on the browser clock instead of the server's
+// `age_seconds`; carry the reading's age and kind ONLY in `.ctl-util-by`,
+// which the sheet hides below 560px.
 
+import STYLES from '../styles.css?raw'
 import { describe, expect, it, vi } from 'vitest'
 import { render, waitFor } from '@testing-library/react'
 
 import type { AgentRun } from '../api'
 import type { AttemptRow } from '../types'
+import { cascade, type CascadeEnv } from './cssgate'
 import { attempt, task } from './runfixture'
 
 const api = vi.hoisted(() => ({
@@ -130,9 +135,16 @@ describe('Details draws CPU as peak and mean cores of the limit', () => {
     expect(track?.querySelector('.ctl-util-over'), 'the excess over the limit is not hatched').not.toBeNull()
   })
 
-  it('says a live reading is the latest heartbeat, and keeps a null mean an em dash beside a measured peak', async () => {
+  it('says a live reading is the latest heartbeat, aged on the SERVER’s clock, and keeps a null mean an em dash', async () => {
+    // THE TWO CLOCKS DISAGREE ON PURPOSE. The server read the heartbeat 20 s
+    // after it was written; this browser's clock puts `measured_at` 140 s ago.
+    // The contract's age is the server's (`age_seconds`), so a row that reads
+    // `2m ago` is aging the reading off a clock the server never checked.
     const root = await mount(
-      withUsage({ status: 'live', final: false, mean_cpu_cores: null, measured_at: new Date(Date.now() - 20_000).toISOString() }, { completed_at: null, exit_code: null }),
+      withUsage(
+        { status: 'live', final: false, mean_cpu_cores: null, age_seconds: 20, measured_at: new Date(Date.now() - 140_000).toISOString() },
+        { completed_at: null, exit_code: null },
+      ),
     )
     expect(by(cpuRow(root, 'peak'))).toMatch(/^latest heartbeat 20s ago/)
     const mean = cpuRow(root, 'mean')
@@ -156,6 +168,83 @@ describe('Details draws CPU as peak and mean cores of the limit', () => {
     expect(r.querySelector('.ctl-util-figure .ctl-em'), 'no reading is drawn as a figure').not.toBeNull()
     expect(r.querySelector('.ctl-util-track')?.classList.contains('is-unknown')).toBe(true)
     expect(r.querySelector('.ctl-util-fill'), 'no reading drew a fill').toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// At phone width
+// ---------------------------------------------------------------------------
+
+/**
+ * Whether nothing from `el` up to `stop` is `display: none` at `env`, by the
+ * shipped sheet's own cascade -- media conditions, specificity and order, as a
+ * browser weighs them (cssgate.ts says why jsdom's cannot answer this).
+ */
+function shownAt(el: Element, env: CascadeEnv, stop: Element): boolean {
+  for (let node: Element | null = el; node !== null; node = node.parentElement) {
+    if (cascade(STYLES, node, 'display', env).winner?.value === 'none') return false
+    if (node === stop) return true
+  }
+  return true
+}
+
+/** The innermost elements under `root` whose text matches: where the words actually sit. */
+function carriers(root: HTMLElement, pattern: RegExp): HTMLElement[] {
+  const all = [root, ...root.querySelectorAll<HTMLElement>('*')]
+  const hits = all.filter((el) => pattern.test(el.textContent ?? ''))
+  return hits.filter((el) => !hits.some((o) => o !== el && el.contains(o)))
+}
+
+const PHONE: CascadeEnv = { width: 390 }
+const DESK: CascadeEnv = { width: 1440 }
+const RUNNING = { completed_at: null, exit_code: null } as const
+/** Read 20 s after it was written, by the server; 140 s ago by this browser's clock. */
+const SERVER_AGED = { age_seconds: 20, measured_at: new Date(Date.now() - 140_000).toISOString() }
+const NOTHING = { peak_cpu_cores: null, mean_cpu_cores: null, cpu_seconds: null }
+
+describe('the CPU reading reaches a phone, where the by column is hidden', () => {
+  // THE DEFECT. `CpuRows` put the reading's age, its source, the cpu-seconds
+  // and WHICH kind of "no reading" it is in `CeilingRow`'s `by` text and
+  // nowhere else, and `@media (max-width: 560px)` sets `.ctl-util-by
+  // { display: none }`. At 390 a live reading 140 s old read `cpu peak 1.62
+  // vCPU / 2 vCPU` -- exactly what a final figure reads -- and every absence
+  // read `— / 2 vCPU`. The memory row answers the same problem with a strip
+  // outside the row (`.att-rss-note`); the CPU rows had none. jsdom applies no
+  // stylesheet, so the `.ctl-util-by` text assertions above pass either way;
+  // these ask the shipped sheet what a 390px viewport displays.
+  it.each([
+    ['a live reading', { status: 'live', final: false, ...SERVER_AGED }, RUNNING, [/live heartbeat 20s ago/, /402\.3 cpu-s/, /cgroup limit/]],
+    ['a last reading', { status: 'last_reading', final: false, ...SERVER_AGED }, {}, [/last heartbeat 20s ago/, /402\.3 cpu-s/, /cgroup limit/]],
+    ['a final reading', {}, {}, [/at exit/, /402\.3 cpu-s/, /cgroup limit/]],
+    ['no reading served', undefined, {}, [/not served/]],
+    ['an attempt that never ran', { status: 'never_ran', ...NOTHING }, {}, [/never ran/]],
+    ['a reading off the event window', { status: 'beyond_window', ...NOTHING }, {}, [/off the event window/]],
+    ['a failed read', { status: 'unread', ...NOTHING }, {}, [/read failed/]],
+    ['a reading that was never taken', { status: 'absent', ...NOTHING }, {}, [/never measured/]],
+  ] as const)('shows %s at 390 in a strip outside the row, in words', async (_case, usage, over, words) => {
+    const root = await mount(withUsage(usage === undefined ? undefined : { ...usage }, { ...over }))
+    const strip = root.querySelector<HTMLElement>('.att-cpu-note')
+    expect(strip, 'the CPU reading has no strip outside its rows').not.toBeNull()
+    expect(strip!.closest('.ctl-util'), 'the strip sits inside a util row, which a phone hides with its by column').toBeNull()
+    expect(shownAt(strip!, PHONE, root), 'the CPU strip is hidden at 390').toBe(true)
+    for (const w of words) {
+      const at = carriers(strip!, w)
+      expect(at.length, `the strip does not say ${w}`).toBeGreaterThan(0)
+      expect(at.every((el) => shownAt(el, PHONE, root)), `${w} is in the strip but hidden at 390`).toBe(true)
+    }
+
+    // THE CONTROL: the by column really is hidden at 390, so the walk above
+    // can answer false -- and at 1440 it is shown, so the words are on screen
+    // at both widths.
+    const byCell = cpuRows(root)[0]!.querySelector('.ctl-util-by')!
+    expect(shownAt(byCell, PHONE, root), 'the by column shows at 390; this case no longer measures its defect').toBe(false)
+    expect(shownAt(byCell, DESK, root), 'the by column is hidden at 1440').toBe(true)
+  })
+
+  it('names which reading the strip is about, beside the memory strip under it', async () => {
+    const root = await mount(withUsage({ status: 'live', final: false, ...SERVER_AGED }, { ...RUNNING }))
+    const strip = root.querySelector<HTMLElement>('.att-cpu-note')
+    expect(strip?.querySelector('b')?.textContent, 'a strip of words under three bars does not say it is the CPU’s').toBe('cpu')
   })
 })
 
