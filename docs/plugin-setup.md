@@ -18,19 +18,43 @@ Three values, once per deployment:
 | **OAuth client secret** | that client's secret | `GOCSPX-…` |
 
 A solo deployment, reached through Cloud Run with no IAP, has no OAuth client;
-leave the last two empty. A team deployment behind IAP needs all three, and
-its operator creates the client once for everybody —
+leave the last two empty. The plugin then sends your own gcloud identity
+(`gcloud auth print-identity-token`) to the `*.run.app` address, which is
+what Cloud Run documents for a developer and accepts from an account holding
+`run.routes.invoke`, i.e. `roles/run.invoker` on the service
+([Test private services](https://docs.cloud.google.com/run/docs/authenticating/developers)).
+That token has no audience of its own, so Google calls it a development path;
+the bridge sends it to that configured `*.run.app` address and nowhere else.
+A team deployment behind IAP needs all three values, and its operator creates
+the client once for everybody —
 [runbooks/iap-desktop-client.md](runbooks/iap-desktop-client.md) is that
 one-time step for Saga's deployment, and the same shape for any other.
 
 ## Install
 
-In a Claude Code session:
+**From a checkout of this repository, which is what works today.** In a
+Claude Code session:
 
 ```text
-/plugin marketplace add bogdan-alexandrescu/SwarmCloud
+/plugin marketplace add /path/to/your/SwarmCloud/checkout
 /plugin install sc@swarmcloud
 ```
+
+A marketplace added from a local directory loads the plugin in place, so its
+MCP server finds the checkout it runs from
+([plugin loading reference](https://code.claude.com/docs/en/plugins/loading),
+"In-place and copied plugins").
+
+**From GitHub** — `/plugin marketplace add bogdan-alexandrescu/SwarmCloud`,
+then the same install — is the intended route, and it **does not start the
+MCP server yet**. Claude Code copies only `plugin/` into its cache, and the
+server's `uv run --directory ${CLAUDE_PLUGIN_ROOT}/..` then points at a
+directory with no `pyproject.toml` (measured 2026-09-25 on 0.4.0). The
+configuration you type is saved, but no bridge runs to read it, nothing is
+seeded, and `sc login` answers that no deployment is configured. The
+plugin-standalone-bridge change (#62) runs the bridge from a pinned git
+requirement instead; once it is merged and tagged, the GitHub route works and
+this paragraph goes.
 
 The install dialog asks for the three values above. Claude Code keeps the URL
 and client ID in your user `settings.json` (under `pluginConfigs`) and the
@@ -50,6 +74,12 @@ uv run sc login
 
 A browser opens on Google's sign-in page; choose your work account. The page
 then says "Signed in" and the terminal prints who you are and your tenant.
+That last line comes from one call to the API made **with the sign-in just
+created**, whatever else this machine has, so it is a real test that the
+deployment admits you. If `SWARM_IMPERSONATE_SA`, `SWARM_ID_TOKEN` or a GCP
+metadata server (Cloud Shell, Workstations) is present, `sc login` also warns
+that every other command and tool on this machine still acts as that identity
+and not as you — they outrank a sign-in, on purpose, for CI.
 That is the last time you do this on this machine until you sign out: the
 refresh token is kept, and each new ID token is minted from it silently.
 
@@ -163,6 +193,8 @@ process opens and fail if a `.tfvars` file is opened outside this mode.
 | `sc login` succeeds, then `did not accept it: ... 401` | IAP does not have this Desktop client on its allowlist | the operator's step, [runbooks/iap-desktop-client.md](runbooks/iap-desktop-client.md) |
 | 403 that names you | you are signed in and IAP does not list you as an accessor | the operator adds you (or your domain) to the IAP accessor list |
 | `no OAuth client secret for <context>` | the secret was never given on this machine | `/plugin configure sc@swarmcloud`, or `sc context add … --client-secret-stdin` |
+| `sc login` succeeds with `warning … not as you` | a service-account identity outranks your sign-in here | unset the variable it names, or run from outside GCP |
+| `/mcp` shows `plugin:sc:swarmcloud` failed | installed from GitHub before #62: the server cannot start from the plugin cache | install from a checkout (above) |
 
 ## Worked example: Saga's `dev` deployment
 

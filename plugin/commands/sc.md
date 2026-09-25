@@ -2,8 +2,15 @@
 description: SwarmCloud cluster state — accounts, capacity, agents, trouble
 argument-hint: "[accounts|agents|capacity|trouble|task <id>]"
 allowed-tools:
-  - Bash(uv run sc:*)
-  - Bash(sc:*)
+  - Bash(uv run sc)
+  - Bash(uv run sc overview:*)
+  - Bash(uv run sc accounts:*)
+  - Bash(uv run sc agents:*)
+  - Bash(uv run sc capacity:*)
+  - Bash(uv run sc task:*)
+  - Bash(uv run sc trouble:*)
+  - Bash(uv run sc whoami:*)
+  - Bash(uv run swarm doctor:*)
 ---
 
 Run the requested view and show the operator its output:
@@ -13,7 +20,14 @@ uv run sc $ARGUMENTS
 ```
 
 With no arguments that is the overview. Other views: `accounts`, `agents`,
-`capacity`, `task <id>`, `trouble`.
+`capacity`, `task <id>`, `trouble`, `whoami`.
+
+If the arguments are `login`, `logout` or `context ...`, do **not** run them.
+They are not views: they change the operator's own sign-in, or which cluster
+every later call reaches, so they are theirs to run. Tell them the command
+(`uv run sc login` opens a browser and waits for them) and stop. This command
+is granted each view by name, not `sc` as a whole, for exactly that reason, so
+running one of those would stop at a permission prompt anyway.
 
 Then read the output using the rules in the `sc` skill, which matter more than
 the numbers themselves:

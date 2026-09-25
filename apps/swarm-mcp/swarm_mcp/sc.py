@@ -12,9 +12,15 @@ IT ALSO SAYS WHICH CLUSTER, AND WHO YOU ARE ON IT (2026-09-25). `sc context`,
 half: which deployment this machine talks to (config.py) and the developer's
 own sign-in to it (signin.py). They write only the developer's OWN state -- a
 config file and a credential-store entry -- and never the cluster, so the
-promise above holds. No skill grants them to a model
-(`test_plugin_commands.py` checks): `sc login` opens a browser and blocks, and
-`sc context use` moves every later call to another cluster.
+promise above holds. No skill or slash command may grant them to a model:
+`sc login` opens a browser and blocks, `sc logout` revokes a sign-in, and
+`sc context use` moves every later call to another cluster. That is why the
+`sc` skill and `/sc` are granted each VIEW by name rather than `sc` as a
+prefix -- a prefix grant covers these too, and did until review caught it --
+and why `overview` exists as a named view: it is the one view a flag could
+not otherwise follow without the grant also matching `sc --json login`.
+`test_plugin_commands.py` compiles every grant the way Claude Code matches it
+and runs each command it allows through these parsers to see what it reaches.
 
 THE DIVISION OF LABOUR WITH render.py IS THE POINT. Everything in this file
 does I/O and decides nothing about presentation; everything in `render.py`
@@ -507,8 +513,38 @@ def _read_secret_line() -> str:
     return (sys.stdin.readline() if sys.stdin is not None else "").strip()
 
 
+def _outranked(detection: Any, email: str) -> str:
+    """The warning for a machine where something ranks above the sign-in.
+
+    `auth.detect` puts SWARM_ID_TOKEN, the metadata server and
+    SWARM_IMPERSONATE_SA ahead of a sign-in, on purpose: CI sets them and
+    means them. But a developer who has one set and has just signed in will
+    otherwise believe every tool now acts as them, and nothing says it does
+    not until they happen to run `sc whoami`.
+    """
+    from . import auth
+
+    tier = detection.tier
+    if tier is auth.Tier.EXPLICIT:
+        who, remedy = "the token in SWARM_ID_TOKEN", "unset SWARM_ID_TOKEN"
+    elif tier is auth.Tier.METADATA:
+        who = "this machine's own service account (the GCP metadata server)"
+        remedy = "run `sc` from a machine outside GCP"
+    elif tier in (auth.Tier.IMPERSONATE, auth.Tier.IAP):
+        who = f"the service account {os.environ.get('SWARM_IMPERSONATE_SA', '').strip()}"
+        remedy = "unset SWARM_IMPERSONATE_SA"
+    else:
+        who, remedy = f"the {tier.value} tier", "see `swarm doctor`"
+    return (
+        f"warning     {detection.detail}, which ranks above a sign-in: the plugin's "
+        f"tools and every other `sc` and `swarm` command on this machine will act as "
+        f"{who}, not as you ({email}). To act as yourself, {remedy}; "
+        f"`{terminal_command('sc whoami')}` shows which identity is in use.\n"
+    )
+
+
 def cmd_login(_client, args, out) -> int:
-    from . import credentials, signin
+    from . import auth, credentials, signin
 
     deployment = _resolve(args)
     store = credentials.store()
@@ -522,12 +558,22 @@ def cmd_login(_client, args, out) -> int:
     email = claims.get("email") or "(the token carried no email)"
     out.write(f"signed in to {deployment.context} ({deployment.url}) as {email}\n")
     out.write(f"your sign-in is kept in {store.describe()}\n")
+    detection = auth.detect(deployment)
+    if detection.tier is not auth.Tier.SIGNED_IN:
+        out.write(_outranked(detection, email))
     # ONE CALL NOW, so the developer learns at sign-in -- not at their first
     # dispatch -- whether this deployment admits the token. A 401 here is the
     # deployment not having allowlisted its own Desktop client, and the
     # message SwarmClient raises says so.
+    #
+    # WITH THE SIGN-IN IT IS CHECKING, whatever `detect` would pick. Left to
+    # detect, a machine with SWARM_IMPERSONATE_SA, SWARM_ID_TOKEN or a
+    # metadata server sent THAT credential, and "signed in" was then printed
+    # over the service account's tenant with exit 0 -- even where IAP had not
+    # allowlisted the Desktop client, which is the one thing this call exists
+    # to find out (review of PR #61, 2026-09-25).
     try:
-        with SwarmClient(deployment=deployment) as api:
+        with SwarmClient(deployment=deployment, tier=auth.Tier.SIGNED_IN) as api:
             me = api.request("GET", "/v1/tenants/me") or {}
     except SwarmError as exc:
         out.write(f"but {deployment.url} did not accept it: {exc}\n")
@@ -754,6 +800,14 @@ def build_parser() -> argparse.ArgumentParser:
     _common(parser, root=True)
     parser.set_defaults(func=cmd_overview)
     sub = parser.add_subparsers(dest="command")
+
+    # THE BARE COMMAND, UNDER A NAME. `sc` alone is the overview, and a flag
+    # can only follow it at the root -- `sc --json` -- where a permission rule
+    # that allows it (`sc --json *`) also allows `sc --json login`. A named
+    # view takes its flags after the name, so it can be granted on its own.
+    o = sub.add_parser("overview", help="everything at once (the same as `sc` alone)")
+    _common(o, root=False)
+    o.set_defaults(func=cmd_overview)
 
     a = sub.add_parser("accounts", help="the account pool: 5H, 7D, when it clears, state")
     _common(a, root=False)

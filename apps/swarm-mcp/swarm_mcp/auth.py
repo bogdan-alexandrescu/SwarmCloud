@@ -83,9 +83,15 @@ class Tier(str, Enum):
     #: it because the client is allowlisted as a programmatic client. The
     #: developer is THEMSELVES on the other side, not a service account.
     SIGNED_IN = "signed-in"
-    #: Ordinary user credentials. `gcloud run services proxy` mints the token,
-    #: because `gcloud auth print-identity-token` CANNOT set an audience for a
-    #: user -- the single fact that makes a laptop different from CI.
+    #: Ordinary user credentials. `gcloud auth print-identity-token` CANNOT
+    #: set an audience for a user -- the single fact that makes a laptop
+    #: different from CI -- so this tier reaches a SOLO deployment one of two
+    #: ways, both of which Cloud Run documents for a developer
+    #: (docs.cloud.google.com/run/docs/authenticating/developers): a
+    #: configured *.run.app address is sent gcloud's own identity token, which
+    #: Cloud Run accepts from an account holding run.routes.invoke; with
+    #: nothing configured and PROJECT_ID set, `gcloud run services proxy`
+    #: forwards on localhost and supplies the token itself.
     PROXY = "user-credentials"
 
 
@@ -229,11 +235,13 @@ def detect(deployment: "Deployment | None" = None) -> Detection:
         else f"context {deployment.context} has no OAuth client id",
     ))
 
-    return Detection(
-        Tier.PROXY,
-        "ordinary user credentials; an authenticated local proxy will be used",
-        considered,
-    )
+    if deployment is None:
+        how = "an authenticated local proxy will be used"
+    elif deployment.front_door:
+        how = "an IAP front door does not accept them"
+    else:
+        how = "gcloud's own identity token goes to Cloud Run (needs run.routes.invoke)"
+    return Detection(Tier.PROXY, f"ordinary user credentials; {how}", considered)
 
 
 def _free_port() -> int:
@@ -245,12 +253,15 @@ def _free_port() -> int:
 class Proxy:
     """`gcloud run services proxy`, supervised.
 
-    WHY A SUBPROCESS AND NOT A TOKEN. `gcloud auth print-identity-token` refuses
-    `--audiences` for user credentials -- only service accounts may set one --
-    and Cloud Run rejects a token whose audience is not its own URL. The proxy
-    is Google's answer to exactly that gap: it mints the right token per request
-    and forwards on localhost. Reimplementing it would mean reimplementing the
-    user OAuth flow, which is how a five-minute setup becomes an afternoon.
+    WHY A SUBPROCESS HERE. `gcloud auth print-identity-token` refuses
+    `--audiences` for user credentials -- only service accounts may set one.
+    The proxy is Google's answer for a caller who knows a SERVICE, not an
+    address: it finds the service, mints per request and forwards on
+    localhost. It is used only when nothing names the deployment's address
+    and PROJECT_ID does. A configured *.run.app address is sent gcloud's own
+    identity token instead (`SwarmClient.developer_id_token`), which Cloud
+    Run's documentation gives developers as the other route and which needs
+    no project, region or service name to find.
     """
 
     def __init__(self, service: str, region: str, project: str) -> None:

@@ -85,11 +85,18 @@ REPO_MODE = "repo"
 LEGACY_URL_VARS = ("SWARM_API_URL", "API_URL")
 LEGACY_HOST_VARS = ("SWARM_API_HOST", "API_HOST")
 
-#: The plugin's `userConfig` keys, in `plugin/.claude-plugin/plugin.json`.
-#: `tests/unit/mcp/test_plugin_user_config.py` parses the manifest and asserts
-#: its keys are exactly these and that each reaches the bridge in the env name
-#: `plugin_env` derives -- so neither side can rename one alone.
-PLUGIN_KEYS = ("deployment_url", "oauth_client_id", "oauth_client_secret")
+#: The plugin's `userConfig` keys, in `plugin/.claude-plugin/plugin.json`,
+#: each spelled ONCE, here, by the role it plays. `_plugin` reads through these
+#: names and nothing else; it used to spell each key again as a literal, so a
+#: rename made here and in the manifest together passed every test that
+#: compared the two lists while the bridge went on reading the old name.
+#: `tests/unit/mcp/test_plugin_user_config.py` now substitutes an answer into
+#: the manifest's own env mapping for each key, the way Claude Code does, and
+#: asks `resolve` where each one landed.
+PLUGIN_URL = "deployment_url"
+PLUGIN_CLIENT_ID = "oauth_client_id"
+PLUGIN_CLIENT_SECRET = "oauth_client_secret"
+PLUGIN_KEYS = (PLUGIN_URL, PLUGIN_CLIENT_ID, PLUGIN_CLIENT_SECRET)
 
 
 def plugin_env(key: str) -> str:
@@ -554,13 +561,13 @@ class _Plugin:
 
 
 def _plugin(environ: Mapping[str, str]) -> _Plugin | None:
-    url = _env(environ, plugin_env("deployment_url"))
+    url = _env(environ, plugin_env(PLUGIN_URL))
     if not url:
         return None
     return _Plugin(
         url=normalise_url(url),
-        client_id=_env(environ, plugin_env("oauth_client_id")),
-        client_secret=_env(environ, plugin_env("oauth_client_secret")),
+        client_id=_env(environ, plugin_env(PLUGIN_CLIENT_ID)),
+        client_secret=_env(environ, plugin_env(PLUGIN_CLIENT_SECRET)),
     )
 
 

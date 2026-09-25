@@ -25,29 +25,56 @@ is at. Seamless is not the same as hidden.
 
 The plugin is a **client for your deployment**, not for this repository's.
 Ask your platform operator for three values first: the deployment URL, and —
-for a deployment behind IAP — its Desktop OAuth client ID and secret. Then, in
-a Claude Code session:
+for a deployment behind IAP — its Desktop OAuth client ID and secret.
+
+**Today, install it from a checkout of this repository.** In a Claude Code
+session:
 
 ```text
-/plugin marketplace add bogdan-alexandrescu/SwarmCloud
+/plugin marketplace add /path/to/your/SwarmCloud/checkout
 /plugin install sc@swarmcloud
 ```
 
-You are prompted for the deployment URL (required), the OAuth client ID and
-the OAuth client secret. The secret is `sensitive` in the manifest, so Claude
-Code keeps it in your system's secure credential store, never in
-`settings.json`. Then:
+A marketplace added from a local directory loads the plugin **in place**, so
+its MCP server — `uv run --directory ${CLAUDE_PLUGIN_ROOT}/.. swarm-mcp` —
+finds the checkout's `pyproject.toml`
+([plugin loading reference](https://code.claude.com/docs/en/plugins/loading),
+"In-place and copied plugins"). `claude --plugin-dir <checkout>/plugin` does
+the same for one session.
+
+**From GitHub it does not work yet.** `/plugin marketplace add
+bogdan-alexandrescu/SwarmCloud` installs, prompts and loads the skills, but
+Claude Code copies only `plugin/` into `~/.claude/plugins/cache/…`, so
+`${CLAUDE_PLUGIN_ROOT}/..` holds no project and the MCP server fails to start
+(measured 2026-09-25 on 0.4.0: the cache held `0.4.0/` and nothing else, and
+`plugin:sc:swarmcloud` failed to connect). Nothing the plugin was configured
+with then reaches a running bridge, and `sc login` in a terminal finds no
+deployment. Running the bridge from the cache is the plugin-standalone-bridge
+change (#62); until it is merged and its tag pushed, use the checkout.
+
+Either way you are prompted for the deployment URL (required), the OAuth
+client ID and the OAuth client secret. The secret is `sensitive` in the
+manifest, so Claude Code keeps it in your system's secure credential store,
+never in `settings.json`. Then:
 
 ```text
 /reload-plugins
 ```
 
-and sign in, from a terminal:
+and sign in, from a terminal in the checkout:
 
 ```bash
 uv run sc login    # a browser window opens; pick your work account
 uv run sc whoami   # context, URL, you, your tenant
 ```
+
+`sc login` finds the deployment because the plugin's MCP server writes it to
+your config file when it starts — so start the server first (`/reload-plugins`,
+then `/mcp` shows `plugin:sc:swarmcloud` connected), or add it yourself with
+`uv run sc context add`. `sc login` ends by calling the API once **with the
+sign-in it just made**, whatever else is set on the machine, and warns you if
+`SWARM_IMPERSONATE_SA`, `SWARM_ID_TOKEN` or a GCP metadata server means every
+other command will still act as a service account rather than as you.
 
 From then on every tool acts **as you**. A tool called before you sign in
 answers `sign-in required for <context>: run sc login (a browser window
@@ -103,13 +130,26 @@ lockstep and derives the scoped prefix from `plugin.json` itself.
 ### What is still repository-bound, and why it cannot be fixed here
 
 `${CLAUDE_PLUGIN_ROOT}` is exported to MCP server subprocesses and **not** to
-commands Claude runs through the Bash tool. So the MCP half of this plugin
-works from any working directory and the **shell half does not**: `uv run sc`
-resolves `uv`'s project against the session's own directory, and outside a
-checkout it answers that there is no `pyproject.toml`. That is a real limit,
-stated here rather than papered over, because a model that meets it without
-warning reports the platform as broken. The `delegate` skill calls tools and is
-unaffected; `/sc` and the `sc` skill want the repository.
+commands Claude runs through the Bash tool. So when the plugin is loaded in
+place from a checkout, the MCP half works from any working directory and the
+**shell half does not**: `uv run sc` resolves `uv`'s project against the
+session's own directory, and outside a checkout it answers that there is no
+`pyproject.toml`. That is a real limit, stated here rather than papered over,
+because a model that meets it without warning reports the platform as broken.
+The `delegate` skill calls tools and is unaffected; `/sc` and the `sc` skill
+want the repository.
+
+Installed from the **GitHub** marketplace, the MCP half does not start either:
+the server's `uv run --directory ${CLAUDE_PLUGIN_ROOT}/..` points at the
+plugin cache, not a checkout (see Install). That is #62's to fix.
+
+The `sc` skill and `/sc` are granted each **view** by name —
+`uv run sc accounts`, `uv run sc task`, and so on — and never `sc` as a
+prefix. `sc login`, `sc logout` and `sc context` share that prefix, and a
+prefix grant would let a session sign the developer out or move every later
+dispatch to another cluster without asking.
+`tests/unit/mcp/test_plugin_commands.py` compiles each grant the way Claude
+Code matches it and runs every command it allows through the real parsers.
 
 The CLI is the same surface without the session wrapping, and is what to reach
 for when diagnosing the plugin itself:
@@ -149,7 +189,8 @@ The doors take **different credentials**, which is the other half:
 |---|---|---|
 | the IAP load balancer | a developer, signed in with `sc login` | an **ID** token for the deployment's Desktop OAuth client |
 | the IAP load balancer | CI, `SWARM_IMPERSONATE_SA` | the service account's OAuth **ACCESS** token |
-| Cloud Run directly | an in-VPC or solo caller | a Google **ID** token for the service URL |
+| Cloud Run directly | an in-VPC caller, or CI on a solo deployment | a Google **ID** token for the service URL |
+| a solo deployment's `*.run.app` address | a developer on ordinary gcloud credentials | gcloud's own **ID** token (`gcloud auth print-identity-token`), which Cloud Run takes from an account holding `run.routes.invoke` |
 
 Measured on 2026-09-24 against the live front door: a gcloud **user** access
 token is refused **401, IAP error code 900**, because the deployment's IAP uses

@@ -668,7 +668,18 @@ def cmd_doctor(_client, args) -> int:
     deployment = _doctor_deployment(args)
     detection = detect(deployment)
     print(f"tier        {detection.tier.value}")
-    print(f"            {detection.detail}")
+    # Wrapped like everything else here: a detail names the context and, on
+    # the user-credentials tier, the route its token takes -- often past 80.
+    print(
+        textwrap.fill(
+            detection.detail,
+            width=78,
+            initial_indent=" " * 12,
+            subsequent_indent=" " * 12,
+            break_on_hyphens=False,
+            break_long_words=False,
+        )
+    )
     print(f"reaches     {', '.join(REACHES[detection.tier])} deployments")
 
     for profile in ("solo", "team"):

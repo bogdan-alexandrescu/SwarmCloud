@@ -438,6 +438,28 @@ def _open(request: urllib.request.Request, timeout: int):
 class _Token:
     value: str
     minted_at: float
+    #: How long `value` may be reused. The usual 45 minutes, except for a token
+    #: this process did not mint fresh -- see `_reuse_for`.
+    ttl: float = _TOKEN_TTL_SECONDS
+
+
+def _reuse_for(token: str) -> float:
+    """How long a token handed over by gcloud may be reused: until five minutes
+    before its own `exp`, never longer than the usual TTL, and not at all when
+    it carries no `exp` that can be read.
+
+    `gcloud auth print-identity-token` returns the identity token it already
+    holds, which can have minutes left. Reusing that for 45 minutes would turn
+    a long `swarm tail` into a 401 at the moment it expired -- a failure that
+    reads like a permission problem.
+    """
+    from .signin import decode_claims
+
+    try:
+        expires = float(decode_claims(token).get("exp") or 0)
+    except (SwarmError, TypeError, ValueError):
+        return 0.0
+    return max(0.0, min(float(_TOKEN_TTL_SECONDS), expires - time.time() - 5 * 60))
 
 
 def unwrap_task(payload: Any) -> dict[str, Any]:
@@ -508,6 +530,7 @@ class SwarmClient:
         connect: bool = True,
         context: str | None = None,
         deployment: Any = None,
+        tier: Any = None,
     ) -> None:
         # Local imports: `auth`, `config` and `signin` all import this module,
         # so importing them at load time would be a cycle.
@@ -523,7 +546,13 @@ class SwarmClient:
         if deployment is None and self._explicit_url is None:
             deployment = _config.resolve(context=context)
         self.deployment = deployment
-        self.detection = _auth.detect(deployment)
+        #: `tier` is for the one caller that must test a SPECIFIC credential
+        #: whatever else this machine has: `sc login`, checking the sign-in it
+        #: just made. Everything else takes what `detect` finds.
+        self.detection = (
+            _auth.Detection(tier, "chosen by the caller") if tier is not None
+            else _auth.detect(deployment)
+        )
         self.tier = self.detection.tier
         self._proxy: _auth.Proxy | None = None
         self._token: _Token | None = None
@@ -550,7 +579,10 @@ class SwarmClient:
         # always was. `gcloud run services proxy` calls the *.run.app address
         # directly, and on a `team` deployment that address refuses everything
         # outside the VPC -- so the proxy is only for the one shape left over:
-        # nothing configured, and PROJECT_ID naming a solo deployment.
+        # nothing configured, and PROJECT_ID naming a solo deployment. A
+        # CONFIGURED solo deployment on user credentials is sent gcloud's own
+        # identity token instead (`_id_token`), which needs no service name,
+        # region or project to find.
         deployment = self.deployment
         if self._explicit_url:
             self.base_url = self._explicit_url
@@ -694,15 +726,46 @@ class SwarmClient:
 
     def _id_token(self) -> str:
         from . import auth as _auth
+        from .config import is_run_app
 
         now = time.monotonic()
-        if self._token is not None and now - self._token.minted_at < _TOKEN_TTL_SECONDS:
+        if self._token is not None and now - self._token.minted_at < self._token.ttl:
             return self._token.value
-        value = _auth.id_token_for(self._audience or self.base_url, tier=self.tier)
+        if self.tier is _auth.Tier.PROXY and self._proxy is None and is_run_app(self.base_url):
+            # A SOLO deployment the user CONFIGURED, on ordinary user
+            # credentials. No proxy was started -- nothing named a project to
+            # start one against -- and `id_token_for(PROXY)` has no token to
+            # give. Before this branch every call here failed with "this tier
+            # reaches the API through a local proxy instead", about a proxy
+            # that did not exist, and a solo user had nothing to configure
+            # that would fix it (review of PR #61, 2026-09-25).
+            value = self.developer_id_token()
+            ttl = _reuse_for(value)
+        else:
+            value = _auth.id_token_for(self._audience or self.base_url, tier=self.tier)
+            ttl = _TOKEN_TTL_SECONDS
         if not value:
             raise SwarmError("no ID token available; run: gcloud auth login")
-        self._token = _Token(value=value, minted_at=now)
+        self._token = _Token(value=value, minted_at=now, ttl=ttl)
         return value
+
+    def developer_id_token(self) -> str:
+        """gcloud's own identity token for the signed-in gcloud account.
+
+        Cloud Run documents exactly this for a developer reaching a private
+        service: `curl -H "Authorization: Bearer $(gcloud auth
+        print-identity-token)" SERVICE_URL`, for an account holding
+        run.routes.invoke (docs.cloud.google.com/run/docs/authenticating/
+        developers). A user account cannot choose the token's audience, and
+        Cloud Run takes it regardless.
+
+        The same page says why it is a DEVELOPMENT path: the token has no
+        audience of its own, so whoever receives it could replay it at any
+        other Cloud Run service this account may invoke. It is therefore only
+        ever sent to a *.run.app address the user configured (`_id_token`
+        checks), never to a load balancer, a custom domain or anything else.
+        """
+        return _run(["gcloud", "auth", "print-identity-token"])
 
     def access_token(self) -> str:
         """An OAuth access token: for GCS, and for IAP at the front door.

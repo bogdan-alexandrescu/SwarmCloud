@@ -2,8 +2,22 @@
 name: sc
 description: Show and interpret SwarmCloud cluster state — the subscription account pool and its 5-hour/7-day quota windows, pool ceilings and which pool binds each runner profile, agents running and queued, and what is wrong right now. Use when asked "what is the swarm doing", "how much quota is left", "why is my task queued", "is anything broken", "which account is nearly full", or before dispatching a long batch.
 allowed-tools:
-  - Bash(uv run sc:*)
-  - Bash(sc:*)
+  - Bash(uv run sc)
+  - Bash(uv run sc overview:*)
+  - Bash(uv run sc accounts:*)
+  - Bash(uv run sc agents:*)
+  - Bash(uv run sc capacity:*)
+  - Bash(uv run sc task:*)
+  - Bash(uv run sc trouble:*)
+  - Bash(uv run sc whoami:*)
+  - Bash(sc)
+  - Bash(sc overview:*)
+  - Bash(sc accounts:*)
+  - Bash(sc agents:*)
+  - Bash(sc capacity:*)
+  - Bash(sc task:*)
+  - Bash(sc trouble:*)
+  - Bash(sc whoami:*)
   - Bash(uv run swarm doctor:*)
   - Bash(uv run swarm profiles:*)
 ---
@@ -22,20 +36,29 @@ developer's own sign-in and which cluster every later call reaches — they are
 theirs to run, so **tell them the command; never run it yourself**. `sc login`
 opens a browser and waits for them.
 
+This skill is granted each **view** by name, not `sc` as a whole. The sign-in
+and context commands live under the same `sc` prefix, so a grant for all of
+`sc` would let this session sign the developer out or move every later
+dispatch to another cluster without asking.
+
 ## Which view
 
 | Question | Command |
 |---|---|
-| what is the swarm doing? | `uv run sc` |
+| what is the swarm doing? | `uv run sc` (or `uv run sc overview`) |
 | how much quota is left? which account? | `uv run sc accounts` |
 | why is my task queued? what is running? | `uv run sc agents` |
 | what is the real ceiling? | `uv run sc capacity` |
 | what did this agent produce? | `uv run sc task <id>` |
 | is anything broken? | `uv run sc trouble` |
+| which deployment, and who am I on it? | `uv run sc whoami` |
 | what may I actually run? | `uv run swarm profiles` |
 
 Add `--json` for the numbers, `--width N` to force a column count, `--ascii`
-for a terminal without the bar glyphs.
+for a terminal without the bar glyphs. Put them **after** the view's name —
+`uv run sc accounts --json`, `uv run sc overview --json` — because that is
+what this skill is granted. A flag written before the view's name works too,
+but asks the developer first.
 
 `uv run swarm profiles` is the odd one out, listed here because it is read-only
 and because it is the question people ask next. It reads the frozen catalogue

@@ -199,8 +199,17 @@ uv run sc login      # a browser opens; pick your saga.xyz account
 uv run sc whoami     # principal is YOU, and your tenant
 ```
 
-`sc login` ends by calling the API once. If it prints `did not accept it: ...
-401`, IAP is refusing the token: step 4 is not applied, or has not propagated.
+`sc login` ends by calling the API once, **with the ID token it just minted** —
+not with whatever else this machine has — so its answer is about the
+allowlist. (Until review caught it, that call went through the ordinary tier
+detection, and with `SWARM_IMPERSONATE_SA` exported it tested the service
+account instead and printed success whatever IAP thought of the Desktop
+client.) If `sc login` prints a `warning … not as you` line, the check above is
+still valid, but every other command on this machine will act as the identity
+it names until you unset it.
+
+If it prints `did not accept it: ... 401`, IAP is refusing the token: step 4 is
+not applied, or has not propagated.
 A **403 that names you** is the other gate — `roles/iap.httpsResourceAccessor`,
 granted through `frontend_iap_members` in `terraform/bootstrap/terraform.tfvars`
 (`domain:saga.xyz` already covers every Saga account).
@@ -208,7 +217,10 @@ granted through `frontend_iap_members` in `terraform/bootstrap/terraform.tfvars`
 ## Step 6 — tell developers
 
 Three values, and where to put them: the plugin asks for all three at
-`/plugin install sc@swarmcloud`.
+`/plugin install sc@swarmcloud`. Until #62 (the bridge run from a pinned git
+requirement) is merged and tagged, the install that starts the plugin's MCP
+server is from a checkout — `/plugin marketplace add <checkout>` — not from
+GitHub; [the plugin setup guide](../plugin-setup.md) says why.
 
 | Prompt | Value |
 |---|---|
