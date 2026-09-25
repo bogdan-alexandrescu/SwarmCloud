@@ -9,11 +9,14 @@ code is the contract with the dispatcher and the reconciler:
     0   terminal state persisted, lease released
     1   the attempt failed, terminal state persisted, lease released
     69  a dependency was UNAVAILABLE before the runner existed: a spent startup
-        budget, UNAVAILABLE, a 5xx, a google-auth transport error, at the
-        generation check or after it. The task, the lease and the event
-        stream were not written. After the generation check, the attempt's
-        own document records the phase and the error, when Firestore took it.
-        The next attempt may not meet the outage, so it is RETRIED
+        budget, UNAVAILABLE, any 5xx or gRPC UNKNOWN, DATA_LOSS or
+        UNIMPLEMENTED, CANCELLED, a google-auth transport error, at the
+        generation check or after it. At the generation check it is also
+        every API error that is not a refusal named under 78. The task, the
+        lease and the event stream were not written. After the generation
+        check, the attempt's own document records the phase and the error,
+        when Firestore took it. The next attempt may not meet the outage, so
+        it is RETRIED
     70  fenced: a newer generation owns this task; the task and the lease
         were not written, and the agent was never started or was stopped
     71  cancelled
@@ -23,8 +26,11 @@ code is the contract with the dispatcher and the reconciler:
         bad configuration, a DNS preflight that still could not resolve what
         the first Firestore call needs after its retries, clients that could
         not be built, or a generation check that Firestore REFUSED
-        (PERMISSION_DENIED, UNAUTHENTICATED, a credential it would not
-        refresh). Nothing was written to Firestore, not even the attempt. The
+        (PERMISSION_DENIED, UNAUTHENTICATED, NOT_FOUND, INVALID_ARGUMENT,
+        FAILED_PRECONDITION, a credential google-auth would not refresh or
+        could not find). Nothing else at the generation check is a 78: an
+        error that is not one of these named refusals is 69. Nothing was
+        written to Firestore, not even the attempt. The
         cause is written to the Kubernetes termination message
         (`startup.write_termination_message`). NOT retried: see below.
         A refusal AFTER the generation check is not a 78: the attempt owns
@@ -38,8 +44,10 @@ code is the contract with the dispatcher and the reconciler:
 THE STARTUP IS LOUD ON PURPOSE (see `startup.py` for the incident behind it).
 The first line is written before the configuration is read. Every phase after
 that gets its own line. Library warnings reach stdout. A DNS failure is
-retried within a bounded window, one warning per failed attempt, and reported
-within `DNS_PREFLIGHT_WINDOW_SECONDS`. A SIGTERM names the phase it arrived in.
+retried on a fixed schedule, one warning per failed attempt: the last lookup
+is asked 30 s after the first however fast each one fails, and the verdict is
+reported within `DNS_PREFLIGHT_WINDOW_SECONDS`. A SIGTERM names the phase it
+arrived in.
 
 WHAT HAPPENS TO EACH EXIT AFTERWARDS. The reconciler reads the exit code of a
 FINISHED execution whose attempt still holds its task's current lease
@@ -217,6 +225,7 @@ def main() -> int:
         hosts=hosts,
         budget_seconds=startup.DNS_PREFLIGHT_BUDGET_SECONDS,
         attempts=startup.DNS_PREFLIGHT_ATTEMPTS,
+        schedule_seconds=list(startup.DNS_PREFLIGHT_SCHEDULE_SECONDS),
         window_seconds=startup.DNS_PREFLIGHT_WINDOW_SECONDS,
     )
 
@@ -252,6 +261,7 @@ def main() -> int:
             attempts=preflight.attempts,
             seconds=preflight.seconds,
             budget_seconds=startup.DNS_PREFLIGHT_BUDGET_SECONDS,
+            schedule_seconds=list(startup.DNS_PREFLIGHT_SCHEDULE_SECONDS),
             window_seconds=startup.DNS_PREFLIGHT_WINDOW_SECONDS,
             nameservers=startup.resolver_nameservers(),
             hint=(

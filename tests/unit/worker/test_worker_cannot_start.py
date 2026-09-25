@@ -85,7 +85,7 @@ DNS_TERMINATION_MESSAGE = json.dumps(
         "severity": "ERROR",
         "message": (
             "DNS unreachable: could not resolve firestore.googleapis.com after 3 attempts "
-            "over 37s; exiting 78 before building any client"
+            "over 30s; exiting 78 before building any client"
         ),
         "cause": "DNS unreachable (firestore.googleapis.com)",
         "phase": "dns_preflight",

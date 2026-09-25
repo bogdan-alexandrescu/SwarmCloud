@@ -21,11 +21,12 @@ This module holds what the entrypoint and the lifecycle share to prevent that:
   * `Phases`: one flushed JSON line per startup phase, so the last line of a
     silent pod names the phase it was stuck in;
   * `dns_preflight_with_retries`: before any client is built, resolve the
-    names the first Firestore call needs, 10 s per attempt, three attempts
-    with a backoff between them. A failure is one structured error naming the
-    hosts, then exit 78. It is not 390 s of nothing, and it is not one blink
-    of the resolver either (owner, 2026-09-25: "have some retry logic before
-    failing, to prevent intermittent dns failures");
+    names the first Firestore call needs, 10 s per attempt, in three attempts
+    that start 0, 12 and 30 s in, however fast each one fails. A failure is
+    one structured error naming the hosts, then exit 78. It is not 390 s of
+    nothing, and it is not a resolver outage of under 30 s either (owner,
+    2026-09-25: "have some retry logic before failing, to prevent
+    intermittent dns failures");
   * `write_termination_message`: the cause of a 78, left where Kubernetes
     copies it into the pod's status, which is where the reconciler reads it.
     A worker that cannot reach Firestore cannot put it there;
@@ -79,38 +80,53 @@ EXIT_INTERRUPTED = 128 + int(signal.SIGTERM)
 #: inside the 120 s SIGTERM grace a GKE worker gets (`dispatch.py`).
 DNS_PREFLIGHT_BUDGET_SECONDS = 10.0
 
-#: How many times the preflight asks before it gives up, and how long it waits
-#: after each failed attempt but the last.
+#: When each attempt of the preflight STARTS, in seconds after the first one
+#: started. The first entry is 0. A failed attempt waits for the next one's
+#: start time, and the last failed attempt is the verdict.
 #:
 #: WHY RETRY AT ALL. Owner, 2026-09-25: "have some retry logic before failing,
 #: to prevent intermittent dns failures". Once 78 fails the task with no retry
-#: (the reconciler reads it now), one blink of the resolver would otherwise
-#: end a task that the next second would have run. A resolver blinks when a
-#: kube-dns or NodeLocal DNSCache pod restarts, is rescheduled, or reloads,
-#: and when a single UDP query is lost, which glibc reports as EAI_AGAIN after
-#: its own per-server timeout. Each of these clears in seconds. That is
-#: general Kubernetes behaviour, not something measured on this cluster.
+#: (the reconciler reads it now), a resolver outage of a few seconds would
+#: otherwise end a task that the next attempt would have run. A resolver has
+#: such an outage when a kube-dns or NodeLocal DNSCache pod restarts (a node
+#: upgrade, a reschedule, a reload), when an upstream resolver answers
+#: SERVFAIL for a while, and when a single UDP query is lost. That is general
+#: Kubernetes behaviour, not something measured on this cluster.
 #:
-#: WHY THREE, 2 s THEN 5 s. The second attempt absorbs a single lost query.
-#: The third, five seconds later, outlasts a cache or kube-dns pod coming back.
-#: A fourth would buy little: what is still failing after about 20 s of
-#: retries is a policy or a configuration, as on 2026-09-24, when the tenant
+#: WHY START TIMES, NOT A COUNT AND A BACKOFF. What rides out an outage is how
+#: long the retries SPAN: an outage that is over before the last lookup is
+#: asked does not fail the task. The first version counted three attempts and
+#: waited 2 s, then 5 s, after each failure. A resolver that drops packets
+#: makes every lookup use its whole 10 s budget, so that spanned 27 s from
+#: the first ask to the last. A resolver that fails AT ONCE (EAI_AGAIN from a
+#: SERVFAIL or a refused port while its pod restarts, EAI_NONAME from a
+#: NXDOMAIN) used no time at all, and spanned 7 s. That is shorter than the
+#: restart it was there to outlast (review of PR #59). With fixed start
+#: times, the span is the same however the lookups fail.
+#:
+#: WHY 0, 12 AND 30 s. The last attempt starts 30 s after the first, so an
+#: outage that is over within 30 s of the first lookup never fails the task,
+#: whether its lookups hang or fail at once. That is the low end of the
+#: 30-45 s the owner asked for. Each gap is longer than an attempt's 10 s
+#: budget, so even an attempt that hung for all of it is followed by a real
+#: wait (2 s, then 8 s) before the next ask. The gaps grow, 12 s then 18 s:
+#: the second attempt catches a blink, and the third outlasts a cache or
+#: kube-dns pod coming back. A fourth would buy little. What is still failing
+#: 30 s in is a policy or a configuration, as on 2026-09-24, when the tenant
 #: egress NetworkPolicy dropped every DNS packet. Waiting does not fix that,
-#: and every extra attempt holds the slot another 10 s or more before the task
-#: is failed with its cause.
+#: and every extra attempt holds the slot longer before the task is failed
+#: with its cause.
 #:
-#: THE WINDOW, `DNS_PREFLIGHT_WINDOW_SECONDS`, is the worst case: every
-#: attempt spends its whole budget, which is what dropped packets do. 3 x 10 s
-#: + 2 s + 5 s = 37 s, inside the 30-45 s the owner asked for, and far inside
-#: the lease's 300 s dispatch deadline. That matters: a worker that has not
-#: heartbeated is judged by that deadline alone, and the worker's own 78, with
-#: its cause, has to arrive before the reconciler reclaims the lease as silent.
-#: A name that fails at once (NXDOMAIN) spends only the backoffs, about 7 s.
-DNS_PREFLIGHT_ATTEMPTS = 3
-DNS_PREFLIGHT_BACKOFF_SECONDS: tuple[float, ...] = (2.0, 5.0)
-DNS_PREFLIGHT_WINDOW_SECONDS = DNS_PREFLIGHT_ATTEMPTS * DNS_PREFLIGHT_BUDGET_SECONDS + sum(
-    DNS_PREFLIGHT_BACKOFF_SECONDS[: DNS_PREFLIGHT_ATTEMPTS - 1]
-)
+#: THE WINDOW, `DNS_PREFLIGHT_WINDOW_SECONDS`, is the worst case: the last
+#: attempt starts at 30 s and uses its whole 10 s budget, 40 s in all. Lookups
+#: that fail at once give their verdict at 30 s. Both are inside the 30-45 s
+#: the owner asked for, and far inside the lease's 300 s dispatch deadline.
+#: That matters: a worker that has not heartbeated is judged by that deadline
+#: alone, and the worker's own 78, with its cause, has to arrive before the
+#: reconciler reclaims the lease as silent.
+DNS_PREFLIGHT_SCHEDULE_SECONDS: tuple[float, ...] = (0.0, 12.0, 30.0)
+DNS_PREFLIGHT_ATTEMPTS = len(DNS_PREFLIGHT_SCHEDULE_SECONDS)
+DNS_PREFLIGHT_WINDOW_SECONDS = DNS_PREFLIGHT_SCHEDULE_SECONDS[-1] + DNS_PREFLIGHT_BUDGET_SECONDS
 
 #: Where Kubernetes reads a container's termination message: the pod spec's
 #: `terminationMessagePath`, whose default this is. The dispatcher sets
@@ -567,28 +583,36 @@ class PreflightOutcome:
 def dns_preflight_with_retries(
     hosts: Sequence[str],
     *,
-    attempts: int = DNS_PREFLIGHT_ATTEMPTS,
+    schedule: Sequence[float] = DNS_PREFLIGHT_SCHEDULE_SECONDS,
     budget_seconds: float = DNS_PREFLIGHT_BUDGET_SECONDS,
-    backoff: Sequence[float] = DNS_PREFLIGHT_BACKOFF_SECONDS,
     resolve: Callable[[str], Any] | None = None,
     sleep: Callable[[float], Any] = time.sleep,
     clock: Callable[[], float] = time.monotonic,
     on_failed_attempt: Callable[[int, list[dict[str, Any]], float], Any] | None = None,
 ) -> PreflightOutcome:
-    """`dns_preflight`, asked again after a backoff until every host resolves or attempts run out.
+    """`dns_preflight`, asked again on a schedule until every host resolves or it ends.
+
+    Attempt N starts `schedule[N-1]` seconds after the first one started, or
+    at once if the attempt before it ran past that time. The wait before an
+    attempt is measured from the FIRST attempt's start, not from the end of
+    the one before. So the retries span the same time whether a lookup fails
+    at once or hangs for its whole budget (see
+    `DNS_PREFLIGHT_SCHEDULE_SECONDS` for why that is what matters).
 
     Only the hosts that failed are asked again. A host that resolved stays
     resolved: its address is not what was in doubt.
 
     `on_failed_attempt(attempt, unreachable, retry_in)` is called for each
     failed attempt that WILL be retried, before the wait, so that each one is
-    logged as it happens. The last failed attempt is the caller's to report,
-    as the verdict. Nothing is slept after it.
+    logged as it happens. `retry_in` is the wait that is then slept. The last
+    failed attempt is the caller's to report, as the verdict. Nothing is slept
+    after it.
     """
+    starts = [max(0.0, float(offset)) for offset in schedule] or [0.0]
     started = clock()
     final: dict[str, dict[str, Any]] = {}
     pending = list(dict.fromkeys(hosts))
-    total = max(1, int(attempts))
+    total = len(starts)
     made = 0
     for attempt in range(1, total + 1):
         made = attempt
@@ -599,7 +623,7 @@ def dns_preflight_with_retries(
         pending = [host for host in pending if not final[host]["ok"]]
         if not pending or attempt == total:
             break
-        wait = float(backoff[min(attempt - 1, len(backoff) - 1)]) if backoff else 0.0
+        wait = round(max(0.0, started + starts[attempt] - clock()), 3)
         if on_failed_attempt is not None:
             on_failed_attempt(attempt, [final[host] for host in pending], wait)
         if wait > 0:

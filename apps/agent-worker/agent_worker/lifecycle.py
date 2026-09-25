@@ -88,7 +88,8 @@ for what is a lost attempt, not a failed one. It was 78 until 2026-09-25. 78 is
 now "cannot start", which the reconciler fails without a retry, so an outage
 cannot share it. See `_exit_unavailable_before_runner` for which errors count.
 A refusal, such as PERMISSION_DENIED, still fails the attempt with its reason.
-At step 1 a refusal is a 78 (`_exit_control_plane_unreachable`).
+At step 1 only a named refusal is a 78, and every other API error is a 69
+(`_exit_control_plane_unreachable`, `_refusal_cause`).
 """
 
 from __future__ import annotations
@@ -1181,19 +1182,27 @@ class Worker:
         its to make. See `__main__` for what the reconciler does with each
         exit.
 
-        WHICH EXIT depends on what Firestore said, by the same rule
-        `_exit_unavailable_before_runner` applies after the check
-        (`_unavailable_cause`):
+        WHICH EXIT depends on what Firestore said:
 
-          * UNAVAILABLE, a spent startup budget, a 5xx, a google-auth
-            transport error: the service was not reached, and the next
-            attempt may reach it. 69, which the reconciler retries.
-          * PERMISSION_DENIED, UNAUTHENTICATED, a credential google-auth would
-            not refresh: the service was reached and said no, and it will say
-            no to the next attempt too. 78, "cannot start", which the
-            reconciler fails without a retry (owner, 2026-09-25). Its cause
-            goes to the Kubernetes termination message, the one place this
-            worker can leave it that the reconciler reads.
+          * A named REFUSAL (`_refusal_cause`), with nothing in the chain that
+            says the service could not be reached: PERMISSION_DENIED,
+            UNAUTHENTICATED, NOT_FOUND, INVALID_ARGUMENT, FAILED_PRECONDITION,
+            a credential google-auth would not refresh or could not find. The
+            service was reached and said no, and it will say no to the next
+            attempt too. 78, "cannot start", which the reconciler fails
+            without a retry (owner, 2026-09-25). Its cause goes to the
+            Kubernetes termination message, the one place this worker can
+            leave it that the reconciler reads.
+          * EVERYTHING ELSE is 69, which the reconciler retries: UNAVAILABLE,
+            a spent startup budget, any 5xx or gRPC UNKNOWN, CANCELLED, a
+            google-auth transport error (`_unavailable_cause`), and an API
+            error of any kind the refusal list does not name.
+
+        The refusals are named, not the outages. The first version did it
+        the other way round: 69 for a named list of outages, 78 for the rest.
+        So gRPC UNKNOWN, which Firestore raises when a stream is reset under
+        it, failed the task for good (review of PR #59). A wrong 69 costs one
+        bounded retry, and a wrong 78 ends a task that would have run.
 
         Before 2026-09-25 both were 78, and nothing read the 78, so the
         difference cost nothing. Once 78 fails the task, a Firestore outage
@@ -1206,7 +1215,8 @@ class Worker:
         retry = options.get("retry")
         cause = getattr(exc, "cause", None)
         transient = _unavailable_cause(exc)
-        exit_code = ExitCode.UNAVAILABLE if transient is not None else ExitCode.CONFIG
+        refusal = _refusal_cause(exc) if transient is None else None
+        exit_code = ExitCode.CONFIG if refusal is not None else ExitCode.UNAVAILABLE
         message = "could not read the control plane at startup; exiting without writing anything"
         self.log.exception(
             message,
@@ -1217,14 +1227,15 @@ class Worker:
             retry_budget_seconds=getattr(retry, "timeout", None),
             call_timeout_seconds=options.get("timeout"),
             exit_code=exit_code,
-            retryable=transient is not None,
+            retryable=exit_code == ExitCode.UNAVAILABLE,
+            refused_by=type(refusal).__name__ if refusal is not None else None,
         )
-        if exit_code == ExitCode.CONFIG:
+        if refusal is not None:
             write_termination_message(
                 message=message,
                 cause=(
                     "the control plane refused the generation check: "
-                    f"{type(exc).__name__}: {exc}"
+                    f"{type(refusal).__name__}: {refusal}"
                 ),
                 phase=self.phases.current,
                 exit_code=exit_code,
@@ -3198,29 +3209,61 @@ def _control_plane_unreachable(exc: BaseException) -> bool:
     return isinstance(exc, auth_exceptions.GoogleAuthError)
 
 
+def _error_chain(exc: BaseException) -> list[BaseException]:
+    """`exc`, then what it was raised from or during (`__cause__`, `__context__`).
+
+    Breadth first, bounded at 16, and cycle-safe. A library can raise
+    something else on the way up: Firestore's rollback of a transaction whose
+    begin failed raises a ValueError whose `__context__` is the RetryError,
+    and google-auth raises RefreshError FROM the TransportError.
+    """
+    seen: set[int] = set()
+    chain: list[BaseException] = []
+    pending: list[BaseException] = [exc]
+    while pending and len(seen) < 16:
+        current = pending.pop(0)
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        chain.append(current)
+        for linked in (current.__cause__, current.__context__):
+            if linked is not None:
+                pending.append(linked)
+    return chain
+
+
 def _unavailable_cause(exc: BaseException) -> BaseException | None:
     """The error in `exc`'s chain that says a dependency could not be reached, or None.
 
     UNAVAILABLE ONLY, not every Google API error. Counted: RetryError (a
-    budget ran out), UNAVAILABLE, DEADLINE_EXCEEDED, INTERNAL and the other
-    5xx, RESOURCE_EXHAUSTED and 429, ABORTED (contention that outlasted the
-    transaction's own retries), and google-auth's transport and timeout
-    errors or any it marks retryable. These say the call did not complete,
-    and the next attempt may find the service back.
+    budget ran out), EVERY ServerError, RESOURCE_EXHAUSTED and 429, ABORTED
+    (contention that outlasted the transaction's own retries), CANCELLED, and
+    google-auth's transport and timeout errors or any it marks retryable.
+    These say the call did not complete, and the next attempt may find the
+    service back.
+
+    EVERY ServerError, not a list of them: UNAVAILABLE, DEADLINE_EXCEEDED,
+    INTERNAL, 502 and 504, and also gRPC UNKNOWN, DATA_LOSS and UNIMPLEMENTED.
+    The first version named five and left those three out. UNKNOWN is what
+    Firestore's client raises when a stream is reset under it ("Stream
+    removed"), and the startup Retry does not retry it. So a stream reset
+    FAILED the task for good after the generation check, and ended it through
+    a 78 at the check (review of PR #59). Each of the three could be permanent,
+    UNIMPLEMENTED above all. But a wrong guess here costs one bounded retry,
+    and the other wrong guess ends the task. CANCELLED is the RPC being
+    dropped, not an answer.
 
     Not counted: PERMISSION_DENIED, NOT_FOUND, INVALID_ARGUMENT,
     FAILED_PRECONDITION, UNAUTHENTICATED and a non-retryable RefreshError.
     Those are answers: the service was reached and said no, and it will say no
     to the next attempt too. The attempt owns its task at this point (step 1
     passed), so it fails it with the reason, as it did before the startup
-    budget. Step 1 is different, and `_control_plane_unreachable` takes every
-    API error there: without the generation check, the attempt does not know
-    that the task is its to fail.
+    budget. Step 1 is different, and `_exit_control_plane_unreachable` turns
+    anything that is not a named refusal (`_refusal_cause`) into a retry:
+    without the generation check, the attempt does not know that the task is
+    its to fail.
 
-    The whole chain is searched (`__cause__` and `__context__`), because a
-    library can raise something else on the way up. Firestore's rollback of a
-    transaction whose begin failed raises a ValueError whose `__context__` is
-    the RetryError. Bounded, and cycle-safe.
+    The whole chain is searched (`_error_chain`).
     """
     try:
         from google.api_core import exceptions as core
@@ -3228,12 +3271,12 @@ def _unavailable_cause(exc: BaseException) -> BaseException | None:
         return None
     transient: tuple[type[BaseException], ...] = (
         core.RetryError,
-        core.ServiceUnavailable,
-        core.GatewayTimeout,  # DeadlineExceeded is a subclass
-        core.InternalServerError,
-        core.BadGateway,
+        # UNAVAILABLE, DEADLINE_EXCEEDED, INTERNAL, UNKNOWN, DATA_LOSS,
+        # UNIMPLEMENTED, 502, 504: every 5xx and every server-side gRPC code.
+        core.ServerError,
         core.TooManyRequests,  # ResourceExhausted is a subclass
         core.Aborted,
+        core.Cancelled,
     )
     try:
         from google.auth import exceptions as auth
@@ -3247,21 +3290,65 @@ def _unavailable_cause(exc: BaseException) -> BaseException | None:
             if isinstance(kind, type)
         )
 
-    seen: set[int] = set()
-    pending: list[BaseException] = [exc]
-    while pending and len(seen) < 16:
-        current = pending.pop(0)
-        if id(current) in seen:
-            continue
-        seen.add(id(current))
+    for current in _error_chain(exc):
         if isinstance(current, transient):
             return current
         if auth is not None and isinstance(current, auth.GoogleAuthError):
             if isinstance(current, auth_transient) or getattr(current, "retryable", False):
                 return current
-        for linked in (current.__cause__, current.__context__):
-            if linked is not None:
-                pending.append(linked)
+    return None
+
+
+def _refusal_cause(exc: BaseException) -> BaseException | None:
+    """The error in `exc`'s chain that says the service was reached and REFUSED, or None.
+
+    Used at step 1 only, and only once `_unavailable_cause` has found nothing.
+    A refusal there is a 78, which fails the TASK with no retry (owner,
+    2026-09-25), so this is a list of the answers that the next attempt would
+    get too, and nothing else:
+
+      * PERMISSION_DENIED and 403, UNAUTHENTICATED and 401: this worker's
+        identity may not read its own task, or was not accepted;
+      * NOT_FOUND: the database, or the project, is not there;
+      * INVALID_ARGUMENT, FAILED_PRECONDITION, OUT_OF_RANGE and 400: the
+        request, or the project's setup (a disabled API), is wrong;
+      * a RefreshError google-auth did not mark retryable, and
+        DefaultCredentialsError: the credential was refused, or there is
+        none. One raised FROM a TransportError never gets here, because
+        `_unavailable_cause` finds the TransportError first.
+
+    Everything else at step 1 is a 69 and is retried: a kind this list does
+    not name, a new one a library adds, a 409. The review of PR #59 found
+    gRPC UNKNOWN ending tasks because the rule was the other way round: 69
+    for a named list, 78 for the rest. A wrong 69 costs one bounded retry
+    (`max_attempts`). A wrong 78 ends a task that would have run.
+    """
+    try:
+        from google.api_core import exceptions as core
+    except ImportError:
+        return None
+    refusals: tuple[type[BaseException], ...] = (
+        core.Forbidden,  # PermissionDenied is a subclass
+        core.Unauthorized,  # Unauthenticated is a subclass
+        core.NotFound,
+        core.BadRequest,  # InvalidArgument, FailedPrecondition, OutOfRange
+    )
+    try:
+        from google.auth import exceptions as auth
+    except ImportError:
+        auth = None  # type: ignore[assignment]
+    if auth is not None:
+        refusals = refusals + tuple(
+            kind
+            for kind in (
+                getattr(auth, "RefreshError", None),
+                getattr(auth, "DefaultCredentialsError", None),
+            )
+            if isinstance(kind, type)
+        )
+    for current in _error_chain(exc):
+        if isinstance(current, refusals) and not getattr(current, "retryable", False):
+            return current
     return None
 
 
