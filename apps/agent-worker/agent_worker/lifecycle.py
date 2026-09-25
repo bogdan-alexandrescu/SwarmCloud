@@ -546,7 +546,7 @@ class Worker:
 
         # ---- STEP 4: restore the latest checkpoint ----------------------
         self.phases.enter("restore_checkpoint")
-        task = self.control.fetch_task()
+        task = self.control.fetch_task(call_options=self.control.startup_call_options)
         # Kept because the publish gate, several steps later, needs the
         # caller's dispatch strategy and re-fetching it there would be a
         # second read of a document that cannot have changed.
@@ -610,7 +610,9 @@ class Worker:
 
         # A provider that is already exhausted must not be hit again.
         self.phases.enter("quota_preflight")
-        preflight = self.control.poll(cfg.provider)
+        preflight = self.control.poll(
+            cfg.provider, call_options=self.control.startup_call_options
+        )
         quota_signal = signal_from_control(preflight, cfg.provider)
         if quota_signal is not None:
             decision = decide(

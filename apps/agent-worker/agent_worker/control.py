@@ -240,14 +240,17 @@ class ControlPlane:
         self._txn = txn_runner or FirestoreTransactionRunner(db)
         self._heartbeat_extension = heartbeat_extension_seconds
         self._lease_released = False
-        # `retry` and `timeout` for the calls a worker makes before its runner
-        # exists: the generation check's three reads and the attempt's first
-        # write. The entrypoint passes a bounded budget
-        # (`__main__.firestore_startup_call_options`). Empty means the
+        # `retry` and `timeout` for the control-plane calls a worker makes
+        # before its runner exists: the generation check's reads, the state
+        # read `advance_to_running` walks from, and the attempt's first write.
+        # The lifecycle passes the same options to its own startup reads (the
+        # checkpoint restore's task read and the quota preflight's poll)
+        # through `startup_call_options`. The entrypoint supplies a bounded
+        # budget (`__main__.firestore_startup_call_options`). Empty means the
         # library's defaults, which for a document read is up to 300 s of
-        # silent retries. Nothing else in this class uses these options: the
-        # mid-run control poll keeps its defaults, and changing how long a
-        # running agent tolerates a Firestore outage is a separate decision.
+        # silent retries. The mid-run control poll keeps its defaults:
+        # changing how long a running agent tolerates a Firestore outage is a
+        # separate decision.
         self._startup_call: dict[str, Any] = dict(startup_call_options or {})
 
     @property
@@ -418,10 +421,21 @@ class ControlPlane:
         self._txn.run(lambda txn: self._fenced_task(txn, write=write))
 
     # -- polling -----------------------------------------------------------
-    def poll(self, provider: str | None = None) -> ControlSignals:
-        """One read of task + lease (+ quota), used by the supervision loop."""
+    def poll(
+        self,
+        provider: str | None = None,
+        *,
+        call_options: Mapping[str, Any] | None = None,
+    ) -> ControlSignals:
+        """One read of task + lease (+ quota), used by the supervision loop.
+
+        `call_options` is for the one poll made before the runner exists, the
+        quota preflight, which passes the startup budget. The supervision loop
+        passes nothing and keeps the library's defaults.
+        """
+        options = dict(call_options or {})
         try:
-            task = self.fetch_task()
+            task = self.fetch_task(call_options=options)
         except FencedError:
             return ControlSignals(
                 state=TaskState.CANCELLED,
@@ -430,14 +444,14 @@ class ControlPlane:
                 lease_released=True,
                 observed_at=utcnow(),
             )
-        lease = self.fetch_lease() or {}
+        lease = self.fetch_lease(call_options=options) or {}
         provider_state: ProviderState | None = None
         provider_paused = False
         retry_after: int | None = None
         reset_at: datetime | None = None
 
         if provider:
-            qsnap = self._quota_ref(provider).get()
+            qsnap = self._quota_ref(provider).get(**options)
             if qsnap.exists:
                 q = qsnap.to_dict() or {}
                 try:
@@ -515,7 +529,9 @@ class ControlPlane:
 
     # -- state transitions -------------------------------------------------
     def _current_state(self) -> TaskState:
-        return _as_state(self.fetch_task().get("state"))
+        # Read only by `advance_to_running`, which runs before the runner
+        # exists, so the read carries the startup budget.
+        return _as_state(self.fetch_task(call_options=self._startup_call).get("state"))
 
     def transition(
         self,
