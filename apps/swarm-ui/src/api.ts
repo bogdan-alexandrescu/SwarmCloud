@@ -40,7 +40,8 @@ export async function loadTasks(): Promise<Result<TaskPage>> {
   if (USE_FIXTURES) return fixtureTasks()
   // Page size caps at 200 server-side (deps.py:194-199). Asking for more is
   // silently clamped, which would make "200 tasks" look like the whole truth.
-  return read<TaskPage>(route('/v1/tasks?limit=200'), (d) => d.tasks.length === 0)
+  // One route with the `?state=` and paged reads below: `/v1/tasks` (CH-18).
+  return read<TaskPage>(route('/v1/tasks', {}, 'limit=200'), (d) => d.tasks.length === 0)
 }
 
 /**
@@ -70,7 +71,7 @@ export async function loadWorkflowBoard(): Promise<Result<WorkflowBoard>> {
 
   const [wf, tasks] = await Promise.all([
     read<{ workflows: Workflow[] }>(route('/v1/workflows?limit=100'), (d) => d.workflows.length === 0),
-    read<TaskPage>(route('/v1/tasks?limit=200'), (d) => d.tasks.length === 0),
+    read<TaskPage>(route('/v1/tasks', {}, 'limit=200'), (d) => d.tasks.length === 0),
   ])
 
   // The workflow read decides whether there is a screen at all.

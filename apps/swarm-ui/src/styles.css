@@ -8819,7 +8819,14 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
    OPT-IN, via `.is-stacked`. Three screens this lane does not own also render
    `table.pools`, and a stacked row with no `data-label` would be a column of
    unlabelled values -- strictly worse than a sideways scroll. So the layout
-   turns on only where the labels exist. */
+   turns on only where the labels exist.
+
+   AND SINCE CH-13 (2026-09-25) ONLY FOR A RECORD. The owner's one rule for
+   tables below 900px keeps this construction for records of four columns or
+   fewer -- an inspector fact -- and gives a data table `.is-scroll` instead:
+   it scrolls with its first column held (the block after the inspector's
+   mirror of this one, and design-system.md §7.3). Stacking Pools made it
+   5,924px tall at 390. */
 @media (max-width: 899px) {
   /* Nothing scrolls sideways any more, so the scroller that hid the columns
      is not merely unused: it is removed, or it would clip the stacked rows. */
