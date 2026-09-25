@@ -284,4 +284,48 @@ describe('the Help page deep link (AH-16)', () => {
     const spy = scrolls(100)
     expect(spy).not.toHaveBeenCalled()
   })
+
+  /**
+   * Inside the app frame: `.ctl-scroll` ends at `bottom`, and the target's box
+   * is `target`. Everything else answers zeroes, as jsdom does.
+   */
+  function scrollsInFrame(bottom: number, target: number): Mock {
+    const spy = vi.fn()
+    Object.defineProperty(Element.prototype, 'scrollIntoView', { value: spy, configurable: true, writable: true })
+    vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
+      if (this.classList.contains('ctl-scroll')) return rect({ top: 0, left: 0, width: 600, height: bottom })
+      if (this.id === HELP['absent-vs-zero'].anchor) return rect({ top: target, left: 0, width: 600, height: 100 })
+      return rect({ top: 0, left: 0, width: 0, height: 0 })
+    })
+    render(
+      <div className="ctl-scroll">
+        <HelpScreen topic="absent-vs-zero" />
+      </div>,
+    )
+    return spy
+  }
+
+  /**
+   * THE SCROLLPORT IS `.ctl-scroll`, NOT THE WINDOW. The frame is two grid
+   * rows, the scroller and the dock under it (styles.css `.ctl-frame`), and
+   * the dock's height can be dragged. A target whose top sits in the dock's
+   * band is below the scroller's bottom edge, out of sight, and still above
+   * `window.innerHeight` -- so measured against the window it counted as in
+   * view, and the deep link left it under the dock.
+   *
+   * MUTATION: compare against `window.innerHeight`. The hidden target is not scrolled to.
+   */
+  it('scrolls to a target hidden under the dock, which the window alone counts as in view', () => {
+    // A 768px window (jsdom's), a scroller ending at 600, the dock below it.
+    // The target spans 620-720: inside the window, outside the scroller.
+    expect(window.innerHeight, 'the case needs the target to fit the window').toBeGreaterThanOrEqual(720)
+    const spy = scrollsInFrame(600, 620)
+    expect(spy).toHaveBeenCalledTimes(1)
+    expect(spy.mock.contexts[0]).toBe(document.getElementById(HELP['absent-vs-zero'].anchor))
+  })
+
+  it('leaves a target inside the scroller where it is', () => {
+    const spy = scrollsInFrame(600, 100)
+    expect(spy).not.toHaveBeenCalled()
+  })
 })

@@ -24,6 +24,8 @@ import {
   type ProfileAdmission,
   type ProfileBlocker,
   type RunnerProfile,
+  NEVER_WRITTEN,
+  REAL_STATES,
   type Task,
   type TaskState,
 } from '../types'
@@ -482,6 +484,73 @@ describe('elapsed', () => {
     expect(elapsed(task('RUNNING', { created: 60_000, started: 50_000 }), NOW).phase).toBe('running')
     expect(elapsed(task('LEASED', { created: 60_000 }), NOW).phase).toBe('waiting')
     expect(elapsed(task('READY', {}), NOW).phase).toBe('unknown')
+  })
+
+  /**
+   * THE PARK PATH, which is invariant 4's normal case and not an edge.
+   * `started_at` is written on DISPATCHED -> STARTING (agent_worker/control.py
+   * `advance_to_running`) and cleared by nothing: not by the worker's park, not
+   * by the scheduler's `park` or `promote_to_ready` (scheduler/store.py), not by
+   * a reclaim. A task that ran, hit quota and parked still carries that start,
+   * and `elapsed()` timed it from there -- `41m 0s`, ticking, phase `running`
+   * -- on a task holding no capacity and running nothing. The same stale start
+   * gave a retry's LEASED and DISPATCHED rows a bare duration, so AG-12's
+   * prefix vanished exactly when a task was retried.
+   *
+   * Only STARTING and RUNNING make `now - started_at` time run: they are the
+   * two states in which the start on the task document is this attempt's.
+   *
+   * MUTATION: time every task that has a `started_at` as running (the test was
+   * `Number.isFinite(started)` alone). PARKED reads `41m 0s`, phase `running`.
+   */
+  it.each([
+    ['PARKED', 'waiting 50m 0s'],
+    ['READY', 'waiting 50m 0s'],
+    ['LEASED', 'leased 50m 0s'],
+    ['DISPATCHED', 'dispatched 50m 0s'],
+  ] as ReadonlyArray<[TaskState, string]>)('never times a %s task that ran before as running: %s', (state, text) => {
+    // Submitted 50 minutes ago; an earlier attempt started 41 minutes ago.
+    const el = elapsed(task(state, { created: 50 * 60_000, started: 41 * 60_000 }), NOW)
+    expect(el.phase, 'a task that is not running is labelled running').not.toBe('running')
+    expect(el.text, 'wall time since an old start reported as run time').not.toBe('41m 0s')
+    expect(el.phase).toBe('waiting')
+    expect(el.text).toBe(text)
+  })
+
+  it('calls a figure running in exactly the two states where the start on the document is this attempt’s', () => {
+    const every: readonly TaskState[] = [...REAL_STATES, ...NEVER_WRITTEN]
+    expect(every, 'the state list is not all twelve; this sweep is partial').toHaveLength(12)
+    const running = every.filter(
+      (state) => elapsed(task(state, { created: 50 * 60_000, started: 41 * 60_000 }), NOW).phase === 'running',
+    )
+    expect(running).toEqual(['STARTING', 'RUNNING'])
+  })
+
+  /**
+   * A FINISHED TASK WITH A START AND NO RECORDED END has no run length to give.
+   * It fell through to `now - started_at` and kept counting, phase `running`,
+   * on a task that is over. Every terminal write on the platform sets
+   * `completed_at` in the same update as the state, so this is an older
+   * document or a writer that forgot -- either way the length was never
+   * recorded, and the figure says so rather than inventing one.
+   *
+   * MUTATION: let it fall through to the running branch. It ticks.
+   */
+  it.each(['SUCCEEDED', 'FAILED', 'CANCELLED'] as ReadonlyArray<TaskState>)(
+    'stops counting a %s task whose end was never recorded',
+    (state) => {
+      const el = elapsed(task(state, { created: 50 * 60_000, started: 41 * 60_000 }), NOW)
+      expect(el.ticking, 'a finished task is still counting').toBe(false)
+      expect(el.phase).not.toBe('running')
+      expect(el.text, 'a run length that was never recorded').not.toMatch(/\d/)
+    },
+  )
+
+  it('times a retried task that is running again from this attempt’s start, not the first', () => {
+    // The worker rewrites `started_at` on every DISPATCHED -> STARTING, so on
+    // a second attempt that is RUNNING the start on the document is its own.
+    const el = elapsed(task('RUNNING', { created: 50 * 60_000, started: 90_000 }), NOW)
+    expect(el).toEqual({ text: '1m 30s', ticking: true, phase: 'running' })
   })
 })
 
