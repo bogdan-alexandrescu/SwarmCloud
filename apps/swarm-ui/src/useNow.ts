@@ -75,14 +75,28 @@ function subscribe(intervalMs: number, onTick: () => void): () => void {
 }
 
 /**
+ * The tick every AGE in the frame moves on: every screen's sub-line, the
+ * head's `newest read`, the dock and the API reads page.
+ *
+ * ONE CONSTANT, NAMED BY EVERY CALLER. Clocks are shared per cadence, so two
+ * callers share an instant only while they pass the same number. Shell.tsx
+ * held `AGE_TICK_MS = 5_000` while the head, the API reads page and the dock
+ * each passed their own `5000`: change the constant alone and the sub-line and
+ * the head would move onto different clocks without a line of either
+ * changing, which is CH-1 back. So the number lives here, beside the clock it
+ * selects, and the age callers import it.
+ */
+export const AGE_TICK_MS = 5_000
+
+/**
  * The current instant, re-rendering the caller every `intervalMs`.
  *
- * 5000 BY DEFAULT because that is the cadence every AGE on these screens moves
- * at -- the head, the dock, the API reads page and every screen's sub-line --
- * and a shared default is what keeps them on one tick. A running DURATION
- * (Agents' elapsed column, the inspector's `run`) wants 1000 and asks for it.
+ * `AGE_TICK_MS` BY DEFAULT because that is the cadence every AGE on these
+ * screens moves at, and a shared default is what keeps them on one tick. A
+ * running DURATION (Agents' elapsed column, the inspector's `run`) wants 1000
+ * and asks for it.
  */
-export function useNow(intervalMs: number = 5000): number {
+export function useNow(intervalMs: number = AGE_TICK_MS): number {
   const sub = useCallback((onTick: () => void) => subscribe(intervalMs, onTick), [intervalMs])
   const snapshot = useCallback(() => clockFor(intervalMs).now, [intervalMs])
   return useSyncExternalStore(sub, snapshot, snapshot)

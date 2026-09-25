@@ -41,8 +41,24 @@
 //   animations   an `animation` that names a `@keyframes` the sheet does not
 //                declare, which is the same fault from the other end.
 //
-// Everything here is pure string work over the source. It reads comments as
-// comments and strings as strings, and nothing else about CSS is modelled.
+// Everything above `cascade` is pure string work over the source. It reads
+// comments as comments and strings as strings, and nothing else about CSS is
+// modelled.
+//
+// `cascade`, AT THE FOOT OF THIS FILE, IS THE ONE EXCEPTION, AND IT EXISTS
+// BECAUSE jsdom'S CASCADE CANNOT ANSWER THE QUESTIONS THE 2026-09-25 QA PASS
+// ASKED. jsdom orders matching rules by SOURCE POSITION ALONE -- its own
+// source says "specificity is only implemented by the order in which the
+// matching rules appear" -- and it applies no `@media` block that does not
+// name `screen`. Four of that pass's defects were exactly those two things:
+// a phone rule placed above the base rule it meant to beat (`.ctl-seg`), a
+// `.state p` out-ranking `.checked-at` on font-size, `.limit-edit input`
+// out-ranking `.acct-wide` on width, and `.ctl-table .is-num` out-ranking a
+// stacked key's alignment. `getComputedStyle` reports the WRONG winner for
+// every one of them, so a test built on it would pass on the broken sheet.
+// `cascade` weighs importance, specificity and order, evaluates the media and
+// container conditions against a stated width, and uses jsdom only for what
+// jsdom does correctly: `Element.matches`.
 
 export type GateNode =
   | { kind: 'rule'; prelude: string; body: string; line: number; nested: boolean }
@@ -349,4 +365,355 @@ export function gate(source: string, label = 'sheet'): GateReport {
     }
   }
   return report
+}
+
+// ---------------------------------------------------------------------------
+// The cascade, for the questions jsdom answers wrongly
+// ---------------------------------------------------------------------------
+
+/** What a rule is evaluated against. Nothing here is guessed: an at-rule or a
+ *  media feature this cannot evaluate THROWS, so an unanswerable question is
+ *  loud rather than read as "no rule applies". */
+export interface CascadeEnv {
+  /** The viewport width a `@media (min|max-width)` is evaluated against, px. */
+  width: number
+  /** `prefers-color-scheme`. `:root` carries the dark palette, so dark is the default. */
+  theme?: 'dark' | 'light'
+  /** The inline size of the nearest size container, px, or null for none. An
+   *  element with no container matches no `@container` rule, as in a browser. */
+  container?: number | null
+  /** Dynamic pseudo-classes to treat as active ('hover', 'focus-visible', …).
+   *  Any other dynamic pseudo-class in a selector makes that branch not match. */
+  states?: readonly string[]
+  /** `prefers-reduced-motion: reduce`. */
+  reducedMotion?: boolean
+}
+
+export interface Declared {
+  property: string
+  value: string
+  important: boolean
+  /** The selector BRANCH that matched, not the whole list. */
+  selector: string
+  line: number
+  /** The at-rule preludes around the rule, outermost first. */
+  conditions: string[]
+  specificity: [number, number, number]
+}
+
+export interface CascadeResult {
+  /** The declaration the cascade chose, or null when no rule declares it. */
+  winner: Declared | null
+  /** Every matching declaration, lowest priority first. */
+  matched: Declared[]
+  /** Selector branches the engine would not evaluate. Never silently skipped. */
+  unsupported: string[]
+}
+
+/** Split on `sep` where it is not inside parentheses, brackets or a string. */
+export function splitTop(text: string, sep = ','): string[] {
+  const out: string[] = []
+  let depth = 0
+  let quote: string | null = null
+  let from = 0
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i]!
+    if (quote !== null) {
+      if (c === '\\') i++
+      else if (c === quote) quote = null
+      continue
+    }
+    if (c === '"' || c === "'") quote = c
+    else if (c === '(' || c === '[') depth++
+    else if (c === ')' || c === ']') depth--
+    else if (c === sep && depth === 0) {
+      out.push(text.slice(from, i))
+      from = i + 1
+    }
+  }
+  out.push(text.slice(from))
+  return out.map((s) => s.trim()).filter((s) => s !== '')
+}
+
+/** The declarations of one rule body, in order, `!important` split off. */
+export function declarations(body: string): { property: string; value: string; important: boolean }[] {
+  const out: { property: string; value: string; important: boolean }[] = []
+  for (const chunk of splitTop(body, ';')) {
+    const colon = chunk.indexOf(':')
+    if (colon === -1) continue
+    const property = chunk.slice(0, colon).trim().toLowerCase()
+    let value = chunk.slice(colon + 1).trim()
+    const imp = /!\s*important\s*$/i.exec(value)
+    if (imp) value = value.slice(0, imp.index).trim()
+    if (property === '' || value === '') continue
+    out.push({ property, value: squash(value), important: imp !== null })
+  }
+  return out
+}
+
+function identEnd(s: string, from: number): number {
+  let i = from
+  while (i < s.length && /[\w-]/.test(s[i]!)) i++
+  return i
+}
+
+function matchingClose(s: string, open: number, o: string, c: string): number {
+  let depth = 0
+  for (let i = open; i < s.length; i++) {
+    if (s[i] === o) depth++
+    else if (s[i] === c) {
+      depth--
+      if (depth === 0) return i
+    }
+  }
+  return s.length - 1
+}
+
+/**
+ * Selectors Level 4 specificity of ONE complex selector, as (ids, classes,
+ * types). `:where()` is zero; `:is()`, `:not()` and `:has()` take their most
+ * specific argument; a pseudo-element counts as a type. That is the whole of
+ * what this sheet uses (stylesheet.gate.test.ts checks it against fixtures).
+ */
+export function specificity(selector: string): [number, number, number] {
+  let a = 0
+  let b = 0
+  let c = 0
+  const s = selector
+  let i = 0
+  while (i < s.length) {
+    const ch = s[i]!
+    if (ch === '#') {
+      a++
+      i = identEnd(s, i + 1)
+    } else if (ch === '.') {
+      b++
+      i = identEnd(s, i + 1)
+    } else if (ch === '[') {
+      b++
+      i = matchingClose(s, i, '[', ']') + 1
+    } else if (ch === ':') {
+      if (s[i + 1] === ':') {
+        c++
+        i = identEnd(s, i + 2)
+        if (s[i] === '(') i = matchingClose(s, i, '(', ')') + 1
+        continue
+      }
+      const end = identEnd(s, i + 1)
+      const name = s.slice(i + 1, end).toLowerCase()
+      if (s[end] === '(') {
+        const close = matchingClose(s, end, '(', ')')
+        const inner = s.slice(end + 1, close)
+        if (name === 'is' || name === 'not' || name === 'has' || name === 'matches') {
+          let best: [number, number, number] = [0, 0, 0]
+          for (const arg of splitTop(inner)) {
+            const sp = specificity(arg)
+            if (sp[0] > best[0] || (sp[0] === best[0] && (sp[1] > best[1] || (sp[1] === best[1] && sp[2] > best[2])))) best = sp
+          }
+          a += best[0]
+          b += best[1]
+          c += best[2]
+        } else if (name !== 'where') {
+          b++
+        }
+        i = close + 1
+      } else {
+        if (['before', 'after', 'first-line', 'first-letter'].includes(name)) c++
+        else b++
+        i = end
+      }
+    } else if (/[a-zA-Z_]/.test(ch)) {
+      c++
+      i = identEnd(s, i)
+    } else {
+      i++
+    }
+  }
+  return [a, b, c]
+}
+
+const DYNAMIC = /:(hover|focus-visible|focus-within|focus|active|visited)(?![\w-])/g
+const PSEUDO_ELEMENT = /::([\w-]+)(\([^)]*\))?\s*$/
+
+function mediaFeature(feature: string, env: CascadeEnv, width: number): boolean {
+  const f = feature.trim()
+  if (f === 'screen' || f === 'all') return true
+  if (f === 'print') return false
+  const m = /^\(\s*([\w-]+)\s*(?::\s*([^)]+?))?\s*\)$/.exec(f)
+  if (m === null) throw new Error(`cascade cannot evaluate the media feature \`${f}\``)
+  const name = m[1]!
+  const value = (m[2] ?? '').trim()
+  const px = (): number => {
+    const n = /^([\d.]+)px$/.exec(value)
+    if (n === null) throw new Error(`cascade cannot evaluate \`${f}\`: only px widths are modelled`)
+    return Number(n[1])
+  }
+  switch (name) {
+    case 'min-width':
+      return width >= px()
+    case 'max-width':
+      return width <= px()
+    case 'prefers-color-scheme':
+      return value === (env.theme ?? 'dark')
+    case 'prefers-reduced-motion':
+      return (value === 'reduce') === (env.reducedMotion ?? false)
+    case 'hover':
+      return value === 'hover'
+    case 'pointer':
+      return value === 'fine'
+    default:
+      throw new Error(`cascade cannot evaluate the media feature \`${f}\``)
+  }
+}
+
+function queryList(list: string, env: CascadeEnv, width: number): boolean {
+  return splitTop(list).some((query) => {
+    let q = query.trim()
+    let negate = false
+    if (/^not\s/.test(q)) {
+      negate = true
+      q = q.slice(4).trim()
+    }
+    q = q.replace(/^only\s+/, '')
+    const holds = q.split(/\s+and\s+/).every((part) => mediaFeature(part, env, width))
+    return negate ? !holds : holds
+  })
+}
+
+/** Whether a grouping at-rule's condition holds in `env`. */
+export function conditionHolds(prelude: string, env: CascadeEnv): boolean {
+  const at = /^@(?:-webkit-)?([\w-]+)\s*([\s\S]*)$/.exec(prelude)
+  if (at === null) throw new Error(`cascade cannot read the at-rule \`${prelude}\``)
+  const kind = at[1]!
+  const rest = at[2]!.trim()
+  if (kind === 'media') return queryList(rest, env, env.width)
+  if (kind === 'container') {
+    const size = env.container ?? null
+    if (size === null) return false
+    // A leading container NAME is dropped: this models one container at a
+    // time, the one `env.container` measures.
+    return queryList(rest.replace(/^[a-zA-Z][\w-]*\s+(?=\()/, ''), env, size)
+  }
+  if (kind === 'supports' || kind === 'layer') return true
+  throw new Error(`cascade cannot evaluate \`${prelude}\``)
+}
+
+/** One style rule, flattened out of its at-rules. `body` has its comments blanked. */
+export type FlatRule = { selector: string; body: string; line: number; conditions: string[]; order: number }
+
+const FLAT = new Map<string, FlatRule[]>()
+
+/** Every style rule with the chain of at-rules around it, in source order. */
+export function flatRules(source: string): FlatRule[] {
+  const hit = FLAT.get(source)
+  if (hit !== undefined) return hit
+  const out: FlatRule[] = []
+  const walk = (nodes: readonly GateNode[], conditions: string[]): void => {
+    for (const n of nodes) {
+      if (n.kind === 'group') walk(n.children, [...conditions, n.prelude])
+      else if (n.kind === 'rule') {
+        out.push({ selector: n.prelude, body: n.body, line: n.line, conditions, order: out.length })
+      }
+    }
+  }
+  walk(parseSheet(source).nodes, [])
+  FLAT.set(source, out)
+  return out
+}
+
+/**
+ * The declaration a browser would use for `property` on `el` (or on its
+ * `pseudo`-element), with the shipped sheet, at `env`.
+ *
+ * `property` may be a list, because a shorthand and its longhands compete for
+ * one value: ask for `['font-size', 'font']` and whichever declaration wins is
+ * the one that sets the size. Reading the value out of a shorthand is the
+ * caller's business, because only the caller knows which part it is about.
+ *
+ * NOT MODELLED, and each is a reason a test must not lean on this for it:
+ * inheritance (a property no rule declares on the element resolves to
+ * `winner: null`, and the test walks up itself), cascade layers, `revert`,
+ * and shadow trees. The order is importance, then specificity, then source
+ * order -- author origin only, which is the only origin this sheet is in.
+ */
+export function cascade(
+  source: string,
+  el: Element,
+  property: string | readonly string[],
+  env: CascadeEnv,
+  pseudo: string | null = null,
+): CascadeResult {
+  const props = new Set(typeof property === 'string' ? [property] : property)
+  const states = new Set(env.states ?? [])
+  const matched: (Declared & { order: number; index: number })[] = []
+  const unsupported: string[] = []
+
+  for (const rule of flatRules(source)) {
+    if (!rule.conditions.every((c) => conditionHolds(c, env))) continue
+    const decls = declarations(rule.body).filter((d) => props.has(d.property))
+    if (decls.length === 0) continue
+
+    let best: { branch: string; spec: [number, number, number] } | null = null
+    for (const branch of splitTop(rule.selector)) {
+      const pe = PSEUDO_ELEMENT.exec(branch)
+      if ((pe?.[1] ?? null) !== pseudo) continue
+      let base = pe === null ? branch : branch.slice(0, pe.index)
+      let inactive = false
+      base = base.replace(DYNAMIC, (_m, name: string) => {
+        if (!states.has(name)) inactive = true
+        return ''
+      })
+      if (inactive) continue
+      base = base.trim() === '' ? '*' : base.trim()
+      let hit: boolean
+      try {
+        hit = el.matches(base)
+      } catch {
+        if (!unsupported.includes(branch)) unsupported.push(branch)
+        continue
+      }
+      if (!hit) continue
+      const spec = specificity(branch)
+      if (
+        best === null ||
+        spec[0] > best.spec[0] ||
+        (spec[0] === best.spec[0] && (spec[1] > best.spec[1] || (spec[1] === best.spec[1] && spec[2] > best.spec[2])))
+      ) {
+        best = { branch, spec }
+      }
+    }
+    if (best === null) continue
+    const chosen = best
+    decls.forEach((d, index) =>
+      matched.push({
+        ...d,
+        selector: chosen.branch,
+        line: rule.line,
+        conditions: rule.conditions,
+        specificity: chosen.spec,
+        order: rule.order,
+        index,
+      }),
+    )
+  }
+
+  matched.sort(
+    (x, y) =>
+      Number(x.important) - Number(y.important) ||
+      x.specificity[0] - y.specificity[0] ||
+      x.specificity[1] - y.specificity[1] ||
+      x.specificity[2] - y.specificity[2] ||
+      x.order - y.order ||
+      x.index - y.index,
+  )
+  const clean: Declared[] = matched.map((d) => ({
+    property: d.property,
+    value: d.value,
+    important: d.important,
+    selector: d.selector,
+    line: d.line,
+    conditions: d.conditions,
+    specificity: d.specificity,
+  }))
+  return { winner: clean[clean.length - 1] ?? null, matched: clean, unsupported }
 }

@@ -30,7 +30,7 @@ import { RuntimesScreen } from './Runtimes'
 import { timeAgo } from './Shell'
 import { SubmitScreen } from './Submit'
 import { SubmitWorkflowScreen } from './SubmitWorkflow'
-import { useNow } from './useNow'
+import { AGE_TICK_MS, useNow } from './useNow'
 import { WorkflowsScreen } from './Workflows'
 
 /**
@@ -864,9 +864,15 @@ function Rail({ at, go }: { at: Route; go: (to: string) => void }) {
    * screen. The selected tab if there is one; the on-state utility button for
    * API reads and Help; the section itself for a one-pane section.
    *
-   * `nearest` ON BOTH AXES, so an item already in view does not move and the
-   * page is not scrolled vertically for it -- on the desktop column this only
-   * ever scrolls the rail's own overflow, on a viewport too short to hold it.
+   * `nearest` ON BOTH AXES, so an item already in view does not move. On the
+   * desktop column the rail is sticky and always on screen, so this only ever
+   * scrolls the rail's own overflow, on a viewport too short to hold it.
+   * BELOW 900px IT CAN SCROLL THE PAGE. The strip is `position: static`
+   * there, inside `.ctl-scroll` (styles.css), so after a reader scrolls down
+   * and follows an in-content link to another section, `block: nearest`
+   * scrolls `.ctl-scroll` up just far enough to show the strip. That puts
+   * them at the top of the screen they just opened rather than part-way down
+   * it; nothing else resets the scroll position on a route change.
    * `scroll-margin-inline-end` (styles.css) keeps the item clear of the fade
    * at the strip's end. jsdom implements no `scrollIntoView`, hence the guard.
    */
@@ -990,7 +996,7 @@ function Head({ at, section }: { at: Route; section: SectionDef | null }) {
   // fetch happens to land -- on the SHARED clock, the one every screen's
   // sub-line and the dock read, so the head and the provenance line under a
   // screen title can no longer disagree by up to a tick (CH-1).
-  const now = useNow(5000)
+  const now = useNow(AGE_TICK_MS)
 
   const newest = summariseProbes(probes).newestSuccessAt
   const tab = section?.tabs.find((t) => t.id === at.tab) ?? null
@@ -1490,7 +1496,7 @@ function ReferenceScreen() {
   const probes = useSyncExternalStore(subscribeProbes, probeSnapshot, probeSnapshot)
   // The ages are the point, so they move on their own rather than only when a
   // fetch happens to land -- on the shared clock the head and the dock read.
-  const now = useNow(5000)
+  const now = useNow(AGE_TICK_MS)
 
   return (
     <>

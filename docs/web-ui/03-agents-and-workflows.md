@@ -202,12 +202,17 @@ When a workflow parent fails, the scheduler's dependency sweep **cancels the chi
 **Column 6, "Elapsed":**
 
 ```
-completed_at != null -> completed_at - (started_at ?? created_at)   [static]
-started_at   != null -> now - started_at                            [ticking]
-otherwise            -> now - created_at, prefixed "queued "        [ticking]
+terminal, started_at == null            -> "never ran"                            [static]
+terminal, started and completed         -> completed_at - started_at              [static]
+terminal, started, no completed_at      -> "—"                                    [static]
+STARTING/RUNNING, started_at != null    -> now - started_at                       [ticking]
+STARTING/RUNNING, started_at == null    -> "—"                                    [static]
+LEASED/DISPATCHED, or any live state
+  with an earlier attempt's started_at  -> the state word alone ("leased")       [static]
+otherwise (never started, no slot held) -> "waiting " + (now - created_at)        [ticking]
 ```
 
-`started_at` is written on `DISPATCHED -> STARTING` (`agent_worker/control.py:410-413`), so a `LEASED` or `DISPATCHED` task legitimately has none. Render "queued 4m", not "0s", and never `Invalid Date`. Every timestamp in `task_to_api` is passed through as the Firestore value, so the parser must also survive `null` on `completed_at` for a row that went terminal between two polls.
+The first version of this table fell back to `created_at` and to any `started_at`, and both fallbacks printed a span as something it is not. `started_at` is written on `DISPATCHED -> STARTING` (`agent_worker/control.py`, `advance_to_running`) and **nothing clears it**: a park, a promote back to READY and a reclaim all leave it, so outside STARTING and RUNNING a start on the document is an earlier attempt's, and `now - started_at` there is not a run. `now - created_at` is a wait only while nothing has started; once an attempt has run it includes that run. And **no state records when the task entered it**, so a state word followed by the age (`leased 3h 0m`) reads as three hours held in a lease that was taken a second ago. Where the document holds no true span, the cell prints the state word and no figure; the age is the inspector's `age` fact. Never render "0s" or `Invalid Date`, and survive `null` on `completed_at` for a row that went terminal between two polls. `elapsed()` in `apps/swarm-ui/src/types.ts` is the implementation and its tests pin every row of this table.
 
 #### 2.4 What this screen cannot show yet
 

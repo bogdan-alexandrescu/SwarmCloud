@@ -973,12 +973,26 @@ export function inputsByStep(
   for (const step of steps) {
     const state = stepState(step, taskById)
     const map: unknown = step.input_from
-    const declaredFiles: [string, string][] =
+    // IN `depends_on` ORDER, NOT THE MAP'S. `input_from` arrives as a JSON
+    // object serialised from a Firestore map (`swarm_api/codec.py`), and a
+    // Firestore map has no order the client can rely on: the same step's two
+    // inputs came back in a different order between two reads, so the table's
+    // inputs cell showed a different file first on each refresh -- and the one
+    // it pushed out of view was the second input merge-1..4 failed on.
+    // `depends_on` is a LIST, it is the order the step was declared in, and
+    // every `input_from` key is one of its members (`validate_dag`). A key that
+    // somehow is not goes last, by name, so the order is still total.
+    const rank = (parent: string) => {
+      const i = step.depends_on.indexOf(parent)
+      return i === -1 ? Number.MAX_SAFE_INTEGER : i
+    }
+    const declaredFiles: [string, string][] = (
       map !== null && typeof map === 'object'
         ? Object.entries(map as Record<string, unknown>).flatMap(([parent, file]) =>
             typeof file === 'string' && file !== '' ? [[parent, file] as [string, string]] : [],
           )
         : []
+    ).sort(([a], [b]) => rank(a) - rank(b) || a.localeCompare(b))
 
     const staged = state.kind === 'state' ? stagedInputsOf(state.task) : null
     // Staged entries, keyed by the upstream STEP they joined to. Anything that
@@ -1047,12 +1061,14 @@ export type EdgeKind = 'order' | 'staged' | 'declared'
  *
  * NOT ALWAYS THE PAIR'S OWN KIND, and a collapsed stage is why. `layoutOf`
  * attaches every step of a collapsed stage to its band's centre, so the
- * thirteen edges `plan -> impl-1..13` are thirteen groups on ONE path. Each
- * group paints a halo in the canvas colour and then its stroke, so each later
- * group wipes out every earlier one, and the band edge showed the LAST child's
- * kind as the whole stage's: solid when one of thirteen had reported its file,
- * dashed when twelve had. Whichever child happened to be last in the level
- * decided whether the band edge read as data at all.
+ * thirteen edges `plan -> impl-1..13` are thirteen marks on ONE path. When each
+ * edge was one group of halo-then-stroke, each later group wiped out every
+ * earlier one, and the band edge showed the LAST child's kind as the whole
+ * stage's: solid when one of thirteen had reported its file, dashed when twelve
+ * had. Whichever child happened to be last in the level decided whether the
+ * band edge read as data at all. (The canvas now paints every halo before any
+ * stroke, which stops a halo erasing an ARROWHEAD; it does not stop thirteen
+ * strokes on one path from being read as the topmost one, so this rule stays.)
  *
  * So the edges that share a path are painted as ONE edge, with the WEAKEST
  * claim any member can support:
@@ -2176,4 +2192,69 @@ export function profileMix(steps: readonly WorkflowStep[]): ProfileCount[] {
   return Array.from(counts, ([profile, count]) => ({ profile, count })).sort(
     (a, b) => b.count - a.count || a.profile.localeCompare(b.profile),
   )
+}
+
+/**
+ * How many profiles the collapsed row names before it counts the rest. The
+ * row's promise is "two named and the rest counted"; `foldMix` may name FEWER
+ * when two do not fit, and never more.
+ */
+export const MIX_NAMED_MAX = 2
+
+// THE CHIP'S GEOMETRY, from the sheet, in the same terms `NODE_CHROME_W` is
+// derived in above. `.wf-chip` is `padding: 0 5px` inside a 1px border at
+// --t-micro mono; `.wf-chip-n` (the `×N`) sits `margin-left: 3px` inside it;
+// `.wf-mix` spaces the chips `--ctl-s1` apart. If those rules change, these
+// move with them -- the cost of drifting is a chip folded one step early or a
+// few pixels clipped, never a wrong count, because the `+N` is computed from
+// what was folded rather than measured.
+const CHIP_CHROME_W = 2 * 5 + 2
+const CHIP_N_GAP = 3
+const MIX_GAP = 4
+
+/** One named chip, `claude-code ×20`, as drawn. */
+export function mixChipW(m: ProfileCount): number {
+  return (
+    CHIP_CHROME_W +
+    monoW(m.profile.length, T_MICRO) +
+    CHIP_N_GAP +
+    monoW(1 + String(m.count).length, T_MICRO)
+  )
+}
+
+/** The `+N` chip that counts what was folded. */
+export function moreChipW(rest: number): number {
+  return CHIP_CHROME_W + monoW(1 + String(rest).length, T_MICRO)
+}
+
+/**
+ * Which chips the row names, and how many it folds into `+N`, in `room` pixels.
+ *
+ * WHOLE CHIPS OR NONE. `.wf-mix` clips, so a row that simply drew the first two
+ * chips and a `+1` cut them mid-word at 1440 -- `moc`, half a `+` -- and a
+ * clipped profile name is a different, shorter name. So the row folds a chip
+ * into the count instead of letting the column cut it: the named chips plus
+ * the `+N` must fit, and the `+N` always counts exactly what is not named.
+ *
+ * `room === null` is a column nobody has measured -- jsdom, or the instant
+ * before layout -- and gets the row's plain promise, two named and the rest
+ * counted. Guessing a width there would be inventing a measurement.
+ */
+export function foldMix(
+  mix: readonly ProfileCount[],
+  room: number | null,
+): { shown: ProfileCount[]; rest: number } {
+  const cap = Math.min(MIX_NAMED_MAX, mix.length)
+  if (room === null) return { shown: mix.slice(0, cap), rest: mix.length - cap }
+  for (let k = cap; k >= 0; k--) {
+    const shown = mix.slice(0, k)
+    const rest = mix.length - k
+    const widths = shown.map(mixChipW)
+    if (rest > 0) widths.push(moreChipW(rest))
+    const w = widths.reduce((t, x) => t + x, 0) + Math.max(0, widths.length - 1) * MIX_GAP
+    if (w <= room) return { shown, rest }
+  }
+  // Not even the count fits. It is still the only true thing to draw: the
+  // column clips it, and every profile is in the row's `title` regardless.
+  return { shown: [], rest: mix.length }
 }

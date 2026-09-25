@@ -42,11 +42,23 @@ export function HelpScreen({ topic }: { topic: string }) {
   // of sight for no gain -- the reader was already looking at it. The rect is
   // read once, before any scroll: fully inside the viewport means stay put.
   // jsdom implements no `scrollIntoView`, hence the guard.
+  //
+  // THE VIEWPORT IS `.ctl-scroll`, NOT THE WINDOW. The frame is two grid rows,
+  // the scroller and the dock under it, and the dock's height can be dragged
+  // (App.tsx, styles.css `.ctl-frame`). A topic whose top sits in the dock's
+  // band is below the scroller's bottom edge and out of sight, yet still above
+  // `window.innerHeight` -- measured against the window it counted as in view
+  // and the deep link left it under the dock. So the visible band is the
+  // scroller's box clipped to the window; outside the frame (a test, a future
+  // page with no scroller) it is the window alone.
   useEffect(() => {
     const el = target.current
     if (el === null || typeof el.scrollIntoView !== 'function') return
     const box = el.getBoundingClientRect()
-    const inView = box.top >= 0 && box.bottom <= window.innerHeight
+    const port = el.closest('.ctl-scroll')?.getBoundingClientRect() ?? null
+    const top = Math.max(0, port?.top ?? 0)
+    const bottom = Math.min(window.innerHeight, port?.bottom ?? window.innerHeight)
+    const inView = box.top >= top && box.bottom <= bottom
     if (!inView) el.scrollIntoView({ block: 'start' })
   }, [topic])
 

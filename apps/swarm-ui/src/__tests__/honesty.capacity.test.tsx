@@ -17,15 +17,19 @@ import { describe, expect, it, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
 
 import type { Result } from '../fetch'
-import type { Capacity, Counterfactual, Pool, ProfileAdmission, ProfileBlocker, RunnerProfile } from '../types'
+import type { RuntimeTopology } from '../api'
+import type { Capacity, Counterfactual, Pool, ProfileAdmission, ProfileBlocker, Runtime, RunnerProfile } from '../types'
 import { headroomFor } from '../types'
 import { BlockerList, Counterfactuals, IncompleteNote, headroomFigure } from '../Blockers'
 import { expectNoFigures } from './setup'
 
 const loadCapacity = vi.hoisted(() => vi.fn<() => Promise<Result<Capacity>>>())
-vi.mock('../api', () => ({ loadCapacity }))
+const loadRuntimeTopology = vi.hoisted(() => vi.fn<() => Promise<Result<RuntimeTopology>>>())
+vi.mock('../api', () => ({ loadCapacity, loadRuntimeTopology }))
 
 const { CapacityScreen } = await import('../Capacity')
+const { ProfilesScreen } = await import('../Profiles')
+const { RuntimesScreen } = await import('../Runtimes')
 
 // ---------------------------------------------------------------------------
 
@@ -359,10 +363,44 @@ describe('the capacity board as a whole', () => {
     // The figure the qualifier governs is in this column and no other.
     const heads = [...document.querySelectorAll('thead th')]
     expect(heads.indexOf(head)).toBe(1)
-    // And the argument is one focusable click away, in the same cell.
-    expect(head.querySelector('button[aria-label^="Help: "]')).not.toBeNull()
     // The paragraph is gone from the surface entirely.
     expect(document.querySelector('.conjunction')).toBeNull()
+  })
+
+  /**
+   * CP-11 (#85) RE-POINT. The assertion above used to end by pinning the `?`
+   * to the `Could start` header cell. Below 900px §B6.3 stacks the table and
+   * HIDES its `<thead>`, so the screen's one in-content `?` went with it --
+   * still in the tab order, invisible -- and the stacked key read a bare
+   * `Could start`, dropping the conjunction the column name exists to carry.
+   *
+   * WHAT DID NOT MOVE: the qualifier is still attached to the figure, and the
+   * argument is still one focusable click away. What moved is WHERE each
+   * lives, to the two places that survive stacking: the qualifier into the
+   * cell's own `data-label` (the stacked key), and the `?` into the panel
+   * head, which no breakpoint hides.
+   */
+  it('keeps the conjunction and its ? where a phone still shows them', async () => {
+    renderCapacity(
+      capacity({ runner_profiles: { 'claude-code': profile({ admission: admission({}) }) } }),
+    )
+    await screen.findByRole('rowheader', { name: 'claude-code' })
+
+    // The stacked key is the column's name, qualifier included.
+    expect(couldStart('claude-code').getAttribute('data-label')).toContain('min across pools')
+
+    // The `?` is in the panel's head and in no part of the table a phone hides.
+    // Found by what it IS -- a disclosure button drawing `?` -- rather than by
+    // its accessible name, whose wording is HelpCard's to change.
+    const panel = document.querySelector('.cap-headroom')!
+    const glyphs = [...panel.querySelectorAll('button[aria-expanded]')].filter(
+      (b) => b.textContent === '?',
+    )
+    expect(glyphs.length, 'the headroom panel lost its ?').toBeGreaterThan(0)
+    for (const glyph of glyphs) {
+      expect(glyph.closest('thead'), 'a ? is inside the <thead> that stacking hides').toBeNull()
+      expect(glyph.closest('table'), 'a ? is inside the table').toBeNull()
+    }
   })
 
   it('declares the tenant beside the headroom figures, every time', async () => {
@@ -440,5 +478,349 @@ describe('the capacity board as a whole', () => {
     expect(screen.queryByText('Headroom')).toBeNull()
     expect(screen.queryByRole('table')).toBeNull()
     expectNoFigures(document.body, ['HTTP 503'])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Visual QA 2026-09-25, Capacity (#85). Each block below was pushed before the
+// fix it demands, so the red run on the PR is the proof it can see the defect.
+// ---------------------------------------------------------------------------
+
+function renderProfiles(data: Capacity) {
+  loadCapacity.mockResolvedValue({ status: 'ok', data, fetchedAt: Date.now(), serverAt: data.generated_at })
+  return render(<ProfilesScreen />)
+}
+
+/** One Profile headroom card, by the runner profile it is about. */
+async function profileCard(name: string): Promise<HTMLElement> {
+  const id = await screen.findByText(name, { selector: 'h2 .mono' })
+  const card = id.closest('section')
+  if (!card) throw new Error(`no card for ${name}`)
+  return card as HTMLElement
+}
+
+/** The `<dd>` a Profile headroom card files under `key`. */
+function kv(card: HTMLElement, key: string): HTMLElement {
+  const dt = [...card.querySelectorAll('dl.kv > dt')].find((d) => d.textContent === key)
+  expect(dt, `the card has no ${key} key`).toBeTruthy()
+  return dt!.nextElementSibling as HTMLElement
+}
+
+/** The row a Profile headroom card draws for one pool. */
+function poolRow(card: HTMLElement, name: string): HTMLElement {
+  const th = [...card.querySelectorAll('th[title]')].find((t) => t.getAttribute('title') === name)
+  expect(th, `the card draws no row for ${name}`).toBeTruthy()
+  return th!.closest('tr') as HTMLElement
+}
+
+describe('an em dash is only ever "not measured" (CP-1)', () => {
+  it('Held back by draws a word when the read is complete and nothing refuses', async () => {
+    renderCapacity(
+      capacity({
+        runner_profiles: {
+          'claude-code': profile({ admission: admission({ headroom: 3, complete: true, blockers: [], uncapped: [] }) }),
+        },
+      }),
+    )
+    const row = (await screen.findByRole('rowheader', { name: 'claude-code' })).closest('tr')!
+    const held = row.querySelector('td[data-label="Held back by"]')!
+    // Measured, complete, and nothing refusing: a fact, so not the mark this
+    // screen reserves for a figure nobody measured.
+    expect(held.textContent).not.toContain('—')
+    expect(held.querySelector('.ctl-em')).toBeNull()
+    expect(held.textContent).toMatch(/[a-z]/)
+  })
+
+  it('Profile headroom says a profile needs no provider rather than drawing a dash', async () => {
+    renderProfiles(
+      capacity({ runner_profiles: { mock: profile({ provider: null, admission: admission({}) }) } }),
+    )
+    const card = await profileCard('mock')
+    const provider = kv(card, 'Provider')
+    expect(provider.textContent).not.toContain('—')
+    // Runtimes' words for the same fact, so the two screens say it one way.
+    expect(provider.textContent).toContain('none needed')
+  })
+})
+
+describe('a disabled runner profile is not advertised with headroom (CP-3)', () => {
+  const REASON = 'codex is disabled on this platform. Use claude-code.'
+  const codex = () =>
+    profile({
+      provider: 'openai',
+      available: false,
+      disabled_reason: REASON,
+      admission: admission({
+        headroom: 10,
+        counterfactual: [
+          { pool: 'global', action: 'raise', headroom_after: 14, basis_after: 'measured', delta: 4, next_binding: [] },
+        ],
+      }),
+    })
+
+  it('Pools draws disabled, with its reason, where the figure would be', async () => {
+    renderCapacity(capacity({ runner_profiles: { codex: codex() } }))
+    await screen.findByRole('rowheader', { name: 'codex' })
+    const cell = couldStart('codex')
+    expect(cell.textContent).toContain('disabled')
+    expect(cell.textContent, 'a disabled profile still shows a headroom figure').not.toMatch(/\d/)
+    // The reason is on the row, as text a reader can see.
+    expect(cell.closest('tr')!.textContent).toContain(REASON)
+  })
+
+  it('Profile headroom draws disabled with its reason, and no counterfactual', async () => {
+    renderProfiles(capacity({ runner_profiles: { codex: codex() } }))
+    const card = await profileCard('codex')
+    expect(card.textContent).toContain('disabled')
+    expect(card.textContent).toContain(REASON)
+    expect(card.textContent).not.toContain('could start')
+    expect(card.textContent).not.toContain('would have started')
+    expect(card.querySelector('.counterfactual')).toBeNull()
+    expect(card.querySelector('h2')!.textContent).not.toMatch(/\d/)
+  })
+
+  it('an available profile is still priced as before', async () => {
+    renderProfiles(capacity({ runner_profiles: { 'claude-code': profile({ available: true, admission: admission({ headroom: 3 }) }) } }))
+    const card = await profileCard('claude-code')
+    expect(card.querySelector('h2')!.textContent).toContain('3')
+    expect(card.textContent).not.toContain('disabled')
+  })
+})
+
+describe('Profile headroom names every binding pool (CP-4, CP-13)', () => {
+  const tie = () =>
+    capacity({
+      pools: [
+        pool({ name: 'global', effective_limit: 5, available: 5 }),
+        pool({ name: 'tenant:eng', effective_limit: 5, available: 5 }),
+        pool({ name: 'resource:standard', effective_limit: 20, available: 20 }),
+      ],
+      runner_profiles: {
+        'claude-code': profile({
+          pools: ['global', 'tenant:eng', 'resource:standard'],
+          admission: admission({ headroom: 5, binding: ['global', 'tenant:eng'], blockers: [] }),
+        }),
+      },
+    })
+
+  it('tags every pool the server says binds, and only those', async () => {
+    renderProfiles(tie())
+    const card = await profileCard('claude-code')
+    for (const name of ['global', 'tenant:eng']) {
+      expect(poolRow(card, name).textContent, `${name} binds and is not tagged`).toContain('binding')
+    }
+    expect(poolRow(card, 'resource:standard').textContent).not.toContain('binding')
+  })
+
+  it('draws binding as the info chip, not the retired warn tag', async () => {
+    renderProfiles(tie())
+    const card = await profileCard('claude-code')
+    const chip = [...poolRow(card, 'global').querySelectorAll('.ctl-chip')].find((c) =>
+      (c.textContent ?? '').includes('binding'),
+    )
+    expect(chip, 'binding is not drawn as a .ctl-chip').toBeTruthy()
+    expect(chip!.className).toContain('is-info')
+    expect(card.querySelector('.tag.capped')).toBeNull()
+  })
+
+  it('names every binding pool in the line under the table', async () => {
+    renderProfiles(tie())
+    const card = await profileCard('claude-code')
+    const foot = [...card.querySelectorAll('p')].find((p) => (p.textContent ?? '').includes('run out first'))
+    expect(foot, 'no "would run out first" line').toBeTruthy()
+    expect(foot!.textContent).toContain('global')
+    expect(foot!.textContent).toContain('eng')
+  })
+})
+
+describe('Profile headroom carries its scope as a card note, not paragraphs (CP-5)', () => {
+  it('drops the conjunction banner and the tenant-scope paragraph, and notes the tenant on every card', async () => {
+    renderProfiles(
+      capacity({
+        tenant_id: 'eng',
+        pools: [pool({ name: 'global' }), pool({ name: 'tenant:eng' })],
+        runner_profiles: {
+          'claude-code': profile({ pools: ['global', 'tenant:eng'], admission: admission({}) }),
+          mock: profile({ provider: null, pools: ['global', 'tenant:eng'], admission: admission({}) }),
+        },
+      }),
+    )
+    const cards = [await profileCard('claude-code'), await profileCard('mock')]
+    expect(document.querySelector('.conjunction')).toBeNull()
+    const paragraphs = [...document.querySelectorAll('p')].map((p) => p.textContent ?? '')
+    expect(paragraphs.some((t) => t.includes('never a sum'))).toBe(false)
+    expect(paragraphs.some((t) => t.includes('including if'))).toBe(false)
+    for (const card of cards) {
+      const note = card.querySelector('.ctl-card-note')
+      expect(note, 'a Profile headroom card declares no tenant').not.toBeNull()
+      expect(note!.textContent).toBe('tenant eng')
+    }
+  })
+})
+
+describe('units are named on every column that counts them (CP-24)', () => {
+  it('Pools: Weight, In use and Ceiling all carry (units), stacked keys too', async () => {
+    renderCapacity(
+      capacity({ pools: [pool({ name: 'global' })], runner_profiles: { 'claude-code': profile({ admission: admission({}) }) } }),
+    )
+    await screen.findByRole('rowheader', { name: 'claude-code' })
+    const heads = [...document.querySelectorAll('thead th')].map((th) => (th.textContent ?? '').trim())
+    for (const name of ['Weight', 'In use', 'Ceiling']) {
+      const found = heads.filter((h) => h.startsWith(name))
+      expect(found.length, `no ${name} column`).toBeGreaterThan(0)
+      for (const h of found) expect(h, `${name} does not say its unit`).toContain('(units)')
+    }
+    const keyed = [
+      ...document.querySelectorAll('td[data-label^="Weight"], td[data-label^="In use"], td[data-label^="Ceiling"]'),
+    ]
+    expect(keyed.length).toBeGreaterThan(0)
+    for (const td of keyed) expect(td.getAttribute('data-label')).toContain('(units)')
+  })
+
+  it('Profile headroom writes Weight as the figure, not as a rationale', async () => {
+    renderProfiles(capacity({ runner_profiles: { browser: profile({ units: 2, admission: admission({}) }) } }))
+    const weight = kv(await profileCard('browser'), 'Weight')
+    expect(weight.textContent).not.toContain('added to every pool')
+    expect(weight.textContent).toMatch(/^2u\b/)
+  })
+})
+
+describe('a counterfactual row says what kind of answer it is (CP-13, CP-15)', () => {
+  function cf(over: Partial<Counterfactual>): Counterfactual {
+    return { pool: 'global', action: 'raise', headroom_after: 4, basis_after: 'measured', delta: 4, next_binding: [], ...over }
+  }
+  function rows(list: Counterfactual[]): HTMLElement[] {
+    render(
+      <Counterfactuals
+        h={headroomFor(profile({ admission: admission({ counterfactual: list }) }))}
+        generatedAt="2026-09-22T10:00:00Z"
+      />,
+    )
+    return [...document.querySelectorAll<HTMLElement>('.cf-row')]
+  }
+
+  it('marks an unmeasured change apart from a measured result', () => {
+    const [measured, unmeasured, uncaps] = rows([
+      cf({ pool: 'global' }),
+      cf({ pool: 'tenant:eng', delta: null, headroom_after: 3 }),
+      cf({ pool: 'resource:standard', delta: null, headroom_after: null }),
+    ])
+    expect(unmeasured!.className).toContain('is-unmeasured')
+    expect(measured!.className).not.toContain('is-unmeasured')
+    // "Nothing else would have been left to cap it" is an answer, not a gap.
+    expect(uncaps!.className).not.toContain('is-unmeasured')
+  })
+
+  it('says bind, not binds, when more than one pool would still bind', () => {
+    const [plural] = rows([cf({ delta: 0, headroom_after: 0, next_binding: ['tenant:eng', 'provider:anthropic'] })])
+    expect(plural!.textContent).toMatch(/still bind\b/)
+    expect(plural!.textContent).not.toContain('still binds')
+  })
+
+  it('keeps binds for a single pool', () => {
+    const [single] = rows([cf({ delta: 0, headroom_after: 0, next_binding: ['tenant:eng'] })])
+    expect(single!.textContent).toContain('still binds')
+  })
+
+  it('never prints two different pools under one label', () => {
+    const list = rows([
+      cf({ pool: 'resource:browser', delta: 0, headroom_after: 0, next_binding: ['resource:browser', 'runner:browser'] }),
+      cf({ pool: 'runner:browser', delta: 0, headroom_after: 0, next_binding: ['resource:browser'] }),
+    ])
+    const labels = list.map((r) => r.querySelector('.cf-action code')?.textContent ?? '')
+    expect(new Set(labels).size, `two pools share a label: ${labels.join(' | ')}`).toBe(labels.length)
+    expect(list[0]!.textContent).not.toMatch(/browser and browser/)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Runtimes (CP-16, CP-17)
+// ---------------------------------------------------------------------------
+
+function rt(over: Partial<Runtime>): Runtime {
+  return {
+    name: 'claude-code',
+    available: true,
+    disabled_reason: '',
+    image: 'img-claude-code',
+    backend: 'cloudrun',
+    resolved_backend: 'cloudrun',
+    provider: 'anthropic',
+    secrets: ['CLAUDE_CODE_OAUTH_TOKEN'],
+    secrets_any_of: false,
+    timeout_seconds: 3600,
+    resource_class: 'standard',
+    resources: { name: 'standard', cpu: 2, memory_gib: 4, disk_gib: 1, units: 1 },
+    ...over,
+  }
+}
+
+function renderRuntimes(list: Runtime[]) {
+  loadRuntimeTopology.mockResolvedValue({
+    status: 'ok',
+    data: {
+      runtimes: Object.fromEntries(list.map((r) => [r.name, r])),
+      pools: [],
+      poolsDetail: null,
+      classes: null,
+      classesDetail: null,
+    },
+    fetchedAt: Date.now(),
+    serverAt: '2026-09-22T10:00:00Z',
+  })
+  return render(<RuntimesScreen />)
+}
+
+async function runtimeCard(name: string): Promise<HTMLElement> {
+  const title = await screen.findByText(name, { selector: '.ctl-card-title .id' })
+  return title.closest('.ctl-card') as HTMLElement
+}
+
+function keysOf(list: Element | null): string[] {
+  if (!list) return []
+  return [...list.querySelectorAll(':scope > .ctl-fact > b')].map((b) => (b.textContent ?? '').trim())
+}
+
+describe('Sets it apart lists only what nothing else shares (CP-16)', () => {
+  const catalogue = () => [
+    rt({ name: 'mock', image: 'img-mock', provider: null, secrets: [] }),
+    rt({ name: 'mock-slow', image: 'img-mock-slow', provider: null, secrets: [] }),
+    rt({ name: 'browser', image: 'img-browser', backend: 'gke', resolved_backend: 'gke' }),
+    rt({ name: 'claude-code' }),
+  ]
+
+  it('files every distinction under a key the card itself uses', async () => {
+    renderRuntimes(catalogue())
+    for (const name of ['mock', 'mock-slow', 'browser', 'claude-code']) {
+      const card = await runtimeCard(name)
+      const own = new Set(keysOf(card.querySelector('.ctl-card-body > .ctl-facts')))
+      expect(own.size, `${name}: the card drew no facts`).toBeGreaterThan(0)
+      for (const key of keysOf(card.querySelector('.rt-apart-facts'))) {
+        expect(own.has(key), `${name}: "${key}" is not a key on its own card (${[...own].join(', ')})`).toBe(true)
+      }
+    }
+  })
+
+  it('does not call a fact shared with another runtime a distinction', async () => {
+    renderRuntimes(catalogue())
+    // `mock` shares its backend with two others and its absent provider with
+    // `mock-slow`. Only its image is its own.
+    expect(keysOf((await runtimeCard('mock')).querySelector('.rt-apart-facts'))).toEqual(['image'])
+    // `browser` is the only one on gke, which IS a distinction.
+    expect(keysOf((await runtimeCard('browser')).querySelector('.rt-apart-facts'))).toContain('runs on')
+  })
+})
+
+describe('a disabled runtime shows why (CP-17)', () => {
+  it('prints the reason on the card, not only in an accessible name', async () => {
+    const reason = 'codex is disabled on this platform. The provider refused the registered credential.'
+    renderRuntimes([
+      rt({}),
+      rt({ name: 'codex', image: 'img-codex', provider: 'openai', available: false, disabled_reason: reason }),
+    ])
+    const card = await runtimeCard('codex')
+    // `textContent` holds what is drawn; an aria-label is not in it.
+    expect(card.textContent).toContain(reason)
+    expect(card.querySelector('.ctl-chip.is-bad')?.textContent).toContain('disabled')
   })
 })

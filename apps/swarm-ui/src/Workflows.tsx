@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
 import {
   loadWorkflowBoard,
@@ -12,6 +12,7 @@ import {
   depItems,
   edgeKinds,
   edgePath,
+  foldMix,
   inputsByStep,
   layoutOf,
   levelsOf,
@@ -423,6 +424,32 @@ function Board({
     }
   }, [taskIds])
 
+  // WHAT EACH CARD IS DRAWING, stated once. The cards below are handed exactly
+  // these, and the sample mark asks the same questions of them -- a second
+  // spelling of "is this card open, and in which view" is how the mark and the
+  // cards would come to disagree about what is on screen.
+  const expandedOf = (id: string): boolean => open[id] ?? mode !== 'collapsed'
+  const viewOf = (id: string): WorkflowView => views[id] ?? (mode === 'collapsed' ? 'graph' : mode)
+  const zoomOf = (id: string): ZoomChoice => zooms[id] ?? 'auto'
+
+  // THE SAMPLE MARK DESCRIBES THE STEP FIGURES, SO IT SHOWS ONLY WHERE THEY ARE
+  // DRAWN. `n/m sampled` is the coverage of the per-step attempt read -- the
+  // cost, tokens and checkpoints on a Figures-tier node and in the Table's
+  // columns. Under Rows no step figure is on screen at all, and the row's
+  // spend is summed from the tasks' own result summaries, a different source
+  // the sample says nothing about; the mark there was a caveat about figures
+  // nobody could see, sitting beside figures it did not qualify. The Timeline
+  // draws times from the task read, and a Graph below the Figures tier draws no
+  // figure either.
+  const figuresDrawn = board.workflows.some((w) => {
+    if (!expandedOf(w.workflow_id)) return false
+    const view = viewOf(w.workflow_id)
+    if (view === 'table') return true
+    if (view !== 'graph') return false
+    const zoom = zoomOf(w.workflow_id)
+    return (zoom === 'auto' ? autoTier(w.steps) : zoom) === 'figures'
+  })
+
   return (
     <>
       {/* ONE STRIP OF CHROME ABOVE THE BOARD, and the count of sentences in it
@@ -434,7 +461,7 @@ function Board({
         <ModeControl mode={mode} onChoose={chooseMode} />
         <span className="is-end wf-caveats">
           {board.statesDetail !== null && <StatesUnavailable detail={board.statesDetail} />}
-          {usage.kind === 'ready' && usage.usage !== null && <SampleNote usage={usage.usage} />}
+          {figuresDrawn && usage.kind === 'ready' && usage.usage !== null && <SampleNote usage={usage.usage} />}
           {/* ONE `?` FOR THE WHOLE BOARD, AND SINCE B7.4 FOR THE WHOLE SCREEN.
               `absent-vs-zero` is the rule every absent figure here obeys -- a
               word where a digit would be, on a dashed rule -- and it is a
@@ -459,13 +486,13 @@ function Board({
               key={w.workflow_id}
               workflow={w}
               taskById={board.taskById}
-              expanded={open[w.workflow_id] ?? mode !== 'collapsed'}
+              expanded={expandedOf(w.workflow_id)}
               onToggle={toggle}
               openStages={openStages}
               onToggleStage={toggleStage}
-              zoom={zooms[w.workflow_id] ?? 'auto'}
+              zoom={zoomOf(w.workflow_id)}
               onZoom={chooseZoom}
-              view={views[w.workflow_id] ?? (mode === 'collapsed' ? 'graph' : mode)}
+              view={viewOf(w.workflow_id)}
               onView={chooseView}
               picked={mine === null ? null : mine.stepId}
               onPick={onPick}
@@ -628,19 +655,50 @@ function rollupLine(workflow: Workflow): Rollup {
       why: `${n} of ${total} steps could not be read (${roll.reason}), so there is no progress figure. This is an unread census, not a stalled workflow.`,
     }
   }
+  // EVERY TERMINAL STATE THE ROLLUP COUNTS, NOT TWO OF THEM. This read
+  // `9/30 done · 4 failed` on a workflow where seventeen steps had been
+  // cancelled: the census named two of the four ways a step ends, so the other
+  // seventeen were simply missing from a line whose whole job is to account
+  // for thirty. The words are the ones the node and the stage band print for
+  // the same states, so one step reads the same at every level of the board.
+  // Whether a finished row should still draw a progress meter is a separate
+  // question (design-system.md §6.4) and is not answered here.
   const done = roll.counts.SUCCEEDED ?? 0
   const failed = roll.counts.FAILED ?? 0
+  const deadLettered = roll.counts.DEAD_LETTERED ?? 0
+  const cancelled = roll.counts.CANCELLED ?? 0
   const unstarted = roll.counts.unstarted ?? 0
-  const parts = [`${done}/${total} done`]
-  if (failed > 0) parts.push(`${failed} failed`)
-  if (unstarted > 0) parts.push(`${unstarted} not started`)
+  const rest: string[] = []
+  if (failed > 0) rest.push(`${failed} failed`)
+  if (deadLettered > 0) rest.push(`${deadLettered} dead_lettered`)
+  if (cancelled > 0) rest.push(`${cancelled} cancelled`)
+  if (unstarted > 0) rest.push(`${unstarted} not started`)
   return {
-    text: parts.join(' · '),
+    text: [`${done}/${total} done`, ...rest].join(' · '),
     trustworthy: true,
     done,
     total,
-    why: `${done} of ${total} steps done.`,
+    why: `${done} of ${total} steps done${rest.length > 0 ? `, ${rest.join(', ')}` : ''}.`,
   }
+}
+
+/**
+ * Whether a cancellation somebody asked for is still in flight.
+ *
+ * Only a DERIVED, COMPLETE rollup in a terminal state ends it. A rollup that
+ * could not read every step, or an API that derived nothing, has not shown the
+ * workflow is over -- and a request whose outcome was not read is still a
+ * request, so the tag stays exactly as it was before this check existed.
+ */
+function cancelPending(workflow: Workflow): boolean {
+  if (!workflow.cancel_requested) return false
+  const roll = workflow.rollup
+  const finished =
+    workflow.state_source === 'derived' &&
+    roll !== undefined &&
+    roll.complete &&
+    TERMINAL_STATES.has(roll.state as TaskState)
+  return !finished
 }
 
 /**
@@ -864,8 +922,14 @@ export function WorkflowCard({
             {/* Still a separate annotation, not folded into the state above.
                 `cancel_requested` is a REQUEST: a step holding a lease keeps it
                 until the worker or the reconciler releases it, so between the
-                request and the release the workflow really is still running. */}
-            {workflow.cancel_requested && <span className="tag wait">cancel requested</span>}
+                request and the release the workflow really is still running.
+
+                AND ONLY THEN. The flag is never cleared, so it rode along on
+                workflows that had finished cancelled a day earlier -- a tag
+                saying something is pending, on a row where nothing is. Agents'
+                `cancelling` chip has the same rule for the same flag on a task:
+                shown while the state is not terminal. */}
+            {cancelPending(workflow) && <span className="tag wait">cancel requested</span>}
           </span>
           {/* `[actions]`, AT THE RIGHT EDGE, 20px, AND IT NEVER DROPS EITHER.
               It was the first column: a caret on the left pushes the id -- the
@@ -1040,7 +1104,8 @@ function Shape({ shape }: { shape: DagShape }) {
 
 /**
  * THE RUNNER MIX. Which models this workflow is spending the subscription on,
- * commonest first, two named and the rest counted.
+ * commonest first, at most two named and the rest counted -- fewer named when
+ * two whole chips and the count do not fit the column (`foldMix`).
  *
  * It earns the line because it is the field that decides whether a quota park
  * is about to matter to THIS workflow: a twenty-step run that is nine
@@ -1051,12 +1116,30 @@ function Shape({ shape }: { shape: DagShape }) {
  */
 function Mix({ steps }: { steps: WorkflowStep[] }) {
   const mix = profileMix(steps)
-  if (mix.length === 0) return <span className="wf-mix" />
-  const shown = mix.slice(0, 2)
-  const rest = mix.length - shown.length
+  // THE COLUMN'S WIDTH, MEASURED, so whole chips fold into `+N` instead of the
+  // column cutting one mid-word (`moc`, half a `+`). `[mix]` is a
+  // `minmax(0, 1.1fr)` track, so its width does not depend on what is drawn in
+  // it and measuring it cannot feed back into itself. Null until measured --
+  // `foldMix` then keeps the plain "two named, rest counted" rather than
+  // guessing a width. A layout effect, so the first painted frame is already
+  // the folded one.
+  const ref = useRef<HTMLSpanElement | null>(null)
+  const [room, setRoom] = useState<number | null>(null)
+  useLayoutEffect(() => {
+    const el = ref.current
+    if (el === null) return
+    const measure = () => setRoom(el.clientWidth > 0 ? el.clientWidth : null)
+    measure()
+    if (typeof ResizeObserver === 'undefined') return
+    const watch = new ResizeObserver(measure)
+    watch.observe(el)
+    return () => watch.disconnect()
+  }, [])
+  if (mix.length === 0) return <span className="wf-mix" ref={ref} />
+  const { shown, rest } = foldMix(mix, room)
   const all = mix.map((m) => `${m.profile} ×${m.count}`).join(', ')
   return (
-    <span className="wf-mix" title={`Runner profiles: ${all}`}>
+    <span className="wf-mix" ref={ref} title={`Runner profiles: ${all}`}>
       {shown.map((m) => (
         <span className="wf-chip" key={m.profile}>
           {m.profile}
@@ -1284,10 +1367,28 @@ function unreadableOf(
 function attemptsCell(state: StepState): Cell {
   if (state.kind === 'unstarted') return absentCell(NEVER_RAN)
   if (state.kind === 'unknown') return absentCell(STATE_UNREAD)
+  const over = attemptsOver(state)
   return measuredCell(
     `${state.task.attempt_count} of ${state.task.max_attempts}`,
-    'Attempts used, of the attempts this step is allowed.',
+    over > 0
+      ? `Attempts used, of the attempts this step is allowed: ${over} more than its ceiling of ${state.task.max_attempts}.`
+      : 'Attempts used, of the attempts this step is allowed.',
   )
+}
+
+/**
+ * How many attempts past its ceiling a step has used -- 0 within it, and 0
+ * when there is no count to compare.
+ *
+ * STRICTLY GREATER, not `>=`. `3 of 3` is a step that used every attempt it was
+ * allowed, which is the ordinary end of a failing step and not a fault; `83 of
+ * 3` is a count the ceiling was supposed to make impossible, and it was drawn
+ * in exactly the same ink as `1 of 3`. The Agents row has the same rule for
+ * the same two fields.
+ */
+function attemptsOver(state: StepState): number {
+  if (state.kind !== 'state') return 0
+  return Math.max(0, state.task.attempt_count - state.task.max_attempts)
 }
 
 /**
@@ -1331,6 +1432,7 @@ function stepRows(
         times,
         ran: f.ran,
         attempts: attemptsCell(state),
+        attemptsOver: attemptsOver(state),
         cost: f.cost,
         tokens: f.tokens,
         pending: usage.kind === 'reading' && state.kind === 'state',
@@ -1735,8 +1837,9 @@ function Minimap({
         focusable="false"
       >
         {layout.bands.map((b) => {
-          const census = stageCensus(b.steps, taskById)
-          const broken = census.failed + census.cancelled > 0
+          // A FAILURE, NOT A CANCELLATION: the same rule, for the same reason,
+          // as the band's own `.has-failure` below.
+          const broken = stageCensus(b.steps, taskById).failed > 0
           return (
             <rect
               key={`band-${b.level}`}
@@ -1995,6 +2098,40 @@ function WorkflowGraph({
                   <path className="wf-arrowhead" d="M 0 1 L 7 4 L 0 7 z" />
                 </marker>
               </defs>
+              {/* TWO PASSES: EVERY HALO, THEN EVERY STROKE.
+
+                  THE HALO IS WHY THE NODES LOST THEIR SHADOWS. Fourteen drop
+                  shadows on one screen bought one thing: an edge crossing a
+                  card read as passing under it rather than into it. A node is
+                  always at least one level below every parent, but it can be
+                  MORE than one, so a long edge does cross the band between --
+                  the separation is real and had to go somewhere. It is on the
+                  EDGE, which is the thing doing the crossing: a wider stroke in
+                  the canvas's own colour, under the line, so the line carries
+                  its own clearance.
+
+                  UNDER EVERY LINE, NOT JUST ITS OWN. Each edge used to be one
+                  group of halo-then-stroke, and SVG paints in document order,
+                  so a later edge's halo painted straight over an earlier edge's
+                  arrowhead wherever two converged on one join -- the arrows into
+                  a fan-in were erased by their own siblings. The halos are now
+                  one layer beneath all the strokes, so a halo can only ever
+                  clear space UNDER a line, never through one.
+
+                  The halo layer's groups carry the same kind classes as the
+                  strokes, because the sheet widens a data edge's halo through
+                  `.wf-link.is-data .wf-edge-halo`; they carry no `data-edge`,
+                  because they are clearance and not a mark. */}
+              <g className="wf-edge-halos">
+                {layout.edges.map((e) => (
+                  <g
+                    key={`${e.from}->${e.to}`}
+                    className={linkClass(kinds.get(`${e.from}->${e.to}`) ?? 'order')}
+                  >
+                    <path className="wf-edge-halo" d={edgePath(e)} />
+                  </g>
+                ))}
+              </g>
               {layout.edges.map((e) => (
                 // THE EDGE'S KIND IS ON THE GROUP (viz #1, #9). `is-order` is a
                 // dependency that only orders the two steps; `is-data` also
@@ -2002,25 +2139,14 @@ function WorkflowGraph({
                 // whether anything has REPORTED the file arriving. Weight and
                 // dash carry it, never hue alone, so a greyscale screenshot keeps
                 // all three apart. Still one group per pair: a data edge is a
-                // kind of edge, not a second one drawn over the first.
-                //
-                // TWO PATHS, ONE EDGE, AND THE FIRST ONE IS WHY THE NODES LOST
-                // THEIR SHADOWS. Fourteen drop shadows on one screen bought one
-                // thing: an edge crossing a card read as passing under it rather
-                // than into it. A node is always at least one level below every
-                // parent, but it can be MORE than one, so a long edge does cross
-                // the band between -- the separation is real and had to go
-                // somewhere. It is now on the EDGE, which is the thing doing the
-                // crossing: a wider stroke in the canvas's own colour, drawn
-                // first, so the line carries its own clearance. One `<g>` per
-                // (parent, child) pair keyed by that pair, so the guarantee that
-                // one dependency draws one mark is unchanged.
+                // kind of edge, not a second one drawn over the first. One `<g>`
+                // per (parent, child) pair keyed by that pair, so the guarantee
+                // that one dependency draws one mark is unchanged.
                 <g
                   key={`${e.from}->${e.to}`}
                   className={linkClass(kinds.get(`${e.from}->${e.to}`) ?? 'order')}
                   data-edge={`${e.from}->${e.to}`}
                 >
-                  <path className="wf-edge-halo" d={edgePath(e)} />
                   <path
                     className="wf-edge"
                     d={edgePath(e)}
@@ -2145,7 +2271,13 @@ function StageBand({
   controls: string
   onToggle: () => void
 }) {
-  const broken = census.failed + census.cancelled > 0
+  // `failed` ONLY -- which already counts DEAD_LETTERED (`stageCensus`). A
+  // stage of cancelled and succeeded steps was painted with the failure rule
+  // and tint, so a workflow somebody stopped on purpose looked, down its whole
+  // collapsed graph, like one that broke. A cancellation is something a person
+  // asked for; it keeps its own count, first after the failures, in its own
+  // tone, and the sentence still names it -- it just does not paint the band.
+  const broken = census.failed > 0
   const cls = [
     'wf-band',
     // `has-unread` first so that a stage that is BOTH unread and broken keeps
@@ -2371,10 +2503,17 @@ function StepNode({
            precisely what lets a `details` node be 144px instead of 255. The
            trade is one row of height for 111px of width, on the axis that ran
            out. */}
+      {/* AT THE FIGURES TIER THE `ran` FIGURE BELOW ALREADY SAYS IT, for three
+           of the five kinds. `ran 1m 8s` on this line over `ran 1m 8s` in the
+           figures was one duration printed twice on one card; so were
+           `running …` over `… so far`, and `never started` over `never
+           started`. A WAIT is different: `queued 2m 33s` and `parked 7m 11s`
+           are time spent NOT running, which the `ran` figure cannot express
+           (it says `not started` or `between attempts`), so those two stay. */}
       <div className="node-line">
         <i className={dotClass({ tone: p.tone, derived: p.derived })} aria-hidden />
         <span className="node-state">{p.word}</span>
-        {showFigures && <StepTime dur={dur} />}
+        {showFigures && (dur.kind === 'queued' || dur.kind === 'parked') && <StepTime dur={dur} />}
       </div>
       {/* The duration on a row of its own. Dropped entirely at `names`, where
           the canvas mark beside the zoom control says so -- never drawn blank,

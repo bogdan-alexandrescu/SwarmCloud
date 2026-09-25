@@ -12,7 +12,7 @@ import { nudgePane } from './focus'
 import { helpAnchor, type TopicId } from './help'
 import { timeAgo } from './Shell'
 import { DOCK, DOCK_COLLAPSED, clampPane, readPane, summariseProbes, writePane } from './panes'
-import { useNow } from './useNow'
+import { AGE_TICK_MS, useNow } from './useNow'
 
 /**
  * THE DOCK (§B3), AND THE TELEMETRY STRIP IT SWALLOWS (§B18).
@@ -67,7 +67,7 @@ export function Dock() {
   // own rather than only when a fetch happens to land -- on the SHARED clock
   // (useNow.ts) the head and every screen's sub-line read, so the dock's
   // `newest 22s ago` and a sub-line's `read just now` are one instant (CH-1).
-  const now = useNow(5000)
+  const now = useNow(AGE_TICK_MS)
   const [open, setOpen] = useState(false)
   const [height, setHeight] = useState(() => readPane(DOCK))
   const dragging = useRef(false)

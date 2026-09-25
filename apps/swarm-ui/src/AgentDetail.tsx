@@ -20,6 +20,7 @@ import { StagedInputs } from './StagedInputs'
 import { StopRun } from './StopRun'
 import { useNow } from './useNow'
 import {
+  CONCURRENCY_STATES,
   GIB,
   REASON_COPY,
   TERMINAL_STATES,
@@ -38,8 +39,8 @@ import {
   type ArtifactRef,
   type AttemptRow,
   type DispatchRole,
-  type ElapsedPhase,
   type DispatchStrategy,
+  type ElapsedPhase,
   type GitSummary,
   type ResourceClassSpec,
   type ResultSummary,
@@ -135,23 +136,6 @@ export function AgentDetailScreen({ taskId, onClose }: { taskId: string; onClose
 }
 
 /**
- * The screen's body, once the load has resolved.
- *
- * EXPORTED FOR ONE REASON. `tests/agentdetail.test.tsx` is the acceptance test
- * for B7.1 -- it renders this screen with a cost that was never reported and
- * asserts that the surface, with every help card CLOSED, still tells absent
- * from zero. `AgentDetailScreen` above wraps this in `Screen`, whose load runs
- * in an effect, so rendering that statically yields a skeleton and would make
- * the acceptance test assert nothing at all. The test drives the real
- * component with a real `AgentRun` instead.
- *
- * `reload` is OPTIONAL for the same reason. The stop control needs it to
- * refresh after a cancel, and the screen always passes it -- but requiring it
- * would force the acceptance test to invent a stub, and a test that has to
- * fabricate a callback in order to assert on STATIC markup is asserting on its
- * own scaffolding. Absent, the stop control simply has nothing to call.
- */
-/**
  * HOW OFTEN THE OPEN DRAWER RE-READS ITS RUN, or null to stop.
  *
  * 10s, not the Agents list's 5s: one read here is FOUR requests -- the task,
@@ -168,6 +152,23 @@ export function drawerPoll(r: AgentRun | null): number | null {
   return DRAWER_POLL_MS
 }
 
+/**
+ * The screen's body, once the load has resolved.
+ *
+ * EXPORTED FOR ONE REASON. `tests/agentdetail.test.tsx` is the acceptance test
+ * for B7.1 -- it renders this screen with a cost that was never reported and
+ * asserts that the surface, with every help card CLOSED, still tells absent
+ * from zero. `AgentDetailScreen` above wraps this in `Screen`, whose load runs
+ * in an effect, so rendering that statically yields a skeleton and would make
+ * the acceptance test assert nothing at all. The test drives the real
+ * component with a real `AgentRun` instead.
+ *
+ * `reload` is OPTIONAL for the same reason. The stop control needs it to
+ * refresh after a cancel, and the screen always passes it -- but requiring it
+ * would force the acceptance test to invent a stub, and a test that has to
+ * fabricate a callback in order to assert on STATIC markup is asserting on its
+ * own scaffolding. Absent, the stop control simply has nothing to call.
+ */
 export function Run({ run, reload }: { run: AgentRun; reload?: () => void }) {
   const { task, events } = run
   // THE SHARED CLOCK (AG-2). This was `Date.now()` taken once at render, so
@@ -536,15 +537,27 @@ function Headline({
       <ul className="ctl-facts">
         {/* `run` ONLY OVER A RUN (AG-3). A cascade-cancelled step read `run
             27m 57s` beside `never ran`: the wall time it sat READY, printed as
-            the agent's run. The KEY is chosen from `elapsed()`'s own `phase`
-            -- the answer it gives for exactly this, so the label and the
-            figure cannot disagree -- and never from the text: a figure that
-            is a wait sits under `wait`, and a finished task that never
-            started reads `run never ran`, which is `elapsed()`'s word. */}
-        <li className="ctl-fact">
-          <b>{el.phase === 'waiting' ? 'wait' : 'run'}</b>
-          {el.text}
-        </li>
+            the agent's run. The key is chosen from `elapsed()`'s own `phase`
+            -- the answer it gives for exactly this, so the key and the figure
+            cannot disagree -- and not from `started_at` alone, which survives
+            a park: keyed on that, a parked retry read `run` over its wait.
+
+            `wait` ONLY OVER A WAIT. A live task that is not running has a
+            wait the document can time only when nothing has started and it
+            holds no slot, and that is the one case where `elapsed()` prints a
+            figure and ticks. A parked retry used to read `wait waiting 50m`
+            beside `age 50m ago`: its age, which includes the attempt that
+            ran, presented as a wait. Between attempts, and on a LEASED or
+            DISPATCHED task, `elapsed()` prints the state word alone, which
+            the chip already says, so the fact is left out rather than keyed
+            over a figure that is not one. `age` beside it is the task's age,
+            under the key that says so. */}
+        {(el.phase !== 'waiting' || (task.started_at === null && el.ticking)) && (
+          <li className="ctl-fact">
+            <b>{el.phase === 'waiting' ? 'wait' : 'run'}</b>
+            {el.text}
+          </li>
+        )}
         <li className="ctl-fact">
           <b>age</b>
           {timeAgo(task.created_at)}
@@ -812,38 +825,62 @@ function tokenRollupNote(total: number, withIn: number, withOut: number): string
  *
  * "Still running" on a PARKED task was the first version of this and it is a
  * flat lie: a parked attempt released its capacity and nothing is executing.
- * `elapsed()` keeps counting wall time from `started_at` regardless -- that is
- * the Agents table's behaviour and is not changed here -- so the sentence
- * under the figure is what has to say which clock it is.
+ *
+ * `running` IS READ FROM `elapsed()`'s PHASE, NOT FROM `started_at`. The start
+ * on the task document survives a park and a requeue, so a retry waiting in
+ * READY, LEASED or DISPATCHED has one -- and this note said `running` under
+ * it. The note follows `elapsed()`'s answer rather than a second reading of
+ * the same field.
+ *
+ * WHERE THE FIGURE IS ONLY A STATE WORD, THE NOTE CARRIES THE AGE, LABELLED AS
+ * ONE. Between attempts, and on a LEASED or DISPATCHED task, `elapsed()` has
+ * no span to time and prints the state word alone. This note says why -- an
+ * earlier attempt ran, or nothing has started -- and gives `submitted … ago`,
+ * which is what the age is. It used to read `wall time, not work` under a
+ * parked retry's `waiting 50m`, which called the age a wait.
+ *
+ * NOTHING HERE SAYS `still counting` ANY MORE. It described `elapsed()` going
+ * on to `now` for a finished task with no recorded end, and for one that never
+ * started. Neither ticks now: a run with no recorded end has no length and
+ * reads `—`, and a task that never started reads `never ran`.
+ *
+ * EVERY AGE HERE IS TAKEN AT `now`, the drawer's shared 1s clock (AG-2), so
+ * the note moves on the same tick as the figure beside it rather than on
+ * whatever `Date.now()` said when the tile last happened to render.
  */
 function elapsedNote(task: Task, phase: ElapsedPhase, now: number): string {
-  // NEVER RAN (AG-3). `elapsed()` says so in the figure itself, so the note
-  // does not say it twice: it names how the task ended and when, which is
-  // what the figure no longer carries. Read from `phase`, the answer
-  // `elapsed()` gives for this, never from the figure's text.
-  if (phase === 'never-ran') {
-    return task.completed_at !== null
-      ? `${stateWord(task.state)} ${timeAgo(task.completed_at, now)}`
-      : stateWord(task.state)
-  }
   if (TERMINAL_STATES.has(task.state)) {
+    // NEVER RAN (AG-3). A finished task with no start never had a worker, so
+    // there is no run to time -- created to, say, a cascade cancel is how long
+    // it WAITED. The figure says `never ran`; this names the ending so the
+    // wait has an end a reader can see.
+    if (task.started_at === null) {
+      return task.completed_at !== null
+        ? `never ran · ${stateWord(task.state)} ${timeAgo(task.completed_at, now)}`
+        : 'never ran · no finish recorded'
+    }
     if (task.completed_at !== null) return `finished ${timeAgo(task.completed_at, now)}`
-    // NO completion time, and `elapsed()` does not stop for that: it falls
-    // through to `now - started_at` and keeps counting to the current clock.
-    // So the figure beside this qualifier is not the length of the run and it
-    // grows on every render. `still counting` is what says that -- the tile
-    // cannot say it any other way, and it is three words rather than a
-    // paragraph because the WHY is `#help/read-failed`'s neighbour topic.
-    return 'no finish recorded · still counting'
+    // NO completion time. Every terminal write sets one with the state, so
+    // this is an older document or a writer that forgot, and the figure above
+    // is an absence rather than a length. This says which absence.
+    return 'no finish recorded'
   }
+  if (phase === 'running') return 'running'
+  // No span to time: STARTING or RUNNING with no start recorded, or a task
+  // with no submission time. The figure is `—`; this says which absence.
+  if (phase === 'unknown') return task.created_at ? 'no start recorded' : 'no submission time recorded'
+  // Between two attempts: the figure is the state word, and the age includes
+  // the run that already happened, so it is given as an age and nothing else.
+  if (task.started_at !== null) return `an earlier attempt ran · submitted ${timeAgo(task.created_at, now)}`
+  // Holding a slot before the first attempt starts: the figure is the state
+  // word, because the age after it read as time held.
+  if (CONCURRENCY_STATES.has(task.state)) return `nothing started · submitted ${timeAgo(task.created_at, now)}`
   // "Parked -- wall time, not work. Nothing is executing and no capacity is
   // held" was the first version, and the fact in it is the first three words:
-  // the figure is a clock, not a measure of work.
+  // the figure is a clock, not a measure of work. Only a PARKED task that has
+  // never started gets here, so the clock is all wait.
   if (task.state === 'PARKED') return 'wall time, not work'
-  // The figure already names what the task is doing while it waits
-  // (`leased 4m`, `waiting 4m`); the note says only that nothing has run.
-  if (phase === 'waiting') return 'nothing started'
-  return 'running'
+  return 'waiting · nothing started'
 }
 
 function Alerts({ task }: { task: Task }) {

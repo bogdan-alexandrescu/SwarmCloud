@@ -187,9 +187,9 @@ function Body({ t }: { t: AttemptTimeline }) {
                 `pending` -- the word `reading`, the dotted in-flight shape --
                 permanently, on a toolbar whose read had landed. `reading` is
                 the one mark of the six that means "still asking"
-                (design-system.md §8.7.1); that the route pages oldest-first
-                with no token is a standing caveat about the route, not a read
-                in flight. The figures are the qualifier and the caveat is
+                (design-system.md §8.7.1); that this screen reads one page,
+                oldest-first, and does not follow the route's page token is a
+                standing caveat about this screen, not a read in flight. The figures are the qualifier and the caveat is
                 their accessible name. Blind attempts, below, are what this
                 page can PROVE is missing, and they keep the `partial` mark. */}
             {count === 0 ? (
@@ -198,14 +198,14 @@ function Body({ t }: { t: AttemptTimeline }) {
                   kind="unread"
                   say="Zero events came back, yet a task is written with its submitted event in the same batch — so this is a failed query, not an empty history."
                 />{' '}
-                {count} ev · no page token
+                {count} ev · first page
               </>
             ) : (
               <span
                 className="att-ev-cap"
-                aria-label={`${count} events, one page, oldest first. The events endpoint caps the page server-side and returns no page token, so newer events may exist and are unreachable from this screen.`}
+                aria-label={`${count} events, the first page, oldest first. This screen reads one page and does not follow the page token the events route returns, so newer events may exist that it has not fetched.`}
               >
-                {count} ev · no page token
+                {count} ev · first page
               </span>
             )}
             {blind.length > 0 && (
@@ -213,7 +213,7 @@ function Body({ t }: { t: AttemptTimeline }) {
                 {' · '}
                 <Mark
                   kind="partial"
-                  say={`${blind.length} attempt${blind.length === 1 ? ' has' : 's have'} no events on this page. Past one page the newest events — everything belonging to those attempts — cannot be fetched at all.`}
+                  say={`${blind.length} attempt${blind.length === 1 ? ' has' : 's have'} no events on this page. Past one page the newest events — everything belonging to those attempts — are not fetched by this screen.`}
                 />{' '}
                 {blind.length} blind
               </>
@@ -225,10 +225,11 @@ function Body({ t }: { t: AttemptTimeline }) {
             most needed it -- the one looking at `events unread` -- was the one
             it was not drawn for. On the toolbar it renders on every path, in
             the same place, beside every mark this screen can draw.
-            It stays a glyph because what it holds cannot be a label: the events
-            endpoint pages oldest-first and returns no page token, so "this is
-            everything" is a claim this screen is never entitled to make and a
-            reader has no way to derive that from the counts in front of them.
+            It stays a glyph because what it holds cannot be a label: this
+            screen reads one page of events, oldest-first, and does not follow
+            the page token the route returns (#19), so "this is everything" is
+            a claim it is never entitled to make and a reader has no way to
+            derive that from the counts in front of them.
             `prose.runs.test.tsx` pins it to this toolbar.
 
             IT OPENS `event-paging` (AG-19). It opened `partial-read`, whose

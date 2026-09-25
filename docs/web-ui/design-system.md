@@ -203,13 +203,34 @@ token `--tint-ok` holding the same mix resolves to nothing, the rule lands in
 the unresolvable pile, and the run fails as undeclared. **There are no tint
 tokens and there will not be any.**
 
-### 1.5 Unresolvable surfaces carry no text
+### 1.5 Text never sits on a hatch
 
-A gradient, a hatch or a shimmer has no luminance the gate can measure.
-`var(--ctl-hatch)` is in that test's allowlist and may carry text; a
-`linear-gradient` is not and may not. So `.ctl-pending` and `.ctl-ghost` set a
-background and no `color`, and the caption goes in a sibling — which is also
-where a screen reader wants it.
+*(Corrected 2026-09-25, CH-4. This section used to say that `var(--ctl-hatch)`
+"is in that test's allowlist and may carry text". That was an exemption resting
+on a premise nobody had measured, and the premise was false.)*
+
+`--ctl-hatch` is two stripes, `--surface-2` and `--line`, and `--line` is a
+**component boundary** colour (§1.2). `--text-dim` over it measures **1.51:1 in
+light and 1.90:1 in dark** — across half of every glyph. Three marks shipped
+their words on it: `.ctl-mark.is-absent` ("not measured", the phrase the mark
+exists to make legible), `.ctl-stale-mark` (the age that says how far to
+distrust a value) and the unknown-environment badge.
+
+**The rule is now: text sits on a solid fill, and the hatch is a band, a swatch
+or a rim beside it.** `.ctl-mark.is-absent` and `.ctl-stale-mark` put the word
+on `--surface-2` with a 6px hatched band at the leading edge; the badge keeps
+its hatch and puts each word on a `--surface-2` plate inside it. The shape
+channel survives greyscale exactly as before — hatched still means "not a
+measurement" — it just no longer runs under the letters.
+
+**And the gate measures it rather than trusting it.** `test_ui_contrast.py`
+resolves a gradient stop by stop — a token that holds a gradient is expanded to
+the gradient first — and holds the text to AA against the **worst** stripe.
+Its allowlist of unresolvable backgrounds is empty. A gradient whose stripes all
+clear AA (`.banner.pill.unknown`, `--surface`/`--surface-2`) passes on its
+ratio; a hatch under text fails on its ratio. `.ctl-pending` and `.ctl-ghost`
+still set a background and no `color`, and their caption goes in a sibling —
+which is also where a screen reader wants it.
 
 ### 1.6 The series palette
 
@@ -2291,3 +2312,106 @@ move every neighbour by a pixel at the moment the strip most needs to hold still
   that were also 700 were brought to 600 in this pass; the wordmark was left.
 * **The dock still overlays resting content at 390px**, exactly as §11.3 and
   §12.4 say. Nothing here touches `Shell.tsx`.
+
+---
+
+## 14. The 2026-09-25 visual QA pass — the stylesheet's half
+
+The QA pass of the live console at `ea1355d` (1440 and 390, light and dark)
+filed its findings as boxes on epics #81–#87. Forty-two of them were the
+sheet's, and this section records what each changed and the constraint behind
+it, so that none of them is quietly reverted. Every one carries its box id in a
+comment beside the rule, and an assertion in `shell.test.tsx`'s *"the
+2026-09-25 visual QA"* block (or the file named below) that states the mutation
+turning it red.
+
+### 14.1 Why the assertions read a cascade and not `getComputedStyle`
+
+jsdom orders matching rules by **source position alone** — its own source says
+specificity "is only implemented by the order in which the matching rules
+appear" — and applies no `@media` block that does not name `screen`. Four of
+these defects were exactly that shape: a phone rule written ~2,000 lines
+**above** the base rule it had to beat (`.ctl-seg > button`, CH-8), `.state p`
+out-ranking `.checked-at` on `font-size` (CH-10), `.limit-edit input`
+out-ranking `.acct-wide` on `width` (CP-19), and `.ctl-table .is-num`
+out-ranking a stacked key's alignment (CH-11). `getComputedStyle` reports the
+wrong winner for all four, so a test built on it would pass on the broken
+sheet. `cssgate.ts` now carries `cascade`: importance, then Selectors-4
+specificity, then order, with media and container conditions evaluated against
+a stated width, and jsdom used only for `Element.matches`.
+`stylesheet.gate.test.ts` proves it on fixtures with known answers first.
+
+### 14.2 What moved
+
+| Box | Rule | The constraint |
+|---|---|---|
+| CH-4 | `.ctl-mark.is-absent`, `.ctl-stale-mark`, `.brand-env.is-unknown` | text on a solid fill, hatch as a band (§1.5) |
+| CH-5 | `.ctl-link` list + `:where(a)` | five screen-private link rules painted `--info`; they are branches of the primitive now, and an unclassed anchor is ink rather than the browser's blue or visited purple |
+| CH-6, CP-23, AG-17, TS-13 | `.ctl-nav-util button.is-on`, `.acct-detail`, `.row[aria-current]`, `.dsp-option.is-on` | §1.3: selection is a surface step plus a 2px `--text` rule, never a hue |
+| CH-7 | `.ctl-q-glyph { min-height: 20px }` | `:where(.app button)`'s 28px minimum beat the disc's 20px height |
+| CH-8 | the touch-target block at the **foot** of the sheet | §7.2's 44px, by height where a box can grow and by an empty centred `::after` where a word or disc cannot; at the foot because a media query adds no specificity |
+| CH-9 | `.ctl-q-card { box-shadow: var(--ctl-shadow-pop) }` | the token was named from this declaration and then used nowhere, so light mode got the dark shadow |
+| CH-10 | `.state p.checked-at` | the micro step inside a state panel |
+| CH-11, CH-12 | the stacked-record key, `.tag`/`.scope` width, identity wrap | every key left-aligned (the comment promised one edge; the cascade gave two), words as wide as themselves, identities breaking rather than cut |
+| CH-14 | `scroll-margin-inline-end: var(--rail-fade)` | an item scrolled into view is clear of the fade mask |
+| CH-15 | one-line crumb, `min-width: 20ch` on the age | the age changing width every 5s moved the crumb across its wrap point |
+| CH-16 | `flex: none` on the dock's line and grip | only the body may shrink |
+| OV-3 | `display: grid` on Overview's ≥900 util override; 19ch provenance | a grid template on a flex box is inert; 128px was 19 characters at an 11px step that no longer exists |
+| OV-13 | every metric label reserves its mark | the strip slid 8–9px when the Running tile's mark appeared |
+| AG-11, AG-13 | `[age]` in `ch` | at least `elapsed()`'s longest form over every state, started or not; at 1101–1200px and 390px the duration holds the track and "waiting" wraps above it, because the width would come out of the name |
+| AG-15 | `.try.spent` / `.is-over` | an attempt count over its ceiling is a fault; two class names because the markup halves were written in parallel |
+| AG-16 | `.row.is-head` | the head is a `.row`, so it inherits the grid and the breakpoints; only its register is new |
+| AG-18 | `.lv-word` in ink | the mark carries the tone (§6.6) |
+| AG-22 | `.art-md` capped at 60vh | the same slot as `.art-text` |
+| AG-26 | `.ctl-drawer` is a size container; the §B6.3 stacked block is restated as `@container ctl-inspector` | see 14.3 |
+| AG-27 | the phone why-line clamp | `-webkit-line-clamp` is inert without its box, orient and clip |
+| AG-30, AG-31 | band `top: -18px`, z 3/4/5, `.ctl-drawer:focus-visible` | a sticky inset is from the content edge; the table head tied the band at z 1 and came later |
+| AG-32 | `.row` row-gap `--ctl-s1` | a why line read as the heading of the row below |
+| WF-8 | `.wf-graph { width: max-content }` | a sticky rail sticks only within its containing block |
+| WF-16 | `[flags] minmax(0, 140px)`, wrapping one-line `.wf-mix` | a content-sized track in per-row grids misaligns every row that has a flag; a chip is whole or absent |
+| TS-7 | `.wfb-step .sbf-offer` on `--surface` | the offers were the card's own fill |
+| TS-21 | `.sub`, `.window-bar`, `.tiles`, `.tile`, `.dsp`, `.dsp-options`, `.wfb-stage + .wfb-stage` | each value moved to the nearest step of §3.1 |
+| TS-22 | one rule for the "still open" segment and its legend key | the key cannot drift from the bar |
+| TS-24 | `.wfb-more > summary` marker, hover, ring | the only way to narrow dependencies read as a caption |
+| CP-13 | `.scope.tenant` neutral, `.cf-effect` in ink | a state hue is a verdict; metadata and hypotheticals are neither |
+| CP-18 | `table-layout: fixed` on the family and profile tables | one schema, one set of columns |
+| CP-19, CP-20 | the open account's fields; the fixed provider's chip | the fields stretch; the confirmation sizes to its label (`field-sizing`) |
+| CP-22 | `.ctl-em { font-family: var(--font) }` | one dash width in every cell |
+| AH-8 | `[aria-invalid]` border, message on its own line | the message widened the column |
+| AH-19 | operand figures in a right-aligned 7ch track | a column of figures aligns like one |
+
+### 14.3 The one mirrored block, and the test that holds it
+
+CSS cannot put one set of rules under "this media condition **or** that
+container condition". The inspector's tables need the stacked layout at 1440,
+where the viewport query does not fire, so the §B6.3 block is restated as
+`@container ctl-inspector (max-width: 899px)` right after it, against
+`.ctl-drawer`'s own width. The alternatives were worse: making the page a
+container too changes what the threshold means (the work column is not the
+window) and makes the fixed overlay drawer position against the container.
+**`shell.test.tsx` compares the two blocks rule by rule and declaration by
+declaration**, so a change to one without the other fails by name — the
+mirrored copy is held, not hoped for. The comments live only in the first
+block.
+
+### 14.4 What this pass did NOT do, and whose it is
+
+* **The markup halves.** Twenty-two of these boxes have a TSX half in another
+  lane (the class hooks, `aria-current`, `aria-invalid`, `scrollIntoView`, the
+  `+N` fold, the HelpCard glyph and card). Every CSS half here is additive and
+  inert until its markup lands. The class names this sheet expects are
+  `.row.is-head`, `.try.spent`/`.is-over`, and `aria-current` / `aria-invalid`
+  as attributes; the head row also matches structurally so the two halves do
+  not have to agree on a spelling.
+* **`HelpCard.tsx`'s `CARD_TITLE` no longer shouts.** It carried
+  `textTransform: 'uppercase'` and `letterSpacing: '.04em'`; the shell/help
+  lane (#145) removed both and emptied the pending list in
+  `typescale.test.ts` that excused them, so CH-3's inline-style scan now
+  excuses nothing.
+* **`.scope.platform` is still an `--info` tint.** CP-13 named the tenant pill;
+  whether the platform pill should be neutral too is a design question, not a
+  mechanical one.
+* **Nothing here was seen rendered.** The assertions prove which rule wins and
+  what it says; whether 19ch holds "waiting 99d 23h" in a given font is
+  arithmetic in the sheet's comments, and only a browser at 1440 and 390 can
+  confirm it.

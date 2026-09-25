@@ -606,6 +606,80 @@ describe('a screen that polls (AG-1)', () => {
   })
 
   /**
+   * A POLL KEEPS AN EMPTY STATE ON SCREEN WHILE IT READS. The load effect put
+   * the screen back to `loading` on every read whenever it held no rows, and an
+   * empty read holds none -- so a tenant with no agents, polled on the 30s
+   * cadence §2.5 asks for, had its empty panel swapped for skeleton rows and its
+   * sub-line for `Reading…` on every poll, and then back.
+   *
+   * The second read never settles here, so what is asserted is the screen
+   * DURING a poll, which is the moment the flash happened.
+   *
+   * MUTATION: reset to `loading` on any read made without rows in hand. The
+   * empty panel is gone while the poll is in flight.
+   */
+  it('keeps an empty state on screen while a poll reads', async () => {
+    fakeClock()
+    let call = 0
+    const load = vi.fn((): Promise<Result<Rows>> => {
+      call += 1
+      return call === 1
+        ? Promise.resolve<Result<Rows>>({ status: 'empty', fetchedAt: Date.now() })
+        : new Promise<Result<Rows>>(() => {})
+    })
+    render(
+      <Screen<Rows>
+        title="Agents"
+        load={load}
+        pollMs={5_000}
+        empty={{ heading: 'No agents are running', body: 'The read succeeded and returned nothing.' }}
+      >
+        {rowsOf}
+      </Screen>,
+    )
+    await advance(0)
+    expect(document.querySelector('.ctl-empty')?.textContent).toContain('No agents are running')
+    await advance(5_000)
+    expect(load, 'the poll did not happen, so this proves nothing').toHaveBeenCalledTimes(2)
+    expect(document.querySelector('.ctl-empty')?.textContent, 'the poll blanked the empty state').toContain(
+      'No agents are running',
+    )
+    expect(document.querySelectorAll('.skeleton')).toHaveLength(0)
+  })
+
+  /**
+   * AND A FAILED FIRST READ STAYS UP WHILE A BACK-OFF RETRY READS. With no
+   * rows in hand the same reset unmounted the failure panel -- and its `Try
+   * again` button -- on every retry, so a reader reaching for the button could
+   * find skeletons under the pointer instead.
+   *
+   * MUTATION: as above. The panel and its button are gone during the retry.
+   */
+  it('keeps a failed read and its retry button on screen while a back-off retry reads', async () => {
+    fakeClock()
+    let call = 0
+    const load = vi.fn((): Promise<Result<Rows>> => {
+      call += 1
+      return call === 1
+        ? Promise.resolve<Result<Rows>>({ status: 'error', error: err('upstream_degraded', { message: 'Busy.' }) })
+        : new Promise<Result<Rows>>(() => {})
+    })
+    render(
+      <Screen<Rows> title="Agents" load={load} pollMs={5_000}>
+        {rowsOf}
+      </Screen>,
+    )
+    await advance(0)
+    expect(document.querySelector('.state.failed')).not.toBeNull()
+    // One failure in a row: the wait has doubled from 5s to 10s.
+    await advance(10_000)
+    expect(load, 'the retry did not happen, so this proves nothing').toHaveBeenCalledTimes(2)
+    expect(document.querySelector('.state.failed'), 'the retry unmounted the failure panel').not.toBeNull()
+    expect(screen.getByRole('button', { name: 'Try again' })).toBeTruthy()
+    expect(document.querySelectorAll('.skeleton')).toHaveLength(0)
+  })
+
+  /**
    * An admin gate or an expired session is not fixed by asking again, so a
    * polling screen stops asking. A person has to act first.
    */

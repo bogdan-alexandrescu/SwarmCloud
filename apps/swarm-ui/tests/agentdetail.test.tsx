@@ -526,6 +526,63 @@ test('a task that never ran does not print its wait as its run', () => {
   )
 })
 
+/** The head's facts strip: the `ctl-facts` list that carries the `age` fact. */
+function headFacts(markup: string): string {
+  const strip = markup.split('<ul class="ctl-facts">').slice(1).map((s) => s.split('</ul>')[0] ?? '')
+  const head = strip.find((s) => s.includes('<b>age</b>'))
+  assert.ok(head !== undefined, 'the head facts strip is gone; every assertion below would be vacuous')
+  return head
+}
+
+/**
+ * A PARKED RETRY. Submitted at 09:00; attempt 1 reached STARTING at 09:09 and
+ * later parked on quota. `started_at` survives the park -- nothing on the
+ * platform clears it -- and the task document records no time for the park.
+ *
+ * The first fix for this keyed the strip on `elapsed()`'s phase and printed
+ * the task's age under `wait`: `wait waiting 50m 0s` beside `age 50m ago`,
+ * fifty minutes of waiting for a task that ran for most of them. On the
+ * retry's lease it read `wait leased 1h 30m` for a lease taken seconds ago.
+ *
+ * BREAK IT: key the fact `wait` on `phase === 'waiting'` alone, and let
+ * `elapsed()` print `now - created_at` for a task that has a start.
+ */
+test('a task between attempts shows no wait and no figure the task document does not hold', () => {
+  for (const state of ['PARKED', 'READY', 'LEASED', 'DISPATCHED'] as const) {
+    const between: Task = {
+      ...TASK,
+      state,
+      started_at: '2026-09-22T09:09:00Z',
+      completed_at: null,
+      current_lease_id: state === 'LEASED' || state === 'DISPATCHED' ? 'lease_2' : null,
+      attempt_count: state === 'LEASED' || state === 'DISPATCHED' ? 2 : 1,
+    }
+    const markup = plain(surface(run({ task: between, attempts: [{ ...ATTEMPT, completed_at: null, exit_code: null }] })))
+    const facts = headFacts(markup)
+    assert.ok(!facts.includes('<b>wait</b>'), `${state}: a task that already ran is shown a wait`)
+    // The age is still on the strip, under the key that says it is one.
+    assert.ok(facts.includes('<b>age</b>'), `${state}: the age fact is gone`)
+    assert.ok(
+      !new RegExp(`${state.toLowerCase()} \\d`).test(facts),
+      `${state}: the strip prints the task's age after its state word, which reads as time in that state`,
+    )
+
+    const tile = tiles(markup).get('Elapsed')
+    assert.ok(tile, `${state}: the Elapsed tile is gone`)
+    assert.ok(!/^waiting\b/.test(tile.value), `${state}: the Elapsed tile calls the age a wait: "${tile.value}"`)
+    assert.ok(!/\d/.test(tile.value), `${state}: the Elapsed tile prints a figure: "${tile.value}"`)
+    // Why there is no figure is on the surface, not only in a `?`.
+    assert.ok(/earlier attempt ran/.test(tile.sub), `${state}: the tile does not say an attempt ran: "${tile.sub}"`)
+  }
+})
+
+test('an unstarted waiting task keeps its wait, because its whole age is one', () => {
+  // THE CONTROL, so the test above cannot pass by never printing `wait`.
+  const ready: Task = { ...TASK, state: 'READY', started_at: null, completed_at: null, current_lease_id: null }
+  const facts = headFacts(plain(surface(run({ task: ready, attempts: [] }))))
+  assert.ok(/<b>wait<\/b>waiting \d/.test(facts), `an unstarted READY task lost its wait: ${facts}`)
+})
+
 test('the error banner names the scheduler for a cascade cancel, not the agent', () => {
   // BREAK IT: fall back to `agent, at finish` for any text the prefixes do
   // not recognise -- the old rule. No agent existed to write this.
