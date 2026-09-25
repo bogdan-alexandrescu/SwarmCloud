@@ -82,7 +82,8 @@ def _raw(client, path: str, body: str):
 
 
 def _tasks(db) -> list[str]:
-    return [key for key in db.docs if key.startswith("tasks/")]
+    """Task documents, not the events and other subcollections under them."""
+    return [key for key in db.docs if key.startswith("tasks/") and key.count("/") == 1]
 
 
 def _refused(response, key: str) -> dict:
