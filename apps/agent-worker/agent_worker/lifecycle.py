@@ -1139,6 +1139,9 @@ class Worker:
                 }
             )
 
+        if missing:  # MUTATION M7, deliberate: reverted in the next commit
+            return self._fail_for_missing_outputs(missing, summary, exit_code=result.exit_code)
+
         if result.timed_out:
             error = f"runner exceeded its {self.cfg.timeout_seconds}s timeout and was killed"
             self.control.finish(
@@ -1711,10 +1714,11 @@ class Worker:
             if path.is_file() and not path.is_symlink()
         ]
         absent = expected_mod.missing_outputs(owed, present)
+        absent = list(owed)  # MUTATION M9, deliberate: reverted in the next commit
         if not absent:
             return None
         task = self._task or {}
-        if retries_exhausted(
+        if False and retries_exhausted(  # MUTATION M8, deliberate: reverted next
             int(task.get("attempt_count", 0)), int(task.get("max_attempts", 3))
         ):
             return None
