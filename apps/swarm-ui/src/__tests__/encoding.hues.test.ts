@@ -255,17 +255,23 @@ describe('a healthy or factual mark carries no state hue (CH-17)', () => {
 describe('the last healthy greens are neutral, like the chip and the dot (CP-14, CH-17 follow-up)', () => {
   // THE FOLLOW-UP SETTLED ON #85, 2026-09-25. Three healthy-state greens were
   // in neither decision's text and are the same ruling: the pool card's track
-  // fill, the provider card's ok edge, and Accounts' success box together with
-  // the legacy `.tag.ok`. A healthy state is a fact, not a verdict. A MARK takes
-  // the primitives' grey, `--text-faint` (CH-17); a WORD takes `--text-dim`,
-  // the grey `.tag.ok` has carried since CP-14 (§6.6: "their word or figure is
-  // in plain or `--text-dim` ink").
+  // fill, the provider card's ok edge, and Accounts' success box heading
+  // together with the legacy `.tag.ok`. A healthy state is a fact, not a
+  // verdict. The follow-up names the grey: "The primitives paint
+  // `--text-faint` per CH-17, which is later than #159's `--text-dim`." So the
+  // fill, the heading and the tag all take `--text-faint`, including the two
+  // that #159 had made `--text-dim` (the tag) or that this sweep first gave
+  // `--text-dim` (the heading).
   //
-  // `.tag.ok` was already `--text-dim` when this block was written, so its line
-  // here is a guard, not a red: it cannot have failed before the fix.
+  // THIS PINS THE FOLLOW-UP'S LETTER OVER CH-17'S WORD RULE. CH-17 lets a word
+  // be "plain or `--text-dim`" ink (§6.6); the follow-up is later and names
+  // these two words, so it governs them. The heading and the tag are
+  // separate `it`s so that each is shown red on its own: the heading would
+  // otherwise stop the block before the tag's line ran.
   //
   // MUTATION: `var(--ok)` back on the fill, the edge, the box's border, its
-  // tint, its heading or the tag; or the ok edge drawn as the unknown card's.
+  // tint, its heading or the tag; `--text-dim` back on the heading or the tag;
+  // or the ok edge drawn as the unknown card's.
   const hosts: HTMLElement[] = []
   afterEach(() => {
     for (const h of hosts.splice(0)) h.remove()
@@ -292,21 +298,29 @@ describe('the last healthy greens are neutral, like the chip and the dot (CP-14,
       }
     })
 
-    it(`draws the fill in the primitives' grey and the words in the tag's, in the ${theme} theme`, () => {
+    const isGrey = (value: string | null, token: string, what: string) => {
+      expect(value, `${what} declares nothing`).not.toBeNull()
+      const got = resolveColour(value!, theme)
+      const want = resolveColour(`var(${token})`, theme)
+      expect(
+        Math.max(Math.abs(got.r - want.r), Math.abs(got.g - want.g), Math.abs(got.b - want.b)),
+        `${what} is ${value}, not ${token}`,
+      ).toBeLessThan(1)
+    }
+
+    it(`draws the pool card's healthy fill in the primitives' grey, --text-faint, in the ${theme} theme`, () => {
       const env = { width: 1440, theme }
-      const grey = (token: string) => resolveColour(`var(${token})`, theme)
-      const is = (value: string | null, token: string, what: string) => {
-        expect(value, `${what} declares nothing`).not.toBeNull()
-        const got = resolveColour(value!, theme)
-        const want = grey(token)
-        expect(
-          Math.max(Math.abs(got.r - want.r), Math.abs(got.g - want.g), Math.abs(got.b - want.b)),
-          `${what} is ${value}, not ${token}`,
-        ).toBeLessThan(1)
-      }
-      is(painted(build('.pool .ctl-track > i', hosts), ['background', 'background-color'], env), '--text-faint', 'the fill')
-      is(painted(build('.state.acct-ok > h3', hosts), 'color', env), '--text-dim', "the success box's heading")
-      is(painted(build('.tag.ok', hosts), 'color', env), '--text-dim', 'the ok tag')
+      isGrey(painted(build('.pool .ctl-track > i', hosts), ['background', 'background-color'], env), '--text-faint', 'the fill')
+    })
+
+    it(`draws the success box's heading in the follow-up's grey, --text-faint, in the ${theme} theme`, () => {
+      const env = { width: 1440, theme }
+      isGrey(painted(build('.state.acct-ok > h3', hosts), 'color', env), '--text-faint', "the success box's heading")
+    })
+
+    it(`draws the legacy ok tag in the follow-up's grey, --text-faint, in the ${theme} theme`, () => {
+      const env = { width: 1440, theme }
+      isGrey(painted(build('.tag.ok', hosts), 'color', env), '--text-faint', 'the ok tag')
     })
 
     it(`draws a healthy provider card's edge unlike an unknown one's, in the ${theme} theme`, () => {
