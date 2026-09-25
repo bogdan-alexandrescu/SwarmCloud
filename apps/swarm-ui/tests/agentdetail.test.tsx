@@ -712,13 +712,25 @@ test('one attempt has one name on its card and over its events', () => {
 // ---------------------------------------------------------------------------
 
 test('the drawer re-reads an unfinished run, and stops once it is finished', () => {
-  // BREAK IT: return DRAWER_POLL_MS for a finished task, or drop `pollMs`
-  // from AgentDetailScreen. A finished run's documents are final; an
-  // unfinished one's liveness is only as fresh as its last read.
-  assert.equal(drawerPoll(run({ task: RUNNING_TASK, attempts: [RUNNING_ATTEMPT] })), DRAWER_POLL_MS)
-  assert.equal(drawerPoll(run({ task: { ...RUNNING_TASK, state: 'PARKED' } })), DRAWER_POLL_MS)
+  // BREAK IT: return DRAWER_POLL_MS for a finished task. A finished run's
+  // documents are final once its finish is whole; an unfinished one's
+  // liveness is only as fresh as its last read.
+  //
+  // WHAT THIS DOES NOT COVER, said so nobody reads it as more: it calls
+  // `drawerPoll` and checks its answers. Whether AgentDetailScreen hands it to
+  // `Screen` at all -- the `pollMs={drawerPoll}` line -- is asserted by
+  // rendering the screen under fake timers, in
+  // src/__tests__/drawer.reread.test.tsx; dropping that line passes this test.
+  // So is the half-written finish (a terminal state whose attempt end and
+  // terminal event are not in yet), which keeps the drawer polling.
+  //
+  // `now` is an hour after TASK's `completed_at`, well past DRAWER_SETTLE_MS,
+  // so a finish with no terminal event on this page is not waited for.
+  const later = Date.parse('2026-09-22T10:40:00Z')
+  assert.equal(drawerPoll(run({ task: RUNNING_TASK, attempts: [RUNNING_ATTEMPT] }), later), DRAWER_POLL_MS)
+  assert.equal(drawerPoll(run({ task: { ...RUNNING_TASK, state: 'PARKED' } }), later), DRAWER_POLL_MS)
   for (const state of ['SUCCEEDED', 'FAILED', 'CANCELLED'] as const) {
-    assert.equal(drawerPoll(run({ task: { ...TASK, state } })), null, `a ${state} run is still polled`)
+    assert.equal(drawerPoll(run({ task: { ...TASK, state } }), later), null, `a ${state} run is still polled`)
   }
   // Before the first read there is nothing to say it is finished.
   assert.equal(drawerPoll(null), DRAWER_POLL_MS)

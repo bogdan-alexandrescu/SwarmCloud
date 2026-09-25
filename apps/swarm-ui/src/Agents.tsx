@@ -7,11 +7,12 @@ import { useEffect, useMemo, useState, type Dispatch, type SetStateAction } from
 // status chips in this product and asked for one, and the rebuilt `.ctl-chip`
 // is only a rebuild if the screens stop hand-rolling their own.
 import { Chip, Em, Mark, type ChipTone } from './AgentDetail'
-import { loadTasks } from './api'
+import { TASK_PAGE_LIMIT, loadTasks } from './api'
 import { DispatchChip } from './Dispatch'
-import { HelpCard } from './HelpCard'
+import type { Result } from './fetch'
+import { HelpCard, phoneWidth } from './HelpCard'
 import { Id, Screen } from './Shell'
-import { useNow } from './useNow'
+import { rowClock, useNow } from './useNow'
 import {
   CONCURRENCY_STATES,
   RESOURCE_UNITS,
@@ -107,15 +108,50 @@ function shortTaskId(id: string): string {
  *
  * THE COST IS THE PAYLOAD, NOT THE QUERY. Every row carries `input`,
  * `metadata` and `result_summary`, so a 200-row page is 2-4 MB (§2.5), and at
- * 5s that is roughly 600 KB/s to a phone. Only the Live tab earns the fast
- * cadence, and only while it has rows; the `view=summary` parameter §8/P2
- * proposes is what would make it cheap.
+ * 5s that is roughly 600 KB/s. Only the Live tab earns the fast cadence, and
+ * only while it has rows; the `view=summary` parameter §8/P2 proposes is what
+ * would make it cheap. Until it exists, a phone reads `PHONE_PAGE_LIMIT` rows
+ * rather than 200 -- see below.
  */
 export const LIVE_POLL_MS = 5_000
 export const IDLE_POLL_MS = 30_000
 
 export function pollInterval(page: TaskPage | null): number {
   return page !== null && page.tasks.some((t) => tabOf(t) === 'live') ? LIVE_POLL_MS : IDLE_POLL_MS
+}
+
+/**
+ * THE PHONE PAGE: 50 rows, not 200 (docs/web-ui/03-agents-and-workflows.md
+ * §2.1 and §2.5).
+ *
+ * §2.5 states the condition this screen's 5s poll ships under: "Until
+ * [view=summary] exists, the phone build must cap at limit=50 and say 'showing
+ * the 50 most recent' rather than ship a 4 MB poll." `view=summary` does not
+ * exist (routes/tasks.py and codec.py take no such parameter), and the list
+ * polled the full 200-row page on every viewport -- 2-4 MB every 5s over
+ * cellular, for as long as Live held a row and the tab was visible.
+ *
+ * "PHONE" IS `phoneWidth()` from HelpCard.tsx: 560px and under, the width at
+ * which this list already draws as cards and a `?` takes a fingertip. §2.1
+ * writes 640px for the card layout; the stylesheet has drawn the phone list at
+ * 560px since before this, and one definition of phone keeps the two from
+ * disagreeing about which layout a width gets. It is decided at each READ,
+ * not once, so a rotated device takes the right page on its next poll.
+ */
+export const PHONE_PAGE_LIMIT = 50
+
+/** A page of the list, and the page size that read asked for. */
+interface AgentsPage extends TaskPage {
+  /** The `limit` the read asked for: `PHONE_PAGE_LIMIT` at phone width. */
+  asked: number
+}
+
+async function loadAgentsPage(): Promise<Result<AgentsPage>> {
+  const asked = phoneWidth() ? PHONE_PAGE_LIMIT : TASK_PAGE_LIMIT
+  const read = await loadTasks(asked)
+  return read.status === 'ok' || read.status === 'stale'
+    ? { ...read, data: { ...read.data, asked } }
+    : read
 }
 
 /**
@@ -143,7 +179,7 @@ export function AgentsScreen({
   return (
     <Screen
       title="Agents"
-      load={loadTasks}
+      load={loadAgentsPage}
       // THE LIST RE-READS (AG-1). It read once and never again, while its
       // clock went on adding to every row: a finished agent read `running`
       // and was counted in Live. `Screen` owns the timer, the pause while the
@@ -201,19 +237,11 @@ export function AgentsScreen({
 }
 
 /**
- * The instant the row durations are computed at: the clock, until the rows
- * are more than one poll interval old, and then no further (AG-1).
- *
- * The rows are a READ, and a read has an age. A ticking clock over rows
- * nobody has re-read kept adding to `run 4m` after the agent had finished --
- * the page said running, the clock said still going, and the platform had
- * moved on. Past one interval a fresh read was due and has not arrived, so the
- * figures stop where the read can still vouch for them; the age of the read
- * is the Screen's to show. `readAt` null (not yet known) keeps the clock.
+ * The instant the row durations are computed at (AG-1). It lives in useNow.ts
+ * now, beside the clock it caps, because the inspector's drawer caps its clock
+ * the same way; re-exported so this screen's tests keep reading it from here.
  */
-export function rowClock(now: number, readAt: number | null, interval: number): number {
-  return readAt === null ? now : Math.min(now, readAt + interval)
-}
+export { rowClock }
 
 function AgentsBody({
   onOpen,
@@ -230,7 +258,7 @@ function AgentsBody({
 }: {
   onOpen: (taskId: string) => void
   openTaskId: string | null
-  page: TaskPage
+  page: AgentsPage
   readAt: number | null
   /** The cadence the rows are re-read at: how far past `readAt` they are good for. */
   interval: number
@@ -290,9 +318,17 @@ function AgentsBody({
   // its accessible name. A count that looks server-side but is not is the same
   // lie as an error rendered as an empty list, so the qualifier is never
   // conditional on there being a next page -- only its second half is.
-  const scopeSay = page.next_page_token
-    ? `Every count and filter on this screen runs over the ${page.tasks.length} rows loaded into this page, not over the platform. More rows exist beyond it.`
-    : `Every count and filter on this screen runs over the ${page.tasks.length} rows loaded into this page, not over the platform.`
+  //
+  // A PHONE PAGE THAT STOPPED SHORT SAYS SO IN §2.5's WORDS. At phone width
+  // the read asks for `PHONE_PAGE_LIMIT` rows, and when more exist the list is
+  // the most recent ones -- `showing the 50 most recent` -- not a page that
+  // merely happens to end early.
+  const phonePage = page.asked < TASK_PAGE_LIMIT && Boolean(page.next_page_token)
+  const scopeSay = phonePage
+    ? `Every count and filter on this screen runs over the ${page.tasks.length} most recent agents, not over the platform. At this width the list reads ${PHONE_PAGE_LIMIT} rows rather than ${TASK_PAGE_LIMIT}, because every row carries its input and its output and the list re-reads every few seconds. More rows exist beyond it.`
+    : page.next_page_token
+      ? `Every count and filter on this screen runs over the ${page.tasks.length} rows loaded into this page, not over the platform. More rows exist beyond it.`
+      : `Every count and filter on this screen runs over the ${page.tasks.length} rows loaded into this page, not over the platform.`
 
   return (
     <>
@@ -335,7 +371,9 @@ function AgentsBody({
         )}
 
         <span className="is-end ag-scope" aria-label={scopeSay}>
-          {page.tasks.length} loaded{page.next_page_token ? ' · more beyond' : ''}
+          {phonePage
+            ? `showing the ${page.tasks.length} most recent`
+            : `${page.tasks.length} loaded${page.next_page_token ? ' · more beyond' : ''}`}
         </span>
       </div>
 

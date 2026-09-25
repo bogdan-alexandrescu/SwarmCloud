@@ -15,10 +15,10 @@ import { HelpCard } from './HelpCard'
 import { LivenessBadge } from './Liveness'
 import { Absent, Mark, Metric, UtilRow, type MarkKind } from './primitives'
 import { RunFiles } from './RunFiles'
-import { Screen, timeAgo } from './Shell'
+import { Screen, timeAgo, type ScreenReading } from './Shell'
 import { StagedInputs } from './StagedInputs'
 import { StopRun } from './StopRun'
-import { useNow } from './useNow'
+import { rowClock, useNow } from './useNow'
 import {
   CONCURRENCY_STATES,
   GIB,
@@ -117,8 +117,8 @@ export function AgentDetailScreen({ taskId, onClose }: { taskId: string; onClose
         // THE DRAWER RE-READS (AG-2). It read once, so a ticking clock over it
         // could only slide `live 36s ago` into `silent` against events that
         // were merely old -- the clock alone makes a live agent look dead.
-        // `drawerPoll` stops once the task is finished: nothing it draws
-        // changes after that.
+        // `drawerPoll` stops once a finished task's last writes are in:
+        // nothing it draws changes after that.
         pollMs={drawerPoll}
         summary={(r) => (
           <>
@@ -129,7 +129,10 @@ export function AgentDetailScreen({ taskId, onClose }: { taskId: string; onClose
           </>
         )}
       >
-        {(r) => <Run run={r} reload={reload} />}
+        {/* THE READING GOES DOWN WITH THE RUN. `Run` caps its clock at one
+            poll past it, and the checkpoint and log panels re-read when it
+            moves, so every part of the drawer is as of the same read. */}
+        {(r, reading) => <Run run={r} reload={reload} reading={reading} />}
       </Screen>
     </div>
   )
@@ -140,16 +143,66 @@ export function AgentDetailScreen({ taskId, onClose }: { taskId: string; onClose
  *
  * 10s, not the Agents list's 5s: one read here is FOUR requests -- the task,
  * its events, its attempts and the resource-class catalogue (`loadAgentRun`)
- * -- so 10s is the same 0.4 rps against the 20 rps per-principal budget that
- * the list's single request spends at 2.5s, and a heartbeat lands only every
- * ~150s anyway. A finished task stops: its documents are final, and polling
- * them is spend with nothing to learn.
+ * -- and a successful one is followed by two more, the checkpoint listing and
+ * the log window (RunFiles.tsx), which re-read with it. Six requests per 10s
+ * is 0.6 rps against the 20 rps per-principal budget, and a heartbeat lands
+ * only every ~150s anyway. A finished task stops once its last writes are in
+ * (`drawerPoll`): its documents are final after that, and polling them is
+ * spend with nothing to learn.
  */
 export const DRAWER_POLL_MS = 10_000
 
-export function drawerPoll(r: AgentRun | null): number | null {
-  if (r !== null && TERMINAL_STATES.has(r.task.state)) return null
-  return DRAWER_POLL_MS
+/**
+ * HOW LONG A FINISH MAY TAKE TO BECOME WHOLE, measured from the task's
+ * `completed_at`, before the drawer stops waiting for it.
+ *
+ * `finish()` (agent_worker/control.py) writes a terminal task in three steps:
+ * the state and `completed_at` (`transition`), then the attempt's end
+ * (`record_attempt_end`), then the terminal event (`emit`). They land within
+ * moments of each other, and `loadAgentRun` reads the task, the events and
+ * the attempts in parallel, so a poll can land between them. Some finishes are
+ * never whole: a cancel of a PARKED task leaves its attempt with no end, and a
+ * run with more events than one page never shows its terminal event. 30s is
+ * three more reads for the first kind to complete, and a bound on the second.
+ * A chosen value, not a measured one: nothing publishes how long `finish()`
+ * takes, and the three writes are one round trip apart.
+ */
+export const DRAWER_SETTLE_MS = 30_000
+
+/**
+ * Whether a terminal run's last writes are all on this read: the attempt's end
+ * (when there is an attempt) and the terminal event. A failed attempt or event
+ * read is not settled -- another read may succeed.
+ */
+function finishSettled(r: AgentRun): boolean {
+  if (r.events === null || !r.events.some(isTerminalEvent)) return false
+  if (r.attempts === null) return false
+  const latest = [...r.attempts].sort((x, y) => x.created_at.localeCompare(y.created_at)).at(-1)
+  return latest === undefined || latest.completed_at !== null
+}
+
+/**
+ * THE DRAWER STOPS ON A SETTLED READ, NOT ON THE FIRST TERMINAL ONE.
+ *
+ * It stopped on the first read that showed a terminal state. A read that
+ * landed between `finish()`'s writes stopped it on SUCCEEDED with the attempt
+ * still open and no terminal event, and nothing corrected it: the attempt chip
+ * said `ended, no end recorded`, the run length said no finish time was ever
+ * written, and the Timeline marked the terminal event missing -- all false a
+ * moment later, and on screen for as long as the drawer stayed open. Watching a
+ * task finish is the flow AG-2 exists for.
+ *
+ * So a terminal run is re-read until its finish is whole, or until its
+ * `completed_at` is `DRAWER_SETTLE_MS` old. The age is taken either way round
+ * (`Math.abs`): `completed_at` is the server's clock and `now` is this
+ * browser's, and a browser running behind must not keep an old finish
+ * polling until its own clock catches up.
+ */
+export function drawerPoll(r: AgentRun | null, now: number = Date.now()): number | null {
+  if (r === null || !TERMINAL_STATES.has(r.task.state)) return DRAWER_POLL_MS
+  if (finishSettled(r)) return null
+  const done = r.task.completed_at === null ? Number.NaN : Date.parse(r.task.completed_at)
+  return Number.isFinite(done) && Math.abs(now - done) <= DRAWER_SETTLE_MS ? DRAWER_POLL_MS : null
 }
 
 /**
@@ -169,13 +222,42 @@ export function drawerPoll(r: AgentRun | null): number | null {
  * fabricate a callback in order to assert on STATIC markup is asserting on its
  * own scaffolding. Absent, the stop control simply has nothing to call.
  */
-export function Run({ run, reload }: { run: AgentRun; reload?: () => void }) {
+export function Run({
+  run,
+  reload,
+  reading,
+}: {
+  run: AgentRun
+  reload?: () => void
+  /**
+   * When this run was read and how often the drawer re-reads it, from
+   * `Screen`. OPTIONAL for the reason `reload` is: the acceptance test renders
+   * this body with no `Screen` around it, where there is no read to age and
+   * nothing re-reads, so the clock runs uncapped and the panels read once.
+   */
+  reading?: ScreenReading
+}) {
   const { task, events } = run
   // THE SHARED CLOCK (AG-2). This was `Date.now()` taken once at render, so
   // `run`, `Elapsed` and the liveness badge's `live 36s ago` never moved. One
   // 1s clock -- the one the Agents list's elapsed column reads -- re-renders
   // the drawer, and LivenessBadge ages against the same instant.
-  const now = useNow(1000)
+  //
+  // AND IT STOPS WHERE THE READ STOPS VOUCHING FOR IT, as the Agents list's
+  // rows do (`rowClock`). When a re-read fails, `Screen` keeps the last good
+  // run on screen, dimmed, and backs off for up to five minutes -- and the
+  // clock went on aging that read: a worker read at `live 20s ago` became
+  // `silent 7m ago`, "the worker may be gone", when only the reads had failed.
+  // `livenessOf` answers `unknown` for an event read that failed precisely to
+  // keep "could not look" apart from "nothing happened"; a stale read is the
+  // same thing, so the figures stop one poll past it. A FINISHED task is not
+  // capped: every age it shows is measured from an instant that will not move,
+  // so `finished 3m ago` is as true an hour later as the clock says.
+  const clock = useNow(1000)
+  const now =
+    reading === undefined || TERMINAL_STATES.has(task.state)
+      ? clock
+      : rowClock(clock, reading.fetchedAt, reading.pollMs ?? DRAWER_POLL_MS)
 
   return (
     /* ONE SUBJECT, SO ONE STACK — AND THE ORDER IS THE OPERATOR'S, NOT THE
@@ -213,7 +295,7 @@ export function Run({ run, reload }: { run: AgentRun; reload?: () => void }) {
           either. See RunFiles.tsx. The attempt records go with it: they are
           what can say a checkpoint was written that the listing no longer
           finds, which is not a real zero. */}
-      <RunFiles task={task} attempts={run.attempts} />
+      <RunFiles task={task} attempts={run.attempts} readAt={reading?.fetchedAt ?? null} />
       <Input run={run} />
       <Timeline task={task} events={events} detail={run.eventsDetail} attempts={run.attempts} />
     </div>
