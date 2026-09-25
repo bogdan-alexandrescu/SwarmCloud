@@ -51,6 +51,7 @@ import { fireEvent, render, waitFor } from '@testing-library/react'
 
 import type { Result } from '../fetch'
 import type { CheckpointRecord, CheckpointsPage, LogStream, Task, TaskLogs } from '../types'
+import { painted } from './marks'
 import { attempt, task } from './runfixture'
 
 const api = vi.hoisted(() => ({
@@ -645,5 +646,61 @@ describe('the log panel is one table of streams', () => {
     const age = cell(rowFor(s, 'stdout'), 'Age')
     expect(age.querySelector('.ctl-em')).not.toBeNull()
     expect(age.querySelector('.ctl-mark.is-absent'), 'an unknown age is drawn as a bare dash').not.toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// CH-13's long value, in the stream's row header (#87 follow-up, 2026-09-25)
+// ---------------------------------------------------------------------------
+
+describe("the log stream's gs:// uri is one line, whole in its title and in its copy (CH-13)", () => {
+  // AG-23 moved the stream's uri into the table's row header, under the
+  // stream's name. §7.3's long-value rule was written for a uri in a stacked
+  // CELL (`td[data-label] > .uri`), so it never reached this one: in the
+  // inspector, where every table stacks, the uri broke over several lines, and
+  // it carried no title and nothing to copy it with. It takes the treatment
+  // every other stacked uri has -- one line, ellipsized, whole in its `title`
+  // and in the `copy gsutil` action beside it (the AH-11 precedent: cut on
+  // screen, whole on hover and in the copy). A cut uri is a different uri.
+  //
+  // MUTATION: drop the title; drop the copy action, or have it copy something
+  // other than this stream's uri; or take the row header's `.uri` out of the
+  // stacked block's rule, in either copy of it (the page's and the
+  // inspector's).
+  const URI = 'gs://swarm-logs/tenants/acme/tasks/tsk_files/logs/att_1.stdout'
+
+  it('keeps the whole uri in its title, with the copy action beside it, which copies that uri', async () => {
+    const writeText = vi.fn(async (_: string) => {})
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
+    try {
+      const s = await panel('Output, as the agent wrote it', { logs: ok(logs([stream('stdout')])) })
+      const head = rowFor(s, 'stdout').querySelector('th')!
+      const uri = head.querySelector<HTMLElement>('.uri')
+      expect(uri?.textContent, 'the row header draws no uri').toBe(URI)
+      expect(uri!.getAttribute('title'), 'the cut uri is not whole in its title').toBe(URI)
+      const copy = head.querySelector<HTMLButtonElement>('button.copy')
+      expect(copy, 'no copy action beside the uri').not.toBeNull()
+      // The one copy vocabulary the inspector has: a log is read with `cat`,
+      // as the attempt's log-location facts already copy it.
+      expect(copy!.textContent).toBe('copy gsutil')
+      fireEvent.click(copy!)
+      expect(writeText).toHaveBeenCalledWith(`gsutil cat ${URI}`)
+    } finally {
+      delete (navigator as unknown as { clipboard?: unknown }).clipboard
+    }
+  })
+
+  it('cuts it to one line below 900px and in the inspector, rather than breaking it', async () => {
+    const s = await panel('Output, as the agent wrote it', { logs: ok(logs([stream('stdout')])) })
+    const uri = rowFor(s, 'stdout').querySelector<HTMLElement>('th .uri')
+    expect(uri, 'the row header draws no uri').not.toBeNull()
+    // 390: the page's stacked block. 1440 with a 480px inspector: its
+    // container-query mirror, which is where this table is actually drawn.
+    for (const env of [{ width: 390 }, { width: 1440, container: 480 }]) {
+      const at = JSON.stringify(env)
+      expect(painted(uri!, 'white-space', env), at).toBe('nowrap')
+      expect(painted(uri!, ['overflow', 'overflow-x'], env), at).toBe('hidden')
+      expect(painted(uri!, 'text-overflow', env), at).toBe('ellipsis')
+    }
   })
 })

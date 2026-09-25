@@ -1086,8 +1086,14 @@ body {
    the track rather than the banner is the smaller change and leaves `.bar`
    meaning one thing.
    The fill tones live with the one track primitive; only the colour override
-   the pool card needs is here. */
-.pool .ctl-track > i { background: var(--ok); }
+   the pool card needs is here.
+   A HEALTHY FILL IS GREY (CP-14 / CH-17 follow-up, #85, 2026-09-25). It was
+   `--ok`: a pool that is fine painted as a verdict. It takes the primitives'
+   ok grey, `--text-faint`, like the chip's and the dot's mark; `.warn` and
+   `.bad` below keep their hue. No screen renders `.pool` today -- Pools draws
+   `.cap-pool` with the shared `UtilTrack` -- so this changes no pixel now; it
+   stops the rule teaching the old verdict to whoever renders it next. */
+.pool .ctl-track > i { background: var(--text-faint); }
 .pool .ctl-track > i.warn { background: var(--warn); }
 .pool .ctl-track > i.bad  { background: var(--bad); }
 
@@ -2743,9 +2749,17 @@ table.pools .pool-name .raw {
   font-weight: 400;
 }
 table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--text-faint); }
-/* Healthy carries no hue (CP-14): the legacy tag's ok word is `--text-dim`.
-   CH-17 later drew the chip's and the dot's ok mark in `--text-faint`, and
-   left this tag to CP-14; both are text greys, neither is `--ok`. */
+/* Healthy carries no hue (CP-14). #159 made the legacy tag's ok word
+   `--text-dim`; the CP-14 / CH-17 follow-up settled on #85 (2026-09-25) puts
+   it in `--text-faint`, the primitives' ok grey, because CH-17's
+   `--text-faint` is "later than #159's `--text-dim`". The follow-up names this
+   tag, so it governs it over CH-17's "plain or `--text-dim`" rule for a word.
+   THE COST: `.tag.unknown` is `--text-faint` too, and a tag has no silhouette,
+   so an ok tag and an unknown one are now the same grey box and only the word
+   tells them apart -- on Dispatch, `dispatch?` beside a strategy and role.
+   Before, the two were `--text-dim` against `--text-faint`, #59636e against
+   #606a77 in the light theme, so the word was already doing nearly all of
+   it. `encoding.hues.test.ts` pins the grey. */
 .tag.ok { color: var(--text-dim); }
 
 .legend dl { margin: 0; }
@@ -3823,7 +3837,13 @@ dl.kv dt.needs-human { color: var(--warn); font-weight: 600; }
 .q-chip.unknown { background: var(--surface-2); color: var(--text-faint); }
 
 .pool.prov .prov-meta { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-faint); margin-bottom: 8px; }
-.pool.prov.ok      { border-left: 3px solid var(--ok); }
+/* AN OK PROVIDER CARD DRAWS NO EDGE RULE (CP-14 / CH-17 follow-up, #85,
+   2026-09-25). It was a 3px `--ok` rule. Neutral cannot mean a grey 3px rule:
+   that is `.pool.prov.unknown`'s own rule below, and a provider nobody has
+   read would then look like one that is fine. §6.7 draws a form only where a
+   row is abnormal, and the dock's `.source.ok` lost its rule for the same
+   reason (CH-17), so the ok card keeps the card's plain 1px edge.
+   `encoding.hues.test.ts` holds the two silhouettes apart. */
 .pool.prov.wait    { border-left: 3px solid var(--warn); }
 .pool.prov.bad     { border-left: 3px solid var(--bad); }
 .pool.prov.unknown { border-left: 3px solid var(--text-faint); }
@@ -4369,14 +4389,23 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
 }
 #acct-label, #acct-lend { display: block; margin-bottom: 2px; }
 
-/* A write that SUCCEEDED. Green, because "nothing to do" and "exchanged" are
-   both good answers and neither may be painted as a failure. */
+/* A write that SUCCEEDED. It was green -- a tinted edge, a tinted fill and an
+   `--ok` heading -- on the argument that "nothing to do" and "exchanged" are
+   both good answers and neither may be painted as a failure. That still
+   holds, and grey is how it holds now (CP-14 / CH-17 follow-up, #85,
+   2026-09-25): a healthy state is a fact, not a verdict, so the box is the
+   plain `.state` box and the heading takes `--text-faint`, the grey the
+   follow-up names ("The primitives paint `--text-faint` per CH-17, which is
+   later than #159's `--text-dim`") and the one `.tag.ok` gives the ok word.
+   The failure beside it (`.state.failed`, `--bad`) and the partial answer
+   (`.state.partial`, `--warn`) keep their hue, so none of the three is alike.
+   THE COST: the heading is now one step fainter than the box's own
+   paragraph (`.state p`, `--text-dim`), so the answer's first line is not
+   its strongest; the heading's weight (600) and size are what still lead. */
 .state.acct-ok {
-  border-color: color-mix(in srgb, var(--ok) 45%, var(--line));
-  background: color-mix(in srgb, var(--ok) 6%, var(--surface));
   margin-top: 4px;
 }
-.state.acct-ok h3 { color: var(--ok); }
+.state.acct-ok h3 { color: var(--text-dim); }
 
 /* ---- the instructions, which are part of the product ---- */
 .acct-instructions h3 {
@@ -9669,13 +9698,18 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
      for a value nobody reads, only copies. It holds one line now and ends in
      an ellipsis; the whole value is in its `title` and in the copy action the
      markup puts beside every one (`copy gsutil`), which is the AH-11
-     precedent: cut on screen, whole on hover and in the copy. */
+     precedent: cut on screen, whole on hover and in the copy.
+     THE ROW HEADER'S URI TOO (CH-13 follow-up, #87, 2026-09-25). AG-23 put
+     the log stream's uri under the stream's name, in the `th`, where the
+     `td[data-label]` selector never reached it; it takes the same rule, with
+     its title and its copy action beside it in `RunFiles.tsx`. */
   .is-stacked > table > tbody > tr > td.mono[data-label],
   .is-stacked > table > tbody > tr > td[data-label] > .mono {
     min-width: 0;
     overflow-wrap: anywhere;
   }
-  .is-stacked > table > tbody > tr > td[data-label] > .uri {
+  .is-stacked > table > tbody > tr > td[data-label] > .uri,
+  .is-stacked > table > tbody > tr > th[scope='row'] > .uri {
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -9811,7 +9845,8 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
     min-width: 0;
     overflow-wrap: anywhere;
   }
-  .is-stacked > table > tbody > tr > td[data-label] > .uri {
+  .is-stacked > table > tbody > tr > td[data-label] > .uri,
+  .is-stacked > table > tbody > tr > th[scope='row'] > .uri {
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;

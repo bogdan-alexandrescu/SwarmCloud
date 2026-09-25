@@ -30,6 +30,7 @@ import { useState } from 'react'
 import type { Result } from '../fetch'
 import type { StepUsage, WorkflowBoard, WorkflowUsage } from '../api'
 import type { AttemptRow, Task, TaskState, Workflow, WorkflowStep } from '../types'
+import { elapsed } from '../types'
 import { cascade } from './cssgate'
 import { colour, resolveSheet, resolveVars, tokenTables, type RGBA } from './spaceprobe'
 
@@ -648,13 +649,35 @@ describe('a step waiting for its next attempt', () => {
     // nothing -- the same misreading the timeline refuses.
     const retry = task('t_retry', 'LEASED', { started_at: iso(-450), attempt_count: 2 })
     const d = stepDuration({ kind: 'state', state: 'LEASED', task: retry }, T0)
-    expect(d.kind).toBe('queued')
-    expect(d.text).toBe('waiting 10m 0s')
     expect(d.text).not.toMatch(/running/)
     // A step that really is running still says so.
     const live = task('t_live', 'RUNNING', { started_at: iso(-60) })
     expect(stepDuration({ kind: 'state', state: 'RUNNING', task: live }, T0).text).toBe('running 1m 0s')
   })
+
+  // RE-POINTED (#145's rule for `elapsed()`, the 2026-09-25 consistency sweep).
+  // This asserted `waiting 10m 0s`: the step's age from submission, under the
+  // word for a wait. But the age includes the earlier attempt's run -- here 7m
+  // 30s of the 10m -- and the task document records no time for the state the
+  // step is in now, so there is no figure to give. `elapsed()` settled this for
+  // the Agents list: between attempts the text is the state word, no figure,
+  // not ticking. The node says what the list says about the same task.
+  //
+  // MUTATION: time the step from `created_at` again (under `waiting` or its
+  // state word), or give the arm a `seconds` a renderer could print.
+  it.each(['READY', 'LEASED', 'DISPATCHED'] as const)(
+    'gives a %s step between attempts no figure, in the words elapsed() uses for the same task',
+    (state) => {
+      const retry = task('t_retry', state, { created_at: iso(-600), started_at: iso(-450), attempt_count: 2 })
+      const d = stepDuration({ kind: 'state', state, task: retry }, T0)
+      expect(d.text, 'the age, which includes the earlier run, presented as a wait').not.toMatch(/^waiting\b/)
+      expect(d.text, 'a figure for a span the task document does not hold').not.toMatch(/\d/)
+      expect('seconds' in d, 'the arm carries a number a renderer could print').toBe(false)
+      const listed = elapsed(retry, T0)
+      expect(listed.phase).toBe('waiting')
+      expect(d.text, 'the node and the Agents list word the same task differently').toBe(listed.text)
+    },
+  )
 })
 
 // ---------------------------------------------------------------------------

@@ -894,7 +894,10 @@ instead of two: lift `ok`, darken `bad`, pull `paused` toward blue-grey.
 > the filled dot — is unchanged. Hue on a state mark is left to warn, bad, paused
 > and live. CP-14 chose `--text-dim`; CH-17, decided after it, draws the chip
 > and dot primitives' ok disc in `--text-faint`, and the later ruling sets that
-> grey (`.tag.ok`, which CH-17 leaves to CP-14, stays `--text-dim`). The cost is
+> grey. `.tag.ok`, which CH-17 leaves to CP-14, stayed `--text-dim` until the
+> 2026-09-25 follow-up on #85 ("The primitives paint `--text-faint` per CH-17,
+> which is later than #159's `--text-dim`") moved it, with Accounts' success
+> heading, to `--text-faint` too (design-system.md §15.7). The cost is
 > recorded in design-system.md §6.6 as well as here: in greyscale an ok mark is
 > told from bad and warn by its silhouette alone, because `--text-faint` is
 > 1.01:1 from `--bad` in the dark theme and 1.45:1 from `--warn` in the light

@@ -2247,7 +2247,9 @@ export function edgePath(e: DagEdge): string {
  *  - `none`    -- there is no duration at all. A step with no task has not
  *                 started; a step whose task was not in the read has timings
  *                 nobody looked at. NEITHER IS `0s`. This arm has no `seconds`
- *                 field, so a renderer cannot print a number for it.
+ *                 field, so a renderer cannot print a number for it. A step
+ *                 BETWEEN ATTEMPTS is here too, as its state word: its age
+ *                 includes the earlier run, so it has no figure (`elapsed()`).
  *  - `queued`  -- it is waiting. Time spent waiting is not time spent working.
  *  - `parked`  -- it waited, stopped, and holds nothing. Also not work.
  *  - `running` -- elapsed so far. Real, and NOT a final duration.
@@ -2367,7 +2369,7 @@ export function stepDuration(state: StepState, now: number): StepDuration {
   // attempt is reclaimed, so a task that is queued, ready, leased or dispatched
   // for its SECOND attempt still carries the first one's start -- and this line
   // said `running 7m` about a step holding no capacity at all. The timeline and
-  // the table draw that span as waiting, and so does this.
+  // the table do not draw that span as a run, and neither does this (below).
   if (Number.isFinite(started) && (task.state === 'STARTING' || task.state === 'RUNNING')) {
     return {
       kind: 'running',
@@ -2377,16 +2379,21 @@ export function stepDuration(state: StepState, now: number): StepDuration {
     }
   }
 
+  // BETWEEN ATTEMPTS THERE IS NO FIGURE (#145's rule for `elapsed()`, applied
+  // here in the 2026-09-25 consistency sweep). This printed `waiting <age>`
+  // from submission, under the word for a wait -- but the age includes the
+  // earlier attempt's run, and nothing on the task document records when the
+  // state it is in now began (a park, a promote and a lease write no time of
+  // their own). Ten minutes of "waiting" for a step that ran for seven of them
+  // is the same misreading `running 7m` was, the other way round. So the text
+  // is the state word, exactly as `elapsed()` prints it for the same task in
+  // the Agents list, and the arm is `none`: it carries no `seconds`, so no
+  // renderer can put a number on it and nothing ticks.
   if (Number.isFinite(started) && Number.isFinite(created)) {
-    // `waiting`, not `queued`: the span runs from submission and includes the
-    // earlier attempt, so "queued" -- which says nothing has started -- would
-    // be false. 16 characters at most (`waiting 365d 23h`), the same bound
-    // `DUR_CHARS` already holds `running 365d 23h` to.
     return {
-      kind: 'queued',
-      seconds: secs(now - created),
-      text: `waiting ${formatDuration(now - created)}`,
-      note: `Waiting for another attempt (${task.attempt_count} of ${task.max_attempts} used). An earlier attempt started and is over; its run is inside this span, so none of it is time run now.`,
+      kind: 'none',
+      text: task.state.toLowerCase(),
+      note: `Between attempts: ${task.state.toLowerCase()} for another attempt (${task.attempt_count} of ${task.max_attempts} used). An earlier attempt ran and is over, and nothing records when this state began, so there is no figure: the step's age includes that run.`,
     }
   }
 
