@@ -480,4 +480,33 @@ describe('B4.1: the tokens are actually in the cascade', () => {
     section.remove()
     style.remove()
   })
+
+  /**
+   * OV-15. AN IN-PAGE HEADING DOES NOT TIE WITH THE PAGE TITLE.
+   *
+   * The Overview's attention lead title was --t-title at 600 -- the `<h1>`'s
+   * own step -- so the page drew two headings of one rank a line apart, the
+   * first repeating what the breadcrumb already says. It is an `<h2>`, and the
+   * heading ladder in design-system.md §2 puts in-page region and card
+   * headings at --t-lead/600; the lead stays distinct from the card titles by
+   * its position, its track and its unboxed region.
+   *
+   * MUTATION: put `.ov-lead-title` back on --t-title.
+   */
+  it('sets the attention lead title a step below the page title', () => {
+    const style = withStyles()
+    const section = document.createElement('section')
+    section.className = 'section ov-lead'
+    section.innerHTML =
+      '<div class="ov-lead-head"><div class="ov-lead-say"><h2 class="ov-lead-title">3 things need attention</h2></div></div>'
+    document.body.appendChild(section)
+
+    const seen = getComputedStyle(section.querySelector('.ov-lead-title')!)
+    expect(seen.fontSize).toBe('var(--t-lead)')
+    expect(seen.lineHeight).toBe('var(--lh-lead)')
+    expect(seen.fontWeight).toBe('600')
+
+    section.remove()
+    style.remove()
+  })
 })
