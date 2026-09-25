@@ -1655,11 +1655,29 @@ export const TERMINAL_STATES: ReadonlySet<TaskState> = new Set<TaskState>([
   'SUCCEEDED', 'FAILED', 'CANCELLED', 'DEAD_LETTERED',
 ])
 
-export type Tone = 'ok' | 'bad' | 'live' | 'wait'
+/**
+ * A task state's tone, which is what its MARK is drawn from (design-system.md
+ * §6.6).
+ *
+ *   ok     SUCCEEDED                      the neutral disc
+ *   bad    FAILED, DEAD_LETTERED          the diamond
+ *   live   the four concurrency states    the haloed, pulsing disc
+ *   wait   QUEUED, READY, PARKED          the caution triangle
+ *   ended  CANCELLED                      the neutral flat bar (CH-22)
+ *
+ * `ended` IS A TONE OF ITS OWN (CH-22, owner decision 2026-09-25). CANCELLED
+ * was `wait`, so Agents drew it as the caution TRIANGLE and Workflows as a
+ * blue disc with an amber word: a task somebody chose to stop, drawn as work
+ * still waiting. It is terminal and it is not a verdict -- the flat bar, grey,
+ * the one `is-info` modifier (not a second one) -- and at 390, where the word
+ * is hidden, cancelled, queued and succeeded are three different shapes.
+ */
+export type Tone = 'ok' | 'bad' | 'live' | 'wait' | 'ended'
 
 export function stateTone(state: TaskState): Tone {
   if (state === 'SUCCEEDED') return 'ok'
   if (state === 'FAILED' || state === 'DEAD_LETTERED') return 'bad'
+  if (state === 'CANCELLED') return 'ended'
   if (CONCURRENCY_STATES.has(state)) return 'live'
   return 'wait'
 }

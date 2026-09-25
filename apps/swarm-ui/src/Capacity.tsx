@@ -227,7 +227,7 @@ function Headroom({ capacity }: { capacity: Capacity }) {
         </span>
       </div>
 
-      <div className="ctl-table is-stacked">
+      <div className="ctl-table is-scroll">
         <table role="table">
             <thead role="rowgroup">
               <tr role="row">
@@ -455,7 +455,7 @@ function Family({
 
 function PoolTable({ pools }: { pools: Pool[] }) {
   return (
-    <div className="ctl-table is-stacked">
+    <div className="ctl-table is-scroll">
       <table role="table">
         <thead role="rowgroup">
           <tr role="row">
