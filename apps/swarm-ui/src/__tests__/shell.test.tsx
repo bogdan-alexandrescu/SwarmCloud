@@ -1094,8 +1094,8 @@ describe('the overflow inventory, as rules that cannot be quietly dropped', () =
     // right number until the band's own 1 turned out to tie with the sticky
     // table head (`.ctl-table thead th`, z 1, later in the DOM) -- the head
     // then painted over the band. What the number stood for is an ORDER, so
-    // the order is what is asserted now, derived from the sheet: every sticky
-    // table head < the band < the ✕ < the inspector's drag handle.
+    // the order is what is asserted: any positioned table cell < the band <
+    // the ✕ < the inspector's drag handle.
     // MUTATIONS: the band back to 1; the ✕ at or under the band; the grip
     // under the ✕.
     const z = (rule: string): number => {
@@ -1103,12 +1103,33 @@ describe('the overflow inventory, as rules that cannot be quietly dropped', () =
       expect(raw, 'the rule must state a numeric z-index, not default to auto').toBeDefined()
       return Number(raw)
     }
-    const heads = flatRules(STYLES).filter(
-      (r) => /thead th/.test(r.selector) && /position:\s*sticky/.test(r.body) && /z-index/.test(r.body),
+    // RE-POINTED AGAIN (WF-21): NO TABLE HEAD IS STICKY. `.ctl-table thead th`
+    // and `table.pools thead th` declared `position: sticky; top: 0; z-index:
+    // 1`, and it never took effect: both wrappers are `overflow-x: auto`, which
+    // makes the wrapper the head's scroll container on both axes, and no
+    // wrapper ever scrolls vertically. What it did do was draw every head cell
+    // as a layer of its own, the likely source of the faint seams at the
+    // Workflows Table's fractional column edges. MUTATION: put `position:
+    // sticky` back on either head.
+    const stickyHeads = flatRules(STYLES).filter(
+      (r) => /thead\s+th/.test(r.selector) && /position:\s*sticky/.test(r.body),
     )
-    expect(heads.length, 'no sticky table head found; the ordering below would be vacuous').toBeGreaterThan(0)
-    for (const h of heads) {
-      expect(z(band), `the band must paint over \`${h.selector}\``).toBeGreaterThan(z(h.body))
+    expect(
+      stickyHeads.map((r) => `${r.selector} (line ${r.line})`),
+      'a table head is sticky again, inside a wrapper that never scrolls vertically',
+    ).toEqual([])
+    // AND ANY TABLE CELL THAT IS POSITIONED AND STACKED STILL RANKS UNDER THE
+    // BAND. Nothing matches this until CH-13's sticky first column lands; the
+    // assertion above is what keeps this case from checking nothing meanwhile,
+    // and this loop covers that column the day it arrives.
+    const stackedCells = flatRules(STYLES).filter(
+      (r) =>
+        /(?:^|[\s>+~,(])(?:th|td)\b/.test(r.selector) &&
+        /position:\s*(?:sticky|relative|absolute|fixed)/.test(r.body) &&
+        /z-index:\s*\d/.test(r.body),
+    )
+    for (const c of stackedCells) {
+      expect(z(band), `the band must paint over \`${c.selector}\``).toBeGreaterThan(z(c.body))
     }
     expect(z(close), 'the ✕ must rank above the band it sits on').toBeGreaterThan(z(band))
     expect(

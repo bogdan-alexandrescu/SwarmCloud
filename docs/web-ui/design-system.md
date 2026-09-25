@@ -527,8 +527,27 @@ off `.ctl-metric`.**
 
 | Token | Value (light / dark) | What gets it |
 |---|---|---|
-| `--ctl-shadow` | `0 1px 2px rgb(31 35 40 / .08)` / `0 1px 2px rgb(0 0 0 / .30)` | **the DAG node, and nothing else by default.** A node has to read as sitting *on* a canvas the edges pass *under* — a genuine z-relationship. A card on a page does not. |
+| `--ctl-shadow` | `0 1px 2px rgb(31 35 40 / .08)` / `0 1px 2px rgb(0 0 0 / .30)` | **the DAG node, and nothing else by default.** A node has to read as sitting *on* a canvas the edges pass *under* — a genuine z-relationship. A card on a page does not. *(Amended below: no edge passes under a node any more.)* |
 | `--ctl-shadow-pop` | `0 8px 24px rgb(31 35 40 / .12)` / `0 8px 24px rgb(0 0 0 / .28)` | a surface **over** the page: the help card, a menu, a drawer edge |
+
+> **Amended 2026-09-25 (WF-4, epic #83): an edge never passes under a card.**
+> The row above let a DAG edge run *under* a node, and on the workflow canvas
+> that is what happened to every edge that skips a level: one straight curve
+> from its parent to its child, crossing the level between wherever the line
+> fell — and the cards are opaque HTML over the edge layer. On the measured
+> 30-step run, `synthesis`'s six direct dependencies on a 13-step stage ran
+> collinear with that stage's edges into `rollup-b` and disappeared behind
+> it. The owner's decision is that every dependency is visible, so an edge that
+> skips a level now runs on an **offset lane of its own**: a column clear of
+> every card and band on the levels it passes (8px, `LANE_CLEAR`) and of every
+> other lane over them (6px, `LANE_SEP`), reached and left through the gaps
+> between levels where nothing is drawn — in a gutter between two cards where
+> one is free, otherwise beside them, widening the canvas if it must. Edges
+> that share both ends (every member of a collapsed band) share one lane.
+> `dag.ts`'s `laneRouter` does it and `workflow.board.test.tsx` samples every
+> drawn edge and fails on any point inside a card or a collapsed band. The
+> node's shadow went earlier, to the edge's halo; the halo now separates one
+> edge from another where two cross in a gap.
 
 The count is the argument. The shipped Overview carried **16 shadowed elements
 on one screen**. Railway's docs page: 1. Northflank's: 1. Hetzner's: 2. Koyeb
@@ -724,6 +743,24 @@ anything by being coloured. So `.ctl-util-fill` defaults to `--text-dim`, and
 untouched — they are the one place on a proportion where colour earns its keep,
 and `test_state_colour_discriminability.py` holds the textures apart in
 greyscale.
+
+> **The workflow Timeline's part of the ruling (WF-11, epic #83; the #122 hue
+> ruling), 2026-09-25.** The Timeline outlined every wait in `--warn-ink` and
+> filled every successful run `--ok`, so a screen of healthy work was a screen
+> of caution and success hues. Now: **a wait (waited or still waiting) is a 1px
+> `--text-faint` outline; a finished run is a `--text-dim` fill whether it
+> succeeded or was cancelled; and hue appears only on a failed run or a run in
+> flight.** A run in flight keeps `--info` and its sweep. A failed run keeps its
+> `--bad` fill and gains TS-4's failed mark (redesign-v2 §5.5 Tier 1, "solid
+> fill + a 2px left rule") in the shape §6.7 gives bad: a `--bad` post at the
+> run's start standing 8px above and below the bar — it has to stand past the
+> bar, because a `--bad` rule on a `--bad` fill is invisible. Against
+> `--surface` the post is 5.3:1 dark and 12.5:1 light, so in greyscale a
+> failed run keeps an outline a grey run does not. The dashed open edge, the
+> `--info` now line and the `--warn` "task unread" word are unchanged, and the
+> row's state dot still carries every state. `workflow.views.test.tsx` resolves
+> the sheet in both themes and holds all of it, the post read from the sheet
+> because jsdom computes no pseudo-element.
 
 > **Answered by the owner, 2026-09-24: `.wf-meter` goes grey.** The question
 > held open here was this: `.wf-meter`'s fill carries
@@ -1084,10 +1121,24 @@ fewer is `.is-stacked`** — the one rule for tables below 900px is §7.3.
 Rows `--row-h` (30px), cells `4px 10px`, **no row rule at all** (§13.3 — the
 old comment beside it already argued that "twenty of these down one table
 identify nothing the rows do not already identify", and then drew them anyway),
-header sticky on `--surface-2` in the label treatment with the one `--line-soft`
+header on `--surface-2` in the label treatment with the one `--line-soft`
 hairline a panel's interior is allowed, under `thead`. `.is-num` is right-aligned mono `tabular-nums`. `.ctl-sub`
 is the raw id under the readable name at `--t-micro`/`--lh-flush` so the row
 keeps the height it was signed off at.
+
+**The head is not sticky (WF-21, 2026-09-25).** It declared `position: sticky;
+top: 0; z-index: 1`, on `.ctl-table thead th` and on `table.pools thead th`, and
+the declaration never took effect: `.ctl-table` and `.table-wrap` are
+`overflow-x: auto`, which makes the wrapper the head's scroll container on both
+axes, and no wrapper ever scrolls vertically. Below 899px the stacked tables
+hide the head anyway. What it did do was draw every head cell as a positioned
+layer of its own — the likely cause of the faint vertical seams the Workflows
+Table showed at fractional column edges. Not yet verified rendered: the next
+release is to be looked at at 1440 in light and dark, and if a seam survives,
+the head's fill moves from each `th` to `thead`, painted once. `shell.test.tsx`
+holds that no `thead th` rule is sticky, and that any positioned table cell
+with a z-index (CH-13's sticky first column, when it lands) ranks under the
+drawer's band.
 
 Row tones are a **wash plus a form**, never a text colour: `.is-bad` a
 full-height 3px rule on the first cell, `.is-warn` a half-height one, `.is-paused`
@@ -1111,7 +1162,9 @@ failed read and a failed row draw one left-edge rule, and its status is `--text`
 
 Generalised from `.wf-bar`, which the audit names as the best row in the
 product: id · state · progress · shape · runner mix · spend · age · flags on one
-grid line, expanding into the DAG.
+grid line, expanding into the DAG. `.wf-bar` itself keeps its box: it is the
+second of §13.3's two named exceptions (WF-17), and `.ctl-line` does not
+inherit that exception.
 
 ```html
 <button class="ctl-line is-open" style="grid-template-columns:[state] 8px [name] minmax(0,1fr) [age] 72px [actions] 28px">
@@ -1441,6 +1494,26 @@ Six places, in order of commitment. Nothing outside this list.
 6. **`docs/`.** The argument, the constraint, the thing that is true for six
    months. A docs link is a legitimate element of an empty state and of a help
    card; it is not an element of a data view.
+
+> **Recorded 2026-09-25 (WF-5, epic #83; corrected on #160's review): a
+> figure's source is a qualifier, and where there is no room in its slot the
+> node gives it a line.** A workflow step's cost or tokens may be its result
+> summary's rather than its attempt telemetry's. That happens only for a
+> finished step (`finishedResultOf`, the one rule for the node, the Table,
+> the row's total and the inspector). The figure then carries `from result`
+> (`.wf-src`: faint, micro, mono, no hue). In the Table and the inspector
+> that sits beside the figure. On a graph node the value column is budgeted
+> for a 20-character figure and nothing more. Sharing it, the note
+> ellipsed to `…`, and the override that made room clipped wider figures
+> with no mark. So the node draws `cost · tokens from result` on
+> `.node-src`, a line under the four figures that names them. Every
+> Figures-tier node reserves that line, and it is counted in
+> `nodeHeightAt('figures')` (246). The alternative was about 84px more width
+> on every node, which takes `STAGE_FITS` from 3 to 2 and draws a three-wide
+> stage without figures at all. The figure's note also says what the view
+> read. Only the inspector, and the board inside its sample, have read the
+> attempt documents, so only they say those documents carry no typed figure.
+> Outside the sample, the board says it did not read them.
 
 ### 8.5 What a main view may say
 
@@ -1976,12 +2049,18 @@ them with their measurements rather than reaching into them.
 ### 12.2 The run list is the Workflows row, because that is the one the owner kept
 
 `#work/workflows` is the internal reference (§11.4) and the thing that makes
-it right is measurable: **its rows are one line tall and they stack.**
-`.wf-card + .wf-card` drops the duplicated top border, so ten rows draw one box
-and nine hairlines. The run list drew `gap: var(--ctl-s1)` between bordered,
-rounded, 72px rows: six rows were six separate floating objects, which is
-"everything is a bordered rounded box" in the place this product repeats a box
-the most.
+it right is measurable: **its rows are one line tall.** *(Corrected
+2026-09-25, WF-17: this said they stack, that "`.wf-card + .wf-card` drops the
+duplicated top border, so ten rows draw one box and nine hairlines". It does
+not, and the board never drew that. The board draws ten one-line rows, each
+`.wf-bar` its own bordered box, 8px apart — `.wf-board`'s gap is `--ctl-s2` —
+and `.wf-card + .wf-card` only removes the `.section + .section` region
+hairline. That is what §11.4 measured, "13 boxes", and froze; §13.3 now names
+it as an exception. The run list's construction below does not rest on it: it
+stands on §13.3 alone.)* The run list drew `gap: var(--ctl-s1)` between
+bordered, rounded, 72px rows: six rows were six separate floating objects,
+which is "everything is a bordered rounded box" in the place this product
+repeats a box the most.
 
 **The list carries the box; the row carries one hairline.** That division is
 not cosmetic and `spacing.test.tsx` is what settled it. The first attempt gave
@@ -2467,9 +2546,20 @@ level of the hierarchy may draw a border at all.** Decided here, once:
 | **Panel** | `.ctl-card`, `.ctl-table`, screen equivalents | **the one box.** One `--line` hairline, `--radius`, `--surface`. The only border in the console. |
 | **Row** | anything repeated inside a panel — a list row, a `.ctl-util`, a table row, a tile | **nothing.** No border, no rule, no per-row fill. `--row-h`, the mono/sans split and the fill step do all of it. |
 
-**The one exception, named so it stays one:** `.ctl-table thead th` keeps a
-`--line-soft` bottom rule. A column head is a different *kind* of row rather than
-the next one, and it says where the data starts exactly once.
+**Two exceptions, named so they stay two** *(the second added 2026-09-25,
+WF-17)*:
+
+1. `.ctl-table thead th` keeps a `--line-soft` bottom rule. A column head is a
+   different *kind* of row rather than the next one, and it says where the data
+   starts exactly once.
+2. **The Workflows row, `.wf-bar`, keeps a panel's box.** It sits directly on
+   the page rather than inside a panel, it opens in place into its own Graph,
+   Timeline or Table canvas, and it is the owner's frozen reference (§11.4:
+   "13 boxes"). So the board is ten boxed rows 8px apart, and that is correct.
+   **`.ctl-line`, the expandable-row primitive, keeps the no-box rule this
+   section gave it.** This is not a general rule that "rows that open in place
+   are panels": that rule would bring back exactly the per-row boxes this
+   section deleted from `.ctl-line`.
 
 **What this pass deleted under that rule** — all primitives or frame, no screens:
 
