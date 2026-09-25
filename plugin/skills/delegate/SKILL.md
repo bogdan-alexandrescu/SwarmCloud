@@ -127,8 +127,11 @@ directory, unless a staged input or a restored checkpoint already has that
 name. A `claude-code` or `codex` upstream agent is told which filenames
 its dependants stage and that directory's absolute path; other runners are told
 nothing, so their prompt has to say it. A file written anywhere else, the
-repository included, is never staged, and nothing fails the upstream step for
-it: the dependant fails at staging.
+repository included, is never staged. An upstream attempt whose agent finishes
+without writing one of those files FAILS, retryably, naming the missing files:
+the step runs again, starting with an empty artifacts directory, until it has
+used `max_attempts`, and then it FAILS for good and its dependants are
+cancelled. A dependant never starts on a step that left its file out.
 
 Per-step state comes from `swarm_workflow_status`, which reports the **derived**
 rollup and never a stored `state` field. That distinction is not theoretical: on

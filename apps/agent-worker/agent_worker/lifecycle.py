@@ -16,7 +16,8 @@ load-bearing in a way the rest are not.
         cancellation / quota exhaustion / a generation change
     9.  capture stdout and stderr
     10. upload artifacts and a final checkpoint
-    11. persist the terminal state
+    11. persist the terminal state, or READY for a retry when a clean run left
+        out an expected output and the task has attempts left (#149)
     12. release the lease
     13. exit
 
@@ -107,7 +108,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
-from swarm_common.models import ProviderState, utcnow
+from swarm_common.models import ProviderState, retries_exhausted, utcnow
 from swarm_common.states import EventType, ParkReason, TaskState
 
 from . import expected_outputs as expected_mod
@@ -215,6 +216,13 @@ NO_ACCOUNT_RETRY_SECONDS = 900
 #: for fifteen would leave a pool with plenty of headroom idle for three sweeps
 #: after it had already refreshed its readings.
 STALE_READING_RETRY_SECONDS = 300
+
+#: How long a task failed for a missing expected output waits before it is
+#: eligible again (#149). Zero: the agent left a file out, and nothing about
+#: that clears with time, so a delay would only hold the dependants back
+#: longer. The retry is bounded by `max_attempts`, not by this, and the
+#: scheduler admits it on its next drain like any other READY task.
+EXPECTED_OUTPUT_RETRY_DELAY_SECONDS = 0
 
 #: How many different accounts one attempt will try before it gives up and
 #: parks. Three, not one: a freshly onboarded account whose secret has no
@@ -1088,13 +1096,25 @@ class Worker:
         assert ws is not None
 
         self._checkpoint("final")
-        # The ONLY call that passes publish=True. The agent exited on its own
-        # here; the other five call sites are parks and crashes.
-        summary = self._upload_outputs(publish=True)
+        # A runner that finished cleanly, by the same three tests the SUCCEEDED
+        # branch below applies: the one outcome a missing expected output turns
+        # into a retryable failure (#149). Anything else fails, or ends, on its
+        # own terms. result.json lives in `work/`, which neither the harvest
+        # nor the upload writes, so reading it here reads what is read below.
+        ran_clean = (
+            not result.timed_out
+            and result.exit_code == 0
+            and _read_json(ws.result_path) is not None
+        )
+        withheld = self._publish_withheld(ran_clean)
+        # The ONLY call that may pass publish=True. The agent exited on its own
+        # here; the other five call sites are parks and crashes. It is False
+        # only for an attempt that is going to run again (`_publish_withheld`).
+        summary = self._upload_outputs(publish=withheld is None, withheld=withheld or "")
         # Here, where the runner ended on its own, and not on the park, cancel
         # and crash paths: a parked attempt resumes later and may still write
         # the file.
-        self._report_missing_outputs(summary)
+        missing = self._report_missing_outputs(summary, fails_the_attempt=ran_clean)
         summary["exit_code"] = result.exit_code
         summary["duration_seconds"] = round(result.duration_seconds, 3)
         self._export_metrics()
@@ -1141,6 +1161,8 @@ class Worker:
                 self.control.update_quota_state(
                     provider=self.cfg.provider, state=ProviderState.AVAILABLE
                 )
+            if missing:
+                return self._fail_for_missing_outputs(missing, summary, exit_code=0)
             self.control.finish(
                 state=TaskState.SUCCEEDED, exit_code=0, result_summary=summary
             )
@@ -1588,9 +1610,12 @@ class Worker:
         """Honour `metadata.expected_outputs`: what later steps will stage from this one.
 
         Written by the API at workflow submission, on the UPSTREAM task (#149).
-        Advice to the agent, not a promise to it, so an unusable entry is
-        dropped and named in a warning rather than failing the attempt. See
-        `agent_worker.expected_outputs` for the measurement behind it.
+        An entry that cannot name a file in the artifacts directory is dropped
+        and named in a warning rather than failing the attempt: no dependant
+        could stage it either. A usable name that is missing when the runner
+        finishes cleanly fails the attempt, retryably
+        (`_fail_for_missing_outputs`). See `agent_worker.expected_outputs` for
+        the measurements behind both.
         """
         declared = expected_mod.declared_outputs(task.get("metadata"))
         if declared.rejected:
@@ -1607,16 +1632,18 @@ class Worker:
         self._expected_outputs = declared.names
         return declared.names
 
-    def _report_missing_outputs(self, summary: dict[str, Any]) -> None:
-        """Say which expected outputs this attempt did not upload (#149).
+    def _report_missing_outputs(
+        self, summary: dict[str, Any], *, fails_the_attempt: bool
+    ) -> list[str]:
+        """Name the expected outputs this attempt did not upload, and return them (#149).
 
         One WARNING line naming them, and `result_summary[MISSING_SUMMARY_KEY]`,
-        which the API serves with the task (`codec.task_to_api`). The attempt is
-        NOT failed for it.
-        Whether a missing expected output should fail the step that was meant
-        to write it is an open owner decision, so until it is made the attempt
-        keeps the state its runner earned. The dependant still fails at
-        staging, naming this task and the file.
+        which the API serves with the task (`codec.task_to_api`). Written on
+        every way `_finalise` ends, so a runner that failed on its own still
+        says what it left out. `fails_the_attempt` is whether the runner
+        finished cleanly, which decides what the line says it costs: then the
+        attempt fails for it (`_fail_for_missing_outputs`), and otherwise it
+        fails, or ends, for a cause of its own.
 
         Measured against what was UPLOADED, the `artifacts` manifest, not the
         directory listing. A dependant stages from that manifest, so a file
@@ -1624,7 +1651,7 @@ class Worker:
         is concerned, and the line says which case it is.
         """
         if not self._expected_outputs:
-            return
+            return []
         produced = [
             entry.get("name")
             for entry in summary.get("artifacts") or []
@@ -1632,13 +1659,106 @@ class Worker:
         ]
         missing = expected_mod.missing_outputs(self._expected_outputs, produced)
         if not missing:
-            return
+            return []
         skipped = summary.get("artifacts_skipped") or []
         summary[expected_mod.MISSING_SUMMARY_KEY] = self._scrub(list(missing))
         self.log.warning(
-            expected_mod.missing_line(missing, skipped=skipped),
+            expected_mod.missing_line(
+                missing,
+                skipped=skipped,
+                consequence=(
+                    "The attempt fails for it, and is retried while the task has "
+                    "attempts left."
+                    if fails_the_attempt
+                    else "The runner did not finish cleanly, so the attempt ends "
+                    "on its own cause."
+                ),
+            ),
             missing=list(missing),
         )
+        return list(missing)
+
+    def _publish_withheld(self, ran_clean: bool) -> str | None:
+        """Why this attempt must not publish, or None when it may (#149).
+
+        Withheld only from an attempt that is going to RUN AGAIN: its runner
+        finished cleanly, an expected output is not in the artifacts directory,
+        and the task has attempts left. Like a park, its work is not finished,
+        and the retry publishes it. Published now, the retry would push again
+        from the final checkpoint, which `_checkpoint("final")` takes BEFORE
+        `_publish_git` auto-commits the agent's uncommitted changes. So when
+        this attempt auto-committed, the retry's commit does not descend from
+        the pushed one, and `push_branch`, which never forces, is refused as a
+        non-fast-forward. The last attempt publishes like any other failed
+        attempt.
+
+        Decided BEFORE the upload, from the directory, because publishing is
+        part of the harvest that runs first. `swarm-work.patch` is left out: the
+        harvest writes it. A file that is here and then not uploaded (the cap,
+        an upload error) is found missing only afterwards, so that attempt has
+        published and is still retried. The count comes from the task this
+        worker fetched when it started; the transaction that fails the attempt
+        reads it again and decides (`control.fail_retryably`).
+        """
+        if not ran_clean or not self._expected_outputs:
+            return None
+        ws = self.ws
+        assert ws is not None
+        owed = expected_mod.without_platform_names(self._expected_outputs, (PATCH_NAME,))
+        present = [
+            path.relative_to(ws.artifacts).as_posix()
+            for path in ws.artifacts.rglob("*")
+            if path.is_file() and not path.is_symlink()
+        ]
+        absent = expected_mod.missing_outputs(owed, present)
+        if not absent:
+            return None
+        task = self._task or {}
+        if retries_exhausted(
+            int(task.get("attempt_count", 0)), int(task.get("max_attempts", 3))
+        ):
+            return None
+        return (
+            "this attempt is retried because expected outputs are missing ("
+            + ", ".join(absent)
+            + "); publishing waits for the attempt that writes them"
+        )
+
+    def _fail_for_missing_outputs(
+        self, missing: list[str], summary: dict[str, Any], *, exit_code: int
+    ) -> Outcome:
+        """Fail this attempt, retryably, with the missing names as its cause (#149).
+
+        The owner's decision on #149 (2026-09-25T10:30Z), which replaces the
+        report-only behaviour this change first shipped: the dependant never
+        starts on a parent that did not write what it promised. The task goes
+        back to READY while it has attempts left, and ends FAILED once
+        `max_attempts` is spent, whereupon the scheduler cancels its dependants
+        as for any failed parent. A requested cancel ends it CANCELLED.
+
+        `exit_code` is the RUNNER's, 0, kept on the attempt as it is for a
+        runner that exited 0 without writing result.json. The worker exits 1:
+        the attempt failed, whatever state the task was left in.
+
+        The retry starts with an empty artifacts directory, because only
+        `work/` is checkpointed, so it must write every expected output again.
+        """
+        skipped = summary.get("artifacts_skipped") or []
+        error = self._scrub(expected_mod.missing_error(missing, skipped=skipped))
+        state = self.control.fail_retryably(
+            exit_code=exit_code,
+            error=error,
+            cause="expected_outputs_missing",
+            result_summary=summary,
+            retry_delay_seconds=EXPECTED_OUTPUT_RETRY_DELAY_SECONDS,
+            detail={"missing": self._scrub(list(missing))},
+        )
+        self.log.info(
+            "the attempt failed for missing expected outputs",
+            task_state=state.value,
+            missing_count=len(missing),
+        )
+        return Outcome(exit_code=ExitCode.FAILED, state=state)
 
     def _clone_base_path(self) -> Path | None:
         ws = self.ws
@@ -2570,7 +2690,7 @@ class Worker:
         return data if isinstance(data, dict) else {}
 
     # -- git: harvest, and publish when the forge allows it -----------------
-    def _harvest_git(self, *, publish: bool) -> dict[str, Any] | None:
+    def _harvest_git(self, *, publish: bool, withheld: str = "") -> dict[str, Any] | None:
         """Describe the agent's changes, and publish them when permitted.
 
         Returns the dict that becomes `result_summary["git"]`, or None when
@@ -2584,7 +2704,9 @@ class Worker:
         from its checkpoint and will reach the terminal path later, so pushing
         a branch and opening a pull request for work that is still in progress
         would put a half-finished change in front of a reviewer -- and do it
-        again on every quota bounce.
+        again on every quota bounce. It is False, for the same reason, on an
+        attempt `_finalise` is about to fail retryably (#149), which passes
+        `withheld` to say so; a park passes nothing and is described as one.
         """
         ws = self.ws
         cfg = self.cfg
@@ -2673,7 +2795,11 @@ class Worker:
             out["publish_reason"] = "the agent changed nothing in the repository"
             return out
 
-        out.update(self._publish_git(repo=repo, work_head=work.head, publish=publish))
+        out.update(
+            self._publish_git(
+                repo=repo, work_head=work.head, publish=publish, withheld=withheld
+            )
+        )
         return out
 
     def _integration_is_pending(self) -> bool:
@@ -2691,7 +2817,7 @@ class Worker:
         )
 
     def _publish_git(
-        self, *, repo: Path, work_head: str | None, publish: bool
+        self, *, repo: Path, work_head: str | None, publish: bool, withheld: str = ""
     ) -> dict[str, Any]:
         """The push-and-pull-request half. Gated on the forge, not on hope."""
         cfg = self.cfg
@@ -2701,7 +2827,8 @@ class Worker:
         if not publish:
             return {
                 "published": False,
-                "publish_reason": "this attempt parked; publishing waits for the run to finish",
+                "publish_reason": withheld
+                or "this attempt parked; publishing waits for the run to finish",
             }
         if not cfg.git_publish_enabled:
             return {"published": False, "publish_reason": "publishing is disabled for this worker"}
@@ -2985,7 +3112,7 @@ class Worker:
 
         return "\n".join(lines)
 
-    def _upload_outputs(self, *, publish: bool = False) -> dict[str, Any]:
+    def _upload_outputs(self, *, publish: bool = False, withheld: str = "") -> dict[str, Any]:
         ws = self.ws
         if ws is None:
             return {}
@@ -3002,7 +3129,7 @@ class Worker:
         # in there. A patch produced afterwards would be the one file in the
         # upload that never had a provider key taken out of it.
         try:
-            git_summary = self._harvest_git(publish=publish)
+            git_summary = self._harvest_git(publish=publish, withheld=withheld)
         except Exception as exc:  # pragma: no cover - defensive
             self.log.exception("the git harvest raised; continuing without it", exc)
             git_summary = {"error": "the git harvest failed unexpectedly"}

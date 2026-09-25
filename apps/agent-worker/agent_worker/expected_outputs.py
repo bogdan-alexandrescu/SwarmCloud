@@ -29,7 +29,9 @@ The owner chose option (b) on #149, and this module is the worker's half of it:
                           files, and the ABSOLUTE artifacts path to the prompt
                           it passes the agent (`with_instructions`)
     worker, _finalise     names any that are missing, in one log line and in
-                          result_summary[MISSING_SUMMARY_KEY]
+                          result_summary[MISSING_SUMMARY_KEY], and, when the
+                          runner finished cleanly, FAILS THE ATTEMPT RETRYABLY
+                          with those names as its cause
 
 INSTRUCTIONS ALONE WERE MEASURED NOT TO BE ENOUGH. On the third run,
 `wf_06a3a949d2c242c3b0e9` (2026-09-25), every prompt named `$SWARM_ARTIFACTS_DIR`
@@ -38,7 +40,32 @@ and told the agent to echo it. scan-02 echoed the right path and then wrote
 artifacts directory (`workspace.link_artifacts`), and the natural wrong guess
 lands in the uploaded directory. The instructions say where; the link catches
 the agent that reads it and writes next to its working directory anyway; the
-end-of-attempt line says when neither worked.
+end-of-attempt check says when neither worked, and fails the attempt so the
+dependant never starts on a parent that did not write what it promised.
+
+A MISSING EXPECTED OUTPUT FAILS THE ATTEMPT, RETRYABLY (owner decision on
+#149, 2026-09-25T10:30Z, replacing the report-only behaviour #153 first
+shipped). The cause names the missing files. The task goes back to READY and
+is admitted again as a new attempt while it has attempts left, and ends FAILED
+once `max_attempts` is spent (`control.fail_retryably`), after which its
+dependants are cancelled like any failed parent's. Only an attempt whose runner
+finished cleanly is failed this way: a runner that failed, timed out or was
+stopped keeps its own cause, and the missing names are recorded beside it.
+
+A RETRY STARTS WITH AN EMPTY ARTIFACTS DIRECTORY. It resumes `work/` from the
+checkpoint the failed attempt took as it ended, and that checkpoint does not
+hold `artifacts/` (only `work/` is archived, and the `./artifacts` link is left
+out). The dependant stages from the attempt that SUCCEEDS, so every expected
+output must be written again by the retry, not only the one that was missing.
+The agent is given the same instructions, which list every name.
+
+An attempt that is going to be retried PUBLISHES NOTHING, as a parked one does
+not: its work is not finished, and the retry publishes it. Published now, the
+retry would push again from the final checkpoint, which is taken before the
+publish step auto-commits the agent's uncommitted changes; when it did, the
+retry's commit does not descend from the pushed one and the push, which is
+never forced, is refused as a non-fast-forward. The last attempt publishes
+like any other failed attempt (`lifecycle._publish_withheld`).
 
 A NAME THE PLATFORM WRITES ITSELF IS NEVER IN THE INSTRUCTIONS
 (`without_platform_names`). A dependant may stage the upstream's
@@ -51,22 +78,20 @@ either is worse than telling it nothing. Each writer leaves
 out its own names -- the worker the patch, the runner its three files -- so no
 list of them is spelled out twice.
 
-Three things are deliberately NOT done here.
+Two things are deliberately NOT done here.
 
 * **The worker does not copy a same-named file out of the working directory.**
   That was option (c) on #149, and the owner rejected it. The `./artifacts`
   link is not a copy: a file written through it is written into the artifacts
   directory in the first place. A file left anywhere else -- the repository, or
   the working directory outside `./artifacts` -- stays there.
-* **A missing expected output does not fail the attempt.** Whether it should is
-  an open owner decision. Until it is made, the attempt says so and succeeds or
-  fails on its own terms, and the dependant still fails at staging, naming the
-  upstream task and the file, exactly as it did before.
-* **A malformed declaration does not fail the attempt either.** This is advice
-  to the agent, not a promise made to it. That is the opposite of
-  `inputs.declared_inputs`, which fails the attempt because a step that declares
-  an INPUT has been promised that file. An unusable entry here is dropped from
-  the advice, and the caller of `declared_outputs` logs it by name.
+* **A malformed declaration does not fail the attempt.** An entry that cannot
+  name a file in the artifacts directory is not a promise anyone can keep, and
+  no dependant can stage it either (`inputs.destination_for` refuses the same
+  shapes). That is the opposite of `inputs.declared_inputs`, which fails the
+  attempt because a step that declares an INPUT has been promised that file. An
+  unusable entry here is dropped, and the caller of `declared_outputs` logs it
+  by name.
 """
 
 from __future__ import annotations
@@ -225,8 +250,8 @@ def missing_outputs(names: Sequence[str], produced: Iterable[str]) -> list[str]:
     return [name for name in names if name not in have]
 
 
-def missing_line(missing: Sequence[str], *, skipped: Iterable[str] = ()) -> str:
-    """One log line naming the missing files.
+def missing_cause(missing: Sequence[str], *, skipped: Iterable[str] = ()) -> str:
+    """Which files are missing, and in which way. The cause a retry names.
 
     A file that was written but not uploaded is named separately, because the
     remedy is different: it is the artifact cap or an upload error, not the
@@ -243,8 +268,32 @@ def missing_line(missing: Sequence[str], *, skipped: Iterable[str] = ()) -> str:
         )
     if over_cap:
         parts.append("written but not uploaded: " + ", ".join(over_cap))
-    return (
+    return "; ".join(parts)
+
+
+def missing_line(
+    missing: Sequence[str], *, skipped: Iterable[str] = (), consequence: str = ""
+) -> str:
+    """One log line naming the missing files, and what that costs this attempt.
+
+    `consequence` is the caller's, because only the caller knows whether the
+    runner finished cleanly, which decides whether the attempt fails for this
+    or for a cause of its own.
+    """
+    line = (
         "expected outputs missing, so a later step that stages them would fail ("
-        + "; ".join(parts)
-        + "). The attempt is not failed for it."
+        + missing_cause(missing, skipped=skipped)
+        + ")."
+    )
+    return f"{line} {consequence}" if consequence else line
+
+
+def missing_error(missing: Sequence[str], *, skipped: Iterable[str] = ()) -> str:
+    """`last_error` for an attempt failed for missing expected outputs."""
+    return (
+        "expected outputs missing ("
+        + missing_cause(missing, skipped=skipped)
+        + "). A later step of this workflow stages them from this task, so the "
+        "attempt failed; it is retried while the task has attempts left, and "
+        "the retry must write every expected output again."
     )

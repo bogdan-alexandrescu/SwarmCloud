@@ -74,7 +74,9 @@ directory is the agent's work, and is checkpointed like anything else.
 The artifacts directory itself is not checkpointed at all. A resumed attempt
 starts with an empty one, so a file written there before a park is uploaded
 under the parked attempt's prefix and is not in the upload of the attempt that
-finally succeeds.
+finally succeeds. A retried attempt starts the same way. When the file is one a
+later workflow step stages, an attempt that ends without writing it again fails
+for it, retryably ([workflows.md](workflows.md#artifacts-pass-by-reference)).
 
 **A resumed worker starts from an empty tree.** `Workspace.create()` removes the
 directory first, every time, and refuses to continue if it cannot. Restoring a

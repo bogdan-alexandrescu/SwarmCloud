@@ -59,17 +59,18 @@ costs nothing while it waits.
 nothing else is.** Only that directory is uploaded when an attempt ends. It sits
 outside the agent's working directory and outside the repository checkout, so a
 file written anywhere else is never uploaded and no later step can stage it,
-however exactly its name matches. This fails late and costs money: the upstream
-step SUCCEEDS, and only the dependant fails, at staging, with `upstream task …
-did not produce an artifact named 'scan-01.md'`. By then every upstream step has
-spent its compute and its provider quota. That is what happened to workflow
-`wf_73946ff4a32a4f99b3a4` on 2026-09-25 (#149). Its eight scan steps were prompted
-"write it to scan-01.md", wrote into their working directories and succeeded.
-All four merges then failed, and seventeen steps were cancelled.
+however exactly its name matches. Until #149 this failed late and cost money:
+the upstream step SUCCEEDED, and only the dependant failed, at staging, with
+`upstream task … did not produce an artifact named 'scan-01.md'`. By then every
+upstream step had spent its compute and its provider quota. That is what
+happened to workflow `wf_73946ff4a32a4f99b3a4` on 2026-09-25. Its eight scan
+steps were prompted "write it to scan-01.md", wrote into their working
+directories and succeeded. All four merges then failed, and seventeen steps were
+cancelled.
 
 **So the platform tells the upstream agent, catches its likeliest wrong guess,
-and says when neither worked.** Three layers, because the first alone was
-measured not to be enough.
+and fails the upstream attempt when neither worked.** Three layers, because the
+first alone was measured not to be enough.
 
 1. **Instructions.** At submission the API inverts every `input_from` edge. It
    records on each upstream step's task the filenames its dependants will
@@ -100,14 +101,34 @@ measured not to be enough.
    or a directory a restored checkpoint brought back), it is left alone and
    one WARNING says so. Files written under it are then not uploaded, exactly
    as before.
-3. **The missing-output line.** If an attempt ends without one of its expected
-   outputs, the worker records the name in
-   `result_summary.expected_outputs_missing` and logs one line naming it. The
-   line says whether the file was never written, or was written and not
-   uploaded (the artifact cap).
+3. **A missing expected output fails the attempt, retryably** (owner decision
+   on #149, 2026-09-25). If an attempt's runner finishes cleanly and one of its
+   expected outputs was not uploaded, the attempt FAILS with the missing names
+   as its cause, in `last_error`, in `result_summary.expected_outputs_missing`,
+   in one log line and in a `retrying` event. The cause says whether the file
+   was never written, or was written and not uploaded (the artifact cap). The
+   task goes back to READY and runs again as a new attempt while it has
+   attempts left, and ends FAILED once `max_attempts` is spent, which cancels
+   its dependants as any failed parent does. A requested cancel still ends it
+   CANCELLED. **A dependant therefore never starts on a parent that did not
+   write what it promised.** A runner that fails, times out or is stopped
+   keeps its own cause, and the missing names are recorded next to it.
 
-None of this makes an agent write the file. A prompt that names the file and
-the directory as well does no harm.
+None of this makes an agent write the file; the third layer makes it cost at
+most `max_attempts` upstream attempts instead of the rest of the workflow. A
+prompt that names the file and the directory as well does no harm.
+
+**A retry starts with an empty artifacts directory.** It resumes `work/` from
+the checkpoint the failed attempt took as it ended, and only `work/` is
+checkpointed. So the retry must write every expected output again, not only the
+one that was missing. The agent is given the same instructions, which list every
+name. **An attempt that is going to be retried publishes nothing**, as a parked
+attempt does not: its work is not finished. Published, the retry's own push
+could be refused as a non-fast-forward, because the final checkpoint is taken
+before the publish step auto-commits the agent's changes. The last attempt
+publishes like any other failed one. A file that was written and then not
+uploaded (the cap, an upload error) is found missing only after the publish
+step, so that attempt has published and is still retried.
 
 **`metadata.expected_outputs` belongs to the service.** A caller cannot set it:
 `POST /v1/tasks`, `POST /v1/tasks/batch`, or a workflow whose own `metadata`
@@ -127,15 +148,14 @@ What this deliberately does not do:
   file written through it is written into the artifacts directory in the first
   place. A file left anywhere else, in the repository or elsewhere in the
   working directory, stays there.
-* **It does not fail the upstream step when a file is missing.** The attempt
-  keeps the state its runner earned, and the dependant still fails at staging,
-  naming the task and the file. Whether a missing expected output should fail
-  the step that owed it is an open owner decision.
-* **It does not carry the artifacts directory across a park.** Only `work/` is
-  checkpointed, and a resumed attempt starts with an empty artifacts directory.
-  A dependant stages from the attempt that SUCCEEDED, so a file written before
-  a park and not written again after the resume is not there for it. That was
-  already true of `$SWARM_ARTIFACTS_DIR`; the link extends it to `./artifacts`.
+* **It does not carry the artifacts directory across a park or a retry.** Only
+  `work/` is checkpointed, and a resumed attempt starts with an empty artifacts
+  directory. A dependant stages from the attempt that SUCCEEDED, so a file
+  written before a park and not written again after the resume is missing, and
+  that attempt fails for it, retryably. That was already true of
+  `$SWARM_ARTIFACTS_DIR`; the link extends it to `./artifacts`.
+* **It does not tell a retry which file it left out.** The retried agent gets
+  the same prompt and the same list, which names every expected output.
 
 `input_from` stages an upstream step's artifact into the downstream step's
 workspace. The file travels through **GCS**, never inline through Firestore —

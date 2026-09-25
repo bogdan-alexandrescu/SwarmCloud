@@ -394,8 +394,9 @@ def test_a_cancel_requested_before_the_attempt_ends_is_not_undone_by_a_retry(
 
 def test_an_attempt_that_will_be_retried_publishes_nothing(db, worker_factory, monkeypatch):
     """Like a park: the work is not finished, and the next attempt publishes it.
-    Published now, the retry would push again from a checkpoint taken before
-    this attempt's auto-commit, and be refused as a non-fast-forward."""
+    Published now, the retry would push again from the final checkpoint, taken
+    before this attempt's auto-commit, and when there was one the push would be
+    refused as a non-fast-forward."""
     _seed(db, ["scan-01.md"], artifact_name="notes.md")
     worker, _config, _exporter = worker_factory()
     seen: list[dict[str, Any]] = []
