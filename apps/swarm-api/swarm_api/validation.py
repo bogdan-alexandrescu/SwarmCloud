@@ -406,6 +406,23 @@ class DagError(ValidationFailed):
     code = "invalid_dag"
 
 
+class StagedInputError(DagError):
+    """An `input_from` the worker would refuse, refused at submission instead.
+
+    HTTP 400, NOT THE 422 EVERY OTHER `DagError` RETURNS, AND THAT IS THE
+    OWNER'S DECISION. The brief for #64 specified "HTTP 400, workflow not
+    created, nothing enqueued". The first cut of PR #65 returned 422 so as to
+    match the sibling refusals (a cycle, a dangling dependency, an `input_from`
+    source that is not a `depends_on`), and because the New Workflow screen
+    mapped only 422 to "invalid". That revised a decision that was not the
+    lane's to revise, so the screen was changed instead: `SubmitWorkflow.tsx`
+    `KIND_BY_STATUS` maps 400 to "invalid" as well. The code stays
+    `invalid_dag`, so a caller that branches on `code` sees one family.
+    """
+
+    status_code = 400
+
+
 def validate_dag(steps: Sequence[StepSpec], *, max_steps: int) -> list[str]:
     """Validate and topologically order a submitted workflow.
 
@@ -563,7 +580,7 @@ def validate_staged_filenames(step: StepSpec) -> None:
         filename = raw.strip() if isinstance(raw, str) else ""
         problem = _filename_problem(filename)
         if problem is not None:
-            raise DagError(
+            raise StagedInputError(
                 f"step {step.step_id!r} stages input from {source!r} as {raw!r}, which "
                 f"{problem}. An input_from filename is where the artifact lands in "
                 "this step's workspace, so it must be a relative path inside it, "
@@ -584,7 +601,7 @@ def validate_staged_filenames(step: StepSpec) -> None:
             continue
         parents = sorted(sources)
         suggestion = " and ".join(repr(_distinct_name(p, filename)) for p in parents[:2])
-        raise DagError(
+        raise StagedInputError(
             f"step {step.step_id!r} stages {filename!r} from {len(parents)} upstream "
             f"steps ({', '.join(repr(p) for p in parents)}). An input_from filename "
             "is both the artifact's name in the upstream step and the path it lands "
@@ -598,6 +615,94 @@ def validate_staged_filenames(step: StepSpec) -> None:
                 "filename": filename,
                 "colliding_upstream_steps": parents,
             },
+        )
+
+
+#: The key inside `task.metadata` the worker stages declared inputs from:
+#: `{upstream TASK id: filename}`. The worker spells it
+#: `agent_worker.inputs.METADATA_KEY`, and a test holds the two equal, because
+#: a check on a key the worker does not read would pass everything.
+INPUT_FROM_METADATA_KEY = "input_from"
+
+
+def validate_workflow_input_from_metadata(metadata: Mapping[str, Any]) -> None:
+    """Refuse a WORKFLOW-level `metadata.input_from` the worker would refuse.
+
+    WHY THE WORKFLOW'S OWN METADATA IS CHECKED, NOT ONLY ITS STEPS. `submit_workflow`
+    builds every step's task with `{**spec.metadata, ...}` and replaces
+    `input_from` only on a step that declares its own. A root step cannot
+    declare one (it has no `depends_on` for it to name), so a workflow-level
+    `metadata.input_from` reaches every root step's task verbatim, keyed by
+    upstream TASK id, which is exactly the shape the worker reads. Checking only
+    the steps left that door open: a colliding or traversing name there was
+    accepted and enqueued, and refused by the worker afterwards (#64).
+
+    The rules are the worker's `declared_inputs` and `destination_for`, as the
+    step-level check states them: absent, None or {} stages nothing; anything
+    else is a mapping of non-empty upstream task id to a filename that is a
+    relative path inside the workspace, and no two entries land on one name.
+    Whether a workflow-level declaration should exist at all is a separate
+    question (docs/contract-change-requests.md §3); this refuses only what can
+    never be staged.
+    """
+    raw = metadata.get(INPUT_FROM_METADATA_KEY)
+    if raw is None or raw == {}:
+        return
+    where = f"metadata.{INPUT_FROM_METADATA_KEY}"
+    # Why it matters, in the words a caller needs: which tasks carry it.
+    inherited = (
+        "Every step of this workflow that declares no input_from of its own "
+        "inherits it, every root step among them, and the worker would refuse "
+        "each of those steps at run time."
+    )
+    if not isinstance(raw, dict):
+        raise StagedInputError(
+            f"{where} must map an upstream task id to one artifact filename, got "
+            f"{type(raw).__name__} {raw!r}. {inherited} To stage an upstream step's "
+            "artifact, declare it in that step's own `input_from`, keyed by upstream "
+            "step id.",
+            detail={"metadata_key": INPUT_FROM_METADATA_KEY, "type": type(raw).__name__},
+        )
+
+    landing: dict[str, list[str]] = {}
+    for upstream, value in raw.items():
+        if not isinstance(upstream, str) or not upstream.strip():
+            raise StagedInputError(
+                f"{where} has the key {upstream!r}, which is not an upstream task id. "
+                f"{inherited}",
+                detail={"input_from": upstream, "problem": "is not an upstream task id"},
+            )
+        filename = value.strip() if isinstance(value, str) else ""
+        problem = (
+            _filename_problem(filename)
+            if isinstance(value, str)
+            else f"is not a filename (it is {type(value).__name__})"
+        )
+        if problem is not None:
+            raise StagedInputError(
+                f"{where} stages input from {upstream!r} as {value!r}, which {problem}. "
+                "The filename is where the artifact lands in the workspace, so it must "
+                "be a relative path inside it, such as 'notes.md' or 'reports/notes.md', "
+                f"with no empty, '.' or '..' segment. {inherited}",
+                detail={
+                    "input_from": upstream,
+                    "filename": value,
+                    "problem": problem,
+                },
+            )
+        landing.setdefault(filename, []).append(upstream.strip())
+
+    for filename, sources in landing.items():
+        if len(sources) < 2:
+            continue
+        upstreams = sorted(sources)
+        raise StagedInputError(
+            f"{where} stages {filename!r} from {len(upstreams)} upstream tasks "
+            f"({', '.join(repr(u) for u in upstreams)}). The filename is both the "
+            "artifact's name upstream and the path it lands at in the workspace, so "
+            f"these files would overwrite one another. {inherited} Stage a distinct "
+            "artifact filename from each upstream task.",
+            detail={"filename": filename, "colliding_upstream_tasks": upstreams},
         )
 
 

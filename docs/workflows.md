@@ -64,8 +64,8 @@ artifact even by naming it.
 The filename is both the artifact's name in the upstream step and the path it
 lands at downstream. So within one step each parent must stage a **distinct**
 relative filename, with no empty, `.` or `..` segment, and the API refuses any
-other shape at submission (`invalid_dag`, naming the step, the parents and the
-file) rather than letting the worker refuse it after every parent has run.
+other shape at submission (HTTP 400 `invalid_dag`, naming the step, the parents
+and the file) rather than letting the worker refuse it after every parent has run.
 
 ## Dependencies and state
 

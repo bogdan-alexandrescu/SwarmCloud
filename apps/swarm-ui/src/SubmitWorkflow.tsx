@@ -130,8 +130,13 @@ type Envelope = {
   workflow?: unknown
   dispatch?: unknown
 }
+// 400 IS A REFUSAL OF THE REQUEST, NOT A FAILED API. The API answers 400
+// `invalid_dag` for an `input_from` the worker could never stage -- two parents
+// on one filename, an absolute or `..` name (#64) -- and every other ApiError
+// that keeps the base class's 400. Without this entry it fell through to
+// `server_error` and a correct refusal was headed "The API failed on this request".
 const KIND_BY_STATUS: Partial<Record<number, ApiErrorKind>> = {
-  401: 'unauthenticated', 403: 'admin_required', 409: 'conflict',
+  400: 'invalid', 401: 'unauthenticated', 403: 'admin_required', 409: 'conflict',
   422: 'invalid', 429: 'rate_limited', 503: 'upstream_degraded',
 }
 const unsure = (kind: ApiErrorKind, httpStatus: number | null, message: string): Submission => ({ kind: 'uncertain', error: { kind, httpStatus, code: null, message } })

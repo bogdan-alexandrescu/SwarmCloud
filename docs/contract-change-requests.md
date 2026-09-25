@@ -275,7 +275,11 @@ reject_reserved_metadata({"unit": "payments", "input_from": {"x": "y"}})
 `_build_task` then copies caller metadata verbatim (`service.py:205`,
 `metadata = dict(spec.metadata)`). So a plain `POST /v1/tasks` carrying
 `metadata.input_from` is stored as written and honoured by the worker, having
-passed none of the DAG checks.
+passed none of the DAG checks. A workflow's own `metadata.input_from` takes the
+same route onto every step that declares no `input_from` of its own, which
+always includes the root steps. Since #64 its filenames are checked at
+submission (`validate_workflow_input_from_metadata`), but the task ids it names
+still carry no dependency edge.
 
 Be precise about what that is and is not. It is **not** a tenant escape:
 `inputs.fetch_upstream_task` (`inputs.py:226-254`) refuses a task belonging to
