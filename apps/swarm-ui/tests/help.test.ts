@@ -257,7 +257,6 @@ test('event paging and serve-time masking each have a topic of their own', () =>
   const paging = topicFor('event-paging')
   assert.ok(paging, 'there is no event-paging topic')
   assert.match(paging.short, /oldest-first/)
-  assert.match(paging.short, /page token/)
   const masking = topicFor('masking-is-serve-time')
   assert.ok(masking, 'there is no masking-is-serve-time topic')
   assert.match(masking.short, /served/)
@@ -266,6 +265,74 @@ test('event paging and serve-time masking each have a topic of their own', () =>
   // Placed where a reader of an attempt would look for them.
   assert.equal(paging.group, 'an-attempt')
   assert.equal(masking.group, 'an-attempt')
+})
+
+/**
+ * AG-19, AND WHICH SIDE THE ONE-PAGE LIMIT IS ON. The first `event-paging`
+ * said the events route "returns no page token", that there is "no token to
+ * ask for the next", and that past one page the newest events "cannot be
+ * fetched at all". It was built from AttemptTimeline's `say` strings, and
+ * those went stale with #19: `GET /v1/tasks/{id}/events` returns
+ * `next_page_token` whenever more events exist and accepts `order=desc`
+ * (swarm_api/routes/tasks.py, `list_events`). What is still true is narrower
+ * and is about THIS SCREEN: api.ts asks for one page, oldest-first, and never
+ * sends the token back.
+ *
+ * So this reads both sources rather than trusting a sentence. While the route
+ * pages, the topic may not say it cannot; while the UI does not follow the
+ * token, the topic has to say that the screen stops at one page.
+ *
+ * MUTATION: restore "returns no page token". The route assertion fails.
+ * MUTATION: drop the sentence about this screen. The UI assertion fails.
+ */
+test('the event-paging topic puts the one-page limit on this screen, not on the route', () => {
+  const t = HELP['event-paging']
+  const all = [t.short, ...t.long].join(' ')
+
+  const route = readFileSync(resolve(SRC, '..', '..', 'swarm-api', 'swarm_api', 'routes', 'tasks.py'), 'utf8')
+  const start = route.indexOf('def list_events(')
+  assert.ok(start >= 0, 'routes/tasks.py has no list_events; this check is reading the wrong file')
+  const end = route.indexOf('\n@router', start)
+  const listEvents = route.slice(start, end === -1 ? undefined : end)
+  const routePages = listEvents.includes('page_token') && listEvents.includes('"next_page_token"')
+  if (routePages) {
+    assert.ok(
+      !/returns no page token|no token to ask|cannot be fetched at all/i.test(all),
+      'the topic says the events route cannot page, and list_events returns next_page_token',
+    )
+  } else {
+    assert.ok(!/next_page_token|order=desc/.test(all), 'the topic describes paging the route no longer offers')
+  }
+
+  const api = readFileSync(join(SRC, 'api.ts'), 'utf8')
+  const reads = [...api.matchAll(/\/events\?[^`'"]*/g)].map((m) => m[0])
+  assert.ok(reads.length > 0, 'api.ts reads no events route; this check is vacuous')
+  if (!reads.some((r) => r.includes('page_token'))) {
+    assert.match(
+      t.short,
+      /this screen[^.]*(?:does not|never)[^.]*token/i,
+      'the UI reads one page and never follows the token, and the topic does not say so',
+    )
+  }
+})
+
+/**
+ * AG-19. `masking-is-serve-time` said the count beside an artifact is "the
+ * number of values hidden in this copy" and read a zero as "nothing matched
+ * the rules". The API masks and counts only the WINDOW it serves (inspect.py:
+ * `redact()` runs over this chunk's bytes and `redaction_count` is that call's
+ * count), and the viewer shows a large artifact one window at a time, marked
+ * `partial`. On a partial read `0 of N families` says nothing about the bytes
+ * that were not served.
+ *
+ * MUTATION: restore "hidden in this copy" with no word about the window.
+ */
+test('the masking topic says its count covers only the bytes this read served', () => {
+  const t = HELP['masking-is-serve-time']
+  const all = [t.short, ...t.long].join(' ')
+  assert.match(t.short, /\bonly\b[^.]*\bserved\b/i, 'the card does not say the count is over the served bytes alone')
+  assert.ok(t.long.some((p) => /partial/i.test(p)), 'the long form never mentions a partial read')
+  assert.ok(!/hidden in this copy/i.test(all), 'the topic still counts the whole copy')
 })
 
 /**
