@@ -147,6 +147,10 @@ describe('the outcomes chart', () => {
     expect(labels[0], 'the first column names no day').toBe(date(23))
     expect(labels[2], 'midnight is an hour with no date').toBe(date(24))
     expect(labels[3]).toBe(new Date(2026, 8, 24, 1).toLocaleTimeString(undefined, { hour: '2-digit' }))
+    // And the boundary is DRAWN, on midnight's column -- not on the chart's
+    // first, which starts a day only because the chart starts there.
+    const cols = [...root.querySelectorAll('.chart .col')]
+    expect(cols.map((c) => c.classList.contains('is-day-start'))).toEqual([false, false, true, false])
   })
 
   it('TS-22: says which series is on which basis in the legend', async () => {
