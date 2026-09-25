@@ -70,7 +70,6 @@ from .validation import (
     validate_resource_class_override,
     validate_runner_profile,
     validate_timeout,
-    validate_workflow_input_from_metadata,
 )
 from .waker import SchedulerWaker
 
@@ -324,13 +323,13 @@ class SubmissionService:
             # on a step that declares its own `input_from` (#151), or on every
             # upstream step by the recorded `expected_outputs` (#149).
             # `_build_task` would refuse it too, but only mid-loop, outside this
-            # try, so the refusal would go uncounted.
+            # try, so the refusal would go uncounted. BEFORE `validate_dag`: a
+            # workflow-level `metadata.input_from` has no valid form to check the
+            # filenames of, so it answers 422 `invalid_dispatch` whatever its
+            # value, and a step's own `input_from` is the only declaration
+            # `validate_dag` ever sees (#151).
             reject_reserved_metadata(spec.metadata)
             order = validate_dag(step_specs, max_steps=self._settings.core.max_workflow_steps)
-            # The workflow's OWN metadata too: it is copied onto every step's
-            # task below, and a root step, which cannot declare an input_from of
-            # its own, carries this one to the worker unchanged (#64).
-            validate_workflow_input_from_metadata(spec.metadata)
             dispatch = resolve_dispatch_options(
                 strategy=spec.strategy,
                 carrier=spec.carrier,

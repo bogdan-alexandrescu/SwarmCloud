@@ -216,8 +216,10 @@ DISPATCH_METADATA_KEY = "dispatch"
 #: (`SubmissionService.submit_workflow`), which rewrites a step's
 #: `{upstream_step: filename}` to the task ids it has just minted. The worker
 #: spells it `agent_worker.inputs.METADATA_KEY`, and
-#: tests/unit/control_plane/test_input_from_is_reserved.py holds the two equal:
-#: reserving a key the worker does not read would refuse nothing that matters.
+#: tests/unit/control_plane/test_input_from_is_reserved.py and
+#: test_input_from_submission.py hold the two equal: reserving a key the worker
+#: does not read would refuse nothing that matters. Defined once, here, beside
+#: the other reserved keys, and `submit_workflow` writes under it.
 INPUT_FROM_METADATA_KEY = "input_from"
 
 #: The key inside `task.metadata` naming the files a workflow step's dependants
@@ -495,13 +497,18 @@ class DagError(ValidationFailed):
     """Every workflow refusal `validate_dag` and its helpers make: 422 `invalid_dag`.
 
     ONE CODE, ONE STATUS. The `input_from` refusals added for #64 (a filename
-    two parents stage into one step, an absolute or traversing filename, a
-    malformed workflow-level `metadata.input_from`) raise this class too, not
-    a subclass with a status of its own. The owner decided so on #64 on
-    2026-09-25: the New Workflow screen (`SubmitWorkflow.tsx` `KIND_BY_STATUS`)
-    heads a 422 "That request was not valid", and a caller branching on the
-    status or on the code must read every refusal in the family the same way.
-    `test_every_invalid_dag_refusal_answers_one_status` holds it.
+    two parents stage into one step, an absolute or traversing filename) raise
+    this class too, not a subclass with a status of its own. The owner decided
+    so on #64 on 2026-09-25: the New Workflow screen (`SubmitWorkflow.tsx`
+    `KIND_BY_STATUS`) heads a 422 "That request was not valid", and a caller
+    branching on the status or on the code must read every refusal in the
+    family the same way. `test_every_invalid_dag_refusal_answers_one_status`
+    holds it.
+
+    A workflow-level `metadata.input_from` is NOT in this family. The key is
+    reserved (owner decision on #151), so `reject_reserved_metadata` refuses it
+    with 422 `invalid_dispatch` before `validate_dag` runs, whatever its value.
+    The same test pins that ordering and the one status both codes share.
     """
 
     code = "invalid_dag"
@@ -587,10 +594,19 @@ def validate_dag(steps: Sequence[StepSpec], *, max_steps: int) -> list[str]:
 #
 # The worker ALREADY enforces every rule below at run time
 # (`agent_worker/inputs.py`: `declared_inputs`, `_assert_distinct_destinations`,
-# `destination_for`), and it keeps doing so. That is defence in depth, and the
-# only guard on a plain task that carries `metadata.input_from`. What checking
-# here changes is WHEN the answer arrives. At run time it arrives after every
-# upstream step has run. Measured 2026-09-25 on wf_1e547922a981411991e2, that
+# `destination_for`), and it keeps doing so. That is defence in depth: the
+# worker reads a free-form dict, and it alone knows the reserved names.
+#
+# A step's `input_from` is the ONLY door a declaration has. A caller cannot
+# send `metadata.input_from` at all -- on a plain task, a batch or a workflow's
+# own `metadata` it is refused whole by `reject_reserved_metadata` (422
+# `invalid_dispatch`, #151), before `validate_dag` runs -- so every
+# `metadata.input_from` the worker reads was written by `submit_workflow` from
+# a step declaration that passed the checks here. There is no workflow-level
+# declaration to check separately.
+#
+# What checking here changes is WHEN the answer arrives. At run time it
+# arrives after every upstream step has run. Measured 2026-09-25 on wf_1e547922a981411991e2, that
 # was ~20 minutes of claude-code across nine steps, then four failed merges and
 # seventeen cancellations, for a mistake visible in the request body (#64).
 #
@@ -699,94 +715,6 @@ def validate_staged_filenames(step: StepSpec) -> None:
                 "filename": filename,
                 "colliding_upstream_steps": parents,
             },
-        )
-
-
-#: The key inside `task.metadata` the worker stages declared inputs from:
-#: `{upstream TASK id: filename}`. The worker spells it
-#: `agent_worker.inputs.METADATA_KEY`, and a test holds the two equal, because
-#: a check on a key the worker does not read would pass everything.
-INPUT_FROM_METADATA_KEY = "input_from"
-
-
-def validate_workflow_input_from_metadata(metadata: Mapping[str, Any]) -> None:
-    """Refuse a WORKFLOW-level `metadata.input_from` the worker would refuse.
-
-    WHY THE WORKFLOW'S OWN METADATA IS CHECKED, NOT ONLY ITS STEPS. `submit_workflow`
-    builds every step's task with `{**spec.metadata, ...}` and replaces
-    `input_from` only on a step that declares its own. A root step cannot
-    declare one (it has no `depends_on` for it to name), so a workflow-level
-    `metadata.input_from` reaches every root step's task verbatim, keyed by
-    upstream TASK id, which is exactly the shape the worker reads. Checking only
-    the steps left that door open: a colliding or traversing name there was
-    accepted and enqueued, and refused by the worker afterwards (#64).
-
-    The rules are the worker's `declared_inputs` and `destination_for`, as the
-    step-level check states them: absent, None or {} stages nothing; anything
-    else is a mapping of non-empty upstream task id to a filename that is a
-    relative path inside the workspace, and no two entries land on one name.
-    Whether a workflow-level declaration should exist at all is a separate
-    question (docs/contract-change-requests.md §3); this refuses only what can
-    never be staged.
-    """
-    raw = metadata.get(INPUT_FROM_METADATA_KEY)
-    if raw is None or raw == {}:
-        return
-    where = f"metadata.{INPUT_FROM_METADATA_KEY}"
-    # Why it matters, in the words a caller needs: which tasks carry it.
-    inherited = (
-        "Every step of this workflow that declares no input_from of its own "
-        "inherits it, every root step among them, and the worker would refuse "
-        "each of those steps at run time."
-    )
-    if not isinstance(raw, dict):
-        raise DagError(
-            f"{where} must map an upstream task id to one artifact filename, got "
-            f"{type(raw).__name__} {raw!r}. {inherited} To stage an upstream step's "
-            "artifact, declare it in that step's own `input_from`, keyed by upstream "
-            "step id.",
-            detail={"metadata_key": INPUT_FROM_METADATA_KEY, "type": type(raw).__name__},
-        )
-
-    landing: dict[str, list[str]] = {}
-    for upstream, value in raw.items():
-        if not isinstance(upstream, str) or not upstream.strip():
-            raise DagError(
-                f"{where} has the key {upstream!r}, which is not an upstream task id. "
-                f"{inherited}",
-                detail={"input_from": upstream, "problem": "is not an upstream task id"},
-            )
-        filename = value.strip() if isinstance(value, str) else ""
-        problem = (
-            _filename_problem(filename)
-            if isinstance(value, str)
-            else f"is not a filename (it is {type(value).__name__})"
-        )
-        if problem is not None:
-            raise DagError(
-                f"{where} stages input from {upstream!r} as {value!r}, which {problem}. "
-                "The filename is where the artifact lands in the workspace, so it must "
-                "be a relative path inside it, such as 'notes.md' or 'reports/notes.md', "
-                f"with no empty, '.' or '..' segment. {inherited}",
-                detail={
-                    "input_from": upstream,
-                    "filename": value,
-                    "problem": problem,
-                },
-            )
-        landing.setdefault(filename, []).append(upstream.strip())
-
-    for filename, sources in landing.items():
-        if len(sources) < 2:
-            continue
-        upstreams = sorted(sources)
-        raise DagError(
-            f"{where} stages {filename!r} from {len(upstreams)} upstream tasks "
-            f"({', '.join(repr(u) for u in upstreams)}). The filename is both the "
-            "artifact's name upstream and the path it lands at in the workspace, so "
-            f"these files would overwrite one another. {inherited} Stage a distinct "
-            "artifact filename from each upstream task.",
-            detail={"filename": filename, "colliding_upstream_tasks": upstreams},
         )
 
 

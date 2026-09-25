@@ -211,6 +211,12 @@ value there reached every root step verbatim and was silently replaced on any
 step that declared its own. To stage an artifact, declare `input_from` on the
 workflow step that needs it.
 
+The refusal runs before the DAG checks, so a workflow whose own `metadata`
+carries `input_from` answers `invalid_dispatch` even when its steps would also
+have been refused `invalid_dag`. There is no valid workflow-level value for the
+filename rules above to check: they apply to a step's `input_from`, which is
+the only declaration a caller can make.
+
 A batch is refused whole: one task carrying the key means none of the batch is
 created.
 
