@@ -176,3 +176,59 @@ describe('Holders says whether its rows are every live lease', () => {
     expect(summary()).toContain('3 unreleased leases listed')
   })
 })
+
+/**
+ * CP-7 (#85). A counter that leaked on a pool NO live lease names is the
+ * drift this card exists to find, and it was the one case it could not see:
+ * the card compared only pools some lease mentioned, so `tenant:eng` holding
+ * 2 units with no lease behind them was simply not a row, and the card drew
+ * `real zero` over it.
+ *
+ * Over EVERY live lease, a pool no lease names has a lease side of 0 by
+ * measurement, not by assumption, so it is compared. Over a cut window it is
+ * not -- a lease the window left out may name it -- which the second case
+ * holds.
+ */
+describe('with every live lease in hand, Drift compares every pool', () => {
+  function withLeakedPool(coverage: Record<string, unknown>): HoldersBoard {
+    const b = board(coverage)
+    return { ...b, pools: [...(b.pools ?? []), pool('tenant:eng', 2)] }
+  }
+
+  it('finds a counter no lease accounts for', async () => {
+    api.loadHolders.mockResolvedValue(ok(withLeakedPool({ active_beyond_window: 0, truncated: false })))
+    render(<HoldersScreen />)
+    await screen.findByText('Every holder', undefined, WAIT)
+    const card = driftCard()
+    expect(card.querySelector('.ctl-mark.is-zero'), 'a leaked counter was drawn as a real zero').toBeNull()
+    const row = [...card.querySelectorAll('tbody tr')].find((tr) => (tr.textContent ?? '').includes('tenant:eng'))
+    expect(row, 'the leaked pool is not compared').toBeTruthy()
+    expect(row!.querySelector('td[data-label="Delta"]')?.textContent).toBe('+2')
+  })
+
+  it('does not manufacture a delta over a cut window', async () => {
+    api.loadHolders.mockResolvedValue(ok(withLeakedPool({ active_beyond_window: 2, truncated: true })))
+    render(<HoldersScreen />)
+    await screen.findByText('Every holder', undefined, WAIT)
+    const rows = [...driftCard().querySelectorAll('tbody tr')].map((tr) => tr.textContent ?? '')
+    expect(rows.some((t) => t.includes('tenant:eng'))).toBe(false)
+  })
+})
+
+/**
+ * CP-21 (#85). The populated summary says `every tenant`; the empty state
+ * said nothing about scope, so "no unreleased leases" read as a claim about
+ * whoever was looking. And an empty state is a mark, a heading, one sentence
+ * and a way out (§6.9) -- it had no way out.
+ */
+describe('the empty state says whose leases it counted, and where to go', () => {
+  it('names its scope and links out', async () => {
+    api.loadHolders.mockResolvedValue({ status: 'empty', fetchedAt: Date.now(), serverAt: '2026-09-24T10:00:00Z' })
+    render(<HoldersScreen />)
+    await screen.findByText('No unreleased leases', undefined, WAIT)
+    const text = summary()
+    expect(text).toContain('every tenant')
+    const links = [...document.querySelectorAll('a[href^="#"]')]
+    expect(links.length, 'the empty state has no way out').toBeGreaterThan(0)
+  })
+})
