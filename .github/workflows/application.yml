@@ -127,6 +127,15 @@ jobs:
         # static comparison of what locals.tf writes against what the apps read.
         run: ./scripts/lib/check-env-parity.sh
 
+      - name: applied egress policies match the live cluster's network (skipped without credentials)
+        # The one parity check that needs the LIVE cluster: every applied
+        # swarm-allow-worker-egress against the cluster's pod range, service
+        # range, kube-dns IP and NodeLocal DNSCache address. This job has no
+        # cloud credentials, so it skips -- with a ::notice on the run page, not
+        # silently. It is here so that skip is visible on every PR; the real
+        # comparison is `--require-live` after an apply (kubernetes/README.md).
+        run: ./scripts/lib/check-cluster-network-parity.sh
+
       - name: the plan guard still catches offenders
         # The single implementation both `make destroy` and the two Terraform
         # workflows use to decide whether a plan may touch this shared project.

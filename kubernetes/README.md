@@ -17,12 +17,14 @@ to be written down rather than assumed.
 | `service-accounts/worker-serviceaccount.yaml` | Workload Identity accounts, no mounted API token |
 | `rbac/worker-rbac.yaml` | A Role with no rules, and the binding |
 | `network-policies/default-deny.yaml` | Deny ingress and egress, for every pod |
-| `network-policies/allow-egress.yaml` | DNS, the metadata server, Google APIs, the internet minus the cluster |
+| `network-policies/allow-egress.yaml` | DNS (NodeLocal DNSCache and kube-dns), the metadata server, Google APIs, the internet minus the cluster |
 | `policies/pod-security.yaml` | Cluster-scoped ValidatingAdmissionPolicies |
 | `worker-templates/worker-job.yaml` | The canonical worker Job |
 | `worker-templates/worker-job-browser.yaml` | The same, plus shared memory for Chromium |
-| `render.py` | Fills in the placeholders; sizing comes from the frozen catalogue |
-| `apply.sh` | Renders, checks it is pointed at the right cluster, applies |
+| `render.py` | Fills in the placeholders; sizing comes from the frozen catalogue, the cluster's network from its inputs |
+| `apply.sh` | Checks it is pointed at the right cluster, reads that cluster's network, renders, applies |
+| `cluster-network.sh` | Reads the pod range, service range, kube-dns IP and NodeLocal DNSCache address from the live cluster (sourced) |
+| `network_parity.py` | Compares an applied egress policy with the live network; run by `scripts/lib/check-cluster-network-parity.sh` |
 
 Every file is held to its invariants by `tests/unit/worker/test_kubernetes_manifests.py`,
 which renders them with the real renderer and asserts the properties that matter
@@ -31,12 +33,17 @@ which renders them with the real renderer and asserts the properties that matter
 ## Using it
 
 ```bash
-# Look at what would be created.
+# Look at what would be created. With no network inputs the egress policy
+# carries documentation addresses and is marked offline-render-not-for-apply;
+# the dry run below shows it with the cluster's real values.
 kubernetes/render.py tenant --tenant eng
 
-# Dry run against the cluster, then apply.
+# Dry run against the cluster (reads its network, prints a diff), then apply.
 kubernetes/apply.sh --tenant eng
 kubernetes/apply.sh --tenant eng --confirm
+
+# Afterwards: every applied egress policy against the live cluster's network.
+scripts/lib/check-cluster-network-parity.sh --require-live
 
 # The cluster-scoped admission policies, once per cluster.
 kubernetes/apply.sh --policies --confirm
@@ -81,10 +88,54 @@ construction.
 **The internet is allowed; the cluster is carved out of it.** NetworkPolicy
 matches IPs, not names, and the provider APIs sit behind CDN ranges that change
 without notice — a pinned allow-list fails as "every task on this tenant is
-broken". So egress is `0.0.0.0/0` with the pod range, the service range,
-RFC1918, link-local and CGNAT excepted. The service range has to be listed
-explicitly: GKE Autopilot's default, `34.118.224.0/20`, is public address space
-that no RFC1918 entry covers.
+broken". So egress is `0.0.0.0/0` with all of RFC1918, link-local and CGNAT
+excepted **unconditionally**, and the cluster's own pod and service ranges
+excepted **as read from the cluster**. The ranges are listed even when private
+space already covers them, because a GKE range need not be private: Autopilot's
+*default* service range, `34.118.224.0/20`, is public space no RFC1918 entry
+covers. swarm-autopilot does not use that default — its ranges are
+`10.44.0.0/14` (pods) and `10.48.0.0/20` (services), measured 2026-09-24 — and
+until that date the policy was rendered with the default anyway, because the
+renderer defaulted it and nothing passed the real one. On Dataplane V2 the pod
+entry is belt and braces: GKE documents that pod traffic is never covered by an
+`ipBlock` at all, so the default deny is what stops pod-to-pod.
+
+**The cluster's network is read, never typed.** Four values in the egress policy
+belong to the cluster: the pod range, the service range, the kube-dns Service IP
+and the NodeLocal DNSCache address. `apply.sh` reads them through
+`cluster-network.sh` — the ranges from `gcloud container clusters describe`
+(`.clusterIpv4Cidr`, `.servicesIpv4Cidr`), the two DNS addresses from
+`kube-system` (the `kube-dns` Service's `clusterIP`, and the first `-localip` of
+the `node-local-dns` DaemonSet), because `describe` contains neither address —
+and refuses them as arguments, in full or abbreviated (`--pod-cid` is refused
+as `--pod-cidr`; `render.py` also turns argparse's prefix expansion off, which
+is what let an abbreviation forwarded after the read values replace them).
+`render.py` takes them as inputs with no defaults; given none, it renders RFC 5737 documentation addresses, marks the
+policy `offline-render-not-for-apply`, and `apply.sh` refuses to apply that.
+The policy's `swarm.saga.xyz/*` annotations record what it was rendered for, and
+`scripts/lib/check-cluster-network-parity.sh` compares every applied copy — the
+annotations and the enforced spec — with the live cluster. In CI, with no
+credentials, it skips with a `::notice` rather than passing on nothing.
+
+**DNS goes to NodeLocal DNSCache, not to the kube-dns pods.** swarm-autopilot
+runs Dataplane V2, Cloud DNS (cluster scope) and NodeLocal DNSCache, which
+Autopilot turns on and does not let you turn off. A pod's nameserver is the
+hostNetwork `node-local-dns` agent, which listens on `169.254.20.10` *and* on the
+kube-dns Service IP (`10.48.0.10`) and forwards to Cloud DNS — never to the
+kube-dns pods. The policy used to allow DNS only to those pods, and anetd drops
+a denied packet without answering, so on 2026-09-24 a browser worker ran 390 s
+with every lookup timing out and printed nothing. The kube-dns podSelector rule
+is kept (it is right on a cluster that serves DNS from those pods); rule 1b adds
+an `ipBlock` to both addresses on 53/UDP and 53/TCP. **That rule is not yet
+proven to match**: GKE documents that on Dataplane V2 an `ipBlock` cannot
+select traffic to a hostNetwork Pod, and node-local-dns is one. A probe pod in
+the tenant namespace must resolve names under the applied policy before a
+worker relies on it.
+
+**The metadata server is `169.254.169.254` on TCP 80 and 8080**, the ports
+GKE's network-policy doc gives for Dataplane V2. Port 988 on that address is
+gone: this cluster's metadata server listens on `169.254.169.252:988`, which GKE
+lists only for clusters without Dataplane V2, so `.254:988` matched nothing.
 
 **Two service accounts, deliberately.** See the conflicts below.
 
@@ -244,8 +295,23 @@ after the dispatcher RBAC was applied.
 (`swarm-agent-worker`), `register-tenant.sh` binds that name, and
 `tests/unit/worker/test_kubernetes_manifests.py` asserts the rendered
 ServiceAccount set contains exactly what `GkeJobDispatcher.ksa_for` asks for.
-`swarm-worker` stays: every tenant registered so far has a Workload Identity
-binding for it, and removing a bound name is a migration of its own.
+`swarm-worker` stays, for tenants `register-tenant.sh` provisioned — it binds
+both names. It is **not** bound for `eng`, which terraform provisioned: measured
+2026-09-24, the only `roles/iam.workloadIdentityUser` member on
+`swarm-agent-worker-eng@` is `[swarm-tenant-eng/swarm-agent-worker]`. Nothing
+names `swarm-worker` in a pod spec, so that costs nothing today; see the header
+of `service-accounts/worker-serviceaccount.yaml`.
+
+**A leftover to delete by hand.** `swarm-tenant-eng` also holds a ServiceAccount
+`swarm-eng` — what `__KSA_NAME__` rendered to before this fix. No manifest here
+declares it any more, and `kubectl apply` never deletes an object a manifest
+stopped declaring. Nothing uses it (no pod or Job in the namespace names it);
+delete it once:
+
+```bash
+kubectl --context gke_saga-agents-staging_us-central1_swarm-autopilot \
+  -n swarm-tenant-eng delete serviceaccount swarm-eng
+```
 
 Full diagnosis, including why the error said 403: [docs/gke-dispatch-403.md](../docs/gke-dispatch-403.md).
 The commands: [docs/runbooks/gke-dispatch-redispatch.md](../docs/runbooks/gke-dispatch-redispatch.md).

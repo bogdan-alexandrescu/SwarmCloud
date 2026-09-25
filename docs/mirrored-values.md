@@ -249,6 +249,76 @@ that "not in the parity checker" is never read as "not covered".
 | the pool-admin allow-list | each `POOL_ADMIN_ROUTES` entry in `swarm_api.auth` restates a route template from `swarm_api/routes/admin.py`, method included; a renamed route leaves the entry naming nothing, which fails closed — the gate is refused the route race-test needs. The template is the path in the *declaring* router, so an `include_router(prefix=...)` added in `main.py` has the same effect | `tests/unit/control_plane/test_pool_admin_is_narrow.py` requires every entry to be an admin-gated route a router serves and a path the app publishes in its OpenAPI document, the set to equal the owner's decision, and a pool admin's `PUT /v1/admin/limits/runner/mock` to succeed |
 | the admin API's ceiling bound | `API_LIMIT_MAX` in `scripts/race-test.sh` mirrors the `le=` on `LimitRequest.limit` in `swarm_api.schemas`; the script cannot ask the API, and refuses before its first write to narrow a pool whose ceiling it could not restore | `tests/unit/scripts/test_race_test_limit_bound.py` imports `LimitRequest` and requires equality — higher strands a narrowed pool behind a 422, lower refuses pools the API could restore |
 | the shared deny-list and the unlabelable-type list | `SHARED_DENY_LIST` in `common.sh`, and `unlabelable-types.json` | nothing — both were restated in `tests/integration/test_destroy_guard.py` and neither was compared; now derived there, with the derivation itself asserted. See below |
+| the cluster's network in the tenant egress policy: pod range, service range, kube-dns Service IP, NodeLocal DNSCache address | every applied `swarm-allow-worker-egress` — its four `swarm.saga.xyz/*` network annotations and the rules that use the values — against the **live cluster**, which is the authority | `scripts/lib/check-cluster-network-parity.sh` with `kubernetes/network_parity.py`, **only with credentials**: CI has none, so there it skips with a `::notice`. `--require-live` is the gate, run after an apply. See [below](#the-one-whose-authority-is-a-live-cluster) |
+
+### The one whose authority is a live cluster
+
+The tenant egress policy needs four values that belong to the cluster. The
+ranges are carved out of the internet rule. The two DNS addresses are where a
+pod's queries actually go on a Cloud DNS + NodeLocal DNSCache cluster.
+
+**The render is (a) DERIVED.** `kubernetes/apply.sh` reads all four through
+`kubernetes/cluster-network.sh`, the only reader. `check-cluster-network-parity.sh`
+sources the same file, so the check and the render cannot read different fields.
+`apply.sh` refuses the five network flags on its own command line. It refuses
+them **in full or abbreviated**: argparse expands a prefix, and `--pod-cid`
+forwarded after the read values used to replace them. `render.py` has no
+defaults for them and refuses abbreviations itself.
+
+Until 2026-09-24 this row would have read "not derived, not compared":
+
+- The policy was rendered from `render.py`'s defaults, pods `10.0.0.0/8` and
+  services `34.118.224.0/20`. swarm-autopilot uses `10.44.0.0/14` and `10.48.0.0/20`.
+- The policy had no DNS address at all.
+- A browser worker ran 390 s with every lookup silently dropped.
+
+**The applied object is (b) COMPARED, and it is the exception to "on every
+build".** A policy in the cluster is a copy that outlives the read that produced
+it. It goes stale when:
+
+- the cluster is recreated;
+- the ranges change;
+- NodeLocal DNSCache moves;
+- someone applies a render by hand.
+
+The authority is not in the repository, so no offline build can see a
+difference. The check therefore has three modes:
+
+- **CI:** skips with a `::notice`, so the run page says it compared nothing
+  rather than passing.
+- **Operator, with `--require-live`:** turns a skip into a failure.
+  `kubernetes/README.md` ("Using it") runs it this way after every apply, and
+  `apply.sh --confirm` prints the command.
+- **Empty sweep:** refused, because no policy found is not agreement.
+
+**Why the cluster, not terraform, is the authority.** The ranges start in
+terraform: `pods_cidr` and `services_cidr` in each environment's tfvars become
+the subnet's secondary ranges, and the cluster names those ranges. The
+renderer still reads the cluster, for three reasons:
+
+- `describe` holds the ranges the cluster **has**; tfvars holds the ranges it
+  was **asked for**.
+- Neither DNS address exists in terraform. They are only on `kube-system`
+  objects.
+- `apply.sh` must work against a cluster whose state file it cannot read. That
+  is the same reason it resolves the RBAC uniqueIds from IAM.
+
+Prod's tfvars ask for different ranges (`10.64.0.0/14`, `10.68.0.0/20`). That
+is exactly why a typed dev value would be wrong the first time it was used
+anywhere else.
+
+**Prose that states the measured values.** These are (c), recorded, not inputs:
+
+- the "measured" notes in `cluster-network.sh`;
+- `allow-egress.yaml`'s comments;
+- `kubernetes/README.md`.
+
+Each is dated 2026-09-24 and says it was measured. None is read by anything.
+The test fixture replaying the incident (`INCIDENT_CLUSTER` in
+`tests/unit/scripts/test_cluster_network_is_read_not_typed.py`) is a record of
+that day, not a copy to keep current. The tests that must fail on a typed value
+use networks that appear nowhere else in the repository, so a hard-coded live
+value cannot pass them.
 
 ## (c) Not compared, and why
 

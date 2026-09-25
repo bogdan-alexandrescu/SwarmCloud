@@ -692,7 +692,24 @@ if [[ "${SKIP_K8S}" -eq 0 ]]; then
   if [[ ! -f "${APPLY_SH}" ]]; then
     warn "kubernetes/apply.sh is missing; cannot create the tenant namespace"
   elif [[ "${K8S_REACHABLE}" -eq 1 ]]; then
-    APPLY_ARGS=(--tenant "${TENANT_ID}" --gsa "${GSA_EMAIL}")
+    # THE CLUSTER'S NETWORK comes from the cluster, through apply.sh. The
+    # tenant's egress policy needs the pod range, the service range, the
+    # kube-dns Service IP and the NodeLocal DNSCache address; apply.sh reads
+    # all four (describe for the ranges, kube-system for the two DNS
+    # addresses -- kubernetes/cluster-network.sh names each source) and
+    # REFUSES them as arguments, so this script passes none. Restating the
+    # read here would be a second copy of it, and a second copy is the defect
+    # this fixes: until 2026-09-24 nothing on this path passed the network at
+    # all, the policy was rendered from renderer defaults (10.0.0.0/8,
+    # 34.118.224.0/20) and allowed DNS only to kube-dns pods this cluster's
+    # DNS never uses, and a browser worker ran 390 s resolving nothing.
+    #
+    # What this script does pass is WHICH cluster: the context it just
+    # checked (kube_context_is_swarm, /readyz) and the cluster name, so the
+    # network apply.sh reads is the one of the cluster this tenant is being
+    # registered on -- not whatever the current context becomes in between.
+    APPLY_ARGS=(--tenant "${TENANT_ID}" --gsa "${GSA_EMAIL}"
+      --context "$(kube_current_context)" --cluster "${GKE_CLUSTER}")
     [[ "${DRY_RUN}" -eq 1 ]] || APPLY_ARGS+=(--confirm)
     if "${APPLY_SH}" "${APPLY_ARGS[@]}"; then
       ok "namespace ${NAMESPACE}: quota, limits, RBAC, PSA labels and default-deny networking applied"
