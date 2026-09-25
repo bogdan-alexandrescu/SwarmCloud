@@ -171,7 +171,7 @@ export function Run({ run, reload }: { run: AgentRun; reload?: () => void }) {
       <Headline run={run} now={now} reload={reload} />
       <Alerts task={task} />
       <Why task={task} />
-      {task.last_error && <ErrorBanner text={task.last_error} />}
+      <ErrorBanner run={run} />
       <RunMetrics run={run} now={now} />
       <Attempts run={run} now={now} />
       <DispatchPanel task={task} />
@@ -386,6 +386,42 @@ function tokens(v: number | null | undefined): ReactNode {
 }
 
 /**
+ * A state as the chip beside it reads it (AG-28).
+ *
+ * `.ctl-chip` lowercases the API's `CANCELLED` with `text-transform`, which is
+ * the one direction §13.2 of design-system.md allows. A heading or a sentence
+ * that interpolates the same state has no stylesheet to do that for it, so
+ * `no attempt yet · CANCELLED` stood in capitals two inches from a chip that
+ * said `cancelled`: one fact, two spellings, on one line.
+ */
+function stateWord(state: string): string {
+  return state.toLowerCase()
+}
+
+/**
+ * Whether any attempt of this task ever reached a running worker.
+ *
+ * `task.started_at` is written on DISPATCHED -> STARTING, and an attempt's
+ * `started_at` by the worker's `record_attempt_start`, so a task with neither
+ * never had an agent to write an error, a result summary or a figure. Read
+ * from both because either can be missing on its own: a failed attempt read
+ * leaves the task's field, and a retried task keeps the attempt records.
+ */
+function anythingRan(task: Task, attempts: AttemptRow[] | null): boolean {
+  return task.started_at !== null || (attempts ?? []).some((a) => a.started_at !== null)
+}
+
+/**
+ * Only the CLI agents parse a usage block out of the runner's output
+ * (`cliagent.run_cli_agent`); the others report no tokens and no cost by
+ * construction. One predicate for the run tiles and the attempt cards, so the
+ * two cannot disagree about whether a figure is coming.
+ */
+function reportsSpend(profile: string): boolean {
+  return profile === 'claude-code' || profile === 'codex'
+}
+
+/**
  * ONE NAME FOR ONE ATTEMPT, on every pane that draws it (AG-21).
  *
  * The same attempt was `Attempt 1` with a `gen 1` chip on its card, `Attempt
@@ -469,10 +505,30 @@ function Headline({
           row is indistinguishable from a row that was never going to be
           there. */}
       <ul className="ctl-facts">
-        <li className="ctl-fact">
-          <b>run</b>
-          {el.text}
-        </li>
+        {/* `run` ONLY FOR A TASK THAT RAN (AG-3). `elapsed()` measures a task
+            with no `started_at` from its creation, which is right for a column
+            of waits and wrong under this key: a cascade-cancelled step read
+            `run 27m 57s` beside `never ran`, the wall time it sat READY
+            printed as the agent's run. A finished task that never started
+            says so here; one still waiting keeps its wait, under a key that
+            says it is one. How long either waited is the Elapsed tile below,
+            whose note names which clock it is. */}
+        {task.started_at !== null ? (
+          <li className="ctl-fact">
+            <b>run</b>
+            {el.text}
+          </li>
+        ) : TERMINAL_STATES.has(task.state) ? (
+          <li className="ctl-fact">
+            <b>run</b>
+            never ran
+          </li>
+        ) : (
+          <li className="ctl-fact">
+            <b>wait</b>
+            {el.text}
+          </li>
+        )}
         <li className="ctl-fact">
           <b>age</b>
           {timeAgo(task.created_at)}
@@ -507,7 +563,7 @@ function Headline({
  * the run's total, and a tile that does not say so gets read as both.
  */
 function RunMetrics({ run, now }: { run: AgentRun; now: number }) {
-  const { task, attempts, classes } = run
+  const { task, attempts, classes, events } = run
   const el = elapsed(task, now)
 
   if (attempts === null) {
@@ -534,6 +590,31 @@ function RunMetrics({ run, now }: { run: AgentRun; now: number }) {
 
   const cls = classes?.[task.resource_class] ?? null
   const noCeiling = ceilingNote(run)
+
+  // THE RUNNING BRANCH (AG-4). Peak memory, tokens and cost are all written
+  // when an attempt ENDS -- `record_resource_usage` and `record_spend` run in
+  // `finish()` -- so while the latest attempt is open, "nothing recorded" is
+  // the expected state rather than an absence. These three tiles drew the
+  // absent encoding (`not recorded`, `not reported`) on a RUNNING agent, right
+  // beside the attempt card's own `written at exit` and a live 18.6 MiB
+  // heartbeat: the one screen telling its reader that a figure was missing
+  // when it was simply not due yet. `AttemptSpend` below already had this
+  // branch; the run-level tiles now take the same pending tone.
+  //
+  // "Open" is `attemptEnd`'s answer, the one predicate the card, the resources
+  // panel and the phase chart read, so a parked or reclaimed attempt -- which
+  // also has no finish time -- is NOT pending here either: none of those
+  // writes is coming.
+  const ordered = [...attempts].sort((x, y) => x.created_at.localeCompare(y.created_at))
+  const latest = ordered[ordered.length - 1]
+  const open = latest !== undefined && !attemptEnd(latest, task, true).over ? latest : null
+  const reports = reportsSpend(task.runner_profile)
+  // The live reading, when there is no final one: every fifth heartbeat
+  // carries the process's high-water mark so far. Labelled with its age, and
+  // never presented as the final figure.
+  const hb = open === null ? null : newestHeartbeat(open, events)
+  const liveRss = hb?.peakRssBytes ?? null
+
   const measured = attempts.filter((a) => a.peak_rss_bytes !== null)
   const peak = measured.length === 0 ? null : Math.max(...measured.map((a) => a.peak_rss_bytes ?? 0))
   const spent = attempts.filter((a) => a.cost_usd !== null)
@@ -570,7 +651,23 @@ function RunMetrics({ run, now }: { run: AgentRun; now: number }) {
         }
         tone={attempts.length === task.attempt_count ? undefined : 'unread'}
       />
-      {peak === null ? (
+      {peak === null && open !== null ? (
+        // STILL RUNNING: the final figure is due at exit. A heartbeat reading
+        // is a real measurement of the live process and is shown as one --
+        // with its age, and on the pending tone, because it is the high-water
+        // mark SO FAR and not the number that will be written.
+        liveRss !== null && hb !== null ? (
+          <Metric
+            label="Peak memory"
+            value={bytesLabel(liveRss)}
+            sub={`live · ${timeAgo(hb.at, now)}`}
+            tone="reading"
+            explain="peak-memory"
+          />
+        ) : (
+          <Metric label="Peak memory" value="written at exit" tone="reading" explain="peak-memory" />
+        )
+      ) : peak === null ? (
         // THE VALUE IS THE FACT AND IT STAYS. "not recorded" on a dashed
         // tile, in the faint colour, beside neighbours that are digits --
         // three signals, none of them hover, none of them colour alone.
@@ -593,7 +690,12 @@ function RunMetrics({ run, now }: { run: AgentRun; now: number }) {
           explain="oom-near-miss"
         />
       )}
-      {tokIn === null && tokOut === null ? (
+      {tokIn === null && tokOut === null && open !== null && reports ? (
+        // Pending only for a runner that reports at all. `mock`, `generic`
+        // and `browser` never write tokens, so for them "not reported" is the
+        // truth while they run as much as after.
+        <Metric label="Tokens" value="written at exit" tone="reading" explain="tokens-reported" />
+      ) : tokIn === null && tokOut === null ? (
         <Metric label="Tokens" value="not reported" tone="absent" explain="tokens-reported" />
       ) : (
         <Metric
@@ -609,7 +711,9 @@ function RunMetrics({ run, now }: { run: AgentRun; now: number }) {
           sub={tokenRollupNote(attempts.length, withIn.length, withOut.length)}
         />
       )}
-      {cost === null ? (
+      {cost === null && open !== null && reports ? (
+        <Metric label="Token cost" value="written at exit" tone="reading" explain="token-cost" />
+      ) : cost === null ? (
         <Metric label="Token cost" value="not reported" tone="absent" explain="token-cost" />
       ) : (
         <Metric
@@ -620,7 +724,16 @@ function RunMetrics({ run, now }: { run: AgentRun; now: number }) {
           // reason the total may not be the whole of it. That there is no
           // infrastructure cost to add is a fact about the platform, and moved.
           sub={`${spent.length} of ${attempts.length} reported`}
-          tone={spent.length === attempts.length ? undefined : 'unread'}
+          // A GAP THAT IS ONLY THE OPEN ATTEMPT IS PENDING, NOT UNREAD. The
+          // earlier attempts' spend is in; the one still running writes its
+          // own at exit. Only an ENDED attempt with no figure is a hole.
+          tone={
+            spent.length === attempts.length
+              ? undefined
+              : attempts.every((a) => a.cost_usd !== null || a === open)
+                ? 'reading'
+                : 'unread'
+          }
           explain="token-cost"
         />
       )}
@@ -689,6 +802,16 @@ function tokenRollupNote(total: number, withIn: number, withOut: number): string
  */
 function elapsedNote(task: Task): string {
   if (TERMINAL_STATES.has(task.state)) {
+    // NEVER RAN (AG-3). A finished task with no start never had a worker, so
+    // the figure above is how long it WAITED -- created to, say, a cascade
+    // cancel -- and not a run. The tile's label is "Elapsed", which is true
+    // either way; this note is what says which, and names the ending so the
+    // wait has an end a reader can see.
+    if (task.started_at === null) {
+      return task.completed_at !== null
+        ? `never ran · ${stateWord(task.state)} ${timeAgo(task.completed_at)}`
+        : 'never ran · still counting'
+    }
     if (task.completed_at !== null) return `finished ${timeAgo(task.completed_at)}`
     // NO completion time, and `elapsed()` does not stop for that: it falls
     // through to `now - started_at` and keeps counting to the current clock.
@@ -696,9 +819,7 @@ function elapsedNote(task: Task): string {
     // grows on every render. `still counting` is what says that -- the tile
     // cannot say it any other way, and it is three words rather than a
     // paragraph because the WHY is `#help/read-failed`'s neighbour topic.
-    return task.started_at === null
-      ? 'no start, no finish · still counting'
-      : 'no finish recorded · still counting'
+    return 'no finish recorded · still counting'
   }
   // "Parked -- wall time, not work. Nothing is executing and no capacity is
   // held" was the first version, and the fact in it is the first three words:
@@ -808,6 +929,12 @@ function reasonText(reason: string): string {
 function Why({ task }: { task: Task }) {
   const why = whyAgent(task)
   if (!why) return null
+  // ONCE, NOT THREE TIMES (AG-7). For a FAILED task `whyAgent` IS
+  // `last_error`, and the error banner directly below prints that same text
+  // in full -- so a failed agent's reason stood here, then in the banner, then
+  // again in the attempt card. The banner is the one that keeps it: full,
+  // monospace, with who wrote it.
+  if (why === task.last_error) return null
   return (
     <section className="section">
       <p className="why-full">{why}</p>
@@ -828,11 +955,10 @@ function Why({ task }: { task: Task }) {
  * 1000 characters, are platform invariants and live in `#help/read-failed`'s
  * neighbourhood rather than above every error.
  */
-function ErrorBanner({ text }: { text: string }) {
-  const reconciled = text.startsWith('reconciled:')
-  // A dispatch failure is written as `<STABLE_CODE> (attempt att_...)`.
-  const dispatch = /^[A-Z][A-Z0-9_]+ \(attempt /.test(text)
-  const origin = reconciled ? 'reconciler' : dispatch ? 'scheduler · dispatch' : 'agent, at finish'
+function ErrorBanner({ run }: { run: AgentRun }) {
+  const text = run.task.last_error
+  if (!text) return null
+  const origin = errorWriter(run)
 
   return (
     <section className="section">
@@ -842,6 +968,59 @@ function ErrorBanner({ text }: { text: string }) {
       </div>
     </section>
   )
+}
+
+/**
+ * `cancelled on request; ` is prepended by the scheduler's dispatch rollback
+ * and by the reconciler's repair when a cancel had been asked for; what
+ * follows it is still the writer's own words.
+ */
+const CANCELLED_ON_REQUEST = /^cancelled on request;\s*/
+
+/**
+ * A dispatch failure, as the scheduler writes it: `<code> (attempt <ref>)`
+ * (scheduler/store.py, `public = f"{error_code} (attempt {reference})"`).
+ *
+ * CASE-INSENSITIVE, AND THAT IS THE FIX. This was `^[A-Z][A-Z0-9_]+`, and the
+ * codes are lowercase -- `gke_create_job_failed`, `cloud_run_run_job_failed` -- so it
+ * matched none of them and every dispatch failure was labelled the agent's.
+ */
+const DISPATCH_CODE = /^[a-z][a-z0-9_]* \(attempt /i
+
+/**
+ * WHO WROTE `task.last_error`, from what this page can see (AG-6).
+ *
+ * The banner said `agent, at finish` for anything it did not recognise, and
+ * the commonest thing it did not recognise was the scheduler: a cascade cancel
+ * of a step whose parent failed writes "an upstream workflow step did not
+ * succeed" onto a task that NEVER RAN -- no agent existed to write anything.
+ * So the writer is read, in order, from:
+ *
+ *   1. the text's own prefix, where the writer puts one (`reconciled:`, the
+ *      dispatch code);
+ *   2. the CANCEL EVENT'S REASON: the scheduler's cancels write a `cancelled`
+ *      event whose `detail.reason` is exactly the `last_error` they wrote
+ *      (scheduler/store.py `cancel`, `cancel_if_not_started`);
+ *   3. the state and the attempts: a task with no started attempt had no
+ *      agent, so whatever wrote this was the platform, and a CANCELLED one
+ *      was the scheduler's cancel even when its event is off this page.
+ *
+ * Only a task that ran, with none of those signs, is the agent's own error.
+ */
+function errorWriter(run: AgentRun): string {
+  const { task, attempts, events } = run
+  const text = task.last_error ?? ''
+  const body = text.replace(CANCELLED_ON_REQUEST, '')
+  if (body.startsWith('reconciled:')) return 'reconciler'
+  if (DISPATCH_CODE.test(body)) return 'scheduler · dispatch'
+  const cancelEvent = (events ?? []).find(
+    (e) => eventKind(e) === 'cancelled' && e.detail?.['reason'] === text,
+  )
+  if (cancelEvent !== undefined) return 'scheduler · cancel'
+  if (!anythingRan(task, attempts)) {
+    return task.state === 'CANCELLED' ? 'scheduler · cancel' : 'scheduler'
+  }
+  return 'agent, at finish'
 }
 
 // ---------------------------------------------------------------------------
@@ -892,8 +1071,8 @@ function Attempts({ run, now }: { run: AgentRun; now: number }) {
           <Absent
             kind="partial"
             heading={`counts ${task.attempt_count} · returned 0`}
-            say={`This task counts ${task.attempt_count} attempts and the query returned none, so there is a hole in the record.${finished ? '' : ` The task is ${task.state}.`}`}
-            foot={finished ? undefined : task.state}
+            say={`This task counts ${task.attempt_count} attempts and the query returned none, so there is a hole in the record.${finished ? '' : ` The task is ${stateWord(task.state)}.`}`}
+            foot={finished ? undefined : stateWord(task.state)}
             explain="attempt-documents"
           />
         ) : (
@@ -902,7 +1081,7 @@ function Attempts({ run, now }: { run: AgentRun; now: number }) {
           // cannot miss. The heading is the state the measurement was taken in.
           <Absent
             kind="zero"
-            heading={`no attempt yet · ${task.state}`}
+            heading={`no attempt yet · ${stateWord(task.state)}`}
             say="The attempt query succeeded and returned nothing. Nothing has been admitted for this task yet, so this is a real zero rather than a failed read."
             explain="attempt-documents"
           />
@@ -1079,8 +1258,7 @@ function AttemptCard({
     <section className="ctl-card att-card">
       <div className="ctl-card-head">
         <h2 className="ctl-card-title">
-          Attempt {ordinal}
-          <span className="count-chip">gen {a.generation}</span>
+          {attemptLabel(ordinal, a.generation)}
           <Chip tone={chip.tone}>{chip.label}</Chip>
           {/* `latest` IS METADATA, NOT A STATE, and it is the one place on
               these four screens where a hairline box is the right answer --
@@ -1157,7 +1335,12 @@ function AttemptCard({
           </li>
         </ul>
 
-        {a.error !== null && <pre className="err full">{a.error}</pre>}
+        {/* ONLY WHEN IT SAYS SOMETHING THE BANNER DOES NOT (AG-7). The last
+            attempt's error is usually the task's `last_error`, which the
+            banner above already prints in full; an EARLIER attempt's error,
+            or one the task's final record replaced, is the retry history and
+            stays on its own card. */}
+        {a.error !== null && a.error !== run.task.last_error && <pre className="err full">{a.error}</pre>}
 
         <AttemptResources a={a} run={run} isLatest={isLatest} />
         <AttemptSpend a={a} profile={run.task.runner_profile} />
@@ -1247,8 +1430,8 @@ function AttemptResources({
         : end.by === 'superseded'
           ? 'A later attempt has replaced it, so nothing writes to this document again.'
           : end.by === 'released'
-            ? `The task is ${task.state} and no longer holds this attempt’s lease, and this attempt was never marked finished — the shape a quota park, a failed dispatch or a reconciler reclaim leaves behind.`
-            : `The task is ${task.state} and this attempt was never marked finished — the shape a kill, or a reconciler reclaim of a stale generation, leaves behind.`
+            ? `The task is ${stateWord(task.state)} and no longer holds this attempt’s lease, and this attempt was never marked finished — the shape a quota park, a failed dispatch or a reconciler reclaim leaves behind.`
+            : `The task is ${stateWord(task.state)} and this attempt was never marked finished — the shape a kill, or a reconciler reclaim of a stale generation, leaves behind.`
   const liveRss = a.peak_rss_bytes === null ? (hb?.peakRssBytes ?? null) : null
   const rss = a.peak_rss_bytes ?? liveRss
   const rssBy =
@@ -1378,7 +1561,7 @@ function AttemptResources({
               {end.over && end.by === 'superseded'
                 ? 'superseded'
                 : end.over && end.by === 'task-ended'
-                  ? task.state
+                  ? stateWord(task.state)
                   : 'ended'}
             </>
           )}
@@ -1419,8 +1602,9 @@ function AttemptSpend({ a, profile }: { a: AttemptRow; profile: string }) {
   // Only the CLI agents go through `cliagent.run_cli_agent`, which is what
   // parses a usage block out of the runner's own output. The others report
   // nothing by construction, which is a different sentence from "this one
-  // should have reported and did not".
-  const reports = profile === 'claude-code' || profile === 'codex'
+  // should have reported and did not". `reportsSpend` is the one copy of that
+  // rule; the run tiles read it too.
+  const reports = reportsSpend(profile)
 
   if (!anything) {
     // THREE DIFFERENT REASONS, and they still need three different answers --
@@ -1746,14 +1930,27 @@ function Output({ run }: { run: AgentRun }) {
       {!terminal ? (
         <Absent
           kind="zero"
-          heading={`nothing written yet · ${task.state}`}
+          heading={`nothing written yet · ${stateWord(task.state)}`}
           say="A result summary is written only when an attempt finishes. This agent has not finished, so there is nothing here — which is not the same as producing nothing."
+          explain="attempt-documents"
+        />
+      ) : summary === null && !anythingRan(task, attempts) ? (
+        // NOTHING RAN, SO NOTHING WAS DUE (AG-8). `finish()` writes the
+        // summary at the end of an attempt, and this task never had one that
+        // started -- a cascade cancel, a cancel before admission, a dispatch
+        // that never came up. No summary is the expected result here, so it
+        // is a real zero; drawn as `partial` it said a record was missing and
+        // sent its reader to the timeline to find it.
+        <Absent
+          kind="zero"
+          heading={`nothing ran · ${stateWord(task.state)}`}
+          say="No attempt of this task ever started, so no result summary was ever going to be written. This is a real zero, not a missing summary."
           explain="attempt-documents"
         />
       ) : summary === null ? (
         <Absent
           kind="partial"
-          heading={`finished with no summary · ${task.state}`}
+          heading={`finished with no summary · ${stateWord(task.state)}`}
           say="This agent reached a terminal state without a result summary. A parked attempt puts its summary in the event detail and in blocked_by instead, so the timeline below is where to look."
           explain="attempt-documents"
         />
@@ -2813,23 +3010,34 @@ function Timeline({
             run did) and one for the unproven (the route caps the page and
             names neither the cap nor the remainder). Both said the same thing
             about the route, which is `#help/partial-read`; what differs is
-            whether this page can PROVE it is short, and that is the difference
-            between a `partial` mark and a `pending` one. */}
-        <span className="is-end ctl-card-note">
-          <Mark
-            kind={endMissing ? 'partial' : 'pending'}
-            say={
-              endMissing
-                ? `The task is ${task.state} and a terminal task writes a terminal event — none is on this page. The route orders events oldest-first, caps the page server-side and returns no page token, so the newest events are not reachable from this screen at all. The end of this task's history is missing, not absent.`
-                : "One page, oldest first. This screen asks for no page size, so the cap is whatever the deployment's default is, and the response says neither what it was nor how many events were left out — a page that looks complete is not evidence that it is."
-            }
-          />{' '}
-          {endMissing
-            ? lastEvent === undefined
+            whether this page can PROVE it is short.
+
+            PROVEN SHORT IS `partial`. UNPROVEN IS NO MARK AT ALL (AG-9). The
+            unproven case used to draw `pending` -- the word `reading`, the
+            dotted in-flight silhouette -- permanently, on a page whose read had
+            long since landed. `reading` is the one mark of the six that means
+            "still asking" (design-system.md §8.7.1), and a caveat about a
+            route's paging is not a read in flight. It is a plain qualifier
+            now, the sentence its accessible name, and the mark is kept for the
+            case where the page can prove something is missing. */}
+        {endMissing ? (
+          <span className="is-end ctl-card-note">
+            <Mark
+              kind="partial"
+              say={`The task is ${stateWord(task.state)} and a terminal task writes a terminal event — none is on this page. The route orders events oldest-first, caps the page server-side and returns no page token, so the newest events are not reachable from this screen at all. The end of this task's history is missing, not absent.`}
+            />{' '}
+            {lastEvent === undefined
               ? 'ends early'
-              : `ends at ${eventKind(lastEvent)}, ${timeAgo(lastEvent.at)}`
-            : 'oldest first · cap unknown'}
-        </span>
+              : `ends at ${eventKind(lastEvent)}, ${timeAgo(lastEvent.at)}`}
+          </span>
+        ) : (
+          <span
+            className="is-end ctl-card-note"
+            aria-label="One page, oldest first. This screen asks for no page size, so the cap is whatever the deployment's default is, and the response says neither what it was nor how many events were left out — a page that looks complete is not evidence that it is."
+          >
+            oldest first · cap unknown
+          </span>
+        )}
       </div>
 
       {groups.map((g) => (
@@ -2918,7 +3126,7 @@ function grouped(events: TaskEvent[], attempts: AttemptRow[] | null): Group[] {
   ordered.forEach((a, i) => {
     groups.push({
       key: a.attempt_id,
-      label: `Attempt ${i + 1} · generation ${a.generation}`,
+      label: attemptLabel(i + 1, a.generation),
       events: byAttempt.get(a.attempt_id) ?? [],
     })
     byAttempt.delete(a.attempt_id)
