@@ -220,8 +220,8 @@ Plan: 9 to import, 1 to add, 0 to change, 2 to destroy.
   `projects/saga-agents-staging/roles/swarmSecretLister`, and its order is
   otherwise unchanged.
 * Destroying `deployer_roles["roles/iam.roleAdmin"]` removes only the
-  deployer's membership. The live binding also holds `user:bogdan@saga.xyz`
-  (read 2026-09-25), which stays.
+  deployer's membership. The live binding also holds one person's `user:`
+  account, the owner's (read 2026-09-25), which stays.
 
 **Type anything but `apply`** if the plan shows any of these:
 

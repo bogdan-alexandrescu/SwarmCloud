@@ -454,6 +454,15 @@ run "a_puller_role_that_can_push_is_refused" {
 # disagreed -- and step 2 would then be refused forever. The first run here
 # holds infra's output to that same literal, so a change to either side fails
 # one of the two (docs/mirrored-values.md).
+#
+# MUTATION-PROVEN IN CI (PR #150; each mutant a commit, reverted after):
+#   guard always true (`>= 0`)            -> the refusal run, terraform run 36149353518
+#   a missing output read as released     -> the refusal run, 36149579771
+#   bootstrap waits for another string    -> the control run, 36149731941
+#   infra writes another string           -> the marker run,  36149914326
+#   one permission dropped from a role    -> bootstrap_defines_the_eight_roles_..., 36150083233
+# The broker grant's own precondition has no mutant: it depends on the
+# secret_lister role, so while the roles refuse it is never evaluated.
 # ---------------------------------------------------------------------------
 
 run "terraform_infra_writes_the_marker_bootstrap_waits_for" {
