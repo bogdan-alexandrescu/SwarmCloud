@@ -10,9 +10,9 @@ issue-form renderer, and it reports a broken form in exactly one place: the
 template chooser. The reporter files a blank issue instead, or gives up, and
 nothing in CI ever notices. So the parts of GitHub's schema these forms depend
 on are asserted here -- required keys, element types, unique ids and labels,
-non-empty unique string options -- and so are the two rules that are this
-repository's own: every label a form applies is declared, and every repo path
-a form names exists.
+non-empty unique string options -- and so are the rules that are this
+repository's own: every label a form applies is declared, every repo path a
+form names exists, and an epic is filed with no task item in its body.
 
 THE "WHERE" LISTS FOLLOW THE NAV; THEY ARE NOT A SECOND COPY OF IT. The bug and
 feature forms ask where the reporter was, and for the web UI the honest answer
@@ -83,6 +83,13 @@ ROUTE_SUFFIX = re.compile(r" \(#([\w/-]+)\)$")
 #: Every other surface ends by saying where its code lives: `(apps/scheduler)`.
 PATH_SUFFIX = re.compile(r" \(([^()]+)\)$")
 NOT_SURE = "Not sure"
+
+#: The label on a form whose issue must be filed with no task item in its body.
+#: An epic closes on its COMMENTS (CLAUDE.md, "Issues"); a box in its body is one
+#: that no comment matches.
+INDEX_FREE_LABEL = "epic"
+#: A Markdown list item that GitHub renders as a task: `- [ ]`, `* [x]`, `1. [X]`.
+TASK_ITEM = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+\[[ xX]\]")
 
 #: UI surfaces that are NOT a tab in SECTIONS, each with the file and component
 #: that draws it. This is not a restatement of the nav: it is exactly the list
@@ -528,3 +535,71 @@ def test_every_invariant_a_form_cites_exists(path: Path) -> None:
     }
     wrong = sorted(n for n in cited if not 1 <= n <= count)
     assert not wrong, f"{path.name} cites invariants {wrong}; CONTRACT.md numbers 1-{count}"
+
+
+# --------------------------------------------------------------------------
+# An epic's body is not an index
+
+
+def _task_items_written_into_the_body(form: dict[str, Any]) -> list[str]:
+    """Every task item GitHub writes into a filed issue's body before anyone types a word.
+
+    What GitHub SUBMITS from a form is not what the form shows. A `markdown`
+    element is shown and never submitted, so the box shape an epic's preamble
+    illustrates is not in the filed body. A `checkboxes` element is always
+    submitted, as `### <label>` followed by one `- [X]` or `- [ ]` task item per
+    option -- a required acknowledgement is therefore a box that arrives ticked.
+    A prefilled `value` is submitted as it stands unless the reporter clears it
+    (inside a fenced block when `render` is set, where it is not a task). A
+    dropdown writes the option picked, as plain text.
+    """
+    out: list[str] = []
+    for i, el in enumerate(form.get("body") or []):
+        if not isinstance(el, dict):
+            continue
+        kind = el.get("type")
+        attrs = el.get("attributes") or {}
+        where = f"body[{i}] ({kind}) {attrs.get('label')!r}"
+        if kind == "checkboxes":
+            for opt in attrs.get("options") or []:
+                text = opt.get("label") if isinstance(opt, dict) else opt
+                out.append(f"{where}: checkbox {text!r}")
+            continue
+        written: list[str] = []
+        if kind in ("textarea", "input") and isinstance(attrs.get("value"), str) and not attrs.get("render"):
+            written = attrs["value"].splitlines()
+        elif kind == "dropdown":
+            written = [o for o in attrs.get("options") or [] if isinstance(o, str)]
+        out.extend(f"{where}: {line.strip()!r}" for line in written if TASK_ITEM.match(line))
+    return out
+
+
+def test_an_epic_is_filed_with_no_task_item_in_its_body() -> None:
+    """The comments are an epic's record; a box in its body is one no comment matches.
+
+    CLAUDE.md closes an epic by enumerating the boxes in its COMMENTS and
+    reconciling them against anything the body lists -- if the two disagree,
+    the epic is not closeable. A task item the form writes into every epic's
+    body therefore makes every epic unclosable by that procedure. Ticked on
+    arrival, it also reads as finished work to anyone who trusts the body over
+    the comments -- the failure CLAUDE.md cites from saga-prompt-lab's #871,
+    which closed on its body's index over two live defects the index never
+    listed. Prompt Lab's own epics (#1399) carry no task item in the body.
+
+    This holds the PROPERTY -- nothing the form submits is a task item -- not
+    the shape "has no checkboxes element", so a ticked box smuggled in as a
+    textarea's prefilled value fails here too.
+    """
+    epics = [p for p in FORMS if INDEX_FREE_LABEL in (_load(p).get("labels") or [])]
+    assert epics, (
+        f"no form applies the {INDEX_FREE_LABEL!r} label, so this check reads nothing; "
+        "CLAUDE.md's Issues section sends every wave's findings to one"
+    )
+    problems = {p.name: _task_items_written_into_the_body(_load(p)) for p in epics}
+    problems = {name: items for name, items in problems.items() if items}
+    assert not problems, (
+        "These forms write task items into every issue they file. An epic's boxes "
+        "belong in its comments; say the rule in a `markdown` element, which GitHub "
+        "shows and never submits.\n  "
+        + "\n  ".join(f"{name}: {item}" for name, items in problems.items() for item in items)
+    )
