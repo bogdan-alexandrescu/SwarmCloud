@@ -791,7 +791,9 @@ describe('Accounts draws a window with the shared track, not the five-cell bar (
       label: 'live',
       observed_at: now(),
       windows: {
-        five_hour: { utilization: 0.4237, resets_at: FAR, reset: false },
+        // 0.4375 is exact in binary, so the width is exactly 43.75% and the
+        // assertion below is about rounding, not about floating point.
+        five_hour: { utilization: 0.4375, resets_at: FAR, reset: false },
         seven_day: { utilization: 1, resets_at: FAR, reset: false },
       },
     }),
@@ -813,8 +815,8 @@ describe('Accounts draws a window with the shared track, not the five-cell bar (
     expect(document.querySelector('.acct-bar'), 'the five-cell bar is still drawn').toBeNull()
     const fill = accountCell('eng:live', '5h').querySelector<HTMLElement>('.ctl-util-fill')
     expect(fill, 'a live reading drew no track').not.toBeNull()
-    // Unrounded: 42.37, not the nearest fifth and not 42.
-    expect(fill!.style.width).toBe('42.37%')
+    // Unrounded: 43.75, not the nearest fifth (40) and not the figure's 44.
+    expect(fill!.style.width).toBe('43.75%')
     // No verdict below a spent window: there is no amber band on Accounts.
     expect(fill!.className.trim()).toBe('ctl-util-fill')
   })

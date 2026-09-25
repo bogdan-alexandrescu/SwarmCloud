@@ -2076,9 +2076,23 @@ def _chip_mark(*modifiers: str) -> tuple[_El, ...]:
 
 
 def _dot(*modifiers: str) -> tuple[_El, ...]:
-    """`<i class="ctl-dot ...">`, the mark without the chip."""
-    return (_El(tag="i", classes=frozenset({"ctl-dot", *modifiers}),
-                attrs=frozenset({"class", "aria-hidden"}), known=True),)
+    """`<i class="ctl-dot ...">`, the mark without the chip, in a plain parent.
+
+    The parent is KNOWN AND CLASSLESS on purpose. With an unknown parent, every
+    `X > i` rule in the sheet -- `.ctl-chip.is-warn > i`, `.liveness.live > i`,
+    `.pool .ctl-track > i` -- may reach an `<i>`, and this asked whether the
+    ok dot might be painted `--warn` by the chip's triangle rule. It failed on
+    exactly that on the first run after the stylesheet change (application
+    run 36136608375): a failure that was the test's own question, not the
+    product. The question here is what the PRIMITIVE paints
+    a bare ok dot; a screen that scopes a dot through its parent's class is not
+    that, and the fill guard above is where such a rule is looked for.
+    """
+    return (
+        _El(tag="i", classes=frozenset({"ctl-dot", *modifiers}),
+            attrs=frozenset({"class", "aria-hidden"}), known=True),
+        _El(tag="span", attrs=frozenset(), known=True),
+    )
 
 
 @pytest.mark.parametrize("theme", ["dark", "light"])
