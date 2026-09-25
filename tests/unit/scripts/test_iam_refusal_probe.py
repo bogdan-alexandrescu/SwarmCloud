@@ -771,4 +771,6 @@ def test_no_step_prints_the_project_policy_or_asks_for_a_token(tmp_path):
     assert SENTINEL.split(":", 1)[1] not in probe.summary_file.read_text()
     all_calls = Path(str(probe.state_file) + ".calls").read_text()
     assert "print-access-token" not in all_calls and "print-identity-token" not in all_calls
-    assert "print-access-token" not in SCRIPT.read_text()
+    # The code, not the header that says it never does this.
+    code = "\n".join(line for line in SCRIPT.read_text().splitlines() if not line.lstrip().startswith("#"))
+    assert "print-access-token" not in code and "print-identity-token" not in code
