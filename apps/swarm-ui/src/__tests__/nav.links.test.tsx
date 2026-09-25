@@ -24,7 +24,7 @@ import { join } from 'node:path'
 import { act, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { App, CAPACITY, INTERNAL_LINKS_MAY_NOT_USE_ALIASES, SECTIONS, WORK, fromHash } from '../App'
+import { App, CAPACITY, INTERNAL_LINKS_MAY_NOT_USE_ALIASES, SECTIONS, WORK, canonical, fromHash } from '../App'
 import { HELP_ROUTE } from '../help'
 
 /**
@@ -145,11 +145,18 @@ describe('internal navigation links', () => {
     for (const l of links()) {
       const [head, ...rest] = l.hash.split('/')
       if (head === HELP_ROUTE || rest.length === 0) continue
-      const wanted = rest.join('/')
       const r = resolve(l.hash)
       // A task drawer link carries an id, not a tab, and is resolved as one.
       if (r.taskId !== null) continue
-      if (r.tab !== wanted) dead.push(`${l.file}: #${l.hash} -> tab "${r.tab}"`)
+      // COMPARED WITH ITS OWN CANONICAL SPELLING, not with `r.tab` (OV-10). A
+      // list address -- `#work/running/recent/failed` -- resolves to the
+      // `running` tab plus a list state, so it names more than a tab and a tab
+      // comparison would call it dead. A link whose canonical spelling is
+      // itself resolved to exactly what it names; a mistyped one
+      // (`running/recent/faild`) falls back to the plain list, is rewritten,
+      // and is still reported here.
+      const want = canonical(r)
+      if (want !== l.hash) dead.push(`${l.file}: #${l.hash} -> #${want}`)
     }
     expect(dead, 'these named a pane that does not exist and fell back to the first one').toEqual([])
   })

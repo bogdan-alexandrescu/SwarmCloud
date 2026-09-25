@@ -4566,6 +4566,46 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
   color: var(--text-faint);
 }
 
+/* A FOOT'S CLAUSES ARE A RUN, AND THE SEPARATOR IS DRAWN, NEVER TYPED (OV-14).
+   A foot was one text run with " · " typed between clauses, and a flex item's
+   text wraps inside itself: at 390 the Overview's Spend foot broke across
+   three lines with a dot left at the end of two of them and a clause split in
+   half. Here each clause is its own element, `nowrap`, in a wrapping row:
+
+     - the dot is every clause-but-the-first's `::before`, absolutely placed
+       and centred in the column gap to its left, with empty alt text so it
+       is not read aloud;
+     - a clause that STARTS a wrapped line has its dot outside the run's left
+       edge, and `overflow-x: clip` removes it there -- so a dot never ends or
+       begins a line and no clause breaks inside itself. The vertical axis
+       stays visible: `clip`, unlike `hidden`, can be one axis alone, so
+       nothing above or below the run is cut.
+
+   A `.ctl-card-foot` child primitive. The Overview's five joined feet use it;
+   other screens adopt it when they are next touched. The gap is the run's own
+   step rather than the foot's, wide enough for the dot with air either side. */
+.ctl-foot-run {
+  display: flex;
+  flex-wrap: wrap;
+  flex: 1 1 100%;
+  min-width: 0;
+  column-gap: var(--ctl-s3);
+  row-gap: 0;
+  overflow-x: clip;
+  overflow-y: visible;
+}
+.ctl-foot-run > * {
+  position: relative;
+  white-space: nowrap;
+}
+.ctl-foot-run > * + *::before {
+  content: '·' / '';
+  position: absolute;
+  left: calc(var(--ctl-s3) / -2);
+  transform: translateX(-50%);
+  color: var(--text-faint);
+}
+
 /* -------------------------------------------------------------------------- */
 /* 9. Eyebrow                                                                  */
 /* -------------------------------------------------------------------------- */
@@ -5175,6 +5215,98 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
 .ctl-dial.is-zero::after {
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--text-faint) 55%, transparent);
 }
+/* THE TRACK DRAWS THE FIGURE NOW (OV-2), NOT THE COVERAGE: `--pct` is the
+   headline's own proportion, and `--measured` -- where `.is-partial` ends the
+   fill and starts the hatch -- is set to the same number. Coverage appears only
+   when it is partial, as the kit's `.ctl-mark.is-partial` under the track. */
+.ctl-dial > .ctl-mark {
+  order: 3;
+  align-self: flex-start;
+}
+
+/* STILL READING (OV-9). Neither a figure nor an absence: the kit's moving
+   surface -- `.ctl-pending`'s own tokens -- with no fill and no axis, and
+   above all NO HATCH. The hatch means a read failed, and drawing it over a
+   request still in flight is the falsehood design-system.md §8.7.1 names. The
+   figure slot holds the pending mark, never a digit. */
+.ctl-dial.is-pending::after {
+  background-color: var(--surface-2);
+  background-image: var(--ctl-pending);
+  background-size: 220% 100%;
+  border-left-width: 0;
+  animation: ctl-sweep 1.4s linear infinite;
+}
+/* The same reason `.ctl-pending` stops: a console is read by people who are tired. */
+@media (prefers-reduced-motion: reduce) {
+  .ctl-dial.is-pending::after { animation: none; }
+}
+
+/* THE ROW'S VERDICT ON THE HEADLINE (OV-12 b). The low-headroom alert moved
+   from the removed strip tile to the Headroom headline, and the headline takes
+   the verdict of the account row it names -- the same thresholds, so the two
+   cannot disagree -- drawn the way the row draws it: the measured part of the
+   track takes `.ctl-util-fill.is-warn/.is-bad`'s colour AND its stripe (the
+   texture is what survives greyscale), the rest keeps the track's surface, and
+   the figure stays in ink. Both fill layers are sized to `--pct` and start at
+   the origin. No new colour role. */
+.ctl-dial.is-warn::after {
+  background-color: var(--surface-2);
+  background-image:
+    repeating-linear-gradient(
+      45deg,
+      color-mix(in srgb, var(--warn) 50%, var(--surface-2)) 0 3px,
+      transparent 3px 7px
+    ),
+    linear-gradient(var(--warn), var(--warn));
+  background-size: calc(var(--pct, 0) * 1%) 100%;
+  background-repeat: no-repeat;
+}
+.ctl-dial.is-bad::after {
+  background-color: var(--surface-2);
+  background-image:
+    repeating-linear-gradient(
+      90deg,
+      color-mix(in srgb, var(--bad) 45%, var(--surface-2)) 0 2px,
+      transparent 2px 5px
+    ),
+    linear-gradient(var(--bad), var(--bad));
+  background-size: calc(var(--pct, 0) * 1%) 100%;
+  background-repeat: no-repeat;
+}
+/* A PARTIAL VERDICT KEEPS ITS HATCHED REMAINDER: the two verdict layers over
+   the hatch, which shows only where they stop. */
+.ctl-dial.is-partial.is-warn::after {
+  background-color: transparent;
+  background-image:
+    repeating-linear-gradient(
+      45deg,
+      color-mix(in srgb, var(--warn) 50%, var(--surface-2)) 0 3px,
+      transparent 3px 7px
+    ),
+    linear-gradient(var(--warn), var(--warn)),
+    var(--ctl-hatch);
+  background-size:
+    calc(var(--pct, 0) * 1%) 100%,
+    calc(var(--pct, 0) * 1%) 100%,
+    100% 100%;
+  background-repeat: no-repeat;
+}
+.ctl-dial.is-partial.is-bad::after {
+  background-color: transparent;
+  background-image:
+    repeating-linear-gradient(
+      90deg,
+      color-mix(in srgb, var(--bad) 45%, var(--surface-2)) 0 2px,
+      transparent 2px 5px
+    ),
+    linear-gradient(var(--bad), var(--bad)),
+    var(--ctl-hatch);
+  background-size:
+    calc(var(--pct, 0) * 1%) 100%,
+    calc(var(--pct, 0) * 1%) 100%,
+    100% 100%;
+  background-repeat: no-repeat;
+}
 /* Left, not centred: there is no ring to sit in the middle of any more, and a
    figure that starts where its track starts is one alignment the eye does not
    have to resolve. `nowrap` is half of the overflow fix -- see the box above. */
@@ -5604,6 +5736,43 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
   border-radius: 999px;
 }
 .ctl-metric.is-good .ctl-metric-value { color: var(--ok); }
+
+/* A LINKED FACT IS INK PLUS A RESTING UNDERLINE, ON ITS LABEL (OV-8).
+   `Metric` renders an <a> whenever it has an href, and the only cue those
+   anchors had was an underline under the FIGURE on hover -- so at rest, and on
+   a phone where nothing hovers, a fact that was a link looked exactly like one
+   that was not. design-system.md §1.3 is the rule (the owner took it over
+   redesign-v2 §5.5's "underline on hover"): a link is ink plus a resting
+   underline, and the accent is what happens when you point at it.
+
+   THE CUE IS ON THE LABEL, NEVER ON THE FIGURE. The fact's bottom edge is
+   reserved for the absent (dashed), unread (dashed warn) and alert (solid bad)
+   rules above; and the label is present in all four renderings -- a value, a
+   read in flight, an absence, a failed read -- while the figure is not, so the
+   cue is there in every state. The label keeps its faint ink at rest and takes
+   `.ctl-link`'s underline token and offset, so whatever the link primitive's
+   token becomes, this follows it. Its `::after` mark box is inline-block, and
+   an underline does not run under an inline-block.
+
+   The anchor draws no decoration of its own: one a browser propagates to every
+   descendant, the figure included, whatever the figure declares. */
+a.ctl-metric {
+  display: block;
+  text-decoration: none;
+  color: inherit;
+}
+a.ctl-metric .ctl-metric-label {
+  text-decoration-line: underline;
+  text-decoration-color: var(--line-soft);
+  text-underline-offset: 3px;
+}
+a.ctl-metric:hover .ctl-metric-label,
+a.ctl-metric:focus-visible .ctl-metric-label {
+  color: var(--info);
+  text-decoration-color: currentColor;
+}
+/* The whole fact is the target, so the whole fact takes the focus ring. */
+a.ctl-metric:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; border-radius: var(--ctl-radius-sm); }
 
 /* -------------------------------------------------------------------------- */
 /* 2. Utilisation bar                                                          */
@@ -7221,11 +7390,15 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
 @media (max-width: 560px) {
   /* §B6.1: THE GRID IS GONE, SO THERE IS NOTHING TO SET TO TWO COLUMNS.
      The strip is a wrapping run of facts (see §B6.1), which needs no
-     breakpoint: at 390pt it wraps to two or three lines by itself, each fact
-     staying exactly as wide as what it says. What this block still owns is the
-     GUTTER — --ctl-s5 of column air is a third of a phone's content width, so
-     it drops one step while the row gap holds, which is what keeps two wrapped
-     lines reading as one strip. */
+     breakpoint: at 390pt it wraps by itself when its facts do not fit on one
+     line, each fact staying exactly as wide as what it says, and a wrapped
+     line holding a single fact is accepted (design-system.md §6.2, §7.2; OV-6,
+     owner decision 2026-09-25). The Overview's strip holds two facts since
+     OV-12 and they fit on one line at 390; the inspector's `.ctl-metrics`
+     follows the same rule. What this block still owns is the GUTTER —
+     --ctl-s5 of column air is a third of a phone's content width, so it drops
+     one step while the row gap holds, which is what keeps two wrapped lines
+     reading as one strip. */
   .ctl-metrics { column-gap: var(--ctl-s3); row-gap: var(--ctl-s3); }
   /* §B4.1: `.ctl-metric-value { font-size: 20px }` IS GONE. There is no step
      between --t-title and --t-figure, and a metric tile's figure is
@@ -9826,13 +9999,17 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
   flex-wrap: wrap;
 }
 .ov-lead-say { flex: 1 1 260px; min-width: 0; }
-/* --t-title, which is the page's second rank and the rank this fact has. It
-   was --t-lead inside a card head, one step below, competing with four other
-   card heads of exactly the same size. */
+/* --t-lead AT 600, THE CARD-TITLE STEP, WHICH MATCHES ITS <h2> (OV-15). It was
+   --t-title -- the page <h1>'s own step -- so the page drew two headings of
+   one rank a line apart, the first repeating what the breadcrumb already says.
+   design-system.md §2's heading ladder gives --t-title to the h1 alone and an
+   in-page tie with it is a defect. The lead stays distinct from the card
+   titles by its position, its track and its unboxed region, which is how §2
+   ranks hierarchy: colour first, weight second, size last. */
 .ov-lead-title {
   margin: 0;
-  font-size: var(--t-title);
-  line-height: var(--lh-title);
+  font-size: var(--t-lead);
+  line-height: var(--lh-lead);
   font-weight: 600;
   letter-spacing: -0.01em;
   color: var(--text);
@@ -9865,22 +10042,12 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 /* THE WHOLE FACT IS THE DOORWAY. The answer to every figure on the strip is on
    another screen, and making the figure itself the link removes a step.
 
-   THE HOVER IS AN UNDERLINE, NOT A BORDER, because there is no border any
-   more (§B6.1). It is also not a transform: a 1px lift on an unboxed fact
-   moves the text and nothing else, which reads as a rendering glitch rather
-   than as an affordance. */
-a.ov-tile {
-  display: block;
-  text-decoration: none;
-  color: inherit;
-}
-a.ov-tile:hover .ctl-metric-value {
-  text-decoration: underline;
-  text-decoration-color: var(--line-soft);
-  text-underline-offset: 4px;
-}
-a.ov-tile:hover .ctl-metric-label { color: var(--text-dim); }
-a.ov-tile:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; border-radius: var(--ctl-radius-sm); }
+   ITS CUE IS THE PRIMITIVE'S, NOT THIS SCREEN'S (OV-8). This block used to
+   underline the FIGURE on hover and dim the label, which gave a phone no cue
+   at all and gave the fact two affordances on a pointer. `a.ctl-metric` in
+   the metric block now underlines the label at rest and takes the accent on
+   hover and focus, and carries the focus ring -- one affordance per target,
+   and every linked fact gets it, not only this strip's. */
 
 /* A MARK IS NOT A FIGURE, so the value slot stops being a figure-sized number
    the moment it stops holding one. ".ctl-metric.is-absent" already drops the
@@ -9992,10 +10159,12 @@ a.ov-tile:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; b
   font-variant-numeric: tabular-nums;
   color: var(--text);
 }
-/* A ring nobody could fill holds no figure, so what is in the middle is an em
+/* A track nobody could fill holds no figure, so what is in the slot is an em
    dash and it must not wear the figure step: at 30px a dash reads as a
-   quantity. */
-.ov-dial.is-unknown .ctl-dial-figure {
+   quantity. A track still READING holds the pending mark, for the same reason
+   (OV-9): no number is there yet, so nothing may have the number's size. */
+.ov-dial.is-unknown .ctl-dial-figure,
+.ov-dial.is-pending .ctl-dial-figure {
   font-size: var(--t-body);
   line-height: var(--lh-body);
   font-weight: 500;
@@ -10100,11 +10269,11 @@ a.ov-tile:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; b
    THEM. ".ov-dialrow" is a two-column flex built for a card whose whole body
    was one dial and one list; inside a half-width group it indented every
    account row by the dial's 96px plus the gap, so the two groups in this panel
-   started their rows 120px apart and read as unrelated. Stacked, the ring is
-   the group's own summary figure and the rows below it line up with the
-   profiles on the left. The dial itself is untouched -- it still carries the
-   coverage as a filled-versus-hatched arc, which is the fact the strip's
-   figure above does NOT carry. */
+   started their rows 120px apart and read as unrelated. Stacked, the headline
+   is the group's own summary figure and the rows below it line up with the
+   profiles on the left. Its track draws the figure itself (OV-2) and the
+   coverage appears only when partial, as the partial mark under the track;
+   it is the only place this figure is drawn at the figure step (OV-12). */
 .ov-group .ov-dialrow { display: block; }
 .ov-group .ov-dial { margin-bottom: var(--ctl-s2); }
 /* THE GROUP LABEL IS A RANK BELOW THE PANEL TITLE AND A RANK ABOVE THE ROWS.
@@ -10119,6 +10288,18 @@ a.ov-tile:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; b
   font: 600 var(--t-meta)/var(--lh-meta) var(--mono);
   color: var(--text-faint);
 }
+/* A GROUP HEAD WITH A DOORWAY (OV-12). The account group carries the link to
+   Accounts that the removed `Account headroom` tile used to be, so its head is
+   the label and the link on one line, the link at the far edge like a card
+   head's. The label keeps its own rank; only the spacing moves to the row. */
+.ov-grouphead-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--ctl-s2);
+  margin: 0 0 var(--ctl-s2);
+}
+.ov-grouphead-row > .ov-grouphead { margin: 0; }
 /* The group's body and provenance take the panel's inset from .ov-groups, so
    they set none of their own. */
 .ov-group .ctl-card-body { padding: 0; }
@@ -10173,6 +10354,35 @@ a.ov-tile:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; b
     padding: 4px 0;
   }
 }
+
+/* EVERY % CARRIES ITS WORD (OV-1), so an account row's figure is "~100% used"
+   at its longest -- ten characters of the row's mono face. The primitive's
+   78px and phone 84px bases were sized for a bare "~100%"; below 900px, where
+   the row is a flex line, the figure gets the ten characters it prints. Above
+   900 the grid override's `max-content` track already sizes it. */
+.ov-dialrow-rows .ctl-util > .ctl-util-figure { flex: 0 0 10ch; }
+
+/* ON A PHONE THE NOTE KEEPS ITS OWN LINE (OV-7). The primitive's phone rule
+   drops the "set by" column, and on these rows that column is the only place a
+   row says "sign in again", "pool is skipping it", paused, draining or which
+   pool binds -- so a skipped or paused account read as a plain figure. A row
+   whose column is a NOTE marks it (`UtilRow` `byNote`), and here it wraps to a
+   line of its own under the row. Only a note: a window name and an age stay
+   dropped, as the primitive decided. Placed after the primitive's phone rule
+   and more specific than it, so it wins at 390. */
+@media (max-width: 560px) {
+  .ov-group .ctl-util > .ctl-util-by.is-note {
+    display: block;
+    flex: 1 0 100%;
+    margin-left: 0;
+    text-align: left;
+    white-space: normal;
+  }
+}
+
+/* STILL READING, IN THE PAGE HEAD (OV-9): the scope arrives with the task
+   page, and an em dash while it is in flight said there was no scope. */
+.ov-reading { color: var(--text-faint); }
 
 /* "0 can start" is the one phrase on this screen that changes what someone
    does next, so it is not left as ordinary grey text. */
@@ -10278,7 +10488,7 @@ a.ov-tile:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; b
      a word or a disc that cannot  a hit area: an empty `::after`, centred on
                                    the control and at least 44x44, which takes
                                    the pointer and draws nothing
-   `a.ov-tile` already clears 44px and is not listed. The rail's items take
+   A linked fact (`a.ctl-metric`) already clears 44px and is not listed. The rail's items take
    height rather than a hit area because the strip clips vertically (it is a
    horizontal scroller), and a hit area outside a clip cannot be hit. The
    section links are in the phone block beside their own padding, where the

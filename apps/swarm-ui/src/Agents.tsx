@@ -7,6 +7,7 @@ import { useCallback, useEffect, useMemo, useState, type Dispatch, type SetState
 // status chips in this product and asked for one, and the rebuilt `.ctl-chip`
 // is only a rebuild if the screens stop hand-rolling their own.
 import { Chip, Em, Mark, type ChipTone } from './AgentDetail'
+import { RECENT_STATES, RECENT_STATE_OF, type AgentList, type RecentState } from './agentlist'
 import { loadTasks } from './api'
 import { DispatchChip } from './Dispatch'
 import { HelpCard } from './HelpCard'
@@ -126,16 +127,39 @@ export function pollInterval(page: TaskPage | null): number {
  * `taskId` is the agent the inspector has open, when one is (AG-17): App
  * passes it and the matching row is marked `aria-current`. OPTIONAL, so this
  * screen stands on its own and App can pass it whether or not it has yet.
+ *
+ * `list` AND `onList` ARE THE ADDRESS (OV-10). `list` is the tab and Recent
+ * state the hash names; a tab named there overrides `landingTab`, and a hash
+ * naming none leaves the tab and state where they are, so "land once, then
+ * stay" is unchanged. Every tab and segment click is reported through
+ * `onList` and App writes the address -- this screen never touches the hash.
+ * Both optional, for the same reason `taskId` is.
  */
 export function AgentsScreen({
   onOpen,
   taskId = null,
+  list = null,
+  onList,
 }: {
   onOpen: (taskId: string) => void
   taskId?: string | null
+  list?: AgentList | null
+  onList?: ((list: AgentList) => void) | undefined
 }) {
-  // `null` until a page has told the body where to land -- see `landingTab`.
-  const [tab, setTab] = useState<Tab | null>(null)
+  // `null` until a page -- or the address -- has told the body where to land;
+  // see `landingTab`.
+  const [tab, setTab] = useState<Tab | null>(list?.tab ?? null)
+  // The Recent tab's state filter. null is "all".
+  const [recentState, setRecentState] = useState<RecentState | null>(list?.state ?? null)
+  // THE ADDRESS WINS WHEN IT NAMES A TAB, and only then. Keyed on the two
+  // values rather than the object, which App rebuilds on every route.
+  const listTab = list?.tab ?? null
+  const listState = list?.state ?? null
+  useEffect(() => {
+    if (listTab === null) return
+    setTab(listTab)
+    setRecentState(listTab === 'recent' ? listState : null)
+  }, [listTab, listState])
   const [profile, setProfile] = useState<string>('')
   const [grouped, setGrouped] = useState(false)
   // WHEN THE ROWS ON SCREEN WERE READ. The row clock stops one interval past
@@ -187,6 +211,9 @@ export function AgentsScreen({
           readAt={readAt}
           tab={tab}
           setTab={setTab}
+          recentState={recentState}
+          setRecentState={setRecentState}
+          onList={onList}
           profile={profile}
           setProfile={setProfile}
           grouped={grouped}
@@ -219,6 +246,9 @@ function AgentsBody({
   readAt,
   tab,
   setTab,
+  recentState,
+  setRecentState,
+  onList,
   profile,
   setProfile,
   grouped,
@@ -230,6 +260,11 @@ function AgentsBody({
   readAt: number | null
   tab: Tab | null
   setTab: Dispatch<SetStateAction<Tab | null>>
+  /** The Recent tab's state filter (OV-10); null is "all". */
+  recentState: RecentState | null
+  setRecentState: (s: RecentState | null) => void
+  /** Where a tab or state click is reported, so App can write the address. */
+  onList: ((list: AgentList) => void) | undefined
   profile: string
   setProfile: (p: string) => void
   grouped: boolean
@@ -266,14 +301,42 @@ function AgentsBody({
     [page.tasks],
   )
 
+  // THE RECENT STATE FILTER (OV-10) applies on Recent alone, over the same
+  // loaded rows as every other count here -- the toolbar's scope qualifier
+  // already says so for all of them. Client-side ON PURPOSE: the Overview's
+  // failures check counts FAILED among these same newest 200, and a
+  // server-side FAILED list would be a different, larger population answering
+  // to the same number.
+  const stateFilter = shown === 'recent' ? recentState : null
   const rows = useMemo(
     () =>
       page.tasks
         .filter((t) => tabOf(t) === shown)
+        .filter((t) => stateFilter === null || t.state === RECENT_STATE_OF[stateFilter])
         .filter((t) => profile === '' || t.runner_profile === profile)
         .sort((a, b) => (a.updated_at < b.updated_at ? 1 : -1)),
-    [page.tasks, shown, profile],
+    [page.tasks, shown, stateFilter, profile],
   )
+
+  // The segment's counts, from the loaded Recent rows, like the tab badges.
+  const stateCounts = useMemo(() => {
+    const recent = page.tasks.filter((t) => tabOf(t) === 'recent')
+    return {
+      all: recent.length,
+      failed: recent.filter((t) => t.state === RECENT_STATE_OF.failed).length,
+      cancelled: recent.filter((t) => t.state === RECENT_STATE_OF.cancelled).length,
+      succeeded: recent.filter((t) => t.state === RECENT_STATE_OF.succeeded).length,
+    }
+  }, [page.tasks])
+
+  const chooseTab = (next: Tab) => {
+    setTab(next)
+    onList?.({ tab: next, state: next === 'recent' ? recentState : null })
+  }
+  const chooseState = (next: RecentState | null) => {
+    setRecentState(next)
+    onList?.({ tab: 'recent', state: next })
+  }
 
   // THE SCOPE OF EVERY FIGURE ABOVE, IN ONE QUALIFIER.
   //
@@ -300,12 +363,32 @@ function AgentsBody({
               role="tab"
               aria-selected={shown === t.id}
               aria-label={t.say}
-              onClick={() => setTab(t.id)}
+              onClick={() => chooseTab(t.id)}
             >
               {t.label} <span className="badge">{counts[t.id]}</span>
             </button>
           ))}
         </div>
+
+        {/* RECENT, BY STATE (OV-10). The same `.ctl-seg` as the tabs, but
+            pressed buttons rather than tabs: it filters the tab it sits
+            beside, it is not a fourth tab. Counts are from the loaded rows,
+            like the tab badges, and DEAD_LETTERED is never offered --
+            nothing writes it (`agentlist.ts`). */}
+        {shown === 'recent' && (
+          <div className="ctl-seg" role="group" aria-label="Recent, by state">
+            {([null, ...RECENT_STATES] as const).map((s) => (
+              <button
+                key={s ?? 'all'}
+                type="button"
+                aria-pressed={recentState === s}
+                onClick={() => chooseState(s)}
+              >
+                {s ?? 'all'} <span className="badge">{stateCounts[s ?? 'all']}</span>
+              </button>
+            ))}
+          </div>
+        )}
 
         <label className="ag-filter">
           <span className="ctl-eyebrow">profile</span>
@@ -349,7 +432,9 @@ function AgentsBody({
                   ? 'No agent is holding a pool slot right now. This is a real zero from a successful read, not a failed one.'
                   : shown === 'waiting'
                     ? 'Nothing is waiting. Waiting work costs nothing, so an empty tab here is normal.'
-                    : 'Nothing has finished in the loaded page.'
+                    : stateFilter !== null
+                      ? `No ${RECENT_STATE_OF[stateFilter]} agent is in the loaded page.`
+                      : 'Nothing has finished in the loaded page.'
               }
             />{' '}
             {/* THIS SCREEN'S ONE `?` (B7.4), AND ONLY ON THE EMPTY LIVE TAB
@@ -362,7 +447,7 @@ function AgentsBody({
                 empty Waiting or Recent tab, which make no claim about cost:
                 the capacity topic opened from those answered a question
                 nobody there was asking. `prose.runs.test.tsx` pins it. */}
-            nothing in {shown}
+            {stateFilter !== null ? `nothing ${stateFilter} in ${shown}` : `nothing in ${shown}`}
             {shown === 'live' && <HelpCard topic="capacity" />}
           </h3>
         </div>

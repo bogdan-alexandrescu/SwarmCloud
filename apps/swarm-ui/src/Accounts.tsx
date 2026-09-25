@@ -495,8 +495,13 @@ function Pool({
                   shouting -- and it shouts in one table rather than all of
                   them, which is the exact inconsistency the rule removes. */}
               <th role="columnheader" scope="col">Account</th>
-              <th role="columnheader" scope="col" className="n">5h</th>
-              <th role="columnheader" scope="col" className="n">7d</th>
+              {/* ONE POLARITY, AND THE WORD IS ON EVERY % (OV-1, owner
+                  decision 2026-09-25). These figures were always % used, under
+                  heads that did not say so, while the Overview's headline beside
+                  them said % left. The heads carry the word for their column,
+                  and the phone key below carries it for each cell. */}
+              <th role="columnheader" scope="col" className="n">5h used</th>
+              <th role="columnheader" scope="col" className="n">7d used</th>
               <th role="columnheader" scope="col" className="n">Clears</th>
               <th role="columnheader" scope="col">State</th>
             </tr>
@@ -606,8 +611,8 @@ function PoolRows({
           </button>
           <span className="raw">{account.account_id}</span>
         </th>
-        <WindowCell reading={five} window="five-hour" label="5h" />
-        <WindowCell reading={seven} window="seven-day" label="7d" />
+        <WindowCell reading={five} window="five-hour" label="5h used" />
+        <WindowCell reading={seven} window="seven-day" label="7d used" />
         <ClearsCell account={account} now={now} readAt={readAt} />
         <td role="cell" data-label="State" className="acct-statecell">
           {/* B4.6: THE STATE IS A MARK AND A WORD, NOT A BADGE (§6.6).
@@ -1221,9 +1226,10 @@ function AllWindows({ account, now }: { account: Account; now: number }) {
           <div className="split-row" key={k}>
             <span className="sr-name">{k}</span>
             <span className="sr-n">
+              {/* No column head over this figure, so the word goes on it (OV-1). */}
               {r.kind === 'never' || r.kind === 'absent'
                 ? '—'
-                : `${isProjected(r) ? '~' : ''}${Math.round(r.pct)}%`}
+                : `${isProjected(r) ? '~' : ''}${Math.round(r.pct)}% used`}
             </span>
             <ExtraClears name={k.replace(/_/g, '-')} w={w} now={now} />
           </div>

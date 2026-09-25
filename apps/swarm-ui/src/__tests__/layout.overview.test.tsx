@@ -764,7 +764,12 @@ describe('OV-9: while the checks read, the lead says so and draws no figure', ()
    */
   it('fills the checks track to the open checks, not to the ones that ran', async () => {
     const failedTask = liveTask({ id: 'task_failed0000000000000', state: 'FAILED', started_at: null })
-    const el = await mountWith({ loadTasks: ok({ tasks: [failedTask], next_page_token: null, tenant_id: 'eng' }) })
+    const el = await mountWith({
+      loadTasks: ok({ tasks: [failedTask], next_page_token: null, tenant_id: 'eng' }),
+      // A polled account, so the accounts check is clear and the one open
+      // check is the failures one.
+      loadAccountPool: ok(accountsPage([reading('fine', 0.1)])),
+    })
     const dial = el.querySelector('.ov-lead .ctl-dial')!
     // Eight checks, one of them open.
     expect(dial.getAttribute('style') ?? '').toMatch(/--pct:\s*13(;|$)/)
