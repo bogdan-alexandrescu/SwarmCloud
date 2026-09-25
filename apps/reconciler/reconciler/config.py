@@ -202,8 +202,8 @@ class ReconcilerConfig:
     #: platform can resume from.
     #:
     #: Seven days. The window exists to absorb a control-plane read that is
-    #: stale or wrong, not to bound storage: a pass runs every five minutes, so
-    #: a deletion here means roughly two thousand consecutive passes all agreed
+    #: stale or wrong, not to bound storage: a pass runs every minute, so a
+    #: deletion here means roughly ten thousand consecutive passes all agreed
     #: the referent no longer exists. It is also deliberately shorter than
     #: `artifact_retention_days` (14 in dev.tfvars, 90 by default) so that this
     #: collector, and not the bucket's blind lifecycle rule, is what usually
@@ -217,9 +217,9 @@ class ReconcilerConfig:
     checkpoint_scan_limit: int = 20000
 
     #: The sweep lists the whole tenants/ prefix, so it runs on its own, slower
-    #: clock than the five-minute reconciliation tick. Hourly: a checkpoint that
+    #: clock than the one-minute reconciliation tick. Hourly: a checkpoint that
     #: became collectable a moment ago costs pennies for another hour, whereas
-    #: twelve full-bucket listings an hour is a bill.
+    #: sixty full-bucket listings an hour is a bill.
     checkpoint_sweep_interval_seconds: int = 3600
 
     #: Label every resource this platform owns; GC refuses to touch anything
