@@ -1996,6 +1996,17 @@ export function whyAgent(task: Task): string {
         : ''
     return `${reasonCopy(b.reason)}${at}`
   }
+  // A READY TASK THAT WAS SENT BACK, AND NOTHING IS REFUSING IT (#149). Three
+  // writers return a task to READY after an attempt and put the cause in
+  // `last_error`: the worker, when a runner finished cleanly without an
+  // expected output (`control.fail_retryably`); the scheduler, when a dispatch
+  // failed (`return_to_ready_after_failed_dispatch`); and the reconciler's
+  // repair. With no pool refusing it, that cause is the whole answer to why
+  // the row has not moved: it is waiting for its next attempt. This said
+  // nothing, while the CLI printed the same field for the same row
+  // (`swarm_mcp.render.task_note`). Below the blocker branch on purpose: a
+  // pool refusing it NOW is the reason it has not moved since.
+  if (task.state === 'READY' && task.last_error) return task.last_error
   if (task.state === 'FAILED') return task.last_error ?? 'Failed.'
   if (task.state === 'CANCELLED') {
     if (!task.cancel_requested && task.depends_on?.length) {

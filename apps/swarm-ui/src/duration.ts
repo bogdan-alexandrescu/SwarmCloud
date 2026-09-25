@@ -12,8 +12,9 @@
 //
 // THE BOUNDARIES, AND WHERE EACH ONE IS READ FROM.
 //
-//   queue       task.created_at (the task's first attempt) or the `ready`
-//               event that re-queued the task (a retry)  ->  admission
+//   queue       task.created_at (the task's first attempt) or the event
+//               that re-queued the task (a retry): `ready`, or the
+//               worker's `retrying` to READY (`putBackInLine`)  ->  admission
 //   cold start  admission  ->  attempt.started_at
 //   run         attempt.started_at  ->  attempt.completed_at
 //
@@ -308,9 +309,26 @@ function firstOfType(
 }
 
 /**
+ * Whether this event is one that put the task back in line.
+ *
+ * `ready` is what the scheduler writes when it promotes a parked task and
+ * what the reconciler's repair writes. The WORKER's requeue (#149: a runner
+ * that finished cleanly without an expected output) is `retrying` with
+ * `detail.to_state: "READY"` (`control.fail_retryably`). Every other
+ * `retrying` is an IN-PLACE retry (a short provider wait, a credential
+ * reload): the same attempt carries on, the task never leaves RUNNING, and
+ * nothing was put back in line, so the state it names is what tells the two
+ * apart.
+ */
+function putBackInLine(e: TaskEvent): boolean {
+  if (e.type === 'ready') return true
+  return e.type === 'retrying' && e.detail?.['to_state'] === 'READY'
+}
+
+/**
  * The instant the task was put back in line for THIS attempt: the newest
- * `ready` event after the previous attempt existed and at or before this
- * admission. Null when no such event is on the page.
+ * requeue event (`putBackInLine`) after the previous attempt existed and at
+ * or before this admission. Null when no such event is on the page.
  */
 function requeuedAt(
   after: number,
@@ -319,7 +337,7 @@ function requeuedAt(
 ): number | null {
   let best: number | null = null
   for (const e of events ?? []) {
-    if (e.type !== 'ready') continue
+    if (!putBackInLine(e)) continue
     const t = instant(e.at)
     if (t === null || t <= after || t > upTo) continue
     if (best === null || t > best) best = t
@@ -433,7 +451,7 @@ export function phasesFor(
   const rows: AttemptPhases[] = []
   let undatable = 0
   // An instant at which the previous attempt already existed: the floor for
-  // the `ready` that re-queued this one.
+  // the event that re-queued this one.
   let previousExisted: number | null = null
   const eventsRead = events !== null
 
@@ -458,8 +476,8 @@ export function phasesFor(
     const runSeen = newestFor(a.attempt_id, 'run', events)
 
     // QUEUE. The first attempt waited from submission; a retry waited from
-    // the `ready` event that put the task back in line. With no such event on
-    // this page, a retry's queue has no start and is drawn as an absence --
+    // the event that put the task back in line (`putBackInLine`). With no
+    // such event on this page, a retry's queue has no start and is drawn as an absence --
     // NOT as starting at the previous attempt's end, which would fold the
     // retry back-off and any park into "queue".
     let queue: Segment
@@ -485,10 +503,10 @@ export function phasesFor(
               phase: 'queue',
               why:
                 i === 0
-                  ? `The task records ${counted} attempts and ${ordered.length} documents came back, so this may not be its first attempt, and the ready event that put it in line is not on this page. The wait before admission has no start.`
+                  ? `The task records ${counted} attempts and ${ordered.length} documents came back, so this may not be its first attempt, and the ready or retrying event that put it in line is not on this page. The wait before admission has no start.`
                   : eventsRead
-                    ? 'The ready event that put the task back in line for this attempt is not on this page of events, so the wait before admission has no start.'
-                    : 'The event read failed, so the ready event that put the task back in line for this attempt could not be looked for.',
+                    ? 'The ready or retrying event that put the task back in line for this attempt is not on this page of events, so the wait before admission has no start.'
+                    : 'The event read failed, so the ready or retrying event that put the task back in line for this attempt could not be looked for.',
             }
     }
     previousExisted = admitted ?? instant(a.created_at) ?? previousExisted
