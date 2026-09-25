@@ -2,31 +2,63 @@
 name: sc
 description: Show and interpret SwarmCloud cluster state — the subscription account pool and its 5-hour/7-day quota windows, pool ceilings and which pool binds each runner profile, agents running and queued, and what is wrong right now. Use when asked "what is the swarm doing", "how much quota is left", "why is my task queued", "is anything broken", "which account is nearly full", or before dispatching a long batch.
 allowed-tools:
-  - Bash(uv run sc:*)
-  - Bash(sc:*)
+  - Bash(uv run sc)
+  - Bash(uv run sc overview:*)
+  - Bash(uv run sc accounts:*)
+  - Bash(uv run sc agents:*)
+  - Bash(uv run sc capacity:*)
+  - Bash(uv run sc task:*)
+  - Bash(uv run sc trouble:*)
+  - Bash(uv run sc whoami:*)
+  - Bash(sc)
+  - Bash(sc overview:*)
+  - Bash(sc accounts:*)
+  - Bash(sc agents:*)
+  - Bash(sc capacity:*)
+  - Bash(sc task:*)
+  - Bash(sc trouble:*)
+  - Bash(sc whoami:*)
   - Bash(uv run swarm doctor:*)
   - Bash(uv run swarm profiles:*)
 ---
 
 # sc — SwarmCloud cluster state
 
-`sc` is read-only. It never writes, never refreshes a credential and never
-cancels anything, so it is always safe to run.
+`sc` is read-only towards the cluster. It never writes to it, never refreshes
+an account's credential and never cancels anything, so every view below is
+always safe to run.
+
+It reads **the developer's own deployment**, not one this plugin knows about:
+whatever they configured at install (`/plugin configure sc@swarmcloud`), or a
+context they added. `uv run sc whoami` prints which deployment, from where,
+and who they are on it. `sc login`, `sc logout` and `sc context` change the
+developer's own sign-in and which cluster every later call reaches — they are
+theirs to run, so **tell them the command; never run it yourself**. `sc login`
+opens a browser and waits for them.
+
+This skill is granted each **view** by name, not `sc` as a whole. The sign-in
+and context commands live under the same `sc` prefix, so a grant for all of
+`sc` would let this session sign the developer out or move every later
+dispatch to another cluster without asking.
 
 ## Which view
 
 | Question | Command |
 |---|---|
-| what is the swarm doing? | `uv run sc` |
+| what is the swarm doing? | `uv run sc` (or `uv run sc overview`) |
 | how much quota is left? which account? | `uv run sc accounts` |
 | why is my task queued? what is running? | `uv run sc agents` |
 | what is the real ceiling? | `uv run sc capacity` |
 | what did this agent produce? | `uv run sc task <id>` |
 | is anything broken? | `uv run sc trouble` |
+| which deployment, and who am I on it? | `uv run sc whoami` |
 | what may I actually run? | `uv run swarm profiles` |
 
 Add `--json` for the numbers, `--width N` to force a column count, `--ascii`
-for a terminal without the bar glyphs.
+for a terminal without the bar glyphs. Put them **after** the view's name —
+`uv run sc accounts --json`, `uv run sc overview --json` — because that is
+what this skill is granted. A flag written before the view's name works too,
+but asks the developer first.
 
 `uv run swarm profiles` is the odd one out, listed here because it is read-only
 and because it is the question people ask next. It reads the frozen catalogue
@@ -107,9 +139,15 @@ is down, and reporting either as the other sends someone to the wrong place.
 ## When sc cannot connect
 
 `sc` exits 1 and prints nothing to stdout, on purpose: a screen of dashes would
-look like a reading. Run `uv run swarm doctor` — it reports which of the four
-auth tiers this machine is on and what that tier can reach, which is almost
-always the real answer.
+look like a reading. Run `uv run swarm doctor` — it reports which deployment it
+resolved and from where, which auth tier this machine is on and what that tier
+can reach, which is almost always the real answer.
+
+**`sign-in required for <context>: run sc login`** is the commonest answer on a
+new machine and is not a fault: the deployment takes a signed-in developer and
+none is signed in. Tell the developer to run `uv run sc login` themselves (a
+browser window opens), then try again. Do not treat it as the cluster being
+unreachable, and do not look for another credential to use instead.
 
 ### "I cannot reach it" is not "it is down" — say the first one
 
@@ -127,7 +165,7 @@ Read the refusal, because the three of them mean three different things:
 
 | What comes back | What it means |
 |---|---|
-| **401, IAP error code 900** | IAP did not accept the token at all. A *user* credential cannot pass here: this deployment sets no `oauth2_client_id`, so IAP uses a Google-managed OAuth client and there is no audience a laptop can mint against. Set `SWARM_IMPERSONATE_SA` |
+| **401, IAP error code 900** | IAP did not accept the token at all. A gcloud *user* credential cannot pass: the deployment's IAP uses a Google-managed OAuth client, which admits only allowlisted programmatic clients. The developer signs in with `uv run sc login` (the deployment's Desktop OAuth client); CI sets `SWARM_IMPERSONATE_SA`. A 401 **after** `sc login` means the deployment has not allowlisted its own client — an operator's one-time step |
 | **403 that NAMES the caller** | IAP **authenticated** you and the principal is not on the list. One `roles/iap.httpsResourceAccessor` grant away — `frontend_iap_members` in `terraform/bootstrap/terraform.tfvars`, which the owner applies and CI does not |
 | **an HTML 404** | the wrong ADDRESS, not a missing route. Cloud Run's `*.run.app` hostname refuses everyone outside the VPC and renders the refusal as 404 |
 

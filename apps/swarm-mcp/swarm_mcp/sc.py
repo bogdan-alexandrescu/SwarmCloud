@@ -1,10 +1,26 @@
 """`sc` -- what the SwarmCloud cluster is doing right now, in one screen.
 
 WHY THIS IS A SEPARATE COMMAND FROM `swarm`. `swarm` is imperative: dispatch,
-tail, apply, integrate. `sc` is interrogative and read-only -- it never writes,
-never refreshes a credential and never cancels anything. Keeping the two apart
-means `sc` can be reached for without reading the flags first, which is the
-only way a status command gets used at the moment it is needed.
+tail, apply, integrate. `sc` is interrogative and read-only TOWARDS THE
+CLUSTER -- it never writes to it, never refreshes an account's credential and
+never cancels anything. Keeping the two apart means `sc` can be reached for
+without reading the flags first, which is the only way a status command gets
+used at the moment it is needed.
+
+IT ALSO SAYS WHICH CLUSTER, AND WHO YOU ARE ON IT (2026-09-25). `sc context`,
+`sc login`, `sc logout` and `sc whoami` are the `kubectl config` / `gh auth`
+half: which deployment this machine talks to (config.py) and the developer's
+own sign-in to it (signin.py). They write only the developer's OWN state -- a
+config file and a credential-store entry -- and never the cluster, so the
+promise above holds. No skill or slash command may grant them to a model:
+`sc login` opens a browser and blocks, `sc logout` revokes a sign-in, and
+`sc context use` moves every later call to another cluster. That is why the
+`sc` skill and `/sc` are granted each VIEW by name rather than `sc` as a
+prefix -- a prefix grant covers these too, and did until review caught it --
+and why `overview` exists as a named view: it is the one view a flag could
+not otherwise follow without the grant also matching `sc --json login`.
+`test_plugin_commands.py` compiles every grant the way Claude Code matches it
+and runs each command it allows through these parsers to see what it reaches.
 
 THE DIVISION OF LABOUR WITH render.py IS THE POINT. Everything in this file
 does I/O and decides nothing about presentation; everything in `render.py`
@@ -469,6 +485,260 @@ def _dump(snap: Snapshot, out) -> None:
 
 
 # --------------------------------------------------------------------------
+# Which deployment, and who you are on it
+# --------------------------------------------------------------------------
+
+
+def _resolve(args) -> Any:
+    """The deployment this command is about, or a SwarmError saying how to add one."""
+    from . import config
+
+    deployment = config.resolve(context=getattr(args, "context", None))
+    if deployment is None:
+        add = terminal_command(
+            "sc context add <name> --url https://<your deployment> --client-id <Desktop OAuth client id>"
+        )
+        raise SwarmError(
+            f"no SwarmCloud deployment is configured on this machine. Add one: `{add}` "
+            "-- or install the sc plugin, which asks for both"
+        )
+    return deployment
+
+
+def _read_secret_line() -> str:
+    """One line from stdin: the only way a secret enters this CLI.
+
+    Never an argument -- argv is what `ps` and shell history keep.
+    """
+    return (sys.stdin.readline() if sys.stdin is not None else "").strip()
+
+
+def _outranked(detection: Any, email: str) -> str:
+    """The warning for a machine where something ranks above the sign-in.
+
+    `auth.detect` puts SWARM_ID_TOKEN, the metadata server and
+    SWARM_IMPERSONATE_SA ahead of a sign-in, on purpose: CI sets them and
+    means them. But a developer who has one set and has just signed in will
+    otherwise believe every tool now acts as them, and nothing says it does
+    not until they happen to run `sc whoami`.
+    """
+    from . import auth
+
+    tier = detection.tier
+    if tier is auth.Tier.EXPLICIT:
+        who, remedy = "the token in SWARM_ID_TOKEN", "unset SWARM_ID_TOKEN"
+    elif tier is auth.Tier.METADATA:
+        who = "this machine's own service account (the GCP metadata server)"
+        remedy = "run `sc` from a machine outside GCP"
+    elif tier in (auth.Tier.IMPERSONATE, auth.Tier.IAP):
+        who = f"the service account {os.environ.get('SWARM_IMPERSONATE_SA', '').strip()}"
+        remedy = "unset SWARM_IMPERSONATE_SA"
+    else:
+        who, remedy = f"the {tier.value} tier", "see `swarm doctor`"
+    return (
+        f"warning     {detection.detail}, which ranks above a sign-in: the plugin's "
+        f"tools and every other `sc` and `swarm` command on this machine will act as "
+        f"{who}, not as you ({email}). To act as yourself, {remedy}; "
+        f"`{terminal_command('sc whoami')}` shows which identity is in use.\n"
+    )
+
+
+def cmd_login(_client, args, out) -> int:
+    from . import auth, credentials, signin
+
+    deployment = _resolve(args)
+    store = credentials.store()
+    secret = _read_secret_line() if getattr(args, "client_secret_stdin", False) else None
+    claims = signin.login(
+        deployment,
+        store=store,
+        client_secret=secret or None,
+        notify=lambda line: print(line, file=sys.stderr),
+    )
+    email = claims.get("email") or "(the token carried no email)"
+    out.write(f"signed in to {deployment.context} ({deployment.url}) as {email}\n")
+    out.write(f"your sign-in is kept in {store.describe()}\n")
+    detection = auth.detect(deployment)
+    if detection.tier is not auth.Tier.SIGNED_IN:
+        out.write(_outranked(detection, email))
+    # ONE CALL NOW, so the developer learns at sign-in -- not at their first
+    # dispatch -- whether this deployment admits the token. A 401 here is the
+    # deployment not having allowlisted its own Desktop client, and the
+    # message SwarmClient raises says so.
+    #
+    # WITH THE SIGN-IN IT IS CHECKING, whatever `detect` would pick. Left to
+    # detect, a machine with SWARM_IMPERSONATE_SA, SWARM_ID_TOKEN or a
+    # metadata server sent THAT credential, and "signed in" was then printed
+    # over the service account's tenant with exit 0 -- even where IAP had not
+    # allowlisted the Desktop client, which is the one thing this call exists
+    # to find out (review of PR #61, 2026-09-25).
+    try:
+        with SwarmClient(deployment=deployment, tier=auth.Tier.SIGNED_IN) as api:
+            me = api.request("GET", "/v1/tenants/me") or {}
+    except SwarmError as exc:
+        out.write(f"but {deployment.url} did not accept it: {exc}\n")
+        return EXIT_FAIL
+    out.write(f"tenant      {me.get('tenant_id') or '(not reported)'}\n")
+    return EXIT_OK
+
+
+def cmd_logout(_client, args, out) -> int:
+    from . import signin
+
+    deployment = _resolve(args)
+    if signin.logout(deployment):
+        out.write(
+            f"signed out of {deployment.context}; the refresh token was revoked and forgotten\n"
+        )
+    else:
+        out.write(f"not signed in to {deployment.context}; nothing to do\n")
+    return EXIT_OK
+
+
+def cmd_whoami(_client, args, out) -> int:
+    """Context, URL, where that came from, the tier, the principal, the tenant.
+
+    Every field is filled from a READ: the principal from the signed-in ID
+    token (or from the API, on a tier without one), the tenant from
+    `/v1/tenants/me`. A field that could not be read is left out and the
+    reason printed, because a blank reads as "none".
+    """
+    from . import auth, credentials, signin
+
+    shown: dict[str, Any] = {
+        "context": None, "url": None, "source": None, "current": None,
+        "tier": None, "credential_store": None, "principal": None,
+        "tenant": None, "error": None,
+    }
+    code = EXIT_OK
+    try:
+        deployment = _resolve(args)
+        shown.update(
+            context=deployment.context, url=deployment.url,
+            source=deployment.source, current=deployment.current,
+        )
+        tier = auth.detect(deployment).tier
+        shown["tier"] = tier.value
+        if tier is auth.Tier.SIGNED_IN:
+            shown["credential_store"] = credentials.store().describe()
+            shown["principal"] = signin.SignedIn(deployment).claims().get("email")
+        with SwarmClient(deployment=deployment) as api:
+            me = api.request("GET", "/v1/tenants/me") or {}
+        shown["tenant"] = me.get("tenant_id")
+        shown["principal"] = shown["principal"] or me.get("email")
+    except SwarmError as exc:
+        shown["error"] = str(exc)
+        code = EXIT_FAIL
+
+    if getattr(args, "json", False):
+        out.write(json.dumps(shown, indent=2) + "\n")
+        return code
+    labels = (
+        ("context", "context"), ("url", "url"), ("source", "from"), ("tier", "tier"),
+        ("credential_store", "sign-in in"), ("principal", "principal"), ("tenant", "tenant"),
+    )
+    for field, label in labels:
+        if shown[field] is None:
+            continue
+        value = shown[field]
+        if field == "context" and shown["current"]:
+            value = f"{value}  (current)"
+        out.write(f"{label:<11} {value}\n")
+    if shown["error"]:
+        out.write(f"{'problem':<11} {shown['error']}\n")
+    return code
+
+
+def cmd_context_add(_client, args, out) -> int:
+    from . import config, credentials
+
+    context, created = config.add_context(args.name, args.url, client_id=args.client_id)
+    if args.client_secret_stdin:
+        secret = _read_secret_line()
+        if not secret:
+            raise SwarmError("--client-secret-stdin was given and stdin held no secret")
+        store = credentials.store()
+        store.set(credentials.key(context.name, credentials.CLIENT_SECRET), secret)
+        out.write(f"client secret kept in {store.describe()}\n")
+    if args.use:
+        config.use_context(context.name)
+    current = config.load().current == context.name
+    out.write(
+        f"{'added' if created else 'updated'} context {context.name} -> {context.url}"
+        + ("  (current)" if current else "")
+        + "\n"
+    )
+    if context.oauth_client_id:
+        login = "sc login" if current else f"sc login --context {context.name}"
+        out.write(f"next: `{terminal_command(login)}`\n")
+    return EXIT_OK
+
+
+def cmd_context_use(_client, args, out) -> int:
+    from . import config
+
+    context = config.use_context(args.name)
+    out.write(f"current context: {context.name} -> {context.url}\n")
+    return EXIT_OK
+
+
+def cmd_context_list(_client, args, out) -> int:
+    from . import config, credentials
+
+    loaded = config.load()
+    try:
+        store = credentials.store()
+    except SwarmError:
+        store = None
+
+    def _signed_in(name: str) -> bool | None:
+        """WHETHER, never with what: the value read here is not kept or shown."""
+        if store is None:
+            return None
+        try:
+            return bool(store.get(credentials.key(name, credentials.REFRESH_TOKEN)))
+        except SwarmError:
+            return None
+
+    rows = [
+        {
+            "name": c.name,
+            "url": c.url,
+            "oauth_client_id": c.oauth_client_id or None,
+            "current": c.name == loaded.current,
+            "signed_in": _signed_in(c.name) if c.oauth_client_id else False,
+        }
+        for c in sorted(loaded.contexts.values(), key=lambda c: c.name)
+    ]
+    if getattr(args, "json", False):
+        out.write(json.dumps({"path": str(loaded.path), "contexts": rows}, indent=2) + "\n")
+        return EXIT_OK
+    if not rows:
+        add = terminal_command("sc context add <name> --url https://<deployment>")
+        out.write(f"no contexts in {loaded.path}. Add one: `{add}`\n")
+        return EXIT_OK
+    width = max(len(r["name"]) for r in rows)
+    out.write(f"  {'NAME':<{width}}  {'SIGNED IN':<9}  URL\n")
+    for r in rows:
+        signed = {True: "yes", False: "no", None: "?"}[r["signed_in"]]
+        if not r["oauth_client_id"]:
+            signed = "-"
+        mark = "*" if r["current"] else " "
+        out.write(f"{mark} {r['name']:<{width}}  {signed:<9}  {r['url']}\n")
+    return EXIT_OK
+
+
+def cmd_context_remove(_client, args, out) -> int:
+    from . import config
+
+    removed = config.remove_context(args.name)
+    out.write(
+        f"removed context {removed.name} ({removed.url}) and the credentials kept for it\n"
+    )
+    return EXIT_OK
+
+
+# --------------------------------------------------------------------------
 # Parser
 # --------------------------------------------------------------------------
 
@@ -506,6 +776,11 @@ def _common(parser: argparse.ArgumentParser, *, root: bool) -> None:
     parser.add_argument(
         "--json", action="store_true", help="the data, unformatted", **default(False)
     )
+    parser.add_argument(
+        "--context",
+        help="which configured deployment to use (see `sc context list`)",
+        **default(None),
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -525,6 +800,14 @@ def build_parser() -> argparse.ArgumentParser:
     _common(parser, root=True)
     parser.set_defaults(func=cmd_overview)
     sub = parser.add_subparsers(dest="command")
+
+    # THE BARE COMMAND, UNDER A NAME. `sc` alone is the overview, and a flag
+    # can only follow it at the root -- `sc --json` -- where a permission rule
+    # that allows it (`sc --json *`) also allows `sc --json login`. A named
+    # view takes its flags after the name, so it can be granted on its own.
+    o = sub.add_parser("overview", help="everything at once (the same as `sc` alone)")
+    _common(o, root=False)
+    o.set_defaults(func=cmd_overview)
 
     a = sub.add_parser("accounts", help="the account pool: 5H, 7D, when it clears, state")
     _common(a, root=False)
@@ -547,14 +830,76 @@ def build_parser() -> argparse.ArgumentParser:
     _common(r, root=False)
     r.set_defaults(func=cmd_trouble)
 
+    # -- which deployment, and who you are on it -------------------------
+    li = sub.add_parser(
+        "login", help="sign in to the current deployment as yourself (a browser window opens)"
+    )
+    _common(li, root=False)
+    li.add_argument(
+        "--client-secret-stdin", action="store_true",
+        help="read the Desktop OAuth client secret from stdin instead of asking",
+    )
+    li.set_defaults(func=cmd_login, no_client=True)
+
+    lo = sub.add_parser("logout", help="forget and revoke your sign-in to the current deployment")
+    _common(lo, root=False)
+    lo.set_defaults(func=cmd_logout, no_client=True)
+
+    wh = sub.add_parser("whoami", help="the context, URL, principal and tenant this machine uses")
+    _common(wh, root=False)
+    wh.set_defaults(func=cmd_whoami, no_client=True)
+
+    cx = sub.add_parser(
+        "context", help="the deployments this machine knows: add, use, list, remove"
+    )
+    cx_sub = cx.add_subparsers(dest="context_command", required=True)
+
+    ca = cx_sub.add_parser("add", help="add or update a deployment")
+    ca.add_argument("name")
+    ca.add_argument(
+        "--url", required=True, help="the deployment's address, e.g. https://swarm.example.com"
+    )
+    ca.add_argument(
+        "--client-id", default="",
+        help="its Desktop OAuth client id (needed for `sc login` at an IAP front door)",
+    )
+    ca.add_argument(
+        "--client-secret-stdin", action="store_true",
+        help="read that client's secret from stdin into the credential store (never an argument)",
+    )
+    ca.add_argument("--use", action="store_true", help="make it the current context")
+    ca.set_defaults(func=cmd_context_add, no_client=True)
+
+    cu = cx_sub.add_parser("use", help="make a context current")
+    cu.add_argument("name")
+    cu.set_defaults(func=cmd_context_use, no_client=True)
+
+    cl = cx_sub.add_parser("list", help="every context, which is current, which are signed in")
+    cl.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
+    cl.set_defaults(func=cmd_context_list, no_client=True)
+
+    cr = cx_sub.add_parser("remove", help="remove a context and the credentials kept for it")
+    cr.add_argument("name")
+    cr.set_defaults(func=cmd_context_remove, no_client=True)
+
     return parser
 
 
 def main(argv: list[str] | None = None, out=None) -> int:
     args = build_parser().parse_args(argv)
     stream = out or sys.stdout
+    if getattr(args, "no_client", False):
+        # Sign-in and contexts exist to fix a connection that cannot be made,
+        # so making one first would stop them running exactly when needed.
+        try:
+            return args.func(None, args, stream)
+        except SwarmError as exc:
+            print(f"sc: {exc}", file=sys.stderr)
+            return EXIT_FAIL
+        except KeyboardInterrupt:  # pragma: no cover
+            return 130
     try:
-        with SwarmClient() as client:
+        with SwarmClient(context=args.context) as client:
             return args.func(client, args, stream)
     except SwarmError as exc:
         # The connection itself failed, so there is no snapshot to mark up.

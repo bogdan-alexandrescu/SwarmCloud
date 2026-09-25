@@ -531,6 +531,13 @@ _ADDRESS_VARS = {
     "SWARM_API_URL",
     "API_URL",
     "ENVIRONMENT",
+    # Since #61 the bridge also takes its deployment from these, and reads
+    # tfvars only in developer mode (SWARM_MCP_CONFIG_FROM=repo), which the
+    # escape-hatch probe below turns on for itself and nothing else does.
+    "SWARM_URL",
+    "SWARM_CONTEXT",
+    "SWARM_MCP_CONFIG_FROM",
+    "SWARM_PLUGIN_DEPLOYMENT_URL",
 }
 
 
@@ -659,6 +666,12 @@ def test_the_bridge_installs_from_git_the_way_the_plugin_fetches_it(tmp_path):
     # in tests/unit/mcp/test_bridge_outside_a_checkout.py.
     front_door = _tfvars_front_door()
     probe_env = {key: value for key, value in env.items() if key not in _ADDRESS_VARS}
+    # Both probes in DEVELOPER MODE, the only mode in which the bridge reads
+    # tfvars at all since #61: the escape hatch must then find this checkout's
+    # front door, and the git install, asked the same, must find none to read.
+    # Outside developer mode no tfvars are read by either; that half is held
+    # offline (tests/unit/mcp/test_contexts.py watches every file opened).
+    probe_env["SWARM_MCP_CONFIG_FROM"] = "repo"
     readings: dict[str, dict] = {}
     for label, from_value in runs:
         args = list(declared["args"])

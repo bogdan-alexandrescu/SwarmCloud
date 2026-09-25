@@ -985,7 +985,28 @@ def serve(stdin=None, stdout=None) -> int:
     return 0
 
 
+def seed_plugin_config() -> None:
+    """Write the plugin's deployment where `sc login` in a terminal can find it.
+
+    Claude Code hands this process the plugin's `userConfig` in its
+    environment; a terminal never sees it. So at start-up the non-secret half
+    goes into the user's config file and the client secret into the credential
+    store (config.seed_from_plugin). Best effort: this process reads the
+    plugin's values from its own environment whether or not that write
+    succeeds, so a read-only home directory costs the terminal its shortcut,
+    not the session its tools. The one line it prints goes to STDERR -- stdout
+    is the JSON-RPC channel, and a stray line there breaks the protocol.
+    """
+    from . import config
+
+    try:
+        config.seed_from_plugin()
+    except Exception as exc:  # noqa: BLE001 - never fatal; see above
+        print(f"swarm-mcp: could not save the plugin's deployment for the terminal: {exc}", file=sys.stderr)
+
+
 def main() -> int:
+    seed_plugin_config()
     return serve()
 
 

@@ -1,10 +1,17 @@
 """The SwarmCloud API, from outside the platform.
 
-IDENTITY IS BORROWED, NOT REINVENTED. The API sits behind IAP, so every request
-needs a Google-signed ID token, and `scripts/lib/common.sh::id_token` already
-knows the four places one can come from. Re-deriving that here would be a fifth
-place for the rule to drift, so this asks `gcloud` the same question the shell
-does and honours the same `SWARM_ID_TOKEN` override.
+WHICH API is the user's to say, not this repository's: `config.py` resolves a
+deployment from `--context`, the environment, the plugin's userConfig or the
+current context, and reads this checkout's tfvars only in developer mode
+(SWARM_MCP_CONFIG_FROM=repo). See that module for the order.
+
+IDENTITY IS BORROWED WHERE IT CAN BE, AND SIGNED IN WHERE IT CANNOT. For CI and
+in-VPC callers the four sources `scripts/lib/common.sh::id_token` knows are
+used as they always were -- this asks `gcloud` the same question the shell does
+and honours the same `SWARM_ID_TOKEN` override. A developer at an IAP front
+door signs in with the deployment's Desktop OAuth client (`sc login`,
+signin.py), because no gcloud user credential passes a Google-managed IAP
+client.
 
 NOTHING IS CACHED TO DISK. An ID token is a bearer credential with an hour of
 life. It lives in this process and nowhere else.
@@ -171,7 +178,8 @@ def front_door_host() -> str:
     session uses was the wrong one.
 
     THREE SOURCES, IN THE SAME ORDER `scripts/lib/common.sh::front_door_host`
-    uses them, because a second order would be a second answer:
+    uses them, because a second order would be a second answer -- the second
+    of them ONLY when SWARM_MCP_CONFIG_FROM=repo (developer mode; see below):
 
       1. `SWARM_API_HOST` or `API_HOST` -- the operator, or a test. Both
          spellings, for the same reason `resolve_api_url` takes both `SWARM_`
@@ -205,6 +213,17 @@ def front_door_host() -> str:
         value = os.environ.get(name, "").strip()
         if value:
             return value.removeprefix("https://").removeprefix("http://").rstrip("/")
+
+    # DEVELOPER MODE ONLY, since 2026-09-25. Read unconditionally, this is what
+    # pointed every installed `sc` plugin at the owner's deployment: the
+    # hostname in Track C's tfvars is THIS repository's deployment, not the
+    # user's. `config.py` is where a user's deployment comes from now, and
+    # `tests/unit/mcp/test_contexts.py` holds this gate with an audit hook
+    # that fails on any open of a tfvars file outside the mode.
+    from .config import repo_mode
+
+    if not repo_mode():
+        return ""
 
     environment = os.environ.get("ENVIRONMENT", "").strip() or "dev"
     tfvars = _repo_root() / "terraform" / "environments" / environment / f"{environment}.tfvars"
@@ -389,6 +408,15 @@ def _explain_json(parsed: Any, stripped: str) -> str:
     return stripped[:300]
 
 
+def _login_command() -> str:
+    """`sc login`, spelled so it runs -- through `follow.terminal_command`, the
+    package's one spelling of a command. Imported here, not at the top:
+    `follow` imports this module."""
+    from .follow import terminal_command
+
+    return terminal_command("sc login")
+
+
 def _explain(status: int, body: str) -> str:
     """Turn an edge's refusal into the sentence it was trying to be."""
     stripped = body.strip()
@@ -397,15 +425,16 @@ def _explain(status: int, body: str) -> str:
         # the remedy does not; the remedy says what to do about it, which
         # Google's does not. Both, or the reader has half an answer.
         return (
-            f"IAP refused this before the API saw it -- {stripped[:200]}. THE FRONT "
-            "DOOR TAKES AN OAUTH ACCESS TOKEN, not a Google ID token: an ID token "
-            "minted for anything other than the IAP OAuth client id reads as "
-            "`Invalid JWT audience`, and a deployment whose `iap` block sets no "
-            "oauth2_client_id has a Google-managed client and therefore no audience "
-            "to mint one for at all -- which is this repository's own frontend "
-            "module. Set SWARM_IMPERSONATE_SA to a service account holding "
-            "roles/iap.httpsResourceAccessor; SWARM_IAP_CLIENT_ID applies only where "
-            "the deployment configured its own OAuth client"
+            f"IAP refused this before the API saw it -- {stripped[:200]}. The front "
+            "door takes two credentials and no others: an ID token minted for an "
+            "OAuth client IAP allowlists as a programmatic client -- which is what "
+            f"`{_login_command()}` mints, with the deployment's Desktop client -- or a service "
+            "account's OAuth ACCESS TOKEN (SWARM_IMPERSONATE_SA, for CI), whose "
+            "principal holds roles/iap.httpsResourceAccessor. An ID token for any "
+            "other audience reads as `Invalid JWT audience`: a deployment whose "
+            "`iap` block sets no oauth2_client_id has a Google-managed client, and "
+            "only allowlisted clients' tokens pass it. SWARM_IAP_CLIENT_ID applies "
+            "only where the deployment configured its own OAuth client"
         )
 
     if 300 <= status < 400:
@@ -439,8 +468,9 @@ def _explain(status: int, body: str) -> str:
             "the list -- roles/iap.httpsResourceAccessor, granted through "
             "frontend_iap_members in terraform/bootstrap/terraform.tfvars, which "
             "the owner applies and CI does not. A 401 means the token itself was not "
-            "accepted: set SWARM_IMPERSONATE_SA, since no OAuth client a user "
-            "credential can mint from is one a Google-managed IAP client takes. "
+            "accepted: a gcloud user credential never is by a Google-managed IAP "
+            "client, so sign in with the deployment's Desktop OAuth client "
+            f"(`{_login_command()}`), or set SWARM_IMPERSONATE_SA in CI. "
             "SWARM_IAP_CLIENT_ID applies only where the deployment configured its "
             "own OAuth client"
         )
@@ -492,6 +522,28 @@ def _open(request: urllib.request.Request, timeout: int):
 class _Token:
     value: str
     minted_at: float
+    #: How long `value` may be reused. The usual 45 minutes, except for a token
+    #: this process did not mint fresh -- see `_reuse_for`.
+    ttl: float = _TOKEN_TTL_SECONDS
+
+
+def _reuse_for(token: str) -> float:
+    """How long a token handed over by gcloud may be reused: until five minutes
+    before its own `exp`, never longer than the usual TTL, and not at all when
+    it carries no `exp` that can be read.
+
+    `gcloud auth print-identity-token` returns the identity token it already
+    holds, which can have minutes left. Reusing that for 45 minutes would turn
+    a long `swarm tail` into a 401 at the moment it expired -- a failure that
+    reads like a permission problem.
+    """
+    from .signin import decode_claims
+
+    try:
+        expires = float(decode_claims(token).get("exp") or 0)
+    except (SwarmError, TypeError, ValueError):
+        return 0.0
+    return max(0.0, min(float(_TOKEN_TTL_SECONDS), expires - time.time() - 5 * 60))
 
 
 def unwrap_task(payload: Any) -> dict[str, Any]:
@@ -560,14 +612,35 @@ class SwarmClient:
         *,
         audience: str | None = None,
         connect: bool = True,
+        context: str | None = None,
+        deployment: Any = None,
+        tier: Any = None,
     ) -> None:
-        from . import auth as _auth  # local: avoids a circular import at module load
+        # Local imports: `auth`, `config` and `signin` all import this module,
+        # so importing them at load time would be a cycle.
+        from . import auth as _auth
+        from . import config as _config
 
-        self.detection = _auth.detect()
+        #: An explicit `base_url` is taken as given and resolves nothing -- it
+        #: is how tests and in-VPC callers name an exact address. Otherwise the
+        #: deployment is resolved from --context, the environment, the plugin
+        #: and the config file (config.py), and never from this repository
+        #: unless developer mode is on.
+        self._explicit_url = (base_url or "").strip().rstrip("/") or None
+        if deployment is None and self._explicit_url is None:
+            deployment = _config.resolve(context=context)
+        self.deployment = deployment
+        #: `tier` is for the one caller that must test a SPECIFIC credential
+        #: whatever else this machine has: `sc login`, checking the sign-in it
+        #: just made. Everything else takes what `detect` finds.
+        self.detection = (
+            _auth.Detection(tier, "chosen by the caller") if tier is not None
+            else _auth.detect(deployment)
+        )
         self.tier = self.detection.tier
         self._proxy: _auth.Proxy | None = None
         self._token: _Token | None = None
-        self._explicit_url = base_url or os.environ.get("SWARM_API_URL", "").strip() or None
+        self._signed_in: Any = None
 
         if self.tier is _auth.Tier.IAP:
             # The audience IAP accepts is its OAuth client id, never the
@@ -586,24 +659,50 @@ class SwarmClient:
     def connect(self) -> None:
         from . import auth as _auth
 
-        # THE FRONT DOOR BEATS THE PROXY, and the order is the whole fix.
-        # `gcloud run services proxy` calls the *.run.app address directly, and
-        # on a `team` deployment that address refuses everything outside the VPC
-        # -- so on the proxy tier this object used to spend 25 seconds starting a
-        # subprocess in order to reach a host that cannot answer, while the load
-        # balancer that CAN was sitting in Track C's tfvars unread.
-        front_door = "" if self._explicit_url else front_door_host()
-        if front_door:
-            self.base_url = f"https://{front_door}"
-        elif self.tier is _auth.Tier.PROXY and not self._explicit_url:
+        # A CONFIGURED DEPLOYMENT BEATS THE PROXY, and the order is the fix it
+        # always was. `gcloud run services proxy` calls the *.run.app address
+        # directly, and on a `team` deployment that address refuses everything
+        # outside the VPC -- so the proxy is only for the one shape left over:
+        # nothing configured, and PROJECT_ID naming a solo deployment. A
+        # CONFIGURED solo deployment on user credentials is sent gcloud's own
+        # identity token instead (`_id_token`), which needs no service name,
+        # region or project to find.
+        deployment = self.deployment
+        if self._explicit_url:
+            self.base_url = self._explicit_url
+        elif deployment is not None:
+            self.base_url = deployment.url.rstrip("/")
+        elif not os.environ.get("PROJECT_ID", "").strip():
+            # NOTHING CONFIGURED. This used to fall back to `gcloud config get-
+            # value project` and start a proxy to whatever `swarm-api` that
+            # project held -- a deployment the user never named. A client that
+            # is told nothing says what to tell it.
+            from .follow import terminal_command
+
+            add = terminal_command(
+                "sc context add <name> --url https://<your deployment> "
+                "--client-id <Desktop OAuth client id>"
+            )
+            raise SwarmError(
+                f"no SwarmCloud deployment is configured. Add one with `{add}` "
+                "(the sc plugin asks for it at install: /plugin configure "
+                "sc@swarmcloud), or set SWARM_URL. For a solo deployment reached "
+                "through Cloud Run, set PROJECT_ID"
+            )
+        elif self.tier is _auth.Tier.PROXY:
             self._proxy = _auth.Proxy(service_name(), region(), project_id())
             self.base_url = self._proxy.start().rstrip("/")
         else:
-            self.base_url = (self._explicit_url or resolve_api_url()).rstrip("/")
+            self.base_url = resolve_api_url().rstrip("/")
         #: Decided from the ADDRESS, not from configuration, so an operator who
         #: points SWARM_API_URL at the load balancer by hand gets the IAP
-        #: credential too.
-        self.front_door = is_front_door(self.base_url)
+        #: credential too -- and from the resolved deployment, which knows it
+        #: is an IAP front door when it has a sign-in client or is not run.app.
+        self.front_door = is_front_door(self.base_url) or bool(
+            deployment is not None
+            and deployment.front_door
+            and self.base_url == deployment.url.rstrip("/")
+        )
         if not self._audience:
             self._audience = self.base_url
 
@@ -688,23 +787,69 @@ class SwarmClient:
         """
         from . import auth as _auth
 
+        # SIGNED IN comes first: the developer's own ID token, minted for the
+        # Desktop client IAP allowlists. It is the one credential this laptop
+        # has that IAP admits AS the developer (see signin.py).
+        if self.tier is _auth.Tier.SIGNED_IN:
+            return self.signed_in().id_token()
         if self.front_door:
             if self.tier is _auth.Tier.IAP:
                 return self._id_token()
             return self.access_token()
         return self._id_token()
 
+    def signed_in(self) -> Any:
+        """The sign-in token source for this client's deployment (signin.SignedIn)."""
+        from . import signin
+
+        if self._signed_in is None:
+            if self.deployment is None:
+                raise SwarmError("there is no configured deployment to be signed in to")
+            self._signed_in = signin.SignedIn(self.deployment)
+        return self._signed_in
+
     def _id_token(self) -> str:
         from . import auth as _auth
+        from .config import is_run_app
 
         now = time.monotonic()
-        if self._token is not None and now - self._token.minted_at < _TOKEN_TTL_SECONDS:
+        if self._token is not None and now - self._token.minted_at < self._token.ttl:
             return self._token.value
-        value = _auth.id_token_for(self._audience or self.base_url, tier=self.tier)
+        if self.tier is _auth.Tier.PROXY and self._proxy is None and is_run_app(self.base_url):
+            # A SOLO deployment the user CONFIGURED, on ordinary user
+            # credentials. No proxy was started -- nothing named a project to
+            # start one against -- and `id_token_for(PROXY)` has no token to
+            # give. Before this branch every call here failed with "this tier
+            # reaches the API through a local proxy instead", about a proxy
+            # that did not exist, and a solo user had nothing to configure
+            # that would fix it (review of PR #61, 2026-09-25).
+            value = self.developer_id_token()
+            ttl = _reuse_for(value)
+        else:
+            value = _auth.id_token_for(self._audience or self.base_url, tier=self.tier)
+            ttl = _TOKEN_TTL_SECONDS
         if not value:
             raise SwarmError("no ID token available; run: gcloud auth login")
-        self._token = _Token(value=value, minted_at=now)
+        self._token = _Token(value=value, minted_at=now, ttl=ttl)
         return value
+
+    def developer_id_token(self) -> str:
+        """gcloud's own identity token for the signed-in gcloud account.
+
+        Cloud Run documents exactly this for a developer reaching a private
+        service: `curl -H "Authorization: Bearer $(gcloud auth
+        print-identity-token)" SERVICE_URL`, for an account holding
+        run.routes.invoke (docs.cloud.google.com/run/docs/authenticating/
+        developers). A user account cannot choose the token's audience, and
+        Cloud Run takes it regardless.
+
+        The same page says why it is a DEVELOPMENT path: the token has no
+        audience of its own, so whoever receives it could replay it at any
+        other Cloud Run service this account may invoke. It is therefore only
+        ever sent to a *.run.app address the user configured (`_id_token`
+        checks), never to a load balancer, a custom domain or anything else.
+        """
+        return _run(["gcloud", "auth", "print-identity-token"])
 
     def access_token(self) -> str:
         """An OAuth access token: for GCS, and for IAP at the front door.
@@ -772,11 +917,22 @@ class SwarmClient:
                     ) from exc
         except urllib.error.HTTPError as exc:
             raw = exc.read().decode("utf-8", errors="replace")
-            raise SwarmError(
-                f"{method} {path} -> {exc.code}: {_explain(exc.code, raw)}",
-                status=exc.code,
-                edge=_is_edge(exc.code, raw),
-            ) from exc
+            edge = _is_edge(exc.code, raw)
+            message = f"{method} {path} -> {exc.code}: {_explain(exc.code, raw)}"
+            if edge and exc.code == 401 and self.tier.value == "signed-in":
+                # The ONE refusal a signed-in developer cannot fix themselves:
+                # the token was theirs and valid, and IAP still did not take
+                # it. That is the deployment not having allowlisted its own
+                # Desktop client -- an operator's one-time step.
+                message += (
+                    f" -- you are signed in to {self.deployment.context}, so this is "
+                    "the deployment refusing its own Desktop OAuth client: its IAP "
+                    "must list that client id as a programmatic client "
+                    "(access_settings.oauth_settings.programmatic_clients on the "
+                    "backend service). Ask its operator; for this repository's own "
+                    "deployment the steps are docs/runbooks/iap-desktop-client.md"
+                )
+            raise SwarmError(message, status=exc.code, edge=edge) from exc
         except urllib.error.URLError as exc:
             raise SwarmError(f"could not reach {self.base_url}: {exc.reason}") from exc
 

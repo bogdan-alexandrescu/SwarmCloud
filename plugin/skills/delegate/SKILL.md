@@ -236,6 +236,14 @@ says what each refusal means and which one is an IAM grant away.
 Nothing was dispatched, so nothing was spent, so say that too: a developer who
 thinks a batch went out and died will not re-run it.
 
+The fifth tell is the most common and the easiest: **`sign-in required for
+<context>: run sc login`**. The deployment the developer configured takes them
+signed in as themselves, and they are not yet. Tell them to run
+`uv run sc login` (a browser window opens), then retry the same call. It is
+theirs to run, not this session's — it waits on a browser — and there is no
+other credential to go looking for: every dispatch is meant to run as the
+developer, on their deployment, and `uv run sc whoami` shows which one that is.
+
 ## When a remote agent dies — a bare task id is not a report
 
 Anything that reaches the developer must be actionable. `swarm_result` already

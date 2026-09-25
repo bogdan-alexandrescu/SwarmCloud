@@ -23,10 +23,77 @@ is at. Seamless is not the same as hidden.
 
 ## Install
 
+The plugin is a **client for your deployment**, not for this repository's.
+Ask your platform operator for three values first: the deployment URL, and —
+for a deployment behind IAP — its Desktop OAuth client ID and secret.
+
+In a Claude Code session:
+
+```text
+/plugin marketplace add bogdan-alexandrescu/SwarmCloud
+/plugin install sc@swarmcloud
+```
+
+You are prompted for the deployment URL (required), the OAuth client ID and
+the OAuth client secret. The secret is `sensitive` in the manifest, so Claude
+Code keeps it in your system's secure credential store, never in
+`settings.json`. Then:
+
+```text
+/reload-plugins
+/mcp                # plugin:sc:swarmcloud should say connected
+```
+
+The server fetches the bridge from GitHub at the tag `sc-v<version>` (see
+*The bridge ships with the plugin*, below). **Between merging a version and
+pushing its tag, that tag does not exist and the server cannot start** — uv
+reports that it cannot find the ref. Until then, start Claude Code with the
+escape hatch, `SWARM_MCP_FROM=<checkout>/apps/swarm-mcp claude`.
+
+Then sign in, from a terminal:
+
+```bash
+uv run sc login    # in a checkout; a browser window opens; pick your work account
+uv run sc whoami   # context, URL, you, your tenant
+```
+
+Outside a checkout, `sc` runs from the same package the server does:
+`uv tool run --from 'swarm-mcp @ git+https://github.com/bogdan-alexandrescu/SwarmCloud@sc-v<version>#subdirectory=apps/swarm-mcp' sc login`.
+
+`sc login` finds the deployment because the plugin's MCP server writes it to
+your config file when it starts — so start the server first (the `/mcp` line
+above), or add it yourself with `sc context add`. `sc login` ends by calling
+the API once **with the sign-in it just made**, whatever else is set on the
+machine, and warns you if `SWARM_IMPERSONATE_SA`, `SWARM_ID_TOKEN` or a GCP
+metadata server means every other command will still act as a service account
+rather than as you.
+
+From then on every tool acts **as you**. A tool called before you sign in
+answers `sign-in required for <context>: run sc login (a browser window
+opens)` rather than failing some other way. Change a value later with
+`/plugin configure sc@swarmcloud`.
+
+**More than one deployment** is a context each, `kubectl`-style —
+`uv run sc context add`, `uv run sc context use`, `uv run sc context list`,
+`uv run sc context remove` — and CI overrides all of it with `SWARM_URL` and
+`SWARM_IMPERSONATE_SA`. [docs/plugin-setup.md](../docs/plugin-setup.md) has
+the whole of it: what each command stores where, the override order, and
+Saga's `dev` values as a worked example. The operator's one-time step — one
+Desktop OAuth client per deployment, allowlisted on IAP — is
+[docs/runbooks/iap-desktop-client.md](../docs/runbooks/iap-desktop-client.md).
+
+**Nothing in the plugin names a deployment.** Until 2026-09-25 the bridge read
+`terraform/environments/<env>/<env>.tfvars` out of whatever checkout it ran
+from, so every install pointed at Saga's cluster. It now reads Terraform only
+in developer mode (`SWARM_MCP_CONFIG_FROM=repo`), for working inside this
+repository, and `tests/unit/mcp/test_contexts.py` fails if it opens a tfvars
+file otherwise.
+
+### Where the plugin comes from
+
 The plugin lives in this repository at `plugin/`, and the repository root is
 the marketplace: `.claude-plugin/marketplace.json` lists `sc` with `plugin/` as
-its source. Point Claude Code at the repository root as a marketplace, then
-install `sc` from it.
+its source.
 
 That file is small and easy to overlook, so it is worth saying what it is for:
 **without it none of the rest of this directory is reachable.** A plugin is
@@ -142,49 +209,37 @@ it cannot find the ref.
   reconnect the server in `/mcp` — uv resumes from what it has already cached —
   or start that first session with `MCP_TIMEOUT=120000 claude`.
 
-**Where the API is, outside a checkout.** In a checkout the bridge finds a
-team deployment's front door by reading `frontend_hostname` from
-`terraform/environments/<env>/<env>.tfvars` (see *Where the API actually is*,
-below), and that one fact decides both the address and the credential.
-Installed from git it has no repository to read: the running code is in uv's
-cache, with no `terraform/` anywhere above it. So tell it, in the environment
-Claude Code starts from (the MCP server inherits it):
+**Where the API is, outside a checkout: wherever you configured it.** The
+deployment URL the install asked for reaches the bridge through the server's
+environment (`SWARM_PLUGIN_DEPLOYMENT_URL`, from `${user_config.deployment_url}`),
+and that one value decides both the address and the credential — see
+*Where the API actually is*, below. The bridge never reads this repository's
+Terraform to find it, installed from git or not, unless developer mode
+(`SWARM_MCP_CONFIG_FROM=repo`) says to.
 
-* **`API_HOST=<hostname>`** (or `SWARM_API_HOST`) for a team deployment. This
-  declares the front door. The bridge sends every call there and presents an
-  OAuth access token, which is the kind IAP takes.
-* **`SWARM_API_URL=https://<hostname>`** works the same way. With no front door
-  declared, the bridge takes an `https` address that is not `*.run.app` to be
-  the load balancer. Without that rule, which #62's first version lacked, it
-  presents a Google ID token for the URL. IAP refuses that as
-  `Invalid JWT audience`, and a laptop with only user credentials cannot mint
-  one at all. A `*.run.app` address still gets an ID token. That is the in-VPC
-  case, where the run.app address does answer. Use `SWARM_API_URL`, not
-  `API_URL`: on the user-credentials tier the bridge reads only the `SWARM_`
-  spelling before it starts a proxy.
-* **`SWARM_REPO_ROOT=<a checkout>`**: the bridge reads that checkout's tfvars,
-  as it would had it been installed from there.
+The environment still overrides the plugin, in the order
+[docs/plugin-setup.md](../docs/plugin-setup.md) gives, for CI and for anyone
+who exports one in the shell Claude Code starts from:
 
-At this deployment's front door the token also has to be one IAP admits. A
-user's own access token is refused with 401, IAP error code 900, so set
-`SWARM_IMPERSONATE_SA` as *Where the API actually is* explains.
+* **`SWARM_URL=https://<address>`**, or the older `SWARM_API_URL`. An `https`
+  address that is not `*.run.app` is taken to be the IAP load balancer: nothing
+  else in this platform serves the API over https under another name. Without
+  that rule, which #62's first version lacked, the bridge presents a Google ID
+  token for the URL, and IAP refuses that as `Invalid JWT audience`. A
+  `*.run.app` address still gets an ID token.
+* **`API_HOST=<hostname>`** (or `SWARM_API_HOST`) declares the front door.
+* **`SWARM_REPO_ROOT=<a checkout>`** names the checkout whose tfvars developer
+  mode reads. It does nothing outside developer mode.
 
-**With none of these set, the bridge does not find the front door.** What
-happens next depends on the auth tier:
+At a front door the token also has to be one IAP admits. A user's own gcloud
+access token is refused with 401, IAP error code 900, which is why `sc login`
+exists; CI sets `SWARM_IMPERSONATE_SA`.
 
-* **A laptop that has only run `gcloud auth login`** (the `user-credentials`
-  tier) starts `gcloud run services proxy` against the project's `swarm-api`
-  Cloud Run service. The project comes from `PROJECT_ID`, or from gcloud's
-  configured project. That can take up to 25 seconds. On a team deployment the
-  service's ingress refuses callers outside the VPC, so every call comes back
-  as an HTML 404. The bridge reports it as an ingress refusal, not a missing
-  route, and says to go through the load balancer. It does not name the
-  variable. The variable is `API_HOST`.
-* **Every other tier** (a service account, the metadata server, an explicit
-  token) asks Cloud Run for the address, which needs `PROJECT_ID`. It sees the
-  internal-only ingress and refuses before any call is made, and that refusal
-  does name `API_HOST`. Without `PROJECT_ID` it refuses at once and asks for
-  `SWARM_API_URL` or `PROJECT_ID`.
+**With nothing configured at all**, the bridge says what to configure — the
+plugin's deployment URL, `sc context add`, or `SWARM_URL` — instead of
+guessing. It no longer falls back to gcloud's configured project: that
+deployment was one the user never named. `PROJECT_ID` still selects the old
+solo path (`gcloud run services proxy` against that project's `swarm-api`).
 
 ### Running your own bridge: `SWARM_MCP_FROM`
 
@@ -205,7 +260,9 @@ SWARM_MCP_FROM='swarm-mcp @ git+https://github.com/bogdan-alexandrescu/SwarmClou
   of the bridge's uv cache keys, so an edit is served once the server restarts
   (reconnect it in `/mcp`). `swarm-common` is installed editable from the
   sibling `apps/common`.
-* **It reads the tfvars of the checkout it was built from.** The install is not
+* **In developer mode it reads the tfvars of the checkout it was built from**
+  (`SWARM_MCP_CONFIG_FROM=repo`; without it, no tfvars are read at all, and
+  the plugin's configured deployment is used). The install is not
   editable. The code is your working copy's, but the files are in uv's cache,
   where nothing above them is your checkout. Going by file location alone, the
   bridge would lose the front door that `uv run` in the same checkout finds, and
@@ -236,8 +293,8 @@ lockstep and derives the scoped prefix from `plugin.json` itself.
 
 **The MCP half is not.** Since 0.4.1 the server is fetched by uv rather than
 found on disk, so it starts from any working directory. Outside a checkout it
-has to be told where a team deployment's front door is: `API_HOST` or
-`SWARM_API_URL`, as *Where the API is, outside a checkout* explains above. Before 0.4.1 this
+reaches the deployment the plugin was configured with, as *Where the API is,
+outside a checkout* explains above. Before 0.4.1 this
 README said the MCP half worked from anywhere, and that was false for every
 marketplace install.
 
@@ -252,6 +309,14 @@ tools come from the MCP server and are unaffected. It also suggests two shell
 commands, and those want the repository too: `uv run swarm tail`, to stream in
 a background shell, and `uv run swarm doctor`, to diagnose.
 
+The `sc` skill and `/sc` are granted each **view** by name —
+`uv run sc accounts`, `uv run sc task`, and so on — and never `sc` as a
+prefix. `sc login`, `sc logout` and `sc context` share that prefix, and a
+prefix grant would let a session sign the developer out or move every later
+dispatch to another cluster without asking.
+`tests/unit/mcp/test_plugin_commands.py` compiles each grant the way Claude
+Code matches it and runs every command it allows through the real parsers.
+
 The CLI is the same surface without the session wrapping, and is what to reach
 for when diagnosing the plugin itself:
 
@@ -263,41 +328,47 @@ uv run swarm profiles
 
 ## What it needs
 
-`swarm-mcp` from this repository, and a working auth tier —
-`uv run swarm doctor` says which one this machine has, **which door it will
-use**, and what that door takes.
+`swarm-mcp` from this repository, a configured deployment (see Install), and a
+working auth tier — `uv run swarm doctor` says which deployment it resolved
+and from where, which tier this machine has, **which door it will use**, and
+what that door takes.
 
 ### Where the API actually is
 
-On a **team** deployment the API is behind IAP at a load balancer, and the
-`*.run.app` address is internal-only: its ingress is
+Wherever **you** configured it: `--context`, `SWARM_URL`, the plugin's
+deployment URL or the current context, in that order ([docs/plugin-setup.md](../docs/plugin-setup.md)
+has the full order). On a **team** deployment that is the load balancer: the
+`*.run.app` address is internal-only — its ingress is
 `internal-and-cloud-load-balancing`, so Google's frontend refuses an outside
-caller and renders the refusal as HTTP 404 — the one status a reader takes for
-"missing route on a broken deployment". Until 2026-09-24 the bridge asked Cloud
-Run for the address and therefore called a healthy control plane UNREACHABLE.
-It now reads `frontend_hostname` out of `terraform/environments/<env>/<env>.tfvars`
-(Track C's input, read rather than copied), the same three-source order
-`scripts/lib/common.sh` uses, and `API_HOST` overrides it.
+caller and renders the refusal as HTTP 404, the one status a reader takes for
+"missing route on a broken deployment". A context on any host other than
+`*.run.app`, or with an OAuth client ID, is treated as that IAP front door.
 
-The two doors take **different credentials**, which is the other half:
+In **developer mode** (`SWARM_MCP_CONFIG_FROM=repo`) the bridge instead reads
+`frontend_hostname` out of `terraform/environments/<env>/<env>.tfvars`, the same
+three-source order `scripts/lib/common.sh` uses, with `API_HOST` overriding it.
+That is for working inside this repository and is never the default.
 
-| Door | Credential |
-|---|---|
-| Cloud Run directly | a Google **ID** token |
-| the IAP load balancer | an OAuth **ACCESS** token |
+The doors take **different credentials**, which is the other half:
 
-Sending the ID token to IAP produces `Invalid IAP credentials: Invalid JWT
-audience`, which reads like an IAM problem and is not. Measured on 2026-09-24
-against the live front door: a user access token is refused **401, IAP error
-code 900**, and an impersonated service account's access token is refused
-**403 naming that service account** — which is IAP saying "authenticated, not
-authorised", one `roles/iap.httpsResourceAccessor` grant from working. That
-grant is `frontend_iap_members` in `terraform/bootstrap/terraform.tfvars` —
-moved out of `terraform/infra` on 2026-09-24, applied by the owner rather than
-by CI — and `swarm-verify` was added to it the same day. So on a
-team deployment set `SWARM_IMPERSONATE_SA`; `SWARM_IAP_CLIENT_ID` applies only
-where the deployment configured its own OAuth client, and this one deliberately
-does not (a client id means a client secret in Terraform state).
+| Door | Who you are | Credential |
+|---|---|---|
+| the IAP load balancer | a developer, signed in with `sc login` | an **ID** token for the deployment's Desktop OAuth client |
+| the IAP load balancer | CI, `SWARM_IMPERSONATE_SA` | the service account's OAuth **ACCESS** token |
+| Cloud Run directly | an in-VPC caller, or CI on a solo deployment | a Google **ID** token for the service URL |
+| a solo deployment's `*.run.app` address | a developer on ordinary gcloud credentials | gcloud's own **ID** token (`gcloud auth print-identity-token`), which Cloud Run takes from an account holding `run.routes.invoke` |
+
+Measured on 2026-09-24 against the live front door: a gcloud **user** access
+token is refused **401, IAP error code 900**, because the deployment's IAP uses
+a Google-managed OAuth client, which admits only allowlisted programmatic
+clients — that is why `sc login` exists. An impersonated service account's
+access token is refused **403 naming that service account** — IAP saying
+"authenticated, not authorised", one `roles/iap.httpsResourceAccessor` grant
+from working. That grant is `frontend_iap_members` in
+`terraform/bootstrap/terraform.tfvars`, applied by the owner rather than by CI.
+`SWARM_IAP_CLIENT_ID` applies only where a deployment configured its own IAP
+OAuth client, which this one deliberately does not (a client id there means a
+client secret in Terraform state).
 
 **`swarm` and `sc` are not on your PATH**, and nothing here should ever tell you
 they are. They are console scripts of `swarm-mcp`, installed into the uv-managed
@@ -343,7 +414,8 @@ the checkout — and talks MCP to it; it is skipped unless
 `the plugin's bridge installs from git` step does. That test also runs each
 install's own interpreter to ask where it thinks its repository is. The git
 install must find none, and must still class an `https` front-door URL as the
-front door. The escape hatch must find this checkout and its `frontend_hostname`.
+front door. The escape hatch must find this checkout and, in developer mode, its
+`frontend_hostname`.
 The same file holds both descriptions to naming what still needs a checkout.
 
 `tests/unit/mcp/test_bridge_outside_a_checkout.py` holds the same two facts

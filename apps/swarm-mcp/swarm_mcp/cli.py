@@ -526,6 +526,12 @@ def cmd_workflow_cancel(client: SwarmClient, args) -> int:
 #: and leaves every pre-existing subcommand's path byte-for-byte unchanged.
 SC_COMMANDS = ("sc", "accounts", "agents", "capacity", "trouble")
 
+#: `sc`'s deployment-and-identity commands, reachable as `swarm login` and the
+#: rest for the same reason the views are: one implementation, two spellings.
+#: Routed on the first token like the views, so `swarm context add x --url y`
+#: reaches `sc`'s parser verbatim.
+SC_IDENTITY_COMMANDS = ("login", "logout", "whoami", "context")
+
 
 def _delegate_to_sc(raw: list[str]) -> int:
     from . import sc as _sc
@@ -548,7 +554,9 @@ def cmd_sc(_client, args) -> int:
 
     It takes no client for the same reason: `sc` builds and closes its own.
     """
-    return _delegate_to_sc([args.command] + list(args.argv))
+    context = getattr(args, "context", None)
+    prefix = ["--context", context] if context else []
+    return _delegate_to_sc(prefix + [args.command] + list(args.argv))
 
 
 # -- setup and diagnosis ---------------------------------------------------
@@ -610,11 +618,68 @@ def cmd_profiles(_client, args) -> int:
     return EXIT_OK
 
 
+def _doctor_deployment(args) -> Any:
+    """Which deployment doctor is about, printed first: it decides the tier.
+
+    Printed BEFORE the tier because the signed-in tier exists only for a
+    deployment with a Desktop OAuth client, and "which deployment" is the first
+    question anyone debugging this has. A config file that cannot be read is
+    reported and doctor carries on -- explaining a broken setup is its job.
+    """
+    from . import config
+
+    try:
+        deployment = config.resolve(context=getattr(args, "context", None))
+    except SwarmError as exc:
+        print(f"deployment  UNREADABLE -- {exc}")
+        return None
+    if deployment is None:
+        print("deployment  none configured")
+        print(
+            textwrap.fill(
+                f"add one with `{terminal_command('sc context add <name> --url <url>')}`, "
+                "or set SWARM_URL; the sc plugin asks at install",
+                width=78,
+                initial_indent="            ",
+                subsequent_indent="            ",
+                break_on_hyphens=False,
+                break_long_words=False,
+            )
+        )
+        return None
+    print(f"deployment  {deployment.context}  {deployment.url}")
+    print(
+        textwrap.fill(
+            f"from {deployment.source}",
+            width=78,
+            initial_indent="            ",
+            subsequent_indent="            ",
+            break_on_hyphens=False,
+            break_long_words=False,
+        )
+    )
+    if deployment.client_id:
+        print(f"sign-in     Desktop OAuth client {deployment.client_id}")
+    return deployment
+
+
 def cmd_doctor(_client, args) -> int:
-    """Say which tier this machine is on and what that tier can reach."""
-    detection = detect()
+    """Say which deployment, which tier this machine is on, and what that reaches."""
+    deployment = _doctor_deployment(args)
+    detection = detect(deployment)
     print(f"tier        {detection.tier.value}")
-    print(f"            {detection.detail}")
+    # Wrapped like everything else here: a detail names the context and, on
+    # the user-credentials tier, the route its token takes -- often past 80.
+    print(
+        textwrap.fill(
+            detection.detail,
+            width=78,
+            initial_indent=" " * 12,
+            subsequent_indent=" " * 12,
+            break_on_hyphens=False,
+            break_long_words=False,
+        )
+    )
     print(f"reaches     {', '.join(REACHES[detection.tier])} deployments")
 
     for profile in ("solo", "team"):
@@ -642,12 +707,17 @@ def cmd_doctor(_client, args) -> int:
         print(f"  checked   {name}: {verdict}")
 
     print()
-    try:
-        print(f"project     {project_id()}")
-        print(f"service     {service_name()} / {region()}")
-    except SwarmError as exc:
-        print(f"project     UNKNOWN -- {exc}")
-        return EXIT_FAIL
+    if deployment is None:
+        # ONLY the solo path needs a project: it asks Cloud Run for the
+        # address. A configured deployment names its own, and demanding a
+        # gcloud project from a plugin user who has none would fail the one
+        # command meant to explain what is wrong.
+        try:
+            print(f"project     {project_id()}")
+            print(f"service     {service_name()} / {region()}")
+        except SwarmError as exc:
+            print(f"project     UNKNOWN -- {exc}")
+            return EXIT_FAIL
 
     # WHICH DOOR, PRINTED BEFORE THE READ, and this is the line whose absence
     # made this command mislead. `doctor` reported a tier, a project and a
@@ -659,34 +729,45 @@ def cmd_doctor(_client, args) -> int:
     # are the two facts that turn "unreachable" into something actionable.
     from .client import front_door_host
 
-    host = front_door_host()
-    if host:
-        # WHICH CREDENTIAL, not "the credential". A deployment that configured
-        # its own OAuth client takes an ID token minted for that client id, and
-        # printing "ACCESS token" at someone on that tier would send them to
-        # debug the one thing that was already right.
-        presents = (
-            "an ID token for the IAP client id"
-            if detection.tier is Tier.IAP
-            else "an OAuth ACCESS token"
-        )
+    front = deployment.url if deployment is not None and deployment.front_door else ""
+    if not front:
+        # The legacy sources: API_HOST, or this repository's tfvars in
+        # developer mode (SWARM_MCP_CONFIG_FROM=repo) and never otherwise.
+        host = front_door_host()
+        front = f"https://{host}" if host else ""
+    if front:
+        # WHICH CREDENTIAL, not "the credential". A signed-in developer
+        # presents their own ID token; a deployment that configured its own
+        # OAuth client takes an ID token minted for that client id; everything
+        # else presents an access token. Printing the wrong one sends a reader
+        # to debug the one thing that was already right.
+        if detection.tier is Tier.SIGNED_IN:
+            presents = f"your own ID token, from `{terminal_command('sc login')}`"
+        elif detection.tier is Tier.IAP:
+            presents = "an ID token for the IAP client id"
+        else:
+            presents = "an OAuth ACCESS token"
         # TWO LINES, because one was 83 columns with a hostname of ordinary
         # length and this command is read in a terminal. `test_doctor_...`
         # asserts nothing here exceeds 80 for exactly that reason.
-        print(f"front door  https://{host}  (IAP)")
+        print(f"front door  {front}  (IAP)")
         print(f"            this tier presents {presents}")
         if detection.tier is Tier.PROXY:
             print(
                 textwrap.fill(
                     "this deployment is reached through its load balancer, so no "
-                    "local proxy is started -- but a USER access token is not one "
+                    "local proxy is started -- but a gcloud USER token is not one "
                     "IAP accepts here: measured 2026-09-24 it answers 401 with IAP "
-                    "error code 900, because terraform/modules/frontend sets no "
-                    "oauth2_client_id and Google manages the OAuth client. Set "
-                    "SWARM_IMPERSONATE_SA to a service account that holds "
-                    "roles/iap.httpsResourceAccessor; without that grant IAP answers "
-                    "403 and NAMES the service account, which is the refusal that "
-                    "tells you the credential itself was accepted.",
+                    "error code 900, because the deployment's IAP uses a "
+                    "Google-managed OAuth client, which admits only allowlisted "
+                    "programmatic clients. Sign in as yourself instead: give this "
+                    "context the deployment's Desktop OAuth client id "
+                    f"(`{terminal_command('sc context add <name> --url <url> --client-id <id>')}`) "
+                    f"and run `{terminal_command('sc login')}`. "
+                    "In CI, set SWARM_IMPERSONATE_SA to a service account that "
+                    "holds roles/iap.httpsResourceAccessor; without that grant IAP "
+                    "answers 403 and NAMES the service account, which is the "
+                    "refusal that tells you the credential itself was accepted.",
                     width=78,
                     initial_indent="            ",
                     subsequent_indent="            ",
@@ -701,7 +782,7 @@ def cmd_doctor(_client, args) -> int:
     # is still worth printing when the API is down, and is exactly what someone
     # needs in order to say WHY it is down.
     try:
-        with SwarmClient() as client:
+        with SwarmClient(context=getattr(args, "context", None)) as client:
             endpoint = client.base_url
             me = client.request("GET", "/v1/tenants/me")
             print(f"api         {endpoint}")
@@ -795,6 +876,12 @@ def _run_quiet(argv):
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="swarm", description=__doc__)
+    parser.add_argument(
+        "--context",
+        default=None,
+        help="which configured deployment to use (`sc context list`); "
+        "default: SWARM_URL, SWARM_CONTEXT, the plugin's, or the current context",
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     d = sub.add_parser("dispatch", help="submit one task")
@@ -909,7 +996,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sc_cmd.set_defaults(func=cmd_sc, no_client=True)
 
-    for alias in ("accounts", "agents", "capacity", "trouble"):
+    for alias in ("accounts", "agents", "capacity", "trouble") + SC_IDENTITY_COMMANDS:
         alias_parser = sub.add_parser(alias, help=f"shorthand for `sc {alias}`")
         alias_parser.add_argument("argv", nargs=argparse.REMAINDER)
         alias_parser.set_defaults(func=cmd_sc, no_client=True)
@@ -936,7 +1023,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     raw = list(sys.argv[1:] if argv is None else argv)
-    if raw and raw[0] in SC_COMMANDS:
+    if raw and raw[0] in SC_COMMANDS + SC_IDENTITY_COMMANDS:
         # `sc` owns its own error handling and exit codes (3 means "something
         # is down"), so this hands the whole line over rather than wrapping it.
         return _delegate_to_sc(raw)
@@ -948,7 +1035,7 @@ def main(argv: list[str] | None = None) -> int:
         # running when they are needed.
         if getattr(args, "no_client", False):
             return args.func(None, args)
-        with SwarmClient() as client:
+        with SwarmClient(context=args.context) as client:
             return args.func(client, args)
     except SwarmError as exc:
         print(f"swarm: {exc}", file=sys.stderr)

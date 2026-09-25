@@ -79,6 +79,14 @@ def clean_env(monkeypatch):
     for name in _VARS:
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(auth, "_metadata_available", lambda timeout=0.3: False)
+    # EVERY TEST HERE IS ABOUT DEVELOPER MODE, and says so. Since 2026-09-25
+    # the bridge is a deployment-agnostic client and reads this repository's
+    # tfvars ONLY when SWARM_MCP_CONFIG_FROM=repo is set (test_contexts.py
+    # proves it does not otherwise, by watching every file it opens). What this
+    # file checks -- that the repository's own front door is found and gets the
+    # credential it takes -- is exactly what that mode is for, so the mode is
+    # switched on here rather than the assertions being weakened.
+    monkeypatch.setenv("SWARM_MCP_CONFIG_FROM", "repo")
 
 
 def _tfvars(tmp_path: Path, body: str, *, environment: str = "dev") -> None:

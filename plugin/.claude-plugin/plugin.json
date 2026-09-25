@@ -1,12 +1,31 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "sc",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "description": "SwarmCloud from inside a Claude Code session. Two skills: `sc` reads the cluster -- the account pool and its quota windows, which pool actually binds each runner profile, what is running, what is wrong -- and never writes. `delegate` owns the decision to run work remotely instead of locally, dispatches it by runner-profile NAME from the frozen catalogue, reports a failure as something actionable rather than a task id, and brings the result back into the working tree. It writes, so it says when it asks first. `delegate` works through the plugin's own MCP server, which fetches the swarm-mcp bridge from GitHub at the tag matching this version and needs only uv. The `sc` skill and /sc run `uv run sc` in the session's directory, so they need a checkout of this repository.",
   "author": {
     "name": "SwarmCloud"
   },
   "license": "MIT",
+  "userConfig": {
+    "deployment_url": {
+      "type": "string",
+      "title": "SwarmCloud deployment URL",
+      "description": "The address of YOUR SwarmCloud deployment -- the load balancer for a team deployment (e.g. https://swarm.example.com), or the *.run.app address for a solo one. Your platform operator knows it.",
+      "required": true
+    },
+    "oauth_client_id": {
+      "type": "string",
+      "title": "OAuth client ID (Desktop app)",
+      "description": "The deployment's Desktop app OAuth client ID (ends in .apps.googleusercontent.com). Your operator creates one per deployment and allowlists it on IAP; with it you sign in as yourself with `sc login`. Leave empty for a solo deployment without IAP."
+    },
+    "oauth_client_secret": {
+      "type": "string",
+      "title": "OAuth client secret (Desktop app)",
+      "description": "The secret of that same Desktop app OAuth client (starts GOCSPX-). Stored in your system's secure credential store, never in settings.json. Leave empty for a solo deployment without IAP.",
+      "sensitive": true
+    }
+  },
   "mcpServers": {
     "swarmcloud": {
       "command": "uv",
@@ -14,9 +33,14 @@
         "tool",
         "run",
         "--from",
-        "${SWARM_MCP_FROM:-swarm-mcp @ git+https://github.com/bogdan-alexandrescu/SwarmCloud@sc-v0.4.1#subdirectory=apps/swarm-mcp}",
+        "${SWARM_MCP_FROM:-swarm-mcp @ git+https://github.com/bogdan-alexandrescu/SwarmCloud@sc-v0.5.0#subdirectory=apps/swarm-mcp}",
         "swarm-mcp"
-      ]
+      ],
+      "env": {
+        "SWARM_PLUGIN_DEPLOYMENT_URL": "${user_config.deployment_url}",
+        "SWARM_PLUGIN_OAUTH_CLIENT_ID": "${user_config.oauth_client_id}",
+        "SWARM_PLUGIN_OAUTH_CLIENT_SECRET": "${user_config.oauth_client_secret}"
+      }
     }
   }
 }

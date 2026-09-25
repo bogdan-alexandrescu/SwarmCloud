@@ -714,6 +714,22 @@ def test_an_applications_own_json_error_is_still_passed_through_unchanged():
     )
 
 
+def _front_door_credential(monkeypatch) -> None:
+    """The credential `https://swarm.example.com` takes, supplied so nothing shells out.
+
+    That address is a front door: since #62 an https host that is not
+    *.run.app is one BY ITS SHAPE when no front door is declared, and since #61
+    nothing is declared by reading this repository's tfvars outside developer
+    mode. A front door is presented an OAuth ACCESS token, so without this the
+    client ran `gcloud auth print-access-token` before sending anything. These
+    tests passed on main only because the real dev.tfvars declared a DIFFERENT
+    host, which made swarm.example.com "not the front door"; with the tfvars
+    gate, two of them failed on the gcloud call, and the truncated-body test
+    passed on the gcloud error's `edge=False` rather than on the body.
+    """
+    monkeypatch.setenv("SWARM_ACCESS_TOKEN", "a.b.c")
+
+
 def test_a_redirect_to_a_sign_in_page_is_not_followed(monkeypatch):
     """urllib follows 30x on GET, so an unauthenticated call to the front door
     resolved to a 200 carrying Google's sign-in HTML. Two consequences, both
@@ -735,6 +751,7 @@ def test_a_redirect_to_a_sign_in_page_is_not_followed(monkeypatch):
         )
 
     monkeypatch.setenv("SWARM_ID_TOKEN", "a.b.c")
+    _front_door_credential(monkeypatch)
     _install(monkeypatch, _opener)
     with pytest.raises(SwarmError) as caught:
         SwarmClient(base_url="https://swarm.example.com").request("GET", "/v1/stats")
@@ -812,6 +829,7 @@ def test_a_non_json_success_is_a_readable_error_not_a_traceback(monkeypatch):
         return _Response(b"<!doctype html><html>sign in</html>", 200)
 
     monkeypatch.setenv("SWARM_ID_TOKEN", "a.b.c")
+    _front_door_credential(monkeypatch)
     _install(monkeypatch, _opener)
     with pytest.raises(SwarmError) as caught:
         SwarmClient(base_url="https://swarm.example.com").request("GET", "/v1/stats")
@@ -828,6 +846,7 @@ def test_a_truncated_json_body_says_so_rather_than_claiming_the_edge(monkeypatch
         return _Response(b'{"tasks": [', 200)
 
     monkeypatch.setenv("SWARM_ID_TOKEN", "a.b.c")
+    _front_door_credential(monkeypatch)
     _install(monkeypatch, _opener)
     with pytest.raises(SwarmError) as caught:
         SwarmClient(base_url="https://swarm.example.com").request("GET", "/v1/tasks")

@@ -3,7 +3,9 @@
     "swarmcloud": {
       "command": "uv",
       "args": ["run", "--directory", ".", "swarm-mcp"],
-      "env": {}
+      "env": {
+        "SWARM_MCP_CONFIG_FROM": "repo"
+      }
     }
   }
 }

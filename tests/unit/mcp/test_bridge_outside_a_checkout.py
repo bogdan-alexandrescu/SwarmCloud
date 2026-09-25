@@ -233,6 +233,13 @@ def test_the_escape_hatch_reads_the_tfvars_of_the_checkout_it_was_built_from(
 
     assert client._repo_root() != cache_lib, "the escape hatch read uv's cache as the repository"
     assert Path(client._repo_root()).resolve() == root.resolve()
+    # TFVARS ARE READ IN DEVELOPER MODE ONLY (#61, the owner's decision of
+    # 2026-09-25: the bridge is a client for the USER's deployment and reads
+    # this repository's Terraform only when SWARM_MCP_CONFIG_FROM=repo). The
+    # escape hatch is a developer's tool, so it finds its checkout either way
+    # and reads that checkout's front door when asked to.
+    assert client.front_door_host() == "", "tfvars were read outside developer mode"
+    monkeypatch.setenv("SWARM_MCP_CONFIG_FROM", "repo")
     assert client.front_door_host() == _FRONT_DOOR
 
 
@@ -270,4 +277,6 @@ def test_swarm_repo_root_still_overrides_everything(monkeypatch, tmp_path):
         {"url": (recorded / "apps" / "swarm-mcp").as_uri(), "dir_info": {}},
     )
     monkeypatch.setenv("SWARM_REPO_ROOT", str(named))
+    # Developer mode: the only mode in which any tfvars are read (#61).
+    monkeypatch.setenv("SWARM_MCP_CONFIG_FROM", "repo")
     assert client.front_door_host() == "named.example.com"
