@@ -1069,7 +1069,7 @@ ended), a hollow ring (unknown), a triangle (warn), a diamond (bad).
 `--info` stays the link's hover colour, the focus ring and the live mark. The
 primitives this moved: `.ctl-dot.is-ok`, `.ctl-dot.is-info`, `.ctl-chip.is-ok`,
 `.ctl-chip.is-info`, `.ctl-metric.is-good` (a neutral disc, its value in
-`--text`), and the dock's read cells (§15). Healthy-state hue that remains has
+`--text`), and the dock's read cells (§15.4). Healthy-state hue that remains has
 an owner and is not this ruling's: `.pool .ctl-track > i`, `.pool.prov.ok`,
 `.state.acct-ok`, `.tag.ok` (CP-14); the Profile headroom status (CP-12);
 `.wf-tl-span.is-ok` and the Workflows graph's `.node.ok` (WF-11). This ruling
@@ -1250,6 +1250,12 @@ non-admin genuinely cannot read `/v1/admin/*`).
 **The shape is fixed: mark, heading, one sentence, a link out.** Any real
 explanation is a `#help/<topic>` link, never a second paragraph.
 
+**One mark per empty state, and it is the primitive's** *(amended 2026-09-25,
+§15.6)*. `Absent` draws the mark inside the heading; a heading or a sentence that
+says `real zero` again, or a hand-drawn `.ctl-mark` span in the body, is a
+second silhouette with no sentence behind it. Five screens shipped one each
+until #170; `emptystate.onemark.test.tsx` holds all five to one.
+
 ### 6.10 Absence — `.ctl-mark`, `.ctl-hold`, `.ctl-ghost`, `.ctl-pending`
 
 See §8, which is what the whole exercise turns on.
@@ -1332,6 +1338,14 @@ each a two-or-three-character mono key plus a full-strength sans value.
 
 **A fact whose value was not read keeps its slot and its key.** A missing row is
 indistinguishable from a row that was never going to be there.
+
+**A fact that WAS read and needs attention is ink, not a mark** *(amended
+2026-09-25, AG-5, §15.6)*. The six marks are six kinds of nothing, and there is
+no seventh. A measured figure a reader should act on -- the artifact viewer's
+masked-credential count above zero, the log panel's "not applied at read
+time" -- is drawn in `--warn` ink with no mark and no `.is-absent` dimming,
+and in plain ink when it is healthy (at zero). The words behind it are its
+`?` topic.
 
 ### 6.14 Nav rail — `.ctl-rail` *(lost its right border in §13.1)*
 
@@ -1435,6 +1449,19 @@ datapoints under the breakpoint and a 960×560 above, and does not render the
 hover apparatus at all on a phone — there is no hover on a phone, so the
 crosshair, the tooltip and the point circles are simply absent rather than made
 touch-friendly.
+
+*How this is built for the inspector charts (AG-20, owner decision
+2026-09-25, §15.6):* each chart root is drawn once per entry in `DRAWN`
+(`charts/parts.tsx`) — a 640-unit and a 300-unit SVG, the narrow one asking
+its axis for fewer ticks — and both are in the markup, so nothing measures the
+DOM and server rendering draws exactly what the browser will. The figure is a
+size container (`.ctl-chart.has-narrow`, `container: ctl-chart / inline-size`)
+and `@container ctl-chart (min-width: 640px)` swaps the wide drawing in. The
+threshold equals the wide drawing's own width, so it is only ever scaled up
+(to the 720px cap); the narrow one has `min-width: 300px`, so it is never
+scaled below the width it was drawn at either. **No tick label renders below
+`--t-micro`.** 640 here is a drawing's width, not the retired 640 viewport
+breakpoint of §7.1.
 
 **Touch targets are 44px at ≤560px.** Railway ships 32px icon buttons and has
 taken public feedback on exactly that. The type does not grow with them.
@@ -2922,13 +2949,18 @@ block.
   arithmetic in the sheet's comments, and only a browser at 1440 and 390 can
   confirm it.
 
-## 15. The shared vocabulary the 2026-09-25 decisions settled
+---
 
-The owner decided the QA pass's decision boxes on 2026-09-25 (#81–#87). The
-chrome-shared lane built the ones every screen draws on, and this section is
-where a later screen finds them rather than inventing a second answer. Each is
-recorded where it lives above; this is the index, plus the three that have no
-other home.
+## 15. The 2026-09-25 QA decisions: the shared vocabulary, and the agents and inspector lane
+
+The owner decided the QA pass's decision boxes on 2026-09-25 (#81–#87). Two
+lanes record theirs here. The chrome-shared lane (#162) built the ones every
+screen draws on, and this section is where a later screen finds them rather
+than inventing a second answer (15.1–15.5). The agents and inspector lane
+(#170) delivered four boxes on #82 and two merged leftovers, and 15.6 records
+what each changed and the constraint behind it, so none of them is quietly
+reverted. Each box is recorded where it lives above; the table is the index,
+plus the sub-sections that have no other home.
 
 | Box | The primitive | Where |
 |---|---|---|
@@ -2943,6 +2975,11 @@ other home.
 | TS-4 | the outcome stack's four forms | 15.3 |
 | CH-2 | the head's read age is the screen's own | 15.1 |
 | CH-18 | the probe registry is keyed by route template | 15.2 |
+| AG-5 | a count that was read is a plain fact: `--warn` ink above zero, plain at zero, never a seventh mark | §6.13, 15.6 |
+| AG-14 | a why line is ink, and `--warn` only when a person has to act | 15.6 |
+| AG-20 | an inspector chart is drawn twice, at 640 and 300 units, and its own width picks one | §7.2, 15.6 |
+| AG-23 | a checkpoint or log panel is a facts strip and one table: one level of box | 15.6 (§13.3) |
+| #170 leftovers | one mark per empty state; the events route pages and this screen does not follow its token | §6.9, 15.6 |
 
 ### 15.1 The head's read age is the screen's own (CH-2)
 
@@ -3049,7 +3086,7 @@ triangle or diamond, and its status in full ink. The collapsed line's private
 `.ctl-dock-dot` is gone; the line draws the shared `.ctl-dot`, so an expired
 session is the diamond rather than the unknown ring.
 
-### 15.5 What this did NOT verify
+### 15.5 What 15.1–15.4 did NOT verify
 
 Nothing here was seen rendered: every claim is a rule the cascade chooses, a
 DOM the components produced, or a ratio computed from the tokens. Whether the
@@ -3061,3 +3098,65 @@ ground-coloured cut reads as a rule at a 26px column width; and the expanded
 account's width in a desktop window narrower than 900px with a classic
 scrollbar, where `100vw` counts the scrollbar and the detail would overhang
 the scrollport by its width (a phone's overlay scrollbar takes none).
+
+### 15.6 The agents and inspector lane (#170)
+
+Four boxes on #82 were the owner's to decide; the decisions are recorded on
+the epic, and this sub-section records what each changed and the constraint
+behind it, so none of them is quietly reverted. Two merged leftovers rode
+along. Every one has a test that states the mutation turning it red, and the
+red run is in the pull request.
+
+| Box | What changed | The constraint | Test |
+|---|---|---|---|
+| AG-5 | The artifact viewer's `masked N` is a plain fact: no mark, no `.is-absent`, `--warn` ink above zero, plain at zero, still opening `masking-is-serve-time` | a count that was read is a measurement; the six marks are kinds of *nothing* and there is no seventh (§6.13 amended) | `artifact.masked`, `prose.runs` (re-pointed) |
+| AG-14 | `.row .why` and `.why-full` are `--text`; `.is-warn` only on a line that needs a person: a **failure** (FAILED); work that **can never be admitted** until someone acts — a pool paused or set to zero, whether admission wrote it as a blocker or the task parked on `MANUAL_PAUSE`, and a spent budget (`BUDGET_EXHAUSTED`); **sign-in needed** (`CREDENTIAL_MISSING`); and a **stuck or silent worker** — in the inspector, a slot-holding task with no event for seven minutes gets `livenessOf`'s sentence as its why line (`SilentWorker`, AgentDetail.tsx). Queued, parked on quota or a provider, waiting on a dependency, and cancelled are ink | a colour on every line marks none of them; "needs a person" is the partition types.ts already keeps (`PARK_NEEDS_A_PERSON`, `needsAPerson`), and "silent" is the one `Liveness.tsx` already draws | `whyline.tone` |
+| AG-20 | Every inspector chart root — peak memory, phase bars, retry lollipop, checkpoint strip, diffstat **and the token-spend line** (`TimeSeries`) — drawn at 640 and at 300 units; the figure is the container; the wide drawing only where the chart is ≥ 640px; the narrow one never below 300px. The checkpoint strip's off-page tray takes at most half of each drawing's plot and counts what it has no room to draw as `+N` | tick text at `--t-micro` rendered at 6–8px when a 640 drawing was scaled into a 400–480px column (§7.2 amended); a tray sized by its count left the 300 drawing no axis at 21 off-page checkpoints | `chart.narrow`, `inspector.charts` (every chart root in the inspector, not a list) |
+| AG-23 | The checkpoint and log panels are a facts strip and one `.ctl-table` each, **three columns**: Checkpoint · Size · Age, and Stream · Size · Age. Whether a retry would restore from a checkpoint is a `resume` line under its name; a checkpoint's objects open from its Size cell as rows of the same table, with a name, a size and an age. No `.ckpt` or `.logwin` card, no `dl.kv`; `real zero`, `not measured`, `partial` and `not read` in the cells; the server's lowercase detail on its own line or after a dash. The strip's `restore` fact is what a retry would restore from | one level of box (§13.3); keep only the sentences a table cannot state — a checkpoint written then reclaimed, and a restore pointer a resume would ignore | `runfiles.flat`, `checkpoint.reclaimed` |
+| leftover A | `Agents`, `AttemptTimeline`, `Capacity`, `Holders`, `Runtimes`: the second `real zero` in each empty state removed | one mark per empty state (§6.9 amended) | `emptystate.onemark` |
+| leftover B | Every string that said the events route "returns no page token" now says this screen reads one page and does not follow the token | `GET /v1/tasks/{id}/events` has returned `next_page_token` since #19; the limit is the screen's (help topic `event-paging`) | `eventpaging.strings` |
+
+**Where the decisions and the code did not line up exactly**, recorded rather
+than smoothed over:
+
+* **AG-5 names "the credential-names help topic".** The `?` beside `masked N`
+  opened `credential-names-not-values` when the box was filed; AG-19 (#152)
+  moved it to `masking-is-serve-time`, because the credential-names topic is
+  about how the runtime catalogue names secrets, not about a value found in an
+  artifact. The two decisions cannot both hold for one `?`. The count keeps
+  its link to the masking topic, which is the topic about these credentials,
+  which needs the owner's confirmation; pointing it back would undo AG-19's
+  fix.
+* **AG-14 names "stuck or silent workers".** `whyAgent` writes no line for a
+  task that holds a slot, so the first pass had nothing to colour. The
+  inspector reads the task's events, and now writes `livenessOf`'s `silent`
+  sentence as a `--warn` why line. The **Agents list** cannot: a row is a task
+  document, and a worker's heartbeat is written to its lease, which no
+  tenant-scoped route serves (the admin leases route is the only reader). That
+  half is a backend change, #179, and the list draws no line for a silent
+  worker until it lands. The list also counts `MANUAL_PAUSE` and
+  `BUDGET_EXHAUSTED` parks as "can never be admitted": nothing ends either one
+  but a person, exactly as for a pool paused or set to zero.
+* **AG-23's log age.** The route serves no per-object time (#172 asks for
+  it), so a `final` stream's age is its attempt's end — when the worker
+  uploads it — and the em dash with `not measured` when that end is not
+  recorded. The word `live` is shown only while the attempt has no end **and**
+  the task holds a slot. `source=auto` also serves the live tail when the
+  final log is absent, which is what a worker killed before its upload leaves
+  behind, and a quota-parked attempt never records an end; either tail is the
+  em dash with `partial` — the last tail published, not a stream still being
+  written. The first pass wrote "`live` for a tail still being written" here
+  and called every tail `live`.
+* **AG-23's restore fact.** It printed the pointer, or "a retry starts from
+  the beginning" when none was set. The worker tries the pointer and, when
+  that resolves to nothing, restores the newest committed checkpoint it can
+  read (`_restore_checkpoint` → `find_latest`), so the fact is now `newest
+  committed` and the listing's newest resumable row — marked `partial` where
+  the listing is cut or a newer row is committed but not resumable, and `not
+  read` where a manifest could not be read.
+
+**What this pass did NOT verify.** Nothing here was seen rendered. The tests
+prove which drawing the sheet picks at a stated container width, which marks
+the cells carry and which rule wins; whether the 300-unit drawings, the
+tray's `+N` and the object rows read well at 390 and 1440 in each theme is
+for the next release's screenshots.

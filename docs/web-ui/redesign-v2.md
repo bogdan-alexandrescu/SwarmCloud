@@ -846,6 +846,14 @@ Fix the inversion: `.section > h2` becomes 16px/600 in `--text`, above body text
   colour on `.row .why`, the blocked-reason line the CSS itself calls the whole
   point. It needs darkening; the earlier audit fixed `--text-faint` and did not
   re-check `--warn`.
+  *(Amended by the owner, 2026-09-25, AG-14 on #82: `.row .why` is no longer
+  `--warn` on every row. It is plain ink, and `--warn` only on a why line that
+  needs a person to act — a failure; work that can never be admitted until
+  someone acts (a pool paused or set to zero, as a blocker or a `MANUAL_PAUSE`
+  park, and a spent budget); sign-in needed (a missing credential); and a
+  stuck or silent worker, which the inspector draws and the Agents list cannot
+  yet. Routine waits and cancellations are ink. design-system.md §15.6 keeps the
+  same list.)*
 - Delete `--ctl-shadow` in dark mode: `0 1px 2px rgb(0 0 0 / .30)` on `--bg`
   `#0b0d10` is ~1.02:1 — invisible, and it costs a paint layer on every
   `.ctl-metric`.

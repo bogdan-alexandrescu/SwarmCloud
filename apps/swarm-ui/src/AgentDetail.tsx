@@ -1,5 +1,5 @@
 import { useCallback, useState, type CSSProperties, type ReactNode } from 'react'
-import { loadAgentRun, type AgentRun } from './api'
+import { EVENT_PAGE_LIMIT, loadAgentRun, type AgentRun } from './api'
 import { ArtifactViewer } from './ArtifactViewer'
 import { AttemptDurations } from './charts/AttemptPhases'
 import { CheckpointStrip } from './charts/CheckpointStrip'
@@ -12,7 +12,7 @@ import { eventKind, isTerminalEvent } from './events'
 import { num } from './fetch'
 import { HELP, type TopicId } from './help'
 import { HelpCard } from './HelpCard'
-import { LivenessBadge } from './Liveness'
+import { LivenessBadge, livenessOf } from './Liveness'
 import { Absent, Mark, Metric, UtilRow, type MarkKind } from './primitives'
 import { RunFiles } from './RunFiles'
 import { Screen, timeAgo, type ScreenReading } from './Shell'
@@ -36,6 +36,7 @@ import {
   stateTone,
   usageOf,
   whyAgent,
+  whyNeedsAction,
   type ArtifactRef,
   type AttemptRow,
   type DispatchRole,
@@ -282,7 +283,7 @@ export function Run({
     <div className="run-stack">
       <Headline run={run} now={now} reload={reload} />
       <Alerts task={task} />
-      <Why task={task} />
+      <Why task={task} events={events} now={now} />
       <ErrorBanner run={run} />
       <RunMetrics run={run} now={now} />
       <Attempts run={run} now={now} />
@@ -295,7 +296,7 @@ export function Run({
           either. See RunFiles.tsx. The attempt records go with it: they are
           what can say a checkpoint was written that the listing no longer
           finds, which is not a real zero. */}
-      <RunFiles task={task} attempts={run.attempts} readAt={reading?.fetchedAt ?? null} />
+      <RunFiles task={task} attempts={run.attempts} readAt={reading?.fetchedAt ?? null} now={now} />
       <Input run={run} />
       <Timeline task={task} events={events} detail={run.eventsDetail} attempts={run.attempts} />
     </div>
@@ -1082,18 +1083,55 @@ function reasonText(reason: string): string {
  * of it". The heading went, because a one-line panel headed "Why" is a word of
  * chrome per word of content.
  */
-function Why({ task }: { task: Task }) {
+function Why({ task, events, now }: { task: Task; events: TaskEvent[] | null; now: number }) {
   const why = whyAgent(task)
-  if (!why) return null
+  if (!why) return <SilentWorker task={task} events={events} now={now} />
   // ONCE, NOT THREE TIMES (AG-7). For a FAILED task `whyAgent` IS
   // `last_error`, and the error banner directly below prints that same text
   // in full -- so a failed agent's reason stood here, then in the banner, then
   // again in the attempt card. The banner is the one that keeps it: full,
   // monospace, with who wrote it.
   if (why === task.last_error) return null
+  // THE SAME INK RULE AS THE LIST'S ROW (AG-14): `--warn` only when the
+  // sentence asks a person to act, plain ink for a routine wait or a cancel.
   return (
     <section className="section">
-      <p className="why-full">{why}</p>
+      <p className={`why-full${whyNeedsAction(task) ? ' is-warn' : ''}`}>{why}</p>
+    </section>
+  )
+}
+
+/**
+ * AG-14'S FOURTH KIND: A STUCK OR SILENT WORKER, which had no line to colour.
+ *
+ * The owner's decision names "stuck/silent workers" among the why lines that
+ * need a person and so take `--warn`. `whyAgent` writes nothing for a task
+ * that holds a slot -- it answers "why is this not running", and a leased or
+ * running task is -- so the first pass had no line here and coloured none.
+ *
+ * The inspector reads the task's events, and `livenessOf` (Liveness.tsx)
+ * already derives the answer the badge in the heading draws: a task in a
+ * concurrency state with no event for seven minutes is `silent`, "the worker
+ * may be gone". That sentence is the why line, in `--warn`, and nothing else
+ * is -- not `quiet` (heartbeats are ~150s apart, so three to seven minutes is
+ * not yet alarming), and not an event read that failed or a re-read that
+ * stopped vouching (`now` stops with it, `rowClock` in `Run`): "could not
+ * look" is never drawn as "nothing happened".
+ *
+ * NOT ON THE AGENTS LIST. A list row is a task document, and a worker's
+ * heartbeat is written to its LEASE (control.py `heartbeat`), which no
+ * tenant-scoped route serves; the admin leases route is the only reader. The
+ * list half is a backend change, #179, rather than a guess from
+ * `updated_at`, which a heartbeat does not move.
+ */
+function SilentWorker({ task, events, now }: { task: Task; events: TaskEvent[] | null; now: number }) {
+  const live = livenessOf(task, events, now)
+  if (live.kind !== 'silent') return null
+  return (
+    <section className="section">
+      <p className="why-full is-warn" data-why="silent">
+        {live.say}
+      </p>
     </section>
   )
 }
@@ -1943,7 +1981,7 @@ function AttemptCheckpoints({ a, run }: { a: AttemptRow; run: AgentRun }) {
                           kind={eventsRead ? 'partial' : 'unread'}
                           say={
                             eventsRead
-                              ? "This checkpoint's event is not on this page, so its location is unknown. The events route is oldest-first, capped, and returns no page token."
+                              ? "This checkpoint's event is not on this page, so its location is unknown. This screen reads one page of events, oldest-first, and does not follow the page token the events route returns."
                               : 'The event read failed, so this checkpoint has no location attached. It is unknown rather than missing, and nothing here says whether the checkpoint itself is fine.'
                           }
                         />
@@ -3134,13 +3172,16 @@ function Timeline({
   }
 
   // THE CAP IS THE SERVER'S AND THIS PAGE DOES NOT KNOW IT. The endpoint
-  // orders `at` ASCENDING, applies `paged_limit` and returns NO page token, so
-  // the newest events of a long task are unreachable here. `events.length >=
-  // 200` was the old test and it could never fire: this client sends no
-  // `limit`, so the server falls back to `default_page_size` -- 50 unless a
-  // deployment overrides it -- and nothing in the response says which. A
+  // orders `at` ASCENDING and applies `paged_limit`; this client asks for
+  // EVENT_PAGE_LIMIT (200) and the server clamps that to its own
+  // `max_page_size`, which a deployment can lower. The route pages -- it
+  // returns `next_page_token` whenever more events exist (#19) -- but this
+  // screen reads ONE page and does not follow the token, so the newest events
+  // of a long task are not on it (help topic `event-paging`). `events.length
+  // >= 200` was the old test, from when the client sent no limit at all and
+  // the server answered with `default_page_size` -- 50 unless overridden. A
   // worker heartbeats every ~150s, so an attempt of more than about two hours
-  // runs past that and the timeline simply stopped mid-run, with the banner
+  // ran past that and the timeline simply stopped mid-run, with the banner
   // written to prevent exactly that silently disabled.
   //
   // Truncation is therefore DETECTED, not counted: a terminal task always
@@ -3184,7 +3225,7 @@ function Timeline({
           <span className="is-end ctl-card-note">
             <Mark
               kind="partial"
-              say={`The task is ${stateWord(task.state)} and a terminal task writes a terminal event — none is on this page. The route orders events oldest-first, caps the page server-side and returns no page token, so the newest events are not reachable from this screen at all. The end of this task's history is missing, not absent.`}
+              say={`The task is ${stateWord(task.state)} and a terminal task writes a terminal event — none is on this page. This screen reads one page of events, oldest-first, and does not follow the page token the events route returns, so the newest events are not on it. The end of this task's history is missing, not absent.`}
             />{' '}
             {lastEvent === undefined
               ? 'ends early'
@@ -3193,7 +3234,7 @@ function Timeline({
         ) : (
           <span
             className="is-end ctl-card-note"
-            aria-label="One page, oldest first. This screen asks for no page size, so the cap is whatever the deployment's default is, and the response says neither what it was nor how many events were left out — a page that looks complete is not evidence that it is."
+            aria-label={`One page, oldest first. This screen asks for ${EVENT_PAGE_LIMIT} events and the server may clamp that lower, and it does not follow the page token the events route returns — so a page that looks complete is not evidence that it is.`}
           >
             oldest first · cap unknown
           </span>

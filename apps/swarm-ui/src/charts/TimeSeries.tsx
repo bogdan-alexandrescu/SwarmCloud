@@ -33,12 +33,22 @@
 // This repository has `check-contract-parity.sh` because a rule restated in a
 // second place drifts. This is the same argument applied to a drawing rule.
 //
-// SSR / renderToStaticMarkup / jsdom. Nothing here measures the DOM. The SVG
-// has an intrinsic size and a viewBox, and CSS scales it inside its column, so
-// the whole chart renders under `renderToStaticMarkup` and under Vitest's
-// jsdom, where layout is 0x0. A responsive container that measures its parent
-// renders an EMPTY DIV in both -- which is why one is not used here, and it is
-// the measured reason recharts was rejected.
+// SSR / renderToStaticMarkup / jsdom. Nothing here measures the DOM. Each SVG
+// has an intrinsic size and a viewBox, so the whole chart renders under
+// `renderToStaticMarkup` and under Vitest's jsdom, where layout is 0x0. A
+// responsive container that measures its parent renders an EMPTY DIV in both
+// -- which is why one is not used here, and it is the measured reason
+// recharts was rejected.
+//
+// DRAWN TWICE, NOT SCALED (AG-20, owner decision 2026-09-25). This was one
+// 640-unit SVG that CSS scaled into its column, and its column is the
+// inspector's Attempts panel: at the 480px default the drawing came out at
+// about 0.7x, so its `--t-micro` tick labels rendered at about 8.4px, under
+// the floor -- directly above the phase chart the first AG-20 pass had fixed.
+// The plot is now drawn once per entry in `DRAWN` (parts.tsx), each with its
+// own scales, tick counts and hatch, and the sheet shows one of them
+// (`.ctl-chart.has-narrow`); both are in the markup, so the reason above
+// still holds.
 
 import { AxisBottom, AxisLeft } from '@visx/axis'
 import { Group } from '@visx/group'
@@ -47,6 +57,7 @@ import { LinePath } from '@visx/shape'
 import { useId } from 'react'
 
 import { HELP, helpAnchor } from '../help'
+import { DRAWN, drawnClass, type Drawn } from './parts'
 import {
   coverageOf,
   inTimeOrder,
@@ -83,8 +94,11 @@ export interface TimeSeriesProps {
   absentCopy: string
   /** Where the value axis may start. No default; see `ZeroRule`. */
   zero: ZeroRule
-  /** Intrinsic size. CSS scales the result to the column; see the note above. */
-  width?: number
+  /**
+   * The plot's height. There is NO `width`: the widths are `DRAWN`'s, one
+   * drawing per entry, and a caller that could pass one would be asking for
+   * the single scaled SVG AG-20 removed.
+   */
   height?: number
 }
 
@@ -93,6 +107,17 @@ export interface TimeSeriesProps {
 // label and a UTC time without the two colliding.
 const MARGIN = { top: 10, right: 14, bottom: 22, left: 56 }
 
+/**
+ * How many time ticks each drawing asks d3 for (a hint, not a count).
+ *
+ * The wide drawing keeps the four it always asked for. The narrow one has a
+ * 230-unit plot (300 less the margins above), and a UTC tick label at
+ * `--t-micro` is about 40 units wide, so it asks for two: d3 then picks an
+ * interval at least as long as the wide drawing's, which can only give it the
+ * same number of ticks or fewer -- never the wide axis squeezed.
+ */
+const TIME_TICKS: Readonly<Record<Drawn['key'], number>> = { wide: 4, narrow: 2 }
+
 export function TimeSeries({
   points,
   title,
@@ -100,7 +125,6 @@ export function TimeSeries({
   format,
   absentCopy,
   zero,
-  width = 640,
   height = 132,
 }: TimeSeriesProps) {
   // Unique per instance: two charts on one screen must not share a <pattern>
@@ -155,166 +179,41 @@ export function TimeSeries({
     )
   }
 
-  const innerW = Math.max(1, width - MARGIN.left - MARGIN.right)
   const innerH = Math.max(1, height - MARGIN.top - MARGIN.bottom)
-
-  // THE TIME AXIS SPANS EVERY POINT, INCLUDING THE ABSENT ONES. When a cost
-  // was not reported, the instant of that attempt was still measured; hiding
-  // it would shorten the window the chart claims to cover.
-  //
-  // A single point (or several at one instant) has no span. Rather than invent
-  // one, the scale collapses to the middle of the plot and the axis carries
-  // that one instant.
-  const xScale = scaleUtc({
-    domain: [new Date(tExtent.lo), new Date(tExtent.hi)],
-    range: tExtent.degenerate ? [innerW / 2, innerW / 2] : [0, innerW],
-  })
-
-  // NO .nice(). The ends of this axis are measurements.
-  const yScale = scaleLinear<number>({
-    domain: [vExtent.lo, vExtent.hi],
-    range: vExtent.degenerate ? [innerH / 2, innerH / 2] : [innerH, 0],
-  })
-
-  const yTicks = valueTicks(vExtent, yScale.ticks(3))
-  const xTicks = tExtent.degenerate ? [new Date(tExtent.lo)] : undefined
-
   const absentPoints = ordered.filter(
     (p): p is Extract<ChartPoint, { measured: false }> => !p.measured,
   )
   const drawsALine = measuredRuns(ordered).some((run) => run.length >= 2)
-  // Wide enough to read as a region rather than as a mark, narrow enough that
-  // two adjacent absences stay two.
-  const bandW = Math.max(4, Math.min(14, innerW / Math.max(4, ordered.length * 2)))
+
+  // NO .nice(). The ends of this axis are measurements. The value axis runs
+  // down the plot's HEIGHT, which both drawings share, so it is built once.
+  const yScale = scaleLinear<number>({
+    domain: [vExtent.lo, vExtent.hi],
+    range: vExtent.degenerate ? [innerH / 2, innerH / 2] : [innerH, 0],
+  })
+  const yTicks = valueTicks(vExtent, yScale.ticks(3))
 
   return (
-    <figure className="ctl-chart" aria-label={title}>
+    <figure className="ctl-chart has-narrow" aria-label={title}>
       <ChartHead title={title} />
-      <svg
-        className="ctl-chart-svg"
-        width={width}
-        height={height}
-        viewBox={`0 0 ${width} ${height}`}
-        // A GROUP, NOT AN IMAGE: an image's children are presentational, and
-        // every absence band's <title> below is the sentence saying why that
-        // point has no value. Those reasons are the accessible route to what
-        // the band means; one label for the whole chart would hide all of them.
-        role="group"
-        aria-label={title}
-      >
-        <defs>
-          {/* The absence texture. The same idea as `--ctl-hatch` in
-              styles.css, which CSS gradients cannot paint into an SVG shape:
-              diagonal stripes read as "no data here" at a glance and survive
-              a greyscale screenshot, which a colour alone does not. */}
-          <pattern
-            id={hatchId}
-            className="ctl-chart-hatch"
-            width={6}
-            height={6}
-            patternUnits="userSpaceOnUse"
-            patternTransform="rotate(45)"
-          >
-            <line x1={0} y1={0} x2={0} y2={6} strokeWidth={2} />
-          </pattern>
-        </defs>
-
-        <Group left={MARGIN.left} top={MARGIN.top}>
-          {/* The zero rule, drawn only when zero is inside the domain. It is
-              what makes a MEASURED zero legible: its dot sits ON this line,
-              where an absence has no dot at all. */}
-          {vExtent.lo <= 0 && vExtent.hi >= 0 && !vExtent.degenerate && (
-            <line
-              className="ctl-chart-zeroline"
-              x1={0}
-              x2={innerW}
-              y1={yScale(0)}
-              y2={yScale(0)}
-              data-testid="zero-rule"
-            />
-          )}
-
-          {/* EVERY ABSENCE IS DRAWN, as a region with no height of its own.
-              It has an x -- the instant is known -- and deliberately no y: a
-              mark at a height would be a value. */}
-          {absentPoints.map((p) => (
-            <rect
-              key={`absent-${p.at}-${p.label}`}
-              className="ctl-chart-absent"
-              data-testid="absent-band"
-              data-label={p.label}
-              data-at={p.at}
-              x={xScale(new Date(p.at)) - bandW / 2}
-              y={0}
-              width={bandW}
-              height={innerH}
-              fill={`url(#${hatchId})`}
-            >
-              <title>{`${p.label} — not measured. ${p.why}`}</title>
-            </rect>
-          ))}
-
-          {/* THE LINE. `defined` is hard-coded and there is no prop that can
-              change it: d3 ends the current subpath at an absence and starts a
-              new one after it, so no stroke ever crosses a gap. Removing this
-              one accessor makes `honesty.chart.test.tsx` fail by name -- that
-              is the mutation this wrapper is here to survive. */}
-          {drawsALine && (
-            <LinePath<ChartPoint>
-              className="ctl-chart-line"
-              data={ordered}
-              x={(p) => xScale(new Date(p.at))}
-              // NaN, not 0. d3 does not call this accessor for a point its
-              // `defined` rejected, but if a future edit ever routes an
-              // absence here, NaN produces no segment. A `0` would produce a
-              // vertex on the baseline -- the exact defect.
-              y={(p) => (p.measured ? yScale(p.value) : Number.NaN)}
-              defined={(p) => p.measured}
-            />
-          )}
-
-          {/* Every measured point, including the zeroes. A lone measurement
-              between two absences has no line and would otherwise not be
-              drawn at all. */}
-          {ordered.map((p) =>
-            p.measured ? (
-              <circle
-                key={`dot-${p.at}-${p.label}`}
-                className={p.value === 0 ? 'ctl-chart-dot is-zero' : 'ctl-chart-dot'}
-                data-testid="measured-dot"
-                data-label={p.label}
-                data-value={p.value}
-                cx={xScale(new Date(p.at))}
-                cy={yScale(p.value)}
-                r={p.value === 0 ? 3.5 : 2.75}
-              >
-                <title>{`${p.label} — ${format(p.value)}, measured`}</title>
-              </circle>
-            ) : null,
-          )}
-
-          <AxisLeft
-            scale={yScale}
-            tickValues={yTicks}
-            tickFormat={(v) => format(Number(v))}
-            numTicks={yTicks.length}
-            axisClassName="ctl-chart-axis"
-            tickClassName="ctl-chart-tick"
-            axisLineClassName="ctl-chart-axisline"
-            tickLength={3}
-          />
-          <AxisBottom
-            top={innerH}
-            scale={xScale}
-            tickValues={xTicks}
-            numTicks={Math.min(4, ordered.length)}
-            axisClassName="ctl-chart-axis"
-            tickClassName="ctl-chart-tick"
-            axisLineClassName="ctl-chart-axisline"
-            tickLength={3}
-          />
-        </Group>
-      </svg>
+      {DRAWN.map((d) => (
+        <Plot
+          key={d.key}
+          d={d}
+          height={height}
+          innerH={innerH}
+          title={title}
+          hatchId={`${hatchId}-${d.key}`}
+          ordered={ordered}
+          absentPoints={absentPoints}
+          drawsALine={drawsALine}
+          tExtent={tExtent}
+          vExtent={vExtent}
+          yScale={yScale}
+          yTicks={yTicks}
+          format={format}
+        />
+      ))}
 
       {/* THE COVERAGE SENTENCE. Rendered from the same `Coverage` the total
           comes from, by this component, always. A total over a partial series
@@ -355,6 +254,194 @@ export function TimeSeries({
         </p>
       )}
     </figure>
+  )
+}
+
+/**
+ * ONE DRAWING of the plot, at one of `DRAWN`'s widths (AG-20).
+ *
+ * Everything below is the plot as it was drawn at 640, with the width and the
+ * time-tick count taken from the drawing. What the two drawings share -- the
+ * points, the value scale down the shared height, the coverage below them --
+ * is computed once, by `TimeSeries`, so the two can never disagree about a
+ * value. Each has its own hatch pattern: the sheet hides one with
+ * `display: none`, and a `<pattern>` inside a hidden SVG does not paint into
+ * its sibling.
+ */
+function Plot({
+  d,
+  height,
+  innerH,
+  title,
+  hatchId,
+  ordered,
+  absentPoints,
+  drawsALine,
+  tExtent,
+  vExtent,
+  yScale,
+  yTicks,
+  format,
+}: {
+  d: Drawn
+  height: number
+  innerH: number
+  title: string
+  hatchId: string
+  ordered: ChartPoint[]
+  absentPoints: Extract<ChartPoint, { measured: false }>[]
+  drawsALine: boolean
+  tExtent: Extent
+  vExtent: Extent
+  yScale: LinearScale
+  yTicks: number[]
+  format: (value: number) => string
+}) {
+  const innerW = Math.max(1, d.w - MARGIN.left - MARGIN.right)
+
+  // THE TIME AXIS SPANS EVERY POINT, INCLUDING THE ABSENT ONES. When a cost
+  // was not reported, the instant of that attempt was still measured; hiding
+  // it would shorten the window the chart claims to cover.
+  //
+  // A single point (or several at one instant) has no span. Rather than invent
+  // one, the scale collapses to the middle of the plot and the axis carries
+  // that one instant.
+  const xScale = scaleUtc({
+    domain: [new Date(tExtent.lo), new Date(tExtent.hi)],
+    range: tExtent.degenerate ? [innerW / 2, innerW / 2] : [0, innerW],
+  })
+
+  const xTicks = tExtent.degenerate ? [new Date(tExtent.lo)] : undefined
+  // Wide enough to read as a region rather than as a mark, narrow enough that
+  // two adjacent absences stay two.
+  const bandW = Math.max(4, Math.min(14, innerW / Math.max(4, ordered.length * 2)))
+
+  return (
+    <svg
+      className={drawnClass(d)}
+      width={d.w}
+      height={height}
+      viewBox={`0 0 ${d.w} ${height}`}
+      // A GROUP, NOT AN IMAGE: an image's children are presentational, and
+      // every absence band's <title> below is the sentence saying why that
+      // point has no value. Those reasons are the accessible route to what
+      // the band means; one label for the whole chart would hide all of them.
+      role="group"
+      aria-label={title}
+    >
+      <defs>
+        {/* The absence texture. The same idea as `--ctl-hatch` in
+            styles.css, which CSS gradients cannot paint into an SVG shape:
+            diagonal stripes read as "no data here" at a glance and survive
+            a greyscale screenshot, which a colour alone does not. */}
+        <pattern
+          id={hatchId}
+          className="ctl-chart-hatch"
+          width={6}
+          height={6}
+          patternUnits="userSpaceOnUse"
+          patternTransform="rotate(45)"
+        >
+          <line x1={0} y1={0} x2={0} y2={6} strokeWidth={2} />
+        </pattern>
+      </defs>
+
+      <Group left={MARGIN.left} top={MARGIN.top}>
+        {/* The zero rule, drawn only when zero is inside the domain. It is
+            what makes a MEASURED zero legible: its dot sits ON this line,
+            where an absence has no dot at all. */}
+        {vExtent.lo <= 0 && vExtent.hi >= 0 && !vExtent.degenerate && (
+          <line
+            className="ctl-chart-zeroline"
+            x1={0}
+            x2={innerW}
+            y1={yScale(0)}
+            y2={yScale(0)}
+            data-testid="zero-rule"
+          />
+        )}
+
+        {/* EVERY ABSENCE IS DRAWN, as a region with no height of its own.
+            It has an x -- the instant is known -- and deliberately no y: a
+            mark at a height would be a value. */}
+        {absentPoints.map((p) => (
+          <rect
+            key={`absent-${p.at}-${p.label}`}
+            className="ctl-chart-absent"
+            data-testid="absent-band"
+            data-label={p.label}
+            data-at={p.at}
+            x={xScale(new Date(p.at)) - bandW / 2}
+            y={0}
+            width={bandW}
+            height={innerH}
+            fill={`url(#${hatchId})`}
+          >
+            <title>{`${p.label} — not measured. ${p.why}`}</title>
+          </rect>
+        ))}
+
+        {/* THE LINE. `defined` is hard-coded and there is no prop that can
+            change it: d3 ends the current subpath at an absence and starts a
+            new one after it, so no stroke ever crosses a gap. Removing this
+            one accessor makes `honesty.chart.test.tsx` fail by name -- that
+            is the mutation this wrapper is here to survive. */}
+        {drawsALine && (
+          <LinePath<ChartPoint>
+            className="ctl-chart-line"
+            data={ordered}
+            x={(p) => xScale(new Date(p.at))}
+            // NaN, not 0. d3 does not call this accessor for a point its
+            // `defined` rejected, but if a future edit ever routes an
+            // absence here, NaN produces no segment. A `0` would produce a
+            // vertex on the baseline -- the exact defect.
+            y={(p) => (p.measured ? yScale(p.value) : Number.NaN)}
+            defined={(p) => p.measured}
+          />
+        )}
+
+        {/* Every measured point, including the zeroes. A lone measurement
+            between two absences has no line and would otherwise not be
+            drawn at all. */}
+        {ordered.map((p) =>
+          p.measured ? (
+            <circle
+              key={`dot-${p.at}-${p.label}`}
+              className={p.value === 0 ? 'ctl-chart-dot is-zero' : 'ctl-chart-dot'}
+              data-testid="measured-dot"
+              data-label={p.label}
+              data-value={p.value}
+              cx={xScale(new Date(p.at))}
+              cy={yScale(p.value)}
+              r={p.value === 0 ? 3.5 : 2.75}
+            >
+              <title>{`${p.label} — ${format(p.value)}, measured`}</title>
+            </circle>
+          ) : null,
+        )}
+
+        <AxisLeft
+          scale={yScale}
+          tickValues={yTicks}
+          tickFormat={(v) => format(Number(v))}
+          numTicks={yTicks.length}
+          axisClassName="ctl-chart-axis"
+          tickClassName="ctl-chart-tick"
+          axisLineClassName="ctl-chart-axisline"
+          tickLength={3}
+        />
+        <AxisBottom
+          top={innerH}
+          scale={xScale}
+          tickValues={xTicks}
+          numTicks={Math.min(TIME_TICKS[d.key], ordered.length)}
+          axisClassName="ctl-chart-axis"
+          tickClassName="ctl-chart-tick"
+          axisLineClassName="ctl-chart-axisline"
+          tickLength={3}
+        />
+      </Group>
+    </svg>
   )
 }
 

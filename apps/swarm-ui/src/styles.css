@@ -2525,14 +2525,26 @@ button.node:focus-visible { outline: 2px solid var(--info); outline-offset: 2px;
 
 /* The blocked/park reason, on its own line under the row. Full width because
    the copy is a sentence -- "Your tenant is at its own limit" is the whole
-   point and truncating it to "Your tenant is at..." defeats it. */
+   point and truncating it to "Your tenant is at..." defeats it.
+
+   PLAIN INK, AND --warn ONLY WHEN SOMEONE HAS TO ACT (AG-14, owner decision
+   2026-09-25). This was `--warn` on every row, so a step waiting on the step
+   before it -- what a healthy chain says about most of its steps -- was the
+   same yellow as a failure, and a colour on every line marked none of them.
+   `.is-warn` is set by `whyNeedsAction` (types.ts): a failure, work that can
+   never be admitted (a pool paused or set to zero, a spent budget), a missing
+   credential -- and, in the inspector, a silent worker (`.why-full`). Queued,
+   parked on quota, waiting on a dependency and cancelled read in ink.
+   redesign-v2 §5.4 kept warn here on purpose; this is the owner's amendment
+   of it, recorded there too. */
 .row .why {
   grid-column: 1 / -1;
   margin-top: 4px;
   font-size: var(--t-body);
-  color: var(--warn);
+  color: var(--text);
   line-height: var(--lh-body);
 }
+.row .why.is-warn { color: var(--warn); }
 
 /* ------------------------------------------------------------------------ */
 /* Stale: real data that is no longer current                               */
@@ -3534,7 +3546,10 @@ dl.kv dd { margin: 0; color: var(--text); min-width: 0; overflow-wrap: anywhere;
 .muted { color: var(--text-dim); font-size: var(--t-body); line-height: var(--lh-body); margin: 0; }
 .muted.small { font-size: var(--t-micro); margin-top: 10px; }
 .warn-text { color: var(--warn); font-size: var(--t-body); line-height: var(--lh-body); }
-.why-full { margin: 0; font-size: var(--t-lead); line-height: var(--lh-lead); color: var(--warn); }
+/* The inspector's why sentence takes the list row's rule (AG-14): ink, and
+   `--warn` only when `whyNeedsAction` says a person has to act. */
+.why-full { margin: 0; font-size: var(--t-lead); line-height: var(--lh-lead); color: var(--text); }
+.why-full.is-warn { color: var(--warn); }
 
 pre.json, pre.err, pre.ev-detail {
   margin: 8px 0 0;
@@ -8278,6 +8293,15 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 .art-prov { margin: var(--ctl-s2) 0 var(--ctl-s3); }
 .art-prov p { margin: 0 0 var(--ctl-s1); }
 .art-prov-actions { display: inline-flex; gap: var(--ctl-s2); margin-top: var(--ctl-s1); }
+/* AG-5. THE MASKED-CREDENTIAL COUNT IS A MEASUREMENT, SO IT WEARS NO MARK.
+   It wore `.ctl-mark.is-unread` -- "the read failed" -- on a count that was
+   read, inside a fact dimmed as absent. The owner's decision (2026-09-25): a
+   plain fact, `--warn` ink above zero and plain ink at zero, no mark, no
+   dimming, and no seventh mark kind. The ink is the attention; the sentence
+   is `#help/masking-is-serve-time` behind the `?` beside it. The log panel's
+   redaction fact takes the same two rules (RunFiles.tsx). */
+.art-masked { color: var(--text); }
+.art-masked.is-warn { color: var(--warn); }
 .art-binary-meta { display: block; margin-top: var(--ctl-s2); font-size: var(--t-micro); }
 
 /* A MEASURE ON THE PROSE. A synthesis document set to the full width of a
@@ -8453,37 +8477,33 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
    `GET /v1/tasks/{id}/logs`. Both payloads distinguish "absent", "unreadable"
    and "present and empty", so nothing here may style two of those alike: the
    untrusted amber is reserved for a read that failed or could not be
-   established, and a plain muted line is what a measured emptiness gets. */
+   established, and a measured emptiness gets the kit's `real zero` mark.
 
-.ckpt-rows { display: flex; flex-direction: column; gap: 10px; }
-.ckpt {
-  border: 1px solid var(--line); border-radius: var(--radius);
-  background: var(--surface); padding: 10px 12px;
-}
-.ckpt-head {
-  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
-  margin-bottom: 6px;
-}
-.ckpt-head .mono { font-weight: 600; }
-.ckpt > details { margin-top: 8px; }
-.ckpt > details > summary { cursor: pointer; }
+   ONE LEVEL OF BOX (AG-23, owner decision 2026-09-25). `.ckpt` and `.logwin`
+   were a bordered card per checkpoint and per stream, inside a panel, each
+   holding a `dl.kv` -- boxes inside boxes. They are gone: each panel is a
+   facts strip and ONE `.ctl-table` (the one box, §13.3), and these rules are
+   what is left that a table does not already draw. */
 
-.logwin {
-  border: 1px solid var(--line); border-radius: var(--radius);
-  background: var(--surface); padding: 10px 12px;
-  margin-bottom: 10px;
-}
-.logwin-head {
-  display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
-  margin-bottom: 6px;
-}
-.logwin-head .mono { font-weight: 600; }
+/* The objects a checkpoint's size sums, opened from its Size cell as ROWS OF
+   THE SAME TABLE (fix-up on #170: "files as a table (name, size, age)"). Not
+   a second box: the row keeps the table's cells and rules, and is set in from
+   the checkpoint it belongs to, in the dim ink, so it reads as that
+   checkpoint's file rather than as another checkpoint. */
+.ctl-table tr.rf-object > th { padding-left: var(--ctl-s5); }
+.ctl-table tr.rf-object > th .mono { color: var(--text-dim); font-weight: 400; }
+
+/* A stream's window sits under the table, labelled by its stream's name. */
+.rf-window { margin-top: var(--ctl-s3); }
+.rf-window > .ctl-eyebrow { display: block; margin-bottom: var(--ctl-s1); }
+
 .logwin-body {
   margin: 0 0 6px;
   padding: 8px 10px;
   max-height: 320px; overflow: auto;
-  /* 6px, not 8px: 8 is not on the corner scale, and a well nested inside a
-     10px card takes the step below it. */
+  /* 6px, not 8px: 8 is not on the corner scale. The well is the stream's own
+     text, a sibling of the panel's table rather than an inset inside a card
+     (AG-23), so it is the only other bordered thing in the panel. */
   background: var(--bg); border: 1px solid var(--line); border-radius: var(--ctl-radius-sm);
   font: var(--t-body)/var(--lh-body) var(--mono); color: var(--text);
   /* Log lines are wrapped by the writer, not by us: re-wrapping a column of
@@ -10622,11 +10642,58 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
   stroke: var(--series-2);
   stroke-dasharray: 2 1.5;
 }
+/* THE TRAY'S COUNT (fix-up on #170): the off-page checkpoints past the ones
+   the tray has room to draw, as `+N`. Set as the tick labels are -- the same
+   mono and the same `--t-micro` in the drawing's own units, which neither
+   drawing is ever scaled below (AG-20) -- and in the dim ink, because it is a
+   count of things not drawn, not a value. */
+.ctl-ckpt-more {
+  fill: var(--text-dim);
+  font-family: var(--mono);
+  font-size: var(--t-micro);
+}
 
 /* --- Diffstat --------------------------------------------------------------- */
 .ctl-diff.is-del { fill: var(--series-4); }
 .ctl-diff.is-ins { fill: var(--series-1); }
 .ctl-diff-binary { fill: var(--series-3); }
+
+/* --- Drawn twice, not scaled (AG-20) -------------------------------------- */
+/* THE DEFECT. Each inspector chart was one SVG with a 640-unit viewBox under
+   `.ctl-chart-svg`'s `width: 100%`, and the inspector is a 400-720px column
+   (INSPECTOR in panes.ts), so the drawing was scaled to about 330-430px and
+   its tick text -- `--t-micro`, 12px in the chart's own units -- rendered at
+   6-8px, under the type scale's floor. §7.2 of design-system.md says charts
+   are authored twice, not scaled.
+
+   THE OWNER'S DECISION (2026-09-25): a second, narrow SVG with fewer ticks,
+   switched by a container or media query, SSR-safe; nothing scaled below the
+   12px floor. Every chart that draws twice puts both drawings in the markup
+   (`DRAWN` in charts/parts.tsx), and these rules show one:
+
+     * THE FIGURE IS THE CONTAINER, so the question is how wide the CHART is,
+       not the window -- at 1440 the inspector is a 480px column and a
+       viewport query would pick the wide drawing for it.
+     * THE WIDE DRAWING SHOWS ONLY IN A BOX AT LEAST 640px ACROSS, its own
+       authored width, so under the base rule's `width: 100%` it is only ever
+       scaled UP (to the 720px cap, 1.125x).
+     * THE NARROW DRAWING NEVER SHRINKS BELOW THE 300 UNITS IT WAS DRAWN AT
+       (`min-width`), and grows no further than 360px -- 1.2x, so 14.4px tick
+       text rather than the 20px a 300-unit drawing would carry across a
+       whole 500px box. Below 300px it overflows its box rather than
+       shrinking, which is §7.2's rule for the DAG as well.
+
+   640 IS NOT A RETIRED BREAKPOINT COMING BACK (§7.1). It is not a viewport
+   width; it is the wide drawing's own width, and the threshold has to equal
+   it for "never scaled down" to be true. `chart.narrow.test.tsx` reads both
+   numbers off the rendered viewBoxes and holds these rules to them. */
+.ctl-chart.has-narrow { container: ctl-chart / inline-size; }
+.ctl-chart-svg.is-wide { display: none; }
+.ctl-chart-svg.is-narrow { min-width: 300px; max-width: 360px; }
+@container ctl-chart (min-width: 640px) {
+  .ctl-chart-svg.is-wide { display: block; }
+  .ctl-chart-svg.is-narrow { display: none; }
+}
 
 /* ---------------------------------------------------------------------------
    A3 -- the checkpoint browser (CheckpointBrowser.tsx)

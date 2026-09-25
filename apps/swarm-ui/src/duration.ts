@@ -42,9 +42,11 @@
 // `finish()`. Both are on the attempt document, which `GET /v1/tasks/{id}/
 // attempts` serves whole.
 //
-// The events route does not: it orders oldest-first, caps the page and returns
-// no page token, so on a long run the TAIL is what falls off -- the terminal
-// event, the last checkpoints, the last heartbeats (redesign-v2 §4, seam S1).
+// The events this screen holds do not: it reads one page of them, oldest-first,
+// and does not follow the page token the events route returns (the route pages
+// since #19; this client does not -- help topic `event-paging`), so on a long
+// run the TAIL is what falls off -- the terminal event, the last checkpoints,
+// the last heartbeats (redesign-v2 §4, seam S1).
 // A phase bar built from `/events` alone would show a long agent's beginning
 // and imply it never finished. So the events contribute only what the attempt
 // document cannot: the `lease_acquired` instant that is admission (among the

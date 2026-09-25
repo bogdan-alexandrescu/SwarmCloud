@@ -32,11 +32,13 @@
 import { EVENT_PAGE_LIMIT } from '../api'
 import { spanText, instant } from '../duration'
 import { bytesLabel, type AttemptRow, type TaskEvent } from '../types'
-import { ChartTitle, HatchDef, useHatchId } from './parts'
+import { ChartTitle, DRAWN, HatchDef, drawnClass, useHatchId } from './parts'
 import { reading, valueExtent, type ChartPoint, type Extent } from './series'
 import { StepLine, ValueAxis, linearScale, type LinearScale } from './TimeSeries'
 
-const W = 640
+// THE WIDTH IS NOT A CONSTANT OF THIS CHART ANY MORE (AG-20): each drawing in
+// `DRAWN` (parts.tsx) brings its own, and the margins below are the same at
+// both, because the value labels on the left are the same length at both.
 const H = 120
 const M = { top: 8, right: 16, bottom: 22, left: 64 }
 const SLIVER = 8
@@ -110,12 +112,10 @@ export function PeakMemoryChart({
     if (p.measured && (top === null || p.value > top.value)) top = { at: p.at, value: p.value }
   }
 
-  const innerW = W - M.left - M.right
   const innerH = H - M.top - M.bottom
-  const x = linearScale(tExtent, [0, innerW])
 
   return (
-    <figure className="ctl-chart ctl-peak" aria-label="Peak RSS reached by T+n">
+    <figure className="ctl-chart ctl-peak has-narrow" aria-label="Peak RSS reached by T+n">
       <ChartTitle>Peak RSS reached by T+n</ChartTitle>
       {vExtent === null ? (
         // NOTHING MEASURED: no value axis, because an axis over an empty
@@ -125,27 +125,34 @@ export function PeakMemoryChart({
           <span className="ctl-chart-key" aria-hidden="true" /> {points.length} heartbeats · no reading
         </p>
       ) : (
-        <svg
-          className="ctl-chart-svg"
-          width={W}
-          height={H}
-          viewBox={`0 0 ${W} ${H}`}
-          role="group"
-          aria-label="Peak resident memory reached by each heartbeat, from the start of this attempt"
-        >
-          <HatchDef id={hatchId} />
-          <g transform={`translate(${M.left},${M.top})`}>
-            <PeakPlot
-              points={points}
-              exit={exit}
-              x={x}
-              vExtent={vExtent}
-              tExtent={tExtent}
-              innerH={innerH}
-              hatchId={hatchId}
-            />
-          </g>
-        </svg>
+        // TWICE, NOT SCALED (AG-20): one drawing per width in `DRAWN`, each
+        // with its own scale, tick count and hatch -- a pattern inside an SVG
+        // the sheet hides does not paint into its sibling.
+        DRAWN.map((d) => (
+          <svg
+            key={d.key}
+            className={drawnClass(d)}
+            width={d.w}
+            height={H}
+            viewBox={`0 0 ${d.w} ${H}`}
+            role="group"
+            aria-label="Peak resident memory reached by each heartbeat, from the start of this attempt"
+          >
+            <HatchDef id={`${hatchId}-${d.key}`} />
+            <g transform={`translate(${M.left},${M.top})`}>
+              <PeakPlot
+                points={points}
+                exit={exit}
+                x={linearScale(tExtent, [0, d.w - M.left - M.right])}
+                vExtent={vExtent}
+                tExtent={tExtent}
+                innerH={innerH}
+                hatchId={`${hatchId}-${d.key}`}
+                ticks={d.ticks}
+              />
+            </g>
+          </svg>
+        ))
       )}
       <figcaption className="ctl-chart-cov" data-testid="peak-cov" data-partial={measuredN < points.length || unplaced > 0 ? 'yes' : 'no'}>
         {top !== null && (
@@ -162,7 +169,7 @@ export function PeakMemoryChart({
             <span
               className="ctl-chart-flag"
               role="img"
-              aria-label={`The events page is full at ${EVENT_PAGE_LIMIT}, the route's cap, and it returns no page token — so later heartbeats for this attempt may exist and the line ends where the page does, not where the attempt did.`}
+              aria-label={`The events page is full at ${EVENT_PAGE_LIMIT}, the route's cap. This screen reads one page and does not follow the page token the events route returns, so later heartbeats for this attempt may exist and the line ends where the page does, not where the attempt did.`}
             >
               page full
             </span>
@@ -181,6 +188,7 @@ function PeakPlot({
   tExtent,
   innerH,
   hatchId,
+  ticks,
 }: {
   points: readonly ChartPoint[]
   exit: { at: number; value: number } | null
@@ -189,6 +197,8 @@ function PeakPlot({
   tExtent: Extent
   innerH: number
   hatchId: string
+  /** How many T+ ticks this drawing asks for along its width (AG-20). */
+  ticks: number
 }) {
   const y = linearScale(vExtent, [innerH, 0])
   return (
@@ -243,6 +253,7 @@ function PeakPlot({
         scale={x}
         extent={tExtent}
         format={(v) => `T+${spanText(v)}`}
+        ticks={ticks}
         minGapPx={64}
       />
     </>

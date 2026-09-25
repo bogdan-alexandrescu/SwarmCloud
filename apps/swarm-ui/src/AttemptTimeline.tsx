@@ -74,7 +74,9 @@ export function AttemptTimelineScreen({ taskId }: { taskId: string }) {
         (t.events === null ? 'events unread' : `${t.events.length} ev`)
       }
       empty={{
-        heading: 'No attempt · real zero',
+        // ONE `real zero`, THE PRIMITIVE'S. `No attempt · real zero` said it a
+        // second time beside the mark `Absent` draws in the heading (#145).
+        heading: 'No attempt',
         // ONE SENTENCE. Which states have no attempt document, and why, is
         // `#help/attempt-documents` -- a topic that already exists and says it
         // better than a two-clause sentence with a parenthetical in it.
@@ -148,10 +150,16 @@ function grouped(t: AttemptTimeline): Group[] {
  *    events..."                                    -> a `not read` mark
  *   "Zero events came back, yet a task is written with its submitted event in
  *    the same batch..."                            -> a `not read` mark
- *   "The events endpoint orders oldest-first, caps the page server-side and
- *    returns no page token..."                     -> #help/partial-read
+ *   "The events endpoint orders oldest-first and caps the page server-side,
+ *    so past one page..."                          -> #help/event-paging
  *   "Every figure on these cards is that attempt's own: the task's
  *    result_summary is written once..."            -> #help/attempt-documents
+ *
+ * (The third paragraph also said the endpoint could not page at all, which
+ * went false with #19: the route returns `next_page_token` and takes
+ * `order=desc`. What is true is that THIS screen reads one page,
+ * oldest-first, and does not follow the page token -- which is what
+ * `event-paging` says, and the topic the toolbar's `?` opens since AG-19.)
  *
  * The first two are facts about THIS read and keep a visible encoding; the
  * last two are invariants of the route and the platform, true of every task
