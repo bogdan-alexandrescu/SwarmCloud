@@ -101,6 +101,15 @@ the rest would produce Jobs whose every execution dies on a missing secret, when
 the correct behaviour is for the task to park as `CREDENTIAL_MISSING` and cost
 nothing.
 
+A tenant with no key that a pool account serves is the exception: admission lets
+it through (`apps/scheduler/scheduler/credentials.py`), terraform has made no Job
+for it, and the dispatcher creates one on the first dispatch. That Job names
+**no** tenant secret. Cloud Run resolves a `secretKeyRef` when the Job is
+created, so naming a secret that does not exist would stop the Job being created
+at all. The worker takes the account's token from the broker instead. The Job's
+secret mount is decided by the same function admission asks, on the same account
+list, so the two cannot disagree about whether the pool is the credential.
+
 The reconciler garbage-collects Job resources that stop being used.
 
 ### What lives where

@@ -64,7 +64,7 @@ Check `park_reason`:
 
 | Reason | Meaning | Fix |
 |---|---|---|
-| `CREDENTIAL_MISSING` | the tenant has no key for this profile's provider | `create-secrets.sh --tenant <t> --provider <p> --stdin` |
+| `CREDENTIAL_MISSING` | the tenant has no key for this profile's provider, and no pool account can run the profile for it | `create-secrets.sh --tenant <t> --provider <p> --stdin`, or, when the `parked` event's `detail.account_pool` is `no_accounts_registered`, lend the tenant an account (`PUT /v1/accounts/<id>/lending`). `profile_takes_no_subscription` (every `browser` task) means only a key will do |
 | `PROVIDER_QUOTA_EXHAUSTED` | quota spent | wait for `next_eligible_at`, or raise the cap |
 | `PROVIDER_COOLDOWN` | backing off after 429s | wait; check AIMD state |
 | `DEPENDENCY_INCOMPLETE` | an upstream workflow step has not finished | check the workflow |
