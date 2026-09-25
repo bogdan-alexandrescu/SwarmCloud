@@ -108,13 +108,19 @@ describe('empty', () => {
    * CH-10. THE EMPTY STATE IS THE §6.9 SHAPE, NOT A HAND-BUILT BOX.
    *
    * It was a `.state` div with an h3, a paragraph and a `Checked just now.` --
-   * no mark, so a real zero and a failed read differed by colour alone, and the
-   * age was printed twice, once here and once in the sub-line directly above.
+   * no mark, so a real zero and a failed read differed by colour alone.
    *
-   * MUTATION: put the `.state` box back. The panel is not `.ctl-empty`, carries
-   * no `real zero` mark, and "just now" appears twice.
+   * RE-POINTED (CH-1/CH-10 settlement on #87, 2026-09-25). This asserted the
+   * age appeared ONCE, because #145 deleted the panel's `Checked …` line. The
+   * box asked for that line to TICK, not to go: the owner's settlement brings
+   * it back on the shared clock. So the panel carries it again -- as the
+   * primitive's foot, at the micro step, not as a `.state p` -- and it says
+   * exactly what the sub-line says, because both read one instant.
+   *
+   * MUTATION: put the `.state` box back. The panel is not `.ctl-empty` and
+   * carries no `real zero` mark. MUTATION: delete the foot. No `Checked` line.
    */
-  it('draws through the shared empty state: a mark, the heading, and the age once', async () => {
+  it('draws through the shared empty state: a mark, the heading, and a Checked line', async () => {
     renderScreen({ status: 'empty', fetchedAt: Date.now() })
     const heading = await screen.findByText('No agents are running')
     const panel = heading.closest('.ctl-empty')
@@ -122,7 +128,9 @@ describe('empty', () => {
     expect(panel!.className, 'a real zero drew a failure or partial variant').toBe('ctl-empty')
     expect(panel!.querySelector('h3 > .ctl-mark.is-zero')?.textContent).toBe('real zero')
     expect(document.querySelector('.state'), 'the hand-built .state box is back').toBeNull()
-    expect(body().textContent!.match(/just now/g), 'the age is stated more than once').toHaveLength(1)
+    expect(panel!.querySelector('.ctl-empty-foot')?.textContent, 'the empty state says nothing about when it was checked').toBe(
+      'Checked just now.',
+    )
   })
 
   /**
@@ -462,6 +470,32 @@ describe('the age under the title moves on its own (CH-1)', () => {
     expect(seen.head).toBe(before + 5_000)
     expect(seen.sub).toBe(seen.head)
     first.unmount()
+  })
+
+  /**
+   * CH-1 AND CH-10, THE EMPTY STATE'S LINE (settled on #87, 2026-09-25). The
+   * box named two ages that never ticked: the sub-line's and the empty
+   * state's `Checked …`. #145 made the first tick and deleted the second;
+   * the settlement brings the second back, ticking on the same shared clock
+   * (`useNow`, `AGE_TICK_MS`), so the two can never disagree.
+   *
+   * MUTATION: compute the line from `Date.now()` at render, or from a clock of
+   * its own. A minute later it still says `just now`, or says a different age
+   * from the sub-line above it.
+   */
+  it('ticks the empty state’s Checked line on the shared clock', async () => {
+    fakeClock()
+    renderScreen({ status: 'empty', fetchedAt: Date.now() })
+    await advance(0)
+    const checked = (): string | null => document.querySelector('.ctl-empty .ctl-empty-foot')?.textContent ?? null
+    expect(checked(), 'the empty state has no Checked line').toBe('Checked just now.')
+    await advance(60_000)
+    expect(checked()).toBe('Checked 1m ago.')
+    expect(sub()).toContain('read 1m ago')
+    // An hour on, still the same instant as the sub-line's.
+    await advance(60 * 60_000)
+    expect(checked()).toBe('Checked 1h ago.')
+    expect(sub()).toContain('read 1h ago')
   })
 
   /** MUTATION: leave StaleBanner reading its age once. It stays at `4m ago`. */

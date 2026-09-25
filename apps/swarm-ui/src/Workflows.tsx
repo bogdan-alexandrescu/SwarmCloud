@@ -648,7 +648,37 @@ interface Rollup {
    * the hatched track (design-system.md §8.3).
    */
   why: string
+  /**
+   * What the steps ENDED as, when the workflow has ended -- null while it has
+   * not, or when the census is not trustworthy. A terminal row draws this
+   * instead of a progress meter (WF-1, settled on #83): see `Progress`.
+   */
+  outcomes: Outcomes | null
 }
+
+/**
+ * The four ways a step ends, counted from the server's census. A derived
+ * rollup is terminal only when every step is terminal and none is unstarted
+ * (rollup.py `derive`), so on a terminal row these four account for every
+ * step.
+ */
+interface Outcomes {
+  succeeded: number
+  failed: number
+  cancelled: number
+  deadLettered: number
+}
+
+/**
+ * The composition's segments, in the order the owner's settlement names them,
+ * each with the class its TS-4 form is drawn by and the word the census uses.
+ */
+const OUTCOME_SEGMENTS: readonly { key: keyof Outcomes; cls: string; word: string }[] = [
+  { key: 'succeeded', cls: 'succeeded', word: 'succeeded' },
+  { key: 'failed', cls: 'failed', word: 'failed' },
+  { key: 'cancelled', cls: 'cancelled', word: 'cancelled' },
+  { key: 'deadLettered', cls: 'dead-lettered', word: 'dead_lettered' },
+]
 
 function rollupLine(workflow: Workflow): Rollup {
   const roll = workflow.rollup
@@ -671,6 +701,7 @@ function rollupLine(workflow: Workflow): Rollup {
       done: 0,
       total,
       why: `${total} steps. No per-step census was derived for this workflow, so no progress is shown. The step count itself was read and is exact.`,
+      outcomes: null,
     }
   }
   if (!roll.complete) {
@@ -683,6 +714,7 @@ function rollupLine(workflow: Workflow): Rollup {
       done: 0,
       total,
       why: `${n} of ${total} steps could not be read (${roll.reason}), so there is no progress figure. This is an unread census, not a stalled workflow.`,
+      outcomes: null,
     }
   }
   // EVERY TERMINAL STATE THE ROLLUP COUNTS, NOT TWO OF THEM. This read
@@ -691,8 +723,9 @@ function rollupLine(workflow: Workflow): Rollup {
   // seventeen were simply missing from a line whose whole job is to account
   // for thirty. The words are the ones the node and the stage band print for
   // the same states, so one step reads the same at every level of the board.
-  // Whether a finished row should still draw a progress meter is a separate
-  // question (design-system.md §6.4) and is not answered here.
+  // Whether a finished row should still draw a progress meter was a separate
+  // question (design-system.md §6.4), settled on #83: it should not -- see
+  // `outcomes` below and `Progress`.
   const done = roll.counts.SUCCEEDED ?? 0
   const failed = roll.counts.FAILED ?? 0
   const deadLettered = roll.counts.DEAD_LETTERED ?? 0
@@ -703,12 +736,34 @@ function rollupLine(workflow: Workflow): Rollup {
   if (deadLettered > 0) rest.push(`${deadLettered} dead_lettered`)
   if (cancelled > 0) rest.push(`${cancelled} cancelled`)
   if (unstarted > 0) rest.push(`${unstarted} not started`)
+  const text = [`${done}/${total} done`, ...rest].join(' · ')
+
+  // A TERMINAL ROW DRAWS WHAT ITS STEPS ENDED AS (WF-1, settled on #83,
+  // 2026-09-25). Only when the four outcomes account for EVERY step: the
+  // server derives a terminal state only then (rollup.py `derive`), and a
+  // composition over fewer steps than the workflow has would leave part of the
+  // track empty -- a gap that reads as nothing, for steps nobody counted. In
+  // that case, which valid data never produces, the row keeps the meter.
+  const outcomes: Outcomes = { succeeded: done, failed, cancelled, deadLettered }
+  const ended = OUTCOME_SEGMENTS.reduce((n, s) => n + outcomes[s.key], 0)
+  if (TERMINAL_STATES.has(roll.state as TaskState) && total > 0 && ended === total) {
+    const parts = OUTCOME_SEGMENTS.filter((s) => outcomes[s.key] > 0).map((s) => `${outcomes[s.key]} ${s.word}`)
+    return {
+      text,
+      trustworthy: true,
+      done,
+      total,
+      why: `All ${total} steps ended: ${parts.join(', ')}.`,
+      outcomes,
+    }
+  }
   return {
-    text: [`${done}/${total} done`, ...rest].join(' · '),
+    text,
     trustworthy: true,
     done,
     total,
     why: `${done} of ${total} steps done${rest.length > 0 ? `, ${rest.join(', ')}` : ''}.`,
+    outcomes: null,
   }
 }
 
@@ -1099,6 +1154,31 @@ function Progress({ roll }: { roll: Rollup }) {
     return (
       <span className="wf-progress untrusted">
         <span className="ctl-track wf-meter is-unknown" role="img" aria-label={roll.why} />
+        <span className="wf-progress-text">{roll.text}</span>
+      </span>
+    )
+  }
+  // A FINISHED ROW DRAWS ITS OUTCOME COMPOSITION, NOT A PROGRESS METER (WF-1,
+  // settled on #83, 2026-09-25). `9/30 done` drawn as a 30% bar says the work
+  // is still going on a workflow that is over. The same 8px track -- §6.4's
+  // one proportion primitive -- carries one segment per outcome, each its
+  // share of the steps, in TS-4's forms (styles.css `.wf-seg`): succeeded
+  // solid, failed and dead-lettered solid with the 2px rule, cancelled the
+  // flat 'ended' bars. An outcome no step ended in draws nothing, because the
+  // four together are every step. A row that has not ended keeps the meter.
+  if (roll.outcomes !== null) {
+    const outcomes = roll.outcomes
+    return (
+      <span className="wf-progress">
+        <span className="ctl-track wf-meter" role="img" aria-label={roll.why} title={roll.text}>
+          {OUTCOME_SEGMENTS.filter((s) => outcomes[s.key] > 0).map((s) => (
+            <i
+              key={s.cls}
+              className={`wf-seg ${s.cls}`}
+              style={{ width: `${+((outcomes[s.key] / roll.total) * 100).toFixed(4)}%` }}
+            />
+          ))}
+        </span>
         <span className="wf-progress-text">{roll.text}</span>
       </span>
     )

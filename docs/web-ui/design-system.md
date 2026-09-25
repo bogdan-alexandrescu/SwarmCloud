@@ -770,6 +770,21 @@ greyscale.
 > the sheet in both themes and holds all of it, the post read from the sheet
 > because jsdom computes no pseudo-element.
 
+> **A finished workflow row draws its outcome composition, not a progress
+> meter (WF-1, settled on #83, 2026-09-25).** `9/30 done` as a 30% bar said the
+> work was still going. In the same 8px track, a terminal row draws one `.wf-seg`
+> per outcome at its share of the steps: succeeded solid in the meter's
+> `--text-dim`, failed and dead-lettered TS-4's solid `--bad` with the 2px rule,
+> cancelled TS-4's flat "ended" bars, by selector on TS-4's own rules (§15.3). A
+> row that has not ended keeps the meter (`workflow.board.test.tsx`).
+> **A failed or dead-lettered segment is at least 4px wide**: TS-4's 2px cut is
+> drawn inside the segment, and one step of thirty is 1.7px of the meter's 51px,
+> which the cut painted entirely `--surface` — a failure drawn as nothing. 4px
+> is the cut plus 2px of `--bad`; the other segments shrink to give it up.
+> Succeeded in `--text-dim` rather than TS-4's `--ok`, and dead-lettered in the
+> failed form, are this build's reading of "TS-4's vocabulary" and are open for
+> the owner's confirmation (#83).
+
 > **Answered by the owner, 2026-09-24: `.wf-meter` goes grey.** The question
 > held open here was this: `.wf-meter`'s fill carries
 > `ctl-util-fill wf-meter-fill`, so the monochrome default reached straight
@@ -1079,6 +1094,10 @@ two words, in `--text-faint` rather than this paragraph's "plain or
 does not reach chart segment fills: TS-4's outcome stack keeps its solid hues
 and gained a shape for each outcome (§15.3) — failed is still solid `--bad`,
 with redesign-v2 §5.5 Tier 1's 2px left rule.
+*Workflows' two, settled on #87 (2026-09-25):* the graph's `.node.ok` and the
+row's `.wf-state.ok` are neutral too — a succeeded node keeps the node's own
+`--text-faint` rule and a succeeded row's word is `--text-dim` — because WF-11,
+named above as their owner, ruled only the Timeline.
 
 **THE ENDED MARK (CH-22, 2026-09-25).** CANCELLED is `stateTone`'s fifth tone,
 `ended`: terminal, not a verdict, and drawn as the grey flat bar — the **one**
@@ -1263,6 +1282,12 @@ says `real zero` again, or a hand-drawn `.ctl-mark` span in the body, is a
 second silhouette with no sentence behind it. Five screens shipped one each
 until #170; `emptystate.onemark.test.tsx` holds all five to one.
 
+**`Screen`'s empty state ends in its `Checked …` line, and it ticks**
+*(CH-1/CH-10, settled on #87, 2026-09-25)*: the primitive's foot at the micro
+step, on the shared clock, reading the sub-line's instant so the two never
+disagree; and a screen's way out is `empty.link`, never an anchor typed into
+the sentence (CP-21).
+
 ### 6.10 Absence — `.ctl-mark`, `.ctl-hold`, `.ctl-ghost`, `.ctl-pending`
 
 See §8, which is what the whole exercise turns on.
@@ -1307,7 +1332,9 @@ was true of about one topic in eight.
 
 A screen whose one `?` explains the whole screen puts it after the title, in
 `.head` and outside the `<h1>` (`PageHead`'s `help`): the Workflows board's
-absent figures are the one case.
+absent figures, and Profile headroom's every-pool-at-once, whose words are the
+pool column's name on every card (`Pools it must clear (all at once)`, CP-5,
+as Pools names its `Could start (min across pools)`), are the two cases.
 
 `.ctl-page-head` is the wrapper for the heads `PageHead` does not describe —
 Overview's facts row and the API reads page. There it stays title left, actions
@@ -1608,6 +1635,15 @@ Six places, in order of commitment. Nothing outside this list.
    headline) or moved the glyph to the heading the line sits under
    (`Backends ?` over Runtimes' unread row; `Workflows ?` for the board's
    absent figures). `HelpCard.tsx`'s header states the same rule.
+   **The topic is about what the glyph or link sits beside, and a topic linked
+   from two screens is written for both** (AG-19, AH-13): the Timeline
+   window's `Why →` opens `event-paging`, not `partial-read`, and
+   `event-paging` names the Timeline screen as well as the attempt timeline —
+   in its title too, which the Help page prints as its heading and in its
+   `showing <title>` line. "One page of events, oldest first" was false of the
+   Timeline, which reads newest first; the title is "Paged reads: a page of
+   events, a window of tasks" and claims no order, and the topic opens by
+   naming both reads.
 6. **`docs/`.** The argument, the constraint, the thing that is true for six
    months. A docs link is a legitimate element of an empty state and of a help
    card; it is not an element of a data view.
@@ -2721,7 +2757,17 @@ WF-17)*:
 `.section`, each `.help-topic` inside it is separated by `--ctl-s5` and draws
 nothing, and a deep-linked topic takes the §1.3 selection treatment — a
 `--surface-2` fill and a 2px `--text` inline-start rule declared transparent on
-every topic, so marking one moves nothing.
+every topic, so marking one moves nothing. A deep link to **any** topic lands with its group
+heading in view (AH-16, settled against AH-18 on #86, 2026-09-25). The group
+heading is the sticky head: `.help-group > h2` sticks to the top of the
+scroller while its group is in view, in the page ground `--bg`, because no
+scroll margin can bring back a heading a screenful above a topic halfway down
+its group. The topic's scroll margin clears that heading — its line box and
+the 10px under it (padding here, so a stuck heading keeps the gap opaque) —
+with `--ctl-s5` above it, and a topic sitting under the stuck heading does not
+count as already in view. Nothing else sticks over the Help column.
+`shell.test.tsx` "AH-16" resolves both sides on the page Help renders, and
+`helpcard.placement.test.tsx` holds the in-view band.
 
 **What this pass deleted under that rule** — all primitives or frame, no screens:
 

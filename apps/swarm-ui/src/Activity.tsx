@@ -33,7 +33,15 @@ const BUDGETS = [200, 500, 1000, 2000]
  * compile error here instead of a `?` that lands on the top of the Help page
  * and answers nothing -- the same rule `Dock.tsx` states for its own link.
  */
-const WINDOW_HELP: TopicId = 'partial-read'
+// `event-paging`, NOT `partial-read` (AG-19, the third call site; this is
+// 5e17e3a, which was never merged). The window's `Why →` sits beside "these N
+// rows only · older tasks exist" -- a bounded read of a paged list -- and it
+// opened "One message belongs to one failure", a topic about attributing one
+// error across several failed reads, which says nothing about why a window
+// stops at N rows. `partial-read` keeps its real callers. `event-paging` names
+// the Timeline screen and says how its window is bounded, because a topic
+// linked from two screens is written for both (AH-13).
+const WINDOW_HELP: TopicId = 'event-paging'
 const SPEND_HELP: TopicId = 'tokens-reported'
 const SCOPE_HELP: TopicId = 'tenant-scope'
 const ABSENCE_HELP: TopicId = 'absent-vs-zero'
@@ -192,8 +200,9 @@ function WindowBar({
       {/* A PARTIAL TOTAL IS NOT A TOTAL, and it is now drawn rather than
           narrated. `.ctl-mark.is-partial` is dashed on one edge only -- the
           side the missing part would have been on -- and the qualifier beside
-          it names the window everything below is computed over. The 20-word
-          sentence that said the same thing is `#help/partial-read`, and the
+          it names the window everything below is computed over. Why the
+          window stops is `#help/event-paging` (AG-19; it pointed at
+          `partial-read`, which is about something else), and the
           full claim is the mark's accessible name, so a screen reader gets it
           at the mark instead of two lines away from it. */}
       {w.moreExist && (

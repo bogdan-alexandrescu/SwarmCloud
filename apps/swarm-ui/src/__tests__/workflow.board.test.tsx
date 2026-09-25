@@ -2228,3 +2228,261 @@ describe('the owner’s decisions: edges that skip a level (WF-4)', () => {
     expect(new Set(direct.map((e) => edgePath(e))).size).toBe(1)
   })
 })
+
+// ---------------------------------------------------------------------------
+// 10. The settlements of 2026-09-25 (epics #83 and #87), the stragglers lane
+// ---------------------------------------------------------------------------
+//
+// Two rulings the owner delegated and settled on the epics after the decision
+// PRs merged. Each case was committed RED against main before the change.
+
+/** A thirty-step workflow that ended, in the measured mix: every way a step ends. */
+const ENDED_MIX = { SUCCEEDED: 9, FAILED: 4, CANCELLED: 15, DEAD_LETTERED: 2 }
+
+/** The outcome segments a row's meter draws, as [outcome class, width %]. */
+function segmentsOf(meter: Element): [string, number][] {
+  return [...meter.querySelectorAll<HTMLElement>(':scope > .wf-seg')].map((s) => [
+    [...s.classList].filter((c) => c !== 'wf-seg').join(' '),
+    Number.parseFloat(s.style.width),
+  ])
+}
+
+describe('the settlements: what a finished row draws, and what a healthy one does not', () => {
+  pinTheClock()
+
+  /**
+   * WF-1's SECOND QUESTION, settled on #83 (2026-09-25). #148 made the census
+   * text count every way a step ends; whether a TERMINAL row should still draw
+   * a progress meter was left open. It should not: `9/30 done` drawn as a 30%
+   * bar says work is still in progress on a workflow that is over. A terminal
+   * row draws its OUTCOME COMPOSITION in the same 8px `.ctl-track` (§6.4's one
+   * proportion primitive): succeeded, failed, cancelled and dead-lettered
+   * segments, each its share of the steps.
+   *
+   * MUTATION: draw the progress fill on every trustworthy row again. A
+   * finished row carries `.wf-meter-fill` and no segments.
+   */
+  it('WF-1: a finished row draws what its steps ended as, not how far it got', () => {
+    const { container } = card(ended('wf_ended', 30, ENDED_MIX))
+    const meter = container.querySelector('.wf-meter')!
+    expect(meter.classList.contains('ctl-track'), 'the composition left the shared 8px track').toBe(true)
+    expect(
+      meter.querySelector('.wf-meter-fill'),
+      '"9/30 done" is still drawn as a 30% bar on a workflow that has ended',
+    ).toBeNull()
+    const segs = segmentsOf(meter)
+    expect(segs.map(([k]) => k), 'the segments are not the four outcomes, in the settled order').toEqual([
+      'succeeded',
+      'failed',
+      'cancelled',
+      'dead-lettered',
+    ])
+    const expected = [9, 4, 15, 2].map((n) => (n / 30) * 100)
+    segs.forEach(([k, w], i) => expect(w, `${k} is not its share of the thirty steps`).toBeCloseTo(expected[i]!, 3))
+    expect(segs.reduce((a, [, w]) => a + w, 0), 'the composition does not account for every step').toBeCloseTo(100, 3)
+    // The accessible name reads the composition, every outcome by its word.
+    const why = meter.getAttribute('aria-label')!
+    for (const clause of ['9 succeeded', '4 failed', '15 cancelled', '2 dead_lettered']) expect(why).toContain(clause)
+    // The census text beside it is #148's, unchanged.
+    expect(container.querySelector('.wf-progress-text')!.textContent).toContain('9/30 done')
+  })
+
+  it('WF-1: an outcome no step ended in draws no segment, and one that all did fills the track', () => {
+    const { container } = card(ended('wf_clean', 3, { SUCCEEDED: 3 }))
+    expect(segmentsOf(container.querySelector('.wf-meter')!)).toEqual([['succeeded', 100]])
+  })
+
+  /** MUTATION: draw the composition on every row. A running row loses its progress fill. */
+  it('WF-1: a row that has not ended keeps its progress meter', () => {
+    const { container } = card(chain())
+    const meter = container.querySelector('.wf-meter')!
+    expect(meter.querySelector('.wf-meter-fill'), 'a running row lost its progress meter').not.toBeNull()
+    expect(meter.querySelector('.wf-seg'), 'a running row draws an outcome composition').toBeNull()
+  })
+
+  /**
+   * IN TS-4's VOCABULARY, which the settlement names: solid, the 2px rule on
+   * failed, the flat 'ended' bars for cancelled. Asked as the Timeline's own
+   * drawing -- whatever the cascade gives `.stackcol > i.<outcome>` it must
+   * give the row's segment -- so the two cannot drift apart.
+   *
+   * DEAD-LETTERED TAKES THE FAILED FORM. TS-4's stack has no fourth form for
+   * it: Activity counts a dead-lettered task as failed, and `stateTone` calls
+   * both `bad`. Each segment draws its own 2px cut at its left edge, so a
+   * dead-lettered segment is still a segment of its own.
+   *
+   * SUCCEEDED IS SOLID AND GREY, NOT `--ok`. TS-4's chart keeps its hues, but
+   * this is the row's meter, which §6.4 (the owner, 2026-09-24) and CH-17 keep
+   * free of healthy hue: a finished run is not a verdict.
+   *
+   * MUTATION: give a segment a fill of its own, drop the 2px rule, or paint
+   * succeeded `--ok`.
+   */
+  it('WF-1: draws each segment in the Timeline’s outcome forms (TS-4)', () => {
+    const { container } = card(ended('wf_ended', 30, ENDED_MIX))
+    const seg = (k: string) => {
+      const el = container.querySelector(`.wf-meter > .wf-seg.${k}`)
+      expect(el, `the row draws no ${k} segment`).not.toBeNull()
+      return el!
+    }
+    const stack = document.createElement('div')
+    stack.innerHTML = '<div class="stackcol"><i class="failed"></i><i class="cancelled"></i></div>'
+    document.body.appendChild(stack)
+    const ts4 = (k: string) => stack.querySelector(`.stackcol > i.${k}`)!
+    const FILL = ['background', 'background-color', 'background-image']
+    const EDGE = ['box-shadow']
+    const HUES = ['--ok', '--info', '--warn', '--bad', '--paused']
+    try {
+      for (const theme of THEMES) {
+        const drawn = (el: Element, props: readonly string[]) =>
+          cascade(SHEETS[theme], el, props, { width: 1440, theme }).winner?.value ?? null
+        for (const k of ['failed', 'dead-lettered']) {
+          expect(drawn(seg(k), FILL), `${theme}: ${k} is not TS-4's failed fill`).toBe(drawn(ts4('failed'), FILL))
+          const edge = drawn(seg(k), EDGE)
+          expect(edge, `${theme}: ${k} draws no 2px rule`).not.toBeNull()
+          expect(edge, `${theme}: ${k} is not TS-4's failed rule`).toBe(drawn(ts4('failed'), EDGE))
+        }
+        expect(drawn(seg('cancelled'), FILL), `${theme}: cancelled is not the flat ended bars`).toBe(
+          drawn(ts4('cancelled'), FILL),
+        )
+        expect(drawn(seg('succeeded'), FILL), `${theme}: succeeded is not solid`).not.toMatch(/gradient/)
+        const ink = paintOf(seg('succeeded'), FILL, theme)
+        expect(sameColour(ink, tokenColour('--text-dim', theme)), `${theme}: succeeded is not the meter's grey`).toBe(true)
+        for (const h of HUES) {
+          expect(sameColour(ink, tokenColour(h, theme)), `${theme}: a succeeded segment is painted ${h}`).toBe(false)
+        }
+      }
+    } finally {
+      stack.remove()
+    }
+  })
+
+  /**
+   * ONE FAILED STEP IN A LONG WORKFLOW STILL PAINTS `--bad` (review of #183).
+   * The failed and dead-lettered segments carry TS-4's 2px cut, drawn INSIDE
+   * the segment (`box-shadow: inset 2px 0 0 var(--surface)`). The 54px meter
+   * has a 3px axis, so its content is 51px under border-box, and one step of
+   * thirty is 1.7px: narrower than its own cut, which painted all of it
+   * `--surface`. The row drew a grey bar ending in a notch while its dot said
+   * FAILED -- and at 560px and below the state word and the census text are
+   * hidden, so on a phone nothing else on the row said so. Any workflow over
+   * 25 steps with a single failed or dead-lettered step drew it that way.
+   *
+   * ASKED AS THE PAINTED WIDTH, through the cascade: the track's content box
+   * (its width, less the axis, under whatever `box-sizing` the sheet gives
+   * it), the segment's share of it or its floor, less the cut. Every length is
+   * read from the shipped sheet, so a wider cut, a narrower meter or a thicker
+   * axis fails here rather than hiding a failure again. The other segments
+   * must be able to give up the width the floor takes, or the track's
+   * `overflow: hidden` would clip the last outcome instead.
+   *
+   * MUTATION: drop the floor on the failed and dead-lettered segments. One of
+   * thirty is 1.7px under a 2px cut.
+   */
+  it('WF-1: one failed or dead-lettered step of thirty still paints --bad, past its own cut', () => {
+    /** A declared length in px. Nothing declared is the initial 0; anything else unreadable fails by name. */
+    const lengthOf = (v: string | null, what: string): number => {
+      if (v === null || v.trim() === '0') return 0
+      const m = /^(-?[\d.]+)px$/.exec(v.trim())
+      expect(m, `${what} is ${v}, not a px length this can read`).not.toBeNull()
+      return Number(m![1])
+    }
+    /** Whether the cascade leaves a flex item able to shrink (the initial `flex-shrink` is 1). */
+    const shrinks = (el: Element, env: { width: number; theme: Theme }): boolean => {
+      const w = cascade(SHEETS[env.theme], el, ['flex-shrink', 'flex'], env).winner
+      if (w === null) return true
+      const v = w.value.trim()
+      if (w.property === 'flex-shrink') return Number(v) > 0
+      if (v === 'none') return false
+      const parts = v.split(/\s+/)
+      return !(parts.length >= 2 && /^[\d.]+$/.test(parts[1]!) && Number(parts[1]) === 0)
+    }
+    for (const [label, counts, cls] of [
+      ['one failed of thirty', { SUCCEEDED: 29, FAILED: 1 }, 'failed'],
+      ['one dead-lettered of thirty', { SUCCEEDED: 29, DEAD_LETTERED: 1 }, 'dead-lettered'],
+      ['one failed and one dead-lettered of thirty', { SUCCEEDED: 28, FAILED: 1, DEAD_LETTERED: 1 }, 'failed'],
+    ] as const) {
+      const { container, unmount } = card(ended(`wf_${cls}`, 30, counts))
+      const meter = container.querySelector('.wf-meter')!
+      const seg = meter.querySelector<HTMLElement>(`:scope > .wf-seg.${cls}`)
+      expect(seg, `${label}: the row draws no ${cls} segment`).not.toBeNull()
+      const others = [...meter.querySelectorAll<HTMLElement>(':scope > .wf-seg')].filter((s) => s !== seg)
+      for (const theme of THEMES) {
+        for (const width of [1440, 390]) {
+          const at = `${label}, ${theme}, ${width}px`
+          const read = (el: Element, props: readonly string[]) =>
+            cascade(SHEETS[theme], el, props, { width, theme }).winner?.value ?? null
+          const trackW = lengthOf(read(meter, ['width']), `${at}: the meter's width`)
+          const axis = lengthOf(
+            read(meter, ['border-left-width', 'border-left', 'border-inline-start-width', 'border-width', 'border']),
+            `${at}: the axis`,
+          )
+          const content = read(meter, ['box-sizing']) === 'border-box' ? trackW - axis : trackW
+          expect(content, `${at}: the track measured nothing; this check would be vacuous`).toBeGreaterThan(20)
+          const share = (Number.parseFloat(seg!.style.width) / 100) * content
+          const floor = lengthOf(read(seg!, ['min-width', 'min-inline-size']), `${at}: the segment's floor`)
+          const shadow = read(seg!, ['box-shadow']) ?? ''
+          const cut = /inset\s+(-?[\d.]+)px/.exec(shadow)
+          expect(cut, `${at}: the ${cls} segment draws no inset cut (${shadow}); TS-4's rule moved`).not.toBeNull()
+          const painted = Math.max(share, floor) - Number(cut![1])
+          expect(
+            painted,
+            `${at}: the ${cls} segment is ${Math.max(share, floor).toFixed(2)}px and its ${cut![1]}px cut paints all of it --surface`,
+          ).toBeGreaterThan(0)
+          for (const o of others) {
+            expect(shrinks(o, { width, theme }), `${at}: a segment cannot give up the width the floor takes`).toBe(true)
+          }
+        }
+      }
+      unmount()
+    }
+  })
+
+  /**
+   * CH-17's RULING, ON WORKFLOWS (settled on #87, 2026-09-25). #182 found two
+   * healthy greens neither hue ruling had reached: the row's state word
+   * `.wf-state.ok` in `--ok-ink`, and the graph node's 3px `.node.ok` rule in
+   * `--ok`. A healthy state is a fact, not a verdict, so both go neutral, like
+   * the chip and the dot: the word takes the row's `--text-dim`, and the rule
+   * the node's own `--text-faint`. The dot beside each still says succeeded.
+   *
+   * MUTATION: put either green back.
+   */
+  it('CH-17: a healthy workflow’s state word and node rule carry no state hue', () => {
+    const tasks = new Map<string, Task>([
+      ['t_a', task('t_a', 'SUCCEEDED', { started_at: iso(-120_000), completed_at: iso(-60_000) })],
+    ])
+    const w = workflow('wf_ok', [step('a', [], { task_id: 't_a' })], {
+      state: 'SUCCEEDED',
+      stored_state: 'SUCCEEDED',
+      rollup: {
+        state: 'SUCCEEDED',
+        complete: true,
+        reason: 'all_steps_succeeded',
+        counts: { SUCCEEDED: 1 },
+        unreadable_steps: [],
+        unstarted_steps: [],
+        steps_read: 1,
+      },
+    })
+    const { container } = card(w, tasks, true)
+    const word = container.querySelector('.wf-state.ok')
+    expect(word, 'a succeeded workflow no longer carries .wf-state.ok; this check is vacuous').not.toBeNull()
+    const node = container.querySelector('.node.ok')
+    expect(node, 'a succeeded step no longer carries .node.ok; this check is vacuous').not.toBeNull()
+    const HUES = ['--ok', '--ok-ink', '--info', '--info-ink', '--warn', '--warn-ink', '--bad', '--bad-ink', '--paused']
+    for (const theme of THEMES) {
+      const ink = paintOf(word!, ['color'], theme)
+      expect(sameColour(ink, tokenColour('--text-dim', theme)), `${theme}: the row's healthy word is not --text-dim`).toBe(true)
+      const rule = paintOf(node!, ['border-left-color', 'border-left', 'border-color', 'border'], theme)
+      expect(
+        sameColour(rule, tokenColour('--text-faint', theme)),
+        `${theme}: the node's healthy rule is not --text-faint`,
+      ).toBe(true)
+      for (const h of HUES) {
+        expect(sameColour(ink, tokenColour(h, theme)), `${theme}: the healthy word is painted ${h}`).toBe(false)
+        expect(sameColour(rule, tokenColour(h, theme)), `${theme}: the healthy node rule is painted ${h}`).toBe(false)
+      }
+    }
+  })
+})

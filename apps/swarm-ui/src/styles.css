@@ -1643,7 +1643,10 @@ body {
   color: var(--text-dim); white-space: nowrap;
   overflow: hidden; text-overflow: ellipsis;
 }
-.wf-state.ok { color: var(--ok-ink); }
+/* `.wf-state.ok` IS GONE (CH-17's ruling, settled on #87, 2026-09-25): a
+   healthy state is a fact, not a verdict, so a succeeded row's word takes the
+   `--text-dim` above, like the chip's and the dot's, and the dot beside it
+   still says succeeded. It painted `--ok-ink`, the last green on the row. */
 .wf-state.bad { color: var(--bad-ink); }
 .wf-state.live { color: var(--info-ink); }
 .wf-state.wait { color: var(--warn-ink); }
@@ -1675,6 +1678,32 @@ body {
        eye's whole severity budget on the workflows that are fine. (It was
        `--info` by exemption until the owner's 2026-09-24 decision in §6.4.) */
 .wf-meter { flex: none; width: 54px; }
+/* A FINISHED ROW'S OUTCOME COMPOSITION (WF-1, settled on #83, 2026-09-25).
+   A terminal row draws one `.wf-seg` per outcome in this same track, each its
+   share of the steps, instead of a progress fill (`Progress` in
+   Workflows.tsx). Failed, dead-lettered and cancelled are TS-4's forms, by
+   selector on TS-4's own rules in the Activity block, so the row and the
+   Timeline's stack cannot drift apart. SUCCEEDED IS THE METER'S GREY, not
+   TS-4's `--ok`: the chart kept its hues (CH-17 does not re-rule chart
+   fills), but this is the row's proportion, which the owner's 2026-09-24
+   §6.4 decision and CH-17 keep free of healthy hue -- a finished run is a
+   fact, not a verdict. Solid, full height, so it stays a different shape from
+   the flat bars in greyscale. */
+.wf-meter > .wf-seg.succeeded { background: var(--text-dim); }
+/* A FAILED STEP IS NEVER NARROWER THAN ITS OWN CUT (review of #183). TS-4's
+   failed form draws its 2px `--surface` cut INSIDE the segment, and the
+   meter's content is 51px (54, less the 3px axis, under border-box), so one
+   step of a 30-step workflow was 1.7px -- all cut, no `--bad` -- and the row
+   drew a grey bar with a notch while its dot said FAILED. At 560px and below
+   the state word and the census text are hidden, so nothing else on the row
+   said so. 4px is the cut plus 2px of `--bad`; the other segments are flex
+   items that shrink by default, so they give that width up rather than the
+   track clipping the last outcome. Only failed and dead-lettered need it:
+   succeeded and cancelled paint from their first pixel.
+   `workflow.board.test.tsx` "one failed or dead-lettered step of thirty"
+   computes the painted width from this sheet. */
+.wf-meter > .wf-seg.failed,
+.wf-meter > .wf-seg.dead-lettered { min-width: 4px; }
 .wf-progress-text {
   font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim);
   /* THE TEXT DOES NOT GIVE WAY; THE ROW DOES. The grid column was never the
@@ -2217,7 +2246,11 @@ button.node {
 }
 button.node:hover, button.node:focus-visible { border-color: var(--info); }
 button.node:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
-.node.ok   { border-left-color: var(--ok); }
+/* `.node.ok` IS GONE (CH-17's ruling, settled on #87, 2026-09-25). A
+   succeeded step keeps the node's own 3px `--text-faint` rule above: the
+   rule carries a hue only for a failure or live work, as the Timeline's spans
+   do since WF-11, and the dot on the node's state line still says succeeded.
+   It painted `--ok`, the graph's last healthy green. */
 .node.bad  { border-left-color: var(--bad); }
 .node.live { border-left-color: var(--info); }
 .node-id { font: 600 var(--t-body)/var(--lh-body) var(--mono); }
@@ -3957,13 +3990,21 @@ button.copy:hover { color: var(--text); border-color: var(--text-faint); }
    colours are unchanged -- CH-17's hue ruling does not re-rule chart fills. */
 .stackcol > i.succeeded,
 .chart-legend .k.succeeded { background: var(--ok); }
+/* The workflow row's outcome composition reuses these two forms by selector
+   rather than restating them (WF-1, settled on #83, 2026-09-25): a finished
+   row's failed and dead-lettered segments are this failed rule, its cancelled
+   segment the flat bars below. Its succeeded segment is not `--ok` -- see
+   `.wf-seg.succeeded` in the Workflows block. */
 .stackcol > i.failed,
-.chart-legend .k.failed {
+.chart-legend .k.failed,
+.wf-meter > .wf-seg.failed,
+.wf-meter > .wf-seg.dead-lettered {
   background: var(--bad);
   box-shadow: inset 2px 0 0 var(--surface);
 }
 .stackcol > i.cancelled,
-.chart-legend .k.cancelled {
+.chart-legend .k.cancelled,
+.wf-meter > .wf-seg.cancelled {
   background: repeating-linear-gradient(to bottom, var(--text-faint) 0 3px, transparent 3px 5px);
 }
 /* Hatched, so "still open" never reads as an outcome.
@@ -5868,12 +5909,51 @@ a.ctl-metric:focus-visible .ctl-metric-label,
   border-inline-start-color: transparent;
   padding-inline-start: var(--ctl-s3);
   padding-block: var(--ctl-s2);
-  /* ONE LARGE BREAK, as the owner's AH-18 decision says ("scroll-margin-top
-     stays at --ctl-s5"). AH-16 had tripled it so a topic that opens its group
-     landed with the group heading still in view; AH-18, decided after it,
-     keeps the single break, and the `.is-current` fill and ink rule are what
-     mark where a deep link landed. */
-  scroll-margin-top: var(--ctl-s5);
+  /* A DEEP LINK LANDS UNDER ITS GROUP HEADING (AH-16, settled against AH-18
+     on #86, 2026-09-25). AH-18 set this back to one large break, `--ctl-s5`,
+     28px -- and the group heading above a topic that opens its group is the
+     `.section > h2` line box, `--t-lead` x `--lh-lead` = 24.8px, plus 10px
+     under it: 34.8px, so the heading landed clipped off the top edge. The
+     settlement keeps AH-18's spacing between topics and sets this margin to
+     clear the sticky head plus the group heading: the heading's line box and
+     the 10px under it, with the large break above it as the breathing room.
+     THE STICKY HEAD IS THE GROUP HEADING ITSELF (`.help-group > h2` below):
+     it sticks to the top of the scroller while its group is in view, so this
+     margin clears it for EVERY topic, not only the six that open a group --
+     for a topic further down, the heading above it had scrolled away with
+     the topics before it. Nothing else sticks over the Help column (the
+     header and both page heads scroll; the rail sticks only in its own column
+     at 900px and up and is static below); `shell.test.tsx` "AH-16" asserts
+     that, and resolves this value against the heading, so a change to either
+     side fails there. The `10px` is the heading's padding below, which has no
+     token. */
+  scroll-margin-top: calc(var(--ctl-s5) + var(--t-lead) * var(--lh-lead) + 10px);
+}
+/* THE GROUP HEADING STICKS WHILE ITS GROUP IS IN VIEW (AH-16, as settled
+   against AH-18 on #86). A deep link has to land with its group heading
+   visible, and no scroll margin can do that for a topic halfway down a
+   group: the heading is a screenful above it. Stuck at the top of
+   `.ctl-scroll`, the heading is above every topic in its group until the
+   group ends and pushes it off.
+     * IT PAINTS THE PAGE GROUND, `--bg`, so a topic passing under it is
+       covered rather than printed through it;
+     * `.section > h2`'s 10px margin under it becomes 10px of PADDING here --
+       the same 34.8px in flow, so nothing on the page moves, but a stuck
+       heading keeps that gap opaque instead of letting the topic's first
+       line run up against the heading's;
+     * `z-index: 1` over the topics, whose `.is-current` fill would otherwise
+       share its paint layer;
+     * nothing between it and `.ctl-scroll` clips or scrolls (`.app`,
+       `main.work`, the section), which is what lets it stick at all.
+   HelpSection.tsx gives the group's section `help-group`, so no other
+   screen's `.section > h2` sticks. */
+.help-group > h2 {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background-color: var(--bg);
+  margin-bottom: 0;
+  padding-bottom: 10px;
 }
 .help-topic + .help-topic { margin-top: var(--ctl-s5); }
 .help-topic.is-current {
