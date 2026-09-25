@@ -68,21 +68,28 @@ windows, and the handler (`_on_signal`) knows which one it is in:
     replace the exception on its way up: `firestore.transactional` rolls back
     on any BaseException, and its rollback of a transaction that had not begun
     raises a ValueError in place of the interrupt.
-  * Once the child exists, the handler only sets `_interrupted`, and the
-    supervision loop stops the runner, checkpoints and parks or stands down
-    exactly as before (`_handle_interruption`).
+  * Once the child exists, the handler sets `_interrupted`, says "stopping:
+    SIGTERM in phase <phase>" in one INFO line, and the supervision loop
+    stops the runner, checkpoints and parks or stands down exactly as before
+    (`_handle_interruption`). No stack dump: `faulthandler` dumps on SIGTERM
+    only until the runner starts (`startup.disarm_stack_dump`). A running
+    attempt is stopped by SIGTERM routinely, and GKE files every stderr line
+    as ERROR (owner, 2026-09-25).
 
 Every startup phase is also announced (`startup.Phases`), so a worker that
 stalls says where.
 
-**A dependency that is unavailable in the same window exits 78, as at step
+**A dependency that is unavailable in the same window exits 69, as at step
 1, and leaves the task to the reconciler.** Every Firestore call from step 1 to
 the runner carries the startup budget (`ControlPlane.startup_budget`), so an
 outage there raises within about 40 s. Failing the task would be terminal: the
 reconciler never requeues FAILED, and `max_attempts` would never be consulted
-for what is a lost attempt, not a failed one. See
-`_exit_unavailable_before_runner` for which errors count. A refusal, such as
-PERMISSION_DENIED, still fails the attempt with its reason.
+for what is a lost attempt, not a failed one. It was 78 until 2026-09-25. 78 is
+now "cannot start", which the reconciler fails without a retry, so an outage
+cannot share it. See `_exit_unavailable_before_runner` for which errors count.
+A refusal, such as PERMISSION_DENIED, still fails the attempt with its reason.
+At step 1 only a named refusal is a 78, and every other API error is a 69
+(`_exit_control_plane_unreachable`, `_refusal_cause`).
 """
 
 from __future__ import annotations
@@ -155,7 +162,16 @@ from .secrets import (
     resolve_credentials,
     resolve_git_token,
 )
-from .startup import EXIT_INTERRUPTED, Phases, StartupInterrupted, route_signals
+from .startup import (
+    EXIT_INTERRUPTED,
+    Phases,
+    StartupInterrupted,
+    disarm_stack_dump,
+    route_signals,
+    say_from_signal_handler,
+    signal_name,
+    write_termination_message,
+)
 
 #: What the SIGTERM/SIGINT handler does, by window. See the module docstring.
 _SIGNAL_EXIT_NOW = "exit_now"   # nothing written yet: name the phase, exit
@@ -715,6 +731,13 @@ class Worker:
             logger=self.log,
         )
         self._child = child
+        # THE STARTUP IS OVER. The SIGTERM stack dump is for a worker stuck
+        # before its runner, where the stack is the diagnosis. From here a
+        # SIGTERM is how an attempt is ordinarily stopped, and GKE would file
+        # the dump as a page of ERROR lines per stop (owner, 2026-09-25).
+        # Disarmed before `start`, so the window where the child exists and
+        # the dump is armed is empty. Idempotent across in-place restarts.
+        disarm_stack_dump()
         child.start()
         self._start_sampler(child)
 
@@ -872,7 +895,9 @@ class Worker:
         decision a promoter needs: what an interrupted last attempt becomes.
         """
         cfg = self.cfg
-        self.log.warning("worker received SIGTERM; stopping the runner before exit")
+        # The signal already said "stopping: SIGTERM in phase runner", once,
+        # from the handler (`_on_signal`). A second line here would make one
+        # stop read as two.
         child.terminate(cfg.termination_grace_seconds, reason="worker interrupted")
         child.finish()
         self._child_ended()
@@ -1151,32 +1176,72 @@ class Worker:
     def _exit_control_plane_unreachable(self, exc: BaseException) -> int:
         """The generation check could not read Firestore. Say so and leave.
 
-        Nothing is written. Firestore is the thing that could not be reached,
-        and without the generation check this attempt does not know that it
-        owns the task, so even a write that could land would not be its to
-        make. The exit is 78, "could not start", like the DNS preflight's. See
-        `__main__` for what the reconciler does with the silent lease.
+        Nothing is written to Firestore. Firestore is the thing that could not
+        be read, and without the generation check this attempt does not know
+        that it owns the task, so even a write that could land would not be
+        its to make. See `__main__` for what the reconciler does with each
+        exit.
 
-        The error is logged whole, with its type and its cause: a RetryError
-        from the startup budget, UNAVAILABLE from DNS or a refused connection,
-        PERMISSION_DENIED from IAM, or an auth failure that grpc reports as
-        UNAVAILABLE. Before this, every one of those looked like 300 s of
-        nothing.
+        WHICH EXIT depends on what Firestore said:
+
+          * A named REFUSAL (`_refusal_cause`), with nothing in the chain that
+            says the service could not be reached: PERMISSION_DENIED,
+            UNAUTHENTICATED, NOT_FOUND, INVALID_ARGUMENT, FAILED_PRECONDITION,
+            a credential google-auth would not refresh or could not find. The
+            service was reached and said no, and it will say no to the next
+            attempt too. 78, "cannot start", which the reconciler fails
+            without a retry (owner, 2026-09-25). Its cause goes to the
+            Kubernetes termination message, the one place this worker can
+            leave it that the reconciler reads.
+          * EVERYTHING ELSE is 69, which the reconciler retries: UNAVAILABLE,
+            a spent startup budget, any 5xx or gRPC UNKNOWN, CANCELLED, a
+            google-auth transport error (`_unavailable_cause`), and an API
+            error of any kind the refusal list does not name.
+
+        The refusals are named, not the outages. The first version did it
+        the other way round: 69 for a named list of outages, 78 for the rest.
+        So gRPC UNKNOWN, which Firestore raises when a stream is reset under
+        it, failed the task for good (review of PR #59). A wrong 69 costs one
+        bounded retry, and a wrong 78 ends a task that would have run.
+
+        Before 2026-09-25 both were 78, and nothing read the 78, so the
+        difference cost nothing. Once 78 fails the task, a Firestore outage
+        at startup would have ended the task for good.
+
+        The error is logged whole, with its type and its cause. Before PR #57,
+        every one of these looked like 300 s of nothing.
         """
         options = self.control.startup_call_options
         retry = options.get("retry")
         cause = getattr(exc, "cause", None)
+        transient = _unavailable_cause(exc)
+        refusal = _refusal_cause(exc) if transient is None else None
+        exit_code = ExitCode.CONFIG if refusal is not None else ExitCode.UNAVAILABLE
+        message = "could not read the control plane at startup; exiting without writing anything"
         self.log.exception(
-            "could not read the control plane at startup; exiting without writing anything",
+            message,
             exc,
             phase=self.phases.current,
             seconds_in_phase=self.phases.seconds_in_phase(),
             cause=f"{type(cause).__name__}: {cause}" if cause is not None else None,
             retry_budget_seconds=getattr(retry, "timeout", None),
             call_timeout_seconds=options.get("timeout"),
-            exit_code=ExitCode.CONFIG,
+            exit_code=exit_code,
+            retryable=exit_code == ExitCode.UNAVAILABLE,
+            refused_by=type(refusal).__name__ if refusal is not None else None,
         )
-        return ExitCode.CONFIG
+        if refusal is not None:
+            write_termination_message(
+                message=message,
+                cause=(
+                    "the control plane refused the generation check: "
+                    f"{type(refusal).__name__}: {refusal}"
+                ),
+                phase=self.phases.current,
+                exit_code=exit_code,
+                execution=_execution_name(),
+            )
+        return exit_code
 
     def _exit_interrupted_before_runner(self, exc: StartupInterrupted) -> int:
         """A SIGTERM while the runner was being prepared: record it on OUR attempt, leave.
@@ -1240,7 +1305,12 @@ class Worker:
         return EXIT_INTERRUPTED
 
     def _exit_unavailable_before_runner(self, exc: Exception, cause: BaseException) -> int:
-        """A dependency was unavailable before the runner started: leave the task, exit 78.
+        """A dependency was unavailable before the runner started: leave the task, exit 69.
+
+        69, not 78. It was 78 until 2026-09-25, when the reconciler began
+        reading exit codes and failing a 78 without a retry. An outage is the
+        one thing here that the next attempt may not meet, so it keeps the
+        retry it always had.
 
         `cause` is the error in `exc`'s chain that says so (`_unavailable_cause`).
         It is usually `exc` itself: a RetryError from the startup budget, or
@@ -1279,18 +1349,18 @@ class Worker:
             unavailable=f"{type(cause).__name__}: {cause}",
             retry_budget_seconds=getattr(retry, "timeout", None),
             call_timeout_seconds=options.get("timeout"),
-            exit_code=ExitCode.CONFIG,
+            exit_code=ExitCode.UNAVAILABLE,
             then=(
                 "the reconciler reclaims the lease once it is silent and requeues "
                 "the task, or fails it when its attempts are spent"
             ),
         )
         self._record_startup_end(
-            ExitCode.CONFIG,
+            ExitCode.UNAVAILABLE,
             f"{type(cause).__name__} during startup phase {phase}; the runner never "
             f"started: {cause}",
         )
-        return ExitCode.CONFIG
+        return ExitCode.UNAVAILABLE
 
     def _record_startup_end(self, exit_code: int, error: str) -> None:
         """This attempt's own end, best effort, under the startup budget. Never raises."""
@@ -3002,7 +3072,8 @@ class Worker:
         It used to set `_interrupted` and nothing else, and only the runner's
         supervision loop read that. A worker stuck before its runner existed
         ignored the reconciler's SIGTERM and died to the SIGKILL 120 s later
-        without a line (the 2026-09-24 GKE incident).
+        without a line (the 2026-09-24 GKE incident). In the last window it
+        still only sets the flag, and says so at INFO.
         """
         self._interrupted = True
         mode = self._signal_mode
@@ -3017,6 +3088,19 @@ class Worker:
             if self._startup_interrupt is None:
                 self._startup_interrupt = interrupt
             raise interrupt
+        else:
+            # The runner exists (or the worker is on its way out): a SIGTERM
+            # is the ordinary way an attempt is stopped, not a fault. ONE
+            # INFO line, and no stack dump: the dump was disarmed when the
+            # runner started (`_run_child_supervised`), because GKE files
+            # every stderr line as ERROR (owner, 2026-09-25). The supervision
+            # loop does the stopping, on the flag set above.
+            name, phase = signal_name(signum), self.phases.current
+            say_from_signal_handler(
+                lambda: self.log.info(
+                    f"stopping: {name} in phase {phase}", signal=name, phase=phase
+                )
+            )
 
     @contextmanager
     def _signal_policy(self, mode: str) -> Iterator[None]:
@@ -3125,29 +3209,61 @@ def _control_plane_unreachable(exc: BaseException) -> bool:
     return isinstance(exc, auth_exceptions.GoogleAuthError)
 
 
+def _error_chain(exc: BaseException) -> list[BaseException]:
+    """`exc`, then what it was raised from or during (`__cause__`, `__context__`).
+
+    Breadth first, bounded at 16, and cycle-safe. A library can raise
+    something else on the way up: Firestore's rollback of a transaction whose
+    begin failed raises a ValueError whose `__context__` is the RetryError,
+    and google-auth raises RefreshError FROM the TransportError.
+    """
+    seen: set[int] = set()
+    chain: list[BaseException] = []
+    pending: list[BaseException] = [exc]
+    while pending and len(seen) < 16:
+        current = pending.pop(0)
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        chain.append(current)
+        for linked in (current.__cause__, current.__context__):
+            if linked is not None:
+                pending.append(linked)
+    return chain
+
+
 def _unavailable_cause(exc: BaseException) -> BaseException | None:
     """The error in `exc`'s chain that says a dependency could not be reached, or None.
 
     UNAVAILABLE ONLY, not every Google API error. Counted: RetryError (a
-    budget ran out), UNAVAILABLE, DEADLINE_EXCEEDED, INTERNAL and the other
-    5xx, RESOURCE_EXHAUSTED and 429, ABORTED (contention that outlasted the
-    transaction's own retries), and google-auth's transport and timeout
-    errors or any it marks retryable. These say the call did not complete,
-    and the next attempt may find the service back.
+    budget ran out), EVERY ServerError, RESOURCE_EXHAUSTED and 429, ABORTED
+    (contention that outlasted the transaction's own retries), CANCELLED, and
+    google-auth's transport and timeout errors or any it marks retryable.
+    These say the call did not complete, and the next attempt may find the
+    service back.
+
+    EVERY ServerError, not a list of them: UNAVAILABLE, DEADLINE_EXCEEDED,
+    INTERNAL, 502 and 504, and also gRPC UNKNOWN, DATA_LOSS and UNIMPLEMENTED.
+    The first version named five and left those three out. UNKNOWN is what
+    Firestore's client raises when a stream is reset under it ("Stream
+    removed"), and the startup Retry does not retry it. So a stream reset
+    FAILED the task for good after the generation check, and ended it through
+    a 78 at the check (review of PR #59). Each of the three could be permanent,
+    UNIMPLEMENTED above all. But a wrong guess here costs one bounded retry,
+    and the other wrong guess ends the task. CANCELLED is the RPC being
+    dropped, not an answer.
 
     Not counted: PERMISSION_DENIED, NOT_FOUND, INVALID_ARGUMENT,
     FAILED_PRECONDITION, UNAUTHENTICATED and a non-retryable RefreshError.
     Those are answers: the service was reached and said no, and it will say no
     to the next attempt too. The attempt owns its task at this point (step 1
     passed), so it fails it with the reason, as it did before the startup
-    budget. Step 1 is different, and `_control_plane_unreachable` takes every
-    API error there: without the generation check, the attempt does not know
-    that the task is its to fail.
+    budget. Step 1 is different, and `_exit_control_plane_unreachable` turns
+    anything that is not a named refusal (`_refusal_cause`) into a retry:
+    without the generation check, the attempt does not know that the task is
+    its to fail.
 
-    The whole chain is searched (`__cause__` and `__context__`), because a
-    library can raise something else on the way up. Firestore's rollback of a
-    transaction whose begin failed raises a ValueError whose `__context__` is
-    the RetryError. Bounded, and cycle-safe.
+    The whole chain is searched (`_error_chain`).
     """
     try:
         from google.api_core import exceptions as core
@@ -3155,12 +3271,12 @@ def _unavailable_cause(exc: BaseException) -> BaseException | None:
         return None
     transient: tuple[type[BaseException], ...] = (
         core.RetryError,
-        core.ServiceUnavailable,
-        core.GatewayTimeout,  # DeadlineExceeded is a subclass
-        core.InternalServerError,
-        core.BadGateway,
+        # UNAVAILABLE, DEADLINE_EXCEEDED, INTERNAL, UNKNOWN, DATA_LOSS,
+        # UNIMPLEMENTED, 502, 504: every 5xx and every server-side gRPC code.
+        core.ServerError,
         core.TooManyRequests,  # ResourceExhausted is a subclass
         core.Aborted,
+        core.Cancelled,
     )
     try:
         from google.auth import exceptions as auth
@@ -3174,21 +3290,65 @@ def _unavailable_cause(exc: BaseException) -> BaseException | None:
             if isinstance(kind, type)
         )
 
-    seen: set[int] = set()
-    pending: list[BaseException] = [exc]
-    while pending and len(seen) < 16:
-        current = pending.pop(0)
-        if id(current) in seen:
-            continue
-        seen.add(id(current))
+    for current in _error_chain(exc):
         if isinstance(current, transient):
             return current
         if auth is not None and isinstance(current, auth.GoogleAuthError):
             if isinstance(current, auth_transient) or getattr(current, "retryable", False):
                 return current
-        for linked in (current.__cause__, current.__context__):
-            if linked is not None:
-                pending.append(linked)
+    return None
+
+
+def _refusal_cause(exc: BaseException) -> BaseException | None:
+    """The error in `exc`'s chain that says the service was reached and REFUSED, or None.
+
+    Used at step 1 only, and only once `_unavailable_cause` has found nothing.
+    A refusal there is a 78, which fails the TASK with no retry (owner,
+    2026-09-25), so this is a list of the answers that the next attempt would
+    get too, and nothing else:
+
+      * PERMISSION_DENIED and 403, UNAUTHENTICATED and 401: this worker's
+        identity may not read its own task, or was not accepted;
+      * NOT_FOUND: the database, or the project, is not there;
+      * INVALID_ARGUMENT, FAILED_PRECONDITION, OUT_OF_RANGE and 400: the
+        request, or the project's setup (a disabled API), is wrong;
+      * a RefreshError google-auth did not mark retryable, and
+        DefaultCredentialsError: the credential was refused, or there is
+        none. One raised FROM a TransportError never gets here, because
+        `_unavailable_cause` finds the TransportError first.
+
+    Everything else at step 1 is a 69 and is retried: a kind this list does
+    not name, a new one a library adds, a 409. The review of PR #59 found
+    gRPC UNKNOWN ending tasks because the rule was the other way round: 69
+    for a named list, 78 for the rest. A wrong 69 costs one bounded retry
+    (`max_attempts`). A wrong 78 ends a task that would have run.
+    """
+    try:
+        from google.api_core import exceptions as core
+    except ImportError:
+        return None
+    refusals: tuple[type[BaseException], ...] = (
+        core.Forbidden,  # PermissionDenied is a subclass
+        core.Unauthorized,  # Unauthenticated is a subclass
+        core.NotFound,
+        core.BadRequest,  # InvalidArgument, FailedPrecondition, OutOfRange
+    )
+    try:
+        from google.auth import exceptions as auth
+    except ImportError:
+        auth = None  # type: ignore[assignment]
+    if auth is not None:
+        refusals = refusals + tuple(
+            kind
+            for kind in (
+                getattr(auth, "RefreshError", None),
+                getattr(auth, "DefaultCredentialsError", None),
+            )
+            if isinstance(kind, type)
+        )
+    for current in _error_chain(exc):
+        if isinstance(current, refusals) and not getattr(current, "retryable", False):
+            return current
     return None
 
 

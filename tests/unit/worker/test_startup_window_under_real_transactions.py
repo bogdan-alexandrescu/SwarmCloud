@@ -20,8 +20,11 @@ show either:
     startup budget turns a 45 s outage into a `RetryError` in 30 s, and
     `run()`'s crash handler turned that into a terminal FAILED. The reconciler
     never requeues FAILED, so `max_attempts` was never consulted. The same
-    outage one step earlier, at the generation check, exits 78 and the task is
-    retried.
+    outage one step earlier, at the generation check, ends startup and the
+    task is retried. That exit is 69 now, not 78: since 2026-09-25 the
+    reconciler reads exit codes and FAILS a 78 without a retry (owner's
+    decision), so an outage, which the next attempt may not meet, cannot share
+    the "cannot start" code.
 
 And one undelivered part of item (4): the transaction's own RPCs (begin,
 commit, rollback), its reads, the STARTING/RUNNING events and the first
@@ -57,6 +60,9 @@ from conftest import TENANT, build_worker, seed_attempt, seed_tenant
 
 #: 128 + SIGTERM, restated: the number is the contract with the pod's reader.
 INTERRUPTED = 143
+#: A dependency was unavailable before the runner; the reconciler retries it.
+#: Restated for the same reason. 78 is "cannot start", which it does not retry.
+UNAVAILABLE = 69
 TASK, LEASE, ATTEMPT = "tasks/task_1", "leases/lease_1", "attempts/att_1"
 
 
@@ -246,7 +252,7 @@ def test_a_sigterm_while_a_transaction_reads_exits_143_even_when_the_rollback_fa
 def test_a_control_plane_outage_before_the_runner_leaves_the_task_for_the_reconciler(
     store, tmp_path, log_stream, monkeypatch, phase, budgeted
 ):
-    """Exit 78 with the task, the lease and the stream untouched, as at the generation check.
+    """Exit 69 with the task, the lease and the stream untouched, as at the generation check.
 
     In `advance_to_running` the outage is in `begin_transaction`, and without
     the budget the library's rollback replaces the `RetryError` with its own
@@ -277,15 +283,62 @@ def test_a_control_plane_outage_before_the_runner_leaves_the_task_for_the_reconc
     exit_code = worker.run()
 
     assert mark, f"Firestore never went away in {phase}"
-    assert exit_code == ExitCode.CONFIG, _records(log_stream)[-4:]
+    assert exit_code == UNAVAILABLE, _records(log_stream)[-4:]
     _assert_left_alone(db, mark)
     assert db.doc(TASK)["state"] != TaskState.FAILED.value
     attempt = db.doc(ATTEMPT)
-    assert attempt["exit_code"] == ExitCode.CONFIG
+    assert attempt["exit_code"] == UNAVAILABLE
     assert phase in attempt["error"], attempt["error"]
     errors = [r for r in _records(log_stream) if r["severity"] == "ERROR"]
     assert errors and errors[-1]["phase"] == phase, errors[-1:]
-    assert errors[-1]["exit_code"] == ExitCode.CONFIG
+    assert errors[-1]["exit_code"] == UNAVAILABLE
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        pytest.param(("Unknown", "Stream removed"), id="grpc-unknown"),
+        pytest.param(("DataLoss", "stream reset mid-message"), id="data-loss"),
+        pytest.param(("MethodNotImplemented", "backend rolling"), id="unimplemented"),
+        pytest.param(("Cancelled", "the RPC was cancelled"), id="cancelled"),
+    ],
+)
+def test_a_server_error_of_any_kind_before_the_runner_is_left_to_the_reconciler(
+    store, tmp_path, log_stream, monkeypatch, error
+):
+    """Every 5xx and gRPC UNKNOWN is the service failing, not the service saying no.
+
+    `google.api_core.exceptions.Unknown` is what Firestore's client raises
+    when a stream is reset under it ("Stream removed"), and the startup Retry
+    does not retry it. It, DataLoss and MethodNotImplemented are ServerErrors
+    outside the named list the first version counted, so each FAILED the task
+    for good at exit 1 (review of PR #59). CANCELLED is the RPC being dropped,
+    not an answer either. Each is now 69, like UNAVAILABLE: the task, the
+    lease and the stream untouched, and the reconciler retries it.
+    """
+    from google.api_core import exceptions as core
+
+    kind, text = error
+    db = TransactionalFirestore()
+    seed_attempt(db)
+    worker = _worker(db, store, tmp_path, log_stream, budgeted=True)
+    monkeypatch.setattr(lifecycle, "ChildProcess", ExplodingChildProcess)
+    mark: dict[str, Any] = {}
+
+    def failed(ref: Any, transactional: bool) -> None:
+        if not transactional and ref.path == TASK and worker.phases.current == "restore_checkpoint":
+            _mark(db, mark)
+            raise getattr(core, kind)(text)
+
+    db.on_read = failed
+
+    exit_code = worker.run()
+
+    assert mark, "Firestore never failed in restore_checkpoint"
+    assert exit_code == UNAVAILABLE, _records(log_stream)[-4:]
+    _assert_left_alone(db, mark)
+    assert db.doc(TASK)["state"] != TaskState.FAILED.value
+    assert db.doc(ATTEMPT)["exit_code"] == UNAVAILABLE
 
 
 def test_a_refusal_before_the_runner_still_fails_the_attempt(

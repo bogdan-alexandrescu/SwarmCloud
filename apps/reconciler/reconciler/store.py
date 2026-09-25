@@ -339,14 +339,15 @@ class ControlStore:
                 )
                 return None
             target = to_state
-            if target is TaskState.READY and data.get("cancel_requested"):
+            if target in (TaskState.READY, TaskState.FAILED) and data.get("cancel_requested"):
                 # Re-read here, not taken from the snapshot: the API sets the
                 # flag with a plain update, so a cancel pressed after this pass
                 # read the task still lands on the right terminal state. READY
                 # would be a second hop -- the scheduler's drain cancels a READY
                 # task with the flag set -- and a hop that depends on another
                 # service being healthy is how a requested cancel sat ignored for
-                # hours on 2026-09-24.
+                # hours on 2026-09-24. FAILED, from a worker that could not
+                # start, would record a task somebody stopped as having failed.
                 target = TaskState.CANCELLED
             if target is TaskState.READY:
                 # ONLY a READY target is ever downgraded. A CANCELLED target is

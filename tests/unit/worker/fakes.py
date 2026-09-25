@@ -284,6 +284,8 @@ class FakeBackend:
         terminate_raises: Exception | None = None,
         terminate_returns: bool = True,
         list_raises: Exception | None = None,
+        terminations: dict[str, Any] | None = None,
+        termination_raises: Exception | None = None,
     ) -> None:
         self.name = name
         self._executions = list(executions or [])
@@ -292,13 +294,26 @@ class FakeBackend:
         self.terminate_raises = terminate_raises
         self.terminate_returns = terminate_returns
         self.list_raises = list_raises
+        #: execution name -> how it ended, as the backend's own record says:
+        #: anything with `exit_code`, `message` and `detail`. What a Cloud Run
+        #: task's `last_attempt_result` or a pod's `state.terminated` reads as.
+        self.terminations = dict(terminations or {})
+        self.termination_raises = termination_raises
         self.terminated: list[str] = []
         self.deleted: list[str] = []
+        self.termination_reads: list[str] = []
 
     def list_executions(self) -> list[Any]:
         if self.list_raises is not None:
             raise self.list_raises
         return list(self._executions)
+
+    def termination(self, execution: Any) -> Any:
+        """How a FINISHED execution ended. A read: nothing is journalled as a write."""
+        self.termination_reads.append(execution.name)
+        if self.termination_raises is not None:
+            raise self.termination_raises
+        return self.terminations.get(execution.name)
 
     def terminate(self, execution: Any) -> bool:
         self.journal.append(("terminate", execution.name, {}))
