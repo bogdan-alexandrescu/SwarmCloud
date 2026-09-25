@@ -933,6 +933,27 @@ def test_tail_says_which_objects_it_found_absent_when_there_are_none(
     assert said and "att_nologs" in said[0], lines
 
 
+def test_tail_does_not_say_never_started_when_it_could_not_read_the_attempts(
+    swarm, world, capsys, monkeypatch
+):
+    """The attempts read failing is not "no attempt". `tail` warned "logs
+    unavailable" and then, for the same task, printed "never started, so it
+    printed nothing" -- a verdict on the very read it had just said failed."""
+    task_id = world.task("task_0000000000noattempts", state="SUCCEEDED")
+    monkeypatch.setattr(
+        cli,
+        "_latest_attempt",
+        lambda client, tid: (None, SwarmError(f"GET /v1/tasks/{tid}/attempts: 503 unavailable")),
+    )
+
+    cli.cmd_tail(swarm, _args(task_ids=[task_id]))
+
+    lines = capsys.readouterr().out.splitlines()
+    assert any("503" in line for line in lines), "the failed read is still warned about"
+    assert not any("never started" in line for line in lines), lines
+    assert any("unknown" in line for line in lines), lines
+
+
 def test_the_state_is_spelled_once_across_sc_task_and_swarm_result(swarm, world, capsys):
     """`sc task` printed `succeeded` where `swarm result` printed `SUCCEEDED`."""
     task_id = world.task("task_0000000000000spelled", state="SUCCEEDED")
