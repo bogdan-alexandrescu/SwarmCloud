@@ -1137,7 +1137,9 @@ class ControlPlane:
         now = utcnow()
 
         def _apply(txn: Any) -> tuple[TaskState, int, int]:
-            task = self._fenced_task(txn, write=write)
+            # MUTATION M1 (#149, red on purpose, reverted in the next commit):
+            # the task is read without the fence.
+            task = _snapshot(txn.get(self._task_ref())).to_dict() or {}
             current = _as_state(task.get("state"))
             attempt_count = int(task.get("attempt_count", 0))
             max_attempts = int(task.get("max_attempts", 3))
