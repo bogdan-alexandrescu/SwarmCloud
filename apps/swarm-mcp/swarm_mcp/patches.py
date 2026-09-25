@@ -32,6 +32,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from swarm_common.states import CONCURRENCY_STATES, PENDING_STATES
+
 from .client import SwarmClient, SwarmError, task_id_of
 from .profiles import backend_of
 
@@ -59,22 +61,36 @@ def download(client: SwarmClient, uri: str, *, timeout: int = 120) -> bytes:
     """
     bucket, key = parse_gs_uri(uri)
     url = f"{_GCS}/{urllib.parse.quote(bucket, safe='')}/o/{urllib.parse.quote(key, safe='')}?alt=media"
-    req = urllib.request.Request(url)
-    req.add_header("Authorization", f"Bearer {client.access_token()}")
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as response:
-            return response.read()
-    except urllib.error.HTTPError as exc:
-        body = exc.read().decode("utf-8", errors="replace")[:300]
-        if exc.code == 403:
-            body += (
-                " -- an artifact lives under the TENANT's prefix, so reading it "
-                "needs storage.objects.get on that bucket for your own account, "
-                "not for the worker's service account"
-            )
-        raise SwarmError(f"could not read {uri}: {exc.code} {body}") from exc
-    except urllib.error.URLError as exc:
-        raise SwarmError(f"could not read {uri}: {exc.reason}") from exc
+    # ONE RETRY, on a 401 with a token the client had cached: the access token
+    # is cached now (`SwarmClient.access_token`), and gcloud can hand back one
+    # with less life left than the cache assumes. A fake client without the
+    # method -- the tests' -- gets no retry, which is the old behaviour.
+    forget = getattr(client, "forget_credentials", None)
+    for attempt in (1, 2):
+        req = urllib.request.Request(url)
+        req.add_header("Authorization", f"Bearer {client.access_token()}")
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as response:
+                return response.read()
+        except urllib.error.HTTPError as exc:
+            if exc.code == 401 and attempt == 1 and callable(forget) and forget():
+                continue
+            body = exc.read().decode("utf-8", errors="replace")[:300]
+            if exc.code == 403:
+                body += (
+                    " -- an artifact lives under the TENANT's prefix, so reading it "
+                    "needs storage.objects.get on that bucket for your own account, "
+                    "not for the worker's service account"
+                )
+            # THE STATUS AS DATA, so a caller can tell "not written yet" (404)
+            # from "you may not read it" (403) without searching this sentence.
+            # `swarm tail` read every failure here as "not published yet", which
+            # hid a missing grant behind an agent that seemed to print nothing
+            # (#88, SC-F12).
+            raise SwarmError(f"could not read {uri}: {exc.code} {body}", status=exc.code) from exc
+        except urllib.error.URLError as exc:
+            raise SwarmError(f"could not read {uri}: {exc.reason}") from exc
+    raise SwarmError(f"could not read {uri}: refused twice")  # pragma: no cover - loop always returns or raises
 
 
 def patch_uri(task: dict[str, Any]) -> str | None:
@@ -96,15 +112,43 @@ def patch_uri(task: dict[str, Any]) -> str | None:
     return None
 
 
+#: States in which a task is still on its way and a summary is simply not due
+#: yet. From the frozen contract, not written out; PARKED has its own sentence.
+_UNFINISHED = frozenset(
+    state.value for state in CONCURRENCY_STATES | PENDING_STATES
+) - {"PARKED"}
+
+
+def _no_summary(task: dict[str, Any]) -> str:
+    """Why a task has no result summary, from its own state and history.
+
+    THE PARKED SENTENCE IS FOR PARKED TASKS. It was printed for every task
+    without a summary -- including, on 2026-09-25 (#88, SC-F10), a workflow
+    step the scheduler cascade-cancelled before it was ever attempted, which
+    has no parked attempt and no event detail to go looking in.
+    """
+    state = str(task.get("state") or "unknown")
+    if state == "PARKED":
+        return (
+            f"{state}: no result summary was written. "
+            "A parked attempt puts its summary in the event detail instead."
+        )
+    if state in _UNFINISHED:
+        return f"{state}: no result summary yet -- one is written when the task finishes"
+    if not task.get("started_at") and not task.get("attempt_count"):
+        return (
+            f"{state}: no result summary was written -- the task never started, "
+            "so no agent produced anything"
+        )
+    return f"{state}: no result summary was written"
+
+
 def explain_absence(task: dict[str, Any]) -> str:
     """Why there is no patch. Six causes, six different responses."""
     summary = task.get("result_summary") or {}
     git = summary.get("git")
     if summary == {} or summary is None:
-        return (
-            f"{task.get('state', 'unknown')}: no result summary was written. "
-            "A parked attempt puts its summary in the event detail instead."
-        )
+        return _no_summary(task)
     if not git:
         return "this task cloned no repository, so there is no code to apply"
     if git.get("error"):
