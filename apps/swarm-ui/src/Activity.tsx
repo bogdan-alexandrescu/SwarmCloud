@@ -307,6 +307,21 @@ const dateLabel = (ms: number) =>
   new Date(ms).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })
 
 /**
+ * Which columns of an HOURLY axis are the first of their day, in the viewer's
+ * zone: the chart's first column, and every one whose date differs from the
+ * column before it. Every other grouping is a day or longer, so no column of it
+ * starts a day partway through the axis.
+ */
+export function dayStarts(keys: readonly number[], bucket: Bucket): boolean[] {
+  const dayOf = (ms: number) => new Date(ms).toDateString()
+  return keys.map((k, i) => {
+    if (bucket !== 'hour') return false
+    const before = keys[i - 1]
+    return before === undefined || dayOf(before) !== dayOf(k)
+  })
+}
+
+/**
  * The label under each column, or `''` for a column that carries none.
  *
  * AN HOUR IS NOT A TIME WITHOUT ITS DAY. `08 PM` appeared three times across a
@@ -319,14 +334,8 @@ const dateLabel = (ms: number) =>
  */
 export function axisLabels(keys: readonly number[], bucket: Bucket): string[] {
   const stride = bucket === 'month' || keys.length <= LABEL_ALL_UP_TO ? 1 : 2
-  const dayOf = (ms: number) => new Date(ms).toDateString()
-  const startsDay = (i: number): boolean => {
-    if (bucket !== 'hour') return false
-    const here = keys[i]
-    const before = keys[i - 1]
-    if (here === undefined) return false
-    return before === undefined || dayOf(before) !== dayOf(here)
-  }
+  const starts = dayStarts(keys, bucket)
+  const startsDay = (i: number): boolean => starts[i] === true
   const out = keys.map(() => '')
   let labelled = -Infinity
   keys.forEach((k, i) => {
@@ -362,6 +371,10 @@ export function axisLabels(keys: readonly number[], bucket: Bucket): string[] {
 function Chart({ window: w, bucket }: { window: TaskWindow; bucket: Bucket }) {
   const { buckets, anomalies } = useMemo(() => outcomeBuckets(w.tasks, bucket), [w.tasks, bucket])
   const labels = useMemo(() => axisLabels(buckets.map(([k]) => k), bucket), [buckets, bucket])
+  // THE DAY BOUNDARY, DRAWN as well as labelled: a rule down the first column
+  // of each day after the first, so a four-day hourly axis reads as four days
+  // even where thinning left a label out.
+  const boundaries = useMemo(() => dayStarts(buckets.map(([k]) => k), bucket), [buckets, bucket])
 
   const max = Math.max(1, ...buckets.map(([, c]) => c.succeeded + c.failed + c.cancelled + c.open))
 
@@ -390,7 +403,12 @@ function Chart({ window: w, bucket }: { window: TaskWindow; bucket: Bucket }) {
           return (
             // An empty bucket is a column with four zero-height segments and a
             // `0 tasks` title: a measured zero, drawn where it happened.
-            <div className="col" key={k} data-total={total} title={`${new Date(k).toLocaleString()}\n${total} tasks`}>
+            <div
+              className={i > 0 && boundaries[i] === true ? 'col is-day-start' : 'col'}
+              key={k}
+              data-total={total}
+              title={`${new Date(k).toLocaleString()}\n${total} tasks`}
+            >
               <div className="stackcol">
                 <i className="open" style={{ height: `${(c.open / max) * 100}%` }} />
                 <i className="cancelled" style={{ height: `${(c.cancelled / max) * 100}%` }} />

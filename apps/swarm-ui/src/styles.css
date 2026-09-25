@@ -3359,6 +3359,12 @@ button.copy:hover { color: var(--text); border-color: var(--text-faint); }
   display: flex; flex-direction: column; align-items: center; gap: 4px;
   min-width: 26px; flex: 1 1 26px; max-width: 72px;
 }
+/* THE DAY BOUNDARY ON AN HOURLY AXIS: the first column of each day after the
+   first carries a rule down its left edge, the interior-separator tone, so
+   four days of hours read as four days even where a label was thinned out.
+   `--ctl-s1` inside it, so the bar and the date clear the rule rather than
+   touching it. */
+.chart .col.is-day-start { border-left: 1px solid var(--line-soft); padding-left: var(--ctl-s1); }
 .stackcol { display: flex; flex-direction: column-reverse; justify-content: flex-start; width: 100%; height: 120px; }
 .stackcol > i { display: block; width: 100%; min-height: 0; }
 .stackcol > i.succeeded { background: var(--ok); }
