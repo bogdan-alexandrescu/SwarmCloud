@@ -22,9 +22,11 @@
 // in the SOURCE. `vitest.config.ts` sets `css: true`, so a class this asserts
 // on is a class the shipped stylesheet actually carries.
 
-import { describe, expect, it, vi } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import STYLES from '../styles.css?raw'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { act, render, screen, waitFor } from '@testing-library/react'
 
+import { cascade } from './cssgate'
 import type { Result } from '../fetch'
 import type { AccountsBoard, RuntimeTopology, SpendRollup } from '../api'
 import type {
@@ -347,8 +349,9 @@ describe('Overview, with every help card closed', () => {
     expect(unpolled!.querySelector('.ctl-util-track')?.className).toContain('is-unknown')
     expect(unpolled!.querySelector('.ctl-util-fill')).toBeNull()
 
-    // THE MEASURED ONE. A digit, on a track that is drawn.
-    expect(textOf(measured!.querySelector('.ctl-util-figure'))).toBe('0%')
+    // THE MEASURED ONE. A digit, on a track that is drawn -- and, since OV-1,
+    // the word that says which way the percentage points.
+    expect(textOf(measured!.querySelector('.ctl-util-figure'))).toBe('0% used')
     expect(measured!.querySelector('.ctl-util-track')?.className).not.toContain('is-unknown')
 
     // AND THE TWO ARE NOT THE SAME PICTURE. This is the assertion the whole
@@ -687,9 +690,13 @@ describe('Accounts, with every help card closed', () => {
     for (const cell of unmeasured) {
       expect(textOf(cell.querySelector('.acct-pct'))).toBe('—')
       expect(textOf(cell)).not.toMatch(/\d/)
-      // THE BAR IS THE MARKER. An empty five-cell bar and a measured 0% are
-      // the same picture, so an unmeasured cell draws no bar at all.
-      expect(cell.querySelector('.acct-bar'), 'an unmeasured cell drew a bar').toBeNull()
+      // THE BAR IS THE MARKER. An empty bar and a measured 0% are the same
+      // picture, so an unmeasured cell draws no bar at all.
+      // CP-25 (#85) RE-POINT: the five-cell `.acct-bar` is gone and the cell
+      // draws the shared §6.4 track, so the absence is asked of the track.
+      // The claim did not move: no proportion of any kind is drawn here.
+      expect(cell.querySelector('.ctl-util-track'), 'an unmeasured cell drew a bar').toBeNull()
+      expect(cell.querySelector('.acct-bar'), 'an unmeasured cell drew the old bar').toBeNull()
     }
 
     // ...and its CLEARS cell, which has no window to count down to, is an em
@@ -705,7 +712,13 @@ describe('Accounts, with every help card closed', () => {
     )
     expect(measured.length, 'the measured-zero row drew no window cell').toBeGreaterThan(0)
     expect(textOf(measured[0]!.querySelector('.acct-pct'))).toBe('0%')
-    expect(measured[0]!.querySelector('.acct-bar'), 'a measured cell drew no bar').not.toBeNull()
+    // CP-25 RE-POINT, and the claim got STRONGER. The five-cell bar drew a
+    // measured 0% as five empty cells -- the same picture as a bar that failed
+    // to paint. The shared track draws it with its baseline tick (§8.7.2).
+    const track = measured[0]!.querySelector('.ctl-util-track')
+    expect(track, 'a measured cell drew no bar').not.toBeNull()
+    expect(track!.classList.contains('is-zero'), 'a measured 0% drew no baseline tick').toBe(true)
+    expect(track!.querySelector('.ctl-util-zero')).not.toBeNull()
   })
 
   it('marks the empty pool as a real zero rather than leaving an empty table', async () => {
@@ -752,6 +765,177 @@ describe('Accounts, with every help card closed', () => {
     expect(document.querySelector('.section.legend')).toBeNull()
     expect(visibleText()).not.toContain('How to run this pool')
   })
+
+  /**
+   * OV-1: ONE POLARITY, AND EVERY % CARRIES ITS WORD. The Overview's headline
+   * said `% left` over rows of % used; the owner set % used everywhere
+   * (Overview, Accounts, sc). This table already printed used, under column
+   * heads that said only `5h` and `7d` -- so the word goes on the head, and on
+   * the phone key that stands in for it.
+   *
+   * MUTATION: head the columns `5h` and `7d` again.
+   */
+  it('says which way every window percentage points, in its column head', async () => {
+    renderAccounts([MEASURED_ZERO])
+    await screen.findByText('eng:fresh', undefined, WAIT)
+    const heads = [...document.querySelectorAll('table.accounts thead th')].map((th) => textOf(th))
+    expect(heads).toContain('5h used')
+    expect(heads).toContain('7d used')
+    const keys = [...document.querySelectorAll('td.acct-window')].map((td) => td.getAttribute('data-label'))
+    expect(keys.length, 'no window cell was drawn').toBeGreaterThan(0)
+    for (const key of keys) expect(key, 'a phone key drops the polarity').toMatch(/ used$/)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Accounts: the owner's decisions on #85, 2026-09-25 (CP-25, CP-26). Each
+// block was pushed before the change it pins.
+// ---------------------------------------------------------------------------
+
+/** A window far enough out that nothing here resets it. */
+const FAR = '2099-01-01T00:00:00Z'
+
+/**
+ * The `data-label` cell of one account's row, by the id printed under it. A
+ * window's label is its phone key, which carries OV-1's polarity (`5h used`,
+ * `7d used`), so the callers below name it that way.
+ */
+function accountCell(id: string, label: string): HTMLElement {
+  const raw = [...document.querySelectorAll('span.raw')].find((s) => s.textContent === id)
+  expect(raw, `no row for ${id}`).toBeTruthy()
+  const cell = raw!.closest('tr')!.querySelector(`td[data-label="${label}"]`)
+  expect(cell, `${id} has no ${label} cell`).not.toBeNull()
+  return cell as HTMLElement
+}
+
+describe('Accounts draws a window with the shared track, not the five-cell bar (CP-25)', () => {
+  const now = () => new Date().toISOString()
+  const board2 = () => [
+    account({
+      account_id: 'eng:live',
+      label: 'live',
+      observed_at: now(),
+      windows: {
+        // 0.4375 is exact in binary, so the width is exactly 43.75% and the
+        // assertion below is about rounding, not about floating point.
+        five_hour: { utilization: 0.4375, resets_at: FAR, reset: false },
+        seven_day: { utilization: 1, resets_at: FAR, reset: false },
+      },
+    }),
+    account({
+      account_id: 'eng:old',
+      label: 'old',
+      observed_at: now(),
+      stale: true,
+      windows: {
+        five_hour: { utilization: 1, resets_at: FAR, reset: false },
+        seven_day: { utilization: 0.3, resets_at: FAR, reset: false },
+      },
+    }),
+  ]
+
+  it('draws the exact percentage in the default grey', async () => {
+    renderAccounts(board2())
+    await screen.findByText('eng:live', undefined, WAIT)
+    expect(document.querySelector('.acct-bar'), 'the five-cell bar is still drawn').toBeNull()
+    const fill = accountCell('eng:live', '5h used').querySelector<HTMLElement>('.ctl-util-fill')
+    expect(fill, 'a live reading drew no track').not.toBeNull()
+    // Unrounded: 43.75, not the nearest fifth (40) and not the figure's 44.
+    expect(fill!.style.width).toBe('43.75%')
+    // No verdict below a spent window: there is no amber band on Accounts.
+    expect(fill!.className.trim()).toBe('ctl-util-fill')
+  })
+
+  it('draws bad only for a live window that is fully spent', async () => {
+    renderAccounts(board2())
+    await screen.findByText('eng:live', undefined, WAIT)
+    expect(accountCell('eng:live', '7d used').querySelector('.ctl-util-fill.is-bad')).not.toBeNull()
+    // Spent, but the reading is stale: projected, never the verdict.
+    const old = accountCell('eng:old', '5h used')
+    expect(old.querySelector('.ctl-util-fill.is-bad'), 'a stale reading drew the spent verdict').toBeNull()
+    expect(old.querySelector('.ctl-util-fill.ov-projected')).not.toBeNull()
+    expect(old.querySelector('.acct-tilde')?.textContent).toBe('~')
+    expect(accountCell('eng:old', '7d used').querySelector('.ctl-util-fill.ov-projected')).not.toBeNull()
+  })
+
+  it('keeps the track a fixed 40px inline beside the figure, and hides it at 560px and below', async () => {
+    renderAccounts(board2())
+    await screen.findByText('eng:live', undefined, WAIT)
+    const track = accountCell('eng:live', '5h used').querySelector('.acct-window > .ctl-util-track')
+    expect(track, 'the track is not the window cell’s own child').not.toBeNull()
+    const won = (prop: string, width: number) => {
+      const r = cascade(STYLES, track!, prop, { width })
+      expect(r.unsupported, 'selectors the resolver could not evaluate').toEqual([])
+      return r.winner?.value ?? null
+    }
+    expect(won('width', 1440)).toBe('40px')
+    expect(won('display', 1440)).toBe('inline-flex')
+    // The phone block's own rule governs, as it does every other track.
+    expect(won('display', 390)).toBe('none')
+  })
+})
+
+describe('the Accounts foot says how old the readings are (CP-26)', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  /**
+   * Renders the screen under a fake clock, one row per reading age in
+   * SECONDS (null: never read), and returns the foot's text.
+   */
+  async function footFor(ages: (number | null)[]): Promise<{ foot: () => string; advance: (ms: number) => Promise<void> }> {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'setInterval', 'clearTimeout', 'clearInterval', 'Date'] })
+    const t = Date.now()
+    const rows = ages.map((s, i) =>
+      s === null
+        ? account({ account_id: `eng:n${i}`, label: `n${i}`, observed_at: null })
+        : account({
+            account_id: `eng:r${i}`,
+            label: `r${i}`,
+            observed_at: new Date(t - s * 1000).toISOString(),
+            windows: { five_hour: { utilization: 0.1, resets_at: FAR, reset: false } },
+          }),
+    )
+    api.loadAccountsBoard.mockResolvedValue(ok(board(rows)))
+    const { container } = render(<AccountsScreen />)
+    const advance = async (ms: number) => {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(ms)
+      })
+    }
+    await advance(0)
+    return { foot: () => textOf(container.querySelector('.provenance')), advance }
+  }
+
+  it('prints the range after the row count, leaving out a row with no reading', async () => {
+    const { foot } = await footFor([2 * 60, 14 * 60, null])
+    expect(foot()).toMatch(/^3 rows · readings 2m–14m old · ~ is projected, not measured/)
+  })
+
+  it('moves the range on its own clock, without a reload', async () => {
+    const { foot, advance } = await footFor([20, 40])
+    expect(foot()).toContain('readings 20s–40s old')
+    // Ten seconds later, with nothing re-read, the range is ten seconds older.
+    // The table's per-render clock would still say 20s-40s: Accounts does not
+    // re-render on its own.
+    const calls = api.loadAccountsBoard.mock.calls.length
+    await advance(10_000)
+    expect(foot()).toContain('readings 30s–50s old')
+    expect(api.loadAccountsBoard.mock.calls.length, 'the range moved because the board was re-read').toBe(calls)
+  })
+
+  it('prints one age when every reading agrees', async () => {
+    const { foot } = await footFor([4 * 60, 4 * 60])
+    expect(foot()).toContain('readings 4m old')
+    expect(foot()).not.toMatch(/readings \S+–/)
+  })
+
+  it('drops the clause when no row has a reading', async () => {
+    const { foot } = await footFor([null])
+    expect(foot()).toContain('1 row')
+    expect(foot()).not.toContain('readings')
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -770,7 +954,7 @@ describe('Runtimes, with every help card closed', () => {
     // WHERE THE WORDS LIVE NOW: `.ctl-mark.is-unread` renders `not read`
     // INSIDE the card that holds the affected columns, the server's own detail
     // sits beside it in `.rt-unread-detail`, and the argument is
-    // `#help/absent-vs-zero` on the `?` in that same row.
+    // `#help/absent-vs-zero` on the `?` after the same card's heading (AH-24).
     //
     // WHY THIS IS THE STRONGER ASSERTION. "Those columns are dashes, not
     // zeros" is a sentence ABOUT the cells, and a banner can be scrolled away
@@ -804,6 +988,21 @@ describe('Runtimes, with every help card closed', () => {
       'the capacity read did not complete',
     )
     expect(card!.querySelector('button[aria-label^="Help: "]')).not.toBeNull()
+    // AFTER THE HEADING, NEVER AFTER A VALUE (AH-24). The glyph trailed the
+    // server's own words, inside the one-line `.rt-unread-detail` that clips
+    // with an ellipsis -- after a value, and cut off with it when the message
+    // ran long. #161's first version moved it to LEAD the row, which is not
+    // after a label either. It goes after the card's heading, `Backends`, in
+    // the slot Pools' `Headroom ?` uses, and only while the counters are
+    // unread. MUTATION: put it back in `.rt-unread`, at either end.
+    const heading = card!.querySelector('h2.ctl-card-title')
+    expect(heading, 'the backends card has no heading').not.toBeNull()
+    expect(heading!.firstChild?.textContent, 'the heading does not start with its word').toBe('Backends')
+    expect(
+      heading!.querySelector('button[aria-label^="Help: "]'),
+      'the `?` does not follow the Backends heading',
+    ).not.toBeNull()
+    expect(card!.querySelector('.rt-unread button'), 'the `?` is still in the unread row').toBeNull()
 
     const row = card!.querySelector('.ctl-table tbody tr')
     expect(row, 'no backend row was drawn').not.toBeNull()

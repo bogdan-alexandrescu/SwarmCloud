@@ -448,7 +448,7 @@ describe('B4.1: the tokens are actually in the cascade', () => {
     style.remove()
   })
 
-  it('fixes the inversion: a panel title is --t-title in --text, not small caps', () => {
+  it('fixes the inversion: a panel title is --t-lead in --text, not small caps', () => {
     const style = withStyles()
     const section = document.createElement('section')
     section.className = 'section'
@@ -461,15 +461,50 @@ describe('B4.1: the tokens are actually in the cascade', () => {
     // rule is in the cascade AND that it carries the token rather than a
     // number. `.section > h2` is written as longhands precisely so this can be
     // read back -- a `font:` shorthand holding var() is not expanded here.
+    //
+    // --t-lead, NOT --t-title (TS-18, owner decision 2026-09-25). §B4.1 put
+    // the section heading on the h1's own step, so "Outcomes by day" and
+    // "Timeline" above it were both 18/600 and the page had no second rank.
+    // design-system.md §2 gives every section, panel and step heading
+    // --t-lead, set apart from body by weight; --t-title is the screen h1's.
     const seen = getComputedStyle(h2)
-    expect(seen.fontSize).toBe('var(--t-title)')
-    expect(seen.lineHeight).toBe('var(--lh-title)')
+    expect(seen.fontSize).toBe('var(--t-lead)')
+    expect(seen.lineHeight).toBe('var(--lh-lead)')
     expect(seen.color).toBe('var(--text)')
     // It was 13px, 600, uppercase, in --text-faint: a heading drawn smaller
     // and fainter than the rows under it, losing to its own content on size,
     // weight and tone at once. The uppercase treatment dropped one level, to
     // panel labels -- see `.ov-h > h2` and the `h4`s in a detail panel.
     expect(seen.textTransform).not.toBe('uppercase')
+
+    section.remove()
+    style.remove()
+  })
+
+  /**
+   * OV-15. AN IN-PAGE HEADING DOES NOT TIE WITH THE PAGE TITLE.
+   *
+   * The Overview's attention lead title was --t-title at 600 -- the `<h1>`'s
+   * own step -- so the page drew two headings of one rank a line apart, the
+   * first repeating what the breadcrumb already says. It is an `<h2>`, and the
+   * heading ladder in design-system.md §2 puts in-page region and card
+   * headings at --t-lead/600; the lead stays distinct from the card titles by
+   * its position, its track and its unboxed region.
+   *
+   * MUTATION: put `.ov-lead-title` back on --t-title.
+   */
+  it('sets the attention lead title a step below the page title', () => {
+    const style = withStyles()
+    const section = document.createElement('section')
+    section.className = 'section ov-lead'
+    section.innerHTML =
+      '<div class="ov-lead-head"><div class="ov-lead-say"><h2 class="ov-lead-title">3 things need attention</h2></div></div>'
+    document.body.appendChild(section)
+
+    const seen = getComputedStyle(section.querySelector('.ov-lead-title')!)
+    expect(seen.fontSize).toBe('var(--t-lead)')
+    expect(seen.lineHeight).toBe('var(--lh-lead)')
+    expect(seen.fontWeight).toBe('600')
 
     section.remove()
     style.remove()

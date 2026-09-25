@@ -266,31 +266,42 @@ function Provenance({ data }: { data: ArtifactContent }) {
             "this output had four credentials in it and you should rotate
             them", so the count stays on the glass. That masking here does not
             remove them from the bucket is a standing fact about the read path
-            and is `#help/credential-names-not-values`. */}
-        <li className={`ctl-fact art-redacted${data.redacted ? ' is-absent' : ''}`}>
-          <b>masked</b>
-          {data.redacted ? (
-            <>
-              {data.redaction_count}{' '}
-              <Mark
-                kind="unread"
-                say={`${data.redaction_count} credential-shaped value${data.redaction_count === 1 ? ' was' : 's were'} masked in this artifact when it was served. They are still in the object in the bucket; masking here does not remove them from there, and anything recognisable should be rotated.`}
-              />
-            </>
-          ) : (
-            <>0 of {data.redaction.rules} families</>
-          )}
+            and is `#help/masking-is-serve-time`.
+
+            A MEASURED FACT, DRAWN AS ONE (AG-5, owner decision 2026-09-25).
+            This wore the `not read` mark -- the dashed silhouette whose one
+            meaning is "the read failed" -- and the fact was dimmed
+            `.is-absent`, the treatment for a figure nothing measured. The
+            count WAS read: it is what the serve path's `redact()` returned
+            over these bytes. The kit's six marks are six kinds of nothing and
+            this is not one of them, and the decision was not to add a
+            seventh. So: no mark, no dimming, and the attention it asks for is
+            its INK -- `--warn` above zero, plain at zero (`.art-masked` in
+            styles.css). The sentence the mark carried is the topic behind
+            the `?` on the key. */}
+        <li className="ctl-fact art-redacted">
+          {/* THE `?` IS ON THE KEY (AH-24): after the label it explains, as
+              Overview's `reads ?` is, and never after the count -- where it
+              trailed `masked 4 …` and read as a footnote on the figure. Why it
+              is here at all is the note at the end of this fact. */}
+          <b>
+            masked
+            <HelpCard topic="masking-is-serve-time" />
+          </b>
+          <span className={`art-masked${data.redacted && data.redaction_count > 0 ? ' is-warn' : ''}`}>
+            {data.redacted ? data.redaction_count : `0 of ${data.redaction.rules} families`}
+          </span>
           {/* THIS SCREEN'S ONE `?` (B7.4), and it is the only one it had. What
               it holds is a property of the SERVING path rather than of this
               artifact: masking happens on the way out, the object in the bucket
               is unchanged, and no label on a count can say that. `0 of N
-              families` is the count; this is what the count does not mean.
+              families` is the count; the glyph on the key is what the count
+              does not mean.
 
               IT OPENS `masking-is-serve-time` (AG-19). It opened "Credential
               names, never values" -- the rule for how a tenant's secrets are
               NAMED, not what happens to a value found in an artifact. The new
               topic is built from the masked mark's own `say` string. */}
-          <HelpCard topic="masking-is-serve-time" />
         </li>
       </ul>
       <span className="art-prov-actions">

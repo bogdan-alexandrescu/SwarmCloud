@@ -687,6 +687,14 @@ describe('AttemptTimeline, with every help card closed', () => {
     const glyph = el.querySelector('.ctl-toolbar button[aria-expanded]')
     expect(glyph, 'the paging topic is unreachable').not.toBeNull()
     expect(glyph!.getAttribute('aria-label') ?? '').toContain(HELP['event-paging'].title)
+    // AFTER THE LABEL, NEVER AFTER A VALUE (AH-24). It trailed the toolbar's
+    // counts -- `12 ev · first page · 1 blind ?` -- where it read as a footnote
+    // on the last figure. The toolbar's label is its `attempts` eyebrow, and
+    // the glyph follows that. MUTATION: move it back to the end of the strip.
+    expect(
+      el.querySelector('.ctl-toolbar .ctl-eyebrow button[aria-label^="Help: "]'),
+      'the toolbar `?` is not on its label',
+    ).not.toBeNull()
   })
 
   it('keeps every attempt figure in a facts strip, absences included', async () => {
@@ -717,17 +725,30 @@ describe('ArtifactViewer', () => {
     expect(mark!.getAttribute('aria-label') ?? '').toMatch(/not the whole artifact/i)
   })
 
-  it('draws masked credentials as a warning mark with the count', async () => {
+  it('draws masked credentials as a measured count in warn ink, with no mark', async () => {
     const el = await renderViewer()
     // WHAT MOVED: "N credential-shaped values were masked in this artifact when
     // it was served. They are in the object in the bucket; masking here does
     // not remove them from there, and anything recognisable should be rotated."
     // The COUNT is the fact and stays on the glass; the rotation advice is help
-    // topic `artifact-redaction`.
+    // topic `masking-is-serve-time`.
+    //
+    // RE-POINTED (AG-5, owner decision 2026-09-25). This pinned the defect: it
+    // asked for `.ctl-mark.is-unread` -- the `not read` mark, the one that
+    // means a read FAILED -- on a count that was read, and the fact it sat in
+    // was dimmed `.is-absent` as if nothing had been measured. The kit's six
+    // marks are six kinds of nothing and this is not one of them, so the
+    // count carries no mark and no dimming; that it needs attention is its
+    // ink, `--warn` above zero (the cascade half is `artifact.masked.test.tsx`).
+    // BREAK IT: put the `unread` mark or `is-absent` back.
     const fact = el.querySelector('.ctl-fact.art-redacted')
     expect(fact, 'read-time redaction is no longer surfaced').not.toBeNull()
-    expect(fact!.querySelector('.ctl-mark.is-unread')).not.toBeNull()
-    expect(fact!.textContent).toContain('4')
+    expect(fact!.querySelector('.ctl-mark'), 'a count that was read wears an absence mark').toBeNull()
+    expect(fact!.classList.contains('is-absent'), 'a count that was read is dimmed as absent').toBe(false)
+    const count = fact!.querySelector('.art-masked')
+    expect(count, 'the count has no element of its own to carry its ink').not.toBeNull()
+    expect(count!.textContent).toBe('4')
+    expect(count!.classList.contains('is-warn'), 'four masked values are not drawn as needing attention').toBe(true)
     // The `?` is the route to the words. It is a button rather than an anchor
     // while the card is shut, which is what keeps this assertion honest: the
     // topic's text is reachable and is NOT on the glass.
@@ -745,6 +766,14 @@ describe('ArtifactViewer', () => {
       ),
       'the redaction topic is unreachable',
     ).toBeDefined()
+    // AFTER THE LABEL, NEVER AFTER A VALUE (AH-24). It trailed the count and
+    // its mark -- `masked 4 … ?` -- the QA pass's own example of a glyph read
+    // as a footnote on a figure. It sits on the fact's key now, as Overview's
+    // `reads ?` does. MUTATION: move it back after the count.
+    expect(
+      fact!.querySelector('b button[aria-label^="Help: "]'),
+      'the masked count’s `?` is not on its label',
+    ).not.toBeNull()
   })
 
   it('tells a zero-byte artifact from a missing one, without a paragraph for either', async () => {

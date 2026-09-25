@@ -206,6 +206,19 @@ work can be routed between agents for the first time") as one of "two
 frozen-contract REQUESTS, raised rather than made" -- and then recorded in a
 commit message, which is not a place anybody looks for an open decision.
 
+**Update 2026-09-25 (#151):** failure (a) below, a plain `POST /v1/tasks`
+carrying `metadata.input_from` past every DAG check, is closed on the unfrozen
+side. The owner decided that the key is reserved, like `dispatch`.
+`reject_reserved_metadata` now refuses it from callers with 422
+`invalid_dispatch`, on a task, a batch and a workflow's own `metadata`, whatever
+its value, and creates nothing. Workflow expansion is the only writer, and a
+step's own `input_from` is the only declaration a caller can make, so the
+`validate_dag` filename checks #64 added (PR #65) see every declaration that
+reaches the worker. `metadata.expected_outputs`, the other key workflow
+expansion writes (#149), is reserved by the same function. The request for a
+typed field is still open. It never depended on (a) alone: the five spellings
+below remain, and the worker still re-validates a free-form dict.
+
 ### What is asked for
 
 A field on `Task`, mirroring the one `WorkflowStep` already has:
@@ -228,16 +241,16 @@ One idea, five spellings:
 |---|---|---|
 | `swarm_common/models.py:333` `WorkflowStep.input_from` | `dict[str, str]` | step id |
 | `swarm-api/schemas.py:80` `WorkflowStepCreate.input_from` | `dict[str, str]` | step id |
-| `swarm-api/validation.py:358` `StepSpec.input_from` | `tuple[str, ...]` | step id, **no filenames** |
+| `swarm-api/validation.py` `StepSpec.input_from` | `Mapping[str, str]` | step id (was a tuple of ids with no filenames until #64) |
 | `task.metadata["input_from"]` | untyped | **task id** |
 | `swarm-ui/src/types.ts:1227` `WorkflowStep.input_from` | `string \| null` | -- |
 
-**Written by exactly one place.** `swarm-api/service.py:354-357`, inside
+**Written by exactly one place.** `swarm-api/service.py:389-392`, inside
 `submit_workflow`, translating step ids to the task ids it has just minted:
 
 ```python
 if source.input_from:
-    task.metadata["input_from"] = {
+    task.metadata[INPUT_FROM_METADATA_KEY] = {
         step_task_id[src]: filename for src, filename in source.input_from.items()
     }
 ```
@@ -249,12 +262,15 @@ re-validates every key and every value at runtime -- the key is a non-empty
 string, the value is a non-empty string, no two entries share a destination --
 because the contract types `metadata` as `dict[str, Any]` and says nothing about
 what is inside it. That defensiveness is correct and would still be wanted; the
-request is about the fifth row of that table, and about the submission path that
-never gets validated at all.
+request is about the fifth row of that table. It was also about the submission
+path that was never validated at all, a caller's own `metadata.input_from`, and
+that half is closed (#151, below).
 
-`StepSpec.input_from` being a *tuple of ids* is not sloppiness: `validate_dag`
-needs to know which step a file comes from, not which file. It is listed because
-it is a fourth shape somebody has to hold in their head while reading this.
+`StepSpec.input_from` was a *tuple of ids* because the dependency rule needs to
+know only which step a file comes from. That shape is also why the API could not
+see two parents staging one filename, a mistake that surfaced only after both
+parents had run. Since #64 it carries the filenames too, and `validate_dag`
+refuses that collision and any absolute or traversing filename at submission.
 
 ### Why: the failure it prevents
 
@@ -274,7 +290,12 @@ reject_reserved_metadata({"unit": "payments", "input_from": {"x": "y"}})
 `_build_task` then copies caller metadata verbatim (`service.py:205`,
 `metadata = dict(spec.metadata)`). So a plain `POST /v1/tasks` carrying
 `metadata.input_from` is stored as written and honoured by the worker, having
-passed none of the DAG checks.
+passed none of the DAG checks. A workflow's own `metadata.input_from` took the
+same route onto every step that declared no `input_from` of its own, which
+always included the root steps. #64 (PR #65) briefly checked that value's
+filenames at submission (`validate_workflow_input_from_metadata`), but the task
+ids it named still carried no dependency edge. That check was removed when #151
+reserved the key, below: there is no valid workflow-level value left to check.
 
 Be precise about what that is and is not. It is **not** a tenant escape:
 `inputs.fetch_upstream_task` (`inputs.py:226-254`) refuses a task belonging to
@@ -284,6 +305,24 @@ construction. It is an **ordering** bypass inside one tenant: the caller names
 any of their own tasks, with no dependency edge and no guarantee the upstream
 ran. A typed field gives the API one field to validate on every path, instead of
 one path validating a key the other path waves through.
+
+**Closed on the unfrozen side, 2026-09-25 (#151).** The paragraphs above describe
+the code before that date. The owner chose to refuse the key from callers rather
+than validate it for a standalone task. `reject_reserved_metadata` now reserves
+`input_from` alongside `dispatch`, so a `POST /v1/tasks` (or a batch) carrying it
+gets 422 `invalid_dispatch` and nothing is created. A workflow whose own
+`metadata` carries it is refused the same way, whatever the value, which also
+closes the path by which that value reached every root step verbatim. That
+refusal runs before `validate_dag`, so such a workflow answers
+`invalid_dispatch`, never `invalid_dag`, even when its declaration would also
+have broken the #64 filename rules. #65's workflow-level filename check and the
+tests that pinned a well-formed, `{}` or `null` workflow-level value as
+accepted went with it; its step-level checks are unchanged. The worker's
+checks stay as defence in depth, not as the only guard on any submission path.
+The test at
+`test_dispatch_strategy.py` quoted above no longer pins `input_from` as allowed.
+`tests/unit/control_plane/test_input_from_is_reserved.py` holds the refusal, the
+empty store after it, and workflow expansion still writing the key.
 
 **(b) The UI's copy is already wrong.** `codec.workflow_to_api:486` serves
 `"input_from": s.input_from`, a `dict[str, str]`. `swarm-ui/src/types.ts:1227`
@@ -315,8 +354,9 @@ well today. Two things then need doing on the **unfrozen** side regardless, and
 neither needs this request:
 
 * `reject_reserved_metadata` should reserve `input_from`, or `_build_task`
-  should validate it for a standalone task. Right now the DAG rule is
-  enforceable on only one of the two ways a task is created.
+  should validate it for a standalone task. **Done** the first way, by owner
+  decision on #151 (2026-09-25): the key is refused from callers on every path
+  that creates a task, and only workflow expansion writes it.
 * `swarm-ui/src/types.ts` should declare `input_from` as
   `Record<string, string>`. **Done**, along with the fixture in `api.ts` that
   built it as a bare string, and `check-contract-parity.sh` section 5 now

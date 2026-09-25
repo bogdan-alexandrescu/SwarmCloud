@@ -29,7 +29,7 @@ import { fileURLToPath } from 'node:url'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { createElement } from 'react'
 
-import { HELP, HELP_ROUTE, TOPIC_IDS, helpAnchor, topicFor, type TopicId } from '../src/help'
+import { HELP, HELP_GROUPS, HELP_ROUTE, TOPIC_IDS, helpAnchor, topicFor, type TopicId } from '../src/help'
 import { HelpNote } from '../src/HelpCard'
 import { HelpScreen } from '../src/HelpSection'
 import { CONCURRENCY_STATES, NEVER_WRITTEN, REAL_STATES, REASON_COPY, TERMINAL_STATES } from '../src/types'
@@ -163,10 +163,10 @@ test('an unknown topic is the default empty state: a mark, one sentence, a link 
 })
 
 // ---------------------------------------------------------------------------
-// The Help page's own chrome (AH-10, AH-15, AH-16)
+// The Help page's own chrome (AH-10, AH-15, AH-16, AH-18, AH-25)
 // ---------------------------------------------------------------------------
 
-/** The opening tag of the topic block at `id`, with its inline style. */
+/** The opening tag of the topic block at `id`. */
 function topicTag(markup: string, id: TopicId): string {
   const m = new RegExp(`<div id="${helpAnchor(id)}"[^>]*>`).exec(markup)
   assert.ok(m, `no topic block for ${id}`)
@@ -174,55 +174,99 @@ function topicTag(markup: string, id: TopicId): string {
 }
 
 /**
- * AH-15. §6.12: a page head is a title and actions, NO subtitle. This one
- * described about one topic in eight ("why a figure looks the way it does")
- * and restated the deep-linked title a second time under the h1.
- *
- * MUTATION: put the `.sub` paragraph back.
+ * The whole block of the topic at `id`: from its opening tag to the next
+ * topic's, or to the end of its group. Read by string position because the
+ * markup is a string here, and a regex over nested elements closes early.
  */
-test('the Help page carries no subtitle', () => {
-  for (const topic of ['', 'absent-vs-zero']) {
-    const markup = renderToStaticMarkup(createElement(HelpScreen, { topic }))
-    assert.ok(!markup.includes('class="sub"'), `the Help page (topic "${topic}") has a subtitle`)
+function topicBlock(markup: string, id: string): string {
+  const start = markup.indexOf(`<div id="${HELP_ROUTE}/${id}"`)
+  assert.ok(start >= 0, `no topic block for ${id}`)
+  const next = markup.indexOf(`<div id="${HELP_ROUTE}/`, start + 1)
+  const close = markup.indexOf('</section>', start)
+  const ends = [next, close].filter((n) => n > start)
+  return markup.slice(start, ends.length > 0 ? Math.min(...ends) : undefined)
+}
+
+/**
+ * AH-25. THE ONE PAGE HEAD, AND HELP IS ITS ONE NAMED EXCEPTION. The Help page
+ * drew its title in `.ctl-page-head` while fourteen routes drew theirs through
+ * `Screen`'s `.head`. It renders `PageHead` now, the markup `Screen` renders:
+ * a title over one line. The owner's AH-25 decision amends §6.12 with exactly
+ * one exception -- Help reads nothing, so its line says what the page is and
+ * which topic is showing -- and says Help keeps its line.
+ *
+ * AH-15 had deleted the line that was there, and the reason still holds: it
+ * said "why a figure on these screens looks the way it does", which is true
+ * of about one topic in eight. So the line is the head-line shape (facts
+ * joined by `·`, no sentence), every fact is read from `help.ts` rather than
+ * typed, and the only topic it names is the one the link asked for.
+ *
+ * MUTATION: render `PageHead` bare again (the lane's first version), or put
+ * AH-15's sentence back.
+ */
+test('the Help page head says what the page is and which topic is showing (AH-25)', () => {
+  const groups = HELP_GROUPS.filter((g) => TOPIC_IDS.some((id) => HELP[id].group === g.id)).length
+  const line = (markup: string): string => /<p class="sub">([\s\S]*?)<\/p>/.exec(markup)?.[1] ?? ''
+  const bare = renderToStaticMarkup(createElement(HelpScreen, { topic: '' }))
+  const deep = renderToStaticMarkup(createElement(HelpScreen, { topic: 'absent-vs-zero' }))
+  const stale = renderToStaticMarkup(createElement(HelpScreen, { topic: 'a-topic-that-was-renamed' }))
+  for (const markup of [bare, deep, stale]) {
+    assert.match(markup, /<div class="head"><h1>Help<\/h1><\/div><p class="sub">/, 'the Help page does not draw the shared head with its line')
+    assert.ok(!markup.includes('ctl-page-head'), 'the Help page still draws a head of its own shape')
+    assert.ok(!/looks the way it does/.test(markup), 'AH-15’s line, true of about one topic in eight, is back')
+    // WHAT THE PAGE IS, from the registry: every topic, in its groups.
+    assert.ok(
+      line(markup).includes(`${TOPIC_IDS.length} topics in ${groups} groups`),
+      `the Help line does not say what the page holds: "${line(markup)}"`,
+    )
+    // A LINE, NOT A DESCRIPTION SENTENCE (§6.12): nothing ends in a full stop.
+    assert.ok(!/\.(\s|$)/.test(line(markup)), `the Help line is a sentence: "${line(markup)}"`)
   }
+  // WHICH TOPIC IS SHOWING -- only when the link named one this build has.
+  assert.ok(line(deep).includes(`showing ${HELP['absent-vs-zero'].title}`), `the Help line does not name the topic: "${line(deep)}"`)
+  assert.ok(!line(bare).includes('showing'), 'the Help line names a topic when none was asked for')
+  assert.ok(!line(stale).includes('showing'), 'the Help line names a topic this build does not carry')
 })
 
 /**
- * AH-10. The h1, the group h2 and the topic h3 all rendered at 18px/600, so the
- * page had one heading size for three ranks. A topic is a bordered card, and a
- * card's title is --t-lead.
+ * AH-18. A TOPIC IS A ROW OF ITS GROUP, NOT A BOX, AND IT IS STYLED BY THE
+ * SHEET. Every topic was an inline-styled bordered panel -- border, surface,
+ * radius, padding -- because "styles.css belongs to another track this pass".
+ * Under design-system §13.3 a topic is a row inside a region, and a row draws
+ * nothing. The treatment now lives in `.help-topic` in styles.css, where
+ * `src/__tests__/shell.test.tsx` asks the cascade what a browser would draw:
+ * no box, the h3 at `--t-lead` (AH-10), paragraphs and notes at `--measure`.
  *
- * MUTATION: set the h3 back to --t-title.
+ * What this file can see, with no stylesheet, is that the treatment is no
+ * longer written inline: every topic block carries the class and no style.
+ *
+ * MUTATION: put the inline `style` back on a topic, or on its h3.
  */
-test('a topic heading is a card title, one step under the page title', () => {
+test('every topic is a .help-topic row with no inline box (AH-18)', () => {
   const markup = renderToStaticMarkup(createElement(HelpScreen, { topic: '' }))
-  const h3 = /<h3 style="([^"]*)">/.exec(markup)
-  assert.ok(h3, 'no topic heading rendered')
-  assert.match(h3[1]!, /font-size:var\(--t-lead\)/)
-  assert.match(h3[1]!, /line-height:var\(--lh-lead\)/)
-  assert.ok(!h3[1]!.includes('--t-title'), 'the topic heading is still the page-title size')
+  for (const id of TOPIC_IDS) {
+    const tag = topicTag(markup, id)
+    assert.match(tag, /class="help-topic"/, `${id} is not a .help-topic row`)
+    assert.ok(!tag.includes('style='), `${id} still draws its own inline box`)
+  }
+  assert.ok(!/<h3 style=/.test(markup), 'a topic heading still carries an inline size')
+  assert.ok(!/<p style=/.test(topicBlock(markup, 'absent-vs-zero')), 'a topic paragraph still carries an inline style')
 })
 
 /**
- * AH-16. A deep-linked topic was marked by a 3px --text-dim rule and nothing
- * else: no surface step, and the dim rule is the weakest ink on the page. The
- * target is a surface step plus a 2px ink rule (§1.3's selected treatment),
- * and it lands with room above it for the group heading.
+ * AH-16, RE-POINTED BY AH-18. A deep-linked topic was marked by a 3px
+ * --text-dim rule and nothing else. It takes §1.3's selected treatment -- a
+ * surface step and a 2px ink rule -- and that treatment is now `.is-current` on
+ * the row, set from the `highlighted` prop. The values are asserted against the
+ * sheet in shell.test.tsx; here, that exactly the target carries the modifier.
  *
- * MUTATION: drop the surface step, or put the --text-dim rule back.
+ * MUTATION: mark every topic current, or none.
  */
-test('the deep-linked topic is marked by a surface step and an ink rule', () => {
+test('the deep-linked topic, and only it, is the current row', () => {
   const markup = renderToStaticMarkup(createElement(HelpScreen, { topic: 'absent-vs-zero' }))
-  const on = topicTag(markup, 'absent-vs-zero')
-  assert.match(on, /background:var\(--surface-2\)/, 'the target has no surface step')
-  assert.match(on, /border-left:2px solid var\(--text\)/, 'the target has no 2px ink rule')
-  assert.ok(!on.includes('--text-dim'), 'the target is still marked in the dim ink')
-  // A LARGER margin than the old --ctl-s5, so the group heading above the
-  // first topic of a group is not clipped when that topic is the target.
-  assert.ok(!/scroll-margin-top:var\(--ctl-s5\)"/.test(on), 'the scroll margin was not enlarged')
-  // And only the target: every other topic sits on the ordinary surface.
-  const off = topicTag(markup, 'read-failed')
-  assert.ok(!off.includes('--surface-2'), 'an untargeted topic carries the target treatment')
+  assert.match(topicTag(markup, 'absent-vs-zero'), /class="help-topic is-current"/, 'the target is not marked current')
+  assert.equal((markup.match(/is-current/g) ?? []).length, 1, 'more than one topic is marked current')
+  assert.ok(!topicTag(markup, 'read-failed').includes('is-current'), 'an untargeted topic carries the target treatment')
 })
 
 // ---------------------------------------------------------------------------
@@ -383,22 +427,278 @@ test('the states topic tells finished apart from waiting', () => {
 })
 
 /**
+ * AH-13. A `long` PARAGRAPH IS ONLY EVER READ ON THE HELP PAGE.
+ *
+ * `HelpSection.tsx` renders the title, the long form and the values; the card
+ * beside a figure renders `short` and nothing else. So a long paragraph that
+ * says "this screen", "shown above" or "the table below it" points at a screen
+ * the reader is not on -- on the Help page, "above" is the previous topic. The
+ * long form names the thing instead ("the Runtimes screen", "the count over
+ * the Accounts table"), and a history clause ("which is what this panel used
+ * to say") goes: Help states what the console does now.
+ *
+ * `short` is deliberately NOT walked: it renders beside its subject, where
+ * "here" and "this" are correct. Nor is every "here": one that means the
+ * console as a whole ("every read here") is true on the Help page too. The
+ * controls below pin that boundary from both sides, so the pattern cannot be
+ * widened into a ban on words that are right, or narrowed until it catches
+ * nothing.
+ *
+ * MUTATION: put "which is what this panel used to say" back into
+ * `signin-is-over`, or "shown above them" back into `workspace-memory`.
+ */
+const POINTS_AT_A_SCREEN =
+  /\bthis (screen|panel|page|form|field|table|card)\b|\bshown above\b|\babove (the table|them)\b|\bfigures? above\b|\bbelow it\b|\bused to (say|show)\b|\b(appears?|drawn|shown|rendered) here\b|\b(an absence|nothing) here\b/i
+
+test('no long paragraph points at a screen the Help page is not (AH-13)', () => {
+  // THE BOUNDARY, BOTH WAYS, before the walk relies on it.
+  for (const bad of [
+    'which is what this panel used to say',
+    'the memory ceiling shown above them',
+    'the count above the table',
+    'every figure above describes',
+    'it remounts the screen below it',
+    'Nothing here includes compute',
+    'Live load appears here only',
+    'an absence here would read',
+  ]) {
+    assert.ok(POINTS_AT_A_SCREEN.test(bad), `the pattern misses "${bad}"`)
+  }
+  for (const fine of [
+    'The states below are the ones that create demand',
+    'the pools listed below',
+    'no grace above the line',
+    'rather than written down here',
+    'every read here returns a value',
+    'an all-clear here is always phrased',
+  ]) {
+    assert.ok(!POINTS_AT_A_SCREEN.test(fine), `the pattern catches "${fine}", which is true on the Help page`)
+  }
+
+  let read = 0
+  const found: string[] = []
+  for (const id of TOPIC_IDS) {
+    HELP[id].long.forEach((para, i) => {
+      read++
+      const m = POINTS_AT_A_SCREEN.exec(para)
+      if (m) found.push(`${id} long[${i}]: "${m[0]}"`)
+    })
+  }
+  // A walk over nothing passes hardest. 243 paragraphs were measured when the
+  // box was decided, and topics are only ever added.
+  assert.ok(read >= 243, `only ${read} long paragraphs were read; the walk is not covering the registry`)
+  assert.deepEqual(found, [], `long paragraphs that point at a screen the Help page is not:\n${found.join('\n')}`)
+})
+
+/**
+ * AH-13 RULE (1), PAST THE PATTERN. The owner's pattern is the floor, not the
+ * whole rule: "wherever a paragraph assumes the reader is on the screen it
+ * describes, it names the thing instead". Review of #161 found four long forms
+ * the pattern does not reach -- a bare `here` in three and an unnamed "submit
+ * form" in the fourth -- each describing one screen from inside it. They name
+ * their screen by its rail label now, and point with no `here` at all.
+ *
+ * MUTATION: put "arrives here" back into `signin-201-no-name`, or "the submit
+ * form" back into `dispatch-carrier`.
+ */
+test('the topics that pointed with a bare "here" or an unnamed form name their screen (AH-13)', () => {
+  const named: Record<string, readonly string[]> = {
+    'dispatch-carrier': ['Submit a task', 'Submit a workflow'],
+    'signin-201-no-name': ['Accounts'],
+    'account-removal-is-reversible': ['Accounts'],
+    'lending-narrows-isolation': ['Accounts'],
+  }
+  for (const [id, screens] of Object.entries(named)) {
+    const t = topicFor(id)
+    assert.ok(t, `there is no ${id} topic`)
+    t.long.forEach((p, i) => {
+      assert.ok(!/\bhere\b/i.test(p), `${id} long[${i}] still points with "here": "${p}"`)
+      assert.ok(!/\bthe submit form\b/i.test(p), `${id} long[${i}] names no form: "${p}"`)
+    })
+    for (const screen of screens) {
+      assert.ok(t.long.join(' ').includes(screen), `${id} never names ${screen}, the screen it describes`)
+    }
+  }
+})
+
+/**
+ * AH-13 RULE (2). A TOPIC LINKED FROM MORE THAN ONE SCREEN IS WRITTEN TO FIT
+ * EVERY ONE OF THEM. `tenant-scope` is linked from three -- the Timeline's
+ * People note (Activity.tsx), the Pools footer (Capacity.tsx) and the Profile
+ * headroom footer (Profiles.tsx) -- and its long form talked about pools and
+ * an unnamed "the route" only, so a reader arriving from the People table
+ * found nothing about the table they came from.
+ *
+ * The screens are found by reading the sources, so a fourth screen that
+ * starts linking the topic fails here until the topic is written for it too.
+ *
+ * MUTATION: restore the pools-only long form.
+ */
+test('tenant-scope is written for every screen that links it (AH-13)', () => {
+  const rail: Record<string, string> = {
+    'Activity.tsx': 'Timeline',
+    'Capacity.tsx': 'Pools',
+    'Profiles.tsx': 'Profile headroom',
+  }
+  const linking = sourceFiles()
+    .filter(({ name, text }) => name !== 'help.ts' && /'tenant-scope'|"tenant-scope"|#help\/tenant-scope\b/.test(code(text)))
+    .map((f) => f.name)
+    .sort()
+  assert.deepEqual(
+    linking,
+    Object.keys(rail).sort(),
+    'the screens that link tenant-scope changed: write the topic for the new one and add it here',
+  )
+  const all = HELP['tenant-scope'].long.join(' ')
+  for (const [file, label] of Object.entries(rail)) {
+    assert.ok(all.includes(`the ${label} screen`), `tenant-scope is linked from ${label} (${file}) and never names it`)
+  }
+  // "The route", unnamed, is what a reader from the Timeline could not place.
+  assert.ok(!/\bthe route\b/.test(all), 'tenant-scope still says "the route" without naming it')
+})
+
+/**
+ * AH-14. FOUR THINGS A READER OF THESE SCREENS HAS TO KNOW HAD NO TOPIC.
+ *
+ * redesign-v2 §9.1 named two -- what a pool is, and why a paused pool is not a
+ * full one -- and the QA pass found two more: what each Tenants column means
+ * (including the Enforced ceiling AH-12 adds, and why there is no budget
+ * column, which AH-21 moves off the screen and into this topic), and what
+ * Platform counts returns.
+ *
+ * Read through `topicFor`, not `HELP[...]`, so this file compiles before the
+ * topics exist and fails on the missing topic rather than on the typecheck.
+ *
+ * MUTATION: delete any of the four, or drop the budget paragraph.
+ */
+test('Help carries the four topics the QA pass found missing (AH-14)', () => {
+  const four = ['paused-vs-full', 'what-a-pool-is', 'tenant-fields', 'platform-counts'] as const
+  for (const id of four) {
+    const t = topicFor(id)
+    assert.ok(t, `there is no ${id} topic`)
+    assert.ok(t.long.length >= 2, `${id} has no long form worth the name`)
+  }
+  const all = (id: string) => {
+    const t = topicFor(id)
+    return t === null ? '' : [t.short, ...t.long].join(' ')
+  }
+  // Paused is not full: the action differs, and raising the ceiling is the
+  // wrong one for a paused pool.
+  assert.match(all('paused-vs-full'), /resum/i, 'paused-vs-full never says a paused pool is resumed')
+  assert.match(all('paused-vs-full'), /ceiling/i, 'paused-vs-full never compares it with a full pool')
+  // A pool: a ceiling, a counter in units, and a reservation that is one
+  // transaction across every pool a task needs.
+  assert.match(all('what-a-pool-is'), /units/i)
+  assert.match(all('what-a-pool-is'), /transaction/i)
+  // Tenants' fields covers the Enforced ceiling and the budget that is not a column.
+  assert.match(all('tenant-fields'), /Enforced/, 'tenant-fields does not explain the Enforced column')
+  const fields = topicFor('tenant-fields')
+  assert.ok(
+    fields !== null && fields.long.some((p) => /budget/i.test(p) && /422/.test(p) && /attribution/i.test(p)),
+    'tenant-fields has no paragraph on the budget the limits route refuses',
+  )
+  // Platform counts: one count per state, per scope, and the admin's second scope.
+  assert.match(all('platform-counts'), /count\(\)/, 'platform-counts does not say what one run asks for')
+  assert.match(all('platform-counts'), /administrator/i, 'platform-counts does not say who gets the second scope')
+
+  // THE BUDGET PARAGRAPH CROSS-LINKS token-cost (AH-21), as a link on the
+  // Help page and not as a title quoted in prose.
+  const markup = renderToStaticMarkup(createElement(HelpScreen, { topic: '' }))
+  assert.ok(
+    topicBlock(markup, 'tenant-fields').includes(`href="#${helpAnchor('token-cost')}"`),
+    'tenant-fields does not link to token-cost',
+  )
+})
+
+/**
+ * REVIEW OF #161: tenant-fields MISSTATED AN ACCESS-CONTROL BOUNDARY.
+ *
+ * It said "the members of a disabled tenant are refused on every call, not
+ * slowed". Every task and workflow read, cancel, artifact, checkpoint, log,
+ * stats and capacity route resolves its tenant through `tenant_scope`, which
+ * calls `SubmissionService.scope_for` -- and that runs the collision check
+ * only, deliberately: "a disabled tenant still has to see and cancel what it
+ * already has running". `tenant_for` is the one that refuses a disabled
+ * tenant, and only the paths that create work, the account routes and the
+ * tenant credential routes call it. An admin who disabled a tenant on the
+ * strength of the old sentence would believe its members had lost read
+ * access they still hold.
+ *
+ * So this reads service.py rather than trusting a sentence: while the read
+ * path does not look at `enabled`, the topic may not claim every call is
+ * refused, and it has to say what is still allowed.
+ *
+ * MUTATION: restore "refused on every call".
+ */
+test('tenant-fields says what a disabled tenant can still do, as the API decides it', () => {
+  const service = readFileSync(resolve(SRC, '..', '..', 'swarm-api', 'swarm_api', 'service.py'), 'utf8')
+  const start = service.indexOf('def scope_for(')
+  assert.ok(start >= 0, 'service.py has no scope_for; this check is reading the wrong file')
+  const end = service.indexOf('\n    def ', start + 1)
+  const scopeFor = service.slice(start, end === -1 ? undefined : end)
+  // The body after the docstring: the docstring itself talks about `enabled`.
+  const body = scopeFor.split('"""')[2] ?? ''
+  assert.ok(body.includes('assert_tenant_scope'), 'scope_for no longer calls the collision check; re-read it')
+  const readsRefuseDisabled = /\benabled\b|tenant_for\(/.test(body)
+
+  const fields = HELP['tenant-fields'].long.join(' ')
+  if (!readsRefuseDisabled) {
+    assert.ok(!/every call/i.test(fields), 'tenant-fields says a disabled tenant is refused on every call; the read paths do not refuse it')
+    assert.match(fields, /disabled tenant cannot submit/i, 'tenant-fields does not say what disabling stops')
+    assert.match(fields, /still[^.]*\bcancel/i, 'tenant-fields does not say a disabled tenant can still cancel what it has')
+    assert.match(fields, /still[^.]*\bread/i, 'tenant-fields does not say a disabled tenant can still read what it has')
+  } else {
+    assert.ok(!/still[^.]*\b(read|cancel)/i.test(fields), 'tenant-fields promises reads the API now refuses')
+  }
+})
+
+/**
+ * REVIEW OF #161: THE ENFORCED COLUMN'S CLAIM WAS TRUE ON ONE PATH OF FOUR.
+ *
+ * "Setting either one through the admin routes moves the tenant's pool with
+ * it, so the pool's ceiling is this same figure" -- and it was only the admin
+ * routes (and a first sign-in, through `ensure_tenant`) that wrote the pool as
+ * min(max_active, capacity_units). `scripts/register-tenant.sh` wrote
+ * capacity_units (40 against a max_active of 20 at its defaults) and
+ * Terraform's bootstrap wrote max_active. Both now write the minimum, which
+ * `tests/terraform/infra_guards.tftest.hcl` and
+ * `tests/integration/test_register_tenant_grants.py` prove; the paragraph says
+ * which paths those are, so the claim is checkable rather than general.
+ *
+ * MUTATION: cut the paragraph back to "through the admin routes".
+ */
+test('tenant-fields names every path that writes the Enforced ceiling', () => {
+  const enforced = HELP['tenant-fields'].long.find((p) => p.startsWith('Enforced'))
+  assert.ok(enforced, 'tenant-fields has no paragraph on the Enforced column')
+  for (const [path, why] of [
+    [/admin routes/i, 'the admin routes'],
+    [/first sign-in/i, 'a first sign-in (ensure_tenant)'],
+    [/register-tenant\.sh/, 'scripts/register-tenant.sh'],
+    [/Terraform/, 'Terraform’s bootstrap'],
+  ] as const) {
+    assert.match(enforced, path, `the Enforced paragraph does not name ${why}, which also writes the tenant pool`)
+  }
+})
+
+/**
  * CH-3. The terms on the Help page were raw uppercase enums in a mono face:
  * LEASED, DISPATCHED -- shouting in a list whose job is to be read. They are
  * lowercased by CSS, so the strings stay the owner's spelling (and the
  * anti-drift test above still finds them) while the page stops shouting.
  *
- * MUTATION: drop the transform, or lowercase the strings instead of the style.
+ * RE-POINTED BY AH-18: the transform moved from an inline style on each `<dt>`
+ * to `.help-topic dt` in styles.css, and `src/__tests__/shell.test.tsx` asks
+ * the cascade for it. What is left here is the half no stylesheet can fake:
+ * the markup carries the owner's spelling, untouched.
+ *
+ * MUTATION: lowercase the strings instead of the style.
  */
-test('the Help page lowercases its enum terms with a style, not by rewriting them', () => {
+test('the Help page keeps its enum terms in the owner’s spelling', () => {
   const markup = renderToStaticMarkup(createElement(HelpScreen, { topic: '' }))
-  const dts = [...markup.matchAll(/<dt style="([^"]*)">([^<]*)<\/dt>/g)]
+  const dts = [...markup.matchAll(/<dt(?: [^>]*)?>([^<]*)<\/dt>/g)]
   assert.ok(dts.length > 0, 'the Help page renders no terms')
-  for (const [, style, term] of dts) {
-    assert.match(style!, /text-transform:lowercase/, `the term ${term} is not lowercased`)
-  }
   // The text itself is untouched: the states still arrive in their own case.
-  assert.ok(dts.some(([, , term]) => term === REAL_STATES.find((s) => CONCURRENCY_STATES.has(s))))
+  assert.ok(dts.some(([, term]) => term === REAL_STATES.find((s) => CONCURRENCY_STATES.has(s))))
 })
 
 /**

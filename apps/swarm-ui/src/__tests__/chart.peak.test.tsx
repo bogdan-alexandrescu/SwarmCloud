@@ -94,7 +94,11 @@ describe('Peak RSS reached by T+n', () => {
         expect(flat || upright, `a diagonal from ${p.x},${p.y} to ${q.x},${q.y}`).toBe(true)
       }
     }
-    expect(container.querySelectorAll('[data-testid="absent-band"]')).toHaveLength(1)
+    // ONE DRAWING'S BANDS. Each width is drawn separately (AG-20), so the
+    // absence is a band in the wide drawing and a band in the narrow one;
+    // the claim is one band per drawing, read off the wide one.
+    expect(container.querySelectorAll('svg.is-wide [data-testid="absent-band"]')).toHaveLength(1)
+    expect(container.querySelectorAll('svg.is-narrow [data-testid="absent-band"]')).toHaveLength(1)
   })
 
   it('draws the end-of-attempt figure as its own mark, not joined to the line', () => {

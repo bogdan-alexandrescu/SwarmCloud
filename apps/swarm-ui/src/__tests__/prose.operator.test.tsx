@@ -179,7 +179,15 @@ const BUDGET = {
   // fit a sentence back in.
   'Pool limits': 40,
   'Platform counts': 32,
-  'Provider quota': 52,
+  // RAISED 52 -> 76, 2026-09-25, BY THE OWNER'S CP-8 / CP-9 / CP-10 DECISIONS
+  // (#85), measured at 61 on CI after them. What the words are: a `Feeds pool`
+  // column naming the pool each cap feeds, column names that carry their basis
+  // and window (`Quota cap`, `429s (this run)`), the stale mark with its age on
+  // every row older than twice the broker's interval -- all three fixture rows
+  // are -- and `quota-row-fields` in the footer index. Each is a fact on the
+  // row or a name on a column, not a sentence; the ceiling keeps the quarter
+  // margin the others have.
+  'Provider quota': 76,
   'Data sources': 10,
 } as const
 

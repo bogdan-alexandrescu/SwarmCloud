@@ -19,6 +19,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 
 import type { Result } from '../fetch'
+import { HELP } from '../help'
 import type { Capacity, Pool, QuotaState, RunnerProfile } from '../types'
 
 const api = vi.hoisted(() => ({
@@ -148,6 +149,45 @@ describe('Pool limits labels its units on both figures (CP-24)', () => {
     expect(heads).toContain('Ceiling (units)')
     for (const td of document.querySelectorAll('td[data-label^="In use"], td[data-label^="Ceiling"]')) {
       expect(td.getAttribute('data-label')).toContain('(units)')
+    }
+  })
+})
+
+/**
+ * AH-22. THE FIGURE CAP, ENFORCED RATHER THAN WRITTEN DOWN.
+ *
+ * design-system §2: one `--t-figure` per card. Pool limits draws one per
+ * profile card -- five on the live screen -- and that is the peer-grid case §2
+ * now names: every card states the same measure in the same unit (agents), and
+ * they are compared card to card, not read as a KPI wall. What the cap forbids
+ * is a SECOND figure inside one card, which is what makes a card a wall. This
+ * is a guard on shipped behaviour, so it cannot be pushed red first: the
+ * screen already keeps it, and nothing held it there.
+ *
+ * MUTATION: draw the binding pool's own figure as a second `.ctl-figure`.
+ */
+describe('Pool limits keeps one figure per card (AH-22)', () => {
+  it('draws exactly one .ctl-figure in every profile card, the tied and the untied', async () => {
+    api.loadCapacity.mockResolvedValue(
+      ok(
+        capacity({
+          runner_profiles: {
+            'claude-code': profile(['global', 'tenant:eng', 'resource:standard']),
+            browser: profile(['resource:standard'], 2),
+            // A profile whose pools are not in the response: its figure is the
+            // absent em dash, and it is still the card's one figure.
+            ghost: profile(['runner:ghost']),
+          },
+        }),
+      ),
+    )
+    render(<AdminSettingsScreen />)
+    await limitCard('claude-code')
+    const cards = [...document.querySelectorAll('.ctl-card')]
+    expect(cards.length, 'fewer profile cards than profiles').toBeGreaterThanOrEqual(3)
+    for (const card of cards) {
+      const title = card.querySelector('.ctl-card-title')?.textContent ?? '?'
+      expect(card.querySelectorAll('.ctl-figure').length, `${title} draws more than one figure`).toBeLessThanOrEqual(1)
     }
   })
 })
@@ -285,5 +325,135 @@ describe('Provider quota counts in English (CP-22)', () => {
     const note = document.querySelector('.ctl-toolbar > .ctl-card-note')
     expect(note, 'the tenant count is not a card note').not.toBeNull()
     expect(note!.textContent).toBe('1 tenant')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Provider quota: the owner's decisions on #85, 2026-09-25 (CP-8, CP-9,
+// CP-10). Each block was pushed before the change it pins.
+// ---------------------------------------------------------------------------
+
+/** A reported instant `minutes` before now. */
+function minutesAgo(minutes: number): string {
+  return new Date(Date.now() - minutes * 60_000).toISOString()
+}
+
+/** The column names of the first quota table, as a reader reads them. */
+function quotaHeads(): string[] {
+  return [...document.querySelectorAll('table thead th')].map((th) => (th.textContent ?? '').trim())
+}
+
+async function renderQuota(rows: QuotaState[]): Promise<HTMLElement> {
+  api.loadAdminQuota.mockResolvedValue(ok({ quota: rows }))
+  render(<QuotaDetailScreen />)
+  const [th] = await screen.findAllByRole('rowheader', { name: rows[0]!.tenant_id }, WAIT)
+  return th!.closest('tr') as HTMLElement
+}
+
+describe('Provider quota says what its cap is and which pool it feeds (CP-8)', () => {
+  it('calls the cap a quota cap, in the header and in the stacked key', async () => {
+    const row = await renderQuota([quota({ state: 'AVAILABLE', updated_at: minutesAgo(1) })])
+    expect(quotaHeads()).toContain('Quota cap')
+    expect(quotaHeads()).not.toContain('Limit')
+    // The value is unchanged: the document's effective_limit.
+    expect(row.querySelector('td[data-label="Quota cap"]')?.textContent).toBe('50')
+    expect(row.querySelector('td[data-label="Limit"]')).toBeNull()
+  })
+
+  it('names the pool the cap feeds, right after it, as a link to Pools', async () => {
+    const row = await renderQuota([quota({ state: 'AVAILABLE', updated_at: minutesAgo(1) })])
+    const heads = quotaHeads()
+    expect(heads.indexOf('Feeds pool'), heads.join(' | ')).toBe(heads.indexOf('Quota cap') + 1)
+    const link = row.querySelector('td[data-label="Feeds pool"] a')
+    expect(link, 'the pool is not a link').not.toBeNull()
+    expect(link!.getAttribute('href')).toBe('#capacity/pools')
+    expect(link!.textContent).toBe('provider:anthropic:tenant:eng')
+    // The full name survives an ellipsis below 900px (CH-13).
+    expect(link!.getAttribute('title')).toBe('provider:anthropic:tenant:eng')
+    expect(link!.className).toContain('ctl-link')
+  })
+})
+
+describe('Provider quota says which run its 429 count is of (CP-10)', () => {
+  it('names the window in the header and in the stacked key', async () => {
+    const row = await renderQuota([
+      quota({ state: 'AVAILABLE', updated_at: minutesAgo(1), rate_limit_count: 0, last_429_at: minutesAgo(25 * 60) }),
+    ])
+    expect(quotaHeads()).toContain('429s (this run)')
+    expect(quotaHeads()).not.toContain('429s')
+    const count = row.querySelector('td[data-label="429s (this run)"]')
+    expect(count?.textContent).toBe('0')
+    // The time of the last 429 stays, beside a count that has been reset.
+    expect(row.querySelector('td[data-label="Last 429"]')?.textContent).toContain('ago')
+  })
+
+  it('puts no help glyph inside the quota tables, and indexes the row fields in the footer', async () => {
+    await renderQuota([
+      quota({ state: 'AVAILABLE', updated_at: minutesAgo(1) }),
+      quota({ provider: 'openai', state: 'AVAILABLE', updated_at: minutesAgo(1) }),
+    ])
+    const tables = [...document.querySelectorAll('table')]
+    expect(tables.length).toBe(2)
+    for (const t of tables) {
+      expect(t.querySelector('button[aria-expanded]'), 'a ? sits inside a quota table').toBeNull()
+    }
+    expect(document.querySelector('a[href="#help/quota-row-fields"]'), 'the footer does not index the row fields').not.toBeNull()
+  })
+})
+
+describe('Provider quota never draws an old reading as a current verdict (CP-9)', () => {
+  /** The State cell of the only row. */
+  function state(row: HTMLElement): HTMLElement {
+    const cell = row.querySelector('td[data-label="State"]')
+    expect(cell, 'the row has no State cell').not.toBeNull()
+    return cell as HTMLElement
+  }
+
+  it('draws a reading five days old with the stale mark and its age, not the ok chip', async () => {
+    const cell = state(await renderQuota([quota({ state: 'AVAILABLE', updated_at: minutesAgo(5 * 24 * 60) })]))
+    expect(cell.querySelector('.ctl-chip.is-ok'), 'a five-day-old reading is drawn as a current verdict').toBeNull()
+    expect(cell.querySelector('.ctl-stale-mark')?.textContent).toContain('5d')
+    // The word it last reported is still on the row, marked, not hidden.
+    expect((cell.textContent ?? '').toLowerCase()).toContain('available')
+  })
+
+  it('draws a reading well inside twice the broker’s interval as current', async () => {
+    const cell = state(await renderQuota([quota({ state: 'AVAILABLE', updated_at: minutesAgo(4) })]))
+    expect(cell.querySelector('.ctl-chip.is-ok')).not.toBeNull()
+    expect(cell.querySelector('.ctl-stale-mark')).toBeNull()
+  })
+
+  it('draws a reading past twice the broker’s five-minute interval as stale', async () => {
+    const cell = state(await renderQuota([quota({ state: 'AVAILABLE', updated_at: minutesAgo(11) })]))
+    expect(cell.querySelector('.ctl-chip.is-ok')).toBeNull()
+    expect(cell.querySelector('.ctl-stale-mark')?.textContent).toContain('11m')
+  })
+
+  it('keeps a verdict that is not ok on a stale reading, and marks its age', async () => {
+    const cell = state(await renderQuota([quota({ state: 'THROTTLED', updated_at: minutesAgo(60) })]))
+    expect(cell.querySelector('.ctl-chip.is-warn')).not.toBeNull()
+    expect(cell.querySelector('.ctl-stale-mark')?.textContent).toContain('1h')
+  })
+
+  /**
+   * #159 REVIEW: THE FIVE MINUTES ARE THE BROKER'S SWEEP, AND NOTHING REPORTS
+   * ON THEM. The constant is the `quota-refresh` Cloud Scheduler cron, which
+   * runs `QuotaService.sweep` -- and the sweep rewrites a document only when
+   * its state or its derived cap changes. `updated_at` moves when a WORKER
+   * reports: at the end of a clean run, or on a 429. The screen told its
+   * reader the threshold was twice "the broker's reporting interval", a report
+   * that does not exist. The words have to name the tick they are twice of.
+   */
+  it('names the tick its threshold is twice of as the broker’s sweep, not a reporting interval', async () => {
+    const cell = state(await renderQuota([quota({ state: 'AVAILABLE', updated_at: minutesAgo(11) })]))
+    const title = cell.querySelector('.ctl-stale-mark')?.getAttribute('title') ?? ''
+    expect(title, 'the stale mark has no title').not.toBe('')
+    expect(title).not.toMatch(/reporting interval/i)
+    expect(title).toMatch(/sweep/i)
+
+    const topic = HELP['provider-quota-states']
+    const said = [topic.short, ...topic.long, ...(topic.values?.() ?? []).map((v) => `${v.term} ${v.note ?? ''}`)].join(' ')
+    expect(said).not.toMatch(/reporting interval/i)
+    expect(said).toMatch(/sweep/i)
   })
 })

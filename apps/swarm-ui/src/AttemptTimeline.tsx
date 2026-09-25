@@ -74,7 +74,9 @@ export function AttemptTimelineScreen({ taskId }: { taskId: string }) {
         (t.events === null ? 'events unread' : `${t.events.length} ev`)
       }
       empty={{
-        heading: 'No attempt · real zero',
+        // ONE `real zero`, THE PRIMITIVE'S. `No attempt · real zero` said it a
+        // second time beside the mark `Absent` draws in the heading (#145).
+        heading: 'No attempt',
         // ONE SENTENCE. Which states have no attempt document, and why, is
         // `#help/attempt-documents` -- a topic that already exists and says it
         // better than a two-clause sentence with a parenthetical in it.
@@ -148,10 +150,16 @@ function grouped(t: AttemptTimeline): Group[] {
  *    events..."                                    -> a `not read` mark
  *   "Zero events came back, yet a task is written with its submitted event in
  *    the same batch..."                            -> a `not read` mark
- *   "The events endpoint orders oldest-first, caps the page server-side and
- *    returns no page token..."                     -> #help/partial-read
+ *   "The events endpoint orders oldest-first and caps the page server-side,
+ *    so past one page..."                          -> #help/event-paging
  *   "Every figure on these cards is that attempt's own: the task's
  *    result_summary is written once..."            -> #help/attempt-documents
+ *
+ * (The third paragraph also said the endpoint could not page at all, which
+ * went false with #19: the route returns `next_page_token` and takes
+ * `order=desc`. What is true is that THIS screen reads one page,
+ * oldest-first, and does not follow the page token -- which is what
+ * `event-paging` says, and the topic the toolbar's `?` opens since AG-19.)
  *
  * The first two are facts about THIS read and keep a visible encoding; the
  * last two are invariants of the route and the platform, true of every task
@@ -166,7 +174,14 @@ function Body({ t }: { t: AttemptTimeline }) {
   return (
     <>
       <div className="ctl-toolbar">
-        <span className="ctl-eyebrow">attempts</span>
+        {/* AH-24: AFTER THE LABEL, NEVER AFTER A VALUE. The toolbar's `?` sat at
+            its far end, after the event counts -- `12 ev · first page · 1
+            blind ?` -- and read as a footnote on the last figure. It follows
+            the toolbar's label now. Why it is here is the note at the end. */}
+        <span className="ctl-eyebrow">
+          attempts
+          <HelpCard topic="event-paging" />
+        </span>
         <span className="count-chip">{t.attempts.length}</span>
         {t.events === null ? (
           <span className="is-end ctl-card-note">
@@ -230,13 +245,12 @@ function Body({ t }: { t: AttemptTimeline }) {
             the page token the route returns (#19), so "this is everything" is
             a claim it is never entitled to make and a reader has no way to
             derive that from the counts in front of them.
-            `prose.runs.test.tsx` pins it to this toolbar.
+            `prose.runs.test.tsx` pins it to this toolbar's label (AH-24).
 
             IT OPENS `event-paging` (AG-19). It opened `partial-read`, whose
             card is "One message belongs to one failure" -- a topic about
             something else, beside a toolbar about paging. `event-paging` is
             built from this toolbar's own `say` strings. */}
-        <HelpCard topic="event-paging" />
       </div>
       {groups.map((g) => (
         <AttemptCard key={g.key} g={g} eventsRead={t.events !== null} />
