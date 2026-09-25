@@ -27,6 +27,11 @@ on:
       # touching only alerts.tf never ran that pin. (Other unit tests read other
       # terraform files and are not triggered by them either; not widened here.)
       - "terraform/modules/monitoring/alerts.tf"
+      # tests/unit/mcp reads the plugin and the marketplace manifest -- its
+      # skills, its server declaration, the version its bridge is pinned to.
+      # Without these, a PR that changed only plugin.json ran none of that.
+      - "plugin/**"
+      - ".claude-plugin/**"
       - "pyproject.toml"
       - "uv.lock"
       - "Makefile"
@@ -297,6 +302,20 @@ jobs:
         # concurrency invariant can be tested exhaustively and fast.
         # -n auto, for the reason the integration step below gives at length.
         run: uv run pytest tests/unit -q -n auto
+
+      - name: the plugin's bridge installs from git, the way the plugin fetches it
+        # A marketplace install copies ONLY plugin/, so the bridge reaches a
+        # user one way: plugin.json's `uv tool run --from 'swarm-mcp @
+        # git+https://github.com/...#subdirectory=apps/swarm-mcp'`, with
+        # swarm-common arriving because uv rewrites swarm-mcp's relative path
+        # source into the same commit. The unit run above holds the
+        # declaration's shape offline and skips this; here the same file
+        # installs it -- at THIS commit, since the release tag it pins does not
+        # exist until the merge is tagged -- from a cold uv cache, outside the
+        # checkout, and talks MCP to it. Network: github.com and pypi.org.
+        env:
+          SWARM_BRIDGE_INSTALL_REF: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: uv run pytest tests/unit/mcp/test_plugin_bridge_install.py -q -s
 
       - name: destroy-guard self-test
         # The guard is the only thing between `make destroy` and another team's
