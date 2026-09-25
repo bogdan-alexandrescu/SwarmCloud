@@ -32,12 +32,16 @@ Everything else is production code: the configuration, the preflight,
     dns-nxdomain              every lookup of a name fails at once
     dns-flaky-once            each name's FIRST lookup fails (EAI_AGAIN), and
                               every later one answers: one transient failure
+    dns-down-15s              every lookup fails AT ONCE (EAI_AGAIN) until 15 s
+                              after the first one, then every lookup answers: a
+                              kube-dns or NodeLocal DNSCache pod restarting, or
+                              an upstream resolver answering SERVFAIL for a while
 
 In the dns-drops and dns-nxdomain scenarios, Firestore is ALSO the stuck kind.
 So a worker that skips the preflight hangs exactly where the incident's worker
 hung. It does not fail some other way that a test could mistake for the
-preflight working. dns-flaky-once has a healthy Firestore, because the worker
-it describes is expected to start and run.
+preflight working. dns-flaky-once and dns-down-15s have a healthy Firestore,
+because the worker each describes is expected to start and run.
 
 HARNESS_TERMINATION_LOG, when set, names the file the worker is to treat as its
 Kubernetes termination-message file (`startup.TERMINATION_MESSAGE_PATH`). The
@@ -76,7 +80,15 @@ SCENARIOS = (
     "dns-drops",
     "dns-nxdomain",
     "dns-flaky-once",
+    "dns-down-15s",
 )
+
+#: How long the resolver is down in the dns-down-15s scenario, counted on this
+#: process's own clock from its first lookup of a name. Fifteen seconds is the
+#: review's example of an outage the retries must ride out (PR #59): longer
+#: than a first retry a few seconds in, shorter than the 30 s the owner asked
+#: the retries to span.
+DNS_OUTAGE_SECONDS = 15.0
 
 #: What the mock runner is asked to do: one step, at once.
 QUICK_RUN = {"prompt": "startup harness", "steps": 1, "sleep_seconds": 0.05}
@@ -163,6 +175,30 @@ def _lookups_fail_once(host: Any, *args: Any, **kwargs: Any) -> Any:
     return list(_ANSWER)
 
 
+_outage_began: list[float] = []
+
+
+def _lookups_fail_for_a_while(host: Any, *args: Any, **kwargs: Any) -> Any:
+    """Every lookup fails at once until `DNS_OUTAGE_SECONDS` after the first, then answers.
+
+    At once, because that is how a resolver that is there but not serving
+    fails: SERVFAIL, or a refused port while its pod restarts, both reported
+    by glibc as EAI_AGAIN with no wait. A retry that only counts attempts
+    spends them in the few seconds its backoffs add up to, whatever the
+    outage does afterwards.
+    """
+    if _is_address(host):
+        return _real_getaddrinfo(host, *args, **kwargs)
+    now = time.monotonic()
+    with _asked_lock:
+        if not _outage_began:
+            _outage_began.append(now)
+        began = _outage_began[0]
+    if now - began < DNS_OUTAGE_SECONDS:
+        raise socket.gaierror(socket.EAI_AGAIN, "Temporary failure in name resolution")
+    return list(_ANSWER)
+
+
 def _client_for(db: FakeFirestore):
     def _client(_settings: Any) -> FakeFirestore:
         # What google-auth does inside `firestore.Client()` when the metadata
@@ -184,7 +220,7 @@ def main(scenario: str) -> int:
     if scenario not in SCENARIOS:
         print(f"unknown scenario {scenario!r}; one of {', '.join(SCENARIOS)}", file=sys.stderr)
         return 2
-    healthy = scenario in ("runs", "runs-long", "dns-flaky-once")
+    healthy = scenario in ("runs", "runs-long", "dns-flaky-once", "dns-down-15s")
     db: FakeFirestore = FakeFirestore() if healthy else StuckFirestore()
     seed_attempt(db, task_input=dict(LONG_RUN if scenario == "runs-long" else QUICK_RUN))
     control_mod.FirestoreTransactionRunner = FakeTransactionRunner  # type: ignore[misc]
@@ -201,6 +237,8 @@ def main(scenario: str) -> int:
         socket.getaddrinfo = _lookups_fail  # type: ignore[assignment]
     elif scenario == "dns-flaky-once":
         socket.getaddrinfo = _lookups_fail_once  # type: ignore[assignment]
+    elif scenario == "dns-down-15s":
+        socket.getaddrinfo = _lookups_fail_for_a_while  # type: ignore[assignment]
     return entrypoint.main()
 
 

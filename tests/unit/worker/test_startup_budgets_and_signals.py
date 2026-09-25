@@ -299,6 +299,7 @@ def test_the_lifecycle_announces_each_phase_once_and_in_order(db, worker_factory
 
 def _unreachable(kind: str) -> BaseException:
     from google.api_core import exceptions as core
+    from google.auth import exceptions as auth
 
     if kind == "retry-budget-spent":
         return core.RetryError(
@@ -307,15 +308,56 @@ def _unreachable(kind: str) -> BaseException:
         )
     if kind == "unavailable":
         return core.ServiceUnavailable("failed to connect to all addresses")
+    if kind == "grpc-unknown":
+        # What Firestore's client raises when a batch_get_documents stream is
+        # reset under it. The startup Retry does not retry it.
+        return core.Unknown("Stream removed")
+    if kind == "data-loss":
+        return core.DataLoss("stream reset mid-message")
+    if kind == "unimplemented":
+        return core.MethodNotImplemented("the backend behind the load balancer is rolling")
+    if kind == "cancelled":
+        return core.Cancelled("the RPC was cancelled")
+    if kind == "an-api-error-of-no-named-kind":
+        return core.AlreadyExists("an answer no generation check expects")
+    if kind == "refresh-over-a-reset-connection":
+        # google-auth's compute-engine credentials raise RefreshError FROM the
+        # TransportError when the metadata server cannot be reached.
+        error = auth.RefreshError("could not refresh the access token", retryable=False)
+        error.__cause__ = auth.TransportError("metadata server connection reset")
+        return error
+    if kind == "refresh-refused":
+        return auth.RefreshError("the metadata server refused the token: 403", retryable=False)
+    if kind == "unauthenticated":
+        return core.Unauthenticated("Request had invalid authentication credentials.")
+    if kind == "not-found":
+        return core.NotFound("The database swarm does not exist for project swarm-test")
+    if kind == "failed-precondition":
+        return core.FailedPrecondition("The Cloud Firestore API is not enabled")
     return core.PermissionDenied("Missing or insufficient permissions.")
 
 
+#: Which exit each error at the generation check earns. 78 fails the TASK with
+#: no retry, so it is for an answer the next attempt would get too: the
+#: service was reached and refused. Anything else, including a kind this list
+#: does not name, is 69 and retried: a wrong 69 costs one bounded retry, a
+#: wrong 78 ends the task (review of PR #59, which found gRPC UNKNOWN at 78).
 @pytest.mark.parametrize(
     ("kind", "expected_exit"),
     [
         ("retry-budget-spent", UNAVAILABLE),
         ("unavailable", UNAVAILABLE),
+        ("grpc-unknown", UNAVAILABLE),
+        ("data-loss", UNAVAILABLE),
+        ("unimplemented", UNAVAILABLE),
+        ("cancelled", UNAVAILABLE),
+        ("an-api-error-of-no-named-kind", UNAVAILABLE),
+        ("refresh-over-a-reset-connection", UNAVAILABLE),
         ("permission-denied", CANNOT_START),
+        ("unauthenticated", CANNOT_START),
+        ("not-found", CANNOT_START),
+        ("failed-precondition", CANNOT_START),
+        ("refresh-refused", CANNOT_START),
     ],
 )
 def test_a_control_plane_it_cannot_read_ends_startup_and_writes_nothing(
@@ -364,7 +406,7 @@ def test_a_control_plane_it_cannot_read_ends_startup_and_writes_nothing(
         record = json.loads(written)
         assert record["exit_code"] == CANNOT_START, record
         assert record["phase"] == "validate_generation", record
-        assert "PermissionDenied" in record["cause"], record
+        assert type(error).__name__ in record["cause"], record
     else:
         assert written == "", "a retryable exit wrote a cannot-start cause"
 
@@ -537,6 +579,32 @@ def test_lookups_that_never_answer_share_one_deadline():
 # -- the retries (owner, 2026-09-25) -----------------------------------------
 
 
+class _Clock:
+    """A monotonic clock that moves only when told to: by a sleep, or by a lookup's cost.
+
+    The preflight takes `clock` and `sleep` as arguments, so the whole retry
+    schedule runs in microseconds and its timing is exact. Timing it for real
+    is `test_startup_is_loud.py`'s job, against the real process.
+    """
+
+    def __init__(self) -> None:
+        self.now = 1000.0
+        self.slept: list[float] = []
+        self._lock = threading.Lock()
+
+    def __call__(self) -> float:
+        with self._lock:
+            return self.now
+
+    def advance(self, seconds: float) -> None:
+        with self._lock:
+            self.now += float(seconds)
+
+    def sleep(self, seconds: float) -> None:
+        self.slept.append(float(seconds))
+        self.advance(seconds)
+
+
 class _Resolver:
     """Fails each name a set number of times, then answers. Counts every ask."""
 
@@ -558,27 +626,60 @@ class _Resolver:
         return _answers(host)
 
 
+class _Outage:
+    """A resolver that fails every lookup until `lasts` seconds after the first, then answers.
+
+    `cost` is what each failed lookup spends, on the fake clock, before it
+    fails: 0 for a resolver that fails at once (SERVFAIL, a refused port,
+    NXDOMAIN: EAI_AGAIN or EAI_NONAME with no wait), the whole per-attempt
+    budget for one that drops packets. ONE host per preflight, so that two
+    lookups in flight do not both move the clock.
+    """
+
+    def __init__(self, clock: _Clock, *, cost: float, lasts: float = float("inf")) -> None:
+        self.clock = clock
+        self.cost = cost
+        self.lasts = lasts
+        self.asked_at: list[float] = []
+
+    def __call__(self, host: str) -> Any:
+        import socket
+
+        now = self.clock()
+        self.asked_at.append(now)
+        if now - self.asked_at[0] >= self.lasts:
+            return _answers(host)
+        self.clock.advance(self.cost)
+        raise socket.gaierror(socket.EAI_AGAIN, "Temporary failure in name resolution")
+
+
+#: How a failed lookup can spend its attempt: at once, after a while, or all of
+#: the 10 s per-attempt budget (the incident's dropped packets).
+_FAILURE_COSTS = pytest.mark.parametrize(
+    "cost", [0.0, 3.0, 10.0], ids=["fails-at-once", "fails-after-3s", "never-answers"]
+)
+
+
 def test_one_failed_lookup_is_retried_after_a_backoff_and_the_preflight_passes():
     from agent_worker.startup import dns_preflight_with_retries
 
+    clock = _Clock()
     resolver = _Resolver({"firestore.example": 1})
-    slept: list[float] = []
     failed: list[tuple[int, list[str], float]] = []
 
     outcome = dns_preflight_with_retries(
         ["metadata.example", "firestore.example"],
-        attempts=3,
-        budget_seconds=2,
-        backoff=(2.0, 5.0),
         resolve=resolver,
-        sleep=slept.append,
+        sleep=clock.sleep,
+        clock=clock,
         on_failed_attempt=lambda n, bad, wait: failed.append((n, [r["host"] for r in bad], wait)),
     )
 
     assert outcome.ok, outcome
     assert outcome.attempts == 2
-    assert slept == [2.0]
-    assert failed == [(1, ["firestore.example"], 2.0)]
+    # One backoff, announced before it was slept, and slept in full.
+    assert len(clock.slept) == 1 and clock.slept[0] > 0, clock.slept
+    assert failed == [(1, ["firestore.example"], clock.slept[0])], failed
     # A name that answered is not asked again.
     assert resolver.asked.count("metadata.example") == 1
     assert resolver.asked.count("firestore.example") == 2
@@ -586,55 +687,102 @@ def test_one_failed_lookup_is_retried_after_a_backoff_and_the_preflight_passes()
 
 
 def test_a_resolver_that_keeps_failing_gets_every_attempt_and_every_backoff_then_is_reported():
-    from agent_worker.startup import dns_preflight_with_retries
+    from agent_worker import startup
 
+    clock = _Clock()
     resolver = _Resolver({"firestore.example": 99})
-    slept: list[float] = []
     failed: list[int] = []
 
-    outcome = dns_preflight_with_retries(
+    outcome = startup.dns_preflight_with_retries(
         ["firestore.example"],
-        attempts=3,
-        budget_seconds=2,
-        backoff=(2.0, 5.0),
         resolve=resolver,
-        sleep=slept.append,
+        sleep=clock.sleep,
+        clock=clock,
         on_failed_attempt=lambda n, _bad, _wait: failed.append(n),
     )
 
     assert not outcome.ok
-    assert outcome.attempts == 3
-    assert resolver.asked == ["firestore.example"] * 3
-    # No sleep after the last attempt: the answer is final, and waiting would
-    # only hold the slot longer.
-    assert slept == [2.0, 5.0]
+    attempts = startup.DNS_PREFLIGHT_ATTEMPTS
+    assert outcome.attempts == attempts
+    assert resolver.asked == ["firestore.example"] * attempts
+    # A backoff before every retry, and none after the last attempt: the
+    # answer is final, and waiting would only hold the slot longer.
+    assert len(clock.slept) == attempts - 1 and all(w > 0 for w in clock.slept), clock.slept
     # The last failure is the caller's error line, not a retry warning.
-    assert failed == [1, 2]
+    assert failed == list(range(1, attempts))
     [result] = outcome.unreachable
     assert result["host"] == "firestore.example" and "gaierror" in result["error"]
 
 
-def test_the_retry_window_is_inside_what_was_asked_and_inside_the_dispatch_deadline():
-    """3-4 attempts over about 30-45 s (owner, 2026-09-25), and well before the reconciler's clock.
+@_FAILURE_COSTS
+def test_the_retries_span_thirty_to_forty_five_seconds_however_the_lookups_fail(cost):
+    """3-4 attempts over about 30-45 s (owner, 2026-09-25), measured, not recomputed.
 
-    A worker that has not heartbeated is judged by its lease's dispatch
-    deadline alone, 300 s after admission (`reconciler.detect.detect_stale_leases`).
-    The worker's own "cannot start" has to arrive long before that, or the
-    reconciler reclaims the lease as silent and the cause is lost again.
+    SPAN is the property: the last lookup is asked no sooner than 30 s after
+    the first, so an outage shorter than that is still being asked about when
+    it ends. The first version counted attempts and slept 2 s then 5 s
+    between them. Lookups that hang spent 10 s each and spanned 27 s; lookups
+    that fail at once spent nothing and spanned 7 s (review of PR #59).
+
+    And the verdict comes by 45 s, far inside the lease's dispatch deadline.
+    A worker that has not heartbeated is judged by that deadline alone, 300 s
+    after admission (`reconciler.detect.detect_stale_leases`). The worker's
+    own "cannot start" has to arrive long before it, or the reconciler
+    reclaims the lease as silent and the cause is lost again.
     """
     from agent_worker import startup
     from swarm_common.config import Settings
 
-    assert 3 <= startup.DNS_PREFLIGHT_ATTEMPTS <= 4
-    assert len(startup.DNS_PREFLIGHT_BACKOFF_SECONDS) >= startup.DNS_PREFLIGHT_ATTEMPTS - 1
-    window = (
-        startup.DNS_PREFLIGHT_ATTEMPTS * startup.DNS_PREFLIGHT_BUDGET_SECONDS
-        + sum(startup.DNS_PREFLIGHT_BACKOFF_SECONDS[: startup.DNS_PREFLIGHT_ATTEMPTS - 1])
+    clock = _Clock()
+    resolver = _Outage(clock, cost=cost)
+
+    outcome = startup.dns_preflight_with_retries(
+        ["firestore.example"], resolve=resolver, sleep=clock.sleep, clock=clock
     )
-    assert startup.DNS_PREFLIGHT_WINDOW_SECONDS == window
-    assert 30 <= window <= 45, window
+
+    assert not outcome.ok
+    assert 3 <= outcome.attempts <= 4, outcome.attempts
+    asked = resolver.asked_at
+    assert len(asked) == outcome.attempts, asked
+    offsets = [round(a - asked[0], 3) for a in asked]
+    assert offsets[-1] >= 30.0, (
+        f"the last lookup was asked {offsets[-1]:g}s after the first (asked at {offsets}); "
+        "a resolver outage longer than that fails the task"
+    )
+    assert 30.0 <= outcome.seconds <= 45.0, (outcome.seconds, offsets)
+    # The window the worker reports on its error line is the worst case it
+    # can take, so what it took must not exceed it.
+    assert outcome.seconds <= startup.DNS_PREFLIGHT_WINDOW_SECONDS, (
+        outcome.seconds, startup.DNS_PREFLIGHT_WINDOW_SECONDS
+    )
+    # Every retry waited first, even after a lookup that used its whole budget.
+    for before, after in zip(asked, asked[1:]):
+        assert after - (before + cost) > 0, offsets
     dispatch_deadline = Settings.__dataclass_fields__["dispatch_timeout_seconds"].default
-    assert window < dispatch_deadline / 4, (window, dispatch_deadline)
+    assert outcome.seconds < dispatch_deadline / 4, (outcome.seconds, dispatch_deadline)
+
+
+@_FAILURE_COSTS
+@pytest.mark.parametrize("lasts", [1.0, 15.0, 29.0])
+def test_an_outage_that_ends_within_thirty_seconds_does_not_fail_the_preflight(cost, lasts):
+    """The owner's words, as a property: an intermittent DNS failure does not fail the task.
+
+    A blink of a second, a resolver pod restarting for 15 s, and an outage
+    that ends a second before the last attempt. Each fails every lookup it
+    sees, in each of the three ways a lookup can fail.
+    """
+    from agent_worker.startup import dns_preflight_with_retries
+
+    clock = _Clock()
+    resolver = _Outage(clock, cost=cost, lasts=lasts)
+
+    outcome = dns_preflight_with_retries(
+        ["firestore.example"], resolve=resolver, sleep=clock.sleep, clock=clock
+    )
+
+    offsets = [round(a - resolver.asked_at[0], 3) for a in resolver.asked_at]
+    assert outcome.ok, f"a {lasts:g}s outage failed the preflight; asked at {offsets}"
+    assert outcome.attempts >= 2, offsets
 
 
 @pytest.mark.parametrize(

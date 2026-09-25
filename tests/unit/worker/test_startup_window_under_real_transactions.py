@@ -294,6 +294,53 @@ def test_a_control_plane_outage_before_the_runner_leaves_the_task_for_the_reconc
     assert errors[-1]["exit_code"] == UNAVAILABLE
 
 
+@pytest.mark.parametrize(
+    "error",
+    [
+        pytest.param(("Unknown", "Stream removed"), id="grpc-unknown"),
+        pytest.param(("DataLoss", "stream reset mid-message"), id="data-loss"),
+        pytest.param(("MethodNotImplemented", "backend rolling"), id="unimplemented"),
+        pytest.param(("Cancelled", "the RPC was cancelled"), id="cancelled"),
+    ],
+)
+def test_a_server_error_of_any_kind_before_the_runner_is_left_to_the_reconciler(
+    store, tmp_path, log_stream, monkeypatch, error
+):
+    """Every 5xx and gRPC UNKNOWN is the service failing, not the service saying no.
+
+    `google.api_core.exceptions.Unknown` is what Firestore's client raises
+    when a stream is reset under it ("Stream removed"), and the startup Retry
+    does not retry it. It, DataLoss and MethodNotImplemented are ServerErrors
+    outside the named list the first version counted, so each FAILED the task
+    for good at exit 1 (review of PR #59). CANCELLED is the RPC being dropped,
+    not an answer either. Each is now 69, like UNAVAILABLE: the task, the
+    lease and the stream untouched, and the reconciler retries it.
+    """
+    from google.api_core import exceptions as core
+
+    kind, text = error
+    db = TransactionalFirestore()
+    seed_attempt(db)
+    worker = _worker(db, store, tmp_path, log_stream, budgeted=True)
+    monkeypatch.setattr(lifecycle, "ChildProcess", ExplodingChildProcess)
+    mark: dict[str, Any] = {}
+
+    def failed(ref: Any, transactional: bool) -> None:
+        if not transactional and ref.path == TASK and worker.phases.current == "restore_checkpoint":
+            _mark(db, mark)
+            raise getattr(core, kind)(text)
+
+    db.on_read = failed
+
+    exit_code = worker.run()
+
+    assert mark, "Firestore never failed in restore_checkpoint"
+    assert exit_code == UNAVAILABLE, _records(log_stream)[-4:]
+    _assert_left_alone(db, mark)
+    assert db.doc(TASK)["state"] != TaskState.FAILED.value
+    assert db.doc(ATTEMPT)["exit_code"] == UNAVAILABLE
+
+
 def test_a_refusal_before_the_runner_still_fails_the_attempt(
     store, tmp_path, log_stream, monkeypatch
 ):

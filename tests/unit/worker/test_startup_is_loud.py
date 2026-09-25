@@ -18,9 +18,14 @@ WHAT IS PINNED, each in the real entrypoint running in its own process
     preflight's bounded retries, with one warning per failed attempt and one
     error line naming the hosts. A DNS that answers NXDOMAIN is retried the
     same number of times, with the backoff between attempts;
+  * the retries SPAN 30-45 s on the worker's own clock however the lookups
+    fail. Lookups that fail at once must not use every attempt up in the few
+    seconds the backoffs add to (review of PR #59: that was about 7 s);
   * ONE transient DNS failure does not fail the attempt: the next lookup
     answers and the worker starts and runs (owner, 2026-09-25: "have some
-    retry logic before failing, to prevent intermittent dns failures");
+    retry logic before failing, to prevent intermittent dns failures"). Nor
+    does a resolver that fails every lookup at once for 15 s and then comes
+    back;
   * a worker that exits 78 leaves its cause, as one JSON line, in the file
     Kubernetes reads as the container's termination message, which is how
     the reconciler learns it without Firestore;
@@ -83,10 +88,17 @@ _NOT_INHERITED = (
 DNS_BUDGET_SECONDS = 10.0
 
 #: The owner's bounds on the retries, as he stated them on 2026-09-25: "e.g.
-#: 3-4 attempts over ~30-45 s total". The exact choice is the worker's, and it
-#: reports it on its error line. These hold that choice inside what was asked.
+#: 3-4 attempts over ~30-45 s total". The exact choice is the worker's. These
+#: hold what the worker DID inside what was asked: the attempts it made, and
+#: the seconds its own log lines say the retries took. Not the window it
+#: reports, which is a constant and says nothing about how long it waited.
 DNS_ATTEMPTS_ALLOWED = (3, 4)
 DNS_WINDOW_ALLOWED_SECONDS = (30.0, 45.0)
+
+#: Slack on the child's own clock, for its log timestamps and a loaded runner.
+#: The worker sleeps to a schedule, so what it overshoots by is scheduling
+#: noise, not a lookup.
+CLOCK_SLACK_SECONDS = 0.5
 
 #: An emulator address the preflight can resolve with no DNS at all. Nothing
 #: listens on it: the harness stands `FakeFirestore` in for the client.
@@ -341,19 +353,31 @@ def _retry_warnings(child: Child) -> list[dict[str, Any]]:
     ]
 
 
-def _assert_bounded_retries(child: Child, error: dict[str, Any]) -> list[dict[str, Any]]:
-    """The error line reports the retries it made, inside the owner's bounds, one line each."""
+def _assert_bounded_retries(
+    child: Child, announced: dict[str, Any], error: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """The retries it made, and the time they TOOK, inside the owner's bounds; one line each.
+
+    The time is the child's own: from its dns_preflight phase line to its
+    error line, by the `time` each carries. The parent reads both through a
+    pipe, late by however loaded the runner is, so the parent's clock would
+    measure the runner, not the worker.
+    """
     attempts = error.get("attempts")
     low, high = DNS_ATTEMPTS_ALLOWED
     assert isinstance(attempts, int) and low <= attempts <= high, (
         f"the preflight made {attempts!r} attempts; the owner asked for {low}-{high}\n"
         f"{child.transcript()}"
     )
-    window = error.get("window_seconds")
     w_low, w_high = DNS_WINDOW_ALLOWED_SECONDS
-    assert isinstance(window, (int, float)) and w_low <= window <= w_high, (
-        f"a retry window of {window!r}s; the owner asked for about {w_low:g}-{w_high:g}s"
+    waited = _seconds_between(announced, error)
+    assert w_low - CLOCK_SLACK_SECONDS <= waited <= w_high + CLOCK_SLACK_SECONDS, (
+        f"the retries gave up {waited:.1f}s after the preflight began; the owner asked "
+        f"for about {w_low:g}-{w_high:g}s, so that a resolver outage shorter than that "
+        f"does not fail the task\n{child.transcript()}"
     )
+    # What the worker says it took agrees with what its lines show.
+    assert abs(error.get("seconds", -1) - waited) <= CLOCK_SLACK_SECONDS, (error, waited)
     warnings = _retry_warnings(child)
     # Every failed attempt is logged: the ones that were retried as a warning
     # each, the last one as the error.
@@ -381,7 +405,7 @@ def test_dns_that_drops_every_packet_ends_startup_with_78_after_bounded_retries(
     assert code == 78, f"exit {code}: the worker did not give up on DNS\n{child.transcript()}"
 
     error = _dns_error(child)
-    _assert_bounded_retries(child, error)
+    _assert_bounded_retries(child, announced, error)
     # Timed on the CHILD's clock, from its own two lines: the parent reads
     # them through a pipe, late by however loaded the runner is. Lookups that
     # never answer spend the whole window, and no more.
@@ -410,6 +434,11 @@ def test_a_name_that_does_not_resolve_is_retried_with_backoff_then_ends_startup_
     Retried like any other failure. A NodeLocal DNSCache or kube-dns pod that
     is restarting can answer SERVFAIL or NXDOMAIN for a moment, and the
     preflight cannot tell that moment from a name that will never exist.
+
+    And retried for as LONG as a lookup that hangs is. The first version gave
+    up about 7 s in here, because only its backoffs took any time, while a
+    restarting resolver pod takes longer than that to come back (review of
+    PR #59). `_assert_bounded_retries` holds the time to the owner's 30-45 s.
     """
     child = spawn("dns-nxdomain")
     announced = child.wait_for(_phase("dns_preflight"))
@@ -417,7 +446,7 @@ def test_a_name_that_does_not_resolve_is_retried_with_backoff_then_ends_startup_
     code = child.finish()
     assert code == 78, f"exit {code}\n{child.transcript()}"
     error = _dns_error(child)
-    warnings = _assert_bounded_retries(child, error)
+    warnings = _assert_bounded_retries(child, announced, error)
     assert all("gaierror" in u["error"] for u in error["unreachable"]), error
 
     # Each retry waited the backoff it announced before it asked again. The
@@ -456,6 +485,43 @@ def test_one_transient_dns_failure_does_not_fail_the_attempt(spawn):
     messages = child.messages()
     assert "DNS preflight passed" in messages, child.transcript()
     assert not any(m.startswith("DNS unreachable") for m in messages), child.transcript()
+    assert child.phases()[-1] == "runner", child.phases()
+
+
+def test_a_resolver_that_fails_at_once_for_fifteen_seconds_does_not_fail_the_attempt(spawn):
+    """The outage the retries exist for, in the shape that fails fastest.
+
+    Every lookup fails at once with EAI_AGAIN for 15 s from the first, then
+    every lookup answers (`startup_harness.DNS_OUTAGE_SECONDS`). That is a
+    kube-dns or NodeLocal DNSCache pod restarting during a node upgrade, or an
+    upstream resolver answering SERVFAIL for a while. With 78 failing the task
+    for good, a worker that gave up inside the outage would end a task that
+    its next lookup would have started (review of PR #59).
+    """
+    outage = 15.0  # startup_harness.DNS_OUTAGE_SECONDS, restated: see DNS_BUDGET_SECONDS
+    child = spawn("dns-down-15s")
+    announced = child.wait_for(_phase("dns_preflight"))
+    assert announced is not None, f"no dns_preflight phase\n{child.transcript()}"
+    code = child.finish(timeout=120)
+    assert code == 0, (
+        f"exit {code}: a {outage:g}s resolver outage ended the attempt\n{child.transcript()}"
+    )
+
+    messages = child.messages()
+    assert not any(m.startswith("DNS unreachable") for m in messages), child.transcript()
+    passed = [r for r in child.records if r.get("message") == "DNS preflight passed"]
+    assert len(passed) == 1, child.transcript()
+    # It passed because it was still asking once the outage was over, on the
+    # child's own clock, and not because the outage never happened.
+    assert _seconds_between(announced, passed[0]) >= outage - CLOCK_SLACK_SECONDS, (
+        f"passed {_seconds_between(announced, passed[0]):.1f}s in, inside a {outage:g}s "
+        f"outage\n{child.transcript()}"
+    )
+    warnings = _retry_warnings(child)
+    assert warnings and len(warnings) == passed[0]["attempts"] - 1, child.transcript()
+    for number, warning in enumerate(warnings, start=1):
+        assert warning["severity"] == "WARNING" and warning["attempt"] == number, warning
+        assert warning["retry_in_seconds"] > 0, warning
     assert child.phases()[-1] == "runner", child.phases()
 
 
