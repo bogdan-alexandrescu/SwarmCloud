@@ -245,19 +245,53 @@ describe('an incomplete read', () => {
     expect(container.textContent).toBe('')
   })
 
-  it('an empty blocker list under an incomplete read is not reported as "nothing is refusing"', () => {
+  /**
+   * CP-6 (#85) RE-POINT, BOTH, after #159's review. These rendered
+   * `<BlockerList>` on its own with nothing refusing and read the sentence it
+   * printed: "No pool is refusing this profile." for a complete read, "No
+   * refusal was measured -- but see above" for an incomplete one. The owner's
+   * decision leaves each Profile headroom card ONE fact sentence, and the
+   * grouped list is back on the card under it -- so the list draws nothing
+   * when there is nothing to list, and the card's sentence says what is true.
+   *
+   * WHAT DID NOT MOVE: an empty list under an incomplete read is still never
+   * reported as a clean bill of health. That is now asked of the card, which
+   * is the thing a reader sees.
+   */
+  it('an empty blocker list under an incomplete read is not reported as "nothing is refusing"', async () => {
     // The dangerous case: measured nothing, and saying so as though it were a
     // clean bill of health.
-    const h = headroomFor(profile({ admission: admission({ complete: false, unread: ['global'], blockers: [] }) }))
-    render(<BlockerList h={h} groups={undefined} />)
-    expect(screen.getByText(/the list is incomplete/)).toBeTruthy()
-    expect(screen.queryByText('No pool is refusing this profile.')).toBeNull()
+    renderProfiles(
+      capacity({
+        pools: [pool({ name: 'global' })],
+        runner_profiles: {
+          'claude-code': profile({
+            pools: ['global', 'tenant:eng'],
+            admission: admission({ headroom: null, basis: 'unknown', complete: false, unread: ['tenant:eng'], blockers: [] }),
+          }),
+        },
+      }),
+    )
+    const card = await profileCard('claude-code')
+    expect(card.textContent).toContain('could not be read')
+    expect(card.textContent).not.toContain('No pool is refusing')
+    expect(card.textContent).not.toMatch(/nothing is refusing/i)
   })
 
-  it('reports no refusal as such only when the read was complete', () => {
-    const h = headroomFor(profile({ admission: admission({ complete: true, blockers: [] }) }))
-    render(<BlockerList h={h} groups={undefined} />)
-    expect(screen.getByText('No pool is refusing this profile.')).toBeTruthy()
+  it('draws no list and no banner when nothing refuses, complete or not (CP-6)', () => {
+    for (const complete of [true, false]) {
+      const h = headroomFor(
+        profile({ admission: admission({ complete, unread: complete ? [] : ['global'], blockers: [] }) }),
+      )
+      const { container, unmount } = render(
+        <>
+          <IncompleteNote h={h} />
+          <BlockerList h={h} groups={undefined} />
+        </>,
+      )
+      expect(container.textContent, `complete=${complete}: the empty list still says something`).toBe('')
+      unmount()
+    }
   })
 
   /**
@@ -1159,6 +1193,144 @@ describe('Pools draws one classification in its table and its cards (CP-14)', ()
     expect(chipsOf(tile)).toEqual(['full|is-warn'])
     expect(tile.querySelector('.ctl-util-fill.is-warn'), 'the full tile’s track is not warn').not.toBeNull()
     expect(tile.querySelector('.ctl-util-fill.is-bad'), 'the full tile’s track is bad').toBeNull()
+  })
+
+  /**
+   * #159 REVIEW. The tile passed `pct: null` for a ceiling of 0, and the
+   * shared track draws null as the hatched NOT MEASURED picture -- beside
+   * `/ 0` and a `limit 0` chip, which say the ceiling WAS read. The track
+   * ignored the classification's tone as well, so the one pool on the card
+   * that admits nothing was the only one whose track did not say so.
+   */
+  it('draws a pool at a ceiling of 0 with a measured track in its chip’s tone, never the not-measured hatch', async () => {
+    renderCapacity(board())
+    fireEvent.click(await screen.findByRole('button', { name: 'Cards' }))
+    for (const [name, tone] of [
+      ['resource:browser', 'is-paused'],
+      ['provider:anthropic:tenant:eng', 'is-bad'],
+    ] as const) {
+      const tile = poolCard(name)
+      const track = tile.querySelector('.ctl-util-track')
+      expect(track, `${name} draws no track`).not.toBeNull()
+      expect(track!.className, `${name}: a ceiling that was read is drawn as not measured`).not.toContain('is-unknown')
+      expect(tile.querySelector(`.ctl-util-fill.${tone}`), `${name}: the track does not take its chip’s ${tone}`).not.toBeNull()
+    }
+    // Control: the healthy tile's track is a plain measured fill.
+    expect(poolCard('global').querySelector('.ctl-util-track.is-unknown')).toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// #159 review of the CP-6 column (#85). Pushed before the fix it demands.
+// ---------------------------------------------------------------------------
+
+describe('Profile headroom says which remedy a +N is (CP-6, #159 review)', () => {
+  /**
+   * `tenant:eng` is PAUSED and refusing `claude-code`. The server models a
+   * paused pool's counterfactual as RESUMING it, limit left alone
+   * (`headroom.py` `_counterfactual`, `action: 'resume'`), so its +4 is what
+   * resuming buys. Under a header that says `if lifted`, a bare `+4` told an
+   * operator to raise a limit the row's own Status title says changes nothing.
+   */
+  const paused = () =>
+    capacity({
+      tenant_id: 'eng',
+      pools: [pool({ name: 'global', active: 2, available: 6 }), pool({ name: 'tenant:eng', enabled: false })],
+      runner_profiles: {
+        'claude-code': profile({
+          pools: ['global', 'tenant:eng'],
+          admission: admission({
+            headroom: 0,
+            blockers: [blocker({ pool: 'tenant:eng', reason: 'MANUAL_PAUSE', limit: 8, active: 0, group: 'needs_action' })],
+            binding: ['tenant:eng'],
+            counterfactual: [cf({ pool: 'tenant:eng', action: 'resume', delta: 4, headroom_after: 4, next_binding: ['global'] })],
+          }),
+        }),
+      },
+    })
+
+  it('says resumed, in the cell’s visible text, for a paused pool', async () => {
+    renderProfiles(paused())
+    const cell = liftCell(await profileCard('claude-code'), 'tenant:eng')
+    expect(cell.textContent).toBe('+4 if resumed')
+    expect(cell.textContent, 'a resume is drawn as a lift').not.toMatch(/lift/i)
+    expect(cell.getAttribute('aria-label') ?? '').toContain('Resume')
+    // The raise is unchanged: `+15` on `browser`'s `global` is pinned bare in
+    // "puts +N on every pool that binds" above.
+  })
+})
+
+describe('Profile headroom keeps the remedy on screen (CP-6, #159 review)', () => {
+  /**
+   * The grouped blocker list went with the counterfactual list, which the
+   * owner's decision did not ask for: the remedy -- somebody has to act, or
+   * waiting clears it -- and each refusal's reason and figures were left in a
+   * `title`, which a phone never shows. It is back under the one sentence, in
+   * the card's own marks (CP-12), and it draws nothing when nothing refuses.
+   */
+  const refused = (over: Partial<ProfileAdmission> = {}) =>
+    capacity({
+      tenant_id: 'eng',
+      pools: [
+        pool({ name: 'global', active: 3, available: 5 }),
+        pool({ name: 'tenant:eng', enabled: false }),
+        pool({ name: 'runner:browser', hard_limit: 4, effective_limit: 4, active: 4, available: 0 }),
+      ],
+      runner_profiles: {
+        browser: profile({
+          resource_class: 'browser',
+          pools: ['global', 'tenant:eng', 'runner:browser'],
+          admission: admission({
+            headroom: 0,
+            blockers: [
+              blocker({ pool: 'tenant:eng', reason: 'MANUAL_PAUSE', limit: 8, active: 0, group: 'needs_action' }),
+              blocker({ pool: 'runner:browser', reason: 'RUNNER_LIMIT', limit: 4, active: 4, group: 'no_room' }),
+            ],
+            binding: ['tenant:eng', 'runner:browser'],
+            ...over,
+          }),
+        }),
+      },
+    })
+
+  it('lists every refusing pool under the remedy that clears it, as visible text', async () => {
+    renderProfiles(refused())
+    const card = await profileCard('browser')
+    const acting = card.querySelector('.blocker-group.needs-action')
+    const room = card.querySelector('.blocker-group.no-room')
+    expect(acting, 'the card does not say somebody has to act').not.toBeNull()
+    expect(room, 'the card does not say waiting clears it').not.toBeNull()
+    expect(acting!.textContent).toContain('Somebody has to act')
+    expect(acting!.textContent).toContain('MANUAL_PAUSE')
+    expect(room!.textContent).toContain('Eligible, no room')
+    expect(room!.textContent).toContain('4 of 4 units in use')
+  })
+
+  it('draws the list in the card’s own marks, so no .tag comes back (CP-12)', async () => {
+    renderProfiles(refused())
+    const card = await profileCard('browser')
+    expect(card.querySelector('.tag'), 'the blocker list brought a .tag back').toBeNull()
+    expect(card.querySelector('.blocker-group.needs-action .ctl-chip.is-paused')?.textContent).toContain('paused')
+    expect(card.querySelector('.blocker-group.no-room .ctl-chip.is-warn')?.textContent).toContain('full')
+  })
+
+  it('says the list is incomplete, above it, when a pool was not read', async () => {
+    renderProfiles(refused({ headroom: null, basis: 'unknown', complete: false, unread: ['global'], binding: [] }))
+    const card = await profileCard('browser')
+    const note = card.querySelector('[role="status"]')
+    expect(note, 'a partial blocker list is drawn as a whole one').not.toBeNull()
+    expect(note!.textContent).toContain('incomplete')
+    expect(note!.textContent).toMatch(/global/i)
+    const list = card.querySelector('.blocker-group')
+    expect(list).not.toBeNull()
+    expect(note!.compareDocumentPosition(list!) & Node.DOCUMENT_POSITION_FOLLOWING, 'the banner is not above the list').toBeTruthy()
+  })
+
+  it('draws no list, and no "nothing is refusing" sentence, when no pool refuses', async () => {
+    renderProfiles(refused({ headroom: 5, blockers: [], binding: ['global'] }))
+    const card = await profileCard('browser')
+    expect(card.querySelector('.blocker-group, .blocker-list')).toBeNull()
+    expect(card.textContent).not.toContain('No pool is refusing')
   })
 })
 

@@ -551,15 +551,19 @@ else:
         )
 
 # -- 7. the quota broker tick the staleness rule is twice of (CP-9, #85) ---
-# Provider quota draws a reading older than twice the broker reporting
-# interval as stale. The interval is Terraform configuration, not frozen
-# contract: the quota-refresh Cloud Scheduler job, whose cron is the scheduler
-# module default quota_refresh_schedule, which the root does not override.
-# types.ts states it once, as QUOTA_REPORT_INTERVAL_SECONDS, and this holds
-# the two together: a changed schedule with the old constant would call
-# current readings stale, or stale readings current.
+# Provider quota draws a reading older than twice the broker's sweep interval
+# as stale. The interval is Terraform configuration, not frozen contract: the
+# quota-refresh Cloud Scheduler job, which calls QuotaService.sweep, and whose
+# cron is the scheduler module default quota_refresh_schedule, which the root
+# does not override. It is a SWEEP, not a report: the sweep rewrites a quota
+# document only when its state or derived cap changes, and updated_at moves
+# when a worker reports. #159's review found the constant named
+# QUOTA_REPORT_INTERVAL_SECONDS and the screen calling it a reporting
+# interval, which no such report has; it is QUOTA_SWEEP_INTERVAL_SECONDS now.
+# types.ts states it once, and this holds it to the cron: a changed schedule
+# with the old constant would call current readings stale, or stale current.
 tf_vars = Path(repo_root) / "terraform" / "modules" / "scheduler" / "variables.tf"
-ts_interval = re.search(r"export const QUOTA_REPORT_INTERVAL_SECONDS = (\d+)\b", SRC)
+ts_interval = re.search(r"export const QUOTA_SWEEP_INTERVAL_SECONDS = (\d+)\b", SRC)
 tf_block = None
 if tf_vars.is_file():
     # \x22 is the double quote, written as an escape for the same reason.
@@ -577,13 +581,13 @@ overrides = sorted(
     and "quota_refresh_schedule" in p.read_text(errors="replace")
 )
 if ts_interval is None:
-    emit("MISSING", "QUOTA_REPORT_INTERVAL_SECONDS", "no numeric export const found")
+    emit("MISSING", "QUOTA_SWEEP_INTERVAL_SECONDS", "no numeric export const found")
 elif tf_block is None:
-    emit("MISSING", "QUOTA_REPORT_INTERVAL_SECONDS", "no quota_refresh_schedule default in %s" % tf_vars)
+    emit("MISSING", "QUOTA_SWEEP_INTERVAL_SECONDS", "no quota_refresh_schedule default in %s" % tf_vars)
 elif overrides:
     emit(
         "MISSING",
-        "QUOTA_REPORT_INTERVAL_SECONDS",
+        "QUOTA_SWEEP_INTERVAL_SECONDS",
         "quota_refresh_schedule is set outside the module (%s); read that value instead" % " ".join(overrides),
     )
 else:
@@ -592,7 +596,7 @@ else:
     if step is None or cron[1:] != ["*", "*", "*", "*"]:
         emit(
             "MISSING",
-            "QUOTA_REPORT_INTERVAL_SECONDS",
+            "QUOTA_SWEEP_INTERVAL_SECONDS",
             "quota_refresh_schedule %s is not an every-N-minutes cron this probe reads" % tf_block.group(1),
         )
     else:
@@ -600,13 +604,13 @@ else:
         if seconds == int(ts_interval.group(1)):
             emit(
                 "OK",
-                "QUOTA_REPORT_INTERVAL_SECONDS",
+                "QUOTA_SWEEP_INTERVAL_SECONDS",
                 "%ss matches quota_refresh_schedule %s" % (seconds, tf_block.group(1)),
             )
         else:
             emit(
                 "DRIFT",
-                "QUOTA_REPORT_INTERVAL_SECONDS",
+                "QUOTA_SWEEP_INTERVAL_SECONDS",
                 "terraform quota_refresh_schedule %s is %ss  //  types.ts %ss"
                 % (tf_block.group(1), seconds, ts_interval.group(1)),
             )

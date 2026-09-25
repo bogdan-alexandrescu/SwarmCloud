@@ -19,6 +19,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 
 import type { Result } from '../fetch'
+import { HELP } from '../help'
 import type { Capacity, Pool, QuotaState, RunnerProfile } from '../types'
 
 const api = vi.hoisted(() => ({
@@ -393,5 +394,27 @@ describe('Provider quota never draws an old reading as a current verdict (CP-9)'
     const cell = state(await renderQuota([quota({ state: 'THROTTLED', updated_at: minutesAgo(60) })]))
     expect(cell.querySelector('.ctl-chip.is-warn')).not.toBeNull()
     expect(cell.querySelector('.ctl-stale-mark')?.textContent).toContain('1h')
+  })
+
+  /**
+   * #159 REVIEW: THE FIVE MINUTES ARE THE BROKER'S SWEEP, AND NOTHING REPORTS
+   * ON THEM. The constant is the `quota-refresh` Cloud Scheduler cron, which
+   * runs `QuotaService.sweep` -- and the sweep rewrites a document only when
+   * its state or its derived cap changes. `updated_at` moves when a WORKER
+   * reports: at the end of a clean run, or on a 429. The screen told its
+   * reader the threshold was twice "the broker's reporting interval", a report
+   * that does not exist. The words have to name the tick they are twice of.
+   */
+  it('names the tick its threshold is twice of as the broker’s sweep, not a reporting interval', async () => {
+    const cell = state(await renderQuota([quota({ state: 'AVAILABLE', updated_at: minutesAgo(11) })]))
+    const title = cell.querySelector('.ctl-stale-mark')?.getAttribute('title') ?? ''
+    expect(title, 'the stale mark has no title').not.toBe('')
+    expect(title).not.toMatch(/reporting interval/i)
+    expect(title).toMatch(/sweep/i)
+
+    const topic = HELP['provider-quota-states']
+    const said = [topic.short, ...topic.long, ...(topic.values?.() ?? []).map((v) => `${v.term} ${v.note ?? ''}`)].join(' ')
+    expect(said).not.toMatch(/reporting interval/i)
+    expect(said).toMatch(/sweep/i)
   })
 })
