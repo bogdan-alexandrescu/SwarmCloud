@@ -100,8 +100,12 @@ class WorkerConfig:
     #
     # THE COST IS WORTH SEEING BEFORE TUNING THIS. One object write per stream
     # per interval per running agent. At 5s and 40 concurrent agents that is
-    # 16 writes/second, ~1.4M class-A operations a day, which is real money at
-    # GCS list prices. Raise the interval before raising the concurrency.
+    # 16 writes/second for the runner's two streams, ~1.4M class-A operations
+    # a day, which is real money at GCS list prices. A CLI or generic runner
+    # publishes its agent's two streams as well (#184), so up to 32
+    # writes/second (~2.8M a day) when every stream is non-empty; a zero-byte
+    # stream is skipped, and claude-code's stderr is usually empty. Raise the
+    # interval before raising the concurrency.
     #
     # It is a TAIL and not the whole file on purpose: GCS has no append, so
     # publishing the full stream would rewrite up to `max_stdout_bytes` every
