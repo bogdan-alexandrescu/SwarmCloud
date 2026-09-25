@@ -382,11 +382,19 @@ export function OverviewScreen() {
               keep their own provenance foot, because they are two different
               reads and a single foot would have to average two ages. */}
           <section className="ctl-card ov-headroom">
+            {/* THE LINK WORD IS THE DESTINATION'S NAME (OV-11). It read
+                `pools →` and opened Profile headroom, a different tab from
+                the Pools one a reader expected; every other card head says
+                the name of the tab it opens (`agents`, `timeline`). The
+                address stays, because the first group in this card is the
+                per-profile headroom and that tab is its deeper version.
+                `layout.overview.test.tsx` reads the tab's label out of
+                App.tsx and holds every card-head link to it. */}
             <CardHead
               title="Headroom"
               note={tenant === null ? undefined : `tenant ${tenant}`}
               href="#capacity/profiles"
-              cta="pools"
+              cta="profile headroom"
               explain="pools-all-at-once"
             />
             <div className="ov-groups">
@@ -806,7 +814,12 @@ function MetricStrip({
         foot={staleFoot(stats, 'counted')}
         reading={stats.status === 'loading'}
         unread={stats.status === 'error' ? errorHeading(stats.error) : null}
-        tone={inFlight !== null && inFlight > 0 ? 'good' : undefined}
+        // NO TONE (OV-5). This was `good` whenever anything ran, which painted
+        // `5 agents` in --ok green with a disc while the table under it drew
+        // the same five as the blue `is-live` mark. A count of running work is
+        // a fact, not a verdict (design-system.md §6.7): five agents running
+        // is neither healthy nor unhealthy, and green here was the only place
+        // on the screen that said it was.
         say="Agents in LEASED, DISPATCHED, STARTING or RUNNING — the four states that reserve capacity. Counted by /v1/stats, one aggregation query per state."
       />
 
@@ -1428,8 +1441,14 @@ function RunningBody({
             <tr>
               <th scope="col">Agent</th>
               <th scope="col">State</th>
+              {/* ELAPSED, NOT RUNTIME (AG-3). A LEASED or DISPATCHED task has
+                  no `started_at` -- the worker writes it on DISPATCHED ->
+                  STARTING -- so the cell under this heading is its WAIT, and
+                  `elapsed()` prefixes it with the state it is waiting in. A
+                  heading saying "Runtime" over a wait is the run-time claim
+                  the drawer's `run` fact stopped making for the same rows. */}
               <th scope="col" className="is-num">
-                Runtime
+                Elapsed
               </th>
             </tr>
           </thead>

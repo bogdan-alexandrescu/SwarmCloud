@@ -16,8 +16,8 @@
 // prints, or found in the drawer title. The id a person can use is the one the
 // id starts with.
 
-import { describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 
 import type { Result } from '../fetch'
 import type { Task, TaskPage, TaskState } from '../types'
@@ -29,7 +29,14 @@ vi.mock('../api', async (importOriginal) => {
   return { ...actual, ...api }
 })
 
-import { AgentsScreen } from '../Agents'
+import {
+  AgentsScreen,
+  IDLE_POLL_MS,
+  LIVE_POLL_MS,
+  attemptsUsed,
+  pollInterval,
+  rowClock,
+} from '../Agents'
 
 const NOW = '2026-09-23T12:00:00.000Z'
 const THEN = '2026-09-23T10:00:00.000Z'
@@ -72,13 +79,13 @@ function task(id: string, state: TaskState, over: Partial<Task> = {}): Task {
   }
 }
 
-async function land(tasks: Task[]): Promise<HTMLElement> {
+async function land(tasks: Task[], taskId?: string | null): Promise<HTMLElement> {
   api.loadTasks.mockResolvedValue({
     status: 'ok',
     data: { tasks, tenant_id: 'acme' },
     fetchedAt: Date.now(),
   } satisfies Result<TaskPage>)
-  const { container } = render(<AgentsScreen onOpen={() => {}} />)
+  const { container } = render(<AgentsScreen onOpen={() => {}} taskId={taskId} />)
   await waitFor(() => expect(container.querySelector('.ctl-seg [role="tab"]')).not.toBeNull())
   return container as HTMLElement
 }
@@ -100,7 +107,9 @@ describe('the Agents screen lands where the rows are', () => {
     ])
     expect(selectedTab()).toBe('Waiting')
     // And it shows them, rather than an empty state about a different tab.
-    expect(document.querySelectorAll('.rows .row')).toHaveLength(3)
+    // `.clickable`: the list's first `.row` is now its column heads (AG-16),
+    // which is not an agent. The three agents are the three rows that open one.
+    expect(document.querySelectorAll('.rows .row.clickable')).toHaveLength(3)
     expect(document.querySelector('.ctl-empty')).toBeNull()
   })
 
@@ -145,5 +154,212 @@ describe('the row id is one a person can use', () => {
     ).toBeLessThan(8)
     // The whole id stays one hover away.
     expect(shown!.getAttribute('title')).toBe(realId)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The QA wave's findings on this list (AG-1, AG-15, AG-16, AG-17, AG-32)
+// ---------------------------------------------------------------------------
+
+describe('the list says what its columns are', () => {
+  /**
+   * AG-16. `1/3`, `1u` and `4m 12s` had no heading, so three columns were read
+   * off their values. The heads are a `.row` whose cells carry the SAME
+   * classes, in the same order, as an agent row -- which is what makes every
+   * breakpoint that drops a column drop its head too. Asserted as that
+   * property, cell by cell, rather than as a list of words.
+   *
+   * BREAK IT: remove `<RowHead />`, or give a head cell a class the row's cell
+   * in that position does not carry.
+   */
+  it('heads each list with a row on the same cells as an agent row', async () => {
+    const container = await land([task('task_ffffffff00000000000f', 'RUNNING')])
+    const rows = container.querySelector('.rows')!
+    const head = rows.firstElementChild as HTMLElement
+    expect(head.classList.contains('is-head'), 'the list has no heading row').toBe(true)
+    expect(head.classList.contains('row'), 'the heads are not on the row grid').toBe(true)
+    const agent = rows.querySelector('.row.clickable')!
+    const cellClass = (el: Element) => el.className.split(/\s+/)[0]
+    const headCells = [...head.children].map(cellClass)
+    const rowCells = [...agent.children].map(cellClass)
+    // The state cell is a `.ctl-chip` on a row and a word in the head; from
+    // the name onwards every head sits over the cell it names.
+    for (let i = 1; i < headCells.length; i++) {
+      expect(headCells[i], `head ${i} is not over the cell it names`).toBe(rowCells[i])
+    }
+    // The three the finding named are labelled.
+    const text = (cls: string) => head.querySelector(`.${cls}`)?.textContent ?? ''
+    expect(text('try')).not.toBe('')
+    expect(text('class')).not.toBe('')
+    expect(text('when')).not.toBe('')
+    // A heading is not an agent: it opens nothing.
+    expect(head.getAttribute('role')).toBeNull()
+    expect(head.hasAttribute('tabindex')).toBe(false)
+  })
+
+  it('heads each workflow group as well', async () => {
+    const container = await land([
+      task('task_dddddddd00000000000d', 'SUCCEEDED', { workflow_id: 'wf_one', step_id: 'a' }),
+      task('task_eeeeeeee00000000000e', 'FAILED', { workflow_id: 'wf_two', step_id: 'b' }),
+    ])
+    fireEvent.click(screen.getByLabelText(/group by workflow/i))
+    await waitFor(() => expect(container.querySelectorAll('.section.group').length).toBe(2))
+    for (const group of container.querySelectorAll('.section.group .rows')) {
+      expect(group.firstElementChild?.classList.contains('is-head'), 'a workflow group has no heads').toBe(true)
+    }
+  })
+})
+
+describe('an attempt count over its cap looks like one', () => {
+  /**
+   * AG-15. `83/3` rendered exactly like `1/3`. Over is `>`, not `>=`: `3/3`
+   * is a task that used every attempt it was allowed, and `4/3` is one the
+   * platform ran past its own cap.
+   *
+   * BREAK IT: test `>=`, or drop the class. `3/3` gains it, or `4/3` loses it.
+   */
+  it('marks 4/3 over the ceiling, with the overage in words, and leaves 3/3 alone', async () => {
+    const container = await land([
+      task('task_aaaaaaaa00000000000a', 'FAILED', { attempt_count: 4, max_attempts: 3 }),
+      task('task_bbbbbbbb00000000000b', 'FAILED', { attempt_count: 3, max_attempts: 3 }),
+    ])
+    const cells = [...container.querySelectorAll('.row.clickable .try')]
+    expect(cells).toHaveLength(2)
+    const over = cells.find((c) => c.textContent === '4/3')!
+    const spent = cells.find((c) => c.textContent === '3/3')!
+    expect(over.classList.contains('is-over'), '4/3 is drawn like any other count').toBe(true)
+    expect(over.getAttribute('aria-label') ?? '').toMatch(/1 over the ceiling/)
+    expect(spent.classList.contains('is-over'), '3/3 is drawn as over its cap').toBe(false)
+    expect(spent.getAttribute('aria-label') ?? '').not.toMatch(/over/)
+  })
+
+  it('computes over from the two numbers, strictly', () => {
+    expect(attemptsUsed({ attempt_count: 83, max_attempts: 3 })).toEqual({
+      over: true,
+      say: '83 attempts against a cap of 3: 80 over the ceiling',
+    })
+    expect(attemptsUsed({ attempt_count: 3, max_attempts: 3 }).over).toBe(false)
+    expect(attemptsUsed({ attempt_count: 0, max_attempts: 3 }).over).toBe(false)
+  })
+})
+
+describe('the row the inspector has open says so', () => {
+  /**
+   * AG-17. With the inspector open, no row showed which agent it was.
+   *
+   * BREAK IT: stop passing `open` to `TaskRow`. No row carries the attribute.
+   */
+  it('marks exactly the open agent aria-current, and no other', async () => {
+    const open = 'task_bbbbbbbb00000000000b'
+    const container = await land(
+      [task('task_aaaaaaaa00000000000a', 'RUNNING'), task(open, 'RUNNING')],
+      open,
+    )
+    const current = container.querySelectorAll('.row[aria-current]')
+    expect(current, 'no row, or more than one, is marked open').toHaveLength(1)
+    expect(current[0]!.getAttribute('aria-current')).toBe('true')
+    expect(current[0]!.querySelector('.id')?.getAttribute('title')).toBe(open)
+  })
+
+  it('marks none when nothing is open', async () => {
+    const container = await land([task('task_aaaaaaaa00000000000a', 'RUNNING')], null)
+    expect(container.querySelector('.row[aria-current]')).toBeNull()
+  })
+})
+
+describe('the capacity `?` belongs to the empty Live tab alone', () => {
+  /**
+   * AG-32. The one glyph on this screen is there because an empty LIVE tab
+   * can be misread -- "nothing running" is not "nothing costing". An empty
+   * Waiting or Recent tab makes no claim about cost, and the capacity topic
+   * opened there answered a question nobody asked.
+   *
+   * BREAK IT: render the glyph for every empty tab again.
+   */
+  it('draws no `?` on an empty Waiting tab', async () => {
+    await land([task('task_dddddddd00000000000d', 'SUCCEEDED')])
+    fireEvent.click(screen.getByRole('tab', { name: /^Waiting/ }))
+    await waitFor(() => expect(selectedTab()).toBe('Waiting'))
+    const empty = document.querySelector('.ctl-empty')!
+    expect(empty.querySelector('.ctl-mark.is-zero'), 'the empty tab lost its real-zero mark').not.toBeNull()
+    expect(empty.querySelector('button[aria-expanded]'), 'the capacity `?` is on the Waiting tab').toBeNull()
+  })
+
+  it('draws no `?` on an empty Recent tab', async () => {
+    await land([task('task_ffffffff00000000000f', 'RUNNING')])
+    fireEvent.click(screen.getByRole('tab', { name: /^Recent/ }))
+    await waitFor(() => expect(selectedTab()).toBe('Recent'))
+    expect(document.querySelector('.ctl-empty button[aria-expanded]')).toBeNull()
+  })
+
+  it('keeps it on the empty Live tab', async () => {
+    await land([task('task_dddddddd00000000000d', 'SUCCEEDED')])
+    fireEvent.click(screen.getByRole('tab', { name: /^Live/ }))
+    await waitFor(() => expect(selectedTab()).toBe('Live'))
+    expect(document.querySelector('.ctl-empty button[aria-expanded]')).not.toBeNull()
+  })
+})
+
+describe('the row clock does not run past the read (AG-1)', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  /**
+   * The list read once and its 1s clock went on adding to every row: a
+   * finished agent read `running` and its elapsed kept climbing, on a page
+   * nobody had re-read. The cadence is §2.5's, and the clock stops one
+   * interval past the read -- when a fresh read was due and has not come.
+   */
+  it('re-reads fast only while Live holds a row', () => {
+    const live: TaskPage = { tasks: [task('task_ffffffff00000000000f', 'RUNNING')] }
+    const idle: TaskPage = { tasks: [task('task_dddddddd00000000000d', 'SUCCEEDED')] }
+    expect(pollInterval(live)).toBe(LIVE_POLL_MS)
+    expect(pollInterval(idle)).toBe(IDLE_POLL_MS)
+    expect(pollInterval(null)).toBe(IDLE_POLL_MS)
+    expect(LIVE_POLL_MS).toBeLessThan(IDLE_POLL_MS)
+  })
+
+  it('holds the clock at one interval past the read', () => {
+    expect(rowClock(1_000, 0, 5_000)).toBe(1_000)
+    expect(rowClock(60_000, 0, 5_000)).toBe(5_000)
+    // Not yet read: nothing to hold it to.
+    expect(rowClock(60_000, null, 5_000)).toBe(60_000)
+  })
+
+  /**
+   * BREAK IT: go back to `elapsed(task, Date.now())` on a 1s interval. A
+   * minute later the row reads `2m 3s` for an agent that was read at `1m 0s`.
+   */
+  it('stops a running row’s elapsed time once the read is older than one interval', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'setInterval', 'clearTimeout', 'clearInterval', 'Date'] })
+    const start = Date.now()
+    api.loadTasks.mockImplementation(async () => ({
+      status: 'ok',
+      data: {
+        tasks: [
+          task('task_ffffffff00000000000f', 'RUNNING', {
+            started_at: new Date(start - 60_000).toISOString(),
+          }),
+        ],
+        tenant_id: 'acme',
+      },
+      fetchedAt: Date.now(),
+    }))
+    const { container } = render(<AgentsScreen onOpen={() => {}} />)
+    const advance = async (ms: number) => {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(ms)
+      })
+    }
+    const when = () => container.querySelector('.row.clickable .when')?.textContent ?? ''
+    await advance(0)
+    expect(when()).toBe('1m 0s')
+    // Inside one interval the clock runs, as it should.
+    await advance(3_000)
+    expect(when()).toBe('1m 3s')
+    // A minute on, with no fresh read, it has stopped at the interval's edge.
+    await advance(60_000)
+    expect(when(), 'the row went on counting past a read nobody refreshed').toBe('1m 5s')
   })
 })
