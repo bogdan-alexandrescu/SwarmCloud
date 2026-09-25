@@ -26,7 +26,8 @@ This module holds what the entrypoint and the lifecycle share to prevent that:
   * `route_signals`: SIGTERM and SIGINT go to one handler, and a SIGTERM also
     dumps every thread's stack to stderr (`faulthandler`), so a hang inside
     grpc shows where it is;
-  * the Firestore budgets that `__main__` passes to the startup reads.
+  * the Firestore budgets that `__main__` gives the control plane for every
+    call it makes before the runner (`ControlPlane.startup_budget`).
 
 Nothing here imports google-cloud at module level. Unit tests import it with no
 credentials and no grpc, like every other module in the package.
@@ -119,6 +120,10 @@ class StartupInterrupted(BaseException):
         self.signum = int(signum)
         self.signal_name = signal_name(signum)
         self.phase = phase
+        #: What a library raised in its place on the way up, if anything. Set
+        #: by `Worker._execute`, which routes on the recorded interrupt and
+        #: not on the exception that reached it.
+        self.replaced_by: BaseException | None = None
         super().__init__(f"{self.signal_name} during startup phase {phase}")
 
 

@@ -227,7 +227,13 @@ def destination_for(work: Path, filename: str, *, reserved: frozenset[str]) -> P
 # ---------------------------------------------------------------------------
 
 
-def fetch_upstream_task(db: Any, *, upstream_task_id: str, tenant_id: str) -> dict[str, Any]:
+def fetch_upstream_task(
+    db: Any,
+    *,
+    upstream_task_id: str,
+    tenant_id: str,
+    call_options: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Read the upstream task document, refusing one belonging to another tenant.
 
     Deliberately NOT `TenantMismatchError`. That exception means "a document
@@ -241,8 +247,11 @@ def fetch_upstream_task(db: Any, *, upstream_task_id: str, tenant_id: str) -> di
     object key from THIS attempt's tenant, so a cross-tenant artifact is
     unreachable by construction. This check exists so the operator gets "that
     task belongs to another tenant" rather than "file not found".
+
+    `call_options` is the read's `retry` and `timeout`: the lifecycle's
+    startup budget, since staging runs before the runner starts.
     """
-    snapshot = db.collection("tasks").document(upstream_task_id).get()
+    snapshot = db.collection("tasks").document(upstream_task_id).get(**dict(call_options or {}))
     if not snapshot.exists:
         raise InputUnavailable(
             f"upstream task {upstream_task_id} has no task document, so the "
@@ -395,8 +404,12 @@ def stage_inputs(
     resumed: bool,
     max_total_bytes: int,
     reserved: frozenset[str],
+    call_options: dict[str, Any] | None = None,
 ) -> list[StagedInput]:
-    """Put every declared input on disk, or fail the attempt trying."""
+    """Put every declared input on disk, or fail the attempt trying.
+
+    `call_options` goes on each upstream task read (`fetch_upstream_task`).
+    """
     if not declared:
         return []
 
@@ -442,7 +455,10 @@ def stage_inputs(
     for item in pending:
         if item.upstream_task_id not in documents:
             documents[item.upstream_task_id] = fetch_upstream_task(
-                db, upstream_task_id=item.upstream_task_id, tenant_id=tenant_id
+                db,
+                upstream_task_id=item.upstream_task_id,
+                tenant_id=tenant_id,
+                call_options=call_options,
             )
         references[item] = artifact_reference(
             documents[item.upstream_task_id],

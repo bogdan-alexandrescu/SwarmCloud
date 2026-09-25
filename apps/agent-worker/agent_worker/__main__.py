@@ -16,10 +16,18 @@ code is the contract with the dispatcher and the reconciler:
     78  the worker could not start at all: bad configuration, a DNS preflight
         that could not resolve what the first Firestore call needs, clients
         that could not be built, or a control plane it could not read at the
-        generation check. Nothing was written, not even the attempt
+        generation check. Nothing was written, not even the attempt.
+        Also: a dependency that was UNAVAILABLE after the generation check and
+        before the runner (a spent startup budget, UNAVAILABLE, a 5xx). The
+        task, the lease and the event stream were not written; the attempt's
+        own document records the phase and the error, when Firestore took it.
+        A refusal there (PERMISSION_DENIED, NOT_FOUND) is not a 78: the
+        attempt fails the task with the reason, exit 1
     143 a SIGTERM or SIGINT arrived before the runner child existed. The task,
         the lease and the event stream were not written. If the attempt had
-        already recorded its start, its own document records the phase
+        already recorded its start, its own document records the phase. That
+        holds when the signal lands inside a Firestore transaction too, where
+        the library's rollback can raise something else in its place
 
 THE STARTUP IS LOUD ON PURPOSE (see `startup.py` for the incident behind it).
 The first line is written before the configuration is read. Every phase after
@@ -31,8 +39,11 @@ WHAT HAPPENS TO A 78 OR A 143 AFTERWARDS. No component reads the exit code.
 The reconciler judges the lease, not the process (`reconciler/detect.py`,
 `detect_stale_leases`):
 
-  * A 78 comes before the first heartbeat, so the lease is judged by its
-    dispatch deadline alone, 300 s after admission. It is then reclaimed as
+  * A 78 from the configuration, the DNS preflight, the generation check or
+    `advance_to_running` comes before the first heartbeat, so the lease is
+    judged by its dispatch deadline alone, 300 s after admission. (A 78 from
+    later in the startup window comes after it, and is judged like a 143
+    after it, below.) It is then reclaimed as
     `stale_lease`: fenced, released, and the task goes back to READY with
     `last_error` "reconciled: lease silent for Ns ...". It is retried like any
     other lost attempt. Once `max_attempts` is spent it goes to FAILED with
@@ -77,15 +88,20 @@ def _firestore_client(settings: Settings):
 
 
 def firestore_startup_call_options() -> dict[str, Any]:
-    """`retry` and `timeout` for the startup reads and the attempt's first write.
+    """`retry` and `timeout` for every Firestore call before the runner exists.
+
+    The control plane applies them inside `ControlPlane.startup_budget()`:
+    reads, writes, and a transaction's own begin, commit and rollback.
 
     The predicate is the set of errors Firestore's own default retries for
     `batch_get_documents`, which is what `DocumentReference.get` calls:
     DEADLINE_EXCEEDED, INTERNAL and UNAVAILABLE. Only the budget is shorter
     (see `startup.FIRESTORE_STARTUP_RETRY_SECONDS`). The same options go on
-    `record_attempt_start`'s `set`. That set writes one fixed document built
-    before the call, so a retry after a DEADLINE_EXCEEDED whose write had in
-    fact landed writes the same bytes again.
+    the window's plain writes: `record_attempt_start`'s `set`, the events and
+    the heartbeat's `update`. Each writes a payload built before the call, so
+    a retry after a DEADLINE_EXCEEDED whose write had in fact landed writes the
+    same bytes again. A transaction's commit is the exception, and it gets a
+    narrower predicate from `control._commit_retry`.
     """
     from google.api_core import exceptions as core_exceptions  # lazy: grpc
     from google.api_core.retry import Retry, if_exception_type

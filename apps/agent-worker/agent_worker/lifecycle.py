@@ -63,12 +63,26 @@ windows, and the handler (`_on_signal`) knows which one it is in:
     document, gives back a pool account, and exits 143. The reconciler reclaims
     the lease once it is silent and requeues the task. A park would strand it,
     because nothing promotes a SCHEDULED_RETRY park.
+    The handler also RECORDS the interrupt before raising it, and `_execute`
+    routes on that record, not on the exception that arrives. A library can
+    replace the exception on its way up: `firestore.transactional` rolls back
+    on any BaseException, and its rollback of a transaction that had not begun
+    raises a ValueError in place of the interrupt.
   * Once the child exists, the handler only sets `_interrupted`, and the
     supervision loop stops the runner, checkpoints and parks or stands down
     exactly as before (`_handle_interruption`).
 
 Every startup phase is also announced (`startup.Phases`), so a worker that
 stalls says where.
+
+**A dependency that is unavailable in the same window exits 78, as at step
+1, and leaves the task to the reconciler.** Every Firestore call from step 1 to
+the runner carries the startup budget (`ControlPlane.startup_budget`), so an
+outage there raises within about 40 s. Failing the task would be terminal: the
+reconciler never requeues FAILED, and `max_attempts` would never be consulted
+for what is a lost attempt, not a failed one. See
+`_exit_unavailable_before_runner` for which errors count. A refusal, such as
+PERMISSION_DENIED, still fails the attempt with its reason.
 """
 
 from __future__ import annotations
@@ -262,6 +276,10 @@ class Worker:
         # `_execute` set it, always through `_signal_policy` so that it is
         # restored however the window is left.
         self._signal_mode = _SIGNAL_FLAG
+        # The first SIGTERM or SIGINT that arrived in the startup window, kept
+        # here as well as raised. See `_execute` for why the record, not the
+        # exception that reaches it, decides the exit.
+        self._startup_interrupt: StartupInterrupted | None = None
         self._child: ChildProcess | None = None
         # The LIVE runner's sampler, or None between runners. The runners that
         # have ended are in `_runner_usage`, and `_attempt_usage` combines the
@@ -330,7 +348,7 @@ class Worker:
         self.phases.enter("validate_generation")
         try:
             # Reads only. A SIGTERM here has nothing to undo, so it exits now.
-            with self._signal_policy(_SIGNAL_EXIT_NOW):
+            with self._signal_policy(_SIGNAL_EXIT_NOW), self.control.startup_budget():
                 signals = self.control.validate_generation()
         except FencedError as exc:
             return self._exit_fenced(exc)
@@ -398,12 +416,41 @@ class Worker:
         #
         # A SIGTERM in here raises `StartupInterrupted` wherever the main
         # thread is, and `run` turns it into an exit that writes neither the
-        # task nor the lease. The window closes BEFORE any park it decided on
-        # is made: a park is several writes (state, event, lease release), and
-        # an exception landing between two of them would leave the task parked
+        # task nor the lease. Every Firestore call in here carries the startup
+        # budget. The window closes BEFORE any park it decided on is made: a
+        # park is several writes (state, event, lease release), and an
+        # exception landing between two of them would leave the task parked
         # with its lease still held.
-        with self._signal_policy(_SIGNAL_RAISE):
-            prepared = self._prepare()
+        try:
+            with self._signal_policy(_SIGNAL_RAISE), self.control.startup_budget():
+                prepared = self._prepare()
+                if self._startup_interrupt is not None:
+                    # A SIGTERM whose exception something caught and dropped
+                    # (an `except BaseException` with no re-raise). The
+                    # platform still asked this process to stop.
+                    raise self._startup_interrupt
+        except StartupInterrupted:
+            raise
+        except BaseException as exc:
+            interrupt = self._startup_interrupt
+            if interrupt is not None:
+                # REPLACED ON THE WAY UP. `firestore.transactional` rolls back
+                # on any BaseException, and the rollback can raise: a
+                # ValueError for a transaction whose begin had not returned,
+                # or the rollback RPC's own error. Whatever arrives here, a
+                # SIGTERM was delivered in this window, and that decides the
+                # exit. Raised again, not handled here, so `run` has one path
+                # for every interrupt.
+                interrupt.replaced_by = exc
+                raise interrupt
+            if not isinstance(exc, Exception) or isinstance(exc, WorkerError):
+                # Fenced, tenant mismatch, cancelled and the other deliberate
+                # exits keep their own handlers in `run`.
+                raise
+            unavailable = _unavailable_cause(exc)
+            if unavailable is None:
+                raise
+            return Outcome(exit_code=self._exit_unavailable_before_runner(exc, unavailable))
         if callable(prepared):
             return prepared()
         child_env = prepared
@@ -546,7 +593,7 @@ class Worker:
 
         # ---- STEP 4: restore the latest checkpoint ----------------------
         self.phases.enter("restore_checkpoint")
-        task = self.control.fetch_task(call_options=self.control.startup_call_options)
+        task = self.control.fetch_task()
         # Kept because the publish gate, several steps later, needs the
         # caller's dispatch strategy and re-fetching it there would be a
         # second read of a document that cannot have changed.
@@ -610,9 +657,7 @@ class Worker:
 
         # A provider that is already exhausted must not be hit again.
         self.phases.enter("quota_preflight")
-        preflight = self.control.poll(
-            cfg.provider, call_options=self.control.startup_call_options
-        )
+        preflight = self.control.poll(cfg.provider)
         quota_signal = signal_from_control(preflight, cfg.provider)
         if quota_signal is not None:
             decision = decide(
@@ -1165,7 +1210,12 @@ class Worker:
         step 1 has checked that document's tenant, and `record_attempt_start`
         then wrote it with this tenant's id. `_cleanup` then gives back a pool
         account, if one was leased, and removes the workspace.
+
+        `replaced_by` is logged when a library raised something else in the
+        interrupt's place on the way up (see `_execute`). It is how an
+        operator tells a rollback that failed from one that was not needed.
         """
+        replaced_by = getattr(exc, "replaced_by", None)
         self.log.warning(
             f"{exc.signal_name} before the runner started; exiting without writing "
             "the task, the lease or an event",
@@ -1174,27 +1224,88 @@ class Worker:
             seconds_in_phase=self.phases.seconds_in_phase(),
             seconds_since_start=self.phases.seconds_since_start(),
             exit_code=EXIT_INTERRUPTED,
+            replaced_by=(
+                f"{type(replaced_by).__name__}: {replaced_by}" if replaced_by is not None else None
+            ),
             then=(
                 "the reconciler reclaims the lease once it is silent and requeues "
                 "the task, or fails it when its attempts are spent"
             ),
         )
-        if not self._writes_forbidden:
-            try:
-                self.control.record_attempt_end(
-                    exit_code=EXIT_INTERRUPTED,
-                    error=(
-                        f"interrupted by {exc.signal_name} during startup phase "
-                        f"{exc.phase}; the runner never started"
-                    ),
-                    call_options=self.control.startup_call_options,
-                )
-            except Exception as write_exc:
-                self.log.warning(
-                    "could not record the interruption on this attempt's document",
-                    error=f"{type(write_exc).__name__}: {write_exc}",
-                )
+        self._record_startup_end(
+            EXIT_INTERRUPTED,
+            f"interrupted by {exc.signal_name} during startup phase {exc.phase}; "
+            "the runner never started",
+        )
         return EXIT_INTERRUPTED
+
+    def _exit_unavailable_before_runner(self, exc: Exception, cause: BaseException) -> int:
+        """A dependency was unavailable before the runner started: leave the task, exit 78.
+
+        `cause` is the error in `exc`'s chain that says so (`_unavailable_cause`).
+        It is usually `exc` itself: a RetryError from the startup budget, or
+        UNAVAILABLE. It is further down the chain when a library raised
+        something else on the way up, such as Firestore's rollback of a
+        transaction whose begin had failed.
+
+        WHY NOT FAIL THE TASK. FAILED is terminal. `finish` sets completed_at
+        and releases the lease, and the reconciler never requeues a FAILED
+        task, so one Firestore outage longer than the 30 s budget would end
+        the task for good without `max_attempts` being consulted. Before the
+        startup budget, the same reads retried for 60 to 300 s and would have
+        ridden most such outages out. Exiting as step 1 does leaves the task
+        where the reconciler can see it: the lease falls silent, the reconciler
+        fences and releases it, and requeues the task or fails it once its
+        attempts are spent.
+
+        WHY NOT REQUEUE IT HERE. The same reason as the interrupted exit: a
+        fenced transition, the retry cap and a lease release, made against
+        the service that just failed. The reconciler already does all three.
+
+        WHAT IS WRITTEN: only this attempt's own document, best effort and
+        under the budget, as in `_exit_interrupted_before_runner`. When the
+        unavailable dependency was not Firestore (the checkpoint store, Secret
+        Manager), it records why the attempt ended where an operator will look.
+        """
+        options = self.control.startup_call_options
+        retry = options.get("retry")
+        phase = self.phases.current
+        self.log.exception(
+            f"{type(cause).__name__} before the runner started; exiting without "
+            "writing the task, the lease or an event",
+            exc,
+            phase=phase,
+            seconds_in_phase=self.phases.seconds_in_phase(),
+            unavailable=f"{type(cause).__name__}: {cause}",
+            retry_budget_seconds=getattr(retry, "timeout", None),
+            call_timeout_seconds=options.get("timeout"),
+            exit_code=ExitCode.CONFIG,
+            then=(
+                "the reconciler reclaims the lease once it is silent and requeues "
+                "the task, or fails it when its attempts are spent"
+            ),
+        )
+        self._record_startup_end(
+            ExitCode.CONFIG,
+            f"{type(cause).__name__} during startup phase {phase}; the runner never "
+            f"started: {cause}",
+        )
+        return ExitCode.CONFIG
+
+    def _record_startup_end(self, exit_code: int, error: str) -> None:
+        """This attempt's own end, best effort, under the startup budget. Never raises."""
+        if self._writes_forbidden:
+            return
+        try:
+            with self.control.startup_budget():
+                self.control.record_attempt_end(
+                    exit_code=exit_code, error=self._scrub(error[:4000])
+                )
+        except Exception as write_exc:
+            self.log.warning(
+                "could not record the end of this attempt on its own document",
+                error=f"{type(write_exc).__name__}: {write_exc}",
+            )
 
     def _restore_checkpoint(self, pointer: Any) -> None:
         ws = self.ws
@@ -1288,6 +1399,9 @@ class Worker:
             work=ws.work,
             store=self.store,
             db=self.db,
+            # The startup budget: staging runs before the runner, inside
+            # `startup_budget()`, and reads each upstream step's task.
+            call_options=self.control.call_options(),
             tenant_id=self.cfg.tenant_id,
             logger=self.log,
             resumed=self._restored_from is not None,
@@ -1355,7 +1469,9 @@ class Worker:
         if self.secret_client is None:
             return None
         try:
-            tenant = load_tenant(self.db, self.cfg.tenant_id)
+            tenant = load_tenant(
+                self.db, self.cfg.tenant_id, call_options=self.control.call_options()
+            )
             return resolve_git_token(
                 tenant=tenant, client=self.secret_client, logger=self.log
             )
@@ -1456,7 +1572,12 @@ class Worker:
             if account_env is not None:
                 base.update(account_env)
             else:
-                tenant = load_tenant(self.db, self.cfg.tenant_id)
+                # Under the startup budget before the runner. The credential
+                # reload calls this again mid-run, outside the window, and gets
+                # the library's defaults there.
+                tenant = load_tenant(
+                    self.db, self.cfg.tenant_id, call_options=self.control.call_options()
+                )
                 resolved = resolve_credentials(
                     tenant=tenant,
                     provider=profile.provider,
@@ -2888,7 +3009,14 @@ class Worker:
         if mode == _SIGNAL_EXIT_NOW:
             self.phases.exit_on_signal(signum, frame)
         elif mode == _SIGNAL_RAISE:
-            raise StartupInterrupted(signum, self.phases.current)
+            interrupt = StartupInterrupted(signum, self.phases.current)
+            # Recorded BEFORE it is raised, and only the first. The exception
+            # can be replaced on its way up (see `_execute`); the record
+            # cannot. A second signal still raises, to cut short whatever the
+            # first one's unwinding is waiting on.
+            if self._startup_interrupt is None:
+                self._startup_interrupt = interrupt
+            raise interrupt
 
     @contextmanager
     def _signal_policy(self, mode: str) -> Iterator[None]:
@@ -2995,6 +3123,73 @@ def _control_plane_unreachable(exc: BaseException) -> bool:
     except ImportError:
         return False
     return isinstance(exc, auth_exceptions.GoogleAuthError)
+
+
+def _unavailable_cause(exc: BaseException) -> BaseException | None:
+    """The error in `exc`'s chain that says a dependency could not be reached, or None.
+
+    UNAVAILABLE ONLY, not every Google API error. Counted: RetryError (a
+    budget ran out), UNAVAILABLE, DEADLINE_EXCEEDED, INTERNAL and the other
+    5xx, RESOURCE_EXHAUSTED and 429, ABORTED (contention that outlasted the
+    transaction's own retries), and google-auth's transport and timeout
+    errors or any it marks retryable. These say the call did not complete,
+    and the next attempt may find the service back.
+
+    Not counted: PERMISSION_DENIED, NOT_FOUND, INVALID_ARGUMENT,
+    FAILED_PRECONDITION, UNAUTHENTICATED and a non-retryable RefreshError.
+    Those are answers: the service was reached and said no, and it will say no
+    to the next attempt too. The attempt owns its task at this point (step 1
+    passed), so it fails it with the reason, as it did before the startup
+    budget. Step 1 is different, and `_control_plane_unreachable` takes every
+    API error there: without the generation check, the attempt does not know
+    that the task is its to fail.
+
+    The whole chain is searched (`__cause__` and `__context__`), because a
+    library can raise something else on the way up. Firestore's rollback of a
+    transaction whose begin failed raises a ValueError whose `__context__` is
+    the RetryError. Bounded, and cycle-safe.
+    """
+    try:
+        from google.api_core import exceptions as core
+    except ImportError:
+        return None
+    transient: tuple[type[BaseException], ...] = (
+        core.RetryError,
+        core.ServiceUnavailable,
+        core.GatewayTimeout,  # DeadlineExceeded is a subclass
+        core.InternalServerError,
+        core.BadGateway,
+        core.TooManyRequests,  # ResourceExhausted is a subclass
+        core.Aborted,
+    )
+    try:
+        from google.auth import exceptions as auth
+    except ImportError:
+        auth = None  # type: ignore[assignment]
+    auth_transient: tuple[type[BaseException], ...] = ()
+    if auth is not None:
+        auth_transient = tuple(
+            kind
+            for kind in (getattr(auth, "TransportError", None), getattr(auth, "TimeoutError", None))
+            if isinstance(kind, type)
+        )
+
+    seen: set[int] = set()
+    pending: list[BaseException] = [exc]
+    while pending and len(seen) < 16:
+        current = pending.pop(0)
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        if isinstance(current, transient):
+            return current
+        if auth is not None and isinstance(current, auth.GoogleAuthError):
+            if isinstance(current, auth_transient) or getattr(current, "retryable", False):
+                return current
+        for linked in (current.__cause__, current.__context__):
+            if linked is not None:
+                pending.append(linked)
+    return None
 
 
 def _execution_name() -> str | None:
