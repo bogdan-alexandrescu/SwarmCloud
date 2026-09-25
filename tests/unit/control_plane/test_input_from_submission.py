@@ -17,20 +17,20 @@ the whole upstream run before anybody heard about it.
 
 WHAT IS ASSERTED, AND WHY IT IS A PROPERTY RATHER THAN A SHAPE. A refusal
 proves nothing on its own: a handler that wrote the tasks and THEN raised would
-return the same 400 and leave the upstream steps enqueued to burn exactly the
+return the same 422 and leave the upstream steps enqueued to burn exactly the
 compute this exists to save. So every refusal below is checked for three things
 together: the status and code, the step/parents/filename in the message (the
 only part a person can act on), and that NOTHING was created -- no task
 document, no workflow document, no scheduler wake.
 
-THE STATUS IS 400 `invalid_dag`, BECAUSE THE OWNER'S BRIEF FOR #64 SAID 400.
-The first cut of PR #65 returned 422 instead, the status of every other
-`validate_dag` refusal, on the grounds that the New Workflow screen mapped
-only 422 to "invalid". That revised a decision that was not the lane's to
-revise. The screen now maps 400 to "invalid" too
-(`src/__tests__/submit.workflow.refusal.test.ts` holds it), and the sibling
-refusals -- a cycle, a dangling dependency, an `input_from` source that is not
-a `depends_on` -- keep their 422.
+THE STATUS IS 422 `invalid_dag`, THE SAME AS EVERY SIBLING `validate_dag`
+REFUSAL: a cycle, a dangling dependency, an `input_from` source that is not a
+`depends_on`. One code, one status, so a caller that branches on either reads
+one family. The owner decided this on #64 on 2026-09-25. The 400 in the
+original brief was a mistake in the brief: the New Workflow screen
+(`apps/swarm-ui/src/SubmitWorkflow.tsx`) maps 422 to "invalid", and a 400
+would have been headed there as a failed API. Section 6 holds every
+`invalid_dag` refusal to that one status.
 
 A WORKFLOW-LEVEL `metadata.input_from` IS THE SAME DECLARATION BY ANOTHER
 DOOR. `submit_workflow` copies the workflow's `metadata` onto every step's
@@ -91,8 +91,8 @@ def _join(step_id: str, input_from: dict[str, str]) -> dict[str, Any]:
 
 
 def _assert_refused_before_anything_was_created(response, db, api_context) -> dict[str, Any]:
-    # 400, as the owner's brief for #64 specified. Not 422: see the header.
-    assert response.status_code == 400, response.text
+    # 422, the status of every invalid_dag refusal: see the header.
+    assert response.status_code == 422, response.text
     body = response.json()
     assert body["code"] == "invalid_dag", body
     assert _created(db) == [], (
@@ -426,3 +426,59 @@ def test_the_metadata_key_the_api_checks_is_the_one_the_worker_reads():
     from swarm_api import validation
 
     assert validation.INPUT_FROM_METADATA_KEY == worker_inputs.METADATA_KEY
+
+
+# --------------------------------------------------------------------------
+# 6. One error code, one status
+# --------------------------------------------------------------------------
+#
+# `invalid_dag` is one code, and it answers one status. The New Workflow
+# screen reads the status (`KIND_BY_STATUS` in SubmitWorkflow.tsx), a caller
+# reads the code, and both must land on "the request was invalid" for every
+# refusal in the family. So the input_from refusals are held against their
+# siblings, through the real HTTP surface, rather than against a number
+# restated here.
+
+def test_every_invalid_dag_refusal_answers_one_status(client):
+    submissions: dict[str, tuple[list[dict[str, Any]], dict[str, Any] | None]] = {
+        # the siblings, whose 422 predates #64
+        "cycle": (
+            [
+                {**_root("build"), "depends_on": ["test"]},
+                {**_root("test"), "depends_on": ["build"]},
+            ],
+            None,
+        ),
+        "dangling dependency": ([{**_root("build"), "depends_on": ["nowhere"]}], None),
+        "input_from source that is not a depends_on": (
+            [_root("scan-A"), {**_root("merge-1"), "input_from": {"scan-A": "notes.md"}}],
+            None,
+        ),
+        # the refusals #64 added
+        "two parents staging one filename": (
+            [
+                _root("scan-A"),
+                _root("scan-B"),
+                _join("merge-1", {"scan-A": "notes.md", "scan-B": "notes.md"}),
+            ],
+            None,
+        ),
+        "a traversing filename": ([_root("analyse"), _join("fix", {"analyse": "../x.md"})], None),
+        "a workflow-level collision": (
+            _roots_and_join(),
+            {"input_from": {"task_earlier_a": "notes.md", "task_earlier_b": "notes.md"}},
+        ),
+        "a malformed workflow-level declaration": (
+            _roots_and_join(),
+            {"input_from": ["task_earlier"]},
+        ),
+    }
+
+    answers: dict[str, tuple[int, Any]] = {}
+    for name, (steps, metadata) in submissions.items():
+        response = _post(client, steps, metadata=metadata)
+        answers[name] = (response.status_code, response.json().get("code"))
+
+    # Every submission was sent and answered, not only the first.
+    assert len(answers) == len(submissions) == 7
+    assert answers == {name: (422, "invalid_dag") for name in submissions}, answers
