@@ -228,7 +228,7 @@ One idea, five spellings:
 |---|---|---|
 | `swarm_common/models.py:333` `WorkflowStep.input_from` | `dict[str, str]` | step id |
 | `swarm-api/schemas.py:80` `WorkflowStepCreate.input_from` | `dict[str, str]` | step id |
-| `swarm-api/validation.py:358` `StepSpec.input_from` | `tuple[str, ...]` | step id, **no filenames** |
+| `swarm-api/validation.py` `StepSpec.input_from` | `Mapping[str, str]` | step id (was a tuple of ids with no filenames until #64) |
 | `task.metadata["input_from"]` | untyped | **task id** |
 | `swarm-ui/src/types.ts:1227` `WorkflowStep.input_from` | `string \| null` | -- |
 
@@ -252,9 +252,11 @@ what is inside it. That defensiveness is correct and would still be wanted; the
 request is about the fifth row of that table, and about the submission path that
 never gets validated at all.
 
-`StepSpec.input_from` being a *tuple of ids* is not sloppiness: `validate_dag`
-needs to know which step a file comes from, not which file. It is listed because
-it is a fourth shape somebody has to hold in their head while reading this.
+`StepSpec.input_from` was a *tuple of ids* because the dependency rule needs to
+know only which step a file comes from. That shape is also why the API could not
+see two parents staging one filename, a mistake that surfaced only after both
+parents had run. Since #64 it carries the filenames too, and `validate_dag`
+refuses that collision and any absolute or traversing filename at submission.
 
 ### Why: the failure it prevents
 
@@ -274,7 +276,11 @@ reject_reserved_metadata({"unit": "payments", "input_from": {"x": "y"}})
 `_build_task` then copies caller metadata verbatim (`service.py:205`,
 `metadata = dict(spec.metadata)`). So a plain `POST /v1/tasks` carrying
 `metadata.input_from` is stored as written and honoured by the worker, having
-passed none of the DAG checks.
+passed none of the DAG checks. A workflow's own `metadata.input_from` takes the
+same route onto every step that declares no `input_from` of its own, which
+always includes the root steps. Since #64 its filenames are checked at
+submission (`validate_workflow_input_from_metadata`), but the task ids it names
+still carry no dependency edge.
 
 Be precise about what that is and is not. It is **not** a tenant escape:
 `inputs.fetch_upstream_task` (`inputs.py:226-254`) refuses a task belonging to
