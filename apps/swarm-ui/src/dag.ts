@@ -33,6 +33,7 @@ import {
   type WorkflowStep,
   usageOf,
 } from './types'
+import type { StepUsage } from './api'
 
 // ---------------------------------------------------------------------------
 // Depth
@@ -345,6 +346,24 @@ const DUR_ROW_W = monoW(DUR_CHARS, T_MICRO)
 /** One `.node-num`: the 46px label column, its `--ctl-s2` gap, and a value. */
 const FIGURES_ROW_W = NUM_LABEL_W + CTL_S2 + monoW(FIGURE_CHARS, T_BODY)
 
+/**
+ * The longest `.node-src` line, in characters: `cost · tokens from result`, 25.
+ *
+ * WF-5's source note, ON A LINE OF ITS OWN BECAUSE THE VALUE COLUMN HAS NO ROOM
+ * FOR IT (#160 review). It first shared the figure's row, in a column budgeted
+ * for a 20-character figure and nothing else: `from result` is 11 characters
+ * of --t-micro (79.5px) plus a `--ctl-s1` gap, so beside `21.4k in · 3.2k out`
+ * it showed as `…`, and past 173px the figure itself was clipped. The two ways
+ * to pay for it were width -- about 84px on every Figures-tier node, which
+ * takes `STAGE_FITS` from 3 to 2 and sends a three-wide stage to `details`,
+ * where no figure is drawn at all -- or one micro row of height. Height is the
+ * axis this canvas has not run out of, so the note has a row, and the row
+ * names the figures it is about rather than sitting beside them.
+ */
+const SRC_CHARS = 25
+/** `.node-src` at --t-micro. Well inside the content box; counted anyway. */
+const SRC_ROW_W = monoW(SRC_CHARS, T_MICRO)
+
 /** `--ctl-s1`, the gap between a node card's flex children. Declared up here
  *  rather than beside `depLines` because `nodeHeightAt` sums it at module
  *  initialisation, and a `const` read before its own declaration is a
@@ -456,9 +475,15 @@ export const TIER_DROPS: Readonly<Record<ZoomTier, readonly string[]>> = {
  *   .node-id      21 + .node-line 17.4 ...... 38.4
  *   .node-meta    17.4 ...................... 17.4
  *   .node-nums    8 + 4 x 22 + 3 x 2 ........ 102
- *   3 x --ctl-s1 between four children ...... 12
+ *   .node-src     17.4 ...................... 17.4
+ *   4 x --ctl-s1 between five children ...... 16
  *                                            -----
- *                                             223.8, ceil 224
+ *                                             245.2, ceil 246
+ *
+ * `.node-src` IS RESERVED ON EVERY FIGURES-TIER NODE, empty unless a figure is
+ * the result's (WF-5; `SRC_CHARS` has why it is a row). Whether a figure is the
+ * result's is known only once the attempt read lands, and a card that grew a
+ * row at that moment would push every level beneath it down the page.
  *
  * `details` drops `.node-nums` and gains a row, because the duration moves off
  * `.node-line` onto one of its own -- which is the trade that makes the tier
@@ -467,13 +492,13 @@ export const TIER_DROPS: Readonly<Record<ZoomTier, readonly string[]>> = {
  *
  * THE 42px STOP STRIP IS RESERVED AT EVERY TIER. A card that grew by 39px the
  * moment its step started running would shove every level beneath it down the
- * page mid-poll, and that is as true of a 97px card as of a 224px one.
+ * page mid-poll, and that is as true of a 97px card as of a 246px one.
  */
 export function nodeHeightAt(tier: ZoomTier): number {
   const rows =
     tier === 'figures'
-      ? // .node-id, .node-line (state AND duration), .node-meta, .node-nums
-        [ROW_BODY_H, ROW_MICRO_H, ROW_MICRO_H, NUMS_H]
+      ? // .node-id, .node-line (state AND duration), .node-meta, .node-nums, .node-src
+        [ROW_BODY_H, ROW_MICRO_H, ROW_MICRO_H, NUMS_H, ROW_MICRO_H]
       : tier === 'details'
         ? // .node-id, .node-line (state), .node-dur, .node-meta
           [ROW_BODY_H, ROW_MICRO_H, ROW_MICRO_H, ROW_MICRO_H]
@@ -526,7 +551,7 @@ export function nodeWidthAt(tier: ZoomTier, steps: readonly WorkflowStep[]): num
     NODE_W,
     Math.ceil(
       NODE_CHROME_W +
-        Math.max(nameW + PR_TAG_W, STATE_AND_DUR_ROW_W, profileW, FIGURES_ROW_W),
+        Math.max(nameW + PR_TAG_W, STATE_AND_DUR_ROW_W, profileW, FIGURES_ROW_W, SRC_ROW_W),
     ),
   )
 }
@@ -610,7 +635,8 @@ export function nodeWidthAt(tier: ZoomTier, steps: readonly WorkflowStep[]): num
  * `layoutOf` has already committed to, overlaps the node beneath it.
  */
 export const NODE_W = Math.ceil(
-  NODE_CHROME_W + Math.max(STATE_AND_DUR_ROW_W, FIGURES_ROW_W),
+  // `SRC_ROW_W` (180.6) never binds; it is here so that it would if it grew.
+  NODE_CHROME_W + Math.max(STATE_AND_DUR_ROW_W, FIGURES_ROW_W, SRC_ROW_W),
 )
 
 /**
@@ -627,11 +653,14 @@ export const NODE_W = Math.ceil(
  *   .node-line    --t-micro / --lh-micro (12 x 1.45) . 17.4
  *   .node-meta    --t-micro / --lh-micro ............. 17.4
  *   .node-nums    8 pad + 4 x (21 + 1) + 3 x 2 ...... 102
- *   3 x --ctl-s1 gap between the four children ....... 12
+ *   .node-src     --t-micro / --lh-micro ............. 17.4
+ *   4 x --ctl-s1 gap between the five children ....... 16
  *                                                    -----
- *                                                     223.8
+ *                                                     245.2
  *
- * 224 is that, rounded up by the one pixel the fractional line boxes need.
+ * 246 is that, rounded up by the one pixel the fractional line boxes need. It
+ * was 224 until `.node-src` took the WF-5 source note off the figures' own
+ * rows (`SRC_CHARS` has why that row is height rather than width).
  *
  * THE `+ 1` IN THE FIGURES TERM IS THE ABSENCE RULE, AND IT IS IN EVERY ROW
  * NOW. `.node-num dd` declares a TRANSPARENT dashed bottom border and
@@ -720,44 +749,56 @@ function depCharsPerLine(w: number): number {
  * because some other node's slack absorbed it. Per-level heights took the
  * slack away, which is how it surfaced.
  *
- * So the wrap is simulated rather than approximated: tokens are packed
+ * So the wrap is simulated rather than approximated: units are packed
  * greedily, a space between them, the `↑ ` prefix costing two columns of the
- * first line. A single token longer than the line is the one case the browser
- * DOES break mid-word (`.node-dep` sets `overflow-wrap: anywhere`), so it is
- * counted by division.
+ * first line.
+ *
+ * THE UNITS ARE `depUnits`, PACKED AS GIVEN (WF-19). Each is an inline-block in
+ * the rendered line, so the browser now breaks ONLY BETWEEN units -- never at
+ * a hyphen inside a step id, and never at a space inside a filename. This
+ * function used to split `join(', ')` on spaces, which was right while the
+ * browser broke at every space and is wrong now: a filename with a space in it
+ * is one box on screen, and counting it as two tokens let its first half fit a
+ * line the box does not. A unit longer than a whole line still wraps inside its
+ * own box (`.node-dep` keeps `overflow-wrap: anywhere`), so its own lines are
+ * counted by division, as before.
+ *
+ * AND A UNIT LONGER THAN A LINE IS A BOX AS WIDE AS THE LINE, which the first
+ * version of this packing missed (#160 review). An inline-block is
+ * shrink-to-fit, and `overflow-wrap: anywhere` puts its minimum at one
+ * character, so a unit whose text is wider than the line takes exactly the
+ * line's width: it cannot sit after `↑ ` or after any unit before it, and no
+ * unit after it can sit on its last line. This counted the text as flowing on
+ * -- the next unit sharing the remainder of the long one's last line, and a
+ * long FIRST unit fitting after the arrow -- and came out a line short in
+ * both cases, 18px of dependency text in the stop strip.
  */
-function depLines(items: readonly string[], perLine: number): number {
-  // SPLIT ON THE SPACES THE BROWSER BREAKS AT, which is what the old
-  // `deps.map(d => d + ',')` was doing implicitly: a step id cannot contain a
-  // space, so one id was one token. A dependency that STAGES A FILE prints as
-  // `plan (plan.md)` (see `depItems`), which is two tokens, and a filename is
-  // not pattern-checked by the API and may contain spaces of its own. Runs of
-  // whitespace collapse in the rendered line, so empty tokens are dropped
-  // rather than counted as a column.
-  const tokens = items
-    .join(', ')
-    .split(' ')
-    .filter((t) => t !== '')
+function depLines(units: readonly string[], perLine: number): number {
+  // Empty units are dropped rather than counted as a column; `depUnits` makes
+  // none, and a unit with no text draws no box.
+  const tokens = units.filter((t) => t !== '')
   let lines = 1
-  let used = 2 // the "↑ " prefix
-  let firstOnLine = true
+  let used = 2 // the "↑ " prefix, so no line this list draws is ever empty
+  let first = true
   for (const tok of tokens) {
     if (tok.length > perLine) {
-      // Breaks mid-word onto lines of its own, then leaves a remainder behind.
-      if (!firstOnLine) lines += 1
-      lines += Math.ceil(tok.length / perLine) - 1
-      used = tok.length % perLine || perLine
-      firstOnLine = false
-      continue
-    }
-    const need = (firstOnLine ? 0 : 1) + tok.length
-    if (used + need <= perLine) {
-      used += need
+      // A box the width of the line: it starts a line of its own -- the one
+      // it is on always holds something, if only the arrow -- wraps inside
+      // itself, and fills its last line, so whatever follows starts another.
+      lines += Math.ceil(tok.length / perLine)
+      used = perLine
     } else {
-      lines += 1
-      used = tok.length
+      // The space before a unit that moves to a new line collapses at the end
+      // of the old one, so a unit that wraps costs only its own length there.
+      const need = (first ? 0 : 1) + tok.length
+      if (used + need <= perLine) {
+        used += need
+      } else {
+        lines += 1
+        used = tok.length
+      }
     }
-    firstOnLine = false
+    first = false
   }
   return lines
 }
@@ -791,15 +832,17 @@ export function heightOf(
   // canvas has run out of. So it survives every tier, and it wraps at whatever
   // width the tier gave the card.
   //
-  // `depItems`, NOT `depends_on`. The line names the file a data edge stages
+  // `depUnits`, NOT `depends_on`. The line names the file a data edge stages
   // (`plan (plan.md)`), and a height counted from the bare ids would be short by
   // every line the filenames wrap onto -- the overlap defect this function
   // exists to prevent, arriving through the one field that just got longer.
+  // And the UNITS rather than the joined text, because they are what the
+  // browser keeps whole (WF-19): `StepNode` draws exactly this list.
   return (
     nodeHeightAt(tier) +
     GAP +
     depLines(
-      depItems(step).map((d) => d.text),
+      depUnits(step).map((u) => u.text),
       depCharsPerLine(width),
     ) *
       DEP_LINE_H
@@ -870,6 +913,53 @@ export function depItems(step: WorkflowStep): DepItem[] {
     const file = inputFileOf(step, parent)
     return { parent, file, text: file === null ? parent : `${parent} (${file})` }
   })
+}
+
+/**
+ * One unbreakable piece of the dependency line: a parent id, or the `(file)`
+ * that parent hands over.
+ *
+ * WHY THE LINE IS DRAWN IN UNITS (WF-19, epic #83). The line wrapped wherever
+ * the browser liked, and `overflow-wrap: anywhere` plus the UA's own break
+ * opportunities put the breaks at HYPHENS: `check-` / `3`, `(cc-` /
+ * `checkpoint.md`. A step id split across two lines is two things a reader has
+ * to rejoin, and a copied half is not an id. Each unit is now an inline-block
+ * (`.node-dep-item`), which a line may move to the next line but not split --
+ * and one longer than a whole line still wraps inside its own box, so nothing
+ * is ever truncated (the pinned `.node-dep` rule is untouched).
+ *
+ * THE SEPARATING COMMA LIVES INSIDE THE UNIT IT FOLLOWS, so `plan (plan.md),
+ * fencing` is `plan`, `(plan.md),`, `fencing`: a comma never starts a line.
+ *
+ * ONE LIST FOR THE MARKUP AND THE HEIGHT. `StepNode` draws these units and
+ * `heightOf` packs these units, so the two cannot disagree about where a line
+ * breaks. That is why the height no longer splits the joined text on spaces: a
+ * filename is not pattern-checked by the API and may contain a space, and a
+ * model that counted two tokens where the browser now keeps one box would put
+ * the height out of step with the render again.
+ */
+export interface DepUnit {
+  readonly parent: string
+  readonly kind: 'parent' | 'file'
+  /** The file, for a `file` unit; null for a parent id. */
+  readonly file: string | null
+  /** Exactly what the unit prints, trailing comma included. */
+  readonly text: string
+}
+
+export function depUnits(step: WorkflowStep): DepUnit[] {
+  const items = depItems(step)
+  const units: DepUnit[] = []
+  items.forEach((d, i) => {
+    const comma = i < items.length - 1 ? ',' : ''
+    if (d.file === null) {
+      units.push({ parent: d.parent, kind: 'parent', file: null, text: `${d.parent}${comma}` })
+      return
+    }
+    units.push({ parent: d.parent, kind: 'parent', file: null, text: d.parent })
+    units.push({ parent: d.parent, kind: 'file', file: d.file, text: `(${d.file})${comma}` })
+  })
+  return units
 }
 
 /**
@@ -1493,6 +1583,27 @@ export interface DagEdge {
   readonly y1: number
   readonly x2: number
   readonly y2: number
+  /**
+   * The offset lane an edge that SKIPS A LEVEL descends on, or null for an
+   * edge between two adjacent levels. See `laneRouter`.
+   */
+  readonly lane: EdgeLane | null
+}
+
+/**
+ * Where a skip-level edge runs past the levels between its two ends.
+ *
+ * `x` is a column free of every card and band on those levels, and of every
+ * other lane over them; `top` is the top of the first level it passes and
+ * `bottom` the bottom of the last. `edgePath` curves into the lane through the
+ * gap under the parent's level, runs straight down it, and curves out through
+ * the gap over the child's -- so the only part of the edge that crosses a
+ * level is a line nothing is drawn on.
+ */
+export interface EdgeLane {
+  readonly x: number
+  readonly top: number
+  readonly bottom: number
 }
 
 /**
@@ -1557,6 +1668,130 @@ export interface DagLayout {
    * that call would still have said it was a band.
    */
   readonly wide: readonly boolean[]
+}
+
+// ---------------------------------------------------------------------------
+// Edges that skip a level -- routed around the cards between (WF-4)
+// ---------------------------------------------------------------------------
+//
+// AN EDGE THAT SKIPS A LEVEL USED TO RUN STRAIGHT THROUGH IT. Every edge was
+// one cubic from its parent's foot to its child's head, so a dependency from
+// level 1 to level 3 crossed level 2 wherever the straight line happened to
+// fall -- and cards are opaque HTML over the edge layer. Measured on the live
+// 30-step run: `synthesis` depends directly on six of a 13-step stage, the
+// stage is a band, and all six edges ran down the canvas's middle, collinear
+// with the band's edges into `rollup-b` and hidden behind that card. Six real
+// dependencies were not on the screen at all. design-system.md §5.3 said an
+// edge may pass UNDER a node; the owner's decision (epic #83) is that it may
+// not: every dependency is visible.
+//
+// SO A SKIP-LEVEL EDGE RUNS ON A LANE OF ITS OWN. Between its two ends it
+// descends on a column that is clear of every card and band on the levels it
+// passes, and clear of every other lane over those levels; it reaches the lane
+// through the gap under its parent's level and leaves it through the gap over
+// its child's, where nothing is drawn. An edge between adjacent levels is
+// unchanged -- it only ever crossed a gap.
+//
+// WHERE A LANE GOES, in order of preference: in a gutter between two cards on
+// every level it passes (the `SIB_GAP` gutters, 28px, hold three lanes), then
+// beside the widest of those levels, then past the right edge of everything
+// drawn, which widens the canvas. The nearest free lane to the middle of the
+// edge's two ends wins, so a lane stays as close as it can to where the
+// straight line was. Edges that SHARE BOTH ENDS -- every member of a collapsed
+// band is drawn from the band -- share one lane, because they are drawn as one
+// path and `edgeKinds` paints them as one edge.
+
+/** Clear space between a lane and the side of any card or band it passes.
+ *  The edge's halo is 5px wide (styles.css `.wf-edge-halo`), so 8px leaves a
+ *  visible 5.5px of canvas between the line and the card. */
+export const LANE_CLEAR = 8
+
+/** How far apart two lanes over the same levels are drawn: the halo's 5px and
+ *  one more, so two parallel lanes read as two lines, not one thick one. */
+export const LANE_SEP = 6
+
+/** A horizontal stretch a lane may not run through. Mutable only while merged. */
+interface Span1D {
+  from: number
+  to: number
+}
+
+/**
+ * The lane picker for one layout. `blockedAt(level)` is what is drawn across
+ * that level; `levelTop` and `levelBottom` are its vertical extent.
+ *
+ * Deterministic: the same edges in the same order get the same lanes, because
+ * `layoutOf` walks levels, children and parents in the steps' own order.
+ */
+function laneRouter(opts: {
+  blockedAt: (level: number) => readonly Span1D[]
+  levelTop: readonly number[]
+  levelBottom: readonly number[]
+}): (key: string, fromLevel: number, toLevel: number, x1: number, x2: number) => EdgeLane | null {
+  const memo = new Map<string, EdgeLane>()
+  const taken: { x: number; first: number; last: number }[] = []
+  return (key, fromLevel, toLevel, x1, x2) => {
+    if (toLevel - fromLevel < 2) return null
+    const seen = memo.get(key)
+    if (seen !== undefined) return seen
+    const first = fromLevel + 1
+    const last = toLevel - 1
+
+    // Everything drawn across the levels the lane passes, merged.
+    const spans: Span1D[] = []
+    for (let l = first; l <= last; l++) for (const s of opts.blockedAt(l)) spans.push({ from: s.from, to: s.to })
+    spans.sort((a, b) => a.from - b.from)
+    const merged: Span1D[] = []
+    for (const s of spans) {
+      const top = merged[merged.length - 1]
+      if (top !== undefined && s.from <= top.to) top.to = Math.max(top.to, s.to)
+      else merged.push(s)
+    }
+
+    // Every lane that runs over any of the same levels.
+    const others = taken.filter((t) => t.first <= last && t.last >= first)
+    const free = (x: number) => others.every((t) => Math.abs(t.x - x) >= LANE_SEP - 0.01)
+
+    // The candidate columns: centred in each gutter and stepping out from the
+    // centre, then out from each side of the whole.
+    const candidates: number[] = []
+    for (let i = 0; i + 1 < merged.length; i++) {
+      const lo = merged[i]!.to + LANE_CLEAR
+      const hi = merged[i + 1]!.from - LANE_CLEAR
+      if (hi < lo) continue
+      const mid = (lo + hi) / 2
+      candidates.push(mid)
+      for (let k = 1; mid - k * LANE_SEP >= lo || mid + k * LANE_SEP <= hi; k++) {
+        if (mid - k * LANE_SEP >= lo) candidates.push(mid - k * LANE_SEP)
+        if (mid + k * LANE_SEP <= hi) candidates.push(mid + k * LANE_SEP)
+      }
+    }
+    const leftmost = merged[0]?.from ?? (x1 + x2) / 2
+    const rightmost = merged[merged.length - 1]?.to ?? (x1 + x2) / 2
+    for (let k = 0, x = leftmost - LANE_CLEAR; x >= PAD / 2; k++, x = leftmost - LANE_CLEAR - k * LANE_SEP) {
+      candidates.push(x)
+    }
+    // Past the right edge there is always room: one more column than there are
+    // lanes already over these levels is enough to find a free one.
+    for (let k = 0; k <= others.length; k++) candidates.push(rightmost + LANE_CLEAR + k * LANE_SEP)
+
+    const target = (x1 + x2) / 2
+    let best: number | null = null
+    for (const x of candidates) {
+      if (!free(x)) continue
+      if (best === null || Math.abs(x - target) < Math.abs(best - target) || (Math.abs(x - target) === Math.abs(best - target) && x < best)) {
+        best = x
+      }
+    }
+    // Unreachable -- the right-hand columns outnumber the lanes they could
+    // collide with -- but a lane is never invented at the target, which is the
+    // one place known to be blocked.
+    const x = best ?? rightmost + LANE_CLEAR + (others.length + 1) * LANE_SEP
+    const lane: EdgeLane = { x, top: opts.levelTop[first]!, bottom: opts.levelBottom[last]! }
+    taken.push({ x, first, last })
+    memo.set(key, lane)
+    return lane
+  }
 }
 
 /** No stage opened. Hoisted so the default argument is not a fresh allocation
@@ -1735,6 +1970,28 @@ export function layoutOf(
     }
   }
 
+  // WHERE A SKIP-LEVEL EDGE RUNS (WF-4; `laneRouter` says why). What each level
+  // draws across the canvas: a wide stage's band spans all of it, open or not;
+  // any other level is its cards.
+  const levelOfStep = new Map<string, number>()
+  levels.forEach((level, lvl) => level.forEach((s) => levelOfStep.set(s.step_id, lvl)))
+  const drawnAt: Span1D[][] = levels.map((_, lvl) =>
+    wide[lvl]
+      ? [{ from: PAD, to: PAD + widest }]
+      : nodes.filter((n) => n.level === lvl).map((n) => ({ from: n.x, to: n.x + nodeW })),
+  )
+  const route = laneRouter({
+    blockedAt: (lvl) => drawnAt[lvl] ?? [],
+    levelTop,
+    levelBottom: levelTop.map((t, lvl) => t + levelH[lvl]!),
+  })
+  // Edges that share both ends -- every member of a collapsed band is drawn
+  // from the band -- are one path, so they are routed as one.
+  const endOf = (id: string): string => {
+    const lvl = levelOfStep.get(id)
+    return lvl !== undefined && wide[lvl] && !open(lvl) ? `band:${lvl}` : `step:${id}`
+  }
+
   const edges: DagEdge[] = []
   for (const level of levels) {
     for (const child of level) {
@@ -1758,10 +2015,20 @@ export function layoutOf(
           y1: from.bottom,
           x2: to.cx,
           y2: to.top,
+          lane: route(
+            `${endOf(parentId)}->${endOf(child.step_id)}`,
+            levelOfStep.get(parentId) ?? 0,
+            levelOfStep.get(child.step_id) ?? 0,
+            from.cx,
+            to.cx,
+          ),
         })
       }
     }
   }
+  // A lane routed past the right edge of everything drawn widens the canvas by
+  // exactly what it needs; every other lane is inside the width already.
+  const laneRight = Math.max(0, ...edges.map((e) => (e.lane === null ? 0 : e.lane.x + PAD)))
 
   return {
     nodes,
@@ -1770,7 +2037,8 @@ export function layoutOf(
     levelTop,
     // WIDTH IS THE WIDEST LEVEL, not the level count: a fan-out is what makes
     // this canvas wide now, and a chain is exactly one node wide at any depth.
-    width: PAD * 2 + widest,
+    // Or the rightmost skip-level lane, when one had to run past everything.
+    width: Math.max(PAD * 2 + widest, laneRight),
     // HEIGHT IS THE SUM OF THE BANDS, not the count times a shared height --
     // the bands are no longer all the same height, so multiplying would either
     // clip the last one or leave a void under it.
@@ -1942,10 +2210,28 @@ export function stageCensus(
  * `k` is half the vertical span, floored at 24 so a sibling-to-sibling edge
  * across one LEVEL_GAP still bows instead of running straight through whatever
  * is between the two cards.
+ *
+ * AN EDGE THAT SKIPS A LEVEL IS THREE PIECES (WF-4): the same S-curve through
+ * the gap under its parent's level, landing on its lane at the top of the
+ * first level it passes; a straight run down the lane, which `laneRouter` kept
+ * clear of every card, band and other lane; and the S-curve again through the
+ * gap over its child. Each curve stays inside its gap -- its control points
+ * sit at its own vertical midpoint, so it never rises above its start or
+ * drops below its end -- and so no part of the edge is drawn under a card.
  */
 export function edgePath(e: DagEdge): string {
-  const k = Math.max(24, (e.y2 - e.y1) / 2)
-  return `M ${e.x1} ${e.y1} C ${e.x1} ${e.y1 + k}, ${e.x2} ${e.y2 - k}, ${e.x2} ${e.y2}`
+  if (e.lane === null) {
+    const k = Math.max(24, (e.y2 - e.y1) / 2)
+    return `M ${e.x1} ${e.y1} C ${e.x1} ${e.y1 + k}, ${e.x2} ${e.y2 - k}, ${e.x2} ${e.y2}`
+  }
+  const l = e.lane
+  const into = (l.top - e.y1) / 2
+  const out = (e.y2 - l.bottom) / 2
+  return (
+    `M ${e.x1} ${e.y1} C ${e.x1} ${e.y1 + into}, ${l.x} ${l.top - into}, ${l.x} ${l.top}` +
+    ` L ${l.x} ${l.bottom}` +
+    ` C ${l.x} ${l.bottom + out}, ${e.x2} ${e.y2 - out}, ${e.x2} ${e.y2}`
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -2141,31 +2427,126 @@ export interface WorkflowSpend {
   readonly usd: number | null
   /** Steps whose task reported a finite cost. */
   readonly covered: number
+  /** Of `covered`, the steps whose figure is their result's rather than their attempts'. */
+  readonly fromResult: number
   /** Steps whose task was joined at all -- the most that could have reported. */
   readonly joined: number
   readonly steps: number
 }
 
+/**
+ * What a step's RESULT says it cost, from `result_summary.runner.usage`.
+ *
+ * THE SECOND SOURCE, AND IT MEANS SOMETHING DIFFERENT FROM THE FIRST (WF-5,
+ * epic #83). The attempt documents are the telemetry: one typed `cost_usd` and
+ * four token counts per attempt, summed per step by `loadWorkflowUsage` -- for
+ * the twelve tasks the board samples. The result summary is what the worker's
+ * `finish()` wrote for the attempt that finished: an untyped dict describing
+ * THAT attempt only. The board already held it for every joined task, printed
+ * "not sampled" for every step outside the sample, and summed it into the
+ * row's total anyway -- so a row's total disagreed with its own nodes.
+ *
+ * The owner's decision: where telemetry is not sampled, show the result's
+ * figure, and SAY WHERE IT CAME FROM ("from result"), because the two sources
+ * are not the same measurement. Every key is read through the same finite-
+ * number guard as everything else here: a missing key is not a zero.
+ */
+export interface ResultUsage {
+  readonly usd: number | null
+  readonly inputTokens: number | null
+  readonly outputTokens: number | null
+}
+
+export function resultUsageOf(task: Task): ResultUsage | null {
+  const usage = usageOf(task)
+  if (usage === null) return null
+  const n = (key: string): number | null => {
+    const v = usage[key]
+    return typeof v === 'number' && Number.isFinite(v) ? v : null
+  }
+  const out = { usd: n('total_cost_usd'), inputTokens: n('input_tokens'), outputTokens: n('output_tokens') }
+  return out.usd === null && out.inputTokens === null && out.outputTokens === null ? null : out
+}
+
+/**
+ * The result's figures for a step whose task has FINISHED, and null for any
+ * other -- THE ONE BORROWING RULE, for the node, the Table, the row's total
+ * and the inspector alike.
+ *
+ * A result belongs to the attempt that wrote it, and only a finished task's
+ * result is its newest attempt's. `control.py`'s `fail_retryably` writes the
+ * failed attempt's `result_summary` and sends the task back to READY, so a
+ * step on its second attempt carries its FIRST attempt's result while it runs
+ * again. The inspector already borrowed only for the newest attempt of a
+ * finished task; the board borrowed for every state, and drew a running step's
+ * old figure as its cost -- under a note saying it was what the worker wrote
+ * when "this attempt" finished, and in a total no inspector could account for.
+ */
+export function finishedResultOf(task: Task): ResultUsage | null {
+  return TERMINAL_STATES.has(task.state) ? resultUsageOf(task) : null
+}
+
+/** Where a step's cost figure came from. */
+export type FigureSource = 'telemetry' | 'result'
+
+/**
+ * ONE STEP'S COST, BY THE ONE RULE THE NODE, THE TABLE AND THE ROW'S TOTAL
+ * SHARE: the attempt telemetry where it carries a cost, otherwise the result's
+ * -- and the result's only once the task has finished (`finishedResultOf`),
+ * which is when the inspector offers it too.
+ *
+ * `telemetry` is the step's rolled-up attempts when this board read them, and
+ * undefined when it did not (outside the sample, or the read failed). Null
+ * when neither source has a figure -- which is an absence, never a zero.
+ */
+export function stepCostOf(
+  task: Task,
+  telemetry: StepUsage | undefined,
+): { usd: number; from: FigureSource } | null {
+  if (
+    telemetry !== undefined &&
+    telemetry.attemptsWithCost > 0 &&
+    typeof telemetry.costUsd === 'number' &&
+    Number.isFinite(telemetry.costUsd)
+  ) {
+    return { usd: telemetry.costUsd, from: 'telemetry' }
+  }
+  const result = finishedResultOf(task)?.usd ?? null
+  return result === null ? null : { usd: result, from: 'result' }
+}
+
+/**
+ * The row's total, summed from the SAME per-step figures its nodes draw.
+ *
+ * `telemetry` is the board's attempt read once it has landed, null before it
+ * has (or when it failed). Before it lands every step's figure is its result's,
+ * which is what the nodes would show too; once it lands, a sampled step's
+ * figure is its attempts' sum -- every attempt, where the result describes only
+ * the one that finished -- and the total moves with its nodes rather than
+ * staying on the other source (WF-5).
+ */
 export function workflowSpend(
   steps: readonly WorkflowStep[],
   taskById: ReadonlyMap<string, Task> | null,
+  telemetry: ReadonlyMap<string, StepUsage> | null = null,
 ): WorkflowSpend {
   let usd: number | null = null
   let covered = 0
+  let fromResult = 0
   let joined = 0
 
   for (const step of steps) {
     const task = step.task_id ? (taskById?.get(step.task_id) ?? null) : null
     if (!task) continue
     joined += 1
-    const usage = usageOf(task)
-    const raw = usage?.['total_cost_usd']
-    if (typeof raw !== 'number' || !Number.isFinite(raw)) continue
+    const cost = stepCostOf(task, telemetry?.get(task.id))
+    if (cost === null) continue
     covered += 1
-    usd = (usd ?? 0) + raw
+    if (cost.from === 'result') fromResult += 1
+    usd = (usd ?? 0) + cost.usd
   }
 
-  return { usd, covered, joined, steps: steps.length }
+  return { usd, covered, fromResult, joined, steps: steps.length }
 }
 
 // ---------------------------------------------------------------------------
