@@ -135,7 +135,8 @@ describe('B2: the attempt timeline is a view mode, not a screen', () => {
     const drawer = document.querySelector('.ctl-drawer')
     expect(drawer, 'the agent inspector did not open').not.toBeNull()
     const panes = [...drawer!.querySelectorAll('[role="tab"]')].map((b) => b.textContent?.trim())
-    expect(panes).toEqual(['Detail', 'Attempts'])
+    // #184: `Details` (was `Detail`) and a third pane, `Artifacts`.
+    expect(panes).toEqual(['Details', 'Attempts', 'Artifacts'])
     expect(
       drawer!.querySelector('[role="tab"][aria-selected="true"]')?.textContent?.trim(),
     ).toBe('Attempts')
