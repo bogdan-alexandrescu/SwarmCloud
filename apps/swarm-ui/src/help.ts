@@ -629,8 +629,10 @@ const SPECS: Record<TopicId, TopicSpec> = {
   // said a keyless tenant's provider runtime simply waits. Admission now asks
   // scheduler/credentials.py `credential_for`, which also admits a keyless
   // tenant on a subscription account it owns or is lent, for a profile that
-  // takes a subscription token, on a deployment with a broker; it parks
-  // CREDENTIAL_MISSING only when neither exists. The paragraph says both.
+  // takes a subscription token, on a deployment with a broker, and parks the
+  // task on a missing credential only when neither exists. The paragraph
+  // says both. (The park reason's own spelling is a frozen value, which
+  // "help.ts restates no frozen value" keeps out of this file.)
   //
   // The budget paragraph is the account the table note used to print as
   // `no monthly_budget_usd column · no cost attribution source`, from the 422
