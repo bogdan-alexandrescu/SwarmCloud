@@ -24,8 +24,21 @@ about a bucket it had never managed to read, with the real reason already in
 being a bucket shared with another team, so that false sentence can be printed
 about theirs.
 
-The three cases below are the three answers that have to stay distinguishable:
-versioning on, versioning off, and could not look.
+The cases below are the answers that have to stay distinguishable: versioning
+on, versioning off, a read that returned no value, and could not look.
+
+THE FAKE ANSWERS LIKE THE REAL `gcloud storage`, NOT LIKE THE SCRIPT EXPECTS.
+Until 2026-09-25 the fake matched whatever field the script asked for
+(`versioning.enabled`) and modelled "off" as an empty answer. Real
+`gcloud storage` names the field `versioning_enabled`, prints True or False for
+it, and answers the dotted path with an empty string -- so the script read
+nothing, fell through to its catch-all, and printed "object versioning is OFF"
+on every bootstrap about a state bucket whose versioning_enabled is True. The
+test passed throughout, because the fake restated the script's belief instead of
+gcloud's behaviour. Measured the same day with
+`gcloud storage buckets list --format='value(name,versioning_enabled)'`: True or
+False for every bucket this repository manages; `value(versioning.enabled)` on
+the same bucket prints nothing.
 
 The fake fails only the versioning read and lets the existence read succeed. That
 is the shape that reaches the check under test; the point being asserted is what
@@ -57,20 +70,22 @@ pytestmark = pytest.mark.skipif(
 
 
 def _fake_gcloud(versioning: str) -> str:
-    """A gcloud whose versioning read answers `versioning`.
+    """A gcloud whose `versioning_enabled` read answers `versioning`.
 
     `describe --format='value(name)'` (does the bucket exist) always succeeds, so
     the script does not try to create anything. The versioning read is the one
-    the cases differ on.
+    the cases differ on. The dotted `versioning.enabled` path answers empty, as
+    real `gcloud storage` does, so a script reading the wrong field is caught.
     """
     return (
         "#!/usr/bin/env bash\n"
         "set -euo pipefail\n"
         'args="$*"\n'
         'case "${args}" in\n'
-        "  *versioning.enabled*)\n"
+        "  *versioning_enabled*)\n"
         f"{versioning}\n"
         "    ;;\n"
+        "  *versioning.enabled*) echo \"\" ;;\n"
         '  *"storage buckets describe"*) echo "'
         + BUCKET
         + '" ;;\n'
@@ -81,7 +96,9 @@ def _fake_gcloud(versioning: str) -> str:
 
 
 ANSWERS_TRUE = '    echo "True"'
-ANSWERS_FALSE = '    echo ""'
+ANSWERS_FALSE = '    echo "False"'
+# The read succeeded and printed nothing: not a measurement either way.
+ANSWERS_NOTHING = '    echo ""'
 # gcloud's real shape for a dead session, and the exit status is the same 1 a
 # genuine "versioning is off" would have produced through the old pipeline.
 CANNOT_LOOK = """    cat >&2 <<'MSG'
@@ -184,3 +201,17 @@ def test_a_read_that_did_not_answer_is_not_reported_as_versioning_off(tmp_path) 
     # Not fatal: an unreadable versioning flag is not a reason to refuse to
     # bootstrap, and the old code did not treat it as one either.
     assert proc.returncode == 0, transcript
+
+
+def test_a_read_that_returned_no_value_is_not_reported_as_versioning_off(tmp_path) -> None:
+    """gcloud answered, but with nothing -- which is what the old dotted field
+    name got every time. An empty value establishes nothing about the bucket."""
+    proc = _bootstrap(tmp_path, _fake_gcloud(ANSWERS_NOTHING))
+    transcript = proc.stdout + proc.stderr
+
+    assert proc.returncode == 0, transcript
+    assert "is OFF" not in transcript, (
+        "an empty answer must never be rendered as a measurement:\n" + transcript
+    )
+    assert "object versioning is on" not in transcript, transcript
+    assert "returned no versioning_enabled value" in transcript, transcript
