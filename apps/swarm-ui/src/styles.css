@@ -2131,8 +2131,10 @@ button.node:focus-visible { outline: 2px solid var(--info); outline-offset: 2px;
    (WF-19). The line broke ids at their hyphens (`check-` / `3`). No max-width:
    an inline-block's shrink-to-fit width is already capped at the line, so a
    unit longer than a whole line still wraps INSIDE its own box through the
-   rule above, and nothing is truncated. No U+2011 either: a copied id still
-   pastes as the id. `heightOf` packs the same units (`depUnits`). */
+   rule above, and nothing is truncated. Such a unit is exactly as wide as the
+   line, so it shares its lines with nothing, which `depLines` counts. No
+   U+2011 either: a copied id still pastes as the id. `heightOf` packs the
+   same units (`depUnits`). */
 .node-dep-item { display: inline-block; }
 /* A SENTENCE, never a numeral. Dashed underline so it reads as "there is no
    figure here" rather than as a small figure. */
@@ -2199,13 +2201,23 @@ button.node:focus-visible { outline: 2px solid var(--info); outline-offset: 2px;
 /* A read still in flight is NOT an absence: it has made no claim about the
    platform at all, so it gets a moving placeholder instead of a sentence. */
 .node-num.is-reading dd { color: var(--text-faint); }
-/* A FIGURE FROM THE STEP'S RESULT, NOT ITS ATTEMPTS (WF-5): the value, then
-   `from result`, on the one line `NODE_H` reserved. The value never shrinks;
-   on a card too narrow for both it is the NOTE that ellipses, never the
-   number (the whole of it is the row's title). */
-.node-num.is-sourced dd { display: flex; align-items: baseline; gap: var(--ctl-s1); text-overflow: clip; }
-.node-num-v { flex: none; }
-.node-num.is-sourced .wf-src { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* WHICH FIGURES ARE THE STEP'S RESULT'S, NOT ITS ATTEMPTS' (WF-5):
+   `cost · tokens from result`, a line of its own under the four figures.
+   It sat beside each figure first, in a value column budgeted for a
+   20-character figure and nothing more, and the rule that made room there
+   set `text-overflow: clip` -- so the note showed as `…` beside a token
+   figure and a wider figure was CUT with no mark (#160 review). The figure's
+   cell is the plain `.node-num dd` again, ellipsis and all.
+   RESERVED: every Figures-tier node draws this line, empty unless a figure
+   was borrowed, and `nodeHeightAt('figures')` counts it -- a card may not
+   grow a row when the attempt read lands. `min-height` is the one micro line
+   an empty block would otherwise not have. Its longest text is 25 characters
+   (180.6px) in a 227px content box; the ellipsis is the guard, not the plan. */
+.node-src {
+  font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-faint);
+  min-height: calc(var(--t-micro) * var(--lh-micro));
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .node-reading {
   display: block; width: 44px; height: 9px; border-radius: 999px;
   background: var(--surface-2);

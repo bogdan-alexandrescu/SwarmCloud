@@ -765,6 +765,46 @@ const EXIT_NOT_RECORDED: Absence = {
 export const FROM_RESULT_NOTE =
   'From the step’s result summary -- what the worker wrote when this attempt finished. This attempt’s own document carries no typed figure for it, so this is the result’s record, not the attempt telemetry. Token cost only; no infrastructure cost is recorded anywhere.'
 
+/**
+ * Why the BOARD -- the Graph's nodes and the Table -- has no attempt figure of
+ * its own for a step whose result it shows instead (WF-5).
+ *
+ *   `not-sampled`  the step is outside the attempts the board samples
+ *   `not-read`     the board's attempt read failed, for the board or this task
+ *   `no-attempt`   the board read the step's attempts and there were none
+ *   `untyped`      the board read them and none carries a typed figure
+ */
+export type BoardTelemetryGap = 'not-sampled' | 'not-read' | 'no-attempt' | 'untyped'
+
+const RESULT_LEAD =
+  'From the step’s result summary -- what the worker wrote when the step’s last attempt finished, so it covers that attempt alone.'
+const COST_ONLY = 'Token cost only; no infrastructure cost is recorded anywhere.'
+
+/**
+ * The note on a result figure THE BOARD draws (#160 review, finding 1).
+ *
+ * `FROM_RESULT_NOTE` says the attempt's own document carries no typed figure.
+ * That is a claim about a document, and the inspector can make it because the
+ * inspector READ the document. The board borrowed the same note outside its
+ * sample and where its attempt read failed -- paths on which it read nothing --
+ * so its title stated a fact about the platform nobody had measured, and the
+ * inspector could then read that attempt and show a figure the title had just
+ * said was not there. Only where the board did read the attempts and found no
+ * typed figure is the inspector's note the board's too.
+ */
+export function boardResultNote(gap: BoardTelemetryGap): string {
+  switch (gap) {
+    case 'untyped':
+      return FROM_RESULT_NOTE
+    case 'not-sampled':
+      return `${RESULT_LEAD} This board did not read this step’s attempts -- the step is outside the attempts it samples -- so it says nothing about what their documents carry; picking the step reads them. ${COST_ONLY}`
+    case 'not-read':
+      return `${RESULT_LEAD} This board could not read this step’s attempts -- the read failed -- so it says nothing about what their documents carry. ${COST_ONLY}`
+    case 'no-attempt':
+      return `${RESULT_LEAD} This board read the step’s attempts and found no attempt document, so the result is the only record of a figure. ${COST_ONLY}`
+  }
+}
+
 /** Input and output tokens as one cell: each half its own, a missing half not a zero. */
 export function tokenPairCell(input: number | null | undefined, output: number | null | undefined, note: string): Cell {
   const tin = tokenCell(input, '')

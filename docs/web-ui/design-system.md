@@ -1215,6 +1215,26 @@ Six places, in order of commitment. Nothing outside this list.
    months. A docs link is a legitimate element of an empty state and of a help
    card; it is not an element of a data view.
 
+> **Recorded 2026-09-25 (WF-5, epic #83; corrected on #160's review): a
+> figure's source is a qualifier, and where there is no room in its slot the
+> node gives it a line.** A workflow step's cost or tokens may be its result
+> summary's rather than its attempt telemetry's. That happens only for a
+> finished step (`finishedResultOf`, the one rule for the node, the Table,
+> the row's total and the inspector). The figure then carries `from result`
+> (`.wf-src`: faint, micro, mono, no hue). In the Table and the inspector
+> that sits beside the figure. On a graph node the value column is budgeted
+> for a 20-character figure and nothing more. Sharing it, the note
+> ellipsed to `…`, and the override that made room clipped wider figures
+> with no mark. So the node draws `cost · tokens from result` on
+> `.node-src`, a line under the four figures that names them. Every
+> Figures-tier node reserves that line, and it is counted in
+> `nodeHeightAt('figures')` (246). The alternative was about 84px more width
+> on every node, which takes `STAGE_FITS` from 3 to 2 and draws a three-wide
+> stage without figures at all. The figure's note also says what the view
+> read. Only the inspector, and the board inside its sample, have read the
+> attempt documents, so only they say those documents carry no typed figure.
+> Outside the sample, the board says it did not read them.
+
 ### 8.5 What a main view may say
 
 Five kinds of word, and no sixth:

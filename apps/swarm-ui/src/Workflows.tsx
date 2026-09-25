@@ -12,12 +12,12 @@ import {
   depUnits,
   edgeKinds,
   edgePath,
+  finishedResultOf,
   foldMix,
   inputsByStep,
   layoutOf,
   levelsOf,
   profileMix,
-  resultUsageOf,
   shapeOf,
   stageCensus,
   stepCostOf,
@@ -62,14 +62,15 @@ import { HelpCard } from './HelpCard'
 import { Id, Screen, timeAgo } from './Shell'
 import {
   axisOf,
+  boardResultNote,
   sameStepAcross,
   stateRankOf,
   stepOrder,
   stepTimes,
   tokenPairCell,
-  FROM_RESULT_NOTE,
   VIEW_LABEL,
   WORKFLOW_VIEWS,
+  type BoardTelemetryGap,
   type WorkflowView,
 } from './stepviews'
 import { StopRun } from './StopRun'
@@ -1483,9 +1484,9 @@ function stepRows(
         costFrom: f.costFrom,
         tokensFrom: f.tokensFrom,
         // A result belongs to the attempt that FINISHED, so the inspector is
-        // offered it only for a finished task (WF-5).
-        result:
-          state.kind === 'state' && TERMINAL_STATES.has(state.state) ? resultUsageOf(state.task) : null,
+        // offered it only for a finished task (WF-5) -- by the same rule the
+        // node, the table and the total borrow it by (`finishedResultOf`).
+        result: state.kind === 'state' ? finishedResultOf(state.task) : null,
         pending: usage.kind === 'reading' && state.kind === 'state',
         inputs: inputs.get(step.step_id) ?? NO_INPUTS,
         sort: {
@@ -2712,11 +2713,12 @@ function StepNode({
       {f !== null && (
         <dl className="node-nums">
           <NodeNum label="ran" cell={f.ran} pending={false} />
-          <NodeNum label="cost" cell={f.cost} pending={pending} from={f.costFrom} />
-          <NodeNum label="tokens" cell={f.tokens} pending={pending} from={f.tokensFrom} />
+          <NodeNum label="cost" cell={f.cost} pending={pending} />
+          <NodeNum label="tokens" cell={f.tokens} pending={pending} />
           <NodeNum label="ckpts" cell={f.checkpoints} pending={pending} />
         </dl>
       )}
+      {f !== null && <NodeSource f={f} pending={pending} />}
 
       {/* THE DEPENDENCY LIST, AND ITS ARROW NOW POINTS THE WAY THE GRAPH RUNS.
           It read `← plan` when parents were to the left; parents are ABOVE, so
@@ -3006,6 +3008,13 @@ const RUNNING_NOW: ReadonlySet<TaskState> = new Set<TaskState>(['STARTING', 'RUN
  * telemetry sums every attempt: two records, not one. Only where NEITHER has a
  * figure does the absence word stand, and it is the word for why the
  * telemetry is missing. Checkpoints have no second source.
+ *
+ * TWO RULES THE FIRST VERSION OF THIS BROKE (#160 review). The result is
+ * borrowed only for a FINISHED task (`finishedResultOf`): a step running its
+ * second attempt still carries its failed first attempt's result, and the
+ * inspector never offered that one. And the figure's note says what THIS
+ * board read (`boardResultNote`): outside the sample, or where the read failed,
+ * the board read no attempt document, so it may not say what one carries.
  */
 function figuresFor(state: StepState, usage: UsageRead, now: number): StepFigures {
   const allAbsent = (a: Absence): StepFigures => ({
@@ -3042,20 +3051,22 @@ function figuresFor(state: StepState, usage: UsageRead, now: number): StepFigure
     }
   }
 
-  // THE RESULT'S FIGURES, for wherever the telemetry has none.
-  const result = resultUsageOf(state.task)
-  const costOrResult = (own: Cell): { cell: Cell; from: 'result' | null } =>
+  // THE RESULT'S FIGURES, for wherever the telemetry has none -- and only once
+  // the task has finished, which is when the result is its newest attempt's.
+  // `gap` is why the telemetry has none, and the note says so.
+  const result = finishedResultOf(state.task)
+  const costOrResult = (own: Cell, gap: BoardTelemetryGap): { cell: Cell; from: 'result' | null } =>
     own.kind === 'absent' && result !== null && result.usd !== null
-      ? { cell: costCell(result.usd, FROM_RESULT_NOTE), from: 'result' }
+      ? { cell: costCell(result.usd, boardResultNote(gap)), from: 'result' }
       : { cell: own, from: null }
-  const tokensOrResult = (own: Cell): { cell: Cell; from: 'result' | null } =>
+  const tokensOrResult = (own: Cell, gap: BoardTelemetryGap): { cell: Cell; from: 'result' | null } =>
     own.kind === 'absent' && result !== null && (result.inputTokens !== null || result.outputTokens !== null)
-      ? { cell: tokenPairCell(result.inputTokens, result.outputTokens, FROM_RESULT_NOTE), from: 'result' }
+      ? { cell: tokenPairCell(result.inputTokens, result.outputTokens, boardResultNote(gap)), from: 'result' }
       : { cell: own, from: null }
 
-  const absentUsage = (a: Absence): StepFigures => {
-    const cost = costOrResult(absentCell(a))
-    const tokens = tokensOrResult(absentCell(a))
+  const absentUsage = (a: Absence, gap: BoardTelemetryGap): StepFigures => {
+    const cost = costOrResult(absentCell(a), gap)
+    const tokens = tokensOrResult(absentCell(a), gap)
     return {
       ran,
       cost: cost.cell,
@@ -3068,27 +3079,30 @@ function figuresFor(state: StepState, usage: UsageRead, now: number): StepFigure
   }
 
   if (usage.kind === 'failed') {
-    return absentUsage({ text: USAGE_NOT_READ.text, note: `${USAGE_NOT_READ.note} (${usage.detail})` })
+    return absentUsage({ text: USAGE_NOT_READ.text, note: `${USAGE_NOT_READ.note} (${usage.detail})` }, 'not-read')
   }
-  if (usage.usage === null) return absentUsage(USAGE_NOT_SAMPLED)
+  if (usage.usage === null) return absentUsage(USAGE_NOT_SAMPLED, 'not-sampled')
 
   const failed = usage.usage.failed.get(taskId)
   if (failed !== undefined) {
-    return absentUsage({ text: USAGE_NOT_READ.text, note: `${USAGE_NOT_READ.note} (${failed})` })
+    return absentUsage({ text: USAGE_NOT_READ.text, note: `${USAGE_NOT_READ.note} (${failed})` }, 'not-read')
   }
   const u = usage.usage.byTaskId.get(taskId)
-  if (u === undefined) return absentUsage(USAGE_NOT_SAMPLED)
+  if (u === undefined) return absentUsage(USAGE_NOT_SAMPLED, 'not-sampled')
   // The read succeeded and there is nothing to sum. A FOURTH thing, and not
   // "the runner reported no cost": nothing has run.
-  if (u.attempts === 0) return absentUsage(NO_ATTEMPT_YET)
+  if (u.attempts === 0) return absentUsage(NO_ATTEMPT_YET, 'no-attempt')
 
+  // Read, and summed: where it has no figure, no attempt document carried one,
+  // which is the inspector's own note and true here for the same reason.
   const cost = costOrResult(
     costCell(
       u.costUsd,
       `Summed over ${u.attemptsWithCost} of ${u.attempts} attempt${u.attempts === 1 ? '' : 's'} that reported one. Token cost only — no infrastructure cost is recorded anywhere.`,
     ),
+    'untyped',
   )
-  const tokens = tokensOrResult(tokensOf(u))
+  const tokens = tokensOrResult(tokensOf(u), 'untyped')
   return {
     ran,
     cost: cost.cell,
@@ -3153,38 +3167,53 @@ function tokensOf(u: StepUsage): Cell {
  * is. `cell.note` is the CAUSE, which is a different question, and it is on
  * the `title` and behind the node's `?`.
  */
-function NodeNum({
-  label,
-  cell,
-  pending,
-  from = null,
-}: {
-  label: string
-  cell: Cell
-  pending: boolean
-  /** `result` when the figure is the step's result's rather than its attempts' (WF-5). */
-  from?: 'result' | null
-}) {
-  const sourced = !pending && from === 'result' && cell.kind === 'measured'
-  const cls = pending ? 'is-reading' : cell.kind === 'absent' ? 'is-absent' : sourced ? 'is-sourced' : ''
+function NodeNum({ label, cell, pending }: { label: string; cell: Cell; pending: boolean }) {
+  const cls = pending ? 'is-reading' : cell.kind === 'absent' ? 'is-absent' : ''
   return (
     <div className={`node-num ${cls}`.trimEnd()} title={cell.note || undefined}>
       <dt>{label}</dt>
-      <dd>
-        {pending ? (
-          <span className="node-reading" aria-label="reading" />
-        ) : sourced ? (
-          // THE FIGURE, THEN WHERE IT CAME FROM, on the one line the card
-          // reserved: the value never shrinks, and on a card too narrow for
-          // both the NOTE is what gives (it ellipses; the number never does).
-          // The whole of it is the row's `title`.
-          <>
-            <span className="node-num-v">{cell.text}</span> <SourceNote />
-          </>
-        ) : (
-          cell.text
-        )}
-      </dd>
+      {/* THE FIGURE AND NOTHING ELSE, in a column budgeted for exactly that.
+          Where it came from is `.node-src`, the line under the four (WF-5);
+          sharing this column, the note ellipsed to `…` beside a token figure
+          and the figure itself was clipped past 173px. */}
+      <dd>{pending ? <span className="node-reading" aria-label="reading" /> : cell.text}</dd>
+    </div>
+  )
+}
+
+/**
+ * WHICH OF THE NODE'S FIGURES ARE THE STEP'S RESULT'S (WF-5): `cost · tokens
+ * from result`, on a line of its own under the four.
+ *
+ * IT WAS BESIDE EACH FIGURE, in the figure's own column, and that column has
+ * room for a 20-character figure and nothing else (#160 review): beside `21.4k
+ * in · 3.2k out` the note showed as `…`, and a wider figure was cut with no
+ * mark. Widening every Figures-tier node by the note's 84px would take
+ * `STAGE_FITS` from 3 to 2 and send a three-wide stage to `details`, where no
+ * figure is drawn at all. So the note has a row, which names the figures it is
+ * about -- the labels on their own rows above -- and the words are the one
+ * spelling the table and the inspector print beside theirs (`SourceNote`).
+ *
+ * RENDERED ON EVERY FIGURES-TIER NODE, EMPTY WHEN NOTHING IS BORROWED, and
+ * `nodeHeightAt('figures')` counts it. Whether a figure is the result's is
+ * known only when the attempt read lands, and a card that grew a row then
+ * would push every level beneath it down the page. Silent while that read is
+ * in flight: a placeholder makes no claim, so there is nothing to source.
+ */
+function NodeSource({ f, pending }: { f: StepFigures; pending: boolean }) {
+  const sourced = pending
+    ? []
+    : [
+        f.costFrom === 'result' && f.cost.kind === 'measured' ? 'cost' : null,
+        f.tokensFrom === 'result' && f.tokens.kind === 'measured' ? 'tokens' : null,
+      ].filter((x): x is string => x !== null)
+  return (
+    <div className="node-src">
+      {sourced.length > 0 && (
+        <>
+          {sourced.join(' · ')} <SourceNote />
+        </>
+      )}
     </div>
   )
 }

@@ -346,6 +346,24 @@ const DUR_ROW_W = monoW(DUR_CHARS, T_MICRO)
 /** One `.node-num`: the 46px label column, its `--ctl-s2` gap, and a value. */
 const FIGURES_ROW_W = NUM_LABEL_W + CTL_S2 + monoW(FIGURE_CHARS, T_BODY)
 
+/**
+ * The longest `.node-src` line, in characters: `cost · tokens from result`, 25.
+ *
+ * WF-5's source note, ON A LINE OF ITS OWN BECAUSE THE VALUE COLUMN HAS NO ROOM
+ * FOR IT (#160 review). It first shared the figure's row, in a column budgeted
+ * for a 20-character figure and nothing else: `from result` is 11 characters
+ * of --t-micro (79.5px) plus a `--ctl-s1` gap, so beside `21.4k in · 3.2k out`
+ * it showed as `…`, and past 173px the figure itself was clipped. The two ways
+ * to pay for it were width -- about 84px on every Figures-tier node, which
+ * takes `STAGE_FITS` from 3 to 2 and sends a three-wide stage to `details`,
+ * where no figure is drawn at all -- or one micro row of height. Height is the
+ * axis this canvas has not run out of, so the note has a row, and the row
+ * names the figures it is about rather than sitting beside them.
+ */
+const SRC_CHARS = 25
+/** `.node-src` at --t-micro. Well inside the content box; counted anyway. */
+const SRC_ROW_W = monoW(SRC_CHARS, T_MICRO)
+
 /** `--ctl-s1`, the gap between a node card's flex children. Declared up here
  *  rather than beside `depLines` because `nodeHeightAt` sums it at module
  *  initialisation, and a `const` read before its own declaration is a
@@ -457,9 +475,15 @@ export const TIER_DROPS: Readonly<Record<ZoomTier, readonly string[]>> = {
  *   .node-id      21 + .node-line 17.4 ...... 38.4
  *   .node-meta    17.4 ...................... 17.4
  *   .node-nums    8 + 4 x 22 + 3 x 2 ........ 102
- *   3 x --ctl-s1 between four children ...... 12
+ *   .node-src     17.4 ...................... 17.4
+ *   4 x --ctl-s1 between five children ...... 16
  *                                            -----
- *                                             223.8, ceil 224
+ *                                             245.2, ceil 246
+ *
+ * `.node-src` IS RESERVED ON EVERY FIGURES-TIER NODE, empty unless a figure is
+ * the result's (WF-5; `SRC_CHARS` has why it is a row). Whether a figure is the
+ * result's is known only once the attempt read lands, and a card that grew a
+ * row at that moment would push every level beneath it down the page.
  *
  * `details` drops `.node-nums` and gains a row, because the duration moves off
  * `.node-line` onto one of its own -- which is the trade that makes the tier
@@ -468,13 +492,13 @@ export const TIER_DROPS: Readonly<Record<ZoomTier, readonly string[]>> = {
  *
  * THE 42px STOP STRIP IS RESERVED AT EVERY TIER. A card that grew by 39px the
  * moment its step started running would shove every level beneath it down the
- * page mid-poll, and that is as true of a 97px card as of a 224px one.
+ * page mid-poll, and that is as true of a 97px card as of a 246px one.
  */
 export function nodeHeightAt(tier: ZoomTier): number {
   const rows =
     tier === 'figures'
-      ? // .node-id, .node-line (state AND duration), .node-meta, .node-nums
-        [ROW_BODY_H, ROW_MICRO_H, ROW_MICRO_H, NUMS_H]
+      ? // .node-id, .node-line (state AND duration), .node-meta, .node-nums, .node-src
+        [ROW_BODY_H, ROW_MICRO_H, ROW_MICRO_H, NUMS_H, ROW_MICRO_H]
       : tier === 'details'
         ? // .node-id, .node-line (state), .node-dur, .node-meta
           [ROW_BODY_H, ROW_MICRO_H, ROW_MICRO_H, ROW_MICRO_H]
@@ -527,7 +551,7 @@ export function nodeWidthAt(tier: ZoomTier, steps: readonly WorkflowStep[]): num
     NODE_W,
     Math.ceil(
       NODE_CHROME_W +
-        Math.max(nameW + PR_TAG_W, STATE_AND_DUR_ROW_W, profileW, FIGURES_ROW_W),
+        Math.max(nameW + PR_TAG_W, STATE_AND_DUR_ROW_W, profileW, FIGURES_ROW_W, SRC_ROW_W),
     ),
   )
 }
@@ -611,7 +635,8 @@ export function nodeWidthAt(tier: ZoomTier, steps: readonly WorkflowStep[]): num
  * `layoutOf` has already committed to, overlaps the node beneath it.
  */
 export const NODE_W = Math.ceil(
-  NODE_CHROME_W + Math.max(STATE_AND_DUR_ROW_W, FIGURES_ROW_W),
+  // `SRC_ROW_W` (180.6) never binds; it is here so that it would if it grew.
+  NODE_CHROME_W + Math.max(STATE_AND_DUR_ROW_W, FIGURES_ROW_W, SRC_ROW_W),
 )
 
 /**
@@ -628,11 +653,14 @@ export const NODE_W = Math.ceil(
  *   .node-line    --t-micro / --lh-micro (12 x 1.45) . 17.4
  *   .node-meta    --t-micro / --lh-micro ............. 17.4
  *   .node-nums    8 pad + 4 x (21 + 1) + 3 x 2 ...... 102
- *   3 x --ctl-s1 gap between the four children ....... 12
+ *   .node-src     --t-micro / --lh-micro ............. 17.4
+ *   4 x --ctl-s1 gap between the five children ....... 16
  *                                                    -----
- *                                                     223.8
+ *                                                     245.2
  *
- * 224 is that, rounded up by the one pixel the fractional line boxes need.
+ * 246 is that, rounded up by the one pixel the fractional line boxes need. It
+ * was 224 until `.node-src` took the WF-5 source note off the figures' own
+ * rows (`SRC_CHARS` has why that row is height rather than width).
  *
  * THE `+ 1` IN THE FIGURES TERM IS THE ABSENCE RULE, AND IT IS IN EVERY ROW
  * NOW. `.node-num dd` declares a TRANSPARENT dashed bottom border and
@@ -732,33 +760,45 @@ function depCharsPerLine(w: number): number {
  * browser broke at every space and is wrong now: a filename with a space in it
  * is one box on screen, and counting it as two tokens let its first half fit a
  * line the box does not. A unit longer than a whole line still wraps inside its
- * own box (`.node-dep` keeps `overflow-wrap: anywhere`), so it is counted by
- * division, as before.
+ * own box (`.node-dep` keeps `overflow-wrap: anywhere`), so its own lines are
+ * counted by division, as before.
+ *
+ * AND A UNIT LONGER THAN A LINE IS A BOX AS WIDE AS THE LINE, which the first
+ * version of this packing missed (#160 review). An inline-block is
+ * shrink-to-fit, and `overflow-wrap: anywhere` puts its minimum at one
+ * character, so a unit whose text is wider than the line takes exactly the
+ * line's width: it cannot sit after `↑ ` or after any unit before it, and no
+ * unit after it can sit on its last line. This counted the text as flowing on
+ * -- the next unit sharing the remainder of the long one's last line, and a
+ * long FIRST unit fitting after the arrow -- and came out a line short in
+ * both cases, 18px of dependency text in the stop strip.
  */
 function depLines(units: readonly string[], perLine: number): number {
   // Empty units are dropped rather than counted as a column; `depUnits` makes
   // none, and a unit with no text draws no box.
   const tokens = units.filter((t) => t !== '')
   let lines = 1
-  let used = 2 // the "↑ " prefix
-  let firstOnLine = true
+  let used = 2 // the "↑ " prefix, so no line this list draws is ever empty
+  let first = true
   for (const tok of tokens) {
     if (tok.length > perLine) {
-      // Breaks mid-word onto lines of its own, then leaves a remainder behind.
-      if (!firstOnLine) lines += 1
-      lines += Math.ceil(tok.length / perLine) - 1
-      used = tok.length % perLine || perLine
-      firstOnLine = false
-      continue
-    }
-    const need = (firstOnLine ? 0 : 1) + tok.length
-    if (used + need <= perLine) {
-      used += need
+      // A box the width of the line: it starts a line of its own -- the one
+      // it is on always holds something, if only the arrow -- wraps inside
+      // itself, and fills its last line, so whatever follows starts another.
+      lines += Math.ceil(tok.length / perLine)
+      used = perLine
     } else {
-      lines += 1
-      used = tok.length
+      // The space before a unit that moves to a new line collapses at the end
+      // of the old one, so a unit that wraps costs only its own length there.
+      const need = (first ? 0 : 1) + tok.length
+      if (used + need <= perLine) {
+        used += need
+      } else {
+        lines += 1
+        used = tok.length
+      }
     }
-    firstOnLine = false
+    first = false
   }
   return lines
 }
@@ -2428,12 +2468,32 @@ export function resultUsageOf(task: Task): ResultUsage | null {
   return out.usd === null && out.inputTokens === null && out.outputTokens === null ? null : out
 }
 
+/**
+ * The result's figures for a step whose task has FINISHED, and null for any
+ * other -- THE ONE BORROWING RULE, for the node, the Table, the row's total
+ * and the inspector alike.
+ *
+ * A result belongs to the attempt that wrote it, and only a finished task's
+ * result is its newest attempt's. `control.py`'s `fail_retryably` writes the
+ * failed attempt's `result_summary` and sends the task back to READY, so a
+ * step on its second attempt carries its FIRST attempt's result while it runs
+ * again. The inspector already borrowed only for the newest attempt of a
+ * finished task; the board borrowed for every state, and drew a running step's
+ * old figure as its cost -- under a note saying it was what the worker wrote
+ * when "this attempt" finished, and in a total no inspector could account for.
+ */
+export function finishedResultOf(task: Task): ResultUsage | null {
+  return TERMINAL_STATES.has(task.state) ? resultUsageOf(task) : null
+}
+
 /** Where a step's cost figure came from. */
 export type FigureSource = 'telemetry' | 'result'
 
 /**
  * ONE STEP'S COST, BY THE ONE RULE THE NODE, THE TABLE AND THE ROW'S TOTAL
- * SHARE: the attempt telemetry where it carries a cost, otherwise the result's.
+ * SHARE: the attempt telemetry where it carries a cost, otherwise the result's
+ * -- and the result's only once the task has finished (`finishedResultOf`),
+ * which is when the inspector offers it too.
  *
  * `telemetry` is the step's rolled-up attempts when this board read them, and
  * undefined when it did not (outside the sample, or the read failed). Null
@@ -2451,7 +2511,7 @@ export function stepCostOf(
   ) {
     return { usd: telemetry.costUsd, from: 'telemetry' }
   }
-  const result = resultUsageOf(task)?.usd ?? null
+  const result = finishedResultOf(task)?.usd ?? null
   return result === null ? null : { usd: result, from: 'result' }
 }
 

@@ -1170,7 +1170,7 @@ describe('semantic zoom', () => {
       }
       // `plan` is a root, so its height is the tier's own with no dependency
       // line added -- the figure `nodeHeightAt` sums from the rows the tier
-      // draws, which is 224 with the four figures on it and 140 without.
+      // draws, which is 246 with the four figures on it and 140 without.
       expect(Number.parseFloat(slotOf(container, 'plan').style.height)).toBe(
         nodeHeightAt(tier),
       )
