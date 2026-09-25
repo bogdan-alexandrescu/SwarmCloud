@@ -88,10 +88,25 @@ commits to four things:
   there, so a bare dependency would install whoever registers it.
   `apps/swarm-mcp/pyproject.toml` gives it a relative `path` source, and
   uv ≥ 0.5.6 rewrites a relative path inside a git dependency into a git source
-  at the same commit, with the subdirectory relative to the checkout
-  ([astral-sh/uv#9594](https://github.com/astral-sh/uv/pull/9594)). One ref,
+  at the same commit, with the subdirectory relative to the checkout. One ref,
   and no second pin to drift from it. pip does not read `[tool.uv.sources]`;
   installing the bridge with pip is not supported.
+
+  **uv's documentation does not describe this case**, so here is what the
+  claim rests on. The docs cover the pieces: a `path` source may be relative
+  and installs "from a directory relative to the project root", and "Sources
+  are only respected by uv"
+  ([Dependency sources](https://docs.astral.sh/uv/concepts/projects/dependencies/#dependency-sources));
+  `uvx --from` takes a git URL
+  ([Requesting different sources](https://docs.astral.sh/uv/guides/tools/#requesting-different-sources)).
+  Neither page says what a relative path means once the package declaring it
+  was fetched from git. uv's 0.5.6 release notes do — "Respect path
+  dependencies within Git dependencies
+  ([#9594](https://github.com/astral-sh/uv/pull/9594))" — and the code is
+  `path_source` in `crates/uv-distribution/src/metadata/lowering.rs`. Because
+  that is a release note and not a documented contract, CI checks it on every
+  run: `uv pip compile` of the pinned requirement must resolve swarm-common
+  to `git+https://github.com/bogdan-alexandrescu/SwarmCloud@<the same commit>#subdirectory=apps/common`.
 * **Never shorten it to `uvx swarm-mcp`.** PyPI's `swarm-mcp` is an unrelated
   project (a Foursquare Swarm check-in server). The name before ` @ ` binds the
   URL; a bare name is a PyPI lookup.
@@ -127,13 +142,49 @@ it cannot find the ref.
   reconnect the server in `/mcp` — uv resumes from what it has already cached —
   or start that first session with `MCP_TIMEOUT=120000 claude`.
 
-**Where the API is, outside a checkout.** The bridge finds a team deployment's
-front door by reading `terraform/environments/<env>/<env>.tfvars` from the
-repository it was installed from (see *Where the API actually is*, below).
-Installed from git it has no repository to read, so set `SWARM_API_URL` (or
-`API_HOST`), or `SWARM_REPO_ROOT` pointing at a checkout, in the environment
-Claude Code starts from; the MCP server inherits it. Without one the bridge
-asks Cloud Run, gets the internal-only address, and says so.
+**Where the API is, outside a checkout.** In a checkout the bridge finds a
+team deployment's front door by reading `frontend_hostname` from
+`terraform/environments/<env>/<env>.tfvars` (see *Where the API actually is*,
+below), and that one fact decides both the address and the credential.
+Installed from git it has no repository to read: the running code is in uv's
+cache, with no `terraform/` anywhere above it. So tell it, in the environment
+Claude Code starts from (the MCP server inherits it):
+
+* **`API_HOST=<hostname>`** (or `SWARM_API_HOST`) for a team deployment. This
+  declares the front door. The bridge sends every call there and presents an
+  OAuth access token, which is the kind IAP takes.
+* **`SWARM_API_URL=https://<hostname>`** works the same way. With no front door
+  declared, the bridge takes an `https` address that is not `*.run.app` to be
+  the load balancer. Without that rule, which #62's first version lacked, it
+  presents a Google ID token for the URL. IAP refuses that as
+  `Invalid JWT audience`, and a laptop with only user credentials cannot mint
+  one at all. A `*.run.app` address still gets an ID token. That is the in-VPC
+  case, where the run.app address does answer. Use `SWARM_API_URL`, not
+  `API_URL`: on the user-credentials tier the bridge reads only the `SWARM_`
+  spelling before it starts a proxy.
+* **`SWARM_REPO_ROOT=<a checkout>`**: the bridge reads that checkout's tfvars,
+  as it would had it been installed from there.
+
+At this deployment's front door the token also has to be one IAP admits. A
+user's own access token is refused with 401, IAP error code 900, so set
+`SWARM_IMPERSONATE_SA` as *Where the API actually is* explains.
+
+**With none of these set, the bridge does not find the front door.** What
+happens next depends on the auth tier:
+
+* **A laptop that has only run `gcloud auth login`** (the `user-credentials`
+  tier) starts `gcloud run services proxy` against the project's `swarm-api`
+  Cloud Run service. The project comes from `PROJECT_ID`, or from gcloud's
+  configured project. That can take up to 25 seconds. On a team deployment the
+  service's ingress refuses callers outside the VPC, so every call comes back
+  as an HTML 404. The bridge reports it as an ingress refusal, not a missing
+  route, and says to go through the load balancer. It does not name the
+  variable. The variable is `API_HOST`.
+* **Every other tier** (a service account, the metadata server, an explicit
+  token) asks Cloud Run for the address, which needs `PROJECT_ID`. It sees the
+  internal-only ingress and refuses before any call is made, and that refusal
+  does name `API_HOST`. Without `PROJECT_ID` it refuses at once and asks for
+  `SWARM_API_URL` or `PROJECT_ID`.
 
 ### Running your own bridge: `SWARM_MCP_FROM`
 
@@ -154,6 +205,14 @@ SWARM_MCP_FROM='swarm-mcp @ git+https://github.com/bogdan-alexandrescu/SwarmClou
   of the bridge's uv cache keys, so an edit is served once the server restarts
   (reconnect it in `/mcp`). `swarm-common` is installed editable from the
   sibling `apps/common`.
+* **It reads the tfvars of the checkout it was built from.** The install is not
+  editable. The code is your working copy's, but the files are in uv's cache,
+  where nothing above them is your checkout. Going by file location alone, the
+  bridge would lose the front door that `uv run` in the same checkout finds, and
+  in #62's first version it did. It finds the checkout from the install's own
+  record of its source. That is
+  the `direct_url.json` uv writes for a directory install (PEP 610). CI's install
+  step checks it against a real install. `SWARM_REPO_ROOT` still overrides it.
 * **Not `local`, and not any bare word.** `--from` reads a bare word as a PyPI
   name — the trap above. Leave the variable **unset** rather than empty: an
   empty value is passed through as an empty `--from`.
@@ -176,17 +235,22 @@ lockstep and derives the scoped prefix from `plugin.json` itself.
 ### What is still repository-bound, and why
 
 **The MCP half is not.** Since 0.4.1 the server is fetched by uv rather than
-found on disk, so it starts from any working directory — with the one caveat
-under *Where the API is, outside a checkout*, above. Before 0.4.1 this README
-said the same thing, and it was false for every marketplace install.
+found on disk, so it starts from any working directory. Outside a checkout it
+has to be told where a team deployment's front door is: `API_HOST` or
+`SWARM_API_URL`, as *Where the API is, outside a checkout* explains above. Before 0.4.1 this
+README said the MCP half worked from anywhere, and that was false for every
+marketplace install.
 
 **The shell half is.** `${CLAUDE_PLUGIN_ROOT}` is exported to MCP server
 subprocesses and **not** to commands Claude runs through the Bash tool, and
 `uv run sc` resolves `uv`'s project against the session's own directory:
 outside a checkout it answers that there is no `pyproject.toml`. That is a real limit,
 stated here rather than papered over, because a model that meets it without
-warning reports the platform as broken. The `delegate` skill calls tools and is
-unaffected; `/sc` and the `sc` skill want the repository.
+warning reports the platform as broken. `/sc` and the `sc` skill want the
+repository, and the plugin's two descriptions say so. The `delegate` skill's
+tools come from the MCP server and are unaffected. It also suggests two shell
+commands, and those want the repository too: `uv run swarm tail`, to stream in
+a background shell, and `uv run swarm doctor`, to diagnose.
 
 The CLI is the same surface without the session wrapping, and is what to reach
 for when diagnosing the plugin itself:
@@ -265,7 +329,7 @@ deleted, so the runs that name it stay readable.
 
 ## What keeps these honest
 
-Three files, all in `make test`, all offline — bar one test, which CI runs:
+Four files, all in `make test`, all offline — bar one test, which CI runs:
 
 `tests/unit/mcp/test_plugin_bridge_install.py` covers whether the server can
 **start** on a machine that has only the plugin: the declaration names nothing
@@ -276,7 +340,16 @@ resolves from the same commit. Its last test installs the bridge for real —
 `plugin.json`'s own command, at the pushed commit, from a cold cache, outside
 the checkout — and talks MCP to it; it is skipped unless
 `SWARM_BRIDGE_INSTALL_REF` is set, which only CI's
-`the plugin's bridge installs from git` step does.
+`the plugin's bridge installs from git` step does. That test also runs each
+install's own interpreter to ask where it thinks its repository is. The git
+install must find none, and must still class an `https` front-door URL as the
+front door. The escape hatch must find this checkout and its `frontend_hostname`.
+The same file holds both descriptions to naming what still needs a checkout.
+
+`tests/unit/mcp/test_bridge_outside_a_checkout.py` holds the same two facts
+offline, against a simulated uv-cache layout: which door an address is, and
+which checkout an install reads, when the bridge is not running from a
+checkout.
 
 `tests/unit/mcp/test_plugin_skills.py` parses every `SKILL.md` here and asserts
 that each tool named in `allowed-tools` or in the prose is one

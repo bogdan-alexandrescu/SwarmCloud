@@ -71,23 +71,82 @@ def _run(argv: list[str], *, timeout: int = 60) -> str:
     return done.stdout.strip()
 
 
+#: This package's directory, relative to the repository root. How a directory
+#: is recognised as a checkout of this repository.
+_BRIDGE_DIR = ("apps", "swarm-mcp")
+
+
+def _is_checkout(root: Any) -> bool:
+    return (root.joinpath(*_BRIDGE_DIR) / "pyproject.toml").is_file()
+
+
+def _built_from_checkout() -> Any:
+    """The checkout a NON-editable install was built from, or None.
+
+    `SWARM_MCP_FROM=<checkout>/apps/swarm-mcp` -- the `sc` plugin's developer
+    escape hatch -- makes `uv tool run` build the working copy and install it
+    into uv's cache, so `__file__` is
+    `<cache>/archive-v0/<hash>/lib/python3.11/site-packages/swarm_mcp/client.py`
+    and nothing above it is the checkout. The install still says where it came
+    from: PEP 610's `direct_url.json`, which uv writes for a directory source
+    as `{"url": "file:///<checkout>/apps/swarm-mcp", "dir_info": {...}}`. A git
+    install's record is `vcs_info` with an https URL, which names nothing on
+    this machine and is ignored.
+
+    Accepted only when the recorded directory IS `<root>/apps/swarm-mcp` of a
+    root that is a checkout, so a stray copy of the package elsewhere is never
+    taken for one.
+    """
+    from importlib import metadata
+    from pathlib import Path
+
+    try:
+        raw = metadata.distribution("swarm-mcp").read_text("direct_url.json")
+    except metadata.PackageNotFoundError:
+        return None
+    try:
+        record = json.loads(raw or "")
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(record, dict) or "dir_info" not in record:
+        return None
+    url = urllib.parse.urlsplit(str(record.get("url", "")))
+    if url.scheme != "file":
+        return None
+    source = Path(urllib.request.url2pathname(url.path)).resolve()
+    root = source.parent.parent
+    if source == root.joinpath(*_BRIDGE_DIR).resolve() and _is_checkout(root):
+        return root
+    return None
+
+
 def _repo_root() -> Any:
     """This repository's root, when the package is installed from it.
 
     `swarm-mcp` is an EDITABLE workspace member (`[tool.uv.sources]` in the root
-    `pyproject.toml`), so in the case that matters -- an operator running
+    `pyproject.toml`), so in the case that matters most -- an operator running
     `uv run sc` in a checkout -- `__file__` is
     `<root>/apps/swarm-mcp/swarm_mcp/client.py` and the root is four parents up.
-    Installed any other way it is not, and every caller here treats "no root"
-    as "nothing to read", never as an error: the front door is then simply not
-    discovered and the behaviour is exactly what it was before.
+
+    THE `sc` PLUGIN'S ESCAPE HATCH IS NOT EDITABLE, and in #62's first version
+    it therefore read uv's cache as the repository: it ran the working copy's
+    code and lost the working copy's front door. `_built_from_checkout` finds the
+    checkout from the install's own record instead.
+
+    Installed from git there is no checkout at all, and every caller here
+    treats "no root" as "nothing to read", never as an error: the front door is
+    then simply not discovered from tfvars, and `is_front_door` falls back to
+    the address's shape.
     """
     from pathlib import Path
 
     override = os.environ.get("SWARM_REPO_ROOT", "").strip()
     if override:
         return Path(override)
-    return Path(__file__).resolve().parents[3]
+    here = Path(__file__).resolve().parents[3]
+    if _is_checkout(here):
+        return here
+    return _built_from_checkout() or here
 
 
 def front_door_host() -> str:
@@ -168,11 +227,36 @@ def is_front_door(url: str) -> bool:
     as `scripts/lib/common.sh::api_is_front_door` does, so an operator who sets
     `SWARM_API_URL` to the load balancer by hand gets the IAP credential too --
     and one who sets it to the *.run.app address from inside the VPC does not.
+
+    WHEN NO FRONT DOOR IS DECLARED, THE ADDRESS'S SHAPE DECIDES. The shell only
+    ever runs inside a checkout, where the tfvars declare the host. The bridge
+    no longer does: the `sc` plugin installs it from git into uv's cache, where
+    there are no tfvars, and in #62's first version an operator there who set
+    `SWARM_API_URL=https://<the front door>` -- the variable the plugin README
+    named first -- was sent a Google ID token, which IAP refuses as `Invalid JWT
+    audience`. So with nothing declared, an https address that is not
+    *.run.app is taken as the load balancer: in this platform nothing else
+    serves the API over https under another name (Terraform creates no Cloud
+    Run domain mapping). A *.run.app address keeps its ID token, and plain http
+    -- the local proxy, a local API -- is never a front door.
+
+    A DECLARED host still decides alone. An access token is a broader credential
+    than an ID token bound to one audience, so where a front door is named it
+    goes to that host and not to a lookalike of it.
     """
-    host = front_door_host()
-    if not host or not url:
+    if not url:
         return False
-    return url == f"https://{host}" or url.startswith(f"https://{host}/")
+    host = front_door_host()
+    if host:
+        return url == f"https://{host}" or url.startswith(f"https://{host}/")
+    parts = urllib.parse.urlsplit(url)
+    hostname = (parts.hostname or "").lower()
+    return (
+        parts.scheme == "https"
+        and bool(hostname)
+        and hostname != "run.app"
+        and not hostname.endswith(".run.app")
+    )
 
 
 def resolve_api_url() -> str:

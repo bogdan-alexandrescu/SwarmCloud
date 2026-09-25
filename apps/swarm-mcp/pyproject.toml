@@ -41,8 +41,10 @@ build-backend = "hatchling.build"
 # source at the SAME commit with the subdirectory taken relative to the
 # checkout -- `apps/common` at whatever tag the plugin pinned. That is
 # astral-sh/uv#9594, shipped in uv 0.5.6 (`path_source` in
-# crates/uv-distribution/src/metadata/lowering.rs). So there is no second ref
-# to drift from the plugin's. In this checkout the entry is an ordinary
+# crates/uv-distribution/src/metadata/lowering.rs). uv's DOCUMENTATION does not
+# describe this case -- only its 0.5.6 release notes and its source do -- which
+# is why CI's install step checks it on every run rather than trusting it. So
+# there is no second ref to drift from the plugin's. In this checkout the entry is an ordinary
 # editable path, identical to the root pyproject's, so the development
 # workspace resolves exactly as before.
 #
@@ -60,4 +62,9 @@ swarm-common = { path = "../common", editable = true }
 # which is the one thing a developer's escape hatch must not do. The price is
 # that the editable install in this workspace is rebuilt after a source edit,
 # at the next `uv run` -- one hatchling build of this small package, not timed.
+#
+# That is half of it. The install is NOT editable, so the running code sits in
+# uv's cache and nothing above it is the checkout; finding that checkout's
+# tfvars -- the front door -- is `swarm_mcp.client._repo_root`, which reads the
+# install's PEP 610 record of where it was built from.
 cache-keys = [{ file = "pyproject.toml" }, { file = "swarm_mcp/**/*.py" }]
