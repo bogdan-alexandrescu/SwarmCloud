@@ -128,6 +128,10 @@ left as they were checked at `b0fff1b`; this list is what changed after.
   which names each checkpoint and says nothing of what is inside it. All three
   parts of the decision shipped in #29 (see "Since `b0fff1b`" above).
 
+**2026-09-25:** §5.5 Tier 2's "links are underline-on-hover" is superseded by
+design-system.md §1.3's resting underline: a link is ink plus an underline at
+rest, and the accent is the hover and focus state (OV-8, epic #81).
+
 ---
 
 *The design record, unchanged from here down.*

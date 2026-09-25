@@ -112,6 +112,8 @@ The primary screen of this section. One table, three tabs, no sub-pages.
 
 **Tabs (a segmented control, not a dropdown):** `Live` · `Waiting` · `Recent`. Each carries a count badge from the rows it holds — not from `/v1/stats`, so the badge and the table can never disagree. The badge is suppressed, not zeroed, whenever the tab is in the partial or error state of §1.7.
 
+**The tab and Recent's state are addresses** (OV-10, owner decision 2026-09-25): `#work/running/live`, `#work/running/waiting`, `#work/running/recent`, and `#work/running/recent/failed` · `/cancelled` · `/succeeded`. A tab named in the address overrides where the list would have landed; an address naming none leaves the tab where it is. Any other tail under `running/` is the plain list, and nothing under `running/` opens an agent drawer. A tab or state click goes through App, which writes the address with `replaceState`, so clicks add no history; closing the drawer returns to the list address it was opened from. The Overview's failed-agents item opens `#work/running/recent/failed`, and its parked items `#work/running/waiting`. (`src/agentlist.ts` holds the two word lists; `tests/route.test.ts` round-trips every address.)
+
 **Columns, desktop, in this order:**
 
 | # | Header | Content | Source |
@@ -136,7 +138,7 @@ Nine columns. Not fourteen. The things deliberately *not* columns: `tenant_id` (
 
   So an optimistic flip to CANCELLED is a lie for exactly the rows a user most wants to cancel. Render a persistent "cancelling…" chip on the row, driven by `cancel_requested == true && !isTerminal(state)`, and let the poll resolve it. That chip is also the honest render for a workflow-level cancel, which fans out through the same method (`store.py:578-601`).
 
-**Filters above the table:** state (folded into the tabs), `runner_profile` (5 known values from the frozen catalogue, so a select, not a text input), owner (see §2.4(c) — client-side, and labelled as such), and a "standalone only" toggle (client-side, §2.4(d)).
+**Filters above the table:** state (folded into the tabs, plus a state segment on `Recent` — all · failed · cancelled · succeeded, counted from the loaded rows like the tab badges; DEAD_LETTERED is never offered because nothing writes it, and the toolbar's "every count and filter runs over the N rows loaded" qualifier covers the segment), `runner_profile` (5 known values from the frozen catalogue, so a select, not a text input), owner (see §2.4(c) — client-side, and labelled as such), and a "standalone only" toggle (client-side, §2.4(d)).
 
 **Grouping, which the owner asked for and the first draft of this section dropped.** "Agents grouped by workflow" is half a list feature and half the graph. The list half: a `Group by workflow` toggle on the `Waiting` and `Recent` tabs that collapses rows under a workflow header showing the workflow id, the step count present in the loaded page, and the **computed** rollup (any member LEASED/DISPATCHED/STARTING/RUNNING → running; all SUCCEEDED → succeeded; any FAILED/CANCELLED → failed, respecting `on_step_failure`). Standalone agents collect under one "No workflow" group, last.
 
