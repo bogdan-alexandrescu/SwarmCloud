@@ -15,7 +15,7 @@
 # that a Cloud DNS + NodeLocal DNSCache cluster never sends a query to -- and a
 # browser worker ran 390 s with every lookup silently dropped. Nothing compared
 # the copy with the cluster. This does. docs/mirrored-values.md is the register
-# of such copies (this one is not in it yet; see the PR that added this file).
+# of such copies; this one is "The one whose authority is a live cluster".
 #
 # WHY NOT A SECTION OF check-contract-parity.sh. That script is part of
 # `make test`, which is fully offline by rule, and it refuses to skip. This one
