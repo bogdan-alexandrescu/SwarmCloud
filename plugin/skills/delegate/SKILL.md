@@ -122,9 +122,13 @@ one step's output reaches the next, by GCS reference rather than through a
 prompt.
 
 A step's file reaches its dependant only if the upstream agent wrote it to
-`$SWARM_ARTIFACTS_DIR`; SwarmCloud tells each upstream agent which filenames its
-dependants stage and that directory's absolute path, and a file written anywhere
-else, the repository included, is never staged.
+`$SWARM_ARTIFACTS_DIR`. `./artifacts` in its working directory is a link to that
+directory, unless a staged input or a restored checkpoint already has that
+name. A `claude-code` or `codex` upstream agent is told which filenames
+its dependants stage and that directory's absolute path; other runners are told
+nothing, so their prompt has to say it. A file written anywhere else, the
+repository included, is never staged, and nothing fails the upstream step for
+it: the dependant fails at staging.
 
 Per-step state comes from `swarm_workflow_status`, which reports the **derived**
 rollup and never a stored `state` field. That distinction is not theoretical: on

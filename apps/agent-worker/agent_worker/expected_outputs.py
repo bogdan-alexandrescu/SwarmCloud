@@ -20,19 +20,44 @@ quota.
 The owner chose option (b) on #149, and this module is the worker's half of it:
 
     API, at submission    metadata.expected_outputs = ["scan-01.md"] on the
-                          UPSTREAM task (swarm_api/expected_outputs.py)
+                          UPSTREAM task (swarm_api/expected_outputs.py); a
+                          caller may not set that key, the API refuses it
     worker, _prepare      copies the usable names into input.json under the
-                          same key
-    CLI runner            appends the names and the ABSOLUTE artifacts path to
-                          the prompt it passes the agent (`with_instructions`)
+                          same key, minus `swarm-work.patch`, and drops a
+                          caller's own input.expected_outputs
+    CLI runner            appends the names, minus its own log and transcript
+                          files, and the ABSOLUTE artifacts path to the prompt
+                          it passes the agent (`with_instructions`)
     worker, _finalise     names any that are missing, in one log line and in
                           result_summary[MISSING_SUMMARY_KEY]
+
+INSTRUCTIONS ALONE WERE MEASURED NOT TO BE ENOUGH. On the third run,
+`wf_06a3a949d2c242c3b0e9` (2026-09-25), every prompt named `$SWARM_ARTIFACTS_DIR`
+and told the agent to echo it. scan-02 echoed the right path and then wrote
+`<work>/artifacts/scan-02.md`. So the worker also links `work/artifacts` to the
+artifacts directory (`workspace.link_artifacts`), and the natural wrong guess
+lands in the uploaded directory. The instructions say where; the link catches
+the agent that reads it and writes next to its working directory anyway; the
+end-of-attempt line says when neither worked.
+
+A NAME THE PLATFORM WRITES ITSELF IS NEVER IN THE INSTRUCTIONS
+(`without_platform_names`). A dependant may stage the upstream's
+`swarm-work.patch`, runner log or transcript, and the API records that name
+like any other. But the patch is the platform's record of the agent's
+repository changes, written after the agent exits over whatever is there (or,
+with an empty diff, not written, leaving an agent's own file to pass for it),
+and the runner writes its log while the agent runs. Telling the agent to write
+either is worse than telling it nothing. Each writer leaves
+out its own names -- the worker the patch, the runner its three files -- so no
+list of them is spelled out twice.
 
 Three things are deliberately NOT done here.
 
 * **The worker does not copy a same-named file out of the working directory.**
-  That was option (c) on #149, and the owner rejected it. The agent is told
-  where the file must go, and a file left anywhere else stays there.
+  That was option (c) on #149, and the owner rejected it. The `./artifacts`
+  link is not a copy: a file written through it is written into the artifacts
+  directory in the first place. A file left anywhere else -- the repository, or
+  the working directory outside `./artifacts` -- stays there.
 * **A missing expected output does not fail the attempt.** Whether it should is
   an open owner decision. Until it is made, the attempt says so and succeeds or
   fails on its own terms, and the dependant still fails at staging, naming the
@@ -65,9 +90,10 @@ from typing import Any, Iterable, Sequence
 #:
 #: The same key in `input.json`, because it is the same list, and one word is
 #: one thing to grep for when an agent says it was never told. The worker
-#: ASSIGNS it there rather than using `setdefault`, like `staged_inputs`: it
-#: states what the platform knows, so a caller's own `expected_outputs` in the
-#: step input must not shadow it.
+#: ASSIGNS it there rather than using `setdefault`, like `staged_inputs`, and
+#: removes a caller's own value when it has none to assign: the key states what
+#: the platform knows, so a caller's `expected_outputs` in the step input must
+#: neither shadow it nor stand in for it.
 METADATA_KEY = "expected_outputs"
 
 #: The key in `task.result_summary` that names the expected outputs this attempt
@@ -101,7 +127,7 @@ def _usable(entry: Any) -> str | None:
     name = entry.strip()
     if not name or name.startswith("/"):
         return None
-    if any(ch in name for ch in ("\\", "\x00")):  # MUTATION M4 (red run only)
+    if any(ch in name for ch in ("\\", "\x00", "\n", "\r")):
         return None
     if any(segment in ("", ".", "..") for segment in name.split("/")):
         return None
@@ -140,6 +166,16 @@ def declared_outputs(metadata: Any) -> Declared:
     return parse_names(metadata.get(METADATA_KEY))
 
 
+def without_platform_names(names: Sequence[str], platform_written: Iterable[str]) -> tuple[str, ...]:
+    """`names` minus the ones the caller of this writes into the artifacts itself.
+
+    The order of `names` is kept. See the module docstring for why a
+    platform-written name is never put in front of the agent.
+    """
+    own = set(platform_written)
+    return tuple(name for name in names if name not in own)
+
+
 def agent_instructions(names: Sequence[str], artifacts_dir: Path | str) -> str:
     """The lines a CLI runner appends to the agent's prompt.
 
@@ -149,16 +185,24 @@ def agent_instructions(names: Sequence[str], artifacts_dir: Path | str) -> str:
     and written nothing (wf_bcdc9180e4fb4a209f31, recorded in
     `runners/cliagent.py`). "Outside the repository" is said because the
     working directory is where an agent assumes its output belongs.
+
+    The `./artifacts` link is deliberately not mentioned. It is a net under
+    the agent that reads this path and writes somewhere else anyway, and it
+    may be absent (`workspace.link_artifacts` skips a name already taken), so
+    naming it here would be a promise this text cannot check. For the same
+    reason the last sentence names the repository and not "the working
+    directory": a file written through the link IS written in the working
+    directory's `./artifacts`, and it does reach later steps.
     """
-    directory = os.fspath(artifacts_dir)  # MUTATION M3 (red run only)
+    directory = os.path.abspath(os.fspath(artifacts_dir))
     listed = ", ".join(names)
     lines = [
         "---",
         f"Later steps of this workflow need these files from you: {listed}.",
         f"Write each one to {directory} (this is $SWARM_ARTIFACTS_DIR), which is "
         "outside the repository and outside your working directory. Files "
-        "written anywhere else, including the working directory and the "
-        "repository, do not reach those steps.",
+        "written anywhere else, the repository included, do not reach those "
+        "steps.",
     ]
     lines += [f"- {PurePosixPath(directory) / name}" for name in names]
     return "\n".join(lines)
@@ -189,7 +233,7 @@ def missing_line(missing: Sequence[str], *, skipped: Iterable[str] = ()) -> str:
     agent's prompt. `inputs.artifact_reference` makes the same distinction on
     the dependant's side.
     """
-    skipped_set: set[str] = set()  # MUTATION M2 (red run only)
+    skipped_set = set(skipped)
     over_cap = [name for name in missing if name in skipped_set]
     absent = [name for name in missing if name not in skipped_set]
     parts: list[str] = []

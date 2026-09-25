@@ -288,17 +288,34 @@ def run_cli_agent(
     # whole flag set. With no names the prompt is passed unchanged, byte for
     # byte. See agent_worker/expected_outputs.py for what is measured and why.
     expected = expected_mod.parse_names(payload.get(expected_mod.METADATA_KEY))
+    # THIS RUNNER'S OWN FILES ARE LEFT OUT. A dependant may stage the upstream
+    # runner's log or transcript, and the API records that name like any
+    # other, but this process writes those three files itself -- the logs
+    # while the agent is running. An agent told to write one would be writing
+    # into a file this runner holds open, or one it overwrites afterwards.
+    own_files = (
+        f"{spec.name}.stdout.log",
+        f"{spec.name}.stderr.log",
+        spec.transcript_name,
+    )
+    told = expected_mod.without_platform_names(expected.names, own_files)
     # The prompt is the only caller-controlled value that reaches argv, and it
     # is passed as a single trailing argument with no shell in the picture.
-    argv.append(expected_mod.with_instructions(prompt, expected.names, ctx.artifacts_dir))
+    argv.append(expected_mod.with_instructions(prompt, told, ctx.artifacts_dir))
 
     limits = resolve_limits(payload, platform_ceilings())
     log = StructuredLogger(stream=sys.stderr, component=f"{spec.name}-runner")
-    if expected.names:
+    if told:
         log.info(
             "told the agent which files later steps need and where to write them",
-            expected_outputs=list(expected.names),
+            expected_outputs=list(told),
             artifacts_dir=os.path.abspath(ctx.artifacts_dir),
+        )
+    if len(told) != len(expected.names):
+        log.info(
+            "left this runner's own files out of the agent's instructions; the "
+            "runner writes them itself",
+            left_out=[name for name in expected.names if name not in told],
         )
     if expected.rejected:
         log.warning(

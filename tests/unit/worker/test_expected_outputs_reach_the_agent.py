@@ -291,9 +291,10 @@ def test_the_platforms_names_replace_a_callers_own(db, store, worker_factory):
 
 
 def test_the_workers_own_patch_is_never_handed_to_the_runner(db, store, worker_factory):
-    """`swarm-work.patch` is written by the worker's git harvest after the agent
-    exits, over whatever is there. An agent told to write it would be doing
-    work the platform throws away."""
+    """`swarm-work.patch` is the platform's record of the agent's repository
+    changes, written after the agent exits whenever the diff is non-empty. An
+    agent told to write it would have its file replaced, or, with an empty
+    diff, uploaded under a name every reader takes for the platform's own."""
     _seed(db, ["notes.md", "swarm-work.patch"])
     worker, _config, _exporter = worker_factory()
 

@@ -67,30 +67,75 @@ spent its compute and its provider quota. That is what happened to workflow
 "write it to scan-01.md", wrote into their working directories and succeeded.
 All four merges then failed, and seventeen steps were cancelled.
 
-**So the platform tells the upstream agent, and a prompt no longer has to.** At
-submission the API inverts every `input_from` edge. It records on each upstream
-step's task the filenames its dependants will stage, as
-`metadata.expected_outputs`, in the same write that creates the task. The worker
-passes that list to the runner. The `claude-code` and `codex` runners append it
-to the prompt they give the agent, along with the **absolute** path of
-`$SWARM_ARTIFACTS_DIR` and the statement that files written anywhere else,
-including the repository, do not reach later steps. The other runners receive the
-list in `input.json` and change nothing. A prompt that names the directory as
-well does no harm.
+**So the platform tells the upstream agent, catches its likeliest wrong guess,
+and says when neither worked.** Three layers, because the first alone was
+measured not to be enough.
 
-Two things this deliberately does not do:
+1. **Instructions.** At submission the API inverts every `input_from` edge. It
+   records on each upstream step's task the filenames its dependants will
+   stage, as `metadata.expected_outputs`, in the same write that creates the
+   task. The worker passes that list to the runner. Only the `claude-code` and
+   `codex` runners act on it: they append the names to the prompt they give
+   the agent, with the **absolute** path of `$SWARM_ARTIFACTS_DIR` and the
+   statement that files written anywhere else, the repository included, do not
+   reach later steps. The `generic`, `mock` and `browser` runners receive the
+   list in `input.json` and change nothing. A name the platform writes itself
+   is never in the instructions: not the worker's `swarm-work.patch`, which is
+   written after the agent exits, and not the runner's own
+   `<runner>.stdout.log`, `<runner>.stderr.log` or transcript, which it writes
+   while the agent runs.
+2. **`./artifacts` is the artifacts directory.** On the third run,
+   `wf_06a3a949d2c242c3b0e9` (2026-09-25), every prompt named
+   `$SWARM_ARTIFACTS_DIR` and told the agent to `echo` it. scan-02 echoed
+   `/workspace/att_…/artifacts`, which is right, then wrote
+   `/workspace/att_…/work/artifacts/scan-02.md`, and reported that it had
+   written the file to `$SWARM_ARTIFACTS_DIR`. The artifacts directory is the
+   working directory's sibling, so `./artifacts` is the natural wrong guess. So
+   before every agent starts, workflow step or not, the worker makes
+   `work/artifacts` a symlink to the artifacts directory, and a file written to
+   `./artifacts/<name>` lands in the directory that is uploaded. The link is
+   never checkpointed: it points outside `work/`, which a restore refuses, and
+   it names this attempt's directory, so a resumed attempt makes its own. If
+   `work/artifacts` already exists (a declared input staged as `artifacts/…`,
+   or a directory a restored checkpoint brought back), it is left alone and
+   one WARNING says so. Files written under it are then not uploaded, exactly
+   as before.
+3. **The missing-output line.** If an attempt ends without one of its expected
+   outputs, the worker records the name in
+   `result_summary.expected_outputs_missing` and logs one line naming it. The
+   line says whether the file was never written, or was written and not
+   uploaded (the artifact cap).
+
+None of this makes an agent write the file. A prompt that names the file and
+the directory as well does no harm.
+
+**`metadata.expected_outputs` belongs to the service.** A caller cannot set it:
+`POST /v1/tasks`, `POST /v1/tasks/batch`, or a workflow whose own `metadata`
+carries it, is refused with 422 `invalid_dispatch` and
+`detail.reserved_metadata_keys: ["expected_outputs"]`, and nothing is created.
+This is the reservation `metadata.dispatch` already has. Accepted, the key
+would reach the agent as "later steps of this workflow need these files", in
+the platform's voice, on a task no step stages from. For the same reason the
+worker drops a caller's own `input.expected_outputs` before the runner sees it,
+and logs that it did.
+
+What this deliberately does not do:
 
 * **It does not copy a file out of the working directory.** The worker does not
   go looking for a same-named file in the working directory and upload it. That
-  was option (c) on #149, and the owner rejected it.
-* **It does not fail the upstream step when a file is missing.** If an attempt
-  ends without one of its expected outputs, the worker records the name in
-  `result_summary.expected_outputs_missing` and logs one line naming it. The
-  line says whether the file was never written, or was written and not uploaded
-  (the artifact cap). The attempt keeps the state its runner earned, and the
-  dependant still fails at staging, naming the task and the file. Whether a
-  missing expected output should fail the step that owed it is an open owner
-  decision.
+  was option (c) on #149, and the owner rejected it. The link is not a copy: a
+  file written through it is written into the artifacts directory in the first
+  place. A file left anywhere else, in the repository or elsewhere in the
+  working directory, stays there.
+* **It does not fail the upstream step when a file is missing.** The attempt
+  keeps the state its runner earned, and the dependant still fails at staging,
+  naming the task and the file. Whether a missing expected output should fail
+  the step that owed it is an open owner decision.
+* **It does not carry the artifacts directory across a park.** Only `work/` is
+  checkpointed, and a resumed attempt starts with an empty artifacts directory.
+  A dependant stages from the attempt that SUCCEEDED, so a file written before
+  a park and not written again after the resume is not there for it. That was
+  already true of `$SWARM_ARTIFACTS_DIR`; the link extends it to `./artifacts`.
 
 `input_from` stages an upstream step's artifact into the downstream step's
 workspace. The file travels through **GCS**, never inline through Firestore —

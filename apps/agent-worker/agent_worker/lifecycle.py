@@ -9,6 +9,7 @@ load-bearing in a way the rest are not.
     4.  restore the latest checkpoint, if any
     5.  optional shallow git clone
     5b. stage every artifact this step declared in `input_from`
+    5c. link `work/artifacts` to `artifacts/`, unless the name is taken (#149)
     6.  resolve the tenant's provider credential
     7.  start the runner child
     8.  while it runs: heartbeat, MANDATORY periodic checkpoint, watch for
@@ -643,6 +644,12 @@ class Worker:
             # clone is; prove liveness after it for the same reason.
             self._heartbeat()
 
+        # ---- STEP 5c: ./artifacts is the artifacts directory ----------------
+        # After the restore, the clone and the staging, never before: a
+        # restore refuses a non-empty `work/`, and a staged input or a
+        # restored directory that already owns the name keeps it.
+        self._link_artifacts()
+
         # ---- runner input -----------------------------------------------
         payload = dict(task.get("input") or {})
         if repo_info:
@@ -653,12 +660,33 @@ class Worker:
             # must not shadow it and leave the agent reading a stale claim.
             payload["staged_inputs"] = [item.as_dict() for item in staged_inputs]
         expected = self._declared_outputs(task)
-        if expected:
-            # Assigned for the same reason as `staged_inputs`: the platform's
-            # statement of what later steps need, which a caller's own key of
-            # the same name must not shadow. A CLI runner turns it into the
-            # agent's instructions; the other runners ignore it.
-            payload.setdefault(expected_mod.METADATA_KEY, list(expected))  # MUTATION M6 (red run only)
+        if expected_mod.METADATA_KEY in payload:
+            # A CALLER'S OWN `input.expected_outputs` NEVER REACHES THE AGENT,
+            # whether or not the API recorded names of its own. A CLI runner
+            # turns this key into instructions in the platform's voice ("later
+            # steps of this workflow need these files"), so only the names the
+            # API wrote into `task.metadata` may fill it -- and the API refuses
+            # that key from callers. Dropped with a line, not silently.
+            dropped = payload.pop(expected_mod.METADATA_KEY)
+            self.log.warning(
+                "dropped the caller's own input.expected_outputs: only the names "
+                "the API recorded for this task's dependants reach the agent",
+                dropped_entries=len(dropped) if isinstance(dropped, (list, tuple)) else 1,
+            )
+        told = expected_mod.without_platform_names(expected, (PATCH_NAME,))
+        if told:
+            # The platform's statement of what later steps need. A CLI runner
+            # turns it into the agent's instructions; the other runners ignore
+            # it. `swarm-work.patch` is left out: it is the platform's record
+            # of the agent's repository changes, which the harvest writes after
+            # the agent exits, over whatever is there, whenever the diff is
+            # non-empty and under the cap (`gitops.summarize_work`). An agent
+            # told to write it would have its file replaced, or -- with an empty
+            # or oversized diff -- uploaded under a name every reader takes for
+            # the platform's diff. It stays in `self._expected_outputs`, which
+            # the end-of-attempt check reads, because a dependant that stages
+            # it still needs it uploaded.
+            payload[expected_mod.METADATA_KEY] = list(told)
         if cfg.model:
             payload.setdefault("model", cfg.model)
         payload.setdefault("task_id", cfg.task_id)
@@ -1509,6 +1537,52 @@ class Worker:
             files=[item.path for item in staged],
         )
         return staged
+
+    def _link_artifacts(self) -> None:
+        """Step 5c: make `./artifacts` in the agent's working directory the
+        directory that is uploaded (#149).
+
+        On every attempt, not only one a later step stages from: the guess it
+        catches is as natural for a caller's own prompt that says "write it to
+        $SWARM_ARTIFACTS_DIR" as for the platform's instructions. Measured on
+        2026-09-25, `wf_06a3a949d2c242c3b0e9`: scan-02 echoed the right path
+        and then wrote `<work>/artifacts/scan-02.md`.
+
+        Never fails the attempt. A name that is already taken is the agent's
+        or the caller's (see `workspace.link_artifacts`), and a link that
+        cannot be made leaves the agent where it was before this existed. Both
+        are one WARNING, because either one is why a file written under
+        `./artifacts` was not uploaded.
+        """
+        ws = self.ws
+        assert ws is not None
+        link = ws.artifacts_link()
+        try:
+            made = workspace_mod.link_artifacts(ws)
+        except OSError as exc:
+            self.log.warning(
+                "could not link work/artifacts to $SWARM_ARTIFACTS_DIR; files the "
+                "agent writes under ./artifacts will not be uploaded",
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            return
+        if made:
+            self.log.info(
+                "work/artifacts links to $SWARM_ARTIFACTS_DIR, so a file the agent "
+                "writes under ./artifacts is uploaded",
+                target=str(ws.artifacts),
+            )
+            return
+        self.log.warning(
+            "work/artifacts already exists, so it was left in place and not linked "
+            "to $SWARM_ARTIFACTS_DIR; files the agent writes under it are not uploaded",
+            kind="link" if link.is_symlink() else ("directory" if link.is_dir() else "file"),
+            restored_from_checkpoint=self._restored_from is not None,
+            staged_inputs_under_it=[
+                item.path for item in self._staged_inputs
+                if item.path.split("/", 1)[0] == link.name
+            ],
+        )
 
     def _declared_outputs(self, task: dict[str, Any]) -> tuple[str, ...]:
         """Honour `metadata.expected_outputs`: what later steps will stage from this one.
