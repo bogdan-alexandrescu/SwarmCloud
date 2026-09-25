@@ -1,0 +1,29 @@
+# The labels the issue forms in .github/ISSUE_TEMPLATE/ apply, declared.
+#
+# WHY THIS FILE EXISTS. GitHub files an issue from a form even when the form
+# names a label the repository does not have; it just drops the label, and the
+# issue lands where nobody filtering by that label will ever see it.
+# tests/unit/scripts/test_issue_forms.py holds every form to this list, and
+# holds this list to what the forms actually apply.
+#
+# WHAT IT IS NOT. A copy of every label on the repository, or a sync. A unit
+# test here runs without credentials and cannot read GitHub, so a label deleted
+# there is not caught. Read `gh label list` before trusting this file, and
+# create a missing label from its entry:
+#
+#   gh label create <name> --color <color> --description "<description>"
+#
+# `bug` and `enhancement` are GitHub's defaults and already existed. `epic` was
+# created on 2026-09-24 for epic.yml.
+#
+# Colours are QUOTED: an all-digit colour left unquoted is a YAML integer and
+# loses its leading zeros.
+- name: bug
+  color: "d73a4a"
+  description: "Something isn't working"
+- name: enhancement
+  color: "a2eeef"
+  description: "New feature or request"
+- name: epic
+  color: "3e4b9e"
+  description: "One wave's out-of-territory findings; closes on its comments, never on its index"

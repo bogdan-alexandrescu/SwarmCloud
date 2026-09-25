@@ -296,6 +296,99 @@ up as a runbook step someone follows at 3am.
 
 ---
 
+## Issues
+
+Bugs, fixes and improvements we mean to do later are filed as GitHub issues,
+through the forms in [`.github/ISSUE_TEMPLATE/`](.github/ISSUE_TEMPLATE/). The
+forms and the rules below were adopted from saga-prompt-lab on 2026-09-24, at
+the owner's request: the structure is theirs, the content is this platform's.
+A finding that lives only in a session transcript or a PR description is lost
+the day that session ends; an issue is where it survives.
+
+**Use the form, and fill in "what you expected".** It is the box that tells a
+bug from documented behaviour, and a lot that looks wrong here is the contract:
+a `READY` or `PARKED` task that holds no capacity and shows no progress is
+invariant 1 working. **Severity S0 is reserved for the guarantees this platform
+exists to keep** — tenant isolation, the other team's resources in
+`saga-agents-staging`, capacity accounting, fencing, and secrets — and an S0 is
+looked at before anything else. A secret is reported by *where* it appeared,
+never pasted.
+
+**Filing from the CLI with `gh issue create --body-file` bypasses the form, so
+write the body in the form's sections, in its order, and pass its label**
+(`--label bug`, `--label enhancement`, `--label epic`). The form is the
+checklist of what an issue has to answer; skipping it from a terminal is how an
+issue ends up with a headline and no expected behaviour.
+Blank issues stay on for chores and notes-to-self — `config.yml` says why.
+
+**The title states the defect as a fact**, the way this repository's commit
+headlines do — "The release's digest check asked for an ID token #36 had
+stopped minting", not "digest check broken". The body says what was measured,
+where and when, with the control that shows the measurement could have come out
+the other way.
+
+**SEVERAL FINDINGS FROM ONE WAVE GO IN ONE EPIC, NOT ONE ISSUE EACH.** A wave of
+parallel lanes turns up mechanical defects outside each lane's territory — a
+stale comment, a missed call site, a guard that checks less than its name says.
+File them as `[epic] Wave <date> out-of-territory findings` (the epic form,
+label `epic`), **one comment per finding**, each a checkbox naming **the file
+and the call site**:
+
+    - [ ] **<the defect, as a fact>** · `apps/scheduler/scheduler/dispatch.py` `worker_env()` · <how it was measured, by which lane or PR>
+
+Tick a box only with **evidence**: the PR that fixed it, or a measurement that
+its premise was wrong. **Batching is for findings whose fix is MECHANICAL.** A
+change to the frozen contract, a Firestore document shape or product behaviour
+gets **its own issue**, linked from its box — and a frozen-contract change is
+also an entry in
+[`docs/contract-change-requests.md`](docs/contract-change-requests.md), because
+rule 1 says so.
+
+**AN EPIC CLOSES ON ITS COMMENTS, NEVER ON ITS INDEX.** In saga-prompt-lab,
+#871 closed over two live defects its body's index never listed. Enumerate the
+boxes from the comments, reconcile them against anything the body lists, and if
+the two disagree the epic is not closeable. So an epic's body carries **no task
+item at all** — not from the CLI, and not from the form, which has no
+checkboxes for exactly this reason: GitHub writes a form's checkboxes into the
+filed body as `- [X]` items, and a required acknowledgement would arrive as a
+ticked box no comment matches, on every epic.
+
+**`Closes #N` ONLY WHEN IT IS UNCONDITIONALLY TRUE.** GitHub reads the keyword
+and drops every qualifier around it: "Closes #12 except the GKE half" closes
+#12. For a partial fix write `part of #N` and say what is left.
+
+**FINDINGS ABOUT OTHER ISSUES GO IN A PR COMMENT, NOT THE PR BODY.** Keep
+reporting them — but an issue cited in the body reads as the PR's own subject,
+to GitHub's linked-issues view and to the next reader. Context references for
+*this* change stay in the body.
+
+**AN ISSUE'S FACTS ABOUT A MOVING TARGET ARE STALE THE DAY AFTER IT IS
+WRITTEN.** A pool ceiling, a lease count, what is deployed, the image a job
+runs, which release run is red: read the live value yourself before acting on
+an issue that quotes one, and say *when* you read it.
+[`docs/DEPLOY_STATE.md`](docs/DEPLOY_STATE.md) is dated for this reason — its
+2026-09-24 reading found the running services were a laptop deploy of
+`7c52762`, not main. An issue that said "main is deployed" would have become
+false without anyone editing it.
+
+**TWO ISSUES THAT EDIT THE SAME FILE ARE ONE LANE, NOT TWO.** Territory, not
+subject, decides how work is split, and it is found by reading the files the
+issues name rather than their titles. Two lanes handed `App.tsx` for two
+different reasons overwrite each other exactly as if they had been handed the
+same one.
+
+**The forms' "Where" list follows the nav, and a test holds it there.**
+`tests/unit/scripts/test_issue_forms.py` reads `SECTIONS` in
+`apps/swarm-ui/src/App.tsx` and fails when a tab is added, renamed or removed
+without the forms following — a form still offering "Runner profiles" after the
+tab became "Profile headroom" sends the reporter looking for a screen that is
+not there. The same test holds every label a form applies to
+[`.github/labels.yml`](.github/labels.yml). It cannot read GitHub, so a label
+deleted there is not caught; create a missing one from its entry in that file
+with `gh label create`.
+
+---
+
 **Correction (workspace storage).** This platform does NOT use Cloud Run ephemeral
 disk. The Terraform google provider cannot express it (`empty_dir.medium` accepts
 only `"MEMORY"`), so workspaces are memory-backed tmpfs and the deployment runs on

@@ -1,0 +1,34 @@
+# Blank issues stay on, for the reason saga-prompt-lab keeps them on: an
+# engineer filing a quick chore or a note-to-self shouldn't have to answer a
+# triage form. Use the forms for anything reported from the outside, where the
+# reporter and the fixer are different people. An agent filing from the CLI
+# with --body-file bypasses the forms, so it writes its body in the form's
+# sections (CLAUDE.md, "Issues").
+#
+# Every url below is a blob/ or tree/ link on main, and
+# tests/unit/scripts/test_issue_forms.py fails if what it points at is not in
+# the repository -- a contact link is the one place a reporter is sent before
+# they have filed anything, so a dead one costs the report.
+blank_issues_enabled: true
+contact_links:
+  - name: How SwarmCloud works
+    url: https://github.com/bogdan-alexandrescu/SwarmCloud/blob/main/README.md
+    about: What the platform is, what is proven on a live deployment, and what does not work yet.
+  - name: The frozen contract (read before filing "this should be allowed")
+    url: https://github.com/bogdan-alexandrescu/SwarmCloud/blob/main/CONTRACT.md
+    about: The invariants every component keeps. Several apparent limitations are these, on purpose.
+  - name: Working agreements
+    url: https://github.com/bogdan-alexandrescu/SwarmCloud/blob/main/CLAUDE.md
+    about: How changes are made here, and the rules for filing, batching and closing issues.
+  - name: Troubleshooting (read before filing "stuck" or "nothing runs")
+    url: https://github.com/bogdan-alexandrescu/SwarmCloud/blob/main/docs/troubleshooting.md
+    about: Stuck in LEASED, everything PARKED, workers exiting generation_fenced — the documented states and what each one means.
+  - name: Operations
+    url: https://github.com/bogdan-alexandrescu/SwarmCloud/blob/main/docs/operations.md
+    about: Day-to-day operation, changing capacity, pausing, alerts, and investigating one task.
+  - name: Runbooks
+    url: https://github.com/bogdan-alexandrescu/SwarmCloud/tree/main/docs/runbooks
+    about: Step-by-step procedures for the incidents that have happened before.
+  - name: Frozen-contract change requests
+    url: https://github.com/bogdan-alexandrescu/SwarmCloud/blob/main/docs/contract-change-requests.md
+    about: A change to apps/common/swarm_common is a request recorded here for the owner to decide — not an issue, and never a direct edit.
