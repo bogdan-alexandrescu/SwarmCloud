@@ -23,7 +23,9 @@
 // pairing or its `error` word; stop polling while RUNNING, or keep polling a
 // settled finish; read the transcript's age off the browser clock; ask the
 // listing for no `limit` (the server's default page is 50); draw a listing the
-// route cut short as the whole manifest.
+// route cut short as the whole manifest; draw `task.input` instead of the
+// API's masked copy (`/v1/tasks/{id}/input`, #184 follow-up), or fall back to
+// it when the copy is not served.
 
 import STYLES from '../styles.css?raw'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -228,6 +230,28 @@ function logs(streams: unknown[], ended = true) {
   }
 }
 
+/**
+ * `GET /v1/tasks/{id}/input`: the task's input as the API masked it (#184
+ * follow-up). The default is the reference task's clean prompt, so its count
+ * is a measured zero.
+ */
+function inputCopy(over: Record<string, unknown> = {}) {
+  const prompt = 'Audit the capacity code.\n\nSay what reserve() guarantees.'
+  return {
+    task_id: REF,
+    tenant_id: 'eng',
+    read_at: new Date().toISOString(),
+    prompt_key: 'string',
+    prompt: { text: prompt, redaction_count: 0 },
+    rest: null,
+    full: { text: JSON.stringify({ prompt }, null, 2), redaction_count: 0 },
+    redacted: false,
+    redaction_count: 0,
+    redaction: { applied_at_read_time: true, rules: 12 },
+    ...over,
+  }
+}
+
 const FINAL_LOGS = logs([
   logStream('agent_stderr'),
   logStream('stdout'),
@@ -272,6 +296,7 @@ function finishedRoutes(over: Record<string, Route> = {}): Record<string, Route>
     [`/v1/tasks/${REF}/answer`]: answer(),
     [`/v1/tasks/${REF}/transcript`]: transcript(),
     [`/v1/tasks/${REF}/logs`]: FINAL_LOGS,
+    [`/v1/tasks/${REF}/input`]: inputCopy(),
     ...over,
   }
 }
@@ -636,14 +661,62 @@ describe('Inputs: the prompt, the repository, and every staged file', () => {
     })
   }
 
-  it('shows the prompt verbatim and wrapped, and the repository, ref and commit cloned', async () => {
-    await openPane(finishedRoutes())
+  it('shows the prompt as the API served it, wrapped, and the repository, ref and commit cloned', async () => {
+    const api = await openPane(finishedRoutes())
     const inputs = await sectionReady('Inputs', /Audit the capacity code/)
     const pre = inputs.querySelector('pre')
-    expect(pre?.textContent, 'the prompt is not verbatim').toBe('Audit the capacity code.\n\nSay what reserve() guarantees.')
+    expect(pre?.textContent, 'the prompt is not the served copy').toBe('Audit the capacity code.\n\nSay what reserve() guarantees.')
+    expect(api.count(`/v1/tasks/${REF}/input`), 'the prompt was not read through the masked copy').toBeGreaterThan(0)
+    // A clean prompt is a measured zero, in plain ink, and the qualifier that
+    // said the prompt was not masked is gone because it no longer is true.
+    const count = inputs.querySelector('.art-masked')
+    expect(count?.textContent, 'the prompt carries no masked count').toBe('0')
+    expect(count!.classList.contains('is-warn')).toBe(false)
+    expect(inputs.textContent).not.toMatch(/not masked/)
     expect(inputs.textContent).toMatch(/github\.com\/bogdan-alexandrescu\/SwarmCloud/)
     expect(inputs.textContent).toMatch(/main/)
     expect(inputs.textContent).toMatch(/0a09be9f3c1d/)
+  })
+
+  it('masks a credential in the prompt as the API masked it, counts it, and never draws the raw input', async () => {
+    // The task document holds the raw prompt; the pane must not draw it. The
+    // served copy is what `redaction.redact` made of it, count included.
+    const secret = 'sk-proj0123456789abcdefghijklmnopqrstuv'
+    const masked = 'Deploy with sk-proj01******** then report.'
+    await openPane(
+      finishedRoutes({
+        [`/v1/tasks/${REF}`]: { task: task({ input: { prompt: `Deploy with ${secret} then report.`, token_hint: secret } }) },
+        [`/v1/tasks/${REF}/input`]: inputCopy({
+          prompt: { text: masked, redaction_count: 1 },
+          rest: { text: '{\n  "token_hint": "sk-proj01********"\n}', redaction_count: 1 },
+          full: { text: `{\n  "prompt": "${masked}",\n  "token_hint": "sk-proj01********"\n}`, redaction_count: 2 },
+          redacted: true,
+          redaction_count: 2,
+        }),
+      }),
+    )
+    const inputs = await sectionReady('Inputs', /Deploy with/)
+    expect(drawer().textContent, 'the raw input reached the screen').not.toContain(secret)
+    expect(inputs.querySelector('pre')?.textContent).toBe(masked)
+    const count = inputs.querySelector('.art-masked')
+    // Everything the block draws: the prompt and the rest of the input.
+    expect(count?.textContent).toBe('2')
+    expect(count!.classList.contains('is-warn'), 'a count above zero is drawn as nothing to see').toBe(true)
+  })
+
+  it('says an API that does not serve the copy does not, and draws no raw prompt in its place', async () => {
+    await openPane(
+      finishedRoutes({
+        // FastAPI's own 404 for a path it does not route: no error envelope.
+        [`/v1/tasks/${REF}/input`]: () =>
+          new Response(JSON.stringify({ detail: 'Not Found' }), {
+            status: 404,
+            headers: { 'content-type': 'application/json' },
+          }),
+      }),
+    )
+    const inputs = await sectionReady('Inputs', /not served by this API/)
+    expect(inputs.textContent, 'the raw prompt was drawn when the copy was not served').not.toMatch(/Audit the capacity code/)
   })
 
   it('links each staged file to the step that produced it, and reads it from THAT run', async () => {

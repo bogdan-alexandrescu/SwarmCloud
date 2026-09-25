@@ -84,12 +84,57 @@ describe('the attempts read', () => {
 
     const attemptReads = calls.filter((c) => c.includes('/attempts'))
     expect(attemptReads, 'the attempts route was never read, so this test checked nothing').toHaveLength(2)
-    // #184: the drawer's read -- and ONLY the drawer's -- also asks for each
-    // attempt's CPU reading. `include=usage` costs the API an events read per
-    // request, so the Overview's per-task attempts reads (`loadAttempts`) must
-    // not carry it. MUTATION: add it to `loadAttempts`, or drop it from
-    // `loadAgentRun` and Details draws `not served` on every attempt.
-    expect(attemptReads[0]).toBe(`/v1/tasks/tsk_live/attempts?limit=${API_MAX_PAGE_SIZE}&include=usage`)
+    // #184 follow-up: the CPU figures are typed attempt fields (contract
+    // request #15), served on every row. The drawer's read asked for
+    // `include=usage`, the interim heartbeat-event read the typed fields
+    // replaced; it asks for nothing extra now. MUTATION: put it back.
+    expect(attemptReads[0]).toBe(`/v1/tasks/tsk_live/attempts?limit=${API_MAX_PAGE_SIZE}`)
     expect(attemptReads[1]).toBe(`/v1/tasks/tsk_live/attempts?limit=${API_MAX_PAGE_SIZE}`)
+  })
+})
+
+// THE INPUT, MASKED (#184 follow-up). Details draws the task's input from the
+// API's read-time-redacted copy, `GET /v1/tasks/{id}/input`, never from the
+// task document. The input never changes after submission, so the drawer --
+// which re-reads its run every 10 s -- asks for it once.
+describe('the input read', () => {
+  it('reads the masked copy with the run, once however often the drawer re-reads', async () => {
+    vi.stubEnv('VITE_LIVE', '1')
+    vi.resetModules()
+    const calls: string[] = []
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      calls.push(url)
+      const body = url.endsWith('/input')
+        ? {
+            task_id: 'tsk_live', tenant_id: 'acme', read_at: '2026-09-25T12:00:00Z', prompt_key: 'string',
+            prompt: { text: 'use sk-proj01********', redaction_count: 1 }, rest: null,
+            full: { text: '{\n  "prompt": "use sk-proj01********"\n}', redaction_count: 1 },
+            redacted: true, redaction_count: 1, redaction: { applied_at_read_time: true, rules: 11 },
+          }
+        : url.includes('/events')
+          ? { events: [] }
+          : url.includes('/attempts')
+            ? { attempts: [] }
+            : url.includes('/resource-classes')
+              ? { resource_classes: {} }
+              : { task: { id: 'tsk_live', state: 'RUNNING', input: { prompt: 'use sk-proj0123456789abcdef' } } }
+      return new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    }) as unknown as typeof fetch
+
+    const api = await import('../api')
+    const first = await api.loadAgentRun('tsk_live')
+    await api.loadAgentRun('tsk_live')
+
+    const inputReads = calls.filter((c) => c.endsWith('/input'))
+    expect(inputReads, 'the drawer never asked for the masked copy').toEqual(['/v1/tasks/tsk_live/input'])
+    expect(first.status).toBe('ok')
+    const run = (first as unknown as { data: Record<string, unknown> }).data
+    const copy = run['input'] as { status: string; data?: { prompt?: { text: string } } } | undefined
+    expect(copy?.status, 'the run carries no masked copy').toBe('ok')
+    expect(copy?.data?.prompt?.text).toBe('use sk-proj01********')
   })
 })
