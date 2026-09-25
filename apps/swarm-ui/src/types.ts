@@ -2015,12 +2015,19 @@ export function whyAgent(task: Task): string {
  *   ran        a finished task that started: from its last start to its end
  *   running    STARTING or RUNNING now; the figure is this attempt's run so
  *              far and is still growing
- *   waiting    not running now and not finished -- never started, or between
- *              attempts (parked, requeued, re-leased); the figure is the
- *              task's age since submission, prefixed with what it is doing
+ *   waiting    live and not running. Only when NOTHING HAS STARTED AND NO
+ *              SLOT IS HELD (READY, PARKED, QUEUED, SUBMITTED with no
+ *              `started_at`) is there a figure: the task's age, all of it a
+ *              wait, as `waiting 4m 0s`, ticking. LEASED and DISPATCHED, and
+ *              any live state after an earlier attempt started, print the
+ *              state word alone and do not tick -- see `elapsed` for why. So
+ *              `waiting` does NOT imply a figure, and it does not imply that
+ *              nothing ran: `task.started_at !== null` is what says an
+ *              earlier attempt did.
  *   never-ran  finished without ever starting; there is no run to time
- *   unknown    no span the document can time: no creation time, or a
- *              finished task whose end was never recorded
+ *   unknown    no span the document can time: no creation time, a finished
+ *              task whose end was never recorded, or STARTING or RUNNING
+ *              with no start recorded
  */
 export type ElapsedPhase = 'ran' | 'running' | 'waiting' | 'never-ran' | 'unknown'
 
@@ -2047,22 +2054,42 @@ const RUN_STATES: ReadonlySet<TaskState> = new Set<TaskState>(['STARTING', 'RUNN
  * created-to-completed span as `run 27m 57s` beside a `never ran` chip. There
  * is no run to time, so the answer is the words `never ran`.
  *
- * THE PREFIX SAYS WHAT AN UNSTARTED TASK IS DOING (AG-12). It was `queued` for
+ * THE WORD SAYS WHAT AN UNSTARTED TASK IS DOING (AG-12). It was `queued` for
  * every one of them, which on LEASED and DISPATCHED -- states that HOLD A POOL
  * SLOT, in the tab that means exactly that -- contradicted the tab it sat in.
- * A concurrency state is named by its own state word (`leased 4m`,
- * `dispatched 4m`); everything else unstarted costs nothing and reads
- * `waiting`. The word comes from the state, not from a list typed here.
+ * A concurrency state is named by its own state word; everything else
+ * unstarted costs nothing and reads `waiting`. The word comes from the state,
+ * not from a list typed here.
+ *
+ * A STATE WORD IN FRONT OF A DURATION READS AS TIME IN THAT STATE, and the
+ * task document holds that time for NO state: nothing records when a task was
+ * leased, dispatched, parked or made ready. (`updated_at` is not it: it also
+ * moves on writes that change no state -- the scheduler's `record_blockers`, a
+ * cancel request, a checkpoint.)
+ * AG-12's first form printed the age after the word -- `leased 3h 0m` for a
+ * task that queued three hours and was leased a second ago -- which is what a
+ * stuck lease looks like, and an operator chases it. So the concurrency states
+ * print the word alone. The age is the inspector's `age` fact.
  *
  * A START ON THE DOCUMENT IS NOT A RUN IN PROGRESS. `started_at` survives a
  * park, a promote back to READY and a reclaim -- nothing on the platform
  * clears it -- so a task that ran, hit quota and parked forty minutes ago
  * still carries its start. Timed from there it read `41m 0s`, ticking, phase
- * `running`, on a task holding no capacity and running nothing; and on its
- * retry the LEASED and DISPATCHED rows lost their prefix to a bare duration.
- * Only in `RUN_STATES` is the start this attempt's, so only there is the
- * figure run time. Anywhere else live, the task is between attempts and reads
- * like any waiting task: its state word and its age.
+ * `running`, on a task holding no capacity and running nothing. Only in
+ * `RUN_STATES` is the start this attempt's, so only there is the figure run
+ * time.
+ *
+ * AND THE AGE IS NOT A WAIT ONCE SOMETHING HAS RUN. The first fix for the
+ * above timed a task between attempts from `created_at` and printed `waiting
+ * 50m 0s`: fifty minutes of waiting for a task that ran for thirty-six of them.
+ * The age includes every earlier run and the document does not say how much,
+ * so between attempts there is no figure to give: the text is the state word,
+ * and nothing ticks. Only a task that has never started and holds no slot has
+ * a wait the document can time, and for it the whole age is one.
+ *
+ * NOTE ON WIDTH. Every form here fits the Agents list's `[age]` track, whose
+ * floor `shell.test.tsx` derives from this function over every state, started
+ * or not: the longest is `waiting 99d 23h`, 15 characters.
  *
  * WHAT THE TASK DOCUMENT CANNOT TELL APART. For a finished task the figure is
  * last start to end. A task cancelled while PARKED, after an earlier attempt
@@ -2090,12 +2117,21 @@ export function elapsed(
       ? { text: formatDuration(completed - started), ticking: false, phase: 'ran' }
       : { text: '\u2014', ticking: false, phase: 'unknown' }
   }
-  if (RUN_STATES.has(task.state) && Number.isFinite(started)) {
-    return { text: formatDuration(now - started), ticking: true, phase: 'running' }
+  if (RUN_STATES.has(task.state)) {
+    // STARTING or RUNNING with no start recorded: the worker writes the two in
+    // one update, so this is an older document or a writer that forgot. The
+    // age is not a run length, and the state chip already says RUNNING.
+    return Number.isFinite(started)
+      ? { text: formatDuration(now - started), ticking: true, phase: 'running' }
+      : { text: '\u2014', ticking: false, phase: 'unknown' }
+  }
+  if (Number.isFinite(started) || CONCURRENCY_STATES.has(task.state)) {
+    // Between attempts, or holding a slot before this attempt starts. The
+    // document has no time for either; see above.
+    return { text: task.state.toLowerCase(), ticking: false, phase: 'waiting' }
   }
   if (Number.isFinite(created)) {
-    const doing = CONCURRENCY_STATES.has(task.state) ? task.state.toLowerCase() : 'waiting'
-    return { text: `${doing} ${formatDuration(now - created)}`, ticking: true, phase: 'waiting' }
+    return { text: `waiting ${formatDuration(now - created)}`, ticking: true, phase: 'waiting' }
   }
   return { text: '\u2014', ticking: false, phase: 'unknown' }
 }

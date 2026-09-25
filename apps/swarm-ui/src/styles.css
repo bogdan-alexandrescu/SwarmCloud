@@ -1192,19 +1192,21 @@ body {
        `scan-terraf…` at EVERY width, 1440 included. A track sized under its own
        longest known value is a truncation with no width band to blame. */
     [step] minmax(0, 120px)
-    /* 19ch, NOT 76px (AG-11). The longest thing this cell prints is
-       `elapsed()`'s wait under its state word (AG-12) -- "dispatched 23h
-       59m", "dispatched 99d 23h": 18 characters -- and at 1440 76px cut every
-       waiting row to "queued 1…", which is the one fact the Waiting tab
-       exists to show. `ch` rather than px because the cell is `tabular-nums`,
-       so a digit IS one `ch`, and the letters of the state words are each
-       within a few percent of one; the 19th character is slack for `m`, the
-       one glyph here wider than a digit.
-       WAS 15ch, sized when every wait read "queued 23h 59m" (14). AG-12 named
-       the wait by its state -- `leased`, `dispatched`, `waiting` -- and the
-       widest of those is four characters longer, so 15ch cut a DISPATCHED
-       row, the state that holds a slot, to "dispatched 23h…". `shell.test.tsx`
-       derives the 18 from `elapsed()` itself, over every state. */
+    /* 19ch, NOT 76px (AG-11). At 1440 76px cut every waiting row to
+       "queued 1…", which is the one fact the Waiting tab exists to show.
+       `ch` rather than px because the cell is `tabular-nums`, so a digit IS
+       one `ch`, and the letters of the words are each within a few percent
+       of one.
+       WAS 15ch, sized when every wait read "queued 23h 59m" (14); then 19ch
+       for AG-12's "dispatched 99d 23h" (18). THAT FORM IS GONE: a state word
+       in front of the task's age read as time spent in the state, so
+       `elapsed()` now prints LEASED, DISPATCHED and every task between
+       attempts as the state word alone. The longest form it prints is
+       "waiting 99d 23h", 15 characters, so 19ch now carries four of slack.
+       Whether those four go back to `[name]` is left open, not decided here:
+       it is a width #154 measured, and this change was to the words.
+       `shell.test.tsx` derives the floor from `elapsed()` itself, over every
+       state, started or not. */
     [age] minmax(0, 19ch)
     [try] 44px
     [class] minmax(0, 116px)
@@ -1241,7 +1243,7 @@ body {
     [state] 112px
     [name] minmax(0, 1fr)
     [step] minmax(0, 120px)
-    /* The same 19ch as the full row, and for the same string (AG-11): the
+    /* The same 19ch as the full row, and for the same reason (AG-11): the
        inspector is open on the screen where "queued 1…" was measured. */
     [age] minmax(0, 19ch);
   row-gap: var(--ctl-s1);
@@ -1267,10 +1269,11 @@ body {
    of `[name]` -- which is exactly the squeeze the stage exists to prevent, the
    one that cut task ids mid-character. So the track is sized to the longest
    DURATION, "23h 59m" (7 characters, plus one of slack), and the cell wraps:
-   the state word sits above "13m 18s" instead of "leased 1…" sitting in one
+   `waiting` sits above "13m 18s" instead of "waiting 1…" sitting in one
    line. The row grows a line only on the rows that are waiting.
    NOT YET TRUE OF ONE WORD. `waiting` (7) and `leased` (6) fit 8ch;
-   `dispatched` is 10 and overflows it by two. That word arrived with AG-12
+   `dispatched` is 10 and overflows it by two -- printed alone now, with no
+   duration after it, but still two over. That word arrived with AG-12
    after this track was sized for `queued`, and the width to hold it would
    come out of `[name]` here and in the 390px template below, which were
    each measured down to the pixel. Which to give up is left open, not

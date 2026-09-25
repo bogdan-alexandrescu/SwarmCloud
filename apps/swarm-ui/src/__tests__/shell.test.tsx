@@ -1223,7 +1223,7 @@ describe('the overflow inventory, as rules that cannot be quietly dropped', () =
 // fixtures with known answers before anything here relies on it.
 //
 // WHAT NONE OF THIS CAN SEE: a pixel. These assert the rule a browser would
-// choose and the value it would use; whether "dispatched 23h 59m" then fits
+// choose and the value it would use; whether "waiting 99d 23h" then fits
 // in 19ch of a given font is arithmetic in the sheet's comments, not a
 // measurement, and the QA screenshots are the only evidence of the rendering.
 
@@ -1231,21 +1231,25 @@ const WIDE: CascadeEnv = { width: 1440 }
 const PHONE: CascadeEnv = { width: 390 }
 
 /**
- * Every form `elapsed()` prints for an unstarted task, in every state, at the
- * edges of each unit. OVER EVERY STATE, not one fixture's: since AG-12 the
- * wait carries its state word (`waiting`, `leased`, `dispatched`), so which
- * state a single fixture happens to be in decides the longest string -- the
- * first version of this read the runfixture default, SUCCEEDED, and measured
- * a `queued` form that no longer exists.
+ * Every form `elapsed()` prints, in every state, started or not, at the edges
+ * of each unit. OVER EVERY STATE, not one fixture's: the text depends on the
+ * state (`waiting 4m 0s`, `leased`, `parked`, a bare run), so which state a
+ * single fixture happens to be in decides the longest string -- the first
+ * version of this read the runfixture default, SUCCEEDED, and measured a
+ * `queued` form that no longer exists. AND STARTED OR NOT, because a task
+ * between attempts carries an earlier start and prints a different form; the
+ * sweep that read only unstarted tasks would not see a longer one there.
  */
 const NOW = Date.parse('2026-09-25T12:00:00Z')
 const SPANS = [59_000, 59 * 60_000 + 59_000, 23 * 3_600_000 + 59 * 60_000, 99 * 86_400_000 + 23 * 3_600_000]
 const EVERY_STATE: readonly TaskState[] = [...REAL_STATES, ...NEVER_WRITTEN]
 const waits = (ms: number): string[] =>
-  EVERY_STATE.map(
-    (state) =>
-      elapsed(task({ state, created_at: new Date(NOW - ms).toISOString(), started_at: null, completed_at: null }), NOW)
-        .text,
+  EVERY_STATE.flatMap((state) =>
+    [null, new Date(NOW - ms / 2).toISOString()].map(
+      (started_at) =>
+        elapsed(task({ state, created_at: new Date(NOW - ms).toISOString(), started_at, completed_at: null }), NOW)
+          .text,
+    ),
   )
 
 describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
@@ -1310,6 +1314,7 @@ describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
   it('AG-11: sizes the run list\'s [age] track to the longest thing the cell prints', () => {
     // DERIVED FROM `elapsed()`, so a new unit or a longer word moves the floor.
     expect(EVERY_STATE, 'the state list is not all twelve; the floor is partial').toHaveLength(12)
+    expect(waits(SPANS[0]!), 'the sweep is not twelve states, started and not').toHaveLength(24)
     const longest = Math.max(...SPANS.flatMap((ms) => waits(ms).map((w) => w.length)))
     const bare = Math.max(...SPANS.map((ms) => formatDuration(ms).length))
     // The prefixed wait is what this track exists for: if no form were longer
@@ -1349,7 +1354,7 @@ describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
     const age = trackAfter(won(pick(f, '.row'), 'grid-template-columns', PHONE), 'age')
     // Each row is its own grid, so a content-sized track moves the name column
     // from row to row. MUTATION: `[age] auto` back.
-    expect(age, 'an `auto` [age] hands the name\'s width to "leased 13m 18s"').not.toMatch(/auto|content/)
+    expect(age, 'an `auto` [age] hands the name\'s width to "waiting 13m 18s"').not.toMatch(/auto|content/)
     expect(ch(minmax(age)[1])).toBeGreaterThanOrEqual(bare)
     expect(won(pick(f, '.when'), 'white-space', PHONE)).toBe('normal')
     // `shortTaskId` prints at most 8 characters (Agents.tsx `.slice(0, 8)`),

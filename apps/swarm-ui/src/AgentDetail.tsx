@@ -19,6 +19,7 @@ import { Screen, timeAgo } from './Shell'
 import { StagedInputs } from './StagedInputs'
 import { StopRun } from './StopRun'
 import {
+  CONCURRENCY_STATES,
   GIB,
   REASON_COPY,
   TERMINAL_STATES,
@@ -510,15 +511,25 @@ function Headline({
             27m 57s` beside `never ran`: the wall time it sat READY, printed as
             the agent's run. The key is chosen from `elapsed()`'s own `phase`
             -- the answer it gives for exactly this, so the key and the figure
-            cannot disagree -- and not from `started_at`, which survives a
-            park: keyed on that, a parked retry read `run` over its wait. A
-            figure that is a wait sits under `wait`; a finished task that never
-            started reads `run never ran`. How long either waited is the
-            Elapsed tile below, whose note names which clock it is. */}
-        <li className="ctl-fact">
-          <b>{el.phase === 'waiting' ? 'wait' : 'run'}</b>
-          {el.text}
-        </li>
+            cannot disagree -- and not from `started_at` alone, which survives
+            a park: keyed on that, a parked retry read `run` over its wait.
+
+            `wait` ONLY OVER A WAIT. A live task that is not running has a
+            wait the document can time only when nothing has started and it
+            holds no slot, and that is the one case where `elapsed()` prints a
+            figure and ticks. A parked retry used to read `wait waiting 50m`
+            beside `age 50m ago`: its age, which includes the attempt that
+            ran, presented as a wait. Between attempts, and on a LEASED or
+            DISPATCHED task, `elapsed()` prints the state word alone, which
+            the chip already says, so the fact is left out rather than keyed
+            over a figure that is not one. `age` beside it is the task's age,
+            under the key that says so. */}
+        {(el.phase !== 'waiting' || (task.started_at === null && el.ticking)) && (
+          <li className="ctl-fact">
+            <b>{el.phase === 'waiting' ? 'wait' : 'run'}</b>
+            {el.text}
+          </li>
+        )}
         <li className="ctl-fact">
           <b>age</b>
           {timeAgo(task.created_at)}
@@ -790,8 +801,15 @@ function tokenRollupNote(total: number, withIn: number, withOut: number): string
  * `running` IS READ FROM `elapsed()`'s PHASE, NOT FROM `started_at`. The start
  * on the task document survives a park and a requeue, so a retry waiting in
  * READY, LEASED or DISPATCHED has one -- and this note said `running` under
- * it. `elapsed()` now times such a task as a wait (`leased 50m`), and the note
- * follows the same answer rather than a second reading of the same field.
+ * it. The note follows `elapsed()`'s answer rather than a second reading of
+ * the same field.
+ *
+ * WHERE THE FIGURE IS ONLY A STATE WORD, THE NOTE CARRIES THE AGE, LABELLED AS
+ * ONE. Between attempts, and on a LEASED or DISPATCHED task, `elapsed()` has
+ * no span to time and prints the state word alone. This note says why -- an
+ * earlier attempt ran, or nothing has started -- and gives `submitted … ago`,
+ * which is what the age is. It used to read `wall time, not work` under a
+ * parked retry's `waiting 50m`, which called the age a wait.
  *
  * NOTHING HERE SAYS `still counting` ANY MORE. It described `elapsed()` going
  * on to `now` for a finished task with no recorded end, and for one that never
@@ -815,14 +833,22 @@ function elapsedNote(task: Task, phase: ElapsedPhase): string {
     // is an absence rather than a length. This says which absence.
     return 'no finish recorded'
   }
+  if (phase === 'running') return 'running'
+  // No span to time: STARTING or RUNNING with no start recorded, or a task
+  // with no submission time. The figure is `—`; this says which absence.
+  if (phase === 'unknown') return task.created_at ? 'no start recorded' : 'no submission time recorded'
+  // Between two attempts: the figure is the state word, and the age includes
+  // the run that already happened, so it is given as an age and nothing else.
+  if (task.started_at !== null) return `an earlier attempt ran · submitted ${timeAgo(task.created_at)}`
+  // Holding a slot before the first attempt starts: the figure is the state
+  // word, because the age after it read as time held.
+  if (CONCURRENCY_STATES.has(task.state)) return `nothing started · submitted ${timeAgo(task.created_at)}`
   // "Parked -- wall time, not work. Nothing is executing and no capacity is
   // held" was the first version, and the fact in it is the first three words:
-  // the figure is a clock, not a measure of work.
+  // the figure is a clock, not a measure of work. Only a PARKED task that has
+  // never started gets here, so the clock is all wait.
   if (task.state === 'PARKED') return 'wall time, not work'
-  if (phase === 'running') return 'running'
-  // Before the first attempt, or between two: the figure is the task's age
-  // under the word for what it is doing, and this says whether anything ran.
-  return task.started_at === null ? 'waiting · nothing started' : 'waiting · an earlier attempt ran'
+  return 'waiting · nothing started'
 }
 
 function Alerts({ task }: { task: Task }) {

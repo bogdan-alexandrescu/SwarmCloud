@@ -2358,7 +2358,7 @@ a stated width, and jsdom used only for `Element.matches`.
 | CH-16 | `flex: none` on the dock's line and grip | only the body may shrink |
 | OV-3 | `display: grid` on Overview's ≥900 util override; 19ch provenance | a grid template on a flex box is inert; 128px was 19 characters at an 11px step that no longer exists |
 | OV-13 | every metric label reserves its mark | the strip slid 8–9px when the Running tile's mark appeared |
-| AG-11, AG-13 | `[age]` in `ch` | sized to `elapsed()`'s longest form; at 1101–1200px and 390px the duration holds the track and "queued" wraps above it, because the width would come out of the name |
+| AG-11, AG-13 | `[age]` in `ch` | at least `elapsed()`'s longest form over every state, started or not; at 1101–1200px and 390px the duration holds the track and "waiting" wraps above it, because the width would come out of the name |
 | AG-15 | `.try.spent` / `.is-over` | an attempt count over its ceiling is a fault; two class names because the markup halves were written in parallel |
 | AG-16 | `.row.is-head` | the head is a `.row`, so it inherits the grid and the breakpoints; only its register is new |
 | AG-18 | `.lv-word` in ink | the mark carries the tone (§6.6) |
@@ -2412,6 +2412,6 @@ block.
   whether the platform pill should be neutral too is a design question, not a
   mechanical one.
 * **Nothing here was seen rendered.** The assertions prove which rule wins and
-  what it says; whether 19ch holds "dispatched 23h 59m" in a given font is
+  what it says; whether 19ch holds "waiting 99d 23h" in a given font is
   arithmetic in the sheet's comments, and only a browser at 1440 and 390 can
   confirm it.
