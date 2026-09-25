@@ -2727,7 +2727,7 @@ table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--tex
    Before, the two were `--text-dim` against `--text-faint`, #59636e against
    #606a77 in the light theme, so the word was already doing nearly all of
    it. `encoding.hues.test.ts` pins the grey. */
-.tag.ok { color: var(--text-faint); }
+.tag.ok { color: var(--text-dim); }
 
 .legend dl { margin: 0; }
 .legend dt {
@@ -4364,7 +4364,7 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
 .state.acct-ok {
   margin-top: 4px;
 }
-.state.acct-ok h3 { color: var(--text-faint); }
+.state.acct-ok h3 { color: var(--text-dim); }
 
 /* ---- the instructions, which are part of the product ---- */
 .acct-instructions h3 {
