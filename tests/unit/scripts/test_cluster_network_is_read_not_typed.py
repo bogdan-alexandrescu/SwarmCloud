@@ -28,9 +28,16 @@ Two more things apply.sh READS rather than takes on trust, driven the same way:
   * WHICH CLUSTER it is about to write to. The deny-list is matched against the
     cluster a context names -- the last segment of
     `gke_<project>_<location>_<cluster>` -- and never against the project id,
-    which for our own cluster contains the other team's `agents-staging`;
+    which for our own cluster contains the other team's `agents-staging`. And
+    the kubeconfig cluster entry must be gcloud's name for exactly the cluster
+    whose network is read: project, location AND cluster;
   * WHICH KSAs are Workload Identity-bound, read from the tenant GSA's IAM
     policy, which decides whether the older `swarm-worker` account is rendered.
+
+And the preview shows what `--confirm` will print, object by object: kubectl's
+own verdict from a server dry run of the same apply, because `kubectl diff`
+alone cannot show an object whose only change is kubectl's last-applied
+annotation.
 
 No real cluster, no credentials and no network are touched: both binaries are
 shell scripts written into a temporary directory and put first on PATH.
@@ -166,7 +173,17 @@ case "$*" in
   *"get daemonset node-local-dns"*) cat "${d}/node-local-dns.json" ;;
   *"get networkpolicies"*) cat "${d}/policies.json" ;;
   *"apply --dry-run=client"*) cat >"${d}/applied-dry-run.yaml" ;;
-  *"diff -f -"*) cat >"${d}/diff.yaml" ;;
+  # A server dry run prints kubectl's verdict per object -- the lines a real
+  # apply prints, suffixed "(server dry run)" -- and exits 1 when any object
+  # failed, having printed the ones that did not.
+  *"apply --dry-run=server"*)
+    cat >"${d}/server-dry-run.yaml"
+    if [[ -f "${d}/server-dry-run.out" ]]; then cat "${d}/server-dry-run.out"; fi
+    if [[ -f "${d}/server-dry-run.err" ]]; then cat "${d}/server-dry-run.err" >&2; exit 1; fi ;;
+  # kubectl diff exits 1 when there IS a difference.
+  *"diff -f -"*)
+    cat >"${d}/diff.yaml"
+    if [[ -s "${d}/diff.out" ]]; then cat "${d}/diff.out"; exit 1; fi ;;
   *) printf 'fake kubectl: unexpected call: %s\n' "$*" >&2; exit 3 ;;
 esac
 """
@@ -274,11 +291,25 @@ class Cluster:
         # A terraform tenant's GSA, as eng's measured on 2026-09-25: the one KSA
         # the dispatcher uses is bound, and nothing else.
         self.bindings("swarm-agent-worker")
+        # An existing tenant whose render matches what is live.
+        self.preview(verdicts=f"namespace/{NAMESPACE} unchanged (server dry run)\n")
 
     def context(self, label: str, cluster_ref: str = CLUSTER_REF) -> None:
         """Point the current context at `label`, which resolves to `cluster_ref`."""
         (self.dir / "context").write_text(label)
         (self.dir / "cluster-ref").write_text(cluster_ref)
+
+    def preview(self, *, verdicts: str, diff: str = "", errors: str = "") -> None:
+        """What the server says about the render: `verdicts` is what
+        `kubectl apply --dry-run=server` prints to stdout, `errors` what it
+        prints to stderr (and exits 1 for), `diff` what `kubectl diff` prints."""
+        (self.dir / "server-dry-run.out").write_text(verdicts)
+        (self.dir / "diff.out").write_text(diff)
+        err = self.dir / "server-dry-run.err"
+        if errors:
+            err.write_text(errors)
+        elif err.exists():
+            err.unlink()
 
     def bindings(
         self,
@@ -616,6 +647,22 @@ NOT_OURS = [
     (CONTEXT, CLUSTER_REF + "-old", "swarm-autopilot-old", False, []),
     # --cluster naming the other team's cluster outright.
     (CONTEXT, CLUSTER_REF, "agents-staging", True, ["--cluster", "agents-staging"]),
+    # OUR CLUSTER'S NAME IN ANOTHER PROJECT, under gcloud's own label for it.
+    # Matching only the cluster segment let this through, while the network
+    # apply.sh reads is saga-agents-staging's (`gcloud container clusters
+    # describe swarm-autopilot --project saga-agents-staging`): the policy would
+    # be rendered for our cluster and written to that one.
+    (
+        "gke_other-project_us-central1_swarm-autopilot",
+        "gke_other-project_us-central1_swarm-autopilot",
+        "other-project", False, [],
+    ),
+    # Our cluster's name at another LOCATION of our own project, behind our
+    # label -- us-central1-a is where the other team's cluster lives.
+    (CONTEXT, "gke_saga-agents-staging_us-central1-a_swarm-autopilot", "us-central1-a", False, []),
+    # A cluster entry that is not in gcloud's shape names no project and no
+    # location, so nothing shows it is the cluster whose network is read.
+    (CONTEXT, "swarm-autopilot", "cluster 'swarm-autopilot'", False, []),
 ]
 
 
@@ -623,7 +670,10 @@ NOT_OURS = [
 @pytest.mark.parametrize(
     "label,cluster_ref,named,deny_listed,extra",
     NOT_OURS,
-    ids=["other-team", "other-team-renamed", "other-team-prod", "contains-our-name", "cluster-flag"],
+    ids=[
+        "other-team", "other-team-renamed", "other-team-prod", "contains-our-name", "cluster-flag",
+        "our-name-other-project", "our-name-other-location", "entry-names-no-project",
+    ],
 )
 def test_apply_refuses_a_cluster_that_is_not_ours(
     tmp_path, label, cluster_ref, named, deny_listed, extra, via_flag
@@ -646,6 +696,153 @@ def test_apply_refuses_a_cluster_that_is_not_ours(
     kubectl = cluster.log("kubectl")
     for verb in ("get service", "get daemonset", "diff", "apply"):
         assert verb not in kubectl, f"kubectl {verb} ran against a refused cluster:\n{kubectl}"
+
+
+def test_apply_takes_the_expected_cluster_entry_from_the_configuration(tmp_path):
+    """The exact-entry check follows GKE_LOCATION (and PROJECT_ID) rather than a
+    location typed into apply.sh: with a zonal location configured, the zonal
+    entry is ours, and the network is read from that same location."""
+    cluster = Cluster(tmp_path, FAKE)
+    zonal = "gke_saga-agents-staging_us-central1-a_swarm-autopilot"
+    cluster.context(CONTEXT, zonal)
+    result = cluster.run(APPLY, "--tenant", "eng", GKE_LOCATION="us-central1-a")
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, output
+    assert f"context  {CONTEXT} -> {zonal}" in result.stderr, output
+    assert "--location us-central1-a" in cluster.log("gcloud")
+
+
+# ---------------------------------------------------------------------------
+# kubernetes/apply.sh's preview shows what --confirm will report
+# ---------------------------------------------------------------------------
+#
+# THE MISMATCH. On 2026-09-25 `apply.sh --tenant eng --confirm` reported
+# `role.rbac.authorization.k8s.io/swarm-worker configured` although the
+# preview before it -- a `kubectl diff` -- listed only two NetworkPolicies.
+# kubectl diff builds its patch WITHOUT kubectl's last-applied-configuration
+# annotation; apply builds it WITH it. So an object whose only change is that
+# annotation -- or whose patch the server normalises away, as it did the
+# Role's `rules: []` -- has no hunk in the diff and still applies as
+# `configured`. This branch's own first apply has two: the Role and
+# swarm-deny-cross-tenant-ingress drop an empty list from the annotation.
+#
+# The fixtures below are shaped as kubectl prints; the objects are the ones the
+# 2026-09-25 read-only diff of this render against swarm-tenant-eng named. They
+# are not captured output.
+
+#: `kubectl apply --dry-run=server` for this branch's first apply to eng.
+VERDICTS_FIRST_APPLY = f"""\
+namespace/{NAMESPACE} unchanged (server dry run)
+serviceaccount/swarm-agent-worker configured (server dry run)
+role.rbac.authorization.k8s.io/swarm-worker configured (server dry run)
+rolebinding.rbac.authorization.k8s.io/swarm-worker configured (server dry run)
+networkpolicy.networking.k8s.io/swarm-default-deny unchanged (server dry run)
+networkpolicy.networking.k8s.io/swarm-deny-cross-tenant-ingress configured (server dry run)
+"""
+
+#: `kubectl diff` of the same render: the RoleBinding and the ServiceAccount,
+#: and neither the Role nor the NetworkPolicy.
+DIFF_FIRST_APPLY = f"""\
+diff -u -N /tmp/LIVE-1/rbac.authorization.k8s.io.v1.RoleBinding.{NAMESPACE}.swarm-worker /tmp/MERGED-1/rbac.authorization.k8s.io.v1.RoleBinding.{NAMESPACE}.swarm-worker
+--- /tmp/LIVE-1/rbac.authorization.k8s.io.v1.RoleBinding.{NAMESPACE}.swarm-worker
++++ /tmp/MERGED-1/rbac.authorization.k8s.io.v1.RoleBinding.{NAMESPACE}.swarm-worker
+@@ -21,6 +21,3 @@
+ - kind: ServiceAccount
+   name: swarm-agent-worker
+   namespace: {NAMESPACE}
+-- kind: ServiceAccount
+-  name: swarm-worker
+-  namespace: {NAMESPACE}
+diff -u -N /tmp/LIVE-1/v1.ServiceAccount.{NAMESPACE}.swarm-agent-worker /tmp/MERGED-1/v1.ServiceAccount.{NAMESPACE}.swarm-agent-worker
+--- /tmp/LIVE-1/v1.ServiceAccount.{NAMESPACE}.swarm-agent-worker
++++ /tmp/MERGED-1/v1.ServiceAccount.{NAMESPACE}.swarm-agent-worker
+@@ -4,7 +4,6 @@
+   annotations:
+     iam.gke.io/gcp-service-account: {TENANT_GSA}
+-    swarm.saga.xyz/alias-of: swarm-worker
+"""
+
+
+def _writes(cluster: Cluster) -> list[str]:
+    """Every kubectl call that could have written: an apply that is not a dry run."""
+    return [
+        line for line in cluster.log("kubectl").splitlines()
+        if " apply " in f" {line} " and "--dry-run" not in line
+    ]
+
+
+@pytest.mark.parametrize("via_flag", [False, True], ids=["current-context", "--context"])
+def test_the_preview_lists_every_object_confirm_will_report_configured(tmp_path, via_flag):
+    cluster = Cluster(tmp_path, FAKE)
+    cluster.preview(verdicts=VERDICTS_FIRST_APPLY, diff=DIFF_FIRST_APPLY)
+    result = cluster.run(APPLY, "--tenant", "eng", *_via(CONTEXT, via_flag))
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, output
+
+    # The two the 2026-09-25 preview could not show, by kubectl's own verdict.
+    for obj in (
+        "role.rbac.authorization.k8s.io/swarm-worker",
+        "networkpolicy.networking.k8s.io/swarm-deny-cross-tenant-ingress",
+    ):
+        assert f"{obj} configured (server dry run)" in result.stdout, (
+            f"the preview does not show that --confirm will report {obj} configured:\n{output}"
+        )
+    # Counted, and the gap between the diff and the verdicts explained.
+    assert "4 configured" in result.stderr, output
+    assert "last-applied" in result.stderr, output
+
+    # The same render the diff was shown and the client validated, through the
+    # same context -- and nothing written.
+    sent = (cluster.dir / "server-dry-run.yaml").read_text()
+    assert sent == (cluster.dir / "diff.yaml").read_text() == (cluster.dir / "applied-dry-run.yaml").read_text()
+    if via_flag:
+        assert f"--context {CONTEXT} apply --dry-run=server -f -" in cluster.log("kubectl")
+    assert _writes(cluster) == [], _writes(cluster)
+
+
+#: A first-time tenant: the namespace does not exist yet, so the server can
+#: dry-run creating it and nothing inside it.
+NEW_TENANT_ERRORS = (
+    f'Error from server (NotFound): error when creating "STDIN": namespaces "{NAMESPACE}" not found\n'
+)
+
+
+def test_the_preview_of_a_new_tenant_reports_what_the_server_could_not_dry_run(tmp_path):
+    """Not fatal -- register-tenant.sh --dry-run previews exactly this -- but not
+    silent either: the objects the server could not judge are named."""
+    cluster = Cluster(tmp_path, FAKE)
+    cluster.preview(
+        verdicts=f"namespace/{NAMESPACE} created (server dry run)\n", errors=NEW_TENANT_ERRORS
+    )
+    result = cluster.run(APPLY, "--tenant", "eng")
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, output
+    assert f"namespace/{NAMESPACE} created (server dry run)" in result.stdout, output
+    assert f'namespaces "{NAMESPACE}" not found' in result.stderr, output
+    assert _writes(cluster) == [], _writes(cluster)
+
+
+def test_server_dry_run_makes_a_failed_server_dry_run_fatal(tmp_path):
+    """--server-dry-run keeps its meaning: the server must accept every object."""
+    cluster = Cluster(tmp_path, FAKE)
+    cluster.preview(
+        verdicts=f"namespace/{NAMESPACE} created (server dry run)\n", errors=NEW_TENANT_ERRORS
+    )
+    result = cluster.run(APPLY, "--tenant", "eng", "--server-dry-run")
+    output = result.stdout + result.stderr
+    assert result.returncode != 0, f"--server-dry-run passed a failed server dry run:\n{output}"
+    assert _writes(cluster) == [], _writes(cluster)
+
+
+def test_a_preview_in_which_the_server_reported_nothing_says_so(tmp_path):
+    """kubectl prints one verdict per object. None at all is not "nothing will
+    change"; it is nothing judged."""
+    cluster = Cluster(tmp_path, FAKE)
+    cluster.preview(verdicts="")
+    result = cluster.run(APPLY, "--tenant", "eng")
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, output
+    assert "reported no object" in result.stderr, output
 
 
 # ---------------------------------------------------------------------------
