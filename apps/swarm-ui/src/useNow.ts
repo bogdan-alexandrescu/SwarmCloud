@@ -101,3 +101,25 @@ export function useNow(intervalMs: number = AGE_TICK_MS): number {
   const snapshot = useCallback(() => clockFor(intervalMs).now, [intervalMs])
   return useSyncExternalStore(sub, snapshot, snapshot)
 }
+
+/**
+ * The instant a figure computed over a READ may be taken at: the clock, until
+ * the read is more than one poll interval old, and then no further (AG-1,
+ * AG-2).
+ *
+ * A read has an age. A ticking clock over data nobody has re-read kept adding
+ * to `run 4m` after the agent had finished, and slid a drawer's `live 20s ago`
+ * to `silent 7m ago` while every re-read failed -- the page said the worker
+ * was gone when only the reads were. Past one interval a fresh read was due
+ * and has not arrived, so the figures stop where the read can still vouch for
+ * them; the age of the read itself is `Screen`'s to show. `readAt` null (not
+ * yet known) keeps the clock.
+ *
+ * HERE, BESIDE THE CLOCK IT CAPS, because two screens use it: the Agents
+ * list's rows and the inspector's drawer. It was defined in Agents.tsx, and
+ * the drawer importing it from there would have made the two modules import
+ * each other.
+ */
+export function rowClock(now: number, readAt: number | null, interval: number): number {
+  return readAt === null ? now : Math.min(now, readAt + interval)
+}
