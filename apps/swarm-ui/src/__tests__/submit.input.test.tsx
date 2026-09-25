@@ -359,9 +359,13 @@ describe('the send panel', () => {
     const count = container.querySelector<HTMLElement>('.sbf-send .warn-text')
     expect(count, 'the send panel does not say what stops it').toBeTruthy()
     expect(count!.textContent).toContain('1 step not ready')
-    // A way to the step, from beside the button: it focuses the step's name.
+    // A way to the step, from beside the button. The step's problem is a
+    // required key, so it lands on THAT FIELD rather than on the step's name
+    // (TS-15): the name is not what has to change.
     fireEvent.click(within(count!).getByRole('button', { name: 'claude-code-1' }))
-    expect(document.activeElement).toBe(container.querySelector('input.wfb-id'))
+    expect(document.activeElement, 'the per-step button did not take the reader to the empty field').toBe(
+      container.querySelector('.wfb-step .sbf-field.is-required textarea'),
+    )
   })
 
   it('TS-16: the task form says it is not ready while its button is disabled', async () => {
@@ -388,5 +392,149 @@ describe('the send panel', () => {
     expect(facts('codex')).toContain('openai key needed')
     expect(facts('mock')).toContain('no provider key needed')
     for (const n of ['claude-code', 'codex', 'mock']) expect(facts(n), n).not.toMatch(/needs a /)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The owner's decisions on epic #84, 2026-09-25 (TS-15, TS-20, TS-23)
+// ---------------------------------------------------------------------------
+//
+// Each case was committed RED against the code it describes before the change
+// landed. The keys named below are the fixture's `required_keys`, which
+// `submit.fixture.test.ts` holds to the API's.
+
+/** Everything a sighted reader sees, with the accessible-name-only text left out. */
+const visible = (el: Element) => (el.textContent ?? '').replace(/\s+/g, ' ')
+
+describe('TS-15: a required key is named at its field, in the words the API used', () => {
+  const blank = () =>
+    render(
+      <InputFields profile="claude-code" required={['prompt']} idPrefix="t" onChange={() => {}}
+        fields={[f({ name: 'prompt', required: true })]} />,
+    )
+
+  it('does not paint a field the reader has not reached yet', () => {
+    const { container } = blank()
+    const editor = container.querySelector('.sbf-field.is-required textarea')!
+    expect(editor.getAttribute('aria-invalid'), 'a freshly picked runner is painted red').toBeNull()
+    expect(container.querySelector('.sbf-miss')).toBeNull()
+    // The `required` tag carries it until then.
+    expect(container.querySelector('.sbf-req')?.textContent).toBe('required')
+  })
+
+  it('once left empty, marks the field invalid and says under it what the runner will not do', () => {
+    const { container } = blank()
+    const editor = container.querySelector('.sbf-field.is-required textarea')!
+    fireEvent.blur(editor)
+    expect(editor.getAttribute('aria-invalid')).toBe('true')
+    const line = container.querySelector('.sbf-field.is-required .sbf-miss')
+    expect(line, 'the missing key is not named at its field').not.toBeNull()
+    expect(visible(line!)).toBe('claude-code will not start without prompt')
+    // The key in mono, as the same string the field is labelled with.
+    expect(line!.querySelector('code')?.textContent).toBe('prompt')
+    expect(editor.getAttribute('aria-describedby')).toBe(line!.id)
+    // The full consequence stays in the accessible text.
+    expect(line!.getAttribute('aria-label')).toMatch(/dispatched/)
+    expect(line!.getAttribute('aria-label')).toMatch(/credential/)
+    // No API jargon on the surface.
+    expect(visible(container)).not.toMatch(/input\.prompt|non-empty string/)
+  })
+
+  it('clears once the field has something in it', () => {
+    const { container } = render(
+      <InputFields profile="claude-code" required={['prompt']} idPrefix="t" onChange={() => {}}
+        fields={[f({ name: 'prompt', required: true, text: 'do the thing' })]} />,
+    )
+    const editor = container.querySelector('.sbf-field.is-required textarea')!
+    fireEvent.blur(editor)
+    expect(editor.getAttribute('aria-invalid')).toBeNull()
+    expect(container.querySelector('.sbf-miss')).toBeNull()
+  })
+
+  it('names the gap in the task send panel as a button that takes the reader to the field', async () => {
+    const { container } = render(<SubmitScreen />)
+    await screen.findByRole('button', { name: 'Submit one task' }, { timeout: 4000 })
+    fireEvent.click(container.querySelector<HTMLInputElement>('input[name="runner-profile"][value="claude-code"]')!)
+    const panel = container.querySelector<HTMLElement>('.sbf-send')!
+    const gap = within(panel).getByRole('button', { name: 'prompt missing' })
+    expect(gap.classList.contains('sbf-mini')).toBe(true)
+    expect(gap.classList.contains('sbf-bad')).toBe(true)
+    fireEvent.click(gap)
+    expect(document.activeElement).toBe(container.querySelector('.sbf-field.is-required textarea'))
+    // The panel's own alert paragraph, in the API's words, is gone.
+    expect(panel.querySelector('[role="alert"]')).toBeNull()
+    expect(visible(panel)).not.toMatch(/input\.prompt|non-empty string/)
+    // And "empty -- the runner gets no settings" is not said over a missing key.
+    expect(visible(panel)).not.toContain('the runner gets no settings')
+  })
+
+  it('says the runner gets no settings only when nothing is required and nothing is set', async () => {
+    const { container } = render(<SubmitScreen />)
+    await screen.findByRole('button', { name: 'Submit one task' }, { timeout: 4000 })
+    fireEvent.click(container.querySelector<HTMLInputElement>('input[name="runner-profile"][value="mock"]')!)
+    expect(visible(container.querySelector('.sbf-send')!)).toContain('empty — the runner gets no settings')
+  })
+
+  it('reserves "Not sent" for the result of a click, on the workflow form too', async () => {
+    const { container } = render(<SubmitWorkflowScreen />)
+    await screen.findByRole('button', { name: 'Submit this workflow' }, { timeout: 4000 })
+    fireEvent.change(container.querySelector<HTMLSelectElement>('select.wfb-profile')!, {
+      target: { value: 'claude-code' },
+    })
+    // Nothing has been clicked, so nothing has been "not sent".
+    expect(visible(container), 'a live problem is worded as the outcome of a send').not.toContain('Not sent')
+    expect(visible(container)).not.toMatch(/input\.prompt|non-empty string/)
+    // The step card no longer carries its own copy of the missing key: the
+    // field does, once it has been left.
+    expect(container.querySelector('.wfb-step [role="alert"]')).toBeNull()
+    // The live problem, in the new words, is what the per-step button carries.
+    const step = within(container.querySelector<HTMLElement>('.sbf-send')!).getByRole('button', { name: 'claude-code-1' })
+    expect(step.getAttribute('title')).toBe('claude-code will not start without prompt')
+  })
+})
+
+describe('TS-20: a stage says "then", and "waits for" is said once, on each step', () => {
+  it('drops the stage clause and the add-a-stage sub-line, and counts steps that run together', async () => {
+    const { container } = render(<SubmitWorkflowScreen />)
+    await screen.findByRole('button', { name: 'Submit this workflow' }, { timeout: 4000 })
+    const addStage = container.querySelector<HTMLButtonElement>('button.wfb-add.is-stage')!
+    expect(visible(addStage).trim(), 'the add-a-stage button repeats "waits for everything above"').toBe('add a stage')
+    fireEvent.click(addStage)
+    const second = () => container.querySelectorAll<HTMLElement>('.wfb-stage')[1]!
+    const head = () => second().querySelector('.wfb-stage-h')!
+    expect(visible(head()).trim()).toBe('then')
+    // The alongside cue stays.
+    const alongside = second().querySelector<HTMLButtonElement>('.wfb-steps > button.wfb-add')!
+    expect(visible(alongside)).toContain('runs alongside')
+    fireEvent.click(alongside)
+    expect(head().querySelector('.wfb-stage-say')?.textContent).toBe('2 steps run together')
+    expect(visible(head())).not.toContain('everything above')
+    // Said on each step's own disclosure -- the control that changes it...
+    const steps = [...second().querySelectorAll('.wfb-step')]
+    expect(steps).toHaveLength(2)
+    for (const s of steps) expect(visible(s.querySelector('.wfb-more > summary')!)).toMatch(/^waits for/)
+    // ...and nowhere else in the stage.
+    const rest = second().cloneNode(true) as HTMLElement
+    for (const s of [...rest.querySelectorAll('.wfb-step')]) s.remove()
+    expect(visible(rest), 'the stage says "waits for" outside its steps').not.toContain('waits for')
+  })
+})
+
+describe('TS-23: the forms carry names, facts and the runner notes, and no instructions', () => {
+  it('says "no runner chosen" before a runner is chosen, and what a runner that needs nothing needs', async () => {
+    const { container } = render(<SubmitScreen />)
+    await screen.findByRole('button', { name: 'Submit one task' }, { timeout: 4000 })
+    expect(screen.getByText('no runner chosen')).toBeTruthy()
+    expect(visible(container)).not.toContain('Choose a runner first')
+    fireEvent.click(container.querySelector<HTMLInputElement>('input[name="runner-profile"][value="mock"]')!)
+    expect(visible(container.querySelector('.sbf-input .sbf-none')!)).toBe('mock requires no input')
+    expect(visible(container)).not.toContain('Add a setting below')
+  })
+
+  it('says "no settings" when the rule was not read', () => {
+    const { container } = render(
+      <InputFields profile="claude-code" required={null} idPrefix="t" onChange={() => {}} fields={[]} />,
+    )
+    expect(visible(container.querySelector('.sbf-none')!)).toBe('no settings')
   })
 })

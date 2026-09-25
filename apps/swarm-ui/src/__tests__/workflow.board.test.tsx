@@ -1494,7 +1494,7 @@ describe('the shipped stylesheet', () => {
     const bar = container.querySelector('.wf-bar')!
     // NOT asserted: that the h2 itself uppercases. It did when this was
     // written, and the type-scale work then removed the small caps from every
-    // panel title deliberately -- "a panel title is --t-title in --text, not
+    // panel title deliberately -- "a panel title is --t-lead in --text, not
     // small caps". Pinning the uppercase here would pin a treatment that was
     // taken out on purpose, and would go red the moment it was taken out
     // again. What must hold either way is that the bar and the identifier are
