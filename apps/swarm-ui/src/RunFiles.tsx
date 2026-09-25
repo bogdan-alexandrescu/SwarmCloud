@@ -1034,7 +1034,27 @@ function Stream({
     <tr role="row">
       <th role="rowheader" scope="row">
         <span className="mono">{stream.stream}</span>
-        {stream.uri !== null && <span className="ctl-sub uri">{stream.uri}</span>}
+        {stream.uri !== null && (
+          <>
+            {/* CH-13's long value (#87 follow-up, 2026-09-25). Stacked, the
+                row header cuts the uri to one line (styles.css §B6.3's `.uri`
+                rule), so the whole of it is in the title and in the copy
+                beside it -- the `copy gsutil` the inspector's other uris
+                carry, with `cat` because a log is read, as the attempt's
+                log-location facts already copy it. A cut uri is a
+                different uri. */}
+            <span className="ctl-sub uri" title={stream.uri}>
+              {stream.uri}
+            </span>
+            <button
+              type="button"
+              className="copy"
+              onClick={() => navigator.clipboard?.writeText(`gsutil cat ${stream.uri}`)}
+            >
+              copy gsutil
+            </button>
+          </>
+        )}
       </th>
       <td role="cell" data-label="Size" className="is-num">
         {stream.status === 'absent' && (

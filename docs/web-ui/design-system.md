@@ -1071,7 +1071,8 @@ primitives this moved: `.ctl-dot.is-ok`, `.ctl-dot.is-info`, `.ctl-chip.is-ok`,
 `.ctl-chip.is-info`, `.ctl-metric.is-good` (a neutral disc, its value in
 `--text`), and the dock's read cells (§15.4). Healthy-state hue that remains has
 an owner and is not this ruling's: `.pool .ctl-track > i`, `.pool.prov.ok`,
-`.state.acct-ok`, `.tag.ok` (CP-14); the Profile headroom status (CP-12);
+`.state.acct-ok`, `.tag.ok` (CP-14 — neutral since the 2026-09-25 consistency
+sweep, §15.7); the Profile headroom status (CP-12);
 `.wf-tl-span.is-ok` and the Workflows graph's `.node.ok` (WF-11). This ruling
 does not reach chart segment fills: TS-4's outcome stack keeps its solid hues
 and gained a shape for each outcome (§15.3) — failed is still solid `--bad`,
@@ -1479,7 +1480,7 @@ nine lines. **One rule now, for every table:**
 |---|---|---|
 | **data table** — five or more columns, read across rows (Pools, Profile headroom, Runtimes, Accounts, Pool limits, Tenants, API reads, the workflow step table) | `.ctl-table.is-scroll` / `.table-wrap.is-scroll` | scrolls sideways; the first column — the row's name — is `position: sticky; left: 0` on an opaque `--surface` (`--surface-2` in the head), so a value is always beside the name it belongs to |
 | **record** — four columns or fewer, an inspector fact (checkpoints, artifacts, commits, staged inputs, a pool's counter delta) | `.ctl-table.is-stacked` | §B6.3's stacked record, unchanged: a name at lead rank, a key column from `data-label`, explicit ARIA roles |
-| **a long value in a record** — a gs:// uri | `.uri` in a stacked cell | one line, ellipsized; the whole value is in its `title` and in the copy action beside it (`copy gsutil`) — cut on screen, whole on hover and in the copy (the AH-11 precedent) |
+| **a long value in a record** — a gs:// uri | `.uri` in a stacked cell, or under a record's name in its row header (the log stream's, since the 2026-09-25 sweep) | one line, ellipsized; the whole value is in its `title` and in the copy action beside it (`copy gsutil`) — cut on screen, whole on hover and in the copy (the AH-11 precedent) |
 
 §B6.3 existed because of F6 — columns hidden behind an `overflow-x: auto` that
 paints no scrollbar here, with nothing to say they existed. The held first
@@ -3160,3 +3161,26 @@ prove which drawing the sheet picks at a stated container width, which marks
 the cells carry and which rule wins; whether the 300-unit drawings, the
 tray's `+N` and the object rows read well at 390 and 1440 in each theme is
 for the next release's screenshots.
+
+### 15.7 The consistency sweep (#85 and #87 follow-ups, 2026-09-25)
+
+Three follow-ups the epics recorded after the decision PRs merged, one line
+each. Each is held by a test committed red first; `.tag.ok` was already grey,
+so its line in that test is a guard rather than a red.
+
+* **CP-14 / CH-17, the last healthy greens.** `.pool .ctl-track > i` is
+  `--text-faint`, the primitives' ok grey; an ok `.pool.prov` card draws no
+  edge rule, because a grey 3px rule is `.pool.prov.unknown`'s and would draw
+  a provider nobody read as one that is fine; `.state.acct-ok` is the plain
+  `.state` box with a `--text-dim` heading, the grey `.tag.ok` keeps
+  (`encoding.hues.test.ts`).
+* **CH-13, the log stream's uri.** Under the stream's name in the row header,
+  it takes §7.3's long-value rule — the rule names `th[scope='row'] > .uri`
+  beside `td[data-label] > .uri`, in both copies of the stacked block — and is
+  whole in its `title` and in a `copy gsutil` that copies `gsutil cat <uri>`
+  (`runfiles.flat.test.tsx`).
+* **The workflow node between attempts.** `stepDuration` gives a step whose
+  earlier attempt ran, and which is not STARTING or RUNNING, its state word
+  and no figure — `elapsed()`'s wording for the same task (#145) — because
+  its age includes that run and nothing records when its current state began
+  (`workflow.views.test.tsx`).
