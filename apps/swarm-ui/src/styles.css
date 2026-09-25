@@ -11882,7 +11882,7 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 .ol-lat-dot.is-hollow { background: var(--surface); }
 .ol-lat-timeout { position: absolute; top: 0; bottom: 0; width: 0; border-left: 1px solid var(--text-dim); }
 .ol-prov {
-  margin: var(--ctl-s4) 0 0;
+  margin: var(--ctl-s5) 0 0;
   font: var(--t-micro)/var(--lh-micro) var(--mono);
   color: var(--text-faint);
 }
