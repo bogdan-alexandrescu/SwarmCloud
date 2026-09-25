@@ -2494,7 +2494,9 @@ table.pools .pool-name .raw {
   font-weight: 400;
 }
 table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--text-faint); }
-.tag.ok { color: var(--ok); }
+/* Healthy carries no hue (CP-14): the legacy tag's ok word is `--text-dim`,
+   as the chip's ok mark is. */
+.tag.ok { color: var(--text-dim); }
 
 .legend dl { margin: 0; }
 .legend dt {
@@ -3821,8 +3823,8 @@ table.pools tbody tr.presumed-dead { background: color-mix(in srgb, var(--bad) 9
                        survives being printed, photographed or read by someone
                        who cannot separate the two colours.
      .acct-unmeasured  NOTHING WAS MEASURED. Draws no bar at all, because an
-                       empty five-cell bar and a measured 0% are the same
-                       picture.
+                       empty bar and a measured 0% are the same picture (a
+                       measured 0% draws the track's baseline tick).
 
    EVERY SELECTOR BELOW IS SCOPED, to an `.acct-*` class or an `#acct-*` id.
    The generic names these two treatments want -- `.projected`, `.unmeasured`,
@@ -3872,43 +3874,38 @@ table.pools.accounts td.n { white-space: nowrap; }
    a monochrome printout still reads correctly. */
 .acct-why.acct-unusable { color: var(--bad); }
 
-/* ---- the five-cell bar, as `miniBar` draws it ----
-   B4.6: THE CELLS LOST THEIR BORDERS AND THEIR HUE. §6.4: "A UTILISATION BAR
-   THAT IS FINE IS GREY. A HUE ON ONE IS A VERDICT." Ten of these bars render
-   above the fold, five cells each, and every filled cell was painted in
-   `--info` -- which §1.3 reserves for "a fact or a link, never a verdict" and
-   which the restraint pass counted as the single busiest thing on a screen.
-   Fifty saturated marks saying "this account is normal" is the state where
-   colour has stopped meaning anything by meaning everything.
+/* ---- the window's track: §6.4's one proportion, not a bar of its own ----
+   CP-25 (#85): THE FIVE-CELL BAR IS GONE. `.acct-bar` drew `cs status`'s
+   `miniBar` -- round to the nearest fifth, five cells, the empty ones in
+   `--line-soft` -- which was a second proportion primitive beside §6.4's, and
+   a coarser figure beside the exact one (42% was three cells). The cell now
+   draws the shared `UtilTrack`: the exact percentage, the default grey fill,
+   `ov-projected` for a stale or reset reading beside its `~`, `is-bad` only
+   for a live window at 100%, and the baseline tick for a measured 0%.
 
-   The 1px `--line` per cell was worse than decorative: it was 50 of this
-   screen's 90 bordered elements, spent on a 5x10px mark where a fill is the
-   whole shape. §5.2's rule reaches this too -- these cells have twins, so the
-   border grades as a separator, but a separator BETWEEN five adjacent cells is
-   what the 2px gap already is.
-
-   THE THREE READINGS STILL SEPARATE, AND BY A WIDER MARGIN THAN BEFORE:
-
-     measured   --text       #1f2328 light / #e8ecf1 dark -- full ink
-     projected  --text-faint #606a77 light / #828d9b dark -- plus its amber `~`
-     spent      --bad        the one hue left, because fully spent is the only
-                             verdict this bar is entitled to make
-
-   Measured-against-projected was `--info` against `--text-faint`, which is a
-   HUE difference and vanishes in greyscale; it is now full ink against faint,
-   which is a LUMINANCE difference and does not. The unfilled cell keeps
-   `--line-soft` -- the repeated-separator weight, visible as a mark at 5px and
-   never mistakable for ink. `.acct-unmeasured` still draws no bar at all,
-   which is the distinction this column exists to protect (§8.7.2). */
-.acct-bar { display: inline-flex; gap: 2px; margin-left: 7px; vertical-align: middle; }
-.acct-bar > i {
-  display: block; width: 5px; height: 10px; border-radius: 1px;
-  background: var(--line-soft);
+   A FIXED 40px, INLINE BESIDE THE FIGURE. The base track is `display: flex`,
+   a block that would take a line of its own under the figure, so the scoped
+   rule makes it an inline box. It sits inside a `@media (min-width: 561px)`
+   ON PURPOSE: at 560px and below the phone block's `.ctl-util-track
+   { display: none }` hides every track but a pool tile's, and a scoped
+   `display` at (0,2,0) would out-rank it. The phone keeps the rule every
+   other track follows -- the figure, the `~` and the em dash carry every state
+   there, as they do for Overview's account tracks -- and no new phone
+   exception is added. `.acct-unmeasured` still draws no track at all, which
+   is the distinction this column exists to protect (§8.7.2). */
+.acct-window > .ctl-util-track {
+  width: 40px;
+  margin-left: 7px;
+  vertical-align: middle;
 }
-.acct-bar > i.on { background: var(--text); }
-/* Fully spent is a FACT, not a threshold somebody chose in this file. */
-.acct-bar.spent > i.on { background: var(--bad); }
-.acct-bar.acct-projected > i.on { background: var(--text-faint); }
+@media (min-width: 561px) {
+  .acct-window > .ctl-util-track { display: inline-flex; }
+}
+
+/* ---- the provenance foot's clauses (CP-26) ----
+   Each clause is one unbreakable item, so a 390pt foot wraps BETWEEN them --
+   at a `·` -- and never inside `readings 2m–14m old` or `~ is projected`. */
+.acct-foot > .acct-clause { white-space: nowrap; }
 
 /* ---- warnings, the block `cs status` prints under its table ---- */
 .acct-warnings {
@@ -4035,10 +4032,10 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
 }
 
 @media (max-width: 560px) {
-  /* The bar is the one thing that can go: the percentage beside it is the
-     same fact, and `~` and the em dash both survive. Dropping the figure
-     instead would leave a picture with no number under it. */
-  .acct-bar { display: none; }
+  /* `.acct-bar { display: none }` WAS HERE (CP-25). The window's track is the
+     shared `.ctl-util-track` now, which the phone block already hides at this
+     width -- the percentage beside it is the same fact, and `~` and the em
+     dash both survive. */
   .acct-detail { padding: 12px 10px 16px; }
   .acct-wide { max-width: none; }
 }
@@ -4951,7 +4948,9 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
   background: transparent;
   border: 1.5px solid var(--text-faint);
 }
-.ctl-dot.is-ok     { background: var(--ok); border-color: var(--ok); }
+/* Healthy carries no hue (CP-14): the ok dot is filled, in `--text-dim`, the
+   grey `.ctl-chip.is-ok` paints. */
+.ctl-dot.is-ok     { background: var(--text-dim); border-color: var(--text-dim); }
 .ctl-dot.is-info   { background: var(--info); border-color: var(--info); }
 .ctl-dot.is-paused { background: var(--paused); border-color: var(--paused); }
 /* Caution keeps the chip's triangle; failure keeps its diamond. */
@@ -6004,29 +6003,54 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
   /* The word is the datum. It is never the hue. */
   color: var(--text);
 }
-/* 10px, solid, no ring -- Geist's measured StatusDot. It was 7px inside a
-   border that supplied the rest of the mark's presence; with the border gone
-   the dot has to carry it alone, and 10px is the size that reads at arm's
-   length on the second monitor these screens are actually read on. */
+/* 10px, no fill -- THE UNKNOWN RING, AND THE BASE ON PURPOSE (CP-14, #85).
+   The base mark was the filled disc, so a modifier no rule matched (`is-wait`
+   is the one Accounts nearly shipped, §12.2 of design-system.md) drew the
+   HEALTHY mark for a state nobody derived. It is now the hollow ring, which
+   is `.ctl-dot`'s base too (§6.6): a chip whose modifier did not match says
+   "unknown" rather than "fine", and every state below declares its own fill.
+   `.is-unknown` is the one state that equals this base.
+
+   10px because it is Geist's measured StatusDot: the mark carries the chip's
+   presence alone now that the border is gone, and 10px reads at arm's length
+   on the second monitor these screens are actually read on. */
 .ctl-chip > i {
   width: 10px; height: 10px;
   border-radius: 999px;
-  background: var(--chip-tone, var(--text-faint));
+  background: transparent;
+  border: 1.5px solid var(--chip-tone, var(--text-faint));
   flex: none;
 }
-.ctl-chip.is-ok      { --chip-tone: var(--ok); }
+/* HEALTHY CARRIES NO HUE (owner ruling, CP-14, 2026-09-25; design-system
+   §6.6-§6.7, redesign-v2 §5.5). The ok mark keeps its filled disc and its
+   word at full ink, and paints `--text-dim`, the grey §6.4 gives a proportion
+   that is fine. Hue on a state mark is the verdicts' -- warn, bad, paused --
+   and live's. Because this is the primitive, every screen's ok mark goes grey
+   with no screen edit. The cost: in greyscale the ok disc is told from warn
+   and bad by its silhouette alone (`--text-dim` is 1.26:1 from `--bad` in the
+   dark theme, 1.30:1 from `--warn` in the light one), which is what
+   `test_every_chip_state_has_its_own_silhouette` holds. `--ok` stays defined. */
+.ctl-chip.is-ok      { --chip-tone: var(--text-dim); }
 .ctl-chip.is-warn    { --chip-tone: var(--warn); }
 .ctl-chip.is-bad     { --chip-tone: var(--bad); }
 .ctl-chip.is-info    { --chip-tone: var(--info); }
 .ctl-chip.is-paused  { --chip-tone: var(--paused); }
 
-/* The shapes. Each one overrides the disc; none of them changes the colour,
-   so tone and shape stay independent and a greyscale reader loses neither. */
+/* The shapes. Each one declares its own fill over the ring and overrides the
+   disc; none of them changes the colour, so tone and shape stay independent
+   and a greyscale reader loses neither. */
 
+/* Present, and fine: the filled disc. */
+.ctl-chip.is-ok > i {
+  background: var(--chip-tone, var(--text-faint));
+  border: 0;
+}
 /* Caution: a triangle, wider than it is tall so the base reads as a base. */
 .ctl-chip.is-warn > i {
   width: 12px; height: 10px;
   border-radius: 0;
+  background: var(--chip-tone, var(--text-faint));
+  border: 0;
   clip-path: polygon(50% 0%, 100% 100%, 0% 100%);
 }
 /* Failure: a diamond. Same area as the disc, off its axis — the one mark on
@@ -6034,18 +6058,23 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
 .ctl-chip.is-bad > i {
   width: 8px; height: 8px;
   border-radius: 1px;
+  background: var(--chip-tone, var(--text-faint));
+  border: 0;
   transform: rotate(45deg);
 }
 /* A fact rather than a verdict: flat. */
 .ctl-chip.is-info > i {
   width: 10px; height: 3px;
   border-radius: 1px;
+  background: var(--chip-tone, var(--text-faint));
+  border: 0;
 }
 /* Held, not running: the pause glyph. Two bars with a gap wide enough to
    survive a 1x display. */
 .ctl-chip.is-paused > i {
   width: 10px; height: 10px;
   border-radius: 1px;
+  border: 0;
   background: linear-gradient(
     90deg,
     var(--chip-tone, var(--text-faint)) 0 34%,
@@ -6053,22 +6082,20 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
     var(--chip-tone, var(--text-faint)) 66% 100%
   );
 }
-/* UNKNOWN IS NOT HEALTHY and must not borrow a healthy colour. Hollow dot,
-   faint text: an absence of information, drawn as one. */
 /* UNKNOWN IS NOT HEALTHY and must not borrow a healthy colour -- but the WORD
    still goes at full ink, because "state not derived" is a fact the operator
-   has to be able to read, not a thing to whisper. Only the mark is faint. */
+   has to be able to read, not a thing to whisper. Only the mark is faint. Its
+   mark is the base ring above, unchanged: `.is-unknown` needs no `> i` rule of
+   its own, and a chip whose modifier matched nothing draws the same thing. */
 .ctl-chip.is-unknown { --chip-tone: var(--text-faint); }
-.ctl-chip.is-unknown > i {
-  background: transparent;
-  border: 1.5px solid var(--chip-tone, var(--text-faint));
-}
 /* Live work gets the only motion on the screen, and only while it is live —
    plus a halo, which is what distinguishes it from `.is-ok` once
    `prefers-reduced-motion` has stopped the pulse. */
 .ctl-chip.is-live { --chip-tone: var(--info); }
 .ctl-chip.is-live > i {
   width: 8px; height: 8px;
+  background: var(--chip-tone, var(--text-faint));
+  border: 0;
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--chip-tone, var(--text-faint)) 35%, transparent);
   animation: ctl-live-pulse 2s ease-in-out infinite;
 }
@@ -7281,8 +7308,6 @@ table.pools tbody tr.unmeasured {
   );
 }
 
-.admission-panel { margin-top: 12px; }
-
 .blocker-group { margin-top: 12px; }
 .blocker-group > h3 {
   display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
@@ -7317,43 +7342,32 @@ table.pools tbody tr.unmeasured {
 /* The submit box has one column and no room for the fraction on its own line. */
 .blocker-list.compact .blocker-row { padding: 5px 8px; font-size: var(--t-body); }
 
-.counterfactual { margin-top: 14px; }
-.counterfactual > h3 {
-  margin: 0 0 6px;
-  font-size: var(--t-meta); font-weight: 600; color: var(--text-dim);
-}
-.cf-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 3px; }
-.cf-row {
-  display: grid; grid-template-columns: minmax(0, 200px) minmax(0, 1fr); gap: 10px;
-  padding: 4px 0; font-size: var(--t-body); line-height: var(--lh-body);
-}
-.cf-action { color: var(--text); }
-.cf-action code { font-size: var(--t-body); background: transparent; color: var(--text); }
-/* INK, NOT `--ok` (CP-13). A counterfactual is a measurement of what WOULD
+/* THE COUNTERFACTUAL IS A COLUMN NOW (CP-6, #85): `+N if lifted` on Profile
+   headroom's pool table, one cell per pool that caps the card. The list that
+   drew it -- `.counterfactual`, `.cf-list`, `.cf-row`, `.cf-action` and their
+   640px stacking rule -- and `.admission-panel` around it are gone with the
+   components that rendered them.
+
+   INK, NOT `--ok` (CP-13). A counterfactual is a measurement of what WOULD
    have happened -- "+3 would fit" -- and it was painted in the healthy hue,
    including the row that says it "could not be measured". Green on a
    hypothetical reads as a result somebody got. The effect is a figure and is
-   drawn as one; the dimmed rows below are the zeros and the unmeasured. */
+   drawn as one; the dimmed cells below are the zeros and the unmeasured. */
 .cf-effect { color: var(--text); }
-/* The zeros are the valuable half -- they say which ceilings are POINTLESS to
-   raise -- so they are dimmed rather than hidden, and never coloured as a
-   result. A green "no change" reads as a success. */
-.cf-row.is-pointless .cf-action,
-.cf-row.is-pointless .cf-effect { color: var(--text-faint); }
+/* The zeros on a binding pool are the valuable half -- they say which ceilings
+   are POINTLESS to raise alone -- so they are dimmed rather than hidden, and
+   never coloured as a result. A green "no change" reads as a success. */
+td.cf-lift.is-pointless .cf-effect { color: var(--text-faint); }
 
 /* `.admission-details` LIVED HERE AND IS GONE (B4.5). It was Pools' per-profile
-   `<details>`, holding `IncompleteNote` and `Counterfactuals` -- roughly 90
-   words per profile, behind a disclosure triangle nobody opens. The
-   counterfactual is real data and is NOT lost: `Profiles.tsx` renders the same
-   two components through `ProfileAdmissionPanel`, which is where a reader who
-   wants one profile's admission arithmetic already goes. What Pools carried was
-   a second copy of it, collapsed. The incompleteness itself stayed on Pools, as
-   `.ctl-mark.is-unread` in the row it belongs to. */
+   `<details>`, holding the incompleteness note and the counterfactual --
+   roughly 90 words per profile, behind a disclosure triangle nobody opens.
+   The counterfactual is real data and is NOT lost: it is Profile headroom's
+   `+N if lifted` column, which is where a reader who wants one profile's
+   admission arithmetic already goes. The incompleteness itself stayed on
+   Pools, as `.ctl-mark.is-unread` in the row it belongs to. */
 
 @media (max-width: 640px) {
-  /* One column: at 390pt the effect wraps to two words per line beside a
-     200px label, which is less readable than stacking. */
-  .cf-row { grid-template-columns: minmax(0, 1fr); gap: 0; }
   .blocker-at { margin-left: 0; flex-basis: 100%; }
 }
 
@@ -7937,11 +7951,14 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 
    TWO THINGS DELIBERATELY SURVIVE THE BOX:
 
-   1. `.ctl-card-head` KEEPS ITS NOTE. That note is Trap E -- "platform-wide"
-      vs "this tenant" -- and it is the only thing on the screen stopping a
-      reader comparing a tenant figure with a platform one. Removing the card
-      to remove the box would have removed the slot the scope declaration lives
-      in, which is a correctness regression wearing a design change.
+   1. THE SCOPE IS DECLARED, AND SINCE CP-2 (#85) IT IS DECLARED PER ROW.
+      Trap E -- "platform" vs "this tenant" -- is the only thing on the screen
+      stopping a reader comparing a tenant figure with a platform one. It was
+      the `.ctl-card-head` note, read off the family's first row, and a family
+      is not one scope (an admin's Tenants family holds every tenant's pool).
+      The owner's decision is a Scope column on every row, and a scope on
+      every card in the Cards view (`.cap-pool-scope`); the head keeps only
+      its title.
    2. THE TABLE KEEPS ITS OWN BORDER. `.ctl-table` draws it, it has always
       drawn it, and it is what now carries the grouping: one boundary per
       family instead of two nested ones.
@@ -7999,6 +8016,15 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
   margin-left: 2px;
   font: var(--t-micro)/var(--lh-micro) var(--mono);
   color: var(--text-faint);
+}
+
+/* A TILE'S SCOPE (CP-2, #85), leading its marks: the Cards view's copy of the
+   table's Scope column, since the family note both used to share is gone.
+   Metadata, so the qualifier treatment -- mono, muted, no hue, no box; the
+   strip's own gap separates it from the first mark. */
+.cap-pool-scope {
+  font: var(--t-meta)/var(--lh-meta) var(--mono);
+  color: var(--text-dim);
 }
 
 /* THE CARDS VIEW. `auto-fit` at a 240px floor gives four across a wide display
@@ -8171,7 +8197,8 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 /* -- Accounts -------------------------------------------------------------- */
 
 /* Accounts keeps `cs status`'s five columns verbatim -- same order, same
-   headings, same five-cell bar -- because an operator already reads that line
+   headings, same figures and `~` (the five-cell bar went into §6.4's shared
+   track, CP-25) -- because an operator already reads that line
    on their laptop and a second vocabulary for the same five facts costs them a
    translation every time they look. So this screen gains no new layout: what
    changed is that the paragraphs AROUND the table became marks IN it, and a

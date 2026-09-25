@@ -13,21 +13,17 @@
 // making a second one. See the header of headroom.py for why that is served
 // rather than restated here.
 
-import { timeAgo } from './Shell'
 import {
   blockerCeiling,
   blockerGroup,
   ceilingCopy,
-  headroomFor,
   needsAPerson,
   poolLabelAmong,
   reasonCopy,
-  type Capacity,
   type Ceiling,
   type Counterfactual,
   type Headroom,
   type ProfileBlocker,
-  type RunnerProfile,
 } from './types'
 
 /** How a pool is named on screen. See `poolLabelAmong`. */
@@ -136,6 +132,15 @@ export function CeilingTag({ blocker }: { blocker: ProfileBlocker }) {
       {tag.word}
     </span>
   )
+}
+
+/**
+ * What a ceiling means for the pool behind it, as `CeilingTag`'s title says it.
+ * Profile headroom's status marks (CP-12, #85) carry the same explanation the
+ * tags did, so it is read from the one table rather than written twice.
+ */
+export function ceilingTitle(c: Ceiling): string {
+  return CEILING_TAG[c].title
 }
 
 /**
@@ -260,19 +265,81 @@ export function BlockerList({
   )
 }
 
-function counterfactualText(c: Counterfactual, label: Label): string {
-  if (c.headroom_after === null) {
-    // Nothing else configured would have bound. Not a number, so not phrased
-    // as one.
-    return 'nothing else would have been left to cap it'
+/**
+ * WHAT LIFTING ONE CEILING WOULD HAVE BOUGHT, as a figure and its sentence --
+ * the `+N if lifted` cell on Profile headroom (CP-6, #85).
+ *
+ * It was `<Counterfactuals>`, a list of sentences under each card, with a row
+ * for every configured pool: "4 more would have started", and five to seven
+ * rows of "nothing would have changed". The owner's decision made it a column
+ * on the rows of the pools that cap the card, and removed the rows for pools
+ * whose lifting buys nothing. The figure is the cell; the sentence the row
+ * used to be is the cell's accessible name, so nothing it said is lost.
+ *
+ * The zeros on a BINDING pool are still the valuable half. Under a
+ * minimum-across-pools rule, raising a ceiling that is not the only binding
+ * one changes nothing -- two pools tie, and lifting either alone buys +0 --
+ * and a cell reading +0 beside a pool tagged `binding` is what stops an
+ * operator raising it and watching nothing move.
+ *
+ * ON THE WORDING, unchanged. This is a PREDICTION and predictions are where a
+ * screen like this starts lying: a lease can be released between the read and
+ * the render, and then a number presented in the present tense is simply
+ * false. So:
+ *
+ *  - everything is PAST CONDITIONAL -- "would have started", never "will
+ *    start" and never "you can start". It is a statement about the counts at
+ *    one instant, which is the only thing it is evidence for;
+ *  - that instant is named, with the server's own `generated_at` rather than
+ *    the browser's clock -- once, in the page foot, rather than once a card;
+ *  - "lifted entirely" rather than "raised to N": the counterfactual removes
+ *    the ceiling altogether, so a zero here means raising it to ANY value buys
+ *    nothing, which is the stronger and more useful claim;
+ *  - a zero always names what still binds. A bare "no change" reads as a
+ *    glitch and gets ignored.
+ *
+ * `kind` is the cell's modifier (CP-13): `pointless` for a measured +0, dimmed
+ * rather than hidden; `unmeasured` for a delta nobody could compute, and for a
+ * read that missed a ceiling (the counterfactual is not computed then: a
+ * ceiling never read cannot be compared against one that was); `measured` for
+ * a change, including "nothing else would have been left to cap it", which is
+ * an answer, not a gap -- drawn as the word `uncapped`, never as a number.
+ */
+export function liftFigure(
+  c: Counterfactual | undefined,
+  complete: boolean,
+  pool: string,
+  label: Label,
+): { text: string; say: string; kind: 'measured' | 'pointless' | 'unmeasured' } {
+  if (!complete) {
+    return {
+      text: '—',
+      say: 'Not computed: a ceiling that was never read cannot be compared against one that was.',
+      kind: 'unmeasured',
+    }
   }
-  if (c.delta === null) return 'the change could not be measured'
+  if (c === undefined) {
+    return {
+      text: '—',
+      say: `Not computed: the response carried no counterfactual for ${label(pool)}.`,
+      kind: 'unmeasured',
+    }
+  }
+  const act = `${c.action === 'resume' ? 'Resume' : 'Lift'} ${label(c.pool)}`
+  if (c.headroom_after === null) {
+    // Nothing else configured would have bound. Not a number, so not drawn as
+    // one.
+    return { text: 'uncapped', say: `${act}: nothing else would have been left to cap it.`, kind: 'measured' }
+  }
+  if (c.delta === null) {
+    return { text: '—', say: `${act}: the change could not be measured.`, kind: 'unmeasured' }
+  }
   if (c.delta > 0) {
     const next =
       c.next_binding.length > 0
         ? ` — then ${c.next_binding.map(label).join(' and ')} would have bound`
         : ''
-    return `${c.delta} more would have started${next}`
+    return { text: `+${c.delta}`, say: `${act}: ${c.delta} more would have started${next}.`, kind: 'measured' }
   }
   // THE VERB AGREES WITH ITS SUBJECT (CP-15). Two pools still in the way
   // "still bind"; it read "eng and anthropic still binds" for as long as
@@ -281,130 +348,18 @@ function counterfactualText(c: Counterfactual, label: Label): string {
     c.next_binding.length > 0
       ? `${c.next_binding.map(label).join(' and ')} still ${c.next_binding.length === 1 ? 'binds' : 'bind'}`
       : 'something else still binds'
-  return `nothing would have changed — ${still}`
+  return { text: '+0', say: `${act}: nothing would have changed — ${still}.`, kind: 'pointless' }
 }
 
-/**
- * Which KIND of answer a counterfactual row is, as the row's modifier (CP-13).
- *
- * `is-pointless` -- a measured +0: lifting this ceiling buys nothing, which is
- * the valuable half and is dimmed rather than hidden.
- * `is-unmeasured` -- a delta nobody could compute (`headroom_after` known,
- * `delta` null because the current figure is not). It was drawn in the
- * result's green beside "the change could not be measured", which is a
- * verdict colour on a sentence that says there is no verdict.
- * No modifier -- a measured change, including "nothing else would have been
- * left to cap it" (`headroom_after` null), which is an answer, not a gap.
+/*
+ * `ProfileAdmissionPanel` LIVED HERE AND IS GONE (CP-6, #85). It drew the
+ * incomplete-read banner, the blocker list grouped by remedy, and the
+ * counterfactual list under every Profile headroom card, and that card was its
+ * only caller. The owner's decision leaves each card one fact sentence: every
+ * refusing pool is on its own row with its status mark -- whose title carries
+ * the reason, the figures and the remedy the blocker row printed -- and what
+ * lifting it would buy is the `+N if lifted` cell (`liftFigure` above).
+ * `IncompleteNote` and `BlockerList` stay exported: they answer "why is THIS
+ * not running" for one object, which is the shape the header of this file
+ * describes, and their tests pin that shape.
  */
-function counterfactualKind(c: Counterfactual): string {
-  if (c.delta === 0) return 'cf-row is-pointless'
-  if (c.delta === null && c.headroom_after !== null) return 'cf-row is-unmeasured'
-  return 'cf-row'
-}
-
-/**
- * The counterfactual, and the zeros are the valuable half.
- *
- * Under a minimum-across-pools rule, raising a ceiling that is not the binding
- * one changes nothing, and the numbers on a capacity screen give no way to
- * tell which ones those are. That is the specific mistake the rule invites,
- * and a row reading "nothing would have changed" is what prevents it.
- *
- * ON THE WORDING. This is a PREDICTION and predictions are where a screen like
- * this starts lying: a lease can be released between the read and the render,
- * and then a number presented in the present tense is simply false. So:
- *
- *  - everything is PAST CONDITIONAL -- "would have started", never "will
- *    start" and never "you can start". It is a statement about the counts at
- *    one instant, which is the only thing it is evidence for;
- *  - that instant is named, with the server's own `generated_at` rather than
- *    the browser's clock;
- *  - "lifted entirely" rather than "raised to N": the counterfactual removes
- *    the ceiling altogether, so a zero here means raising it to ANY value buys
- *    nothing, which is the stronger and more useful claim;
- *  - a zero always names what still binds. A bare "no change" reads as a
- *    glitch and gets ignored.
- */
-export function Counterfactuals({
-  h,
-  generatedAt,
-  label = labelsFor(h),
-}: {
-  h: Headroom
-  generatedAt: string
-  label?: Label
-}) {
-  if (h.counterfactual.length === 0) {
-    if (!h.complete) {
-      return (
-        <p className="muted small">
-          Not computed: a ceiling that was never read cannot be compared against
-          one that was.
-        </p>
-      )
-    }
-    return null
-  }
-
-  return (
-    <div className="counterfactual">
-      <h3>If one ceiling were lifted</h3>
-      <ul className="cf-list">
-        {h.counterfactual.map((c) => {
-          return (
-            <li key={c.pool} className={counterfactualKind(c)}>
-              <span className="cf-action">
-                {c.action === 'resume' ? 'Resume' : 'Lift'}{' '}
-                <code title={c.pool}>{label(c.pool)}</code>
-              </span>
-              <span className="cf-effect">{counterfactualText(c, label)}</span>
-            </li>
-          )
-        })}
-      </ul>
-      {/* THE AGE OF THE COUNTS IS THE MARKER: a conclusion drawn from a
-          snapshot is only as current as the snapshot, and that is the one
-          thing a reader cannot recover from the lines themselves. */}
-      <p className="muted small">
-        From pool counts read{' '}
-        <time dateTime={generatedAt} title={generatedAt}>
-          {timeAgo(generatedAt)}
-        </time>
-        {/* NO `?` (B7.4). `blockers-at-an-instant` says these counts were read
-            one pool at a time and are therefore not a simultaneous snapshot --
-            and "one pool at a time" is already the last four words of the line
-            it was attached to, beside the timestamp of the read. A glyph here
-            opened a card to say the sentence it was standing next to. This
-            panel is drawn inside Overview and inside the agent detail, both of
-            which carry their own glyph; the topic is in the rail's Help
-            section. */}
-        , one pool at a time.
-      </p>
-    </div>
-  )
-}
-
-/**
- * The whole block for one profile. Used by the Capacity board and the runner
- * profile cards so the two cannot drift into two different answers.
- */
-export function ProfileAdmissionPanel({
-  profile,
-  capacity,
-}: {
-  profile: RunnerProfile
-  capacity: Capacity
-}) {
-  const h = headroomFor(profile)
-  // ONE LABELLER FOR THE WHOLE CARD: the profile's own pool list plus
-  // anything the analysis names, so `browser · resource` in the card's table
-  // is `browser · resource` in its blocker list and counterfactual too.
-  const label = labelsAmong([...profile.pools, ...printed(h)])
-  return (
-    <div className="admission-panel">
-      <IncompleteNote h={h} label={label} />
-      <BlockerList h={h} groups={capacity.blocked_reason_groups} label={label} />
-      <Counterfactuals h={h} generatedAt={capacity.generated_at} label={label} />
-    </div>
-  )
-}
