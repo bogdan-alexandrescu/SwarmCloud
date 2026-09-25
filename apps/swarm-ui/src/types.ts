@@ -178,6 +178,21 @@ export function poolKind(name: string): PoolKind {
   }
 }
 
+/**
+ * The pool a tenant's quota document for one provider feeds (CP-8, #85).
+ *
+ * `quota_broker/service.py` `apply_to_pools` writes a document's derived cap
+ * onto exactly this pool, and `pool_names_for` puts it in every task's list
+ * for that provider. Provider quota names it on each row, so a reader can see
+ * that the document's cap is ONE input to a pool whose own ceiling may be
+ * lower. `scripts/lib/check-contract-parity.sh` section 5 reads this template
+ * literal and holds it to `pool_names_for`, so the signature and the one-line
+ * body stay exactly this shape.
+ */
+export function providerTenantPool(provider: string, tenant: string): string {
+  return `provider:${provider}:tenant:${tenant}`
+}
+
 /** `provider:anthropic:tenant:u-bogdan` -> `anthropic · u-bogdan`. */
 export function poolLabel(name: string): string {
   if (name === 'global') return 'global'
@@ -2799,21 +2814,83 @@ export function timeAgo(when: Date | string | number, now: number = Date.now()):
 }
 
 /**
- * The five-cell bar, as `miniBar` in claudeswitch's internal/render/width.go
- * draws it: round to the nearest fifth, clamp, `▰` filled and `▱`
- * empty.
+ * An age as a bare span -- `40s`, `14m`, `3h`, `5d` -- for a mark or a range
+ * that says `old` after it (`5d old`, `readings 2m–14m old`).
  *
- * Returned as a count rather than a string so the component can draw real
- * elements -- a screen reader hearing five geometric-shape glyphs learns
- * nothing, and the percentage beside it is the accessible version of the
- * same fact.
+ * `timeAgo`'s buckets and rounding, so the two never disagree about the same
+ * instant, without its "just now": a range reading "just now–14m" is not
+ * something anyone says, and under five seconds is still a number of seconds.
  */
-export const BAR_CELLS = 5
-
-export function barFilled(pct: number): number {
-  const filled = Math.round((pct / 100) * BAR_CELLS)
-  return Math.max(0, Math.min(BAR_CELLS, filled))
+export function ageSpan(ms: number): string {
+  const s = Math.max(0, Math.round(ms / 1000))
+  if (s < 60) return `${s}s`
+  if (s < 3600) return `${Math.round(s / 60)}m`
+  const h = Math.round(s / 3600)
+  if (h < 48) return `${h}h`
+  return `${Math.round(h / 24)}d`
 }
+
+/**
+ * THE QUOTA BROKER'S SWEEP INTERVAL, stated once (CP-9, #85).
+ *
+ * It is the `quota-refresh` Cloud Scheduler job: the scheduler module's
+ * `quota_refresh_schedule`, `*\/5 * * * *` (terraform/modules/scheduler/
+ * variables.tf), which the root does not override. Every five minutes the
+ * broker's `sweep` retires expired cooldowns and re-asserts every provider
+ * pool. `scripts/lib/check-contract-parity.sh` section 7 holds this number to
+ * that cron, so a changed schedule with this constant left behind fails there
+ * rather than quietly calling current readings stale.
+ *
+ * A SWEEP, NOT A REPORT (#159 review). This was `QUOTA_REPORT_INTERVAL_
+ * SECONDS`, and the screen called it "the broker's reporting interval". No
+ * such report exists: the sweep rewrites a document only when its state or
+ * its derived cap changed, and `updated_at` moves when a WORKER reports -- at
+ * the end of a clean run, or on a 429 (`update_quota_state`). An AVAILABLE
+ * document nobody reports on keeps the `updated_at` of the last worker report
+ * or state change, which is what `Reported` prints.
+ *
+ * WHICH TICK THE OWNER'S "TWICE THE BROKER'S REPORTING INTERVAL" MEANT IS AN
+ * OPEN QUESTION TO THE OWNER (#85, CP-9): the sweep, a worker-report cadence
+ * (there is no fixed one), or a fixed age. Until it is answered the threshold
+ * stays twice the sweep, and the words say so rather than naming a report.
+ */
+export const QUOTA_SWEEP_INTERVAL_SECONDS = 300
+
+/**
+ * A quota reading older than this is drawn with the stale mark and its age,
+ * never with the ok verdict: twice the broker's sweep interval, the closest
+ * config value to the owner's rule (2026-09-25; see above for what is still
+ * open). One missed tick is a late tick; two is a reading nothing has
+ * confirmed since. On a quiet tenant that is most rows at rest: nothing has
+ * reported on them since, which is the true age of what they say.
+ */
+export const QUOTA_STALE_AFTER_MS = 2 * QUOTA_SWEEP_INTERVAL_SECONDS * 1000
+
+/**
+ * How old a quota document's reading is, and whether that is past
+ * `QUOTA_STALE_AFTER_MS`. `ageMs` is null when `updated_at` is missing or
+ * unparseable -- an age nobody recorded, which is not a fresh one, so it is
+ * stale too.
+ */
+export function quotaReadingAge(
+  q: Pick<QuotaState, 'updated_at'>,
+  now: number,
+): { stale: boolean; ageMs: number | null } {
+  const at = q.updated_at ? new Date(q.updated_at).getTime() : Number.NaN
+  if (!Number.isFinite(at)) return { stale: true, ageMs: null }
+  const ageMs = Math.max(0, now - at)
+  return { stale: ageMs > QUOTA_STALE_AFTER_MS, ageMs }
+}
+
+/*
+ * `BAR_CELLS` AND `barFilled` LIVED HERE AND ARE GONE (CP-25, #85). They drew
+ * Accounts' five-cell bar the way claudeswitch's `miniBar` does -- round to the
+ * nearest fifth, clamp -- which put a second proportion primitive beside
+ * §6.4's one and rounded 42% to three cells. The owner's decision collapsed it
+ * into the shared `UtilTrack` (primitives.tsx) at the exact percentage. What
+ * the table still shares with `cs status` is the figure, the `~` and the
+ * window labels.
+ */
 
 // ---------------------------------------------------------------------------
 // Adding an account: the two-step sign-in
