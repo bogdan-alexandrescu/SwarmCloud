@@ -27,7 +27,7 @@
 // that is both checkable here and load-bearing.
 
 import { describe, expect, it, vi } from 'vitest'
-import { render } from '@testing-library/react'
+import { act, render } from '@testing-library/react'
 
 import STYLES from '../styles.css?raw'
 // App.tsx as TEXT, not as a module: importing it would evaluate every screen
@@ -96,7 +96,7 @@ function accountsPage(accounts: Account[]): AccountsPage {
   return { accounts, tenant_id: 'eng', unreadable_documents: [], unreadable_document_count: 0 }
 }
 
-function spend(): SpendRollup {
+function spend(over: Partial<SpendRollup> = {}): SpendRollup {
   return {
     tenantId: 'eng',
     tasksOnPage: 0,
@@ -114,6 +114,7 @@ function spend(): SpendRollup {
     cacheCreationTokens: null,
     from: '2026-09-23T09:00:00Z',
     to: '2026-09-23T10:00:00Z',
+    ...over,
   }
 }
 
@@ -179,10 +180,16 @@ describe('the landing screen is a lead and two regions, not a grid of boxes', ()
    *
    * The strip used to carry `Attention · 10 things` one line above a card
    * headed `Needs attention` holding the same ten. A fact drawn twice is not
-   * emphasis: it is a reader checking whether the two numbers agree. The strip
-   * has four facts now and none of them is the problem count.
+   * emphasis: it is a reader checking whether the two numbers agree.
+   *
+   * TWO FACTS, NOT FOUR (OV-12). `Account headroom` and `Token spend` were the
+   * Headroom group's and the Spend card's own figures drawn a second time at
+   * the figure step, so the strip keeps only the two facts no panel repeats:
+   * Running and Units held.
+   *
+   * MUTATION: put either removed tile back on the strip.
    */
-  it('says the attention count once, at page rank, and not again in the fact strip', async () => {
+  it('says the attention count once, in the lead, and not again in the fact strip', async () => {
     const el = await mountOverview()
 
     const title = el.querySelector('.ov-lead-title')
@@ -191,7 +198,8 @@ describe('the landing screen is a lead and two regions, not a grid of boxes', ()
     const labels = [...el.querySelectorAll('.ctl-metrics .ctl-metric-label')].map((n) =>
       (n.textContent ?? '').trim(),
     )
-    expect(labels.length, 'the fact strip lost or gained a figure').toBe(4)
+    expect(labels.length, 'the fact strip lost or gained a figure').toBe(2)
+    expect(labels).toEqual(['Running', 'Units held'])
     expect(
       labels.some((l) => /attention/i.test(l)),
       'the attention figure is in the strip AND in the lead',
@@ -352,7 +360,15 @@ describe('a card says what it opens, and a count is not a verdict', () => {
    */
   it('names every card-head link after the tab it opens', async () => {
     const el = await mountOverview()
-    const links = [...el.querySelectorAll<HTMLAnchorElement>('.ctl-card-head a.ov-link')]
+    // THE GROUP HEAD COUNTS TOO (OV-12). The link to Accounts that the removed
+    // `Account headroom` tile carried moved to the "By subscription account"
+    // group head, and it is held to the same rule as the card heads.
+    const group = el.querySelector<HTMLAnchorElement>('.ov-headroom .ov-grouphead-row a.ov-link')
+    expect(group, 'the account group head carries no link to Accounts').not.toBeNull()
+    expect(group!.getAttribute('href')).toBe('#capacity/accounts')
+    const links = [
+      ...el.querySelectorAll<HTMLAnchorElement>('.ctl-card-head a.ov-link, .ov-grouphead-row a.ov-link'),
+    ]
     // A sweep that found no links would pass over the one that is wrong.
     expect(links.length, 'no card-head link was found, so nothing was checked').toBeGreaterThanOrEqual(3)
     for (const a of links) {
@@ -427,5 +443,495 @@ describe('a card says what it opens, and a count is not a verdict', () => {
     const head = heads[heads.length - 1] ?? ''
     expect(head, 'the duration column has no heading').not.toBe('')
     expect(head, `a not-started agent's wait sits under "${head}"`).not.toMatch(/run/i)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The 2026-09-25 QA decisions (epic #81). Each test names its box, and the
+// mutation that turns it red is in its docstring.
+// ---------------------------------------------------------------------------
+
+type Reads = Partial<Record<keyof typeof api, Result<unknown> | Promise<Result<unknown>>>>
+
+/** A read that never lands: the request is in flight for the whole test. */
+function never<T>(): Promise<Result<T>> {
+  return new Promise(() => {})
+}
+
+/** Every read landed and healthy, then whichever the test overrides. */
+async function mountWith(reads: Reads = {}): Promise<HTMLElement> {
+  api.loadCapacity.mockResolvedValue(ok(CAPACITY))
+  api.loadTasks.mockResolvedValue(ok(EMPTY_TASKS))
+  api.loadLeases.mockResolvedValue({ status: 'empty', fetchedAt: Date.now() })
+  api.loadProviders.mockResolvedValue({ status: 'empty', fetchedAt: Date.now() })
+  api.loadWorkflows.mockResolvedValue({ status: 'empty', fetchedAt: Date.now() })
+  api.loadStats.mockResolvedValue(ok(EMPTY_STATS))
+  api.loadAccountPool.mockResolvedValue(ok(accountsPage([account({})])))
+  api.loadSpend.mockResolvedValue(ok(spend()))
+  for (const [name, result] of Object.entries(reads)) {
+    const fn = api[name as keyof typeof api]
+    if (result instanceof Promise) fn.mockReturnValue(result)
+    else fn.mockResolvedValue(result)
+  }
+  const { container } = render(<OverviewScreen />)
+  await settle()
+  return container
+}
+
+const text = (n: Element | null | undefined): string => (n?.textContent ?? '').replace(/\s+/g, ' ').trim()
+
+/** An account with a current reading of its five-hour window, `used` of 1. */
+function reading(label: string, used: number, over: Partial<Account> = {}): Account {
+  return account({
+    account_id: `eng:${label}`,
+    label,
+    observed_at: new Date().toISOString(),
+    windows: { five_hour: { utilization: used, resets_at: '2099-01-01T00:00:00Z', reset: false } },
+    ...over,
+  })
+}
+
+/** One pool and one profile bound by it, so the profile group draws a row and a foot. */
+const CAPACITY_ONE: Capacity = {
+  pools: [
+    {
+      name: 'global',
+      hard_limit: 4,
+      adaptive_target: null,
+      quota_derived_limit: null,
+      effective_limit: 4,
+      active: 1,
+      available: 3,
+      enabled: true,
+      updated_at: '2026-09-23T10:00:00Z',
+    },
+  ],
+  runner_profiles: {
+    'claude-code': {
+      resource_class: 'standard',
+      backend: 'cloudrun',
+      provider: 'anthropic',
+      units: 1,
+      pools: ['global'],
+      admission: {
+        units: 1,
+        headroom: 3,
+        basis: 'measured',
+        blockers: [],
+        binding: ['global'],
+        counterfactual: [],
+        complete: true,
+        unread: [],
+        uncapped: [],
+      },
+    },
+  },
+  tenant_id: 'eng',
+  generated_at: '2026-09-23T10:00:00Z',
+}
+
+describe('OV-1, OV-2, OV-12: the headroom headline is % used, names its account, and draws itself', () => {
+  /**
+   * OV-1. ONE POLARITY. The headline printed `72 % left` over rows printing
+   * `74 / 52 / 29` -- % used, both as a bare `%`, and the 74 was the fullest
+   * account. Every % on the panel is now % used and carries the word, and the
+   * headline names the account its figure is (owner decision, epic #81).
+   *
+   * OV-2. THE TRACK IS THE FIGURE. It drew coverage (usable/total accounts),
+   * so it was full whenever every account had a reading, whatever the figure
+   * said. `--pct` is the figure now.
+   *
+   * MUTATION: print `100 - pct` with `% left`, or set `--pct` to the coverage.
+   */
+  it('prints the best account as % used, names it, and fills its track to that figure', async () => {
+    const el = await mountWith({
+      loadAccountPool: ok(accountsPage([reading('laptop', 0.28), reading('desk', 0.74)])),
+    })
+    const dial = el.querySelector('.ov-headroom .ctl-dial')
+    expect(dial, 'the headroom group drew no headline').not.toBeNull()
+    expect(text(dial!.querySelector('.ctl-dial-figure'))).toBe('28% used · laptop')
+    expect(dial!.getAttribute('style') ?? '', 'the track draws coverage, not the figure').toMatch(/--pct:\s*28(;|$)/)
+    // Coverage is complete, so no coverage is drawn: no hatch, no partial mark.
+    expect(dial!.classList.contains('is-partial')).toBe(false)
+    expect(dial!.querySelector('.ctl-mark.is-partial')).toBeNull()
+
+    // EVERY % CARRIES ITS WORD, worst first as before.
+    const rows = [...el.querySelectorAll('.ov-headroom .ov-dialrow-rows .ctl-util-figure')].map(text)
+    expect(rows).toEqual(['74% used', '28% used'])
+    expect(text(el), 'a figure on the screen still reads as % left').not.toMatch(/% left/)
+  })
+
+  /**
+   * OV-2, the other half. Coverage appears ONLY when it is partial, and then as
+   * the kit's partial mark beside a track that still draws the figure, with
+   * the remainder hatched.
+   *
+   * MUTATION: drop the mark, or draw the partial track at the coverage again.
+   */
+  it('marks the headline partial when an account has no reading, and still draws the figure', async () => {
+    const el = await mountWith({
+      loadAccountPool: ok(accountsPage([reading('laptop', 0.28), account({ account_id: 'eng:never', label: 'never' })])),
+    })
+    const dial = el.querySelector('.ov-headroom .ctl-dial')!
+    expect(dial.classList.contains('is-partial'), 'a partial population drew a whole track').toBe(true)
+    expect(dial.getAttribute('data-partial')).toBe('yes')
+    expect(dial.getAttribute('style') ?? '').toMatch(/--pct:\s*28(;|$)/)
+    const mark = dial.querySelector('.ctl-mark.is-partial')
+    expect(mark, 'a partial headline carries no partial mark').not.toBeNull()
+    expect(text(mark)).toBe('partial')
+    expect(mark!.getAttribute('aria-label') ?? '').toMatch(/never/)
+  })
+
+  /**
+   * OV-12 (b). THE LOW-HEADROOM ALERT MOVED FROM THE TILE TO THE HEADLINE, and
+   * it takes the verdict of the row it names -- the same thresholds, so the
+   * headline and its row cannot disagree.
+   *
+   * MUTATION: give the headline its own threshold, or no tone at all.
+   */
+  it('gives the headline the verdict of the account row it names', async () => {
+    for (const [used, tone] of [
+      [0.95, 'is-bad'],
+      [0.8, 'is-warn'],
+    ] as const) {
+      const el = await mountWith({ loadAccountPool: ok(accountsPage([reading('hot', used)])) })
+      const dial = el.querySelector('.ov-headroom .ctl-dial')!
+      expect(dial.classList.contains(tone), `${used * 100}% used drew no ${tone} headline`).toBe(true)
+      expect(
+        el.querySelector(`.ov-headroom .ov-dialrow-rows .ctl-util-fill.${tone}`),
+        `the row the headline names is not ${tone}`,
+      ).not.toBeNull()
+      // The figure stays in ink: the track carries the verdict.
+      expect(dial.querySelector('.ctl-dial-figure')!.className).not.toMatch(/is-(bad|warn)/)
+    }
+    const calm = await mountWith({ loadAccountPool: ok(accountsPage([reading('calm', 0.2)])) })
+    const dial = calm.querySelector('.ov-headroom .ctl-dial')!
+    expect(dial.classList.contains('is-warn') || dial.classList.contains('is-bad')).toBe(false)
+  })
+
+  /**
+   * OV-12. A FACT IS DRAWN AT THE FIGURE STEP ONCE. Spend was in the tile and
+   * in the card, and the headroom figure in the tile and in the group, which
+   * put seven figure-size numbers above the fold for five facts.
+   *
+   * MUTATION: restore either tile.
+   */
+  it('draws the spend figure and the headroom figure at the figure step exactly once each', async () => {
+    const el = await mountWith({
+      loadAccountPool: ok(accountsPage([reading('laptop', 0.28)])),
+      loadSpend: ok(spend({ tasksWithAttempts: 3, tasksSampled: 3, attempts: 3, attemptsWithCost: 3, costUsd: 1.25 })),
+    })
+    const figures = [...el.querySelectorAll('.ctl-figure, .ctl-metric-value, .ctl-dial-figure')].map(text)
+    expect(figures.filter((f) => f.includes('$1.2500')), 'the spend figure is drawn twice').toHaveLength(1)
+    expect(figures.filter((f) => /(^|\D)28%/.test(f)), 'the headroom figure is not drawn exactly once').toHaveLength(1)
+  })
+})
+
+describe('OV-4, OV-14: the spend figure is a partial sum, and its foot is a run of clauses', () => {
+  /**
+   * OV-4. The sum is the 12 newest tasks that have run, drawn as a total, with
+   * `tasksWithAttempts` never rendered. It keeps the client-side sum and now
+   * carries the partial mark and names what it covers.
+   *
+   * OV-14. The foot's clauses are separate nowrap elements in the decided
+   * order -- what the sum covers, the holes in it, then how old it is -- and
+   * no `·` is typed anywhere in a foot: CSS draws it, so a separator never
+   * ends or begins a line.
+   *
+   * MUTATION: drop the mark, drop the coverage clause, reorder the clauses, or
+   * type a ' · ' back into any foot.
+   */
+  it('marks the sum partial, names its coverage first, and types no separator in any foot', async () => {
+    const el = await mountWith({
+      loadCapacity: ok(CAPACITY_ONE),
+      loadTasks: ok({ tasks: [liveTask()], next_page_token: null, tenant_id: 'eng' }),
+      loadStats: ok({ ...EMPTY_STATS, tasks_by_state: { RUNNING: 1 } }),
+      loadAccountPool: ok(accountsPage([reading('laptop', 0.28)])),
+      loadSpend: ok(
+        spend({
+          tasksOnPage: 60,
+          tasksWithAttempts: 40,
+          tasksSampled: 12,
+          attempts: 31,
+          attemptsWithCost: 29,
+          failedReads: 1,
+          failedDetail: 'HTTP 503',
+          costUsd: 1.25,
+        }),
+      ),
+    })
+    const card = el.querySelector('.ov-spend')!
+    const mark = card.querySelector('.ctl-mark.is-partial')
+    expect(mark, 'the spend sum is drawn as a total').not.toBeNull()
+    expect(mark!.getAttribute('aria-label') ?? '').toMatch(/12 newest of 40/)
+
+    const run = card.querySelector('.ctl-card-foot .ctl-foot-run')
+    expect(run, 'the spend foot is not a run of clauses').not.toBeNull()
+    const clauses = [...run!.children].map(text)
+    expect(clauses).toEqual([
+      '31 attempts, 12 newest of 40 tasks',
+      '2 unmeasured',
+      '1 of 12 reads failed',
+      expect.stringMatching(/^summed (just now|\d+[smhd] ago)$/),
+      'no re-poll',
+    ])
+
+    const feet = [...el.querySelectorAll('.ctl-card-foot')]
+    // All five feet that join clauses: the profile group, Running, Spend and
+    // the account group are drawn by this fixture. A sweep over none is not
+    // a clean sweep.
+    expect(feet.length, 'the fixture drew too few feet to check').toBeGreaterThanOrEqual(4)
+    for (const foot of feet) {
+      expect(foot.textContent ?? '', `a foot still types its separator: "${text(foot)}"`).not.toContain('·')
+      expect(foot.querySelector('.ctl-foot-run'), `a foot is not a run of clauses: "${text(foot)}"`).not.toBeNull()
+    }
+  })
+})
+
+describe('OV-7: on a phone, an account row keeps the note that changes what it means', () => {
+  /**
+   * The phone rule hides `.ctl-util-by`, which is the only place a row says
+   * "sign in again", "pool is skipping it", paused, draining or which pool
+   * binds. The note is marked, so the phone rule shows it on its own line --
+   * and only when there is one: a window name and an age are not a note.
+   *
+   * MUTATION: stop marking the note, or mark every `by`.
+   */
+  it('marks the status notes and nothing else', async () => {
+    const el = await mountWith({
+      loadCapacity: ok(CAPACITY_ONE),
+      loadAccountPool: ok(
+        accountsPage([
+          reading('fine', 0.1),
+          reading('dead', 0.1, { state: 'REAUTH_REQUIRED' }),
+          reading('held', 0.1, { state: 'PAUSED' }),
+        ]),
+      ),
+    })
+    const byOf = (name: string) =>
+      [...el.querySelectorAll('.ov-headroom .ctl-util')]
+        .find((r) => text(r.querySelector('.ctl-util-name b')) === name)
+        ?.querySelector('.ctl-util-by') ?? null
+    expect(text(byOf('dead'))).toBe('sign in again')
+    expect(byOf('dead')!.classList.contains('is-note'), 'sign in again is not marked a note').toBe(true)
+    expect(text(byOf('held'))).toBe('paused')
+    expect(byOf('held')!.classList.contains('is-note'), 'paused is not marked a note').toBe(true)
+    // The binding pool on the profile row is a note too.
+    expect(byOf('claude-code')!.classList.contains('is-note'), 'the binding pool is not marked a note').toBe(true)
+    // A current reading's window and age is provenance, not a note.
+    expect(byOf('fine')!.classList.contains('is-note'), 'a plain reading was marked a note').toBe(false)
+  })
+
+  /**
+   * A PAUSED OR DRAINING ACCOUNT KEEPS ITS NOTE WHATEVER ITS READING SAYS.
+   * The column held one word and the reading words outranked the state, so a
+   * paused account whose reading was stale, cleared, never taken or missing
+   * its window printed only the reading word -- unmarked, so a phone showed
+   * no note at all, and a wide screen never said "paused". The decision names
+   * paused and draining among the notes a phone must show; the reading word
+   * follows the note on the same line.
+   *
+   * MUTATION: let a reading word replace the state again, or stop marking it.
+   */
+  it('keeps a paused or draining note when the reading is stale or was never taken', async () => {
+    const el = await mountWith({
+      loadAccountPool: ok(
+        accountsPage([
+          reading('drain', 0.1, { state: 'DRAINING', stale: true }),
+          account({ account_id: 'eng:held', label: 'held', state: 'PAUSED' }),
+          reading('fine', 0.1),
+        ]),
+      ),
+    })
+    const byOf = (name: string) =>
+      [...el.querySelectorAll('.ov-headroom .ctl-util')]
+        .find((r) => text(r.querySelector('.ctl-util-name b')) === name)
+        ?.querySelector('.ctl-util-by') ?? null
+    expect(byOf('drain'), 'the draining account drew no row').not.toBeNull()
+    expect(text(byOf('drain')), 'a stale reading hid the draining note').toMatch(/^draining\b.*\bstale\b/)
+    expect(byOf('drain')!.classList.contains('is-note'), 'draining over a stale reading is not a note').toBe(true)
+    expect(byOf('held'), 'the paused account drew no row').not.toBeNull()
+    expect(text(byOf('held')), 'a reading never taken hid the paused note').toMatch(/^paused\b.*\bnever polled$/)
+    expect(byOf('held')!.classList.contains('is-note'), 'paused over no reading is not a note').toBe(true)
+    expect(byOf('fine')!.classList.contains('is-note')).toBe(false)
+  })
+})
+
+describe('OV-9: while the checks read, the lead says so and draws no figure', () => {
+  /**
+   * The lead drew the "could not run" hatch and `0 open` while its reads were
+   * still in flight, and the head printed `scope —` for a tenant id that had
+   * not arrived. Pending is its own picture: the kit's pending mark, no digit,
+   * no hatch; the hatch waits for a read that failed.
+   *
+   * MUTATION: fall through to `partial` or `unknown` while a check reads.
+   */
+  it('draws the pending mark, no digit and no hatch, and says the scope is reading', async () => {
+    const el = await mountWith({ loadStats: never(), loadTasks: never() })
+    const dial = el.querySelector('.ov-lead .ctl-dial')!
+    expect(dial.classList.contains('is-pending'), 'a lead still reading is not drawn as pending').toBe(true)
+    expect(dial.classList.contains('is-unknown') || dial.classList.contains('is-partial'), 'a read in flight drew the hatch').toBe(false)
+    expect(dial.querySelector('.ctl-mark.is-pending'), 'the lead carries no pending mark').not.toBeNull()
+    expect(text(dial.querySelector('.ctl-dial-figure')), 'a count was drawn before the checks ran').not.toMatch(/\d/)
+    // The first fact is the scope: its key, then what it says while the task
+    // read that carries the tenant id is still in flight.
+    const scope = el.querySelector('.ov-prov .ctl-fact')!
+    expect(text(scope.querySelector('b'))).toBe('scope')
+    expect(text(scope).slice('scope'.length).trim(), 'the scope reads as missing while it is in flight').toBe('reading…')
+  })
+
+  it('draws the hatch once a read has failed, and not before', async () => {
+    const el = await mountWith({
+      loadStats: { status: 'error', error: { kind: 'server_error', httpStatus: 500, code: null, message: 'boom' } },
+    })
+    const dial = el.querySelector('.ov-lead .ctl-dial')!
+    expect(dial.classList.contains('is-pending')).toBe(false)
+    expect(dial.classList.contains('is-partial'), 'a failed check did not hatch the lead').toBe(true)
+    expect(dial.querySelector('.ctl-mark.is-partial'), 'a partial lead carries no partial mark').not.toBeNull()
+  })
+
+  /**
+   * THE HATCH IS THE BLIND SHARE, AND ONLY IT (OV-2). The track draws open
+   * checks over all checks; a partial one hatched from that figure to the
+   * end, so seven checks that ran and came back clear were drawn as
+   * unmeasured, and one blind check of eight drew the same track as seven.
+   * `--measured` is the share that ran: the hatch starts there.
+   *
+   * MUTATION: set `--measured` to the figure again, or to the coverage of
+   * anything but the checks.
+   */
+  it('hatches only the checks that could not run, not the ones that came back clear', async () => {
+    const el = await mountWith({
+      loadStats: { status: 'error', error: { kind: 'server_error', httpStatus: 500, code: null, message: 'boom' } },
+      // A polled account, so the accounts check is clear: eight checks, the
+      // dispatch one blind, the other seven clear, none open.
+      loadAccountPool: ok(accountsPage([reading('fine', 0.1)])),
+    })
+    const dial = el.querySelector('.ov-lead .ctl-dial')!
+    expect(dial.classList.contains('is-partial')).toBe(true)
+    const style = dial.getAttribute('style') ?? ''
+    expect(style, 'nothing is open, so nothing is filled').toMatch(/--pct:\s*0(;|$)/)
+    expect(style, 'the hatch does not start where the checks that ran end (7 of 8)').toMatch(/--measured:\s*88(;|$)/)
+  })
+
+  /**
+   * OV-2 on the lead: the checks track is open / total, not ran / total, so
+   * it is not full on a healthy platform.
+   *
+   * MUTATION: fill it to the checks that ran.
+   */
+  it('fills the checks track to the open checks, not to the ones that ran', async () => {
+    const failedTask = liveTask({ id: 'task_failed0000000000000', state: 'FAILED', started_at: null })
+    const el = await mountWith({
+      loadTasks: ok({ tasks: [failedTask], next_page_token: null, tenant_id: 'eng' }),
+      // A polled account, so the accounts check is clear and the one open
+      // check is the failures one.
+      loadAccountPool: ok(accountsPage([reading('fine', 0.1)])),
+    })
+    const dial = el.querySelector('.ov-lead .ctl-dial')!
+    // Eight checks, one of them open.
+    expect(dial.getAttribute('style') ?? '').toMatch(/--pct:\s*13(;|$)/)
+    expect(dial.classList.contains('is-partial')).toBe(false)
+    expect(dial.querySelector('.ctl-mark.is-partial')).toBeNull()
+  })
+})
+
+describe('OV-16: the running count re-reads every 60 seconds and says how old it is', () => {
+  /**
+   * `/v1/stats` re-read only on a manual refresh, while its comment said it
+   * was on the 20-second poll, and "created before this page begins" reasoned
+   * from a count of unknown age. The owner set its cadence at 60 seconds; the
+   * age is beside the figure and in the sentence that reasons from it.
+   *
+   * MUTATION: put stats back on the manual cadence, or on the 20s poll, or
+   * drop either age.
+   */
+  it('re-reads /v1/stats on a 60-second timer and not on the 20-second one', async () => {
+    const spy = vi.spyOn(globalThis, 'setInterval')
+    try {
+      await mountWith()
+      const timers = spy.mock.calls.map((c) => ({ fn: c[0] as unknown as () => void, ms: c[1] }))
+      const minute = timers.filter((t) => t.ms === 60_000)
+      expect(minute.length, 'nothing re-reads /v1/stats on a 60-second timer').toBeGreaterThan(0)
+      const before = api.loadStats.mock.calls.length
+      await act(async () => {
+        for (const t of minute) t.fn()
+      })
+      await settle()
+      expect(api.loadStats.mock.calls.length, 'the 60-second timer did not re-read /v1/stats').toBeGreaterThan(before)
+
+      const poll = timers.filter((t) => t.ms === 20_000)
+      expect(poll.length, 'the 20-second poll is gone').toBeGreaterThan(0)
+      const mid = api.loadStats.mock.calls.length
+      await act(async () => {
+        for (const t of poll) t.fn()
+      })
+      await settle()
+      expect(api.loadStats.mock.calls.length, 'the 20-second poll re-read /v1/stats').toBe(mid)
+    } finally {
+      spy.mockRestore()
+    }
+  })
+
+  it('prints the count’s age beside the figure and in the sentence that reasons from it', async () => {
+    const el = await mountWith({ loadStats: ok({ ...EMPTY_STATS, tasks_by_state: { RUNNING: 3 } }) })
+    const tile = [...el.querySelectorAll('.ctl-metrics .ctl-metric')].find((m) =>
+      /^running/i.test(text(m.querySelector('.ctl-metric-label'))),
+    )
+    expect(tile, 'the Running figure is not on the strip').toBeDefined()
+    expect(text(tile!.querySelector('.ctl-metric-foot'))).toMatch(/^counted (just now|\d+[smhd] ago)$/)
+
+    // No row on the page is running while the counts say 3: the sentence that
+    // explains the gap says how old the 3 is.
+    const mark = el.querySelector('.ov-running .ctl-empty .ctl-mark')
+    expect(mark, 'the Running card drew no empty state').not.toBeNull()
+    expect(mark!.getAttribute('aria-label') ?? '').toMatch(/state counts, read (just now|\d+[smhd] ago), say 3;/)
+  })
+})
+
+describe('OV-10: the failures figure and the failed-agents list count one population', () => {
+  /** `phoneWidth()` reads `matchMedia`, which jsdom does not have. */
+  function media(phone: boolean): void {
+    vi.stubGlobal('matchMedia', (query: string) => ({
+      matches: phone && query.includes('560'),
+      media: query,
+      onchange: null,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      addListener: () => {},
+      removeListener: () => {},
+      dispatchEvent: () => false,
+    }))
+  }
+
+  /**
+   * THE DECISION'S GUARANTEE, AT PHONE WIDTH. The failures item's figure and
+   * the list its link opens "describe the same population" because the list
+   * filters client-side over the same task read the check counts. Since #152
+   * the agent list reads the 50-row phone page at 560px and under (§2.5, and
+   * `drawer.reread.test.tsx` pins it at 50), while the Overview kept counting
+   * over 200 -- so "7 failed among the 200 most recent" could open a list
+   * reading "nothing failed in recent". The Overview's task read is the list's
+   * page at every width now, and the headline's N says which.
+   *
+   * MUTATION: read the full page on a phone again.
+   */
+  it('reads the phone page at phone width, the page the agent list reads', async () => {
+    media(true)
+    api.loadTasks.mockClear()
+    await mountWith()
+    const limits = api.loadTasks.mock.calls.map((c) => c[0] as unknown)
+    expect(limits.length, 'the Overview made no task read').toBeGreaterThan(0)
+    expect(limits.filter((l) => l !== 50), 'a phone Overview counted over a page the list does not read').toEqual([])
+  })
+
+  /** The control: a wide screen reads the full page, as the list does. */
+  it('reads the full page on a wide screen', async () => {
+    media(false)
+    api.loadTasks.mockClear()
+    await mountWith()
+    const limits = api.loadTasks.mock.calls.map((c) => c[0] as unknown)
+    expect(limits.length).toBeGreaterThan(0)
+    expect(limits.includes(50), 'a wide Overview read the phone page').toBe(false)
   })
 })

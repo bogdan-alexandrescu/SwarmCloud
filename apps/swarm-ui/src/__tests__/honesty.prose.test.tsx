@@ -347,8 +347,9 @@ describe('Overview, with every help card closed', () => {
     expect(unpolled!.querySelector('.ctl-util-track')?.className).toContain('is-unknown')
     expect(unpolled!.querySelector('.ctl-util-fill')).toBeNull()
 
-    // THE MEASURED ONE. A digit, on a track that is drawn.
-    expect(textOf(measured!.querySelector('.ctl-util-figure'))).toBe('0%')
+    // THE MEASURED ONE. A digit, on a track that is drawn -- and, since OV-1,
+    // the word that says which way the percentage points.
+    expect(textOf(measured!.querySelector('.ctl-util-figure'))).toBe('0% used')
     expect(measured!.querySelector('.ctl-util-track')?.className).not.toContain('is-unknown')
 
     // AND THE TWO ARE NOT THE SAME PICTURE. This is the assertion the whole
@@ -751,6 +752,26 @@ describe('Accounts, with every help card closed', () => {
     // ...and the eleven-paragraph legend is gone from the surface.
     expect(document.querySelector('.section.legend')).toBeNull()
     expect(visibleText()).not.toContain('How to run this pool')
+  })
+
+  /**
+   * OV-1: ONE POLARITY, AND EVERY % CARRIES ITS WORD. The Overview's headline
+   * said `% left` over rows of % used; the owner set % used everywhere
+   * (Overview, Accounts, sc). This table already printed used, under column
+   * heads that said only `5h` and `7d` -- so the word goes on the head, and on
+   * the phone key that stands in for it.
+   *
+   * MUTATION: head the columns `5h` and `7d` again.
+   */
+  it('says which way every window percentage points, in its column head', async () => {
+    renderAccounts([MEASURED_ZERO])
+    await screen.findByText('eng:fresh', undefined, WAIT)
+    const heads = [...document.querySelectorAll('table.accounts thead th')].map((th) => textOf(th))
+    expect(heads).toContain('5h used')
+    expect(heads).toContain('7d used')
+    const keys = [...document.querySelectorAll('td.acct-window')].map((td) => td.getAttribute('data-label'))
+    expect(keys.length, 'no window cell was drawn').toBeGreaterThan(0)
+    for (const key of keys) expect(key, 'a phone key drops the polarity').toMatch(/ used$/)
   })
 })
 

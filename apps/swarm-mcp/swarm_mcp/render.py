@@ -772,8 +772,13 @@ def render_accounts(
         # window moves slower than the 5-hour one. The 5-hour figure and the
         # account it belongs to are what a narrow screen must still show --
         # dropping the utilisation would leave a table about nothing.
-        Column("short", window_heading(short_key) if short_key else "5H", drop=1),
-        Column("long", window_heading(long_key) if long_key else "7D", drop=2),
+        #
+        # USED, ON THE HEAD (OV-1, owner decision 2026-09-25): one polarity on
+        # every surface -- the console's Overview, its Accounts table and this
+        # -- and every percentage carries its word. The figures were always
+        # utilisation; the heads now say so, as the Accounts table's do.
+        Column("short", f"{window_heading(short_key) if short_key else '5H'} USED", drop=1),
+        Column("long", f"{window_heading(long_key) if long_key else '7D'} USED", drop=2),
         Column("clears", "CLEARS", align="right", drop=4),
         Column("state", "STATE", flex=True, drop=3),
     ]
@@ -1593,7 +1598,10 @@ def find_trouble(snap: Snapshot, style: Style = PLAIN) -> list[Finding]:
                         Finding(
                             "warn" if reading.utilization < 1.0 else "down",
                             ident,
-                            f"{window_heading(key)} at {format_percent(reading, style)}"
+                            # "used", because every percentage carries its word
+                            # (OV-1): a bare "98%" beside a window name reads
+                            # as either room or use.
+                            f"{window_heading(key)} at {format_percent(reading, style)} used"
                             f", clears in {format_until(reading.resets_at, now, style)}",
                         )
                     )

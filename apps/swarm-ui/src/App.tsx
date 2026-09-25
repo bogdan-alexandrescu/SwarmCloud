@@ -1,4 +1,5 @@
 import {
+  useCallback,
   useEffect,
   useLayoutEffect,
   useRef,
@@ -7,6 +8,7 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from 'react'
 import { createPortal } from 'react-dom'
+import { agentListPath, parseAgentList, type AgentList } from './agentlist'
 import { INSPECTOR, clampPane, readPane, writePane } from './panes'
 import { AccountsScreen } from './Accounts'
 import { ActivityScreen, TenantsScreen } from './Activity'
@@ -604,6 +606,13 @@ export interface Route {
   /** Set when an agent drawer is open over the Agents section. */
   taskId: string | null
   taskPane: TaskPane
+  /**
+   * The agent list's tab and Recent state, when the address names them
+   * (OV-10): `#work/running/recent/failed`. OPTIONAL, so every route built
+   * without one is still a Route; absent and null both mean "the address names
+   * no tab", which leaves the list where it is.
+   */
+  list?: AgentList | null
 }
 
 function sectionOf(id: string): SectionDef | null {
@@ -681,6 +690,19 @@ export function fromHash(): Route {
     }
   }
 
+  // THE AGENT LIST'S OWN ADDRESSES (OV-10), and BEFORE the rule below that
+  // reads an unmatched Work tail as a task id. Without this, `running/recent`
+  // matched no tab and opened a drawer for an agent called "running/recent".
+  // NOTHING UNDER `running/` IS A TASK ID: a tail that is not one of the list
+  // addresses (`running/bogus`, `running/live/failed`, `running/recent/faild`)
+  // is the plain list, never a drawer and never a guessed tab.
+  if (head === WORK && tail[0] === 'running' && tail.length > 1) {
+    const list = parseAgentList(tail.slice(1))
+    return list === null
+      ? { sectionId: WORK, tab: 'running', ...blank }
+      : { sectionId: WORK, tab: 'running', ...blank, list }
+  }
+
   const section = sectionOf(head)
   if (section) {
     const wanted = tail.join('/')
@@ -710,7 +732,30 @@ export function canonical(r: Route): string {
   }
   if (r.sectionId === REFERENCE) return REFERENCE
   if (r.sectionId === HELP) return r.tab === '' ? HELP : `${HELP}/${r.tab}`
+  // A list address is written only while no drawer is open: the drawer's own
+  // address wins above, and the list it was opened from is kept by App.
+  if (r.sectionId === WORK && r.tab === 'running' && r.list) {
+    return `${WORK}/running/${agentListPath(r.list)}`
+  }
   return `${r.sectionId}/${r.tab}`
+}
+
+/**
+ * The key a screen's reads are scoped by (CH-2): the canonical route WITHOUT
+ * the agent list's tab and Recent state (OV-10).
+ *
+ * A list address names a VIEW of one mounted screen, not a screen. The Agents
+ * list filters the rows it already holds when its tab or segment changes and
+ * reads nothing, so keying the scope by the full address began an empty scope
+ * on every tab or segment click -- and on closing an inspector back to
+ * `#work/running/recent/failed` after it had opened from there, since the
+ * drawer's own page key carries no list. Both are the defect `beginScreenReads`
+ * exists to prevent: the head saying "reading…" beside a list fully drawn,
+ * with nothing in flight until the next poll. The address bar still carries
+ * the list (`canonical`); only the reads scope ignores it.
+ */
+function readsKey(r: Route): string {
+  return canonical({ ...r, list: null })
 }
 
 export function App() {
@@ -752,8 +797,11 @@ export function App() {
   // across all three -- closing the inspector used to begin an empty scope
   // beside a fully drawn list, and the head said "reading…" with nothing being
   // read.
-  const screenKey = canonical(at)
-  const pageKey = at.taskId === null ? null : canonical({ ...at, taskId: null })
+  //
+  // THE LIST'S TAB AND STATE ARE NOT A NEW SCREEN (OV-10): both keys are
+  // `readsKey`, the route with the list address removed -- see there.
+  const screenKey = readsKey(at)
+  const pageKey = at.taskId === null ? null : readsKey({ ...at, taskId: null })
   useLayoutEffect(() => {
     beginScreenReads(screenKey, pageKey)
   }, [screenKey, pageKey])
@@ -762,8 +810,35 @@ export function App() {
     window.location.hash = to
   }
 
+  // THE LIST ADDRESS THE DRAWER WAS OPENED FROM (OV-10). Opening an agent
+  // replaces the list address with the drawer's, so without this the drawer
+  // closed to bare `work/running` while the list behind it still showed, say,
+  // Recent · failed -- the address bar and the visible list disagreeing the
+  // moment it shut. Updated from every route that is not a drawer, and from
+  // the list's own clicks (which can happen with the drawer open). Written
+  // during render rather than in an effect, so the close address below is
+  // never one route behind; the write is idempotent, so a double render is
+  // harmless.
+  const lastList = useRef<AgentList | null>(at.list ?? null)
+  if (at.taskId === null) lastList.current = at.list ?? null
+
+  // A TAB OR SEGMENT CLICK IS A ROUTE CHANGE, and the normalise effect above
+  // writes it with `replaceState` -- so clicks add no history entries, and
+  // Agents.tsx never writes the hash itself.
+  const onList = useCallback((list: AgentList) => {
+    lastList.current = list
+    setAt((r) => ({ ...r, list }))
+  }, [])
+
   const section = sectionOf(at.sectionId)
   const inspector = at.taskId !== null
+  const listAddress = canonical({
+    sectionId: WORK,
+    tab: 'running',
+    taskId: null,
+    taskPane: 'detail',
+    list: lastList.current,
+  })
 
   return (
     // THE FRAME (§3.4, §11.3). Two rows: everything that scrolls, then the
@@ -813,12 +888,21 @@ export function App() {
               // THE PAGE (CH-2): its `Screen`s' reads stay its own while the
               // inspector is open over it (`RoutedPage` in Shell.tsx).
               <RoutedPage.Provider value={true}>
-                <SectionBody sectionId={section.id} tab={at.tab} taskId={at.taskId} go={go} />
+                <SectionBody
+                  sectionId={section.id}
+                  tab={at.tab}
+                  taskId={at.taskId}
+                  list={at.list ?? null}
+                  onList={onList}
+                  go={go}
+                />
               </RoutedPage.Provider>
             )}
           </main>
 
-          {at.taskId !== null && <AgentDrawer taskId={at.taskId} pane={at.taskPane} go={go} />}
+          {at.taskId !== null && (
+            <AgentDrawer taskId={at.taskId} pane={at.taskPane} closeTo={listAddress} go={go} />
+          )}
         </div>
       </div>
 
@@ -1074,7 +1158,7 @@ function RailTabs({
  *    loading: the frame's identity read had landed, the page's had not, and
  *    the dock already said the same tab-wide thing a few hundred pixels
  *    below. Now it is the newest success among the reads the CURRENT screen
- *    started (`beginScreenReads` in fetch.ts, keyed by `canonical(at)`), and
+ *    started (`beginScreenReads` in fetch.ts, keyed by `readsKey(at)`), and
  *    the dock keeps the tab-wide view. Four sentences, each a measurement or
  *    the plain absence of one:
  *
@@ -1165,7 +1249,7 @@ function ScreenAge({ at, reads, now }: { at: Route; reads: ScreenReads; now: num
   // lands). A screen that stayed mounted -- the list under a closing
   // inspector -- keeps its own reads (`beginScreenReads`), so it can never
   // land here saying "reading…" with nothing being read.
-  const own = reads.key === canonical(at) ? reads : null
+  const own = reads.key === readsKey(at) ? reads : null
   if (own !== null && own.newestSuccessAt !== null) {
     return <>newest read {timeAgo(own.newestSuccessAt, now)}</>
   }
@@ -1291,12 +1375,18 @@ function SectionBody({
   sectionId,
   tab,
   taskId,
+  list,
+  onList,
   go,
 }: {
   sectionId: string
   tab: string
   /** The agent the inspector has open, or null. */
   taskId: string | null
+  /** The list address's tab and Recent state (OV-10), or null when it names none. */
+  list: AgentList | null
+  /** Where the list reports a tab or state click; App turns it into the route. */
+  onList: (list: AgentList) => void
   go: (to: string) => void
 }) {
   const openAgent = (id: string) => go(`${WORK}/task/${encodeURIComponent(id)}`)
@@ -1312,7 +1402,7 @@ function SectionBody({
    * not checked for extra keys. Once the prop is declared the spread is
    * checked like any attribute, so nothing is left unchecked for long.
    */
-  const agentsProps = { onOpen: openAgent, taskId }
+  const agentsProps = { onOpen: openAgent, taskId, list, onList }
 
   // EVERY CASE IS A STRING LITERAL, and that is required rather than casual.
   //
@@ -1436,10 +1526,17 @@ function SectionBody({
 function AgentDrawer({
   taskId,
   pane,
+  closeTo,
   go,
 }: {
   taskId: string
   pane: TaskPane
+  /**
+   * The list address this drawer was opened from (OV-10), so closing it
+   * restores the address the list behind it is showing -- not bare
+   * `work/running`, which would name a different tab than the one on screen.
+   */
+  closeTo: string
   go: (to: string) => void
 }) {
   // `WORK`, NOT THE LITERAL `agents`. These two were the last places in the app
@@ -1451,7 +1548,7 @@ function AgentDrawer({
   // effect, so nothing was visibly broken and nothing was going to make anyone
   // update it either.
   const base = `${WORK}/task/${encodeURIComponent(taskId)}`
-  const close = () => go(`${WORK}/running`)
+  const close = () => go(closeTo)
   const [width, setWidth] = useState(() => readPane(INSPECTOR))
   const dragging = useRef(false)
   const panel = useRef<HTMLDivElement>(null)

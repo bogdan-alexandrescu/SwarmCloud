@@ -276,6 +276,15 @@ class TestAccounts:
         for heading in ("ACCOUNT", "5H", "7D", "CLEARS", "STATE"):
             assert heading in out
 
+    def test_every_window_percentage_says_which_way_it_points(self):
+        # OV-1 (epic #81): one polarity on every surface -- % used -- and every
+        # % carries its word. The console's Overview printed "% left" over rows
+        # of % used; this table always printed used, under heads that said only
+        # 5H and 7D. The word goes on the head, as it does on the Accounts screen.
+        out = text(render_accounts([account()], WIDE, NOW))
+        assert "5H USED" in out
+        assert "7D USED" in out
+
     def test_a_stale_account_is_marked_and_the_legend_explains_the_mark(self):
         out = text(render_accounts([account(five=0.12, stale=True)], WIDE, NOW))
         assert "~12%" in out
@@ -798,6 +807,15 @@ class TestTrouble:
         findings = find_trouble(snapshot(accounts=[acct]), WIDE)
         exhausted = [f for f in findings if "7D at" in f.what]
         assert exhausted and "clears in 5h 00m" in exhausted[0].what
+
+    def test_an_exhausted_window_says_its_percentage_is_used(self):
+        # OV-1 (epic #81): every % carries its word, in a sentence as in a table.
+        acct = account(windows={"seven_day": {
+            "utilization": 1.0, "resets_at": iso(hours=5), "reset": False,
+        }})
+        findings = find_trouble(snapshot(accounts=[acct]), WIDE)
+        exhausted = [f for f in findings if "7D at" in f.what]
+        assert exhausted and "7D at 100% used" in exhausted[0].what
 
     def test_no_accounts_at_all_is_a_finding_not_a_blank(self):
         findings = find_trouble(snapshot(accounts=[]), WIDE)

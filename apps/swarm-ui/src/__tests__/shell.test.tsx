@@ -1682,13 +1682,19 @@ describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
       expect(won(link, 'text-decoration-thickness', WIDE), `"${name}" underline thickness`).toBe('1px')
       expect(won(link, 'color', { ...WIDE, states: ['hover'] }), `"${name}" on hover`).toBe('var(--info)')
     }
-    // The fact strip's hover cue is the same underline (`a.ov-tile`).
+    // A linked fact's cue is the same underline, on its LABEL and at rest
+    // (OV-8): the figure is never underlined, so the fact carries one
+    // affordance, and the label's underline is CH-23's token because the label
+    // is a branch of the link rule. `stylesheet.gate.test.ts` pins the rest of
+    // OV-8 (the figure plain with or without hover). MUTATION: give the label
+    // an underline of its own in `--line-soft`, or drop it from the link rule.
     const tile = fragment(
-      '<a class="ctl-metric ov-tile" href="#x"><span class="ctl-metric-value">4</span></a>',
+      '<a class="ctl-metric ov-tile" href="#x"><span class="ctl-metric-label">Units held</span>' +
+        '<span class="ctl-metric-value">4</span></a>',
     )
-    const value = pick(tile, '.ctl-metric-value')
-    expect(won(value, 'text-decoration-color', { ...WIDE, states: ['hover'] })).toBe('var(--line)')
-    expect(won(value, 'text-decoration-thickness', { ...WIDE, states: ['hover'] })).toBe('1px')
+    const label = pick(tile, '.ctl-metric-label')
+    expect(won(label, 'text-decoration-color', WIDE)).toBe('var(--line)')
+    expect(won(label, 'text-decoration-thickness', WIDE)).toBe('1px')
   })
 
   it('CH-6: API reads and Help mark the current page the way a section does', () => {
