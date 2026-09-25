@@ -29,6 +29,7 @@ import {
   helpRole,
   helpTransition,
   helpTriggerProps,
+  pressedInside,
   type HelpEvent,
   type HelpState,
 } from '../src/HelpCard'
@@ -140,6 +141,24 @@ test('the trigger sends focus, click and escape to the state machine', () => {
     ['focus', 'click', 'escape', 'blur'],
     'a key that is not Escape must not dismiss, and focus/click must both arrive',
   )
+})
+
+/**
+ * AH-6, the rule on its own. A press is outside only if it landed in neither
+ * the card nor its trigger; `src/__tests__/helpcard.placement.test.tsx` drives
+ * the same rule through real pointer events.
+ *
+ * MUTATION: return false unconditionally (every press is outside, the defect).
+ */
+test('a press on the card or its trigger is not an outside press', () => {
+  const node = {} as Node
+  const holding = { contains: (n: Node | null) => n === node }
+  const empty = { contains: () => false }
+  assert.equal(pressedInside(node, [holding, null]), true, 'a press inside the card counted as outside')
+  assert.equal(pressedInside(node, [null, holding]), true, 'a press on the trigger counted as outside')
+  assert.equal(pressedInside(node, [empty, empty]), false, 'a press elsewhere did not count as outside')
+  assert.equal(pressedInside(null, [holding]), false, 'a press with no target counted as inside')
+  assert.equal(pressedInside(node, [null, null]), false, 'an unmounted card swallowed an outside press')
 })
 
 test('hover is on the wrapper, so the card itself counts as hovered', () => {

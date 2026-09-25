@@ -15,6 +15,7 @@ import {
   overCeiling,
   poolKind,
   poolLabel,
+  poolLabelAmong,
   poolScope,
   reasonCopy,
   setBy,
@@ -467,5 +468,60 @@ describe('elapsed', () => {
 
   it('prints an absence, not 0s, when it has no time to start from', () => {
     expect(elapsed(task('READY', {}), NOW).text).toBe('—')
+  })
+
+  /**
+   * THE PHASE IS WHAT A LABEL IS CHOSEN FROM. The inspector keys this figure
+   * `run`; over a `never-ran` or a `waiting` figure that key is the AG-3
+   * contradiction in a new place, so the caller reads the phase rather than
+   * parsing the words.
+   */
+  it('says which clock the figure is, so a caller can label it', () => {
+    expect(elapsed(task('CANCELLED', { created: 60_000, completed: 1_000 }), NOW).phase).toBe('never-ran')
+    expect(elapsed(task('SUCCEEDED', { created: 60_000, started: 50_000, completed: 1_000 }), NOW).phase).toBe('ran')
+    expect(elapsed(task('RUNNING', { created: 60_000, started: 50_000 }), NOW).phase).toBe('running')
+    expect(elapsed(task('LEASED', { created: 60_000 }), NOW).phase).toBe('waiting')
+    expect(elapsed(task('READY', {}), NOW).phase).toBe('unknown')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// poolLabelAmong -- two pools, one word
+// ---------------------------------------------------------------------------
+
+describe('poolLabelAmong', () => {
+  /**
+   * CP-15. `resource:browser` and `runner:browser` both print `browser`, so a
+   * blocker list read "Lift browser" twice and "browser and browser still
+   * binds" -- two ceilings owned by two settings, under one name.
+   *
+   * MUTATION: return `poolLabel(name)` unconditionally. Both read `browser`.
+   */
+  it('qualifies two pools that would print the same word by their kind', () => {
+    const among = ['resource:browser', 'runner:browser', 'global']
+    expect(poolLabelAmong('resource:browser', among)).toBe('browser · resource')
+    expect(poolLabelAmong('runner:browser', among)).toBe('browser · runner')
+    const labels = among.map((n) => poolLabelAmong(n, among))
+    expect(new Set(labels).size, 'two pools still share a label').toBe(among.length)
+  })
+
+  it('leaves a label that collides with nothing exactly as poolLabel prints it', () => {
+    // The short label stays the common case: qualifying everything would be a
+    // longer word on every row to fix a collision on two.
+    const among = ['resource:browser', 'runner:claude-code', 'global', 'provider:anthropic:tenant:acme']
+    for (const name of among) expect(poolLabelAmong(name, among)).toBe(poolLabel(name))
+    expect(poolLabelAmong('resource:browser', [])).toBe('browser')
+  })
+
+  it('does not count a pool as colliding with itself', () => {
+    expect(poolLabelAmong('resource:browser', ['resource:browser', 'resource:browser'])).toBe('browser')
+  })
+
+  it('falls back to the raw name when the kind cannot separate them either', () => {
+    // Same kind, same label, different names: poolLabel dropped the only part
+    // that differs, so the name is the one spelling left that cannot collide.
+    const among = ['provider:anthropic:tenant:acme', 'provider:anthropic:acme']
+    expect(poolLabel(among[0]!)).toBe(poolLabel(among[1]!))
+    expect(poolLabelAmong(among[0]!, among)).toBe(among[0])
   })
 })

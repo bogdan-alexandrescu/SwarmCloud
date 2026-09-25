@@ -32,18 +32,29 @@ import { timeAgo } from './Shell'
  * rather than the words "never loaded", because an em dash in the same column
  * as every other age is read as "no age" without anyone having to parse it.
  */
-export function DataSourceCells({ probes }: { probes: readonly ProbeRecord[] }) {
+export function DataSourceCells({
+  probes,
+  now,
+}: {
+  probes: readonly ProbeRecord[]
+  /**
+   * The instant every age here is measured against: the dock's, which is the
+   * shared clock the head and every screen's sub-line read (CH-1). Left out,
+   * each cell reads the wall clock as it renders.
+   */
+  now?: number | undefined
+}) {
   if (probes.length === 0) return null
   return (
     <div className="source-cells">
       {probes.map((p) => (
-        <Cell key={p.path} probe={p} />
+        <Cell key={p.path} probe={p} now={now} />
       ))}
     </div>
   )
 }
 
-function Cell({ probe }: { probe: ProbeRecord }) {
+function Cell({ probe, now }: { probe: ProbeRecord; now: number | undefined }) {
   const { tone, label } = describe(probe)
   return (
     <div className={`source ${tone}`} title={detailFor(probe)}>
@@ -61,7 +72,7 @@ function Cell({ probe }: { probe: ProbeRecord }) {
             —
           </i>
         ) : (
-          timeAgo(probe.lastSuccessAt)
+          timeAgo(probe.lastSuccessAt, now)
         )}
       </span>
     </div>

@@ -1,5 +1,6 @@
 import { useEffect, useRef, type Ref } from 'react'
-import { HELP, HELP_GROUPS, TOPIC_IDS, topicFor, type TopicId } from './help'
+import { HELP, HELP_GROUPS, HELP_ROUTE, TOPIC_IDS, topicFor, type TopicId } from './help'
+import { Absent } from './primitives'
 
 /**
  * THE HELP SECTION (docs/web-ui/ui-audit-and-build-prompt.md §B7.3).
@@ -35,29 +36,50 @@ export function HelpScreen({ topic }: { topic: string }) {
   const target = useRef<HTMLDivElement | null>(null)
 
   // Deep links are the point of the anchors, so one has to actually land.
+  //
+  // BUT ONLY WHEN IT IS NOT ALREADY IN VIEW (AH-16). A topic already on screen
+  // was jumped to the top edge anyway, taking the group heading above it out
+  // of sight for no gain -- the reader was already looking at it. The rect is
+  // read once, before any scroll: fully inside the viewport means stay put.
+  // jsdom implements no `scrollIntoView`, hence the guard.
   useEffect(() => {
-    target.current?.scrollIntoView({ block: 'start' })
+    const el = target.current
+    if (el === null || typeof el.scrollIntoView !== 'function') return
+    const box = el.getBoundingClientRect()
+    const inView = box.top >= 0 && box.bottom <= window.innerHeight
+    if (!inView) el.scrollIntoView({ block: 'start' })
   }, [topic])
 
   return (
     <>
-      <div className="head">
+      {/* NO SUBTITLE (AH-15). §6.12: a page head is a title and its actions,
+          and nothing else. This one said "Why a figure on these screens looks
+          the way it does" -- true of about one topic in eight -- and then
+          restated the deep-linked topic's title, which the highlighted topic
+          below already says in its own heading. It is `.ctl-page-head`, the
+          §6.12 primitive the API reads page already uses, because `.head` left
+          the spacing under the title to the subtitle that is gone. */}
+      <div className="ctl-page-head">
         <h1>Help</h1>
       </div>
-      <p className="sub">
-        Why a figure on these screens looks the way it does.
-        {wanted !== null && <> Showing {wanted.title}.</>}
-      </p>
 
+      {/* AN UNKNOWN TOPIC IS A REAL ANSWER, SO IT IS THE DEFAULT EMPTY STATE
+          (AH-17). It was a warn-coloured `.is-partial` panel with two
+          sentences, no mark, no link and no gap to the first group under it.
+          Nothing about a stale link is PARTIAL -- this build carries no such
+          topic, which is a complete and correct answer -- so it is §6.9's
+          fixed shape: the `real zero` mark, the heading, one sentence, a way
+          back to the top of Help, and the one large break before the page. */}
       {topic !== '' && wanted === null && (
-        <div className="ctl-empty is-partial" role="status">
-          <h3>
-            No help topic is called <code>{topic}</code>
-          </h3>
-          <p>
-            The link that brought you here names a topic this build does not
-            carry. Everything this build does carry is below.
-          </p>
+        <div style={{ marginBottom: 'var(--ctl-s5)' }}>
+          <Absent
+            kind="zero"
+            heading={`No help topic is called ${topic}`}
+            say={`This build carries no help topic called ${topic}.`}
+            link={{ href: `#${HELP_ROUTE}`, label: 'All topics' }}
+          >
+            Everything this build does carry is below.
+          </Absent>
         </div>
       )}
 
@@ -115,20 +137,32 @@ function Topic({
         // from existing tokens -- the call AgentDetail.tsx already made. An
         // inline style adds no selector and cannot reach another screen.
         border: '1px solid var(--line)',
-        borderLeft: highlighted ? '3px solid var(--text-dim)' : '1px solid var(--line)',
+        // THE DEEP-LINK TARGET IS §1.3's SELECTED TREATMENT (AH-16): a surface
+        // step and a 2px rule in ink. It was a 3px rule in --text-dim and no
+        // surface change -- the weakest ink on the page marking the one block
+        // the reader was sent to.
+        borderLeft: highlighted ? '2px solid var(--text)' : '1px solid var(--line)',
         borderRadius: 'var(--radius)',
-        background: 'var(--surface)',
+        background: highlighted ? 'var(--surface-2)' : 'var(--surface)',
         padding: 'var(--ctl-pad-chrome)',
         marginBottom: 'var(--ctl-s3)',
-        scrollMarginTop: 'var(--ctl-s5)',
+        // THREE OF THE LARGE BREAK, not one. At --ctl-s5 alone a target that
+        // opens its group landed with the group's own heading clipped off the
+        // top; this leaves room for that heading and its margin above the
+        // topic, so the reader sees which group they landed in.
+        scrollMarginTop: 'calc(var(--ctl-s5) * 3)',
       }}
     >
       <h3
         style={{
           margin: '0 0 var(--ctl-s2)',
-          // A help section's heading is the panel title of that section.
-          fontSize: 'var(--t-title)',
-          lineHeight: 'var(--lh-title)',
+          // A TOPIC IS A CARD, AND A CARD'S TITLE IS --t-lead (AH-10). This was
+          // --t-title, "the panel title of that section", which put the page's
+          // h1, each group's h2 and every topic's h3 at the same 18px/600 --
+          // one size for three ranks. The topic is one bordered card among
+          // many under its group heading, and reads as that now.
+          fontSize: 'var(--t-lead)',
+          lineHeight: 'var(--lh-lead)',
           fontWeight: 600,
         }}
       >
@@ -172,6 +206,12 @@ function Topic({
                   lineHeight: 'var(--lh-meta)',
                   fontFamily: 'var(--mono)',
                   color: 'var(--text)',
+                  // The terms are the API's enums as their owner spells them
+                  // -- `LEASED` -- and a list of raw capitals shouts every
+                  // one (CH-3). Lowercased by style, so the string is still
+                  // the owner's spelling for a copy, a search, and the
+                  // anti-drift test in tests/help.test.ts.
+                  textTransform: 'lowercase',
                 }}
               >
                 {v.term}

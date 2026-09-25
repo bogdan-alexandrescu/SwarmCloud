@@ -17,8 +17,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { act, render, screen, waitFor } from '@testing-library/react'
 
-import { Screen } from '../Shell'
+import { AGED_AFTER_MS, MAX_BACKOFF_MS, Screen, nextPollDelay, type ScreenReading } from '../Shell'
 import type { ApiError, ApiErrorKind, Result } from '../fetch'
+import { useNow } from '../useNow'
 import { expectNoFigures } from './setup'
 
 interface Rows {
@@ -429,10 +430,38 @@ describe('the age under the title moves on its own (CH-1)', () => {
     await advance(0)
     expect(document.querySelector('.stale-body')).toBeNull()
     expect(sub()).not.toContain('not refreshed')
-    // Six minutes: past the five a read is trusted for (Shell.tsx).
-    await advance(6 * 60_000)
+    // Past the five minutes a read is trusted for (Shell.tsx), by one tick.
+    await advance(AGED_AFTER_MS + 5_000)
     expect(sub()).toContain('not refreshed')
     expect(document.querySelector('.stale-body')?.textContent).toContain('alpha')
+  })
+
+  /**
+   * ONE CLOCK, NOT ONE PER COMPONENT. The head, the dock and every sub-line
+   * read `useNow(5000)`, and two readers of one cadence get one instant --
+   * which is what stops "22s" beside "just now" (CH-1). AG-2's inspector reads
+   * the same hook.
+   *
+   * MUTATION: give each caller its own interval, started when it mounts. The
+   * second reader, mounted 2s after the first, reads a different instant.
+   */
+  it('gives every reader of one cadence the same instant', async () => {
+    fakeClock()
+    const seen: Record<string, number> = {}
+    function Reader({ name }: { name: string }) {
+      seen[name] = useNow(5_000)
+      return null
+    }
+    const first = render(<Reader name="head" />)
+    await advance(2_000)
+    render(<Reader name="sub" />)
+    await advance(5_000)
+    expect(seen.sub).toBe(seen.head)
+    const before = seen.head!
+    await advance(5_000)
+    expect(seen.head).toBe(before + 5_000)
+    expect(seen.sub).toBe(seen.head)
+    first.unmount()
   })
 
   /** MUTATION: leave StaleBanner reading its age once. It stays at `4m ago`. */
@@ -613,6 +642,40 @@ describe('a screen that polls (AG-1)', () => {
     )
     await advance(0)
     expect(sub()).toContain('every 5s')
+  })
+
+  /**
+   * What a screen that ticks its own clock over the rows needs to know: when
+   * those rows were read, and how often they are meant to be. Agents stops its
+   * 1s clock once the data is older than one interval (AG-1's other half).
+   */
+  it('tells its children when the rows were read and at what cadence', async () => {
+    fakeClock()
+    const seen: ScreenReading[] = []
+    const t0 = Date.now()
+    render(
+      <Screen<Rows> title="Agents" load={async () => okNow()} pollMs={5_000}>
+        {(d, reading) => {
+          seen.push(reading)
+          return rowsOf(d)
+        }}
+      </Screen>,
+    )
+    await advance(0)
+    const last = seen[seen.length - 1]
+    expect(last?.fetchedAt).toBe(t0)
+    expect(last?.pollMs).toBe(5_000)
+  })
+
+  /** The back-off doubles, and stops doubling at the cap. */
+  it('doubles its wait per failure in a row, up to five minutes', () => {
+    expect(nextPollDelay(5_000, 0)).toBe(5_000)
+    expect(nextPollDelay(5_000, 1)).toBe(10_000)
+    expect(nextPollDelay(5_000, 3)).toBe(40_000)
+    expect(nextPollDelay(5_000, 20)).toBe(MAX_BACKOFF_MS)
+    // A screen that already polls slower than the cap is never made FASTER by
+    // failing: its own cadence is the floor.
+    expect(nextPollDelay(10 * 60_000, 2)).toBe(10 * 60_000)
   })
 
   /** And a screen that was not asked to poll reads exactly once. */

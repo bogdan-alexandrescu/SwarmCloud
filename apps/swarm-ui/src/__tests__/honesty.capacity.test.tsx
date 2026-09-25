@@ -360,7 +360,7 @@ describe('the capacity board as a whole', () => {
     const heads = [...document.querySelectorAll('thead th')]
     expect(heads.indexOf(head)).toBe(1)
     // And the argument is one focusable click away, in the same cell.
-    expect(head.querySelector('button[aria-label^="What "]')).not.toBeNull()
+    expect(head.querySelector('button[aria-label^="Help: "]')).not.toBeNull()
     // The paragraph is gone from the surface entirely.
     expect(document.querySelector('.conjunction')).toBeNull()
   })

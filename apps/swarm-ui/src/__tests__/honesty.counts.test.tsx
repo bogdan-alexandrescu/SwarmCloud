@@ -322,6 +322,6 @@ describe('the states that can never be written', () => {
       expect(foot.textContent, `${state} is excluded and unnamed`).toContain(state)
     }
     // And the `?` that holds the reason is present and shut.
-    expect(foot.querySelector('button[aria-label^="What "]')).not.toBeNull()
+    expect(foot.querySelector('button[aria-label^="Help: "]')).not.toBeNull()
   })
 })

@@ -349,7 +349,14 @@ export function UtilRow({
  */
 export type AbsentKind = 'zero' | 'failed' | 'partial' | 'admin'
 
-/** The "link out" that ends an empty state (§6.9). */
+/**
+ * THE "LINK OUT" THAT ENDS AN EMPTY STATE (§6.9), and the slot that was
+ * missing. The shape is four things and this component drew three, so every
+ * screen that wanted the fourth hand-built a panel instead -- `Screen`'s
+ * `.state` box (CH-10, CP-21) and the Help page's unknown-topic panel (AH-17)
+ * among them. It closes the one sentence rather than adding a second, and it
+ * is `.ctl-link` -- ink plus an underline -- like every other in-page link.
+ */
 export interface LinkOut {
   href: string
   label: ReactNode
@@ -370,6 +377,7 @@ export function Absent({
   foot,
   explain,
   className,
+  link,
 }: {
   kind: AbsentKind
   heading: string
@@ -381,6 +389,7 @@ export function Absent({
   explain?: TopicId | undefined
   /** A screen's own layout hook -- e.g. an empty state inside a card. */
   className?: string | undefined
+  /** The way out: where to go from here. Closes the sentence, or stands alone. */
   link?: LinkOut | undefined
 }) {
   const cls = kind === 'zero' ? '' : ` is-${kind}`
@@ -395,7 +404,17 @@ export function Absent({
         {heading}
         {explain !== undefined && <HelpNote topic={explain} id={descId} />}
       </h3>
-      {children !== undefined && <p>{children}</p>}
+      {(children !== undefined || link !== undefined) && (
+        <p>
+          {children}
+          {children !== undefined && link !== undefined && ' '}
+          {link !== undefined && (
+            <a className="ctl-link" href={link.href}>
+              {link.label}
+            </a>
+          )}
+        </p>
+      )}
       {foot !== undefined && <span className="ctl-empty-foot">{foot}</span>}
     </div>
   )

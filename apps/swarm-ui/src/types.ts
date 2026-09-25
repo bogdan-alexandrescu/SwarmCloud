@@ -187,6 +187,32 @@ export function poolLabel(name: string): string {
   return `${parts[1]} · ${parts[3] ?? parts[2]}`
 }
 
+/**
+ * `poolLabel`, qualified by kind wherever another pool in `among` would print
+ * the same word (CP-15).
+ *
+ * `poolLabel` drops the kind, which is right almost everywhere and wrong in
+ * exactly one shape this platform has: `resource:browser` and
+ * `runner:browser` both print `browser`. A blocker list then read "Lift
+ * browser" twice and "browser and browser still binds" -- two different
+ * ceilings, owned by two different settings, under one name. Where that
+ * happens both are qualified, `browser · resource` and `browser · runner`;
+ * where it does not, nothing changes, so the short label stays the common
+ * case.
+ *
+ * `among` is whatever set the labels will be READ together in -- a blocker's
+ * pools, a profile's pools, every pool on a screen. Two pools of the SAME kind
+ * that still print one label differ only in the part `poolLabel` drops, so
+ * those fall back to the raw name, the one spelling left that cannot collide.
+ */
+export function poolLabelAmong(name: string, among: readonly string[]): string {
+  const label = poolLabel(name)
+  const rivals = among.filter((other) => other !== name && poolLabel(other) === label)
+  if (rivals.length === 0) return label
+  const kind = poolKind(name)
+  return rivals.some((other) => poolKind(other) === kind) ? name : `${label} · ${kind}`
+}
+
 /** What `headroomFor` hands a screen. Every field comes off the response. */
 export interface Headroom {
   /**
@@ -1981,28 +2007,63 @@ export function whyAgent(task: Task): string {
 }
 
 /**
+ * What an `elapsed` figure is a measure of. A caller choosing the LABEL for the
+ * figure -- `run` in the inspector's facts strip, a column head -- reads this
+ * rather than parsing the text: a `run` key over a `never-ran` figure is the
+ * AG-3 contradiction all over again.
+ *
+ *   ran        a finished run, from its start to its end
+ *   running    a start and no end yet; the figure is still growing
+ *   waiting    never started, not finished; the figure is time since creation,
+ *              prefixed with what the task is doing meanwhile
+ *   never-ran  finished without ever starting; there is no run to time
+ *   unknown    nothing to time from
+ */
+export type ElapsedPhase = 'ran' | 'running' | 'waiting' | 'never-ran' | 'unknown'
+
+/**
  * Column 6, "Elapsed".
  *
  * `started_at` is written on DISPATCHED -> STARTING, so a LEASED or
- * DISPATCHED task legitimately has none. That must read "queued 4m", never
- * "0s" and never "Invalid Date" -- and `completed_at` can be null on a row
- * that went terminal between two polls, so the terminal branch cannot assume
- * it.
+ * DISPATCHED task legitimately has none. That must never read "0s" or
+ * "Invalid Date" -- and `completed_at` can be null on a row that went
+ * terminal between two polls, so the terminal branch cannot assume it.
+ *
+ * WALL TIME IS NEVER REPORTED AS RUN TIME (AG-3). A terminal task that never
+ * started -- cancelled while it waited, failed at admission -- used to fall
+ * back from `started_at` to `created_at`, and the drawer printed that
+ * created-to-completed span as `run 27m 57s` beside a `never ran` chip. There
+ * is no run to time, so the answer is the words `never ran`.
+ *
+ * THE PREFIX SAYS WHAT AN UNSTARTED TASK IS DOING (AG-12). It was `queued` for
+ * every one of them, which on LEASED and DISPATCHED -- states that HOLD A POOL
+ * SLOT, in the tab that means exactly that -- contradicted the tab it sat in.
+ * A concurrency state is named by its own state word (`leased 4m`,
+ * `dispatched 4m`); everything else unstarted costs nothing and reads
+ * `waiting`. The word comes from the state, not from a list typed here.
  */
-export function elapsed(task: Task, now: number): { text: string; ticking: boolean } {
+export function elapsed(
+  task: Task,
+  now: number,
+): { text: string; ticking: boolean; phase: ElapsedPhase } {
   const ms = (v: string | null) => (v ? new Date(v).getTime() : NaN)
   const created = ms(task.created_at)
   const started = ms(task.started_at)
   const completed = ms(task.completed_at)
 
-  if (Number.isFinite(completed)) {
-    const from = Number.isFinite(started) ? started : created
-    if (!Number.isFinite(from)) return { text: '\u2014', ticking: false }
-    return { text: formatDuration(completed - from), ticking: false }
+  if (TERMINAL_STATES.has(task.state) && !Number.isFinite(started)) {
+    return { text: 'never ran', ticking: false, phase: 'never-ran' }
   }
-  if (Number.isFinite(started)) return { text: formatDuration(now - started), ticking: true }
-  if (Number.isFinite(created)) return { text: `queued ${formatDuration(now - created)}`, ticking: true }
-  return { text: '\u2014', ticking: false }
+  if (Number.isFinite(started)) {
+    return Number.isFinite(completed)
+      ? { text: formatDuration(completed - started), ticking: false, phase: 'ran' }
+      : { text: formatDuration(now - started), ticking: true, phase: 'running' }
+  }
+  if (Number.isFinite(created)) {
+    const doing = CONCURRENCY_STATES.has(task.state) ? task.state.toLowerCase() : 'waiting'
+    return { text: `${doing} ${formatDuration(now - created)}`, ticking: true, phase: 'waiting' }
+  }
+  return { text: '\u2014', ticking: false, phase: 'unknown' }
 }
 
 /**

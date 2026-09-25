@@ -18,7 +18,7 @@ import { CapacityScreen } from './Capacity'
 import { Dock } from './Dock'
 import { probeSnapshot, subscribeProbes, type ProbeRecord } from './fetch'
 import { isOverlay, nudgePane, trapTab } from './focus'
-import { useHelpDisclosure, useEdgeSafePlacement } from './HelpCard'
+import { useCardBridge, useHelpDisclosure, useEdgeSafePlacement } from './HelpCard'
 import { HELP_ROUTE } from './help'
 import { HelpScreen } from './HelpSection'
 import { HoldersScreen } from './Holders'
@@ -30,6 +30,7 @@ import { RuntimesScreen } from './Runtimes'
 import { timeAgo } from './Shell'
 import { SubmitScreen } from './Submit'
 import { SubmitWorkflowScreen } from './SubmitWorkflow'
+import { useNow } from './useNow'
 import { WorkflowsScreen } from './Workflows'
 
 /**
@@ -774,7 +775,7 @@ export function App() {
                 <ReferenceScreen />
               )
             ) : (
-              <SectionBody sectionId={section.id} tab={at.tab} go={go} />
+              <SectionBody sectionId={section.id} tab={at.tab} taskId={at.taskId} go={go} />
             )}
           </main>
 
@@ -845,8 +846,44 @@ export function App() {
  * finds it wrapped.
  */
 function Rail({ at, go }: { at: Route; go: (to: string) => void }) {
+  const rail = useRef<HTMLElement>(null)
+
+  /*
+   * THE CURRENT ITEM IS BROUGHT INTO VIEW ON EVERY ROUTE CHANGE (CH-14).
+   *
+   * Below 900px the rail is a strip that scrolls sideways, and nothing ever
+   * scrolled it: measured at 390px, `#work/new`, `#admin/tenants` and `#help`
+   * all opened with the current tab -- or the Help button -- past the right
+   * edge, so the one item that says where the reader is was the one they
+   * could not see.
+   *
+   * WHICH ITEM, IN THIS ORDER, and the order is why these are three queries
+   * rather than one selector list: a list returns the first match in DOCUMENT
+   * order, and a section button always precedes its own tabs, so `#admin/
+   * counts` would have scrolled to "Admin" and left "Platform counts" off
+   * screen. The selected tab if there is one; the on-state utility button for
+   * API reads and Help; the section itself for a one-pane section.
+   *
+   * `nearest` ON BOTH AXES, so an item already in view does not move and the
+   * page is not scrolled vertically for it -- on the desktop column this only
+   * ever scrolls the rail's own overflow, on a viewport too short to hold it.
+   * `scroll-margin-inline-end` (styles.css) keeps the item clear of the fade
+   * at the strip's end. jsdom implements no `scrollIntoView`, hence the guard.
+   */
+  useEffect(() => {
+    const root = rail.current
+    if (root === null) return
+    const current =
+      root.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]') ??
+      root.querySelector<HTMLElement>('.ctl-nav-util .is-on') ??
+      root.querySelector<HTMLElement>('.ctl-nav-link.is-on')
+    if (current !== null && typeof current.scrollIntoView === 'function') {
+      current.scrollIntoView({ inline: 'nearest', block: 'nearest' })
+    }
+  }, [at.sectionId, at.tab])
+
   return (
-    <nav className="ctl-rail" aria-label="Sections">
+    <nav className="ctl-rail" aria-label="Sections" ref={rail}>
       <div className="ctl-rail-sections">
         {SECTIONS.map((s) => {
           const on = at.sectionId === s.id
@@ -894,11 +931,15 @@ function Rail({ at, go }: { at: Route; go: (to: string) => void }) {
         >
           {REFERENCE_LABEL}
         </button>
-        {/* THE HEAD `?` (§B7.3). The way into Help from anywhere, for the
-            reader who has not got a `?` in front of them. A glyph and an
-            accessible name, not the word "Help" -- the rail is the product's
-            three questions over a landing screen, and a fifth word beside them
-            reads as a fifth section. */}
+        {/* THE RAIL'S `?`, which this comment used to call "the head `?`" --
+            it is not (AH-5). The head `?` is `SectionQuestion`, in `Head`
+            below, and it is the way into Help that ui-audit §B7.2/§B7.3
+            describe: its card now ends in a link here. This button is the
+            other way in, always in the same place, for a reader with no
+            screen-level `?` in front of them. A glyph and an accessible name,
+            not the word "Help" -- the rail is the product's three questions
+            over a landing screen, and a fifth word beside them reads as a
+            fifth section. */}
         <button
           className={at.sectionId === HELP ? 'is-on' : ''}
           aria-current={at.sectionId === HELP ? 'page' : undefined}
@@ -945,14 +986,11 @@ function Rail({ at, go }: { at: Route; go: (to: string) => void }) {
  */
 function Head({ at, section }: { at: Route; section: SectionDef | null }) {
   const probes = useSyncExternalStore(subscribeProbes, probeSnapshot, probeSnapshot)
-  const [, tick] = useState(0)
-
   // The age is the point, so it moves on its own rather than only when a
-  // fetch happens to land.
-  useEffect(() => {
-    const id = setInterval(() => tick((n) => n + 1), 5000)
-    return () => clearInterval(id)
-  }, [])
+  // fetch happens to land -- on the SHARED clock, the one every screen's
+  // sub-line and the dock read, so the head and the provenance line under a
+  // screen title can no longer disagree by up to a tick (CH-1).
+  const now = useNow(5000)
 
   const newest = summariseProbes(probes).newestSuccessAt
   const tab = section?.tabs.find((t) => t.id === at.tab) ?? null
@@ -984,7 +1022,7 @@ function Head({ at, section }: { at: Route; section: SectionDef | null }) {
         {newest === null ? (
           <span className="ctl-em">nothing has loaded in this tab</span>
         ) : (
-          <>newest read {timeAgo(newest)}</>
+          <>newest read {timeAgo(newest, now)}</>
         )}
       </span>
 
@@ -1020,31 +1058,57 @@ function Head({ at, section }: { at: Route; section: SectionDef | null }) {
  *
  * `useEdgeSafePlacement` is imported rather than reimplemented. Two
  * implementations of one widget is exactly how the first one's fixes stopped
- * reaching the second, and a third would do it again.
+ * reaching the second, and a third would do it again. The same goes for the
+ * outside press (AH-6, in `useHelpDisclosure`) and the tab bridge
+ * (`useCardBridge`), which this card needs now that it has a stop in it.
+ *
+ * IT ENDS IN A WAY INTO HELP (AH-5). The code and ui-audit §B7.2/§B7.3 call the
+ * head `?` the way into Help, and its card was a dead end: the section's
+ * question and nothing to follow. `Help →` goes to the top of the Help page,
+ * because the question is about a section and no single topic answers it.
  */
 function SectionQuestion({ section }: { section: SectionDef }) {
-  const { state, trigger, hover } = useHelpDisclosure()
+  // THE CARD IS MEASURED THROUGH `cardRef`, and before it existed this card
+  // was not measured at all. `useEdgeSafePlacement` used to look for the card
+  // under the ANCHOR, and this one is portalled to `document.body` below, so
+  // the vertical placement fell back to its 220px estimate every time. A
+  // section's question is the longest string in `SECTIONS` -- Capacity's runs
+  // to four clauses -- and at 390px it wraps well past 220px, which is exactly
+  // the case the estimate gets wrong and the clamp then cannot correct. The
+  // ref belongs to the disclosure, whose outside-press test needs it too.
+  const { state, trigger, hover, cardRef, triggerRef } = useHelpDisclosure()
   const cardId = `q-${section.id}`
-  // THE CARD IS MEASURED THROUGH THIS REF, and before it existed this card was
-  // not measured at all. `useEdgeSafePlacement` used to look for the card under
-  // the ANCHOR, and this one is portalled to `document.body` three lines below,
-  // so the vertical placement fell back to its 220px estimate every time. A
-  // section's question is the longest string in `SECTIONS` -- Capacity's runs to
-  // four clauses -- and at 390px it wraps well past 220px, which is exactly the
-  // case the estimate gets wrong and the clamp then cannot correct.
-  const cardRef = useRef<HTMLSpanElement>(null)
+  const triggerId = `${cardId}-t`
   const [anchorRef, placement] = useEdgeSafePlacement(state.open, cardRef)
+  const bridge = useCardBridge(state, trigger, cardRef, triggerRef)
 
   const card = (
     <span
       id={cardId}
       role={state.pinned ? 'dialog' : 'tooltip'}
       className="ctl-q-card"
+      data-focus-return={triggerId}
       style={placement}
       ref={cardRef}
     >
       <strong className="ctl-q-title">{section.label} answers</strong>
       <span className="ctl-q-body">{section.question}</span>
+      {/* Inline, from tokens, like the topic cards' own link: styles.css is
+          another lane's this pass, and an inline style reaches no other
+          element. */}
+      <a
+        className="ctl-link"
+        href={`#${HELP}`}
+        style={{
+          display: 'inline-block',
+          marginTop: 'var(--ctl-s2)',
+          fontSize: 'var(--t-micro)',
+          lineHeight: 'var(--lh-micro)',
+        }}
+        {...bridge.stop}
+      >
+        Help &rarr;
+      </a>
     </span>
   )
 
@@ -1052,11 +1116,17 @@ function SectionQuestion({ section }: { section: SectionDef }) {
     <span className="ctl-q" {...hover} ref={anchorRef}>
       <button
         type="button"
+        id={triggerId}
+        ref={triggerRef}
         className="ctl-q-glyph"
-        aria-label={`What the ${section.label} section answers`}
+        // `Help: <card title>`, the name every `?` in the app now carries
+        // (AH-4), so one query finds both kinds and a screen reader hears the
+        // same shape of name wherever it meets one.
+        aria-label={`Help: ${section.label} answers`}
         aria-expanded={state.open}
         aria-controls={state.open ? cardId : undefined}
         {...trigger}
+        {...bridge.trigger}
       >
         ?
       </button>
@@ -1074,13 +1144,29 @@ function SectionQuestion({ section }: { section: SectionDef }) {
 function SectionBody({
   sectionId,
   tab,
+  taskId,
   go,
 }: {
   sectionId: string
   tab: string
+  /** The agent the inspector has open, or null. */
+  taskId: string | null
   go: (to: string) => void
 }) {
   const openAgent = (id: string) => go(`${WORK}/task/${encodeURIComponent(id)}`)
+  /*
+   * THE LIST IS TOLD WHICH AGENT IS OPEN (AG-17). `taskId` stopped at the
+   * drawer, so with the inspector open no row said which agent it was showing
+   * -- the list and the panel beside it could not be read as one view.
+   *
+   * SPREAD FROM AN OBJECT, NOT WRITTEN AS AN ATTRIBUTE, so this compiles
+   * whichever of two lanes lands first: `Agents.tsx` declares the optional
+   * `taskId` prop in its own lane, and a JSX attribute naming a prop the
+   * component does not declare is a type error, where an object spread is
+   * not checked for extra keys. Once the prop is declared the spread is
+   * checked like any attribute, so nothing is left unchecked for long.
+   */
+  const agentsProps = { onOpen: openAgent, taskId }
 
   // EVERY CASE IS A STRING LITERAL, and that is required rather than casual.
   //
@@ -1116,7 +1202,7 @@ function SectionBody({
       return <OverviewScreen />
 
     case 'work/running':
-      return <AgentsScreen onOpen={openAgent} />
+      return <AgentsScreen {...agentsProps} />
     case 'work/workflows':
       return <WorkflowsScreen />
     case 'work/timeline':
@@ -1402,14 +1488,9 @@ function AgentDrawer({
  */
 function ReferenceScreen() {
   const probes = useSyncExternalStore(subscribeProbes, probeSnapshot, probeSnapshot)
-  const [, tick] = useState(0)
-
   // The ages are the point, so they move on their own rather than only when a
-  // fetch happens to land.
-  useEffect(() => {
-    const id = setInterval(() => tick((n) => n + 1), 5000)
-    return () => clearInterval(id)
-  }, [])
+  // fetch happens to land -- on the shared clock the head and the dock read.
+  const now = useNow(5000)
 
   return (
     <>
@@ -1417,11 +1498,15 @@ function ReferenceScreen() {
           this is what THIS TAB called, not what the API offers. That caveat
           belongs to the thing it qualifies -- the page's own title -- so it is
           a `.ctl-card-note` beside it, in the slot §8.4.2 reserves for exactly
-          this, and the argument is one click away in `#help/api-reads`. */}
+          this, and the argument is one click away in `#help/api-reads`.
+
+          `ctl-link` (CH-5): this anchor carried no class, so it fell back to
+          the browser's own blue -- visited purple once followed -- in a
+          product whose links are ink plus an underline. */}
       <div className="ctl-page-head">
         <h1>{REFERENCE_LABEL}</h1>
         <span className="ctl-card-note">this tab only · not the API surface</span>
-        <a className="is-end" href={`#${HELP}/api-reads`}>
+        <a className="ctl-link is-end" href={`#${HELP}/api-reads`}>
           What these mean &rarr;
         </a>
       </div>
@@ -1467,7 +1552,7 @@ function ReferenceScreen() {
               </thead>
               <tbody role="rowgroup">
                 {probes.map((p) => (
-                  <RouteRow key={p.path} probe={p} />
+                  <RouteRow key={p.path} probe={p} now={now} />
                 ))}
               </tbody>
               <caption>
@@ -1482,14 +1567,14 @@ function ReferenceScreen() {
   )
 }
 
-function RouteRow({ probe }: { probe: ProbeRecord }) {
+function RouteRow({ probe, now }: { probe: ProbeRecord; now: number }) {
   const outcome = describeProbe(probe)
   return (
     <tr role="row" className={outcome.row}>
       <th role="rowheader" scope="row" className="ctl-ref-path">
         {probe.path}
       </th>
-      <td role="cell" data-label="Last attempt">{timeAgo(probe.lastAttemptAt)}</td>
+      <td role="cell" data-label="Last attempt">{timeAgo(probe.lastAttemptAt, now)}</td>
       <td role="cell" data-label="Outcome">
         <span className={`ctl-chip ${outcome.tone}`}>
           <i aria-hidden />
@@ -1505,7 +1590,7 @@ function RouteRow({ probe }: { probe: ProbeRecord }) {
         {probe.lastSuccessAt === null ? (
           <span className="ctl-em">never in this tab</span>
         ) : (
-          timeAgo(probe.lastSuccessAt)
+          timeAgo(probe.lastSuccessAt, now)
         )}
       </td>
     </tr>
