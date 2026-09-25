@@ -107,14 +107,25 @@ reason: a written value and a derived value are two records of one fact.
 * A complete payload is cached for 60 s, keyed by the minute. A cache hit keeps
   its original `generated_at`, so the age a reader sees stays true.
 
-Estimated costs, not measured:
+Read costs, measured on 2026-09-25 by the module's own meter over a read-only
+snapshot of dev (4 tenants, 740 tasks, 481 attempts, 17 workflows). The meter
+counts the way Firestore bills: a query costs its rows or 1 if it returns none,
+a `get_all` costs one read per id asked for (a missing document included), and
+a small `count()` costs 1. It is not a Cloud Billing figure.
 
-* A warm 30-day hourly view in tenant scope is about 31 day docs, plus the live
-  delta, plus 4 counts.
-* The "Workflows that failed" rows add up to 20 workflow docs and their step
-  tasks, read through `WorkflowRollups.for_workflows`.
+| view | first read (derives) | warm (stored days) |
+|---|---|---|
+| one tenant, 30 days hourly, no failed workflow in the span | 68 | **36** |
+| eng, 30 days hourly, 6 failed workflows in the span | 217 | **185** |
+| platform, 14 days daily, 4 tenants | 2,250 | 221 |
+
+* So the 35–50 estimate holds for a tenant view with no failed workflow: 31
+  day docs, the live delta and 4 counts.
+* The "Workflows that failed" rows are the rest. On dev they cost 6 workflow
+  docs plus 143 step tasks, read through `WorkflowRollups.for_workflows`.
 * A first build of a sealed day reads every task that ended or arrived that
-  day, plus their attempts.
+  day, plus their attempts. A cold 14-day platform view spent 2,250 of its
+  5,000 budget.
 
 ## Bucket boundaries are wall-clock instants in the viewer's zone
 
@@ -183,16 +194,83 @@ Both are in `terraform/modules/firestore/indexes.tf` and asserted in
 Arrivals use the existing `tasks-tenant-created`. Attempts use `tenant_id ==`
 plus `task_id in`, with no ordering, which merged single-field indexes serve.
 
-## What is not verified
+## Measured against real Firestore
 
-* Whether the equality-only `count()` behind `terminal_without_completed_at`
-  (tenant_id, state, completed_at == null) is served without a composite
-  index. The emulator does not enforce indexes. The proof is the release smoke
-  against real Firestore.
-* The read-cost figures above are estimates, not measurements.
-* The API image's time zone database. `python:3.11-slim` installs `tzdata`. If
-  it were missing, every zone would fail, and the route answers 503 naming the
-  image, not 422 blaming the caller.
+The emulator does not enforce composite indexes, so each query shape was run
+once against dev (`saga-agents-staging`, database `swarm`) on 2026-09-25,
+**read-only**, through the module's own methods and the real client. Every
+write RPC was refused in the client before anything was sent.
+
+* **The ended-tasks query cannot run without `tasks-tenant-completed`.** It
+  failed with `FailedPrecondition: The query requires an index`, and the index
+  Firestore asked for is (tenant_id ASC, completed_at ASC, `__name__` ASC):
+  the Terraform index, plus the `__name__` field Firestore adds itself. Until
+  that index is built, every derive fails. Each day is then `unread:
+  read_failed` and every bucket carries no numbers, which is the honest
+  failure, never a row of zeros.
+  * In `release.yml`, `deploy` needs `infrastructure`. So on the release path
+    the index exists before the route ships.
+  * A deploy by hand that skips Terraform serves every bucket unread until
+    the index is applied.
+* **Everything else runs on indexes that already exist:**
+  * the arrivals query on `tasks-tenant-created`;
+  * `tenant_id ==` plus `task_id in` on attempts;
+  * the tenant-checked `get_all` of parents and of `outcome_days`, where a
+    missing document comes back with `exists` False;
+  * `count()` over (tenant_id, state, completed_at == null), both
+    tenant-scoped and over the whole platform, with no composite index.
+* **An `in` takes at most 30 values.** 30 streamed; 31 failed with
+  `InvalidArgument: 'IN' supports up to 30 comparison values.` That limit is
+  why attempts are read in chunks of 30.
+  * `tests/unit/control_plane/fakes.py` now refuses a larger `in` the same
+    way. The emulator already did.
+  * A 35-task day is read in both suites. Raising the chunk to 100 turned
+    exactly those two tests red (run 36196177221, reverted).
+* `tests/integration/test_outcomes_emulator.py` runs the route through the
+  real client against the emulator on every PR. It covers the queries, the
+  IS_NULL count, the rollup batch, the Timestamps read back, and the drift
+  route.
+
+Still not verified:
+
+* **The index build itself**, which is a Terraform apply.
+* **A single batch near the 10 MiB request cap.** That is a write, and the
+  read-only probe could not make one.
+* **The API image's time zone database.** `python:3.11-slim` installs
+  `tzdata`. If it were missing, every zone would fail, and the route answers
+  503 naming the image, not 422 blaming the caller.
+
+## What dev showed against #185's checks (2026-09-25)
+
+The mockup's figures were read at 19:21 UTC by **submission** day. This route
+places work by **completed_at**. Both give the same headline on dev:
+
+* At the mockup's read time, completed_at gives 272 of 300, 90.67 %
+  (0.8684–0.9346). That is the mockup's figure exactly. The two bases agree
+  because every task on dev was created after the span began (the first on
+  16 Sep). So the tasks that had ended by that time are exactly the tasks
+  whose `completed_at` falls before it. At 22:03 UTC the same span read
+  278 of 306, because six more had succeeded since.
+* **The time zone moves 22 Sep's failures, as it should.** In UTC, 22 Sep ended
+  25 succeeded, 305 cancelled and 8 failed, which is the mockup's day, and 338
+  were submitted. In Europe/Bucharest, 7 of those 8 failures ended between
+  00:00 and 02:00 local on 23 Sep. So Bucharest's 22 Sep reads 14 / 305 / 1,
+  and its 23 Sep has 13 failures. The cancels have their own lane either way,
+  so they no longer hide a failure.
+* Every figure the route served over that snapshot matched a direct count
+  written without the module: each bucket, the rate and its interval, cancel
+  causes, retries, cost, per-profile latency, groups, and the first failed
+  step of each workflow.
+* **The failure split is not the mockup's.** On dev: runner error 13,
+  dispatch failed 7, could not start 4, lost worker 3, other 1, and no
+  timeout at all. So the mockup's "other" was not hiding timeouts.
+  * The mockup's "outputs missing 6" are the downstream half of #149: 10 of
+    the 13 runner errors are the worker refusing to stage an input
+    (`inputs.InputUnavailable`: "upstream task … did not produce an artifact
+    named …", and "upstream tasks … all stage …").
+  * The contract puts any worker-written end with an exit code under
+    "runner error". Whether input staging deserves its own class is open with
+    the owner. It would bump `CLASSIFIER_VERSION` and `DERIVE_VERSION`.
 
 ## Offboarding
 
