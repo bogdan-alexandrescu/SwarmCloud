@@ -17,8 +17,12 @@ So each rule is held to its writer here, in the two ways available:
     classified.
 
 The exit codes are held to the worker's `ExitCode` and the reconciler's
-constant the same way. The retirement path -- a typed end cause written by each
-terminal writer -- is contract request 23.
+constant the same way.
+
+THE TEXT IS NOW THE FALLBACK. Contract request 23 was accepted on 2026-09-25
+(#185, decision 9): every terminal writer records a typed `Task.end_cause`, and
+the classifier reads it first. These pins still matter, for every task that
+ended before the field existed -- which is every task on dev today.
 """
 
 from __future__ import annotations
@@ -27,6 +31,7 @@ import re
 from pathlib import Path
 from types import SimpleNamespace
 
+from agent_worker import inputs as inputs_mod
 from agent_worker import startup
 from agent_worker.errors import ExitCode
 from agent_worker.expected_outputs import missing_error
@@ -151,6 +156,39 @@ def test_a_dispatch_failure_is_the_schedulers_code_and_attempt():
         )
 
 
+def _rendered_opening(literal: str) -> str:
+    """An f-string's first literal as it reads once rendered: `{METADATA_KEY}`
+    is the worker's real key, every other placeholder a word."""
+    text = literal.replace("{METADATA_KEY}", inputs_mod.METADATA_KEY)
+    return re.sub(r"\{[^}]*\}", "x1", text)
+
+
+def test_every_input_the_worker_refuses_to_stage_is_inputs_unavailable():
+    """#185, decision 4. The worker ends the task with `str(InputUnavailable)` as
+    the whole `last_error`, so each message's opening literal is what the
+    fallback classifier sees. EVERY raise in inputs.py is rendered and held
+    here, so a new refusal -- or a reworded one -- cannot drain into
+    "runner error" unseen."""
+    source = _src("apps/agent-worker/agent_worker/inputs.py")
+    openings = re.findall(r'raise InputUnavailable\(\s*f?"((?:[^"\\]|\\.)*)"', source)
+    assert len(openings) >= 20, f"read too few InputUnavailable messages to compare: {openings}"
+    assert len(openings) == source.count("raise InputUnavailable("), (
+        "a raise in inputs.py does not open with a string literal, so this pin cannot read it"
+    )
+    for literal in openings:
+        text = _rendered_opening(literal)
+        assert classify_failure("FAILED", text, 1) == "inputs_unavailable", (
+            f"{text!r} (inputs.py) would be counted as a runner error"
+        )
+
+
+def test_the_two_refusals_dev_measured_are_the_workers_words():
+    """dev, 2026-09-25: 10 of 13 "runner errors" were these two."""
+    source = _src("apps/agent-worker/agent_worker/inputs.py")
+    assert 'f"upstream task {upstream_task_id} did not produce an artifact named "' in source
+    assert "f\"upstream tasks {', '.join(sorted(sources))} all stage {filename!r} \"" in source
+
+
 def test_a_clean_exit_without_a_result_is_the_runners_error():
     lifecycle = _src("apps/agent-worker/agent_worker/lifecycle.py")
     assert 'error = "runner exited 0 without writing result.json"' in lifecycle
@@ -172,10 +210,16 @@ def test_every_writer_that_ends_a_requested_cancel_uses_the_prefix():
     assert cancel_cause(False, "cancelled on request; reconciled: lease expired") == "requested"
 
 
-def test_the_failed_parent_text_is_the_schedulers():
+def test_the_failed_parent_text_is_the_schedulers_and_says_neither_which_parent_nor_why():
+    """The scheduler writes the same words after a FAILED, a DEAD_LETTERED and a
+    CANCELLED parent (`_FAILED_PARENT_STATES` holds all three), so the text is
+    split by the parents' states (#185, decision 2)."""
     loop = _src("apps/scheduler/scheduler/loop.py")
     assert loop.count('"an upstream workflow step did not succeed"') >= 2
-    assert cancel_cause(False, "an upstream workflow step did not succeed") == "after_failure"
+    assert "_FAILED_PARENT_STATES = frozenset(" in loop
+    text = "an upstream workflow step did not succeed"
+    assert cancel_cause(False, text, parent_states=["FAILED"]) == "after_failure"
+    assert cancel_cause(False, text, parent_states=["CANCELLED"]) == "after_cancel"
 
 
 def test_the_sweep_text_is_the_schedulers():
