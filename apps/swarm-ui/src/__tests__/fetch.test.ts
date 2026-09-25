@@ -355,6 +355,81 @@ describe('the probe registry', () => {
   })
 })
 
+/**
+ * CH-18: A ROUTE IS A PATH TEMPLATE, NOT A URL.
+ *
+ * The registry was keyed by the concrete URL, so every task anyone opened
+ * added its own `/v1/tasks/<id>/attempts?limit=50` "route" -- 13 of 29 on the
+ * screenshot the QA pass took -- which inflated the dock's route count, shaped
+ * its p95, and made the help text's "one record per route" untrue. It is keyed
+ * by the template now, with ids and the query removed, and each record carries
+ * the concrete URL of its last attempt so a failure can still be traced to the
+ * task it was for.
+ *
+ * ON THE LIVE READ, through the real loader with a stubbed `fetch`: the
+ * fixture path registers templates by hand, so it could not show the defect.
+ * `VITE_LIVE` turns the fixtures off and `resetModules` makes api.ts read it.
+ */
+describe('the probe registry is keyed by route, not by URL (CH-18)', () => {
+  async function live(): Promise<{
+    api: typeof import('../api')
+    registry: typeof import('../fetch')
+  }> {
+    vi.stubEnv('VITE_LIVE', '1')
+    vi.resetModules()
+    const api = await import('../api')
+    const registry = await import('../fetch')
+    return { api, registry }
+  }
+
+  /** The concrete URL of a record's last attempt. */
+  const lastUrl = (r: object | undefined): unknown => (r as { lastUrl?: unknown } | undefined)?.lastUrl
+
+  it("merges two tasks' attempts reads into one route whose last URL is the later one", async () => {
+    // MUTATION: key the record by the URL again.
+    const { api, registry } = await live()
+    respond('{"attempts":[{"attempt_id":"att_1"}]}')
+    await api.loadAttempts('tsk_aaaa')
+    await api.loadAttempts('tsk_bbbb')
+
+    const snap = registry.probeSnapshot()
+    const attempts = snap.filter((p) => p.path.includes('/attempts'))
+    expect(attempts.map((p) => p.path)).toEqual(['/v1/tasks/{id}/attempts'])
+    expect(String(lastUrl(attempts[0]))).toContain('tsk_bbbb')
+    for (const p of snap) {
+      expect(p.path, 'a route key carries a query').not.toContain('?')
+      expect(p.path, 'a route key carries an id').not.toMatch(/tsk_aaaa|tsk_bbbb/)
+    }
+  })
+
+  it('reads a 503 for one task then a 200 for another as the 200, with the second URL -- the merge, documented', async () => {
+    // The status is the last attempt of ANY call to the route; each panel
+    // still carries its own failure. MUTATION: a record per URL.
+    const { api, registry } = await live()
+    respond('{"message":"A service the API depends on did not answer."}', { status: 503 })
+    await api.loadAttempts('tsk_aaaa')
+    respond('{"attempts":[{"attempt_id":"att_1"}]}')
+    await api.loadAttempts('tsk_bbbb')
+
+    const attempts = registry.probeSnapshot().filter((p) => p.path.includes('/attempts'))
+    expect(attempts).toHaveLength(1)
+    expect(attempts[0]?.lastStatus).toBe(200)
+    expect(String(lastUrl(attempts[0]))).toContain('tsk_bbbb')
+  })
+
+  it('merges the three task-list reads, whatever their query, into one /v1/tasks', async () => {
+    // `?limit=200`, `?state=…` and the paged `?limit=200&page_token=…` were
+    // three routes. MUTATION: key by the URL with its query.
+    const { api, registry } = await live()
+    respond('{"tasks":[],"tenant_id":"acme"}')
+    await api.loadTasks()
+    await api.loadTasksInState('PARKED')
+    const tasks = registry.probeSnapshot().filter((p) => p.path.startsWith('/v1/tasks'))
+    expect(tasks.map((p) => p.path)).toEqual(['/v1/tasks'])
+    expect(String(lastUrl(tasks[0]))).toContain('state=PARKED')
+  })
+})
+
 // ---------------------------------------------------------------------------
 // The two one-liners that carry a disproportionate amount of the honesty
 // ---------------------------------------------------------------------------

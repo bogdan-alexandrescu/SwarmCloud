@@ -264,12 +264,16 @@ describe('B3: the head', () => {
     expect(head, 'no head region').not.toBeNull()
     expect(head!.querySelector('.ctl-crumb')?.textContent ?? '').toContain('Overview')
 
-    // NOTHING HAS LOADED is a different sentence from "0s ago", and this
-    // suite is offline, so it is the true one here. A head that rendered a
-    // zero age against no successful read would be the defining bug of this
-    // product, in the frame.
+    // READING is a different sentence from "0s ago", and on the first render
+    // nothing this screen asked for has landed, so it is the true one here. A
+    // head that rendered a zero age against no successful read would be the
+    // defining bug of this product, in the frame.
+    //
+    // RE-POINTED BY CH-2: the head's age is the SCREEN's own newest read now,
+    // and the word for a read in flight is "reading…" (the tab-wide age is
+    // the dock's). It used to say "nothing has loaded in this tab".
     const age = head!.querySelector('.ctl-head-age')?.textContent ?? ''
-    expect(age).toContain('nothing has loaded')
+    expect(age).toContain('reading')
     expect(age).not.toMatch(/\d/)
   })
 })
@@ -1559,9 +1563,22 @@ describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
     for (const link of links) {
       const name = link.textContent
       expect(won(link, 'color', WIDE), `"${name}" at rest`).toBe('var(--text)')
-      expect(won(link, 'text-decoration-color', WIDE), `"${name}" underline`).toBe('var(--line-soft)')
+      // RE-POINTED BY CH-23: the resting underline is `--line`, the boundary
+      // token, which clears §1.2's 3:1 floor on every surface in both themes;
+      // `--line-soft` measured 2.05:1 (light) and 1.72:1 (dark) on `--surface`.
+      // `encoding.hues.test.ts` holds every underline in the sheet to 3:1.
+      // MUTATION: `--line-soft` back, or the 1px thickness floor dropped.
+      expect(won(link, 'text-decoration-color', WIDE), `"${name}" underline`).toBe('var(--line)')
+      expect(won(link, 'text-decoration-thickness', WIDE), `"${name}" underline thickness`).toBe('1px')
       expect(won(link, 'color', { ...WIDE, states: ['hover'] }), `"${name}" on hover`).toBe('var(--info)')
     }
+    // The fact strip's hover cue is the same underline (`a.ov-tile`).
+    const tile = fragment(
+      '<a class="ctl-metric ov-tile" href="#x"><span class="ctl-metric-value">4</span></a>',
+    )
+    const value = pick(tile, '.ctl-metric-value')
+    expect(won(value, 'text-decoration-color', { ...WIDE, states: ['hover'] })).toBe('var(--line)')
+    expect(won(value, 'text-decoration-thickness', { ...WIDE, states: ['hover'] })).toBe('1px')
   })
 
   it('CH-6: API reads and Help mark the current page the way a section does', () => {
