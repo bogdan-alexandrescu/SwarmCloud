@@ -158,6 +158,11 @@ resource "google_cloud_run_v2_job" "this" {
           }
         }
 
+        env {
+          name  = "GCE_METADATA_IP"
+          value = "169.254.169.254"
+        }
+
         # Provider keys. Only this tenant's service account can read these
         # secrets, so a doctored reference to another tenant's secret fails at
         # start instead of leaking (invariant 9).
