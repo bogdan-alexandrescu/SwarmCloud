@@ -788,7 +788,8 @@ describe('the Table toggle', () => {
     expect(table.classList.contains('ctl-table') && table.classList.contains('is-scroll')).toBe(true)
     expect(table.querySelectorAll('tbody tr')).toHaveLength(14)
     const heads = [...table.querySelectorAll('thead th')].map((th) => th.textContent)
-    expect(heads).toContain('Submitted')
+    // The one submission-time column names its basis under Table too, where no lane label is drawn.
+    expect(heads).toContain('Submitted · by created_at')
     expect(heads.some((h) => /Rate · k of n · 95 %/.test(h ?? ''))).toBe(true)
     const toggle = root.querySelector<HTMLButtonElement>('.ol-table-toggle')!
     expect(toggle.getAttribute('aria-pressed')).toBe('true')
@@ -899,6 +900,110 @@ describe('reading, failing and re-reading', () => {
     const hit = await timeline({ ...ledgerFixture(), cached: true })
     const provs = [...hit.querySelectorAll('.ol-prov')]
     expect(provs[provs.length - 1]!.textContent).toContain('0 reads this request')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Parity with what GET /v1/outcomes actually serves (#196 against #197)
+// ---------------------------------------------------------------------------
+//
+// A parity pass read the route's code beside this page's and found four
+// places where the page said something the route does not: a cache claim on a
+// payload the route never caches, a count of rollup documents called "days",
+// a basis the page restated instead of reading, and a submitter the route
+// sends as '' drawn as a blank. Each case below was pushed before the code
+// that satisfies it.
+
+describe('what the route serves, said as the route means it', () => {
+  it('says a partial payload was not cached: the route caches only a complete one', async () => {
+    // swarm_api.outcomes.read caches when totals.complete and previous.complete,
+    // so a re-read continues a partial build instead of serving its gaps.
+    const root = await timeline(oneUnread())
+    const prov = root.querySelector('.ol-prov')!.textContent ?? ''
+    expect(prov, 'a partial payload claims the 60 s cache').not.toContain('cached 60 s')
+    expect(prov).toContain('not cached')
+    cleanup()
+    const d = ledgerFixture()
+    d.previous = { ...d.previous!, complete: false }
+    const prev = await timeline(d)
+    expect(prev.querySelector('.ol-prov')!.textContent).toContain('not cached')
+  })
+
+  it('counts coverage.days in its own unit: UTC days in tenant scope, tenant-days in platform scope', async () => {
+    // 12-25 Sep in Bucharest touches the UTC days 11-25: 15 rollup documents
+    // for 14 local days, and in platform scope one per tenant per day.
+    const root = await timeline()
+    const facts = [...root.querySelectorAll('.ol-facts .ctl-fact')].map((f) => f.textContent)
+    expect(facts).toContain('sealed14 of 15 UTC days · today so far')
+    const prov = root.querySelector('.ol-prov')!.textContent ?? ''
+    expect(prov).toContain('14 UTC days sealed')
+    expect(prov, 'a live day need not be today: yesterday is live through the seal grace').toContain('1 live')
+    cleanup()
+    const d = ledgerFixture()
+    d.scope = { kind: 'platform', tenants: ['eng', 'personal', 'verify'], excluded: [], tenants_complete: true }
+    d.coverage = { ...d.coverage, days: { total: 45, sealed: 42, live: 3, unread: 0 } }
+    const platform = await timeline(d, { view: 'scope=platform' }, { admin: true })
+    const pf = [...platform.querySelectorAll('.ol-facts .ctl-fact')].map((f) => f.textContent)
+    expect(pf, '45 tenant-days read as "45 days" over a 14-day span').toContain('sealed42 of 45 tenant-days · today so far')
+    expect(platform.querySelector('.ol-prov')!.textContent).toContain('42 tenant-days sealed')
+  })
+
+  it('prints each series’ basis in the route’s word, never its own', async () => {
+    // Not values the route sends today: values that prove the words are READ.
+    const d = ledgerFixture()
+    d.basis = { outcomes: 'ended_at', submitted: 'arrived_at' }
+    const root = await timeline(d)
+    const labels = [...drawing(root).querySelectorAll('.ol-lane-label')].map((t) => t.textContent ?? '')
+    expect(labels[3]).toContain('by arrived_at')
+    expect(drawing(root, 'narrow').querySelectorAll('.ol-lane-label')[3]!.textContent).toContain('by arrived_at')
+    expect(root.querySelector('.ol-legend')!.textContent).toContain('by arrived_at')
+    const facts = [...root.querySelectorAll('.ol-facts .ctl-fact')].map((f) => f.textContent)
+    expect(facts).toContain('byended_at')
+    cleanup()
+    const table = await timeline(d, { view: 'table=1' })
+    const heads = [...table.querySelectorAll('.ol-table thead th')].map((th) => th.textContent)
+    expect(heads).toContain('Submitted · by arrived_at')
+  })
+
+  it('draws a submitter the route did not record as an absence, never as a blank', async () => {
+    // The route's tuples carry submitted_by as '' when a task has none, so a
+    // group row's key and a workflow row's submitter can both be ''.
+    const d = ledgerFixture()
+    d.groups = { ...d.groups, by: 'submitted_by', rows_total: 1, rows: [{ ...d.groups.rows[0]!, key: '' }] }
+    d.workflows_failed = {
+      ...d.workflows_failed,
+      rows_total: 1,
+      rows: [{ ...d.workflows_failed.rows[0]!, submitted_by: '' }],
+    }
+    const root = await timeline(d, { view: 'group=submitted_by' })
+    const head = card(root, /^Reliability/).querySelector('tbody tr th')!
+    expect(head.textContent?.trim(), 'a row with no name reads as a blank').toBe('not recorded')
+    const who = card(root, /^Workflows that failed/).querySelector('tbody tr td')!
+    expect(who.textContent, 'no submitter reads as a blank').toBe('—')
+  })
+
+  it('refuses a range the route would refuse, with the reason, and sends nothing', async () => {
+    // The route answers 422 to a since in the future and to a span over 400 days.
+    const onView = vi.fn()
+    const root = await timeline(ledgerFixture(), { view: '', onView })
+    fireEvent.click(within(root.querySelector<HTMLElement>('.ol-span')!).getByRole('button', { name: 'from–to' }))
+    const range = root.querySelector<HTMLElement>('.ol-range')!
+    const [from, to] = [...range.querySelectorAll('input')]
+    const apply = within(range).getByRole('button', { name: 'apply' }) as HTMLButtonElement
+    fireEvent.change(from!, { target: { value: '2024-01-01' } })
+    fireEvent.change(to!, { target: { value: '2026-09-10' } })
+    expect(apply.disabled, 'a 984-day range is offered').toBe(true)
+    expect(range.textContent).toContain('at most 400 days')
+    fireEvent.change(from!, { target: { value: '2099-01-01' } })
+    fireEvent.change(to!, { target: { value: '2099-01-02' } })
+    expect(apply.disabled, 'a range starting in 2099 is offered').toBe(true)
+    expect(range.textContent).toContain('in the future')
+    fireEvent.change(from!, { target: { value: '2026-09-01' } })
+    fireEvent.change(to!, { target: { value: '2026-09-10' } })
+    expect(apply.disabled).toBe(false)
+    const calls = onView.mock.calls.length
+    fireEvent.click(apply)
+    expect(onView.mock.calls.length).toBe(calls + 1)
   })
 })
 

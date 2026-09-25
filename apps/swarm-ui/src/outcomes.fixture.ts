@@ -197,9 +197,11 @@ export function ledgerFixture(): Outcomes {
         by_exit: [
           { exit_code: 75, label: 'parked', n: 14 },
           { exit_code: null, label: 'no exit recorded', n: 9 },
-          { exit_code: 69, label: 'unavailable', n: 6 },
-          { exit_code: 70, label: 'fenced', n: 5 },
-          { exit_code: 143, label: 'signal', n: 7 },
+          // The route's own labels (swarm_api.outcomes EXIT_LABELS), so a
+          // fixture read shows what a live one does.
+          { exit_code: 143, label: 'interrupted', n: 7 },
+          { exit_code: 69, label: 'dependency unavailable', n: 6 },
+          { exit_code: 70, label: 'generation fenced', n: 5 },
         ],
       },
       admissions_without_attempt_doc: 0,
@@ -272,7 +274,9 @@ export function ledgerFixture(): Outcomes {
           key: 'generic', submitted: 2, ended: 2, succeeded: 2, failed: 0, dead_lettered: 0,
           cancelled: { total: 0, requested: 0, after_failure: 0, workflow_sweep: 0, other: 0 },
           rate: wilsonFixture(2, 2), cost: { sum_usd: null, attempts: 2, reporting: 0 }, declared_cost: false,
-          series: buckets.map(() => null),
+          // A null entry is an UNREAD bucket, and every bucket here was read:
+          // measured {0, 0} until the day both of generic's tasks ended.
+          series: buckets.map((_, i) => (i === buckets.length - 1 ? { k: 2, n: 2 } : { k: 0, n: 0 })),
         },
       ],
     },
@@ -307,7 +311,9 @@ export function ledgerFixture(): Outcomes {
       ],
     },
     coverage: {
-      days: { total: 15, sealed: 13, live: 2, unread: 0 },
+      // 12-25 Sep in Bucharest touches the UTC days 11-25 Sep. At 11:10Z on
+      // the 25th every one but the 25th is past its seal grace.
+      days: { total: 15, sealed: 14, live: 1, unread: 0 },
       unread: [],
       derived_now: 0,
       built_through: '2026-09-25T11:08:02Z',
