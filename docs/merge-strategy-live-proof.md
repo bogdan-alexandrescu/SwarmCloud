@@ -4,15 +4,18 @@
 offline against real git. Exactly one of them has ever run against a real
 repository, and that one pushes nothing.
 
-This document exists because the gap is not a coding task. Closing it needs a
-credential that does not exist, on a repository somebody owns, with write
+This document exists because the gap is not a coding task. Closing it needed a
+credential that did not exist, on a repository somebody owns, with write
 permission somebody has to grant — three decisions, none of them an
 engineer's to take quietly. What follows is what each one is, so the owner can
 decide with the facts rather than authorise "whatever it needs".
 
-**Nothing in this document has been executed.** No token was created, no branch
-was pushed, no pull request was opened. Every "verified" line below is a
-read-only observation, with the command that produced it.
+**Where this stands (2026-09-25).** The owner has taken the decisions. The
+credential exists: a **classic** personal access token (the decision is recorded
+in section 3), stored by `scripts/create-secrets.sh` as `swarm-tenant-eng-git`,
+version 1, at 23:23Z. When this was written, no platform run had pushed a branch
+or opened a pull request. Every "verified" line below is a read-only observation,
+with the command that produced it and the date it was made.
 
 ---
 
@@ -53,9 +56,16 @@ swarm-tenant-u-bogdan-anthropic
 swarm-tenant-u-bogdan-anthropic-refresh
 ```
 
-No `-git` secret exists for either tenant. So today a **private** repository
-cannot even be cloned, and a public one clones unauthenticated — which is why
-`collect` against a public repository is the only combination that has worked.
+No `-git` secret existed for either tenant on that date. So a **private**
+repository could not even be cloned, and a public one cloned unauthenticated.
+That is why `collect` against a public repository was the only combination that
+had worked.
+
+Read again on 2026-09-25 at 23:25Z (`gcloud secrets describe` and
+`get-iam-policy`, metadata only): `swarm-tenant-eng-git` exists, with one
+enabled version and the `component=tenant-credential,provider=git,tenant=eng`
+labels, and **no IAM binding**. So point 1 below is true for `eng`, and point 3
+is not yet true.
 
 Three things have to be true, and the second is the one that gets forgotten:
 
@@ -68,7 +78,14 @@ Three things have to be true, and the second is the one that gets forgotten:
 3. **The tenant's service account may read it**
    (`roles/secretmanager.secretAccessor` on that one secret).
    `scripts/register-tenant.sh` already does this per `--provider`, so `git`
-   needs no new mechanism.
+   needs no new mechanism. Re-running it to add `git` is not free, though.
+   `--providers` REPLACES the tenant's `credentials`, so it has to name every
+   provider the tenant keeps. A re-run also rewrites `display_name`,
+   `max_active` and `capacity_units` (to defaults of 20 and 40 unless they are
+   given), writes `gcs_prefix` without the trailing slash that terraform writes,
+   and creates the prefix marker object. Pass the tenant's current values, or
+   make the two changes on their own: the one secret binding, and a Firestore
+   PATCH whose update mask is `credentials` alone.
 
 **No Terraform change is required**, and that is worth stating because it looks
 like it should be. `terraform/infra/locals.tf` builds `secret_env` from a
@@ -79,10 +96,10 @@ function returns. Adding `git` to a profile's `secret_env` would put the token
 in the agent's own environment — the opposite of what `gitops.py` goes to
 trouble to avoid.
 
-> I could not read the `tenants/eng` Firestore document to confirm what its
-> `credentials` array currently holds; the read was refused by this session's
-> tooling. Point 2 above is derived from the code and from the secret listing,
-> not observed. Check it before concluding the secret alone is enough.
+Read 2026-09-25 at 23:09Z (Firestore REST `GET` on `tenants/eng` in database
+`swarm`, read-only): `credentials` is `["anthropic", "openai"]`. Point 2 is
+therefore observed, not only derived. The secret alone is not enough until
+`git` is added there.
 
 ---
 
@@ -119,10 +136,22 @@ A fine-grained PAT scoped to that single repository is the smallest thing that
 works. A classic PAT needs `repo`, which is every repository the account can
 see — a much larger blast radius for the same proof.
 
+**Owner decision, 2026-09-25: a classic PAT.** The owner chose a classic
+personal access token deliberately, after being told its scope, because
+SwarmCloud's agents are to reach repositories in both his personal account and
+the saga organisation. The token `eng`'s workers use therefore reaches every
+repository that account can reach with `repo` scope, not one repository.
+Neither of the following has been checked: whether the saga organisation
+accepts classic tokens (an organisation can restrict them), and whether it
+requires SAML SSO authorisation per token.
+
 `Contents: write` alone is a real and useful half-step: the branch pushes, the
 pull request fails with a stated reason, and `_publish_git` records
 `published: true` with "the branch was pushed but no pull request was opened".
-That is a legitimate way to test the push path without granting PR rights.
+That is a legitimate way to test the push path without granting PR rights. It
+exists for fine-grained tokens only. A classic token's `repo` scope carries
+pull-request rights with it, so this half-step is not available with the token
+chosen above.
 
 ---
 
@@ -157,9 +186,11 @@ Stop at the first that does not behave as stated.
 
 **Preparation** (one time, by the repository owner):
 
-1. Mint a fine-grained PAT on `bogdan-alexandrescu/SwarmCloud` with
-   `Contents: Read and write` and `Pull requests: Read and write`.
-2. `scripts/create-secrets.sh --tenant eng --provider git --stdin`
+1. Mint a personal access token. **Done 2026-09-25**: a classic PAT, not the
+   fine-grained single-repository token this step first named (see section 3
+   for why).
+2. `scripts/create-secrets.sh --tenant eng --provider git --stdin`.
+   **Done 2026-09-25 at 23:23Z.**
 3. Add `git` to the `eng` tenant's `credentials` and bind
    `roles/secretmanager.secretAccessor` for its GSA — `scripts/register-tenant.sh`
    covers both; confirm the tenant document afterwards.
@@ -172,7 +203,12 @@ though the token can now push. Check `git.published == false`, the reason names
 **Run 2 — `direct-pr`, one task.** One branch `swarm/<task-id>` and one pull
 request against `main`. Check the branch actually contains the agent's edits:
 an empty diff means `commit_dirty` did not stage uncommitted work, which is the
-common agent behaviour and the reason that function exists.
+common agent behaviour and the reason that function exists. Check also that
+every commit on the branch is authored and committed by the worker's identity
+and carries no `Co-Authored-By` trailer or "Generated with" line. Nothing this
+platform puts on GitHub may carry Claude attribution. #209 makes the worker
+write every commit it pushes. Until #209 is deployed, the proof prompt tells the
+agent not to commit, so the only commit is the worker's.
 
 **Run 3 — `integrate`, a workflow of at least three steps.** swarm-api requires
 exactly one integrator (`validation.py`). The proof is a count and a tree:
@@ -188,14 +224,18 @@ branches, or the next run's `open_pull_request` adopts the open one it finds
 
 ## 6. What this would cost, stated plainly
 
-A token that can write to a repository, held by a platform that runs agent code
-written by a language model against untrusted repository contents. The
+A token that can write to every repository its account can reach (a classic
+PAT, section 3), held by a platform that runs agent code written by a language
+model against untrusted repository contents. The
 mitigations are real — the token is per-tenant, it reaches git through a 0600
 file deleted in a `finally`, it is never in argv, the branch name is derived
 from the task id and re-checked before the push, the default branch is refused,
 nothing is ever force-pushed, and hooks are disabled on every git invocation so
 a `.git/hooks/pre-commit` the agent wrote cannot execute.
 
-They are mitigations, not a boundary. The smallest version of this decision is
-a fine-grained PAT on one repository that nothing important depends on, and
-that is what section 5 assumes.
+They are mitigations, not a boundary. The smallest version of this decision
+would have been a fine-grained PAT on one repository that nothing important
+depends on, and section 5 was first written assuming it. The owner chose a
+classic PAT instead (section 3). The proofs therefore run with a token that
+reaches every repository the account can reach, and each of the mitigations
+above matters in proportion.

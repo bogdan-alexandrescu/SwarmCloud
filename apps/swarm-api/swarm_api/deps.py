@@ -31,6 +31,7 @@ from .groups import CloudIdentityGroups, MembershipResolver
 from .inspect import InspectionService
 from .metrics import ApiMetrics
 from .objects import ObjectReader, build_object_reader
+from .outcomes import Outcomes
 from .ratelimit import TokenBucketLimiter
 from .rollup import WorkflowRollups
 from .service import SubmissionService
@@ -66,6 +67,11 @@ class AppContext:
     #: other collaborator so a test gets the shipped code path over an in-memory
     #: Firestore rather than a patched import.
     rollups: WorkflowRollups
+    #: GET /v1/outcomes and its maintenance route: derives the per-tenant
+    #: per-day rollup, writes it, drift-checks it, and holds the 60 s payload
+    #: cache. Built here, never at import, so the cache is per app and a test
+    #: gets the shipped code over an in-memory Firestore.
+    outcomes: Outcomes
     now: Callable[[], Any] = utcnow
 
     def ready(self) -> tuple[bool, str]:
@@ -163,6 +169,7 @@ def build_context(
         now=now,
     )
     rollups = WorkflowRollups(store=store, metrics=metrics)
+    outcomes = Outcomes(store=store, rollups=rollups, metrics=metrics, now=now)
     return AppContext(
         settings=settings,
         db=db,
@@ -175,6 +182,7 @@ def build_context(
         waker=waker,
         inspection=inspection,
         rollups=rollups,
+        outcomes=outcomes,
         now=now,
     )
 
