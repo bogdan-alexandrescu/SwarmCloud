@@ -33,7 +33,7 @@
 //   to a named list. A trap that is not in that list is a trap that was not
 //   declared.
 
-import { declaredTabIndex, isFocusable, tabStops } from '../focus'
+import { declaredTabIndex, hiddenByStyle, isFocusable, tabStops } from '../focus'
 
 export type Kind =
   /** A `tabindex` above zero. It reorders the whole document's tab sequence. */
@@ -233,6 +233,13 @@ export function probeKeyboard(doc: Document, opts: ProbeOptions): Report {
       // See `isDisabled`: the sheet's own `:disabled` rule takes this cursor
       // back, and a selector match cannot see a later rule override it.
       if (isDisabled(el)) continue
+      // NOT DRAWN AT THIS WIDTH, so not a mouse-only control: the pointer
+      // cannot reach a `display: none` element any more than Tab can. The case
+      // is the phone strip's second row (CH-21), which draws the open
+      // section's tabs a second time and is hidden on the desktop column this
+      // sweep reads -- its displayed twin, the inline tab, is checked here.
+      // The same `hiddenByStyle` is what already keeps it out of `tabStops`.
+      if (hiddenByStyle(el)) continue
       if (isFocusable(el)) continue
       const parent = el.parentElement
       if (parent !== null && parent.closest('button, a[href], [tabindex]') !== null) continue
@@ -249,6 +256,8 @@ export function probeKeyboard(doc: Document, opts: ProbeOptions): Report {
     if (!promisesAControl(el)) continue
     // A switched-off control is meant to be out of the tab order.
     if (isDisabled(el)) continue
+    // Nor is a control the sheet does not display at this width (see above).
+    if (hiddenByStyle(el)) continue
     if (isFocusable(el)) continue
     say({
       kind: 'role-without-focus',

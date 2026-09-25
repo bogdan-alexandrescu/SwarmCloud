@@ -597,6 +597,15 @@ export interface DispatchConsequence {
   pushes: boolean
   /** The headline, with the real step count already in it. */
   headline: string
+  /**
+   * THE WORKFLOW CARD'S SHORT VALUE (WF-13, epic #83): a lowercase phrase that
+   * reads after the card's `opens` key -- "opens no pull request and pushes
+   * nothing". The headline is two sentences for a form where a choice is being
+   * made, and after a key it read "opens No pull request. Nothing is pushed."
+   * Built in the same switch, and its ceiling word ("up to") comes from
+   * `atMost`, so it never claims more than the count does.
+   */
+  opens: string
   /** What happens to the work itself. */
   detail: string
 }
@@ -607,43 +616,63 @@ export function consequenceOf(
 ): DispatchConsequence {
   const n = Math.max(1, steps)
   const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? '' : 's'}`
+  // THE CARD'S VALUE TAKES ITS CEILING WORD FROM THE ARM'S OWN `atMost` (WF-13):
+  // a count that can come out lower reads "up to", one that cannot is stated
+  // as it is. Read off the object rather than written into each string, so the
+  // phrase cannot claim more than the count it sits beside.
+  const withOpens = (c: Omit<DispatchConsequence, 'opens'>, what: string): DispatchConsequence => ({
+    ...c,
+    opens: `${c.atMost ? 'up to ' : ''}${what}`,
+  })
   switch (strategy) {
     case 'collect':
-      return {
-        pullRequests: 0,
-        atMost: false,
-        pushes: false,
-        headline: 'No pull request. Nothing is pushed.',
-        detail:
-          `Each of the ${plural(n, 'step')} harvests its patch into the task's own GCS ` +
-          'prefix and the run ends there. Nothing reaches the repository, so this is ' +
-          'the only strategy that works with a read-only token.',
-      }
+      return withOpens(
+        {
+          pullRequests: 0,
+          atMost: false,
+          pushes: false,
+          headline: 'No pull request. Nothing is pushed.',
+          detail:
+            `Each of the ${plural(n, 'step')} harvests its patch into the task's own GCS ` +
+            'prefix and the run ends there. Nothing reaches the repository, so this is ' +
+            'the only strategy that works with a read-only token.',
+        },
+        'no pull request and pushes nothing',
+      )
     case 'direct-pr':
-      return {
-        pullRequests: n,
-        atMost: true,
-        pushes: true,
-        headline: `Up to ${plural(n, 'pull request')} — one per step.`,
-        detail:
-          `Every step pushes its own branch and opens its own pull request, so ${plural(n, 'step')} ` +
-          `means ${plural(n, 'review')} to do and ${plural(n, 'branch')} to merge. A step whose agent ` +
-          'changed nothing opens none, which is why this is a ceiling and not a count.',
-      }
+      return withOpens(
+        {
+          pullRequests: n,
+          atMost: true,
+          pushes: true,
+          headline: `Up to ${plural(n, 'pull request')} — one per step.`,
+          detail:
+            `Every step pushes its own branch and opens its own pull request, so ${plural(n, 'step')} ` +
+            `means ${plural(n, 'review')} to do and ${plural(n, 'branch')} to merge. A step whose agent ` +
+            'changed nothing opens none, which is why this is a ceiling and not a count.',
+        },
+        plural(n, 'pull request'),
+      )
     case 'integrate':
-      return {
-        pullRequests: 1,
-        atMost: true,
-        pushes: true,
-        headline: 'Exactly one pull request for the whole workflow.',
-        detail:
-          n < 2
-            ? 'One final step receives the others’ work and opens the single pull ' +
-              'request. There are no other steps here yet, so there is nothing to integrate.'
-            : `The final step merges the other ${plural(n - 1, 'step')}’ branches into its own ` +
-              'and opens one pull request against the repository. Those steps push a branch each ' +
-              'and open nothing.',
-      }
+      // "Exactly one or none": the integrator is the only step that opens a
+      // pull request, and it opens none if nothing changed -- `atMost` is true,
+      // so the card says "up to 1".
+      return withOpens(
+        {
+          pullRequests: 1,
+          atMost: true,
+          pushes: true,
+          headline: 'Exactly one pull request for the whole workflow.',
+          detail:
+            n < 2
+              ? 'One final step receives the others’ work and opens the single pull ' +
+                'request. There are no other steps here yet, so there is nothing to integrate.'
+              : `The final step merges the other ${plural(n - 1, 'step')}’ branches into its own ` +
+                'and opens one pull request against the repository. Those steps push a branch each ' +
+                'and open nothing.',
+        },
+        '1 pull request, for all steps',
+      )
   }
 }
 
@@ -1657,11 +1686,29 @@ export const TERMINAL_STATES: ReadonlySet<TaskState> = new Set<TaskState>([
   'SUCCEEDED', 'FAILED', 'CANCELLED', 'DEAD_LETTERED',
 ])
 
-export type Tone = 'ok' | 'bad' | 'live' | 'wait'
+/**
+ * A task state's tone, which is what its MARK is drawn from (design-system.md
+ * §6.6).
+ *
+ *   ok     SUCCEEDED                      the neutral disc
+ *   bad    FAILED, DEAD_LETTERED          the diamond
+ *   live   the four concurrency states    the haloed, pulsing disc
+ *   wait   QUEUED, READY, PARKED          the caution triangle
+ *   ended  CANCELLED                      the neutral flat bar (CH-22)
+ *
+ * `ended` IS A TONE OF ITS OWN (CH-22, owner decision 2026-09-25). CANCELLED
+ * was `wait`, so Agents drew it as the caution TRIANGLE and Workflows as a
+ * blue disc with an amber word: a task somebody chose to stop, drawn as work
+ * still waiting. It is terminal and it is not a verdict -- the flat bar, grey,
+ * the one `is-info` modifier (not a second one) -- and at 390, where the word
+ * is hidden, cancelled, queued and succeeded are three different shapes.
+ */
+export type Tone = 'ok' | 'bad' | 'live' | 'wait' | 'ended'
 
 export function stateTone(state: TaskState): Tone {
   if (state === 'SUCCEEDED') return 'ok'
   if (state === 'FAILED' || state === 'DEAD_LETTERED') return 'bad'
+  if (state === 'CANCELLED') return 'ended'
   if (CONCURRENCY_STATES.has(state)) return 'live'
   return 'wait'
 }

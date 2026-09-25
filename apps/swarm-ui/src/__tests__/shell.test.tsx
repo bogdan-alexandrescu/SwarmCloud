@@ -77,6 +77,7 @@ function allRules(sheet: CSSStyleSheet): CSSStyleRule[] {
 function probe(over: Partial<ProbeRecord> = {}): ProbeRecord {
   return {
     path: '/v1/capacity',
+    lastUrl: over.path ?? '/v1/capacity',
     lastStatus: 200,
     lastKind: null,
     lastLatencyMs: 120,
@@ -264,12 +265,16 @@ describe('B3: the head', () => {
     expect(head, 'no head region').not.toBeNull()
     expect(head!.querySelector('.ctl-crumb')?.textContent ?? '').toContain('Overview')
 
-    // NOTHING HAS LOADED is a different sentence from "0s ago", and this
-    // suite is offline, so it is the true one here. A head that rendered a
-    // zero age against no successful read would be the defining bug of this
-    // product, in the frame.
+    // READING is a different sentence from "0s ago", and on the first render
+    // nothing this screen asked for has landed, so it is the true one here. A
+    // head that rendered a zero age against no successful read would be the
+    // defining bug of this product, in the frame.
+    //
+    // RE-POINTED BY CH-2: the head's age is the SCREEN's own newest read now,
+    // and the word for a read in flight is "reading…" (the tab-wide age is
+    // the dock's). It used to say "nothing has loaded in this tab".
     const age = head!.querySelector('.ctl-head-age')?.textContent ?? ''
-    expect(age).toContain('nothing has loaded')
+    expect(age).toContain('reading')
     expect(age).not.toMatch(/\d/)
   })
 })
@@ -567,9 +572,9 @@ describe('B18: the strip collapses to one line and expands on click', () => {
 
   it('draws one line at rest and the cells only once asked', async () => {
     const { Dock } = await import('../Dock')
-    const { noteFixtureProbe } = await import('../fetch')
-    noteFixtureProbe('/v1/capacity', 120, true)
-    noteFixtureProbe('/v1/admin/leases', 300, false)
+    const { noteFixtureProbe, route } = await import('../fetch')
+    noteFixtureProbe(route('/v1/capacity'), 120, true)
+    noteFixtureProbe(route('/v1/admin/leases'), 300, false)
 
     const { container } = render(<Dock />)
     const line = container.querySelector<HTMLButtonElement>('.ctl-dock-line')
@@ -1089,8 +1094,8 @@ describe('the overflow inventory, as rules that cannot be quietly dropped', () =
     // right number until the band's own 1 turned out to tie with the sticky
     // table head (`.ctl-table thead th`, z 1, later in the DOM) -- the head
     // then painted over the band. What the number stood for is an ORDER, so
-    // the order is what is asserted now, derived from the sheet: every sticky
-    // table head < the band < the ✕ < the inspector's drag handle.
+    // the order is what is asserted: any positioned table cell < the band <
+    // the ✕ < the inspector's drag handle.
     // MUTATIONS: the band back to 1; the ✕ at or under the band; the grip
     // under the ✕.
     const z = (rule: string): number => {
@@ -1098,12 +1103,33 @@ describe('the overflow inventory, as rules that cannot be quietly dropped', () =
       expect(raw, 'the rule must state a numeric z-index, not default to auto').toBeDefined()
       return Number(raw)
     }
-    const heads = flatRules(STYLES).filter(
-      (r) => /thead th/.test(r.selector) && /position:\s*sticky/.test(r.body) && /z-index/.test(r.body),
+    // RE-POINTED AGAIN (WF-21): NO TABLE HEAD IS STICKY. `.ctl-table thead th`
+    // and `table.pools thead th` declared `position: sticky; top: 0; z-index:
+    // 1`, and it never took effect: both wrappers are `overflow-x: auto`, which
+    // makes the wrapper the head's scroll container on both axes, and no
+    // wrapper ever scrolls vertically. What it did do was draw every head cell
+    // as a layer of its own, the likely source of the faint seams at the
+    // Workflows Table's fractional column edges. MUTATION: put `position:
+    // sticky` back on either head.
+    const stickyHeads = flatRules(STYLES).filter(
+      (r) => /thead\s+th/.test(r.selector) && /position:\s*sticky/.test(r.body),
     )
-    expect(heads.length, 'no sticky table head found; the ordering below would be vacuous').toBeGreaterThan(0)
-    for (const h of heads) {
-      expect(z(band), `the band must paint over \`${h.selector}\``).toBeGreaterThan(z(h.body))
+    expect(
+      stickyHeads.map((r) => `${r.selector} (line ${r.line})`),
+      'a table head is sticky again, inside a wrapper that never scrolls vertically',
+    ).toEqual([])
+    // AND ANY TABLE CELL THAT IS POSITIONED AND STACKED STILL RANKS UNDER THE
+    // BAND. Nothing matches this until CH-13's sticky first column lands; the
+    // assertion above is what keeps this case from checking nothing meanwhile,
+    // and this loop covers that column the day it arrives.
+    const stackedCells = flatRules(STYLES).filter(
+      (r) =>
+        /(?:^|[\s>+~,(])(?:th|td)\b/.test(r.selector) &&
+        /position:\s*(?:sticky|relative|absolute|fixed)/.test(r.body) &&
+        /z-index:\s*\d/.test(r.body),
+    )
+    for (const c of stackedCells) {
+      expect(z(band), `the band must paint over \`${c.selector}\``).toBeGreaterThan(z(c.body))
     }
     expect(z(close), 'the ✕ must rank above the band it sits on').toBeGreaterThan(z(band))
     expect(
@@ -1191,8 +1217,8 @@ describe('the overflow inventory, as rules that cannot be quietly dropped', () =
     // from, and is invisible to a stylesheet assertion.
     vi.resetModules()
     const { Dock } = await import('../Dock')
-    const { noteFixtureProbe } = await import('../fetch')
-    noteFixtureProbe('/v1/capacity', 120, true)
+    const { noteFixtureProbe, route } = await import('../fetch')
+    noteFixtureProbe(route('/v1/capacity'), 120, true)
     const { container } = render(<Dock />)
     const boxes = [...container.querySelectorAll('.ctl-dock-facts .ctl-dock-fact')]
     expect(
@@ -1559,9 +1585,22 @@ describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
     for (const link of links) {
       const name = link.textContent
       expect(won(link, 'color', WIDE), `"${name}" at rest`).toBe('var(--text)')
-      expect(won(link, 'text-decoration-color', WIDE), `"${name}" underline`).toBe('var(--line-soft)')
+      // RE-POINTED BY CH-23: the resting underline is `--line`, the boundary
+      // token, which clears §1.2's 3:1 floor on every surface in both themes;
+      // `--line-soft` measured 2.05:1 (light) and 1.72:1 (dark) on `--surface`.
+      // `encoding.hues.test.ts` holds every underline in the sheet to 3:1.
+      // MUTATION: `--line-soft` back, or the 1px thickness floor dropped.
+      expect(won(link, 'text-decoration-color', WIDE), `"${name}" underline`).toBe('var(--line)')
+      expect(won(link, 'text-decoration-thickness', WIDE), `"${name}" underline thickness`).toBe('1px')
       expect(won(link, 'color', { ...WIDE, states: ['hover'] }), `"${name}" on hover`).toBe('var(--info)')
     }
+    // The fact strip's hover cue is the same underline (`a.ov-tile`).
+    const tile = fragment(
+      '<a class="ctl-metric ov-tile" href="#x"><span class="ctl-metric-value">4</span></a>',
+    )
+    const value = pick(tile, '.ctl-metric-value')
+    expect(won(value, 'text-decoration-color', { ...WIDE, states: ['hover'] })).toBe('var(--line)')
+    expect(won(value, 'text-decoration-thickness', { ...WIDE, states: ['hover'] })).toBe('1px')
   })
 
   it('CH-6: API reads and Help mark the current page the way a section does', () => {

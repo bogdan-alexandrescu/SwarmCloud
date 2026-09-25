@@ -511,7 +511,7 @@ function HolderTable({ rows, coverage }: { rows: LeaseRow[]; coverage: LeaseCove
           {coverage.kind === 'unreported' && ' · completeness unreported'}
         </span>
       </div>
-      <div className="ctl-table is-stacked">
+      <div className="ctl-table is-scroll">
           <table role="table">
             <thead role="rowgroup">
               <tr role="row">

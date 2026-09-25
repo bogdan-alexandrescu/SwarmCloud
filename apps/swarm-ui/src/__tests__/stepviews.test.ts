@@ -30,6 +30,7 @@ import {
   stateRankOf,
   stepTimes,
   type SortFacts,
+  type TimelineAxis,
 } from '../stepviews'
 import {
   stagedInputsOf,
@@ -215,6 +216,34 @@ describe('axisOf', () => {
     expect(axis.t1 - axis.t0).toBe(1000)
   })
 
+  it('WF-12: hangs a last label left of its line only in the last quarter of the track, and never the first', () => {
+    const ends = (a: TimelineAxis) => a.ticks.map((t) => t.end === true)
+    const spanning = (seconds: number) =>
+      axisOf(
+        [stepTimes(joined(task('a', 'SUCCEEDED', { created_at: iso(-seconds), started_at: iso(-seconds), completed_at: iso(0) })), T0)],
+        T0,
+        null,
+      )!
+    // Ten days and an hour: the step is 7d, so the last of two ticks sits at
+    // 168 / 241 of the track -- about 70%. There is room to its right, so its
+    // label faces right like every other.
+    const far = spanning(241 * 3600)
+    expect(far.ticks.map((t) => t.label)).toEqual(['0', '+7d'])
+    const farLast = pctOf(far, far.ticks[far.ticks.length - 1]!.at)
+    expect(farLast).toBeGreaterThan(65)
+    expect(farLast).toBeLessThan(75)
+    expect(ends(far)).toEqual([false, false])
+    // Twenty-one minutes: 5m steps, the last at 20 / 21 -- about 95%. It hangs.
+    const near = spanning(21 * 60)
+    expect(near.ticks.map((t) => t.label)).toEqual(['0', '+5m', '+10m', '+15m', '+20m'])
+    expect(ends(near)).toEqual([false, false, false, false, true])
+    // The first tick never hangs, including on the one-second floor, where the
+    // last tick is at 100% and there are only two.
+    const floor = spanning(1)
+    expect(ends(floor)).toEqual([false, true])
+    for (const a of [far, near, floor]) expect(ends(a)[0]).toBe(false)
+  })
+
   it('writes whole units and no zero remainders', () => {
     expect(spanLabel(300_000)).toBe('5m')
     expect(spanLabel(90_000)).toBe('1m 30s')
@@ -396,6 +425,18 @@ describe('attemptsInOrder and attemptFacts', () => {
     const e = fact(attemptFacts(attempt(1, { error: 'killed\nline two\nline three' }), OVER, T0), 'error')
     expect(e.text).toBe('killed (+2 lines)')
     expect(e.note).toBe('killed\nline two\nline three')
+  })
+
+  it('WF-21: says which timestamps "took" is read from, and points at the table’s "ran"', () => {
+    // Two different facts, not one figure disagreeing with itself: `took` is ONE
+    // attempt's own start and end (control.py:816, :930); the Table's `ran` is
+    // the task's latest start and its completion (control.py:794, :1073). They
+    // are separate utcnow() reads, so a single-attempt step can differ by about
+    // a second. Each note says which it is and points at the other.
+    const took = fact(attemptFacts(attempt(1), OVER, T0), 'took')
+    expect(took.kind).toBe('measured')
+    expect(took.note, 'the note does not say it is the attempt’s own timestamps').toMatch(/attempt’s own started_at/)
+    expect(took.note, 'the note does not point at the table’s figure').toMatch(/table’s “ran”/)
   })
 })
 

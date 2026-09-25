@@ -9,9 +9,10 @@ import {
 } from './api'
 import {
   autoTier,
-  depItems,
+  depUnits,
   edgeKinds,
   edgePath,
+  finishedResultOf,
   foldMix,
   inputsByStep,
   layoutOf,
@@ -19,11 +20,13 @@ import {
   profileMix,
   shapeOf,
   stageCensus,
+  stepCostOf,
   stepDuration,
   workflowSpend,
   CANVAS_COLUMN,
   DECLARED_WORDS,
   NEVER_STARTED_WORD,
+  PAD,
   TIER_DROPS,
   ZOOM_TIERS,
   type DagBand,
@@ -59,12 +62,15 @@ import { HelpCard } from './HelpCard'
 import { Id, Screen, timeAgo } from './Shell'
 import {
   axisOf,
+  boardResultNote,
   sameStepAcross,
   stateRankOf,
   stepOrder,
   stepTimes,
+  tokenPairCell,
   VIEW_LABEL,
   WORKFLOW_VIEWS,
+  type BoardTelemetryGap,
   type WorkflowView,
 } from './stepviews'
 import { StopRun } from './StopRun'
@@ -87,6 +93,7 @@ import {
   TERMINAL_STATES,
 } from './types'
 import {
+  SourceNote,
   StepInspector,
   StrayMark,
   UnreadableMark,
@@ -121,11 +128,14 @@ import {
  * horizontally not vertically ... top to bottom rather than left to right".
  * `dag.ts`'s layout section holds the transpose and what it costs.
  *
- * THE NODE IS THE LINK. One target, no anchors inside it: the step id and both
- * deep links resolved to the same task drawer, so the card is the anchor and
- * the stop control is its sibling. Every node keeps the three facts it has
- * always carried -- the step NAME, its STATUS and its RUNNER PROFILE -- and
- * adds the one that was missing, how long it has taken.
+ * THE NODE IS ONE TARGET, AND IT PICKS. No anchors inside it: the step id and
+ * both deep links resolved to the same task drawer, so the card became the one
+ * target and the stop control its sibling. Since the owner's WF-7 decision
+ * (epic #83) that target is a button that fills the inspector in place --
+ * nothing on the canvas navigates -- and the inspector carries `open agent →`
+ * to the drawer. Every node keeps the three facts it has always carried -- the
+ * step NAME, its STATUS and its RUNNER PROFILE -- and adds the one that was
+ * missing, how long it has taken.
  *
  * Step state is JOINED, not read off the step. `GET /v1/workflows` returns
  * steps with no state field at all; it only exists on the task a step created.
@@ -140,7 +150,8 @@ import {
  * open card has its own Graph / Timeline / Table. Both new views are in
  * `WorkflowViews.tsx` and their arithmetic in `stepviews.ts`; every row is built
  * HERE, from the node's own readers, so a step reads the same in all three.
- * Picking a step in either new view opens the INSPECTOR under it, whose two
+ * Picking a step in any of the three -- a node on the Graph too, since WF-7 --
+ * opens the INSPECTOR under it, whose two
  * scrubbers walk the step's attempts and the same step across the board's
  * other workflows.
  *
@@ -361,16 +372,27 @@ function Board({
   // MOVING THE SELECTION TO ANOTHER WORKFLOW OPENS THAT WORKFLOW. Under Rows its
   // card may be closed, and an inspector that moved into a closed card would be
   // a selection nobody can see.
+  //
+  // AND IT OPENS IN THE VIEW THE READER WAS IN (WF-10, epic #83). It opened in
+  // whatever that card's own default was -- the Graph, under Rows -- so a reader
+  // comparing one step's attempts across workflows in the Table was put back on
+  // a canvas at every press, with the step folded into a stage band. The view
+  // they chose is carried with the step they picked; a band holding the step is
+  // marked and opens to it (`WorkflowGraph`).
   const onSibling = useCallback(
     (delta: -1 | 1) => {
       if (pick === null) return
       const at = siblings.ids.indexOf(pick.workflowId)
       const target = siblings.ids[at + delta]
       if (at < 0 || target === undefined) return
+      // `viewOf` below, spelled inline because this callback is memoised on
+      // the stores it reads rather than on a closure rebuilt every render.
+      const from: WorkflowView = views[pick.workflowId] ?? (mode === 'collapsed' ? 'graph' : mode)
+      chooseView(target, from)
       openCard(target)
       choosePick({ workflowId: target, stepId: pick.stepId, focus: delta < 0 ? 'newer' : 'older' })
     },
-    [pick, siblings, openCard, choosePick],
+    [pick, siblings, views, mode, chooseView, openCard, choosePick],
   )
 
   const onFocused = useCallback(() => {
@@ -436,9 +458,9 @@ function Board({
   // DRAWN. `n/m sampled` is the coverage of the per-step attempt read -- the
   // cost, tokens and checkpoints on a Figures-tier node and in the Table's
   // columns. Under Rows no step figure is on screen at all, and the row's
-  // spend is summed from the tasks' own result summaries, a different source
-  // the sample says nothing about; the mark there was a caveat about figures
-  // nobody could see, sitting beside figures it did not qualify. The Timeline
+  // spend carries its own coverage and says how much of it came from results
+  // (WF-5); the mark there was a caveat about figures nobody could see,
+  // sitting beside figures it did not qualify. The Timeline
   // draws times from the task read, and a Graph below the Figures tier draws no
   // figure either.
   const figuresDrawn = board.workflows.some((w) => {
@@ -838,7 +860,14 @@ export function WorkflowCard({
 }) {
   const roll = rollupLine(workflow)
   const shape = shapeOf(workflow.steps)
-  const spend = workflowSpend(workflow.steps, taskById)
+  // THE SAME PER-STEP FIGURES THE NODES AND THE TABLE DRAW (WF-5): the attempt
+  // telemetry where the board read it, the result's where it did not. The row
+  // summed results alone, so it disagreed with its own nodes.
+  const spend = workflowSpend(
+    workflow.steps,
+    taskById,
+    usage.kind === 'ready' && usage.usage !== null ? usage.usage.byTaskId : null,
+  )
   const header = workflowHeaderState(workflow)
   const bodyId = `wf-body-${workflow.workflow_id}`
 
@@ -964,6 +993,7 @@ export function WorkflowCard({
               zoom={zoom}
               onZoom={onZoom}
               picked={picked}
+              onPick={pickStep}
               reload={reload}
             />
           ) : (
@@ -1013,7 +1043,7 @@ export function WorkflowCard({
  * Neither is a filled mark, so neither can be read as a state the platform
  * holds -- which is the whole of the invariant, restated as a shape.
  */
-function dotClass(header: { tone: Tone | 'unknown'; derived: boolean }): string {
+export function dotClass(header: { tone: Tone | 'unknown'; derived: boolean }): string {
   if (header.tone === 'unknown') {
     return header.derived ? 'ctl-dot' : 'ctl-dot is-underived'
   }
@@ -1024,10 +1054,16 @@ function dotClass(header: { tone: Tone | 'unknown'; derived: boolean }): string 
       return 'ctl-dot is-bad'
     case 'live':
       return 'ctl-dot is-live'
-    // QUEUED, PARKED, READY. `--info` is this sheet's "a fact, not a verdict"
-    // (§1.2), which is exactly what a waiting workflow is: it is not a
-    // failure, it is not healthy, and it is certainly not an absence.
+    // QUEUED, PARKED, READY: THE WAIT MARK AGENTS ALREADY DRAWS (CH-22). This
+    // was `is-info`, argued as "a fact, not a verdict" -- and `is-info` is now
+    // the flat bar CANCELLED ends in, so a waiting workflow and a cancelled
+    // one would have shared it. Agents' chip draws `wait` as the caution
+    // triangle (`chipTone` in AgentDetail.tsx); the workflow row, its graph
+    // node and its band now draw the same.
     case 'wait':
+      return 'ctl-dot is-warn'
+    // CANCELLED: the neutral flat bar, the one `is-info` modifier (CH-22).
+    case 'ended':
       return 'ctl-dot is-info'
   }
 }
@@ -1181,7 +1217,15 @@ function Spend({ spend }: { spend: WorkflowSpend }) {
     )
   }
   const partial = spend.covered < spend.steps
-  const note = `${spend.covered} of ${spend.steps} steps reported a cost.${
+  // WHICH RECORD THE FIGURES CAME FROM (WF-5). The total is the sum of the
+  // figures the steps themselves show, and some of those are a result's rather
+  // than the attempts' -- which the steps mark `from result`, so the total
+  // says how many.
+  const sources =
+    spend.fromResult > 0
+      ? ` (${spend.fromResult} from the step’s result summary, where no attempt telemetry read here had one)`
+      : ''
+  const note = `${spend.covered} of ${spend.steps} steps reported a cost${sources}.${
     partial ? ' The rest have not reported one, so this is a floor rather than the total.' : ''
   }`
   return (
@@ -1300,13 +1344,17 @@ function WorkflowDispatch({
           <b>dispatch</b>
           <code>{dispatch.strategy}</code>
         </li>
-        {/* `c.headline` is one short statement of what comes OUT of the run --
-            "Up to 3 pull requests — one per step." It is the answer to the
-            only question this panel exists for, so it is a fact in a fact
-            slot rather than a paragraph under one. */}
+        {/* `c.opens` IS THE CARD'S OWN SHORT VALUE (WF-13): a lowercase phrase
+            that reads after its key -- `dispatch collect · opens no pull request
+            and pushes nothing`. It printed `c.headline`, the forms' two-sentence
+            statement, so every open card read "opens No pull request. Nothing
+            is pushed." The full sentence stays where a choice is being made:
+            the Dispatch option count, the Consequence box and SubmitWorkflow's
+            outcome. Both come out of one switch in `consequenceOf`, so the
+            card and the form cannot disagree on the count. */}
         <li className="ctl-fact">
           <b>opens</b>
-          {c.headline}
+          {c.opens}
         </li>
         {dispatch.strategy === 'integrate' && integratorTaskId !== null && (
           <li className="ctl-fact">
@@ -1421,10 +1469,14 @@ function stepRows(
       // The SORT value of the cost, read off the same usage the cell was built
       // from. Null wherever the cell is an absence, so an unmeasured cost can
       // never be ranked as a small one.
+      // THE SAME FIGURE THE CELL SHOWS (WF-5): the telemetry's where it has one,
+      // the result's where it does not -- so the cost column sorts on what it
+      // prints, whichever record that is.
       const u =
         state.kind === 'state' && usage.kind === 'ready' && usage.usage !== null
           ? usage.usage.byTaskId.get(state.task.id)
           : undefined
+      const spent = state.kind === 'state' && usage.kind !== 'reading' ? stepCostOf(state.task, u) : null
       const row: StepRowModel = {
         step,
         taskId,
@@ -1435,6 +1487,12 @@ function stepRows(
         attemptsOver: attemptsOver(state),
         cost: f.cost,
         tokens: f.tokens,
+        costFrom: f.costFrom,
+        tokensFrom: f.tokensFrom,
+        // A result belongs to the attempt that FINISHED, so the inspector is
+        // offered it only for a finished task (WF-5) -- by the same rule the
+        // node, the table and the total borrow it by (`finishedResultOf`).
+        result: state.kind === 'state' ? finishedResultOf(state.task) : null,
         pending: usage.kind === 'reading' && state.kind === 'state',
         inputs: inputs.get(step.step_id) ?? NO_INPUTS,
         sort: {
@@ -1443,7 +1501,7 @@ function stepRows(
           waitedMs: times.waitedMs,
           ranMs: times.ranMs,
           attempts: state.kind === 'state' ? state.task.attempt_count : null,
-          costUsd: u !== undefined && u.attempts > 0 ? u.costUsd : null,
+          costUsd: spent === null ? null : spent.usd,
         },
       }
       return row
@@ -1707,19 +1765,23 @@ const TIER_TITLE: Readonly<Record<ZoomTier, string>> = {
  * figures nobody measured, and the distinction cannot live on the node: the
  * node is what has stopped saying things.
  *
- * SO IT LIVES ON THE CANVAS, ONCE, in the board's own chrome vocabulary. It is
- * the same argument the single `?` on this screen makes and the same argument
- * `SampleNote` makes: the fact is a property of the READ (or here, of the
- * zoom), not of any one row, and drawn per node it would be one mark per step.
+ * SO IT LIVES ON THE CANVAS, ONCE, in the board's own chrome. It is the same
+ * argument the single `?` on this screen makes: the fact is a property of the
+ * zoom, not of any one row, and drawn per node it would be one mark per step.
  *
- * `is-partial`, not `is-absent`. `.ctl-mark.is-absent` means the platform
- * reported nothing; this is a coverage statement -- part of the record is shown
- * and part is not -- which is exactly what the partial mark's one-sided dash
- * already encodes on `SampleNote`.
+ * A ZOOM IS A VIEW CHOICE, NOT A READ, SO IT TAKES NO DATA MARK (WF-14, epic
+ * #83). This was a `.ctl-mark.is-partial` -- the amber, one-sided-dash mark
+ * that says a READ came back partial, and which `SampleNote` still wears for
+ * exactly that. On a zoom it made the reader's own choice, or the automatic
+ * one made for them, look like something the platform had failed to report.
+ * It is `.wf-zoom-note` now: the same words, faint mono type, no border, no
+ * dash and no hue. The explanatory sentence is its accessible name and its
+ * title, so nothing it said is lost.
  *
- * SILENT AT THE FULL TIER, because `TIER_DROPS.figures` is empty. A mark saying
- * "nothing is hidden" on every canvas that fits would be noise of the kind
- * §8.4 removed from this screen twice already.
+ * SILENT AT THE FULL TIER, because `TIER_DROPS.figures` is empty, and shown
+ * whenever the drawn tier drops fields, under Auto as well as under a chosen
+ * tier. A note saying "nothing is hidden" on every canvas that fits would be
+ * noise of the kind §8.4 removed from this screen twice already.
  */
 function ZoomNotice({ tier, choice }: { tier: ZoomTier; choice: ZoomChoice }) {
   const dropped = TIER_DROPS[tier]
@@ -1731,20 +1793,13 @@ function ZoomNotice({ tier, choice }: { tier: ZoomTier; choice: ZoomChoice }) {
   const head = dropped.slice(0, -1).join(', ')
   const tail = dropped[dropped.length - 1] ?? ''
   const list = head === '' ? tail : `${head} and ${tail}`
+  const sentence =
+    `This canvas is drawn at the ${TIER_LABEL[tier]} zoom` +
+    (choice === 'auto' ? ', chosen automatically so that the widest stage fits the column' : ', which you chose') +
+    `, so no step is drawing its ${list}. That is a decision about the zoom and not a fact about the steps: every one of those fields still exists and is still measured or still absent exactly as it was. Choose Figures above, or open a step, to see them.`
   return (
-    <span className="wf-caveat" role="status">
-      <span
-        className="ctl-mark is-partial"
-        aria-label={
-          `This canvas is drawn at the ${TIER_LABEL[tier]} zoom` +
-          (choice === 'auto'
-            ? ', chosen automatically so that the widest stage fits the column'
-            : ', which you chose') +
-          `, so no step is drawing its ${list}. That is a decision about the zoom and not a fact about the steps: every one of those fields still exists and is still measured or still absent exactly as it was. Choose Figures above, or open a step, to see them.`
-        }
-      >
-        {list} not drawn
-      </span>
+    <span className="wf-caveat wf-zoom-note" role="status" aria-label={sentence} title={sentence}>
+      {list} not drawn
     </span>
   )
 }
@@ -1762,7 +1817,7 @@ function ZoomNotice({ tier, choice }: { tier: ZoomTier; choice: ZoomChoice }) {
  * `role="img"` with the whole position stated in its accessible name, plus a
  * pointer shortcut for people who have a pointer. Everything it does is
  * reachable without it: the wrapper scrolls natively (wheel, trackpad,
- * touch, the scrollbar), every node is an `<a>` in the tab order and focusing
+ * touch, the scrollbar), every node is a `<button>` in the tab order and focusing
  * one scrolls it into view, and every band is a `<button>`. A `role="img"` was
  * chosen over a `<button>` deliberately -- a button whose only meaningful
  * activation is "the x coordinate you clicked at" is a button a keyboard cannot
@@ -1915,6 +1970,7 @@ function WorkflowGraph({
   zoom,
   onZoom,
   picked,
+  onPick,
   reload,
 }: {
   workflow: Workflow
@@ -1926,6 +1982,8 @@ function WorkflowGraph({
   onZoom?: (id: string, choice: ZoomChoice) => void
   /** The step the inspector is on, outlined so the canvas says which one it is. */
   picked: string | null
+  /** Clicking a node puts its step in the inspector (WF-7). */
+  onPick: (stepId: string) => void
   reload: () => void
 }) {
   const now = useNow()
@@ -1986,6 +2044,85 @@ function WorkflowGraph({
     },
     [syncView],
   )
+
+  // A STAGE BAND HOLDING THE PICKED STEP OPENS TO IT (WF-10, epic #83). When
+  // the scrubber carries a step into this workflow, or a step picked in the
+  // Table is looked at on the Graph, the step may be one of thirteen folded
+  // into a band -- picked, and nowhere on the canvas. So the stage opens, and
+  // the canvas is brought round to the step (below). Only when the pick
+  // ARRIVES: a reader who closes the stage again while the step is still
+  // picked is not overruled on the next render.
+  const pickedLevel = picked === null ? -1 : levels.findIndex((l) => l.some((s) => s.step_id === picked))
+  const pickedFolded = pickedLevel >= 0 && layout.wide[pickedLevel] === true && !expandedStages.has(pickedLevel)
+  const bringIntoView = useRef<'picked' | null>(null)
+  useEffect(() => {
+    if (!pickedFolded) return
+    bringIntoView.current = 'picked'
+    onToggleStage(stageKey(workflow.workflow_id, pickedLevel), false)
+    // On the pick's arrival only -- see above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [picked, workflow.workflow_id])
+
+  // THE CANVAS OPENS ON ITS START, NOT ON AN EMPTY LANE (WF-9, epic #83).
+  // Levels are centred against the widest one -- kept, by the owner's decision
+  // -- so on a canvas wider than its column the start node sits in the middle
+  // and the wrapper, opening at scrollLeft 0, showed the empty left of the
+  // widest level instead: at 390 an empty `starts` lane with the start node
+  // off to the right, and an opened 13-wide stage showed blank levels. So on
+  // mount, and whenever a stage is OPENED (the canvas widens and the start
+  // moves to its new middle), the wrapper scrolls the roots into view, centred
+  // in the part of the column the sticky rail does not cover. When the stage
+  // opened because the picked step was in it, the picked step is brought into
+  // view instead.
+  const opened = [...expandedStages].sort((a, b) => a - b).join(',')
+  const seenOpen = useRef<string | null>(null)
+  useLayoutEffect(() => {
+    const before = seenOpen.current
+    seenOpen.current = opened
+    const grew =
+      before === null ||
+      opened
+        .split(',')
+        .some((k) => k !== '' && !before.split(',').includes(k))
+    if (!grew) return
+    const el = wrapRef.current
+    if (el === null || el.clientWidth <= 0) return
+    const wantPicked = bringIntoView.current === 'picked'
+    bringIntoView.current = null
+    const pickedNode = wantPicked ? layout.nodes.find((n) => n.step.step_id === picked) : undefined
+    let span: readonly [number, number] | null = null
+    if (pickedNode !== undefined) {
+      span = [pickedNode.x, pickedNode.x + layout.nodeW]
+    } else if (layout.wide[0] === true) {
+      const band = layout.bands.find((b) => b.level === 0)
+      if (band !== undefined) span = [band.x, band.x + band.w]
+    } else {
+      const roots = layout.nodes.filter((n) => n.level === 0)
+      if (roots.length > 0) {
+        span = [Math.min(...roots.map((n) => n.x)), Math.max(...roots.map((n) => n.x)) + layout.nodeW]
+      }
+    }
+    if (span === null) return
+    // The canvas sits after the sticky rail and the graph's gap; both are read
+    // off the rendered boxes (0 where nothing is laid out, as in jsdom).
+    const rail = el.querySelector<HTMLElement>('.wf-levels')
+    const graph = el.querySelector<HTMLElement>('.wf-graph')
+    const railW = rail?.offsetWidth ?? 0
+    const gap = graph === null ? 0 : Number.parseFloat(getComputedStyle(graph).columnGap) || 0
+    const canvasLeft = railW + gap
+    const visible = el.clientWidth - railW
+    const [from, to] = span
+    const left =
+      to - from <= visible
+        ? canvasLeft + (from + to) / 2 - railW - visible / 2
+        : canvasLeft + from - railW - PAD
+    el.scrollLeft = Math.max(0, Math.min(left, el.scrollWidth - el.clientWidth))
+    syncView()
+    // On mount and when a stage opens, and on nothing else: the 1Hz clock
+    // re-renders this canvas every second, and a scroll that followed every
+    // render would take the canvas out of the reader's hands.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [opened])
 
   // `levels`, NOT `layout.nodes`. A workflow whose every stage is collapsed has
   // no nodes and is emphatically not empty -- testing the node count would have
@@ -2187,6 +2324,7 @@ function WorkflowGraph({
                     state={stepState(n.step, taskById)}
                     inputs={inputs.get(n.step.step_id) ?? NO_INPUTS}
                     picked={picked === n.step.step_id}
+                    onPick={onPick}
                     workflow={workflow}
                     now={now}
                     usage={usage}
@@ -2216,6 +2354,7 @@ function WorkflowGraph({
                 band={b}
                 census={stageCensus(b.steps, taskById)}
                 controls={stageDomId(workflow.workflow_id, b.level)}
+                picked={picked !== null && b.steps.some((s) => s.step_id === picked) ? picked : null}
                 onToggle={() => onToggleStage(stageKey(workflow.workflow_id, b.level), b.expanded)}
               />
             ))}
@@ -2264,11 +2403,18 @@ function StageBand({
   band,
   census,
   controls,
+  picked,
   onToggle,
 }: {
   band: DagBand
   census: StageCensus
   controls: string
+  /**
+   * The picked step's id when it is one of this stage's steps (WF-10). The
+   * band is marked with it -- a picked step folded into a band was picked and
+   * nowhere on the canvas -- and `WorkflowGraph` opens the stage to it.
+   */
+  picked: string | null
   onToggle: () => void
 }) {
   // `failed` ONLY -- which already counts DEAD_LETTERED (`stageCensus`). A
@@ -2285,6 +2431,9 @@ function StageBand({
     // declared after it). Two facts, two properties, one border.
     census.unread > 0 ? 'has-unread' : '',
     broken ? 'has-failure' : '',
+    // THE SELECTION IS NOT A STATE, so it takes no hue: the same three-sided
+    // `--text` outline `.node.is-picked` draws, and a word (WF-10).
+    picked !== null ? 'holds-picked' : '',
     // NO `is-open` MODIFIER. Open and closed are told apart by the caret, which
     // is the same glyph in the same slot that `.wf-bar` uses one level up for
     // the same gesture; a second visual channel for it would be teaching a
@@ -2302,7 +2451,7 @@ function StageBand({
       // `aria-controls` pointing at an id that is not in the document is worse
       // than omitting it: it tells a screen reader there is somewhere to go.
       aria-controls={band.expanded ? controls : undefined}
-      aria-label={`${census.sentence} ${
+      aria-label={`${census.sentence}${picked === null ? '' : ` It holds the picked step, ${picked}.`} ${
         band.expanded
           ? 'Activate to collapse this stage back to one band.'
           : `Activate to draw all ${census.steps} steps.`
@@ -2320,6 +2469,11 @@ function StageBand({
           </span>
         ))}
       </span>
+      {/* WHICH STEP IS PICKED IN HERE, by name, on the band itself (WF-10). It
+          never gives way to the counts: the counts clip and the failures are
+          first, so what the clip costs is the end of the census, which the
+          band's name still carries whole. */}
+      {picked !== null && <span className="wf-band-pick">{picked}</span>}
       {/* The same glyph and the same column as the workflow row's own caret,
           because it is the same gesture one level down. */}
       <span className="wf-caret" aria-hidden>
@@ -2382,6 +2536,7 @@ function StepNode({
   state,
   inputs,
   picked,
+  onPick,
   workflow,
   now,
   usage,
@@ -2398,6 +2553,8 @@ function StepNode({
   inputs: StepInputs
   /** The inspector is on this step. */
   picked: boolean
+  /** Put this step in the inspector, or take it out again (WF-7). */
+  onPick: (stepId: string) => void
   workflow: Workflow
   now: number
   usage: UsageRead
@@ -2438,40 +2595,41 @@ function StepNode({
   // what an absent or unrecognised block means, and a second one here is how
   // two screens start disagreeing about the same task.
   const role = state.kind === 'state' ? (dispatchOf(state.task)?.role ?? null) : null
-  const taskId = state.kind === 'state' ? state.task.id : state.kind === 'unknown' ? state.taskId : null
 
-  // THE WHOLE CARD IS THE LINK, AND THERE IS NOTHING LINKED INSIDE IT.
+  // THE WHOLE CARD IS ONE TARGET, AND IT PICKS THE STEP (WF-7, epic #83).
   //
-  // The owner's words: "The agent task node should be clicable not have links
-  // inisde it if all of them point to the same page or section." There were
-  // THREE anchors on this node and all three landed on the same page: the step
-  // id and `input & output →` both went to `#work/task/<id>`, and
-  // `attempts →` went to `#work/task/<id>/attempts`, which `App.tsx` resolves
-  // to the SAME drawer with its second tab selected -- one click away once you
-  // are there, and reachable from the drawer's own tab strip. So all three
-  // collapse into one target and `.node-links` is gone entirely.
+  // The owner's words, which made the card one target: "The agent task node
+  // should be clicable not have links inisde it if all of them point to the
+  // same page or section." There were three anchors on this node and all three
+  // landed on the same drawer, so they became one: the card. That target was
+  // an anchor to `#work/task/<id>` -- so clicking a step on the Graph left the
+  // workflow for the Work › Agents drawer, while the Timeline and the Table
+  // picked the same step into the inspector. redesign-v2 §2.3 says "Selecting
+  // any node in any mode fills the inspector. Nothing navigates", and the
+  // owner decided for it: the card is a BUTTON that fills the inspector in
+  // place, pressed while its step is the one inspected, and the inspector
+  // carries `open agent →` to the drawer. A step with no task is pickable too
+  // -- it has facts to show -- and its inspector offers no link, so there is
+  // no dead one.
   //
-  // HOW THE STOP CONTROL SURVIVES THAT, which is the constraint the old shape
-  // was built around: a `<button>` inside an `<a>` is invalid HTML, so the node
-  // used to be a plain `<div>` with the anchor on the id alone. The card is the
-  // anchor now, and the stop control is its SIBLING inside `.node-slot` --
-  // absolutely positioned into a strip the card reserves with padding. Nothing
-  // is nested in anything it may not be, the button is still a real button, and
-  // every `title` on this card still belongs to a real ancestor of the element
-  // it explains rather than sitting under a transparent overlay. That last
-  // point is load-bearing: `.node-num`'s `title` is the CAUSE of an absence,
-  // and a stretched-link overlay would have swallowed every one of them.
-  // The card's contents, written once and mounted into either an `<a>` or a
-  // `<div>` below. Not a component: it closes over everything already computed
-  // here, and a second component would be a second place to forget a fact.
+  // HOW THE STOP CONTROL SURVIVES THAT, which is the constraint this shape was
+  // built around: a `<button>` inside a `<button>` is invalid HTML exactly as
+  // one inside an `<a>` was. So the stop control stays the card's SIBLING
+  // inside `.node-slot`, absolutely positioned into a strip the card reserves
+  // with padding. Nothing is nested in anything it may not be, and every
+  // `title` on this card still belongs to a real ancestor of the element it
+  // explains rather than sitting under a transparent overlay. That last point
+  // is load-bearing: `.node-num`'s `title` is the CAUSE of an absence, and a
+  // stretched overlay would have swallowed every one of them.
+  //
+  // The card's contents, written once. Not a component: it closes over
+  // everything already computed here, and a second component would be a second
+  // place to forget a fact.
   const body = (
     <>
       <div className="node-id">
-        {/* The step NAME. It is no longer its own anchor -- the card around it
-            is -- but a step the workflow has not reached still has nothing to
-            open, so that card is a plain `<div>` and the name is not a dead
-            link. */}
-        {taskId ? <span className="node-name">{step.step_id}</span> : step.step_id}
+        {/* The step NAME. */}
+        <span className="node-name">{step.step_id}</span>
         {/* A ZOOM FIELD, AND THE FIRST ONE TO GO. The tag and its margin are
             96px -- more than two thirds of a `names` node -- and it marks ONE
             step in a workflow. Spending it on every card in a stage to label the
@@ -2566,6 +2724,7 @@ function StepNode({
           <NodeNum label="ckpts" cell={f.checkpoints} pending={pending} />
         </dl>
       )}
+      {f !== null && <NodeSource f={f} pending={pending} />}
 
       {/* THE DEPENDENCY LIST, AND ITS ARROW NOW POINTS THE WAY THE GRAPH RUNS.
           It read `← plan` when parents were to the left; parents are ABOVE, so
@@ -2579,24 +2738,35 @@ function StepNode({
           it names parents this workflow does not contain -- which is exactly
           the case that draws no edge at all. */}
       {/* A DEPENDENCY THAT STAGES A FILE NAMES IT: `↑ plan (plan.md)`. The
-          text is `depItems`, which is also what `heightOf` wraps, so the line
-          and the box it is measured into are one string. The file carries its
-          own arrival state -- solid when a result reported it staged, a dashed
-          rule when nothing has (the absence mark), with which kind of not-yet
-          on its title. */}
+          file carries its own arrival state -- solid when a result reported it
+          staged, a dashed rule when nothing has (the absence mark), with which
+          kind of not-yet on its title.
+
+          DRAWN AS UNITS THE LINE MAY MOVE BUT NOT SPLIT (WF-19). Every parent
+          id and every `(file)` is one `.node-dep-item`, an inline-block, with
+          the separating comma inside the unit it follows; a plain space goes
+          between units. The line wrapped at hyphens -- `check-` / `3`, `(cc-` /
+          `checkpoint.md` -- and a split id is two things to rejoin and a copied
+          half is not an id. A unit longer than a whole line still wraps inside
+          its own box, so nothing is truncated. The list is `depUnits`, which is
+          also what `heightOf` packs, so the line and the box it is measured
+          into break in the same places. */}
       {step.depends_on.length > 0 && (
         <div className="node-dep" title={`depends on ${step.depends_on.join(', ')}`}>
           ↑{' '}
-          {depItems(step).map((d, i) => (
-            <Fragment key={d.parent}>
-              {i > 0 ? ', ' : ''}
-              {d.file === null ? (
-                d.parent
-              ) : (
-                <>
-                  {d.parent} <DepFile file={d.file} provenance={inputs.declared.get(d.parent) ?? null} />
-                </>
-              )}
+          {depUnits(step).map((u, i) => (
+            <Fragment key={`${u.kind}:${u.parent}`}>
+              {i > 0 ? ' ' : ''}
+              <span className="node-dep-item">
+                {u.file === null ? (
+                  u.text
+                ) : (
+                  <>
+                    <DepFile file={u.file} provenance={inputs.declared.get(u.parent) ?? null} />
+                    {u.text.endsWith(',') ? ',' : ''}
+                  </>
+                )}
+              </span>
             </Fragment>
           ))}
         </div>
@@ -2606,27 +2776,23 @@ function StepNode({
 
   return (
     <div className="node-slot" style={{ left: x, top: y, width: w, height: h }}>
-      {taskId ? (
-        <a
-          className={`node ${p.tone} zoom-${tier}${picked ? ' is-picked' : ''}`}
-          title={p.title}
-          href={`#work/task/${encodeURIComponent(taskId)}`}
-        >
-          {body}
-        </a>
-      ) : (
-        <div className={`node ${p.tone} zoom-${tier}${picked ? ' is-picked' : ''}`} title={p.title}>
-          {body}
-        </div>
-      )}
+      <button
+        type="button"
+        className={`node ${p.tone} zoom-${tier}${picked ? ' is-picked' : ''}`}
+        title={p.title}
+        aria-pressed={picked}
+        onClick={() => onPick(step.step_id)}
+      >
+        {body}
+      </button>
       {/* B28, on the node. Only when the step's TASK was actually joined: a
           step whose state is `unknown` was not in the task read, and offering
           to stop something this screen could not read would be acting on a
           guess. `StopRun` then decides for itself whether the state is one the
           cancel route accepts, so a terminal node draws nothing at all.
 
-          A SIBLING OF THE CARD, NOT A CHILD OF IT. The card is an `<a>` now and
-          a `<button>` may not live inside one. It sits in the strip `.node`
+          A SIBLING OF THE CARD, NOT A CHILD OF IT. The card is a `<button>`
+          (WF-7) and a button may not live inside one. It sits in the strip `.node`
           reserves at its foot, so it overlaps nothing -- `NODE_H` counts that
           strip. */}
       {state.kind === 'state' && (
@@ -2721,6 +2887,13 @@ interface StepFigures {
   tokens: Cell
   checkpoints: Cell
   /**
+   * `result` where `cost` / `tokens` is the step's result summary's figure
+   * rather than its attempts' (WF-5). Every view marks such a figure
+   * `from result`; null for a telemetry figure and for an absence.
+   */
+  costFrom: 'result' | null
+  tokensFrom: 'result' | null
+  /**
    * The single sentence explaining the usage absences, or null if measured.
    *
    * NO LONGER RENDERED AS A PARAGRAPH. It is the flag the node reads to decide
@@ -2736,20 +2909,21 @@ interface StepFigures {
  * THE NODE IS THE WAY IN.
  *
  * This was a plain `<div>` with no href and no onClick, so from "draft is
- * parked" there was no click that reached `draft`. It is now an `<a>` to
- * `#work/task/<id>` -- the route App.tsx already resolves to the full agent
- * run: runtime environment, attempts, spend, duration, logs, checkpoints,
- * artifacts and outputs. An anchor rather than a click handler on purpose: it
- * is middle-clickable, copyable, and reachable by keyboard without this file
- * reimplementing any of that.
+ * parked" there was no click that reached `draft`. It became an `<a>` to
+ * `#work/task/<id>`, and since WF-7 it is a button that picks the step into the
+ * inspector, whose `open agent →` is that same anchor -- the route App.tsx
+ * already resolves to the full agent run: runtime environment, attempts,
+ * spend, duration, logs, checkpoints, artifacts and outputs. An anchor rather
+ * than a click handler on purpose: it is middle-clickable, copyable, and
+ * reachable by keyboard without this file reimplementing any of that.
  *
- * A step with NO TASK is not a link, and says why. A dead link to a task that
+ * A step with NO TASK gets no link, and says why. A dead link to a task that
  * does not exist would be the same defect one level down.
  *
- * A step whose task id we hold but whose task the read did not return IS a
- * link: the task exists, the run page fetches it by id, and the fact that this
- * board's page of 200 tasks did not include it says nothing about whether the
- * run can be opened.
+ * A step whose task id we hold but whose task the read did not return DOES get
+ * the link: the task exists, the run page fetches it by id, and the fact that
+ * this board's page of 200 tasks did not include it says nothing about whether
+ * the run can be opened.
  */
 /**
  * HOW LONG THE STEP HAS BEEN RUNNING, or the reason that is not a number.
@@ -2786,7 +2960,18 @@ function ranCell(task: Task, now: number): Cell {
     })
   }
   if (Number.isFinite(completed)) {
-    return measuredCell(durationText(completed - started), 'Start to finish, including any provider wait and any park.')
+    // WHICH TIMESTAMPS, AND THE OTHER FIGURE THEY ARE NOT (WF-21). The task's
+    // `started_at` is rewritten at each attempt's DISPATCHED -> STARTING
+    // (control.py:794) and `completed_at` is written at the end
+    // (control.py:1073); the inspector's `took` reads one attempt's own
+    // timestamps instead (control.py:816, :930). Separate utcnow() reads, so
+    // the two can differ by about a second. This said "and any park", which
+    // was false: a park ENDS the attempt and the next start rewrites
+    // started_at, which is why the Timeline counts earlier attempts as waiting.
+    return measuredCell(
+      durationText(completed - started),
+      'From this task’s latest started_at, rewritten at each attempt’s start, to its completed_at. The inspector’s “took” times one attempt from its own start and end instead -- separate writes, so for a single attempt the two can differ by about a second.',
+    )
   }
   if (terminal) {
     return absentCell(FINISH_NOT_RECORDED)
@@ -2819,6 +3004,23 @@ const RUNNING_NOW: ReadonlySet<TaskState> = new Set<TaskState>(['STARTING', 'RUN
  * sample has figures this board chose not to fetch; a step whose attempt read
  * failed has figures that could not be fetched. One "—" for all four sends an
  * operator to four different places at random.
+ *
+ * AND A SECOND SOURCE FOR TWO OF THEM (WF-5, epic #83). Where the attempt
+ * telemetry has no cost or no tokens for a step -- outside the sample, a read
+ * that failed, or attempts that carry no typed figure -- the step's result
+ * summary may still have reported one, and the row's total was already
+ * counting it. That figure is shown, and marked `from result` wherever it is
+ * drawn, because the result describes only the attempt that finished and the
+ * telemetry sums every attempt: two records, not one. Only where NEITHER has a
+ * figure does the absence word stand, and it is the word for why the
+ * telemetry is missing. Checkpoints have no second source.
+ *
+ * TWO RULES THE FIRST VERSION OF THIS BROKE (#160 review). The result is
+ * borrowed only for a FINISHED task (`finishedResultOf`): a step running its
+ * second attempt still carries its failed first attempt's result, and the
+ * inspector never offered that one. And the figure's note says what THIS
+ * board read (`boardResultNote`): outside the sample, or where the read failed,
+ * the board read no attempt document, so it may not say what one carries.
  */
 function figuresFor(state: StepState, usage: UsageRead, now: number): StepFigures {
   const allAbsent = (a: Absence): StepFigures => ({
@@ -2826,6 +3028,8 @@ function figuresFor(state: StepState, usage: UsageRead, now: number): StepFigure
     cost: absentCell(a),
     tokens: absentCell(a),
     checkpoints: absentCell(a),
+    costFrom: null,
+    tokensFrom: null,
     why: a.note,
   })
 
@@ -2842,39 +3046,75 @@ function figuresFor(state: StepState, usage: UsageRead, now: number): StepFigure
       text: 'reading',
       note: 'The attempt read for this step is still in flight.',
     }
-    return { ran, cost: absentCell(pending), tokens: absentCell(pending), checkpoints: absentCell(pending), why: null }
+    return {
+      ran,
+      cost: absentCell(pending),
+      tokens: absentCell(pending),
+      checkpoints: absentCell(pending),
+      costFrom: null,
+      tokensFrom: null,
+      why: null,
+    }
   }
 
-  const absentUsage = (a: Absence): StepFigures => ({
-    ran,
-    cost: absentCell(a),
-    tokens: absentCell(a),
-    checkpoints: absentCell(a),
-    why: a.note,
-  })
+  // THE RESULT'S FIGURES, for wherever the telemetry has none -- and only once
+  // the task has finished, which is when the result is its newest attempt's.
+  // `gap` is why the telemetry has none, and the note says so.
+  const result = finishedResultOf(state.task)
+  const costOrResult = (own: Cell, gap: BoardTelemetryGap): { cell: Cell; from: 'result' | null } =>
+    own.kind === 'absent' && result !== null && result.usd !== null
+      ? { cell: costCell(result.usd, boardResultNote(gap)), from: 'result' }
+      : { cell: own, from: null }
+  const tokensOrResult = (own: Cell, gap: BoardTelemetryGap): { cell: Cell; from: 'result' | null } =>
+    own.kind === 'absent' && result !== null && (result.inputTokens !== null || result.outputTokens !== null)
+      ? { cell: tokenPairCell(result.inputTokens, result.outputTokens, boardResultNote(gap)), from: 'result' }
+      : { cell: own, from: null }
+
+  const absentUsage = (a: Absence, gap: BoardTelemetryGap): StepFigures => {
+    const cost = costOrResult(absentCell(a), gap)
+    const tokens = tokensOrResult(absentCell(a), gap)
+    return {
+      ran,
+      cost: cost.cell,
+      tokens: tokens.cell,
+      checkpoints: absentCell(a),
+      costFrom: cost.from,
+      tokensFrom: tokens.from,
+      why: a.note,
+    }
+  }
 
   if (usage.kind === 'failed') {
-    return absentUsage({ text: USAGE_NOT_READ.text, note: `${USAGE_NOT_READ.note} (${usage.detail})` })
+    return absentUsage({ text: USAGE_NOT_READ.text, note: `${USAGE_NOT_READ.note} (${usage.detail})` }, 'not-read')
   }
-  if (usage.usage === null) return absentUsage(USAGE_NOT_SAMPLED)
+  if (usage.usage === null) return absentUsage(USAGE_NOT_SAMPLED, 'not-sampled')
 
   const failed = usage.usage.failed.get(taskId)
   if (failed !== undefined) {
-    return absentUsage({ text: USAGE_NOT_READ.text, note: `${USAGE_NOT_READ.note} (${failed})` })
+    return absentUsage({ text: USAGE_NOT_READ.text, note: `${USAGE_NOT_READ.note} (${failed})` }, 'not-read')
   }
   const u = usage.usage.byTaskId.get(taskId)
-  if (u === undefined) return absentUsage(USAGE_NOT_SAMPLED)
+  if (u === undefined) return absentUsage(USAGE_NOT_SAMPLED, 'not-sampled')
   // The read succeeded and there is nothing to sum. A FOURTH thing, and not
   // "the runner reported no cost": nothing has run.
-  if (u.attempts === 0) return absentUsage(NO_ATTEMPT_YET)
+  if (u.attempts === 0) return absentUsage(NO_ATTEMPT_YET, 'no-attempt')
 
-  return {
-    ran,
-    cost: costCell(
+  // Read, and summed: where it has no figure, no attempt document carried one,
+  // which is the inspector's own note and true here for the same reason.
+  const cost = costOrResult(
+    costCell(
       u.costUsd,
       `Summed over ${u.attemptsWithCost} of ${u.attempts} attempt${u.attempts === 1 ? '' : 's'} that reported one. Token cost only — no infrastructure cost is recorded anywhere.`,
     ),
-    tokens: tokensOf(u),
+    'untyped',
+  )
+  const tokens = tokensOrResult(tokensOf(u), 'untyped')
+  return {
+    ran,
+    cost: cost.cell,
+    costFrom: cost.from,
+    tokens: tokens.cell,
+    tokensFrom: tokens.from,
     // COUNTED, not reported: the attempt document carries its own list of
     // checkpoint ids, so this figure is never absent once the attempts are in
     // hand, and a zero here IS the measurement. It renders as a digit while its
@@ -2938,7 +3178,48 @@ function NodeNum({ label, cell, pending }: { label: string; cell: Cell; pending:
   return (
     <div className={`node-num ${cls}`.trimEnd()} title={cell.note || undefined}>
       <dt>{label}</dt>
+      {/* THE FIGURE AND NOTHING ELSE, in a column budgeted for exactly that.
+          Where it came from is `.node-src`, the line under the four (WF-5);
+          sharing this column, the note ellipsed to `…` beside a token figure
+          and the figure itself was clipped past 173px. */}
       <dd>{pending ? <span className="node-reading" aria-label="reading" /> : cell.text}</dd>
+    </div>
+  )
+}
+
+/**
+ * WHICH OF THE NODE'S FIGURES ARE THE STEP'S RESULT'S (WF-5): `cost · tokens
+ * from result`, on a line of its own under the four.
+ *
+ * IT WAS BESIDE EACH FIGURE, in the figure's own column, and that column has
+ * room for a 20-character figure and nothing else (#160 review): beside `21.4k
+ * in · 3.2k out` the note showed as `…`, and a wider figure was cut with no
+ * mark. Widening every Figures-tier node by the note's 84px would take
+ * `STAGE_FITS` from 3 to 2 and send a three-wide stage to `details`, where no
+ * figure is drawn at all. So the note has a row, which names the figures it is
+ * about -- the labels on their own rows above -- and the words are the one
+ * spelling the table and the inspector print beside theirs (`SourceNote`).
+ *
+ * RENDERED ON EVERY FIGURES-TIER NODE, EMPTY WHEN NOTHING IS BORROWED, and
+ * `nodeHeightAt('figures')` counts it. Whether a figure is the result's is
+ * known only when the attempt read lands, and a card that grew a row then
+ * would push every level beneath it down the page. Silent while that read is
+ * in flight: a placeholder makes no claim, so there is nothing to source.
+ */
+function NodeSource({ f, pending }: { f: StepFigures; pending: boolean }) {
+  const sourced = pending
+    ? []
+    : [
+        f.costFrom === 'result' && f.cost.kind === 'measured' ? 'cost' : null,
+        f.tokensFrom === 'result' && f.tokens.kind === 'measured' ? 'tokens' : null,
+      ].filter((x): x is string => x !== null)
+  return (
+    <div className="node-src">
+      {sourced.length > 0 && (
+        <>
+          {sourced.join(' · ')} <SourceNote />
+        </>
+      )}
     </div>
   )
 }
