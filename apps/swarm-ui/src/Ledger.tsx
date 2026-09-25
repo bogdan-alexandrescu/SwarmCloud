@@ -17,7 +17,13 @@
 //     `k of n`;
 //   * a list cut short says `showing 20 of N` in a caption with the total;
 //   * a row whose parts could not be read is kept, with the not-read mark,
-//     rather than dropped.
+//     rather than dropped;
+//   * EVERY CARD SAYS HOW MUCH OF THE SPAN IT COVERS. The route sums each
+//     card over the buckets it read, so when one was not read the card-note
+//     carries the partial mark and `read of n <unit>` (§8.6's coverage note),
+//     an empty card says it is empty over the buckets read -- not "a real
+//     zero" -- and when NONE was read the card draws the not-read mark and no
+//     digit at all: its zeroes are sums over nothing.
 //
 // No card restates the contract's arithmetic. The failure classes arrive in
 // the server's fixed order (`vocab`), with its labels; this file never sorts
@@ -32,14 +38,18 @@ import {
   bucketName,
   interval,
   money,
+  nothingReadWords,
   pct,
   secs,
+  spanCoverage,
   unreadWords,
   type CostCell,
   type GroupBy,
   type GroupRow,
   type LatencyOutcome,
+  type LedgerView,
   type Outcomes,
+  type SpanCoverage,
   type Stat,
 } from './outcomes'
 import { Absent, Mark, UtilTrack } from './primitives'
@@ -48,6 +58,7 @@ import {
   CONCURRENCY_STATES,
   PARK_NEEDS_A_PERSON,
   pluralise,
+  timeAgo,
   type Stats,
   type TaskPage,
 } from './types'
@@ -129,7 +140,8 @@ function Row({
 /**
  * One column per bucket, on the chart's own buckets, highlighting the pick. No
  * text inside, so it is drawn at one width without scaling any type; hidden
- * below 900px by the sheet, and not drawn at all past `STRIP_MAX_BUCKETS`.
+ * below 900px by the sheet, and in any card too narrow for its band's row
+ * (`STRIP_BANDS`), and not drawn at all past `STRIP_MAX_BUCKETS`.
  */
 function Strip({
   values,
@@ -146,7 +158,14 @@ function Strip({
   const h = 16
   const w = values.length * col
   return (
-    <svg className="ol-strip" width={w} height={h} viewBox={`0 0 ${w} ${h}`} role="img" aria-label={label}>
+    <svg
+      className={`ol-strip is-n${stripBand(values.length)}`}
+      width={w}
+      height={h}
+      viewBox={`0 0 ${w} ${h}`}
+      role="img"
+      aria-label={label}
+    >
       <HatchDef id={hatch} />
       {pickedAt >= 0 && <rect className="ol-sel" x={pickedAt * col} y={0} width={col} height={h} />}
       {values.map((v, i) =>
@@ -165,6 +184,66 @@ function Strip({
 /** The picked bucket's index, for the strips. */
 function pickedIndex(data: Outcomes, picked: string | null): number {
   return picked === null ? -1 : data.buckets.findIndex((b) => b.start === picked)
+}
+
+/**
+ * THE STRIP'S BAND: the most buckets a strip in it holds. A card's row is
+ * name (>=104px) · track (>=48px) · count (44px) · strip, 8px apart -- 220px
+ * before a strip of 6px a bucket -- so the sheet can only tell whether a
+ * strip FITS its card from how many buckets it draws. Each band has a
+ * `@container ol-card` rule (styles.css) that shows it once the card body is
+ * 220 + 6 x band px wide: 304, 364, 406, 490, 580.
+ */
+export const STRIP_BANDS = [14, 24, 31, 45, STRIP_MAX_BUCKETS] as const
+
+export function stripBand(n: number): number {
+  return STRIP_BANDS.find((b) => n <= b) ?? STRIP_MAX_BUCKETS
+}
+
+/**
+ * A card-note with the span's coverage fused to it: plain when every bucket
+ * was read; `· partial read of n <unit>` when one was not. With none read the
+ * card draws `NotRead` instead of a note.
+ */
+function coverNote(cov: SpanCoverage, what: string, base: ReactNode): ReactNode {
+  if (cov.complete || cov.none) return base
+  return (
+    <>
+      {base} ·{' '}
+      <Mark
+        kind="partial"
+        say={`${what} covers ${cov.read} of the span's ${cov.of} ${cov.unit}; the rest could not be read (${cov.reasons.join('; ')}), so every figure here is a floor.`}
+      />{' '}
+      {cov.read} of {cov.of} {cov.unit}
+    </>
+  )
+}
+
+/** A card over a span of which nothing was read: the not-read mark and the reason, and no digit. */
+function NotRead({ cov, what }: { cov: SpanCoverage; what: string }) {
+  return (
+    <p className="ol-line ol-not-read">
+      <Mark
+        kind="unread"
+        say={`${what} has no figure: none of the span's ${cov.of} ${cov.unit} could be read (${cov.reasons.join('; ')}). Nothing here is a zero.`}
+      />{' '}
+      {nothingReadWords(cov)}
+    </p>
+  )
+}
+
+/** The empty state of a card whose list is empty: a real zero over the whole span, a partial one otherwise. */
+function Nothing({ cov, heading, what }: { cov: SpanCoverage; heading: string; what: string }) {
+  if (cov.complete) {
+    return <Absent kind="zero" heading={`${heading} in this span`} say={`A real zero: ${what} in this span.`} />
+  }
+  return (
+    <Absent
+      kind="partial"
+      heading={`${heading} in the ${cov.read} of ${cov.of} ${cov.unit} read`}
+      say={`Nothing is listed, but only ${cov.read} of the span's ${cov.of} ${cov.unit} could be read, so this is not a zero for the whole span.`}
+    />
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -188,7 +267,7 @@ export function LedgerTable({ data }: { data: Outcomes }) {
             <th scope="col" className="is-num">Failed</th>
             <th scope="col" className="is-num">Dead-lettered</th>
             <th scope="col" className="is-num">Rate · k of n · 95 %</th>
-            <th scope="col" className="is-num">Cancelled · requested / after a failure</th>
+            <th scope="col" className="is-num">Cancelled · requested or other / after a failure</th>
             <th scope="col" className="is-num">Submitted</th>
             <th scope="col" className="is-num">Finished</th>
           </tr>
@@ -221,7 +300,9 @@ export function LedgerTable({ data }: { data: Outcomes }) {
                     )}
                   </td>
                   <td className="is-num">
-                    {b.cancelled?.total} · {b.cancelled?.requested} / {(b.cancelled?.after_failure ?? 0) + (b.cancelled?.workflow_sweep ?? 0)}
+                    {/* The same two sums lane 3 draws: the flat bars and the outline. */}
+                    {b.cancelled?.total} · {(b.cancelled?.requested ?? 0) + (b.cancelled?.other ?? 0)} /{' '}
+                    {(b.cancelled?.after_failure ?? 0) + (b.cancelled?.workflow_sweep ?? 0)}
                   </td>
                   <td className="is-num">{b.submitted}</td>
                   <td className="is-num">{b.ended}</td>
@@ -245,20 +326,22 @@ export function FailureClassesCard({ data, picked }: { data: Outcomes; picked: s
   const max = Math.max(0, ...data.vocab.failure_classes.map((c) => t[c.key] ?? 0))
   const strips = data.buckets.length <= STRIP_MAX_BUCKETS
   const at = pickedIndex(data, picked)
+  const cov = spanCoverage(data)
   return (
     <Card
       title="Why tasks failed"
-      note={`${total} · by class`}
+      note={cov.none ? undefined : coverNote(cov, 'Why tasks failed', `${total} · by class`)}
       explain="failure-classes"
       className="ol-failures"
       foot={<span>exit code, then last_error</span>}
     >
+      {cov.none && <NotRead cov={cov} what="Why tasks failed" />}
       {/* THE ORDER IS THE SERVER'S AND IT IS FIXED: runner error, timeout,
           lost worker, could not start, outputs missing, dispatch failed,
           other, no reason recorded. A filter never re-ranks it, and `other`
           and `no reason` are always drawn, because the class is matched from
           free text and an unmatched failure is still a failure. */}
-      {data.vocab.failure_classes.map((c) => (
+      {!cov.none && data.vocab.failure_classes.map((c) => (
         <Row
           key={c.key}
           name={c.label}
@@ -297,6 +380,9 @@ export function WorkflowsFailedCard({
 }) {
   const w = data.workflows_failed
   const classLabel = new Map(data.vocab.failure_classes.map((c) => [c.key, c.label]))
+  const cov = spanCoverage(data)
+  // The kind filter is a fact about the view, not a measurement, so it is
+  // checked before coverage: no step can be in a standalone-only view.
   if (!w.applicable) {
     return (
       <Card title="Workflows that failed, and where" className="is-wide ol-workflows">
@@ -308,10 +394,17 @@ export function WorkflowsFailedCard({
       </Card>
     )
   }
+  if (cov.none) {
+    return (
+      <Card title="Workflows that failed, and where" className="is-wide ol-workflows">
+        <NotRead cov={cov} what="Workflows that failed" />
+      </Card>
+    )
+  }
   return (
     <Card
       title="Workflows that failed, and where"
-      note={`${w.with_failed_steps} of ${w.with_ended_steps} with steps ending in ${spanLabel}`}
+      note={coverNote(cov, 'Workflows that failed', `${w.with_failed_steps} of ${w.with_ended_steps} with steps ending in ${spanLabel}`)}
       className="is-wide ol-workflows"
       foot={
         w.failing_steps.length > 0 ? (
@@ -320,11 +413,7 @@ export function WorkflowsFailedCard({
       }
     >
       {w.rows.length === 0 ? (
-        <Absent
-          kind="zero"
-          heading="No workflow step failed in this span"
-          say="A real zero: every workflow step that ended in this span ended some other way."
-        />
+        <Nothing cov={cov} heading="No workflow step failed" what="every workflow step that ended ended some other way" />
       ) : (
         <div className="ctl-table is-scroll">
           <table>
@@ -388,24 +477,29 @@ function Steps({ row }: { row: Outcomes['workflows_failed']['rows'][number] }) {
       </span>
     )
   }
+  // THIS PAGE'S TS-4 FORMS, NOT THE WORKFLOWS ROW'S (owner decision on #185:
+  // succeeded is solid --ok here). `.wf-seg.succeeded` is the Workflows
+  // meter's grey (WF-1), and drawn on this page it made one outcome two
+  // colours between the lanes and this card. Dead-lettered takes the failed
+  // form, as it does in the decided lane; open and unreadable steps are the
+  // track's undrawn remainder, and the text beside it counts them.
   const segs: Array<[string, number]> = [
     ['succeeded', s.succeeded],
-    ['failed', s.failed],
-    ['dead-lettered', s.dead_lettered],
+    ['failed', s.failed + s.dead_lettered],
     ['cancelled', s.cancelled],
   ]
   const text = `${s.succeeded} of ${s.total} ok${s.open > 0 ? ` · ${s.open} open` : ''}${s.unreadable > 0 ? ` · ${s.unreadable} not read` : ''}`
   return (
     <span className="ol-steps">
       <span
-        className="ctl-track wf-meter"
+        className="ctl-track ol-meter"
         role="img"
         aria-label={`${s.total} steps, all of them including any outside this span: ${s.succeeded} succeeded, ${s.failed} failed, ${s.dead_lettered} dead-lettered, ${s.cancelled} cancelled, ${s.open} still open, ${s.unreadable} not read`}
       >
         {segs
           .filter(([, n]) => n > 0)
           .map(([cls, n]) => (
-            <i key={cls} className={`wf-seg ${cls}`} style={{ width: `${+((n / s.total) * 100).toFixed(4)}%` }} />
+            <i key={cls} className={`ol-seg ${cls}`} style={{ width: `${+((n / s.total) * 100).toFixed(4)}%` }} />
           ))}
       </span>{' '}
       <span className="ol-q">{text}</span>
@@ -422,8 +516,16 @@ const TRY_LABEL: Record<string, string> = { '0': 'never ran', '1': '1 try', '2':
 export function RetriesCard({ data }: { data: Outcomes }) {
   const r = data.retries
   const max = Math.max(0, ...r.tries.map((t) => t.tasks))
+  const cov = spanCoverage(data)
+  if (cov.none) {
+    return (
+      <Card title="Retries and attempts" className="ol-retries">
+        <NotRead cov={cov} what="Retries and attempts" />
+      </Card>
+    )
+  }
   return (
-    <Card title="Retries and attempts" note="admissions, not runs" className="ol-retries">
+    <Card title="Retries and attempts" note={coverNote(cov, 'Retries and attempts', 'admissions, not runs')} className="ol-retries">
       <p className="ol-sub">
         needed a retry · {r.needed_retry.k} of {r.needed_retry.of} that ran
         {r.needed_retry.of > 0 && ` (${Math.round((r.needed_retry.k / r.needed_retry.of) * 100)} %)`}
@@ -552,10 +654,22 @@ function LatencyLine({ label, o, timeout }: { label: string; o: LatencyOutcome; 
 
 export function LatencyCard({ data }: { data: Outcomes }) {
   const rows = data.latency.by_profile
+  const cov = spanCoverage(data)
+  if (cov.none) {
+    return (
+      <Card title="Time to result, by profile" className="ol-latency">
+        <NotRead cov={cov} what="Time to result" />
+      </Card>
+    )
+  }
   return (
-    <Card title="Time to result, by profile" note="wait, then run · p50 ● p95 ○" className="ol-latency">
+    <Card
+      title="Time to result, by profile"
+      note={coverNote(cov, 'Time to result', 'wait, then run · p50 ● p95 ○')}
+      className="ol-latency"
+    >
       {rows.length === 0 ? (
-        <Absent kind="zero" heading="Nothing finished in this span" say="A real zero: no task that was not cancelled ended in this span." />
+        <Nothing cov={cov} heading="Nothing finished" what="no task that was not cancelled ended" />
       ) : (
         <>
           <div className="ol-lat-scale" aria-hidden>
@@ -697,10 +811,15 @@ export function ReliabilityCard({
 }) {
   const g = data.groups
   const choices: GroupBy[] = platform ? ['runner_profile', 'tenant_id', 'submitted_by'] : ['runner_profile', 'submitted_by']
+  const cov = spanCoverage(data)
   return (
     <Card
       title={`Reliability by ${GROUP_LABEL[g.by]}`}
-      note={`${rowsWord(g.by, g.rows_total)} · ${data.buckets.length} ${data.bucket === 'hour' ? 'hours' : `${data.bucket}s`}`}
+      note={
+        cov.none
+          ? undefined
+          : coverNote(cov, 'Reliability', `${rowsWord(g.by, g.rows_total)} · ${data.buckets.length} ${cov.unit}`)
+      }
       className="is-wide ol-reliability"
     >
       <div className="ctl-seg ol-group" role="group" aria-label="Group by">
@@ -710,8 +829,10 @@ export function ReliabilityCard({
           </button>
         ))}
       </div>
-      {g.rows.length === 0 ? (
-        <Absent kind="zero" heading="Nothing ended in this span" say="A real zero: no task ended in this span under these filters." />
+      {cov.none ? (
+        <NotRead cov={cov} what="Reliability" />
+      ) : g.rows.length === 0 ? (
+        <Nothing cov={cov} heading="Nothing ended" what="no task ended under these filters" />
       ) : (
         <div className="ctl-table is-scroll">
           <table>
@@ -816,10 +937,18 @@ export function CostCard({ data, picked }: { data: Outcomes; picked: string | nu
   const b = c.by_outcome
   const per = c.per_succeeded_task
   const boughtTotal = [b.succeeded, b.failed, b.dead_lettered, b.cancelled].reduce((n, x) => n + (x.sum_usd ?? 0), 0)
+  const cov = spanCoverage(data)
+  if (cov.none) {
+    return (
+      <Card title="Reported cost" explain="tokens-reported" className="ol-cost-card" foot={<span>Reported cost · not a bill</span>}>
+        <NotRead cov={cov} what="Reported cost" />
+      </Card>
+    )
+  }
   return (
     <Card
       title="Reported cost"
-      note={`by task end · ${c.reporting} of ${c.attempts} attempts`}
+      note={coverNote(cov, 'Reported cost', `by task end · ${c.reporting} of ${c.attempts} attempts`)}
       explain="tokens-reported"
       className="ol-cost-card"
       foot={<span>Reported cost · not a bill</span>}
@@ -914,17 +1043,36 @@ export interface OpenWork {
   parked: { status: 'ok'; data: TaskPage } | { status: 'empty' } | { status: 'error'; message: string } | null
 }
 
+/**
+ * The view's filters this card does NOT apply, in words. `/v1/stats` counts
+ * by state only -- no profile, submitter or kind -- and in platform scope it
+ * counts every tenant, so an include list or an exclusion the ledger honours
+ * is not honoured here. Each one set is named, so a count beside a filtered
+ * ledger is not read as filtered.
+ */
+export function unfiltered(view: LedgerView): string[] {
+  const out: string[] = []
+  if (view.profile.length > 0) out.push('profile')
+  if (view.platform && (view.tenant.length > 0 || view.exclude_tenant.length > 0)) out.push('tenant')
+  if (view.submitted_by.length > 0) out.push('person')
+  if (view.kind !== 'all') out.push('kind')
+  return out
+}
+
 export function OpenWorkCard({
   open,
-  platform,
-  profileFiltered,
+  view,
   tenant,
+  now,
 }: {
   open: OpenWork
-  platform: boolean
-  profileFiltered: boolean
+  view: LedgerView
   tenant: string | null
+  /** The page's clock, so the read's age moves. */
+  now: number
 }) {
+  const platform = view.platform
+  const notApplied = unfiltered(view)
   const s = open.stats
   const counts = s?.status === 'ok' ? (platform ? s.data.platform_tasks_by_state : s.data.tasks_by_state) : undefined
   const n = (state: string) => counts?.[state] ?? 0
@@ -939,7 +1087,13 @@ export function OpenWorkCard({
   const itself = [...reasons.entries()].filter(([r]) => !PARK_NEEDS_A_PERSON.has(r))
   const more = open.parked?.status === 'ok' && open.parked.data.next_page_token !== null && open.parked.data.next_page_token !== undefined
   return (
-    <Card title="Not finished yet" note="now · span not applied" className="ol-open">
+    // THE AGE OF THE READ ON SCREEN, never "now": this card is re-read on its
+    // own, and the head's age is the ledger's.
+    <Card
+      title="Not finished yet"
+      note={`${s === null ? 'reading' : s.status === 'ok' ? `read ${timeAgo(s.data.generated_at, now)}` : 'not read'} · span not applied`}
+      className="ol-open"
+    >
       {s === null ? (
         <p className="ol-line">
           <Mark kind="pending" say="The live state counts are still being read." /> reading
@@ -955,7 +1109,7 @@ export function OpenWorkCard({
       ) : (
         <p className="ol-line ol-open-counts">
           {n('PARKED')} parked · {running} running · {n('QUEUED')} queued · {n('READY')} ready
-          {profileFiltered && <span className="ol-q"> · not filtered by profile</span>}
+          {notApplied.length > 0 && <span className="ol-q"> · not filtered by {notApplied.join(', ')}</span>}
         </p>
       )}
       {parkedTasks === null ? (
@@ -1003,9 +1157,16 @@ export function CancelCausesCard({ data, picked }: { data: Outcomes; picked: str
   const max = Math.max(0, ...data.vocab.cancel_causes.map((c) => t[c.key]))
   const strips = data.buckets.length <= STRIP_MAX_BUCKETS
   const at = pickedIndex(data, picked)
+  const cov = spanCoverage(data)
   return (
-    <Card title="Why tasks were cancelled" note={`${t.total} · by cause`} className="ol-cancels" foot={<span>a cancel is not a verdict: no hue</span>}>
-      {data.vocab.cancel_causes.map((c) => (
+    <Card
+      title="Why tasks were cancelled"
+      note={cov.none ? undefined : coverNote(cov, 'Why tasks were cancelled', `${t.total} · by cause`)}
+      className="ol-cancels"
+      foot={<span>a cancel is not a verdict: no hue</span>}
+    >
+      {cov.none && <NotRead cov={cov} what="Why tasks were cancelled" />}
+      {!cov.none && data.vocab.cancel_causes.map((c) => (
         <Row
           key={c.key}
           name={c.label}

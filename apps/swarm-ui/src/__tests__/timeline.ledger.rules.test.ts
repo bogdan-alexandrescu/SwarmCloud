@@ -196,7 +196,9 @@ describe('at 390 (§7.2)', () => {
   })
 
   it('draws the cards’ mini strips only at 900px and up', () => {
-    const f = fragment('<section class="ctl-card ol-card"><div class="ctl-card-body"><svg class="ol-strip is-n14"></svg></div></section>')
+    const f = fragment(
+      '<section class="ctl-card ol-card"><div class="ctl-card-body"><div class="ol-row"><svg class="ol-strip is-n14"></svg></div></div></section>',
+    )
     expect(won(pick(f, '.ol-strip'), 'display', { width: 899, container: 700 })).toBe('none')
     expect(won(pick(f, '.ol-strip'), 'display', { width: 900, container: 700 })).toBe('block')
   })
@@ -212,9 +214,8 @@ describe('a card’s mini strips are drawn only where its row fits (1440, 3-up)'
   // border into the next card.
   const CARD =
     '<section class="ctl-card ol-card"><div class="ctl-card-body">' +
-    '<svg class="ol-strip is-n14" id="s14"></svg><svg class="ol-strip is-n24" id="s24"></svg>' +
-    '<svg class="ol-strip is-n31" id="s31"></svg><svg class="ol-strip is-n45" id="s45"></svg>' +
-    '<svg class="ol-strip is-n60" id="s60"></svg></div></section>'
+    ['14', '24', '31', '45', '60'].map((n) => `<div class="ol-row"><svg class="ol-strip is-n${n}" id="s${n}"></svg></div>`).join('') +
+    '</div></section>'
   const shown = (container: number, width = 1440) => {
     const f = fragment(CARD)
     return ['#s14', '#s24', '#s31', '#s45', '#s60'].filter((id) => won(pick(f, id), 'display', { width, container }) !== 'none')

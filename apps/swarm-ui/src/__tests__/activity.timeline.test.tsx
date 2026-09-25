@@ -85,15 +85,21 @@ function me(admin: boolean): Me {
   }
 }
 
-/** The live counts, read 40 s before the test asks: the card must say how old they are. */
-function stats(): Stats {
+/**
+ * The live counts, read 40 s before the test asks: the card must say how old
+ * they are. An admin's read also carries the platform-wide counts, which the
+ * card draws in platform scope (absent for everyone else -- absent, not zero).
+ */
+function stats(admin: boolean): Stats {
+  const byState = {
+    SUBMITTED: 0, QUEUED: 2, PARKED: 3, READY: 1, LEASED: 1, DISPATCHED: 0,
+    STARTING: 0, RUNNING: 2, SUCCEEDED: 272, FAILED: 28, CANCELLED: 416, DEAD_LETTERED: 0,
+  }
   return {
     tenant_id: 'eng',
     dispatch_paused: false,
-    tasks_by_state: {
-      SUBMITTED: 0, QUEUED: 2, PARKED: 3, READY: 1, LEASED: 1, DISPATCHED: 0,
-      STARTING: 0, RUNNING: 2, SUCCEEDED: 272, FAILED: 28, CANCELLED: 416, DEAD_LETTERED: 0,
-    },
+    tasks_by_state: byState,
+    ...(admin ? { platform_tasks_by_state: { ...byState, PARKED: 14 } } : {}),
     limits: {},
     generated_at: new Date(Date.now() - 40_000).toISOString(),
   }
@@ -177,7 +183,7 @@ function serve(payload: Outcomes | Result<Outcomes>, opts: { admin?: boolean } =
   api.loadOutcomes.mockResolvedValue(r)
   api.loadMe.mockResolvedValue(ok(me(opts.admin === true)))
   api.loadRunnerProfiles.mockResolvedValue(ok(['browser', 'claude-code', 'codex', 'generic', 'mock']))
-  api.loadStats.mockImplementation(() => Promise.resolve(ok(stats())))
+  api.loadStats.mockImplementation(() => Promise.resolve(ok(stats(opts.admin === true))))
   api.loadTasksInState.mockResolvedValue(
     ok<TaskPage>({ tasks: [parked('p1', 'CREDENTIAL_MISSING'), parked('p2', 'CREDENTIAL_MISSING'), parked('p3', 'PROVIDER_QUOTA_EXHAUSTED')], next_page_token: null }),
   )

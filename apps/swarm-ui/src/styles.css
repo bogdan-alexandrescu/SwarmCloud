@@ -11666,7 +11666,8 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
   font: 600 var(--t-body)/var(--lh-body) var(--font);
   color: var(--text);
 }
-.ol-kofn {
+.ol-kofn,
+.ol-interval {
   font: var(--t-body)/var(--lh-body) var(--mono);
   color: var(--text-dim);
   font-variant-numeric: tabular-nums;
@@ -11684,13 +11685,29 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
    -- never scaled down, so no tick renders under --t-micro. The narrow one
    shows below 640px and scrolls when its buckets need more than the box. */
 .ol-chart { container: ol-chart / inline-size; margin: 0; }
+/* THE SCALE DOES NOT SCROLL (wireframe_390). A drawing is a positioned frame
+   holding three layers: the gutter SVG with every tick, laid over its left
+   edge; the lane labels, laid over the plot's left edge; and the plot, the
+   one layer in the scroller, pushed right by the gutter's width (inline, per
+   drawing). Drawn as one SVG inside the scroller, the ticks and the labels
+   scrolled off on open, because the plot opens at its newest end. `isolation`
+   keeps the labels' z-index inside the drawing. */
 .ol-plot { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.ol-canvas { position: relative; }
+.ol-gutter {
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: block;
+  overflow: visible;
+  pointer-events: none;
+}
 /* TS-3's cue that older buckets are off the left edge, only while they are. */
 .ol-plot.has-older {
   -webkit-mask-image: linear-gradient(to right, transparent 0, #000 var(--ctl-s5));
   mask-image: linear-gradient(to right, transparent 0, #000 var(--ctl-s5));
 }
-.ol-drawing { position: relative; display: none; }
+.ol-drawing { position: relative; display: none; isolation: isolate; }
 .ol-drawing.is-narrow { display: block; }
 @container ol-chart (min-width: 640px) {
   .ol-drawing.is-mid { display: block; }
@@ -11702,9 +11719,27 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 }
 .ol-svg { display: block; overflow: visible; }
 .ol-svg text,
+.ol-gutter text,
 .ol-strip text { font-family: var(--mono); font-size: var(--t-micro); }
 .ol-tick { fill: var(--text-faint); }
-.ol-lane-label { fill: var(--text-dim); font-weight: 600; }
+/* A LANE LABEL SITS OVER COLUMNS THAT MOVE UNDER IT: the page's own ground
+   behind its text keeps it legible over a scrolled plot, an hourly axis's day
+   rules and the pick; it takes no pointer, so a tap on the column beneath
+   still picks it. One line, clipped short of the chart's edge rather than
+   pushing the page sideways on the narrowest phones. */
+.ol-lane-label {
+  position: absolute;
+  z-index: 1;
+  max-width: calc(100% - 56px);
+  overflow: hidden;
+  padding-right: var(--ctl-s1);
+  background: var(--bg);
+  color: var(--text-dim);
+  font: 600 var(--t-micro)/var(--lh-micro) var(--mono);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
 .ol-grid { stroke: var(--line-soft); stroke-dasharray: 2 3; }
 .ol-base { stroke: var(--line); }
 .ol-day { stroke: var(--line-soft); }
@@ -11747,6 +11782,7 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
   margin: 0;
 }
 .ol-at { font: 600 var(--t-body)/var(--lh-body) var(--font); color: var(--text); }
+.ol-at-cover { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-faint); }
 .ol-step { display: none; }
 .ol-legend,
 .ol-keys {
@@ -11788,6 +11824,14 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 /* ---- the cards ---- */
 .ol-cards { margin-top: var(--ctl-s5); }
 .ol-card.is-wide { grid-column: 1 / -1; }
+/* A COVERAGE NOTE IS LONGER THAN A QUALIFIER. `· partial 13 of 14 days` on
+   `by task end · 209 of 612 attempts` is ~400px of mono in a ~329px card,
+   and `.ctl-card-note` does not wrap, so the head wraps instead: the note
+   drops under the title, still right-aligned, rather than past the card. */
+.ol-card > .ctl-card-head { flex-wrap: wrap; row-gap: var(--ctl-s1); }
+.ol-card > .ctl-card-head > .ctl-card-note { margin-left: auto; }
+/* THE CARD BODY IS THE SIZE CONTAINER a row's strip is measured against. */
+.ol-card > .ctl-card-body { container: ol-card / inline-size; }
 .ol-row {
   display: grid;
   grid-template-columns: minmax(104px, 150px) minmax(48px, 1fr) 44px auto;
@@ -11806,7 +11850,25 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
   text-align: right;
   font-variant-numeric: tabular-nums;
 }
-.ol-strip { display: block; }
+/* A MINI STRIP IS DRAWN ONLY WHERE ITS ROW FITS. A row is name (>=104px) ·
+   track (>=48px) · count (44px) · strip, 8px apart: 220px before a strip of
+   6px a bucket. At 1440 the cards are 3-up and a body is ~329px, so a 24-hour
+   strip (364px row) or a 30-day one (400px) spilled 20-70px over the card's
+   border. The strip carries its band (`is-n14` ... `is-n60`, Ledger.tsx
+   STRIP_BANDS) and shows once the card body is 220 + 6 x band wide. Below
+   900px none is drawn: a 6px column per bucket is texture beside a label
+   that already carries the count. */
+.ol-strip { display: none; }
+@container ol-card (min-width: 304px) { .ol-strip.is-n14 { display: block; } }
+@container ol-card (min-width: 364px) { .ol-strip.is-n24 { display: block; } }
+@container ol-card (min-width: 406px) { .ol-strip.is-n31 { display: block; } }
+@container ol-card (min-width: 490px) { .ol-strip.is-n45 { display: block; } }
+@container ol-card (min-width: 580px) { .ol-strip.is-n60 { display: block; } }
+/* Not nested in the container rules: the sheet uses no nested at-rules. Same
+   specificity as a band's rule and after it, so it wins below 900px. */
+@media (max-width: 899px) {
+  .ol-row > .ol-strip { display: none; }
+}
 .ol-strip-col { fill: var(--text-dim); }
 .ol-sub,
 .ol-line {
@@ -11819,6 +11881,8 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 .ol-meter-wrap { display: block; min-width: 0; }
 .ol-meter > .ol-seg.failed { min-width: 4px; }
 .ol-steps { display: inline-flex; align-items: center; gap: var(--ctl-s2); white-space: nowrap; }
+/* The Workflows row's 54px, in this page's forms: succeeded solid --ok. */
+.ol-steps > .ol-meter { flex: none; width: 54px; }
 .ol-phrase { color: var(--text-dim); }
 .ol-tag {
   font: var(--t-micro)/var(--lh-micro) var(--mono);
@@ -11885,12 +11949,6 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
   margin: var(--ctl-s5) 0 0;
   font: var(--t-micro)/var(--lh-micro) var(--mono);
   color: var(--text-faint);
-}
-
-/* Mini strips are drawn only at 900px and up: below it a 6px column per
-   bucket is texture beside a label that already carries the count. */
-@media (max-width: 899px) {
-  .ol-strip { display: none; }
 }
 
 /* ---- phone (§7.2): 44px targets, the span first, everything else behind a sheet ---- */

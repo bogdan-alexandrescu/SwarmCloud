@@ -7,6 +7,7 @@ import {
   loadTasksInState,
   loadTenants,
 } from './api'
+import { IDLE_POLL_MS } from './Agents'
 import { OutcomeLedger } from './charts/OutcomeLedger'
 import { errorHeading, type ApiError, type Result } from './fetch'
 import { helpAnchor, type TopicId } from './help'
@@ -31,10 +32,13 @@ import {
   instantLabel,
   interval,
   monthAllowed,
+  nothingReadWords,
   outcomesQuery,
   parseView,
   pct,
   serializeView,
+  spanCoverage,
+  unitWord,
   viewDays,
   viewerZone,
   type BucketChoice,
@@ -221,10 +225,24 @@ export function ActivityScreen({
   }, [admin])
 
   // ---- the one live card -------------------------------------------------
+  // A LIVE READ CARRIES ITS AGE, AND IS RE-READ. "Not finished yet" is the one
+  // card not drawn from the ledger's payload, so the head's `read Ns ago`
+  // (the ledger's generated_at) says nothing about it. It is read on open, on
+  // refresh, on every filter change -- the moment a reader is comparing it
+  // with a ledger that was just re-read -- and on the Agents screen's idle
+  // cadence while the page stays open and visible; the card prints the age
+  // of the read it shows. Between reads the last counts stay drawn rather
+  // than blanking to "reading" on every tick.
   const [open, setOpen] = useState<OpenWork>({ stats: null, parked: null })
+  const [openTick, setOpenTick] = useState(0)
+  useEffect(() => {
+    const timer = setInterval(() => {
+      if (typeof document === 'undefined' || document.visibilityState !== 'hidden') setOpenTick((n) => n + 1)
+    }, IDLE_POLL_MS)
+    return () => clearInterval(timer)
+  }, [])
   useEffect(() => {
     let live = true
-    setOpen({ stats: null, parked: null })
     loadStats().then((r) => {
       if (!live) return
       setOpen((o) => ({
@@ -250,7 +268,7 @@ export function ActivityScreen({
     return () => {
       live = false
     }
-  }, [nonce])
+  }, [key, nonce, openTick])
 
   const [picked, setPicked] = useState<string | null>(null)
   const refresh = () => setNonce((n) => n + 1)
@@ -319,12 +337,7 @@ export function ActivityScreen({
             />
             <WorkflowsFailedCard data={data} spanLabel={view.span ?? 'this range'} />
             <CostCard data={data} picked={picked} />
-            <OpenWorkCard
-              open={open}
-              platform={view.platform}
-              profileFiltered={view.profile.length > 0}
-              tenant={myTenant}
-            />
+            <OpenWorkCard open={open} view={view} tenant={myTenant} now={now} />
             <CancelCausesCard data={data} picked={picked} />
           </div>
           <Provenance data={data} />
@@ -355,6 +368,9 @@ function prevWords(d: Outcomes): string {
 export function deltaWords(d: Outcomes): string | null {
   const p = d.previous
   if (p === null) return null
+  // Nothing of THIS span was read: there is nothing to compare, and the
+  // headline says so with the not-read mark.
+  if (d.totals.buckets_read === 0) return null
   const prev = prevWords(d)
   if (!p.complete) return `${prev} partial, no delta`
   if (p.rate === null) return `${prev}: no finished work, so no delta`
@@ -363,10 +379,6 @@ export function deltaWords(d: Outcomes): string | null {
   if (!d.totals.complete) return `${prev} ${pct(p.rate.p)} · this span partial, no delta`
   const pts = (t.p - p.rate.p) * 100
   return `${prev} ${pct(p.rate.p)} · ${pts >= 0 ? '+' : '−'}${Math.abs(pts).toFixed(1)} pts`
-}
-
-function unitWord(d: Outcomes): string {
-  return d.bucket === 'hour' ? 'hours' : `${d.bucket}s`
 }
 
 /**
@@ -388,6 +400,7 @@ function LedgerSection({
   const t = data.totals
   const delta = deltaWords(data)
   const orphans = data.coverage.terminal_without_completed_at
+  const cov = spanCoverage(data)
   return (
     <section className="section ol-ledger" aria-labelledby="ol-rate-title">
       <div className="ol-head">
@@ -397,11 +410,27 @@ function LedgerSection({
         <HelpCard topic={RATE_HELP} />
         {/* WHAT THE FIGURE LEAVES OUT, fused to it rather than footnoted: the
             cancels are counted, drawn in their own lane, and not in the rate
-            (owner decision). */}
-        <span className="ctl-card-note ol-note">excludes {t.cancelled.total} cancelled</span>
+            (owner decision). With nothing read there is no count to print. */}
+        <span className="ctl-card-note ol-note">
+          {cov.none ? 'cancels excluded' : `excludes ${t.cancelled.total} cancelled`}
+        </span>
       </div>
       <p className="ol-headline">
-        {t.rate === null ? (
+        {cov.none ? (
+          // NOTHING READ IS NOT NOTHING FINISHED. "no finished work" is a
+          // measured n = 0; over a span of which no bucket was read the route's
+          // zeroes are sums over nothing, so the figure slot takes the
+          // not-read mark and no digit (§8.6).
+          <>
+            <b className="ol-figure is-phrase is-unread">
+              <Mark
+                kind="unread"
+                say={`The success rate was not read: none of the span's ${cov.of} ${cov.unit} could be read (${cov.reasons.join('; ')}). No figure is drawn, because none was measured.`}
+              />
+            </b>
+            <span className="ol-q">{nothingReadWords(cov)}</span>
+          </>
+        ) : t.rate === null ? (
           // n = 0 is measured, but a rate over nothing is undefined: a
           // phrase, never 0 %.
           <b className="ol-figure is-phrase">no finished work</b>
@@ -419,13 +448,17 @@ function LedgerSection({
             {t.rate.k} of {t.rate.n} decided
           </span>
         )}
-        {!t.complete && (
+        {/* THE INTERVAL IS PRINTED, not only named to a screen reader (#185:
+            "the figure with k of n decided, its interval"). The readout also
+            carries it, but under Table the readout is not drawn. */}
+        {t.rate !== null && <span className="ol-interval">95 % interval {interval(t.rate)}</span>}
+        {!t.complete && !cov.none && (
           <span className="ol-partial">
             <Mark
               kind="partial"
-              say={`${t.buckets - t.buckets_read} of ${t.buckets} ${unitWord(data)} could not be read, so every total here covers ${t.buckets_read} of them and is a floor.`}
+              say={`${t.buckets - t.buckets_read} of ${t.buckets} ${unitWord(data.bucket)} could not be read, so every total here covers ${t.buckets_read} of them and is a floor.`}
             />{' '}
-            {t.buckets_read} of {t.buckets} {unitWord(data)}
+            {t.buckets_read} of {t.buckets} {unitWord(data.bucket)}
           </span>
         )}
         {delta !== null && <span className="ol-delta">{delta}</span>}

@@ -46,13 +46,35 @@
 // width and scrolls inside the chart instead of shrinking -- at 390 that is
 // the 26px floor, opening at the newest end (TS-3).
 //
+// THE SCALE DOES NOT SCROLL (wireframe_390: `100┤ … 0┤ … ok ┤ … cx ┤` pinned,
+// older days behind the fade). Each drawing is three layers: a gutter SVG as
+// wide as the drawing's left margin, holding every tick; the lane labels, as
+// HTML over the plot's left edge on the page's own ground; and the plot, the
+// ONLY part inside the scroller -- grid, marks, time axis and the columns a
+// reader picks. Drawn in one SVG inside the scroller, the whole scale scrolled
+// off on open: at 390 and 14 days the plot opens 52px in, past every tick,
+// and at 24h or 30d past every lane label, the throughput lane's
+// `by created_at` among them. The plot's SVG keeps the drawing's coordinates
+// (its viewBox starts at the left margin), so a mark is at the same x in
+// every layer and in every test that reads one.
+//
 // THE MARKS ARE PRESENTATIONAL; THE COLUMNS SPEAK. Each drawing's SVG is
 // `aria-hidden`, and over it sits one HTML column per bucket, `role="img"`,
 // named with its full time and every count (TS-9). The columns are one tab
 // stop with a roving tabindex, starting on the newest bucket. Only the
 // drawing the sheet shows is in the tab order: the others are `display: none`.
 
-import { useLayoutEffect, useMemo, useRef, useState, type FocusEvent, type KeyboardEvent } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type FocusEvent,
+  type KeyboardEvent,
+  type UIEvent,
+} from 'react'
 
 import {
   LOW_N,
@@ -61,7 +83,10 @@ import {
   bucketSaid,
   dayStarts,
   interval,
+  nothingReadWords,
   pct,
+  spanCoverage,
+  unitWord,
   unreadWords,
   wallOf,
   type LedgerBucketSize,
@@ -148,6 +173,8 @@ interface Scales {
   down: number
   cancelled: number
   flow: number
+  /** How many buckets the maxima were taken over. At 0 there is no scale, and no lane prints a `max`. */
+  read: number
 }
 
 function scalesOf(buckets: readonly OutcomeBucket[]): Scales {
@@ -155,30 +182,51 @@ function scalesOf(buckets: readonly OutcomeBucket[]): Scales {
   let down = 0
   let cancelled = 0
   let flow = 0
+  let read = 0
   for (const b of buckets) {
     if (b.state === 'unread') continue
+    read += 1
     up = Math.max(up, b.succeeded ?? 0)
     down = Math.max(down, (b.failed ?? 0) + (b.dead_lettered ?? 0))
     cancelled = Math.max(cancelled, b.cancelled?.total ?? 0)
     flow = Math.max(flow, b.submitted ?? 0, b.ended ?? 0)
   }
-  return { up, down, cancelled, flow }
+  return { up, down, cancelled, flow, read }
 }
 
 const r1 = (v: number) => Math.round(v * 10) / 10
 
-/** The lane labels, by drawing: the narrow one cannot carry the long form. */
+/**
+ * The lane labels, by drawing: the narrow one cannot carry the long form.
+ *
+ * A `max` IS PRINTED ONLY OVER READ BUCKETS: with none read there is no
+ * scale, and `max 0` would be a measurement nobody made.
+ *
+ * THE NARROW LABELS FIT THE PHONE'S PLOT. They sit over the plot's pinned
+ * left edge, one line each, so the longest (~36 characters of --t-micro mono,
+ * ~260px) has to fit the 320px a 390 viewport leaves beside the 38px scale;
+ * `Submitted vs finished · by created_at · max 338` did not.
+ */
 function laneLabels(d: LedgerDrawn, s: Scales): string[] {
   const narrow = d.key === 'narrow'
+  const max = (n: number) => (s.read === 0 ? '' : ` · max ${n}`)
   return [
     narrow ? 'Success rate' : 'Success rate · cancels excluded',
     narrow ? 'Decided · ok up, failed down' : 'Decided, by the bucket it ended · succeeded up, failed down',
-    `Cancelled · own scale · max ${s.cancelled}`,
+    `Cancelled · own scale${max(s.cancelled)}`,
     narrow
-      ? `Submitted vs finished · by created_at · max ${s.flow}`
-      : `Throughput · submitted (by created_at, the only lane on submission time) vs finished · max ${s.flow}`,
+      ? `Throughput · by created_at${max(s.flow)}`
+      : `Throughput · submitted (by created_at, the only lane on submission time) vs finished${max(s.flow)}`,
   ]
 }
+
+/**
+ * Where an HTML lane label's box starts so its baseline sits where the SVG
+ * label's did (`lane.y - 8`): the --t-micro line box is 17.4px and its
+ * baseline ~12px down. It stays inside the gap above its lane (24-26px), so
+ * it never covers a mark of the lane above.
+ */
+const LABEL_RISE = 20
 
 /**
  * One drawing: the SVG marks and, over them, the columns a reader picks.
@@ -189,20 +237,27 @@ function Drawing({
   scales,
   pickedAt,
   stopAt,
+  older,
   onColumnFocus,
   onColumnPick,
   onKeys,
+  onPlotScroll,
   register,
+  registerPlot,
 }: {
   d: LedgerDrawn
   data: Outcomes
   scales: Scales
   pickedAt: number
   stopAt: number
+  /** Whether older buckets are off this drawing's left edge, for TS-3's fade. */
+  older: boolean
   onColumnFocus: (i: number, el: HTMLElement) => void
   onColumnPick: (i: number) => void
   onKeys: (e: KeyboardEvent<HTMLDivElement>) => void
+  onPlotScroll: (key: string, e: UIEvent<HTMLDivElement>) => void
   register: (key: string, i: number, el: HTMLDivElement | null) => void
+  registerPlot: (key: string, el: HTMLDivElement | null) => void
 }) {
   const { buckets, bucket, tz } = data
   const g = geometry(d, buckets.length)
@@ -259,222 +314,252 @@ function Drawing({
   })
   if (fr.length > 0) flowRuns.push(fr)
 
+  // The plot layer's width: everything right of the scale column.
+  const plotLayerW = g.W - g.left
+
   return (
-    <div className={`ol-drawing is-${d.key}`} style={{ width: `${g.W}px` }} data-drawn={d.w}>
+    <div className={`ol-drawing is-${d.key}`} data-drawn={d.w}>
+      {/* THE SCALE COLUMN: every tick, pinned, outside the scroller. */}
       <svg
-        className="ol-svg"
-        width={g.W}
+        className="ol-gutter"
+        width={g.left}
         height={g.H}
-        viewBox={`0 0 ${g.W} ${g.H}`}
+        viewBox={`0 0 ${g.left} ${g.H}`}
         aria-hidden="true"
         focusable="false"
       >
-        <HatchDef id={hatch} />
-        <defs>
-          {/* TS-4's flat "ended" bars: a 3px bar every 5px, anchored to the page so columns line up. */}
-          <pattern id={flat} width={4} height={5} patternUnits="userSpaceOnUse">
-            <rect className="ol-flat" x={0} y={0} width={4} height={3} />
-          </pattern>
-        </defs>
-
-        {/* The pick: a surface step and a 2px ink rule over the column, no hue (§1.3). */}
-        {pickedAt >= 0 && (
-          <g className="ol-picked">
-            <rect className="ol-sel" x={r1(g.x0(pickedAt))} y={TOP - 18} width={r1(g.pitch)} height={r1(bottom - TOP + 20)} />
-            <rect className="ol-sel-rule" x={r1(g.x0(pickedAt))} y={TOP - 18} width={r1(g.pitch)} height={2} />
-          </g>
-        )}
-
-        {/* Lane labels and scales. */}
-        {g.lane.map((l, i) => (
-          <text key={`lab${i}`} className="ol-lane-label" x={g.left} y={l.y - 8}>
-            {words[i]}
-          </text>
+        {[1, 0.5, 0].map((t) => (
+          <text key={`r${t}`} className="ol-tick" x={g.left - 6} y={ry(t) + 4} textAnchor="end">{`${t * 100}%`}</text>
         ))}
-        <g className="ol-scale">
-          {[1, 0.5, 0].map((t) => (
-            <g key={`r${t}`}>
-              <line className={t === 0 ? 'ol-base' : 'ol-grid'} x1={g.left} x2={right} y1={ry(t)} y2={ry(t)} />
-              <text className="ol-tick" x={g.left - 6} y={ry(t) + 4} textAnchor="end">{`${t * 100}%`}</text>
-            </g>
-          ))}
-          <line className="ol-base" x1={g.left} x2={right} y1={r1(zeroY)} y2={r1(zeroY)} />
-          <text className="ol-tick" x={g.left - 6} y={r1(zeroY) + 4} textAnchor="end">
-            0
+        <text className="ol-tick" x={g.left - 6} y={r1(zeroY) + 4} textAnchor="end">
+          0
+        </text>
+        {scales.up > 0 && (
+          <text className="ol-tick" x={g.left - 6} y={L2.y + 8} textAnchor="end">
+            {scales.up}
           </text>
-          {scales.up > 0 && (
-            <text className="ol-tick" x={g.left - 6} y={L2.y + 8} textAnchor="end">
-              {scales.up}
-            </text>
-          )}
-          {scales.down > 0 && (
-            <text className="ol-tick" x={g.left - 6} y={L2.y + L2.h} textAnchor="end">
-              {scales.down}
-            </text>
-          )}
-          <line className="ol-base" x1={g.left} x2={right} y1={L3.y + L3.h} y2={L3.y + L3.h} />
-          <line className="ol-base" x1={g.left} x2={right} y1={L4.y + L4.h} y2={L4.y + L4.h} />
-        </g>
-
-        {/* Day boundaries on an hourly axis, drawn as well as labelled. */}
-        {boundary.map((b, i) =>
-          b && i > 0 ? (
-            <line key={`day${i}`} className="ol-day" x1={r1(g.x0(i))} x2={r1(g.x0(i))} y1={L1.y - 4} y2={bottom} />
-          ) : null,
         )}
-
-        {/* Lane 1: the band, then the line, then the points. */}
-        <g className="ol-lane is-rate">
-          {runs.map((rr, ri) => {
-            const pts = rr.map((i) => ({ i, r: buckets[i]!.rate!, now: buckets[i]!.in_progress }))
-            const hi = pts.map((p) => `${r1(g.cx(p.i))},${ry(p.r.hi)}`).join(' ')
-            const lo = pts
-              .slice()
-              .reverse()
-              .map((p) => `${r1(g.cx(p.i))},${ry(p.r.lo)}`)
-              .join(' ')
-            const last = pts[pts.length - 1]!
-            const solid = last.now ? pts.slice(0, -1) : pts
-            return (
-              <g key={`run${ri}`} data-run={ri}>
-                {pts.length > 1 && <polygon className="ol-m-band" points={`${hi} ${lo}`} />}
-                {pts.length > 1 && <polyline className="ol-m-edge" points={hi} />}
-                {pts.length > 1 && (
-                  <polyline className="ol-m-edge" points={pts.map((p) => `${r1(g.cx(p.i))},${ry(p.r.lo)}`).join(' ')} />
-                )}
-                {solid.length > 1 && (
-                  <polyline className="ol-m-rate" points={solid.map((p) => `${r1(g.cx(p.i))},${ry(p.r.p)}`).join(' ')} />
-                )}
-                {last.now && pts.length > 1 && (
-                  <polyline
-                    className="ol-m-rate is-so-far"
-                    points={`${r1(g.cx(pts[pts.length - 2]!.i))},${ry(pts[pts.length - 2]!.r.p)} ${r1(g.cx(last.i))},${ry(last.r.p)}`}
-                  />
-                )}
-                {pts.map((p) => (
-                  <circle
-                    key={`pt${p.i}`}
-                    className={p.r.n >= LOW_N && !p.now ? 'ol-m-pt' : 'ol-m-pt is-hollow'}
-                    cx={r1(g.cx(p.i))}
-                    cy={ry(p.r.p)}
-                    r={3}
-                    data-i={p.i}
-                  />
-                ))}
-              </g>
-            )
-          })}
-        </g>
-
-        {/* Lanes 2-4, and the unread bands, per bucket. */}
-        {buckets.map((b, i) => {
-          const x = r1(g.cx(i) - g.bar / 2)
-          const w = r1(g.bar)
-          const tick = (y: number, key: string) => (
-            <line key={key} className="ol-zero" x1={r1(g.cx(i) - 3)} x2={r1(g.cx(i) + 3)} y1={r1(y)} y2={r1(y)} />
-          )
-          if (b.state === 'unread') {
-            return (
-              <rect
-                key={b.start}
-                className="ol-unread"
-                data-i={i}
-                x={r1(g.x0(i))}
-                y={L1.y}
-                width={r1(g.pitch)}
-                height={bottom - L1.y}
-                fill={`url(#${hatch})`}
-              />
-            )
-          }
-          const ok = b.succeeded ?? 0
-          const bad = (b.failed ?? 0) + (b.dead_lettered ?? 0)
-          const flatN = (b.cancelled?.requested ?? 0) + (b.cancelled?.other ?? 0)
-          const afterN = (b.cancelled?.after_failure ?? 0) + (b.cancelled?.workflow_sweep ?? 0)
-          const flatH = flatN === 0 ? 0 : Math.max(3, flatN * k3)
-          const afterH = afterN === 0 ? 0 : Math.max(3, afterN * k3)
-          const fin = b.ended ?? 0
-          const sub = b.submitted ?? 0
-          return (
-            <g key={b.start} className="ol-bucket" data-i={i}>
-              {/* Lane 2 */}
-              {ok > 0 && <rect className="ol-m-ok" x={x} y={r1(zeroY - ok * k2)} width={w} height={r1(ok * k2)} />}
-              {bad > 0 && (
-                <>
-                  <rect className="ol-m-bad" x={x} y={r1(zeroY)} width={w} height={r1(Math.max(MIN_FAILED_PX, bad * k2))} />
-                  <rect className="ol-m-cut" x={x} y={r1(zeroY)} width={Math.min(2, w)} height={r1(Math.max(MIN_FAILED_PX, bad * k2))} />
-                </>
-              )}
-              {ok === 0 && bad === 0 && tick(zeroY, 'z2')}
-              {/* Lane 3 */}
-              {flatH > 0 && (
-                <rect className="ol-m-ended" x={x} y={r1(L3.y + L3.h - flatH)} width={w} height={r1(flatH)} fill={`url(#${flat})`} />
-              )}
-              {afterH > 0 && (
-                <rect
-                  className="ol-m-after"
-                  x={r1(x + 0.5)}
-                  y={r1(L3.y + L3.h - flatH - afterH + 0.5)}
-                  width={r1(Math.max(0, w - 1))}
-                  height={r1(Math.max(0, afterH - 1))}
-                />
-              )}
-              {flatN + afterN === 0 && tick(L3.y + L3.h, 'z3')}
-              {/* Lane 4: finished columns; the submitted line is drawn once below. */}
-              {fin > 0 && <rect className="ol-m-fin" x={x} y={r1(L4.y + L4.h - fin * k4)} width={w} height={r1(fin * k4)} />}
-              {fin === 0 && sub === 0 && tick(L4.y + L4.h, 'z4')}
-              {/* The current bucket's dashed right edge: the side the missing part is on. */}
-              {b.in_progress && (
-                <line className="ol-so-far" x1={r1(g.x0(i) + g.pitch)} x2={r1(g.x0(i) + g.pitch)} y1={L1.y} y2={bottom} />
-              )}
-            </g>
-          )
-        })}
-
-        <g className="ol-lane is-flow">
-          {flowRuns.map((rr, ri) => {
-            const y = (i: number) => r1(L4.y + L4.h - (buckets[i]!.submitted ?? 0) * k4)
-            const d0 = rr
-              .map((i, j) => `${j === 0 ? 'M' : 'L'}${r1(g.x0(i))},${y(i)} L${r1(g.x0(i) + g.pitch)},${y(i)}`)
-              .join(' ')
-            return <path key={`flow${ri}`} className="ol-m-sub" d={d0} />
-          })}
-        </g>
-
-        {/* The time axis. */}
-        {labels.map((l, i) =>
-          l === '' ? null : (
-            <text key={`ax${i}`} className="ol-tick ol-axis-label" x={r1(g.cx(i))} y={g.axisY} textAnchor="middle">
-              {l}
-            </text>
-          ),
+        {scales.down > 0 && (
+          <text className="ol-tick" x={g.left - 6} y={L2.y + L2.h} textAnchor="end">
+            {scales.down}
+          </text>
         )}
       </svg>
 
+      {/* THE LANE LABELS, pinned over the plot's left edge on the page's ground. */}
+      {g.lane.map((l, i) => (
+        <span
+          key={`lab${i}`}
+          className="ol-lane-label"
+          aria-hidden="true"
+          style={{ left: `${g.left}px`, top: `${l.y - LABEL_RISE}px` }}
+        >
+          {words[i]}
+        </span>
+      ))}
+
       <div
-        className="ol-cols"
-        role="group"
-        aria-label={`Outcomes by ${bucket}, ${buckets.length} ${buckets.length === 1 ? 'bucket' : 'buckets'}, four lanes`}
-        style={{ left: `${g.left}px`, width: `${r1(g.plotW)}px`, height: `${g.H}px` }}
-        onKeyDown={onKeys}
+        ref={(el) => registerPlot(d.key, el)}
+        className={older ? 'ol-plot has-older' : 'ol-plot'}
+        style={{ marginLeft: `${g.left}px` }}
+        onScroll={(e) => onPlotScroll(d.key, e)}
       >
-        {buckets.map((b, i) => (
+        <div className="ol-canvas" style={{ width: `${plotLayerW}px`, height: `${g.H}px` }}>
+          <svg
+            className="ol-svg"
+            width={plotLayerW}
+            height={g.H}
+            viewBox={`${g.left} 0 ${plotLayerW} ${g.H}`}
+            aria-hidden="true"
+            focusable="false"
+          >
+            <HatchDef id={hatch} />
+            <defs>
+              {/* TS-4's flat "ended" bars: a 3px bar every 5px, anchored to the page so columns line up. */}
+              <pattern id={flat} width={4} height={5} patternUnits="userSpaceOnUse">
+                <rect className="ol-flat" x={0} y={0} width={4} height={3} />
+              </pattern>
+            </defs>
+
+            {/* The pick: a surface step and a 2px ink rule over the column, no hue (§1.3). */}
+            {pickedAt >= 0 && (
+              <g className="ol-picked">
+                <rect className="ol-sel" x={r1(g.x0(pickedAt))} y={TOP - 18} width={r1(g.pitch)} height={r1(bottom - TOP + 20)} />
+                <rect className="ol-sel-rule" x={r1(g.x0(pickedAt))} y={TOP - 18} width={r1(g.pitch)} height={2} />
+              </g>
+            )}
+
+            {/* The scale's rules, which run under the columns; their numbers are in the gutter. */}
+            <g className="ol-scale">
+              {[1, 0.5, 0].map((t) => (
+                <line key={`r${t}`} className={t === 0 ? 'ol-base' : 'ol-grid'} x1={g.left} x2={right} y1={ry(t)} y2={ry(t)} />
+              ))}
+              <line className="ol-base" x1={g.left} x2={right} y1={r1(zeroY)} y2={r1(zeroY)} />
+              <line className="ol-base" x1={g.left} x2={right} y1={L3.y + L3.h} y2={L3.y + L3.h} />
+              <line className="ol-base" x1={g.left} x2={right} y1={L4.y + L4.h} y2={L4.y + L4.h} />
+            </g>
+
+            {/* Day boundaries on an hourly axis, drawn as well as labelled. */}
+            {boundary.map((b, i) =>
+              b && i > 0 ? (
+                <line key={`day${i}`} className="ol-day" x1={r1(g.x0(i))} x2={r1(g.x0(i))} y1={L1.y - 4} y2={bottom} />
+              ) : null,
+            )}
+
+            {/* Lane 1: the band, then the line, then the points. */}
+            <g className="ol-lane is-rate">
+              {runs.map((rr, ri) => {
+                const pts = rr.map((i) => ({ i, r: buckets[i]!.rate!, now: buckets[i]!.in_progress }))
+                const hi = pts.map((p) => `${r1(g.cx(p.i))},${ry(p.r.hi)}`).join(' ')
+                const lo = pts
+                  .slice()
+                  .reverse()
+                  .map((p) => `${r1(g.cx(p.i))},${ry(p.r.lo)}`)
+                  .join(' ')
+                const last = pts[pts.length - 1]!
+                const solid = last.now ? pts.slice(0, -1) : pts
+                return (
+                  <g key={`run${ri}`} data-run={ri}>
+                    {pts.length > 1 && <polygon className="ol-m-band" points={`${hi} ${lo}`} />}
+                    {pts.length > 1 && <polyline className="ol-m-edge" points={hi} />}
+                    {pts.length > 1 && (
+                      <polyline className="ol-m-edge" points={pts.map((p) => `${r1(g.cx(p.i))},${ry(p.r.lo)}`).join(' ')} />
+                    )}
+                    {solid.length > 1 && (
+                      <polyline className="ol-m-rate" points={solid.map((p) => `${r1(g.cx(p.i))},${ry(p.r.p)}`).join(' ')} />
+                    )}
+                    {last.now && pts.length > 1 && (
+                      <polyline
+                        className="ol-m-rate is-so-far"
+                        points={`${r1(g.cx(pts[pts.length - 2]!.i))},${ry(pts[pts.length - 2]!.r.p)} ${r1(g.cx(last.i))},${ry(last.r.p)}`}
+                      />
+                    )}
+                    {pts.map((p) => (
+                      <circle
+                        key={`pt${p.i}`}
+                        className={p.r.n >= LOW_N && !p.now ? 'ol-m-pt' : 'ol-m-pt is-hollow'}
+                        cx={r1(g.cx(p.i))}
+                        cy={ry(p.r.p)}
+                        r={3}
+                        data-i={p.i}
+                      />
+                    ))}
+                  </g>
+                )
+              })}
+            </g>
+
+            {/* Lanes 2-4, and the unread bands, per bucket. */}
+            {buckets.map((b, i) => {
+              const x = r1(g.cx(i) - g.bar / 2)
+              const w = r1(g.bar)
+              const tick = (y: number, key: string) => (
+                <line key={key} className="ol-zero" x1={r1(g.cx(i) - 3)} x2={r1(g.cx(i) + 3)} y1={r1(y)} y2={r1(y)} />
+              )
+              if (b.state === 'unread') {
+                return (
+                  <rect
+                    key={b.start}
+                    className="ol-unread"
+                    data-i={i}
+                    x={r1(g.x0(i))}
+                    y={L1.y}
+                    width={r1(g.pitch)}
+                    height={bottom - L1.y}
+                    fill={`url(#${hatch})`}
+                  />
+                )
+              }
+              const ok = b.succeeded ?? 0
+              const bad = (b.failed ?? 0) + (b.dead_lettered ?? 0)
+              const flatN = (b.cancelled?.requested ?? 0) + (b.cancelled?.other ?? 0)
+              const afterN = (b.cancelled?.after_failure ?? 0) + (b.cancelled?.workflow_sweep ?? 0)
+              const flatH = flatN === 0 ? 0 : Math.max(3, flatN * k3)
+              const afterH = afterN === 0 ? 0 : Math.max(3, afterN * k3)
+              const fin = b.ended ?? 0
+              const sub = b.submitted ?? 0
+              return (
+                <g key={b.start} className="ol-bucket" data-i={i}>
+                  {/* Lane 2 */}
+                  {ok > 0 && <rect className="ol-m-ok" x={x} y={r1(zeroY - ok * k2)} width={w} height={r1(ok * k2)} />}
+                  {bad > 0 && (
+                    <>
+                      <rect className="ol-m-bad" x={x} y={r1(zeroY)} width={w} height={r1(Math.max(MIN_FAILED_PX, bad * k2))} />
+                      <rect className="ol-m-cut" x={x} y={r1(zeroY)} width={Math.min(2, w)} height={r1(Math.max(MIN_FAILED_PX, bad * k2))} />
+                    </>
+                  )}
+                  {ok === 0 && bad === 0 && tick(zeroY, 'z2')}
+                  {/* Lane 3 */}
+                  {flatH > 0 && (
+                    <rect className="ol-m-ended" x={x} y={r1(L3.y + L3.h - flatH)} width={w} height={r1(flatH)} fill={`url(#${flat})`} />
+                  )}
+                  {afterH > 0 && (
+                    <rect
+                      className="ol-m-after"
+                      x={r1(x + 0.5)}
+                      y={r1(L3.y + L3.h - flatH - afterH + 0.5)}
+                      width={r1(Math.max(0, w - 1))}
+                      height={r1(Math.max(0, afterH - 1))}
+                    />
+                  )}
+                  {flatN + afterN === 0 && tick(L3.y + L3.h, 'z3')}
+                  {/* Lane 4: finished columns; the submitted line is drawn once below. */}
+                  {fin > 0 && <rect className="ol-m-fin" x={x} y={r1(L4.y + L4.h - fin * k4)} width={w} height={r1(fin * k4)} />}
+                  {fin === 0 && sub === 0 && tick(L4.y + L4.h, 'z4')}
+                  {/* The current bucket's dashed right edge: the side the missing part is on. */}
+                  {b.in_progress && (
+                    <line className="ol-so-far" x1={r1(g.x0(i) + g.pitch)} x2={r1(g.x0(i) + g.pitch)} y1={L1.y} y2={bottom} />
+                  )}
+                </g>
+              )
+            })}
+
+            <g className="ol-lane is-flow">
+              {flowRuns.map((rr, ri) => {
+                const y = (i: number) => r1(L4.y + L4.h - (buckets[i]!.submitted ?? 0) * k4)
+                const d0 = rr
+                  .map((i, j) => `${j === 0 ? 'M' : 'L'}${r1(g.x0(i))},${y(i)} L${r1(g.x0(i) + g.pitch)},${y(i)}`)
+                  .join(' ')
+                return <path key={`flow${ri}`} className="ol-m-sub" d={d0} />
+              })}
+            </g>
+
+            {/* The time axis. */}
+            {labels.map((l, i) =>
+              l === '' ? null : (
+                <text key={`ax${i}`} className="ol-tick ol-axis-label" x={r1(g.cx(i))} y={g.axisY} textAnchor="middle">
+                  {l}
+                </text>
+              ),
+            )}
+          </svg>
+
           <div
-            key={b.start}
-            ref={(el) => register(d.key, i, el)}
-            className={i === pickedAt ? 'ol-col is-picked' : 'ol-col'}
-            role="img"
-            aria-label={bucketSaid(b, bucket, tz)}
-            tabIndex={i === stopAt ? 0 : -1}
-            data-i={i}
-            data-start={b.start}
-            data-state={b.state}
-            style={{ left: `${r1(i * g.pitch)}px`, width: `${r1(g.pitch)}px` }}
-            onMouseEnter={() => onColumnPick(i)}
-            onClick={() => onColumnPick(i)}
-            onFocus={(e) => onColumnFocus(i, e.currentTarget)}
-          />
-        ))}
+            className="ol-cols"
+            role="group"
+            aria-label={`Outcomes by ${bucket}, ${buckets.length} ${buckets.length === 1 ? 'bucket' : 'buckets'}, four lanes`}
+            style={{ left: 0, width: `${r1(g.plotW)}px`, height: `${g.H}px` }}
+            onKeyDown={onKeys}
+          >
+            {buckets.map((b, i) => (
+              <div
+                key={b.start}
+                ref={(el) => register(d.key, i, el)}
+                className={i === pickedAt ? 'ol-col is-picked' : 'ol-col'}
+                role="img"
+                aria-label={bucketSaid(b, bucket, tz)}
+                tabIndex={i === stopAt ? 0 : -1}
+                data-i={i}
+                data-start={b.start}
+                data-state={b.state}
+                style={{ left: `${r1(i * g.pitch)}px`, width: `${r1(g.pitch)}px` }}
+                onMouseEnter={() => onColumnPick(i)}
+                onClick={() => onColumnPick(i)}
+                onFocus={(e) => onColumnFocus(i, e.currentTarget)}
+              />
+            ))}
+          </div>
+        </div>
       </div>
     </div>
   )
@@ -571,15 +656,47 @@ export function OutcomeLedger({ data, picked, onPick, onZoom }: OutcomeLedgerPro
   // TS-3: OPEN AT THE NEWEST END, and fade the left edge only while something
   // older is off-screen. Keyed on the axis, so a re-read of the same span
   // leaves a reader who scrolled back where they were.
-  const scroller = useRef<HTMLDivElement>(null)
-  const [older, setOlder] = useState(false)
+  //
+  // ONE SCROLLER PER DRAWING, each opened the first time it is SHOWN: a
+  // drawing under `display: none` has no width to scroll, so it is opened when
+  // the chart's box changes and the sheet swaps it in (a phone turned
+  // sideways), not left at its oldest bucket. A drawing already opened keeps
+  // wherever its reader scrolled it.
+  const figure = useRef<HTMLElement>(null)
+  const plots = useRef(new Map<string, HTMLDivElement | null>())
+  const registerPlot = (key: string, el: HTMLDivElement | null) => {
+    plots.current.set(key, el)
+  }
+  const [older, setOlder] = useState<Readonly<Record<string, boolean>>>({})
   const axis = `${bucket}:${starts[0] ?? ''}:${starts[starts.length - 1] ?? ''}`
-  useLayoutEffect(() => {
-    const el = scroller.current
-    if (el === null) return
-    el.scrollLeft = el.scrollWidth
-    setOlder(el.scrollLeft > 0)
+  const opened = useRef<{ axis: string; keys: Set<string> }>({ axis: '', keys: new Set() })
+  const openNewest = useCallback(() => {
+    if (opened.current.axis !== axis) opened.current = { axis, keys: new Set() }
+    const seen: Record<string, boolean> = {}
+    for (const [key, el] of plots.current) {
+      if (el === null || el.clientWidth === 0) continue
+      if (!opened.current.keys.has(key)) {
+        el.scrollLeft = el.scrollWidth
+        opened.current.keys.add(key)
+      }
+      seen[key] = el.scrollLeft > 0
+    }
+    setOlder((o) => (Object.keys(seen).every((k) => o[k] === seen[k]) ? o : { ...o, ...seen }))
   }, [axis])
+  useLayoutEffect(() => {
+    openNewest()
+  }, [openNewest])
+  useEffect(() => {
+    const el = figure.current
+    if (el === null || typeof ResizeObserver === 'undefined') return
+    const watch = new ResizeObserver(() => openNewest())
+    watch.observe(el)
+    return () => watch.disconnect()
+  }, [openNewest])
+  const onPlotScroll = (key: string, e: UIEvent<HTMLDivElement>) => {
+    const now = e.currentTarget.scrollLeft > 0
+    setOlder((o) => (o[key] === now ? o : { ...o, [key]: now }))
+  }
 
   const drawingOf = (el: Element | null): string | null =>
     el?.closest('.ol-drawing')?.className.match(/is-(wide|mid|narrow)/)?.[1] ?? null
@@ -642,31 +759,32 @@ export function OutcomeLedger({ data, picked, onPick, onZoom }: OutcomeLedgerPro
   const shown = shownOf(data, pickedBucket !== null && pickedBucket.state !== 'unread' ? pickedBucket : null)
   const settleMin = Math.round(data.coverage.seal_grace_s / 60)
   const failedThere = pickedBucket === null ? 0 : (pickedBucket.failed ?? 0) + (pickedBucket.dead_lettered ?? 0)
-  const unitWord = bucket === 'hour' ? 'hours' : `${bucket}s`
+  const units = unitWord(bucket)
+  // THE SPAN'S TOTALS ARE SUMS OVER THE READ BUCKETS ONLY (TS-9): partial
+  // when one was not read, and no figure at all when none was.
+  const cov = spanCoverage(data)
+  const spanNotRead = pickedBucket === null && cov.none
 
   return (
     <div className="ol-chart-readout" onMouseLeave={restore} onBlur={onBlur} onKeyDown={onReadoutKeyDown}>
-      <figure className="ol-chart" aria-label={`Outcome ledger by ${bucket}, ${buckets.length} ${unitWord}`}>
-        <div
-          ref={scroller}
-          className={older ? 'ol-plot has-older' : 'ol-plot'}
-          onScroll={(e) => setOlder(e.currentTarget.scrollLeft > 0)}
-        >
-          {LEDGER_DRAWN.map((d) => (
-            <Drawing
-              key={d.key}
-              d={d}
-              data={data}
-              scales={scales}
-              pickedAt={pickedAt}
-              stopAt={stopAt}
-              onColumnFocus={onColumnFocus}
-              onColumnPick={onColumnPick}
-              onKeys={onKeys}
-              register={register}
-            />
-          ))}
-        </div>
+      <figure ref={figure} className="ol-chart" aria-label={`Outcome ledger by ${bucket}, ${buckets.length} ${units}`}>
+        {LEDGER_DRAWN.map((d) => (
+          <Drawing
+            key={d.key}
+            d={d}
+            data={data}
+            scales={scales}
+            pickedAt={pickedAt}
+            stopAt={stopAt}
+            older={older[d.key] === true}
+            onColumnFocus={onColumnFocus}
+            onColumnPick={onColumnPick}
+            onKeys={onKeys}
+            onPlotScroll={onPlotScroll}
+            register={register}
+            registerPlot={registerPlot}
+          />
+        ))}
       </figure>
 
       <div className="ol-readout">
@@ -675,14 +793,31 @@ export function OutcomeLedger({ data, picked, onPick, onZoom }: OutcomeLedgerPro
             ‹
           </button>
           <b className="ol-at">
-            {pickedBucket !== null ? atName(pickedBucket, bucket, tz) : `all ${buckets.length} ${unitWord}`}
+            {pickedBucket !== null ? atName(pickedBucket, bucket, tz) : `all ${buckets.length} ${units}`}
           </b>
+          {pickedBucket === null && !cov.complete && !cov.none && (
+            <span className="ol-at-cover">
+              <Mark
+                kind="partial"
+                say={`${cov.of - cov.read} of the span's ${cov.of} ${cov.unit} could not be read, so these totals cover ${cov.read} of them and each is a floor.`}
+              />{' '}
+              {cov.read} of {cov.of} {cov.unit}
+            </span>
+          )}
           <button type="button" className="ol-step" aria-label="Later bucket" onClick={() => step(1)}>
             ›
           </button>
         </p>
 
-        {pickedBucket !== null && pickedBucket.state === 'unread' ? (
+        {spanNotRead ? (
+          <p className="ol-legend">
+            <Mark
+              kind="unread"
+              say={`None of the span's ${cov.of} ${cov.unit} could be read, so there is no total to print: ${cov.reasons.join('; ')}.`}
+            />{' '}
+            <span className="ol-q">{nothingReadWords(cov)}</span>
+          </p>
+        ) : pickedBucket !== null && pickedBucket.state === 'unread' ? (
           <p className="ol-legend">
             <Mark
               kind="unread"
@@ -714,16 +849,24 @@ export function OutcomeLedger({ data, picked, onPick, onZoom }: OutcomeLedgerPro
             <span className="ol-li">
               dead-lettered <b className="ol-n">{shown.dead_lettered}</b>
             </span>
+            {/* ONE NUMBER PER KEY, AND IT IS THE NUMBER THE KEY'S MARK DRAWS
+                (TS-9). The flat bars are requested + other and the outline is
+                after_failure + workflow_sweep -- lane 3's two marks -- so the
+                cancelled total, which no single mark draws, stands unkeyed. */}
             <span className="ol-li">
-              <i className="ol-k is-ended" aria-hidden /> cancelled <b className="ol-n">{shown.cancelled}</b>{' '}
+              cancelled <b className="ol-n">{shown.cancelled}</b>
+            </span>
+            <span className="ol-li">
+              <i className="ol-k is-ended" aria-hidden /> requested or other{' '}
+              <b className="ol-n">{shown.requested + shown.other}</b>{' '}
               <span className="ol-q">
                 requested {shown.requested} · other {shown.other}
               </span>
             </span>
             <span className="ol-li">
               <i className="ol-k is-after" aria-hidden /> after a failure{' '}
-              <b className="ol-n">{shown.after_failure}</b>{' '}
-              <span className="ol-q">workflow sweep {shown.workflow_sweep}</span>
+              <b className="ol-n">{shown.after_failure + shown.workflow_sweep}</b>{' '}
+              <span className="ol-q">incl. workflow sweep {shown.workflow_sweep}</span>
             </span>
             <span className="ol-li">
               <i className="ol-k is-sub" aria-hidden /> submitted <b className="ol-n">{shown.submitted}</b>{' '}

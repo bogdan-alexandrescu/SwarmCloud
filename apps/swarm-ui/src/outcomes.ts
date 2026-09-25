@@ -660,6 +660,59 @@ export function unreadWords(r: UnreadReason | null): string {
   return 'not read'
 }
 
+/** A bucket size as a plural unit: `hours`, `days`, `weeks`, `months`. */
+export function unitWord(bucket: LedgerBucketSize): string {
+  return bucket === 'hour' ? 'hours' : `${bucket}s`
+}
+
+/**
+ * HOW MUCH OF THE SPAN EVERY TOTAL COVERS (TS-9). The route sums `totals`,
+ * `retries`, `latency`, `groups` and `workflows_failed` over the buckets it
+ * READ, and serves an unread bucket with no numbers at all. So a total is a
+ * floor whenever one bucket was not read, and when none was read every "0" in
+ * the payload is a sum over nothing -- not a measurement. Every figure the
+ * page draws from the payload asks this first:
+ *
+ *   * `complete` -- draw the figure plainly;
+ *   * partial   -- draw it, with the partial mark and `read of n <unit>`;
+ *   * `none`    -- draw NO figure: the not-read mark, never a zero, never a
+ *                  "real zero" and never "no finished work", which would
+ *                  each claim something was measured.
+ */
+export interface SpanCoverage {
+  complete: boolean
+  none: boolean
+  read: number
+  of: number
+  unit: string
+  /** Why the unread buckets were not read, in the reader's words, each once. */
+  reasons: string[]
+}
+
+export function spanCoverage(d: Outcomes): SpanCoverage {
+  const t = d.totals
+  const reasons: string[] = []
+  for (const b of d.buckets) {
+    if (b.state !== 'unread') continue
+    const w = unreadWords(b.unread_reason)
+    if (!reasons.includes(w)) reasons.push(w)
+  }
+  return {
+    complete: t.complete,
+    none: t.buckets_read === 0,
+    read: t.buckets_read,
+    of: t.buckets,
+    unit: unitWord(d.bucket),
+    reasons,
+  }
+}
+
+/** The not-read words for a span nobody read, with no digit in them: the figure slot's words. */
+export function nothingReadWords(c: SpanCoverage): string {
+  const why = c.reasons.length > 0 ? ` · ${c.reasons.join(' · ')}` : ''
+  return `none of this span’s ${c.unit} could be read${why}`
+}
+
 /** Whether a sealed-or-open bucket measured nothing at all -- a MEASURED zero, drawn as the axis tick. */
 export function measuredNothing(b: OutcomeBucket): boolean {
   return b.state !== 'unread' && (b.ended ?? 0) === 0 && (b.submitted ?? 0) === 0
