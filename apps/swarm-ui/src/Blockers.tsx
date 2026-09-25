@@ -20,7 +20,7 @@ import {
   ceilingCopy,
   headroomFor,
   needsAPerson,
-  poolLabeller,
+  poolLabelAmong,
   reasonCopy,
   type Capacity,
   type Ceiling,
@@ -30,7 +30,7 @@ import {
   type RunnerProfile,
 } from './types'
 
-/** How a pool is named on screen. See `poolLabeller`. */
+/** How a pool is named on screen. See `poolLabelAmong`. */
 type Label = (pool: string) => string
 
 /**
@@ -48,9 +48,14 @@ function printed(h: Headroom): string[] {
   ]
 }
 
+/** Every pool named against `among`, the set the labels are read together in. */
+function labelsAmong(among: readonly string[]): Label {
+  return (pool) => poolLabelAmong(pool, among)
+}
+
 /** The default labeller for a panel drawn on its own, outside a profile card. */
 function labelsFor(h: Headroom): Label {
-  return poolLabeller(printed(h))
+  return labelsAmong(printed(h))
 }
 
 /** The number, or an em dash with the reason there is no number. */
@@ -394,7 +399,7 @@ export function ProfileAdmissionPanel({
   // ONE LABELLER FOR THE WHOLE CARD: the profile's own pool list plus
   // anything the analysis names, so `browser · resource` in the card's table
   // is `browser · resource` in its blocker list and counterfactual too.
-  const label = poolLabeller([...profile.pools, ...printed(h)])
+  const label = labelsAmong([...profile.pools, ...printed(h)])
   return (
     <div className="admission-panel">
       <IncompleteNote h={h} label={label} />

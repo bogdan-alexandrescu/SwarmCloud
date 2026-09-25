@@ -188,32 +188,29 @@ export function poolLabel(name: string): string {
 }
 
 /**
- * `poolLabel` for pools SHOWN TOGETHER: any label two of them would share is
- * qualified by its kind, so `resource:browser` and `runner:browser` read
- * `browser · resource` and `browser · runner` (CP-15, visual QA 2026-09-25).
+ * `poolLabel`, qualified by kind wherever another pool in `among` would print
+ * the same word (CP-15).
  *
  * `poolLabel` drops the kind, which is right almost everywhere and wrong in
- * exactly one shape: the `browser` profile clears BOTH `resource:browser` and
- * `runner:browser`, and every screen that listed its pools printed `browser`
- * twice -- `Lift browser` on two counterfactual rows, `browser and browser
- * still binds`, two operands on Pool limits with the same name and different
- * ceilings. A reader cannot act on a name that points at two pools.
+ * exactly one shape this platform has: `resource:browser` and
+ * `runner:browser` both print `browser`. A blocker list then read "Lift
+ * browser" twice and "browser and browser still binds" -- two different
+ * ceilings, owned by two different settings, under one name. Where that
+ * happens both are qualified, `browser · resource` and `browser · runner`;
+ * where it does not, nothing changes, so the short label stays the common
+ * case.
  *
- * Qualified only on a collision, and only among `names`: a label nothing else
- * in view shares keeps the short form every other screen uses.
+ * `among` is whatever set the labels will be READ together in -- a blocker's
+ * pools, a profile's pools, every pool on a screen. Two pools of the SAME kind
+ * that still print one label differ only in the part `poolLabel` drops, so
+ * those fall back to the raw name, the one spelling left that cannot collide.
  */
-export function poolLabeller(names: Iterable<string>): (name: string) => string {
-  const seen = new Map<string, Set<string>>()
-  for (const n of names) {
-    const label = poolLabel(n)
-    const pools = seen.get(label) ?? new Set<string>()
-    pools.add(n)
-    seen.set(label, pools)
-  }
-  return (name) => {
-    const label = poolLabel(name)
-    return (seen.get(label)?.size ?? 0) > 1 ? `${label} · ${poolKind(name)}` : label
-  }
+export function poolLabelAmong(name: string, among: readonly string[]): string {
+  const label = poolLabel(name)
+  const rivals = among.filter((other) => other !== name && poolLabel(other) === label)
+  if (rivals.length === 0) return label
+  const kind = poolKind(name)
+  return rivals.some((other) => poolKind(other) === kind) ? name : `${label} · ${kind}`
 }
 
 /** What `headroomFor` hands a screen. Every field comes off the response. */

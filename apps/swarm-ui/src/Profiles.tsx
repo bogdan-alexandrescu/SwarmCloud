@@ -4,7 +4,7 @@ import type { TopicId } from './help'
 import { HelpLinks } from './HelpCard'
 import { Screen } from './Shell'
 import { ProfileAdmissionPanel, headroomFigure } from './Blockers'
-import { headroomFor, poolLabeller, poolScope, type Capacity, type Pool, type RunnerProfile } from './types'
+import { headroomFor, poolLabelAmong, poolScope, type Capacity, type Pool, type RunnerProfile } from './types'
 
 /**
  * The runner-profile catalogue — what kinds of agent this platform can run.
@@ -168,7 +168,8 @@ function ProfileCard({ name, profile, byName, tenant, capacity }: {
   // One name per pool across the whole card, qualified where two would read
   // alike (CP-15): the `browser` profile clears `resource:browser` AND
   // `runner:browser`, and both printed `browser`.
-  const label = poolLabeller([...profile.pools, ...binding])
+  const among = [...profile.pools, ...binding]
+  const label = (pool: string) => poolLabelAmong(pool, among)
   // A PROFILE THE PLATFORM REFUSES IS NOT PRICED (CP-3). Its pools are still
   // listed -- they are true, and they are what re-enabling it would face --
   // but "N could start", the run-out line and the counterfactuals are offers,

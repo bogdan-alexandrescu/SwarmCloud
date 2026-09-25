@@ -3,7 +3,7 @@ import { loadCapacity, setPoolLimit } from './api'
 import { errorHeading, isPaused, type ApiError } from './fetch'
 import { HelpCard } from './HelpCard'
 import { Screen } from './Shell'
-import { poolKind, poolLabel, poolLabeller, setBy, type Capacity, type Pool } from './types'
+import { poolKind, poolLabel, poolLabelAmong, setBy, type Capacity, type Pool } from './types'
 
 /**
  * Pool limits: the concurrency ceilings, editable.
@@ -247,7 +247,8 @@ function ProfileCard({
   // One name per operand, qualified where two would read alike (CP-15): the
   // `browser` profile takes `resource:browser` AND `runner:browser`, and both
   // printed `browser` -- two operands with one name and different ceilings.
-  const label = poolLabeller(operands.map((o) => o.pool))
+  const among = operands.map((o) => o.pool)
+  const label = (pool: string) => poolLabelAmong(pool, among)
   const named = binding.map(label).join(' and ')
 
   return (

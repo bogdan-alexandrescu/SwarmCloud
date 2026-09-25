@@ -15,7 +15,7 @@ import {
   overCeiling,
   poolKind,
   poolLabel,
-  poolLabeller,
+  poolLabelAmong,
   poolScope,
   setBy,
   type Capacity,
@@ -383,7 +383,8 @@ function HeldBackBy({ h }: { h: Headroom }) {
   }
   // Named against each other, so two refusing pools never share a chip's name
   // (CP-15): `resource:browser` and `runner:browser` both printed `browser`.
-  const label = poolLabeller(h.blockers.map((b) => b.pool))
+  const among = h.blockers.map((b) => b.pool)
+  const label = (pool: string) => poolLabelAmong(pool, among)
   return (
     <span className="cap-marks">
       {h.blockers.map((b) => {
