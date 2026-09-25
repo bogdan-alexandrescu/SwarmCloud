@@ -483,9 +483,10 @@ def test_nothing_is_reported_when_every_expected_output_was_written(db, worker_f
 def test_an_unusable_entry_is_dropped_loudly_and_does_not_fail_the_attempt(
     db, store, worker_factory, log_stream
 ):
-    """The declaration is advice to the agent. An entry that cannot be a file
-    in the artifacts directory is left out of that advice with a warning naming
-    it; it does not cost the upstream step its run."""
+    """An entry that cannot be a file in the artifacts directory is left out of
+    the instructions and of the end-of-attempt check, with a warning naming it.
+    No dependant could stage it either, so it does not cost the upstream step
+    its run. Only a usable name that is missing fails the attempt."""
     _seed(db, ["notes.md", "../escape.md", "/etc/passwd", 7, ""], artifact_name="notes.md")
     worker, _config, _exporter = worker_factory()
 
