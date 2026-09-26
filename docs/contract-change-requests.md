@@ -2609,7 +2609,10 @@ below.
 
 **`claude-code` and `codex` declare nothing**, so `input.model` is refused from
 every caller, which is the attribution-only rule
-`test_model_flag_is_attribution_only.py` holds for the bridge.
+`test_model_flag_is_attribution_only.py` holds for the bridge. (Since #226,
+2026-09-26, the CLI runners do not read `input.model` either: the model is the
+profile's Job's `MODEL`, set once in Terraform, and the worker drops a stored
+`input.model` with a WARNING, which covers `browser` and `generic` too.)
 
 **The one departure: `browser` and `generic` are `inputs=None`, NOT DECLARED
 YET, and the API bounds them by size alone, as it bounded every profile

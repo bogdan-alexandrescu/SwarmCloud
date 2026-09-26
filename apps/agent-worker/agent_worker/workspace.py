@@ -3,8 +3,12 @@
 One attempt, one directory tree, created empty and destroyed at the end:
 
     <workspace_root>/<attempt_id>/
-        work/          the runner's current directory; this is what gets checkpointed
+        work/          the runner's current directory, and HOME for the agent CLI;
+                       this is what gets checkpointed
           artifacts    a link to the artifacts/ below, absolute; never checkpointed
+          repo/        the repository checkout, when a task has one; the agent
+                       CLI's working directory then (#226)
+            artifacts  the same link again, hidden from git; never checkpointed
         artifacts/     files the runner wants kept; uploaded on exit
         logs/          stdout.log, stderr.log
         tmp/           TMPDIR for the child, so a stray temp file cannot escape
@@ -35,6 +39,14 @@ agent echoed `$SWARM_ARTIFACTS_DIR` correctly and then wrote
 land in the uploaded directory. `create()` cannot make it: a restore refuses a
 non-empty `work/`, and a declared input or a restored checkpoint may already
 own the name, in which case the link is skipped rather than put over it.
+
+**With a repository attached, the agent starts in `work/repo` (#226, owner
+decision of 2026-09-26),** so Claude Code loads the repository's own
+`CLAUDE.md` by itself, as a local lane does. `./artifacts` is then the
+checkout's, so the lifecycle makes the same link at `work/repo/artifacts` and
+hides it from git (`gitops.hide_from_git`); `work/artifacts` stays as well, as
+`../artifacts` from the checkout. HOME stays `work/`: the CLI keeps its own
+state under HOME, and none of it belongs in the repository's diff.
 """
 
 from __future__ import annotations
@@ -45,6 +57,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .errors import WorkspaceError
+
+#: The repository checkout's directory inside `work/`. Defined here, beside the
+#: tree it names, because the checkpoint needs it as well as the lifecycle:
+#: a link to the artifacts directory inside the checkout must never be
+#: archived either (`checkpoint.CheckpointManager.create`).
+REPO_DIR_NAME = "repo"
 
 
 @dataclass(frozen=True)
@@ -124,16 +142,26 @@ class Workspace:
     # declared input over any name in that set. The owner's rule for this name
     # is the opposite: a declared input called `artifacts/...` is staged, and
     # the link is the thing that gives way.
-    def artifacts_link(self) -> Path:
-        """Where `link_artifacts` puts the link: `work/artifacts`.
+    def artifacts_link(self, within: Path | None = None) -> Path:
+        """Where `link_artifacts` puts the link: `work/artifacts` by default,
+        or `<within>/artifacts` -- the checkout's, when the agent starts there.
 
         Named after the directory it points at, derived rather than spelled
         again, because the directory's own name is the one an agent guesses.
         """
-        return self.work / self.artifacts.name
+        return (within if within is not None else self.work) / self.artifacts.name
+
+    # A METHOD, NOT A PROPERTY, for the reason `artifacts_link` is one:
+    # `control_file_names` collects every Path-valued property under `work/`,
+    # and `repo` is not a control file. A task with no repository whose agent
+    # makes a `repo/` folder has made its own work, which is uploaded.
+    def checkout(self) -> Path:
+        """`work/repo`: where the repository is cloned, when a task has one."""
+        return self.work / REPO_DIR_NAME
 
     def is_artifacts_link(self, path: Path) -> bool:
-        """True when `path` is `work/artifacts` AND a link resolving to `artifacts/`.
+        """True when `path` is `work/artifacts` or `work/repo/artifacts` AND a
+        link resolving to `artifacts/`.
 
         Compared by where it resolves, not by the link's text, so an agent
         that re-created it as `../artifacts` is still recognised: that link
@@ -141,7 +169,7 @@ class Workspace:
         A real directory at the same path is the agent's own work and is
         never this.
         """
-        if path != self.artifacts_link():
+        if path not in (self.artifacts_link(), self.artifacts_link(self.checkout())):
             return False
         try:
             return path.is_symlink() and path.resolve() == self.artifacts.resolve()
@@ -213,8 +241,9 @@ def create(root: Path, attempt_id: str) -> Workspace:
     return ws
 
 
-def link_artifacts(ws: Workspace) -> bool:
-    """Make `work/artifacts` a link to `artifacts/`. False when the name is taken.
+def link_artifacts(ws: Workspace, within: Path | None = None) -> bool:
+    """Make `work/artifacts` (or `<within>/artifacts`) a link to `artifacts/`.
+    False when the name is taken.
 
     Taken means anything at all is there, a dangling link included: a declared
     input staged as `artifacts/...`, or a directory a restored checkpoint
@@ -232,10 +261,14 @@ def link_artifacts(ws: Workspace) -> bool:
     (`checkpoint.CheckpointManager.create`), because it names this attempt's
     directory and a resumed attempt makes its own.
 
+    `within` is the checkout, `work/repo`, where the agent starts when a
+    task has a repository (#226). There a name the repository tracks, an
+    `artifacts/` folder of its own, is taken in exactly the same sense.
+
     Raises OSError if the link cannot be made; the caller decides what that
     costs.
     """
-    link = ws.artifacts_link()
+    link = ws.artifacts_link(within)
     if os.path.lexists(link):
         return False
     os.symlink(os.path.abspath(ws.artifacts), link, target_is_directory=True)
