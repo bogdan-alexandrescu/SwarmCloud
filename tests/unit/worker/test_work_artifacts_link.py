@@ -321,8 +321,15 @@ def test_an_existing_work_artifacts_is_left_alone_and_the_skip_is_logged(
         assert "artifacts/after-resume.md" in archive.getnames()
 
     # What was already true before the link, and still is for this directory:
-    # a file under it is not an artifact.
-    assert "after-resume.md" not in _manifest_names(db)
+    # a file under it is not an artifact under its own name, so no later step
+    # stages it. This task has no repository, so what its agent created in
+    # the working folder is uploaded as `workdir/<path>` (#184, owner decision
+    # of 2026-09-26; test_standalone_outputs.py) -- the restored file too,
+    # because an earlier attempt's agent created it.
+    names = _manifest_names(db)
+    assert "after-resume.md" not in names
+    assert "workdir/artifacts/after-resume.md" in names, names
+    assert "workdir/artifacts/scan-02.md" in names, names
 
     skipped = [
         r

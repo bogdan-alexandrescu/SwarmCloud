@@ -15,7 +15,9 @@ load-bearing in a way the rest are not.
     8.  while it runs: heartbeat, MANDATORY periodic checkpoint, watch for
         cancellation / quota exhaustion / a generation change
     9.  capture stdout and stderr
-    10. upload artifacts and a final checkpoint
+    10. upload artifacts and a final checkpoint; for a CLI agent with no
+        repository, also what it created in its working folder, under
+        `workdir/` (#184)
     11. persist the terminal state, or READY for a retry when a clean run left
         out an expected output and the task has attempts left (#149)
     12. release the lease
@@ -124,6 +126,7 @@ from swarm_common.states import EventType, ParkReason, TaskState
 from . import expected_outputs as expected_mod
 from . import inputs as inputs_mod
 from . import redact as redact_mod
+from . import standalone_outputs as standalone_mod
 from . import workspace as workspace_mod
 from .accountlease import (
     ACCOUNT_TOKEN_ENV,
@@ -177,7 +180,7 @@ from .procman import ChildProcess, ChildResult
 from .quota import QuotaDecision, decide, read_runner_signal, signal_from_control
 from .runners.base import EXIT_QUOTA_EXHAUSTED, EXIT_TERMINATED, SPEND_KEYS
 from .runners.limits import GRACE_ENV, STDERR_ENV, STDOUT_ENV, TIMEOUT_ENV
-from .runners.streams import agent_stream_files
+from .runners.streams import agent_stream_files, cli_agent_spec
 from .secrets import (
     CredentialMissing,
     SecretError,
@@ -364,6 +367,17 @@ class Worker:
         # `metadata.expected_outputs` (#149). Kept so `_finalise` can name any
         # the attempt did not upload; see `agent_worker.expected_outputs`.
         self._expected_outputs: tuple[str, ...] = ()
+        # A CLI agent's task with no repository has what its agent CREATED in
+        # the working folder uploaded, under `workdir/` (#184, owner decision
+        # of 2026-09-26; `agent_worker.standalone_outputs`). `_standalone` is
+        # decided in `_prepare`, once the task is known. `_restored_workdir` is
+        # what a checkpoint brought back into `work/`. `_workdir_baseline` is
+        # what was there just before the attempt's FIRST runner started,
+        # less what an earlier attempt's agent created; None until then, and
+        # None means nothing is uploaded from the working folder.
+        self._standalone = False
+        self._restored_workdir: frozenset[str] = frozenset()
+        self._workdir_baseline: frozenset[str] | None = None
         self._heartbeats = 0
         self._deadline = time.monotonic() + config.timeout_seconds
         # The account this attempt holds, if the pool gave it one. Set once and
@@ -555,6 +569,11 @@ class Worker:
         ws = self.ws
         assert ws is not None
 
+        # What is in the working folder before the FIRST runner starts: once
+        # per attempt, so an in-place restart below does not make the first
+        # run's files "existing" ones (#184, standalone tasks only).
+        self._take_workdir_baseline()
+
         # ---- STEPS 7-9: run the child, supervised -----------------------
         attempt_number = 0
         credential_reloads = 0
@@ -695,7 +714,16 @@ class Worker:
         # caller's dispatch strategy and re-fetching it there would be a
         # second read of a document that cannot have changed.
         self._task = task
+        self._standalone = self._uploads_working_folder(task)
         self._restore_checkpoint(task.get("latest_checkpoint"))
+        if self._standalone and self._restored_from is not None:
+            # What the checkpoint brought back, BEFORE the worker stages
+            # anything: whatever in here is not a staged input was written by
+            # an earlier attempt's agent, and counts as created (see
+            # `agent_worker.standalone_outputs`, "A resumed attempt").
+            self._restored_workdir = frozenset(
+                standalone_mod.scan(ws.work, reserved=self._workdir_reserved()).files
+            )
         # Restoring a large checkpoint is unbounded; prove liveness after it.
         self._heartbeat()
 
@@ -1741,6 +1769,263 @@ class Worker:
             ],
         )
 
+    # -- the working folder of a task with no repository (#184) --------------
+    def _uploads_working_folder(self, task: dict[str, Any]) -> bool:
+        """True when this attempt uploads what its agent creates in `work/`.
+
+        A task with NO repository, on a runner whose child is a provider's
+        coding-agent CLI (`cli_agent_spec`: claude-code, codex). The URL is
+        read from the same two places `_maybe_clone` reads it, so "no
+        repository" here and "nothing to clone" there are the same answer. A
+        repository task is unchanged: its diff or pull request is the
+        deliverable (owner decision of 2026-09-26). See
+        `agent_worker.standalone_outputs` for why mock, generic and browser
+        are not included.
+        """
+        if cli_agent_spec(self.cfg.runner_profile) is None:
+            return False
+        return not (self.cfg.repository_url or task.get("repository_url"))
+
+    def _workdir_reserved(self) -> frozenset[str]:
+        """Top-level names in `work/` that are the worker's, never the agent's.
+
+        The control files, found by inspection (`control_file_names`), and the
+        `./artifacts` link when it is the worker's own link: its target is
+        uploaded already, and a second copy under `workdir/` would be the
+        artifacts twice. A real `work/artifacts` folder (the link was not made
+        because the name was taken) is the agent's, and is scanned.
+        """
+        ws = self.ws
+        assert ws is not None
+        names = set(ws.control_file_names())
+        link = ws.artifacts_link()
+        if ws.is_artifacts_link(link):
+            names.add(link.name)
+        return frozenset(names)
+
+    def _take_workdir_baseline(self) -> None:
+        """Record what `work/` holds before the attempt's first runner starts.
+
+        Once per attempt. Files a checkpoint restored count as created unless
+        they are a staged input: the platform puts nothing else in a standalone
+        task's `work/` but its control files, which are skipped by name.
+        """
+        ws = self.ws
+        if not self._standalone or self._workdir_baseline is not None or ws is None:
+            return
+        try:
+            present = frozenset(
+                standalone_mod.scan(ws.work, reserved=self._workdir_reserved()).files
+            )
+        except Exception as exc:  # pragma: no cover - defensive; never fails the attempt
+            # No baseline means nothing is uploaded from the working folder:
+            # the behaviour before #184, said once, rather than a failed run.
+            self.log.warning(
+                "could not list the working folder before the runner started; nothing "
+                "will be uploaded from it for this attempt",
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            return
+        staged = {item.path for item in self._staged_inputs}
+        carried = (self._restored_workdir - staged) & present
+        self._workdir_baseline = present - carried
+        self.log.info(
+            "no repository: what the agent creates in its working folder is uploaded "
+            f"when the attempt ends, under {standalone_mod.PREFIX}/",
+            present_before=len(self._workdir_baseline),
+            created_by_an_earlier_attempt=len(carried),
+            cap_files=self.cfg.max_workdir_output_files,
+            cap_bytes=self.cfg.max_workdir_output_bytes,
+        )
+
+    def _upload_workdir_outputs(self, *, taken: set[str], budget: int) -> dict[str, Any] | None:
+        """Upload what the agent created in `work/`, within the caps. Never raises.
+
+        None when this attempt does not upload its working folder: a
+        repository task, a runner that is not a CLI agent, or an attempt whose
+        runner never started (no baseline, so nothing can have been created).
+
+        `taken` is the manifest names already uploaded from the artifacts
+        folder: a file there named `workdir/<path>` keeps its place. `budget`
+        is what `max_artifact_bytes` leaves, so this upload never takes the
+        attempt past the cap every artifact is under.
+
+        Each file is copied, without following any symlink, into the worker's
+        own scratch folder (`ws.private`, which is in no child's environment),
+        redacted there exactly as an artifact is (`_redact_file`), uploaded as
+        `workdir/<path>`, and the copy deleted. The agent's own file is left as
+        it was, because a resumed attempt restores `work/` from the checkpoint
+        taken before this runs.
+
+        Listed and NOT uploaded, each with its reason (see
+        `agent_worker.standalone_outputs`): a name that is not UTF-8 or is too
+        long to be an object's, a core dump, a name the artifacts folder took,
+        a file over a cap, and -- unlike an artifact -- a file holding a
+        registered secret the worker could not redact, or could not scan.
+
+        Returns `uploaded` (manifest entries), `bytes` and `summary`, which is
+        `result_summary.workdir_outputs`. Nothing goes into
+        `artifacts_skipped` (every reader of it calls its names dropped at the
+        artifacts folder's size cap) or into `redaction_skipped` (no file this
+        uploads left the pod unredacted).
+        """
+        ws = self.ws
+        cfg = self.cfg
+        if ws is None or self._workdir_baseline is None:
+            return None
+        found = standalone_mod.scan(ws.work, reserved=self._workdir_reserved())
+        new = standalone_mod.created(found, self._workdir_baseline)
+        byte_cap = max(0, min(cfg.max_workdir_output_bytes, budget))
+        uploaded: list[dict[str, Any]] = []
+        not_uploaded: list[dict[str, Any]] = []
+        total = 0
+        staging = ws.private / "workdir-output"
+        for relative, size in standalone_mod.upload_order(new):
+            name = standalone_mod.manifest_name(relative)
+            # NAMES FIRST: nothing below may put a name into a key, a log line
+            # or the summary before it is known to be one they can all carry.
+            if not standalone_mod.storable(name):
+                not_uploaded.append(
+                    {"name": standalone_mod.shown(name), "bytes": size, "reason": standalone_mod.NOT_UTF8}
+                )
+                continue
+            key = f"{cfg.artifact_prefix}/{name}"
+            if len(key.encode("utf-8")) > standalone_mod.MAX_OBJECT_NAME_BYTES:
+                not_uploaded.append(
+                    {"name": standalone_mod.shown(name), "bytes": size, "reason": standalone_mod.NAME_TOO_LONG}
+                )
+                continue
+            if standalone_mod.is_core_dump(relative):
+                not_uploaded.append({"name": name, "bytes": size, "reason": standalone_mod.CORE_DUMP})
+                continue
+            if name in taken:
+                not_uploaded.append({"name": name, "bytes": size, "reason": standalone_mod.NAME_TAKEN})
+                continue
+            if len(uploaded) >= cfg.max_workdir_output_files or total + size > byte_cap:
+                not_uploaded.append({"name": name, "bytes": size, "reason": standalone_mod.OVER_CAP})
+                continue
+            try:
+                ws.private.mkdir(parents=True, exist_ok=True)
+                standalone_mod.copy_without_following(
+                    ws.work, relative, staging, limit=byte_cap - total
+                )
+            except standalone_mod.OverCap:
+                not_uploaded.append({"name": name, "bytes": size, "reason": standalone_mod.OVER_CAP})
+                continue
+            except standalone_mod.Refused as exc:
+                self.log.warning(
+                    "refused a working-folder file: a symlink, or not a regular file, "
+                    "when it was read; nothing was followed",
+                    file=self._scrub(name),
+                    error=str(exc),
+                )
+                not_uploaded.append(
+                    {"name": name, "bytes": size, "reason": standalone_mod.SYMLINK_REFUSED}
+                )
+                continue
+            except OSError as exc:
+                self.log.warning(
+                    "could not read a working-folder file", file=self._scrub(name), error=str(exc)
+                )
+                not_uploaded.append({"name": name, "bytes": size, "reason": standalone_mod.UNREADABLE})
+                continue
+            try:
+                if self.log.has_secrets:
+                    entry = self._redact_file(staging, label=name, withheld=True)
+                    if entry is not None:
+                        # Measured to hold a registered value it could not
+                        # rewrite, or not examinable at all: kept in the pod.
+                        # The agent never chose to deliver this file, so the
+                        # artifacts folder's "upload it as-is and say so"
+                        # does not apply (#225 review).
+                        not_uploaded.append(
+                            {
+                                "name": name,
+                                "bytes": size,
+                                "reason": (
+                                    standalone_mod.HOLDS_SECRET
+                                    if entry["secret_found"]
+                                    else standalone_mod.UNEXAMINED
+                                ),
+                            }
+                        )
+                        continue
+                final = staging.stat().st_size
+                if total + final > byte_cap:
+                    # Redaction can lengthen a file; the cap is on what is uploaded.
+                    not_uploaded.append({"name": name, "bytes": final, "reason": standalone_mod.OVER_CAP})
+                    continue
+                try:
+                    self.store.upload_file(key, staging)
+                except Exception as exc:
+                    self.log.warning(
+                        "working-folder upload failed", artifact=self._scrub(name), error=str(exc)
+                    )
+                    not_uploaded.append(
+                        {"name": name, "bytes": final, "reason": standalone_mod.UPLOAD_FAILED}
+                    )
+                    continue
+            except OSError as exc:
+                self.log.warning(
+                    "could not prepare a working-folder file for upload",
+                    file=self._scrub(name),
+                    error=str(exc),
+                )
+                not_uploaded.append({"name": name, "bytes": size, "reason": standalone_mod.UNREADABLE})
+                continue
+            finally:
+                staging.unlink(missing_ok=True)
+            total += final
+            uploaded.append({"name": name, "bytes": final, "uri": self.store.uri(key)})
+
+        if ws.work.is_symlink():
+            self.log.warning(
+                "the working folder is a symlink, so nothing was uploaded from it; "
+                "a link is never followed out of the workspace"
+            )
+        # EVERY NAME, IN THE LOG. The summary below lists the first 50 and
+        # counts the rest (a Firestore document has a 1 MiB limit); these lines
+        # name all of them, `LOG_BATCH` to a line, so a line stays well under
+        # Cloud Logging's 256 KiB entry however many files the agent left.
+        batch = standalone_mod.LOG_BATCH
+        batches = (len(not_uploaded) + batch - 1) // batch
+        for index in range(batches):
+            self.log.warning(
+                "files the agent created in its working folder were not uploaded",
+                count=len(not_uploaded),
+                batch=f"{index + 1} of {batches}",
+                files=[
+                    f"{e['name']}: not uploaded: {e['reason']}"
+                    for e in not_uploaded[index * batch : (index + 1) * batch]
+                ],
+                cap_files=cfg.max_workdir_output_files,
+                cap_bytes=cfg.max_workdir_output_bytes,
+            )
+        self.log.info(
+            "uploaded what the agent created in its working folder",
+            uploaded=len(uploaded),
+            bytes=total,
+            symlinks_skipped=len(found.symlinks),
+        )
+        return {
+            "uploaded": uploaded,
+            "bytes": total,
+            "summary": {
+                "prefix": f"{standalone_mod.PREFIX}/",
+                "uploaded": len(uploaded),
+                "uploaded_bytes": total,
+                # The first 50; `not_uploaded_count` is the whole number and
+                # the WARNING lines above name every one. "over cap" is the
+                # owner's wording.
+                "not_uploaded": not_uploaded[:50],
+                "not_uploaded_count": len(not_uploaded),
+                "symlinks_skipped": len(found.symlinks),
+                "working_folder_is_symlink": ws.work.is_symlink(),
+                "cap_files": cfg.max_workdir_output_files,
+                "cap_bytes": cfg.max_workdir_output_bytes,
+            },
+        }
+
     def _declared_outputs(self, task: dict[str, Any]) -> tuple[str, ...]:
         """Honour `metadata.expected_outputs`: what later steps will stage from this one.
 
@@ -2721,51 +3006,87 @@ class Worker:
         if ws is None or not self.log.has_secrets:
             return []
         targets = [ws.stdout_path, ws.stderr_path]
+        # Not a file whose name is not UTF-8: `_upload_outputs` does not upload
+        # one (no object can be named with it), so it never leaves the pod and
+        # has no `redaction_skipped` entry to earn (#225 review).
         targets += [
             path
             for path in sorted(ws.artifacts.rglob("*"))
-            if path.is_file() and not path.is_symlink()
+            if path.is_file() and not path.is_symlink() and standalone_mod.storable(str(path))
         ]
         targets.append(ws.result_path)
         unredacted: list[dict[str, Any]] = []
         for path in targets:
-            try:
-                outcome = self.log.scrub_file_outcome(path, max_bytes=redact_mod.MAX_SCRUB_BYTES)
-            except OSError as exc:  # a read-only or vanished file must not fail the attempt
-                self.log.warning(
-                    "could not redact a file before upload", path=str(path), error=str(exc)
-                )
-                continue
-            if not outcome.skipped:
-                continue
-            found = self.log.file_contains_secret(path)
-            try:
-                size: int | None = path.stat().st_size
-            except OSError:
-                size = None
-            label = _workspace_label(ws, path)
-            if found is False:
-                self.log.info(
-                    "file not rewritten, and its raw bytes hold no registered secret",
-                    file=label,
-                    reason=outcome.value,
-                    bytes=size,
-                )
-                continue
-            entry = {"file": label, "reason": outcome.value, "bytes": size, "secret_found": found}
-            unredacted.append(entry)
-            if found:
-                self.log.error(
-                    "A FILE THAT COULD NOT BE REDACTED CONTAINS A REGISTERED SECRET; "
-                    "it is uploaded as-is",
-                    **entry,
-                )
-            else:
-                self.log.warning(
-                    "a file could be neither redacted nor scanned; it is uploaded unexamined",
-                    **entry,
-                )
+            entry = self._redact_file(path, label=_workspace_label(ws, path))
+            if entry is not None:
+                unredacted.append(entry)
         return unredacted
+
+    def _redact_file(
+        self, path: Path, *, label: str, withheld: bool = False
+    ) -> dict[str, Any] | None:
+        """Scrub one file bound for GCS in place; the `redaction_skipped` entry, or None.
+
+        None when the file was rewritten, or was left alone and its raw bytes
+        hold no registered value. `label` is what a reader can place: a path
+        under the workspace, or the manifest name of a working-folder copy
+        (`_upload_workdir_outputs`), whose scratch path means nothing to anyone.
+        See `_redact_before_upload` for the trade this reports on.
+
+        `withheld` is the working-folder upload's answer to that trade: a file
+        this returns an entry for is NOT uploaded, and the lines say so. An
+        artifact the agent chose to deliver goes up as-is and is reported; a
+        file caught by the net under the working folder does not (#225
+        review). A file the rewrite raised on is unexamined, so with
+        `withheld` it gets an entry rather than a pass.
+        """
+        label = standalone_mod.displayable(label)
+        try:
+            outcome = self.log.scrub_file_outcome(path, max_bytes=redact_mod.MAX_SCRUB_BYTES)
+        except OSError as exc:  # a read-only or vanished file must not fail the attempt
+            self.log.warning("could not redact a file before upload", file=label, error=str(exc))
+            if withheld:
+                return {"file": label, "reason": "unreadable", "bytes": None, "secret_found": None}
+            return None
+        if not outcome.skipped:
+            return None
+        found = self.log.file_contains_secret(path)
+        try:
+            size: int | None = path.stat().st_size
+        except OSError:
+            size = None
+        if found is False:
+            self.log.info(
+                "file not rewritten, and its raw bytes hold no registered secret",
+                file=label,
+                reason=outcome.value,
+                bytes=size,
+            )
+            return None
+        entry = {"file": label, "reason": outcome.value, "bytes": size, "secret_found": found}
+        if withheld:
+            self.log.warning(
+                "a working-folder file could not be redacted and "
+                + (
+                    "holds a registered secret"
+                    if found
+                    else "could not be scanned for one"
+                )
+                + "; it is NOT uploaded",
+                **entry,
+            )
+        elif found:
+            self.log.error(
+                "A FILE THAT COULD NOT BE REDACTED CONTAINS A REGISTERED SECRET; "
+                "it is uploaded as-is",
+                **entry,
+            )
+        else:
+            self.log.warning(
+                "a file could be neither redacted nor scanned; it is uploaded unexamined",
+                **entry,
+            )
+        return entry
 
     # -- live logs ----------------------------------------------------------
     def _publish_live_logs(self) -> None:
@@ -3488,6 +3809,19 @@ class Worker:
                 continue
             size = path.stat().st_size
             rel = path.relative_to(ws.artifacts).as_posix()
+            if not standalone_mod.storable(rel):
+                # A name whose bytes are not UTF-8 (#225 review): no object can
+                # be named with it, and as a lone surrogate in the summary it
+                # made `finish` raise, and the next attempt fail the same way.
+                # Named as the bytes it was, in the log and the skipped list.
+                shown = standalone_mod.shown(rel)
+                self.log.warning(
+                    "an artifact's name is not valid UTF-8, so no object can be "
+                    "named with it; not uploaded",
+                    artifact=shown,
+                )
+                skipped.append(shown)
+                continue
             if total + size > self.cfg.max_artifact_bytes:
                 skipped.append(rel)
                 continue
@@ -3500,6 +3834,26 @@ class Worker:
                 continue
             total += size
             artifacts.append({"name": rel, "bytes": size, "uri": self.store.uri(key)})
+
+        # WHAT A CLI AGENT WITH NO REPOSITORY CREATED IN ITS WORKING FOLDER
+        # (#184, owner decision of 2026-09-26), after the artifacts folder so a
+        # file there keeps its name, and into the same manifest under
+        # `workdir/`, so the Artifacts tab lists and serves it like any other.
+        # A repository task returns None here and is unchanged.
+        try:
+            workdir = self._upload_workdir_outputs(
+                taken={entry["name"] for entry in artifacts},
+                budget=self.cfg.max_artifact_bytes - total,
+            )
+        except Exception as exc:  # pragma: no cover - defensive; teardown path
+            self.log.exception("the working-folder upload raised; continuing without it", exc)
+            workdir = None
+        if workdir is not None:
+            # Its files it did not upload stay in `workdir_outputs`, with their
+            # reasons, and out of `artifacts_skipped`, whose every reader calls
+            # a name there dropped at THIS folder's size cap (#225 review).
+            artifacts.extend(workdir["uploaded"])
+            total += workdir["bytes"]
 
         # THE RUNNER'S TWO STREAMS, AND THE AGENT'S TWO (#184). The agent
         # CLI's captures stay in `artifacts/` too -- a dependant's `input_from`
@@ -3532,6 +3886,8 @@ class Worker:
         }
         if git_summary is not None:
             summary["git"] = git_summary
+        if workdir is not None:
+            summary["workdir_outputs"] = workdir["summary"]
         if skipped:
             summary["artifacts_skipped"] = skipped[:50]
         if unredacted:

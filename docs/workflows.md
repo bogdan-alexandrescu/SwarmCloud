@@ -55,11 +55,15 @@ costs nothing while it waits.
 
 ## Artifacts pass by reference
 
-**An artifact is a file the upstream step wrote into `$SWARM_ARTIFACTS_DIR`, and
-nothing else is.** Only that directory is uploaded when an attempt ends. It sits
+**An artifact a later step can stage by its name is a file the upstream step
+wrote into `$SWARM_ARTIFACTS_DIR`, and nothing else is.** That directory sits
 outside the agent's working directory and outside the repository checkout, so a
-file written anywhere else is never uploaded and no later step can stage it,
-however exactly its name matches. Until #149 this failed late and cost money:
+file written anywhere else is never staged by a later step, however exactly its
+name matches. (Since #184's owner decision of 2026-09-26, a claude-code or codex
+task with NO repository also uploads what its agent created in its working
+folder, but as `workdir/<path>`, so a working-folder `scan-01.md` is
+`workdir/scan-01.md` and still does not satisfy a step that stages
+`scan-01.md`; see [agent-output.md](agent-output.md).) Until #149 this failed late and cost money:
 the upstream step SUCCEEDED, and only the dependant failed, at staging, with
 `upstream task … did not produce an artifact named 'scan-01.md'`. By then every
 upstream step had spent its compute and its provider quota. That is what
@@ -76,10 +80,11 @@ first alone was measured not to be enough.
    records on each upstream step's task the filenames its dependants will
    stage, as `metadata.expected_outputs`, in the same write that creates the
    task. The worker passes that list to the runner. Only the `claude-code` and
-   `codex` runners act on it: they append the names to the prompt they give
-   the agent, with the **absolute** path of `$SWARM_ARTIFACTS_DIR` and the
-   statement that files written anywhere else, the repository included, do not
-   reach later steps. The `generic`, `mock` and `browser` runners receive the
+   `codex` runners act on it: every prompt they give an agent already ends
+   with one line naming the **absolute** path of `$SWARM_ARTIFACTS_DIR` (#184,
+   2026-09-26), and they add the names after it, with each file's full path
+   and the statement that files written anywhere else, the repository
+   included, do not reach later steps. The `generic`, `mock` and `browser` runners receive the
    list in `input.json` and change nothing. A name the platform writes itself
    is never in the instructions: not the worker's `swarm-work.patch`, which is
    written after the agent exits, and not the runner's own
@@ -147,7 +152,10 @@ What this deliberately does not do:
   was option (c) on #149, and the owner rejected it. The link is not a copy: a
   file written through it is written into the artifacts directory in the first
   place. A file left anywhere else, in the repository or elsewhere in the
-  working directory, stays there.
+  working directory, is never staged by a later step under its own name. A
+  task with no repository does upload what its agent created there (#184),
+  for a reader of the Artifacts tab, under `workdir/<path>`, which is not the
+  name a dependant stages.
 * **It does not carry the artifacts directory across a park or a retry.** Only
   `work/` is checkpointed, and a resumed attempt starts with an empty artifacts
   directory. A dependant stages from the attempt that SUCCEEDED, so a file
