@@ -541,6 +541,19 @@ def assert_tenant_identity(tenant: Tenant) -> str:
 # Cloud Run Jobs
 # --------------------------------------------------------------------------
 
+def _plain_env_value(container: Any, name: str) -> str | None:
+    """The literal value of env var `name` on a Cloud Run container, or None.
+
+    A variable read from a secret has no literal value and counts as absent;
+    so does an empty string, which is what an unset proto field reads as.
+    """
+    for env in getattr(container, "env", None) or ():
+        if getattr(env, "name", None) == name:
+            value = getattr(env, "value", "") or ""
+            return value or None
+    return None
+
+
 class CloudRunJobDispatcher:
     def __init__(
         self, settings: Any, *, client: Any | None = None, pool: AccountPool | None = None
@@ -568,6 +581,12 @@ class CloudRunJobDispatcher:
     def job_name(self, job_id: str) -> str:
         return f"{self.parent}/jobs/{job_id}"
 
+    def _model_for(self, profile: RunnerProfile) -> str | None:
+        """The model this profile's agent runs, from WORKER_MODELS, or None."""
+        models = getattr(self._settings, "worker_models", None) or {}
+        value = models.get(profile.name)
+        return value.strip() if isinstance(value, str) and value.strip() else None
+
     def _build_job(
         self, profile: RunnerProfile, tenant: Tenant, resource_class: str | None = None
     ) -> Any:
@@ -581,6 +600,15 @@ class CloudRunJobDispatcher:
             run_v2.EnvVar(name="RUNNER_PROFILE", value=profile.name),
             run_v2.EnvVar(name="TENANT_ID", value=tenant.tenant_id),
         ]
+        # THE PROFILE'S MODEL, ON THE JOB (#226). A Job Terraform creates carries
+        # `MODEL` from `local.runner_models`; this Job -- for a tenant Terraform
+        # does not list, or a resource class other than the profile's own --
+        # gets the same value through WORKER_MODELS, or its agents would run the
+        # CLI's default model while Terraform's ran the pinned one. On the Job
+        # and not in `worker_env`, which a task shapes: a caller never chooses it.
+        model = self._model_for(profile)
+        if model:
+            env.append(run_v2.EnvVar(name="MODEL", value=model))
         # THE SAME QUESTION ADMISSION ASKED, of the same pool list
         # (credentials.py, #169). This used to be a private rule of its own,
         # `_pool_can_serve`: "the deployment has a broker and the tenant has no
@@ -701,7 +729,12 @@ class CloudRunJobDispatcher:
         tenant: Tenant,
         resource_class: str | None,
     ) -> bool:
-        """Bring a job THIS dispatcher created up to the image it would create today.
+        """Bring a job THIS dispatcher created up to the image, and the MODEL,
+        it would create today.
+
+        The MODEL half is #226: a job created before WORKER_MODELS existed has
+        none, and its agents would run the CLI's default model until the next
+        image change happened to rebuild it.
 
         A Cloud Run Job pins its image on the job resource, and this method's
         caller used to stop at "it exists". So a job the dispatcher created for a
@@ -733,10 +766,17 @@ class CloudRunJobDispatcher:
             return False
         wanted = image_uri(self._settings, profile)
         try:
-            current = existing.template.template.containers[0].image
+            container = existing.template.template.containers[0]
+            current = container.image
         except (AttributeError, IndexError):
+            container = None
             current = ""
-        if current == wanted:
+        # AND ITS MODEL (#226). A Job created before WORKER_MODELS carries no
+        # MODEL, and the image check alone would leave it that way until the
+        # next image change. Same rebuild, same single write.
+        wanted_model = self._model_for(profile)
+        current_model = _plain_env_value(container, "MODEL")
+        if current == wanted and current_model == wanted_model:
             return False
         job = self._build_job(profile, tenant, resource_class)
         job.name = name
@@ -749,7 +789,10 @@ class CloudRunJobDispatcher:
                 f"to {wanted}: {exc}",
                 code="cloud_run_update_job_failed",
             ) from exc
-        log.info("cloud run job %s moved from %s to %s", name, current or "?", wanted)
+        log.info(
+            "cloud run job %s moved from %s (MODEL %s) to %s (MODEL %s)",
+            name, current or "?", current_model or "unset", wanted, wanted_model or "unset",
+        )
         return True
 
     def ensure_job(

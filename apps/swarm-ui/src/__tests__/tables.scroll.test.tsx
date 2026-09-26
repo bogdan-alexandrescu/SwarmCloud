@@ -15,8 +15,9 @@
 // `is-scroll` its prose and controls ran off the right edge, and the held-
 // column rule made that one cell sticky as well.
 //
-// WHAT NONE OF THIS CAN SEE: a pixel. Whether 20ch reads well as a held column
-// under a thumb is for the next release's screenshots.
+// WHAT NONE OF THIS CAN SEE: a pixel. Whether the held column -- 45vw at 390,
+// 175.5px, since 20ch of its face is wider there -- reads well under a thumb
+// is for the next release's screenshots.
 
 import { describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen } from '@testing-library/react'
@@ -127,6 +128,14 @@ function expectScrolls(table: Element, what: string): void {
     )
     // Its width is the held column's ceiling, not CP-18's percentage.
     expect(painted(cell, 'width', PHONE) ?? '', `${what}: the held column's width`).toMatch(/^min\(/)
+    // AND THE CEILING IS ALSO ITS FLOOR (#222). A table cell's `width` counts
+    // only toward its column's max-content width; a table laid out at its
+    // min-content width -- any `width: 100%` table whose nowrap columns
+    // overflow a phone -- gives the held column one character. These tables
+    // are `max-content`, so they never showed it, but the floor is the shared
+    // rule's and holds here too (`tables.held.test.tsx` has the tables that
+    // did show it). MUTATION: drop `min-width` from the held-column rule.
+    expect(painted(cell, 'min-width', PHONE), `${what}: the held column has no floor`).toBe(painted(cell, 'width', PHONE))
   }
 }
 

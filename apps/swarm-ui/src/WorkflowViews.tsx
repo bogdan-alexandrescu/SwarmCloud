@@ -543,8 +543,15 @@ function InputsCell({ inputs }: { inputs: StepInputs }) {
  * `.ctl-table`, the shared table primitive, so the rhythm, the head and the row
  * tones are the ones every other table in this console already draws. The
  * head is NOT sticky (WF-21): the wrapper scrolls sideways only, so a sticky
- * head never stuck, and making each head cell a layer of its own is the likely
- * source of the faint seams this table showed at fractional column edges.
+ * head never stuck. The faint seams this table showed at fractional column
+ * edges were first put down to that stickiness, then to each head cell
+ * painting its own fill; they survived both fixes, because Chrome paints a
+ * row group's background into each cell's rect too. `thead` now also paints
+ * its `--surface-2` as one inset-shadow rectangle, which Chrome draws once
+ * for the whole head (#178, owner decision 2026-09-26; styles.css
+ * `.ctl-table thead`). None of the head cells here declares a fill of its
+ * own, and shell.test.tsx renders this head -- `data-col`, `aria-sort`, the
+ * sort buttons -- to hold that.
  * A failed step's row takes `is-bad` (a full-height rule down its first cell,
  * which survives greyscale); an unread one takes `is-warn`.
  *

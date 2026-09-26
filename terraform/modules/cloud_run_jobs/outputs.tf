@@ -13,6 +13,16 @@ output "images" {
   value = { for k, j in google_cloud_run_v2_job.this : k => j.template[0].template[0].containers[0].image }
 }
 
+# Job -> the MODEL its container environment carries, or null when it has none
+# (#226, tests/terraform/runner_model.tftest.hcl). Read from the same `env` map
+# the resource's `dynamic "env"` block is built from, one entry per key, rather
+# than off the planned resource like `images`: the Job's other variables include
+# URLs that are unknown until apply, and a block collection holding an unknown
+# value can itself plan as unknown, which would leave this output unknown too.
+output "models" {
+  value = { for k, v in var.jobs : k => lookup(v.env, "MODEL", null) }
+}
+
 output "workspace_size_gib" {
   description = <<-EOT
     Effective workspace size per job. This is a FRACTION OF CONTAINER MEMORY,

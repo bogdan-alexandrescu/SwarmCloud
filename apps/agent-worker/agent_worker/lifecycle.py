@@ -164,6 +164,7 @@ from .gitops import (
     MergeOutcome,
     commit_dirty,
     fold_agent_commits,
+    hide_from_git,
     merge_branches,
     prepare_publish_repo,
     push_branch,
@@ -270,7 +271,9 @@ MAX_ACCOUNT_TRIES = 3
 #: every interval; the event stream would be unreadable at that rate.
 HEARTBEAT_EVENT_EVERY = 5
 
-REPO_DIR_NAME = "repo"
+#: `work/repo`. Spelled once, in `workspace`, because the checkpoint needs it
+#: too: the `./artifacts` link inside the checkout is never archived (#226).
+REPO_DIR_NAME = workspace_mod.REPO_DIR_NAME
 
 #: Worker-owned scratch INSIDE the checkpointed work directory. It has to be
 #: inside `work/` so a resumed attempt still knows which commit its clone
@@ -377,7 +380,8 @@ class Worker:
         self._clone_base: str | None = None
         # The clone base the PUBLISH trusts, which is not always the one above.
         # `_clone_base` may come from `work/.swarm/clone-base`, a file in the
-        # agent's own working directory; that is good enough to describe the
+        # agent's HOME (its working directory's parent, when it starts in the
+        # checkout -- #226), which it can write; that is good enough to describe the
         # work and not good enough to decide what reaches a forge. This one is
         # only ever the worker's own knowledge: the commit its clone landed on
         # in this process, or the base a previous attempt's worker recorded in
@@ -770,7 +774,10 @@ class Worker:
         # different paths inside `work/`, and a declared name that would collide
         # with the clone directory is refused rather than resolved. Order
         # relative to the RUNNER INPUT is: `input.json` has to be able to tell
-        # the agent what it was given, so staging happens first.
+        # the agent what it was given, so staging happens first. A staged file
+        # lands in `work/`, never in the checkout, even though the agent of a
+        # repository task starts in the checkout (#226): the prompt names each
+        # one by absolute path instead (`expected_outputs.staged_paths`).
         self.phases.enter("stage_inputs")
         staged_inputs = self._stage_declared_inputs(task)
         if staged_inputs:
@@ -783,6 +790,8 @@ class Worker:
         # restore refuses a non-empty `work/`, and a staged input or a
         # restored directory that already owns the name keeps it.
         self._link_artifacts()
+        # And in the checkout, where a repository task's agent starts (#226).
+        self._link_checkout_artifacts()
 
         # ---- runner input -----------------------------------------------
         payload = dict(task.get("input") or {})
@@ -793,6 +802,31 @@ class Worker:
             # disk right now, so a caller's own `staged_inputs` in the step input
             # must not shadow it and leave the agent reading a stale claim.
             payload["staged_inputs"] = [item.as_dict() for item in staged_inputs]
+        elif "staged_inputs" in payload:
+            # AND REMOVED WHEN NOTHING WAS STAGED (#226). A CLI runner now turns
+            # this key into a line of the prompt, in the platform's voice, naming
+            # files "earlier steps of this workflow gave you". Only the worker's
+            # own record may fill it, exactly as for `expected_outputs` below.
+            dropped = payload.pop("staged_inputs")
+            self.log.warning(
+                "dropped the caller's own input.staged_inputs: only the files the "
+                "worker staged for this task are named to the agent",
+                dropped_entries=len(dropped) if isinstance(dropped, (list, tuple)) else 1,
+            )
+        if "model" in payload:
+            # A CALLER NEVER CHOOSES THE MODEL (#226, invariant 10). The API
+            # refuses `input.model` on every profile that declares its inputs
+            # (#213); this is the same rule for a task written before that
+            # refusal shipped, a profile whose inputs are not declared yet
+            # (`browser`, `generic`: #218), or a path that does not go through
+            # the API. The model is the Job's `MODEL`, which reaches the runner
+            # in its environment (`_build_child_env`), never through input.json.
+            payload.pop("model")
+            self.log.warning(
+                "dropped the caller's own input.model: the model an agent runs is "
+                "the runner profile's, set on its Job as MODEL",
+                job_model=cfg.model,
+            )
         expected = self._declared_outputs(task)
         if expected_mod.METADATA_KEY in payload:
             # A CALLER'S OWN `input.expected_outputs` NEVER REACHES THE AGENT,
@@ -821,8 +855,8 @@ class Worker:
             # the end-of-attempt check reads, because a dependant that stages
             # it still needs it uploaded.
             payload[expected_mod.METADATA_KEY] = list(told)
-        if cfg.model:
-            payload.setdefault("model", cfg.model)
+        # `cfg.model` is NOT written here any more (#226). It was, with
+        # `setdefault`, so a caller's `input.model` won over the Job's MODEL.
         payload.setdefault("task_id", cfg.task_id)
         payload.setdefault("attempt_id", cfg.attempt_id)
         # This attempt's number: the task's `attempt_count`, which admission
@@ -1670,8 +1704,8 @@ class Worker:
             # no longer answers "what did this repository look like on arrival".
             self.log.info("repository already present from checkpoint; skipping clone")
             # THE BASE THE PUSH TRUSTS COMES FROM THE MANIFEST, NOT THE TREE.
-            # The marker file sits in `work/`, the agent's working directory,
-            # and travels in the archive the agent's own files travel in. An
+            # The marker file sits in `work/`, the agent's HOME and writable by
+            # it, and travels in the archive the agent's own files travel in. An
             # agent that wrote a later commit of its own into it lifted the
             # fold's floor above its earlier commits, and those were pushed as
             # the agent wrote them. The manifest is written by the worker,
@@ -1780,8 +1814,10 @@ class Worker:
         return staged
 
     def _link_artifacts(self) -> None:
-        """Step 5c: make `./artifacts` in the agent's working directory the
-        directory that is uploaded (#149).
+        """Step 5c: make `work/artifacts` the directory that is uploaded (#149).
+        `work/` is the agent's working directory when the task has no
+        repository; with one, `_link_checkout_artifacts` links the checkout's
+        `./artifacts` too (#226), and this one is `../artifacts` from there.
 
         On every attempt, not only one a later step stages from: the guess it
         catches is as natural for a caller's own prompt that says "write it to
@@ -1823,6 +1859,79 @@ class Worker:
                 item.path for item in self._staged_inputs
                 if item.path.split("/", 1)[0] == link.name
             ],
+        )
+
+    def _link_checkout_artifacts(self) -> None:
+        """Step 5c, for a repository task: `./artifacts` in the CHECKOUT is the
+        directory that is uploaded, and git never sees it (#226).
+
+        With a repository attached the agent starts in `work/repo` (owner
+        decision of 2026-09-26), so the guess `work/artifacts` catches (#149:
+        an agent that echoed `$SWARM_ARTIFACTS_DIR` and then wrote
+        `./artifacts/scan-02.md`) is made in the checkout instead. The link is
+        made there as well, and hidden with the clone's `.git/info/exclude`,
+        so it is in no patch, no auto-commit and no pushed branch. A link git
+        can still see -- the repository's own `.gitignore` un-ignores the name
+        -- is taken away again, because a symlink to this attempt's directory
+        in the tenant's repository is worse than a missed guess.
+
+        Never fails the attempt, like `_link_artifacts`: every outcome other
+        than a hidden link is one WARNING, since each is the reason a file
+        written under the checkout's `./artifacts` was not uploaded.
+        """
+        ws = self.ws
+        assert ws is not None
+        checkout = ws.checkout()
+        if not self._repo_url or not checkout.is_dir() or checkout.is_symlink():
+            return
+        link = ws.artifacts_link(checkout)
+        try:
+            made = workspace_mod.link_artifacts(ws, within=checkout)
+        except OSError as exc:
+            self.log.warning(
+                "could not link the checkout's ./artifacts to $SWARM_ARTIFACTS_DIR; "
+                "files the agent writes under it stay in the repository",
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            return
+        if not made:
+            self.log.warning(
+                "the checkout already has an artifacts entry, so it was left in place "
+                "and not linked to $SWARM_ARTIFACTS_DIR; files the agent writes under "
+                "it are the repository's, not uploaded artifacts",
+                kind="link" if link.is_symlink() else ("directory" if link.is_dir() else "file"),
+            )
+            return
+        hidden = hide_from_git(
+            repo=checkout,
+            name=link.name,
+            private_dir=ws.private,
+            logs_dir=ws.logs,
+            timeout_seconds=self.cfg.git_clone_timeout_seconds,
+            logger=self.log,
+        )
+        if hidden:
+            self.log.info(
+                "the checkout's ./artifacts links to $SWARM_ARTIFACTS_DIR and is "
+                "hidden from git, so a file the agent writes under it is uploaded "
+                "and is not part of its diff",
+                target=str(ws.artifacts),
+            )
+            return
+        try:
+            link.unlink()
+        except OSError as exc:
+            self.log.warning(
+                "the checkout's ./artifacts link could not be hidden from git or "
+                "removed; it may appear in the agent's diff",
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            return
+        self.log.warning(
+            "the checkout's ./artifacts link was removed because git would still "
+            "see it (the repository's own .gitignore un-ignores the name, or git "
+            "could not be asked); files the agent writes under ./artifacts stay "
+            "in the repository"
         )
 
     # -- the working folder of a task with no repository (#184) --------------
@@ -2389,6 +2498,13 @@ class Worker:
             STDOUT_ENV: str(self.cfg.max_stdout_bytes),
             STDERR_ENV: str(self.cfg.max_stderr_bytes),
         }
+        # THE CHECKOUT, WHEN THERE IS ONE (#226). A CLI runner starts its agent
+        # there (`cliagent.agent_working_directory`), so Claude Code loads the
+        # repository's own CLAUDE.md as a local lane does. Set by the worker,
+        # after the clone, and never read from `input`, which a caller writes:
+        # `input.repository` is `setdefault`, so a caller's own would shadow it.
+        if self._repo_url and ws.checkout().is_dir():
+            base["SWARM_REPO_DIR"] = str(ws.checkout())
         # WHAT THE IMAGE SETS THAT THE RUNNER NEEDS, carried by EXACT NAME.
         # Everything else in the worker's environment stays behind; see
         # `workspace.child_env` for why this environment is built rather than

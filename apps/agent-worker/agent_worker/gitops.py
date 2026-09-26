@@ -719,6 +719,77 @@ def summarize_work(
     )
 
 
+def hide_from_git(
+    *,
+    repo: Path,
+    name: str,
+    private_dir: Path,
+    logs_dir: Path,
+    timeout_seconds: int,
+    logger: Any,
+    git_binary: str = "git",
+) -> bool:
+    """Make the top-level `name` in the checkout invisible to git. True when it is.
+
+    For the `./artifacts` link the worker makes in the checkout (#226): with a
+    repository attached the agent starts in `work/repo`, so `./artifacts` is
+    there, and a link git could see would be in the harvest's patch, the
+    auto-commit and the pushed branch -- a symlink to this attempt's own
+    directory, in the tenant's repository.
+
+    `.git/info/exclude`, never `.gitignore`: the exclude file is local to this
+    clone, is never committed and never pushed, so the repository the agent
+    works on is left exactly as it arrived. `/name`, anchored, so a directory
+    of the same name deeper in the tree is not hidden.
+
+    Then ASKED, not assumed. A repository's own `.gitignore` outranks the
+    exclude file, and a `!/artifacts` there un-hides the link; so the answer is
+    git's (`check-ignore`), and False tells the caller to take the link away
+    rather than let it into the diff. Idempotent: a resumed attempt restores
+    the exclude file from its checkpoint, and the entry is not written twice.
+
+    Refuses to write through a symlink at `.git/info` or at the exclude file:
+    the agent of an earlier attempt could have put one there, and the checkpoint
+    that restored it keeps only links that stay inside `work/`.
+    """
+    repo = Path(repo)
+    git_dir = repo / ".git"
+    if not git_dir.is_dir() or git_dir.is_symlink():
+        return False
+    info = git_dir / "info"
+    exclude = info / "exclude"
+    if info.is_symlink() or exclude.is_symlink():
+        return False
+    pattern = f"/{name}"
+    try:
+        info.mkdir(exist_ok=True)
+        existing = exclude.read_text(errors="replace") if exclude.exists() else ""
+        if pattern not in existing.splitlines():
+            separator = "" if not existing or existing.endswith("\n") else "\n"
+            with exclude.open("a", encoding="utf-8") as handle:
+                handle.write(
+                    f"{separator}# SwarmCloud: the link to this attempt's artifacts "
+                    f"directory, never part of the work\n{pattern}\n"
+                )
+    except OSError as exc:
+        logger.warning("could not write the checkout's git exclude file", error=str(exc))
+        return False
+    try:
+        code, _ = _git_text(
+            [git_binary, *_NO_HOOKS, "check-ignore", "--quiet", "--", name],
+            repo=repo,
+            private_dir=private_dir,
+            logs_dir=logs_dir,
+            slug="hide-artifacts-link",
+            timeout_seconds=timeout_seconds,
+            logger=logger,
+        )
+    except GitError as exc:
+        logger.warning("could not ask git whether the link is hidden", error=str(exc))
+        return False
+    return code == 0
+
+
 @dataclass(frozen=True)
 class PushResult:
     branch: str

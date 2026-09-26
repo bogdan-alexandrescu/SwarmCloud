@@ -12,8 +12,9 @@ run that found it had to POST the DAG by hand.
 WHAT MAY BE SENT. Invariant 10 is unchanged: a caller names a `runner_profile`
 and supplies DATA, never an image, a command, a resource spec or a backend
 parameter. Runner inputs are data, but they are read by one runner and mean
-nothing -- or something else -- to another: `input.model` IS read by the CLI
-runners and would select a model (test_model_flag_is_attribution_only.py). So
+nothing -- or something else -- to another: `input.model` WAS read by the CLI
+runners and selected a model (test_model_flag_is_attribution_only.py; since
+#226 the model is the Job's MODEL and the runner reads no `input.model`). So
 the gate is per PROFILE, and it is the frozen catalogue's own
 `RunnerProfile.inputs` (contract request 25, accepted by the owner on #142,
 2026-09-25). Until then the bridge kept a table of its own keyed by profile
@@ -124,8 +125,8 @@ def test_a_mock_step_carries_its_declared_inputs():
 
 
 def test_a_profile_that_declares_no_inputs_refuses_them():
-    """`claude-code` reads `input.model`; letting a caller set it is the
-    contract change invariant 10 forbids. It declares nothing, so nothing goes."""
+    """`claude-code` read `input.model` until #226; letting a caller set it was
+    the contract change invariant 10 forbids. It declares nothing, so nothing goes."""
     with pytest.raises(SwarmError) as caught:
         workflows.build_steps(
             [{"step_id": "a", "runner_profile": "claude-code", "prompt": "x",
