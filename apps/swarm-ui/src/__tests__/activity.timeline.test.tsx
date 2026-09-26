@@ -1190,7 +1190,9 @@ describe('the eight cards', () => {
   it('draws a card’s mini strips in the band its bucket count needs, so the sheet can drop them where they do not fit', async () => {
     const root = await timeline(thirtyDays())
     const strips = [...card(root, /^Why tasks failed/).querySelectorAll('.ol-strip')]
-    expect(strips).toHaveLength(8)
+    // One per class in the route's vocabulary: nine since "inputs unavailable" (#185, decision 4).
+    expect(strips).toHaveLength(ledgerFixture().vocab.failure_classes.length)
+    expect(strips).toHaveLength(9)
     for (const s of strips) {
       expect(s.classList.contains('is-n31'), `a 30-bucket strip is not in the ≤31 band: ${s.getAttribute('class')}`).toBe(true)
       expect(Number(s.getAttribute('width'))).toBe(30 * 6)
