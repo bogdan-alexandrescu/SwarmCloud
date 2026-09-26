@@ -16,7 +16,13 @@
 // MUTATIONS: put `<LogsPanel>` back in `RunFiles`; put `<Artifacts>` back in
 // `Output`; draw `task.input.prompt` again, or fall back to it when the copy
 // was not read; draw `full` under a string prompt instead of `rest` (the
-// prompt twice, and the block the PR #210 review found a secret in).
+// prompt twice, and the block the PR #210 review found a secret in); read the
+// copy off the drawer's run again instead of on its own; call a whitespace
+// prompt empty; run the server's message into `input not read`.
+//
+// THE COPY IS DETAILS' OWN READ (PR #210 re-review). It rode in
+// `loadAgentRun`'s `Promise.all`, so the drawer waited on it; Details' Input
+// reads it through `loadTaskInputOnce`, mocked here, and never off `run`.
 
 import { describe, expect, it, vi } from 'vitest'
 import { render, waitFor } from '@testing-library/react'
@@ -28,6 +34,7 @@ import { attempt, task } from './runfixture'
 const api = vi.hoisted(() => ({
   loadCheckpoints: vi.fn(),
   loadTaskLogs: vi.fn(),
+  loadTaskInputOnce: vi.fn(),
 }))
 
 vi.mock('../api', async (importOriginal) => {
@@ -61,7 +68,11 @@ function inputCopy(over: Record<string, unknown> = {}) {
   }
 }
 
+/** What `loadTaskInputOnce` answers for the run `agentRun` builds. */
+let served: unknown = null
+
 function agentRun(t: Partial<Task> = {}, input: unknown = { status: 'ok', data: inputCopy(), fetchedAt: Date.now() }): AgentRun {
+  served = input
   const run = {
     task: task({
       state: 'SUCCEEDED',
@@ -81,15 +92,18 @@ function agentRun(t: Partial<Task> = {}, input: unknown = { status: 'ok', data: 
     classesDetail: null,
     classesRouteMissing: false,
   }
-  // The copy rides on the run the drawer reads (`loadAgentRun`).
-  return (input === undefined ? run : Object.assign(run, { input })) as unknown as AgentRun
+  // The copy is NOT on the run: Details reads it itself.
+  return run as unknown as AgentRun
 }
 
 async function mount(run: AgentRun): Promise<HTMLElement> {
   api.loadCheckpoints.mockResolvedValue({ status: 'empty', fetchedAt: Date.now() })
   api.loadTaskLogs.mockResolvedValue({ status: 'empty', fetchedAt: Date.now() })
+  api.loadTaskInputOnce.mockImplementation(async () => served)
   const { container } = render(<Run run={run} />)
   await waitFor(() => expect(container.querySelector('.ctl-metrics')).not.toBeNull(), WAIT)
+  // The Input section's own read has landed: no block is still `reading`.
+  await waitFor(() => expect(section(container as HTMLElement, 'Input')?.querySelector('.ctl-mark.is-pending') ?? null).toBeNull(), WAIT)
   return container as HTMLElement
 }
 
@@ -198,5 +212,59 @@ describe('Details shows the task’s input as the API masked it, with its count'
     expect(root.textContent, 'the raw prompt was drawn when the copy failed').not.toContain(SECRET)
     expect(root.textContent, 'the raw prompt was drawn when the copy failed').not.toContain('Deploy with')
     expect(section(root, 'Input')!.querySelector('.ctl-mark.is-unread'), 'a failed read is not marked as one').not.toBeNull()
+  })
+
+  it('reads the copy itself, and not off the run the drawer read', async () => {
+    // A run that still carried a copy must not be where Details takes it
+    // from: the drawer's read no longer asks for one.
+    const run = agentRun()
+    Object.assign(run, { input: { status: 'ok', data: inputCopy({ prompt: { text: 'OFF-THE-RUN', redaction_count: 0 } }), fetchedAt: Date.now() } })
+    const root = await mount(run)
+    expect(api.loadTaskInputOnce, 'Details did not read the masked copy itself').toHaveBeenCalledWith('tsk_charts')
+    expect(section(root, 'Input')!.textContent).not.toContain('OFF-THE-RUN')
+    expect([...section(root, 'Input')!.querySelectorAll('pre')].map((p) => p.textContent)).toContain(MASKED_PROMPT)
+  })
+
+  it('asks again for a copy that failed when the drawer reads again', async () => {
+    // One failed read said `input not read` until the drawer was reopened.
+    const failed = { status: 'error', error: { kind: 'upstream_degraded', httpStatus: 503, code: 'upstream_unavailable', message: 'Busy.' } }
+    const run = agentRun({}, failed)
+    api.loadCheckpoints.mockResolvedValue({ status: 'empty', fetchedAt: Date.now() })
+    api.loadTaskLogs.mockResolvedValue({ status: 'empty', fetchedAt: Date.now() })
+    api.loadTaskInputOnce.mockImplementation(async () => served)
+    const first = { fetchedAt: 1_000, pollMs: 10_000 }
+    const { container, rerender } = render(<Run run={run} reading={first} />)
+    const input = () => section(container as HTMLElement, 'Input')!
+    await waitFor(() => expect(input().querySelector('.ctl-mark.is-unread')).not.toBeNull(), WAIT)
+
+    served = { status: 'ok', data: inputCopy(), fetchedAt: Date.now() }
+    rerender(<Run run={run} reading={{ fetchedAt: 11_000, pollMs: 10_000 }} />)
+    await waitFor(() => expect([...input().querySelectorAll('pre')].map((p) => p.textContent)).toContain(MASKED_PROMPT), WAIT)
+    expect(api.loadTaskInputOnce.mock.calls.length, 'the failed copy was not asked for again').toBeGreaterThanOrEqual(2)
+  })
+
+  it('parts the server’s words from `input not read`, in the text as on screen', async () => {
+    const failed = { status: 'error', error: { kind: 'upstream_degraded', httpStatus: 503, code: 'upstream_unavailable', message: 'Busy.' } }
+    const root = await mount(agentRun({}, failed))
+    const line = section(root, 'Input')!.querySelector('.ctl-mark.is-unread')!.parentElement!
+    expect(line.textContent ?? '', 'the message runs into the words before it').not.toMatch(/readBusy/)
+    expect(line.textContent ?? '').toMatch(/input not read · Busy\./)
+  })
+
+  it('draws a whitespace prompt as the prompt it is, not as an empty one', async () => {
+    // The Artifacts pane draws `"\n"` as a prompt; Details called it `empty
+    // prompt`, "submitted empty", on the same served copy.
+    const copy = inputCopy({ prompt: { text: '\n  ', redaction_count: 0 }, rest: null })
+    const root = await mount(agentRun({}, { status: 'ok', data: copy, fetchedAt: Date.now() }))
+    const input = section(root, 'Input')!
+    expect(input.textContent, 'a whitespace prompt is called empty').not.toMatch(/empty\s*prompt/)
+    expect([...input.querySelectorAll('pre')].map((p) => p.textContent), 'the prompt as sent is not drawn').toContain('\n  ')
+  })
+
+  it('still calls the empty string an empty prompt', async () => {
+    // THE CONTROL for the case above.
+    const copy = inputCopy({ prompt: { text: '', redaction_count: 0 }, rest: null })
+    const root = await mount(agentRun({}, { status: 'ok', data: copy, fetchedAt: Date.now() }))
+    expect(section(root, 'Input')!.textContent).toMatch(/empty\s*prompt/)
   })
 })

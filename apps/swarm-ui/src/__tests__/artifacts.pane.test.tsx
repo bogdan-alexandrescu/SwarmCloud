@@ -719,6 +719,57 @@ describe('Inputs: the prompt, the repository, and every staged file', () => {
     expect(inputs.textContent, 'the raw prompt was drawn when the copy was not served').not.toMatch(/Audit the capacity code/)
   })
 
+  it('asks again for a copy that failed, on the pane’s next poll, and draws it when it comes', async () => {
+    // PR #210 REVIEW. The read's key was the constant `input`, so one failed
+    // copy said `the masked input not read` for as long as the pane was open,
+    // while every other read on it came back on the 5 s poll.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'setInterval', 'clearTimeout', 'clearInterval', 'Date'] })
+    let copyFails = true
+    const running = () => task({ state: 'RUNNING', completed_at: null, result_summary: null })
+    const api = await openPane({
+      [`/v1/tasks/${REF}`]: () => ({ task: running() }),
+      [`/v1/tasks/${REF}/artifacts`]: listing(),
+      [`/v1/tasks/${REF}/answer`]: () =>
+        answer({ status: 'not_yet', source: null, object: null, format: null, content: null, complete: null, is_error: null, subtype: null, num_turns: null, attempt: attemptBlock(false) }),
+      [`/v1/tasks/${REF}/transcript`]: () =>
+        transcript({ stream: stream({ source: 'live', age_seconds: 4 }), format: 'claude-stream-json', steps: [], complete: false, attempt: attemptBlock(false) }),
+      [`/v1/tasks/${REF}/logs`]: () =>
+        logs([logStream('agent_stderr', { source: 'live' }), logStream('stdout', { source: 'live' }), logStream('stderr', { source: 'live' })], false),
+      [`/v1/tasks/${REF}/input`]: () =>
+        copyFails
+          ? new Response(JSON.stringify({ code: 'upstream_unavailable', message: 'Busy.' }), {
+              status: 503,
+              headers: { 'content-type': 'application/json' },
+            })
+          : inputCopy(),
+    })
+    const advance = async (ms: number) => {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(ms)
+      })
+      for (let i = 0; i < 4; i++) {
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(0)
+        })
+      }
+    }
+    await advance(0)
+    expect(section('Inputs').textContent, 'the failed copy is not said to be not read').toMatch(/masked input not read/)
+    const firstAsks = api.count(`/v1/tasks/${REF}/input`)
+    expect(firstAsks).toBeGreaterThan(0)
+
+    copyFails = false
+    await advance(5_000)
+    expect(api.count(`/v1/tasks/${REF}/input`), 'the failed copy was not asked for again on the poll').toBeGreaterThan(firstAsks)
+    expect(section('Inputs').querySelector('pre')?.textContent, 'the copy that came back is not drawn').toBe(
+      'Audit the capacity code.\n\nSay what reserve() guarantees.',
+    )
+    // Once read, it is answered from memory: the next poll asks nothing.
+    const afterRead = api.count(`/v1/tasks/${REF}/input`)
+    await advance(5_000)
+    expect(api.count(`/v1/tasks/${REF}/input`), 'a copy already read was asked for again').toBe(afterRead)
+  })
+
   it('links each staged file to the step that produced it, and reads it from THAT run', async () => {
     const api = await openPane(stagedRoutes('ok'))
     const inputs = await sectionReady('Inputs', /scan\.md/)

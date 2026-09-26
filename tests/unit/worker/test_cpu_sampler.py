@@ -645,3 +645,95 @@ def test_an_attempt_that_must_write_nothing_writes_no_cpu(db, worker_factory):
     worker._writes_forbidden = False
     worker._record_cpu()
     assert db.doc("attempts/att_1")["cpu_seconds"] == 5.0
+
+
+# ---------------------------------------------------------------------------
+# Every exit writes the CPU, and a failed memory write does not skip it
+# (PR #210 review)
+# ---------------------------------------------------------------------------
+#
+# The typed fields were written with each periodic reading and when a runner
+# was reaped through `_stop_sampler`. Two gaps: a runner still alive at a crash,
+# or killed at cleanup, is never reaped through `_stop_sampler`, so the attempt
+# kept its last periodic reading -- up to one reading behind -- and Details drew
+# it as the figures at exit; and `_stop_sampler` wrote the memory peak first,
+# unguarded, so a Firestore error there skipped the CPU write after it.
+
+
+class _LiveSampler:
+    """A runner's sampler still attached: the runner was never reaped through `_stop_sampler`."""
+
+    def __init__(self, usage) -> None:
+        self.usage = usage
+
+    def stop(self):  # pragma: no cover - the paths under test do not stop it
+        return self.usage
+
+
+def _cpu_written(db) -> float | None:
+    return db.documents.get("attempts/att_1", {}).get("cpu_seconds")
+
+
+def test_the_upload_on_every_exit_writes_the_attempts_cpu_beside_its_spend(
+    db, worker_factory, monkeypatch, tmp_path: Path
+):
+    """`_upload_outputs` is where every orderly exit and the crash handler
+    record the attempt's spend ahead of its state; the CPU goes with it."""
+    from agent_worker import metrics
+    from agent_worker import workspace as workspace_mod
+    from agent_worker.metrics import ResourceUsage
+
+    monkeypatch.setattr(metrics, "CGROUP_ROOT", tmp_path / "no-cgroup-here")
+    seed_attempt(db)
+    worker, config, _ = worker_factory()
+    worker.ws = workspace_mod.create(config.workspace_root, config.attempt_id)
+    worker._sampler = _LiveSampler(ResourceUsage(cpu_seconds=7.5, cpu_source="cgroup"))
+
+    worker._upload_outputs()
+
+    assert _cpu_written(db) == 7.5, "the exit's upload recorded no CPU for a runner it never reaped"
+
+
+def test_cleanup_writes_the_cpu_of_a_runner_it_killed_without_reaping(
+    db, worker_factory, monkeypatch, tmp_path: Path
+):
+    """`_cleanup` is the spend backstop for a crash with a runner alive and for
+    a mid-run fence; the CPU backstop sits beside it."""
+    from agent_worker import metrics
+    from agent_worker.metrics import ResourceUsage
+
+    monkeypatch.setattr(metrics, "CGROUP_ROOT", tmp_path / "no-cgroup-here")
+    seed_attempt(db)
+    worker, _, _ = worker_factory()
+    worker._sampler = _LiveSampler(ResourceUsage(cpu_seconds=9.25, cpu_source="cgroup"))
+
+    worker._cleanup()
+
+    assert _cpu_written(db) == 9.25, "cleanup recorded no CPU for the runner it was left with"
+
+
+def test_a_failed_memory_write_does_not_skip_the_attempts_cpu_write(
+    db, worker_factory, monkeypatch, tmp_path: Path
+):
+    from agent_worker import metrics
+    from agent_worker.metrics import ResourceUsage
+
+    monkeypatch.setattr(metrics, "CGROUP_ROOT", tmp_path / "no-cgroup-here")
+    seed_attempt(db)
+    worker, _, _ = worker_factory()
+
+    def unavailable(**_kw):
+        raise RuntimeError("503 firestore unavailable")
+
+    monkeypatch.setattr(worker.control, "record_resource_usage", unavailable)
+
+    class Reaped:
+        usage = ResourceUsage(peak_rss_bytes=100, cpu_seconds=12.5, cpu_source="cgroup")
+
+        def stop(self):
+            return self.usage
+
+    worker._sampler = Reaped()
+    worker._stop_sampler()  # must not raise: the memory peak is telemetry too
+
+    assert _cpu_written(db) == 12.5, "a failed memory write skipped the CPU write after it"

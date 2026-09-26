@@ -40,7 +40,7 @@ import STYLES from '../styles.css?raw'
 import { describe, expect, it, vi } from 'vitest'
 import { render, waitFor } from '@testing-library/react'
 
-import type { AgentRun } from '../api'
+import { EVENT_PAGE_LIMIT, type AgentRun } from '../api'
 import type { AttemptRow, Task, TaskEvent } from '../types'
 import { cascade, type CascadeEnv } from './cssgate'
 import { attempt, ev, task } from './runfixture'
@@ -83,11 +83,11 @@ const RUNNING_ATTEMPT: Partial<AttemptRow> = { completed_at: null, exit_code: nu
 /** The task ended and this attempt's finish was never recorded: a kill or a reclaim. */
 const UNRECORDED: Partial<AttemptRow> = { completed_at: null, exit_code: null }
 
-function agentRun(a: AttemptRow, t: Partial<Task> = {}, events: TaskEvent[] = []): AgentRun {
+function agentRun(a: AttemptRow, t: Partial<Task> = {}, events: TaskEvent[] | null = []): AgentRun {
   return {
     task: task({ state: 'SUCCEEDED', attempt_count: 1, ...t }),
     events,
-    eventsDetail: null,
+    eventsDetail: events === null ? 'The event read failed: 503.' : null,
     attempts: [a],
     attemptsDetail: null,
     // cpu 4 in the catalogue, 2 reported by the worker: the two must be told apart.
@@ -97,7 +97,7 @@ function agentRun(a: AttemptRow, t: Partial<Task> = {}, events: TaskEvent[] = []
   }
 }
 
-async function mount(a: AttemptRow, t: Partial<Task> = {}, events: TaskEvent[] = []): Promise<HTMLElement> {
+async function mount(a: AttemptRow, t: Partial<Task> = {}, events: TaskEvent[] | null = []): Promise<HTMLElement> {
   api.loadCheckpoints.mockResolvedValue({ status: 'empty', fetchedAt: Date.now() })
   api.loadTaskLogs.mockResolvedValue({ status: 'empty', fetchedAt: Date.now() })
   const { container } = render(<Run run={agentRun(a, t, events)} />)
@@ -246,6 +246,51 @@ describe('Details draws CPU as peak and mean cores of the limit, from the attemp
     const rows = cpuRows(root)
     expect(rows).toHaveLength(1)
     expect(by(rows[0]!)).toBe('never measured')
+  })
+
+  it('says events not read, not never measured, when the event read failed on an attempt with no typed figures', async () => {
+    // PR #210 RE-REVIEW. `loadAgentRun` sets `events: null` when `/events`
+    // fails, and the legacy reader iterated nothing and answered `never
+    // measured` -- "none of its heartbeat events on this page carries one" --
+    // about a page nobody read. Every attempt from before the typed fields
+    // reads that way at deploy, whenever the event read fails.
+    const root = await mount(withCpu(NOTHING), {}, null)
+    const rows = cpuRows(root)
+    expect(rows, 'two identical rows for one absence').toHaveLength(1)
+    expect(by(rows[0]!)).toBe('events not read')
+    expect(root.textContent, 'a page that was not read is said to hold no reading').not.toMatch(/never measured/)
+    const strip = root.querySelector<HTMLElement>('.att-cpu-note')
+    expect(strip?.querySelector('.ctl-mark.is-unread'), 'the strip does not mark the reading as not read').not.toBeNull()
+    expect(rows[0]!.querySelector('.ctl-util-fill'), 'no reading drew a fill').toBeNull()
+  })
+
+  it('reads an attempt with typed figures the same whether or not the event read failed', async () => {
+    // THE CONTROL: the typed fields need no page, so a failed event read
+    // changes nothing about an attempt that has them.
+    const root = await mount(withCpu({}), {}, null)
+    expect(by(cpuRow(root, 'peak'))).toBe('at exit · reported limit')
+  })
+
+  it('says a full page may hold newer readings than the heartbeat it read, and a short page does not', async () => {
+    // PR #210 REVIEW. The page is the task's first `EVENT_PAGE_LIMIT` events.
+    // When it is full the route has more, and on a long attempt the newest
+    // heartbeat on the page is an early one; the strip says so.
+    const beats = (n: number) =>
+      Array.from({ length: n }, (_, i) =>
+        ev('heartbeat', new Date(Date.now() - (n - i) * 150_000).toISOString(), 'att_1', {
+          elapsed_seconds: 150 * (i + 1), peak_rss_bytes: null, checkpoints: 0,
+          cpu_seconds: Number((10 + i * 0.5).toFixed(1)), cpu_source: 'cgroup',
+        }),
+      )
+    const full = await mount(withCpu(NOTHING), {}, beats(EVENT_PAGE_LIMIT))
+    const fullStrip = full.querySelector<HTMLElement>('.att-cpu-note')?.textContent ?? ''
+    expect(fullStrip, 'a full page does not say newer readings may exist').toMatch(/page full; newer readings may exist/)
+    full.remove()
+
+    const short = await mount(withCpu(NOTHING), {}, beats(3))
+    const shortStrip = short.querySelector<HTMLElement>('.att-cpu-note')?.textContent ?? ''
+    expect(shortStrip, 'a short page claims to be full').not.toMatch(/page full/)
+    expect(shortStrip).toMatch(/cpu-seconds only/)
   })
 
   it.each([
