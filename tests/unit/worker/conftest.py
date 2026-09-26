@@ -172,6 +172,7 @@ def build_worker(
     max_in_worker_retry_delay_seconds: int = 45,
     secret_client: Any | None = None,
     txn_runner: Any | None = None,
+    reap_before_publish: Any | None = None,
     **overrides: Any,
 ) -> tuple[Worker, WorkerConfig, RecordingExporter]:
     profile = RUNNER_PROFILES[runner_profile]
@@ -226,7 +227,14 @@ def build_worker(
         metrics_exporter=exporter,
         secret_client=secret_client or FakeSecretClient(),
     )
-    return Worker(config, deps), config, exporter
+    worker = Worker(config, deps)
+    # The production reaper runs `os.kill(-1, SIGKILL)`, which would take this
+    # test process (and its whole session) down. Every worker built here gets a
+    # scoped stand-in by default: `() ` means "nothing the agent started is
+    # alive", which is the clean case the publish tests assume. The tests that
+    # exercise the reap itself (test_forge_token_isolation.py) set their own.
+    worker.reap_before_publish = reap_before_publish or (lambda: ())
+    return worker, config, exporter
 
 
 @pytest.fixture

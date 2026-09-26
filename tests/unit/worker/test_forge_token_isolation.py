@@ -37,7 +37,10 @@ from __future__ import annotations
 
 import os
 import shutil
+import signal
 import subprocess
+import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -377,6 +380,7 @@ def test_the_token_bearing_push_runs_in_a_repo_free_of_agent_configuration(
         f"url.{attacker_url}.pushInsteadOf": origin_url,
         "http.proxy": "http://attacker.example.invalid:3128",
         "http.sslVerify": "false",
+        "http.extraHeader": "Authorization: Basic YXR0YWNrZXI6",
         "remote.origin.pushurl": attacker_url,
         "credential.helper": "!f() { cat >/dev/null; }; f",
     }
@@ -407,7 +411,9 @@ def test_the_token_bearing_push_runs_in_a_repo_free_of_agent_configuration(
         capture_output=True,
         text=True,
     ).stdout.lower()
-    for token in ("insteadof", "http.proxy", "sslverify", "pushurl", "credential.helper"):
+    for token in (
+        "insteadof", "http.proxy", "sslverify", "extraheader", "pushurl", "credential.helper",
+    ):
         assert token not in listed, (
             f"the repository the token-bearing push ran in carries the agent's "
             f"{token!r} (repo {seen['repo']}):\n{listed}"
@@ -582,3 +588,272 @@ def test_a_repository_hook_is_never_run_during_publish(
     )
 
     assert not marker.exists(), "a repository-supplied hook executed during publish"
+
+
+# ---------------------------------------------------------------------------
+# The reap: no process the agent started is alive when the token is used
+# ---------------------------------------------------------------------------
+#
+# The tests above prove WHERE the token-bearing commands run (a worker-owned
+# repository whose config the agent never wrote). These prove WHEN: before the
+# first token-bearing step, every process the agent double-forked out of the
+# runner's session is killed and its death verified. Such a process shares the
+# worker's uid and, left alive, could watch `ws.private` and poison the publish
+# repository between its creation and the push, or read the 0600 credential file
+# while the push runs -- neither of which the worker-owned repository alone
+# prevents, because the attacker does not need to write the repo's config from
+# inside, only to be a live process next to it.
+#
+# The real reap runs `os.kill(-1, SIGKILL)`, which in this shared test process
+# would kill the test runner; `procman`'s own tests exercise it inside a private
+# PID namespace. Here the reap is injected with a SCOPED stand-in that kills the
+# one escaped daemon by its process group and verifies it is gone -- so what is
+# under test is the worker's ordering (reap, verified, BEFORE the credential is in
+# hand) and its refusal path, against real git and a real escaped process.
+
+_DAEMON_HELPER = Path(__file__).with_name("forge_escaped_daemon.py")
+
+
+def _pid_alive(pid: int) -> bool:
+    """True while `pid` names a live (non-zombie) process."""
+    try:
+        with open(f"/proc/{pid}/status", encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                if line.startswith("State:"):
+                    return not line.split(None, 2)[1].startswith("Z")
+        return True
+    except FileNotFoundError:
+        return False
+    except OSError:
+        # No /proc (e.g. macOS locally): fall back to signal 0. CI is Linux.
+        try:
+            os.kill(pid, 0)
+            return True
+        except ProcessLookupError:
+            return False
+        except OSError:
+            return True
+
+
+def _spawn_escaped_daemon(worker, origin: Path, attacker: Path, tmp_path: Path) -> int:
+    """Start a real double-forked setsid daemon watching `ws.private`. Returns its
+    pid (== its process-group id, after setsid)."""
+    pidfile = tmp_path / "daemon.pid"
+    lootfile = tmp_path / "daemon.loot"
+    subprocess.run(
+        [
+            sys.executable, str(_DAEMON_HELPER),
+            str(worker.ws.private), str(pidfile), str(lootfile),
+            f"file://{origin}", f"file://{attacker}",
+        ],
+        check=True,
+        capture_output=True,
+        timeout=15,
+    )
+    for _ in range(500):
+        if pidfile.exists() and pidfile.read_text().strip():
+            break
+        time.sleep(0.01)
+    else:
+        raise AssertionError("the escaped daemon never wrote its pid")
+    return int(pidfile.read_text().strip())
+
+
+def _kill_group(pid: int) -> None:
+    try:
+        os.killpg(pid, signal.SIGKILL)
+    except (ProcessLookupError, OSError):
+        pass
+
+
+@pytest.mark.skipif(
+    not Path("/proc").is_dir(),
+    reason="the reap verifies liveness via /proc; this platform has none (CI is Linux)",
+)
+def test_no_agent_process_is_alive_when_the_publish_token_is_used(
+    worker_factory, monkeypatch, origin, attacker, local_urls, forge, tmp_path
+):
+    """A process the agent double-forked into its own session survives the
+    runner's group kill. Before the worker's publish path uses the tenant token,
+    that process must be dead. Injected scoped reaper; real daemon; real git."""
+    state = {"reaper_called": False, "daemon_pid": None, "alive_at_prepare": None,
+             "alive_at_push": None}
+
+    def scoped_reaper() -> tuple:
+        state["reaper_called"] = True
+        pid = state["daemon_pid"]
+        _kill_group(pid)
+        for _ in range(200):
+            if not _pid_alive(pid):
+                return ()
+            time.sleep(0.02)
+            _kill_group(pid)
+        return (pid,)
+
+    def set_up(worker) -> None:
+        state["daemon_pid"] = _spawn_escaped_daemon(worker, origin, attacker, tmp_path)
+        worker.reap_before_publish = scoped_reaper
+
+    # Record whether the daemon is alive at the two token-bearing steps.
+    real_prepare = lifecycle.prepare_publish_repo
+    real_push = lifecycle.push_branch
+
+    def watch_prepare(**kwargs):
+        state["alive_at_prepare"] = _pid_alive(state["daemon_pid"])
+        return real_prepare(**kwargs)
+
+    def watch_push(**kwargs):
+        state["alive_at_push"] = _pid_alive(state["daemon_pid"])
+        return real_push(**kwargs)
+
+    monkeypatch.setattr(lifecycle, "prepare_publish_repo", watch_prepare)
+    monkeypatch.setattr(lifecycle, "push_branch", watch_push)
+
+    try:
+        _, config, out = run_attempt(
+            worker_factory, monkeypatch, origin,
+            task_id="t-reap",
+            dispatch={"strategy": "direct-pr"},
+            edit=agent_edits_without_committing,
+            pre_publish=set_up,
+        )
+
+        assert state["reaper_called"] is True, (
+            "the publish path never reaped: agent processes could be alive while the "
+            "token is used"
+        )
+        assert state["alive_at_prepare"] is False, (
+            "an agent process was alive when the worker built the publish repository "
+            "-- the window it could poison it before the push"
+        )
+        assert state["alive_at_push"] is False, (
+            "an agent process was alive when the token-bearing push ran -- it could "
+            "read the credential file while the push held it"
+        )
+        # The isolation still holds and the loot stays empty.
+        branch = f"{config.git_branch_prefix}{config.task_id}"
+        assert branch in refs(origin), out
+        assert branch not in refs(attacker)
+        loot = tmp_path / "daemon.loot"
+        assert not loot.exists() or loot.read_text() == "", (
+            "the escaped daemon captured credential material during publish"
+        )
+    finally:
+        if state["daemon_pid"] is not None:
+            _kill_group(state["daemon_pid"])
+
+
+def test_publish_is_refused_when_agent_processes_survive_the_reap(
+    worker_factory, monkeypatch, origin, attacker, local_urls, forge, tmp_path
+):
+    """If the reap cannot prove the container clean, the publish is refused with a
+    stated reason -- and no token-bearing command runs at all."""
+    ran = {"prepare": False, "push": False}
+    real_prepare = lifecycle.prepare_publish_repo
+    real_push = lifecycle.push_branch
+
+    def guard_prepare(**kwargs):
+        # Delegates rather than short-circuits so that on code that does NOT reap
+        # (the pre-fix state this is red against) the publish runs to completion
+        # and `ran["prepare"]` catches it -- a clean assertion, not a crash.
+        ran["prepare"] = True
+        return real_prepare(**kwargs)
+
+    def guard_push(**kwargs):
+        ran["push"] = True
+        return real_push(**kwargs)
+
+    monkeypatch.setattr(lifecycle, "prepare_publish_repo", guard_prepare)
+    monkeypatch.setattr(lifecycle, "push_branch", guard_push)
+
+    def set_reaper(worker) -> None:
+        worker.reap_before_publish = lambda: (4242, 4243)
+
+    _, config, out = run_attempt(
+        worker_factory, monkeypatch, origin,
+        task_id="t-reap-refused",
+        dispatch={"strategy": "direct-pr"},
+        edit=agent_edits_without_committing,
+        pre_publish=set_reaper,
+    )
+
+    assert out["published"] is False
+    assert "still alive" in out["publish_reason"], out
+    assert ran["prepare"] is False, "the publish repository was built despite survivors"
+    assert ran["push"] is False, "the token-bearing push ran despite survivors"
+    branch = f"{config.git_branch_prefix}{config.task_id}"
+    assert branch not in refs(origin), "a branch was pushed despite the reap refusing"
+
+
+def test_a_clean_publish_reaps_first_and_still_succeeds(
+    worker_factory, monkeypatch, origin, local_urls, forge, tmp_path
+):
+    """The control: the reap runs on the normal path too, and when it finds
+    nothing the publish proceeds exactly as before."""
+    called = {"reaped": False}
+
+    def clean_reaper() -> tuple:
+        called["reaped"] = True
+        return ()
+
+    def set_reaper(worker) -> None:
+        worker.reap_before_publish = clean_reaper
+
+    _, config, out = run_attempt(
+        worker_factory, monkeypatch, origin,
+        task_id="t-reap-clean",
+        dispatch={"strategy": "direct-pr"},
+        edit=agent_edits_without_committing,
+        pre_publish=set_reaper,
+    )
+
+    assert called["reaped"] is True, "the reap did not run on the clean publish path"
+    branch = f"{config.git_branch_prefix}{config.task_id}"
+    assert branch in refs(origin), out
+    assert out["published"] is True
+
+
+# -- the integrator's fetch must not recurse into submodules ------------------
+
+
+def test_the_integrator_fetch_does_not_recurse_into_submodules(
+    worker_factory, monkeypatch, origin, local_urls, forge
+):
+    """`fetch.recurseSubmodules` defaults to on-demand, which would fetch a
+    submodule named in an untrusted contributor branch's `.gitmodules` -- carrying
+    the token to whatever host it lists. The token-bearing fetch must disable it."""
+    for name in ("t-sa", "t-sb"):
+        run_attempt(
+            worker_factory, monkeypatch, origin,
+            task_id=name,
+            dispatch={"strategy": "integrate", "role": "contributor"},
+            edit=contributor_edit(name),
+        )
+
+    recorded: list[list[str]] = []
+    real_run_child = gitops.run_child
+
+    def recording(argv, **kwargs):
+        recorded.append(list(argv))
+        return real_run_child(argv, **kwargs)
+
+    monkeypatch.setattr(gitops, "run_child", recording)
+
+    run_attempt(
+        worker_factory, monkeypatch, origin,
+        task_id="t-sint",
+        dispatch={
+            "strategy": "integrate",
+            "role": "integrator",
+            "integrates": ["t-sa", "t-sb"],
+        },
+        edit=contributor_edit("t-sint"),
+    )
+
+    fetches = [a for a in recorded if "fetch" in a]
+    assert fetches, "the integrator ran no fetch; the test proves nothing"
+    for argv in fetches:
+        assert "fetch.recurseSubmodules=false" in argv, (
+            f"the token-bearing fetch would recurse into submodules: {argv}"
+        )
+        assert "submodule.recurse=false" in argv, argv
