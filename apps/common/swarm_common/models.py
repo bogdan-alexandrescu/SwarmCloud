@@ -280,6 +280,36 @@ class Attempt:
     cache_creation_input_tokens: int | None = None
     cost_usd: float | None = None
 
+    # What the attempt's CPU did. Added 2026-09-25 as change request #15 in
+    # docs/contract-change-requests.md, accepted by the platform owner on #184.
+    #
+    # Every figure is the ATTEMPT's -- every runner it started, combined by
+    # `agent_worker.metrics.combine_usage` -- in seconds and in cores, where
+    # 1.0 is one whole vCPU:
+    #
+    #   cpu_seconds      CPU time consumed while the attempt's runners ran;
+    #   peak_cpu_cores   the busiest sampling interval of any of them;
+    #   mean_cpu_cores   cpu_seconds over RUNNER wall time, so setup, the clone
+    #                    and retry waits are not counted as idle;
+    #   cpu_limit_cores  what the figures are a fraction of: the container's
+    #                    cgroup `cpu.max`, else the catalogue cpu of the class
+    #                    it was sized with.
+    #
+    # These replace the interim home #188 gave them, flat keys on HEARTBEAT
+    # events read back by an opt-in events query: that was not queryable across
+    # attempts and cost a read per request. They sit at the end of the class,
+    # not beside `peak_rss_bytes` as the request drew them, so no positional
+    # construction of an `Attempt` changes meaning.
+    #
+    # None means NOT MEASURED, as for the spend fields above: an attempt fenced
+    # before its runner started measured nothing, which is a different fact
+    # from an idle agent's 0.0 cores. Optional, so every existing document
+    # stays valid and nothing migrates.
+    cpu_seconds: float | None = None
+    peak_cpu_cores: float | None = None
+    mean_cpu_cores: float | None = None
+    cpu_limit_cores: float | None = None
+
 
 @dataclass
 class TaskEvent:

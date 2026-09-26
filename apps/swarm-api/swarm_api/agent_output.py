@@ -40,7 +40,7 @@ from typing import Any, Iterator
 from swarm_common.states import TERMINAL_STATES
 
 from . import agent_streams as agent_streams_mod
-from .attempt_usage import attempt_is_over
+from .attempt_state import attempt_is_over
 from .checkpoint_content import (
     CHUNK_BYTES,
     IMAGE_EXTENSIONS,
