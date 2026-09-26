@@ -1829,24 +1829,29 @@ describe('the QA pass: the collapsed row', () => {
   describe('the census reads whole without a pointer', () => {
     const WIDE: CascadeEnv = { width: 1440 }
     const PHONE: CascadeEnv = { width: 390 }
+    /** A 1440 viewport with the work column at `row` px -- the whole column (1150), or narrowed by the inspector. */
+    const at = (row: number): CascadeEnv => ({ width: 1440, container: row })
     /** One `ch` of the row's 13px sans, from 24ch = 196.5px measured at 1440. */
     const SANS_13_CH = 196.5 / 24
     /** One character of the census's 12px mono, from 24 characters = 173px measured. */
     const MONO_12_CHAR = 173 / 24
-    const RUNNING = '1/5 done · 1 not started'
+    /** The row's two `max-content` tracks for a running row, measured in Chrome: "running" and "23h ago", 12px mono. */
+    const WORD_PX = 50.58
+    const AGE_PX = 50.58
+    const RUNNING = '12/30 done · 18 not started'
     const LONG = '10/30 done · 1 failed · 19 cancelled'
 
-    /** Five steps: one done, three running, one not started. */
+    /** Thirty steps: twelve done, none failed, eighteen not started. */
     function running(): Workflow {
-      return workflow('wf_running', Array.from({ length: 5 }, (_, i) => step(`r-${i}`, [])), {
+      return workflow('wf_running', Array.from({ length: 30 }, (_, i) => step(`r-${i}`, [])), {
         rollup: {
           state: 'RUNNING',
           complete: true,
           reason: 'steps_hold_capacity',
-          counts: { SUCCEEDED: 1, RUNNING: 3, unstarted: 1 },
+          counts: { SUCCEEDED: 12, unstarted: 18 },
           unreadable_steps: [],
           unstarted_steps: [],
-          steps_read: 5,
+          steps_read: 30,
         },
       })
     }
@@ -1858,26 +1863,99 @@ describe('the QA pass: the collapsed row', () => {
     const px = (v: string | null): number =>
       Number(/^([\d.]+)px$/.exec(resolveVars(v ?? '', tokenTables(STYLES).dark).trim())?.[1] ?? Number.NaN)
 
-    // MUTATION: the `[progress]` floor back to 24ch, or anything under 29ch;
+    /** The wide template's tracks, `[name] track` pairs in order, as the cascade resolves them at `env`. */
+    function tracks(bar: Element, env: CascadeEnv): [string, string][] {
+      const template = (won(bar, 'grid-template-columns', env) ?? '').replace(/\s+/g, ' ').trim()
+      const parts = splitTop(template, ' ')
+      const out: [string, string][] = []
+      parts.forEach((p, i) => {
+        if (/^\[[\w-]+\]$/.test(p)) out.push([p.slice(1, -1), parts[i + 1] ?? ''])
+      })
+      expect(out.map(([n]) => n), `not the wide template: ${template}`).toContain('progress')
+      return out
+    }
+
+    /**
+     * `[progress]`'s floor in ch, at `env`: a literal, or a custom property
+     * resolved on the row itself (so a `@container` rule that sets it is
+     * seen), falling back to the `var()`'s own fallback.
+     */
+    function floorCh(bar: Element, env: CascadeEnv): number {
+      const track = tracks(bar, env).find(([n]) => n === 'progress')![1]
+      const lo = splitTop(/^minmax\((.*)\)$/.exec(track)?.[1] ?? '')[0] ?? ''
+      const v = /^var\(\s*(--[\w-]+)\s*(?:,\s*(.+))?\)$/.exec(lo)
+      const value = v === null ? lo : (won(bar, v[1]!, env) ?? v[2] ?? '')
+      const ch = /^([\d.]+)ch$/.exec(value.trim())
+      expect(ch, `[progress] has no floor in ch at ${env.container ?? 'no'} px: ${track}`).not.toBeNull()
+      return Number(ch![1])
+    }
+
+    /**
+     * How far from the row's left border edge its last track -- the caret --
+     * ends, at the smallest the grid can make it: every `minmax(0, …)` track
+     * at 0, `[progress]` at its floor, the fixed tracks as declared, the two
+     * `max-content` tracks at their measured widths, the gaps, the left padding
+     * and both borders. At most the row's width means the caret is inside it.
+     */
+    function narrowest(bar: Element, env: CascadeEnv): number {
+      const list = tracks(bar, env)
+      let sum = 0
+      for (const [name, track] of list) {
+        if (name === 'progress') sum += floorCh(bar, env) * SANS_13_CH
+        else if (/^[\d.]+px$/.test(track)) sum += parseFloat(track)
+        else if (/^minmax\(\s*0\s*,/.test(track)) sum += 0
+        else if (track === 'max-content' && name === 'word') sum += WORD_PX
+        else if (track === 'max-content' && name === 'age') sum += AGE_PX
+        else sum += Number.NaN
+      }
+      const gap = px(won(bar, ['column-gap', 'gap'], env))
+      const padLeft = px(splitTop(resolveVars(won(bar, 'padding', env) ?? '', tokenTables(STYLES).dark), ' ').slice(-1)[0] ?? '')
+      const border = px(/^([\d.]+px)/.exec(won(bar, 'border', env) ?? '')?.[1] ?? '')
+      const total = sum + gap * (list.length - 1) + padLeft + 2 * border
+      expect(Number.isFinite(total), `a track, the gap, the padding or the border is not a length: ${total}`).toBe(true)
+      return total
+    }
+
+    // THE TWO-DIGIT RUNNING FORM IS WHOLE AT 1440 (owner decision 2026-09-26,
+    // on #223): "12/30 done · 18 not started" is 27 characters, 195px measured.
+    // The floor is 33ch in a row at least 620px wide -- the 1440 work column
+    // is 1150 -- which is 270.2px, less the meter and its gap: 208.2px.
+    // MUTATION: the wide floor back to 29ch (175.4px) or anything under 32ch;
     // the meter wider, or its gap larger, without the floor following.
-    it('gives [progress] a floor at 1440 that holds the running form whole', () => {
+    it('gives [progress] a floor at 1440 that holds the two-digit running form whole', () => {
       const bar = card(running()).container.querySelector('.wf-bar')!
       expect(bar.querySelector('.wf-progress-text')!.textContent, 'the fixture is not the running form').toBe(RUNNING)
-      const template = won(bar, 'grid-template-columns', WIDE)
-      const parts = splitTop(template ?? '', ' ')
-      const at = parts.indexOf('[progress]')
-      expect(at, `the wide template names no [progress] line: ${template}`).toBeGreaterThanOrEqual(0)
-      const floor = /^minmax\(\s*([\d.]+)ch\s*,/.exec(parts[at + 1] ?? '')
-      expect(floor, `[progress] has no floor in ch: ${parts[at + 1]}`).not.toBeNull()
       const meter = px(won(bar.querySelector('.wf-meter')!, 'width', WIDE))
       const gap = px(won(bar.querySelector('.wf-progress')!, ['gap', 'column-gap'], WIDE))
       expect(Number.isFinite(meter) && Number.isFinite(gap), `the meter (${meter}) or its gap (${gap}) is not a length`).toBe(true)
-      const room = Number(floor![1]) * SANS_13_CH - meter - gap
+      const room = floorCh(bar, at(1150)) * SANS_13_CH - meter - gap
       const needs = RUNNING.length * MONO_12_CHAR
       expect(
         room,
         `at 1440 "${RUNNING}" gets ${room.toFixed(1)}px of the ${needs.toFixed(1)}px it needs, so it is cut`,
       ).toBeGreaterThanOrEqual(needs)
+    })
+
+    // THE FLOOR GIVES WAY IN A NARROW ROW (owner decision 2026-09-26, on
+    // #223). With the inspector open beside it the work column is a few
+    // hundred px at 1440, and a 33ch floor there ran the row's grid past its
+    // right edge. So the floor is 33ch only where the row is at least 620px
+    // wide, and 12ch below that. Held at a 480px row, as with the inspector
+    // open: the floor is 12ch and a running row's caret ends inside the row.
+    // At 619 it is still 12ch; at 620 it is 33ch, and the caret is inside
+    // there too. Measured in Chrome for this sheet, a running row's caret
+    // stays inside down to 445px.
+    // MUTATION: a fixed floor again (any ch, at every row width); the switch
+    // moved from 620px; the narrow floor raised so a 480px row overflows.
+    it('lets the floor give way to 12ch in a row under 620px, so the caret stays inside at 480', () => {
+      const bar = card(running()).container.querySelector('.wf-bar')!
+      expect(floorCh(bar, at(480)), 'the floor at a 480px row').toBe(12)
+      expect(floorCh(bar, at(619)), 'the floor at a 619px row').toBe(12)
+      expect(floorCh(bar, at(620)), 'the floor at a 620px row').toBe(33)
+      for (const row of [480, 620]) {
+        const end = narrowest(bar, at(row))
+        expect(end, `at a ${row}px row the caret ends ${end.toFixed(1)}px from the left edge, outside the row`).toBeLessThanOrEqual(row)
+      }
     })
 
     // MUTATION: take the census out of the open card; hide it at a width; or
