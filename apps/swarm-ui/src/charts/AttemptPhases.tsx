@@ -45,7 +45,7 @@
 import { PHASE_LABEL, phaseExtent, phasesFor, spanText, workSum } from '../duration'
 import type { AttemptPhases, Segment, WorkSum } from '../duration'
 import type { AttemptRow, Task, TaskEvent } from '../types'
-import { ChartTitle, DRAWN, HatchDef, drawnClass, useHatchId, type Drawn } from './parts'
+import { ChartTitle, DRAWN, HatchDef, VALUE_LABEL_GAP_PX, drawnClass, useHatchId, type Drawn } from './parts'
 import { ValueAxis, linearScale, type LinearScale } from './TimeSeries'
 
 // Compact by the same D2 rule `TimeSeries` follows: a 10px bar in an 18px
@@ -434,7 +434,7 @@ function RetryLollipop({ rows, hatchId }: { rows: readonly AttemptPhases[]; hatc
               {rows.map((r, i) => (
                 <Lolly key={r.attempt.attempt_id} r={r} cx={band * (i + 0.5)} y={y} innerH={innerH} hatchId={id} />
               ))}
-              <ValueAxis side="left" scale={y} extent={extent} format={spanText} minGapPx={14} />
+              <ValueAxis side="left" scale={y} extent={extent} format={spanText} minGapPx={VALUE_LABEL_GAP_PX} />
             </g>
           </svg>
         )

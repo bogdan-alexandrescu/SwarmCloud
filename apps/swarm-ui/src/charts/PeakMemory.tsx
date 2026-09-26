@@ -32,7 +32,7 @@
 import { EVENT_PAGE_LIMIT } from '../api'
 import { spanText, instant } from '../duration'
 import { bytesLabel, type AttemptRow, type TaskEvent } from '../types'
-import { ChartTitle, DRAWN, HatchDef, drawnClass, useHatchId } from './parts'
+import { ChartTitle, DRAWN, HatchDef, VALUE_LABEL_GAP_PX, drawnClass, useHatchId } from './parts'
 import { reading, valueExtent, type ChartPoint, type Extent } from './series'
 import { StepLine, ValueAxis, linearScale, type LinearScale } from './TimeSeries'
 
@@ -246,7 +246,7 @@ function PeakPlot({
           <title>{`at exit — ${bytesLabel(exit.value)}`}</title>
         </path>
       )}
-      <ValueAxis side="left" scale={y} extent={vExtent} format={bytesLabel} minGapPx={14} />
+      <ValueAxis side="left" scale={y} extent={vExtent} format={bytesLabel} minGapPx={VALUE_LABEL_GAP_PX} />
       <ValueAxis
         side="bottom"
         top={innerH}

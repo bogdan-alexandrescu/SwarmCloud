@@ -42,6 +42,17 @@ export function HatchDef({ id }: { id: string }) {
   )
 }
 
+/**
+ * HOW CLOSE TWO LABELS ON A VERTICAL VALUE SCALE MAY SIT, baseline to
+ * baseline, in px. A --t-micro digit is about 9px tall, so 14 leaves about 5px
+ * between two glyphs. Stated once: `ValueAxis`'s left axes (AttemptPhases,
+ * PeakMemory) pass it as `minGapPx`, and the outcome ledger's gutter keeps it
+ * by the same rule -- the Timeline's decided lane printed its "0" 4-9px into
+ * its failed max without it (epic #222). A horizontal axis needs a gap as wide
+ * as its labels, so those pass their own.
+ */
+export const VALUE_LABEL_GAP_PX = 14
+
 /** The chart's title, above the plot. Also the figure's accessible name. */
 export function ChartTitle({ children }: { children: string }) {
   return <p className="ctl-chart-title">{children}</p>

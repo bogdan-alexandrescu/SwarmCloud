@@ -528,8 +528,10 @@ describe('Workflows that failed, when the block does not apply', () => {
 
 /**
  * The gap the inspector charts' vertical value axes keep between two labels
- * (`ValueAxis`, `minGapPx={14}` in AttemptPhases and PeakMemory). A --t-micro
- * digit is ~9px tall, so 14px baseline to baseline leaves ~5px between glyphs.
+ * (`ValueAxis`'s `minGapPx` in AttemptPhases and PeakMemory, stated once as
+ * `VALUE_LABEL_GAP_PX` in charts/parts.tsx). A --t-micro digit is ~9px tall,
+ * so 14px baseline to baseline leaves ~5px between glyphs. Written here as the
+ * number, not imported: a test that read the constant would pass with it at 0.
  */
 const LABEL_GAP = 14
 

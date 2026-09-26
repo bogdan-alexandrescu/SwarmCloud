@@ -25,7 +25,9 @@
 //      22 Sep can no longer flatten that day's 8 failures. Three marks, all in
 //      TS-4's cancel vocabulary and none with a hue (a cancel is not a
 //      verdict), stacked up from the axis:
-//        requested (and other)  TS-4's flat "ended" bars -- a cancel;
+//        requested (and other)  TS-4's flat "ended" bars -- a cancel -- whose
+//                               pattern starts at the baseline, so a mark
+//                               always stands on one whole bar;
 //        after a cancel         the flat bars inside a 1px outline -- a
 //                               cascade (the outline) that began at a cancel
 //                               somebody asked for (the bars);
@@ -110,7 +112,7 @@ import {
   type Outcomes,
 } from '../outcomes'
 import { Mark } from '../primitives'
-import { HatchDef, useHatchId } from './parts'
+import { HatchDef, VALUE_LABEL_GAP_PX, useHatchId } from './parts'
 
 /**
  * The three drawings. `w` is the nominal width; `floor` the narrowest a
@@ -273,6 +275,39 @@ function scalesOf(buckets: readonly OutcomeBucket[]): Scales {
 
 const r1 = (v: number) => Math.round(v * 10) / 10
 
+/** One label of the scale column: its text and its baseline. */
+interface GutterTick {
+  key: string
+  text: string
+  y: number
+}
+
+/**
+ * THE SCALE COLUMN'S LABELS NEVER PRINT INTO EACH OTHER (epic #222). The
+ * decided lane's zero sits wherever the split puts it -- near the floor when
+ * successes outnumber failures, near the top the other way -- and the gutter
+ * drew its "0" and both maxima whatever the distance: in the QA of #197 the
+ * "0" and the failed max "7" overprinted by 4px at 1440 and 9px at 390.
+ *
+ * THE RULE IS `ValueAxis`'s (TimeSeries.tsx), WITH ITS GAP: labels are kept in
+ * `ranked` order, and one within VALUE_LABEL_GAP_PX of a label already kept is
+ * dropped, never nudged off the value it names. The caller ranks the rate
+ * lane's fixed ticks first, then the decided lane's zero -- the value both
+ * sides hang from, ValueAxis's `keep` -- then its top, then its floor. So what
+ * gives way is the SMALLER side's max, next to the zero; the larger side's
+ * sits at least half the lane away. Both sides share one scale (`k2`), so the
+ * larger max still sets it, and the readout, the column's name and the Table
+ * print every count exactly.
+ */
+function gutterTicks(ranked: readonly GutterTick[]): GutterTick[] {
+  const kept: GutterTick[] = []
+  for (const t of ranked) {
+    if (kept.some((k) => Math.abs(k.y - t.y) < VALUE_LABEL_GAP_PX)) continue
+    kept.push(t)
+  }
+  return kept
+}
+
 /**
  * The lane labels, by drawing: the narrow one cannot carry the long form.
  *
@@ -367,6 +402,16 @@ function Drawing({
   const zeroY = span2 === 0 ? L2.y + L2.h / 2 : L2.y + scales.up * k2
   const k3 = scales.cancelled === 0 ? 0 : L3.h / scales.cancelled
   const k4 = scales.flow === 0 ? 0 : L4.h / scales.flow
+  // Lane 3's baseline, which every mark in it stands on.
+  const base3 = L3.y + L3.h
+
+  // The scale column's labels, in the order they are kept (`gutterTicks`).
+  const ticks = gutterTicks([
+    ...[1, 0.5, 0].map((t) => ({ key: `r${t}`, text: `${t * 100}%`, y: ry(t) + 4 })),
+    { key: 'zero', text: '0', y: r1(zeroY) + 4 },
+    ...(scales.up > 0 ? [{ key: 'up', text: String(scales.up), y: L2.y + 8 }] : []),
+    ...(scales.down > 0 ? [{ key: 'down', text: String(scales.down), y: L2.y + L2.h }] : []),
+  ])
 
   // The rate line's runs: consecutive buckets with a rate. Unread and
   // nothing-decided buckets break it; the current bucket joins by a dash.
@@ -407,22 +452,11 @@ function Drawing({
         aria-hidden="true"
         focusable="false"
       >
-        {[1, 0.5, 0].map((t) => (
-          <text key={`r${t}`} className="ol-tick" x={g.left - 6} y={ry(t) + 4} textAnchor="end">{`${t * 100}%`}</text>
+        {ticks.map((t) => (
+          <text key={t.key} className="ol-tick" x={g.left - 6} y={t.y} textAnchor="end">
+            {t.text}
+          </text>
         ))}
-        <text className="ol-tick" x={g.left - 6} y={r1(zeroY) + 4} textAnchor="end">
-          0
-        </text>
-        {scales.up > 0 && (
-          <text className="ol-tick" x={g.left - 6} y={L2.y + 8} textAnchor="end">
-            {scales.up}
-          </text>
-        )}
-        {scales.down > 0 && (
-          <text className="ol-tick" x={g.left - 6} y={L2.y + L2.h} textAnchor="end">
-            {scales.down}
-          </text>
-        )}
       </svg>
 
       {/* THE LANE LABELS, pinned over the plot's left edge on the page's ground. */}
@@ -454,9 +488,19 @@ function Drawing({
           >
             <HatchDef id={hatch} />
             <defs>
-              {/* TS-4's flat "ended" bars: a 3px bar every 5px, anchored to the page so columns line up. */}
-              <pattern id={flat} width={4} height={5} patternUnits="userSpaceOnUse">
-                <rect className="ol-flat" x={0} y={0} width={4} height={3} />
+              {/* TS-4's flat "ended" bars: a 3px bar every 5px, ANCHORED TO LANE 3's BASELINE,
+                  so every "requested (and other)" mark stands on one whole bar and the columns
+                  still line up, since they share the baseline. From the SVG's origin the bars
+                  fell where they fell: the baseline is y ≡ 1 (mod 5) in all three drawings, so a
+                  3px mark painted its bottom row alone, against the baseline rule (epic #222). */}
+              <pattern
+                id={flat}
+                y={base3 - FLAT_BAR}
+                width={4}
+                height={FLAT_PERIOD}
+                patternUnits="userSpaceOnUse"
+              >
+                <rect className="ol-flat" x={0} y={0} width={4} height={FLAT_BAR} />
               </pattern>
             </defs>
 
@@ -557,7 +601,7 @@ function Drawing({
               const [flatH, cascH, afterH] = laneThreeStack(flatN, cascN, afterN, k3, L3.h)
               // The stack's edges, rounded ONCE each, so neighbouring marks
               // share an edge exactly and none passes the lane's top or base.
-              const e0 = L3.y + L3.h
+              const e0 = base3
               const e1 = r1(e0 - flatH)
               const e2 = r1(e0 - flatH - cascH)
               const e3 = r1(e0 - flatH - cascH - afterH)
