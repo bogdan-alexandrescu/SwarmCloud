@@ -415,3 +415,149 @@ def run_child(
         child.mark_timed_out()
         child.terminate(grace_seconds, reason="timeout")
     return child.finish()
+
+
+# ---------------------------------------------------------------------------
+# Pre-publish reap -- nothing the agent started is alive when the token is used
+# ---------------------------------------------------------------------------
+#
+# WHY THIS EXISTS. The runner is started `start_new_session=True`, and stopping
+# it signals its process GROUP (`ChildProcess.terminate` -> `killpg`). That
+# reaps the runner and every helper that stayed in its group -- but NOT a
+# process the agent itself put in a different group. A double fork plus
+# `setsid()`, or `nohup ... & disown`, moves a child into its own session, and
+# such a process survives the group kill and is re-parented to PID 1 (tini).
+#
+# The agent and the worker run as the SAME uid (`images/agent-runtime-base`:
+# `USER swarm:swarm`; workspace.py: `ws.private` "is not a permission
+# boundary"). So a surviving agent process could, in the window the publish path
+# holds the tenant credential, watch `ws.private` and drop an `insteadOf` into
+# the freshly `mkdtemp`'d publish repository before the push (a TOCTOU the
+# unpredictable name alone does not close, because the watcher does not need to
+# predict the name -- only to notice the directory appear), or read the
+# short-lived 0600 credential file while the push runs. Either hands it the
+# tenant's PAT.
+#
+# The guarantee this restores: when the worker runs its first git command that
+# carries the token, no process the agent started is alive. `os.kill(-1, sig)`
+# from a non-PID-1 process signals every process this uid may signal EXCEPT
+# itself and PID 1 (POSIX kill(2)) -- i.e. tini stays, the worker stays, and
+# every escaped agent process dies. tini reaps the corpses. The verify then
+# reads /proc and refuses to publish if anything the uid owns is still alive,
+# so a race that a kill missed becomes a refusal, never a leak.
+#
+# By the time this runs the runner has been reaped (`_child_ended`), the
+# sampler thread is stopped, and the worker's own git helpers are synchronous
+# (`run_child` waits) -- so there is no worker-owned subprocess to protect, and
+# the worker's background workers (sampler, signal-log, DNS preflight) are
+# THREADS, which share the worker's pid and never appear as a separate /proc
+# entry. A liveness/readiness exec probe (v2 GKE) could be mid-run and get
+# killed; its failureThreshold is 3, so one lost probe is harmless.
+
+
+def _sigkill_all_other_processes() -> None:
+    """SIGKILL every process this uid may signal except PID 1 and this process.
+
+    `os.kill(-1, sig)` is the single-syscall form: the kernel delivers to the
+    whole set at once, which is why a fork racing the kill is the only gap, and
+    the caller's retry closes it. `ESRCH` means there was nothing else to
+    signal, which is success, not failure.
+    """
+    try:
+        os.kill(-1, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+
+
+def _live_foreign_pids(
+    *, proc_root: str = "/proc", uid: int | None = None, self_pid: int | None = None
+) -> tuple[int, ...]:
+    """PIDs of live processes this uid owns, other than PID 1 and this process.
+
+    Reads `/proc/<pid>/status`: a process counts only when its REAL uid matches
+    ours (kernel threads and PID 1, which may run as root, are skipped) and it
+    is not a zombie -- a zombie has been killed and is merely awaiting a reap by
+    tini, so counting it would refuse a publish over a corpse. `/proc` entries
+    that vanish mid-scan are a process exiting under us and are skipped.
+
+    `proc_root`, `uid` and `self_pid` are injectable so the logic is testable
+    against a fabricated /proc without spawning anything.
+    """
+    uid = os.getuid() if uid is None else uid
+    me = os.getpid() if self_pid is None else self_pid
+    survivors: list[int] = []
+    try:
+        entries = os.listdir(proc_root)
+    except OSError:
+        return ()
+    for entry in entries:
+        if not entry.isdigit():
+            continue
+        pid = int(entry)
+        if pid == 1 or pid == me:
+            continue
+        real_uid: int | None = None
+        state = ""
+        try:
+            with open(f"{proc_root}/{entry}/status", encoding="utf-8", errors="replace") as fh:
+                for line in fh:
+                    if line.startswith("Uid:"):
+                        # `Uid:\treal\teffective\tsaved\tfsuid`
+                        parts = line.split()
+                        if len(parts) >= 2:
+                            real_uid = int(parts[1])
+                    elif line.startswith("State:"):
+                        # `State:\tR (running)` -- the code letter is what matters.
+                        state = line.split(None, 2)[1] if len(line.split(None, 2)) >= 2 else ""
+                    if real_uid is not None and state:
+                        break
+        except (OSError, ValueError):
+            continue  # vanished, or a line we could not parse; not a survivor we can act on
+        if real_uid != uid:
+            continue
+        if state == "Z":  # zombie: already dead, tini will reap it
+            continue
+        survivors.append(pid)
+    return tuple(survivors)
+
+
+def reap_foreign_processes(
+    *,
+    logger: Any,
+    killer: Any = None,
+    lister: Any = None,
+    attempts: int = 20,
+    delay: float = 0.05,
+) -> tuple[int, ...]:
+    """Kill every foreign process this uid owns, then verify none survive.
+
+    Returns `()` when the container holds only PID 1 and this process after the
+    reap; otherwise the PIDs still alive after `attempts` kill-and-check rounds,
+    which the caller turns into a refusal to publish. Never raises: a reap that
+    cannot prove the container is clean must fail closed at the call site, not
+    crash the teardown path.
+
+    `killer` and `lister` are injectable so a unit test can exercise the
+    orchestration -- and so no test ever runs the real `os.kill(-1, SIGKILL)`,
+    which in a shared test process would take the test runner down with it.
+    """
+    kill = killer or _sigkill_all_other_processes
+    live = lister or _live_foreign_pids
+    kill()
+    survivors = live()
+    tries = 0
+    while survivors and tries < attempts:
+        time.sleep(delay)
+        kill()  # a process mid-fork when the last kill landed is caught now
+        survivors = live()
+        tries += 1
+    if survivors:
+        logger.error(
+            "processes the agent started are still alive after the pre-publish reap; "
+            "refusing to publish so the tenant credential is never in hand while "
+            "agent code can run",
+            surviving_pids=list(survivors),
+        )
+    else:
+        logger.info("pre-publish reap complete; no foreign process remains")
+    return tuple(survivors)
