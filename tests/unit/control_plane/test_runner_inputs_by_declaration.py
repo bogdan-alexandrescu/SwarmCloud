@@ -241,6 +241,57 @@ def test_a_profile_that_has_not_declared_its_inputs_is_bounded_by_size_only(clie
     assert response.status_code == 201, response.text
 
 
+# -- one rule, one answer ------------------------------------------------------------
+
+#: Inputs whose answer differs by profile: a key only the mock declares, one
+#: only the browser runner reads, one only the generic runner reads, and the
+#: key the CLI runners would pass as `--model`.
+ONE_ANSWER_INPUTS = {
+    "the prompt alone": {"prompt": "x"},
+    "a mock knob": {"prompt": "x", "sleep_seconds": 1},
+    "a browser url": {"prompt": "x", "url": "https://example.com"},
+    "a generic command": {"prompt": "x", "command": "pytest"},
+    "a model": {"prompt": "x", "model": "x"},
+}
+
+
+@pytest.mark.parametrize("sent", ONE_ANSWER_INPUTS)
+@pytest.mark.parametrize("name", sorted(n for n, p in RUNNER_PROFILES.items() if p.available))
+def test_the_api_and_the_shared_rule_give_one_answer_for_every_profile(client, db, name, sent):
+    """THE RULE HAS ONE HOME, `swarm_common.profiles.check_inputs`, which the
+    API and the bridge both call. The review of #213 found the API deciding the
+    not-declared-yet case for itself, ahead of the call: the shared function
+    refused every key for `browser` and `generic` while the API accepted every
+    key, so a caller that trusted the one rule got the opposite of the API's
+    answer. Whatever a profile declares, the two answer alike."""
+    from swarm_common.profiles import InputRefused, check_inputs
+
+    input = ONE_ANSWER_INPUTS[sent]
+    try:
+        check_inputs(RUNNER_PROFILES[name], {k: v for k, v in input.items() if k != "prompt"})
+        rule = 201
+    except InputRefused:
+        rule = 422
+    response = _task(client, name, input)
+    assert response.status_code == rule, (
+        f"the shared rule answers {rule} for {name} with {sent}, the API "
+        f"{response.status_code}: {response.text}"
+    )
+    assert bool(_tasks(db)) == (rule == 201)
+
+
+def test_the_shared_rule_is_where_not_declared_yet_is_decided():
+    """`inputs is None` means NOT DECLARED YET (open with the owner on #218),
+    and the input is then bounded by its size alone -- which the caller that
+    measures the size decides, not this function. So the shared rule hands it
+    back unchecked, and no caller has to catch the None before asking."""
+    from swarm_common.profiles import check_inputs
+
+    undeclared = dataclasses.replace(RUNNER_PROFILES["mock"], inputs=None)
+    raw = {"url": "https://example.com", "actions": [{"type": "screenshot"}], "command": "pytest"}
+    assert check_inputs(undeclared, raw) == raw
+
+
 def test_the_api_reads_the_catalogue_and_keeps_no_table_of_its_own(client, monkeypatch):
     """ONE SOURCE. Change the declaration and the API's answer changes with it:
     a key the catalogue starts declaring is accepted, and one it stops

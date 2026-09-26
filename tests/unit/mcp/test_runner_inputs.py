@@ -483,3 +483,74 @@ def test_every_input_the_bridge_or_the_skill_shows_is_one_that_is_declared():
         assert shown, f"{where} shows no example any more; this test reads nothing there"
         undeclared = sorted(shown - set(_declared("mock")))
         assert not undeclared, f"{where} shows {undeclared} as inputs, which mock does not declare"
+
+
+# -- the profiles whose inputs are not declared yet (#218) ------------------------
+
+#: The profiles the frozen catalogue has not declared inputs for yet
+#: (`inputs is None`). What they should declare is open with the owner on #218.
+_UNDECLARED = sorted(name for name, p in RUNNER_PROFILES.items() if p.inputs is None)
+
+
+@pytest.mark.parametrize("name", _UNDECLARED or ["<none>"])
+def test_the_bridge_sends_nothing_to_a_profile_that_has_not_declared_yet(name):
+    """THE BRIDGE'S OWN SEND POLICY, not a second copy of the rule. The API
+    bounds what a caller sends these by size alone; the bridge sends them
+    nothing, because it sends only what a declaration names and neither has
+    one. Letting `swarm_dispatch` send a browser task's `actions` would be a
+    new plugin capability, which is #218's third question for the owner."""
+    if name == "<none>":
+        pytest.skip("every profile declares its inputs now; #218 is settled")
+    with pytest.raises(SwarmError) as caught:
+        workflows.build_steps(
+            [{"step_id": "a", "runner_profile": name, "prompt": "x",
+              "inputs": {"url": "https://example.com"}}]
+        )
+    message = str(caught.value)
+    assert name in message, message
+    assert "yet" in message, "the refusal says the profile has not declared, not that it takes nothing"
+
+
+def _inputs_paragraphs() -> dict[str, str]:
+    """The paragraph each of the plugin's two texts gives to runner inputs."""
+    skill = (_REPO / "plugin" / "skills" / "delegate" / "SKILL.md").read_text()
+    readme = (_REPO / "plugin" / "README.md").read_text()
+    found = {
+        "delegate SKILL.md": [p for p in re.split(r"\n\s*\n", skill) if p.startswith("`inputs`")],
+        "plugin/README.md": [
+            p for p in re.split(r"\n\s*\n", readme) if p.startswith("**Beside the prompt")
+        ],
+    }
+    for where, paragraphs in found.items():
+        assert len(paragraphs) == 1, f"{where}'s runner-inputs paragraph moved"
+    return {where: " ".join(paragraphs[0].split()) for where, paragraphs in found.items()}
+
+
+def test_the_plugin_says_which_profiles_the_api_bounds_by_size_alone():
+    """The review of #213: the delegate skill said an undeclared key is refused
+    "by the bridge, and by the API for every other caller", and the README that
+    "the API refuses an undeclared key from every caller" and that "every other
+    profile declares none and takes none". For `browser` and `generic`, whose
+    inputs are not declared yet, the API takes any key under the size limit, so
+    an operator who read either believed those two were policed. Each text
+    names every profile not declared yet and says it is bounded by size; the
+    claims the review quoted do not come back while one exists."""
+    for where, text in _inputs_paragraphs().items():
+        for name in _UNDECLARED:
+            assert f"`{name}`" in text, (
+                f"{where} does not name {name}, whose inputs are not declared yet"
+            )
+        if _UNDECLARED:
+            assert "size" in text, f"{where} does not say what bounds {_UNDECLARED}"
+            for claim in (
+                "for every other caller",
+                "from every caller",
+                "Every other profile declares none",
+            ):
+                assert claim not in text, (
+                    f"{where} says {claim!r}, which is false for {_UNDECLARED}"
+                )
+        else:
+            assert "not declared yet" not in text, (
+                f"{where} still says a profile has not declared its inputs; none is left"
+            )

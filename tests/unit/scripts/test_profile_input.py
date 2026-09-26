@@ -73,15 +73,13 @@ def test_every_profile_gets_an_object_carrying_the_run_id(profile):
 def test_every_profile_input_is_one_its_profile_declares(profile):
     """The suites submit through this against a live platform, where a key the
     catalogue does not declare is a 422 `invalid_input` and the run proves
-    nothing. Checked with the rule the API applies, not a copy of it; a
-    profile whose inputs are not declared yet is bounded by size alone."""
+    nothing. Checked with the rule the API applies, not a copy of it, and for
+    every profile: what a profile whose inputs are not declared yet takes is
+    that rule's to say too, not a special case here."""
     from swarm_common.profiles import check_inputs
 
-    catalogued = RUNNER_PROFILES[profile]
     body = profile_input(profile, "run-123")
-    if catalogued.inputs is None:
-        return
-    check_inputs(catalogued, {k: v for k, v in body.items() if k != "prompt"})
+    check_inputs(RUNNER_PROFILES[profile], {k: v for k, v in body.items() if k != "prompt"})
 
 
 def test_the_browser_input_is_one_the_browser_runner_accepts():
