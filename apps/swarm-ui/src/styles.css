@@ -649,7 +649,6 @@ body {
 .ctl-section-q,
 .ctl-ref-lead,
 .ctl-empty > p,
-.chart-legend,
 .node-why,
 .muted.small,
 .help-topic p,
@@ -3912,95 +3911,16 @@ a.copy { display: inline-block; text-decoration: none; }
 /* Activity                                                                  */
 /* ------------------------------------------------------------------------ */
 
-/* ON THE SCALE (TS-21): the gap and margin were 16 and 14 and the padding
-   10/12 -- three values between steps. Each moves to the nearest step, and the
-   padding to the compact pair a toolbar panel uses (s2 above and below, s3 at
-   the sides), which keeps the ink ~11px off the rule. */
-.window-bar {
-  position: sticky; top: 0; z-index: 5;
-  display: flex; align-items: baseline; gap: var(--ctl-s3); flex-wrap: wrap;
-  margin-bottom: var(--ctl-s3); padding: var(--ctl-s2) var(--ctl-s3);
-  border: 1px solid var(--line); border-radius: var(--radius);
-  background: var(--surface);
-}
-.wb-span strong { font-size: var(--t-body); }
-/* The span the rows actually covered, never a claimed date range. */
-.wb-detail { display: block; margin-top: 2px; font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
-.wb-controls { margin-left: auto; display: flex; gap: 12px; flex-wrap: wrap; font-size: var(--t-body); color: var(--text-dim); }
-.wb-controls label { display: inline-flex; align-items: center; gap: 6px; }
-.wb-controls select {
-  padding: 3px 7px; border: 1px solid var(--line); border-radius: 6px;
-  background: var(--bg); color: var(--text); font-size: var(--t-body);
-}
-/* A PARTIAL WINDOW, DRAWN. The mark is dashed on the edge the missing rows
-   would have been on; the note names the window every figure below is computed
-   over; the link is the argument. Twenty words of sentence became three
-   elements, one of which needs no reading at all. */
-.wb-more {
-  flex-basis: 100%;
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: var(--ctl-s1) var(--ctl-s2);
-  margin: var(--ctl-s2) 0 0;
-  font-style: normal;
-}
-.wb-more-note { color: var(--text-dim); }
-/* `.wb-more a` is a `.ctl-link` branch now (CH-5, sec 9b). */
-
-/* §B4.3 move 3: CAP THE BARS, AND LEFT-ALIGN THEM.
-   `.chart .col { flex: 1 }` divided the full content width between the
-   columns, so a seven-day window on a 1600px screen drew seven bars 220px
-   wide. A 220px-wide bar is not a more precise measurement than a 60px one --
-   it is the same number, drawn larger, and at that width the eye stops reading
-   the row as a series. Capping at 72px and packing left keeps the series
-   readable and hands the leftover width back to the page. */
-.chart {
-  display: flex; align-items: flex-end; justify-content: flex-start; gap: 3px;
-  height: 150px; padding-top: 8px;
-  overflow-x: auto; -webkit-overflow-scrolling: touch;
-  /* Left-aligned and capped. `flex: 1` on the columns drew two ~534px-wide,
-     120px-tall bars for seven tasks; widening the page made that worse, not
-     better, so the cap lands with the width. */
-  justify-content: flex-start;
-}
-.chart .col {
-  display: flex; flex-direction: column; align-items: center; gap: 4px;
-  min-width: 26px; flex: 1 1 26px; max-width: 72px;
-}
-/* THE DAY BOUNDARY ON AN HOURLY AXIS: the first column of each day after the
-   first carries a rule down its left edge, the interior-separator tone, so
-   four days of hours read as four days even where a label was thinned out.
-   `--ctl-s1` inside it, so the bar and the date clear the rule rather than
-   touching it. */
-.chart .col.is-day-start { border-left: 1px solid var(--line-soft); padding-left: var(--ctl-s1); }
-/* THE PICKED COLUMN (TS-9): the column the legend is reading out, backed by the
-   hueless selection step (§1.3) -- a surface step, never the accent. A column
-   is one tab stop of a roving set, so it takes the one ring the accent is
-   allowed; 1px of offset keeps the ring inside the 3px gap and the scroller. */
-.chart .col.is-picked { background: var(--surface-2); border-radius: var(--ctl-radius-sm); }
-.chart .col:focus-visible { outline: 2px solid var(--info); outline-offset: 1px; }
-/* THE CUE THAT THERE IS MORE (TS-3). The chart opens at its newest end, so on
-   a phone the older buckets are off the LEFT edge -- and a scroller whose
-   scrollbar the platform does not paint gives no sign of them. The phone
-   rail's fade (`--rail-fade`) is the precedent: a mask over the edge, applied
-   only while something is actually hidden there (`has-older` is set from
-   `scrollLeft`), because a permanent fade would dim a bucket for no reason. */
-.chart.has-older {
-  -webkit-mask-image: linear-gradient(to right, transparent 0, #000 var(--ctl-s5));
-  mask-image: linear-gradient(to right, transparent 0, #000 var(--ctl-s5));
-}
-/* EVERY THIRD HOUR ON A PHONE (TS-3). The chart draws the union of the wide
-   axis's labels and the phone's (`axisLabels` / `phoneAxisLabels`), and each
-   set's extras are hidden at the other width. `visibility`, not `display`, so
-   a hidden label keeps its line and the bars stay on one baseline. */
-.col-label.is-phone-only { visibility: hidden; }
-@media (max-width: 560px) {
-  .col-label.is-wide-only { visibility: hidden; }
-  .col-label.is-phone-only { visibility: visible; }
-}
-.stackcol { display: flex; flex-direction: column-reverse; justify-content: flex-start; width: 100%; height: 120px; }
-.stackcol > i { display: block; width: 100%; min-height: 0; }
+/* THE ROW-WINDOW TIMELINE'S RULES ARE DELETED (#185, the owner's decision 7,
+   2026-09-25). `.window-bar` and its `.wb-*` parts, `.chart` and `.chart .col`
+   with their day-start, pick, focus and `has-older` fade, `.col-label` and its
+   wide and phone thinning, `.stackcol`, and `.chart-legend` with its `.k` keys
+   and `.cl-*` readout were drawn by the Timeline that read a window of rows.
+   The outcome ledger replaced it and renders none of them: its toolbar is
+   `.ol-*`, its fade is `.ol-plot.has-older`, its pick is `.ol-sel` and
+   `.ol-col:focus-visible`, and its readout is `.ol-legend`. The tests that
+   read these rules out of the sheet were re-pointed at the ledger's own rules
+   in the same change, so no claim they made is left unheld. */
 /* FOUR OUTCOMES, FOUR FORMS, NOT FOUR HUES (TS-4). They were three flat fills
    and one hatch, told apart by hue alone: failed against cancelled measured
    1.01:1 in the dark theme and succeeded against cancelled 1.08:1 in the
@@ -4014,7 +3934,12 @@ a.copy { display: inline-block; text-decoration: none; }
                                       successes does
      cancelled  flat bars             CH-22's neutral "ended" mark, stacked:
                                       one 3px bar per step, grey, no verdict
-     open       the 45° hatch         unchanged: not an outcome yet
+     open       the 45° hatch         retired with the row window (#185): the
+                                      ledger draws only work that ended
+
+   A CANCEL'S CANCELS are the flat bars inside a 1px `--text-dim` outline:
+   `.ol-k.is-after-cancel` takes the flat bars here and the outline beside
+   `.ol-k.is-after` (#185, decision 2).
 
    THE FAILED RULE IS DRAWN IN THE PANEL'S OWN GROUND, `--surface`: a 2px cut
    down the segment's left edge. It has to show against solid `--bad`, and
@@ -4026,10 +3951,8 @@ a.copy { display: inline-block; text-decoration: none; }
    `encoding.hues.test.ts` holds the rule at 3:1 on the fill in both themes.
 
    EVERY SEGMENT AND ITS LEGEND KEY ARE ONE RULE, as TS-22 made "still open":
-   one declaration, two selectors, so a key cannot drift from its bar. The
+   one declaration, several selectors, so a key cannot drift from its bar. The
    colours are unchanged -- CH-17's hue ruling does not re-rule chart fills. */
-.stackcol > i.succeeded,
-.chart-legend .k.succeeded,
 .ol-k.is-ok,
 .ol-meter > .ol-seg.succeeded { background: var(--ok); }
 /* The workflow row's outcome composition reuses these two forms by selector
@@ -4037,8 +3960,6 @@ a.copy { display: inline-block; text-decoration: none; }
    row's failed and dead-lettered segments are this failed rule, its cancelled
    segment the flat bars below. Its succeeded segment is not `--ok` -- see
    `.wf-seg.succeeded` in the Workflows block. */
-.stackcol > i.failed,
-.chart-legend .k.failed,
 .wf-meter > .wf-seg.failed,
 .wf-meter > .wf-seg.dead-lettered,
 .ol-k.is-bad,
@@ -4046,40 +3967,18 @@ a.copy { display: inline-block; text-decoration: none; }
   background: var(--bad);
   box-shadow: inset 2px 0 0 var(--surface);
 }
-.stackcol > i.cancelled,
-.chart-legend .k.cancelled,
 .wf-meter > .wf-seg.cancelled,
 .ol-k.is-ended,
+.ol-k.is-after-cancel,
 .ol-meter > .ol-seg.cancelled {
   background: repeating-linear-gradient(to bottom, var(--text-faint) 0 3px, transparent 3px 5px);
 }
-/* Hatched, so "still open" never reads as an outcome.
-   THE LEGEND'S KEY IS THE SAME RULE, NOT A SECOND DRAWING OF IT (TS-22). The
-   key was a flat `--surface-2` square with a border while the segment it names
-   was hatched, so the one entry in the legend that had to be matched by its
-   PATTERN could only be matched by elimination. One declaration, two
-   selectors: the key cannot drift from the bar again. */
-.stackcol > i.open,
-.chart-legend .k.open {
-  background: repeating-linear-gradient(
-    45deg, var(--surface-2), var(--surface-2) 3px, var(--line) 3px, var(--line) 6px
-  );
-}
-.col-label { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-faint); white-space: nowrap; }
-.chart-legend { margin: 10px 0 0; font-size: var(--t-micro); color: var(--text-faint); line-height: var(--lh-micro); }
-.chart-legend .k { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin: 0 4px 0 10px; vertical-align: baseline; }
-/* Every key is drawn by its segment's rule above (TS-22, TS-4). */
-/* THE BASIS, FUSED TO THE LEGEND rather than trailing it as a clause. "stacks
-   bucket on completed_at; a task's submission time is a different question"
-   was a sentence explaining an axis; this is the axis saying it. */
-.chart-legend .cl-basis { margin-left: var(--ctl-s3); }
-/* THE READOUT (TS-9). The counts are the figures this legend now carries, so
-   they are ink, and tabular so a swap from the window to one column does not
-   jitter the line. The picked column's name leads, in ink too; `all` is a
-   `.sbf-mini` text button and needs only its gap. */
-.chart-legend .cl-n { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
-.chart-legend .cl-at { color: var(--text); }
-.chart-legend .cl-all { margin-left: var(--ctl-s2); }
+/* "STILL OPEN" HAS NO SEGMENT TO DRAW ANY MORE. Its 45° hatch was a rule for
+   `.stackcol > i.open` and its `.chart-legend` key, both the row-window
+   Timeline's, and both deleted with it (#185, decision 7). The ledger places
+   work by the bucket it ENDED in, so nothing it draws is open: open work is
+   the "Not finished yet" card's counts, in words. The hatch as "not read" is
+   `--ctl-hatch`, unchanged. */
 
 /* `.tiles`, `.tile`, `.t-value`, `.t-sub` and the `.tile.blocked` family are
    gone with the boxed tiles they drew (TS-11): the Timeline's figures are the
@@ -4103,10 +4002,6 @@ a.copy { display: inline-block; text-decoration: none; }
 .sr-name { font: var(--t-body)/var(--lh-body) var(--mono); color: var(--text-dim); }
 .sr-n { font: var(--t-body)/var(--lh-body) var(--mono); text-align: right; font-variant-numeric: tabular-nums; }
 
-@media (max-width: 640px) {
-  .window-bar { position: static; }
-  .wb-controls { margin-left: 0; }
-}
 
 /* ---- liveness badge ---- */
 /* The dot is never the only carrier of meaning: the word is always present,
@@ -4562,8 +4457,9 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
   --ctl-radius-lg: 14px;
 
   /* THE COLOUR OF "NOBODY MEASURED THIS", AND IT IS ITS OWN COLOUR NOW.
-     It was `var(--text-faint)` -- the colour the Activity chart paints
-     CANCELLED with (`.stackcol > i.cancelled`), and the colour of every
+     It was `var(--text-faint)` -- the colour the Activity chart painted
+     CANCELLED with (then `.stackcol > i.cancelled`; the flat bars of
+     `.ol-meter > .ol-seg.cancelled` now), and the colour of every
      caption and section label on the screen. So an outcome and an absence
      were the same paint exactly, which design-system.md §5.5 and the audit
      both name as the one collapse this product exists to prevent.
@@ -5145,8 +5041,8 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
    `text-underline-offset: 3px` keeps it off the descenders.
 
    NOT YET UNIVERSAL, and the report says so plainly rather than claiming it.
-   `.ov-link`, `.wb-more a`, `.node-links a` and `.art-md a` are four
-   screen-private link treatments that each paint `--info` (a fifth,
+   `.ov-link`, `.wb-more a`, `.node-links a` and `.art-md a` were four
+   screen-private link treatments that each painted `--info` (a fifth,
    `.tile.blocked .t-sub a`, went with the Timeline's boxed tiles, TS-11), and
    folding them into this primitive means editing four screens --
    which is the next phase's job, not this one's. What this pass ships is the
@@ -5156,7 +5052,8 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
    AND THE LIST GREW BY FIVE (CH-5, the 2026-09-25 QA pass). Five more link
    treatments were painting `--info` under rules of their own: the summary
    line's "refresh" on all fourteen Screen routes, the dock's two tool links,
-   the note links in `.ctl-panel-note`, Timeline's `.wb-more` link and the
+   the note links in `.ctl-panel-note`, Timeline's `.wb-more` link (deleted
+   with the row window it widened, #185 decision 7) and the
    workflow inspector's "run ->". They are branches of THIS rule rather than
    five restatements of it, so a change to the primitive reaches them, and the
    rules that painted them blue are deleted where they stood -- an equal-
@@ -5174,7 +5071,6 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
 .sub button,
 .ctl-dock-tools a,
 .ctl-panel-note a,
-.wb-more a,
 a.ctl-metric .ctl-metric-label,
 .wf-inspect-run {
   color: var(--text);
@@ -5188,7 +5084,6 @@ a.ctl-metric .ctl-metric-label,
 .sub button:not(:disabled):hover,
 .ctl-dock-tools a:hover,
 .ctl-panel-note a:hover,
-.wb-more a:hover,
 a.ctl-metric:hover .ctl-metric-label,
 a.ctl-metric:focus-visible .ctl-metric-label,
 .wf-inspect-run:hover {
@@ -5200,7 +5095,6 @@ a.ctl-metric:focus-visible .ctl-metric-label,
 .sub button:focus-visible,
 .ctl-dock-tools a:focus-visible,
 .ctl-panel-note a:focus-visible,
-.wb-more a:focus-visible,
 .wf-inspect-run:focus-visible {
   color: var(--info);
   outline: 2px solid var(--info);
@@ -11616,7 +11510,6 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 
   .limit-edit input,
   .limit-edit button,
-  .wb-controls select,
   .sbf-go {
     min-height: 44px;
   }
@@ -11865,9 +11758,12 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 .ol-m-ok { fill: var(--ok); }
 .ol-m-bad { fill: var(--bad); }
 .ol-m-cut { fill: var(--surface); }
-/* Lane 3: the flat "ended" bars, and the outline a failure's cancels take. */
+/* Lane 3: the flat "ended" bars (a cancel), the bare outline a failure's
+   cancels take, and the two together for a cancel's cancels -- the bars
+   inside the outline (#185, decision 2). No hue on any of the three. */
 .ol-flat { fill: var(--text-faint); }
-.ol-m-after { fill: none; stroke: var(--text-dim); stroke-width: 1; }
+.ol-m-after,
+.ol-m-after-cancel { fill: none; stroke: var(--text-dim); stroke-width: 1; }
 /* Lane 4: counts, not outcomes -- a step line and neutral columns. */
 .ol-m-sub { fill: none; stroke: var(--series-2); stroke-width: 2; }
 .ol-m-fin { fill: var(--series-5); }
@@ -11912,6 +11808,8 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 }
 .ol-k.is-rate { height: 2px; background: var(--series-1); vertical-align: middle; }
 .ol-k.is-after { background: none; border: 1px solid var(--text-dim); }
+/* Its flat bars are TS-4's cancelled rule, by selector; the outline is here. */
+.ol-k.is-after-cancel { border: 1px solid var(--text-dim); }
 .ol-k.is-sub { height: 2px; background: var(--series-2); vertical-align: middle; }
 .ol-k.is-fin { background: var(--series-5); }
 .ol-k.is-zero { height: 2px; background: var(--text-faint); vertical-align: middle; }

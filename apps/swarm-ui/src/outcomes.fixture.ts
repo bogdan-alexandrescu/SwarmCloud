@@ -35,6 +35,7 @@ const ZERO_CLASSES: Record<FailureClassKey, number> = {
   timeout: 0,
   lost_worker: 0,
   could_not_start: 0,
+  inputs_unavailable: 0,
   outputs_missing: 0,
   dispatch_failed: 0,
   other: 0,
@@ -51,7 +52,7 @@ interface Day {
   cost?: { sum: number | null; attempts: number; reporting: number }
 }
 
-const NONE = { requested: 0, after_failure: 0, workflow_sweep: 0, other: 0 }
+const NONE = { requested: 0, after_failure: 0, after_cancel: 0, workflow_sweep: 0, other: 0 }
 
 /** 12-25 Sep. Sums: succeeded 272, failed 28, submitted 730, cancelled 401 / 12 / 3 / 0. */
 export const DEV_DAYS: readonly Day[] = [
@@ -69,7 +70,7 @@ export const DEV_DAYS: readonly Day[] = [
   },
   { day: 21, s: 2, f: 0, sub: 3, c: NONE, cost: { sum: 3.3, attempts: 2, reporting: 2 } },
   {
-    day: 22, s: 25, f: 8, sub: 338, c: { requested: 297, after_failure: 5, workflow_sweep: 3, other: 0 },
+    day: 22, s: 25, f: 8, sub: 338, c: { requested: 297, after_failure: 5, after_cancel: 0, workflow_sweep: 3, other: 0 },
     cls: { dispatch_failed: 8 }, cost: { sum: 61.4, attempts: 240, reporting: 30 },
   },
   { day: 23, s: 22, f: 6, sub: 32, c: { ...NONE, requested: 1, after_failure: 1 }, cls: { lost_worker: 6 }, cost: { sum: 52.1, attempts: 44, reporting: 31 } },
@@ -84,7 +85,7 @@ const iso = (day: number) => `2026-09-${String(day).padStart(2, '0')}T00:00:00+0
 
 function bucketOf(d: Day, generatedAt: number): OutcomeBucket {
   const cancelled: CancelSplit = {
-    total: d.c.requested + d.c.after_failure + d.c.workflow_sweep + d.c.other,
+    total: d.c.requested + d.c.after_failure + d.c.after_cancel + d.c.workflow_sweep + d.c.other,
     ...d.c,
   }
   const end = iso(d.day + 1)
@@ -135,6 +136,7 @@ export function ledgerFixture(): Outcomes {
         { key: 'timeout', label: 'timeout' },
         { key: 'lost_worker', label: 'lost worker' },
         { key: 'could_not_start', label: 'could not start' },
+        { key: 'inputs_unavailable', label: 'inputs unavailable' },
         { key: 'outputs_missing', label: 'outputs missing' },
         { key: 'dispatch_failed', label: 'dispatch failed' },
         { key: 'other', label: 'other' },
@@ -143,10 +145,11 @@ export function ledgerFixture(): Outcomes {
       cancel_causes: [
         { key: 'requested', label: 'requested' },
         { key: 'after_failure', label: 'after a failure' },
+        { key: 'after_cancel', label: 'after a cancel' },
         { key: 'workflow_sweep', label: 'workflow sweep' },
         { key: 'other', label: 'other' },
       ],
-      classifier_version: 1,
+      classifier_version: 2,
     },
     buckets,
     totals: {
@@ -162,6 +165,7 @@ export function ledgerFixture(): Outcomes {
         total: cancel('total'),
         requested: cancel('requested'),
         after_failure: cancel('after_failure'),
+        after_cancel: cancel('after_cancel'),
         workflow_sweep: cancel('workflow_sweep'),
         other: cancel('other'),
       },
@@ -255,24 +259,24 @@ export function ledgerFixture(): Outcomes {
       rows: [
         {
           key: 'claude-code', submitted: 180, ended: 172, succeeded: 61, failed: 22, dead_lettered: 0,
-          cancelled: { total: 89, requested: 80, after_failure: 9, workflow_sweep: 0, other: 0 },
+          cancelled: { total: 89, requested: 80, after_failure: 9, after_cancel: 0, workflow_sweep: 0, other: 0 },
           rate: wilsonFixture(61, 83), cost: { sum_usd: 371.2, attempts: 190, reporting: 181 }, declared_cost: false,
           series: buckets.map((b) => (b.rate === null ? { k: 0, n: 0 } : { k: Math.min(b.rate.k, 6), n: Math.min(b.rate.n, 8) })),
         },
         {
           key: 'mock', submitted: 467, ended: 460, succeeded: 190, failed: 2, dead_lettered: 0,
-          cancelled: { total: 268, requested: 265, after_failure: 3, workflow_sweep: 0, other: 0 },
+          cancelled: { total: 268, requested: 265, after_failure: 3, after_cancel: 0, workflow_sweep: 0, other: 0 },
           rate: wilsonFixture(190, 192), cost: { sum_usd: 0.24, attempts: 380, reporting: 24 }, declared_cost: true,
           series: buckets.map((b) => (b.rate === null ? { k: 0, n: 0 } : { k: b.rate.n, n: b.rate.n })),
         },
         {
           key: 'codex', submitted: 4, ended: 4, succeeded: 0, failed: 0, dead_lettered: 0,
-          cancelled: { total: 4, requested: 4, after_failure: 0, workflow_sweep: 0, other: 0 },
+          cancelled: { total: 4, requested: 4, after_failure: 0, after_cancel: 0, workflow_sweep: 0, other: 0 },
           rate: null, cost: { sum_usd: 12.4, attempts: 4, reporting: 4 }, declared_cost: false, series: null,
         },
         {
           key: 'generic', submitted: 2, ended: 2, succeeded: 2, failed: 0, dead_lettered: 0,
-          cancelled: { total: 0, requested: 0, after_failure: 0, workflow_sweep: 0, other: 0 },
+          cancelled: { total: 0, requested: 0, after_failure: 0, after_cancel: 0, workflow_sweep: 0, other: 0 },
           rate: wilsonFixture(2, 2), cost: { sum_usd: null, attempts: 2, reporting: 0 }, declared_cost: false,
           // A null entry is an UNREAD bucket, and every bucket here was read:
           // measured {0, 0} until the day both of generic's tasks ended.

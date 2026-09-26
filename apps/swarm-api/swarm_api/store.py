@@ -55,6 +55,7 @@ from google.cloud.firestore_v1.base_query import FieldFilter
 from swarm_common.admission import _snapshot
 from swarm_common.models import (
     Attempt,
+    EndCause,
     Lease,
     ProviderState,
     QuotaState,
@@ -815,6 +816,11 @@ class Store:
                 assert_transition(task.state, TaskState.CANCELLED)
                 patch["state"] = TaskState.CANCELLED.value
                 patch["completed_at"] = now
+                # Why it ended, typed, beside when (contract request 23). Only
+                # here, where THIS write ends the task: a flag on a task that
+                # holds capacity ends nothing, and the worker or the reconciler
+                # that ends it writes the same cause.
+                patch["end_cause"] = EndCause.CANCEL_REQUESTED.value
                 patch["park_reason"] = None
                 patch["blocked_by"] = []
             txn.update(ref, patch)

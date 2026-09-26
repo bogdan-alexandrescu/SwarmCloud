@@ -253,7 +253,7 @@ What it must not imply, and how it is prevented:
 | 305 cancels hide 8 failures | cancels have their own lane and scale, with the max printed; failures hang from the decided lane's zero, never under 4px |
 | Arrivals share the outcomes' time basis | the throughput lane's label says it is the only lane on the submission-time basis |
 | A scale scrolls away from its lane | each drawing's ticks are in a gutter SVG and its lane labels are HTML over the plot's left edge, both outside `.ol-plot`, the one layer that scrolls; the plot's SVG keeps the drawing's coordinates (its viewBox starts at the left margin) |
-| A legend key names one mark and prints another's number | the flat bars' key prints requested + other, the outline's after_failure + workflow_sweep; the cancelled total is unkeyed |
+| A legend key names one mark and prints another's number | the flat bars' key prints requested + other, the outline's after_failure + workflow_sweep, the outlined bars' after_cancel (#185 decision 2); the cancelled total is unkeyed |
 | A span's totals read as whole when a bucket was not read | the readout's `all N days` carries the partial mark and `read of n`, and with nothing read the legend is the not-read mark with no count; no lane prints a `max` over no bucket |
 
 **Drawn three times, not scaled** (§7.2): 1080, 640 and 300 units

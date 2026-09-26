@@ -40,6 +40,12 @@ export interface CancelSplit {
   total: number
   requested: number
   after_failure: number
+  /**
+   * A cascade cancel whose parent was CANCELLED, not FAILED (#185, decision 2).
+   * The scheduler writes the same words for both; the route splits them by the
+   * task's `end_cause`, or by its parents' states for a task without one.
+   */
+  after_cancel: number
   workflow_sweep: number
   other: number
 }
@@ -56,12 +62,13 @@ export type FailureClassKey =
   | 'timeout'
   | 'lost_worker'
   | 'could_not_start'
+  | 'inputs_unavailable'
   | 'outputs_missing'
   | 'dispatch_failed'
   | 'other'
   | 'no_reason'
 
-export type CancelCauseKey = 'requested' | 'after_failure' | 'workflow_sweep' | 'other'
+export type CancelCauseKey = 'requested' | 'after_failure' | 'after_cancel' | 'workflow_sweep' | 'other'
 
 export type BucketState = 'sealed' | 'open' | 'unread'
 
@@ -231,9 +238,10 @@ export interface Outcomes {
   groups: { by: GroupBy; rows_total: number; rows: GroupRow[] }
   workflows_failed: {
     applicable: boolean
-    with_ended_steps: number
-    with_failed_steps: number
-    rows_total: number
+    /** null when `applicable` is false (kind=standalone): nothing was counted, so no count is a zero. */
+    with_ended_steps: number | null
+    with_failed_steps: number | null
+    rows_total: number | null
     rows: WorkflowFailedRow[]
     failing_steps: Array<{ step_id: string; n: number }>
   }
@@ -800,7 +808,7 @@ export function bucketSaid(b: OutcomeBucket, bucket: LedgerBucketSize, tz: strin
     `${b.succeeded ?? 0} succeeded`,
     `${(b.failed ?? 0) + (b.dead_lettered ?? 0)} failed`,
     b.rate === null ? 'no rate, nothing decided' : `rate ${pct(b.rate.p)} (${b.rate.k} of ${b.rate.n}, 95 % ${interval(b.rate)})`,
-    `${c?.total ?? 0} cancelled, ${(c?.after_failure ?? 0) + (c?.workflow_sweep ?? 0)} after a failure`,
+    `${c?.total ?? 0} cancelled, ${(c?.after_failure ?? 0) + (c?.workflow_sweep ?? 0)} after a failure, ${c?.after_cancel ?? 0} after a cancel`,
     `${b.submitted ?? 0} submitted`,
   ]
   const when = b.in_progress ? ', so far' : b.state === 'open' ? ', still settling' : ''

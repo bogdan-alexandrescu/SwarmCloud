@@ -52,6 +52,10 @@ This rule runs through the whole response:
   failures.
 * `coverage.terminal_without_completed_at` is null when its count failed, never
   0.
+* Under `kind=standalone`, `workflows_failed` does not apply (`applicable:
+  false`), and its three counts -- `with_ended_steps`, `with_failed_steps`,
+  `rows_total` -- are null: nothing was counted, so no count is a zero. The
+  review of #196 found them served as 0, which reads as "no workflow failed".
 * A bucket before a tenant's first task holds sealed zeros. That is a real
   measurement: tasks are never TTL'd, and the derive covers every task.
 
@@ -96,6 +100,15 @@ reason: a written value and a derived value are two records of one fact.
   The doc is rewritten at most once a minute per tenant.
 * A bucket is `open` rather than `sealed` for the same 15 minutes after it
   ends. `in_progress` separately marks "the current period, so far".
+  `test_a_day_is_open_for_fifteen_minutes_after_it_ends_and_sealed_at_the_fifteenth`
+  pins both edges: at 00:14:59 the day before is `open`, not in progress, and
+  its stored day still live; at 00:15:00 it is `sealed`, by a full derive.
+* A stored day is used only when BOTH its `derive_version` and its
+  `classifier_version` are this module's. Each tuple carries the class its
+  classifier gave it, so a day on another classifier holds classes this code
+  would not assign; it is derived again on the next read that needs it. (Until
+  2026-09-25 only `derive_version` was read, so the classifier's version was
+  written and never acted on.)
 
 ### The read budget
 
@@ -143,7 +156,52 @@ boundary.
   1 Nov 2026 is the example.
 * Weeks start on ISO Monday, the same rule as `types.ts bucketStart`.
 
-## The failure classifier, and how it retires
+## Why a task ended: its typed cause first, its text only without one
+
+Contract requests 23 and 24 were accepted by the owner on 2026-09-25 (#185,
+decision 9) and applied in PR #217.
+
+* **`Task.end_cause` is read first.** Every terminal writer records it beside
+  `completed_at`: the worker, the reconciler, the scheduler and the API's
+  cancel. A task that carries one is classified by it and by nothing else --
+  a cause the image does not know is `other`, never re-guessed from the text.
+  The text classifier below is the FALLBACK, for tasks that ended before the
+  field existed (every task on dev on the day it shipped) and for the one end
+  no cause names (the runner stopped on SIGTERM with no cancel requested).
+* **The failure classes**, in their fixed order: runner error, timeout, lost
+  worker, could not start, **inputs unavailable**, outputs missing, dispatch
+  failed, other, no reason recorded. "Inputs unavailable" is decision 4: the
+  worker refusing to stage a declared `input_from` artifact before the agent
+  starts is not the runner's error. It sits before "outputs missing" because
+  an attempt meets them in that order.
+* **The cancel causes**: requested, after a failure, **after a cancel**,
+  workflow sweep, other. "After a cancel" is decision 2 (below).
+* **Declared cost is the catalogue's.** `DECLARED_COST_PROFILES` is every
+  profile whose `RunnerProfile.cost_declared` is set (request 24); the module
+  names none.
+* `DERIVE_VERSION` and `CLASSIFIER_VERSION` went 1 -> 2 with this, so every
+  stored day is derived again under the new rules.
+
+### A cancel's cascade is not a failure's (decision 2)
+
+The scheduler writes "an upstream workflow step did not succeed" when a parent
+is FAILED, DEAD_LETTERED **or CANCELLED** (`scheduler/loop.py`,
+`_FAILED_PARENT_STATES`), so the text alone counted a cancel somebody pressed
+as a failure. Two halves close it:
+
+* the scheduler now records `failed_parent` or `cancelled_parent` from the
+  parents it read when it cancelled (a failure wins when a step had both);
+* a task without that cause is split AT DERIVE TIME by the states of its
+  `depends_on` parents -- the documents the wait figure already reads, so it
+  costs no read. A FAILED or DEAD_LETTERED parent makes it "after a failure",
+  else a CANCELLED one "after a cancel". With no parent readable in either
+  state the text cannot say which, and it is `other`: never a guessed failure.
+
+`workflows_failed.rows[].cascade_cancelled` counts only the failure's cascade
+(after a failure and the fail_workflow sweep). A step that followed a CANCELLED
+parent was stopped by a person, not by the failure.
+
+### The text classifier (the fallback)
 
 `classify_failure` and `cancel_cause` read text that other components wrote.
 None of those components ship in the API image.
@@ -158,15 +216,11 @@ None of those components ship in the API image.
   writer's real function, by
   `tests/unit/control_plane/test_outcomes_classifier_parity.py`. A reworded
   message therefore turns CI red instead of draining into `other`.
+* Every `InputUnavailable` message `agent_worker/inputs.py` raises opens with
+  its own literal, and the worker ends the task with the message as the whole
+  `last_error`; the parity test renders the opening of EVERY raise there and
+  holds each to "inputs unavailable".
 * `other` and `no_reason` are always counted. Nothing is dropped.
-* The retirement path is a typed end cause written by each terminal writer.
-  It is filed as contract request 23. `mock` is named as a declared-cost
-  profile in one place until request 24 gives `RunnerProfile` a flag for it.
-
-**Known overclaim, open with the owner.** The scheduler writes "an upstream
-workflow step did not succeed" when a parent is FAILED, DEAD_LETTERED **or
-CANCELLED** (`scheduler/loop.py`, `_FAILED_PARENT_STATES`). So some cancels
-labelled "after a failure" really followed a cancel.
 
 ## Tenant isolation (invariant 9)
 
@@ -268,9 +322,11 @@ places work by **completed_at**. Both give the same headline on dev:
     the 13 runner errors are the worker refusing to stage an input
     (`inputs.InputUnavailable`: "upstream task … did not produce an artifact
     named …", and "upstream tasks … all stage …").
-  * The contract puts any worker-written end with an exit code under
-    "runner error". Whether input staging deserves its own class is open with
-    the owner. It would bump `CLASSIFIER_VERSION` and `DERIVE_VERSION`.
+  * The contract put any worker-written end with an exit code under
+    "runner error". The owner decided on 2026-09-25 that input staging is its
+    own class (#185, decision 4); `CLASSIFIER_VERSION` and `DERIVE_VERSION`
+    went to 2 with it, so dev's stored days are derived again and these 10
+    read "inputs unavailable".
 
 ## Offboarding
 

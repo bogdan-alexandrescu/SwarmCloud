@@ -33,7 +33,7 @@ from datetime import datetime, timedelta
 from typing import Any, Callable
 
 from swarm_common.admission import AdmissionConfig, AdmissionDenied
-from swarm_common.models import Lease, Task, Tenant, utcnow
+from swarm_common.models import EndCause, Lease, Task, Tenant, utcnow
 from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES, resolve_backend
 from swarm_common.states import PENDING_STATES, EventType, ParkReason, TaskState
 
@@ -57,6 +57,22 @@ PREWARM_REASONS = (
 _FAILED_PARENT_STATES = frozenset(
     {TaskState.FAILED, TaskState.CANCELLED, TaskState.DEAD_LETTERED}
 )
+
+
+def _parent_cause(states: dict[str, TaskState], failed: list[str]) -> EndCause:
+    """Why a dependant of `failed` is cancelled: a failure, or a cancel.
+
+    The text the cancel writes -- "an upstream workflow step did not succeed"
+    -- is the same for both, which is what made the outcome ledger count a
+    cancel somebody pressed as a failure (#185, decision 2). The end cause says
+    which, from the states this drain just read. A FAILED or DEAD_LETTERED
+    parent wins over a CANCELLED one: the failure is what the dependant could
+    not have survived, whatever else was stopped beside it.
+    """
+    if any(states.get(tid) in (TaskState.FAILED, TaskState.DEAD_LETTERED) for tid in failed):
+        return EndCause.FAILED_PARENT
+    return EndCause.CANCELLED_PARENT
+
 
 #: The one `on_step_failure` value the scheduler acts on. Anything else,
 #: `continue` included, leaves only the dependency rule above in force.
@@ -395,7 +411,11 @@ class Scheduler:
         if task.cancel_requested:
             # It holds no capacity in READY, so it can be finished here.
             self._cancel(
-                task, "cancellation requested before admission", report, why="cancel_requested"
+                task,
+                "cancellation requested before admission",
+                report,
+                why="cancel_requested",
+                end_cause=EndCause.CANCEL_REQUESTED,
             )
             return False
 
@@ -433,6 +453,7 @@ class Scheduler:
                     report,
                     why="failed_parent",
                     detail={"failed_parents": failed},
+                    end_cause=_parent_cause(states, failed),
                 )
                 return False
             if any(states.get(tid) is not TaskState.SUCCEEDED for tid in task.depends_on):
@@ -686,9 +707,10 @@ class Scheduler:
         report: DrainReport,
         *,
         why: str,
+        end_cause: EndCause,
         detail: dict[str, Any] | None = None,
     ) -> None:
-        outcome = self._store.cancel(task, text, detail)
+        outcome = self._store.cancel(task, text, detail, end_cause=end_cause)
         if outcome.applied:
             self._count_cancel(report, reason=why)
         else:
@@ -809,7 +831,9 @@ class Scheduler:
                 state,
                 self._settings.dependency_sweep_size,
             ):
-                outcome = self._store.cancel_if_not_started(step, reason, detail)
+                outcome = self._store.cancel_if_not_started(
+                    step, reason, detail, end_cause=EndCause.WORKFLOW_SWEEP
+                )
                 if outcome.applied:
                     self._count_cancel(report, reason="workflow_failed")
                     cancelled += 1
@@ -877,6 +901,7 @@ class Scheduler:
                     report,
                     why="failed_parent",
                     detail={"failed_parents": failed},
+                    end_cause=_parent_cause(states, failed),
                 )
                 continue
             if all(states.get(tid) is TaskState.SUCCEEDED for tid in task.depends_on):

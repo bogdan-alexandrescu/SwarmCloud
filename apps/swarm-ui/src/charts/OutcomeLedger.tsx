@@ -22,9 +22,18 @@
 //      `--bad` with the 2px ground-coloured cut, never under 4px, all on ONE
 //      count scale through zero. A measured zero is the axis tick alone.
 //   3  Cancelled, on its OWN scale with its max printed, so 305 cancels on
-//      22 Sep can no longer flatten that day's 8 failures. Requested (and
-//      other) cancels are TS-4's flat "ended" bars; the cancels a failure
-//      caused are a 1px outline with no fill. No hue: a cancel is not a verdict.
+//      22 Sep can no longer flatten that day's 8 failures. Three marks, all in
+//      TS-4's cancel vocabulary and none with a hue (a cancel is not a
+//      verdict), stacked up from the axis:
+//        requested (and other)  TS-4's flat "ended" bars -- a cancel;
+//        after a cancel         the flat bars inside a 1px outline -- a
+//                               cascade (the outline) of a cancel (the bars);
+//        after a failure        the 1px outline alone, no fill -- a cascade of
+//                               something that was not a cancel (workflow
+//                               sweeps included, which only a failure starts).
+//      The two cascades used to be one outline, because the scheduler writes
+//      the same words for both; the route splits them now (#185, decision 2),
+//      and the readout names each.
 //   4  Throughput (owner decision, from the Flow concept): submitted per bucket
 //      against finished per bucket, answering "are we keeping up". THE ONLY
 //      LANE ON THE SUBMISSION-TIME BASIS, and its label says so. Submitted is a
@@ -475,8 +484,10 @@ function Drawing({
               const ok = b.succeeded ?? 0
               const bad = (b.failed ?? 0) + (b.dead_lettered ?? 0)
               const flatN = (b.cancelled?.requested ?? 0) + (b.cancelled?.other ?? 0)
+              const cascN = b.cancelled?.after_cancel ?? 0
               const afterN = (b.cancelled?.after_failure ?? 0) + (b.cancelled?.workflow_sweep ?? 0)
               const flatH = flatN === 0 ? 0 : Math.max(3, flatN * k3)
+              const cascH = cascN === 0 ? 0 : Math.max(3, cascN * k3)
               const afterH = afterN === 0 ? 0 : Math.max(3, afterN * k3)
               const fin = b.ended ?? 0
               const sub = b.submitted ?? 0
@@ -495,16 +506,36 @@ function Drawing({
                   {flatH > 0 && (
                     <rect className="ol-m-ended" x={x} y={r1(L3.y + L3.h - flatH)} width={w} height={r1(flatH)} fill={`url(#${flat})`} />
                   )}
+                  {cascH > 0 && (
+                    <>
+                      {/* After a cancel: the flat bars (a cancel) in the outline (a cascade). */}
+                      <rect
+                        className="ol-m-ended is-after-cancel"
+                        x={x}
+                        y={r1(L3.y + L3.h - flatH - cascH)}
+                        width={w}
+                        height={r1(cascH)}
+                        fill={`url(#${flat})`}
+                      />
+                      <rect
+                        className="ol-m-after-cancel"
+                        x={r1(x + 0.5)}
+                        y={r1(L3.y + L3.h - flatH - cascH + 0.5)}
+                        width={r1(Math.max(0, w - 1))}
+                        height={r1(Math.max(0, cascH - 1))}
+                      />
+                    </>
+                  )}
                   {afterH > 0 && (
                     <rect
                       className="ol-m-after"
                       x={r1(x + 0.5)}
-                      y={r1(L3.y + L3.h - flatH - afterH + 0.5)}
+                      y={r1(L3.y + L3.h - flatH - cascH - afterH + 0.5)}
                       width={r1(Math.max(0, w - 1))}
                       height={r1(Math.max(0, afterH - 1))}
                     />
                   )}
-                  {flatN + afterN === 0 && tick(L3.y + L3.h, 'z3')}
+                  {flatN + cascN + afterN === 0 && tick(L3.y + L3.h, 'z3')}
                   {/* Lane 4: finished columns; the submitted line is drawn once below. */}
                   {fin > 0 && <rect className="ol-m-fin" x={x} y={r1(L4.y + L4.h - fin * k4)} width={w} height={r1(fin * k4)} />}
                   {fin === 0 && sub === 0 && tick(L4.y + L4.h, 'z4')}
@@ -580,6 +611,7 @@ interface Shown {
   requested: number
   other: number
   after_failure: number
+  after_cancel: number
   workflow_sweep: number
   cancelled: number
   submitted: number
@@ -597,6 +629,7 @@ function shownOf(data: Outcomes, b: OutcomeBucket | null): Shown {
       requested: t.cancelled.requested,
       other: t.cancelled.other,
       after_failure: t.cancelled.after_failure,
+      after_cancel: t.cancelled.after_cancel,
       workflow_sweep: t.cancelled.workflow_sweep,
       cancelled: t.cancelled.total,
       submitted: t.submitted,
@@ -611,6 +644,7 @@ function shownOf(data: Outcomes, b: OutcomeBucket | null): Shown {
     requested: b.cancelled?.requested ?? 0,
     other: b.cancelled?.other ?? 0,
     after_failure: b.cancelled?.after_failure ?? 0,
+    after_cancel: b.cancelled?.after_cancel ?? 0,
     workflow_sweep: b.cancelled?.workflow_sweep ?? 0,
     cancelled: b.cancelled?.total ?? 0,
     submitted: b.submitted ?? 0,
@@ -852,9 +886,10 @@ export function OutcomeLedger({ data, picked, onPick, onZoom }: OutcomeLedgerPro
               dead-lettered <b className="ol-n">{shown.dead_lettered}</b>
             </span>
             {/* ONE NUMBER PER KEY, AND IT IS THE NUMBER THE KEY'S MARK DRAWS
-                (TS-9). The flat bars are requested + other and the outline is
-                after_failure + workflow_sweep -- lane 3's two marks -- so the
-                cancelled total, which no single mark draws, stands unkeyed. */}
+                (TS-9). The flat bars are requested + other, the outlined bars
+                after_cancel, and the bare outline after_failure +
+                workflow_sweep -- lane 3's three marks -- so the cancelled
+                total, which no single mark draws, stands unkeyed. */}
             <span className="ol-li">
               cancelled <b className="ol-n">{shown.cancelled}</b>
             </span>
@@ -869,6 +904,10 @@ export function OutcomeLedger({ data, picked, onPick, onZoom }: OutcomeLedgerPro
               <i className="ol-k is-after" aria-hidden /> after a failure{' '}
               <b className="ol-n">{shown.after_failure + shown.workflow_sweep}</b>{' '}
               <span className="ol-q">incl. workflow sweep {shown.workflow_sweep}</span>
+            </span>
+            <span className="ol-li">
+              <i className="ol-k is-after-cancel" aria-hidden /> after a cancel{' '}
+              <b className="ol-n">{shown.after_cancel}</b>
             </span>
             <span className="ol-li">
               <i className="ol-k is-sub" aria-hidden /> submitted <b className="ol-n">{shown.submitted}</b>{' '}

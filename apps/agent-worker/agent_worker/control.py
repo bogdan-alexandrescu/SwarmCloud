@@ -71,6 +71,7 @@ from typing import Any, Callable, Iterator, Mapping, Protocol, Sequence
 from swarm_common.admission import _snapshot, release_lease_in_transaction
 from swarm_common.models import (
     Attempt,
+    EndCause,
     ProviderState,
     TaskEvent,
     new_id,
@@ -1100,12 +1101,18 @@ class ControlPlane:
         exit_code: int | None,
         error: str | None = None,
         result_summary: dict[str, Any] | None = None,
+        end_cause: EndCause | None = None,
     ) -> None:
         """Persist a terminal state, record the attempt's end, release the lease.
 
         The transition is fenced (see `transition`), and it comes first. A
         superseded attempt gets `FencedWriteRefused` before anything else is
         written: no attempt end, no event, no release.
+
+        `end_cause` is WRITTEN ON EVERY TERMINAL STATE, None included (contract
+        request 23): a success carries None, and so does an end no cause names.
+        Written rather than omitted so the document says what this write
+        decided, whatever an earlier write left there.
         """
         if state not in TERMINAL_STATES:
             raise ControlPlaneError(f"{state.value} is not terminal")
@@ -1113,6 +1120,7 @@ class ControlPlane:
             "completed_at": utcnow(),
             "current_lease_id": None,
             "last_error": error,
+            "end_cause": end_cause.value if end_cause is not None else None,
         }
         if result_summary is not None:
             fields["result_summary"] = result_summary
@@ -1136,9 +1144,14 @@ class ControlPlane:
         result_summary: dict[str, Any] | None = None,
         retry_delay_seconds: int = 0,
         detail: dict[str, Any] | None = None,
+        end_cause: EndCause | None = None,
     ) -> TaskState:
         """End this ATTEMPT as failed, and send the task back to READY if it has
         attempts left. Returns the state the task was left in.
+
+        `end_cause` is what the task ends as if this attempt was its last and it
+        ends FAILED. A CANCELLED end is always CANCEL_REQUESTED, because only a
+        requested cancel picks it; READY ends nothing and writes no cause.
 
         `finish(FAILED)` ends the task for good. This ends only the attempt.
         One fenced transaction reads the task and picks the target:
@@ -1200,6 +1213,10 @@ class ControlPlane:
                 # will never run again is a promise nothing keeps.
                 payload["completed_at"] = now
                 payload["next_eligible_at"] = None
+                ended_as = (
+                    EndCause.CANCEL_REQUESTED if target is TaskState.CANCELLED else end_cause
+                )
+                payload["end_cause"] = ended_as.value if ended_as is not None else None
             txn.update(self._task_ref(), payload)
             return target, attempt_count, max_attempts
 

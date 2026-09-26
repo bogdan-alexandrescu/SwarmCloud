@@ -59,6 +59,7 @@ from swarm_common.admission import (
 )
 from swarm_common.models import (
     Attempt,
+    EndCause,
     Lease,
     QuotaState,
     SlotPool,
@@ -859,6 +860,13 @@ class SchedulerStore:
                 # leaves the field alone leaves that promise on a FAILED task.
                 payload["completed_at"] = now
                 payload["next_eligible_at"] = None
+                # Why it ended, typed (contract request 23): a requested cancel
+                # or the dispatch that kept failing, never the text's words.
+                payload["end_cause"] = (
+                    EndCause.CANCEL_REQUESTED
+                    if target is TaskState.CANCELLED
+                    else EndCause.DISPATCH_FAILED
+                ).value
             else:
                 payload["next_eligible_at"] = now + timedelta(
                     seconds=max(0, retry_delay_seconds)
@@ -1032,8 +1040,20 @@ class SchedulerStore:
         self._log_skip(outcome, task, lease=lease, level=logging.WARNING, consequence=consequence)
         return outcome
 
-    def cancel(self, task: Task, reason: str, detail: dict[str, Any] | None = None) -> GuardedWrite:
+    def cancel(
+        self,
+        task: Task,
+        reason: str,
+        detail: dict[str, Any] | None = None,
+        *,
+        end_cause: EndCause,
+    ) -> GuardedWrite:
         """Terminate a task that can never become runnable.
+
+        `end_cause` is REQUIRED, not defaulted: every caller knows why it is
+        cancelling -- a requested cancel, or a parent that failed or was
+        cancelled -- and a default would let a new caller write a cause it did
+        not decide (contract request 23).
 
         Only called for tasks that hold NO capacity, so there is no lease to
         release: a task holding a lease is cancelled through the worker or the
@@ -1057,6 +1077,7 @@ class SchedulerStore:
                 "blocked_by": [],
                 "completed_at": now,
                 "last_error": reason[:1000],
+                "end_cause": end_cause.value,
                 "updated_at": now,
             },
         )
@@ -1065,7 +1086,12 @@ class SchedulerStore:
         return outcome
 
     def cancel_if_not_started(
-        self, task: Task, reason: str, detail: dict[str, Any] | None = None
+        self,
+        task: Task,
+        reason: str,
+        detail: dict[str, Any] | None = None,
+        *,
+        end_cause: EndCause = EndCause.WORKFLOW_SWEEP,
     ) -> GuardedWrite:
         """Cancel a step only if it STILL has not started, in whatever pending state it is now.
 
@@ -1127,6 +1153,7 @@ class SchedulerStore:
                     "next_eligible_at": None,
                     "completed_at": now,
                     "last_error": reason[:1000],
+                    "end_cause": end_cause.value,
                     "updated_at": now,
                 },
             )
