@@ -240,3 +240,117 @@ test('the agent drawer still resolves, including a task id spelling "help"', () 
   assert.equal(viaAlias.sectionId, 'work')
   assert.equal(viaAlias.taskId, 'help')
 })
+
+/**
+ * OV-10. THE AGENT LIST'S TAB AND ITS RECENT STATE ARE ADDRESSES.
+ *
+ * The Overview's failed-agents item linked to `#work/running` and said
+ * "agents · Recent tab", because the tab was component state the hash could
+ * not carry -- and the list then opened on whichever tab had rows, which is
+ * Live whenever anything runs. The owner's decision (epic #81, OV-10) makes
+ * the tab and the Recent tab's state filter part of the address:
+ *
+ *   #work/running/<live|waiting|recent>
+ *   #work/running/recent/<failed|cancelled|succeeded>
+ *
+ * Read off `route.list` through a cast, so this file compiles against a Route
+ * that does not declare the field -- the state the red run was taken in.
+ */
+function listOf(hash: string): unknown {
+  at(hash)
+  return (fromHash() as unknown as { list?: unknown }).list ?? null
+}
+
+test('OV-10: every list address round-trips through its canonical spelling', () => {
+  for (const hash of [
+    'work/running/live',
+    'work/running/waiting',
+    'work/running/recent',
+    'work/running/recent/failed',
+    'work/running/recent/cancelled',
+    'work/running/recent/succeeded',
+  ]) {
+    at(`#${hash}`)
+    const r = fromHash()
+    assert.equal(r.taskId, null, `#${hash} opened the agent drawer`)
+    assert.equal(r.sectionId, 'work')
+    assert.equal(r.tab, 'running')
+    assert.equal(canonical(r), hash, `#${hash} is rewritten to something else`)
+  }
+  assert.deepEqual(listOf('#work/running/recent/failed'), { tab: 'recent', state: 'failed' })
+  assert.deepEqual(listOf('#work/running/waiting'), { tab: 'waiting', state: null })
+  // Through the alias too, and rewritten to the current spelling.
+  at('#agents/running/recent/failed')
+  assert.equal(canonical(fromHash()), 'work/running/recent/failed')
+})
+
+/**
+ * NOTHING UNDER `running/` IS A TASK ID. `fromHash` reads an unmatched Work
+ * tail as a task id -- the old nav's `#work/<id>` -- and before OV-10 that is
+ * what `#work/running/recent` became: an agent drawer for a task called
+ * "running/recent". An address that is not one of the list addresses above
+ * lands on the plain list, with no list state and no drawer.
+ *
+ * MUTATION: parse the list addresses AFTER the unmatched-tail rule, or drop
+ * the `running` guard, and `#work/running/bogus` opens a drawer again.
+ */
+test('OV-10: an address under running/ never opens a drawer, and a mistyped one is the plain list', () => {
+  for (const hash of [
+    '#work/running/recent',
+    '#work/running/bogus',
+    '#work/running/live/failed',
+    '#work/running/recent/faild',
+    '#work/running/recent/dead_lettered',
+    '#work/running/',
+  ]) {
+    at(hash)
+    const r = fromHash()
+    assert.equal(r.taskId, null, `${hash} opened the agent drawer`)
+    assert.equal(r.sectionId, 'work', `${hash} left the Work section`)
+    assert.equal(r.tab, 'running', `${hash} left the agent list`)
+  }
+  for (const hash of [
+    '#work/running/bogus',
+    '#work/running/live/failed',
+    '#work/running/recent/faild',
+    '#work/running/recent/dead_lettered',
+  ]) {
+    assert.equal(listOf(hash), null, `${hash} carried a list state it does not name`)
+    assert.equal(canonical(fromHash()), 'work/running', `${hash} is not the plain list`)
+  }
+  // The drawer's own address is untouched by any of this.
+  at('#work/task/task_abc123')
+  assert.equal(fromHash().taskId, 'task_abc123')
+})
+
+/**
+ * #185: THE TIMELINE'S VIEW RIDES ON ITS ADDRESS, AND A QUERY IS NOT A TASK ID.
+ *
+ * The Timeline writes every filter to the hash (`#work/timeline?span=30d`).
+ * Before the query was split off, `timeline?span=30d` matched no tab and the
+ * Work fallback read the whole tail as a TASK ID, opening an inspector for an
+ * agent called "timeline?span=30d". And `canonical` has to keep the query, or
+ * the normalise effect would strip every filter from the address the moment
+ * it was written.
+ *
+ * MUTATION: route on the unsplit hash (the drawer opens); drop the view from
+ * `canonical` (the round trip loses the query).
+ */
+test('#185: #work/timeline?… opens the Timeline with its view, never a drawer, and keeps the query', () => {
+  for (const hash of ['#work/timeline?span=30d', '#work/timeline?span=7d&table=1', '#history/timeline?span=90d']) {
+    at(hash)
+    const r = fromHash()
+    assert.equal(r.taskId, null, `${hash} opened the agent drawer`)
+    assert.equal(r.sectionId, 'work', `${hash} left Work`)
+    assert.equal(r.tab, 'timeline', `${hash} left the Timeline`)
+    assert.equal(r.view, hash.slice(hash.indexOf('?') + 1), `${hash} lost its view`)
+    assert.equal(canonical(r), `work/timeline?${r.view}`, `${hash} is not written back with its view`)
+  }
+  // No query, no view: the plain address is unchanged.
+  at('#work/timeline')
+  assert.equal(fromHash().view ?? null, null)
+  assert.equal(canonical(fromHash()), 'work/timeline')
+  // And only the Timeline carries one: a query on any other route is dropped.
+  at('#work/running?span=30d')
+  assert.equal(canonical(fromHash()), 'work/running')
+})

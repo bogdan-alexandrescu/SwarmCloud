@@ -41,7 +41,9 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Iterable, Sequence
 
-from swarm_common.states import CONCURRENCY_STATES, PENDING_STATES
+from swarm_common import states as _states
+from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES
+from swarm_common.states import CONCURRENCY_STATES, PENDING_STATES, TaskState
 
 # --------------------------------------------------------------------------
 # Style
@@ -377,6 +379,200 @@ def format_age(value: Any, now: datetime, style: Style) -> str:
     return _span(max(0.0, (now - when).total_seconds()), style)
 
 
+def clock(value: Any) -> str:
+    """`03:52:52Z` for an event's `at`, or `--:--:--` when it carried none.
+
+    WHY LIVE OUTPUT CARRIES A TIME AT ALL. `swarm tail` and `swarm follow`
+    print each task's events as they are read, task by task, so the order on
+    screen is the order of the POLL and not of the platform. Measured on
+    2026-09-25 (#88, SC-F9): a dependent step's cancel printed above its
+    upstream's, which reads as the cascade running backwards. A time on every
+    event line is what lets a reader put them back in order -- and, for
+    `tail`, the events of one poll are sorted by it as well.
+
+    UTC, and SAYS so with the `Z`: the API stamps UTC, and a bare `03:52:52`
+    beside a local clock would be hours out with nothing to show it.
+    ASCII only, so it survives the `--ascii` rule every other mark obeys.
+    """
+    when = parse_time(value)
+    if when is None:
+        return "--:--:--"
+    return when.astimezone(timezone.utc).strftime("%H:%M:%SZ")
+
+
+# --------------------------------------------------------------------------
+# Who is asking, whose the figures are, and whether a listing is whole
+# --------------------------------------------------------------------------
+
+
+def tenant_of(me: Any) -> str | None:
+    """The tenant id out of a `GET /v1/tenants/me` answer, or None.
+
+    NESTED. The route answers `{"tenant": {"tenant_id": ...}, "principal":
+    {...}}` (swarm_api/routes/tenants.py), and three readers in this package
+    read `tenant_id` off the top level instead: the `sc` header, `swarm
+    doctor` and `sc whoami`/`sc login`. None of them errored -- the key was
+    simply absent -- so on 2026-09-25 (#88, SC-F3/F4) the header showed the
+    tenant as "not measured" and doctor printed `tenant None` in the same run
+    that had just read it. ONE reader, here, so the next shape change is one
+    edit.
+
+    The flat shape is still accepted after the nested one. It is what every
+    fake in this suite used to answer, and a deployment older than the nesting
+    would answer it too; reading it costs nothing and misreads nothing.
+    """
+    if not isinstance(me, dict):
+        return None
+    tenant = me.get("tenant")
+    if isinstance(tenant, dict) and tenant.get("tenant_id"):
+        return str(tenant["tenant_id"])
+    flat = me.get("tenant_id")
+    return str(flat) if flat else None
+
+
+def principal_of(me: Any) -> dict[str, Any]:
+    """`principal` out of the same answer: email, groups, is_admin.
+
+    `{}` when there is none, never None, so a caller reads each field with
+    `.get` and an absent field prints as "(not reported)" rather than as the
+    word None -- which is what `swarm doctor` printed for `admin` on
+    2026-09-25 while the route was serving `is_admin: false`.
+    """
+    if not isinstance(me, dict):
+        return {}
+    principal = me.get("principal")
+    if isinstance(principal, dict):
+        return principal
+    return {key: me[key] for key in ("email", "groups", "is_admin") if key in me}
+
+
+class Listing(list):
+    """A list that also says WHOSE it is and whether it is WHOLE.
+
+    A plain list can say neither, and both were missing on 2026-09-25 (#88):
+    `sc` printed ACCOUNTS "0 accounts" and AGENTS "0 running" -- one tenant's
+    figures -- directly beside CAPACITY's `claude-code 8/40`, which was
+    another tenant's work on a shared pool, with nothing on screen to say the
+    two were measured over different populations (SC-F5); and AGENTS was built
+    from the newest 100 of 324 tasks and presented as complete (SC-F11).
+
+    A SUBCLASS rather than a new return type, so every renderer and test that
+    already takes a list keeps working, and `sc --json` still dumps a list.
+    `tenant_id` is the tenant the ROUTE says it answered for -- every tenant-
+    scoped listing route echoes the resolved one -- and `incomplete` is a list
+    of sentences, empty when the listing is whole.
+    """
+
+    def __init__(
+        self,
+        items: Iterable[Any] = (),
+        *,
+        tenant_id: str | None = None,
+        incomplete: Iterable[str] = (),
+        window: "TaskWindow | None" = None,
+    ) -> None:
+        super().__init__(items)
+        self.tenant_id = str(tenant_id) if tenant_id else None
+        self.incomplete = [str(line) for line in incomplete]
+        self.window = window
+
+
+@dataclass(frozen=True)
+class TaskWindow:
+    """The newest-N page a task listing read beside its live states, SAID (#190).
+
+    `sc.fetch_tasks` reads every LIVE task by state and, beside them, one page
+    of the newest tasks of any state -- the only place a FAILED or
+    DEAD_LETTERED task is read from. `sc trouble` counted those as "N task(s)
+    ... in the window listed" and listed no window anywhere; the window lived
+    in a docstring and a constant. So the page describes itself: how many it
+    held, whether that was every task the tenant has, and when the oldest of
+    them was created -- which is what a reader needs to tell "5 today" from
+    "5 ever" from "5 of the newest hundred".
+    """
+
+    limit: int
+    count: int
+    oldest: Any = None
+    whole: bool = False
+
+
+def listing_tenant(items: Any) -> str | None:
+    """The tenant a `Listing` was answered for; None for a plain list."""
+    return getattr(items, "tenant_id", None) or None
+
+
+def listing_window(items: Any) -> TaskWindow | None:
+    """The newest-N window a `Listing` read; None for a plain list."""
+    window = getattr(items, "window", None)
+    return window if isinstance(window, TaskWindow) else None
+
+
+def format_since(value: Any, now: datetime) -> str:
+    """`03:28Z` for today, `2026-09-01 00:10Z` for any other day, "" when unknown."""
+    when = parse_time(value)
+    if when is None:
+        return ""
+    when = when.astimezone(timezone.utc)
+    if when.date() == now.astimezone(timezone.utc).date():
+        return when.strftime("%H:%MZ")
+    return when.strftime("%Y-%m-%d %H:%MZ")
+
+
+def window_scope(items: Any, whose: str, now: datetime) -> tuple[str, str]:
+    """`("of the newest 100 tasks of tenant eng", " (created since 03:28Z)")`.
+
+    The population a count over a task listing was taken from, and when its
+    oldest member was created -- the two halves of "which window". A plain
+    list, which has no window to name, is named by how many tasks it held.
+    """
+    window = listing_window(items)
+    if window is None:
+        return f"of the {len(items)} tasks{whose} this read returned", ""
+    scope = (
+        f"of all {window.count} tasks{whose}"
+        if window.whole
+        else f"of the newest {window.count} tasks{whose}"
+    )
+    since = format_since(window.oldest, now)
+    return scope, f" (created since {since})" if since else ""
+
+
+def listing_gaps(items: Any) -> list[str]:
+    """What a `Listing` did not read, as sentences; `[]` for a plain list."""
+    return list(getattr(items, "incomplete", None) or [])
+
+
+def scoped(subtitle: str, tenant: str | None, style: Style) -> str:
+    """A section subtitle that names the tenant its figures belong to.
+
+    Only for TENANT-SCOPED sections. The capacity section is the other kind --
+    shared pools, counted across every tenant -- and says that in its own body
+    (`render_capacity`), so the two can no longer be read as one population.
+    """
+    if not tenant:
+        return subtitle
+    head = f"tenant {tenant}"
+    return f"{head}{style.sep}{subtitle}" if subtitle else head
+
+
+def scope_tenant(snap: "Snapshot") -> str | None:
+    """Which tenant this snapshot's tenant-scoped figures belong to.
+
+    `/v1/tenants/me` first, because it is the identity route; then whatever
+    tenant a listing route echoed. They are the same resolved tenant -- every
+    route resolves it through the same call -- so the fallbacks only matter for
+    a narrow view that did not fetch the identity at all.
+    """
+    capacity = snap.capacity if isinstance(snap.capacity, dict) else {}
+    return (
+        tenant_of(snap.tenant)
+        or listing_tenant(snap.tasks)
+        or listing_tenant(snap.accounts)
+        or (str(capacity["tenant_id"]) if capacity.get("tenant_id") else None)
+    )
+
+
 # --------------------------------------------------------------------------
 # Readings
 # --------------------------------------------------------------------------
@@ -634,8 +830,13 @@ def render_accounts(
         # window moves slower than the 5-hour one. The 5-hour figure and the
         # account it belongs to are what a narrow screen must still show --
         # dropping the utilisation would leave a table about nothing.
-        Column("short", window_heading(short_key) if short_key else "5H", drop=1),
-        Column("long", window_heading(long_key) if long_key else "7D", drop=2),
+        #
+        # USED, ON THE HEAD (OV-1, owner decision 2026-09-25): one polarity on
+        # every surface -- the console's Overview, its Accounts table and this
+        # -- and every percentage carries its word. The figures were always
+        # utilisation; the heads now say so, as the Accounts table's do.
+        Column("short", f"{window_heading(short_key) if short_key else '5H'} USED", drop=1),
+        Column("long", f"{window_heading(long_key) if long_key else '7D'} USED", drop=2),
         Column("clears", "CLEARS", align="right", drop=4),
         Column("state", "STATE", flex=True, drop=3),
     ]
@@ -673,7 +874,12 @@ def render_accounts(
     return lines
 
 
-def accounts_subtitle(accounts: Sequence[dict[str, Any]] | None, style: Style) -> str:
+def accounts_subtitle(
+    accounts: Sequence[dict[str, Any]] | None,
+    style: Style,
+    *,
+    tenant: str | None = None,
+) -> str:
     if accounts is None:
         return "unreadable"
     assigned = sum(int(a.get("assigned") or 0) for a in accounts)
@@ -682,7 +888,10 @@ def accounts_subtitle(accounts: Sequence[dict[str, Any]] | None, style: Style) -
     bits.append(f"{assigned} agent{'s' if assigned != 1 else ''} assigned")
     if stale:
         bits.append(f"{stale} stale")
-    return style.sep.join(bits).strip()
+    # The pool a tenant may RUN on: the accounts it owns and the ones lent to
+    # it. That is a tenant-scoped answer and it is printed beside platform-wide
+    # pools, so it says whose it is -- see `scoped`.
+    return scoped(style.sep.join(bits).strip(), tenant or listing_tenant(accounts), style)
 
 
 # --------------------------------------------------------------------------
@@ -814,6 +1023,29 @@ def format_used(binding: Binding, style: Style) -> Cell:
     return Cell(f"{binding.active}/{binding.limit}", tone)
 
 
+def profile_refused(name: str, spec: Any) -> str | None:
+    """Why no task of this profile can be dispatched at all, or None.
+
+    ROOM IS ABOUT POOLS, AND A POOL WITH ROOM DOES NOT MAKE A PROFILE
+    DISPATCHABLE. On 2026-09-25 (#88, SC-F13) `sc capacity` showed ROOM for
+    `codex` while `swarm profiles` and every dispatch refused it: the pools it
+    binds on had headroom, and the catalogue has disabled the profile. The
+    API's capacity route does not serve a profile's availability (CP-3 holds
+    that half), so two sources are read here, the served one first:
+
+      * `available: false` on the profile's own entry, for an API that serves it;
+      * the FROZEN catalogue, `swarm_common.profiles.RUNNER_PROFILES` -- the
+        same module the API imports, so this is the platform's own answer and
+        not a copy of it (profiles.py makes the same argument for `check`).
+    """
+    if isinstance(spec, dict) and spec.get("available") is False:
+        return str(spec.get("disabled_reason") or "the API reports it unavailable")
+    profile = RUNNER_PROFILES.get(name)
+    if profile is not None and not profile.available:
+        return profile.disabled_reason or "disabled in the runner catalogue"
+    return None
+
+
 def render_capacity(
     capacity: dict[str, Any] | None,
     style: Style,
@@ -830,8 +1062,24 @@ def render_capacity(
     profiles = capacity.get("runner_profiles") or {}
 
     rows: list[dict[str, Any]] = []
+    refused: list[str] = []
     for name in sorted(profiles):
         spec = profiles[name] or {}
+        if profile_refused(name, spec) is not None:
+            # NO ROOM AND NO BINDING POOL. Either would be a figure about a
+            # pool presented as a figure about a profile nothing can run.
+            refused.append(name)
+            rows.append(
+                {
+                    "profile": Cell(name, "dim"),
+                    "class": Cell(str(spec.get("resource_class") or style.dash), "dim"),
+                    "backend": Cell(str(spec.get("backend") or style.dash), "dim"),
+                    "binds": Cell(style.dash, "dim"),
+                    "used": Cell(style.dash, "dim"),
+                    "room": Cell("disabled", "bad"),
+                }
+            )
+            continue
         units = _int_or_none(spec.get("units")) or 1
         binding = binding_pool(list(spec.get("pools") or []), pools, units)
         rows.append(
@@ -846,13 +1094,18 @@ def render_capacity(
             }
         )
 
+    # UNITS, NOT "USED" (#192). The cell is the binding pool's `active/limit`,
+    # and admission adds a task's `units` to `active` on every pool it takes
+    # (`swarm_common/admission.py`) -- so it counts units, while ROOM beside it
+    # counts agents of the profile. The header says which, and the note under
+    # the table says how the two relate.
     lines = render_table(
         [
             Column("profile", "PROFILE", flex=True),
             Column("class", "CLASS", drop=3),
             Column("backend", "BACKEND", drop=4),
             Column("binds", "BINDS ON", flex=True, drop=1),
-            Column("used", "USED", align="right", drop=2),
+            Column("used", "UNITS", align="right", drop=2),
             Column("room", "ROOM", align="right"),
         ],
         rows,
@@ -860,6 +1113,24 @@ def render_capacity(
     )
     if not rows:
         lines = [f"  {style.paint('no runner profiles reported', 'warn')}"]
+    else:
+        if refused:
+            lines += detail(
+                f"disabled in the runner catalogue, so no pool's room applies: "
+                f"{', '.join(refused)}",
+                style,
+            )
+        # THE POPULATION, SAID. A shared pool's figure counts every tenant's
+        # work; the tenant-scoped sections around this one count the caller's
+        # only. On 2026-09-25 (#88, SC-F5) `claude-code 8/40` -- another
+        # tenant's work -- sat beside AGENTS "0 running" with nothing to say
+        # the two were different populations.
+        #
+        # AND THE UNIT, SAID (#192). This note used to say the figure "counts
+        # every tenant's agents", so two browser agents at `4/10` read as four.
+        tenant = capacity.get("tenant_id")
+        own = f"tenant:{tenant}" if tenant else "your own tenant pool"
+        lines += detail(units_note(own), style)
 
     if profiles_only:
         return lines
@@ -899,7 +1170,9 @@ def render_capacity(
             render_table(
                 [
                     Column("pool", "POOL", flex=True),
-                    Column("used", "USED", align="right"),
+                    # Units, like the profile table's column (#192); FREE is
+                    # the pool's free units, which ROOM divides.
+                    Column("used", "UNITS", align="right"),
                     Column("free", "FREE", align="right", drop=2),
                     Column("state", "STATE", drop=1),
                 ],
@@ -912,8 +1185,41 @@ def render_capacity(
     return lines
 
 
+def units_note(own: str) -> str:
+    """The sentence under the capacity table: what UNITS and ROOM each count.
+
+    The per-class units are read from `swarm_common.profiles.RESOURCE_CLASSES`
+    -- the numbers admission charges -- so the note cannot go on saying 2 the
+    day the catalogue says 3.
+    """
+    per_class = ", ".join(
+        f"{name} {resource.units}"
+        for name, resource in sorted(RESOURCE_CLASSES.items(), key=lambda kv: (kv[1].units, kv[0]))
+    )
+    return (
+        "UNITS is capacity units in use out of the pool's limit, not agents: an "
+        f"agent takes its resource class's units ({per_class}). On a shared pool "
+        f"it counts every tenant's; only {own} counts yours alone. ROOM counts "
+        "agents: how many more of that profile fit before the binding pool refuses."
+    )
+
+
+def _fit_phrase(room: int) -> str:
+    if room <= 0:
+        return "no more agents fit"
+    if room == 1:
+        return "1 more agent fits"
+    return f"{room} more agents fit"
+
+
 def capacity_subtitle(capacity: dict[str, Any] | None, style: Style) -> str:
-    """The tightest pool across every profile -- the real ceiling, named.
+    """The profile with the fewest agents still to fit -- the real ceiling, named.
+
+    RANKED BY AGENTS, AND SAYS SO (#192). The ranking was always the fewest
+    agents of a profile that still fit (ROOM), but the line printed the binding
+    pool's UNITS -- `tightest: resource:browser 0/10` -- which named an empty
+    pool the tightest because a browser agent takes two units. It now names
+    the profile, the agents that fit, and the pool, with its units labelled.
 
     A pool that could not be graded outranks every measured one, for the same
     reason it does in `binding_pool`: naming a "tightest" pool while another
@@ -926,8 +1232,12 @@ def capacity_subtitle(capacity: dict[str, Any] | None, style: Style) -> str:
     profiles = capacity.get("runner_profiles") or {}
     paused: Binding | None = None
     ungradeable: Binding | None = None
-    tightest: Binding | None = None
-    for spec in profiles.values():
+    tightest: tuple[str, Binding] | None = None
+    for name, spec in profiles.items():
+        if profile_refused(name, spec) is not None:
+            # A profile nothing can dispatch has no ceiling worth quoting, and
+            # the subtitle is the line people quote.
+            continue
         units = _int_or_none((spec or {}).get("units")) or 1
         binding = binding_pool(list((spec or {}).get("pools") or []), pools, units)
         if binding.pool is None:
@@ -936,15 +1246,19 @@ def capacity_subtitle(capacity: dict[str, Any] | None, style: Style) -> str:
             paused = paused or binding
         elif binding.unknown or binding.room is None:
             ungradeable = ungradeable or binding
-        elif tightest is None or binding.room < tightest.room:
-            tightest = binding
+        elif tightest is None or binding.room < tightest[1].room:
+            tightest = (name, binding)
     if paused is not None:
         return f"{paused.pool} is paused"
     if ungradeable is not None:
         return f"{ungradeable.pool} ceiling unknown"
     if tightest is None:
         return "no pool limits configured"
-    return f"tightest: {tightest.pool} {tightest.active}/{tightest.limit}"
+    name, binding = tightest
+    return (
+        f"tightest: {name}, {_fit_phrase(binding.room or 0)} on {binding.pool} "
+        f"({format_used(binding, style).text} units)"
+    )
 
 
 # --------------------------------------------------------------------------
@@ -962,6 +1276,17 @@ def capacity_subtitle(capacity: dict[str, Any] | None, style: Style) -> str:
 #: because a task payload carries its state as a plain string.
 RUNNING_STATES = frozenset(state.value for state in CONCURRENCY_STATES)
 QUEUED_STATES = frozenset(state.value for state in PENDING_STATES)
+
+#: The active states in LIFECYCLE order, for the headline's breakdown. Read off
+#: the frozen enum's own order rather than written out, for the reason above.
+_ACTIVE_ORDER = tuple(state.value for state in TaskState if state.value in RUNNING_STATES)
+
+#: States a task never leaves. Named FINISHED rather than TERMINAL_STATES on
+#: purpose: `test_the_contract_is_not_shadowed_by_a_local_terminal_set` holds
+#: this module to not re-exporting that name. It is the contract's set plus the
+#: `DEAD_LETTER` spelling older payloads use, the same pair `client.TERMINAL`
+#: carries.
+FINISHED_STATES = frozenset(state.value for state in _states.TERMINAL_STATES) | {"DEAD_LETTER"}
 
 _STATE_TONE = {
     "RUNNING": "good",
@@ -989,22 +1314,69 @@ def task_id_of(task: dict[str, Any]) -> str:
     return str(task.get("id") or task.get("task_id") or "?")
 
 
-def short_id(task_id: str, keep: int = 10) -> str:
+#: HOW MANY CHARACTERS OF A TASK ID A LINE IS LABELLED WITH -- one number, for
+#: every surface. On 2026-09-25 (#88, SC-F15) one task was shown three ways in
+#: one session: in full by `swarm workflow`, as its last 8 by `tail` and
+#: `follow`, and as its last 10 by `sc agents`, so matching a line in one to a
+#: row in another meant counting characters. Eight, because the id's random
+#: tail is what distinguishes it and eight hex characters of it do.
+SHORT_ID_CHARS = 8
+
+#: A step id is the caller's own name for the step and can be as long as they
+#: like; the label is a prefix, so it is clipped before it crowds out the id.
+_STEP_LABEL_CHARS = 12
+
+
+def short_id(task_id: str, keep: int = SHORT_ID_CHARS) -> str:
     return task_id if len(task_id) <= keep else task_id[-keep:]
+
+
+def task_label(task_id: Any, step_id: Any = None) -> str:
+    """How a line names one task: `b 4674b39f` for a workflow step, else `4674b39f`.
+
+    THE STEP ID FIRST, because it is the name the reader chose and the one
+    their spec uses. A workflow's steps were shown by task id alone, which
+    nobody has written down anywhere, so reading `tail` for a five-step
+    workflow meant keeping the id-to-step map in your head (#88, SC-F15).
+    """
+    short = short_id(str(task_id or "?"))
+    step = str(step_id or "").strip()
+    if not step:
+        return short
+    if len(step) > _STEP_LABEL_CHARS:
+        step = step[: _STEP_LABEL_CHARS - 2] + ".."
+    return f"{step} {short}"
+
+
+def describe_blocker(blocker: Any) -> str:
+    """One `blocked_by` entry as words: `provider concurrency limit (provider:anthropic)`.
+
+    The scheduler writes each entry as `{"pool": ..., "reason": ...}`. Printed
+    as it is stored, that is a Python dict repr, which is what `swarm
+    workflow-status` printed on 2026-09-25 (#88, SC-F16).
+    """
+    if isinstance(blocker, dict):
+        pool = blocker.get("pool") or ""
+        reason = str(blocker.get("reason") or "").lower().replace("_", " ")
+        return f"{reason} ({pool})" if pool else reason
+    return str(blocker)
+
+
+def describe_blockers(blocked: Any) -> list[str]:
+    """Every `blocked_by` entry, each through `describe_blocker`."""
+    if not blocked:
+        return []
+    items = blocked if isinstance(blocked, list) else [blocked]
+    return [describe_blocker(item) for item in items]
 
 
 def task_note(task: dict[str, Any], style: Style) -> Cell:
     park = task.get("park_reason")
     if park:
         return Cell(str(park).lower().replace("_", " "), "warn")
-    blocked = task.get("blocked_by") or []
+    blocked = describe_blockers(task.get("blocked_by"))
     if blocked:
-        first = blocked[0] if isinstance(blocked, list) else blocked
-        if isinstance(first, dict):
-            pool = first.get("pool") or ""
-            reason = str(first.get("reason") or "").lower().replace("_", " ")
-            return Cell(f"{reason} ({pool})" if pool else reason, "warn")
-        return Cell(str(first), "warn")
+        return Cell(blocked[0], "warn")
     error = task.get("last_error")
     if error:
         return Cell(str(error).splitlines()[0], "bad")
@@ -1025,8 +1397,14 @@ def render_agents(
 
     running = [t for t in tasks if t.get("state") in RUNNING_STATES]
     queued = [t for t in tasks if t.get("state") in QUEUED_STATES]
+    # What the listing did NOT read, said under whatever it did. A table built
+    # from part of the tenant's tasks and presented as the whole is the
+    # defect (#88, SC-F11); the sentence is how a reader knows which it is.
+    gaps: list[str] = []
+    for gap in listing_gaps(tasks):
+        gaps += detail(gap, style, tone="warn")
     if not running and not queued:
-        return [f"  {style.paint('nothing running, nothing queued', 'dim')}"]
+        return [f"  {style.paint('nothing running, nothing queued', 'dim')}"] + gaps
 
     def rows_for(items: Sequence[dict[str, Any]], anchor: str) -> list[dict[str, Any]]:
         out = []
@@ -1035,8 +1413,12 @@ def render_agents(
             metadata = task.get("metadata") or {}
             out.append(
                 {
-                    "task": Cell(short_id(task_id_of(task))),
-                    "state": Cell(state.lower(), _STATE_TONE.get(state, None)),
+                    "task": Cell(task_label(task_id_of(task), task.get("step_id"))),
+                    # AS THE API SPELLS IT. `swarm status`, `swarm result`,
+                    # `workflow-status` and `follow` all print the state in
+                    # upper case, and this table and `sc task` printed it in
+                    # lower -- two spellings of one vocabulary (#88, SC-F19).
+                    "state": Cell(state, _STATE_TONE.get(state, None)),
                     "profile": Cell(str(task.get("runner_profile") or style.dash), "dim"),
                     "label": Cell(str(metadata.get("unit") or ""), "dim"),
                     "age": Cell(format_age(task.get(anchor) or task.get("created_at"), now, style),
@@ -1047,7 +1429,9 @@ def render_agents(
         return out
 
     columns = [
-        Column("task", "TASK"),
+        # FLEXIBLE, and never dropped: a workflow step's label carries its step
+        # id, and at the narrowest widths truncating that beats overflowing.
+        Column("task", "TASK", flex=True),
         Column("state", "STATE"),
         Column("profile", "PROFILE", drop=3),
         Column("label", "LABEL", flex=True, drop=4),
@@ -1063,15 +1447,48 @@ def render_agents(
             lines.append("")
         lines.append(style.paint(f"  queued ({len(queued)})", "dim"))
         lines += render_table(columns, rows_for(queued, "created_at"), style, heading=False)
-    return lines
+    return lines + gaps
 
 
-def agents_subtitle(tasks: Sequence[dict[str, Any]] | None, style: Style) -> str:
+def active_headline(tasks: Sequence[dict[str, Any]]) -> str:
+    """`2 active (2 dispatched, 0 running)` -- demand, and how much of it runs.
+
+    "RUNNING" WAS THE WRONG WORD FOR THIS COUNT. It is every state that holds
+    capacity (`CONCURRENCY_STATES`, invariant 1), which is right for demand and
+    wrong as a description: on 2026-09-25 (#88, SC-F14) the headline said "2
+    running" over two tasks that were DISPATCHED and waiting for a container.
+    The total is kept -- it is what the pools are charged for -- and the
+    breakdown says how much of it is actually running. RUNNING is always
+    named, as 0 when it is 0, because that zero is the finding.
+    """
+    counts: dict[str, int] = {}
+    for task in tasks:
+        state = task.get("state")
+        if state in RUNNING_STATES:
+            counts[state] = counts.get(state, 0) + 1
+    running = TaskState.RUNNING.value
+    parts = [
+        f"{counts[state]} {state.lower()}"
+        for state in _ACTIVE_ORDER
+        if state != running and counts.get(state)
+    ]
+    parts.append(f"{counts.get(running, 0)} running")
+    return f"{sum(counts.values())} active ({', '.join(parts)})"
+
+
+def agents_subtitle(
+    tasks: Sequence[dict[str, Any]] | None,
+    style: Style,
+    *,
+    tenant: str | None = None,
+) -> str:
     if tasks is None:
         return "unreadable"
-    running = sum(1 for t in tasks if t.get("state") in RUNNING_STATES)
     queued = sum(1 for t in tasks if t.get("state") in QUEUED_STATES)
-    return f"{running} running{style.sep}{queued} queued"
+    text = f"{active_headline(tasks)}{style.sep}{queued} queued"
+    if listing_gaps(tasks):
+        text += f"{style.sep}incomplete"
+    return scoped(text, tenant or listing_tenant(tasks), style)
 
 
 # --------------------------------------------------------------------------
@@ -1094,8 +1511,19 @@ def render_task(
         ] + detail(error or "no reason reported", style, indent=2)
 
     state = str(task.get("state") or "?")
+    # NEVER A BARE DASH FOR "IT NEVER STARTED". The dash means "not measured",
+    # and a step cascade-cancelled before it was attempted HAS been measured:
+    # it has no start because there was none. `started —` said the opposite
+    # (#88, SC-F19).
+    if task.get("started_at"):
+        started = f"started {format_ago(task.get('started_at'), now, style)}"
+    elif state in FINISHED_STATES:
+        started = "never started"
+    else:
+        started = "not started yet"
     lines = [
-        f"{style.paint(task_id_of(task), 'bold')}  {style.paint(state.lower(), _STATE_TONE.get(state))}",
+        # Upper case, as the API and every `swarm` command spell a state.
+        f"{style.paint(task_id_of(task), 'bold')}  {style.paint(state, _STATE_TONE.get(state))}",
         style.paint(
             f"  profile   {task.get('runner_profile') or style.dash}"
             f"   attempt {task.get('attempt_count', style.dash)}"
@@ -1103,11 +1531,17 @@ def render_task(
             "dim",
         ),
         style.paint(
-            f"  created   {format_ago(task.get('created_at'), now, style)}"
-            f"   started {format_ago(task.get('started_at'), now, style)}",
+            f"  created   {format_ago(task.get('created_at'), now, style)}   {started}",
             "dim",
         ),
     ]
+    if task.get("step_id"):
+        lines.append(
+            style.paint(
+                f"  step      {task['step_id']} of {task.get('workflow_id') or style.dash}",
+                "dim",
+            )
+        )
     note = task_note(task, style)
     if note.text:
         lines.append(f"  {style.paint('why', 'dim')}       {style.paint(note.text, note.tone)}")
@@ -1196,6 +1630,12 @@ def find_trouble(snap: Snapshot, style: Style = PLAIN) -> list[Finding]:
     """
     out: list[Finding] = []
     now = snap.now
+    # WHOSE, on every finding about a tenant-scoped figure. The trouble list
+    # mixes the caller's tasks and accounts with pools every tenant shares, and
+    # a finding that does not say which it is about reads as the platform's
+    # when it is the tenant's, or the other way round (#88, SC-F5).
+    tenant = scope_tenant(snap)
+    whose = f" of tenant {tenant}" if tenant else ""
 
     for area, error in (
         ("identity", snap.tenant_error),
@@ -1218,7 +1658,12 @@ def find_trouble(snap: Snapshot, style: Style = PLAIN) -> list[Finding]:
     if snap.accounts is not None:
         if not snap.accounts:
             out.append(
-                Finding("warn", "accounts", "none registered; a claude-code runner has no credential to run on")
+                Finding(
+                    "warn",
+                    "accounts",
+                    f"none registered{' for tenant ' + tenant if tenant else ''}; "
+                    "a claude-code runner has no credential to run on",
+                )
             )
         for account in snap.accounts:
             ident = str(account.get("account_id") or account.get("label") or "?")
@@ -1254,7 +1699,10 @@ def find_trouble(snap: Snapshot, style: Style = PLAIN) -> list[Finding]:
                         Finding(
                             "warn" if reading.utilization < 1.0 else "down",
                             ident,
-                            f"{window_heading(key)} at {format_percent(reading, style)}"
+                            # "used", because every percentage carries its word
+                            # (OV-1): a bare "98%" beside a window name reads
+                            # as either room or use.
+                            f"{window_heading(key)} at {format_percent(reading, style)} used"
                             f", clears in {format_until(reading.resets_at, now, style)}",
                         )
                     )
@@ -1273,10 +1721,22 @@ def find_trouble(snap: Snapshot, style: Style = PLAIN) -> list[Finding]:
                 continue
             if enabled is None:
                 out.append(Finding("note", name, "pool did not report whether it is enabled"))
+            # A pool named for a tenant is that tenant's alone; every other
+            # pool is shared, and its `active` is every tenant's agents.
+            shared = not (name.startswith("tenant:") or ":tenant:" in name)
             if limit == 0:
                 out.append(Finding("down", name, "effective limit is 0; nothing can be admitted"))
             elif available == 0 and limit:
-                out.append(Finding("warn", name, f"full at {active}/{limit}"))
+                # UNITS, as the capacity table now labels them (#192): a pool
+                # of 10 is full at five browser agents, not ten.
+                out.append(
+                    Finding(
+                        "warn",
+                        name,
+                        f"full at {active}/{limit} units"
+                        + (", counting every tenant's" if shared else ""),
+                    )
+                )
 
     if snap.tasks is not None:
         parked: dict[str, int] = {}
@@ -1292,11 +1752,20 @@ def find_trouble(snap: Snapshot, style: Style = PLAIN) -> list[Finding]:
             elif state == "FAILED":
                 failed += 1
         for reason, count in sorted(parked.items(), key=lambda kv: -kv[1]):
-            out.append(Finding("warn", "parked", f"{count} task(s): {reason.lower().replace('_', ' ')}"))
+            out.append(
+                Finding("warn", "parked", f"{count} task(s){whose}: {reason.lower().replace('_', ' ')}")
+            )
+        # THE WINDOW, NAMED (#190). Parked tasks are live and every live task
+        # is read; failed and dead-lettered ones are finished and come only
+        # from the newest-N page, so their counts are over that page, and the
+        # finding says which page -- "in the window listed" named none.
+        scope, since = window_scope(snap.tasks, whose, now)
         if dead:
-            out.append(Finding("down", "dead-lettered", f"{dead} task(s) gave up after every attempt"))
+            out.append(
+                Finding("down", "dead-lettered", f"{dead} {scope} gave up after every attempt{since}")
+            )
         if failed:
-            out.append(Finding("note", "failed", f"{failed} task(s) in the window listed"))
+            out.append(Finding("note", "failed", f"{failed} {scope} failed{since}"))
 
     out.sort(key=lambda f: (f.rank, f.where))
     return out
@@ -1354,7 +1823,9 @@ def render_trouble(findings: Sequence[Finding], style: Style) -> list[str]:
 
 
 def render_header(snap: Snapshot, style: Style) -> list[str]:
-    tenant = (snap.tenant or {}).get("tenant_id") or style.dash
+    # `tenant_of`, not `.get("tenant_id")`: the identity route nests it, and
+    # the flat read showed a tenant that WAS read as not measured (#88, SC-F4).
+    tenant = scope_tenant(snap) or style.dash
     # Ordered by what an operator needs when only part of it fits: the tenant
     # they are acting as first, then the tier that explains a refusal, then the
     # URL, which is the longest and the least often surprising.
@@ -1372,10 +1843,13 @@ def render_header(snap: Snapshot, style: Style) -> list[str]:
 
 def render_overview(snap: Snapshot, style: Style) -> list[str]:
     now = snap.now
+    tenant = scope_tenant(snap)
     lines = render_header(snap, style)
     lines.append("")
 
-    lines.append(section("accounts", accounts_subtitle(snap.accounts, style), style))
+    lines.append(
+        section("accounts", accounts_subtitle(snap.accounts, style, tenant=tenant), style)
+    )
     lines += render_accounts(snap.accounts, style, now, error=snap.accounts_error)
     lines.append("")
 
@@ -1383,7 +1857,7 @@ def render_overview(snap: Snapshot, style: Style) -> list[str]:
     lines += render_capacity(snap.capacity, style, error=snap.capacity_error, profiles_only=True)
     lines.append("")
 
-    lines.append(section("agents", agents_subtitle(snap.tasks, style), style))
+    lines.append(section("agents", agents_subtitle(snap.tasks, style, tenant=tenant), style))
     lines += render_agents(snap.tasks, style, now, error=snap.tasks_error)
     lines.append("")
 

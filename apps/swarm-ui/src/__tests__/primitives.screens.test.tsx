@@ -303,29 +303,43 @@ describe('Overview draws the four track states, through the shared track', () =>
     expect(track(row('never')).classList.contains('is-unknown')).toBe(true)
     expect(row('never').querySelector('.ctl-util-figure')?.textContent).toBe('—')
 
+    // OV-1: EVERY % CARRIES ITS WORD. The rows printed a bare `%` under a
+    // headline printing `% left`, so the same glyph meant two opposite things
+    // one line apart. They are % used, and say so.
     const zero = track(row('zero'))
     expect(zero.classList.contains('is-zero')).toBe(true)
-    expect(row('zero').querySelector('.ctl-util-figure')?.textContent).toBe('0%')
+    expect(row('zero').querySelector('.ctl-util-figure')?.textContent).toBe('0% used')
 
     // PROJECTED: real, not current. The documented grey, never a verdict hue.
     const stale = track(row('stale'))
     const fill = stale.querySelector('.ctl-util-fill')
     expect(fill?.classList.contains('ov-projected'), 'a stale reading lost its projected grey').toBe(true)
     expect(fill?.classList.contains('is-warn') || fill?.classList.contains('is-bad')).toBe(false)
-    expect(row('stale').querySelector('.ctl-util-figure')?.textContent).toBe('~50%')
+    expect(row('stale').querySelector('.ctl-util-figure')?.textContent).toBe('~50% used')
   })
 })
 
 describe('Overview draws the four tile states, through the shared tile', () => {
+  /**
+   * TWO TILES CARRY THE FOUR PICTURES NOW (OV-12). `Token spend` and `Account
+   * headroom` left the strip -- each drew a figure its own panel draws -- so
+   * the four renderings are asked of the two facts that remain: Running
+   * (unread, then pending in a second render) and Units held (absent, then a
+   * figure that is the doorway to Pools).
+   */
   it('a failed read, a read in flight, an absence and a figure stay four pictures', async () => {
-    renderOverview({
+    const first = renderOverview({
       loadStats: { status: 'error', error: { kind: 'server_error', httpStatus: 500, code: null, message: 'boom' } },
-      loadSpend: never(),
     })
-    // Every read but spend has to land first; the rows are the last to draw.
     await screen.findByText('p-zero', undefined, WAIT)
     await screen.findByText('never', undefined, WAIT)
     await waitFor(() => expect(tile('Running').classList.contains('is-unread')).toBe(true), WAIT)
+
+    // Two facts, and neither is a figure a panel below draws again.
+    const labels = [...document.querySelectorAll('.ctl-metrics .ctl-metric-label')].map((l) =>
+      (l.childNodes[0]?.textContent ?? '').trim(),
+    )
+    expect(labels).toEqual(['Running', 'Units held'])
 
     // UNREAD: the read failed. A mark, no digit.
     const running = tile('Running')
@@ -337,19 +351,27 @@ describe('Overview draws the four tile states, through the shared tile', () => {
     expect(units.classList.contains('is-absent')).toBe(true)
     expect(units.querySelector('.ctl-metric-value .ctl-mark.is-absent')).not.toBeNull()
     expect(units.querySelector('.ctl-metric-value')?.textContent).not.toMatch(/\d/)
+    first.unmount()
+
+    // SECOND RENDER: the count still in flight, and a global pool to count.
+    renderOverview({
+      loadStats: never(),
+      loadCapacity: ok({ ...CAPACITY, pools: [...CAPACITY.pools, pool({ name: 'global', active: 2 })] }),
+    })
+    await screen.findByText('p-zero', undefined, WAIT)
 
     // READING: still in flight. Neither of the two absences, and no word.
-    const cost = tile('Token spend')
-    expect(cost.querySelector('.ctl-metric-value .ctl-pending')).not.toBeNull()
-    expect(cost.classList.contains('is-absent') || cost.classList.contains('is-unread')).toBe(false)
-    expect(cost.querySelector('.ctl-mark')).toBeNull()
+    const pending = tile('Running')
+    expect(pending.querySelector('.ctl-metric-value .ctl-pending')).not.toBeNull()
+    expect(pending.classList.contains('is-absent') || pending.classList.contains('is-unread')).toBe(false)
+    expect(pending.querySelector('.ctl-mark')).toBeNull()
 
     // A FIGURE, and the doorway it is: the whole tile is the link.
-    const headroom = tile('Account headroom')
-    expect(headroom.tagName).toBe('A')
-    expect(headroom.getAttribute('href')).toBe('#capacity/accounts')
-    expect(headroom.querySelector('.ctl-metric-value')?.textContent).toMatch(/^100% left$/)
-    expect(headroom.getAttribute('aria-label')).toMatch(/^Account headroom\. /)
+    const held = tile('Units held')
+    expect(held.tagName).toBe('A')
+    expect(held.getAttribute('href')).toBe('#capacity/pools')
+    expect(held.querySelector('.ctl-metric-value')?.textContent).toMatch(/\d/)
+    expect(held.getAttribute('aria-label')).toMatch(/^Units held\. /)
   })
 })
 
@@ -420,7 +442,9 @@ describe('AgentDetail draws requested-vs-utilised through the shared track', () 
     }
   })
 
-  it('fills a measured peak, and hatches cpu, which nothing samples', async () => {
+  // #184: cpu is sampled now; an attempt row served with no `usage` reading
+  // -- this fixture's -- is one hatched `not served` row, never a zero.
+  it('fills a measured peak, and hatches cpu when the attempt serves no reading', async () => {
     await mountRun(agentRun())
     const memory = track(row('memory')).querySelector<HTMLElement>('.ctl-util-fill')
     expect(memory, 'a measured peak drew no fill').not.toBeNull()
@@ -469,7 +493,7 @@ describe('AgentDetail draws requested-vs-utilised through the shared track', () 
 // ---------------------------------------------------------------------------
 
 describe('Capacity draws each pool card through the shared track', () => {
-  it('no ceiling is hatched, a zero is ticked, a reading fills, and the track is a meter', async () => {
+  it('a ceiling of 0 fills in its mark’s tone, a zero is ticked, a reading fills, and the track is a meter', async () => {
     api.loadCapacity.mockResolvedValue(
       ok<Capacity>({
         pools: [
@@ -496,9 +520,17 @@ describe('Capacity draws each pool card through the shared track', () => {
       return track(c!)
     }
 
+    // #159 RE-POINT (CP-14, #85). This asserted `backend:a`, at a ceiling of 0,
+    // drew the hatched `is-unknown` track: the card used to read a 0 ceiling
+    // as "no ceiling". CP-14 made the tile say `/ 0` and carry the `limit 0`
+    // mark, because a ceiling of 0 WAS read and admits nothing -- and the
+    // review of #159 found the hatch still beside them, saying "not
+    // measured" about the one figure on the tile that was. A `backend:` pool
+    // only a person writes, so its limit 0 is the paused tone, and the track
+    // is full in it: no room, measured.
     const a = card('backend:a')
-    expect(a.classList.contains('is-unknown')).toBe(true)
-    expect(a.querySelector('.ctl-util-fill')).toBeNull()
+    expect(a.classList.contains('is-unknown'), 'a ceiling that was read is drawn as not measured').toBe(false)
+    expect(a.querySelector<HTMLElement>('.ctl-util-fill.is-paused')?.style.width).toBe('100%')
 
     const b = card('backend:b')
     expect(b.classList.contains('is-zero')).toBe(true)

@@ -1,24 +1,25 @@
 import { useCallback, useState, type CSSProperties, type ReactNode } from 'react'
-import { loadAgentRun, type AgentRun } from './api'
-import { ArtifactViewer } from './ArtifactViewer'
+import { EVENT_PAGE_LIMIT, loadAgentRun, loadTaskInputOnce, type AgentRun } from './api'
 import { AttemptDurations } from './charts/AttemptPhases'
 import { CheckpointStrip } from './charts/CheckpointStrip'
 import { DiffstatChart } from './charts/Diffstat'
 import { PeakMemoryChart } from './charts/PeakMemory'
 import { TokenSpendChart } from './charts/TokenSpend'
 import { DispatchFacts } from './Dispatch'
-import { attemptEnd } from './duration'
+import { attemptEnd, type AttemptEnd } from './duration'
 import { eventKind, isTerminalEvent } from './events'
-import { num } from './fetch'
+import { num, type Result } from './fetch'
 import { HELP, type TopicId } from './help'
 import { HelpCard } from './HelpCard'
-import { LivenessBadge } from './Liveness'
+import { LivenessBadge, livenessOf } from './Liveness'
 import { Absent, Mark, Metric, UtilRow, type MarkKind } from './primitives'
-import { RunFiles } from './RunFiles'
-import { Screen, timeAgo } from './Shell'
+import { RunFiles, useRead } from './RunFiles'
+import { Screen, timeAgo, type ScreenReading } from './Shell'
 import { StagedInputs } from './StagedInputs'
 import { StopRun } from './StopRun'
+import { rowClock, useNow } from './useNow'
 import {
+  CONCURRENCY_STATES,
   GIB,
   REASON_COPY,
   TERMINAL_STATES,
@@ -34,15 +35,18 @@ import {
   stateTone,
   usageOf,
   whyAgent,
+  whyNeedsAction,
   type ArtifactRef,
   type AttemptRow,
   type DispatchRole,
   type DispatchStrategy,
+  type ElapsedPhase,
   type GitSummary,
   type ResourceClassSpec,
   type ResultSummary,
   type Task,
   type TaskEvent,
+  type TaskInputCopy,
   type Tone,
 } from './types'
 
@@ -111,6 +115,12 @@ export function AgentDetailScreen({ taskId, onClose }: { taskId: string; onClose
         key={`${taskId}:${reloads}`}
         title={taskId}
         load={load}
+        // THE DRAWER RE-READS (AG-2). It read once, so a ticking clock over it
+        // could only slide `live 36s ago` into `silent` against events that
+        // were merely old -- the clock alone makes a live agent look dead.
+        // `drawerPoll` stops once a finished task's last writes are in:
+        // nothing it draws changes after that.
+        pollMs={drawerPoll}
         summary={(r) => (
           <>
             {r.task.runner_profile} · {r.task.resource_class} ·{' '}
@@ -120,10 +130,80 @@ export function AgentDetailScreen({ taskId, onClose }: { taskId: string; onClose
           </>
         )}
       >
-        {(r) => <Run run={r} reload={reload} />}
+        {/* THE READING GOES DOWN WITH THE RUN. `Run` caps its clock at one
+            poll past it, and the checkpoint and log panels re-read when it
+            moves, so every part of the drawer is as of the same read. */}
+        {(r, reading) => <Run run={r} reload={reload} reading={reading} />}
       </Screen>
     </div>
   )
+}
+
+/**
+ * HOW OFTEN THE OPEN DRAWER RE-READS ITS RUN, or null to stop.
+ *
+ * 10s, not the Agents list's 5s: one read here is FOUR requests -- the task,
+ * its events, its attempts and the resource-class catalogue (`loadAgentRun`)
+ * -- and a successful one is followed by two more, the checkpoint listing and
+ * the log window (RunFiles.tsx), which re-read with it. Six requests per 10s
+ * is 0.6 rps against the 20 rps per-principal budget, and a heartbeat lands
+ * only every ~150s anyway. A finished task stops once its last writes are in
+ * (`drawerPoll`): its documents are final after that, and polling them is
+ * spend with nothing to learn.
+ */
+export const DRAWER_POLL_MS = 10_000
+
+/**
+ * HOW LONG A FINISH MAY TAKE TO BECOME WHOLE, measured from the task's
+ * `completed_at`, before the drawer stops waiting for it.
+ *
+ * `finish()` (agent_worker/control.py) writes a terminal task in three steps:
+ * the state and `completed_at` (`transition`), then the attempt's end
+ * (`record_attempt_end`), then the terminal event (`emit`). They land within
+ * moments of each other, and `loadAgentRun` reads the task, the events and
+ * the attempts in parallel, so a poll can land between them. Some finishes are
+ * never whole: a cancel of a PARKED task leaves its attempt with no end, and a
+ * run with more events than one page never shows its terminal event. 30s is
+ * three more reads for the first kind to complete, and a bound on the second.
+ * A chosen value, not a measured one: nothing publishes how long `finish()`
+ * takes, and the three writes are one round trip apart.
+ */
+export const DRAWER_SETTLE_MS = 30_000
+
+/**
+ * Whether a terminal run's last writes are all on this read: the attempt's end
+ * (when there is an attempt) and the terminal event. A failed attempt or event
+ * read is not settled -- another read may succeed.
+ */
+function finishSettled(r: AgentRun): boolean {
+  if (r.events === null || !r.events.some(isTerminalEvent)) return false
+  if (r.attempts === null) return false
+  const latest = [...r.attempts].sort((x, y) => x.created_at.localeCompare(y.created_at)).at(-1)
+  return latest === undefined || latest.completed_at !== null
+}
+
+/**
+ * THE DRAWER STOPS ON A SETTLED READ, NOT ON THE FIRST TERMINAL ONE.
+ *
+ * It stopped on the first read that showed a terminal state. A read that
+ * landed between `finish()`'s writes stopped it on SUCCEEDED with the attempt
+ * still open and no terminal event, and nothing corrected it: the attempt chip
+ * said `ended, no end recorded`, the run length said no finish time was ever
+ * written, and the Timeline marked the terminal event missing -- all false a
+ * moment later, and on screen for as long as the drawer stayed open. Watching a
+ * task finish is the flow AG-2 exists for.
+ *
+ * So a terminal run is re-read until its finish is whole, or until its
+ * `completed_at` is `DRAWER_SETTLE_MS` old. The age is taken either way round
+ * (`Math.abs`): `completed_at` is the server's clock and `now` is this
+ * browser's, and a browser running behind must not keep an old finish
+ * polling until its own clock catches up.
+ */
+export function drawerPoll(r: AgentRun | null, now: number = Date.now()): number | null {
+  if (r === null || !TERMINAL_STATES.has(r.task.state)) return DRAWER_POLL_MS
+  if (finishSettled(r)) return null
+  const done = r.task.completed_at === null ? Number.NaN : Date.parse(r.task.completed_at)
+  return Number.isFinite(done) && Math.abs(now - done) <= DRAWER_SETTLE_MS ? DRAWER_POLL_MS : null
 }
 
 /**
@@ -143,9 +223,42 @@ export function AgentDetailScreen({ taskId, onClose }: { taskId: string; onClose
  * fabricate a callback in order to assert on STATIC markup is asserting on its
  * own scaffolding. Absent, the stop control simply has nothing to call.
  */
-export function Run({ run, reload }: { run: AgentRun; reload?: () => void }) {
+export function Run({
+  run,
+  reload,
+  reading,
+}: {
+  run: AgentRun
+  reload?: () => void
+  /**
+   * When this run was read and how often the drawer re-reads it, from
+   * `Screen`. OPTIONAL for the reason `reload` is: the acceptance test renders
+   * this body with no `Screen` around it, where there is no read to age and
+   * nothing re-reads, so the clock runs uncapped and the panels read once.
+   */
+  reading?: ScreenReading
+}) {
   const { task, events } = run
-  const now = Date.now()
+  // THE SHARED CLOCK (AG-2). This was `Date.now()` taken once at render, so
+  // `run`, `Elapsed` and the liveness badge's `live 36s ago` never moved. One
+  // 1s clock -- the one the Agents list's elapsed column reads -- re-renders
+  // the drawer, and LivenessBadge ages against the same instant.
+  //
+  // AND IT STOPS WHERE THE READ STOPS VOUCHING FOR IT, as the Agents list's
+  // rows do (`rowClock`). When a re-read fails, `Screen` keeps the last good
+  // run on screen, dimmed, and backs off for up to five minutes -- and the
+  // clock went on aging that read: a worker read at `live 20s ago` became
+  // `silent 7m ago`, "the worker may be gone", when only the reads had failed.
+  // `livenessOf` answers `unknown` for an event read that failed precisely to
+  // keep "could not look" apart from "nothing happened"; a stale read is the
+  // same thing, so the figures stop one poll past it. A FINISHED task is not
+  // capped: every age it shows is measured from an instant that will not move,
+  // so `finished 3m ago` is as true an hour later as the clock says.
+  const clock = useNow(1000)
+  const now =
+    reading === undefined || TERMINAL_STATES.has(task.state)
+      ? clock
+      : rowClock(clock, reading.fetchedAt, reading.pollMs ?? DRAWER_POLL_MS)
 
   return (
     /* ONE SUBJECT, SO ONE STACK — AND THE ORDER IS THE OPERATOR'S, NOT THE
@@ -170,21 +283,22 @@ export function Run({ run, reload }: { run: AgentRun; reload?: () => void }) {
     <div className="run-stack">
       <Headline run={run} now={now} reload={reload} />
       <Alerts task={task} />
-      <Why task={task} />
-      {task.last_error && <ErrorBanner text={task.last_error} />}
+      <Why task={task} events={events} now={now} />
+      <ErrorBanner run={run} />
       <RunMetrics run={run} now={now} />
       <Attempts run={run} now={now} />
       <DispatchPanel task={task} />
       <Output run={run} />
-      {/* The checkpoint and log READ ROUTES, which no screen had ever called.
-          They are a separate component because they are separate reads with
-          their own failure states: a failed checkpoint listing must not blank
-          this page, and it must not render as "this task has no checkpoints"
-          either. See RunFiles.tsx. The attempt records go with it: they are
-          what can say a checkpoint was written that the listing no longer
-          finds, which is not a real zero. */}
-      <RunFiles task={task} attempts={run.attempts} />
-      <Input run={run} />
+      {/* The checkpoint READ ROUTE, which no screen had ever called. It is a
+          separate component because it is a separate read with its own
+          failure states: a failed checkpoint listing must not blank this page,
+          and it must not render as "this task has no checkpoints" either. See
+          RunFiles.tsx. The attempt records go with it: they are what can say a
+          checkpoint was written that the listing no longer finds, which is not
+          a real zero. The runner's log was drawn here too, and lives in
+          Artifacts › Logs only now (#184, owner decision of 2026-09-25). */}
+      <RunFiles task={task} attempts={run.attempts} readAt={reading?.fetchedAt ?? null} now={now} />
+      <Input run={run} readAt={reading?.fetchedAt ?? null} />
       <Timeline task={task} events={events} detail={run.eventsDetail} attempts={run.attempts} />
     </div>
   )
@@ -200,9 +314,14 @@ export function Run({ run, reload }: { run: AgentRun; reload?: () => void }) {
  * `warn` rather than letting it fall through keeps a THROTTLED-shaped state
  * from silently rendering in the default grey, which is the colour reserved
  * for "we do not know".
+ *
+ * `ended` (CANCELLED, CH-22) is the flat bar: the ONE `is-info` modifier, not a
+ * second one, grey since CH-17 -- a terminal state that is not a verdict.
  */
 export function chipTone(tone: ChipTone): string {
-  return tone === 'wait' ? 'warn' : tone
+  if (tone === 'wait') return 'warn'
+  if (tone === 'ended') return 'info'
+  return tone
 }
 
 /**
@@ -385,6 +504,59 @@ function tokens(v: number | null | undefined): ReactNode {
   return v.toLocaleString()
 }
 
+/**
+ * A state as the chip beside it reads it (AG-28).
+ *
+ * `.ctl-chip` lowercases the API's `CANCELLED` with `text-transform`, which is
+ * the one direction §13.2 of design-system.md allows. A heading or a sentence
+ * that interpolates the same state has no stylesheet to do that for it, so
+ * `no attempt yet · CANCELLED` stood in capitals two inches from a chip that
+ * said `cancelled`: one fact, two spellings, on one line.
+ */
+function stateWord(state: string): string {
+  return state.toLowerCase()
+}
+
+/**
+ * Whether any attempt of this task ever reached a running worker.
+ *
+ * `task.started_at` is written on DISPATCHED -> STARTING, and an attempt's
+ * `started_at` by the worker's `record_attempt_start`, so a task with neither
+ * never had an agent to write an error, a result summary or a figure. Read
+ * from both because either can be missing on its own: a failed attempt read
+ * leaves the task's field, and a retried task keeps the attempt records.
+ */
+function anythingRan(task: Task, attempts: AttemptRow[] | null): boolean {
+  return task.started_at !== null || (attempts ?? []).some((a) => a.started_at !== null)
+}
+
+/**
+ * Only the CLI agents parse a usage block out of the runner's output
+ * (`cliagent.run_cli_agent`); the others report no tokens and no cost by
+ * construction. One predicate for the run tiles and the attempt cards, so the
+ * two cannot disagree about whether a figure is coming.
+ */
+function reportsSpend(profile: string): boolean {
+  return profile === 'claude-code' || profile === 'codex'
+}
+
+/**
+ * ONE NAME FOR ONE ATTEMPT, on every pane that draws it (AG-21).
+ *
+ * The same attempt was `Attempt 1` with a `gen 1` chip on its card, `Attempt
+ * 1 · generation 1` over its events and `Attempt · gen 1` -- no ordinal at all
+ * -- in the Attempts view. A reader matching a card to its events across two
+ * panes had three spellings to reconcile. The ordinal is the attempt's place
+ * among the documents, oldest first; the generation is the fencing number it
+ * was minted with, and the two are not the same number on a fenced task.
+ *
+ * EXPORTED because AttemptTimeline draws the same attempts and imports its
+ * primitives from here already.
+ */
+export function attemptLabel(ordinal: number, generation: number): string {
+  return `Attempt ${ordinal} · gen ${generation}`
+}
+
 // ---------------------------------------------------------------------------
 // Head
 // ---------------------------------------------------------------------------
@@ -417,8 +589,23 @@ function Headline({
             second dot beside the first -- the owner's "decorative double dot",
             here and in Agents.tsx. Colour is still not the only signal: the
             `<i>` carries the silhouette and the WORD carries the state. */}
-        <Chip tone={stateTone(task.state)}>{task.state}</Chip>
-        {/* THIS SCREEN'S ONE `?` (B7.4), on the state chip it qualifies.
+        {/* AH-24: A `?` GOES AFTER THE LABEL OR HEADING IT EXPLAINS, NEVER
+            AFTER A VALUE. The chip is the task's state -- a value -- and the
+            glyph trailed it as `● running ? ● live`. This heading held nothing
+            but values (the state, the liveness, the stop control), so the
+            state takes its key here, as every fact in the strip under it
+            does: `state ? ● running`. The key is `.ctl-fact > b`, the label
+            treatment the strip uses, and the glyph is inside it, after its
+            word, as Overview's `reads ?` is. */}
+        <span className="ctl-fact">
+          <b>
+            state
+            <HelpCard topic="capacity" />
+          </b>
+          <Chip tone={stateTone(task.state)}>{task.state}</Chip>
+        </span>
+        {/* THIS SCREEN'S ONE `?` (B7.4), for the state chip it qualifies, and
+            drawn after the chip's key (AH-24, above).
             The agent detail carried twenty-two help anchors, the most in the
             console -- one on almost every metric tile and empty state, each
             opening a general sentence beside a mark whose own accessible name
@@ -432,8 +619,7 @@ function Headline({
             be costing nothing. That is invariant 1, it is the first question
             anyone opens this screen with, and no chip can carry it.
             `tests/agentdetail.test.tsx` asserts a `?` renders on this surface
-            with every card closed. */}
-        <HelpCard topic="capacity" />
+            with every card closed, after the `state` key and before the chip. */}
         <LivenessBadge task={task} events={events} now={now} />
         {/* B28. The route has existed and worked since it was written and
             nothing in this app called it, so an operator watching an agent
@@ -452,10 +638,29 @@ function Headline({
           row is indistinguishable from a row that was never going to be
           there. */}
       <ul className="ctl-facts">
-        <li className="ctl-fact">
-          <b>run</b>
-          {el.text}
-        </li>
+        {/* `run` ONLY OVER A RUN (AG-3). A cascade-cancelled step read `run
+            27m 57s` beside `never ran`: the wall time it sat READY, printed as
+            the agent's run. The key is chosen from `elapsed()`'s own `phase`
+            -- the answer it gives for exactly this, so the key and the figure
+            cannot disagree -- and not from `started_at` alone, which survives
+            a park: keyed on that, a parked retry read `run` over its wait.
+
+            `wait` ONLY OVER A WAIT. A live task that is not running has a
+            wait the document can time only when nothing has started and it
+            holds no slot, and that is the one case where `elapsed()` prints a
+            figure and ticks. A parked retry used to read `wait waiting 50m`
+            beside `age 50m ago`: its age, which includes the attempt that
+            ran, presented as a wait. Between attempts, and on a LEASED or
+            DISPATCHED task, `elapsed()` prints the state word alone, which
+            the chip already says, so the fact is left out rather than keyed
+            over a figure that is not one. `age` beside it is the task's age,
+            under the key that says so. */}
+        {(el.phase !== 'waiting' || (task.started_at === null && el.ticking)) && (
+          <li className="ctl-fact">
+            <b>{el.phase === 'waiting' ? 'wait' : 'run'}</b>
+            {el.text}
+          </li>
+        )}
         <li className="ctl-fact">
           <b>age</b>
           {timeAgo(task.created_at)}
@@ -490,7 +695,7 @@ function Headline({
  * the run's total, and a tile that does not say so gets read as both.
  */
 function RunMetrics({ run, now }: { run: AgentRun; now: number }) {
-  const { task, attempts, classes } = run
+  const { task, attempts, classes, events } = run
   const el = elapsed(task, now)
 
   if (attempts === null) {
@@ -501,7 +706,7 @@ function RunMetrics({ run, now }: { run: AgentRun; now: number }) {
             only thing the sentence was doing that a reader needed on the
             surface. Why the attempt read can fail, and what may not be
             concluded from one, is `#help/read-failed`. */}
-        <Metric label="Elapsed" value={el.text} sub={elapsedNote(task)} foot="task document" />
+        <Metric label="Elapsed" value={el.text} sub={elapsedNote(task, el.phase, now)} foot="task document" />
         <Metric
           label="Attempts"
           value={`${task.attempt_count} / ${task.max_attempts}`}
@@ -517,6 +722,31 @@ function RunMetrics({ run, now }: { run: AgentRun; now: number }) {
 
   const cls = classes?.[task.resource_class] ?? null
   const noCeiling = ceilingNote(run)
+
+  // THE RUNNING BRANCH (AG-4). Peak memory, tokens and cost are all written
+  // when an attempt ENDS -- `record_resource_usage` and `record_spend` run in
+  // `finish()` -- so while the latest attempt is open, "nothing recorded" is
+  // the expected state rather than an absence. These three tiles drew the
+  // absent encoding (`not recorded`, `not reported`) on a RUNNING agent, right
+  // beside the attempt card's own `written at exit` and a live 18.6 MiB
+  // heartbeat: the one screen telling its reader that a figure was missing
+  // when it was simply not due yet. `AttemptSpend` below already had this
+  // branch; the run-level tiles now take the same pending tone.
+  //
+  // "Open" is `attemptEnd`'s answer, the one predicate the card, the resources
+  // panel and the phase chart read, so a parked or reclaimed attempt -- which
+  // also has no finish time -- is NOT pending here either: none of those
+  // writes is coming.
+  const ordered = [...attempts].sort((x, y) => x.created_at.localeCompare(y.created_at))
+  const latest = ordered[ordered.length - 1]
+  const open = latest !== undefined && !attemptEnd(latest, task, true).over ? latest : null
+  const reports = reportsSpend(task.runner_profile)
+  // The live reading, when there is no final one: every fifth heartbeat
+  // carries the process's high-water mark so far. Labelled with its age, and
+  // never presented as the final figure.
+  const hb = open === null ? null : newestHeartbeat(open, events)
+  const liveRss = hb?.peakRssBytes ?? null
+
   const measured = attempts.filter((a) => a.peak_rss_bytes !== null)
   const peak = measured.length === 0 ? null : Math.max(...measured.map((a) => a.peak_rss_bytes ?? 0))
   const spent = attempts.filter((a) => a.cost_usd !== null)
@@ -537,7 +767,7 @@ function RunMetrics({ run, now }: { run: AgentRun; now: number }) {
 
   return (
     <div className="ctl-metrics">
-      <Metric label="Elapsed" value={el.text} sub={elapsedNote(task)} />
+      <Metric label="Elapsed" value={el.text} sub={elapsedNote(task, el.phase, now)} />
       <Metric
         label="Attempts"
         value={`${attempts.length}`}
@@ -553,7 +783,23 @@ function RunMetrics({ run, now }: { run: AgentRun; now: number }) {
         }
         tone={attempts.length === task.attempt_count ? undefined : 'unread'}
       />
-      {peak === null ? (
+      {peak === null && open !== null ? (
+        // STILL RUNNING: the final figure is due at exit. A heartbeat reading
+        // is a real measurement of the live process and is shown as one --
+        // with its age, and on the pending tone, because it is the high-water
+        // mark SO FAR and not the number that will be written.
+        liveRss !== null && hb !== null ? (
+          <Metric
+            label="Peak memory"
+            value={bytesLabel(liveRss)}
+            sub={`live · ${timeAgo(hb.at, now)}`}
+            tone="reading"
+            explain="peak-memory"
+          />
+        ) : (
+          <Metric label="Peak memory" value="written at exit" tone="reading" explain="peak-memory" />
+        )
+      ) : peak === null ? (
         // THE VALUE IS THE FACT AND IT STAYS. "not recorded" on a dashed
         // tile, in the faint colour, beside neighbours that are digits --
         // three signals, none of them hover, none of them colour alone.
@@ -576,7 +822,12 @@ function RunMetrics({ run, now }: { run: AgentRun; now: number }) {
           explain="oom-near-miss"
         />
       )}
-      {tokIn === null && tokOut === null ? (
+      {tokIn === null && tokOut === null && open !== null && reports ? (
+        // Pending only for a runner that reports at all. `mock`, `generic`
+        // and `browser` never write tokens, so for them "not reported" is the
+        // truth while they run as much as after.
+        <Metric label="Tokens" value="written at exit" tone="reading" explain="tokens-reported" />
+      ) : tokIn === null && tokOut === null ? (
         <Metric label="Tokens" value="not reported" tone="absent" explain="tokens-reported" />
       ) : (
         <Metric
@@ -592,7 +843,9 @@ function RunMetrics({ run, now }: { run: AgentRun; now: number }) {
           sub={tokenRollupNote(attempts.length, withIn.length, withOut.length)}
         />
       )}
-      {cost === null ? (
+      {cost === null && open !== null && reports ? (
+        <Metric label="Token cost" value="written at exit" tone="reading" explain="token-cost" />
+      ) : cost === null ? (
         <Metric label="Token cost" value="not reported" tone="absent" explain="token-cost" />
       ) : (
         <Metric
@@ -603,7 +856,16 @@ function RunMetrics({ run, now }: { run: AgentRun; now: number }) {
           // reason the total may not be the whole of it. That there is no
           // infrastructure cost to add is a fact about the platform, and moved.
           sub={`${spent.length} of ${attempts.length} reported`}
-          tone={spent.length === attempts.length ? undefined : 'unread'}
+          // A GAP THAT IS ONLY THE OPEN ATTEMPT IS PENDING, NOT UNREAD. The
+          // earlier attempts' spend is in; the one still running writes its
+          // own at exit. Only an ENDED attempt with no figure is a hole.
+          tone={
+            spent.length === attempts.length
+              ? undefined
+              : attempts.every((a) => a.cost_usd !== null || a === open)
+                ? 'reading'
+                : 'unread'
+          }
           explain="token-cost"
         />
       )}
@@ -666,29 +928,63 @@ function tokenRollupNote(total: number, withIn: number, withOut: number): string
  *
  * "Still running" on a PARKED task was the first version of this and it is a
  * flat lie: a parked attempt released its capacity and nothing is executing.
- * `elapsed()` keeps counting wall time from `started_at` regardless -- that is
- * the Agents table's behaviour and is not changed here -- so the sentence
- * under the figure is what has to say which clock it is.
+ *
+ * `running` IS READ FROM `elapsed()`'s PHASE, NOT FROM `started_at`. The start
+ * on the task document survives a park and a requeue, so a retry waiting in
+ * READY, LEASED or DISPATCHED has one -- and this note said `running` under
+ * it. The note follows `elapsed()`'s answer rather than a second reading of
+ * the same field.
+ *
+ * WHERE THE FIGURE IS ONLY A STATE WORD, THE NOTE CARRIES THE AGE, LABELLED AS
+ * ONE. Between attempts, and on a LEASED or DISPATCHED task, `elapsed()` has
+ * no span to time and prints the state word alone. This note says why -- an
+ * earlier attempt ran, or nothing has started -- and gives `submitted … ago`,
+ * which is what the age is. It used to read `wall time, not work` under a
+ * parked retry's `waiting 50m`, which called the age a wait.
+ *
+ * NOTHING HERE SAYS `still counting` ANY MORE. It described `elapsed()` going
+ * on to `now` for a finished task with no recorded end, and for one that never
+ * started. Neither ticks now: a run with no recorded end has no length and
+ * reads `—`, and a task that never started reads `never ran`.
+ *
+ * EVERY AGE HERE IS TAKEN AT `now`, the drawer's shared 1s clock (AG-2), so
+ * the note moves on the same tick as the figure beside it rather than on
+ * whatever `Date.now()` said when the tile last happened to render.
  */
-function elapsedNote(task: Task): string {
-  if (TERMINAL_STATES.has(task.state)) {
-    if (task.completed_at !== null) return `finished ${timeAgo(task.completed_at)}`
-    // NO completion time, and `elapsed()` does not stop for that: it falls
-    // through to `now - started_at` and keeps counting to the current clock.
-    // So the figure beside this qualifier is not the length of the run and it
-    // grows on every render. `still counting` is what says that -- the tile
-    // cannot say it any other way, and it is three words rather than a
-    // paragraph because the WHY is `#help/read-failed`'s neighbour topic.
-    return task.started_at === null
-      ? 'no start, no finish · still counting'
-      : 'no finish recorded · still counting'
+function elapsedNote(task: Task, phase: ElapsedPhase, now: number): string {
+  // NEVER RAN (AG-3). A finished task with no start never had a worker, so
+  // there is no run to time. `elapsed()` says so in the figure itself, so the
+  // note does not say it twice: it names how the task ended and when, which is
+  // what the figure does not carry. Read from `phase`, the answer `elapsed()`
+  // gives for exactly this, never from the figure's text.
+  if (phase === 'never-ran') {
+    return task.completed_at !== null
+      ? `${stateWord(task.state)} ${timeAgo(task.completed_at, now)}`
+      : `${stateWord(task.state)} · no finish recorded`
   }
+  if (TERMINAL_STATES.has(task.state)) {
+    if (task.completed_at !== null) return `finished ${timeAgo(task.completed_at, now)}`
+    // NO completion time. Every terminal write sets one with the state, so
+    // this is an older document or a writer that forgot, and the figure above
+    // is an absence rather than a length. This says which absence.
+    return 'no finish recorded'
+  }
+  if (phase === 'running') return 'running'
+  // No span to time: STARTING or RUNNING with no start recorded, or a task
+  // with no submission time. The figure is `—`; this says which absence.
+  if (phase === 'unknown') return task.created_at ? 'no start recorded' : 'no submission time recorded'
+  // Between two attempts: the figure is the state word, and the age includes
+  // the run that already happened, so it is given as an age and nothing else.
+  if (task.started_at !== null) return `an earlier attempt ran · submitted ${timeAgo(task.created_at, now)}`
+  // Holding a slot before the first attempt starts: the figure is the state
+  // word, because the age after it read as time held.
+  if (CONCURRENCY_STATES.has(task.state)) return `nothing started · submitted ${timeAgo(task.created_at, now)}`
   // "Parked -- wall time, not work. Nothing is executing and no capacity is
   // held" was the first version, and the fact in it is the first three words:
-  // the figure is a clock, not a measure of work.
+  // the figure is a clock, not a measure of work. Only a PARKED task that has
+  // never started gets here, so the clock is all wait.
   if (task.state === 'PARKED') return 'wall time, not work'
-  if (task.started_at === null) return 'waiting · nothing started'
-  return 'running'
+  return 'waiting · nothing started'
 }
 
 function Alerts({ task }: { task: Task }) {
@@ -788,12 +1084,55 @@ function reasonText(reason: string): string {
  * of it". The heading went, because a one-line panel headed "Why" is a word of
  * chrome per word of content.
  */
-function Why({ task }: { task: Task }) {
+function Why({ task, events, now }: { task: Task; events: TaskEvent[] | null; now: number }) {
   const why = whyAgent(task)
-  if (!why) return null
+  if (!why) return <SilentWorker task={task} events={events} now={now} />
+  // ONCE, NOT THREE TIMES (AG-7). For a FAILED task `whyAgent` IS
+  // `last_error`, and the error banner directly below prints that same text
+  // in full -- so a failed agent's reason stood here, then in the banner, then
+  // again in the attempt card. The banner is the one that keeps it: full,
+  // monospace, with who wrote it.
+  if (why === task.last_error) return null
+  // THE SAME INK RULE AS THE LIST'S ROW (AG-14): `--warn` only when the
+  // sentence asks a person to act, plain ink for a routine wait or a cancel.
   return (
     <section className="section">
-      <p className="why-full">{why}</p>
+      <p className={`why-full${whyNeedsAction(task) ? ' is-warn' : ''}`}>{why}</p>
+    </section>
+  )
+}
+
+/**
+ * AG-14'S FOURTH KIND: A STUCK OR SILENT WORKER, which had no line to colour.
+ *
+ * The owner's decision names "stuck/silent workers" among the why lines that
+ * need a person and so take `--warn`. `whyAgent` writes nothing for a task
+ * that holds a slot -- it answers "why is this not running", and a leased or
+ * running task is -- so the first pass had no line here and coloured none.
+ *
+ * The inspector reads the task's events, and `livenessOf` (Liveness.tsx)
+ * already derives the answer the badge in the heading draws: a task in a
+ * concurrency state with no event for seven minutes is `silent`, "the worker
+ * may be gone". That sentence is the why line, in `--warn`, and nothing else
+ * is -- not `quiet` (heartbeats are ~150s apart, so three to seven minutes is
+ * not yet alarming), and not an event read that failed or a re-read that
+ * stopped vouching (`now` stops with it, `rowClock` in `Run`): "could not
+ * look" is never drawn as "nothing happened".
+ *
+ * NOT ON THE AGENTS LIST. A list row is a task document, and a worker's
+ * heartbeat is written to its LEASE (control.py `heartbeat`), which no
+ * tenant-scoped route serves; the admin leases route is the only reader. The
+ * list half is a backend change, #179, rather than a guess from
+ * `updated_at`, which a heartbeat does not move.
+ */
+function SilentWorker({ task, events, now }: { task: Task; events: TaskEvent[] | null; now: number }) {
+  const live = livenessOf(task, events, now)
+  if (live.kind !== 'silent') return null
+  return (
+    <section className="section">
+      <p className="why-full is-warn" data-why="silent">
+        {live.say}
+      </p>
     </section>
   )
 }
@@ -811,11 +1150,10 @@ function Why({ task }: { task: Task }) {
  * 1000 characters, are platform invariants and live in `#help/read-failed`'s
  * neighbourhood rather than above every error.
  */
-function ErrorBanner({ text }: { text: string }) {
-  const reconciled = text.startsWith('reconciled:')
-  // A dispatch failure is written as `<STABLE_CODE> (attempt att_...)`.
-  const dispatch = /^[A-Z][A-Z0-9_]+ \(attempt /.test(text)
-  const origin = reconciled ? 'reconciler' : dispatch ? 'scheduler · dispatch' : 'agent, at finish'
+function ErrorBanner({ run }: { run: AgentRun }) {
+  const text = run.task.last_error
+  if (!text) return null
+  const origin = errorWriter(run)
 
   return (
     <section className="section">
@@ -825,6 +1163,59 @@ function ErrorBanner({ text }: { text: string }) {
       </div>
     </section>
   )
+}
+
+/**
+ * `cancelled on request; ` is prepended by the scheduler's dispatch rollback
+ * and by the reconciler's repair when a cancel had been asked for; what
+ * follows it is still the writer's own words.
+ */
+const CANCELLED_ON_REQUEST = /^cancelled on request;\s*/
+
+/**
+ * A dispatch failure, as the scheduler writes it: `<code> (attempt <ref>)`
+ * (scheduler/store.py, `public = f"{error_code} (attempt {reference})"`).
+ *
+ * CASE-INSENSITIVE, AND THAT IS THE FIX. This was `^[A-Z][A-Z0-9_]+`, and the
+ * codes are lowercase -- `gke_create_job_failed`, `cloud_run_run_job_failed` -- so it
+ * matched none of them and every dispatch failure was labelled the agent's.
+ */
+const DISPATCH_CODE = /^[a-z][a-z0-9_]* \(attempt /i
+
+/**
+ * WHO WROTE `task.last_error`, from what this page can see (AG-6).
+ *
+ * The banner said `agent, at finish` for anything it did not recognise, and
+ * the commonest thing it did not recognise was the scheduler: a cascade cancel
+ * of a step whose parent failed writes "an upstream workflow step did not
+ * succeed" onto a task that NEVER RAN -- no agent existed to write anything.
+ * So the writer is read, in order, from:
+ *
+ *   1. the text's own prefix, where the writer puts one (`reconciled:`, the
+ *      dispatch code);
+ *   2. the CANCEL EVENT'S REASON: the scheduler's cancels write a `cancelled`
+ *      event whose `detail.reason` is exactly the `last_error` they wrote
+ *      (scheduler/store.py `cancel`, `cancel_if_not_started`);
+ *   3. the state and the attempts: a task with no started attempt had no
+ *      agent, so whatever wrote this was the platform, and a CANCELLED one
+ *      was the scheduler's cancel even when its event is off this page.
+ *
+ * Only a task that ran, with none of those signs, is the agent's own error.
+ */
+function errorWriter(run: AgentRun): string {
+  const { task, attempts, events } = run
+  const text = task.last_error ?? ''
+  const body = text.replace(CANCELLED_ON_REQUEST, '')
+  if (body.startsWith('reconciled:')) return 'reconciler'
+  if (DISPATCH_CODE.test(body)) return 'scheduler · dispatch'
+  const cancelEvent = (events ?? []).find(
+    (e) => eventKind(e) === 'cancelled' && e.detail?.['reason'] === text,
+  )
+  if (cancelEvent !== undefined) return 'scheduler · cancel'
+  if (!anythingRan(task, attempts)) {
+    return task.state === 'CANCELLED' ? 'scheduler · cancel' : 'scheduler'
+  }
+  return 'agent, at finish'
 }
 
 // ---------------------------------------------------------------------------
@@ -875,8 +1266,8 @@ function Attempts({ run, now }: { run: AgentRun; now: number }) {
           <Absent
             kind="partial"
             heading={`counts ${task.attempt_count} · returned 0`}
-            say={`This task counts ${task.attempt_count} attempts and the query returned none, so there is a hole in the record.${finished ? '' : ` The task is ${task.state}.`}`}
-            foot={finished ? undefined : task.state}
+            say={`This task counts ${task.attempt_count} attempts and the query returned none, so there is a hole in the record.${finished ? '' : ` The task is ${stateWord(task.state)}.`}`}
+            foot={finished ? undefined : stateWord(task.state)}
             explain="attempt-documents"
           />
         ) : (
@@ -885,7 +1276,7 @@ function Attempts({ run, now }: { run: AgentRun; now: number }) {
           // cannot miss. The heading is the state the measurement was taken in.
           <Absent
             kind="zero"
-            heading={`no attempt yet · ${task.state}`}
+            heading={`no attempt yet · ${stateWord(task.state)}`}
             say="The attempt query succeeded and returned nothing. Nothing has been admitted for this task yet, so this is a real zero rather than a failed read."
             explain="attempt-documents"
           />
@@ -1062,8 +1453,7 @@ function AttemptCard({
     <section className="ctl-card att-card">
       <div className="ctl-card-head">
         <h2 className="ctl-card-title">
-          Attempt {ordinal}
-          <span className="count-chip">gen {a.generation}</span>
+          {attemptLabel(ordinal, a.generation)}
           <Chip tone={chip.tone}>{chip.label}</Chip>
           {/* `latest` IS METADATA, NOT A STATE, and it is the one place on
               these four screens where a hairline box is the right answer --
@@ -1140,7 +1530,12 @@ function AttemptCard({
           </li>
         </ul>
 
-        {a.error !== null && <pre className="err full">{a.error}</pre>}
+        {/* ONLY WHEN IT SAYS SOMETHING THE BANNER DOES NOT (AG-7). The last
+            attempt's error is usually the task's `last_error`, which the
+            banner above already prints in full; an EARLIER attempt's error,
+            or one the task's final record replaced, is the retry history and
+            stays on its own card. */}
+        {a.error !== null && a.error !== run.task.last_error && <pre className="err full">{a.error}</pre>}
 
         <AttemptResources a={a} run={run} isLatest={isLatest} />
         <AttemptSpend a={a} profile={run.task.runner_profile} />
@@ -1230,8 +1625,8 @@ function AttemptResources({
         : end.by === 'superseded'
           ? 'A later attempt has replaced it, so nothing writes to this document again.'
           : end.by === 'released'
-            ? `The task is ${task.state} and no longer holds this attempt’s lease, and this attempt was never marked finished — the shape a quota park, a failed dispatch or a reconciler reclaim leaves behind.`
-            : `The task is ${task.state} and this attempt was never marked finished — the shape a kill, or a reconciler reclaim of a stale generation, leaves behind.`
+            ? `The task is ${stateWord(task.state)} and no longer holds this attempt’s lease, and this attempt was never marked finished — the shape a quota park, a failed dispatch or a reconciler reclaim leaves behind.`
+            : `The task is ${stateWord(task.state)} and this attempt was never marked finished — the shape a kill, or a reconciler reclaim of a stale generation, leaves behind.`
   const liveRss = a.peak_rss_bytes === null ? (hb?.peakRssBytes ?? null) : null
   const rss = a.peak_rss_bytes ?? liveRss
   const rssBy =
@@ -1306,22 +1701,7 @@ function AttemptResources({
         fmt={bytesLabel}
         by={diskBy}
       />
-      {/* CPU HAS NO UTILISED SIDE AT ALL. The sampler measures memory and disk
-          only, so a cpu bar here would be a hatched track next to a request --
-          which is the honest picture and is why it is drawn rather than left
-          out: a panel headed "requested vs utilised" that silently omits a
-          third of the envelope reads as if cpu were fine. */}
-      <CeilingRow
-        label={
-          <>
-            <b>cpu</b> not sampled
-          </>
-        }
-        used={null}
-        ceiling={cls === null ? null : cls.cpu}
-        fmt={(v) => `${v} vCPU`}
-        by="never measured"
-      />
+      <CpuRows a={a} cls={cls} end={end} events={events} />
 
       {/* The standing rules -- requests == limits, the tmpfs workspace, what
           oom_near_miss actually asserts -- live ONCE in the card foot at the
@@ -1340,6 +1720,10 @@ function AttemptResources({
           560px. */}
       {a.peak_rss_bytes === null && (liveRss !== null || (ended && a.started_at !== null)) && (
         <p className="att-rss-note">
+          {/* NAMED, since the CPU rows grew a strip of their own just above
+              this one: two unlabelled lines of `heartbeat 3m ago` under five
+              bars would not say which bar each is about. */}
+          <b>memory</b>
           {liveRss !== null && hb !== null ? (
             <>
               <Mark
@@ -1361,7 +1745,7 @@ function AttemptResources({
               {end.over && end.by === 'superseded'
                 ? 'superseded'
                 : end.over && end.by === 'task-ended'
-                  ? task.state
+                  ? stateWord(task.state)
                   : 'ended'}
             </>
           )}
@@ -1375,6 +1759,400 @@ function AttemptResources({
           maximum and would lie if it were read as memory in use now. */}
       <PeakMemoryChart attempt={a} events={events} />
     </div>
+  )
+}
+
+/**
+ * CPU, AS PEAK AND MEAN CORES AGAINST THE LIMIT (#184), in the style of the
+ * memory and workspace rows above.
+ *
+ * WHERE THE FIGURES COME FROM NOW. Contract request #15 was ACCEPTED on #184
+ * (2026-09-25): the attempt document carries `cpu_seconds`, `peak_cpu_cores`,
+ * `mean_cpu_cores` and `cpu_limit_cores`, served on every attempt row. They
+ * replaced #188's interim path -- the same figures on HEARTBEAT events, read
+ * back by `attempts?include=usage` into a `usage` block, which this no longer
+ * reads. The worker rewrites them with each periodic reading while a runner
+ * runs and when each runner is reaped, so the document IS the live reading.
+ *
+ * WHAT EACH ROW CAN SAY, and why it is the attempt's end that decides it: the
+ * document records no time for the figures, so what they are is read off
+ * what is known about the attempt (`attemptEnd`, the memory row's evidence):
+ *
+ *   at exit          its finish is recorded, and the runner was reaped and
+ *                    wrote its figures before that;
+ *   live reading     it is running. NO AGE IS CLAIMED: there is no served
+ *                    time to age, and an age off this browser's clock would be
+ *                    a guess drawn as a measurement (the #187 review's point);
+ *   last written     it ended without a recorded finish -- a kill, a reclaim
+ *                    -- so these are the figures it last wrote, and none at
+ *                    exit are coming;
+ *   heartbeat event  its typed fields are empty and a HEARTBEAT of it on this
+ *                    page carries a figure (`interimReading`): peak, mean and
+ *                    cpu-seconds from #188's window, or the cpu-seconds only,
+ *                    as every heartbeat before #188 carried them -- and, on a
+ *                    full page, `page full; newer readings may exist`;
+ *   events not read  its typed fields are empty and the event read failed,
+ *                    so the page that could hold its reading was not looked
+ *                    at: not `never measured`.
+ *
+ * TWO ROWS, peak and mean, as the owner decided ("as built"). The ceiling is
+ * the limit the worker wrote, labelled by the class read here when that class
+ * has the same cpu, else `reported limit`: the typed fields do not say
+ * whether the kernel's `cpu.max` or the catalogue gave it, and naming either
+ * would be a guess. Only when no limit was written does the ceiling fall back
+ * to the task's class as read here. A figure over the ceiling takes the
+ * track's over-ceiling hatch.
+ *
+ * ONE ROW WHEN THERE IS NOTHING TO SPLIT. With nothing measured -- not served,
+ * never ran, events not read, not yet written, never measured -- two identical hatched rows
+ * would say one fact twice. The one row still says WHICH kind of nothing.
+ *
+ * THE STRIP UNDER THE ROWS IS HOW ANY OF THAT REACHES A PHONE. The `by`
+ * column is `display: none` below 560px, so `CpuNote` carries the same words,
+ * from the same `cpuReading`, outside the row.
+ */
+function CpuRows({
+  a,
+  cls,
+  end,
+  events,
+}: {
+  a: AttemptRow
+  cls: ResourceClassSpec | null
+  /** What is known about this attempt's end: the same judgement the memory row makes. */
+  end: AttemptEnd
+  /** The drawer's event page, where an attempt from before the typed fields keeps its reading. */
+  events: TaskEvent[] | null
+}) {
+  const from = cpuOf(a, events)
+  const figures = from.kind === 'not_served' ? null : from.figures
+  const reported = figures?.cpu_limit_cores ?? null
+  const ceiling = reported ?? (cls === null ? null : cls.cpu)
+  const fmt = (v: number) => `${Number(v.toFixed(2))} vCPU`
+  const reading = cpuReading(from, a, end)
+
+  if (figures === null || !reading.measured) {
+    return (
+      <>
+        <CeilingRow label={<b>cpu</b>} used={null} ceiling={ceiling} fmt={fmt} by={reading.by} />
+        <CpuNote reading={reading} seconds={null} from={null} />
+      </>
+    )
+  }
+
+  const source = limitSource(figures.cpu_limit_cores, cls)
+  const seconds = figures.cpu_seconds === null ? null : `${Number(figures.cpu_seconds.toFixed(1))} cpu-s`
+  return (
+    <>
+      <CeilingRow
+        label={
+          <>
+            <b>cpu</b> peak
+          </>
+        }
+        used={figures.peak_cpu_cores}
+        ceiling={ceiling}
+        fmt={fmt}
+        by={source === null ? reading.by : `${reading.by} · ${source}`}
+      />
+      <CeilingRow
+        label={
+          <>
+            <b>cpu</b> mean
+          </>
+        }
+        used={figures.mean_cpu_cores}
+        ceiling={ceiling}
+        fmt={fmt}
+        by={seconds === null ? reading.by : `${reading.by} · ${seconds}`}
+      />
+      <CpuNote reading={reading} seconds={seconds} from={source} />
+    </>
+  )
+}
+
+/** The four typed CPU fields of one attempt (contract request #15). Null is not measured. */
+interface CpuFigures {
+  cpu_seconds: number | null
+  peak_cpu_cores: number | null
+  mean_cpu_cores: number | null
+  cpu_limit_cores: number | null
+}
+
+/** Where an attempt's CPU figures were read from. */
+type CpuFrom =
+  /** The row carries none of the four keys: an API older than the typed fields. */
+  | { kind: 'not_served' }
+  /** The attempt's own typed fields -- the only source for any attempt after this change. */
+  | { kind: 'attempt'; figures: CpuFigures }
+  /**
+   * A HEARTBEAT reading, for an attempt whose typed fields are empty.
+   * `secondsOnly`: the event carries cpu-seconds and no cores, as every
+   * HEARTBEAT before #188 did. `pageFull`: the page holds as many events as
+   * this screen asks for, so the route has more, and a newer reading of this
+   * attempt may be among them.
+   */
+  | { kind: 'heartbeat'; figures: CpuFigures; final: boolean; secondsOnly: boolean; pageFull: boolean }
+  /**
+   * The typed fields are empty and the EVENT READ FAILED, so whether a
+   * heartbeat of this attempt carries a figure is unknown (PR #210
+   * re-review). Not `never measured`: that says the page was looked at.
+   */
+  | { kind: 'unread'; figures: CpuFigures }
+
+function measuredAny(f: CpuFigures): boolean {
+  return f.cpu_seconds !== null || f.peak_cpu_cores !== null || f.mean_cpu_cores !== null
+}
+
+/**
+ * THE ATTEMPT'S FIGURES, from its row -- or, for an attempt from before the
+ * typed fields, from the interim reading its heartbeat events carry.
+ */
+function cpuOf(a: AttemptRow, events: TaskEvent[] | null): CpuFrom {
+  if (
+    a.cpu_seconds === undefined &&
+    a.peak_cpu_cores === undefined &&
+    a.mean_cpu_cores === undefined &&
+    a.cpu_limit_cores === undefined
+  ) {
+    return { kind: 'not_served' }
+  }
+  const figures: CpuFigures = {
+    cpu_seconds: a.cpu_seconds ?? null,
+    peak_cpu_cores: a.peak_cpu_cores ?? null,
+    mean_cpu_cores: a.mean_cpu_cores ?? null,
+    cpu_limit_cores: a.cpu_limit_cores ?? null,
+  }
+  if (measuredAny(figures)) return { kind: 'attempt', figures }
+  // The legacy reader needs the page; a failed event read is not an empty one.
+  if (events === null) return { kind: 'unread', figures }
+  return interimReading(a, events) ?? { kind: 'attempt', figures }
+}
+
+/**
+ * THE LEGACY READER, and the only thing left of #188's interim path.
+ *
+ * TWO KINDS OF ATTEMPT HAVE EMPTY TYPED FIELDS AND WERE MEASURED ANYWAY:
+ *
+ *   - From #188's window (its deploy, 2026-09-25 about 23:08 UTC on dev, to
+ *     this change's): the worker put peak, mean, cpu-seconds and the limit on
+ *     HEARTBEAT events -- the newest with `final: true` when a runner was
+ *     reaped -- and wrote none on the attempt. A read-only look at dev's
+ *     Firestore at 23:16 UTC found one such attempt.
+ *   - From BEFORE #188: every HEARTBEAT carried `cpu_seconds` and
+ *     `cpu_source`, and no cores (5262b74^ lifecycle.py `_heartbeat`). #188's
+ *     own reader drew those cpu-seconds on main. This reader first asked for
+ *     `peak_cpu_cores` only, and those attempts read `never measured` while
+ *     the page held their figure (the PR #210 review).
+ *
+ * "Never measured" would be false of both. So, for an attempt whose typed
+ * fields carry nothing, the newest HEARTBEAT of it ON THIS PAGE that carries a
+ * figure. When that event has no cores, the figures are the cpu-seconds
+ * alone (`secondsOnly`), and the peak and mean rows draw em dashes. No
+ * server read is added: the drawer already holds the page. The page is the
+ * task's first `EVENT_PAGE_LIMIT` events, so on a long attempt the newest
+ * reading here can be an early one, and the words say it is the newest ON
+ * THIS PAGE. When the page is FULL and the reading is not the one taken at
+ * exit, the strip says so -- `page full; newer readings may exist` -- because
+ * then there are more events than this page holds (PR #210 review). It reads
+ * nothing on any attempt the worker wrote typed fields for, which is every
+ * measured attempt after this change.
+ */
+function interimReading(a: AttemptRow, events: TaskEvent[]): CpuFrom | null {
+  const n = (d: Record<string, unknown>, key: string): number | null => {
+    const v = d[key]
+    return typeof v === 'number' && Number.isFinite(v) ? v : null
+  }
+  let best: { figures: CpuFigures; detail: Record<string, unknown> } | null = null
+  let bestAt = -Infinity
+  for (const e of events) {
+    if (e.type !== 'heartbeat' || e.attempt_id !== a.attempt_id || e.detail === null) continue
+    const t = Date.parse(e.at)
+    if (!Number.isFinite(t) || t <= bestAt) continue
+    const d = e.detail
+    const figures: CpuFigures = {
+      cpu_seconds: n(d, 'cpu_seconds'),
+      peak_cpu_cores: n(d, 'peak_cpu_cores'),
+      mean_cpu_cores: n(d, 'mean_cpu_cores'),
+      cpu_limit_cores: n(d, 'cpu_limit_cores'),
+    }
+    // A figure, not a key: a heartbeat that carried the key empty is no reading.
+    if (!measuredAny(figures)) continue
+    bestAt = t
+    best = { figures, detail: d }
+  }
+  const found = best
+  if (found === null) return null
+  const secondsOnly = found.figures.peak_cpu_cores === null && found.figures.mean_cpu_cores === null
+  return {
+    kind: 'heartbeat',
+    figures: found.figures,
+    final: found.detail['final'] === true,
+    secondsOnly,
+    pageFull: events.length >= EVENT_PAGE_LIMIT,
+  }
+}
+
+/**
+ * WHERE THE CPU CEILING CAME FROM, in words for the `by` column and the strip.
+ *
+ *   no limit written   the task's class read here, by name;
+ *   the class's cpu    the class's name (`standard limit`): the worker sized
+ *                      the container by that class or its cgroup says the
+ *                      same, and with `requests == limits` those agree;
+ *   anything else      `reported limit`: the worker wrote a figure, and the
+ *                      typed field does not say whether the kernel or the
+ *                      catalogue gave it, so neither is named.
+ */
+function limitSource(cores: number | null, cls: ResourceClassSpec | null): string | null {
+  if (cores === null) return cls !== null ? `${cls.name} limit` : null
+  if (cls !== null && cls.cpu === cores) return `${cls.name} limit`
+  return 'reported limit'
+}
+
+/** One attempt's CPU reading, in words, for the rows' `by` column and for the strip under them. */
+interface CpuReading {
+  /** False when nothing was measured, or nothing was served. */
+  measured: boolean
+  /** The `by` column's words, as the memory row writes them: `at exit`, `live reading`. */
+  by: string
+  /** The strip's words: the same, with what the narrow `by` column has no room for. */
+  strip: string
+  /** Null for figures at exit: `at exit` needs no mark, and the memory strip draws none for it either. */
+  mark: MarkKind | null
+  say: string
+}
+
+/**
+ * WHAT AN ATTEMPT'S CPU FIGURES ARE, in words. The one place those words are
+ * decided; the `by` column and the strip both read them from here, so they
+ * cannot disagree.
+ */
+function cpuReading(from: CpuFrom, a: AttemptRow, end: AttemptEnd): CpuReading {
+  if (from.kind === 'not_served') {
+    return {
+      measured: false,
+      by: 'not served',
+      strip: 'not served',
+      mark: 'absent',
+      say: 'The API answering this UI sent no CPU fields with this attempt. It is older than the typed fields (contract request #15), so this says nothing about how much CPU the attempt used.',
+    }
+  }
+  if (a.started_at === null) {
+    return {
+      measured: false,
+      by: 'never ran',
+      strip: 'never ran',
+      mark: 'zero',
+      say: 'This attempt never started, so it used no CPU. That is a fact about the attempt, not a missing measurement.',
+    }
+  }
+  if (from.kind === 'unread') {
+    // THE PAGE WAS NOT READ, so nothing can be said about what it holds. On
+    // every attempt from before the typed fields this was `never measured`,
+    // a claim about a page no one had looked at (PR #210 re-review).
+    return {
+      measured: false,
+      by: 'events not read',
+      strip: 'events not read',
+      mark: 'unread',
+      say: 'No CPU figures were written on this attempt, and the task’s events could not be read, so whether one of its heartbeat events carries a reading is unknown. This is neither a zero nor a missing measurement.',
+    }
+  }
+  // A FULL PAGE, AND A READING THAT IS NOT THE ONE AT EXIT: the route has
+  // more events than this page, and a newer reading of this attempt may be
+  // among them (PR #210 review). A reading taken when the runner was reaped
+  // is the attempt's last whatever else is off the page.
+  const pageFull = from.kind === 'heartbeat' && from.pageFull && !from.final
+  const pageFullSay = pageFull
+    ? ` This page is full — the task has more events than it holds — so newer readings of this attempt may exist that this one does not include.`
+    : ' The page is the task’s first events, so on a long attempt this reading can be an early one, not the total at exit.'
+  if (from.kind === 'heartbeat' && from.secondsOnly) {
+    // Before #188 a heartbeat carried the cumulative cpu-seconds and nothing
+    // else about CPU. The cores it never carried are em dashes, not zeros.
+    return {
+      measured: true,
+      by: 'heartbeat event',
+      strip: `heartbeat event · cpu-seconds only${pageFull ? ' · page full; newer readings may exist' : ''}`,
+      mark: 'partial',
+      say: `No CPU figures were written on this attempt. Its newest heartbeat event on this page with a figure carries its cumulative cpu-seconds and no peak or mean cores (every heartbeat before #188 carried only that), so the peak and mean are unknown: em dashes, not zeros.${pageFullSay}`,
+    }
+  }
+  if (from.kind === 'heartbeat') {
+    return {
+      measured: true,
+      by: 'heartbeat event',
+      strip: from.final
+        ? 'heartbeat event · at exit'
+        : `heartbeat event${pageFull ? ' · page full; newer readings may exist' : ''}`,
+      mark: 'partial',
+      say: `This attempt ran before the attempt carried its CPU figures (contract request #15), so they are read from its newest heartbeat event on this page${from.final ? ', taken when its runner was reaped' : ', a periodic one: not the figures at exit'}. Nothing was written on the attempt itself.${pageFull ? pageFullSay : ''}`,
+    }
+  }
+  if (!measuredAny(from.figures)) {
+    return end.over
+      ? {
+          measured: false,
+          by: 'never measured',
+          strip: 'never measured',
+          mark: 'absent',
+          say: 'No CPU figures were written on this attempt, and none of its heartbeat events on this page carries one. The page is the task’s first events, so a later heartbeat is not read here. What the attempt used is unknown, which is why the figure is an em dash and not a zero.',
+        }
+      : {
+          measured: false,
+          by: 'not yet written',
+          strip: 'not yet written',
+          mark: 'pending',
+          say: 'The worker writes the attempt’s CPU figures with its first periodic reading after the runner starts, and none has landed yet. This is not a zero.',
+        }
+  }
+  if (!end.over) {
+    return {
+      measured: true,
+      by: 'live reading',
+      strip: 'live reading · age not recorded',
+      mark: 'pending',
+      say: 'A live reading: the running worker rewrites these figures on the attempt with each periodic reading. The attempt records no time for them, so no age is shown. They are not the figures at exit.',
+    }
+  }
+  if (end.by === 'recorded') return { measured: true, by: 'at exit', strip: 'at exit', mark: null, say: '' }
+  return {
+    measured: true,
+    by: 'last written',
+    strip: 'last written',
+    mark: 'partial',
+    say: 'This attempt ended without a recorded finish, so these are the figures its worker last wrote while it ran. They are not the figures at exit, and none are coming.',
+  }
+}
+
+/**
+ * THE CPU READING, OUTSIDE THE ROWS, SO IT REACHES A PHONE.
+ *
+ * WHAT SHOWS AT EACH WIDTH, and why it is not the same everywhere:
+ *
+ *   - The MARK AND ITS WORDS (`live reading`, `never ran`, `last written`)
+ *     show at every width, as the memory strip's do. That is the precedent
+ *     this follows, and the mark's sentence is the accessible name.
+ *   - The cpu-seconds and the ceiling's source, `.att-cpu-by`, show only below
+ *     560px. Above that they are already in the `by` column beside each bar,
+ *     and a second copy would caption the thing the reader is looking at.
+ *   - Figures AT EXIT have no mark, so the whole strip is `.is-final` and
+ *     shows only below 560px. On a phone it is the only place `at exit`
+ *     appears.
+ *
+ * The rules are in styles.css beside `.att-rss-note`. details.cpu.test.tsx
+ * asks the shipped sheet's cascade what a 390px viewport shows, because jsdom
+ * applies no stylesheet and would pass either way.
+ */
+function CpuNote({ reading, seconds, from }: { reading: CpuReading; seconds: string | null; from: string | null }) {
+  const extra = [seconds, from].filter((x): x is string => x !== null)
+  return (
+    <p className={`att-rss-note att-cpu-note${reading.mark === null ? ' is-final' : ''}`}>
+      <b>cpu</b>
+      {reading.mark !== null && <Mark kind={reading.mark} say={reading.say} />}
+      <span>{reading.strip}</span>
+      {extra.length > 0 && <span className="att-cpu-by">· {extra.join(' · ')}</span>}
+    </p>
   )
 }
 
@@ -1402,8 +2180,9 @@ function AttemptSpend({ a, profile }: { a: AttemptRow; profile: string }) {
   // Only the CLI agents go through `cliagent.run_cli_agent`, which is what
   // parses a usage block out of the runner's own output. The others report
   // nothing by construction, which is a different sentence from "this one
-  // should have reported and did not".
-  const reports = profile === 'claude-code' || profile === 'codex'
+  // should have reported and did not". `reportsSpend` is the one copy of that
+  // rule; the run tiles read it too.
+  const reports = reportsSpend(profile)
 
   if (!anything) {
     // THREE DIFFERENT REASONS, and they still need three different answers --
@@ -1586,14 +2365,17 @@ function AttemptCheckpoints({ a, run }: { a: AttemptRow; run: AgentRun }) {
                           kind={eventsRead ? 'partial' : 'unread'}
                           say={
                             eventsRead
-                              ? "This checkpoint's event is not on this page, so its location is unknown. The events route is oldest-first, capped, and returns no page token."
+                              ? "This checkpoint's event is not on this page, so its location is unknown. This screen reads one page of events, oldest-first, and does not follow the page token the events route returns."
                               : 'The event read failed, so this checkpoint has no location attached. It is unknown rather than missing, and nothing here says whether the checkpoint itself is fine.'
                           }
                         />
                       </>
                     ) : (
                       <>
-                        <span className="mono uri">{r.uri}</span>
+                        {/* The whole uri in the title: below 900px a stacked
+                            record ellipsizes it to one line (CH-13), and a cut
+                            uri is a different uri. */}
+                        <span className="mono uri" title={r.uri}>{r.uri}</span>
                         {/* No signed URL is minted here, by design. The reader
                             uses their own credentials against GCS, which keeps
                             the tenant boundary in one place. */}
@@ -1679,12 +2461,17 @@ function Output({ run }: { run: AgentRun }) {
   // what the worker writes, not what the field is guaranteed to hold. A
   // document written by an older worker -- or by a test fixture -- can carry
   // `artifacts: 1`, and `(x ?? []) as ArtifactRef[]` would hand that straight
-  // to `.map` and blank the page with a runtime error. Shape is CHECKED, and
-  // a value of the wrong shape is reported rather than silently read as none.
+  // to `.find` and blank the page with a runtime error. Shape is CHECKED.
+  //
+  // THE LIST ITSELF IS NOT DRAWN HERE ANY MORE (#184, owner decision of
+  // 2026-09-25): Details' own artifact table -- a viewer and a `copy gsutil`
+  // per file -- duplicated Artifacts › Outputs, which lists every file with a
+  // viewer by kind and a download through the API. The manifest is still read
+  // here for the one thing Details says about a file: which one is the patch
+  // the git outcome names.
   const artifactsRaw = summary?.artifacts
   const artifacts: ArtifactRef[] = Array.isArray(artifactsRaw) ? (artifactsRaw as ArtifactRef[]) : []
-  const artifactsMalformed = artifactsRaw !== undefined && !Array.isArray(artifactsRaw)
-  // THE SAME CAUTION AS THE ARTIFACT LIST, for the same reason: an older
+  // THE SAME CAUTION, for the same reason: an older
   // worker or a fixture can put a list -- or a string -- in `logs`. Silently
   // substituting `{}` made `Logs` print "no log stream was uploaded for this
   // attempt", a claim about the RUN, for a record that is merely malformed,
@@ -1729,151 +2516,38 @@ function Output({ run }: { run: AgentRun }) {
       {!terminal ? (
         <Absent
           kind="zero"
-          heading={`nothing written yet · ${task.state}`}
+          heading={`nothing written yet · ${stateWord(task.state)}`}
           say="A result summary is written only when an attempt finishes. This agent has not finished, so there is nothing here — which is not the same as producing nothing."
+          explain="attempt-documents"
+        />
+      ) : summary === null && !anythingRan(task, attempts) ? (
+        // NOTHING RAN, SO NOTHING WAS DUE (AG-8). `finish()` writes the
+        // summary at the end of an attempt, and this task never had one that
+        // started -- a cascade cancel, a cancel before admission, a dispatch
+        // that never came up. No summary is the expected result here, so it
+        // is a real zero; drawn as `partial` it said a record was missing and
+        // sent its reader to the timeline to find it.
+        <Absent
+          kind="zero"
+          heading={`nothing ran · ${stateWord(task.state)}`}
+          say="No attempt of this task ever started, so no result summary was ever going to be written. This is a real zero, not a missing summary."
           explain="attempt-documents"
         />
       ) : summary === null ? (
         <Absent
           kind="partial"
-          heading={`finished with no summary · ${task.state}`}
+          heading={`finished with no summary · ${stateWord(task.state)}`}
           say="This agent reached a terminal state without a result summary. A parked attempt puts its summary in the event detail and in blocked_by instead, so the timeline below is where to look."
           explain="attempt-documents"
         />
       ) : (
         <>
           <GitOutcome git={summary.git} artifacts={artifacts} task={task} />
-          <Artifacts
-            artifacts={artifacts}
-            summary={summary}
-            malformed={artifactsMalformed}
-            taskId={task.id}
-          />
           <Logs logs={logs} malformed={logsMalformed} raw={logsRaw} />
           <SummaryUsage task={task} attempts={attempts} />
         </>
       )}
     </section>
-  )
-}
-
-function Artifacts({
-  artifacts,
-  summary,
-  malformed,
-  taskId,
-}: {
-  artifacts: ArtifactRef[]
-  summary: ResultSummary
-  /** `artifacts` was present but not an array. Not the same as none. */
-  malformed: boolean
-  /** B29: the viewer names an ARTIFACT on a TASK; it never sends a location. */
-  taskId: string
-}) {
-  const skippedRaw = summary.artifacts_skipped
-  const skipped = Array.isArray(skippedRaw) ? skippedRaw : []
-  const [open, setOpen] = useState<string | null>(null)
-  const showing = open === null ? null : artifacts.find((a) => a.name === open) ?? null
-
-  if (malformed) {
-    return (
-      <div className="section">
-        <span className="ctl-eyebrow">artifacts</span>
-        <Absent
-          kind="partial"
-          heading="artifacts is not a list"
-          say="This result summary records an artifacts field that is not an array, so nothing here can be listed. The attempt may well have uploaded files — this is a malformed record, not an empty one."
-        />
-      </div>
-    )
-  }
-
-  return (
-    <div className="section" style={SUB}>
-      <div className="ctl-toolbar att-sub-head">
-        <span className="ctl-eyebrow">artifacts</span>
-        <span className="count-chip">{artifacts.length}</span>
-        {skipped.length > 0 && (
-          // THE CAP, AS A FRACTION AND A MARK. "N artifacts were skipped for
-          // exceeding the size cap, so this list is incomplete" plus the names
-          // was a `warn-text` paragraph under the table; the names are data
-          // and stay, the sentence is the mark's accessible name.
-          <span className="is-end ctl-card-note">
-            <Mark
-              kind="partial"
-              say={`${skipped.length} artifact${skipped.length === 1 ? ' was' : 's were'} skipped for exceeding the size cap, so this list is incomplete: ${skipped.join(', ')}`}
-            />{' '}
-            {skipped.length} over cap
-          </span>
-        )}
-      </div>
-      {artifacts.length === 0 ? (
-        <p className="att-none">
-          <Mark
-            kind="zero"
-            say="This attempt uploaded no artifacts. The read succeeded and the list is empty, not missing."
-          />{' '}
-          none uploaded
-        </p>
-      ) : (
-        /* `is-stacked` (F6), the same three-column shape as the checkpoint
-           table above and in the same drawer, so it hides the same two columns
-           at the same width. `Location` is the one that matters here: it
-           carries the uri and the `copy gsutil` control, and a row whose
-           visible part is a name and nothing else offers no way out of the
-           console at all. (Unbraced, for the reason the checkpoint table's
-           comment gives.) */
-        <div className="ctl-table is-stacked">
-          <table role="table">
-            <thead role="rowgroup">
-              <tr role="row">
-                <th role="columnheader" scope="col">Artifact</th>
-                <th role="columnheader" scope="col" className="is-num">Size</th>
-                <th role="columnheader" scope="col">Location</th>
-              </tr>
-            </thead>
-            <tbody role="rowgroup">
-              {artifacts.map((a) => (
-                <tr role="row" key={a.uri} className={a.name === open ? 'is-open' : undefined}>
-                  <th role="rowheader" scope="row">
-                    {/* THE WAY IN. `GET /v1/tasks/{id}/artifacts/content` sends
-                        the NAME as this row spells it and nothing else: the
-                        server resolves the object from the task's own manifest,
-                        which is why no path, key or uri from this table is ever
-                        put in a request. */}
-                    <button
-                      type="button"
-                      className="art-open"
-                      aria-expanded={a.name === open}
-                      onClick={() => setOpen((cur) => (cur === a.name ? null : a.name))}
-                    >
-                      {a.name}
-                    </button>
-                  </th>
-                  <td role="cell" data-label="Size" className="is-num">{bytesLabel(a.bytes)}</td>
-                  {/* Still passed by reference as well. The viewer serves a
-                      bounded, redacted window; the uri is how someone reads the
-                      whole object with their own credentials, which keeps that
-                      half of the tenant boundary where IAM already enforces it. */}
-                  <td role="cell" data-label="Location">
-                    <span className="mono uri">{a.uri}</span>
-                    <button
-                      className="copy"
-                      onClick={() => navigator.clipboard?.writeText(`gsutil cp ${a.uri} .`)}
-                    >
-                      copy gsutil
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-      {showing !== null && (
-        <ArtifactViewer taskId={taskId} artifact={showing} onClose={() => setOpen(null)} />
-      )}
-    </div>
   )
 }
 
@@ -1964,16 +2638,19 @@ function Logs({
  * window of either the final object or the live tail, redacted at read time.
  * Nothing had called it, so the screen went on stating the old constraint --
  * which is worse than a missing feature, because it tells a reader not to look.
- * The "Output, as the agent wrote it" panel below reads it.
+ * The Artifacts pane reads it, for the agent's streams and for the runner's
+ * (#184).
  */
 function LogsFoot() {
   // WHAT IT SAYS NOW, and it is a pointer rather than an explanation. These
-  // are object LOCATIONS from the result summary; the text window, including
-  // the live tail, is read by a different route and drawn by `RunFiles` below.
-  // A reader who needs to know which is which follows the link.
+  // are object LOCATIONS from the result summary. Their text -- the agent's
+  // streams, its transcript and its answer, live while it runs, and the
+  // runner process's own log -- is the Artifacts pane's alone: the runner log
+  // panel that stood below this in Details was removed by the owner's decision
+  // of 2026-09-25 (#184).
   return (
     <p className="ctl-card-foot">
-      <span>locations only · text window below</span>
+      <span>locations only · text under Artifacts</span>
     </p>
   )
 }
@@ -2527,11 +3204,30 @@ function PublishOutcome({ git, task }: { git: GitSummary; task: Task }) {
  * `input` is a free-form dict: the API accepts it whole and each runner reads
  * what it needs. `input.prompt` is the CONVENTION the CLI agents and the mock
  * runner use, not a schema field, so it is surfaced as the prompt when it is a
- * non-empty string and the whole object is still shown underneath. A screen
- * that only rendered `prompt` would show nothing for a runner that names it
- * differently.
+ * string, and the rest of the object is shown underneath -- or the whole
+ * object, when there is no prompt string (`RestOfInput`). A screen that only
+ * rendered `prompt` would show nothing for a runner that names it differently.
+ *
+ * MASKED, WITH A COUNT (#184, owner decision of 2026-09-25). The prompt and
+ * the input under it come from the API's read-time-redacted copy (`GET
+ * /v1/tasks/{id}/input`), never from `task.input`, which is the document as
+ * submitted: a token pasted into a prompt was drawn here in clear. Each block
+ * says `masked N` beside it, in the ink the artifact viewer's count takes.
+ * When the copy was not read, the block says so -- it is never replaced by
+ * the raw input.
+ *
+ * THE METADATA TABLE IS NOT MASKED. It draws `task.metadata` as submitted: the
+ * owner's decision named the input, and whether the caller's metadata is
+ * masked too is still his to make (recorded on PR #210). So this section does
+ * NOT mask every byte it shows, and nothing here says it does.
+ *
+ * ITS OWN READ, NOT THE DRAWER'S (PR #210 re-review). The copy rode in
+ * `loadAgentRun`'s `Promise.all`, so the whole drawer waited on it. It is read
+ * here, through the same once-per-task cache the Artifacts pane uses, and a
+ * failed read is asked again with each re-read of the drawer (`readAt`), so a
+ * copy that failed once is not `input not read` until the drawer is reopened.
  */
-function Input({ run }: { run: AgentRun }) {
+function Input({ run, readAt }: { run: AgentRun; readAt: number | null }) {
   const { task } = run
   // The sizing behind the class NAME. A caller picks `resource_class` and
   // `runner_profile` by name and nothing else -- which is the rule that keeps
@@ -2541,12 +3237,17 @@ function Input({ run }: { run: AgentRun }) {
   // rather than left implicit in a bar three panels up.
   const cls = run.classes?.[task.resource_class] ?? null
   const noCeiling = ceilingNote(run)
-  const input = task.input
-  const record = typeof input === 'object' && input !== null && !Array.isArray(input)
-    ? (input as Record<string, unknown>)
-    : null
-  const promptValue = record?.['prompt']
-  const prompt = typeof promptValue === 'string' && promptValue.trim() !== '' ? promptValue : null
+  // A copy that was read is answered from memory on every later ask, so a
+  // key that changes with each read of the drawer costs no request once the
+  // copy is in hand -- and re-asks one that failed.
+  const { state: copy } = useRead<TaskInputCopy>(
+    () => loadTaskInputOnce(task.id),
+    task.id,
+    `input:${readAt ?? ''}`,
+    null,
+  )
+  // A stale copy is still a copy the API masked; only its refresh failed.
+  const served = copy.status === 'ok' || copy.status === 'stale' ? copy.data : null
   const metadata = task.metadata
 
   return (
@@ -2611,27 +3312,41 @@ function Input({ run }: { run: AgentRun }) {
       </ul>
 
       <div className="section" style={SUB}>
-        <span className="ctl-eyebrow">prompt</span>
-        {prompt === null ? (
-          // TWO DIFFERENT FACTS, AND THEY STAY APART. An input that is not an
-          // object at all is a malformed submission; an object without a
-          // `prompt` key is legitimate, because the key is a convention of the
-          // CLI and mock runners rather than part of the schema. That second
-          // sentence is `#help/input-is-opaque`.
+        <div className="ctl-toolbar att-sub-head">
+          <span className="ctl-eyebrow">prompt</span>
+          {served !== null && served.prompt !== null && <MaskedNote count={served.prompt.redaction_count} />}
+        </div>
+        {served === null ? (
+          <InputNotRead copy={copy} />
+        ) : served.prompt === null ? (
+          // TWO DIFFERENT FACTS, AND THEY STAY APART. A `prompt` that is not
+          // text is not a prompt anyone can read; an input without a `prompt`
+          // key is legitimate, because the key is a convention of the CLI and
+          // mock runners rather than part of the schema. That second sentence
+          // is `#help/input-is-opaque`.
           <p className="att-none">
             <Mark
-              kind={record === null ? 'absent' : 'zero'}
+              kind="zero"
               say={
-                record === null
-                  ? "This task's input is not an object at all, so it carries no prompt string."
+                served.prompt_key === 'other'
+                  ? "This task's input has a prompt key whose value is not text, so there is no prompt to show. The full input is below."
                   : "This task's input has no prompt string. That is legitimate — the field is a convention of the CLI and mock runners, not part of the submission schema. The full input is below."
               }
             />{' '}
-            {record === null ? 'input is not an object' : 'no prompt key'}
+            {served.prompt_key === 'other' ? 'prompt is not text' : 'no prompt key'}
+          </p>
+        ) : served.prompt.text === '' ? (
+          // EMPTY MEANS THE EMPTY STRING, as the Artifacts pane reads it. A
+          // prompt of whitespace was sent as whitespace and is drawn as it
+          // was sent; calling it empty contradicted that pane on the same
+          // served copy (PR #210 re-review).
+          <p className="att-none">
+            <Mark kind="zero" say="The prompt was submitted empty. A real, empty prompt, not a missing one." /> empty
+            prompt
           </p>
         ) : (
           <pre className="json" style={{ maxHeight: 320, overflowY: 'auto' }}>
-            {prompt}
+            {served.prompt.text}
           </pre>
         )}
       </div>
@@ -2684,15 +3399,110 @@ function Input({ run }: { run: AgentRun }) {
           declared no input and reported none. See StagedInputs.tsx. */}
       <StagedInputs task={task} />
 
-      {input !== null && input !== undefined && (
-        <div className="section" style={SUB}>
-          <span className="ctl-eyebrow">full input</span>
-          <pre className="json" style={{ maxHeight: 320, overflowY: 'auto' }}>
-            {JSON.stringify(input, null, 2)}
-          </pre>
-        </div>
-      )}
+      {served !== null && <RestOfInput served={served} />}
     </section>
+  )
+}
+
+/**
+ * WHAT IS UNDER THE PROMPT: the rest of the input when the prompt block drew
+ * a prompt, the whole input when it did not -- as the Artifacts pane draws
+ * them.
+ *
+ * NEVER THE WHOLE INPUT UNDER ITS OWN PROMPT (the PR #210 review). This block
+ * drew `full` under the prompt, so the prompt was on screen twice, once in
+ * each block's masking, and `full` was where a secret quoted inside the
+ * prompt came out in clear while the block above masked it. The route now
+ * masks both the same way; drawing `rest` is what keeps one prompt one block
+ * with one count. Each block's `masked N` is its own, so the two counts on
+ * screen add up to the input's.
+ */
+function RestOfInput({ served }: { served: TaskInputCopy }) {
+  if (served.prompt === null) {
+    return (
+      <div className="section" style={SUB}>
+        <div className="ctl-toolbar att-sub-head">
+          <span className="ctl-eyebrow">full input</span>
+          <MaskedNote count={served.full.redaction_count} />
+        </div>
+        <pre className="json" style={{ maxHeight: 320, overflowY: 'auto' }}>
+          {served.full.text}
+        </pre>
+      </div>
+    )
+  }
+  return (
+    <div className="section" style={SUB}>
+      <div className="ctl-toolbar att-sub-head">
+        <span className="ctl-eyebrow">rest of the input</span>
+        {served.rest !== null && <MaskedNote count={served.rest.redaction_count} />}
+      </div>
+      {served.rest === null ? (
+        <p className="att-none">
+          <Mark kind="zero" say="The prompt is the whole of this task's input: nothing else was submitted with it." />{' '}
+          nothing else submitted
+        </p>
+      ) : (
+        <pre className="json" style={{ maxHeight: 320, overflowY: 'auto' }}>
+          {served.rest.text}
+        </pre>
+      )}
+    </div>
+  )
+}
+
+/**
+ * `masked N` beside a block of the input: how many credential-shaped runs the
+ * API masked in what the block draws. A measured fact, drawn as the artifact
+ * viewer draws its count (AG-5): no mark, and `--warn` ink above zero.
+ */
+export function MaskedNote({ count }: { count: number }) {
+  return (
+    <span className="is-end ctl-card-note">
+      masked <span className={`art-masked${count > 0 ? ' is-warn' : ''}`}>{count}</span>
+    </span>
+  )
+}
+
+/**
+ * THE COPY WAS NOT READ, and nothing stands in for it. The raw `task.input`
+ * is right there on the task document, and drawing it here would be exactly
+ * the unmasked prompt this read exists to replace -- so a failed or missing
+ * copy is said as one, and the input is not shown.
+ */
+function InputNotRead({ copy }: { copy: Result<TaskInputCopy> }) {
+  if (copy.status === 'loading') {
+    return (
+      <p className="att-none">
+        <Mark kind="pending" say="Reading the masked copy of this task's input. The read is in flight." /> reading
+      </p>
+    )
+  }
+  if (copy.status === 'error' && copy.error.kind === 'not_found' && copy.error.code === null) {
+    return (
+      <p className="att-none">
+        <Mark
+          kind="absent"
+          say="The deployment answering this UI does not serve the masked copy of a task's input yet. The input is not drawn unmasked in its place."
+        />{' '}
+        not served by this API
+      </p>
+    )
+  }
+  const message = copy.status === 'error' ? copy.error.message : null
+  return (
+    <p className="att-none">
+      <Mark
+        kind="unread"
+        say="The masked copy of this task's input could not be read, so it is not shown — and it is not drawn unmasked instead. Nothing may be concluded about the input: it is not empty and it is not missing."
+      />{' '}
+      input not read
+      {/* A SEPARATOR BEFORE THE SERVER'S WORDS. `.att-none` is a flex row, so
+          the gap parted them on screen, but its text ran them together --
+          `input not readBusy.` -- which is what a screen reader and a copy
+          read (PR #210 review). */}
+      {message !== null && <span className="ctl-sub">{` · ${message}`}</span>}
+    </p>
   )
 }
 
@@ -2760,13 +3570,16 @@ function Timeline({
   }
 
   // THE CAP IS THE SERVER'S AND THIS PAGE DOES NOT KNOW IT. The endpoint
-  // orders `at` ASCENDING, applies `paged_limit` and returns NO page token, so
-  // the newest events of a long task are unreachable here. `events.length >=
-  // 200` was the old test and it could never fire: this client sends no
-  // `limit`, so the server falls back to `default_page_size` -- 50 unless a
-  // deployment overrides it -- and nothing in the response says which. A
+  // orders `at` ASCENDING and applies `paged_limit`; this client asks for
+  // EVENT_PAGE_LIMIT (200) and the server clamps that to its own
+  // `max_page_size`, which a deployment can lower. The route pages -- it
+  // returns `next_page_token` whenever more events exist (#19) -- but this
+  // screen reads ONE page and does not follow the token, so the newest events
+  // of a long task are not on it (help topic `event-paging`). `events.length
+  // >= 200` was the old test, from when the client sent no limit at all and
+  // the server answered with `default_page_size` -- 50 unless overridden. A
   // worker heartbeats every ~150s, so an attempt of more than about two hours
-  // runs past that and the timeline simply stopped mid-run, with the banner
+  // ran past that and the timeline simply stopped mid-run, with the banner
   // written to prevent exactly that silently disabled.
   //
   // Truncation is therefore DETECTED, not counted: a terminal task always
@@ -2796,23 +3609,34 @@ function Timeline({
             run did) and one for the unproven (the route caps the page and
             names neither the cap nor the remainder). Both said the same thing
             about the route, which is `#help/partial-read`; what differs is
-            whether this page can PROVE it is short, and that is the difference
-            between a `partial` mark and a `pending` one. */}
-        <span className="is-end ctl-card-note">
-          <Mark
-            kind={endMissing ? 'partial' : 'pending'}
-            say={
-              endMissing
-                ? `The task is ${task.state} and a terminal task writes a terminal event — none is on this page. The route orders events oldest-first, caps the page server-side and returns no page token, so the newest events are not reachable from this screen at all. The end of this task's history is missing, not absent.`
-                : "One page, oldest first. This screen asks for no page size, so the cap is whatever the deployment's default is, and the response says neither what it was nor how many events were left out — a page that looks complete is not evidence that it is."
-            }
-          />{' '}
-          {endMissing
-            ? lastEvent === undefined
+            whether this page can PROVE it is short.
+
+            PROVEN SHORT IS `partial`. UNPROVEN IS NO MARK AT ALL (AG-9). The
+            unproven case used to draw `pending` -- the word `reading`, the
+            dotted in-flight silhouette -- permanently, on a page whose read had
+            long since landed. `reading` is the one mark of the six that means
+            "still asking" (design-system.md §8.7.1), and a caveat about a
+            route's paging is not a read in flight. It is a plain qualifier
+            now, the sentence its accessible name, and the mark is kept for the
+            case where the page can prove something is missing. */}
+        {endMissing ? (
+          <span className="is-end ctl-card-note">
+            <Mark
+              kind="partial"
+              say={`The task is ${stateWord(task.state)} and a terminal task writes a terminal event — none is on this page. This screen reads one page of events, oldest-first, and does not follow the page token the events route returns, so the newest events are not on it. The end of this task's history is missing, not absent.`}
+            />{' '}
+            {lastEvent === undefined
               ? 'ends early'
-              : `ends at ${eventKind(lastEvent)}, ${timeAgo(lastEvent.at)}`
-            : 'oldest first · cap unknown'}
-        </span>
+              : `ends at ${eventKind(lastEvent)}, ${timeAgo(lastEvent.at)}`}
+          </span>
+        ) : (
+          <span
+            className="is-end ctl-card-note"
+            aria-label={`One page, oldest first. This screen asks for ${EVENT_PAGE_LIMIT} events and the server may clamp that lower, and it does not follow the page token the events route returns — so a page that looks complete is not evidence that it is.`}
+          >
+            oldest first · cap unknown
+          </span>
+        )}
       </div>
 
       {groups.map((g) => (
@@ -2901,7 +3725,7 @@ function grouped(events: TaskEvent[], attempts: AttemptRow[] | null): Group[] {
   ordered.forEach((a, i) => {
     groups.push({
       key: a.attempt_id,
-      label: `Attempt ${i + 1} · generation ${a.generation}`,
+      label: attemptLabel(i + 1, a.generation),
       events: byAttempt.get(a.attempt_id) ?? [],
     })
     byAttempt.delete(a.attempt_id)

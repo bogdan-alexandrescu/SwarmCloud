@@ -10,9 +10,10 @@ import {
   loadWorkflows,
   type SpendRollup,
 } from './api'
+import { PHONE_PAGE_LIMIT } from './agentlist'
 import { blindness, deriveChecks, type Check, type Problem } from './checks'
 import type { TopicId } from './help'
-import { HelpCard, HelpNote } from './HelpCard'
+import { HelpCard, HelpNote, phoneWidth } from './HelpCard'
 import { errorHeading, isPaused, type ApiError, type Result } from './fetch'
 import { Absent, Mark, Metric, UtilRow, type TrackTone } from './primitives'
 import { timeAgo } from './Shell'
@@ -101,23 +102,30 @@ import {
  *     silence is calm.
  */
 export function OverviewScreen() {
-  // TWO REFRESH CADENCES, on purpose.
+  // THREE REFRESH CADENCES, on purpose.
   //
-  // `live` drives the five cheap reads and re-runs on a timer: capacity, the
-  // task page, leases, providers and accounts are all single indexed reads and
-  // are the ones that actually move.
+  // `live` drives the six cheap reads and re-runs every twenty seconds:
+  // capacity, the task page, leases, providers, accounts and workflows are all
+  // single indexed reads and are the ones that actually move.
   //
-  // `heavy` drives the two expensive ones and re-runs ONLY when a person asks.
-  // `/v1/stats` is one Firestore count() per state -- twelve aggregation
-  // queries -- and the spend rollup is a fan-out of one request per sampled
-  // task. Polling either would make the screen that is open all day the most
-  // expensive thing on the platform.
+  // `counted` drives `/v1/stats` and re-runs every sixty seconds while this
+  // screen is open (OV-16, owner decision 2026-09-25). It is one Firestore
+  // count() per state -- twelve aggregation queries -- so it is not on the
+  // twenty-second poll. It used to re-run ONLY on a manual refresh, while
+  // this comment said it was on the poll, and the Running card's "created
+  // before this page begins" reasoned from a count of unknown age.
   //
-  // BOTH THEREFORE CARRY THEIR READ AGE, in the tile foot and, for spend, in
-  // the card foot as well. A figure that does not re-poll sitting beside five
-  // that refresh every twenty seconds is indistinguishable from them unless it
-  // says how old it is, and the one that goes stale is denominated in dollars.
+  // `heavy` drives the spend rollup, a fan-out of one request per sampled
+  // task, and re-runs ONLY when a person asks. Polling it would make the
+  // screen that is open all day the most expensive thing on the platform.
+  //
+  // BOTH SLOW ONES THEREFORE CARRY THEIR READ AGE: the Running figure's foot
+  // and the sentence that reasons from it print the count's, and the spend
+  // card's foot prints the sum's. A figure that does not move with the
+  // twenty-second poll is indistinguishable from the ones that do unless it
+  // says how old it is, and the one that goes stalest is in dollars.
   const [live, setLive] = useState(0)
+  const [counted, setCounted] = useState(0)
   const [heavy, setHeavy] = useState(0)
   // The id the subscription-account group's heading publishes its explanation
   // at. It is here rather than inside the group because the group is inline
@@ -125,6 +133,7 @@ export function OverviewScreen() {
   const accountsHelpId = useId()
   const refresh = useCallback(() => {
     setLive((n) => n + 1)
+    setCounted((n) => n + 1)
     setHeavy((n) => n + 1)
   }, [])
 
@@ -132,9 +141,13 @@ export function OverviewScreen() {
     const id = setInterval(() => setLive((n) => n + 1), POLL_MS)
     return () => clearInterval(id)
   }, [])
+  useEffect(() => {
+    const id = setInterval(() => setCounted((n) => n + 1), STATS_POLL_MS)
+    return () => clearInterval(id)
+  }, [])
 
   const capacity = useRead(loadCapacity, live)
-  const tasks = useRead(loadTasks, live)
+  const tasks = useRead(loadListPage, live)
   const leases = useRead(loadLeases, live)
   const providers = useRead(loadProviders, live)
   const accounts = useRead(loadAccountPool, live)
@@ -142,7 +155,7 @@ export function OverviewScreen() {
   // stopped moving is the fact this screen was worst at reporting and a figure
   // that only refreshes when someone presses a button cannot report it.
   const workflows = useRead(loadWorkflows, live)
-  const stats = useRead(loadStats, heavy)
+  const stats = useRead(loadStats, counted)
 
   const spend = useSpend(tasks, heavy)
 
@@ -245,8 +258,19 @@ export function OverviewScreen() {
             {/* THE SCOPE IS NOT DECORATION. `/v1/stats` and `/v1/tasks` are
                 tenant-scoped while the `global` pool is platform-wide, so a
                 figure on this screen means nothing until you know which of
-                the two it is. */}
-            {tenant === null ? <i className="ctl-em">&mdash;</i> : tenant}
+                the two it is.
+                STILL READING IS NOT MISSING (OV-9). The tenant id arrives
+                with the task page, and while that read is in flight the em
+                dash said "there is no scope" about a scope nobody had been
+                told yet. The dash is for a read that landed without one or
+                failed. */}
+            {tasks.status === 'loading' ? (
+              <span className="ov-reading">reading…</span>
+            ) : tenant === null ? (
+              <i className="ctl-em">&mdash;</i>
+            ) : (
+              tenant
+            )}
           </li>
           <li
             className="ctl-fact ov-tally"
@@ -324,17 +348,16 @@ export function OverviewScreen() {
       </section>
 
       {/* REGION 2 -- THE STATE OF THE PLATFORM.
-          Four figures, then the three panels that hold the detail behind
-          them. One hairline separates it from the lead, which is §13.3's
-          region rule spent once on the page's one real change of subject
-          rather than four times on a list of boxes. */}
+          Two facts no panel repeats, then the three panels that hold the
+          detail. The strip carried four until OV-12: `Account headroom` and
+          `Token spend` were the Headroom group's and the Spend card's own
+          figures drawn a second time at the figure step, so each fact is now
+          drawn once, in the panel that holds its context. One hairline
+          separates this from the lead, which is §13.3's region rule spent
+          once on the page's one real change of subject rather than four
+          times on a list of boxes. */}
       <section className="section ov-state">
-        <MetricStrip
-          capacity={capacity}
-          stats={stats}
-          accounts={accounts}
-          spend={spend}
-        />
+        <MetricStrip capacity={capacity} stats={stats} />
 
         {/* THE GRID IS ASYMMETRIC ON PURPOSE AND IT HOLDS THREE PANELS, NOT
             FIVE. The old grid was `repeat(N, 1fr)` with ten parity selectors
@@ -382,11 +405,19 @@ export function OverviewScreen() {
               keep their own provenance foot, because they are two different
               reads and a single foot would have to average two ages. */}
           <section className="ctl-card ov-headroom">
+            {/* THE LINK WORD IS THE DESTINATION'S NAME (OV-11). It read
+                `pools →` and opened Profile headroom, a different tab from
+                the Pools one a reader expected; every other card head says
+                the name of the tab it opens (`agents`, `timeline`). The
+                address stays, because the first group in this card is the
+                per-profile headroom and that tab is its deeper version.
+                `layout.overview.test.tsx` reads the tab's label out of
+                App.tsx and holds every card-head link to it. */}
             <CardHead
               title="Headroom"
               note={tenant === null ? undefined : `tenant ${tenant}`}
               href="#capacity/profiles"
-              cta="pools"
+              cta="profile headroom"
               explain="pools-all-at-once"
             />
             <div className="ov-groups">
@@ -400,10 +431,21 @@ export function OverviewScreen() {
                     `?`: the rows underneath already print the window each
                     figure belongs to, so the glyph was opening a card to say
                     what the row beside it says. */}
-                <h3 className="ov-grouphead" aria-describedby={accountsHelpId}>
-                  By subscription account
-                  <HelpNote topic="binding-window" id={accountsHelpId} />
-                </h3>
+                {/* THE DOORWAY TO ACCOUNTS MOVED HERE WITH THE FIGURE (OV-12).
+                    The strip's `Account headroom` tile was the link to the
+                    Accounts tab; the tile is gone because this group draws
+                    the same figure, so the link is on the group that owns it,
+                    reading the tab's own label (OV-11's rule, held by
+                    `layout.overview.test.tsx`). */}
+                <div className="ov-grouphead-row">
+                  <h3 className="ov-grouphead" aria-describedby={accountsHelpId}>
+                    By subscription account
+                    <HelpNote topic="binding-window" id={accountsHelpId} />
+                  </h3>
+                  <a className="ctl-link ov-link" href="#capacity/accounts">
+                    accounts &rarr;
+                  </a>
+                </div>
                 <AccountsBody state={accounts} />
               </div>
             </div>
@@ -468,6 +510,37 @@ function tallyTone(pending: number, refused: number, broken: number): string {
  * timer actually uses.
  */
 const POLL_MS = 20_000
+
+/**
+ * How often `/v1/stats` re-runs while this screen is open (OV-16).
+ *
+ * SIXTY SECONDS, AND IT IS THE OWNER'S NUMBER, not a derived one: the owner
+ * set it on 2026-09-25 as the cost call the finding named. The read is twelve
+ * Firestore aggregation queries, one count() per state, so it stays off the
+ * twenty-second poll -- three times slower than the reads that are single
+ * indexed queries -- and it no longer waits for a person to press refresh.
+ */
+const STATS_POLL_MS = 60_000
+
+/**
+ * THE TASK PAGE THIS SCREEN COUNTS OVER IS THE AGENT LIST'S PAGE (OV-10).
+ *
+ * The failures item links to `#work/running/recent/failed`, a client-side
+ * filter over the list's own read, and the decision's guarantee is that the
+ * figure and that list describe one population. The list reads
+ * `PHONE_PAGE_LIMIT` rows at phone width (§2.5), so this reads the same page
+ * there and the api's full page everywhere else; every "among the N most
+ * recent" on this screen then names the page the list shows. Decided at each
+ * read, as the list decides it, so a rotated phone takes the right page on
+ * its next poll.
+ *
+ * `loadTasks()` WITH NO ARGUMENT on a wide screen, not `TASK_PAGE_LIMIT`: the
+ * full page is the api's default, and naming it here would be a second
+ * statement of it.
+ */
+function loadListPage(): Promise<Result<TaskPage>> {
+  return phoneWidth() ? loadTasks(PHONE_PAGE_LIMIT) : loadTasks()
+}
 
 // ---------------------------------------------------------------------------
 // Read plumbing
@@ -548,7 +621,7 @@ function useRead<T>(load: () => Promise<Result<T>>, nonce: number): Result<T> {
  * `error` rather than `stale`, so without that rule a 500 on the 20-second
  * poll would replace a rollup that really was summed from a page that really
  * landed -- retracting a measurement because a later, different read failed.
- * The tile carries the sum's age for exactly that case.
+ * The card's foot carries the sum's age for exactly that case.
  */
 function useSpend(tasks: Result<TaskPage>, heavy: number): Result<SpendRollup> {
   const [state, setState] = useState<Result<SpendRollup>>({
@@ -680,45 +753,84 @@ function ageOf(r: Result<unknown>): number | null {
 // links to. The six words and their silhouettes are the primitive's.
 
 /**
- * THE DIAL, and the reason the unfilled arc is always painted.
+ * THE HEADLINE AND ITS TRACK -- still called a dial, and no longer a ring.
  *
- * Hetzner paints the whole ring in every meter they ship and fills the
- * measured part of it. A partial total then LOOKS partial, because the
- * unmeasured remainder is visibly present and visibly not filled. That is the
- * invariant rendered rather than narrated.
+ * THE TRACK DRAWS THE FIGURE ITSELF (OV-2, owner decision 2026-09-25). It used
+ * to draw COVERAGE -- usable accounts over all accounts, checks that ran over
+ * all checks -- under a figure that said something else, so it was full
+ * whenever coverage was complete, whatever the figure said: `72 % left` over a
+ * full bar, `0 open` over a full bar. `pct` is now the figure's own proportion:
+ * % used for the headroom headline, open checks over all checks for the lead.
  *
- * `measured` is the share of the POPULATION this figure speaks for, not the
- * figure itself. A subscription headroom of 100% read off one of three
- * accounts is not a 100% ring: it is a ring filled a third of the way and
- * hatched the rest, with 100% in the middle. Those are two different facts and
- * the dial is the only place on the screen that can hold both at once.
+ * COVERAGE APPEARS ONLY WHEN IT IS PARTIAL, as the kit's partial mark beside
+ * the figure (`mark`), and the track keeps its hatched remainder. The hatch
+ * starts at `measured`: on the attention lead that is the checks that ran, so
+ * a check that came back clear is plain track and only a blind one is hatched;
+ * the headroom headline passes none, and hatches from its figure. A complete
+ * population draws no coverage at all, because "every account reported" is
+ * not news.
+ *
+ * FIVE KINDS, AND THEY MUST NOT CONVERGE:
+ *
+ *   measured  the figure, over its track
+ *   zero      a measured zero: the axis and the inset hairline, no fill
+ *   partial   the figure, the partial mark, and the remainder hatched
+ *   unknown   no figure could be drawn because every read behind it failed:
+ *             an em dash, and the track hatched with no fill and no axis
+ *   pending   the reads are still in flight (OV-9): the kit's pending mark and
+ *             the moving surface, NO digit and NO hatch. The hatch says a read
+ *             failed, and drawing it over a request that is still out is the
+ *             falsehood §8.7.1 names
+ *
+ * `tone` is a VERDICT on the fill, the row's own (OV-12): `is-warn` and
+ * `is-bad` paint the measured part the way `.ctl-util-fill.is-warn/.is-bad`
+ * paint a row, so a headline and the row it names cannot disagree. The figure
+ * stays in ink.
  */
 function Dial({
   kind,
+  pct,
   measured,
+  tone,
   say,
+  mark,
   children,
 }: {
-  kind: 'measured' | 'partial' | 'unknown' | 'zero'
-  /** 0-100, the share of the population that reported. */
-  measured: number
+  kind: 'measured' | 'partial' | 'unknown' | 'zero' | 'pending'
+  /** 0-100: the figure's own proportion. Ignored when there is no figure. */
+  pct: number
+  /**
+   * 0-100, on the same scale as `pct`: how much of the track was measured.
+   * A partial track hatches from here to the end and draws the plain track
+   * between the figure and here. Omitted, it is the figure itself.
+   */
+  measured?: number | undefined
+  tone?: 'is-warn' | 'is-bad' | undefined
   say: string
+  /** The kit's partial or pending mark, drawn under the track. */
+  mark?: ReactNode
   children: ReactNode
 }) {
-  const pct = Math.max(0, Math.min(100, Math.round(measured)))
+  const fill = Math.max(0, Math.min(100, Math.round(pct)))
+  // Never below the fill: a figure is measured, so no part of it is hatched.
+  const read = measured === undefined ? fill : Math.max(fill, Math.min(100, Math.round(measured)))
+  const figured = kind !== 'unknown' && kind !== 'pending'
   return (
     <div
-      className={`ctl-dial ov-dial${kind === 'measured' ? '' : ` is-${kind}`}`}
+      className={`ctl-dial ov-dial${kind === 'measured' ? '' : ` is-${kind}`}${figured && tone ? ` ${tone}` : ''}`}
       // Strings, not numbers: React appends `px` to a numeric value for a
       // known length property, and a custom property that arrives as `57px`
-      // makes `calc(var(--pct) * 1%)` invalid and the arc disappear.
-      style={{ '--pct': String(pct), '--measured': String(pct) } as CSSProperties}
+      // makes `calc(var(--pct) * 1%)` invalid and the fill disappear.
+      // `--measured` is where `.is-partial` starts the hatch (OV-2): only the
+      // share nobody measured is drawn as a hole.
+      style={{ '--pct': String(fill), '--measured': String(read) } as CSSProperties}
       role="img"
       aria-label={say}
       data-partial={kind === 'partial' ? 'yes' : 'no'}
-      data-measured={kind === 'unknown' ? 'false' : 'true'}
+      data-measured={figured ? 'true' : 'false'}
     >
       <b className="ctl-dial-figure">{children}</b>
+      {mark}
     </div>
   )
 }
@@ -728,32 +840,34 @@ function Dial({
 // ---------------------------------------------------------------------------
 
 /**
- * FOUR FIGURES, FOUR DOORWAYS, AND NO FIFTH.
+ * TWO FACTS, TWO DOORWAYS, AND ONLY THE FACTS NO PANEL REPEATS.
  *
  * WHAT CHANGED, AND WHY IT IS A STRUCTURAL CHANGE RATHER THAN A COSMETIC ONE.
  *
  *   1. THE ATTENTION TILE IS GONE. It said the same thing the lead directly
  *      above it now says at page rank -- `10 things` over `10 things need
- *      attention` -- and it said it in the same strip as four figures nobody
- *      has to act on. A fact drawn twice is not emphasis; it is a reader
- *      checking whether the two numbers agree. The coverage that used to be
- *      its foot ("8/8 ran · 1 blind") moved with it, to the lead's qualifier,
- *      where it is beside the list it qualifies.
+ *      attention`. A fact drawn twice is not emphasis; it is a reader checking
+ *      whether the two numbers agree. The coverage that used to be its foot
+ *      ("8/8 ran · 1 blind") moved with it, to the lead's qualifier, where it
+ *      is beside the list it qualifies.
  *
- *   2. THE THREE LIVE FIGURES DROPPED THEIR PROVENANCE FOOT AND SPEND KEPT
- *      ITS. Running, Units held and Headroom are all on the same twenty-second
- *      poll, and the page head says so once (`poll 20s`, `reads 8/8`); four
- *      copies of "read just now" under four figures that were read by the same
- *      timer is the same fact four times. Spend is the one read on this screen
- *      that does NOT re-poll, so a figure hours old would otherwise sit beside
- *      three that refreshed twenty seconds ago and look exactly like them --
- *      and it is denominated in dollars. Its foot is unconditional and carries
- *      its coverage as well as its age.
+ *   2. SO ARE `Account headroom` AND `Token spend` (OV-12, owner decision
+ *      2026-09-25), for the same reason: each was a panel's own figure drawn a
+ *      second time at the figure step, which put seven figure-size numbers
+ *      above the fold for five facts. Each is now drawn once, in the panel
+ *      that holds its context -- the Headroom group's headline and the Spend
+ *      card's figure. Nothing they did is lost: the link to Accounts is on the
+ *      account group's head, the low-headroom alert is the headline's verdict
+ *      (the row thresholds, not the tile's own), and their absent, unread and
+ *      pending renderings are the panels' own states.
  *
- *      THE OTHER THREE ARE NOT SILENT WHEN THEY GO STALE. `footFor` still
- *      renders under any figure whose reading is older than two poll periods,
- *      so the foot appearing now MEANS something -- this figure is not from
- *      the current poll -- where before it was there whatever happened.
+ *   3. RUNNING CARRIES ITS AGE, UNITS HELD ONLY WHEN IT IS STALE. Units held
+ *      is on the twenty-second poll and the page head says so once (`poll
+ *      20s`); a "read just now" under it is the same fact twice, so `staleFoot`
+ *      renders only past two poll periods, when the foot means something.
+ *      Running is `/v1/stats`, which is on its own sixty-second cadence
+ *      (OV-16), so a figure up to a minute old sits beside ones twenty seconds
+ *      old -- and its age is printed beside it, always.
  *
  * EVERY FIGURE HAS FOUR RENDERINGS AND THEY MUST NOT CONVERGE:
  *
@@ -774,13 +888,9 @@ function Dial({
 function MetricStrip({
   capacity,
   stats,
-  accounts,
-  spend,
 }: {
   capacity: Result<Capacity>
   stats: Result<Stats>
-  accounts: Result<AccountsPage>
-  spend: Result<SpendRollup>
 }) {
   const cap = dataOf(capacity)
   const st = dataOf(stats)
@@ -793,9 +903,6 @@ function MetricStrip({
           .filter(([s]) => CONCURRENCY_STATES.has(s as TaskState))
           .reduce((n, [, v]) => n + (typeof v === 'number' ? v : 0), 0)
 
-  const pool = accountHeadroom(accounts)
-  const sp = dataOf(spend)
-
   return (
     <div className="ctl-metrics">
       <Tile
@@ -803,10 +910,18 @@ function MetricStrip({
         label="Running"
         value={inFlight}
         unit="agents"
-        foot={staleFoot(stats, 'counted')}
+        // UNCONDITIONAL (OV-16): this count is on the sixty-second cadence,
+        // not the twenty-second one the page head names, so its age is part
+        // of the figure rather than a staleness warning.
+        foot={footFor(stats, 'counted')}
         reading={stats.status === 'loading'}
         unread={stats.status === 'error' ? errorHeading(stats.error) : null}
-        tone={inFlight !== null && inFlight > 0 ? 'good' : undefined}
+        // NO TONE (OV-5). This was `good` whenever anything ran, which painted
+        // `5 agents` in --ok green with a disc while the table under it drew
+        // the same five as the blue `is-live` mark. A count of running work is
+        // a fact, not a verdict (design-system.md §6.7): five agents running
+        // is neither healthy nor unhealthy, and green here was the only place
+        // on the screen that said it was.
         say="Agents in LEASED, DISPATCHED, STARTING or RUNNING — the four states that reserve capacity. Counted by /v1/stats, one aggregation query per state."
       />
 
@@ -827,44 +942,6 @@ function MetricStrip({
         // "units", never "agents": admission increments by the resource
         // class's weight, so 8 may be two large agents or eight standard ones.
         say="Weighted units held on the platform-wide global pool. Admission counts a resource class's weight, so this is not a count of agents."
-      />
-
-      <Tile
-        href="#capacity/accounts"
-        // "Account headroom", not "Headroom". The panel below is called
-        // Headroom and covers BOTH ceilings -- the pools and the subscription
-        // accounts -- while this figure is the account half alone. Two things
-        // one word apart, one of which is a subset of the other, is how a
-        // reader concludes the platform has 37% of its capacity left when what
-        // is true is that its best account does.
-        label="Account headroom"
-        value={pool.pct === null ? null : Math.round(pool.pct)}
-        unit={pool.pct === null ? undefined : '% left'}
-        foot={pool.usable === null ? undefined : `best of ${pool.usable}/${pool.total}`}
-        reading={pool.reading}
-        unread={accounts.status === 'error' ? errorHeading(accounts.error) : null}
-        absent={pool.absent === null ? null : pool.foot ?? pool.sub}
-        tone={pool.pct !== null && pool.pct < 15 ? 'alert' : undefined}
-        say={pool.sub}
-      />
-
-      <Tile
-        href="#work/timeline"
-        label="Token spend"
-        value={sp && sp.costUsd !== null ? money(sp.costUsd) : null}
-        // THE AGE IS NOT OPTIONAL ON THIS ONE, which is why it calls `footFor`
-        // and its three neighbours call `staleFoot`. See the note above.
-        foot={sp ? `${sp.attemptsWithCost}/${sp.attempts} · ${footFor(spend, 'summed') ?? 'not summed'}` : footFor(spend, 'summed')}
-        reading={spend.status === 'loading'}
-        unread={spend.status === 'error' ? errorHeading(spend.error) : null}
-        absent={
-          spend.status === 'empty'
-            ? 'No task has run, so there is no attempt to sum.'
-            : sp && sp.costUsd === null
-              ? 'No attempt in this sample reported a cost. That is an absent measurement, not $0.00.'
-              : null
-        }
-        say="Token cost summed one request per sampled task. It is a sample rather than a bill, and it never includes infrastructure: no billing integration of any kind records Cloud Run, Firestore or GCS spend."
       />
     </div>
   )
@@ -1071,6 +1148,23 @@ function CardAbsent(props: Omit<Parameters<typeof Absent>[0], 'className'>) {
 }
 
 /**
+ * A card foot's clauses, as a run (OV-14).
+ *
+ * THE SEPARATOR IS DRAWN, NEVER TYPED. The feet here were one text run with
+ * ' · ' between clauses, and a flex item's text wraps inside itself: at 390
+ * the Spend foot broke across three lines with a `·` left at the end of two of
+ * them and a clause split in half. Each child of this run is one clause, one
+ * element, `nowrap`; `.ctl-foot-run` in styles.css draws the dot in the gap to
+ * each clause's left and clips the one that would start a line. So a clause
+ * never breaks inside itself and a dot never ends or begins a line.
+ *
+ * Every child must be ONE ELEMENT, and a falsy child is simply not a clause.
+ */
+function FootRun({ children }: { children: ReactNode }) {
+  return <span className="ctl-foot-run">{children}</span>
+}
+
+/**
  * A read in flight, at the geometry the content will occupy.
  *
  * A THING THAT IS ABSENT OCCUPIES THE SPACE IT WOULD HAVE OCCUPIED. If the
@@ -1176,7 +1270,10 @@ function CapacityBody({ state }: { state: Result<Capacity> }) {
         ))}
       </div>
       <p className="ctl-card-foot">
-        {cap.pools.length} pools · {footFor(state, 'read') ?? 'not read'}
+        <FootRun>
+          <span>{countOf(cap.pools.length, 'pool')}</span>
+          <span>{footFor(state, 'read') ?? 'not read'}</span>
+        </FootRun>
       </p>
     </>
   )
@@ -1244,6 +1341,23 @@ function ProfileRow({
         ? 'is-warn'
         : undefined
 
+  // More than one pool can be at its ceiling at once. This column has room
+  // for one name, so when several refuse it says SO rather than picking one.
+  // "refusing", not "full": one of them may be PAUSED, which is a different
+  // fact with the opposite remedy.
+  const by =
+    h.blockers.length > 1
+      ? `${h.blockers.length} refusing`
+      : paused
+        ? 'paused'
+        : !h.complete
+          ? `${h.unread.length} unread`
+          : h.binding
+            ? bindingLabel(h.binding, tenant)
+            : h.missing.length > 0
+              ? `${h.missing.length} uncapped`
+              : '—'
+
   return (
     <UtilRow
       nameTitle={`${name} · ${profile.units} unit(s) per agent`}
@@ -1300,23 +1414,12 @@ function ProfileRow({
           ? h.blockers.map((b) => `${b.pool} (${b.active}/${b.limit})`).join(', ')
           : (h.binding ?? undefined)
       }
-      by={
-        // More than one pool can be at its ceiling at once. This column has
-        // room for one name, so when several refuse it says SO rather than
-        // picking one. "refusing", not "full": one of them may be PAUSED,
-        // which is a different fact with the opposite remedy.
-        h.blockers.length > 1
-          ? `${h.blockers.length} refusing`
-          : paused
-            ? 'paused'
-            : !h.complete
-              ? `${h.unread.length} unread`
-              : h.binding
-                ? bindingLabel(h.binding, tenant)
-                : h.missing.length > 0
-                  ? `${h.missing.length} uncapped`
-                  : '—'
-      }
+      by={by}
+      // EVERY ANSWER HERE IS A NOTE (OV-7): which pool binds, that several
+      // refuse, that one is paused or unread. Each changes what the row's
+      // figure means, so on a phone it keeps a line of its own under the row.
+      // The dash is the one that is not.
+      byNote={by !== '—'}
     />
   )
 }
@@ -1333,7 +1436,8 @@ const RUNNING_ROWS = 4
  * TWO SOURCES, DELIBERATELY, AND BOTH ARE NAMED. The COUNT comes from
  * `/v1/stats`, an exact Firestore count() per state. The ROWS come from
  * `/v1/tasks?limit=200`, the 200 most recently CREATED tasks (store.py:408
- * orders created_at DESCENDING) -- so an agent running for two days while 200
+ * orders created_at DESCENDING; 50 at phone width, the agent list's page --
+ * `loadListPage`) -- so an agent running for two days while 200
  * newer tasks were created is counted and not listed. The caption prints both
  * figures rather than quietly showing whichever is smaller, because the gap
  * between them is itself information.
@@ -1392,6 +1496,12 @@ function RunningBody({
       : Object.entries(st.tasks_by_state)
           .filter(([s]) => CONCURRENCY_STATES.has(s as TaskState))
           .reduce((n, [, v]) => n + (typeof v === 'number' ? v : 0), 0)
+  // HOW OLD THE COUNT IS (OV-16). The rows are on the twenty-second poll and
+  // the count is on its own sixty-second one, so "stats say 3" can be a minute
+  // older than the rows it is compared with -- and the sentence below draws a
+  // conclusion from the comparison. Both say the count's age.
+  const countedAt = ageOf(stats)
+  const countedAge = countedAt === null ? null : timeAgo(countedAt)
 
   if (running.length === 0) {
     return (
@@ -1405,14 +1515,17 @@ function RunningBody({
               (counted === null
                 ? 'The exact count could not be read, so this is the page’s answer rather than the platform’s.'
                 : counted === 0
-                  ? 'The state counts agree: zero.'
-                  : `The state counts say ${counted}; those agents were created before this page begins.`)
+                  ? `The state counts, read ${countedAge ?? 'at an unknown time'}, agree: zero.`
+                  : `The state counts, read ${countedAge ?? 'at an unknown time'}, say ${counted}; those agents were created before this page begins.`)
             }
           />
         </div>
         <p className="ctl-card-foot">
-          0 of {page.tasks.length} newest
-          {counted !== null && counted !== 0 && <> · stats say {counted}</>}
+          <FootRun>
+            <span>0 of {page.tasks.length} newest</span>
+            {counted !== null && counted !== 0 && <span>stats say {counted}</span>}
+            {counted !== null && counted !== 0 && countedAge !== null && <span>counted {countedAge}</span>}
+          </FootRun>
         </p>
       </>
     )
@@ -1428,8 +1541,16 @@ function RunningBody({
             <tr>
               <th scope="col">Agent</th>
               <th scope="col">State</th>
+              {/* ELAPSED, NOT RUNTIME (AG-3). A LEASED or DISPATCHED task has
+                  no `started_at` of this attempt -- the worker writes it on
+                  DISPATCHED -> STARTING -- so the cell under this heading is
+                  not a run for those rows. `elapsed()` prints their state
+                  word alone: the task's age after `leased` read as time held
+                  in the lease, which is what a stuck lease looks like. A
+                  heading saying "Runtime" would be the run-time claim the
+                  drawer's `run` fact stopped making for the same rows. */}
               <th scope="col" className="is-num">
-                Runtime
+                Elapsed
               </th>
             </tr>
           </thead>
@@ -1443,11 +1564,18 @@ function RunningBody({
       {/* THE GAP BETWEEN THE TWO SOURCES IS THE INFORMATION, so both figures
           stay on the surface as digits. `/v1/stats` counting more than the
           page holds is not a discrepancy to hide: it is agents older than the
-          200 most recently created. */}
+          200 most recently created (50 on a phone). */}
       <p className="ctl-card-foot">
-        {running.length} of {page.tasks.length} newest
-        {counted !== null && counted !== running.length && <> · stats say {counted}</>}
-        {running.length > shown.length && <> · showing {shown.length}</>}
+        <FootRun>
+          <span>
+            {running.length} of {page.tasks.length} newest
+          </span>
+          {counted !== null && counted !== running.length && <span>stats say {counted}</span>}
+          {counted !== null && counted !== running.length && countedAge !== null && (
+            <span>counted {countedAge}</span>
+          )}
+          {running.length > shown.length && <span>showing {shown.length}</span>}
+        </FootRun>
       </p>
     </>
   )
@@ -1498,8 +1626,11 @@ function RunningRow({ task }: { task: Task }) {
  * The one cell on this screen that has to move on its own, and therefore the
  * one place the 1Hz clock lives.
  *
- * A LEASED task has no `started_at` -- lifecycle writes it on
- * DISPATCHED -> STARTING -- so `elapsed` says "queued 4m", never "0s".
+ * A LEASED task has no `started_at` of its own attempt -- lifecycle writes it
+ * on DISPATCHED -> STARTING -- so `elapsed` says "leased", never "0s" and
+ * never the task's age after the word, and says it on a retry too, whose
+ * `started_at` is the previous attempt's. Only STARTING and RUNNING rows
+ * tick here.
  */
 function Runtime({ task }: { task: Task }) {
   const now = useNow()
@@ -1618,14 +1749,26 @@ function SpendBody({ state, tasks }: { state: Result<SpendRollup>; tasks: Result
         >
           {s.costUsd === null ? <span className="ctl-em">&mdash;</span> : money(s.costUsd)}
         </b>
-        {s.costUsd === null && (
-          <div className="ov-figure-mark">
+        {/* A SUM OVER A SAMPLE IS NOT A TOTAL (OV-4), so a measured figure
+            carries the kit's partial mark -- always, because it is always a
+            sample: the newest tasks that have run, one attempt read per task,
+            token cost only (no billing integration records infrastructure).
+            It keeps the client-side sum, as the owner decided; what changed
+            is that it no longer draws that sum as the whole. An absent figure
+            carries the absent mark instead: partial-of-nothing says nothing. */}
+        <div className="ov-figure-mark">
+          {s.costUsd === null ? (
             <Mark
               kind="absent"
               say="No attempt in this sample reported a cost. That is an absent measurement and not $0.00: record_usage omits a key the runner did not report."
             />
-          </div>
-        )}
+          ) : (
+            <Mark
+              kind="partial"
+              say={`Summed from the ${countOf(s.attempts, 'attempt')} of the ${s.tasksSampled} newest of ${countOf(s.tasksWithAttempts, 'task')} that have run on the ${s.tasksOnPage} most recently created. A sample of token cost, not a bill: older tasks are outside it, and no billing integration records Cloud Run, Firestore or GCS spend.`}
+            />
+          )}
+        </div>
 
         {/* THE TOKEN MIX, AS A PROPORTION RATHER THAN FOUR NUMBERS IN A LIST.
             Hand-rolled: four `<i>` widths off one total, in four tones of ONE
@@ -1637,29 +1780,31 @@ function SpendBody({ state, tasks }: { state: Result<SpendRollup>; tasks: Result
         <TokenMix s={s} />
       </div>
 
-      {/* PROVENANCE, IN ONE LINE, WHERE PROVENANCE GOES. Four paragraphs used
-          to say this: the sample size, the span, the age of the sum, that it
-          does not re-poll, and how many attempts carried no cost. They are
-          counts, so they are drawn as counts. */}
+      {/* PROVENANCE, WHERE PROVENANCE GOES, AS A RUN OF CLAUSES (OV-14).
+          THE ORDER IS THE OWNER'S: what the sum covers, then the holes in that
+          coverage, then how old it is and how it moves. It holds at every
+          width; where a line breaks depends on the counts, and nothing
+          promises a particular break. */}
       <p className="ctl-card-foot">
-        {s.attempts} attempts / {s.tasksSampled} tasks
-        {' · '}
-        {footFor(state, 'summed') ?? 'not summed'} · no re-poll
-        {unmeasured > 0 && (
-          <>
-            {' · '}
-            <span className="ov-warn">{unmeasured} unmeasured</span>
-          </>
-        )}
-        {/* THE COUNT OF WHAT IS MISSING, KEPT AS A DIGIT ON THE SURFACE. These
-            figures are a sum over a sample with a hole in it, and the size of
-            the hole is the thing that must not need a hover. ONE MESSAGE IS
-            ONE FAILURE'S -- the rollup keeps only the first error it saw
-            (api.ts, loadSpend), so the rest are unexplained rather than
-            explained wrongly. */}
-        {s.failedReads > 0 && (
-          <>
-            {' · '}
+        <FootRun>
+          {/* 1. WHAT THE SUM COVERS (OV-4): the attempts it read and the
+              window it read them in -- `tasksWithAttempts` was computed and
+              never shown, so the coverage the figure is partial against was
+              nowhere on the screen. */}
+          <span>
+            {countOf(s.attempts, 'attempt')}, {s.tasksSampled} newest of {countOf(s.tasksWithAttempts, 'task')}
+          </span>
+          {/* 2. THE HOLES: attempts that carried no cost figure... */}
+          {unmeasured > 0 && <span className="ov-warn">{unmeasured} unmeasured</span>}
+          {/* 3. ...and attempt reads that failed. THE COUNT OF WHAT IS
+              MISSING, KEPT AS A DIGIT ON THE SURFACE: the size of the hole is
+              the thing that must not need a hover. ONE MESSAGE IS ONE
+              FAILURE'S -- the rollup keeps only the first error it saw (api.ts,
+              loadSpend), so the rest are unexplained rather than explained
+              wrongly. NO `?` (B7.4): the accessible name is `partial-read`
+              with THIS response's numbers and message in it, which a shared
+              topic cannot have. */}
+          {s.failedReads > 0 && (
             <span
               className="ov-bad"
               aria-label={`${s.failedReads} of ${s.tasksSampled} attempt reads failed, so their spend is in none of these figures. ${
@@ -1670,13 +1815,13 @@ function SpendBody({ state, tasks }: { state: Result<SpendRollup>; tasks: Result
             >
               {s.failedReads} of {s.tasksSampled} reads failed
             </span>
-            {/* NO `?` (B7.4). The accessible name above is `partial-read`,
-                written out longer than the topic and with THIS response's
-                numbers and THIS failure's message in it, which a shared topic
-                cannot have. A glyph here would open a generic version of the
-                sentence already attached to the figure. */}
-          </>
-        )}
+          )}
+          {/* 4. HOW OLD IT IS, and 5. HOW IT MOVES: the sum is on no timer --
+              only a press of refresh re-sums it (OV-16 set the cadence of
+              `/v1/stats`, not of this). */}
+          <span>{footFor(state, 'summed') ?? 'not summed'}</span>
+          <span>no re-poll</span>
+        </FootRun>
       </p>
     </>
   )
@@ -1810,10 +1955,17 @@ function money(v: number): string {
  * reset. `readingOf` is the one place that distinction is encoded, so it is
  * asked rather than re-derived: only a `live` reading is a figure.
  *
- * `usable` AND `total` ARE WHAT THE DIAL DRAWS. The ring is the share of the
- * pool this figure speaks for, and the figure in the middle is the headroom.
- * A headroom of 100% read off one of three accounts is not a full ring: it is
- * a ring filled a third of the way and hatched the rest, with 100% in it.
+ * THE FIGURE IS % USED, AND IT NAMES ITS ACCOUNT (OV-1, owner decision
+ * 2026-09-25). It was % LEFT -- `72 % left` over account rows printing % used
+ * as a bare `%`, so `74` one line below `72` was the fullest account, not a
+ * roomier one. One polarity everywhere (this screen, Accounts, `sc`), and the
+ * headline says whose figure it is: `28 % used · laptop`. The best account is
+ * still the one with the most room, which is the one with the LEAST used.
+ *
+ * `usable` AND `total` ARE THE COVERAGE, and the headline's track no longer
+ * draws them (OV-2): it draws the figure. When `usable < total` the headline
+ * carries the kit's partial mark instead, with this function's sentences as
+ * its accessible name.
  *
  * EXPORTED so the arithmetic below can be asserted. A verifier found on
  * 2026-09-22 that replacing `accounts.length - unread - projected -
@@ -1823,7 +1975,10 @@ function money(v: number): string {
  * nothing could call this.
  */
 export function accountHeadroom(state: Result<AccountsPage>): {
+  /** The best usable account's binding window, % USED. null when none has one. */
   pct: number | null
+  /** That account's id and label. null exactly when `pct` is. */
+  best: { id: string; label: string } | null
   sub: string
   foot: string | undefined
   reading: boolean
@@ -1836,6 +1991,7 @@ export function accountHeadroom(state: Result<AccountsPage>): {
   if (state.status === 'loading') {
     return {
       pct: null,
+      best: null,
       sub: 'reading the subscription pool',
       foot: undefined,
       reading: true,
@@ -1847,6 +2003,7 @@ export function accountHeadroom(state: Result<AccountsPage>): {
   if (state.status === 'error') {
     return {
       pct: null,
+      best: null,
       sub: 'the subscription pool could not be read',
       foot: undefined,
       reading: false,
@@ -1858,6 +2015,7 @@ export function accountHeadroom(state: Result<AccountsPage>): {
   if (state.status === 'empty') {
     return {
       pct: null,
+      best: null,
       sub: 'no account is registered, so the subscription pool supplies nothing',
       foot: 'read succeeded · a real zero',
       reading: false,
@@ -1877,7 +2035,9 @@ export function accountHeadroom(state: Result<AccountsPage>): {
   // id, and `scope` has already been turned into a sentence fragment.
   const scopeId = state.data.tenant_id
 
-  let best: { pct: number; key: string; observedAt: string } | null = null
+  // `pct` IS % USED. The best account is the one with the least of its
+  // binding window used, which is the one with the most room.
+  let best: { pct: number; key: string; observedAt: string; id: string; label: string } | null = null
   // Accounts whose headroom is UNKNOWN: never polled, or polled with no
   // window in the answer. Named, not counted -- "1 account excluded" does not
   // tell anyone which credential to go and look at.
@@ -1932,9 +2092,9 @@ export function accountHeadroom(state: Result<AccountsPage>): {
       projected.push(a.label)
       continue
     }
-    const left = Math.max(0, Math.min(100, 100 - r.pct))
-    if (best === null || left > best.pct) {
-      best = { pct: left, key: w.key, observedAt: r.observedAt }
+    const used = Math.max(0, Math.min(100, r.pct))
+    if (best === null || used < best.pct) {
+      best = { pct: used, key: w.key, observedAt: r.observedAt, id: a.account_id, label: a.label }
     }
   }
 
@@ -1948,7 +2108,8 @@ export function accountHeadroom(state: Result<AccountsPage>): {
   if (best === null) {
     return {
       pct: null,
-      sub: `${countOf(accounts.length, 'account')} ${scope} · ${absenceSentence(unread, projected, notServing)}`,
+      best: null,
+      sub: `${countOf(accounts.length, 'account')} ${scope} · ${absenceSentence(unread, projected, notServing, unreadableHere)}`,
       foot: 'a missing reading is not 0% used, and a window that has cleared has not been read since',
       reading: false,
       absent: 'nothing measured',
@@ -1959,16 +2120,20 @@ export function accountHeadroom(state: Result<AccountsPage>): {
 
   return {
     pct: best.pct,
-    // THE AGE IS PART OF THE FIGURE. Every other tile on the strip carries the
-    // age of the read behind it; this one showed a percentage with nothing
-    // saying whether it was measured a minute or four days ago.
-    sub: `best of ${countOf(usable, 'usable account')} · its ${best.key.replace('_', '-')} window binds · read ${timeAgo(best.observedAt)}`,
+    best: { id: best.id, label: best.label },
+    // THE AGE IS PART OF THE FIGURE. A percentage with nothing saying whether
+    // it was measured a minute or four days ago is a claim without provenance.
+    sub: `${best.label}, the best of ${countOf(usable, 'usable account')}, has ${Math.round(best.pct)}% of its ${best.key.replace('_', '-')} window used · that window binds · read ${timeAgo(best.observedAt)}`,
     // DERIVED, NEVER ASSERTED, AND IT NAMES NAMES. The previous wording --
     // "every registered account has a current reading" -- was a sentence
     // chosen by `unusable === 0` over a tenant-scoped list, and the accounts
     // it was silent about were exactly the ones worth knowing about.
-    foot: unread.length > 0 || projected.length > 0 || notServing.length > 0
-      ? absenceSentence(unread, projected, notServing)
+    // An account the pool is SKIPPING for this tenant is named too: it is one
+    // of the holes the headline's partial mark is about (OV-2), and a mark
+    // whose sentence said every account had a current reading would be
+    // contradicting itself.
+    foot: unread.length > 0 || projected.length > 0 || notServing.length > 0 || unreadableHere.length > 0
+      ? absenceSentence(unread, projected, notServing, unreadableHere)
       : `all ${countOf(accounts.length, 'account')} ${scope} ${accounts.length === 1 ? 'has' : 'have'} a current reading`,
     reading: false,
     absent: null,
@@ -1993,15 +2158,18 @@ function countOf(n: number, noun: string): string {
  * needing sign-in" -- was the old wording, and it did not even list the case
  * that actually applies here.
  *
- * THIS IS NOW AN ACCESSIBLE NAME RATHER THAN A PARAGRAPH. The counts it
- * summarises are drawn: the dial's hatched arc is the accounts with no
- * reading, and the card's note is `best of 1/3`. The sentence is what a
- * screen reader gets and what the `?` expands.
+ * A fourth, `skipped`: accounts the pool will not hand this tenant because it
+ * reported them unreadable. Their headroom is real and unavailable.
+ *
+ * THIS IS AN ACCESSIBLE NAME RATHER THAN A PARAGRAPH: the headline's partial
+ * mark carries it (OV-2), and so does the headline itself when nothing could
+ * be measured. The sentence is what a screen reader gets.
  */
 function absenceSentence(
   unread: string[],
   projected: string[],
   notServing: string[],
+  skipped: string[] = [],
 ): string {
   const parts: string[] = []
   if (unread.length > 0) {
@@ -2016,6 +2184,9 @@ function absenceSentence(
   }
   if (notServing.length > 0) {
     parts.push(`${notServing.join(', ')} not serving`)
+  }
+  if (skipped.length > 0) {
+    parts.push(`${skipped.join(', ')} ${skipped.length === 1 ? 'is' : 'are'} being skipped by the pool for this tenant`)
   }
   // Only reachable with every list empty when the caller has a figure, and
   // that caller words it itself; this is the honest fallback either way.
@@ -2060,6 +2231,7 @@ function AccountsBody({ state }: { state: Result<AccountsPage> }) {
 
   const pool = accountHeadroom(state)
   const total = state.data.accounts.length
+  const tenantId = state.data.tenant_id
   const accounts = [...state.data.accounts]
     .map((a) => ({ a, w: bindingWindow(a) }))
     // Worst first, and "needs a person" IS the worst. Sorting on room alone
@@ -2068,52 +2240,103 @@ function AccountsBody({ state }: { state: Result<AccountsPage> }) {
     .sort((x, y) => rank(x.a, x.w) - rank(y.a, y.w))
     .slice(0, ACCOUNT_ROWS)
 
-  // THE RING IS THE COVERAGE, THE FIGURE IS THE HEADROOM, and the two are
-  // different facts. `.is-partial` hatches the accounts that reported nothing,
-  // so a confident 100% read off one of three is visibly one third of a ring.
-  const coverage = total === 0 ? 0 : ((pool.usable ?? 0) / total) * 100
+  // THE TRACK IS THE FIGURE, THE MARK IS THE COVERAGE (OV-2). The track used
+  // to be usable/total accounts under a figure that said something else, so
+  // it was full whenever every account had a reading. It is the headline's %
+  // used now; a population with holes in it gets the kit's partial mark, and
+  // the track keeps its hatched remainder.
+  const partial = pool.pct !== null && (pool.usable ?? 0) < total
   const dialKind =
-    pool.pct === null
-      ? 'unknown'
-      : (pool.usable ?? 0) < total
-        ? 'partial'
-        : pool.pct === 0
-          ? 'zero'
-          : 'measured'
+    pool.pct === null ? 'unknown' : partial ? 'partial' : pool.pct === 0 ? 'zero' : 'measured'
+  // THE HEADLINE TAKES ITS ROW'S VERDICT (OV-12 b), computed by the same
+  // function the row is drawn with, so the two cannot disagree. This replaces
+  // the removed tile's own "under 15% left" threshold. The best account is a
+  // live, serving one by construction, so only the two ceiling verdicts can
+  // come back; a paused or projected tone could not be a headline's anyway.
+  const named = pool.best === null ? undefined : state.data.accounts.find((a) => a.account_id === pool.best!.id)
+  const namedTone = named === undefined ? undefined : accountRow(named, bindingWindow(named)).tone
+  const headlineTone = namedTone === 'is-warn' || namedTone === 'is-bad' ? namedTone : undefined
 
   return (
     <>
       <div className="ctl-card-body">
         <div className="ov-dialrow">
-          <Dial kind={dialKind} measured={coverage} say={pool.sub}>
-            {pool.pct === null ? (
+          <Dial
+            kind={dialKind}
+            pct={pool.pct ?? 0}
+            tone={headlineTone}
+            say={pool.sub}
+            mark={
+              partial ? (
+                <Mark
+                  kind="partial"
+                  say={`The best of ${pool.usable ?? 0} of ${countOf(total, 'account')}; the rest are not in this figure. ${pool.foot ?? ''}`}
+                />
+              ) : undefined
+            }
+          >
+            {pool.pct === null || pool.best === null ? (
               <span className="ctl-em">&mdash;</span>
             ) : (
               <>
                 {Math.round(pool.pct)}
-                <span className="ctl-figure-unit">% left</span>
+                {/* ONE POLARITY, AND THE WORD IS ON EVERY % (OV-1): this is %
+                    used, like every row under it, and it names the account
+                    the figure is. */}
+                <span className="ctl-figure-unit">% used · {pool.best.label}</span>
               </>
             )}
           </Dial>
           <div className="ov-dialrow-rows">
             {accounts.map(({ a, w }) => {
-              // FIVE KINDS OF READING, AND ONLY ONE OF THEM IS A CURRENT
-              // FIGURE. `readingOf` is the same function the Accounts screen
-              // uses, so the two screens cannot disagree about the same
-              // account: an account whose binding window has reset reads
-              // "~90% · cleared" here and "cleared" there.
-              const r: AccountReading =
-                a.observed_at === null
-                  ? { kind: 'never' }
-                  : w === null
-                    ? { kind: 'absent' }
-                    : readingOf(a, w.key)
-              // `null`, never 0: the width of a bar nobody measured is not
-              // zero, it does not exist.
-              const pct =
-                r.kind === 'live' || r.kind === 'stale' || r.kind === 'reset' ? r.pct : null
-              const projected = isProjected(r)
-              const windowName = w?.key.replace(/_/g, '-') ?? null
+              const { r, pct, projected, windowName, tone } = accountRow(a, w)
+              // What the reading is, when it is not a current one. The figure
+              // carries the same fact as its dash or tilde.
+              const readingWord =
+                r.kind === 'never'
+                  ? 'never polled'
+                  : r.kind === 'absent'
+                    ? 'no window reported'
+                    : r.kind === 'reset'
+                      ? 'cleared'
+                      : r.kind === 'stale'
+                        ? `stale ${timeAgo(r.observedAt)}`
+                        : null
+              // Paused, draining: the account is not taking work, whatever
+              // its reading says. `needsAHuman` is the one state with a
+              // sentence of its own, above.
+              const stateWord = a.state !== 'AVAILABLE' && !needsAHuman(a) ? a.state.toLowerCase() : null
+              // A CURRENT READING CARRIES ITS AGE TOO. `stale` and `cleared`
+              // have said how old they are for as long as this card has
+              // existed; a `live` reading printed only the window name, so the
+              // one row with a confident figure was the one row that did not
+              // say when it was measured.
+              const by = needsAHuman(a)
+                ? 'sign in again'
+                : // Before every reading word, because it outranks all of
+                  // them: whatever this row's figure says, the pool will not
+                  // hand this account to this tenant while the report stands.
+                  unreadableFor(a, tenantId)
+                  ? 'pool is skipping it'
+                  : // THE STATE LEADS AND THE READING WORD FOLLOWS IT (OV-7).
+                    // The reading words used to outrank the state, so a paused
+                    // account with a stale reading printed only "stale 3h
+                    // ago": no note on a phone, and no "paused" anywhere.
+                    stateWord !== null
+                    ? readingWord !== null
+                      ? `${stateWord} · ${readingWord}`
+                      : stateWord
+                    : readingWord !== null
+                      ? readingWord
+                      : r.kind === 'live' && windowName !== null
+                        ? `${windowName} · ${timeAgo(r.observedAt)}`
+                        : (windowName ?? '—')
+              // THE NOTES (OV-7): the states that change what the row's figure
+              // means -- a person has to sign in, the pool is skipping it for
+              // this tenant, or it is paused or draining. A window name and an
+              // age are provenance, and the reading words are carried by the
+              // figure's own dash or tilde.
+              const note = by === 'sign in again' || by === 'pool is skipping it' || stateWord !== null
               return (
                 <UtilRow
                   key={a.account_id}
@@ -2136,15 +2359,7 @@ function AccountsBody({ state }: { state: Result<AccountsPage> }) {
                   // segment, and the shared track would draw the segment.
                   track={{
                     pct: pct === null ? null : Math.min(100, pct),
-                    tone: projected
-                      ? 'ov-projected'
-                      : a.state !== 'AVAILABLE'
-                        ? 'is-paused'
-                        : pct !== null && pct > 90
-                          ? 'is-bad'
-                          : pct !== null && pct > 75
-                            ? 'is-warn'
-                            : undefined,
+                    tone,
                     zeroTitle: `Measured: this account reported 0% of its binding window used. The bar has a baseline because this zero is a reading, not a missing one.`,
                   }}
                   figureTitle={
@@ -2161,39 +2376,16 @@ function AccountsBody({ state }: { state: Result<AccountsPage> }) {
                             use for a figure that is real but not current. */}
                         {projected && <span className="ov-tilde">~</span>}
                         {Math.round(pct)}%
+                        {/* EVERY % CARRIES ITS WORD (OV-1). A bare `%` here sat
+                            under a headline in the other polarity. */}
+                        <span className="ctl-util-of"> used</span>
                       </>
                     ) : (
                       <span className="ctl-em">&mdash;</span>
                     )
                   }
-                  // A CURRENT READING CARRIES ITS AGE TOO. `stale` and
-                  // `cleared` have said how old they are for as long as this
-                  // card has existed; a `live` reading printed only the window
-                  // name, so the one row with a confident figure was the one
-                  // row that did not say when it was measured.
-                  by={
-                    needsAHuman(a)
-                      ? 'sign in again'
-                      : // Before every reading word, because it outranks all
-                        // of them: whatever this row's figure says, the pool
-                        // will not hand this account to this tenant while the
-                        // report stands.
-                        unreadableFor(a, state.data.tenant_id)
-                        ? 'pool is skipping it'
-                        : r.kind === 'never'
-                        ? 'never polled'
-                        : r.kind === 'absent'
-                          ? 'no window reported'
-                          : r.kind === 'reset'
-                            ? 'cleared'
-                            : r.kind === 'stale'
-                              ? `stale ${timeAgo(r.observedAt)}`
-                              : a.state !== 'AVAILABLE'
-                                ? a.state.toLowerCase()
-                                : r.kind === 'live' && windowName !== null
-                                  ? `${windowName} · ${timeAgo(r.observedAt)}`
-                                  : (windowName ?? '—')
-                  }
+                  by={by}
+                  byNote={note}
                 />
               )
             })}
@@ -2206,12 +2398,58 @@ function AccountsBody({ state }: { state: Result<AccountsPage> }) {
           what the tilde means -- are drawn in the rows themselves: a hatched
           track with no fill, an em dash, a tilde. */}
       <p className="ctl-card-foot">
-        {countOf(total, 'account')}
-        {total > accounts.length && <> · showing {accounts.length}</>}
-        {state.data.tenant_id ? ` · ${state.data.tenant_id}` : ' · every tenant'}
+        <FootRun>
+          <span>{countOf(total, 'account')}</span>
+          {total > accounts.length && <span>showing {accounts.length}</span>}
+          <span>{state.data.tenant_id ? state.data.tenant_id : 'every tenant'}</span>
+        </FootRun>
       </p>
     </>
   )
+}
+
+/**
+ * One account as its row draws it: the reading and the verdict.
+ *
+ * ONE FUNCTION FOR THE ROW AND THE HEADLINE (OV-12 b). The headline takes the
+ * verdict of the account it names, and computing that verdict a second way is
+ * how a headline and its own row come to disagree -- so both call this.
+ */
+function accountRow(
+  a: AccountsPage['accounts'][number],
+  w: ReturnType<typeof bindingWindow>,
+): {
+  r: AccountReading
+  pct: number | null
+  projected: boolean
+  windowName: string | null
+  tone: TrackTone | undefined
+} {
+  // FIVE KINDS OF READING, AND ONLY ONE OF THEM IS A CURRENT FIGURE.
+  // `readingOf` is the same function the Accounts screen uses, so the two
+  // screens cannot disagree about the same account: an account whose binding
+  // window has reset reads "~90% · cleared" here and "cleared" there.
+  const r: AccountReading =
+    a.observed_at === null ? { kind: 'never' } : w === null ? { kind: 'absent' } : readingOf(a, w.key)
+  // `null`, never 0: the width of a bar nobody measured is not zero, it does
+  // not exist.
+  const pct = r.kind === 'live' || r.kind === 'stale' || r.kind === 'reset' ? r.pct : null
+  const projected = isProjected(r)
+  const windowName = w?.key.replace(/_/g, '-') ?? null
+  // Never observed, or no reading for the binding window: hatched with no
+  // fill. A PROJECTED reading does get a bar -- the figure is real -- but a
+  // grey one, never the red or amber that says a ceiling is being approached
+  // now. Above 90% used is bad and above 75% is a warning.
+  const tone: TrackTone | undefined = projected
+    ? 'ov-projected'
+    : a.state !== 'AVAILABLE'
+      ? 'is-paused'
+      : pct !== null && pct > 90
+        ? 'is-bad'
+        : pct !== null && pct > 75
+          ? 'is-warn'
+          : undefined
+  return { r, pct, projected, windowName, tone }
 }
 
 /** Sort key: least room first. An unreadable account sorts last, not first. */
@@ -2249,23 +2487,30 @@ const ATTENTION_ROWS = 4
  * what somebody does next TWICE, both times at the rank of a tile, in the same
  * silhouette as four figures nobody has to act on.
  *
- * It is now the page's opening statement: a ring, a title at --t-title, the
- * coverage beside it, and the problems as rows on the page background. No box,
- * no card head, no card foot. §13.3 of design-system.md is the rule -- a
+ * It is now the page's opening statement: a count over its track, a title,
+ * the coverage beside it, and the problems as rows on the page background. No
+ * box, no card head, no card foot. §13.3 of design-system.md is the rule -- a
  * REGION is a change of subject and is never a box; a PANEL is an object and
  * draws the one box there is. "What is wrong" is the page's subject, not one
  * of its objects.
  *
+ * THE TITLE IS A STEP BELOW THE PAGE'S (OV-15). It was --t-title, the `<h1>`'s
+ * own step, so two headings of one rank stood a line apart. It is an `<h2>` at
+ * --t-lead/600, the card-title step, and it stays distinct from the card
+ * titles by its position, its track and its unboxed region -- §2 ranks by
+ * colour first, weight second and size last.
+ *
  * WHAT DID NOT MOVE -- THE HONESTY ENCODING, WHICH IS THE WHOLE POINT OF THE
  * COMPONENT.
  *
- *   - THE COVERAGE DIAL IS UNCHANGED and still replaces ninety words. The ring
- *     is the checks; the filled arc is the ones that RAN and the hatched arc
- *     is the ones that could not. A short problem list over four blind checks
- *     and a short list over eight clear ones are different pictures before
- *     either is read, which is the whole point, because only one of them is
- *     good news. `data-partial`, `is-partial` and `--pct` are the same three
- *     attributes `honesty.prose.test.tsx` mutates against.
+ *   - A SHORT LIST OVER BLIND CHECKS AND A SHORT LIST OVER CLEAR ONES ARE STILL
+ *     DIFFERENT PICTURES. The track draws open checks over all checks now
+ *     (OV-2) rather than the ones that ran, and a blind check is the kit's
+ *     partial mark plus a hatch over the blind share alone -- the checks that
+ *     ran clear stay plain track -- visible before either is read,
+ *     which is the whole point, because only one of them is good news.
+ *     `data-partial`, `is-partial` and `--pct` are the same three attributes
+ *     `honesty.prose.test.tsx` mutates against.
  *   - THE ALL-CLEAR IS STILL ONLY AN ALL-CLEAR WHEN EVERY CHECK RAN, and the
  *     `Absent` mark still names which of the three kinds of nothing it is.
  *   - THE COVERAGE COUNTS ARE STILL UNCONDITIONAL. They were `.ctl-card-foot`;
@@ -2280,20 +2525,59 @@ function AttentionLead({ checks }: { checks: Check[] }) {
   const blind = checks.filter((c): c is Extract<Check, { status: 'blind' }> => c.status === 'blind')
   const reading = checks.filter((c) => c.status === 'reading')
   const clear = checks.filter((c): c is Extract<Check, { status: 'clear' }> => c.status === 'clear')
-  const ran = clear.length + checks.filter((c) => c.status === 'found').length
-  const complete = blind.length === 0 && reading.length === 0
+  const found = checks.filter((c) => c.status === 'found').length
+  const ran = clear.length + found
 
-  // THE ALL-CLEAR IS ONLY AN ALL-CLEAR WHEN EVERY CHECK RAN. Some of what
-  // could be wrong was never looked at, and a dial hatched for the part
-  // nobody examined says that without a sentence.
-  const dialKind = ran === 0 ? 'unknown' : complete ? 'measured' : 'partial'
+  // FIVE PICTURES, IN THIS ORDER, AND THE ORDER IS THE HONESTY RULE.
+  //
+  //   pending  a check is still reading (OV-9): no digit and no hatch, the
+  //            kit's pending mark. A count taken before every check has run
+  //            is not the count, and the hatch means a read FAILED -- drawing
+  //            it over a request still in flight is the falsehood §8.7.1
+  //            names. Reads here re-run without returning to `loading`, so
+  //            this is first paint, not every poll.
+  //   unknown  every check that finished was blind: the em dash and the hatch.
+  //   partial  some were blind: the count, the partial mark, a hatched
+  //            remainder. THE ALL-CLEAR IS ONLY AN ALL-CLEAR WHEN EVERY CHECK
+  //            RAN.
+  //   zero     every check ran and none is open: a measured zero.
+  //   measured every check ran and some are open.
+  //
+  // THE TRACK IS OPEN / TOTAL (OV-2), the checks that found something over
+  // all the checks. It was ran / total, which is full on every healthy poll
+  // whatever the count above it says. It counts CHECKS, not problems, because
+  // one check can raise up to three problems and a track cannot fill past its
+  // total; the digit beside it is the problem count.
+  const dialKind =
+    reading.length > 0
+      ? 'pending'
+      : ran === 0
+        ? 'unknown'
+        : blind.length > 0
+          ? 'partial'
+          : found === 0
+            ? 'zero'
+            : 'measured'
 
   return (
     <>
       <div className="ov-lead-head">
         <Dial
           kind={dialKind}
+          pct={checks.length === 0 ? 0 : (found / checks.length) * 100}
+          // THE HATCH IS THE BLIND SHARE AND NOTHING ELSE. A check that ran
+          // and came back clear was measured -- it is plain track -- so the
+          // hatch starts where the checks that ran end: one blind of eight is
+          // an eighth of hatch, not everything past the open count.
           measured={checks.length === 0 ? 0 : (ran / checks.length) * 100}
+          mark={
+            dialKind === 'partial' ? (
+              <Mark
+                kind="partial"
+                say={`${blind.length} of ${checks.length} checks could not run, so this count is over the ${ran} that did: ${blind.map((c) => `${c.label.toLowerCase()} — ${c.why}`).join('; ')}`}
+              />
+            ) : undefined
+          }
           say={
             `${ran} of ${checks.length} checks ran and found ${problems.length} ${problems.length === 1 ? 'problem' : 'problems'}.` +
             (blind.length > 0
@@ -2316,7 +2600,12 @@ function AttentionLead({ checks }: { checks: Check[] }) {
             ` Derived on every read from ${sourceList(checks)}. Nothing stores, routes or acknowledges an alert on this platform, so this is not an inbox.`
           }
         >
-          {ran === 0 ? (
+          {dialKind === 'pending' ? (
+            <Mark
+              kind="pending"
+              say={`${reading.length} of ${checks.length} checks are still reading: ${reading.map((c) => c.label.toLowerCase()).join(', ')}. No count is drawn until they have run.`}
+            />
+          ) : ran === 0 ? (
             <span className="ctl-em">&mdash;</span>
           ) : (
             <>
@@ -2328,10 +2617,12 @@ function AttentionLead({ checks }: { checks: Check[] }) {
 
         <div className="ov-lead-say">
           {/* THE COUNT IS IN THE TITLE WHEN THERE IS ONE, which is the whole
-              reason the tile could go: `10 things need attention` at --t-title
-              is the same fact the tile carried, said once, at the rank the
-              fact deserves. With nothing found the title is the subject alone
-              and the `Absent` mark below it carries which kind of nothing. */}
+              reason the tile could go: `10 things need attention` is the same
+              fact the tile carried, said once, as the page's first heading.
+              An `<h2>` at --t-lead/600 (OV-15), a step below the `<h1>` it
+              used to tie with. With nothing found the title is the subject
+              alone and the `Absent` mark below it carries which kind of
+              nothing. */}
           <h2 className="ov-lead-title">
             {problems.length === 0
               ? 'Needs attention'

@@ -36,10 +36,13 @@ import time
 from pathlib import Path
 from typing import Any
 
+from swarm_common.profiles import RESOURCE_CLASSES
+
 from . import profiles as catalogue
 from . import workflows
 from .client import TERMINAL, SwarmClient, SwarmError, task_id_of
 from .follow import DEFAULT_EVENT_PAGE, DEFAULT_LOG_BUDGET, follow, follow_command
+from .invocation import terminal_command
 from .patches import (
     apply_patch,
     describe_task,
@@ -51,6 +54,23 @@ from .patches import (
 )
 
 PROTOCOL_VERSION = "2024-11-05"
+
+#: A runner's DECLARED inputs, for `swarm_dispatch` and a `swarm_workflow` step
+#: (#142). An open object in the schema because what it may hold depends on the
+#: profile named beside it; `profiles.check_inputs` refuses anything the
+#: profile does not declare, before anything travels. The profiles that declare
+#: any are read from the frozen catalogue, which swarm-api enforces too.
+_INPUTS_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "description": (
+        "Data for the runner beside the prompt -- ONLY the inputs the named "
+        "profile declares, which swarm_profiles lists under `inputs`; any other "
+        "key, or any input at all for a profile that declares none, is refused. "
+        f"Declared today by: {', '.join(catalogue.declaring()) or 'no profile'}"
+        " -- e.g. {\"sleep_seconds\": 120} keeps a mock step RUNNING long enough "
+        "to cancel. Never an image, a command, a resource spec, a backend or a model."
+    ),
+}
 
 TOOLS: list[dict[str, Any]] = [
     {
@@ -78,6 +98,7 @@ TOOLS: list[dict[str, Any]] = [
                 "repo": {"type": "string", "description": "Repository to clone (https or ssh)."},
                 "ref": {"type": "string", "description": "Branch, tag or commit."},
                 "label": {"type": "string", "description": "A short name, for the UI."},
+                "inputs": _INPUTS_SCHEMA,
             },
             "required": ["prompt"],
         },
@@ -211,7 +232,12 @@ TOOLS: list[dict[str, Any]] = [
             "`exit_code: null` means NOT RECORDED. It is not 0. Reporting it as "
             "0 says the agent exited cleanly, which is the one thing it did not "
             "do. `failure.note` means the task failed before any agent ran, so "
-            "the investigation is admission and dispatch rather than the agent."
+            "the investigation is admission and dispatch rather than the agent.\n"
+            "\n"
+            "`commits`, `insertions`, `deletions` and `uncommitted_files` are "
+            "null when nothing was counted -- the task cloned no repository, "
+            "never started, or its harvest failed -- and `no_patch_because` says "
+            "which. Null is not zero; 0 is a count the harvest made."
         ),
         "inputSchema": {
             "type": "object",
@@ -278,9 +304,24 @@ TOOLS: list[dict[str, Any]] = [
             "copied into this step's working directory before its agent starts "
             "-- the upstream agent must have written that exact filename into "
             "$SWARM_ARTIFACTS_DIR, and a declared input that cannot be staged "
-            "FAILS the attempt rather than starting the agent without it. Every "
+            "FAILS the attempt rather than starting the agent without it. "
+            "A claude-code or codex upstream agent is told which filenames its "
+            "dependants stage and the absolute path of $SWARM_ARTIFACTS_DIR, "
+            "which is outside the repository; any other runner is told nothing, "
+            "so its prompt must say it. `./artifacts` in an agent's working "
+            "directory is a link to $SWARM_ARTIFACTS_DIR, unless a staged input "
+            "or a restored checkpoint already has that name. A file written "
+            "anywhere else never reaches a dependant. An upstream attempt that "
+            "finishes without writing a file a dependant stages FAILS, "
+            "retryably, naming the missing files: it runs again until "
+            "max_attempts is spent, then fails and its dependants are "
+            "cancelled. Every "
             "`input_from` source must also appear in `depends_on`, or the API "
-            "refuses the whole submission.\n"
+            "refuses the whole submission. The same refusal applies when two "
+            "parents of one step stage the same filename, since the name is also "
+            "where the file lands, or when a filename is absolute or contains "
+            "an empty, '.' or '..' segment. So have each parent write its own "
+            "distinct relative filename.\n"
             "\n"
             "Returns as soon as the workflow is accepted, with the task id of "
             "every step. It does not wait: poll swarm_workflow_status for "
@@ -349,6 +390,7 @@ TOOLS: list[dict[str, Any]] = [
                                 ),
                             },
                             "timeout_seconds": {"type": "integer"},
+                            "inputs": _INPUTS_SCHEMA,
                         },
                         "required": ["step_id", "prompt"],
                     },
@@ -526,8 +568,15 @@ TOOLS: list[dict[str, Any]] = [
             "Pool ceilings, and for each runner profile WHICH pool actually "
             "binds it. Admission is all-or-nothing across every required pool, "
             "so the ceiling a profile feels is the tightest of them -- not the "
-            "global one, which is the one people quote. ROOM is how many more "
-            "tasks of that profile fit before the binding pool refuses."
+            "global one, which is the one people quote. ROOM is AGENTS: how many "
+            "more tasks of that profile fit before the binding pool refuses. "
+            "UNITS is capacity UNITS in use out of the pool's limit, not agents -- "
+            "an agent takes its resource class's units ("
+            + ", ".join(
+                f"{name} {resource.units}"
+                for name, resource in sorted(RESOURCE_CLASSES.items(), key=lambda kv: kv[1].units)
+            )
+            + ") -- and on a shared pool it counts every tenant's."
         ),
         "inputSchema": {
             "type": "object",
@@ -644,20 +693,22 @@ _SC_VIEWS = {
 
 def _call(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
     if name == "swarm_dispatch":
+        # CHECKED BEFORE THE ROUND TRIP. The API refuses an unknown or disabled
+        # profile too and stays the authority; this only refuses sooner, with
+        # the catalogue's own reason, so a session that typed `claude` for
+        # `claude-code` is told which names exist instead of reading a 4xx. See
+        # `profiles.check` for why a local check here is not a second opinion.
+        profile = catalogue.check(args.get("profile") or "claude-code", where="swarm_dispatch")
+        # The inputs this profile DECLARES, and nothing else, refused by name
+        # before anything travels (#142).
+        inputs = catalogue.check_inputs(profile, args.get("inputs"), where="swarm_dispatch")
         task = client.dispatch(
             prompt=args["prompt"],
-            # CHECKED BEFORE THE ROUND TRIP. The API refuses an unknown or
-            # disabled profile too and stays the authority; this only refuses
-            # sooner, with the catalogue's own reason, so a session that typed
-            # `claude` for `claude-code` is told which names exist instead of
-            # reading a 4xx. See `profiles.check` for why a local check here is
-            # not a second opinion.
-            runner_profile=catalogue.check(
-                args.get("profile") or "claude-code", where="swarm_dispatch"
-            ),
+            runner_profile=profile,
             repository_url=args.get("repo"),
             repository_ref=args.get("ref"),
             metadata={"unit": args["label"]} if args.get("label") else None,
+            inputs=inputs or None,
         )
         task_id = task_id_of(task)
         if not task_id:
@@ -914,6 +965,31 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
     raise SwarmError(f"unknown tool: {name}")
 
 
+def _tool_error_text(exc: SwarmError) -> str:
+    """What a failed tool call answers: the error, and, where the request never
+    reached swarm-api, the command that says why -- spelled for this install.
+
+    WHY THE BRIDGE SAYS IT AND THE SKILL DOES NOT (review of PR #201). The
+    delegate skill answered "IAP refused this before the API saw it" with "Run
+    `uv run swarm doctor`", which on a plugin-only install answers `Failed to
+    spawn: swarm` -- #189's own output, met while diagnosing an unreachable
+    API. A skill is text and cannot know the install; `terminal_command` does.
+    So the refusal carries the command and the skill says to run the one the
+    error names, as it says of `follow_live_with`.
+
+    ONLY ON `edge`: Google's edge answered, not the API. An answer from the
+    API itself -- a 409, a validation error -- means the request arrived, and
+    doctor, which explains how a request fails to arrive, is no answer to it.
+    """
+    text = str(exc)
+    if getattr(exc, "edge", False):
+        text = text.rstrip().rstrip(".") + (
+            f". This never reached swarm-api: `{terminal_command('swarm doctor')}` prints "
+            "the address this bridge used and the credential that address takes"
+        )
+    return text
+
+
 def _respond(message_id: Any, result: Any) -> None:
     sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": message_id, "result": result}) + "\n")
     sys.stdout.flush()
@@ -972,7 +1048,7 @@ def serve(stdin=None, stdout=None) -> int:
                 # session rather than show the operator what went wrong.
                 _respond(
                     message_id,
-                    {"content": [{"type": "text", "text": str(exc)}], "isError": True},
+                    {"content": [{"type": "text", "text": _tool_error_text(exc)}], "isError": True},
                 )
             except Exception as exc:  # pragma: no cover - defensive
                 _respond(

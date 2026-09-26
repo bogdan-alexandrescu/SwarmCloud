@@ -122,10 +122,10 @@ theme.
 | `--text` | `#1f2328` | `#e8ecf1` | a value, a heading, the thing you came to read |
 | `--text-dim` | `#59636e` | `#93a0b0` | a label, a unit, a connective word |
 | `--text-faint` | `#606a77` | `#828d9b` | provenance, ages, the small print that says how much to trust the big number |
-| `--ok` | `#1a7f37` | `#58c668` | healthy, succeeded, under the ceiling |
+| `--ok` | `#1a7f37` | `#58c668` | healthy, succeeded, under the ceiling — **as a figure or a fill, not on a state mark**: the ok disc is grey (§6.6, CH-17) |
 | `--warn` | `#6e4a00` | `#ffd60a` | approaching a limit, a read that failed, a partial total |
 | `--bad` | `#681117` | `#f85149` | failed, over a ceiling, act on this |
-| `--info` | `#0969da` | `#58a6ff` | **a fact or a link, never a verdict** |
+| `--info` | `#0969da` | `#58a6ff` | **the link's hover, the focus ring and the live mark — never a verdict, and no longer the fact mark**: the info flat bar is grey (§6.6, CH-17) |
 | `--paused` | `#7139db` | `#b288f8` | parked, held by an operator — which is not "full" |
 | `--*-ink` | see §1.4 | see §1.4 | the accent as *text on a tint of itself* |
 | `--series-1..5` | one value, both themes | | a chart line's identity — never a severity |
@@ -135,9 +135,14 @@ and no fourth. Five state hues and no sixth.
 
 ### 1.3 There is one accent, and selection has no hue
 
-`--info` is the accent. It is the link colour, the focus ring and the mark for a
-fact that is not a verdict. It is **not** a severity and is deliberately outside
-the ok/warn/bad triad in `test_state_colour_discriminability.py`.
+`--info` is the accent. It is the link's hover colour, the focus ring and the
+live mark. It is **not** a severity and is deliberately outside the ok/warn/bad
+triad in `test_state_colour_discriminability.py`.
+
+*(Amended 2026-09-25, CH-17.)* It used to be "the mark for a fact that is not a
+verdict" as well. It is not any more: the fact mark is the flat bar, drawn in
+`--text-faint` (§6.6), so a fact carries no hue at all. On a state mark, hue is
+spent only on warn, bad, paused and live.
 
 `styles.css:2971` already records that `--info` carries seven jobs, and fixed it
 for exactly one of them. **This spec extends that fix to all of them: a
@@ -162,17 +167,30 @@ saturated text** and declares three text tones and no fourth. Northflank spends
 two hues on a whole page. Every one of the five spends its accent once or twice,
 on the primary action.
 
-**So a link is ink plus an underline, and the accent is what happens when you
-point at it** — `.ctl-link`. This is a *stronger* affordance than the blue was,
-not a weaker one: WCAG 1.4.1 says colour may not be the only channel, and a
-colour that is also the focus ring, the live-agent dot and a chart fill was
-already too overloaded to read as "clickable" on its own.
+**So a link is ink plus a `--line` underline, the boundary token at 3:1 or
+better, and the accent when you point at it** — `.ctl-link`. This is a
+*stronger* affordance than the blue was, not a weaker one: WCAG 1.4.1 says
+colour may not be the only channel, and a colour that is also the focus ring,
+the live-agent dot and a chart fill was already too overloaded to read as
+"clickable" on its own.
+
+*(Amended 2026-09-25, CH-23.)* The resting underline was `--line-soft`, chosen
+so it would not compete with the word on it. At rest the underline is the whole
+affordance, so it is a component boundary and is held to §1.2's 3:1 floor for
+one; `--line-soft` measured 2.05:1 (light) and 1.72:1 (dark) on `--surface` —
+about 1.3:1 once antialiased — which is why Overview's row links read as plain
+text. `--line` measures 4.04 / 3.80 / 3.63:1 in light and 3.53 / 3.85 / 3.24:1
+in dark on `--surface`, `--bg` and `--surface-2`, and is drawn at a 1px
+thickness floor. The `.ctl-link` list, the `:where(a)` fallback and the fact
+strip's hover cue all use it; `encoding.hues.test.ts` holds every
+`text-decoration-color` in the sheet to 3:1 on all three grounds, so the next
+underline in `--line-soft` fails wherever it is written.
 
 `.ctl-link` ships as the primitive; **it is not yet universal and this document
-does not claim it is.** `.ov-link`, `.wb-more a`, `.tile.blocked .t-sub a`,
-`.node-links a` and `.art-md a` are five screen-private link treatments that each
-paint `--info`, and folding them in means editing five screens — the screen
-phase's job. What §11 shipped is the primitive they collapse into, so the screen
+does not claim it is.** `.ov-link`, `.wb-more a`, `.node-links a` and `.art-md a`
+are screen-private link treatments that each paint `--info` (a fifth,
+`.tile.blocked .t-sub a`, went with the Timeline's boxed tiles in TS-11), and
+folding them in means editing those screens — the screen phase's job. What §11 shipped is the primitive they collapse into, so the screen
 lanes cannot each invent a sixth answer.
 
 ### 1.4 The ink rule, and the trap under it
@@ -203,13 +221,34 @@ token `--tint-ok` holding the same mix resolves to nothing, the rule lands in
 the unresolvable pile, and the run fails as undeclared. **There are no tint
 tokens and there will not be any.**
 
-### 1.5 Unresolvable surfaces carry no text
+### 1.5 Text never sits on a hatch
 
-A gradient, a hatch or a shimmer has no luminance the gate can measure.
-`var(--ctl-hatch)` is in that test's allowlist and may carry text; a
-`linear-gradient` is not and may not. So `.ctl-pending` and `.ctl-ghost` set a
-background and no `color`, and the caption goes in a sibling — which is also
-where a screen reader wants it.
+*(Corrected 2026-09-25, CH-4. This section used to say that `var(--ctl-hatch)`
+"is in that test's allowlist and may carry text". That was an exemption resting
+on a premise nobody had measured, and the premise was false.)*
+
+`--ctl-hatch` is two stripes, `--surface-2` and `--line`, and `--line` is a
+**component boundary** colour (§1.2). `--text-dim` over it measures **1.51:1 in
+light and 1.90:1 in dark** — across half of every glyph. Three marks shipped
+their words on it: `.ctl-mark.is-absent` ("not measured", the phrase the mark
+exists to make legible), `.ctl-stale-mark` (the age that says how far to
+distrust a value) and the unknown-environment badge.
+
+**The rule is now: text sits on a solid fill, and the hatch is a band, a swatch
+or a rim beside it.** `.ctl-mark.is-absent` and `.ctl-stale-mark` put the word
+on `--surface-2` with a 6px hatched band at the leading edge; the badge keeps
+its hatch and puts each word on a `--surface-2` plate inside it. The shape
+channel survives greyscale exactly as before — hatched still means "not a
+measurement" — it just no longer runs under the letters.
+
+**And the gate measures it rather than trusting it.** `test_ui_contrast.py`
+resolves a gradient stop by stop — a token that holds a gradient is expanded to
+the gradient first — and holds the text to AA against the **worst** stripe.
+Its allowlist of unresolvable backgrounds is empty. A gradient whose stripes all
+clear AA (`.banner.pill.unknown`, `--surface`/`--surface-2`) passes on its
+ratio; a hatch under text fails on its ratio. `.ctl-pending` and `.ctl-ghost`
+still set a background and no `color`, and their caption goes in a sibling —
+which is also where a screen reader wants it.
 
 ### 1.6 The series palette
 
@@ -254,8 +293,8 @@ below them are the owner's and are unchanged.**
 | `--t-micro` | 12 / 1.45 | ages, raw ids, provenance, card feet. The hard floor. |
 | `--t-meta` | 13 / 1.45 | column heads, eyebrows, labels — **a treatment as much as a size**: 600, mono, `--text-faint`. *No longer uppercase and no longer tracked: see §13.2. No longer the chip: see §6.6.* |
 | `--t-body` | 14 / 1.50 | the workhorse: table cells, values, controls, state words, `body` itself |
-| `--t-lead` | 16 / 1.55 | a card title; **the one sentence a screen is allowed** |
-| `--t-title` | **18** / 1.30 | the screen `<h1>`, at weight **600** |
+| `--t-lead` | 16 / 1.55 | a card title; **the one sentence a screen is allowed**; and, at 600, **every section, panel and step heading** (TS-18) |
+| `--t-title` | **18** / 1.30 | the screen `<h1>` (`.head h1`, `.ctl-page-head > h1`), at weight **600** — and only two other things: the product wordmark (`.brand-word`, a logotype, not a heading) and a rendered document's own h1 (`.art-md .art-h[data-level="1"]`), which follows the document's ladder |
 | `--t-figure` | **22** / 1.10 | the one number a card exists for |
 
 **Why the top two moved, and the count cap that matters more than either.**
@@ -273,11 +312,43 @@ wearing six names. The h1 also drops from weight 650 to 600, because this
 section already said the ladder stops at 600 and the h1 was the one rule in the
 sheet that ignored it.
 
-**The cap is the real rule: one `--t-figure` per card, and one card per screen
-carries the screen's figure.** A smaller step used eight times still reads as a
-KPI wall. No reference screen shows its largest size more than once.
+**The cap is the real rule: one `--t-figure` per card.** On a screen that
+summarises, one card carries the screen's figure. In a grid of peer cards that
+each state the same measure in the same unit, every card carries its own
+figure, because the figures are compared card to card, not read as a KPI wall.
+The peer grids are Pools' pool tiles (occupancy), Pool limits' profile cards
+(agent ceiling) and Platform counts' scope cards (task total per scope). A
+smaller step used eight times on a summary still reads as a KPI wall; no
+reference screen shows its largest size more than once on one. *(Amended
+2026-09-25, AH-22 in #86, so this section and §6.2 agree;
+`honesty.admin.test.tsx` holds the per-card half on Pool limits.)*
 `apps/swarm-ui/src/__tests__/typescale.test.ts` states the six values and was
 re-pointed, not worked around.
+
+**The Overview is the one named exception, and its terms are exact** (OV-12,
+owner decision 2026-09-25). It has five figure-bearing regions — the lead's
+count, the strip's two facts (Running, Units held), the Spend card's figure and
+the Headroom group's headline — with **one figure-step number per fact, and
+never the same fact twice**. Until then the strip also drew `Account headroom`
+and `Token spend`, which are the Headroom group's and the Spend card's own
+figures, so seven figure-size numbers stood above the fold for five facts. The
+document no longer states a cap that screen breaks; what the exception does not
+allow is a second copy of any fact at the figure step.
+
+**The heading ladder** (OV-15, owner decision 2026-09-25). `--t-title` belongs
+to the page `<h1>` alone. In-page region and card headings sit at `--t-lead`
+and weight 600 — the Overview's attention lead title is an `<h2>` at that step,
+and stays distinct from the card titles by its position, its track and its
+unboxed region, which is how the paragraph below ranks hierarchy. **An in-page
+heading that ties with the h1 is a defect.** The in-page headings the sheet
+used to draw at `--t-title` — `.section > h2` and `.section > .ctl-toolbar > h2`
+(§B4.1 of the sheet), `.sbf-move-h`, `.state h3`, `.ctl-empty > h3`,
+`.art-head h3` and `.ckb-head h3` — are TS-18's (epic #84), which moves them to
+`--t-lead`/600 (`timeline.submit.rules.test.ts`). TS-18's first draft kept
+`.ov-lead-title` at `--t-title` as an exception; OV-15 wins on that element
+(resolved on #84, 2026-09-25). A rendered document's own h1
+(`.art-md .art-h[data-level="1"]`) follows the document's ladder, not the
+console's.
 
 `--lh-flush: 1` is not a seventh step; it is legal only inside a `font:`
 shorthand next to a size token, where a fixed box must not grow, and every use
@@ -464,8 +535,27 @@ off `.ctl-metric`.**
 
 | Token | Value (light / dark) | What gets it |
 |---|---|---|
-| `--ctl-shadow` | `0 1px 2px rgb(31 35 40 / .08)` / `0 1px 2px rgb(0 0 0 / .30)` | **the DAG node, and nothing else by default.** A node has to read as sitting *on* a canvas the edges pass *under* — a genuine z-relationship. A card on a page does not. |
+| `--ctl-shadow` | `0 1px 2px rgb(31 35 40 / .08)` / `0 1px 2px rgb(0 0 0 / .30)` | **the DAG node, and nothing else by default.** A node has to read as sitting *on* a canvas the edges pass *under* — a genuine z-relationship. A card on a page does not. *(Amended below: no edge passes under a node any more.)* |
 | `--ctl-shadow-pop` | `0 8px 24px rgb(31 35 40 / .12)` / `0 8px 24px rgb(0 0 0 / .28)` | a surface **over** the page: the help card, a menu, a drawer edge |
+
+> **Amended 2026-09-25 (WF-4, epic #83): an edge never passes under a card.**
+> The row above let a DAG edge run *under* a node, and on the workflow canvas
+> that is what happened to every edge that skips a level: one straight curve
+> from its parent to its child, crossing the level between wherever the line
+> fell — and the cards are opaque HTML over the edge layer. On the measured
+> 30-step run, `synthesis`'s six direct dependencies on a 13-step stage ran
+> collinear with that stage's edges into `rollup-b` and disappeared behind
+> it. The owner's decision is that every dependency is visible, so an edge that
+> skips a level now runs on an **offset lane of its own**: a column clear of
+> every card and band on the levels it passes (8px, `LANE_CLEAR`) and of every
+> other lane over them (6px, `LANE_SEP`), reached and left through the gaps
+> between levels where nothing is drawn — in a gutter between two cards where
+> one is free, otherwise beside them, widening the canvas if it must. Edges
+> that share both ends (every member of a collapsed band) share one lane.
+> `dag.ts`'s `laneRouter` does it and `workflow.board.test.tsx` samples every
+> drawn edge and fails on any point inside a card or a collapsed band. The
+> node's shadow went earlier, to the edge's halo; the halo now separates one
+> edge from another where two cross in a gap.
 
 The count is the argument. The shipped Overview carried **16 shadowed elements
 on one screen**. Railway's docs page: 1. Northflank's: 1. Hetzner's: 2. Koyeb
@@ -493,6 +583,27 @@ are the only two: the track fill at `.3s` (a proportion that snaps reads as a
 redraw rather than a change) and the live pulse at `2s`.
 `prefers-reduced-motion` stops the pulse and the pending sweep; both carry a
 second, static signal so neither is distinguishable by motion alone.
+
+**The live pulse has a floor of `.8` (CH-19, 2026-09-25):**
+`@keyframes ctl-live-pulse { 0%, 100% { opacity: 1 } 50% { opacity: .8 } }`,
+one keyframe for all three live marks (`.ctl-dot.is-live`, `.ctl-chip.is-live >
+i`, `.liveness.live > i`). It was `.35`, which blended a live mark to **1.69:1
+(light) and 1.95:1 (dark)** for about half of every cycle — the running dot
+under the 3:1 a graphical object needs. Measured, blending the mark over each
+ground: at `.7` light `--info` is about 2.9:1 on `--surface-2` and `--bg`; at
+`.75` the light `--ok` liveness dot is 3.00:1 on `--surface-2`; at **`.8` every
+live mark clears 3:1 on `--bg`, `--surface` and `--surface-2` in both themes**,
+the lowest being light `--ok` at 3.26:1 (light `--info` 3.39–3.66:1, dark
+4.65:1 or higher). `encoding.hues.test.ts` finds every rule that names the
+keyframe — not a list of three — and holds it to 3:1 at the keyframe's lowest
+stop.
+
+**And reduced motion actually stops it.** The global rule sets
+`animation-iteration-count: 1 !important` beside the `.01ms` duration. The
+duration alone left `infinite` running, so every frame caught the mark at an
+arbitrary point of its fade; one iteration plays once, invisibly, and rests at
+the mark's base opacity of 1, and the static halo is then what keeps live
+apart from ok, as this section claims.
 
 ---
 
@@ -534,6 +645,13 @@ are *when this was read, from how many sources, and how many did not answer*. A
 card whose figures all came from one read says so once here, instead of once per
 figure.
 
+**A foot's clauses are separate `nowrap` elements in a `.ctl-foot-run`, and the
+separator is drawn by CSS, never typed** (OV-14, owner decision 2026-09-25). A
+typed " · " left a dot at the end of a wrapped line and let a clause break in
+half; the run draws each clause's dot in the gap to its left and clips the one
+that would start a line. The Overview's feet use it; other screens adopt it
+when they are next touched.
+
 ### 6.2 Metric tile — `.ctl-metric` *(amended by §11: the tile lost its box)*
 
 One fact, its unit, and what it does not include. Label (`--t-meta`, mono,
@@ -573,6 +691,25 @@ from and the next phase deletes most of them.** A tile's `sub` may be a
 qualifier, never a definition: `of 5 reads` is a qualifier; `LEASED,
 DISPATCHED, STARTING, RUNNING — the states that reserve capacity` is a
 definition and belongs in the `?`.
+
+**A strip is a wrapping run of facts, not a grid** (OV-6, owner decision
+2026-09-25; `styles.css` §B6.1): each fact is as wide as what it says, and a
+wrapped line holding a single fact is accepted. The same rule governs the
+inspector's strip.
+
+**A strip carries only facts no panel on the screen repeats, and a fact is drawn
+at the figure step once** (OV-12). The Overview's strip is Running and Units
+held; headroom and spend are drawn by the panels that hold their context.
+
+**A linked tile underlines its label** (OV-8): ink plus a resting underline,
+the accent on hover and focus — §1.3's rule, on `a.ctl-metric` so every linked
+fact gets it. **The label is a branch of the `.ctl-link` rule itself** (and of
+its hover rule, for hover and focus), not a rule restating its values, so
+whatever the link's underline token, thickness or offset becomes applies to the
+label unchanged; the metric block adds only the label's faint ink at rest. The
+figure is never underlined: the fact's bottom edge is reserved for the absent,
+unread and alert rules, and the label is present in all four renderings while
+the figure is not.
 
 ### 6.3 Figure — `.ctl-figure`
 
@@ -614,6 +751,39 @@ anything by being coloured. So `.ctl-util-fill` defaults to `--text-dim`, and
 untouched — they are the one place on a proportion where colour earns its keep,
 and `test_state_colour_discriminability.py` holds the textures apart in
 greyscale.
+
+> **The workflow Timeline's part of the ruling (WF-11, epic #83; the #122 hue
+> ruling), 2026-09-25.** The Timeline outlined every wait in `--warn-ink` and
+> filled every successful run `--ok`, so a screen of healthy work was a screen
+> of caution and success hues. Now: **a wait (waited or still waiting) is a 1px
+> `--text-faint` outline; a finished run is a `--text-dim` fill whether it
+> succeeded or was cancelled; and hue appears only on a failed run or a run in
+> flight.** A run in flight keeps `--info` and its sweep. A failed run keeps its
+> `--bad` fill and gains TS-4's failed mark (redesign-v2 §5.5 Tier 1, "solid
+> fill + a 2px left rule") in the shape §6.7 gives bad: a `--bad` post at the
+> run's start standing 8px above and below the bar — it has to stand past the
+> bar, because a `--bad` rule on a `--bad` fill is invisible. Against
+> `--surface` the post is 5.3:1 dark and 12.5:1 light, so in greyscale a
+> failed run keeps an outline a grey run does not. The dashed open edge, the
+> `--info` now line and the `--warn` "task unread" word are unchanged, and the
+> row's state dot still carries every state. `workflow.views.test.tsx` resolves
+> the sheet in both themes and holds all of it, the post read from the sheet
+> because jsdom computes no pseudo-element.
+
+> **A finished workflow row draws its outcome composition, not a progress
+> meter (WF-1, settled on #83, 2026-09-25).** `9/30 done` as a 30% bar said the
+> work was still going. In the same 8px track, a terminal row draws one `.wf-seg`
+> per outcome at its share of the steps: succeeded solid in the meter's
+> `--text-dim`, failed and dead-lettered TS-4's solid `--bad` with the 2px rule,
+> cancelled TS-4's flat "ended" bars, by selector on TS-4's own rules (§15.3). A
+> row that has not ended keeps the meter (`workflow.board.test.tsx`).
+> **A failed or dead-lettered segment is at least 4px wide**: TS-4's 2px cut is
+> drawn inside the segment, and one step of thirty is 1.7px of the meter's 51px,
+> which the cut painted entirely `--surface` — a failure drawn as nothing. 4px
+> is the cut plus 2px of `--bad`; the other segments shrink to give it up.
+> Succeeded in `--text-dim` rather than TS-4's `--ok`, and dead-lettered in the
+> failed form, are this build's reading of "TS-4's vocabulary" and are open for
+> the owner's confirmation (#83).
 
 > **Answered by the owner, 2026-09-24: `.wf-meter` goes grey.** The question
 > held open here was this: `.wf-meter`'s fill carries
@@ -789,11 +959,48 @@ only their geometry is linear instead of angular:
 | State | Drawing |
 |---|---|
 | default | `--pct` filled in `--text-dim`, the rest `--surface-2`, the axis drawn at the origin |
-| `.is-partial` | filled to `--measured`, **hatched** from there — the hole in the total drawn as a hole |
+| `.is-partial` | filled to `--pct`, plain track on to `--measured`, **hatched** from there — the hole in the total drawn as a hole *(split by OV-2; see below)* |
 | `.is-unknown` | hatched, **no fill and no axis**. An empty track reads as 0%, which is a claim nobody made |
 | `.is-zero` | empty, axis drawn, plus the inset hairline `.ctl-util-track.is-zero` uses — the same mark, meaning the same thing |
 
 The `aria-label` route to the sentence is the caller's and is unchanged.
+
+**Amended by the 2026-09-25 QA decisions (epic #81).**
+
+* **The track draws the figure itself (OV-2).** It drew coverage — usable
+  accounts over all accounts, checks that ran over all checks — under a figure
+  that said something else, so it was full whenever coverage was complete. The
+  headroom track is the headline's % used; the checks track is open checks over
+  all checks (checks, not problems: one check can raise several problems and a
+  track cannot fill past its total). **Coverage appears only when it is
+  partial, as the kit's `.ctl-mark.is-partial` under the track**; a complete
+  population draws no coverage at all.
+* **A partial track hatches only what was not measured** (OV-2, corrected in
+  review of #157). `.is-partial` is three segments now: the figure filled to
+  `--pct`, the plain track on to `--measured`, the hatch from `--measured` to
+  the end. The attention lead sets `--measured` to the checks that ran, so a
+  check that came back clear is plain track and only a blind one is hatched:
+  one blind check of eight is an eighth of hatch (`--measured: 88`), where the
+  first version of OV-2 hatched everything past the open count and drew seven
+  clear checks as unmeasured. The headroom headline sets no `--measured`, so its
+  hatch starts at its figure — the hatched remainder OV-12 (b) names; the
+  table's `.is-partial` row above keeps its meaning, the hole drawn as a hole.
+* **A fifth state, `.is-pending` (OV-9)**: the reads are in flight. The figure
+  slot holds the pending mark and no digit; the track is `.ctl-pending`'s moving
+  surface, with no fill, no axis and **no hatch** — the hatch means a read
+  failed, and drawing it over a request still out is §8.7.1's falsehood.
+* **`.is-warn` / `.is-bad` (OV-12)**: the headroom headline takes the verdict of
+  the account row it names, computed by the same function the row uses, so the
+  two cannot disagree. The measured part of the track takes
+  `.ctl-util-fill.is-warn/.is-bad`'s colour and stripe; a partial track keeps
+  its hatched remainder; the figure stays in `--text`. No new colour role.
+* **One polarity: a subscription window's percentage is % used, everywhere**
+  (OV-1) — the Overview's headline and rows, the Accounts table and `sc`. The
+  headline names its account (`28 % used · laptop`), and **every % carries its
+  word**: on the figure where there is no column head, on the head (and the
+  phone key standing in for it) where there is. The headline was % left over
+  rows of % used, both printed as a bare `%`, and the fullest account's `74`
+  sat one line under a `72` that meant the opposite.
 
 **The name stays `.ctl-dial` in this pass**, and that is a scoping decision, not
 an oversight: renaming it means editing every screen that calls it, and §11 was
@@ -856,16 +1063,98 @@ and it is the same vocabulary wherever a state is drawn —
 `test_every_chip_state_has_its_own_silhouette` holds them apart and was not
 touched:
 
-| State | Mark | Meaning |
+| State | Mark | Hue | Meaning |
+|---|---|---|---|
+| ok | filled disc | **none** — `--text-faint` | present, and fine |
+| warn | triangle, apex up | `--warn` | the universal caution shape |
+| bad | diamond | `--bad` | a disc knocked off its axis — the one mark with corners |
+| info | flat bar, 10×3 | **none** — `--text-faint` | a fact, not a verdict; and **ended** (CANCELLED) |
+| paused | two bars | `--paused` | the pause glyph |
+| unknown | hollow ring | none | an absence of information, drawn as one |
+| underived | ring with a bar through it | none | the state exists; nobody computed it |
+| live | disc with a halo | `--info` | a dot that is broadcasting |
+
+**THE HUE RULING (CH-17, 2026-09-25): on a state mark, hue is spent only on
+warn, bad, paused and live.** `ok` and `info` keep their shapes and lose their
+hue: the ok disc and the info flat bar are drawn in `--text-faint`, and their
+word or figure is in plain or `--text-dim` ink. The hue never touches the word
+(above), and nothing is coloured for being healthy (§6.7). In greyscale the
+marks stay distinct by shape alone: a filled disc (ok), a flat bar (a fact, or
+ended), a hollow ring (unknown), a triangle (warn), a diamond (bad).
+`--info` stays the link's hover colour, the focus ring and the live mark. The
+primitives this moved: `.ctl-dot.is-ok`, `.ctl-dot.is-info`, `.ctl-chip.is-ok`,
+`.ctl-chip.is-info`, `.ctl-metric.is-good` (a neutral disc, its value in
+`--text`), and the dock's read cells (§15.4). Healthy-state hue that remains has
+an owner and is not this ruling's: `.pool .ctl-track > i`, `.pool.prov.ok`,
+`.state.acct-ok`, `.tag.ok` (CP-14 — neutral since the 2026-09-25 consistency
+sweep, §15.7, whose follow-up puts the success heading and the legacy ok tag,
+two words, in `--text-faint` rather than this paragraph's "plain or
+`--text-dim`": it is later and names them); the Profile headroom status (CP-12);
+`.wf-tl-span.is-ok` and the Workflows graph's `.node.ok` (WF-11). This ruling
+does not reach chart segment fills: TS-4's outcome stack keeps its solid hues
+and gained a shape for each outcome (§15.3) — failed is still solid `--bad`,
+with redesign-v2 §5.5 Tier 1's 2px left rule.
+*Workflows' two, settled on #87 (2026-09-25):* the graph's `.node.ok` and the
+row's `.wf-state.ok` are neutral too — a succeeded node keeps the node's own
+`--text-faint` rule and a succeeded row's word is `--text-dim` — because WF-11,
+named above as their owner, ruled only the Timeline.
+
+**THE ENDED MARK (CH-22, 2026-09-25).** CANCELLED is `stateTone`'s fifth tone,
+`ended`: terminal, not a verdict, and drawn as the grey flat bar — the **one**
+`is-info` modifier, not a second one. It was `wait`, so Agents drew a cancelled
+task as the caution triangle and Workflows as a blue disc with an amber word.
+`.ctl-dot.is-info` is the flat bar this table always specified (it had been a
+filled disc, so at 390, where the word is hidden, a cancelled and a queued
+workflow were one dot). The waiting states keep the wait mark: `chipTone` draws
+`wait` as the triangle, and Workflows' `dotClass` now does too, so a queued
+workflow and a cancelled one no longer share a mark. The vocabulary, for a new
+screen to reuse rather than extend:
+
+| `stateTone` | States | Chip / dot |
 |---|---|---|
-| ok | filled disc | present, and fine |
-| warn | triangle, apex up | the universal caution shape |
-| bad | diamond | a disc knocked off its axis — the one mark with corners |
-| info | flat bar | a fact, not a verdict |
-| paused | two bars | the pause glyph |
-| unknown | hollow ring | an absence of information, drawn as one |
-| underived | ring with a bar through it | the state exists; nobody computed it |
-| live | disc with a halo | a dot that is broadcasting |
+| `ok` | SUCCEEDED | `is-ok` — grey disc |
+| `bad` | FAILED, DEAD_LETTERED | `is-bad` — diamond |
+| `live` | LEASED, DISPATCHED, STARTING, RUNNING | `is-live` — haloed disc |
+| `wait` | QUEUED, READY, PARKED | `is-warn` — triangle |
+| `ended` | CANCELLED | `is-info` — grey flat bar |
+
+**The chip's base mark is the hollow ring** (owner ruling, 2026-09-25, CP-14):
+a chip whose modifier matched no rule draws the unknown mark, never the ok disc,
+and every other state declares its own fill.
+
+> **Owner ruling, 2026-09-25 (CP-14, #85): healthy carries no hue.** The ok mark
+> keeps its filled disc and its word at full ink, and paints a text grey, not
+> `--ok`, on `.ctl-chip.is-ok`, `.ctl-dot.is-ok` and the legacy `.tag.ok`. Hue
+> on a state mark is left to the verdicts (warn, bad, paused) and to live.
+> Because the change is in the primitive, Pools, Runtimes, Accounts'
+> `AVAILABLE`, Provider quota's `AVAILABLE` and every other ok mark went grey
+> with no screen edit. The `--ok` token stays defined, and the dock (CH-17) and
+> the Timeline (WF-11) apply the ruling in their own boxes.
+>
+> **Which grey, where CP-14 and CH-17 meet.** CP-14 chose `--text-dim` — the
+> grey §6.4 uses for a proportion that is fine. CH-17, decided after it, names
+> the chip and dot primitives and draws the ok disc and the info bar in
+> `--text-faint` (the hue ruling above), so the later ruling sets the grey of
+> `.ctl-chip.is-ok` and `.ctl-dot.is-ok`. `.tag.ok`, which CH-17 leaves to
+> CP-14, is a word and stays `--text-dim` (§6.6's "plain or `--text-dim`" for
+> a word), as does Accounts' success heading; the 2026-09-25 follow-up on #85
+> gives `--text-faint` to marks and fills only (§15.7). CP-14's ruling — no
+> hue on a healthy mark — holds under either grey, and
+> `test_the_ok_mark_is_a_text_grey` accepts both.
+>
+> **The cost, recorded so it is not rediscovered:** in greyscale the ok disc is
+> now told from bad and warn **by its silhouette alone**. `--text-faint`, the
+> primitives' grey, is 1.01:1 from `--bad` in the dark
+> theme and 1.45:1 from `--warn` in the light one; `--text-dim`, CP-14's first
+> choice, is 1.26:1 and 1.30:1
+> (WCAG relative luminance of the theme tokens in `styles.css`). The
+> 1.5:1 triad floor (`MIN_STATE_RATIO` in `test_state_colour_discriminability.py`)
+> still governs the `--ok` / `--warn` / `--bad` tokens that fills use and is not
+> relaxed; `test_every_chip_state_has_its_own_silhouette` is what holds the ok
+> mark apart, and its "may equal the base" exemption moved from `is-ok` to
+> `is-unknown`. `test_the_ok_mark_is_a_text_grey` and
+> `test_a_chip_whose_modifier_matches_nothing_draws_the_unknown_ring` pin the two
+> halves of the ruling on the cascade, in both themes.
 
 `.ctl-dot` is that mark **without** the chip, for a table cell, a DAG node or a
 dense row — which is why there were four state chips: there was no way to get
@@ -893,15 +1182,31 @@ double dot"*.
 ### 6.7 Data table — `.ctl-table` *(row rules removed by §13.3)*
 
 Scrolls sideways rather than reflowing into cards: these are numbers that only
-mean anything beside each other in a row.
+mean anything beside each other in a row. **Below 900px a data table is
+`.is-scroll` and holds its first column in view; a record of four columns or
+fewer is `.is-stacked`** — the one rule for tables below 900px is §7.3.
 
 Rows `--row-h` (30px), cells `4px 10px`, **no row rule at all** (§13.3 — the
 old comment beside it already argued that "twenty of these down one table
 identify nothing the rows do not already identify", and then drew them anyway),
-header sticky on `--surface-2` in the label treatment with the one `--line-soft`
+header on `--surface-2` in the label treatment with the one `--line-soft`
 hairline a panel's interior is allowed, under `thead`. `.is-num` is right-aligned mono `tabular-nums`. `.ctl-sub`
 is the raw id under the readable name at `--t-micro`/`--lh-flush` so the row
 keeps the height it was signed off at.
+
+**The head is not sticky (WF-21, 2026-09-25).** It declared `position: sticky;
+top: 0; z-index: 1`, on `.ctl-table thead th` and on `table.pools thead th`, and
+the declaration never took effect: `.ctl-table` and `.table-wrap` are
+`overflow-x: auto`, which makes the wrapper the head's scroll container on both
+axes, and no wrapper ever scrolls vertically. Below 899px the stacked tables
+hide the head anyway. What it did do was draw every head cell as a positioned
+layer of its own — the likely cause of the faint vertical seams the Workflows
+Table showed at fractional column edges. Not yet verified rendered: the next
+release is to be looked at at 1440 in light and dark, and if a seam survives,
+the head's fill moves from each `th` to `thead`, painted once. `shell.test.tsx`
+holds that no `thead th` rule is sticky, and that any positioned table cell
+with a z-index (CH-13's sticky first column, when it lands) ranks under the
+drawer's band.
 
 Row tones are a **wash plus a form**, never a text colour: `.is-bad` a
 full-height 3px rule on the first cell, `.is-warn` a half-height one, `.is-paused`
@@ -912,13 +1217,25 @@ one wash in greyscale.
 0% error rate as plain ink and tints exactly one cell. Nothing is coloured for
 being healthy; a healthy platform is a quiet grey screen, which is what an
 operations console should look like at 3am. This also shrinks the
-state-separability problem to the cases where it matters.
+state-separability problem to the cases where it matters. A healthy row's
+status is the ok mark — a filled grey disc beside its word (`--text-faint` on
+the chip and the dot since CH-17; CP-14 first drew it `--text-dim`, §6.6) —
+which is present and legible and carries no hue (§6.6, owner ruling 2026-09-25).
+
+*(Extended 2026-09-25, CH-17.)* The same ruling now holds for the marks
+themselves (§6.6): the ok disc and the info flat bar are grey. And the dock's
+read cells take this section's forms: a failing cell is in the
+`tr.is-bad > :first-child` / `tr.is-warn > :first-child` selector lists, so a
+failed read and a failed row draw one left-edge rule, and its status is `--text`
+— never a text colour.
 
 ### 6.8 One-line expandable row — `.ctl-line` *(lost its box in §13.3)*
 
 Generalised from `.wf-bar`, which the audit names as the best row in the
 product: id · state · progress · shape · runner mix · spend · age · flags on one
-grid line, expanding into the DAG.
+grid line, expanding into the DAG. `.wf-bar` itself keeps its box: it is the
+second of §13.3's two named exceptions (WF-17), and `.ctl-line` does not
+inherit that exception.
 
 ```html
 <button class="ctl-line is-open" style="grid-template-columns:[state] 8px [name] minmax(0,1fr) [age] 72px [actions] 28px">
@@ -942,6 +1259,12 @@ is a different and worse thing than a row. **Cells do not wrap** — `nowrap` pl
 `text-overflow: ellipsis` is what makes the row height a constant, which is what
 makes the drops clean.
 
+*(Scoped 2026-09-25, CH-13.)* This is the rule for a `.ctl-line` LIST. A
+`.ctl-table` below 900px follows §7.3 instead: a data table scrolls with its
+first column held, and only a record of four columns or fewer — an inspector
+fact — is relabelled into a stacked "Label: value" record, which is §B6.3's
+construction kept for the one case it fits.
+
 ### 6.9 Empty state — `.ctl-empty` *(exists; unchanged)*
 
 Four variants, because four different things look like an empty screen and this
@@ -952,6 +1275,18 @@ non-admin genuinely cannot read `/v1/admin/*`).
 
 **The shape is fixed: mark, heading, one sentence, a link out.** Any real
 explanation is a `#help/<topic>` link, never a second paragraph.
+
+**One mark per empty state, and it is the primitive's** *(amended 2026-09-25,
+§15.6)*. `Absent` draws the mark inside the heading; a heading or a sentence that
+says `real zero` again, or a hand-drawn `.ctl-mark` span in the body, is a
+second silhouette with no sentence behind it. Five screens shipped one each
+until #170; `emptystate.onemark.test.tsx` holds all five to one.
+
+**`Screen`'s empty state ends in its `Checked …` line, and it ticks**
+*(CH-1/CH-10, settled on #87, 2026-09-25)*: the primitive's foot at the micro
+step, on the shared clock, reading the sub-line's instant so the two never
+disagree; and a screen's way out is `empty.link`, never an anchor typed into
+the sentence (CP-21).
 
 ### 6.10 Absence — `.ctl-mark`, `.ctl-hold`, `.ctl-ghost`, `.ctl-pending`
 
@@ -969,12 +1304,44 @@ the count of sentences above a table in this product is zero.
 marked by a surface step and weight — **not a filled pill**. Very low ink, and
 it survives both themes without a fill that has to be re-tuned for each.
 
-### 6.12 Page header — `.ctl-page-head`
+### 6.12 Page header — `PageHead` (`.head` + `.sub`), and `.ctl-page-head`
 
-Title left, actions right, nothing else. No subtitle, no description, no
-breadcrumb duplication — the breadcrumb lives in `.ctl-head` one region up and is
-never repeated. `flex-wrap` is the entire mobile strategy: the actions wrap under
-the title at 390px instead of needing a second, phone-only header.
+*(Amended 2026-09-25, AH-25 in #86: this section said "title left, actions
+right, nothing else", while fourteen routes drew a title over a line of
+provenance and the code called that line the house standard. The rule below is
+the head that ships.)*
+
+**A title, then one line of provenance.** The line says what was read, how old
+it is, and the screen's read control: `4 tenants · read 2m ago · refresh`. It
+carries no description sentence. **A control that costs something prints its
+cost immediately before it on that line**, and the two sit in one unit that does
+not wrap apart: `not counted yet · 24 count() per run · Run the count`. The
+control is `.sub button`, the link-style read-now control, not a boxed button.
+
+`PageHead` in `Shell.tsx` is the markup, once: `.head > h1` over `p.sub`.
+`Screen` renders it on fourteen routes, and Platform counts and Help render it
+with their own lines. Every head has a line.
+
+**The one exception is Help.** It reads nothing, so it has no provenance to
+print: its line says what the page is and which topic is showing —
+`<n> topics in <m> groups · showing <topic title>` — every part read from
+`help.ts` at render time, so no count is written down here to go stale. It is
+the head-line shape, facts joined by `·`, and not the description sentence
+AH-15 deleted ("why a figure on these screens looks the way it does"), which
+was true of about one topic in eight.
+
+A screen whose one `?` explains the whole screen puts it after the title, in
+`.head` and outside the `<h1>` (`PageHead`'s `help`): the Workflows board's
+absent figures, and Profile headroom's every-pool-at-once, whose words are the
+pool column's name on every card (`Pools it must clear (all at once)`, CP-5,
+as Pools names its `Could start (min across pools)`), are the two cases.
+
+`.ctl-page-head` is the wrapper for the heads `PageHead` does not describe —
+Overview's facts row and the API reads page. There it stays title left, actions
+right. No breadcrumb duplication anywhere — the breadcrumb lives in `.ctl-head`
+one region up and is never repeated. `flex-wrap` is the entire mobile strategy:
+the line wraps under the title at 390px instead of needing a second, phone-only
+header.
 
 **The one sentence a screen is allowed lives behind the `?`.** `.ctl-q` already
 ships with 82 help topics, hover-120ms / focus-immediate / click-to-pin, and
@@ -1006,6 +1373,14 @@ each a two-or-three-character mono key plus a full-strength sans value.
 **A fact whose value was not read keeps its slot and its key.** A missing row is
 indistinguishable from a row that was never going to be there.
 
+**A fact that WAS read and needs attention is ink, not a mark** *(amended
+2026-09-25, AG-5, §15.6)*. The six marks are six kinds of nothing, and there is
+no seventh. A measured figure a reader should act on -- the artifact viewer's
+masked-credential count above zero, the log panel's "not applied at read
+time" -- is drawn in `--warn` ink with no mark and no `.is-absent` dimming,
+and in plain ink when it is healthy (at zero). The words behind it are its
+`?` topic.
+
 ### 6.14 Nav rail — `.ctl-rail` *(lost its right border in §13.1)*
 
 200px fixed, six sections, every tab always rendered, never reorders. Its value
@@ -1028,6 +1403,37 @@ a floating bottom bar**, because the dock already owns the bottom edge of the
 viewport and two fixed bars stacked on a 390px screen is 25% of the glass spent
 on chrome. The strip keeps every section visible and scrolls; nothing is hidden
 behind a menu.
+
+**The strip is two rows (CH-21, 2026-09-25), so each section keeps a fixed
+position.** It was one row with the open section's tabs inserted inline after
+their section, which moved every later section whenever one opened — §6.14's "a
+position means one thing" held on the desktop column and nowhere else.
+
+| Row | Class | Holds |
+|---|---|---|
+| 1 | `.ctl-rail-main` | the sections and the utility corner (API reads, `?`) — the same items in the same places on every route |
+| 2 | `.ctl-rail-sub` (`role="tablist"`) | the open section's tabs, drawn only when it has more than one (Overview draws no second row) |
+
+Each row scrolls on its own, with the `--rail-fade` mask from **one** rule
+naming both rows, and each ends on the fade's width of empty space (row 1
+through the utility corner, row 2 on its own). `.ctl-rail` is the column that
+holds them. The open section's tabs are drawn twice by one component
+(`RailTabs`): inline for the desktop column and as row 2; the sheet displays
+exactly one copy at any width (`.ctl-rail-main` is `display: contents` at 900px
+and up, so the desktop rail is unchanged), and the scroll-into-view of CH-14
+targets the displayed copy.
+
+**A section's selection is a rule and a tab's is a fill.** Below 900px the
+selected section keeps its 2px `--text` bottom rule and loses its fill; the
+selected tab takes the `--surface-2` fill in `--text` ink and no rule;
+unselected tabs are `--text-faint`. The two levels had drawn a rule each and
+read alike; now they differ in greyscale and need no hue — the phone case of
+§1.3's "surface step plus a 2px rule", split between the two levels. At 390,
+the 52px header, the two strip rows at the 44px phone target (about 97px) and
+the ~32px collapsed dock are about 180px on load, around 21% of an 844px
+screen; only the dock is fixed (the strip is `position: static` below 900px),
+so the two-fixed-bars concern above does not arise. The sticky strip and a
+"top" affordance are not part of this and stay tracked on #139.
 
 ---
 
@@ -1064,12 +1470,12 @@ media query.
 
 | | At 390px |
 |---|---|
-| Frame | rail → horizontal strip; `--app-pad` 16px; header keeps its height and its environment bar |
-| Overview | one column, five cards stacked; **the metric strip becomes a 2-up grid, not five stacked 30px figures** |
+| Frame | rail → the two-row strip (§6.15); `--app-pad` 16px; header keeps its height and its environment bar. **The header is one row that does not wrap at ≤560px (CH-20):** in order, the mark (the home link, named "SwarmCloud" by the mark's title; the wordmark is not drawn), the environment badge, the tenant key, the tenant id and the admin tag. Only the tenant id gives way — it ellipsizes, whole in its `title` and in a copy: **the id is its own copy control** (`.brand-id`, a button that draws nothing of its own, 44px tall at ≤560px), which copies the whole id and says in a status whether the copy landed or the browser refused it. It is the id rather than a button beside it because at 390 the id keeps only 60–70px, which a separate 44px control would take. Not drawn but still announced (visually hidden, never removed): the tenant's display name, the "signed in" key and principal, the unknown badge's host, and the word ENVIRONMENT — the unknown badge reads "env UNKNOWN", about 122px, keeping its capitals, hatch and left rule. The admin tag is a grey hairline tag (1px `--line`, `--surface-2`, `--text-dim`, the non-production badge's box), and above 560px it shares one nowrap unit with the principal, so it can never wrap onto a line of its own. Pending is the tenant key and "reading…"; failed is the tenant key and the `not read` mark, with the error heading as its accessible name. |
+| Overview | one column: the lead, the fact strip as a wrapping run of facts (`styles.css` §B6.1, no grid), then the three panels stacked. *Amended by OV-6, 2026-09-25: this row said "five cards stacked; the metric strip becomes a 2-up grid", which §B6.1 had removed on purpose. Since OV-12 the strip holds two facts and they fit on one line at 390.* An account row's status note (sign in again, pool skipping, paused, draining, the binding pool) wraps to its own line under the row, only when there is one (OV-7). A paused or draining note leads the reading word rather than giving way to it (`paused · stale 3h ago`), so a stale, cleared or never-polled reading cannot hide it |
 | Workflows | collapsed rows keep `[state] [id] [progress] [actions]`; the DAG scrolls horizontally inside its wrap and is **not** scaled to fit — scaling turns step names into texture |
 | Agents / Holders / Timeline | `.ctl-line` on its irreducible template |
-| Pools / Runtimes / Accounts / AdminSettings | `.ctl-table` scrolls sideways; **Pools' Cards toggle is promoted to all four**, since a side-scrolling table is the audit's worst mobile finding and four of the five screens have no escape from it |
-| AgentDetail | a full-screen `role="dialog"` overlay, as today below 1100px |
+| Pools / Runtimes / Accounts / AdminSettings | `.ctl-table.is-scroll` scrolls sideways with its first column held in view (§7.3). *(Amended 2026-09-25, CH-13: the Cards-toggle promotion this row proposed was not built; the held first column is the owner's answer to the same finding.)* |
+| AgentDetail | a full-screen `role="dialog"` overlay, as today below 1100px; its tables are records and stack (§7.3) |
 | Dock | 28px collapsed; the page now reserves its actual height (§3.4) |
 
 **Charts are authored twice, not scaled.** Vercel ships a 368×234 SVG with fewer
@@ -1078,8 +1484,92 @@ hover apparatus at all on a phone — there is no hover on a phone, so the
 crosshair, the tooltip and the point circles are simply absent rather than made
 touch-friendly.
 
+*How this is built for the inspector charts (AG-20, owner decision
+2026-09-25, §15.6):* each chart root is drawn once per entry in `DRAWN`
+(`charts/parts.tsx`) — a 640-unit and a 300-unit SVG, the narrow one asking
+its axis for fewer ticks — and both are in the markup, so nothing measures the
+DOM and server rendering draws exactly what the browser will. The figure is a
+size container (`.ctl-chart.has-narrow`, `container: ctl-chart / inline-size`)
+and `@container ctl-chart (min-width: 640px)` swaps the wide drawing in. The
+threshold equals the wide drawing's own width, so it is only ever scaled up
+(to the 720px cap); the narrow one has `min-width: 300px`, so it is never
+scaled below the width it was drawn at either. **No tick label renders below
+`--t-micro`.** 640 here is a drawing's width, not the retired 640 viewport
+breakpoint of §7.1.
+
 **Touch targets are 44px at ≤560px.** Railway ships 32px icon buttons and has
 taken public feedback on exactly that. The type does not grow with them.
+
+### 7.3 One rule for tables below 900px *(CH-13, owner decision 2026-09-25)*
+
+`styles.css` §B6.3 stacked **every** opted-in table into "Label: value" records
+below 900px, while §6.7 and §6.8 said tables scroll or drop columns, and
+neither document named the other. Stacked, a data table lost what it is for — a
+comparison down a column — and a great deal of height: Pools was 5,924px tall
+at 390 and Profile headroom 9,882px, and an attempt's gs:// uri wrapped over
+nine lines. **One rule now, for every table:**
+
+| Kind | Class | Below 900px |
+|---|---|---|
+| **data table** — five or more columns, read across rows (Pools, Profile headroom, Runtimes, Accounts, Pool limits, Tenants, API reads, the workflow step table) | `.ctl-table.is-scroll` / `.table-wrap.is-scroll` | scrolls sideways; the first column — the row's name — is `position: sticky; left: 0` on an opaque `--surface` (`--surface-2` in the head), so a value is always beside the name it belongs to |
+| **record** — four columns or fewer, an inspector fact (checkpoints, artifacts, commits, staged inputs, a pool's counter delta) | `.ctl-table.is-stacked` | §B6.3's stacked record, unchanged: a name at lead rank, a key column from `data-label`, explicit ARIA roles |
+| **a long value in a record** — a gs:// uri | `.uri` in a stacked cell, or under a record's name in its row header (the log stream's, since the 2026-09-25 sweep) | one line, ellipsized; the whole value is in its `title` and in the copy action beside it (`copy gsutil`) — cut on screen, whole on hover and in the copy (the AH-11 precedent) |
+
+§B6.3 existed because of F6 — columns hidden behind an `overflow-x: auto` that
+paints no scrollbar here, with nothing to say they existed. The held first
+column answers the half of F6 that made the hidden columns unreadable, and the
+column cut at the right edge says the row goes on. A louder cue (the
+`background-attachment: local` scroll shadow) was tried and reverted earlier
+because it blinds `spaceprobe.ts`'s border grading; that note stands in the
+sheet. A row tone's left-edge rule is a background image on the held cell and
+still shows; its wash shows in the cells that scroll, not under the held one.
+The inspector's tables are all records, so the container-query mirror of
+§B6.3 (§14.3) is unchanged apart from the `.uri` rule, which both blocks carry.
+`chrome.shared.test.tsx` scans every table in the source: any of five or more
+columns must be `is-scroll`, and no `is-stacked` table may have more than four.
+
+**What a scrolling table needs to actually scroll**, each learned from a table
+that did not:
+
+- **It is sized by its content.** CP-18 gives Pools' six family tables and
+  every Profile headroom table `table-layout: fixed` at `width: 100%`, with
+  percentage widths on the head row, so that their columns line up from one
+  table to the next. A fixed-layout table at 100% is sized to its wrapper and
+  never overflows — at 390 each figure column was ~25px of content, "In use
+  (units)" wrapped to three lines and figures broke mid-number, and there was
+  nothing to scroll. Below 900px both are `table-layout: auto`, `width:
+  max-content` (at least the wrapper), and their cells beside the held column
+  do not wrap. CP-18 still holds at 900px and up; below it each table scrolls
+  on its own, so there is no shared x to keep.
+- **The held column has a ceiling:** `width` and `max-width` of
+  `min(45vw, 20ch)`, wrapping at spaces and, for an id with none, anywhere. A
+  **width**, not only a max-width, because a max-width on a table cell is
+  ignored by more than one engine, and a wrapping cell with no width is
+  squeezed to one character when the table overflows. Without it a held cell
+  was as wide as its longest line: on API reads, a task read's concrete URL is
+  ~53 characters, ~400px of mono in a 356px scrollport, and a sticky cell wider
+  than the scrollport covers it at every offset — every other column scrolled
+  under it, never visible. A raw-id line that is a locator rather than a name
+  is cut instead of wrapped: API reads' `lastUrl` (up to 110 characters for a
+  checkpoint file) is one line, ellipsized, whole in its `title`, and adds
+  nothing to the column's width (`width: 0; min-width: 100%`).
+- **A cell that spans the row is not the held column** (`:not([colspan])`),
+  and what it holds stays in view. An expanded account's detail is one cell
+  across the account table's five columns — 909px in a 358px phone — so under
+  `is-scroll` its prose ran off the right edge and its controls were off
+  screen until the reader panned the table. The detail is `position: sticky;
+  left: 0` and one scrollport wide (`calc(100vw - 2 * var(--app-pad) - 2px)`:
+  the viewport less the page's gutters and the wrapper's borders), and wraps.
+
+`tables.scroll.test.tsx` renders Pools, Profile headroom and Accounts and asks
+the cascade at 390 about the elements they drew; `chrome.shared.test.tsx`
+renders API reads over a real task URL. A bare `.is-scroll` fixture is not
+enough: the first one passed while Pools and Profile headroom did not scroll.
+
+Tables not yet classified, and why: Overview's Running rows (three columns
+inside a card, which fit) and the inspector's metadata key/value table (two
+columns, already a record in shape) carry neither class and keep the plain
+`overflow-x: auto`.
 
 ---
 
@@ -1137,9 +1627,49 @@ Six places, in order of commitment. Nothing outside this list.
 5. **The `?` card (`.ctl-q` → `help.ts`).** The sentence, the paragraph, the
    worked example. 82 topics already exist, with `#help/<topic>` deep links.
    Hover after 120ms, focus immediately, click to pin.
+   **One slot for the glyph (AH-24, 2026-09-25): after the label or heading
+   it explains, never after a value** — `Headroom ?`, `reads ?`,
+   `never written: ?`, not `masked 4 … ?` or `● running ? ● live`. The rule
+   names no exception. Where a line had no label of its own, the 2026-09-25
+   pass gave the value its missing key (`state ? ● running` on the agent
+   headline) or moved the glyph to the heading the line sits under
+   (`Backends ?` over Runtimes' unread row; `Workflows ?` for the board's
+   absent figures). `HelpCard.tsx`'s header states the same rule.
+   **The topic is about what the glyph or link sits beside, and a topic linked
+   from two screens is written for both** (AG-19, AH-13): the Timeline
+   window's `Why →` opens `event-paging`, not `partial-read`, and
+   `event-paging` names the Timeline screen as well as the attempt timeline —
+   in its title too, which the Help page prints as its heading and in its
+   `showing <title>` line. "One page of events, oldest first" was false of the
+   Timeline, which reads newest first; the title is "Paged reads: a page of
+   events, a window of tasks" and claims no order, and the topic opens by
+   naming both reads. *(Superseded by #185, §16: the Timeline no longer reads
+   a window of tasks, so nothing links it to `event-paging`, and the topic is
+   written for the attempt timeline alone again, titled "One page of events,
+   not the whole history". The rule this paragraph states is unchanged.)*
 6. **`docs/`.** The argument, the constraint, the thing that is true for six
    months. A docs link is a legitimate element of an empty state and of a help
    card; it is not an element of a data view.
+
+> **Recorded 2026-09-25 (WF-5, epic #83; corrected on #160's review): a
+> figure's source is a qualifier, and where there is no room in its slot the
+> node gives it a line.** A workflow step's cost or tokens may be its result
+> summary's rather than its attempt telemetry's. That happens only for a
+> finished step (`finishedResultOf`, the one rule for the node, the Table,
+> the row's total and the inspector). The figure then carries `from result`
+> (`.wf-src`: faint, micro, mono, no hue). In the Table and the inspector
+> that sits beside the figure. On a graph node the value column is budgeted
+> for a 20-character figure and nothing more. Sharing it, the note
+> ellipsed to `…`, and the override that made room clipped wider figures
+> with no mark. So the node draws `cost · tokens from result` on
+> `.node-src`, a line under the four figures that names them. Every
+> Figures-tier node reserves that line, and it is counted in
+> `nodeHeightAt('figures')` (246). The alternative was about 84px more width
+> on every node, which takes `STAGE_FITS` from 3 to 2 and draws a three-wide
+> stage without figures at all. The figure's note also says what the view
+> read. Only the inspector, and the board inside its sample, have read the
+> attempt documents, so only they say those documents carry no typed figure.
+> Outside the sample, the board says it did not read them.
 
 ### 8.5 What a main view may say
 
@@ -1154,7 +1684,19 @@ Five kinds of word, and no sixth:
 
 **Forbidden in a data view:** a definition, a rationale, a "what this means", a
 "how to" line, a second sentence anywhere, a paragraph of reassurance on the
-healthy path. `Overview.tsx:2086` currently renders
+healthy path.
+
+**Forms too (TS-23, owner decision 2026-09-25).** The five kinds of word apply
+to a form — Submit a task, Submit a workflow — with one allowance: a field, or
+an offer to add one, may carry **one `--t-micro` note stating what the runner
+does with that key**, read from the runner source. These are the `SUGGESTED` /
+`ANY_PROFILE` notes on `.sbf-offer-note` and `.sbf-note`, kept on purpose.
+Forms get **no how-to lines and no second sentence**: a step with nothing to
+ask yet says `no runner chosen`, not "Choose a runner first — what it reads is
+what this asks for"; an empty input says `` `mock` requires no input `` or `no
+settings`; the room box states its cost as a fact on its head and keeps one
+sentence; and an unread room is the unread mark with a pool count (§8.6), not a
+paragraph saying it is not zero. `Overview.tsx:2086` currently renders
 `checks.map(c => c.note).join(' · ')` — **eight full sentences, ~90 words, on a
 healthy platform, saying nothing is wrong eight different ways.** That is the
 shape being deleted.
@@ -1527,6 +2069,14 @@ bullets are superseded by name below rather than edited in place, because
 several lanes are amending this document at once and an append conflicts where
 an interleaved edit collides.
 
+**Amended 2026-09-25 (OV-12, owner decision): the Overview's strip carries only
+facts that no panel repeats, and a fact is drawn at the figure step once.** The
+strip is Running and Units held. `Account headroom` and `Token spend` left it,
+because each was a panel's own figure drawn a second time; the link to Accounts
+moved to the account group's head, the low-headroom alert became the Headroom
+headline's verdict (§6.5), and the absent, unread and pending renderings are
+the panels' own. §2 names the resulting five figure-bearing regions.
+
 ### 12.1 What moved, and what it was measured against
 
 All counts are `main.work` at 1440×900 on the live dev server, at `scrollY = 0`,
@@ -1667,12 +2217,18 @@ them with their measurements rather than reaching into them.
 ### 12.2 The run list is the Workflows row, because that is the one the owner kept
 
 `#work/workflows` is the internal reference (§11.4) and the thing that makes
-it right is measurable: **its rows are one line tall and they stack.**
-`.wf-card + .wf-card` drops the duplicated top border, so ten rows draw one box
-and nine hairlines. The run list drew `gap: var(--ctl-s1)` between bordered,
-rounded, 72px rows: six rows were six separate floating objects, which is
-"everything is a bordered rounded box" in the place this product repeats a box
-the most.
+it right is measurable: **its rows are one line tall.** *(Corrected
+2026-09-25, WF-17: this said they stack, that "`.wf-card + .wf-card` drops the
+duplicated top border, so ten rows draw one box and nine hairlines". It does
+not, and the board never drew that. The board draws ten one-line rows, each
+`.wf-bar` its own bordered box, 8px apart — `.wf-board`'s gap is `--ctl-s2` —
+and `.wf-card + .wf-card` only removes the `.section + .section` region
+hairline. That is what §11.4 measured, "13 boxes", and froze; §13.3 now names
+it as an exception. The run list's construction below does not rest on it: it
+stands on §13.3 alone.)* The run list drew `gap: var(--ctl-s1)` between
+bordered, rounded, 72px rows: six rows were six separate floating objects,
+which is "everything is a bordered rounded box" in the place this product
+repeats a box the most.
 
 **The list carries the box; the row carries one hairline.** That division is
 not cosmetic and `spacing.test.tsx` is what settled it. The first attempt gave
@@ -1889,6 +2445,23 @@ rather than inventing a metric that would have moved.
    elements were spent outlining a 5×10px mark whose whole shape is its fill.
    The unfilled cell is `--line-soft`, the repeated-separator weight.
 
+   > **Collapsed, 2026-09-25 (owner decision, CP-25, #85).** The five-cell bar
+   > is gone: `Bar`, `barFilled`, `BAR_CELLS` and the `.acct-bar` rules were
+   > deleted, and the 5h and 7d cells draw §6.4's shared `UtilTrack` — the
+   > exact, unrounded percentage (the cells rounded 42% to three fifths), the
+   > default grey fill, `ov-projected` for a stale or reset reading beside the
+   > existing `~`, `is-bad` only for a live reading at 100%, and the baseline
+   > tick for a measured 0%, which five empty cells could not draw. There is no
+   > amber band, and no over segment because the percentage is clamped. The
+   > track is a fixed 40px inline beside the figure (`.acct-window >
+   > .ctl-util-track`), and at 560px and below the phone block hides it as it
+   > hides every track but a pool tile's; there the figure, the `~` and the em
+   > dash carry every state. Unmeasured cells are unchanged: the em dash, `not
+   > measured`, no track. **What remains of the `cs status` parity is the
+   > figure, the `~` and the window labels.** One disagreement is left open for
+   > its own box: Overview colours the same reading warn above 75% and bad
+   > above 90%, while Accounts draws bad only at 100%.
+
 3. **The metric tile lost its box on Pools too, and gained a line** (§6.2
    applied). `.cap-pool` is the same thing as `.ctl-metric` under another name
    — one fact, its unit, a proportion — so it takes the same rule: **nothing
@@ -1907,6 +2480,16 @@ rather than inventing a metric that would have moved.
    stopping a reader comparing a tenant figure with a platform one. Scoped to
    `.cap-families > .ctl-card`; the primitive is untouched for its nine other
    callers.
+
+   > **Amended 2026-09-25 (owner decision, CP-2, #85): the scope moved from the
+   > family head to every row.** The note was computed from the family's first
+   > row, and a family is not one scope — an admin's Tenants family printed
+   > "this tenant" above four tenants' pools, and Providers printed
+   > "platform-wide" above per-tenant slices. Each family table now has a
+   > `Scope` column reading `platform`, `this tenant` or `tenant X`, each card
+   > in the Cards view carries the same word (`.cap-pool-scope`), and the
+   > family note is removed. Trap E is held more strongly than before: the
+   > declaration is on the figure's own row.
 
 5. **The proportion stops at 320px, and this is the answer to the owner's item
    8.** The tile track was `1fr`, so a family holding one pool — Global does —
@@ -2158,9 +2741,36 @@ level of the hierarchy may draw a border at all.** Decided here, once:
 | **Panel** | `.ctl-card`, `.ctl-table`, screen equivalents | **the one box.** One `--line` hairline, `--radius`, `--surface`. The only border in the console. |
 | **Row** | anything repeated inside a panel — a list row, a `.ctl-util`, a table row, a tile | **nothing.** No border, no rule, no per-row fill. `--row-h`, the mono/sans split and the fill step do all of it. |
 
-**The one exception, named so it stays one:** `.ctl-table thead th` keeps a
-`--line-soft` bottom rule. A column head is a different *kind* of row rather than
-the next one, and it says where the data starts exactly once.
+**Two exceptions, named so they stay two** *(the second added 2026-09-25,
+WF-17)*:
+
+1. `.ctl-table thead th` keeps a `--line-soft` bottom rule. A column head is a
+   different *kind* of row rather than the next one, and it says where the data
+   starts exactly once.
+2. **The Workflows row, `.wf-bar`, keeps a panel's box.** It sits directly on
+   the page rather than inside a panel, it opens in place into its own Graph,
+   Timeline or Table canvas, and it is the owner's frozen reference (§11.4:
+   "13 boxes"). So the board is ten boxed rows 8px apart, and that is correct.
+   **`.ctl-line`, the expandable-row primitive, keeps the no-box rule this
+   section gave it.** This is not a general rule that "rows that open in place
+   are panels": that rule would bring back exactly the per-row boxes this
+   section deleted from `.ctl-line`.
+
+**Help topics are rows of their region, with no box** (AH-18): a group is the
+`.section`, each `.help-topic` inside it is separated by `--ctl-s5` and draws
+nothing, and a deep-linked topic takes the §1.3 selection treatment — a
+`--surface-2` fill and a 2px `--text` inline-start rule declared transparent on
+every topic, so marking one moves nothing. A deep link to **any** topic lands with its group
+heading in view (AH-16, settled against AH-18 on #86, 2026-09-25). The group
+heading is the sticky head: `.help-group > h2` sticks to the top of the
+scroller while its group is in view, in the page ground `--bg`, because no
+scroll margin can bring back a heading a screenful above a topic halfway down
+its group. The topic's scroll margin clears that heading — its line box and
+the 10px under it (padding here, so a stuck heading keeps the gap opaque) —
+with `--ctl-s5` above it, and a topic sitting under the stuck heading does not
+count as already in view. Nothing else sticks over the Help column.
+`shell.test.tsx` "AH-16" resolves both sides on the page Help renders, and
+`helpcard.placement.test.tsx` holds the in-view band.
 
 **What this pass deleted under that rule** — all primitives or frame, no screens:
 
@@ -2291,3 +2901,486 @@ move every neighbour by a pixel at the moment the strip most needs to hold still
   that were also 700 were brought to 600 in this pass; the wordmark was left.
 * **The dock still overlays resting content at 390px**, exactly as §11.3 and
   §12.4 say. Nothing here touches `Shell.tsx`.
+
+---
+
+## 14. The 2026-09-25 visual QA pass — the stylesheet's half
+
+The QA pass of the live console at `ea1355d` (1440 and 390, light and dark)
+filed its findings as boxes on epics #81–#87. Forty-two of them were the
+sheet's, and this section records what each changed and the constraint behind
+it, so that none of them is quietly reverted. Every one carries its box id in a
+comment beside the rule, and an assertion in `shell.test.tsx`'s *"the
+2026-09-25 visual QA"* block (or the file named below) that states the mutation
+turning it red.
+
+### 14.1 Why the assertions read a cascade and not `getComputedStyle`
+
+jsdom orders matching rules by **source position alone** — its own source says
+specificity "is only implemented by the order in which the matching rules
+appear" — and applies no `@media` block that does not name `screen`. Four of
+these defects were exactly that shape: a phone rule written ~2,000 lines
+**above** the base rule it had to beat (`.ctl-seg > button`, CH-8), `.state p`
+out-ranking `.checked-at` on `font-size` (CH-10), `.limit-edit input`
+out-ranking `.acct-wide` on `width` (CP-19), and `.ctl-table .is-num`
+out-ranking a stacked key's alignment (CH-11). `getComputedStyle` reports the
+wrong winner for all four, so a test built on it would pass on the broken
+sheet. `cssgate.ts` now carries `cascade`: importance, then Selectors-4
+specificity, then order, with media and container conditions evaluated against
+a stated width, and jsdom used only for `Element.matches`.
+`stylesheet.gate.test.ts` proves it on fixtures with known answers first.
+
+### 14.2 What moved
+
+| Box | Rule | The constraint |
+|---|---|---|
+| CH-4 | `.ctl-mark.is-absent`, `.ctl-stale-mark`, `.brand-env.is-unknown` | text on a solid fill, hatch as a band (§1.5) |
+| CH-5 | `.ctl-link` list + `:where(a)` | five screen-private link rules painted `--info`; they are branches of the primitive now, and an unclassed anchor is ink rather than the browser's blue or visited purple |
+| CH-6, CP-23, AG-17, TS-13 | `.ctl-nav-util button.is-on`, `.acct-detail`, `.row[aria-current]`, `.dsp-option.is-on` | §1.3: selection is a surface step plus a 2px `--text` rule, never a hue |
+| CH-7 | `.ctl-q-glyph { min-height: 20px }` | `:where(.app button)`'s 28px minimum beat the disc's 20px height |
+| CH-8 | the touch-target block at the **foot** of the sheet | §7.2's 44px, by height where a box can grow and by an empty centred `::after` where a word or disc cannot; at the foot because a media query adds no specificity |
+| CH-9 | `.ctl-q-card { box-shadow: var(--ctl-shadow-pop) }` | the token was named from this declaration and then used nowhere, so light mode got the dark shadow |
+| CH-10 | `.state p.checked-at` | the micro step inside a state panel |
+| CH-11, CH-12 | the stacked-record key, `.tag`/`.scope` width, identity wrap | every key left-aligned (the comment promised one edge; the cascade gave two), words as wide as themselves, identities breaking rather than cut |
+| CH-14 | `scroll-margin-inline-end: var(--rail-fade)` | an item scrolled into view is clear of the fade mask |
+| CH-15 | one-line crumb, `min-width: 20ch` on the age | the age changing width every 5s moved the crumb across its wrap point |
+| CH-16 | `flex: none` on the dock's line and grip | only the body may shrink |
+| OV-3 | `display: grid` on Overview's ≥900 util override; 19ch provenance | a grid template on a flex box is inert; 128px was 19 characters at an 11px step that no longer exists |
+| OV-13 | every metric label reserves its mark | the strip slid 8–9px when the Running tile's mark appeared |
+| AG-11, AG-13 | `[age]` in `ch` | at least `elapsed()`'s longest form over every state, started or not; at 1101–1200px and 390px the duration holds the track and "waiting" wraps above it, because the width would come out of the name |
+| AG-15 | `.try.spent` / `.is-over` | an attempt count over its ceiling is a fault; two class names because the markup halves were written in parallel |
+| AG-16 | `.row.is-head` | the head is a `.row`, so it inherits the grid and the breakpoints; only its register is new |
+| AG-18 | `.lv-word` in ink | the mark carries the tone (§6.6) |
+| AG-22 | `.art-md` capped at 60vh | the same slot as `.art-text` |
+| AG-26 | `.ctl-drawer` is a size container; the §B6.3 stacked block is restated as `@container ctl-inspector` | see 14.3 |
+| AG-27 | the phone why-line clamp | `-webkit-line-clamp` is inert without its box, orient and clip |
+| AG-30, AG-31 | band `top: -18px`, z 3/4/5, `.ctl-drawer:focus-visible` | a sticky inset is from the content edge; the table head tied the band at z 1 and came later |
+| AG-32 | `.row` row-gap `--ctl-s1` | a why line read as the heading of the row below |
+| WF-8 | `.wf-graph { width: max-content }` | a sticky rail sticks only within its containing block |
+| WF-16 | `[flags] minmax(0, 140px)`, wrapping one-line `.wf-mix` | a content-sized track in per-row grids misaligns every row that has a flag; a chip is whole or absent |
+| TS-7 | `.wfb-step .sbf-offer` on `--surface` | the offers were the card's own fill |
+| TS-21 | `.sub`, `.window-bar`, `.tiles`, `.tile`, `.dsp`, `.dsp-options`, `.wfb-stage + .wfb-stage` | each value moved to the nearest step of §3.1 |
+| TS-22 | one rule for the "still open" segment and its legend key | the key cannot drift from the bar |
+| TS-24 | `.wfb-more > summary` marker, hover, ring | the only way to narrow dependencies read as a caption |
+| CP-13 | `.scope.tenant` neutral, `.cf-effect` in ink | a state hue is a verdict; metadata and hypotheticals are neither |
+| CP-18 | `table-layout: fixed` on the family and profile tables | one schema, one set of columns |
+| CP-19, CP-20 | the open account's fields; the fixed provider's chip | the fields stretch; the confirmation sizes to its label (`field-sizing`) |
+| CP-22 | `.ctl-em { font-family: var(--font) }` | one dash width in every cell |
+| AH-8 | `[aria-invalid]` border, message on its own line | the message widened the column |
+| AH-19 | operand figures in a right-aligned 7ch track | a column of figures aligns like one |
+
+### 14.3 The one mirrored block, and the test that holds it
+
+CSS cannot put one set of rules under "this media condition **or** that
+container condition". The inspector's tables need the stacked layout at 1440,
+where the viewport query does not fire, so the §B6.3 block is restated as
+`@container ctl-inspector (max-width: 899px)` right after it, against
+`.ctl-drawer`'s own width. The alternatives were worse: making the page a
+container too changes what the threshold means (the work column is not the
+window) and makes the fixed overlay drawer position against the container.
+**`shell.test.tsx` compares the two blocks rule by rule and declaration by
+declaration**, so a change to one without the other fails by name — the
+mirrored copy is held, not hoped for. The comments live only in the first
+block.
+
+### 14.4 What this pass did NOT do, and whose it is
+
+* **The markup halves.** Twenty-two of these boxes have a TSX half in another
+  lane (the class hooks, `aria-current`, `aria-invalid`, `scrollIntoView`, the
+  `+N` fold, the HelpCard glyph and card). Every CSS half here is additive and
+  inert until its markup lands. The class names this sheet expects are
+  `.row.is-head`, `.try.spent`/`.is-over`, and `aria-current` / `aria-invalid`
+  as attributes; the head row also matches structurally so the two halves do
+  not have to agree on a spelling.
+* **`HelpCard.tsx`'s `CARD_TITLE` no longer shouts.** It carried
+  `textTransform: 'uppercase'` and `letterSpacing: '.04em'`; the shell/help
+  lane (#145) removed both and emptied the pending list in
+  `typescale.test.ts` that excused them, so CH-3's inline-style scan now
+  excuses nothing.
+* **`.scope.platform` is still an `--info` tint.** CP-13 named the tenant pill;
+  whether the platform pill should be neutral too is a design question, not a
+  mechanical one.
+* **Nothing here was seen rendered.** The assertions prove which rule wins and
+  what it says; whether 19ch holds "waiting 99d 23h" in a given font is
+  arithmetic in the sheet's comments, and only a browser at 1440 and 390 can
+  confirm it.
+
+---
+
+## 15. The 2026-09-25 QA decisions: the shared vocabulary, and the agents and inspector lane
+
+The owner decided the QA pass's decision boxes on 2026-09-25 (#81–#87). Two
+lanes record theirs here. The chrome-shared lane (#162) built the ones every
+screen draws on, and this section is where a later screen finds them rather
+than inventing a second answer (15.1–15.5). The agents and inspector lane
+(#170) delivered four boxes on #82 and two merged leftovers, and 15.6 records
+what each changed and the constraint behind it, so none of them is quietly
+reverted. Each box is recorded where it lives above; the table is the index,
+plus the sub-sections that have no other home.
+
+| Box | The primitive | Where |
+|---|---|---|
+| CH-17 | the hue ruling: ok and info marks are grey; hue only on warn, bad, paused, live | §1.2, §1.3, §6.6, §6.7 |
+| CP-14 | healthy carries no hue (ruled first; CH-17 set the primitives' grey, `--text-faint`, for marks and fills; `.tag.ok` and the Accounts success heading are words and take `--text-dim`, §6.6 and §15.7); the chip's base mark is the hollow ring, so a modifier that matches nothing draws unknown — built by the Capacity lane (#159) | §6.6, §6.7 |
+| CH-22 | `stateTone`'s `ended` tone for CANCELLED, drawn as the grey flat bar (`is-info`) | §6.6 |
+| CH-23 | a link's resting underline is `--line` at 1px | §1.3 |
+| CH-19 | the live pulse's `.8` floor; reduced motion rests the pulse | §5.4 |
+| CH-21 | the two-row phone strip; a section selection is a rule, a tab's a fill | §6.15 |
+| CH-20 | the one-row phone header | §7.2 |
+| CH-13 | one rule for tables below 900px: `is-scroll` for data, `is-stacked` for records | §7.3 |
+| TS-4 | the outcome stack's four forms | 15.3 |
+| CH-2 | the head's read age is the screen's own | 15.1 |
+| CH-18 | the probe registry is keyed by route template | 15.2 |
+| AG-5 | a count that was read is a plain fact: `--warn` ink above zero, plain at zero, never a seventh mark | §6.13, 15.6 |
+| AG-14 | a why line is ink, and `--warn` only when a person has to act | 15.6 |
+| AG-20 | an inspector chart is drawn twice, at 640 and 300 units, and its own width picks one | §7.2, 15.6 |
+| AG-23 | a checkpoint or log panel is a facts strip and one table: one level of box | 15.6 (§13.3) |
+| #170 leftovers | one mark per empty state; the events route pages and this screen does not follow its token | §6.9, 15.6 |
+
+### 15.1 The head's read age is the screen's own (CH-2)
+
+The head used to show the newest successful payload of **any** route the tab
+had called, so it said "just now" beside a page that was still loading — the
+frame's identity read had landed and the page's had not — and the dock a few
+hundred pixels below said the same tab-wide thing. The head now shows the
+newest success among the reads **the current screen** started; the dock keeps
+the tab-wide view, as its label already says.
+
+A screen is a route of the app (`canonical()`), begun in a layout effect on
+every route change, so it has begun before any screen issues a read. A read
+belongs to the screen that was open when it **started** (`fetch.ts`
+`beginScreenReads`), so a slow read from the screen you just left cannot land
+as "newest read just now" on the one you opened; a fixture read, which
+registers when it lands, is attributed by its start time. The product header's
+identity read passes `frame: true` and belongs to no screen. Four sentences,
+each a measurement or the plain absence of one: **`reading…`** (nothing the
+screen asked for has settled — CH-20's pending identity uses the same word),
+**`newest read 4s ago`**, **`not read`** (every read failed), **`admin only`**
+(every read met the admin gate). Help and API reads issue no reads of their
+own and say "reads nothing". `chrome.shared.test.tsx` holds it on the live
+path with a stubbed API: the frame's read lands, the screen's does not, and the
+head says "reading…" while the dock says "newest".
+
+**A route can show two screens: the agent inspector over the Agents list.**
+The list never unmounts while the inspector opens, switches pane and closes,
+and it re-reads only on its next poll — so beginning an empty scope when the
+inspector closed left the head saying "reading…" beside a list fully drawn,
+with nothing in flight, for up to 30s (for good, once polling had stopped on an
+answer only a person can change). A route therefore has a **page** — the
+screen the rail points at — and at most one **inspector** over it
+(`beginScreenReads(key, page)`). The page's reads carry on across the
+inspector when the page is the one already open, and start from nothing
+otherwise (a screen re-entered through another page is a screen re-read); the
+inspector's always start from nothing, because each pane mounts and reads. A
+read the page asked for stays the page's while an inspector is open: `Screen`
+runs its load inside `pageReads` when it is inside `RoutedPage` (Shell.tsx),
+which App provides around the routed section, so the list's polls neither pass
+for the inspector's reads nor go missing from the list's own age. With that,
+"nothing settled" only ever means a screen that has just mounted, whose read is
+starting; `chrome.shared.test.tsx` opens and closes the inspector against a
+stubbed API and holds the head off "reading…" with no request in flight. A
+fixture read cannot say which of the two asked, and counts to the inspector
+when one was open — development only.
+
+### 15.2 A route is a path template (CH-18)
+
+The probe registry was keyed by the concrete URL, so every task anyone opened
+added its own `/v1/tasks/<id>/attempts?limit=50` "route" — 13 of the 29 dock
+cells on the QA screenshot — which inflated the count, shaped the p95 and made
+the help text's "one record per route" untrue. `fetch.ts` exports
+`route(template, params?, query?)`, which returns `{ url, template }`: each
+`{name}` is substituted with `encodeURIComponent(params.name)` (or verbatim for
+an `encoded()` value — the checkpoint member path, which arrives encoded
+segment by segment), the query is appended, and the registry key is the
+template with any literal `?…` removed. **`read()`, `write()` and
+`noteFixtureProbe()` accept only that value, not a string**, so the typecheck
+refuses a call that would key a probe by a URL; a hand-kept list of call sites
+could not (the first draft of this decision's list missed four). Templates keep
+their literal paths and placeholders because three Python seam tests read those
+literals' shapes against the routers; account routes spell `{account_id}`, the
+router's own name, because one of them compares exactly.
+
+Each record carries `lastUrl`, the concrete URL of its last attempt: the dock
+cell's title and the API reads table's `.ctl-sub` line under the route (the
+raw-id slot of §6.7) show it, so a failure can still be traced to its task. The
+"routes" count and "p95 over the last attempt of each route" are now true as
+written. A route's status is the last attempt of any call to it and its age
+the newest successful payload of any call to it; each panel still carries its
+own age and its own failure.
+
+### 15.3 The outcome stack is four forms (TS-4)
+
+Timeline's outcome segments were three flat fills and a hatch, apart by hue
+alone: failed against cancelled 1.01:1 in dark, succeeded against cancelled
+1.08:1 in light.
+
+| Outcome | Form |
+|---|---|
+| succeeded | solid `--ok` |
+| failed | solid `--bad` with a 2px left rule — redesign-v2 §5.5 Tier 1's "solid fill + a 2px left rule", as written. The rule is drawn in `--surface`, the panel's own ground: a 2px cut down the segment's left edge, because it must show against solid `--bad` and only the grounds do — `--surface` 5.32:1 (dark), 12.49:1 (light), where `--bad` is 1:1, `--bad-ink` 1.28:1 / 1.68:1 and `--text` 2.83:1 / 1.26:1 |
+| cancelled | flat bars — `repeating-linear-gradient(to bottom, --text-faint 0 3px, transparent 3px 5px)`, CH-22's grey "ended" bar stacked |
+| open | the 45° hatch — **retired 2026-09-25** with the row-window Timeline, the only thing that drew an open segment (#185, decision 7). The ledger places work by the bucket it ended in, so it draws no open work; the "Not finished yet" card counts it in words |
+
+Every segment and its legend key are one rule (TS-22's construction), so a key
+cannot drift from its bar. `encoding.hues.test.ts` holds the four apart with
+the colour stripped, holds failed to a solid fill, and holds its rule at 3:1
+against that fill in both themes. *(A 60% wash under a `--bad` rule was built
+first, on the reasoning that a same-hue rule cannot show on a solid fill; it
+drew a day of failures lighter than the successes beside it, and was not the
+form Tier 1 names. The rule changed colour instead of the fill changing
+strength.)*
+
+### 15.4 The dock's read cells (CH-17)
+
+Twenty-nine bordered, green cards on a healthy platform. A cell is a row of the
+dock's panel now (§13.3): no border, no rule, no radius, no fill, with the grid
+gap grown to `--ctl-s3` because the gap is what separates cells with no edge. A
+healthy cell is the grey disc with a `--text-dim` status; an admin-only 403 the
+grey flat bar with a `--text-dim` status; only a warn or bad cell carries tone —
+the table row's own left-edge rule (it is in those selector lists), its
+triangle or diamond, and its status in full ink. The collapsed line's private
+`.ctl-dock-dot` is gone; the line draws the shared `.ctl-dot`, so an expired
+session is the diamond rather than the unknown ring.
+
+### 15.5 What 15.1–15.4 did NOT verify
+
+Nothing here was seen rendered: every claim is a rule the cascade chooses, a
+DOM the components produced, or a ratio computed from the tokens. Whether the
+phone header fits one row at 390 with a long tenant id, how the held first
+column reads under a thumb, and how the flat-bar segments look at a one-task
+height are for the next release's screenshots. So are: whether a 20ch held
+column reads well on Pools and Accounts; whether the failed segment's 2px
+ground-coloured cut reads as a rule at a 26px column width; and the expanded
+account's width in a desktop window narrower than 900px with a classic
+scrollbar, where `100vw` counts the scrollbar and the detail would overhang
+the scrollport by its width (a phone's overlay scrollbar takes none).
+
+### 15.6 The agents and inspector lane (#170)
+
+Four boxes on #82 were the owner's to decide; the decisions are recorded on
+the epic, and this sub-section records what each changed and the constraint
+behind it, so none of them is quietly reverted. Two merged leftovers rode
+along. Every one has a test that states the mutation turning it red, and the
+red run is in the pull request.
+
+| Box | What changed | The constraint | Test |
+|---|---|---|---|
+| AG-5 | The artifact viewer's `masked N` is a plain fact: no mark, no `.is-absent`, `--warn` ink above zero, plain at zero, still opening `masking-is-serve-time` | a count that was read is a measurement; the six marks are kinds of *nothing* and there is no seventh (§6.13 amended) | `artifact.masked`, `prose.runs` (re-pointed) |
+| AG-14 | `.row .why` and `.why-full` are `--text`; `.is-warn` only on a line that needs a person: a **failure** (FAILED); work that **can never be admitted** until someone acts — a pool paused or set to zero, whether admission wrote it as a blocker or the task parked on `MANUAL_PAUSE`, and a spent budget (`BUDGET_EXHAUSTED`); **sign-in needed** (`CREDENTIAL_MISSING`); and a **stuck or silent worker** — in the inspector, a slot-holding task with no event for seven minutes gets `livenessOf`'s sentence as its why line (`SilentWorker`, AgentDetail.tsx). Queued, parked on quota or a provider, waiting on a dependency, and cancelled are ink | a colour on every line marks none of them; "needs a person" is the partition types.ts already keeps (`PARK_NEEDS_A_PERSON`, `needsAPerson`), and "silent" is the one `Liveness.tsx` already draws | `whyline.tone` |
+| AG-20 | Every inspector chart root — peak memory, phase bars, retry lollipop, checkpoint strip, diffstat **and the token-spend line** (`TimeSeries`) — drawn at 640 and at 300 units; the figure is the container; the wide drawing only where the chart is ≥ 640px; the narrow one never below 300px. The checkpoint strip's off-page tray takes at most half of each drawing's plot and counts what it has no room to draw as `+N` | tick text at `--t-micro` rendered at 6–8px when a 640 drawing was scaled into a 400–480px column (§7.2 amended); a tray sized by its count left the 300 drawing no axis at 21 off-page checkpoints | `chart.narrow`, `inspector.charts` (every chart root in the inspector, not a list) |
+| AG-23 | The checkpoint and log panels are a facts strip and one `.ctl-table` each, **three columns**: Checkpoint · Size · Age, and Stream · Size · Age. Whether a retry would restore from a checkpoint is a `resume` line under its name; a checkpoint's objects open from its Size cell as rows of the same table, with a name, a size and an age. No `.ckpt` or `.logwin` card, no `dl.kv`; `real zero`, `not measured`, `partial` and `not read` in the cells; the server's lowercase detail on its own line or after a dash. The strip's `restore` fact is what a retry would restore from | one level of box (§13.3); keep only the sentences a table cannot state — a checkpoint written then reclaimed, and a restore pointer a resume would ignore | `runfiles.flat`, `checkpoint.reclaimed` |
+| leftover A | `Agents`, `AttemptTimeline`, `Capacity`, `Holders`, `Runtimes`: the second `real zero` in each empty state removed | one mark per empty state (§6.9 amended) | `emptystate.onemark` |
+| leftover B | Every string that said the events route "returns no page token" now says this screen reads one page and does not follow the token | `GET /v1/tasks/{id}/events` has returned `next_page_token` since #19; the limit is the screen's (help topic `event-paging`) | `eventpaging.strings` |
+
+**Where the decisions and the code did not line up exactly**, recorded rather
+than smoothed over:
+
+* **AG-5 names "the credential-names help topic".** The `?` beside `masked N`
+  opened `credential-names-not-values` when the box was filed; AG-19 (#152)
+  moved it to `masking-is-serve-time`, because the credential-names topic is
+  about how the runtime catalogue names secrets, not about a value found in an
+  artifact. The two decisions cannot both hold for one `?`. The count keeps
+  its link to the masking topic, which is the topic about these credentials,
+  which needs the owner's confirmation; pointing it back would undo AG-19's
+  fix.
+* **AG-14 names "stuck or silent workers".** `whyAgent` writes no line for a
+  task that holds a slot, so the first pass had nothing to colour. The
+  inspector reads the task's events, and now writes `livenessOf`'s `silent`
+  sentence as a `--warn` why line. The **Agents list** cannot: a row is a task
+  document, and a worker's heartbeat is written to its lease, which no
+  tenant-scoped route serves (the admin leases route is the only reader). That
+  half is a backend change, #179, and the list draws no line for a silent
+  worker until it lands. The list also counts `MANUAL_PAUSE` and
+  `BUDGET_EXHAUSTED` parks as "can never be admitted": nothing ends either one
+  but a person, exactly as for a pool paused or set to zero.
+* **AG-23's log age.** The route serves no per-object time (#172 asks for
+  it), so a `final` stream's age is its attempt's end — when the worker
+  uploads it — and the em dash with `not measured` when that end is not
+  recorded. The word `live` is shown only while the attempt has no end **and**
+  the task holds a slot. `source=auto` also serves the live tail when the
+  final log is absent, which is what a worker killed before its upload leaves
+  behind, and a quota-parked attempt never records an end; either tail is the
+  em dash with `partial` — the last tail published, not a stream still being
+  written. The first pass wrote "`live` for a tail still being written" here
+  and called every tail `live`.
+* **AG-23's restore fact.** It printed the pointer, or "a retry starts from
+  the beginning" when none was set. The worker tries the pointer and, when
+  that resolves to nothing, restores the newest committed checkpoint it can
+  read (`_restore_checkpoint` → `find_latest`), so the fact is now `newest
+  committed` and the listing's newest resumable row — marked `partial` where
+  the listing is cut or a newer row is committed but not resumable, and `not
+  read` where a manifest could not be read.
+
+**What this pass did NOT verify.** Nothing here was seen rendered. The tests
+prove which drawing the sheet picks at a stated container width, which marks
+the cells carry and which rule wins; whether the 300-unit drawings, the
+tray's `+N` and the object rows read well at 390 and 1440 in each theme is
+for the next release's screenshots.
+
+### 15.7 The consistency sweep (#85 and #87 follow-ups, 2026-09-25)
+
+Three follow-ups the epics recorded after the decision PRs merged, one line
+each. Each is held by a test committed red first.
+
+* **CP-14 / CH-17, the last healthy greens.** `.pool .ctl-track > i` is
+  `--text-faint`, the primitives' ok grey; an ok `.pool.prov` card draws no
+  edge rule, because a grey 3px rule is `.pool.prov.unknown`'s and would draw
+  a provider nobody read as one that is fine; `.state.acct-ok` is the plain
+  `.state` box; its heading and `.tag.ok` are words, so they take
+  `--text-dim`, §6.6's word grey. The follow-up's `--text-faint` is for marks
+  and fills (the primitives), not words; this was clarified on #85 after a
+  first cut painted both words `--text-faint` (`encoding.hues.test.ts`, one
+  case each for the fill, the heading and the tag). So `.tag.ok` stays one
+  step apart from `.tag.unknown`, and the success heading matches its own
+  paragraph (`.state p` is `--text-dim`).
+* **CH-13, the log stream's uri.** Under the stream's name in the row header,
+  it takes §7.3's long-value rule — the rule names `th[scope='row'] > .uri`
+  beside `td[data-label] > .uri`, in both copies of the stacked block — and is
+  whole in its `title` and in a `copy gsutil` that copies `gsutil cat <uri>`
+  (`runfiles.flat.test.tsx`).
+* **The workflow node between attempts.** `stepDuration` gives a step whose
+  earlier attempt ran, and which is not STARTING or RUNNING, its state word
+  and no figure — `elapsed()`'s wording for the same task (#145) — because
+  its age includes that run and nothing records when its current state began
+  (`workflow.views.test.tsx`).
+
+---
+
+## 16. The Timeline as an outcome ledger (#185, owner decisions 2026-09-25)
+
+The Timeline read the newest 200–2,000 tasks and labelled whatever span they
+happened to cover ("bound by rows, label by the span"), because the task list
+could not filter by time. Dev's 730 tasks already exceeded the default window,
+so the page was partial on the day it was redesigned, and one column stacked
+outcomes by `completed_at` on top of still-open work by `created_at`, so its
+height measured nothing: 416 cancels flattened 28 failures. The owner accepted
+the synthesis of a three-concept design round with one change (a throughput
+lane), and the page now reads `GET /v1/outcomes` over a real span. This
+section records what each part must keep, so none of it is quietly reverted.
+
+| Part | What it keeps | Why | Test |
+|---|---|---|---|
+| **The span** | 24h · 7d · **14d (default)** · 30d · 90d · from–to, applied by the server; the server buckets (hour ≤ 48h, day ≤ 60d, week beyond) unless overridden; month only at ≥ 60 days; hourly never past 2,000 buckets | the Rows control's premise (the list cannot filter by time) is gone; a combination the route refuses (422) is one the page never sends | `outcomes.view`, `activity.timeline` "the read" |
+| **The address** | every filter is the hash's query (`#work/timeline?span=30d&table=1`); the last view is remembered per browser inside try/catch; a filter change is a route change with `replaceState` | a link reproduces the page; `fromHash` splits the query off first, because `timeline?span=30d` otherwise matched no tab and opened an **agent drawer** named after it | `route.test.ts` #185 |
+| **One figure** | the success rate at `--t-figure`, `k of n decided`, the Wilson 95 % interval **printed beside it** (`95 % interval 86.8–93.5 %`) as well as in its accessible name, `excludes N cancelled` in the card-note; `no finished work` (never 0 %) at a measured n = 0; the partial mark and `k of n days` when a bucket is unread; **the not-read mark and no digit when no bucket was read**; the previous-span delta **dropped, with the reason**, when that span is partial or decided nothing | cancels are left out of the denominator (owner decision); a delta over part of a span compares two different things; an interval only in an aria-label is one no sighted reader sees, and under Table the readout that also carries it is not drawn | `activity.timeline` "the headline" |
+| **Four lanes, one axis** | rate (`--series-1`, y fixed 0–100 %, Wilson band on `--surface-2` with ruled edges, hollow under 5 decided, a gap at n = 0); decided (succeeded up in TS-4's solid `--ok`, failed and dead-lettered down in solid `--bad` with the 2px `--surface` cut, ≥ 4px, one scale through zero); cancelled (its own scale, max printed; requested and other as TS-4's flat bars, the cancels a failure caused as a 1px `--text-dim` outline, and the cancels a CANCEL caused -- "after a cancel", #185 decision 2 -- as the flat bars inside that outline, stacked between the two); throughput (submitted as a `--series-2` step line over finished as `--series-5` columns, **labelled as the only lane on the submission-time basis**) | small multiples, never a dual axis; failures hang from a common zero; cancels stop drowning them; throughput answers "are we keeping up" | `activity.timeline` "the ledger" |
+| **Every bucket** | a column per bucket from `since` to `until`; a measured zero is the axis tick in each lane; the current bucket has a dashed right edge and reads `so far`; a just-ended one reads `settling`; an unread bucket is one hatched band across all four lanes with no mark and no digit | an absence is never a zero, and a zero is never an absence (§8.6) | same |
+| **Drawn three times** | 1080, 640 and 300 units, each with its own geometry and label stride; `.ol-chart` is the size container; `@container ol-chart (min-width: 640px / 1080px)` shows the drawing whose authored width the box holds; the narrow drawing's column floor is 26px, past which it grows and scrolls, opening at the newest end | AG-20's mechanism plus a page-width entry: the 640 drawing scaled across a 1,144px column would carry ~21px ticks, and scaled into a phone ~6px ones | `timeline.ledger.rules` |
+| **The scale does not scroll** | each drawing is a positioned frame of three layers: `.ol-gutter` (an SVG as wide as the left margin, every tick), the lane labels (HTML over the plot's left edge, on `--bg`, `pointer-events: none`, one line), and `.ol-plot`, the only layer in the scroller; each drawing has its own scroller, opened at its newest end the first time it is shown | wireframe_390 pins `100┤ … 0┤ … ok ┤ … cx ┤` with older days behind the fade. Drawn as one SVG inside the scroller, the ticks scrolled off on open (at 390 and 14 days the plot opens 52px in) and, at 24h or 30d, every lane label with them, the throughput lane's `by created_at` among them | `activity.timeline` "keeps each lane's scale…", `timeline.ledger.rules` "pins the scale column…" |
+| **The readout is the legend** (TS-9) | span totals by default, one bucket's on hover, tap or focus; `all`, Escape and leaving restore; one tab stop with a roving tabindex starting on the newest bucket; not a live region; 44px ‹ › steps on a phone; `zoom to <day>` with a chip back; `N failed that day →` says `not limited to <day>`. **One number per key, and it is the number the key's mark draws**: the flat bars' key prints requested + other, the outline's after_failure + workflow_sweep (`incl. workflow sweep N`), the outlined bars' `after a cancel` its own count, and the cancelled total, which no single mark draws, stands unkeyed; the column names and the Table's `requested or other / after a failure / after a cancel` use the same three sums. The span's totals carry the partial mark and `read of n` when a bucket is unread, and the not-read mark with no count when none was | the SVG marks are `aria-hidden`; each column is an HTML `role="img"` named with its full time and every count. The readout printed 5 beside the outline on 22 Sep while the outline, the column name and the Table said 8 | `activity.timeline` "the readout" |
+| **Table** | the same buckets as a `.ctl-table.is-scroll`, with `Submitted · by <basis.submitted>` | the keyboard and screen-reader route to every value; under Table no lane label is drawn, so the one submission-time column names its basis itself | "the Table toggle" |
+| **The route's words, as the route means them** | the basis is **read** from the payload's `basis` (lane label, readout, facts line, Table), never restated; `coverage.days` is printed in its own unit, `N of M UTC days` in tenant scope and `tenant-days` in platform scope; the provenance says `cached 60 s` only for a payload the route caches (every bucket read, the previous span's too) and `not cached: partial` otherwise, and on a cache hit names the kept read by its time (`N UTC days built by the 14:10:02 read`) rather than saying `built by this read` beside `0 reads this request` (epic #222); a submitter the route sends as `''` is `not recorded` or `—`, never a blank; the from–to inputs refuse, with the reason, a start in the future and a span over 400 days | a parity pass read #196's route beside this page and found each of these saying something the route does not mean: `cached 60 s` on a payload it re-derives, "56 days" for four tenants' 14, a basis word that would survive the basis changing, a blank row, and a 422 the page could have prevented | `activity.timeline` "what the route serves…", `outcomes.view` "what the route means…", `test_outcomes_ui_field_contract.py` |
+| **Eight cards** | Why tasks failed (the server's fixed class order) · Retries and attempts (admissions, not runs) · Time to result by profile (no all-profiles row) · Reliability by profile, tenant or person · Workflows that failed, and where (its step composition in the ledger's TS-4 forms, succeeded solid `--ok`) · **Reported cost · not a bill** (renamed from "Token spend"; per attempt, by task end) · Not finished yet (live, span not applied) · Why tasks were cancelled | every card but the live one draws the same payload on the same basis under the same filters | "the eight cards" |
+| **Every card says what it covers** | the route sums every card over the buckets it READ. One unread: each card-note carries the partial mark and `read of n <unit>` (§8.6's coverage note; the card head wraps rather than overflow), and an empty list is the partial empty state `… in the 13 of 14 days read`, never `a real zero`. None read: every card draws the not-read mark and the reason, and **no digit** — no count, no real-zero tick, no `$`, and no lane prints a `max` | a zero summed over no bucket is not a measurement; drawn as the real-zero tick it is the absence-as-zero this system exists to prevent | `activity.timeline` "partial and not read" |
+| **The live card carries its age** | "Not finished yet" prints `read <age>` from its own `/v1/stats` read (never `now`), is re-read on every filter change and on the Agents screen's idle cadence (`IDLE_POLL_MS`) while the page is visible, keeps its last counts between reads, and names every set filter it does not apply: `not filtered by profile, tenant, person, kind`. **Park reasons are the caller's own tenant's in platform scope** (`GET /v1/tasks` is tenant-scoped; #185 decision 8), so there the card says `park reasons: tenant <id> only` wherever it draws a reason, `… · none parked there` when that tenant has none, and counts `reasons for k of n` in that tenant, not over the platform | the head's age is the ledger's `generated_at`, a different read; left open 40 minutes and then filtered, the card said `now` over 40-minute-old counts that included the tenant the toolbar had just excluded | "the eight cards" |
+| **Strips only where they fit** | a mini strip is 6px a bucket beside a row of 220px (name ≥ 104 · track ≥ 48 · count 44 · three 8px gaps); the card body is the `ol-card` size container and each strip carries its band (`is-n14` … `is-n60`), shown at ≥ 900px once the body is 220 + 6 × band wide: 304, 364, 406, 490, 580px | at 1440 the cards are 3-up and a body is ~329px: a 24-hour or 30-day strip spilled 20–70px over the card's border into the next card; 14 days fits | `timeline.ledger.rules` "a card's mini strips…" |
+| **One glyph** | the only `?` is after "Success rate"; the cards publish their topics through `explain` (a `HelpNote`, no glyph) and the screen ends in a `Reading this screen:` index | B7.4's ceiling is twenty glyphs and two per screen; the console was at nineteen | `tests/help.test.ts` |
+
+**The throughput lane's encoding is recorded as chosen, not as decided.** The
+Flow concept drew `submitted` as the 1px outline column that lane 3 already
+uses for "after a failure" cancels, so one mark would have meant two things on
+one chart. The contract's recommended option — a `--series-2` step line over
+neutral `--series-5` columns, because these are counts and not outcomes — is
+what shipped; it is surfaced on #185 for the owner's confirmation.
+
+**TS-4's forms on an SVG.** The segments of §15.3 are CSS backgrounds, which an
+SVG shape cannot take, so the ledger restates them as fills (`.ol-m-ok`,
+`.ol-m-bad` with `.ol-m-cut`, the `.ol-flat` pattern) with the same tokens. The
+legend keys and the cards' outcome tracks (`.ol-k.is-*`, `.ol-meter > .ol-seg.*`)
+are added to TS-4's own rules by selector, so those cannot drift.
+
+**After a cancel, in the same vocabulary (#185, decision 2).** The scheduler
+writes one sentence after a failed parent and after a cancelled one, so lane 3
+drew both as the failure's outline. The route splits them now -- by the task's
+typed `end_cause`, or, for a task that ended before the field existed, by what
+each parent's own end sent down, up the chain (a CANCELLED parent is often a
+failure's cascade itself; the review of #217) -- and lane 3 draws the new cause
+with no new form: it IS a cancel (TS-4's flat bars) AND a cascade (the 1px
+`--text-dim` outline), so it is both marks at once, stacked between the plain
+bars below and the bare outline above. No hue on any of the three. Its key,
+`.ol-k.is-after-cancel`, is on TS-4's cancelled rule by selector and carries the
+outline beside `.ol-k.is-after`. `timeline.causes.test.tsx` holds the marks, the
+key, the words and the Table.
+
+**The bars are the mark's own, and it is never under 7px (the review of #217).**
+The first cut filled the outline with the page-anchored `-flat` pattern. Lane 3's
+baseline sits at y ≡ 1 (mod 5) in all three drawings (366, 306, 266), so a 3-4px
+mark on it had its only interior rows in the pattern's 2px gap, and drew as the
+bare "after a failure" outline pixel for pixel -- at every count under about 21
+of 305, which is most buckets. The mark now draws its bars as `.ol-flat` rects
+counted from its own top inner edge, exactly as its key's gradient runs from the
+top of its border, and is at least one period of them: 1px outline, a 3px bar,
+the 2px gap, 1px outline. A minimum is height the count did not earn, so the
+lane takes it back from its tallest mark rather than letting the column rise
+into the label above. `timeline.causes.test.tsx` measures the bar pixels inside
+each outline in the wide, mid and narrow drawings, and every lane-3 mark
+against the lane's top and base.
+
+**The plain flat bars stand on the baseline, and the scale's labels keep a gap
+(the post-deploy QA of #197, epic #222).** The "requested (and other)" mark kept
+the `-flat` pattern, anchored to the SVG's origin, so on lane 3's y ≡ 1 (mod 5)
+baseline a 3px mark painted its bottom row alone, against the baseline rule --
+a thicker baseline, not a bar. The pattern now starts 3px above lane 3's
+baseline, so every requested mark stands on one whole bar and the columns still
+line up (they share the baseline). In the scale column, the decided lane's `0`
+sits wherever the split puts it, and it printed 4px into the failed max at 1440
+and 9px at 390. The gutter now keeps `ValueAxis`'s rule with its gap
+(`VALUE_LABEL_GAP_PX`, 14px, which the inspector charts' left axes pass as
+`minGapPx`): the rate ticks, then the zero, then the top, then the floor, each
+dropped rather than drawn within 14px of one already kept. What gives way is the
+smaller side's max, beside the zero; the shared scale still has the larger one,
+and the readout, the column name and the Table carry every count.
+
+**What retired with the window.** The Rows control and its rule; the window
+bar's `Last N tasks` / `All N tasks`; the People table (grouping by person is
+now server-side over the whole span, in Reliability); the metric strip; AG-19's
+link from the window to `event-paging`, whose topic is written for the attempt
+timeline alone again (§8.4 item 5 describes the state before #185). **And,
+since 2026-09-25 (decision 7), the old Activity rules**: `.window-bar` and its
+`.wb-*` parts, `.chart` and `.chart .col` with the day-start, pick, focus and
+`has-older` fade, `.col-label` and its thinning, `.stackcol`, and `.chart-legend`
+with its `.k` keys and `.cl-*` readout are deleted from `styles.css`. TS-4's
+failed and cancelled rules lost those selectors and keep `.wf-meter`'s and the
+ledger's; the "open" hatch lost its only two and went with them (§15.3). The six
+test files that read the deleted rules were re-pointed at the ledger's own --
+`.ol-plot.has-older`, `.ol-sel`, `.ol-col:focus-visible`, `.ol-n`, the
+per-drawing axes, `.ol-toolbar`, `.ol-table-toggle`, `.ol-line .ctl-link`, and
+`.ol-meter > .ol-seg.*` for TS-4 -- and `timeline.causes.test.tsx` fails on any
+of the deleted selectors coming back.
+
+**How the tests were proven red.** The first test commit (run 36190161144)
+failed at `tsc`, so it proved no assertion. The ledger's honesty rules were
+then broken one line each in a MUTATION commit (0.0 % for nothing decided in
+the headline and the Table, no partial mark, an unread bucket drawn as zeroes,
+no real-zero tick) and the Timeline's tests went red on exactly those five in
+vitest; the review fix-up's cases were pushed before the code that satisfies
+them and went red in vitest too. One of those, the live card's `not filtered
+by tenant`, went red on a gap in its fixture before its assertion, so a second
+mutation dropped the disclosure and the fixed case went red on the assertion
+itself. The pull request names every run.
+
+**The page is held to the route, not only to a fixture.**
+`tests/unit/control_plane/test_outcomes_ui_field_contract.py` reads
+`outcomes.ts` as text and checks it against the payloads that #196's real
+route serves over its own fixture week: tenant scope with every filter the
+page sends, platform scope with an exclusion and with an include list, an
+explicit range, and a read past its derive budget. It checks every field in
+both directions and at every depth, including the literal unions the page
+switches on. Every declared array must be seen with an element, and every
+nullable object must be seen at least once not null, so no type passes by
+being checked only against `[]` or `null`. The same file holds the query
+parameters, the span, bucket, kind and group choices, the default span and
+the restated limits (`MAX_BUCKETS`, `MONTH_MIN_DAYS`, `MAX_SPAN_DAYS`,
+`OUTCOMES_CACHE_S`) to `swarm_api.outcomes` (docs/mirrored-values.md). It
+fails on this branch alone, as the route-level seam test does, and passes
+only once the route is merged.
+
+**What this did NOT verify.** Nothing here was seen rendered: the tests prove
+which marks the ledger draws for a contract-shaped payload, which drawing the
+sheet picks at a container width, and which rule wins. The component tests
+draw from a fixture in the contract's exact shape (`outcomes.fixture.ts`), not
+from a live read; the field-contract test above is what holds that shape to
+the route. Whether the 1080
+drawing reads well at 1440, how a 26px column reads under a thumb, and whether
+the Wilson band's ruled edges are enough in the light theme are for the next
+release's screenshots.

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { Fragment, useState } from 'react'
 import { loadCapacity, loadStats } from './api'
 import { DispatchChoice, type DispatchDraft } from './Dispatch'
 import { errorHeading, type ApiError, type ApiErrorKind, type Result } from './fetch'
@@ -8,6 +8,7 @@ import {
   InputFields,
   Move,
   buildInput,
+  inputFieldId,
   missingRequired,
   seedFields,
   type InputField,
@@ -89,8 +90,18 @@ async function loadSubmitForm(): Promise<Result<FormSources>> {
     : { status: 'ok', data, fetchedAt: cap.fetchedAt, serverAt: cap.serverAt }
 }
 
-/** One reason this form refused to send, attributed to the step that caused it. */
-interface StepProblem { stepId: string; message: string }
+/** One reason this form will not send, attributed to the step that causes it.
+ *  `key` is the step's React identity, which -- unlike its name -- exists and
+ *  is unique even for the two problems that are ABOUT the name. `missing` is
+ *  the required keys with nothing in them, as the API named them, so the send
+ *  panel can take a reader to the first one's field (TS-15). */
+interface StepProblem {
+  key: number
+  stepId: string
+  kind: 'name' | 'input' | 'required'
+  message: string
+  missing?: string[]
+}
 
 /** `not_sent`: this browser refused; NOTHING left, so there is nothing to check for.
  *  `rejected`: the API refused, so nothing was created and the form can be corrected.
@@ -136,8 +147,9 @@ const KIND_BY_STATUS: Partial<Record<number, ApiErrorKind>> = {
 }
 const unsure = (kind: ApiErrorKind, httpStatus: number | null, message: string): Submission => ({ kind: 'uncertain', error: { kind, httpStatus, code: null, message } })
 
-/** POST /v1/workflows. fetch.ts owns reads and has no write half yet. */
-async function postWorkflow(body: unknown): Promise<Submission> {
+/** POST /v1/workflows. fetch.ts owns reads and has no write half yet.
+ *  Exported for `submit.workflow.refusal.test.ts`, which hands it real responses. */
+export async function postWorkflow(body: unknown): Promise<Submission> {
   let res: Response
   try {
     res = await fetch('/v1/workflows', {
@@ -226,6 +238,96 @@ function dependsOf(step: StepDraft, steps: StepDraft[]): string[] {
   return step.after.filter((id) => earlier.includes(id))
 }
 
+/** The id a step's name box carries, so the send panel can take a reader to it. */
+const stepNameId = (key: number) => `wfb-${key}-name`
+
+/** The field-id prefix of a step's input editor; see `inputFieldId`. */
+const stepFields = (key: number) => `wf${key}`
+
+/**
+ * THE PLAN AS IT WOULD BE SENT, AND EVERY REASON IT WOULD NOT BE.
+ *
+ * Built on every render, not on the click. The problems used to be found only
+ * inside `send`, and shown in a panel at the TOP of the build column -- about
+ * 2,100px above the button at 390 -- so the click looked like it had done
+ * nothing, while every step still read `Not sent` and the button stayed
+ * enabled. Now the same pass drives the button (disabled while any problem
+ * stands), the panel's heading, and the count beside the button with a way to
+ * each step; `send` re-runs it rather than trusting the last render.
+ *
+ * Every problem found here is a workflow that would have been accepted by the
+ * API and then failed at the agent, one step at a time, having spent a slot on
+ * each. Every step is checked, not just the first bad one: fixing them one
+ * round-trip at a time is the same wait.
+ *
+ * THESE ARE LIVE MESSAGES, SO NONE OF THEM SAYS "Not sent" (TS-15). That
+ * phrase is the result of a click -- the `not_sent` outcome, whose heading
+ * already says nothing was submitted -- and it stood in front of every problem
+ * on every step before anything had been clicked at all.
+ */
+function planOf(
+  steps: StepDraft[],
+  byName: ReadonlyMap<string, RunnerProfile>,
+): { problems: StepProblem[]; body: Array<Record<string, unknown>> } {
+  const problems: StepProblem[] = []
+  const body: Array<Record<string, unknown>> = []
+  const seen = new Set<string>()
+  for (const s of steps) {
+    const id = s.id.trim()
+    if (id === '') { problems.push({ key: s.key, stepId: id, kind: 'name', message: 'this step has no name' }); continue }
+    if (seen.has(id)) { problems.push({ key: s.key, stepId: id, kind: 'name', message: 'two steps are called this' }); continue }
+    seen.add(id)
+    const built = buildInput(s.input)
+    if (!built.ok) {
+      // Worded as this form's own finding, not as the API's: a refusal
+      // phrased like the API's sends someone looking at the platform for a
+      // mistake that is on this screen.
+      problems.push({ key: s.key, stepId: id, kind: 'input', message: built.message })
+      continue
+    }
+    // null means THIS API DID NOT SAY which keys the runner demands, which is
+    // not the same as demanding none. Nothing is checked in that case and the
+    // step says so; inventing a rule here would refuse valid workflows.
+    const missing = missingRequired(s.input, requiredInputKeys(byName.get(s.profile)))
+    if (missing.length > 0) {
+      problems.push({
+        key: s.key,
+        stepId: id,
+        kind: 'required',
+        // The KEYS are named rather than the word "prompt": `required_keys`
+        // is a list the API sends, and a message that hardcoded one of its
+        // values would start lying the first time a runner demanded another.
+        // As the API named them, without its `input.` prefix or its "as a
+        // non-empty string" (TS-15).
+        message: `${s.profile} will not start without ${missing.join(', ')}`,
+        missing,
+      })
+      continue
+    }
+    const depends = dependsOf(s, steps)
+    const staged: Record<string, string> = {}
+    for (const source of depends) {
+      const filename = (s.from[source] ?? '').trim()
+      if (filename !== '') staged[source] = filename
+    }
+    body.push({
+      step_id: id,
+      runner_profile: s.profile,
+      // SENT ALWAYS, including when it is `{}`. `WorkflowStepCreate.input` is
+      // `Field(default_factory=dict)`, so an omitted `input` is an accepted
+      // workflow whose every agent step fails -- the defect this screen had.
+      // An empty object here is a caller who chose it, not a form that forgot.
+      input: built.input,
+      depends_on: depends,
+      // Omitted when empty, unlike `input`: an empty `input_from` is exactly
+      // the default and stages nothing, whereas an empty `input` is a payload
+      // the runner still has to read.
+      ...(Object.keys(staged).length === 0 ? {} : { input_from: staged }),
+    })
+  }
+  return { problems, body }
+}
+
 export function SubmitWorkflowScreen() {
   return (
     // ONE SENTENCE IN THE EMPTY STATE (§6.9).
@@ -292,63 +394,33 @@ function Form({ sources }: { sources: FormSources }) {
   const dependedOn = new Set(steps.flatMap((s) => dependsOf(s, steps)))
   const terminals = steps.map((s) => s.id).filter((id) => !dependedOn.has(id))
 
-  const send = () => {
-    // BUILT AND CHECKED BEFORE ANYTHING IS SENT. Every problem found here is a
-    // workflow that would have been accepted by the API and then failed at the
-    // agent, one step at a time, having spent a slot on each. Every step is
-    // checked, not just the first bad one: fixing them one round-trip at a
-    // time is the same wait.
-    const problems: StepProblem[] = []
-    const body: Array<Record<string, unknown>> = []
-    const seen = new Set<string>()
-    for (const s of steps) {
-      const id = s.id.trim()
-      if (id === '') { problems.push({ stepId: id, message: 'Not sent — this step has no name.' }); continue }
-      if (seen.has(id)) { problems.push({ stepId: id, message: 'Not sent — two steps are called this.' }); continue }
-      seen.add(id)
-      const built = buildInput(s.input)
-      if (!built.ok) {
-        // Labelled "Not sent", as `Submit.tsx` labels its own: a refusal
-        // phrased like the API's sends someone looking at the platform for a
-        // mistake that is on this screen.
-        problems.push({ stepId: id, message: `Not sent — ${built.message}.` })
-        continue
+  // THE LIVE PLAN. What disables the button, titles the send panel and lists
+  // the steps that stop it -- the same pass `send` makes, so what the panel
+  // says and what the click does cannot disagree.
+  const plan = planOf(steps, byName)
+  const blocked = plan.problems.length > 0
+  // TO WHAT HAS TO CHANGE. A step whose problem is a required key goes to
+  // that key's field rather than to the step's name (TS-15); a name problem,
+  // or input that will not build, goes to the name as before.
+  const toProblem = (p: StepProblem) => {
+    const first = p.missing?.[0]
+    if (first !== undefined) {
+      const field = steps.find((s) => s.key === p.key)?.input.find((f) => f.name.trim() === first)
+      const el = field === undefined ? null : document.getElementById(inputFieldId(stepFields(p.key), field.key))
+      if (el !== null) {
+        el.focus()
+        return
       }
-      // null means THIS API DID NOT SAY which keys the runner demands, which is
-      // not the same as demanding none. Nothing is checked in that case and the
-      // step says so; inventing a rule here would refuse valid workflows.
-      const missing = missingRequired(s.input, requiredInputKeys(byName.get(s.profile)))
-      if (missing.length > 0) {
-        problems.push({
-          stepId: id,
-          // The KEYS are named rather than the word "prompt": `required_keys`
-          // is a list the API sends, and a message that hardcoded one of its
-          // values would start lying the first time a runner demanded another.
-          message: `Not sent — ${s.profile} requires ${missing.map((k) => `input.${k}`).join(', ')} as a non-empty string.`,
-        })
-        continue
-      }
-      const depends = dependsOf(s, steps)
-      const staged: Record<string, string> = {}
-      for (const source of depends) {
-        const filename = (s.from[source] ?? '').trim()
-        if (filename !== '') staged[source] = filename
-      }
-      body.push({
-        step_id: id,
-        runner_profile: s.profile,
-        // SENT ALWAYS, including when it is `{}`. `WorkflowStepCreate.input` is
-        // `Field(default_factory=dict)`, so an omitted `input` is an accepted
-        // workflow whose every agent step fails -- the defect this screen had.
-        // An empty object here is a caller who chose it, not a form that forgot.
-        input: built.input,
-        depends_on: depends,
-        // Omitted when empty, unlike `input`: an empty `input_from` is exactly
-        // the default and stages nothing, whereas an empty `input` is a payload
-        // the runner still has to read.
-        ...(Object.keys(staged).length === 0 ? {} : { input_from: staged }),
-      })
     }
+    document.getElementById(stepNameId(p.key))?.focus()
+  }
+
+  const send = () => {
+    // RE-BUILT AT THE CLICK, and still refused before anything is sent. The
+    // button is disabled while a problem stands, so this branch should not be
+    // reachable; it stays because "the form refuses before it posts" is the
+    // invariant, and a disabled attribute is only one way of keeping it.
+    const { problems, body } = planOf(steps, byName)
     if (problems.length > 0) { setSub({ kind: 'not_sent', problems }); return }
     setSub({ kind: 'sending' })
     const repo = dispatch.repositoryUrl.trim()
@@ -378,20 +450,29 @@ function Form({ sources }: { sources: FormSources }) {
               the next band waits for it. That is the whole dependency model a
               reader needs for the common shape, and it is expressed by WHERE a
               step is rather than by what its neighbours are called. */}
+          {/* "WAITS FOR" IS SAID ONCE PER STEP, ON THE STEP (TS-20). It was
+              said three times over one step: on the stage header ("waits for
+              everything above"), on the add-a-stage button, and on the step's
+              own disclosure -- and only the last one is the control that
+              changes it. So a later stage's header reads `then`, plus how many
+              steps run together when there are two or more. */}
           {stages.map((inStage, i) => (
             <div className="wfb-stage" key={i}>
               <div className="wfb-stage-h">
                 <span className="wfb-stage-n">{i === 0 ? 'first' : `then`}</span>
-                <span className="wfb-stage-say">
-                  {i === 0
-                    ? (inStage.length === 1 ? 'starts immediately' : `${inStage.length} steps start together`)
-                    : (inStage.length === 1 ? 'waits for everything above' : `${inStage.length} steps run together, after everything above`)}
-                </span>
+                {i === 0 ? (
+                  <span className="wfb-stage-say">
+                    {inStage.length === 1 ? 'starts immediately' : `${inStage.length} steps start together`}
+                  </span>
+                ) : inStage.length > 1 && (
+                  <span className="wfb-stage-say">{inStage.length} steps run together</span>
+                )}
               </div>
               <div className="wfb-steps">
                 {inStage.map((s) => (
                   <StepCard key={s.key} step={s} steps={steps} profiles={offered}
                     required={requiredInputKeys(byName.get(s.profile))}
+                    nameProblem={plan.problems.find((p) => p.key === s.key && p.kind === 'name')?.message ?? null}
                     removable={steps.length > 1}
                     onChange={(next) => patch(s.key, next)} onRemove={() => drop(s.key)} />
                 ))}
@@ -402,7 +483,7 @@ function Form({ sources }: { sources: FormSources }) {
             </div>
           ))}
           <button type="button" className="wfb-add is-stage" disabled={atCeiling} onClick={() => addStep(stageCount)}>
-            add a stage <span className="wfb-add-say">waits for everything above</span>
+            add a stage
           </button>
           {atCeiling && maxSteps !== null && (
             <p className="warn-text">This tenant&apos;s limit is {maxSteps} steps.</p>
@@ -438,7 +519,9 @@ function Form({ sources }: { sources: FormSources }) {
 
       <aside className="sbf-side">
         <div className="sbf-send">
-          <h2>Ready to send</h2>
+          {/* From the live plan, like the button: this said `Ready to send`
+              over a plan with three steps reading `Not sent`. */}
+          <h2>{blocked ? 'Not ready to send' : 'Ready to send'}</h2>
           <ul className="ctl-facts">
             <li className="ctl-fact">
               <b>steps</b>
@@ -453,7 +536,26 @@ function Form({ sources }: { sources: FormSources }) {
               {dispatch.strategy}
             </li>
           </ul>
-          <button type="button" className="sbf-go" disabled={sub.kind === 'sending'} onClick={send}>
+          {/* THE COUNT, BESIDE THE BUTTON IT DISABLES, AND A WAY TO EACH STEP.
+              The step's own card says what is wrong with it; this says which
+              steps, and takes a reader to one -- on a phone the cards are a
+              long scroll above. Each is a button that focuses the step's name,
+              not an in-page anchor: a hash is a ROUTE in this app, and
+              following one would leave the form. */}
+          {blocked && (
+            <p className="warn-text" role="status">
+              {plan.problems.length === 1 ? '1 step' : `${plan.problems.length} steps`} not ready:{' '}
+              {plan.problems.map((p, i) => (
+                <Fragment key={p.key}>
+                  {i > 0 ? ', ' : ''}
+                  <button type="button" className="sbf-mini" title={p.message} onClick={() => toProblem(p)}>
+                    {p.stepId === '' ? '(unnamed step)' : p.stepId}
+                  </button>
+                </Fragment>
+              ))}
+            </p>
+          )}
+          <button type="button" className="sbf-go" disabled={sub.kind === 'sending' || blocked} onClick={send}>
             {sub.kind === 'sending' ? 'Submitting…' : 'Submit this workflow'}
           </button>
         </div>
@@ -462,7 +564,7 @@ function Form({ sources }: { sources: FormSources }) {
   )
 }
 
-function StepCard({ step, steps, profiles, required, removable, onChange, onRemove }: {
+function StepCard({ step, steps, profiles, required, nameProblem, removable, onChange, onRemove }: {
   step: StepDraft
   steps: StepDraft[]
   profiles: Array<[string, RunnerProfile]>
@@ -470,6 +572,10 @@ function StepCard({ step, steps, profiles, required, removable, onChange, onRemo
    *  did not say. Computed by the form so the live warning here and the
    *  refusal in `send` read the same answer. */
   required: string[] | null
+  /** Why this step's NAME stops the plan -- blank, or taken by another step --
+   *  from the form's live plan. The name is the one problem only the whole
+   *  plan can see, so the card is told it rather than working it out. */
+  nameProblem: string | null
   removable: boolean
   onChange: (next: StepDraft) => void
   onRemove: () => void
@@ -477,7 +583,6 @@ function StepCard({ step, steps, profiles, required, removable, onChange, onRemo
   const [open, setOpen] = useState(false)
   const chosen = profiles.find(([name]) => name === step.profile)
   const depends = dependsOf(step, steps)
-  const missing = missingRequired(step.input, required)
   const built = buildInput(step.input)
   // Every step in an EARLIER stage. Offering a step in the same stage or a
   // later one would be offering a 422, and worse, a workflow that stages a
@@ -500,7 +605,8 @@ function StepCard({ step, steps, profiles, required, removable, onChange, onRemo
         {/* The id is SHOWN because the API's refusals name it, and editable
             because someone may want a word that means something. It is never
             a prerequisite: it already has a value. */}
-        <input className="mono wfb-id" value={step.id} spellCheck={false} aria-label="step name"
+        <input id={stepNameId(step.key)} className="mono wfb-id" value={step.id} spellCheck={false} aria-label="step name"
+          aria-invalid={nameProblem !== null || undefined}
           onChange={(e) => onChange({ ...step, id: e.target.value })} />
         <select className="wfb-profile" aria-label={`${step.id} runner profile`} value={step.profile}
           onChange={(e) => retitle(e.target.value)}>
@@ -527,17 +633,16 @@ function StepCard({ step, steps, profiles, required, removable, onChange, onRemo
         </p>
       )}
 
+      {/* A MISSING REQUIRED KEY IS SAID AT ITS FIELD, by `InputFields`, once
+          the field has been left (TS-15). This card's own copy of it -- "Not
+          sent -- claude-code requires input.prompt as a non-empty string",
+          before anything had been sent -- is deleted rather than kept
+          agreeing. */}
       <InputFields profile={step.profile} fields={step.input} required={required}
-        idPrefix={`wf${step.key}`} onChange={(input) => onChange({ ...step, input })} />
+        idPrefix={stepFields(step.key)} onChange={(input) => onChange({ ...step, input })} />
 
-      {!built.ok && <p className="warn-text" role="alert">Not sent — {built.message}.</p>}
-      {missing.length > 0 && (
-        <p className="warn-text" role="alert"
-          aria-label={`${step.profile} requires ${missing.map((k) => `input.${k}`).join(', ')} as a non-empty string. Submitting without it produces a step that is dispatched, given a credential, and then fails, so this form will not send it.`}>
-          Not sent — {step.profile} requires{' '}
-          <code>{missing.map((k) => `input.${k}`).join(', ')}</code> as a non-empty string.
-        </p>
-      )}
+      {nameProblem !== null && <p className="warn-text" role="alert">{nameProblem}</p>}
+      {!built.ok && <p className="warn-text" role="alert">{built.message}</p>}
 
       {/* THE TWO ADVANCED CONTROLS, BEHIND THE ANSWER THEY ALREADY HAVE.
           Both used to be open rows saying "— no other named step yet" and "—

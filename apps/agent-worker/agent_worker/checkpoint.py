@@ -66,6 +66,14 @@ class CheckpointRecord:
     archive_sha256: str
     file_count: int
     uri: str
+    #: The commit the attempt's clone landed on, as the WORKER knew it, or
+    #: `gitops.EMPTY_CLONE_BASE` for an empty repository; None when there was
+    #: no clone, or the manifest predates this field. It is here, and not only
+    #: in `work/.swarm/clone-base`, because that file is in the agent's working
+    #: directory: the publish decides which commits it replaces from this base,
+    #: and an agent that could move it could keep its own commits out of the
+    #: fold. The manifest is written by the worker, outside the archived tree.
+    clone_base: str | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "CheckpointRecord":
@@ -156,6 +164,10 @@ class CheckpointManager:
         self._log = logger
         self._max_bytes = max_bytes
         self._seq = 0
+        #: Written into every manifest `create` uploads. The lifecycle sets it
+        #: once the clone has landed, or once it has been read back from the
+        #: checkpoint a resumed attempt restored, so it carries forward.
+        self.clone_base: str | None = None
 
     @property
     def seq(self) -> int:
@@ -175,9 +187,24 @@ class CheckpointManager:
         archive_key = f"{prefix}/{ARCHIVE_NAME}"
         manifest_key = f"{prefix}/{MANIFEST_NAME}"
 
+        # THE ARTIFACTS LINK IS LEFT OUT, knowingly (#149). `work/artifacts` is
+        # a link the worker makes to `artifacts/` (`workspace.link_artifacts`).
+        # Archived, it would break every resume: it resolves outside `work/`,
+        # and `_safe_members` refuses an archive holding such a link, so the
+        # restore would fail and the attempt with it. It names this attempt's
+        # directory besides, and a resumed attempt makes its own.
+        #
+        # What is BEHIND the link is not archived either, and nothing has to
+        # be done for that: `Path.rglob` does not descend into a symlinked
+        # directory (3.11 checks `is_dir(follow_symlinks=False)`), so
+        # `_write_archive` meets the link as one entry and never its contents.
+        # Those files are the artifacts, which are uploaded on their own.
+        skip = frozenset(
+            path for path in (ws.artifacts_link(),) if ws.is_artifacts_link(path)
+        )
         with tempfile.TemporaryDirectory(prefix="swarm-ckpt-") as tmpdir:
             archive_path = Path(tmpdir) / ARCHIVE_NAME
-            file_count = self._write_archive(ws.work, archive_path)
+            file_count = self._write_archive(ws.work, archive_path, skip=skip)
             size = archive_path.stat().st_size
             if size > self._max_bytes:
                 raise CheckpointError(
@@ -201,6 +228,7 @@ class CheckpointManager:
                 archive_sha256=digest,
                 file_count=file_count,
                 uri=self._store.uri(f"{prefix}/"),
+                clone_base=self.clone_base,
             )
             # Commit marker. Nothing before this line is discoverable.
             self._store.upload_bytes(
@@ -218,10 +246,14 @@ class CheckpointManager:
         )
         return record
 
-    def _write_archive(self, source: Path, archive_path: Path) -> int:
+    def _write_archive(
+        self, source: Path, archive_path: Path, *, skip: frozenset[Path] = frozenset()
+    ) -> int:
         count = 0
         with tarfile.open(archive_path, "w:gz") as tar:
             for entry in sorted(Path(source).rglob("*")):
+                if entry in skip:
+                    continue
                 if entry.is_symlink():
                     tar.add(entry, arcname=str(entry.relative_to(source)), recursive=False)
                     count += 1

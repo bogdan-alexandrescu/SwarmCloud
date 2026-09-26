@@ -255,18 +255,35 @@ def test_the_step_node_reaches_its_inputs_and_outputs():
     From "draft is parked" there was no click that reached draft -- the route
     was Agents, then Waiting, then find the row, re-identifying by the step chip
     a step you were already looking at.
+
+    RE-POINTED WITH WF-7 (epic #83). The node became one anchor to the task
+    drawer -- whose own tabs hold the input and output and the attempts -- and
+    the owner then decided that clicking a node fills the step inspector in
+    place and that the INSPECTOR carries `open agent ->` to that drawer. The
+    route this test exists for is that link now. The old assertions here also
+    passed on the node's COMMENTS alone (`input & output ->` and `/attempts`
+    are quoted in its explanation of the anchors it replaced), which is the
+    grep-passes-on-a-comment failure `apps/swarm-ui/src/__tests__/README.md`
+    describes; they read the code now.
     """
-    node = body_of(src("Workflows.tsx"), "function StepNode(")
+    views = src("WorkflowViews.tsx")
+    inspector = body_of(views, "export function StepInspector(")
+    code = "\n".join(
+        line
+        for line in re.sub(r"/\*.*?\*/", "", inspector, flags=re.DOTALL).splitlines()
+        if not line.lstrip().startswith("//")
+    )
     # Read, not spelled: the section was renamed `agents` -> `work` and this
     # assertion checked the old string. See `_work_id` in
     # test_workflow_graph_screen.py for why the constant is the thing to read.
     work = re.search(r"export const WORK = '([a-z-]+)'", src("App.tsx"))
     assert work, "App.tsx no longer exports a WORK section id"
-    assert f"#{work.group(1)}/task/" in node, "the step node links nowhere"
-    assert "input &amp; output" in node or "input & output" in node, (
-        "the step node offers no route to what the step read or wrote"
-    )
-    assert "/attempts" in node, "the step node offers no route to its attempts"
+    assert f"#{work.group(1)}/task/" in code, "a picked step links nowhere"
+    # The drawer that route opens is the one whose tabs are the input and
+    # output and the attempts: the router resolves `task/<id>` and
+    # `task/<id>/attempts` to the same drawer.
+    router = body_of(src("App.tsx"), "function fromHash(")
+    assert "tail[0] === 'task'" in router, "the router no longer opens the task drawer"
 
 
 def test_every_step_figure_goes_through_measure():
@@ -712,8 +729,13 @@ def test_the_bars_and_tabs_are_capped():
     """`flex: 1` drew two ~534px bars for seven tasks and three ~356px buttons
     for four-character labels. Every pixel of new page width made both worse."""
     css = src("styles.css")
-    col = re.search(r"\n\.chart \.col \{[^}]*\}", css, re.S)
-    assert col is not None and "max-width:" in col.group(0), ".chart .col is still uncapped"
+    # RE-POINTED (#185, decision 7): the row-window chart's `.chart .col` and
+    # its 72px cap are deleted with the page that drew them. The ledger draws
+    # its bars in SVG, and its geometry caps each at 28px however wide the
+    # drawing grows.
+    ledger = src("charts/OutcomeLedger.tsx")
+    bar = re.search(r"bar: Math\.max\(1, Math\.min\([^)]*\b28\)\)", ledger)
+    assert bar is not None, "the ledger's bar is no longer capped: it grows with the drawing"
     tab = re.search(r"\n\.tabs button \{[^}]*\}", css, re.S)
     assert tab is not None and "flex: 0 0 auto" in tab.group(0), ".tabs button still fills the row"
     split = re.search(r"\n\.split-row \{[^}]*\}", css, re.S)

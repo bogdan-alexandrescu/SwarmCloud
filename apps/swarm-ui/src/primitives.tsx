@@ -290,6 +290,11 @@ export function UtilTrack({
  * names them), so they are drawn here in that order and nowhere else. The
  * `title`s are the long forms of three columns that ellipsise; each is
  * optional because not every column has one.
+ *
+ * `byNote` says the last column is a NOTE rather than provenance (OV-7): a
+ * status that changes what the row means -- "sign in again", "paused", which
+ * pool binds -- as against a window name and an age. It is the `is-note` hook
+ * a screen's phone rule uses to keep that column when it drops the rest.
  */
 export function UtilRow({
   name,
@@ -299,6 +304,7 @@ export function UtilRow({
   figureTitle,
   by,
   byTitle,
+  byNote = false,
 }: {
   name: ReactNode
   nameTitle?: string | undefined
@@ -307,6 +313,7 @@ export function UtilRow({
   figureTitle?: string | undefined
   by: ReactNode
   byTitle?: string | undefined
+  byNote?: boolean | undefined
 }) {
   return (
     <div className="ctl-util">
@@ -317,7 +324,7 @@ export function UtilRow({
       <span className="ctl-util-figure" title={figureTitle}>
         {figure}
       </span>
-      <span className="ctl-util-by" title={byTitle}>
+      <span className={byNote ? 'ctl-util-by is-note' : 'ctl-util-by'} title={byTitle}>
         {by}
       </span>
     </div>
@@ -349,6 +356,19 @@ export function UtilRow({
  */
 export type AbsentKind = 'zero' | 'failed' | 'partial' | 'admin'
 
+/**
+ * THE "LINK OUT" THAT ENDS AN EMPTY STATE (§6.9), and the slot that was
+ * missing. The shape is four things and this component drew three, so every
+ * screen that wanted the fourth hand-built a panel instead -- `Screen`'s
+ * `.state` box (CH-10, CP-21) and the Help page's unknown-topic panel (AH-17)
+ * among them. It closes the one sentence rather than adding a second, and it
+ * is `.ctl-link` -- ink plus an underline -- like every other in-page link.
+ */
+export interface LinkOut {
+  href: string
+  label: ReactNode
+}
+
 const EMPTY_MARK: Readonly<Record<AbsentKind, MarkKind>> = {
   zero: 'zero',
   failed: 'unread',
@@ -364,6 +384,7 @@ export function Absent({
   foot,
   explain,
   className,
+  link,
 }: {
   kind: AbsentKind
   heading: string
@@ -375,6 +396,8 @@ export function Absent({
   explain?: TopicId | undefined
   /** A screen's own layout hook -- e.g. an empty state inside a card. */
   className?: string | undefined
+  /** The way out: where to go from here. Closes the sentence, or stands alone. */
+  link?: LinkOut | undefined
 }) {
   const cls = kind === 'zero' ? '' : ` is-${kind}`
   const descId = useId()
@@ -388,7 +411,17 @@ export function Absent({
         {heading}
         {explain !== undefined && <HelpNote topic={explain} id={descId} />}
       </h3>
-      {children !== undefined && <p>{children}</p>}
+      {(children !== undefined || link !== undefined) && (
+        <p>
+          {children}
+          {children !== undefined && link !== undefined && ' '}
+          {link !== undefined && (
+            <a className="ctl-link" href={link.href}>
+              {link.label}
+            </a>
+          )}
+        </p>
+      )}
       {foot !== undefined && <span className="ctl-empty-foot">{foot}</span>}
     </div>
   )

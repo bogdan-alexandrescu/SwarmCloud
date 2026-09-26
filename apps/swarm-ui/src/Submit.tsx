@@ -3,7 +3,9 @@ import { loadCapacity } from './api'
 import { CeilingTag, ceilingFigure } from './Blockers'
 import { DispatchChoice, DispatchFacts, type DispatchDraft } from './Dispatch'
 import { isPaused, type ApiError } from './fetch'
+import { HELP } from './help'
 import { HelpCard } from './HelpCard'
+import { Mark } from './primitives'
 import { FailedPanel, Screen } from './Shell'
 import {
   DEFAULT_CARRIER,
@@ -52,8 +54,9 @@ import {
  * `runner_profile` BY NAME and the frozen catalogue supplies the image,
  * command, resource class and backend. The picker is now a LIST rather than a
  * `<select>` precisely to make that visible -- the catalogue is the offer, and
- * a name that is not in it cannot be typed. `input` is data the platform never
- * reads; it is not an execution parameter, and nothing here lets one become
+ * a name that is not in it cannot be typed. `input` is data for the runner; the
+ * API checks only that its keys are ones the profile declares (contract request
+ * 25). It is not an execution parameter, and nothing here lets one become
  * one. schemas.py sets `extra="forbid"` and main.py answers any
  * FORBIDDEN_CALLER_FIELD with a message naming it.
  *
@@ -243,35 +246,38 @@ interface Suggestion {
 }
 
 /**
- * WHAT EACH PROFILE'S RUNNER READS -- offered, never enforced.
+ * WHAT EACH PROFILE'S RUNNER READS, AND MAY BE SENT.
  *
  * READ FROM THE RUNNER SOURCE ON 2026-09-23 and keyed by PROFILE NAME, which
  * is the one thing this bundle has: `/v1/capacity` serves a profile's resource
  * class, backend, provider, pools and `input_contract`, and NOT its `command`.
- * `swarm_api/runnerinputs.py` keys its own table by runner MODULE for exactly
- * the reason a name table is worse -- a new profile pointed at an existing
- * runner inherits nothing here and needs a line added.
  *
- * THAT DRIFT IS AFFORDABLE HERE AND IT WOULD NOT BE THERE, because these are
- * suggestions and `required_keys` is a rule. A suggestion that goes stale
- * offers a key the runner ignores; it never refuses valid work and it never
- * hides a key, because "a setting of your own" is always the last option in
- * the picker. The API's `required_keys` remains the only thing that can stop a
- * submission, and an unread `required_keys` still renders as unread.
+ * NO LONGER ONLY A SUGGESTION FOR A DECLARED PROFILE. Since contract request
+ * 25 (#142, 2026-09-25) the frozen catalogue declares what `input` may carry
+ * per profile, `RunnerProfile.inputs`, and swarm-api refuses any other key
+ * with 422 `invalid_input`. So a key offered here for mock, claude-code or
+ * codex that the catalogue does not declare is a refusal this form invites --
+ * which is why `model` (the CLI runners pass it as `--model`, choosing the
+ * model an agent runs) and a `timeout_seconds` offered to every profile are
+ * gone. `generic` and `browser` have not declared their inputs yet and are
+ * bounded by size only, so their entries are still the runner census.
+ * scripts/lib/check-contract-parity.sh (section 13) holds every entry for a
+ * declared profile to the declaration, and
+ * tests/unit/control_plane/test_submit_offers_only_what_runners_read.py holds
+ * every entry for a profile not declared yet to a key its runner reads.
  *
  * REQUESTED, NOT CHANGED (CLAUDE.md's reporting rule): `/v1/capacity` should
- * serve an `accepted_keys` block beside `required_keys`, built in
- * `runnerinputs.py` off the same module table, so this constant can be deleted.
+ * serve each profile's declared inputs beside `required_keys`, so this
+ * constant can be deleted rather than compared.
  */
 const SUGGESTED: Record<string, Suggestion[]> = {
-  // runners/cliagent.py:264 (prompt, also required) and :277 (model).
+  // runners/cliagent.py (prompt, also required). The prompt is all the
+  // catalogue lets a caller send these two.
   'claude-code': [
     { name: 'prompt', kind: 'text', note: 'the whole instruction, passed as one argument' },
-    { name: 'model', kind: 'text', note: 'overrides the image default; letters, digits, . : - _ only' },
   ],
   codex: [
     { name: 'prompt', kind: 'text', note: 'the whole instruction, passed as one argument' },
-    { name: 'model', kind: 'text', note: 'overrides the image default; letters, digits, . : - _ only' },
   ],
   // runners/generic.py -- GENERIC_COMMANDS is the frozen argv catalogue, and
   // `command` NAMES an entry in it. That is invariant 10's own pattern, not an
@@ -281,8 +287,12 @@ const SUGGESTED: Record<string, Suggestion[]> = {
     { name: 'paths', kind: 'list', note: 'pytest only: existing paths inside the workspace' },
     { name: 'target', kind: 'text', note: 'make only: one target from the repository Makefile' },
     { name: 'working_directory', kind: 'text', note: 'a directory inside the workspace to run in' },
+    { name: 'timeout_seconds', kind: 'number', note: 'lowers the child wall clock; the platform ceiling still wins' },
   ],
-  // runners/browser.py:76-107.
+  // runners/browser.py:76-107. No `timeout_seconds`: the browser runner starts
+  // no child through runners/limits.py and never reads it, so an offer here
+  // told a user their run was shorter while the platform's ceiling applied
+  // unchanged (the review of #213).
   browser: [
     { name: 'url', kind: 'text', note: 'opened first, before any action below' },
     { name: 'actions', kind: 'actions', note: 'run in order after the first page loads' },
@@ -301,14 +311,11 @@ const SUGGESTED: Record<string, Suggestion[]> = {
   ],
 }
 
-/** Offered for every profile: `runners/limits.py` reads it for any runner, and
- *  a caller may only LOWER it -- the platform ceiling wins and says it clamped. */
-const ANY_PROFILE: Suggestion[] = [
-  { name: 'timeout_seconds', kind: 'number', note: 'lowers the child wall clock; the platform ceiling still wins' },
-]
-
+/** `timeout_seconds` (`runners/limits.py`, which a caller may only LOWER) is
+ *  offered to `generic` alone: a declared profile that does not declare it
+ *  refuses it, and the browser runner never reads it. */
 function suggestionsFor(profile: string): Suggestion[] {
-  return [...(SUGGESTED[profile] ?? []), ...ANY_PROFILE]
+  return SUGGESTED[profile] ?? []
 }
 
 const ACTION_TYPES = ['goto', 'click', 'fill', 'press', 'wait_for', 'wait', 'screenshot', 'extract'] as const
@@ -444,8 +451,15 @@ export function seedFields(previous: InputField[], required: string[] | null): I
  *  `choices` is passed alongside rather than stored on the field: it belongs to
  *  the SUGGESTION, not to the value, and a list of catalogue names is never
  *  part of what gets sent. */
-function ValueEditor({ f, id, choices, onChange }: {
-  f: InputField; id: string; choices?: string[]; onChange: (next: InputField) => void
+function ValueEditor({ f, id, choices, invalid, describedBy, onBlur, onChange }: {
+  f: InputField; id: string; choices?: string[]
+  /** The field is a required key left empty (TS-15): the editor carries it. */
+  invalid?: boolean
+  /** The id of the line under the editor that says what is missing. */
+  describedBy?: string | undefined
+  /** Leaving the field is what lets it be marked; see `InputFields`. */
+  onBlur?: () => void
+  onChange: (next: InputField) => void
 }) {
   if (f.kind === 'flag') {
     return (
@@ -481,7 +495,9 @@ function ValueEditor({ f, id, choices, onChange }: {
   if (f.kind === 'actions') return <BrowserActions f={f} onChange={onChange} />
   if (choices) {
     return (
-      <select id={id} className="mono" value={f.text} onChange={(e) => onChange({ ...f, text: e.target.value })}>
+      <select id={id} className="mono" value={f.text} aria-invalid={invalid || undefined}
+        aria-describedby={describedBy} onBlur={onBlur}
+        onChange={(e) => onChange({ ...f, text: e.target.value })}>
         <option value="">choose one…</option>
         {choices.map((c) => <option key={c} value={c}>{c}</option>)}
       </select>
@@ -499,8 +515,10 @@ function ValueEditor({ f, id, choices, onChange }: {
         // "what this agent should do" -- a placeholder describing a different
         // key, which is worse than none at all.
         placeholder={name === 'prompt' ? 'what this agent should do' : undefined}
+        aria-invalid={invalid || undefined} aria-describedby={describedBy} onBlur={onBlur}
         onChange={(e) => onChange({ ...f, text: e.target.value })} />
     : <input id={id} className="mono" value={f.text} spellCheck={false}
+        aria-invalid={invalid || undefined} aria-describedby={describedBy} onBlur={onBlur}
         onChange={(e) => onChange({ ...f, text: e.target.value })} />
 }
 
@@ -535,6 +553,14 @@ function BrowserActions({ f, onChange }: { f: InputField; onChange: (next: Input
 }
 
 /**
+ * The id of one field's editor, which is what a "missing" button in either
+ * send panel focuses. One spelling, so the button and the field agree.
+ */
+export function inputFieldId(idPrefix: string, key: number): string {
+  return `${idPrefix}-f${key}`
+}
+
+/**
  * THE INPUT EDITOR. Shared by both submit screens.
  *
  * THE ABSENCE HERE IS `required === null`, and it is the whole reason this
@@ -543,6 +569,17 @@ function BrowserActions({ f, onChange }: { f: InputField; onChange: (next: Input
  * second is a measured empty. They get different renderings, the unread one
  * carries `.ctl-mark.is-unread` and an accessible sentence, and neither blocks
  * the form -- inventing a rule would refuse valid work.
+ *
+ * A MISSING REQUIRED KEY IS SAID AT ITS FIELD (TS-15, owner decision
+ * 2026-09-25), in the API's own words for it: the key exactly as
+ * `required_keys` sent it, in mono, as the field is labelled -- never
+ * `input.prompt` or "as a non-empty string", which are the API's jargon. It
+ * was said only in the send panel, far from the field, while the field itself
+ * had no invalid state. Now the editor carries `aria-invalid` (the warn edge)
+ * and one warn-ink line under it names what the runner will not do, with the
+ * full consequence as the line's accessible name. Only once the field has been
+ * LEFT empty: a runner just picked is not painted red, and until then the
+ * `required` tag carries it.
  */
 export function InputFields({ profile, fields, required, onChange, idPrefix }: {
   profile: string
@@ -551,6 +588,11 @@ export function InputFields({ profile, fields, required, onChange, idPrefix }: {
   onChange: (next: InputField[]) => void
   idPrefix: string
 }) {
+  // The fields that have been left, by field key. Local on purpose: whether a
+  // reader has visited a field is this editor's business, not the form's.
+  const [left, setLeft] = useState<ReadonlySet<number>>(() => new Set())
+  const leave = (key: number) => setLeft((prev) => (prev.has(key) ? prev : new Set(prev).add(key)))
+  const missing = new Set(missingRequired(fields, required))
   const offers = suggestionsFor(profile)
   const used = new Set(fields.map((f) => f.name.trim()))
   const unused = offers.filter((o) => !used.has(o.name))
@@ -586,16 +628,22 @@ export function InputFields({ profile, fields, required, onChange, idPrefix }: {
               version of the sentence it was standing in. */}
         </p>
       )}
+      {/* A NAME AND A FACT, NOT AN INSTRUCTION (TS-23, §8.5's forms clause).
+          "starts without any input. Add a setting below if this run needs
+          one." was a fact and a how-to line; the offers below are the how. */}
       {fields.length === 0 && (
         <p className="sbf-none">
           {required !== null && required.length === 0
-            ? `${profile} starts without any input. Add a setting below if this run needs one.`
-            : 'No settings yet.'}
+            ? <><span className="mono">{profile}</span> requires no input</>
+            : 'no settings'}
         </p>
       )}
       {fields.map((f, i) => {
-        const id = `${idPrefix}-f${f.key}`
+        const id = inputFieldId(idPrefix, f.key)
         const note = noteFor(f.name.trim())
+        const key = f.name.trim()
+        const gap = f.required && missing.has(key) && left.has(f.key)
+        const missId = `${id}-missing`
         return (
           <div className={f.required ? 'sbf-field is-required' : 'sbf-field'} key={f.key}>
             <div className="sbf-key">
@@ -630,7 +678,15 @@ export function InputFields({ profile, fields, required, onChange, idPrefix }: {
                 </button>
               )}
             </div>
-            <ValueEditor f={f} id={id} choices={choicesFor(f.name.trim())} onChange={(next) => set(i, next)} />
+            <ValueEditor f={f} id={id} choices={choicesFor(key)} invalid={gap}
+              describedBy={gap ? missId : undefined} onBlur={() => leave(f.key)}
+              onChange={(next) => set(i, next)} />
+            {gap && (
+              <p id={missId} className="sbf-miss"
+                aria-label={`${profile} will not start without ${key}. A run sent without it is dispatched, given a credential, and then fails, so this form will not send it.`}>
+                {profile} will not start without <code>{key}</code>
+              </p>
+            )}
             {note && <p className="sbf-note">{note}</p>}
           </div>
         )
@@ -679,6 +735,9 @@ export function Move({ n, title, aside, children }: { n: number; title: string; 
   )
 }
 
+/** The task form's field-id prefix: the editor and the panel's buttons share it. */
+const TASK_FIELDS = 'task'
+
 function Form({ capacity }: { capacity: Capacity }) {
   const [chosen, setChosen] = useState('')
   const [fields, setFields] = useState<InputField[]>([])
@@ -706,6 +765,11 @@ function Form({ capacity }: { capacity: Capacity }) {
   const built = buildInput(fields)
   const missing = missingRequired(fields, required)
   const blocked = chosen === '' || !built.ok || missing.length > 0
+  // The send panel's "`prompt` missing" takes the reader to that field.
+  const toField = (key: string) => {
+    const f = fields.find((x) => x.name.trim() === key)
+    if (f) document.getElementById(inputFieldId(TASK_FIELDS, f.key))?.focus()
+  }
 
   async function submit(e?: FormEvent) {
     e?.preventDefault()
@@ -716,8 +780,11 @@ function Form({ capacity }: { capacity: Capacity }) {
       return
     }
     if (missing.length > 0) {
+      // A CLICK'S RESULT, so it is the one place "Not sent" belongs (TS-15).
+      // The keys as the API named them, without its `input.` prefix or its
+      // "as a non-empty string".
       setOutcome({ kind: 'refused', unattributed: null, fields: { input:
-        `Not sent — ${chosen} requires ${missing.join(', ')} as a non-empty string.` } })
+        `Not sent — ${chosen} will not start without ${missing.join(', ')}.` } })
       return
     }
     setOutcome({ kind: 'sending' })
@@ -791,7 +858,10 @@ function Form({ capacity }: { capacity: Capacity }) {
                     <span className="sbf-runner-name mono">{n}</span>
                     <span className="sbf-runner-facts">
                       {p.resource_class} · {p.units} unit{p.units === 1 ? '' : 's'} · {p.backend}
-                      {p.provider ? <> · needs a {p.provider} key</> : <> · needs no provider key</>}
+                      {/* `<provider> key needed`, not `needs a <provider>
+                          key`: the article was chosen before the name was
+                          known, and read `needs a anthropic key`. */}
+                      {p.provider ? <> · {p.provider} key needed</> : <> · no provider key needed</>}
                     </span>
                     {/* A DISABLED PROFILE IS KEPT AND EXPLAINED, not hidden.
                         The catalogue says a disabled profile is known and
@@ -810,10 +880,13 @@ function Form({ capacity }: { capacity: Capacity }) {
         {/* NO `aside` (B7.4): this was the second copy of `input-is-opaque` on
             one screen, four hundred lines from the first. */}
         <Move n={2} title="Say what it should do">
+          {/* A STATE, NOT AN INSTRUCTION (TS-23). "Choose a runner first --
+              what it reads is what this asks for." was a how-to line and a
+              rationale; step 1 is directly above. */}
           {chosen === '' ? (
-            <p className="sbf-none">Choose a runner first — what it reads is what this asks for.</p>
+            <p className="sbf-none">no runner chosen</p>
           ) : (
-            <InputFields profile={chosen} fields={fields} required={required} onChange={setFields} idPrefix="task" />
+            <InputFields profile={chosen} fields={fields} required={required} onChange={setFields} idPrefix={TASK_FIELDS} />
           )}
           {bad.input && <p className="warn-text" role="alert">{bad.input}</p>}
         </Move>
@@ -821,7 +894,8 @@ function Form({ capacity }: { capacity: Capacity }) {
         {/* `steps={1}`: a standalone task IS one step, and that is the number the
             pull-request counts on the options are computed from. `scale="task"`
             is the same word `resolve_dispatch_options` takes, and it is what
-            makes `integrate` show as unavailable here rather than 422 later. */}
+            keeps `integrate` and the carrier off this form -- with one line
+            pointing to the workflow form -- rather than a 422 later. */}
         <Move n={3} title="Choose what happens to the result">
           <DispatchChoice
             draft={dispatch}
@@ -840,7 +914,11 @@ function Form({ capacity }: { capacity: Capacity }) {
           together. */}
       <aside className="sbf-side">
         <div className="sbf-send">
-          <h2>Ready to send</h2>
+          {/* FROM `blocked`, THE SAME VALUE THAT DISABLES THE BUTTON. The
+              heading said `Ready to send` over a greyed-out button with no
+              runner chosen and an empty prompt -- the panel's title and its
+              only control disagreeing about the one thing the panel is for. */}
+          <h2>{blocked ? 'Not ready to send' : 'Ready to send'}</h2>
           <ul className="ctl-facts">
             <li className={chosen === '' ? 'ctl-fact is-absent' : 'ctl-fact'}>
               <b>runner</b>
@@ -851,26 +929,35 @@ function Form({ capacity }: { capacity: Capacity }) {
               {/* THREE DIFFERENT NOTHINGS, AND THEY DO NOT SHARE A RENDERING.
                   No runner chosen yet is an em dash: nothing has been decided.
                   A chosen runner with no settings is a MEASURED empty object,
-                  which is a real thing to send and says so in words. A value
-                  that will not build is neither -- it is the reason the send
-                  is blocked. */}
+                  which is a real thing to send and says so in words -- but
+                  only when nothing is required (TS-15): over a missing key it
+                  would describe a send that cannot happen. A value that will
+                  not build, or a required key with nothing in it, is neither
+                  -- it is the reason the send is blocked, and a missing key is
+                  a button to its field, the workflow panel's per-step pattern. */}
               {chosen === '' ? <i className="ctl-em">&mdash;</i>
-                : built.ok
-                  ? (Object.keys(built.input).length === 0
+                : !built.ok ? <i className="sbf-bad">{built.message}</i>
+                  : missing.length > 0 ? (
+                    <span className="sbf-gaps">
+                      {missing.map((k) => (
+                        <button type="button" key={k} className="sbf-mini sbf-bad" onClick={() => toField(k)}>
+                          <code>{k}</code> missing
+                        </button>
+                      ))}
+                    </span>
+                  )
+                  : Object.keys(built.input).length === 0
                     ? <i className="sbf-empty">empty — the runner gets no settings</i>
-                    : <span className="mono">{Object.keys(built.input).join(', ')}</span>)
-                  : <i className="sbf-bad">{built.message}</i>}
+                    : <span className="mono">{Object.keys(built.input).join(', ')}</span>}
             </li>
             <li className="ctl-fact">
               <b>result</b>
               {dispatch.strategy}
             </li>
           </ul>
-          {missing.length > 0 && (
-            <p className="warn-text" role="alert">
-              {chosen} requires <code>{missing.map((k) => `input.${k}`).join(', ')}</code> as a non-empty string.
-            </p>
-          )}
+          {/* The panel's "{runner} requires input.x as a non-empty string"
+              alert is gone (TS-15): the field says it, and the fact above is
+              the way to the field. */}
           <button type="submit" className="sbf-go" disabled={outcome.kind === 'sending' || blocked}>
             {outcome.kind === 'sending' ? 'Submitting…' : 'Submit one task'}
           </button>
@@ -924,13 +1011,16 @@ export function ProfileFacts({ name, profile, pools }: { name: string; profile: 
 
   return (
     <div className="sbf-room">
-      <p className="sbf-room-h"><span className="mono">{name}</span> right now</p>
-      <p className="muted">
-        Costs {profile.units} weighted unit{profile.units === 1 ? '' : 's'} in each of its{' '}
-        {profile.pools.length} pools, all at once.
-        {/* NO `?` (B7.4). "all at once" is the last three words of the sentence
-            the glyph was attached to, and the sentence already names the count
-            and the weight. */}
+      {/* ONE SENTENCE IN THIS BOX, AND THE COST IS A FACT ON ITS HEAD (TS-23).
+          "Costs N weighted units in each of its M pools, all at once." was a
+          second sentence; the figures are facts and sit on the head. "In each
+          of", never "x", which reads as a total. "All at once" is the
+          all-or-nothing rule, and that lives in the capacity help topic.
+          The decided phrase at every pool count, one pool included: "in each
+          of 1 pool", not a second wording. Each noun agrees with its count. */}
+      <p className="sbf-room-h">
+        <span className="mono">{name}</span> right now · {profile.units} unit{profile.units === 1 ? '' : 's'}{' '}
+        in each of {profile.pools.length} pool{profile.pools.length === 1 ? '' : 's'}
       </p>
       <p className="muted">
         {room.agents === null ? (
@@ -941,18 +1031,17 @@ export function ProfileFacts({ name, profile, pools }: { name: string; profile: 
             <>No pool in this profile&apos;s list is configured, so nothing caps it right now.</>
           ) : (
             <>
-              {/* NEVER A ZERO HERE. The count of unread pools is the figure and
-                  the clause that it is not zero stays beside it. */}
-              Room could not be measured: {room.unread.length} of its pools could
-              not be read. <strong>That is not zero.</strong>
-              {/* NO `?` (B7.4), AND THIS IS THE ONE DELETION THAT NEEDED THE
-                  MOST CARE, because `room-unknown-not-zero` is the rule the
-                  whole console is built around. It stays on the surface in
-                  bold, in four words, with the count of unread pools beside
-                  it -- which is stronger than a glyph, not weaker: a reader
-                  cannot fail to open it. The rule is only allowed to move
-                  behind a `?` where the surface cannot carry it, and here the
-                  surface carries it. */}
+              {/* NEVER A ZERO HERE, AND NOW DRAWN RATHER THAN SAID (TS-23).
+                  This was "Room could not be measured: N of its pools could not
+                  be read. That is not zero." -- two sentences, and "not
+                  measured" is the ABSENT mark's word, not the unread one's. It
+                  is the kit's unread encoding (§8.6): the `not read` mark, whose
+                  accessible name is `room-unknown-not-zero`'s rule, then
+                  `room unknown` and the count of pools that did not answer. No
+                  room figure, and no digit in the room slot but that pool
+                  count, which §8.5 allows as a bare count. */}
+              <Mark kind="unread" say={HELP['room-unknown-not-zero'].short} /> room unknown ·{' '}
+              {room.unread.length} of {profile.pools.length} pools could not be read
             </>
           )
         ) : (

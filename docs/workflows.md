@@ -45,7 +45,7 @@ costs nothing while it waits.
 |---|---|
 | `step_id` | unique within the workflow; `^[A-Za-z0-9][A-Za-z0-9_\-.]*$` |
 | `runner_profile` | a **name** from the frozen catalogue — never an image or command |
-| `input` | the step's own payload, bounded by `max_input_bytes` |
+| `input` | the step's own payload, bounded by `max_input_bytes`: its `prompt`, plus only the keys its profile declares (below) |
 | `depends_on` | upstream `step_id`s, up to 50 |
 | `input_from` | `{upstream_step: artifact_filename}` staged into this step's workspace |
 | `resource_class` | optional named class, no larger than the profile's own |
@@ -53,13 +53,199 @@ costs nothing while it waits.
 
 `max_workflow_steps` (default 50) bounds the whole thing.
 
+## What `input` may carry
+
+A runner reads its task's `input`, and an input means something only to the
+runner that reads it: `input.model` is passed as `--model` by the CLI runners,
+and `input.quota_exhausted` makes the mock simulate a rate limit. So what a
+caller may send is declared per profile in the frozen catalogue,
+`RunnerProfile.inputs` (contract request 25, accepted by the owner on #142 on
+2026-09-25), and the API holds every caller to it: `POST /v1/tasks`, the batch,
+and each step here.
+
+| the profile | what `input` may carry |
+|---|---|
+| `mock` | `prompt`, and its declared test knobs, in the table below |
+| `claude-code`, `codex` | `prompt` and nothing else |
+| `browser`, `generic` | **not declared yet**: anything, bounded by `max_input_bytes` alone, as before |
+
+What the mock declares, with each key's kind and bounds. This table is
+generated from the catalogue, not written: a bound stated anywhere else in
+this file would be a copy nothing compares, so none is.
+
+<!-- runner-inputs:mock generated from RUNNER_PROFILES["mock"].inputs; tests/unit/mcp/test_runner_input_prose.py fails when it differs -->
+| input | kind and bounds | what the mock runner does with it |
+|---|---|---|
+| `sleep_seconds` | number 0..3600 | how long the run sleeps, in total |
+| `cpu_burn_seconds` | number 0..3600 | how long it burns CPU, in total |
+| `steps` | integer 1..1000 | how many progress files, and checkpoints, it writes |
+| `fail` | boolean | fail on purpose, after the steps |
+| `fail_message` | string | the error a failure reports |
+| `exit_code` | integer 1..255 except 77, 78, 143 | the exit code a failure uses |
+| `artifact_text` | string | what the output artifact holds |
+| `artifact_name` | filename | the output artifact's file name |
+| `quota_exhausted` | boolean | park the first attempt on a simulated provider rate limit; the next one runs |
+| `retry_after_seconds` | integer 1..3600 | the retry-after that simulated rate limit reports |
+<!-- /runner-inputs:mock -->
+
+Every declared number has a floor and a ceiling, and an integer's bounds lie
+inside the signed 64-bit range; the catalogue refuses a declaration without
+them. Python reads a JSON integer at any length and Firestore stores 64 bits,
+so an unbounded number passed every check and failed at the task write with a
+500. The API also refuses, with 422, an integer anywhere in an input or a
+task's metadata that Firestore could not store, which is the only number check
+a profile not declared yet gets.
+
+A key the profile does not declare, or a declared one outside its bounds, is
+refused with 422 `invalid_input`. The detail names the key (`key`, and every
+refused key in `keys`), the bound for a declared key (`expected`), what the
+profile does declare (`declared`) and, on a workflow, the step (`step_id`).
+Nothing is created: one refused step refuses the workflow, and one refused task
+refuses its batch. `NaN` and `Infinity` are refused as numbers; Python reads
+them from JSON, and every comparison with `NaN` is false, so a bound alone
+would let them through. `swarm_profiles` and `swarm profiles` list each
+profile's inputs.
+
+`browser` and `generic` are the exception because their work IS their input.
+The browser runner cannot start without `url` or `actions`, and the generic
+runner cannot start without the name of a command in its own catalogue, so an
+empty declaration would refuse every task they run. Which keys they declare,
+with which bounds, is an open question recorded under request 25 in
+[contract-change-requests.md](contract-change-requests.md) and tracked as #218.
+
+`{"quota_exhausted": true}` parks a mock step ONCE: the task's first attempt,
+and no other. The attempt is counted by the task's own `attempt_count`, which
+admission increments in the lease's own transaction and the worker hands to
+the runner, so the bound holds even when the park's checkpoint fails to
+upload; the attempt after the park runs to the end, from that checkpoint when
+there is one. It parked on every attempt until 2026-09-25, and a park does not
+spend an attempt, so such a task never ended. Its first bound was a count in
+the mock's own working directory, which only the checkpoint carried forward,
+so a park whose upload failed was followed by another (the review of #213).
+
 ## Artifacts pass by reference
+
+**An artifact a later step can stage by its name is a file the upstream step
+wrote into `$SWARM_ARTIFACTS_DIR`, and nothing else is.** That directory sits
+outside the agent's working directory and outside the repository checkout, so a
+file written anywhere else is never staged by a later step, however exactly its
+name matches. (Since #184's owner decision of 2026-09-26, a claude-code or codex
+task with NO repository also uploads what its agent created in its working
+folder, but as `workdir/<path>`, so a working-folder `scan-01.md` is
+`workdir/scan-01.md` and still does not satisfy a step that stages
+`scan-01.md`; see [agent-output.md](agent-output.md).) Until #149 this failed late and cost money:
+the upstream step SUCCEEDED, and only the dependant failed, at staging, with
+`upstream task … did not produce an artifact named 'scan-01.md'`. By then every
+upstream step had spent its compute and its provider quota. That is what
+happened to workflow `wf_73946ff4a32a4f99b3a4` on 2026-09-25. Its eight scan
+steps were prompted "write it to scan-01.md", wrote into their working
+directories and succeeded. All four merges then failed, and seventeen steps were
+cancelled.
+
+**So the platform tells the upstream agent, catches its likeliest wrong guess,
+and fails the upstream attempt when neither worked.** Three layers, because the
+first alone was measured not to be enough.
+
+1. **Instructions.** At submission the API inverts every `input_from` edge. It
+   records on each upstream step's task the filenames its dependants will
+   stage, as `metadata.expected_outputs`, in the same write that creates the
+   task. The worker passes that list to the runner. Only the `claude-code` and
+   `codex` runners act on it: every prompt they give an agent already ends
+   with one line naming the **absolute** path of `$SWARM_ARTIFACTS_DIR` (#184,
+   2026-09-26), and they add the names after it, with each file's full path
+   and the statement that files written anywhere else, the repository
+   included, do not reach later steps. The `generic`, `mock` and `browser` runners receive the
+   list in `input.json` and change nothing. A name the platform writes itself
+   is never in the instructions: not the worker's `swarm-work.patch`, which is
+   written after the agent exits, and not the runner's own
+   `<runner>.stdout.log`, `<runner>.stderr.log` or transcript, which it writes
+   while the agent runs.
+2. **`./artifacts` is the artifacts directory.** On the third run,
+   `wf_06a3a949d2c242c3b0e9` (2026-09-25), every prompt named
+   `$SWARM_ARTIFACTS_DIR` and told the agent to `echo` it. scan-02 echoed
+   `/workspace/att_…/artifacts`, which is right, then wrote
+   `/workspace/att_…/work/artifacts/scan-02.md`, and reported that it had
+   written the file to `$SWARM_ARTIFACTS_DIR`. The artifacts directory is the
+   working directory's sibling, so `./artifacts` is the natural wrong guess. So
+   before every agent starts, workflow step or not, the worker makes
+   `work/artifacts` a symlink to the artifacts directory, and a file written to
+   `./artifacts/<name>` lands in the directory that is uploaded. The link is
+   never checkpointed: it points outside `work/`, which a restore refuses, and
+   it names this attempt's directory, so a resumed attempt makes its own. If
+   `work/artifacts` already exists (a declared input staged as `artifacts/…`,
+   or a directory a restored checkpoint brought back), it is left alone and
+   one WARNING says so. Files written under it are then not uploaded, exactly
+   as before.
+3. **A missing expected output fails the attempt, retryably** (owner decision
+   on #149, 2026-09-25). If an attempt's runner finishes cleanly and one of its
+   expected outputs was not uploaded, the attempt FAILS with the missing names
+   as its cause, in `last_error`, in `result_summary.expected_outputs_missing`,
+   in one log line and in a `retrying` event. The cause says whether the file
+   was never written, or was written and not uploaded (the artifact cap). The
+   task goes back to READY and runs again as a new attempt while it has
+   attempts left, and ends FAILED once `max_attempts` is spent, which cancels
+   its dependants as any failed parent does. A requested cancel still ends it
+   CANCELLED. **A dependant therefore never starts on a parent that did not
+   write what it promised.** A runner that fails, times out or is stopped
+   keeps its own cause, and the missing names are recorded next to it.
+
+None of this makes an agent write the file; the third layer makes it cost at
+most `max_attempts` upstream attempts instead of the rest of the workflow. A
+prompt that names the file and the directory as well does no harm.
+
+**A retry starts with an empty artifacts directory.** It resumes `work/` from
+the checkpoint the failed attempt took as it ended, and only `work/` is
+checkpointed. So the retry must write every expected output again, not only the
+one that was missing. The agent is given the same instructions, which list every
+name. **An attempt that is going to be retried publishes nothing**, as a parked
+attempt does not: its work is not finished. Published, the retry's own push
+could be refused as a non-fast-forward, because the final checkpoint is taken
+before the publish step auto-commits the agent's changes. The last attempt
+publishes like any other failed one. A file that was written and then not
+uploaded (the cap, an upload error) is found missing only after the publish
+step, so that attempt has published and is still retried.
+
+**`metadata.expected_outputs` belongs to the service.** A caller cannot set it:
+`POST /v1/tasks`, `POST /v1/tasks/batch`, or a workflow whose own `metadata`
+carries it, is refused with 422 `invalid_dispatch` and
+`detail.reserved_metadata_keys: ["expected_outputs"]`, and nothing is created.
+This is the reservation `metadata.dispatch` already has. Accepted, the key
+would reach the agent as "later steps of this workflow need these files", in
+the platform's voice, on a task no step stages from. For the same reason the
+worker drops a caller's own `input.expected_outputs` before the runner sees it,
+and logs that it did.
+
+What this deliberately does not do:
+
+* **It does not copy a file out of the working directory.** The worker does not
+  go looking for a same-named file in the working directory and upload it. That
+  was option (c) on #149, and the owner rejected it. The link is not a copy: a
+  file written through it is written into the artifacts directory in the first
+  place. A file left anywhere else, in the repository or elsewhere in the
+  working directory, is never staged by a later step under its own name. A
+  task with no repository does upload what its agent created there (#184),
+  for a reader of the Artifacts tab, under `workdir/<path>`, which is not the
+  name a dependant stages.
+* **It does not carry the artifacts directory across a park or a retry.** Only
+  `work/` is checkpointed, and a resumed attempt starts with an empty artifacts
+  directory. A dependant stages from the attempt that SUCCEEDED, so a file
+  written before a park and not written again after the resume is missing, and
+  that attempt fails for it, retryably. That was already true of
+  `$SWARM_ARTIFACTS_DIR`; the link extends it to `./artifacts`.
+* **It does not tell a retry which file it left out.** The retried agent gets
+  the same prompt and the same list, which names every expected output.
 
 `input_from` stages an upstream step's artifact into the downstream step's
 workspace. The file travels through **GCS**, never inline through Firestore —
 Firestore has a 1 MiB document limit, and an agent's output is routinely larger.
 The tenant's GCS prefix applies, so a workflow cannot stage another tenant's
 artifact even by naming it.
+
+The filename is both the artifact's name in the upstream step and the path it
+lands at downstream. So within one step each parent must stage a **distinct**
+relative filename, with no empty, `.` or `..` segment, and the API refuses any
+other shape at submission (HTTP 422 `invalid_dag`, naming the step, the parents
+and the file) rather than letting the worker refuse it after every parent has run.
 
 ## Dependencies and state
 
@@ -75,6 +261,52 @@ monopolise a pass.
 would otherwise sit in `DEPENDENCY_INCOMPLETE` forever — holding no capacity, but
 never completing and never erroring, which is the worst kind of failure because
 nothing alerts on it.
+
+## `metadata.input_from` belongs to the service, not the caller
+
+The worker stages a task's inputs from `metadata.input_from`, a map of
+`{upstream TASK id: filename}`. **Only workflow expansion writes that key.** It
+rewrites each step's `input_from`, keyed by step id, to the ids of the upstream
+tasks it has just created. That rewrite happens after the declaration has passed
+the checks above, including the rule that every `input_from` source is also a
+`depends_on`.
+
+So the API refuses the key from callers, the same way it refuses
+`metadata.dispatch` (owner decision on #151, 2026-09-25):
+
+| request | answer |
+|---|---|
+| `POST /v1/tasks` or `POST /v1/tasks/batch` with `metadata.input_from` | 422 `invalid_dispatch`, `detail.reserved_metadata_keys: ["input_from"]`, nothing created |
+| `POST /v1/workflows` whose own `metadata` has `input_from` | the same 422, nothing created |
+| `POST /v1/workflows` whose steps declare `input_from` | accepted; each declaring step's task gets `metadata.input_from` |
+
+The key is refused whatever its value, `{}` and `null` included. It is
+reserved, not validated. A value on a plain task arrived with no dependency
+edge, so nothing guaranteed the upstream task had run. A bad declaration was
+refused only by the worker, after the task had been admitted and had held
+capacity. The workflow's own `metadata` is copied onto every step's task, so a
+value there reached every root step verbatim and was silently replaced on any
+step that declared its own. To stage an artifact, declare `input_from` on the
+workflow step that needs it.
+
+The refusal runs before the DAG checks, so a workflow whose own `metadata`
+carries `input_from` answers `invalid_dispatch` even when its steps would also
+have been refused `invalid_dag`. There is no valid workflow-level value for the
+filename rules above to check: they apply to a step's `input_from`, which is
+the only declaration a caller can make.
+
+A batch is refused whole: one task carrying the key means none of the batch is
+created.
+
+**Three metadata keys are reserved, and one refusal names all of them.**
+`dispatch`, `input_from` and `expected_outputs` (above) are the keys the
+service writes into `task.metadata`. They are one tuple,
+`validation.RESERVED_METADATA_KEYS`, checked by one function. A caller who sends
+more than one gets a single 422 whose `detail.reserved_metadata_keys` lists each
+of them, in that order, and whose message says why each is reserved and what to
+send instead. `expected_outputs` was first reserved by a check of its own (#153),
+so as not to collide with the `input_from` change. That check heard about one
+key per round trip, and it was folded into the tuple once both had merged.
 
 ## Failure behaviour
 

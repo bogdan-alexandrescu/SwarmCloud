@@ -671,3 +671,609 @@ def test_a_read_only_token_is_a_stated_fact_not_a_failed_attempt(
     assert out["can_push"] is False
     assert "push" in out["publish_reason"]
     assert (worker.ws.artifacts / lifecycle.PATCH_NAME).exists()
+
+
+# -- no tool's attribution reaches the forge --------------------------------
+#
+# THE OWNER'S RULE (2026-09-25): nothing this platform puts on GitHub carries
+# Claude attribution -- no `Co-Authored-By: Claude` trailer, no "Generated with
+# Claude Code" footer, no commit authored as Claude.
+#
+# The worker's own commits never did. The AGENT's could: the claude-code runner
+# starts Claude Code with no settings of its own and with HOME set to the
+# attempt's workspace (`runners/cliagent.py`), so a settings file baked into
+# the image's home directory is never read, and an agent that runs `git commit`
+# itself follows Claude Code's default instruction to add the trailer. In a
+# container with no git identity it may also pick an identity of its own. Those
+# commits were pushed exactly as the agent made them.
+#
+# So the guarantee is made where the work leaves the worker, for every runner
+# at once, and these tests hold it against the REMOTE: every commit a `swarm/`
+# branch adds over `main` is authored AND committed by the worker's identity,
+# with a message the worker wrote.
+
+#: Case-insensitive fragments that only attribution produces. Deliberately not
+#: the bare word "claude": the platform's own runner profile is `claude-code`,
+#: and the pull request body names it as provenance.
+ATTRIBUTION_MARKERS = (
+    "co-authored-by",
+    "generated with",
+    "noreply@anthropic.com",
+    "anthropic.com",
+    "claude.com/claude-code",
+    "claude.ai/code",
+)
+
+CLAUDE_COMMIT_MESSAGE = (
+    "Add committed.txt\n"
+    "\n"
+    "\U0001f916 Generated with [Claude Code](https://claude.com/claude-code)\n"
+    "\n"
+    "Co-Authored-By: Claude <noreply@anthropic.com>\n"
+)
+
+
+def _commit_as_claude(repo: Path, name: str) -> None:
+    """Commit the way an agent in the claude-code runner does by default."""
+    ident = ["-c", "user.name=Claude", "-c", "user.email=noreply@anthropic.com"]
+    subprocess.run(["git", *ident, "add", "-A"], cwd=str(repo), check=True, capture_output=True)
+    subprocess.run(
+        ["git", *ident, "commit", "--quiet", "-m",
+         CLAUDE_COMMIT_MESSAGE.replace("committed.txt", name)],
+        cwd=str(repo), check=True, capture_output=True,
+    )
+
+
+def agent_commits_with_claude_attribution(repo: Path) -> None:
+    """One attributed commit, then more work left uncommitted on top of it."""
+    (repo / "committed.txt").write_text("work the agent committed as Claude\n")
+    _commit_as_claude(repo, "committed.txt")
+    (repo / "uncommitted.txt").write_text("work the agent left uncommitted\n")
+
+
+def contributor_commits_with_claude_attribution(name: str):
+    def edit(repo: Path) -> None:
+        (repo / f"{name}.txt").write_text(f"work from {name}, committed as Claude\n")
+        _commit_as_claude(repo, f"{name}.txt")
+    return edit
+
+
+def pushed_commits(bare: Path, branch: str, *, since: str | None = "main") -> list[dict]:
+    """Every commit `branch` adds over `main` on the remote: what a reviewer sees.
+
+    `since=None` lists every commit on the branch, for a remote that has no
+    `main` to compare against (an empty repository the agent populated)."""
+    revision = f"{since}..{branch}" if since else branch
+    raw = subprocess.run(
+        ["git", "log", "--format=%an%x1f%ae%x1f%cn%x1f%ce%x1f%P%x1f%B%x1e", revision],
+        cwd=str(bare), check=True, capture_output=True, text=True,
+    ).stdout
+    commits = []
+    for record in raw.split("\x1e"):
+        record = record.strip("\n")
+        if not record:
+            continue
+        author, author_email, committer, committer_email, parents, message = record.split(
+            "\x1f", 5
+        )
+        commits.append({
+            "author": (author, author_email),
+            "committer": (committer, committer_email),
+            "parents": parents.split(),
+            "message": message,
+        })
+    return commits
+
+
+def tags(bare: Path) -> list[str]:
+    """Every tag on the remote. A swarm attempt has no reason to publish one."""
+    return subprocess.run(
+        ["git", "for-each-ref", "--format=%(refname)", "refs/tags/"],
+        cwd=str(bare), check=True, capture_output=True, text=True,
+    ).stdout.split()
+
+
+def assert_only_the_worker_wrote(commits: list[dict], config) -> None:
+    assert commits, "the branch adds no commits, so there was nothing to check"
+    worker = (config.git_author_name, config.git_author_email)
+    for commit in commits:
+        assert commit["author"] == worker, (
+            f"a pushed commit is authored by {commit['author']}, not the worker"
+        )
+        assert commit["committer"] == worker, (
+            f"a pushed commit is committed by {commit['committer']}, not the worker"
+        )
+        lowered = commit["message"].lower()
+        found = [m for m in ATTRIBUTION_MARKERS if m in lowered]
+        assert not found, f"a pushed commit message carries attribution {found}:\n{commit['message']}"
+
+
+def assert_no_attribution_in(text: str, what: str) -> None:
+    lowered = text.lower()
+    found = [m for m in ATTRIBUTION_MARKERS if m in lowered]
+    assert not found, f"the {what} carries attribution {found}:\n{text}"
+
+
+def test_direct_pr_pushes_no_commit_the_agent_attributed_to_claude(
+    worker_factory, monkeypatch, origin, local_urls, forge
+):
+    """The agent committed as Claude with the trailer and the footer, then left
+    more work uncommitted. All of the work reaches the branch; none of the
+    attribution does."""
+    _, config, out = run_attempt(
+        worker_factory, monkeypatch, origin,
+        task_id="t-direct-attributed",
+        dispatch={"strategy": "direct-pr"},
+        edit=agent_commits_with_claude_attribution,
+    )
+
+    branch = f"{config.git_branch_prefix}{config.task_id}"
+    assert out["published"] is True, out.get("publish_reason")
+    assert {"committed.txt", "uncommitted.txt"} <= tree_at(origin, branch), (
+        "replacing the agent's commits lost some of its work"
+    )
+    assert_only_the_worker_wrote(pushed_commits(origin, branch), config)
+
+    assert len(forge.pulls) == 1
+    assert_no_attribution_in(forge.pulls[0]["title"], "pull request title")
+    assert_no_attribution_in(forge.pulls[0]["body"], "pull request body")
+
+
+def test_integrate_pushes_no_commit_any_step_attributed_to_claude(
+    worker_factory, monkeypatch, origin, local_urls, forge
+):
+    """Every contributor and the integrator commit as Claude. The contributor
+    branches and the one integrated branch carry every step's work and only
+    the worker's commits -- the integrator merges what the contributors
+    PUSHED, so a contributor that pushed attribution would put it here too."""
+    for name in ("t-a", "t-b"):
+        run_attempt(
+            worker_factory, monkeypatch, origin,
+            task_id=name,
+            dispatch={"strategy": "integrate", "carrier": "branches", "role": "contributor"},
+            edit=contributor_commits_with_claude_attribution(name),
+        )
+
+    _, config, out = run_attempt(
+        worker_factory, monkeypatch, origin,
+        task_id="t-int-attributed",
+        dispatch={
+            "strategy": "integrate",
+            "carrier": "branches",
+            "role": "integrator",
+            "integrates": ["t-a", "t-b"],
+        },
+        edit=contributor_commits_with_claude_attribution("t-int-attributed"),
+    )
+
+    assert out["integrated"]["merged"] == ["swarm/t-a", "swarm/t-b"]
+    for name in ("t-a", "t-b"):
+        assert_only_the_worker_wrote(pushed_commits(origin, f"swarm/{name}"), config)
+
+    branch = f"{config.git_branch_prefix}{config.task_id}"
+    assert {"t-a.txt", "t-b.txt", "t-int-attributed.txt"} <= tree_at(origin, branch)
+    assert_only_the_worker_wrote(pushed_commits(origin, branch), config)
+    assert len(forge.pulls) == 1
+    assert_no_attribution_in(forge.pulls[0]["body"], "pull request body")
+
+
+def test_an_unknown_clone_base_publishes_nothing_rather_than_unchecked_commits(
+    worker_factory, monkeypatch, origin, local_urls, forge
+):
+    """Replacing the agent's commits needs the commit the clone landed on. A
+    resumed attempt that has lost it -- nothing in memory, nothing in the
+    checkpoint it restored, and no marker in the workspace either -- does not
+    have it, and pushing whatever HEAD holds is exactly the unchecked push the
+    rule forbids.
+
+    NO PATCH IS PRODUCED HERE EITHER, and this test says so rather than
+    implying otherwise: a patch is a diff against the clone base, so without
+    one the harvest can list the dirty files and nothing more. The work
+    survives only in the checkpoint archive. (The case where the patch IS still
+    harvested -- a checkpoint that records no base, with the marker still in
+    the workspace -- is the next test.)"""
+    url = f"file://{origin}"
+    worker, config, _ = worker_factory(
+        task_id="t-no-base", attempt_id="att-t-no-base", lease_id="lease-t-no-base",
+        repository_url=url,
+    )
+    worker.ws = workspace_mod.create(config.workspace_root, config.attempt_id)
+    task = {"task_id": "t-no-base", "metadata": {"dispatch": {"strategy": "direct-pr"}}}
+    worker._task = task
+    monkeypatch.setattr(worker, "_git_token", lambda: "not-a-real-token")
+    assert worker._maybe_clone(task) is not None
+    agent_commits_with_claude_attribution(worker.ws.work / lifecycle.REPO_DIR_NAME)
+
+    # What a resumed attempt that knows no base looks like: nothing in memory
+    # (neither the harvest's base nor the one the worker publishes from), and
+    # nothing on disk to read it back from.
+    worker._clone_base = None
+    worker._publish_base = None
+    marker = worker.ws.work / lifecycle.WORKER_STATE_DIR / lifecycle.CLONE_BASE_FILE
+    marker.unlink(missing_ok=True)
+
+    before = refs(origin)
+    out = worker._harvest_git(publish=True)
+
+    assert refs(origin) == before, "commits nobody checked were pushed"
+    assert forge.pulls == []
+    assert out["published"] is False
+    assert "clone base" in out["publish_reason"]
+    assert out.get("patch") is None, "a patch was produced with no base to diff against"
+    assert not (worker.ws.artifacts / lifecycle.PATCH_NAME).exists()
+    assert "uncommitted.txt" in out["dirty"], "the dirty list is what survives"
+
+
+# -- the clone base the fold trusts is the worker's, not the workspace's -----
+#
+# A resumed attempt used to read the commit its clone landed on from
+# `work/.swarm/clone-base` -- a file in the agent's own working directory, and
+# in the checkpoint archive the next attempt restores. An agent that wrote a
+# LATER commit of its own there moved the fold's floor above its own commits:
+# `base..HEAD` then held only the commits above the forged base, and every one
+# below it was pushed as the agent wrote it. The base the worker publishes
+# from is now the one the worker recorded in the checkpoint MANIFEST, which is
+# outside the tree the agent works in.
+
+
+def _attempt(worker_factory, monkeypatch, origin, *, task_id: str, attempt: int, dispatch: dict):
+    """One attempt's worker, workspace and task, with no clone yet."""
+    worker, config, _ = worker_factory(
+        task_id=task_id,
+        attempt_id=f"att-{task_id}-{attempt}",
+        lease_id=f"lease-{task_id}-{attempt}",
+        generation=attempt,
+        repository_url=f"file://{origin}",
+    )
+    worker.ws = workspace_mod.create(config.workspace_root, config.attempt_id)
+    task = {"task_id": task_id, "metadata": {"dispatch": dispatch}}
+    worker._task = task
+    monkeypatch.setattr(worker, "_git_token", lambda: "not-a-real-token")
+    return worker, config, task
+
+
+def _head(repo: Path) -> str:
+    return subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=str(repo), check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+
+def test_a_resumed_attempt_publishes_from_the_base_the_worker_recorded_not_the_workspace_marker(
+    worker_factory, monkeypatch, origin, local_urls, forge
+):
+    """The agent commits three times as Claude, writes its OWN third commit into
+    the workspace's clone-base marker, and the attempt checkpoints. The next
+    attempt restores that checkpoint, the agent commits once more, and the
+    worker publishes. Every commit the branch adds over `main` must still be
+    the worker's: the forged marker must not lift the fold above the agent's
+    first three commits."""
+    dispatch = {"strategy": "direct-pr"}
+    first, _, task = _attempt(
+        worker_factory, monkeypatch, origin, task_id="t-forged-base", attempt=1, dispatch=dispatch
+    )
+    assert first._maybe_clone(task)["commit"], "the clone did not land"
+    repo = first.ws.work / lifecycle.REPO_DIR_NAME
+    for n in (1, 2, 3):
+        (repo / f"c{n}.txt").write_text(f"commit {n}, made as Claude\n")
+        _commit_as_claude(repo, f"c{n}.txt")
+    marker = first.ws.work / lifecycle.WORKER_STATE_DIR / lifecycle.CLONE_BASE_FILE
+    marker.write_text(_head(repo) + "\n")
+    record = first.checkpoints.create(first.ws, label="park")
+
+    second, config, _ = _attempt(
+        worker_factory, monkeypatch, origin, task_id="t-forged-base", attempt=2, dispatch=dispatch
+    )
+    second._restore_checkpoint(record.uri)
+    assert second._maybe_clone(task)["from_checkpoint"] is True
+    repo = second.ws.work / lifecycle.REPO_DIR_NAME
+    (repo / "c4.txt").write_text("commit 4, made as Claude after the resume\n")
+    _commit_as_claude(repo, "c4.txt")
+
+    out = second._harvest_git(publish=True)
+
+    branch = f"{config.git_branch_prefix}{config.task_id}"
+    assert out["published"] is True, out.get("publish_reason")
+    assert {"c1.txt", "c2.txt", "c3.txt", "c4.txt"} <= tree_at(origin, branch)
+    assert_only_the_worker_wrote(pushed_commits(origin, branch), config)
+
+
+def test_a_checkpoint_that_records_no_clone_base_is_harvested_but_not_published(
+    worker_factory, monkeypatch, origin, local_urls, forge
+):
+    """A checkpoint written before the worker recorded the base in its manifest
+    carries only the workspace marker. The marker is good enough to DESCRIBE
+    the work -- the patch and the commit list stay in the platform -- and not
+    good enough to decide what reaches the forge, because the agent can write
+    it. So the resumed attempt harvests a patch and refuses the push."""
+    dispatch = {"strategy": "direct-pr"}
+    first, _, task = _attempt(
+        worker_factory, monkeypatch, origin, task_id="t-legacy-ckpt", attempt=1, dispatch=dispatch
+    )
+    assert first._maybe_clone(task)["commit"], "the clone did not land"
+    agent_commits_with_claude_attribution(first.ws.work / lifecycle.REPO_DIR_NAME)
+    # What a manifest written before this change holds: no clone base at all.
+    first.checkpoints.clone_base = None
+    record = first.checkpoints.create(first.ws, label="park")
+
+    second, _, _ = _attempt(
+        worker_factory, monkeypatch, origin, task_id="t-legacy-ckpt", attempt=2, dispatch=dispatch
+    )
+    second._restore_checkpoint(record.uri)
+    assert second._maybe_clone(task)["from_checkpoint"] is True
+
+    before = refs(origin)
+    out = second._harvest_git(publish=True)
+
+    assert refs(origin) == before, "a push was decided by a marker the agent can write"
+    assert forge.pulls == []
+    assert out["published"] is False
+    assert "clone base" in out["publish_reason"]
+    assert out["patch"] == lifecycle.PATCH_NAME, "the work was not harvested"
+    patch = (second.ws.artifacts / lifecycle.PATCH_NAME).read_text()
+    assert "committed.txt" in patch and "uncommitted.txt" in patch
+
+
+# -- identity and refs the agent can plant in the clone's own config ---------
+#
+# `.git/config` in the clone is the agent's to write, and the worker's git runs
+# in that repository. git takes a commit's author from `author.*` and its
+# committer from `committer.*` BEFORE `user.*`, so the worker's `-c user.name`
+# overrode nothing an agent had put there. A cherry-pick left in progress hands
+# the concluding commit the picked commit's author whatever the config says.
+# `push.followTags` pushes every annotated tag reachable from the branch. And
+# `core.fsmonitor` and `gpg.program` are programs git runs on the worker's
+# behalf.
+
+
+def _config(repo: Path, *pairs: tuple[str, str]) -> None:
+    for key, value in pairs:
+        subprocess.run(
+            ["git", "config", key, value], cwd=str(repo), check=True, capture_output=True
+        )
+
+
+CLAUDE_IDENTITY_IN_CONFIG = (
+    ("author.name", "Claude"),
+    ("author.email", "noreply@anthropic.com"),
+    ("committer.name", "Claude"),
+    ("committer.email", "noreply@anthropic.com"),
+)
+
+
+@pytest.mark.parametrize("also_commits", [False, True], ids=["uncommitted-only", "committed-too"])
+def test_an_identity_the_agent_wrote_into_git_config_reaches_no_pushed_commit(
+    worker_factory, monkeypatch, origin, local_urls, forge, also_commits
+):
+    """Uncommitted-only is the case the fold never sees: the only commit is the
+    worker's own auto-commit, so it is pushed as made -- and it was made as
+    Claude. Committed-too is the fold commit itself."""
+    def edit(repo: Path) -> None:
+        _config(repo, *CLAUDE_IDENTITY_IN_CONFIG)
+        if also_commits:
+            (repo / "committed.txt").write_text("work the agent committed\n")
+            _commit_as_claude(repo, "committed.txt")
+        (repo / "uncommitted.txt").write_text("work the agent left uncommitted\n")
+
+    _, config, out = run_attempt(
+        worker_factory, monkeypatch, origin,
+        task_id=f"t-config-identity-{'committed' if also_commits else 'uncommitted'}",
+        dispatch={"strategy": "direct-pr"},
+        edit=edit,
+    )
+
+    branch = f"{config.git_branch_prefix}{config.task_id}"
+    assert out["published"] is True, out.get("publish_reason")
+    assert "uncommitted.txt" in tree_at(origin, branch)
+    assert_only_the_worker_wrote(pushed_commits(origin, branch), config)
+
+
+def test_an_integrators_merge_commits_are_the_workers_whatever_its_git_config_says(
+    worker_factory, monkeypatch, origin, local_urls, forge
+):
+    """The integrator's merges are made after the fold, in the same clone, so
+    an identity in its config reached them too."""
+    for name in ("t-cfg-a", "t-cfg-b"):
+        run_attempt(
+            worker_factory, monkeypatch, origin,
+            task_id=name,
+            dispatch={"strategy": "integrate", "carrier": "branches", "role": "contributor"},
+            edit=contributor_edit(name),
+        )
+
+    def edit(repo: Path) -> None:
+        _config(repo, *CLAUDE_IDENTITY_IN_CONFIG)
+        (repo / "t-cfg-int.txt").write_text("the integrator's own work\n")
+
+    _, config, out = run_attempt(
+        worker_factory, monkeypatch, origin,
+        task_id="t-cfg-int",
+        dispatch={
+            "strategy": "integrate",
+            "carrier": "branches",
+            "role": "integrator",
+            "integrates": ["t-cfg-a", "t-cfg-b"],
+        },
+        edit=edit,
+    )
+
+    assert out["integrated"]["merged"] == ["swarm/t-cfg-a", "swarm/t-cfg-b"]
+    branch = f"{config.git_branch_prefix}{config.task_id}"
+    commits = pushed_commits(origin, branch)
+    merges = [c for c in commits if len(c["parents"]) > 1]
+    assert len(merges) == 2, "the merge commits were not among what was checked"
+    assert_only_the_worker_wrote(commits, config)
+
+
+def agent_leaves_a_cherry_pick_in_progress(repo: Path) -> None:
+    """Two commits as Claude on a side branch, the second picked onto the cloned
+    branch, the conflict resolved in the tree, and the pick never concluded.
+
+    Nothing is committed on the cloned branch, so the worker's auto-commit is
+    the only commit over the base -- the case the fold leaves as it is."""
+    subprocess.run(["git", "checkout", "-q", "-b", "side"], cwd=str(repo), check=True)
+    for text in ("first side edit\n", "second side edit\n"):
+        (repo / "README.md").write_text(text)
+        _commit_as_claude(repo, "README.md")
+    subprocess.run(["git", "checkout", "-q", "-"], cwd=str(repo), check=True)
+    picked = subprocess.run(
+        ["git", "-c", "user.name=Claude", "-c", "user.email=noreply@anthropic.com",
+         "cherry-pick", "side"],
+        cwd=str(repo), capture_output=True,
+    )
+    assert picked.returncode != 0, "the pick applied cleanly, so nothing is left in progress"
+    (repo / "README.md").write_text("resolved by the agent\n")
+    subprocess.run(["git", "add", "README.md"], cwd=str(repo), check=True)
+    assert (repo / ".git" / "CHERRY_PICK_HEAD").exists()
+
+
+def test_a_cherry_pick_the_agent_left_in_progress_lends_its_author_to_no_pushed_commit(
+    worker_factory, monkeypatch, origin, local_urls, forge
+):
+    _, config, out = run_attempt(
+        worker_factory, monkeypatch, origin,
+        task_id="t-cherry-pick",
+        dispatch={"strategy": "direct-pr"},
+        edit=agent_leaves_a_cherry_pick_in_progress,
+    )
+
+    branch = f"{config.git_branch_prefix}{config.task_id}"
+    assert out["published"] is True, out.get("publish_reason")
+    assert_only_the_worker_wrote(pushed_commits(origin, branch), config)
+
+
+def test_a_tag_the_agent_made_is_not_pushed_even_with_follow_tags_set(
+    worker_factory, monkeypatch, origin, local_urls, forge
+):
+    """An annotated tag carries a tagger and a message the agent chose, and
+    `push.followTags` pushes it alongside the branch it points into. The fold
+    rewrites commits; it never sees a tag."""
+    def edit(repo: Path) -> None:
+        _config(repo, ("push.followTags", "true"))
+        subprocess.run(
+            ["git", "-c", "user.name=Claude", "-c", "user.email=noreply@anthropic.com",
+             "tag", "-a", "claude-was-here", "HEAD", "-m", CLAUDE_COMMIT_MESSAGE],
+            cwd=str(repo), check=True, capture_output=True,
+        )
+        (repo / "agent.txt").write_text("work the agent left uncommitted\n")
+
+    assert tags(origin) == [], "the fixture's remote already has a tag"
+    _, config, out = run_attempt(
+        worker_factory, monkeypatch, origin,
+        task_id="t-follow-tags",
+        dispatch={"strategy": "direct-pr"},
+        edit=edit,
+    )
+
+    assert out["published"] is True, out.get("publish_reason")
+    assert tags(origin) == [], "the agent's tag reached the remote"
+
+
+def test_a_program_the_agent_named_in_git_config_is_never_run_by_the_worker(
+    worker_factory, monkeypatch, origin, local_urls, forge, tmp_path
+):
+    """`core.fsmonitor` is a hook by another name, and `commit.gpgSign` makes
+    every worker commit run `gpg.program`. Both are read from the clone's
+    config, both run under the worker after the runner has exited, and the
+    null hooks path stops neither. A signing program the agent wrote would
+    also put text it chose into the worker's own commit object."""
+    ran = tmp_path / "ran-under-the-worker"
+    program = tmp_path / "agent-program.sh"
+    program.write_text(f'#!/bin/sh\necho "$0 $*" >> "{ran}"\nexit 1\n')
+    program.chmod(0o755)
+
+    def edit(repo: Path) -> None:
+        _config(
+            repo,
+            ("core.fsmonitor", str(program)),
+            ("commit.gpgSign", "true"),
+            ("gpg.program", str(program)),
+        )
+        (repo / "agent.txt").write_text("work the agent left uncommitted\n")
+
+    _, config, out = run_attempt(
+        worker_factory, monkeypatch, origin,
+        task_id="t-config-programs",
+        dispatch={"strategy": "direct-pr"},
+        edit=edit,
+    )
+
+    assert not ran.exists(), f"the agent's program ran under the worker:\n{ran.read_text()}"
+    assert out["published"] is True, out.get("publish_reason")
+    assert_only_the_worker_wrote(
+        pushed_commits(origin, f"{config.git_branch_prefix}{config.task_id}"), config
+    )
+
+
+# -- the property, checked where the work leaves ------------------------------
+
+
+def test_a_commit_the_worker_did_not_write_is_refused_at_the_push_even_without_the_fold(
+    worker_factory, monkeypatch, origin, local_urls, forge
+):
+    """The fold is how the property is MADE; the push is where it is CHECKED.
+    With the fold taken away, the agent's attributed commit reaches the push
+    step -- and the push must refuse it rather than trust that nothing
+    upstream of it ever regresses."""
+    monkeypatch.setattr(lifecycle, "fold_agent_commits", lambda **kw: 0)
+    before = refs(origin)
+
+    _, _, out = run_attempt(
+        worker_factory, monkeypatch, origin,
+        task_id="t-unfolded",
+        dispatch={"strategy": "direct-pr"},
+        edit=agent_commits_with_claude_attribution,
+    )
+
+    assert refs(origin) == before, "a commit the worker did not write was pushed"
+    assert forge.pulls == []
+    assert out["published"] is False
+    assert "authored by Claude" in out["publish_reason"]
+
+
+# -- an empty repository has no base, and that is not an unknown one ---------
+
+
+@pytest.fixture
+def empty_origin(tmp_path: Path) -> Path:
+    """A bare repository with no commits at all: 'scaffold the project here'."""
+    bare = tmp_path / "empty.git"
+    subprocess.run(
+        ["git", "init", "--quiet", "--bare", "--initial-branch=main", str(bare)],
+        check=True, capture_output=True,
+    )
+    return bare
+
+
+@pytest.mark.parametrize(
+    "edit",
+    [agent_edits_without_committing, agent_commits_with_claude_attribution],
+    ids=["uncommitted-only", "committed-too"],
+)
+def test_work_in_an_empty_repository_is_one_parentless_worker_commit(
+    worker_factory, monkeypatch, empty_origin, local_urls, forge, edit
+):
+    """`git clone` of an empty repository succeeds and lands on no commit, so
+    there is no clone base -- but that is KNOWN, unlike a base a resumed
+    attempt lost. Everything the agent did is the agent's, and the worker
+    replaces it with one commit of its own that has no parent."""
+    worker, config, task = _attempt(
+        worker_factory, monkeypatch, empty_origin,
+        task_id=f"t-empty-{edit.__name__.split('_')[1]}", attempt=1,
+        dispatch={"strategy": "direct-pr"},
+    )
+    cloned = worker._maybe_clone(task)
+    assert cloned is not None and cloned["commit"] is None, "the repository was not empty"
+    repo = worker.ws.work / lifecycle.REPO_DIR_NAME
+    edit(repo)
+    expected = {p.name for p in repo.iterdir() if p.name != ".git"}
+
+    out = worker._harvest_git(publish=True)
+
+    branch = f"{config.git_branch_prefix}{config.task_id}"
+    assert out["published"] is True, out.get("publish_reason")
+    commits = pushed_commits(empty_origin, branch, since=None)
+    assert len(commits) == 1 and commits[0]["parents"] == [], (
+        f"expected one parentless commit, got {[c['parents'] for c in commits]}"
+    )
+    assert_only_the_worker_wrote(commits, config)
+    assert expected <= tree_at(empty_origin, branch)

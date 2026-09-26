@@ -305,9 +305,12 @@ outside a checkout it answers that there is no `pyproject.toml`. That is a real 
 stated here rather than papered over, because a model that meets it without
 warning reports the platform as broken. `/sc` and the `sc` skill want the
 repository, and the plugin's two descriptions say so. The `delegate` skill's
-tools come from the MCP server and are unaffected. It also suggests two shell
-commands, and those want the repository too: `uv run swarm tail`, to stream in
-a background shell, and `uv run swarm doctor`, to diagnose.
+tools come from the MCP server and are unaffected. The shell commands the
+bridge hands back -- `follow_live_with`, a sign-in hint, the `swarm doctor`
+command a tool's error ends with when the request never reached the API -- are
+spelled for the install the bridge runs from, so they need no checkout (see
+*Where the API actually is*, below). The delegate skill names no launcher of
+its own: it tells the model to run each command exactly as the bridge spelled it.
 
 The `sc` skill and `/sc` are granted each **view** by name —
 `uv run sc accounts`, `uv run sc task`, and so on — and never `sc` as a
@@ -370,12 +373,23 @@ from working. That grant is `frontend_iap_members` in
 OAuth client, which this one deliberately does not (a client id there means a
 client secret in Terraform state).
 
-**`swarm` and `sc` are not on your PATH**, and nothing here should ever tell you
-they are. They are console scripts of `swarm-mcp`, installed into the uv-managed
-environment, so every command this plugin hands back carries the `uv run`
-prefix. Three places used to hand a model the bare string `swarm tail <id>`; the
-model ran it, got `command not found`, and had every reason to report the
-platform as broken.
+**A command the bridge hands back is spelled for the install it is running
+from**, by one function (`swarm_mcp.invocation.terminal_command`), so it runs
+where the bridge runs and reaches the same version of it:
+
+| The bridge is running from | A command reads |
+|---|---|
+| a checkout of this repository (its `.mcp.json`, or a shell inside it) | `uv run swarm tail <id>` |
+| `uv tool install`, with that install's `swarm` on your PATH | `swarm tail <id>` |
+| the plugin, with nothing installed | `uv tool run --from 'swarm-mcp @ git+https://github.com/bogdan-alexandrescu/SwarmCloud@sc-v<version>#subdirectory=apps/swarm-mcp' swarm tail <id>` |
+| the escape hatch, `SWARM_MCP_FROM` | `uv tool run --from <that value> swarm tail <id>` |
+
+The plugin-only row is rebuilt from the install's own record of where it came
+from, so it names the same tag the server was started with. Until 0.5.2 every
+row read `uv run`, which outside a checkout answers `Failed to spawn: swarm`
+(#189). A `swarm` on your PATH from some other install is not used: it is
+installed on its own and can be another version. Run what the bridge hands
+back rather than retyping it.
 
 ## Choosing a runner profile
 
@@ -398,9 +412,56 @@ name is a typo and lists the real names, while a known-but-disabled one quotes
 the catalogue's own reason. `codex` is the live example: disabled rather than
 deleted, so the runs that name it stay readable.
 
+**Beside the prompt, a caller may send only the inputs a profile declares.**
+`mock` declares its test knobs — `sleep_seconds`, `steps`, `fail`,
+`artifact_text` and the rest, listed by `swarm_profiles` under `inputs` — so a
+step can sleep long enough to be cancelled, or fail on purpose: `inputs` on a
+`swarm_dispatch` call or a `swarm_workflow` step, `--input sleep_seconds=120`
+on `swarm dispatch`, `"inputs": {...}` on a step in a `swarm workflow` spec.
+`{"quota_exhausted": true}` parks a mock step once, on a simulated rate limit
+with the `retry_after_seconds` you give it, and the attempt after the park
+finishes: the mock parks the task's first attempt only, counted by the task's
+own `attempt_count`, so the bound holds even when the park's checkpoint fails
+to upload. Before 0.5.3 the rate limit fired on every attempt, a park does not
+spend one, and the step parked until cancelled, which is why 0.5.2 withheld
+both keys. `exit_code` refuses the codes the worker reads as a success, a rate
+limit, a refused credential and a cancellation. Every key's kind and bounds
+are in the table below, which is generated from the catalogue rather than
+restated here. `claude-code` and `codex` declare none and take only the prompt.
+A key the profile does not declare is refused by name, never dropped, and
+never an image, a command, a resource spec, a backend or a model:
+`input.model` is read by the CLI runners, and a caller setting it would be
+choosing the model a `claude-code` agent runs. The declarations are the frozen
+catalogue's own, `RunnerProfile.inputs` (contract request 25), and for a
+profile that declares, the API refuses an undeclared key with 422
+`invalid_input` whoever sends it, so the bridge's refusal is only the earlier
+of two identical answers. **`browser` and `generic` have not declared their
+inputs yet** ([#218](https://github.com/bogdan-alexandrescu/SwarmCloud/issues/218)):
+each runner's work is its input (a url or actions, a command name), and
+nobody has decided which keys they take. The bridge sends them none; the API
+bounds what any other caller sends them by size alone, as it bounded every
+profile before 0.5.3.
+
+What `mock` declares, as `swarm_profiles` lists it:
+
+<!-- runner-inputs:mock generated from RUNNER_PROFILES["mock"].inputs; tests/unit/mcp/test_runner_input_prose.py fails when it differs -->
+| input | kind and bounds | what the mock runner does with it |
+|---|---|---|
+| `sleep_seconds` | number 0..3600 | how long the run sleeps, in total |
+| `cpu_burn_seconds` | number 0..3600 | how long it burns CPU, in total |
+| `steps` | integer 1..1000 | how many progress files, and checkpoints, it writes |
+| `fail` | boolean | fail on purpose, after the steps |
+| `fail_message` | string | the error a failure reports |
+| `exit_code` | integer 1..255 except 77, 78, 143 | the exit code a failure uses |
+| `artifact_text` | string | what the output artifact holds |
+| `artifact_name` | filename | the output artifact's file name |
+| `quota_exhausted` | boolean | park the first attempt on a simulated provider rate limit; the next one runs |
+| `retry_after_seconds` | integer 1..3600 | the retry-after that simulated rate limit reports |
+<!-- /runner-inputs:mock -->
+
 ## What keeps these honest
 
-Four files, all in `make test`, all offline — bar one test, which CI runs:
+Five files, all in `make test`, all offline — bar one test, which CI runs:
 
 `tests/unit/mcp/test_plugin_bridge_install.py` covers whether the server can
 **start** on a machine that has only the plugin: the declaration names nothing
@@ -433,3 +494,8 @@ writes, and that the skill never tells a session a tool which exists is missing.
 file or this README must be one the argparse parsers really accept, nothing the
 bridge returns may tell a model to run a bare `swarm`, and the marketplace
 manifest must exist and agree with `plugin.json` about this plugin's name.
+
+`tests/unit/mcp/test_runner_input_prose.py` holds the runner-inputs table above,
+and the one in `docs/workflows.md`, equal to the frozen catalogue, fails when a
+sentence here, there or in the delegate skill states a bound the table does not
+own, and requires every example input to be one the catalogue accepts.

@@ -1,3 +1,4 @@
+import { useId } from 'react'
 import { loadRuntimeTopology, type ResourceClasses, type RuntimeTopology } from './api'
 import { isPaused } from './fetch'
 import type { TopicId } from './help'
@@ -97,15 +98,13 @@ export function RuntimesScreen() {
       }}
       /* The read SUCCEEDED and named no runner profile. Distinct from a failed
          read, which never reaches here, and distinct from the capacity screen's
-         empty -- pools and the catalogue are different absences. */
+         empty -- pools and the catalogue are different absences.
+
+         THE MARK IS `Screen`'s, in the heading (#145). A hand-drawn
+         `.ctl-mark is-zero` span here said `real zero` a second time. */
       empty={{
         heading: 'The catalogue came back with no runtimes',
-        body: (
-          <>
-            <span className="ctl-mark is-zero">real zero</span> nothing can be submitted until
-            one is registered
-          </>
-        ),
+        body: <>nothing can be submitted until one is registered</>,
       }}
     >
       {(d) => <Topology data={d} />}
@@ -231,7 +230,18 @@ function Backends({
             column name it cannot be scrolled away from the rows it governs and
             cannot be read as qualifying the next column along.
             `#help/declared-vs-resolved-backend` is in the footer index. */}
-        <h2 className="ctl-card-title">Backends</h2>
+        {/* AH-24: THE UNREAD ROW'S `?` FOLLOWS THIS HEADING, the slot Pools'
+            `Headroom ?` uses. It trailed the server's own words inside the
+            one-line `.rt-unread-detail` -- after a value, and clipped with it
+            when the message ran long -- and then led the row, which follows
+            nothing: the row has no label, its first item is the mark. Drawn
+            only while the counters are unread, because `absent-vs-zero` is
+            what the mark and the dashes below it need, and nothing else here
+            does. */}
+        <h2 className="ctl-card-title">
+          Backends
+          {capped === null && <HelpCard topic="absent-vs-zero" />}
+        </h2>
         {/* Trap E: a number may only sit beside a number of the same scope, so
             the scope is declared rather than left to be inferred. Both numbers
             here are platform-wide and cannot be otherwise -- the catalogue route
@@ -254,15 +264,15 @@ function Backends({
           with no digit in it, which is the fact the mark indexes. */}
       {capped === null && (
         <div className="rt-unread">
+          {/* Its `?` is on the `Backends` heading above (AH-24). */}
           <span className="ctl-mark is-unread">not read</span>
           <span className="rt-unread-detail">
             {poolsDetail ?? 'the capacity read did not complete'}
-            <HelpCard topic="absent-vs-zero" />
           </span>
         </div>
       )}
 
-      <div className="ctl-table is-stacked">
+      <div className="ctl-table is-scroll">
         <table role="table">
             <thead role="rowgroup">
               <tr role="row">
@@ -455,42 +465,42 @@ interface Distinction {
  *
  * An empty list is returned as an empty list and marked by the caller. "The
  * comparison ran and found no difference" is a finding; a blank cell is not.
+ *
+ * ONLY WHAT NOTHING ELSE SHARES, UNDER THE CARD'S OWN KEYS (CP-16, visual QA
+ * 2026-09-25). This used to push `target 1 of 4` and `quota none spent` for
+ * facts three other runtimes had too -- a distinction nothing distinguishes --
+ * and to restate the card's rows under keys that clashed with the card's own
+ * (`ceiling` beside `max run`, `creds` beside `cred`), so one fact read as two.
+ * Every entry is now `sole`, `longest`/`shortest` or `heaviest`/`lightest`
+ * against the rest of the payload, and its key is the key of the row above it
+ * that it is about. A runtime that shares everything gets the real-zero mark,
+ * which is what that finding already looked like.
  */
 function distinguishing(r: Runtime, all: Runtime[]): Distinction[] {
   const facts: Distinction[] = []
+  // A catalogue of one has nothing to be told apart from.
+  if (all.length < 2) return facts
 
-  const backends = new Set(all.map((x) => x.resolved_backend))
-  if (backends.size > 1) {
-    const here = all.filter((x) => x.resolved_backend === r.resolved_backend)
-    facts.push({ key: 'target', value: here.length === 1 ? 'sole' : `1 of ${here.length}` })
-  }
+  /** True when no other runtime in the payload has the same value. */
+  const sole = (of: (x: Runtime) => string | null): boolean =>
+    all.filter((x) => of(x) === of(r)).length === 1
 
-  const sameImage = all.filter((x) => x.image === r.image)
-  if (sameImage.length === 1 && all.length > 1) {
-    facts.push({ key: 'image', value: 'sole' })
-  }
+  if (sole((x) => x.resolved_backend)) facts.push({ key: 'runs on', value: 'sole' })
+  if (sole((x) => x.image)) facts.push({ key: 'image', value: 'sole' })
 
-  if (r.provider === null) {
-    // The one that matters most to a tenant: it runs with no credential
-    // registered at all, which is why it is stated rather than inferred from
-    // an empty credential row.
-    facts.push({ key: 'quota', value: 'none spent' })
-  } else {
-    const samePv = all.filter((x) => x.provider === r.provider)
-    if (samePv.length === 1 && all.length > 1) {
-      facts.push({ key: 'quota', value: 'sole' })
-    }
-  }
-
-  if (r.secrets_any_of && r.secrets.length > 1) {
-    facts.push({ key: 'creds', value: `any 1 of ${r.secrets.length}` })
-  }
+  // THE CREDENTIAL AS ONE FACT: which provider, and which secrets under which
+  // rule -- the whole of what the `cred` row says. A runtime that needs none is
+  // told apart only when it is the only one that needs none; while two need
+  // none, "none spent" describes both and distinguishes neither.
+  const credential = (x: Runtime): string =>
+    x.provider === null ? '' : `${x.provider}|${x.secrets_any_of ? 'any' : 'all'}|${[...x.secrets].sort().join(',')}`
+  if (sole(credential)) facts.push({ key: 'cred', value: 'sole' })
 
   const timeouts = all.map((x) => x.timeout_seconds)
   if (soleExtreme(r.timeout_seconds, timeouts, 'max')) {
-    facts.push({ key: 'ceiling', value: 'longest' })
+    facts.push({ key: 'max run', value: 'longest' })
   } else if (soleExtreme(r.timeout_seconds, timeouts, 'min')) {
-    facts.push({ key: 'ceiling', value: 'shortest' })
+    facts.push({ key: 'max run', value: 'shortest' })
   }
 
   const weights = all.map((x) => x.resources.units)
@@ -512,6 +522,8 @@ function RuntimeCard({ runtime, all }: { runtime: Runtime; all: Runtime[] }) {
   const spec = runtime.resources
   const left = spec.memory_gib - spec.disk_gib
   const coherent = Number.isFinite(left) && left >= 0
+  const off = runtime.available === false
+  const reasonId = useId()
 
   return (
     <section className="ctl-card">
@@ -525,11 +537,13 @@ function RuntimeCard({ runtime, all }: { runtime: Runtime; all: Runtime[] }) {
             refused. The catalogue serves it because an existing task that names
             it still has to render; a reader scanning this list needs to know at
             a glance that it cannot be dispatched, or the entry reads as an
-            option. The REASON is the mark's accessible name -- it is the only
-            part a reader can act on, and "disabled" alone sends them looking
-            for a setting. */}
-        {runtime.available === false ? (
-          <span className="ctl-chip is-bad" aria-label={runtime.disabled_reason}>
+            option. `is-bad` stays: the one profile disabled today was switched
+            off over a credential its provider refused, which is a failure and
+            not a choice. (No profile is named here: this file may hold no
+            name from the frozen catalogue, comments included --
+            test_runtimes_screen.py reads it whole.) */}
+        {off ? (
+          <span className="ctl-chip is-bad" aria-describedby={runtime.disabled_reason ? reasonId : undefined}>
             <i aria-hidden="true" />
             disabled
           </span>
@@ -539,6 +553,18 @@ function RuntimeCard({ runtime, all }: { runtime: Runtime; all: Runtime[] }) {
       </div>
 
       <div className="ctl-card-body">
+        {/* THE REASON IS ON THE CARD, NOT IN AN ATTRIBUTE (CP-17, visual QA
+            2026-09-25). It was the chip's `aria-label` and nothing else: a
+            sighted reader got `disabled` and no way to learn why, which sends
+            them looking for a setting -- and the reason is the only part of
+            this they can act on (it names the profile to use instead). The
+            chip points at it, so
+            a screen reader still hears it with the mark. */}
+        {off && runtime.disabled_reason && (
+          <p className="muted" id={reasonId}>
+            {runtime.disabled_reason}
+          </p>
+        )}
         {/* §B6.4: `is-rows`. Thirteen pairs in a wrapping flex strip rendered
             as a justified blob -- `max run 5m size demo-small cpu 3 vCPU` on
             one line -- with every key starting wherever the previous value
@@ -778,7 +804,7 @@ function Sizing({
         </span>
       </div>
 
-      <div className="ctl-table is-stacked">
+      <div className="ctl-table is-scroll">
         <table role="table">
             <thead role="rowgroup">
               <tr role="row">

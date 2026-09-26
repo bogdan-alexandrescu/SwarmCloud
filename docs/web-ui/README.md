@@ -61,8 +61,13 @@ changes wearing a UI costume, and no amount of front-end effort reaches them.
 ## Also in this directory
 
 The eight numbered files above are the feature specification — what could be
-built, and what blocks each screen. Three more files answer different questions
+built, and what blocks each screen. Four more files answer different questions
 and are read on their own:
+
+* [`agent-inspector-artifacts.md`](agent-inspector-artifacts.md) — the agent
+  drawer's Artifacts pane (inputs, the answer, every file, logs and the
+  transcript, live) and the CPU rows in Details (#184): where each figure comes
+  from, why every byte goes through the API, and what the pane cannot show.
 
 * [`redesign.md`](redesign.md) — the information architecture: what the sections
   are, why there are six of them, and the routing. `App.tsx` names this file as
@@ -161,8 +166,8 @@ else saved, never a second name this product may emit, and
 - Task timeline (per-task event stream, error banner, GCS log paths)
 
 **[user-activity](07-user-activity.md)**
-- A1 — Activity (tenant timeline: stacked outcome chart, submitted line, 4 stat tiles, coverage bar, runner-profile split)
-- A1 — Recorded spend tile + coverage bar
+- A1 — Activity (tenant timeline: stacked outcome chart read out by its legend, three figures on the metric strip, runner-profile split)
+- A1 — Token spend, summed from task results and marked partial (the coverage bar was replaced by its foot, TS-12)
 - A2 — People (per-engineer table + engineer drawer, derived from A1's rows at zero extra reads)
 - A4 — Tenants (admin roster: tenant_id, kind, principal, enabled, max_active, capacity_units, credential chips)
 - A4 — Platform-wide state counts (admin, behind an explicit button, 5-minute cache)

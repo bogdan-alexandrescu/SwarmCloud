@@ -155,6 +155,27 @@ cannot show; each table keeps the facts as text a reader can copy.
   a live worker emits (`running`, `heartbeat`, `checkpoint_*`) and a cold
   start only by the scheduler's `lease_acquired` and `dispatched`.
 
+**Every inspector chart is drawn twice, not scaled (AG-20).** Each root --
+the phase bars, the retry lollipop, peak memory, the checkpoint strip, the
+diffstat and `TimeSeries`' token-spend line -- is rendered once per entry in
+`DRAWN` (`parts.tsx`): a 640-unit and a 300-unit SVG, each with its own
+scale, its own hatch pattern and its own tick count (the narrow one asks for
+fewer). The token-spend line was left out of the first pass and stayed one
+scaled 640-unit SVG, with its ticks at about 8.4px in the default inspector;
+`inspector.charts.test.tsx` now counts every chart root the inspector mounts
+rather than a list of the ones known to be fixed. The checkpoint strip's
+off-page tray is bounded by the width it is drawn at (half the plot at most,
+the rest counted as `+N`), so neither drawing's time axis can be squeezed to
+nothing. Both are in the markup; the figure is a size
+container (`.ctl-chart.has-narrow`) and `@container ctl-chart (min-width:
+640px)` in styles.css shows the wide one only where the chart is at least as
+wide as it was drawn, while the narrow one has a `min-width` of its own
+width. So neither is ever scaled down, and tick text never renders under
+`--t-micro`. Before this, one 640-unit drawing was scaled into a 400-480px
+inspector column and its ticks rendered at 6-8px. `chart.narrow.test.tsx`
+holds the pairs, the tick counts and the sheet's switch; a test that counts a
+chart's marks reads them off one drawing (`svg.is-wide`).
+
 **Every chart root is `role="group"`, never `role="img"`.** An image's
 children are presentational, so the per-mark sentences (an open segment's
 lower bound, an absence band's reason, an off-page checkpoint's "not
@@ -211,3 +232,42 @@ The inspector charts' tests, each read back off the rendered SVG:
 These were proved the way CLAUDE.md asks: the defect committed on the branch
 and the named tests watched going red in CI, then reverted. The run ids are in
 the pull request.
+
+## The outcome ledger (`OutcomeLedger.tsx`, #185)
+
+The Timeline's chart: four aligned lanes on one time axis — success rate,
+decided work, cancels on their own scale, and throughput — over the buckets
+`GET /v1/outcomes` serves. It imports no charting library, so the guard above
+is unchanged: every mark is a `<rect>` or a polyline between two values the
+server measured, on a scale whose domain is those values with no `.nice()`,
+and "not read" is the shared `HatchDef`.
+
+What it must not imply, and how it is prevented:
+
+| Rule | How |
+|---|---|
+| A bucket with nothing decided has a 0 % rate | the rate lane draws no point where `rate` is null, and the line breaks there; the y scale is fixed at 0–100 % |
+| One of two reads as an outage | a point under five decided is hollow, and the Wilson band is drawn behind the line |
+| An unread bucket is a quiet one | one hatched band across all four lanes, no mark, no digit, and its column is named `not read` |
+| An empty bucket is missing data | a measured zero is the axis tick in each lane |
+| 305 cancels hide 8 failures | cancels have their own lane and scale, with the max printed; failures hang from the decided lane's zero, never under 4px |
+| Arrivals share the outcomes' time basis | the throughput lane's label says it is the only lane on the submission-time basis |
+| A scale scrolls away from its lane | each drawing's ticks are in a gutter SVG and its lane labels are HTML over the plot's left edge, both outside `.ol-plot`, the one layer that scrolls; the plot's SVG keeps the drawing's coordinates (its viewBox starts at the left margin) |
+| Two scale labels print into each other | the gutter keeps `ValueAxis`'s rule and gap (`VALUE_LABEL_GAP_PX` in `parts.tsx`, which the inspector charts' left axes pass as `minGapPx`): the rate ticks, the decided lane's zero, its top, its floor, each dropped rather than drawn within 14px of one kept (epic #222: the `0` and the failed max overprinted by 4-9px) |
+| A 3px cancel mark reads as a thicker baseline | the requested bars' pattern starts 3px above lane 3's baseline, so every requested mark stands on one whole bar; from the SVG's origin a 3px mark painted one row (epic #222) |
+| A legend key names one mark and prints another's number | the flat bars' key prints requested + other, the outline's after_failure + workflow_sweep, the outlined bars' after_cancel (#185 decision 2); the cancelled total is unkeyed |
+| A span's totals read as whole when a bucket was not read | the readout's `all N days` carries the partial mark and `read of n`, and with nothing read the legend is the not-read mark with no count; no lane prints a `max` over no bucket |
+
+**Drawn three times, not scaled** (§7.2): 1080, 640 and 300 units
+(`LEDGER_DRAWN`), each with its own geometry and label stride; the figure is
+the `ol-chart` container and the sheet shows the drawing whose authored width
+the box holds. The narrow drawing's column floor is 26px, past which it grows
+and scrolls from the newest end. **The SVGs are `aria-hidden`**; over each sits
+one HTML column per bucket, `role="img"`, named with its full time and every
+count, and the columns are one tab stop with a roving tabindex. The roots of
+the drawings' pick layers are `role="group"`, as every chart root is.
+
+Tests: `activity.timeline.test.tsx` (the marks, the names, the readout and the
+keyboard, on a payload in the contract's exact shape), `timeline.ledger.rules.test.ts`
+(which drawing the cascade shows at a container width, and TS-4's forms), and
+`outcomes.view.test.ts` (the axis labels in the server's zone).

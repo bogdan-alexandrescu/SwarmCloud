@@ -38,6 +38,7 @@ move.
 | §2.4 Overview | **Overview workflow and parked checks** | `checks.ts:566` `workflowCheck` and `checks.ts:706` `parkedCheck`, both run by `deriveChecks` (`checks.ts:133`) |
 | §4 #1 | **Semantic zoom on the workflow graph** | `dag.ts:372` onward sets which fields a node drops at each tier; the control is at `Workflows.tsx:1060-1106` |
 | §2.1, §2.4 | **Three-section nav** | `App.tsx:214-404` `SECTIONS`: Overview as the landing screen, then Work · Capacity · Admin. Runtimes and History became panes, not sections. The fifteen screens keep their own routes. This replaces §2.4's six sections |
+| §2.4 Admin | **Admin's read-only pane** | Admin took one read-only pane, Platform counts (a platform-wide count behind a button that prints its cost), so §2.4's "No read-only data at all" no longer holds; the current question is in App.tsx and redesign.md §2. *(Added 2026-09-25, AH-23 in #86.)* |
 
 **Still open at `b0fff1b`**
 
@@ -127,6 +128,10 @@ left as they were checked at `b0fff1b`; this list is what changed after.
   only the list of checkpoints existed (`GET /v1/tasks/{id}/checkpoints`),
   which names each checkpoint and says nothing of what is inside it. All three
   parts of the decision shipped in #29 (see "Since `b0fff1b`" above).
+
+**2026-09-25:** §5.5 Tier 2's "links are underline-on-hover" is superseded by
+design-system.md §1.3's resting underline: a link is ink plus an underline at
+rest, and the accent is the hover and focus state (OV-8, epic #81).
 
 ---
 
@@ -293,7 +298,8 @@ count is zero, and there are seven independently implemented bar primitives doin
 the work a chart layer would do: `.bar` (5px), `.stack` (12px), `.stackcol` (120px),
 `.coverage` (4px), `.sr-bar` (9px), `.acct-bar` (10px cells), `.ctl-util-track`
 (10px). Seven implementations of one idea is why the same fact has three different
-visual weights on three screens.
+visual weights on three screens. *(2026-09-25: `.acct-bar` is gone — Accounts'
+windows draw the shared `.ctl-util-track` since CP-25, #85.)*
 
 ### 1.4 Meaning is carried by prose, and prose is what you read when you cannot see
 
@@ -840,6 +846,14 @@ Fix the inversion: `.section > h2` becomes 16px/600 in `--text`, above body text
   colour on `.row .why`, the blocked-reason line the CSS itself calls the whole
   point. It needs darkening; the earlier audit fixed `--text-faint` and did not
   re-check `--warn`.
+  *(Amended by the owner, 2026-09-25, AG-14 on #82: `.row .why` is no longer
+  `--warn` on every row. It is plain ink, and `--warn` only on a why line that
+  needs a person to act — a failure; work that can never be admitted until
+  someone acts (a pool paused or set to zero, as a blocker or a `MANUAL_PAUSE`
+  park, and a spent budget); sign-in needed (a missing credential); and a
+  stuck or silent worker, which the inspector draws and the Agents list cannot
+  yet. Routine waits and cancellations are ink. design-system.md §15.6 keeps the
+  same list.)*
 - Delete `--ctl-shadow` in dark mode: `0 1px 2px rgb(0 0 0 / .30)` on `--bg`
   `#0b0d10` is ~1.02:1 — invisible, and it costs a paint layer on every
   `.ctl-metric`.
@@ -857,15 +871,39 @@ adjacent word:
 
 | State | Colour | Second channel |
 |---|---|---|
-| ok | `--ok` | solid fill, filled dot |
+| ok | **none on a state mark** — `--text-faint` (CH-17; was `--ok`, then `--text-dim` under CP-14, below); `--ok` only as a figure or a chart fill | solid fill, filled dot |
 | live | `--info` | solid fill + the only animation on the screen |
 | warn | `--warn` | 45° hatch (`--ctl-hatch` already exists and is already used correctly for unknown ceilings — extend it) |
 | bad | `--bad` | solid fill + a 2px left rule |
 | paused | `--paused` | **horizontal** hatch, deliberately distinct from warn's 45° |
 | unknown / not-measured | `--ctl-absent` | dotted outline, hollow dot, **no fill at all** |
+| info / ended (CANCELLED) | **none** — `--text-faint` (CH-17, CH-22) | the flat bar; on a chart segment, stacked flat bars (TS-4) |
+
+*(Amended 2026-09-25, owner decisions CH-17, CH-22, TS-4.)* On a state mark hue
+is spent only on warn, bad, paused and live; ok and info keep their shapes and
+lose their hue (design-system.md §6.6), because a healthy platform is a quiet
+grey screen. CANCELLED is `stateTone`'s `ended` tone and draws the grey flat
+bar — terminal, not a verdict — where it used to borrow `wait`'s triangle.
+`--info` remains the link's hover, the focus ring and the live mark.
 
 Then retune luminance so the six occupy at least **three** distinct greyscale steps
 instead of two: lift `ok`, darken `bad`, pull `paused` toward blue-grey.
+
+> **Owner amendment, 2026-09-25 (CP-14, #85): healthy carries no hue.** The ok
+> mark's colour is a text grey, not `--ok`; its second channel — the solid fill,
+> the filled dot — is unchanged. Hue on a state mark is left to warn, bad, paused
+> and live. CP-14 chose `--text-dim`; CH-17, decided after it, draws the chip
+> and dot primitives' ok disc in `--text-faint`, and the later ruling sets that
+> grey. `.tag.ok`, which CH-17 leaves to CP-14, stayed `--text-dim` until the
+> 2026-09-25 follow-up on #85 ("The primitives paint `--text-faint` per CH-17,
+> which is later than #159's `--text-dim`") moved it, with Accounts' success
+> heading, to `--text-faint` too (design-system.md §15.7). The cost is
+> recorded in design-system.md §6.6 as well as here: in greyscale an ok mark is
+> told from bad and warn by its silhouette alone, because `--text-faint` is
+> 1.01:1 from `--bad` in the dark theme and 1.45:1 from `--warn` in the light
+> one (`--text-dim`: 1.26:1 and 1.30:1). The 1.5:1 triad floor still governs the
+> `--ok` / `--warn` / `--bad` tokens that fills use. The `--ok` token stays
+> defined.
 
 Split `--ctl-absent` off `--text-faint`. "Cancelled" is an outcome and "not
 measured" is an absence; they must not share a colour.
@@ -903,11 +941,24 @@ Target **32–36px**:
 
 The current sheet is already right here and the redesign must not undo it: five
 motion declarations in 1,877 lines, and `@media (prefers-reduced-motion: reduce)`
-neutralises all of them with `!important`, so ordering cannot defeat it.
+overrides them with `!important`, so ordering cannot defeat it.
+
+*(Corrected 2026-09-25, CH-19.)* That rule did **not** neutralise them: it set
+only a `.01ms` duration, which left every `infinite` animation running, so the
+live pulse cycled .01ms at a time and each frame caught the mark at an
+arbitrary point of its fade. It now also sets `animation-iteration-count: 1
+!important`, so an animation plays once, invisibly, and rests at its base style
+(design-system.md §5.4).
 
 Keep exactly three permitted animations: the live-state pulse (and only while the
 thing is genuinely live), a meter's width transit, and the skeleton — at the
 original 0.5→0.85 amplitude, not the 1→0.35 the collision produced.
+
+*(Corrected 2026-09-25, CH-19.)* The live pulse itself is **1→0.8**, not 1→0.35:
+at .35 a live mark blended to 1.69:1 (light) and 1.95:1 (dark) against its
+ground for half of every cycle, and at .8 every live mark clears 3:1 on
+`--bg`, `--surface` and `--surface-2` in both themes (the lowest, light `--ok`,
+3.26:1). The measurements are in design-system.md §5.4.
 
 Add one, from Temporal: **in-flight edges and bars are dashed and the dashes
 animate**; retrying is dashed red, pending is dashed purple. It is the cheapest way

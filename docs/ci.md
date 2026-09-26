@@ -34,14 +34,15 @@ Three reasons, in the order they cost the most:
    `make test` is the whole offline suite; running it serialises against every
    other lane working in the same checkout.
 
-## The four workflows, and what each one is responsible for
+## The five workflows, and what each one is responsible for
 
 | workflow | runs on | jobs |
 |---|---|---|
-| `application.yml` | push to `main`; pull requests touching `apps/`, `images/`, `kubernetes/`, `scripts/`, `tests/`, `docs/`, `Makefile`, `pyproject.toml`, `uv.lock`, `README.md`, `CLAUDE.md`, `CONTRACT.md`, `release.yml` or the workflow itself | `shellcheck` · `release workflow wiring (actionlint)` · `format / unit tests` · `swarm-ui typecheck / component tests` · `integration tests (emulator)` · `kubernetes manifests` · `build images` (**push to `main` only** — the one build of each commit) |
+| `application.yml` | push to `main`; pull requests touching `apps/`, `images/`, `kubernetes/`, `scripts/`, `tests/`, `docs/`, `Makefile`, `pyproject.toml`, `uv.lock`, `README.md`, `CLAUDE.md`, `CONTRACT.md`, `release.yml`, `iam-refusal-probe.yml` or the workflow itself | `shellcheck` · `release workflow wiring (actionlint)` (also lints `iam-refusal-probe.yml`) · `format / unit tests` · `swarm-ui typecheck / component tests` · `integration tests (emulator)` · `kubernetes manifests` · `build images` (**push to `main` only** — the one build of each commit) |
 | `terraform.yml` | push to `main`; pull requests touching `terraform/`, `tests/terraform/`, the plan guard, the destroy guard, the unlabelable-type list or the workflow itself | `fmt / validate / tflint` · `terraform test` · `checkov` · `plan` (**not** on a pull request) · `plan (not run on a pull request)` |
 | `security.yml` | every pull request; push to `main`; Mondays 06:00 UTC | `trivy (repo)` · `secret scan` · `checkov (terraform + kubernetes)` · `platform policy assertions` · `trivy (published images)` (schedule / dispatch only) |
 | `release.yml` | push to `main` touching `apps/`, `images/`, `terraform/`, `kubernetes/`, `scripts/` or the workflow; or manual dispatch with an environment | `verify` · `images and scan` (reuses `application.yml`'s build of the commit; moves nothing) · `approval` (the one job naming a GitHub environment — prod waits here) · `promote` · `terraform apply` · `deploy and smoke` — the last three only after `approval` succeeded, and on prod only in the attempt it succeeded in · `prod approval is from an earlier attempt` (runs only on a partial re-run of prod, and fails it) |
+| `iam-refusal-probe.yml` | **manual dispatch on `main` only**, by the owner, once ([below](#the-deployers-refusal-is-proven-once-by-a-probe-the-owner-dispatches)) — never on a push, a pull request or a schedule | `deployer is refused an unlisted role` |
 
 Three details in that table are easy to misread and each has bitten someone:
 
@@ -630,6 +631,65 @@ of its own (the project's testable permissions include no
 `iam.roles.setIamPolicy`, read 2026-09-25), so closing 2 means moving the
 custom roles terraform/infra defines out of CI (#79). Each changes what CI can
 do, none is made here, and which to make is the owner's decision.
+
+## The deployer's refusal is proven once, by a probe the owner dispatches
+
+Once PR #73's targeted apply lands, the deployer's `projectIamAdmin` carries the
+`modifiedGrantsByRole` condition in
+[`deployer_conditions.tf`](../terraform/bootstrap/deployer_conditions.tf).
+Releases then prove the **admitted** side. Every plan reads the project policy,
+and a release that adds a tenant writes it. Nothing in the pipeline asks for a
+role **off** the list. **Owner decision, 2026-09-25 (#68):** a deliberate
+probe, run once by the owner after step 3 of the order on #80.
+
+[`iam-refusal-probe.yml`](../.github/workflows/iam-refusal-probe.yml) has no
+trigger but `workflow_dispatch`, takes no inputs, and refuses any ref but
+`main`. The workload identity provider would refuse one anyway: it mints the
+deployer's token for `refs/heads/main` only. As the deployer, the probe asks for
+`roles/browser` for itself. It **passes only if IAM refuses with
+PERMISSION_DENIED on the policy write**. If the grant lands, the probe removes
+exactly that binding, reads the policy back, and fails saying #68 must be
+reopened. The owner's steps, and what each outcome means, are in
+[the runbook](runbooks/iam-refusal-probe.md).
+
+**What a pass proves.** One role the list does not name was refused under the
+condition, for a direct grant by the deployer to itself, at the time of the run.
+Preflight makes that the condition's refusal and nobody else's. The scoped
+binding is the only `projectIamAdmin` the deployer holds, and none of its other
+roles carries `resourcemanager.projects.setIamPolicy`. That check is limited to
+the roles preflight could read, which is all of them before step 4 (#150).
+`hasOnly` treats every unlisted role alike, so one refusal speaks for the
+expression. It is still one role, measured once.
+
+**What it cannot prove:**
+
+* **That the `roleAdmin` route is closed (#79, PR #150).** That route changes a
+  custom role CI already holds so that it carries `setIamPolicy`. The write is
+  then authorised by that role, and the condition is never evaluated. The probe
+  asks the condition a question that route never asks. If the route has already
+  been used, preflight finds the permission on the role and stops. It does not
+  show that the route is shut.
+* **Who a listed role goes to.** `hasOnly` limits which roles change, not whose
+  grant changes. CI can still grant any of the fifteen, unconditioned, to
+  anyone.
+* **Routes through other identities.** Routes 1 and 3 in
+  [the table above](#what-the-view-does-not-bound-the-deployer-can-reach-every-log)
+  act as another account, and the probe signs in as the deployer only. Group
+  memberships and inherited policy are not visible to it.
+* **Anything after the run.** A later bootstrap apply can change the condition.
+  After any change to it, run the probe again.
+
+**How it knows it was refused.** gcloud does not print the status word
+PERMISSION_DENIED. For an HTTP 403, which Google maps to PERMISSION_DENIED and
+nothing else, it prints `does not have permission to access projects instance
+[<project>:setIamPolicy]`. The probe accepts that sentence, and rejects a 403
+that names a disabled API, billing or a service perimeter. Everything else fails
+the run: an auth failure, a network error, a 403 on the policy read, a new
+wording. The sentence comes from the Cloud SDK source (SDK 483.0.0) and has not
+been seen on the runner. A wording change therefore costs a re-run, never a
+false pass. [`classify`](../scripts/iam-refusal-probe.sh) has the full rule.
+[`test_iam_refusal_probe.py`](../tests/unit/scripts/test_iam_refusal_probe.py)
+runs the script against a fake `gcloud`, and holds each case.
 
 ## The finishing sequence
 

@@ -33,11 +33,146 @@ reintroduce exactly that, one layer up.
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
-from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES, resolve_backend
+from swarm_common.profiles import (
+    RESOURCE_CLASSES,
+    RUNNER_PROFILES,
+    InputRefused,
+    RunnerInput,
+    resolve_backend,
+)
+from swarm_common.profiles import check_inputs as check_inputs_by_declaration
 
 from .client import SwarmError
+
+
+# --------------------------------------------------------------------------
+# The inputs a caller may send a runner (#142)
+# --------------------------------------------------------------------------
+#
+# THE DECLARATION IS THE FROZEN CATALOGUE'S, `RunnerProfile.inputs`, and this
+# module keeps no copy of it. Until contract request 25 was accepted (#142,
+# 2026-09-25) the bridge held the one table, `DECLARED_INPUTS`, keyed by
+# profile NAME; swarm-api now refuses an undeclared key from every caller with
+# 422 `invalid_input` wherever a profile declares, reading the same field and
+# calling the same rule (`swarm_common.profiles.check_inputs`), so a table
+# here would be a second answer to one question -- the plugin refusing what
+# the API accepts, or sending what it refuses. What is left here is the
+# bridge's own framing:
+# where a refusal happened (`where`), what to call next (`swarm_profiles`),
+# and `swarm dispatch --input KEY=VALUE` typed by the declaration.
+#
+# WHY PER PROFILE, AND WHY THIS IS NOT INVARIANT 10 LOOSENED. A caller still
+# names a profile and supplies DATA; nothing declared is an image, a command,
+# a resource spec or a backend parameter. But an input means something only to
+# the runner that reads it: `input.model` is read by the CLI runners and would
+# select the model a `claude-code` agent runs, which is the contract change
+# test_model_flag_is_attribution_only.py exists to stop. So a profile that
+# declares nothing takes nothing, and a key a profile does not declare is
+# refused by name -- never dropped, never passed through.
+#
+# A PROFILE WHOSE INPUTS ARE NOT DECLARED YET (`inputs is None`: `browser`,
+# `generic`, open with the owner on #218) is bounded by size alone at the API:
+# the shared rule hands its input back unchecked, and it decides that in one
+# place. THE BRIDGE SENDS IT NONE, and that is not a second answer to the
+# rule's question but the bridge's own send policy: it sends a key only when a
+# declaration names it, which gives `--input` a kind to type the value by, and
+# neither profile has one. Letting `swarm_dispatch` send a browser task's
+# `actions` would be a new plugin capability, #218's third question.
+#
+# tests/unit/mcp/test_runner_inputs.py holds the bridge to the catalogue, every
+# declared key to a `payload` read in the runner's source, and every exit code
+# the worker reads as something other than a failure to a refusal.
+
+
+def declared_inputs(name: str) -> dict[str, RunnerInput]:
+    """The inputs this profile declares; `{}` for one that declares none."""
+    profile = RUNNER_PROFILES.get(name)
+    return dict(profile.inputs or {}) if profile is not None else {}
+
+
+def declaring() -> list[str]:
+    """The profiles that declare at least one input, read from the catalogue."""
+    return sorted(name for name in RUNNER_PROFILES if declared_inputs(name))
+
+
+def _declaring() -> str:
+    return ", ".join(declaring()) or "none"
+
+
+def check_inputs(name: str, raw: Any, *, where: str = "") -> dict[str, Any]:
+    """The declared inputs `raw` asks for, checked; refuses anything else. Returns them.
+
+    `raw` is None (nothing asked for) or an object. The profile NAME has already
+    been checked by `check`; this is only about what may travel with it. The
+    rule is `swarm_common.profiles.check_inputs`, the one swarm-api applies.
+    """
+    prefix = f"{where}: " if where else ""
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise SwarmError(
+            f"{prefix}`inputs` must be an object of the inputs {name} declares, not "
+            f"{type(raw).__name__}"
+        )
+    profile = RUNNER_PROFILES[name]
+    declared = declared_inputs(name)
+    if raw and not declared:
+        # The bridge's send policy (see the header): only what a declaration
+        # names travels. The wording tells "takes only a prompt" from "has not
+        # declared yet", because the second is an open question, not a rule.
+        not_yet = (
+            " yet (which keys it takes is open with the owner on #218), and the "
+            "bridge sends only what a declaration names"
+            if profile.inputs is None
+            else ""
+        )
+        raise SwarmError(
+            f"{prefix}runner profile {name!r} declares no inputs{not_yet}, so none can "
+            f"be sent ({sorted(raw)} were given). Only these profiles declare any: "
+            f"{_declaring()} -- see `swarm_profiles`. A step's instructions go in `prompt`."
+        )
+    try:
+        return check_inputs_by_declaration(profile, raw)
+    except InputRefused as refused:
+        if refused.expected is not None:
+            raise SwarmError(f"{prefix}{refused}") from None
+        offered = ", ".join(f"{key} ({spec.describe()})" for key, spec in sorted(declared.items()))
+        raise SwarmError(
+            f"{prefix}{name} does not declare {list(refused.keys)} as an input, so it is not "
+            f"sent. It declares: {offered}. The instructions go in `prompt`; an image, a "
+            "command, a resource spec, a backend or a model are never sent "
+            "(invariant 10)."
+        ) from None
+
+
+def parse_input_flags(name: str, flags: list[str] | None, *, where: str = "") -> dict[str, Any]:
+    """`swarm dispatch --input KEY=VALUE ...`, typed by what `name` declares.
+
+    A string input keeps its text as typed -- `fail_message=123` is the message
+    "123" -- and every other kind is read as JSON (`120`, `2.5`, `true`), so
+    the value is typed by the DECLARATION rather than by whatever JSON happens
+    to make of the text. The result goes through `check_inputs`.
+    """
+    prefix = f"{where}: " if where else ""
+    declared = declared_inputs(name)
+    raw: dict[str, Any] = {}
+    for flag in flags or []:
+        key, sep, text = str(flag).partition("=")
+        key = key.strip()
+        if not sep or not key:
+            raise SwarmError(f"{prefix}--input takes KEY=VALUE, not {flag!r}")
+        spec = declared.get(key)
+        if spec is None or spec.kind in ("string", "filename"):
+            raw[key] = text
+            continue
+        try:
+            raw[key] = json.loads(text)
+        except json.JSONDecodeError:
+            raw[key] = text
+    return check_inputs(name, raw or None, where=where)
 
 
 def names() -> list[str]:
@@ -90,6 +225,14 @@ def public_profile(name: str) -> dict[str, Any]:
     }
     if not profile.available:
         out["disabled_reason"] = profile.disabled_reason
+    declared = declared_inputs(name)
+    if declared:
+        # What a caller may send this profile besides its prompt (#142), so the
+        # names are learned here rather than from prose that goes stale.
+        out["inputs"] = {
+            key: {"kind": spec.describe(), "means": spec.means}
+            for key, spec in sorted(declared.items())
+        }
     return out
 
 

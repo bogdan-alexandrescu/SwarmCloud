@@ -24,15 +24,26 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { renderToStaticMarkup } from 'react-dom/server'
 
-import { Run } from '../src/AgentDetail'
+import { DRAWER_POLL_MS, Run, drawerPoll } from '../src/AgentDetail'
 import type { AgentRun } from '../src/api'
-import type { AttemptRow, Task } from '../src/types'
+import type { AttemptRow, Task, TaskEvent } from '../src/types'
 
 // ---------------------------------------------------------------------------
 // Fixtures: a run that measured some things and did not measure others
 // ---------------------------------------------------------------------------
 
-const TASK: Task = {
+/**
+ * A RUNNING task and its open attempt.
+ *
+ * THIS USED TO BE THE B7.1 FIXTURE, AND THAT WAS THE DEFECT AG-4 NAMES. The
+ * acceptance test asserted `not recorded` and `not reported` -- the ABSENT
+ * encoding -- on an attempt that had not finished, when peak memory, tokens and
+ * cost are all written at the END of an attempt: on a running agent "nothing
+ * yet" is the expected state, not an absence. The acceptance test now runs on
+ * the ended run below, and this pair is the running case, which asserts the
+ * pending tone instead.
+ */
+const RUNNING_TASK: Task = {
   id: 'task_b5dc2568713a40158851',
   tenant_id: 'u-bogdan',
   state: 'RUNNING',
@@ -67,18 +78,10 @@ const TASK: Task = {
   current_lease_id: 'lease_1',
 }
 
-/**
- * ONE ATTEMPT THAT MEASURED NOTHING IT COULD HAVE MEASURED.
- *
- * `cost_usd: null` is the case the brief names: no attempt reported a cost. It
- * is an absent measurement and NOT $0.00. `checkpoints: []` is the opposite
- * case sitting right beside it -- the documents were read, and none lists a
- * checkpoint. That zero is real and must render as a digit.
- */
-const ATTEMPT: AttemptRow = {
+const RUNNING_ATTEMPT: AttemptRow = {
   attempt_id: 'att_1',
-  task_id: TASK.id,
-  tenant_id: TASK.tenant_id,
+  task_id: RUNNING_TASK.id,
+  tenant_id: RUNNING_TASK.tenant_id,
   generation: 1,
   lease_id: 'lease_1',
   backend: 'cloudrun',
@@ -97,6 +100,42 @@ const ATTEMPT: AttemptRow = {
   cache_read_input_tokens: null,
   cache_creation_input_tokens: null,
   cost_usd: null,
+}
+
+/**
+ * THE B7.1 FIXTURE: a run that is OVER and measured nothing it could have.
+ *
+ * `cost_usd: null` is the case the brief names: no attempt reported a cost. It
+ * is an absent measurement and NOT $0.00 -- and it is only an absence because
+ * the attempt ENDED without writing one; the running pair above is the case
+ * where the same null is still due. `checkpoints: []` is the opposite case
+ * sitting right beside it -- the documents were read, and none lists a
+ * checkpoint. That zero is real and must render as a digit.
+ */
+const TASK: Task = {
+  ...RUNNING_TASK,
+  state: 'SUCCEEDED',
+  updated_at: '2026-09-22T09:40:00Z',
+  completed_at: '2026-09-22T09:40:00Z',
+  current_lease_id: null,
+}
+
+const ATTEMPT: AttemptRow = {
+  ...RUNNING_ATTEMPT,
+  completed_at: '2026-09-22T09:40:00Z',
+  exit_code: 0,
+}
+
+function event(over: Partial<TaskEvent> & Pick<TaskEvent, 'type' | 'at'>): TaskEvent {
+  return {
+    event_id: `ev_${over.type}_${over.at}`,
+    task_id: RUNNING_TASK.id,
+    attempt_id: null,
+    lease_id: null,
+    generation: null,
+    detail: null,
+    ...over,
+  }
 }
 
 function run(over: Partial<AgentRun> = {}): AgentRun {
@@ -127,8 +166,12 @@ function surface(r: AgentRun = run()): string {
 interface Tile {
   label: string
   value: string
+  /** What the tile says under the figure, tags stripped. */
+  sub: string
   absent: boolean
   unread: boolean
+  /** The pending tone: a figure that is due, not missing. */
+  reading: boolean
 }
 
 function tiles(markup: string): Map<string, Tile> {
@@ -148,11 +191,16 @@ function tiles(markup: string): Map<string, Tile> {
     const value = (rest.split(/<span class="ctl-metric-(?:sub|foot)"/)[0] ?? '')
       .replace(/<[^>]*>/g, '')
       .trim()
+    const sub = (/<span class="ctl-metric-sub">([\s\S]*?)<\/span>/.exec(rest)?.[1] ?? '')
+      .replace(/<[^>]*>/g, '')
+      .trim()
     out.set(label, {
       label,
       value,
+      sub,
       absent: cls.includes('is-absent'),
       unread: cls.includes('is-unread'),
+      reading: cls.includes('is-reading'),
     })
   }
   return out
@@ -262,8 +310,13 @@ test('a real zero says so in words, not only in a border colour', () => {
   assert.ok(/no attempt yet/i.test(markup), 'the surface no longer says no attempt has been made')
   assert.ok(/nothing has been admitted/i.test(markup), 'the surface no longer says nothing was admitted')
   assert.ok(markup.includes('real zero'), 'nothing on the surface says this zero is real')
-  // The state it was measured in is a fact about THIS task and stays.
-  assert.ok(markup.includes('PARKED'), 'the state the measurement was taken in is gone')
+  // The state it was measured in is a fact about THIS task and stays -- IN THE
+  // HEADING, spelled as the chip beside it reads (AG-28). This asserted only
+  // that `PARKED` was somewhere in the markup, which the state chip satisfies
+  // on its own; the heading printing `no attempt yet · PARKED` in capitals
+  // beside a chip reading `parked` passed it. It now pins the heading.
+  assert.ok(markup.includes('no attempt yet · parked'), 'the heading lost the state, or shouts it')
+  assert.ok(!markup.includes('no attempt yet · PARKED'), 'the heading prints the API’s uppercase state')
   assert.ok(!markup.includes('role="tooltip"'), 'this surface should be at rest')
 })
 
@@ -345,12 +398,354 @@ test('the `?` sits after a label and never after a value', () => {
     assert.ok(!(body ?? '').includes('<button'), 'a metric label draws a help glyph again')
   }
   assert.ok(explained >= 3, `only ${explained} metric labels publish an explanation`)
-  // AND THE SCREEN'S ONE GLYPH IS STILL ON A LABEL, NOT A VALUE. It sits in
-  // the run heading, after the state chip it qualifies -- which is a label in
-  // every sense the rule means: it names the thing, it is not the thing.
+  // AND THE SCREEN'S ONE GLYPH FOLLOWS A LABEL (AH-24). It sat in the run
+  // heading AFTER the state chip -- `● running ? ● live` -- and the owner's
+  // rule of 2026-09-25 is that a `?` goes after the label or heading it
+  // explains and never after a value. A state chip is the task's state: a
+  // value. #161's first version moved the glyph to LEAD the heading, which is
+  // not after a label either. The heading's state now carries its key, as
+  // every fact in the strip under it does -- `state ? ● running` -- and the
+  // glyph is inside that key, after its word and before the chip.
+  // MUTATION: put the glyph back after the chip, or ahead of the key.
+  const heading = /<section class="section panel"><h2>([\s\S]*?)<\/h2>/.exec(markup)
+  assert.ok(heading, 'no run heading rendered')
+  const h = heading[1]!
+  const glyphAt = h.indexOf('aria-label="Help: ')
+  const chipAt = h.indexOf('class="ctl-chip ')
+  assert.ok(glyphAt >= 0, 'the run heading no longer carries the screen ?')
+  assert.ok(chipAt >= 0, 'the run heading draws no state chip')
+  assert.ok(glyphAt < chipAt, 'the run heading draws its ? after the state chip, a value')
   assert.match(
-    markup,
-    /<span class="ctl-chip [^"]*"><i aria-hidden="true"><\/i>[A-Z_]+<\/span><span style="[^"]*"><button/,
-    'the run heading no longer carries the screen ?',
+    h,
+    /<b>state<span style="[^"]*"><button[^>]*aria-label="Help: /,
+    'the run heading ? does not follow a `state` label',
   )
+})
+
+// ---------------------------------------------------------------------------
+// A running agent: pending, not absent (AG-4)
+// ---------------------------------------------------------------------------
+
+/** Static markup with React's text separators taken out, for phrase matching. */
+function plain(markup: string): string {
+  return markup.replace(/<!-- -->/g, '')
+}
+
+test('a running agent draws its end-of-attempt figures as pending, never as absent', () => {
+  // BREAK IT: drop the `open !== null` branches from RunMetrics. The three
+  // tiles go back to `not recorded` / `not reported` on the dashed absent
+  // tile, beside an attempt that is still running.
+  const t = tiles(surface(run({ task: RUNNING_TASK, attempts: [RUNNING_ATTEMPT] })))
+  for (const label of ['Peak memory', 'Tokens', 'Token cost']) {
+    const tile = t.get(label)
+    assert.ok(tile, `${label} is not on the screen`)
+    assert.equal(tile.absent, false, `${label} draws the absent encoding while its attempt is open`)
+    assert.equal(tile.reading, true, `${label} is not on the pending tone while its attempt is open`)
+    // Pending is still not a number: nothing has been written.
+    assert.ok(!readsAsANumber(tile.value), `${label} rendered "${tile.value}" before anything was written`)
+  }
+  assert.equal(t.get('Tokens')?.value, 'written at exit')
+  assert.equal(t.get('Token cost')?.value, 'written at exit')
+  assert.equal(t.get('Peak memory')?.value, 'written at exit')
+})
+
+test('a running agent shows its newest heartbeat peak as a live figure, with its age', () => {
+  const beat = event({
+    type: 'heartbeat',
+    at: '2026-09-22T09:10:00Z',
+    attempt_id: 'att_1',
+    detail: { peak_rss_bytes: 19_500_000, elapsed_seconds: 530, checkpoints: 0 },
+  })
+  const t = tiles(surface(run({ task: RUNNING_TASK, attempts: [RUNNING_ATTEMPT], events: [beat] })))
+  const peak = t.get('Peak memory')
+  assert.ok(peak, 'Peak memory is not on the screen')
+  // A heartbeat reading IS a measurement of the live process, so it is a figure.
+  assert.equal(peak.value, '18.6 MiB')
+  assert.match(peak.sub, /^live · /, `the live figure is not labelled live with its age: "${peak.sub}"`)
+  assert.equal(peak.absent, false)
+  assert.equal(peak.reading, true, 'the live high-water mark is presented as the final figure')
+})
+
+test('a runner that never reports spend stays absent while it runs', () => {
+  // The control: `mock`, `generic` and `browser` never write tokens, so for
+  // them "not reported" is true while running as well as after. A pending
+  // tile there would promise a figure that is never coming.
+  const mock: Task = { ...RUNNING_TASK, runner_profile: 'mock' }
+  const t = tiles(surface(run({ task: mock, attempts: [RUNNING_ATTEMPT] })))
+  for (const label of ['Tokens', 'Token cost']) {
+    assert.equal(t.get(label)?.value, 'not reported', `${label} promises a figure a mock run never writes`)
+    assert.equal(t.get(label)?.absent, true)
+  }
+})
+
+// ---------------------------------------------------------------------------
+// A task that never ran (AG-3, AG-6, AG-8)
+// ---------------------------------------------------------------------------
+
+const UPSTREAM = 'an upstream workflow step did not succeed'
+
+/**
+ * A workflow step the scheduler cascade-cancelled after its parent failed. It
+ * sat READY for 27m 57s and never ran: no attempt, no `started_at`, and the
+ * `last_error` and the `cancelled` event's `reason` are the scheduler's own
+ * words (scheduler/store.py `cancel`).
+ */
+const CASCADE: Task = {
+  ...TASK,
+  id: 'task_cascade000000000000',
+  state: 'CANCELLED',
+  created_at: '2026-09-22T09:00:00Z',
+  started_at: null,
+  completed_at: '2026-09-22T09:27:57Z',
+  updated_at: '2026-09-22T09:27:57Z',
+  attempt_count: 0,
+  current_generation: 0,
+  current_lease_id: null,
+  workflow_id: 'wf_0123456789',
+  step_id: 'synthesise',
+  depends_on: ['task_parent0000000000000'],
+  last_error: UPSTREAM,
+}
+
+function cascade(): AgentRun {
+  return run({
+    task: CASCADE,
+    attempts: [],
+    events: [
+      event({ type: 'submitted', at: '2026-09-22T09:00:00Z' }),
+      event({
+        type: 'cancelled',
+        at: '2026-09-22T09:27:57Z',
+        detail: { reason: UPSTREAM, failed_parents: ['task_parent0000000000000'] },
+      }),
+    ],
+  })
+}
+
+test('a task that never ran does not print its wait as its run', () => {
+  // BREAK IT: print `el.text` under `run` whatever the task's start. This
+  // step then reads `run 27m 57s` beside `never ran`.
+  const markup = plain(surface(cascade()))
+  assert.ok(!markup.includes('<b>run</b>27m 57s'), 'the wait is printed under the run key')
+  assert.ok(markup.includes('<b>run</b>never ran'), 'the run key does not say it never ran')
+  // The Elapsed tile says it too, in its figure or in its note -- whichever
+  // `elapsed()` leaves it to. The figure is `elapsed()`'s to choose (the
+  // shared-types lane makes it `never ran` outright); what this screen must
+  // never do is show a duration there with nothing saying no run happened.
+  const tile = tiles(surface(cascade())).get('Elapsed')
+  assert.ok(tile, 'the Elapsed tile is gone')
+  assert.ok(
+    /never ran/.test(tile.value) || /^never ran · cancelled/.test(tile.sub),
+    `the Elapsed tile reads "${tile.value}" / "${tile.sub}" and never says this never ran`,
+  )
+})
+
+/**
+ * AG-3, THE NOTE UNDER A FIGURE THAT ALREADY SAYS IT. Since #145, `elapsed()`
+ * gives a task that finished without starting the figure `never ran`. The
+ * note under it still opened `never ran · cancelled 3d ago`: the same two
+ * words twice, one line apart, with the one fact the figure cannot carry --
+ * how the task ended, and when -- pushed behind them.
+ *
+ * BREAK IT: prefix the never-ran note with `never ran · ` again.
+ */
+test('a task that never ran says so once on its Elapsed tile, and the note names how it ended', () => {
+  const tile = tiles(surface(cascade())).get('Elapsed')
+  assert.ok(tile, 'the Elapsed tile is gone')
+  assert.equal(tile.value, 'never ran')
+  assert.ok(!/never ran/.test(tile.sub), `the note repeats the figure: "${tile.sub}"`)
+  assert.match(tile.sub, /^cancelled \S/, `the note does not say how the task ended: "${tile.sub}"`)
+
+  // With no end recorded, the ending is still named, and so is the absence.
+  const unended = tiles(surface(run({ ...cascade(), task: { ...CASCADE, completed_at: null } }))).get('Elapsed')
+  assert.ok(unended, 'the Elapsed tile is gone')
+  assert.equal(unended.value, 'never ran')
+  assert.ok(!/never ran/.test(unended.sub), `the note repeats the figure: "${unended.sub}"`)
+  assert.match(unended.sub, /^cancelled\b.*no finish recorded/, `the note hides the missing end: "${unended.sub}"`)
+})
+
+/** The head's facts strip: the `ctl-facts` list that carries the `age` fact. */
+function headFacts(markup: string): string {
+  const strip = markup.split('<ul class="ctl-facts">').slice(1).map((s) => s.split('</ul>')[0] ?? '')
+  const head = strip.find((s) => s.includes('<b>age</b>'))
+  assert.ok(head !== undefined, 'the head facts strip is gone; every assertion below would be vacuous')
+  return head
+}
+
+/**
+ * A PARKED RETRY. Submitted at 09:00; attempt 1 reached STARTING at 09:09 and
+ * later parked on quota. `started_at` survives the park -- nothing on the
+ * platform clears it -- and the task document records no time for the park.
+ *
+ * The first fix for this keyed the strip on `elapsed()`'s phase and printed
+ * the task's age under `wait`: `wait waiting 50m 0s` beside `age 50m ago`,
+ * fifty minutes of waiting for a task that ran for most of them. On the
+ * retry's lease it read `wait leased 1h 30m` for a lease taken seconds ago.
+ *
+ * BREAK IT: key the fact `wait` on `phase === 'waiting'` alone, and let
+ * `elapsed()` print `now - created_at` for a task that has a start.
+ */
+test('a task between attempts shows no wait and no figure the task document does not hold', () => {
+  for (const state of ['PARKED', 'READY', 'LEASED', 'DISPATCHED'] as const) {
+    const between: Task = {
+      ...TASK,
+      state,
+      started_at: '2026-09-22T09:09:00Z',
+      completed_at: null,
+      current_lease_id: state === 'LEASED' || state === 'DISPATCHED' ? 'lease_2' : null,
+      attempt_count: state === 'LEASED' || state === 'DISPATCHED' ? 2 : 1,
+    }
+    const markup = plain(surface(run({ task: between, attempts: [{ ...ATTEMPT, completed_at: null, exit_code: null }] })))
+    const facts = headFacts(markup)
+    assert.ok(!facts.includes('<b>wait</b>'), `${state}: a task that already ran is shown a wait`)
+    // The age is still on the strip, under the key that says it is one.
+    assert.ok(facts.includes('<b>age</b>'), `${state}: the age fact is gone`)
+    assert.ok(
+      !new RegExp(`${state.toLowerCase()} \\d`).test(facts),
+      `${state}: the strip prints the task's age after its state word, which reads as time in that state`,
+    )
+
+    const tile = tiles(markup).get('Elapsed')
+    assert.ok(tile, `${state}: the Elapsed tile is gone`)
+    assert.ok(!/^waiting\b/.test(tile.value), `${state}: the Elapsed tile calls the age a wait: "${tile.value}"`)
+    assert.ok(!/\d/.test(tile.value), `${state}: the Elapsed tile prints a figure: "${tile.value}"`)
+    // Why there is no figure is on the surface, not only in a `?`.
+    assert.ok(/earlier attempt ran/.test(tile.sub), `${state}: the tile does not say an attempt ran: "${tile.sub}"`)
+  }
+})
+
+test('an unstarted waiting task keeps its wait, because its whole age is one', () => {
+  // THE CONTROL, so the test above cannot pass by never printing `wait`.
+  const ready: Task = { ...TASK, state: 'READY', started_at: null, completed_at: null, current_lease_id: null }
+  const facts = headFacts(plain(surface(run({ task: ready, attempts: [] }))))
+  assert.ok(/<b>wait<\/b>waiting \d/.test(facts), `an unstarted READY task lost its wait: ${facts}`)
+})
+
+test('the error banner names the scheduler for a cascade cancel, not the agent', () => {
+  // BREAK IT: fall back to `agent, at finish` for any text the prefixes do
+  // not recognise -- the old rule. No agent existed to write this.
+  const markup = plain(surface(cascade()))
+  assert.ok(markup.includes('error · scheduler · cancel'), 'the cascade cancel is not attributed to the scheduler')
+  assert.ok(!markup.includes('agent, at finish'), 'a task that never ran blames its agent')
+})
+
+test('the error banner reads a lowercase dispatch code as the scheduler’s', () => {
+  // BREAK IT: make DISPATCH_CODE case-sensitive again (`^[A-Z][A-Z0-9_]+`).
+  // Every real code is lowercase, so every dispatch failure became the agent's.
+  const failed: Task = {
+    ...TASK,
+    state: 'FAILED',
+    attempt_count: 3,
+    started_at: null,
+    last_error: 'gke_create_job_failed (attempt att_3)',
+  }
+  const unstarted: AttemptRow = { ...ATTEMPT, started_at: null, completed_at: null, exit_code: null }
+  const markup = plain(surface(run({ task: failed, attempts: [unstarted] })))
+  assert.ok(markup.includes('error · scheduler · dispatch'), 'a lowercase dispatch code is not read as a dispatch failure')
+})
+
+test('the error banner still names the agent when the agent ran and failed', () => {
+  // THE CONTROL, so the two tests above cannot pass by never saying `agent`.
+  const failed: Task = { ...TASK, state: 'FAILED', last_error: 'claude exited 1: tool call failed' }
+  const ran: AttemptRow = { ...ATTEMPT, exit_code: 1, error: 'claude exited 1: tool call failed' }
+  const markup = plain(surface(run({ task: failed, attempts: [ran] })))
+  assert.ok(markup.includes('error · agent, at finish'), 'an agent’s own failure is no longer attributed to it')
+})
+
+test('a finished task that never ran has nothing-ran as its output, a real zero', () => {
+  // BREAK IT: remove the `!anythingRan` branch from Output. The step then says
+  // `finished with no summary`, partial -- a missing record -- for the one
+  // result that was never going to be written.
+  const markup = plain(surface(cascade()))
+  assert.ok(markup.includes('nothing ran · cancelled'), 'the output panel does not say nothing ran')
+  assert.ok(!markup.includes('finished with no summary'), 'a task that never ran is drawn as a missing summary')
+})
+
+// ---------------------------------------------------------------------------
+// The reason, once (AG-7)
+// ---------------------------------------------------------------------------
+
+test('a failed agent’s reason is printed once, and an earlier attempt’s own error still shows', () => {
+  // BREAK IT: render `Why` and the attempt card's `pre.err` unconditionally.
+  // The last error is then printed three times.
+  const reason = 'claude exited 1: the repository has no main branch'
+  const failed: Task = { ...TASK, state: 'FAILED', attempt_count: 2, last_error: reason }
+  const first: AttemptRow = {
+    ...ATTEMPT,
+    attempt_id: 'att_0',
+    lease_id: 'lease_0',
+    created_at: '2026-09-22T09:00:30Z',
+    exit_code: 1,
+    error: 'first attempt: timed out cloning',
+  }
+  const last: AttemptRow = { ...ATTEMPT, exit_code: 1, error: reason }
+  const markup = surface(run({ task: failed, attempts: [first, last] }))
+  const count = markup.split(reason).length - 1
+  assert.equal(count, 1, `the reason is printed ${count} times`)
+  assert.ok(markup.includes('first attempt: timed out cloning'), 'an earlier attempt’s different error was dropped')
+})
+
+// ---------------------------------------------------------------------------
+// Marks that are not in flight, and one name per attempt (AG-9, AG-21)
+// ---------------------------------------------------------------------------
+
+/** The Timeline panel's toolbar, as markup. */
+function timelineToolbar(markup: string): string {
+  const at = markup.indexOf('<h2>Timeline')
+  assert.ok(at >= 0, 'the Timeline panel is not on the screen')
+  return markup.slice(at, markup.indexOf('</div>', at))
+}
+
+test('the timeline does not draw a read in flight once its read has landed', () => {
+  // BREAK IT: put `kind={endMissing ? 'partial' : 'pending'}` back.
+  const events = [event({ type: 'submitted', at: '2026-09-22T09:00:00Z' })]
+  const unproven = timelineToolbar(surface(run({ task: RUNNING_TASK, attempts: [RUNNING_ATTEMPT], events })))
+  assert.ok(!unproven.includes('is-pending'), 'the landed timeline still says `reading`')
+  assert.ok(unproven.includes('oldest first · cap unknown'), 'the paging caveat is gone from the toolbar')
+  // THE PROVEN CASE KEEPS ITS MARK: a SUCCEEDED task with no terminal event
+  // on the page proves the page ends early.
+  const proven = timelineToolbar(surface(run({ events })))
+  assert.ok(proven.includes('ctl-mark is-partial'), 'a provably short page is no longer marked partial')
+})
+
+test('one attempt has one name on its card and over its events', () => {
+  // BREAK IT: title the card `Attempt {n}` with a `gen` chip, or label the
+  // event group `generation`. The same attempt then has two spellings.
+  const events = [
+    event({ type: 'submitted', at: '2026-09-22T09:00:00Z' }),
+    event({ type: 'starting', at: '2026-09-22T09:01:10Z', attempt_id: 'att_1' }),
+  ]
+  const markup = plain(surface(run({ events })))
+  const names = markup.split('Attempt 1 · gen 1').length - 1
+  assert.ok(names >= 2, `the card and its event group do not share one name (${names} found)`)
+  assert.ok(!markup.includes('Attempt 1 · generation'), 'the event group spells the attempt differently')
+})
+
+// ---------------------------------------------------------------------------
+// The drawer re-reads while there is something to learn (AG-2)
+// ---------------------------------------------------------------------------
+
+test('the drawer re-reads an unfinished run, and stops once it is finished', () => {
+  // BREAK IT: return DRAWER_POLL_MS for a finished task. A finished run's
+  // documents are final once its finish is whole; an unfinished one's
+  // liveness is only as fresh as its last read.
+  //
+  // WHAT THIS DOES NOT COVER, said so nobody reads it as more: it calls
+  // `drawerPoll` and checks its answers. Whether AgentDetailScreen hands it to
+  // `Screen` at all -- the `pollMs={drawerPoll}` line -- is asserted by
+  // rendering the screen under fake timers, in
+  // src/__tests__/drawer.reread.test.tsx; dropping that line passes this test.
+  // So is the half-written finish (a terminal state whose attempt end and
+  // terminal event are not in yet), which keeps the drawer polling.
+  //
+  // `now` is an hour after TASK's `completed_at`, well past DRAWER_SETTLE_MS,
+  // so a finish with no terminal event on this page is not waited for.
+  const later = Date.parse('2026-09-22T10:40:00Z')
+  assert.equal(drawerPoll(run({ task: RUNNING_TASK, attempts: [RUNNING_ATTEMPT] }), later), DRAWER_POLL_MS)
+  assert.equal(drawerPoll(run({ task: { ...RUNNING_TASK, state: 'PARKED' } }), later), DRAWER_POLL_MS)
+  for (const state of ['SUCCEEDED', 'FAILED', 'CANCELLED'] as const) {
+    assert.equal(drawerPoll(run({ task: { ...TASK, state } }), later), null, `a ${state} run is still polled`)
+  }
+  // Before the first read there is nothing to say it is finished.
+  assert.equal(drawerPoll(null), DRAWER_POLL_MS)
 })

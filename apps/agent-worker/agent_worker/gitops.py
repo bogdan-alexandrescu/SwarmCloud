@@ -66,6 +66,10 @@ class CloneResult:
     ref: str | None
     commit: str | None
     duration_seconds: float
+    #: True when the clone succeeded and the repository had no commits, which
+    #: is why `commit` is None. Established positively (no object at all), so
+    #: a `rev-parse` that failed for any other reason is never read as "empty".
+    empty: bool = False
 
 
 def validate_repository_url(url: str) -> str:
@@ -230,8 +234,16 @@ def shallow_clone(
                 logger.error("could not remove the git credential file", error=str(exc))
 
     commit = _read_head(destination, private_dir, logs_dir, logger, git_binary)
-    logger.info("repository cloned", url=url, ref=ref, commit=commit, seconds=round(total, 2))
-    return CloneResult(path=destination, url=url, ref=ref, commit=commit, duration_seconds=total)
+    empty = commit is None and _holds_no_objects(
+        destination, private_dir, logs_dir, logger, git_binary
+    )
+    logger.info(
+        "repository cloned", url=url, ref=ref, commit=commit, empty=empty,
+        seconds=round(total, 2),
+    )
+    return CloneResult(
+        path=destination, url=url, ref=ref, commit=commit, duration_seconds=total, empty=empty
+    )
 
 
 def _read_head(
@@ -253,6 +265,40 @@ def _read_head(
         return None
     text = (logs_dir / "git-head.out.log").read_text(errors="replace").strip()
     return text or None
+
+
+def _holds_no_objects(
+    destination: Path, tmp: Path, logs_dir: Path, logger: Any, git_binary: str
+) -> bool:
+    """True when the fresh clone holds no object at all: an empty repository.
+
+    Asked only after `rev-parse HEAD` failed, and it must answer "yes" before
+    the clone counts as empty. Reading a failed `rev-parse` as "empty" would
+    let a transient failure turn a real repository into one whose whole tree
+    the publish folds into a parentless commit. Objects rather than refs,
+    because a clone of a pinned sha is a detached HEAD with no ref either
+    (measured: `for-each-ref` is empty there too), while any clone that
+    fetched something has a loose object or a pack.
+    """
+    result = run_child(
+        [git_binary, "-C", str(destination), "count-objects", "-v"],
+        cwd=tmp,
+        env={"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": str(tmp), "GIT_CONFIG_NOSYSTEM": "1"},
+        stdout_path=logs_dir / "git-objects.out.log",
+        stderr_path=logs_dir / "git-objects.err.log",
+        timeout_seconds=30,
+        grace_seconds=5,
+        max_stdout_bytes=4096,
+        max_stderr_bytes=4096,
+        logger=logger,
+    )
+    if result.exit_code != 0:
+        return False
+    counts: dict[str, str] = {}
+    for line in (logs_dir / "git-objects.out.log").read_text(errors="replace").splitlines():
+        key, _, value = line.partition(":")
+        counts[key.strip()] = value.strip()
+    return counts.get("count") == "0" and counts.get("in-pack") == "0"
 
 
 # ---------------------------------------------------------------------------
@@ -344,7 +390,63 @@ def _git_env(private_dir: Path) -> dict[str, str]:
 #: hand arbitrary code a worker-side execution point after the sandbox was
 #: supposed to be finished with. Both belts are worn -- `--no-verify` on the
 #: commands that accept it, and a hooks path that cannot contain anything.
-_NO_HOOKS = ["-c", "core.hooksPath=/dev/null"]
+#:
+#: The same reasoning covers two programs that are hooks in all but name, both
+#: read from the clone's `.git/config`, which the agent can write:
+#:
+#: * `core.fsmonitor` -- set to a path, git documents it as the fsmonitor
+#:   hook command and runs it on every index refresh: measured at ten runs
+#:   across the `add`, `diff --cached`, `commit`, `reset --soft` and `status`
+#:   a publish makes, in a scratch repository with git 2.40.1.
+#: * `commit.gpgSign` makes every worker commit run `gpg.program`, and what
+#:   that program prints becomes a `gpgsig` header on the worker's own commit
+#:   -- text the agent chose, in an object the worker pushes.
+#:
+#: NOT CLOSED HERE, and not closable by listing keys: a filter driver the
+#: agent defines (`filter.<name>.clean`) and names in `.gitattributes` runs on
+#: `git add`; diff drivers and `log.showSignature` are the same class. The fix
+#: for that class is to run the worker's git in a repository whose
+#: configuration the worker wrote, which is what the forge-token lane (#219)
+#: does for the commands that carry a credential.
+_NO_HOOKS = [
+    "-c", "core.hooksPath=/dev/null",
+    "-c", "core.fsmonitor=false",
+    "-c", "commit.gpgSign=false",
+]
+
+
+def _worker_identity(name: str, email: str) -> list[str]:
+    """The `-c` arguments that make the worker the author AND committer.
+
+    `user.*` alone is not enough, and was all this module passed. git reads a
+    commit's author from `author.name`/`author.email` BEFORE `user.*`, and its
+    committer from `committer.*` before `user.*`; `-c user.name` overrides
+    `user.name` and nothing else. The clone's `.git/config` is the agent's to
+    write, so an agent that set `author.name=Claude` there made every commit
+    the worker created -- its auto-commit, its fold, the integrator's merges --
+    Claude's. A command-line `-c` of the SAME key outranks the repository's
+    value, so all six are set. Measured with git 2.40.1.
+
+    One case this does not reach: a `git commit` that concludes a cherry-pick
+    takes its author from `CHERRY_PICK_HEAD` regardless of configuration.
+    `--author` overrides that, so every worker `git commit` passes
+    `_author_option` as well.
+    """
+    return [
+        "-c", f"user.name={name}",
+        "-c", f"user.email={email}",
+        "-c", f"author.name={name}",
+        "-c", f"author.email={email}",
+        "-c", f"committer.name={name}",
+        "-c", f"committer.email={email}",
+    ]
+
+
+def _author_option(name: str, email: str) -> str:
+    """`--author` in the explicit `Name <email>` form. Without the angle
+    brackets git treats the value as a pattern and searches history for an
+    author to copy, which is the opposite of what is wanted here."""
+    return f"--author={name} <{email}>"
 
 
 def _git_text(
@@ -610,11 +712,7 @@ def commit_dirty(
     executing under the worker after the runner has already exited.
     """
     repo = Path(repo)
-    ident = [
-        "-c", f"user.name={author_name}",
-        "-c", f"user.email={author_email}",
-    ]
-    g = [git_binary, *_NO_HOOKS, *ident]
+    g = [git_binary, *_NO_HOOKS, *_worker_identity(author_name, author_email)]
 
     def run(argv: list[str], slug: str) -> tuple[int, str]:
         return _git_text(
@@ -640,14 +738,335 @@ def commit_dirty(
     if diff_code == 0:
         return None
 
+    # `--author` as well as the identity keys: this commit concludes a
+    # cherry-pick the agent left in progress, if there is one, and git would
+    # otherwise give it the picked commit's author (see `_worker_identity`).
     commit_code, _ = run(
-        [*g, "commit", "--no-verify", "--message", message], "publish-commit"
+        [
+            *g, "commit", "--no-verify", _author_option(author_name, author_email),
+            "--message", message,
+        ],
+        "publish-commit",
     )
     if commit_code != 0:
         raise GitError("could not commit the agent's uncommitted changes")
 
     code, text = run([git_binary, *_NO_HOOKS, "rev-parse", "HEAD"], "publish-head")
     return text.strip() if code == 0 else None
+
+
+def fold_agent_commits(
+    *,
+    repo: Path,
+    base: str | None,
+    keep: str | None,
+    message: str,
+    author_name: str,
+    author_email: str,
+    private_dir: Path,
+    logs_dir: Path,
+    timeout_seconds: int,
+    logger: Any,
+    git_binary: str = "git",
+) -> int:
+    """Replace every commit made since `base` with ONE commit the worker makes.
+
+    Returns how many commits were replaced, or 0 when there was nothing to
+    replace -- no commits at all, or only `keep`, the worker's own commit from
+    `commit_dirty`.
+
+    WHY THE WORKER WRITES EVERY COMMIT IT PUSHES. Nothing this platform puts on
+    a forge may carry Claude attribution (the owner's rule, 2026-09-25). The
+    worker's own commits never did; the AGENT'S could. The claude-code runner
+    starts Claude Code with HOME set to the attempt's workspace and no settings
+    of its own, so an agent that runs `git commit` follows Claude Code's
+    default instruction to add a `Co-Authored-By: Claude` trailer and a
+    "Generated with Claude Code" line -- and in a container with no git
+    identity it may commit AS Claude. A settings file cannot fix this from the
+    image: HOME is overridden, a setting governs only the tool's instruction
+    and not the model's choice of identity, and it covers one runner. Folding
+    here covers every runner, and is checkable against a real remote.
+
+    The tree is not touched: `reset --soft` keeps the index and the working
+    tree exactly as the agent left them, so the one commit carries all of its
+    work, committed or not. What the agent committed is still recorded -- the
+    harvest ran first, and `result_summary.git.commits` lists each commit's
+    subject and author -- it is only not pushed as the agent wrote it.
+
+    An unknown `base` REFUSES rather than degrading. Without it there is no way
+    to tell the agent's commits from the repository's own, and pushing whatever
+    HEAD holds is the unchecked push this exists to prevent.
+
+    `EMPTY_CLONE_BASE` is not unknown. The repository had no commits when it
+    was cloned, so every commit in it is the agent's, and they are replaced by
+    one worker commit with no parent.
+
+    `keep` is left alone only when it is the sole commit AND it reads back as
+    the worker's. The sha alone does not prove that: a commit that concludes a
+    cherry-pick the agent left in progress is authored as the picked commit
+    was, whoever ran `git commit`. `commit_dirty` passes `--author` against
+    exactly that, and this check is what folds the commit anyway if some other
+    route lends it an author.
+    """
+    empty = base == EMPTY_CLONE_BASE
+    if not empty and (not base or not _SHA_RE.match(base.strip())):
+        raise GitError(
+            "the clone base is unknown, so the worker cannot replace the agent's "
+            "commits with its own; nothing was pushed rather than commits whose "
+            "author and message the worker did not write"
+        )
+    base = (base or "").strip()
+    repo = Path(repo)
+    g = [git_binary, *_NO_HOOKS, *_worker_identity(author_name, author_email)]
+
+    def run(argv: list[str], slug: str) -> tuple[int, str]:
+        return _git_text(
+            argv,
+            repo=repo,
+            private_dir=private_dir,
+            logs_dir=logs_dir,
+            slug=slug,
+            timeout_seconds=timeout_seconds,
+            logger=logger,
+        )
+
+    if empty:
+        code, _ = run([*g, "rev-parse", "--verify", "--quiet", "HEAD"], "publish-fold-born")
+        if code != 0:
+            # Still no commit at all: nothing was made, so nothing to replace.
+            return 0
+        span = "HEAD"
+    else:
+        span = f"{base}..HEAD"
+
+    code, text = run([*g, "rev-list", "--count", span], "publish-fold-count")
+    if code != 0:
+        raise GitError("could not count the commits made since the clone base")
+    try:
+        count = int(text.strip() or "0")
+    except ValueError as exc:
+        raise GitError(f"could not read the commit count {text.strip()[:40]!r}") from exc
+    if count == 0:
+        return 0
+    if count == 1 and keep:
+        code, head = run([*g, "rev-parse", "HEAD"], "publish-fold-head")
+        if code == 0 and head.strip() == keep:
+            author, committer = _worker_idents(run, g)
+            if not _foreign(_read_commit(run, g, keep), author, committer):
+                # The only commit is the worker's own, from `commit_dirty`.
+                return 0
+
+    if empty:
+        # `reset --soft` needs a commit to rewind to and there is none, so the
+        # parentless commit is made from the index directly. The index is
+        # everything the agent left, committed or not: `commit_dirty` staged
+        # what was uncommitted, and the rest is what HEAD already holds.
+        code, tree = run([*g, "write-tree"], "publish-fold-tree")
+        if code != 0 or not tree.strip():
+            raise GitError("could not write the agent's work as a tree")
+        code, made = run([*g, "commit-tree", tree.strip(), "-m", message], "publish-fold-root")
+        if code != 0 or not _SHA_RE.match(made.strip()):
+            raise GitError("could not commit the agent's work as the worker")
+        code, _ = run([*g, "reset", "--soft", made.strip()], "publish-fold-reset")
+        if code != 0:
+            raise GitError("could not move the branch to the worker's commit")
+    else:
+        code, _ = run([*g, "reset", "--soft", base], "publish-fold-reset")
+        if code != 0:
+            raise GitError("could not rewind to the clone base to replace the agent's commits")
+
+        # Commits that add up to no change leave nothing staged; HEAD is the base.
+        code, _ = run([*g, "diff", "--cached", "--quiet"], "publish-fold-staged")
+        if code != 0:
+            code, _ = run(
+                [
+                    *g, "commit", "--no-verify", _author_option(author_name, author_email),
+                    "--message", message,
+                ],
+                "publish-fold-commit",
+            )
+            if code != 0:
+                raise GitError("could not commit the agent's work as the worker")
+    logger.info("folded the agent's commits into one worker commit", replaced=count)
+    return count
+
+
+#: The clone base recorded for a repository that had NO commits when it was
+#: cloned. `git clone` of an empty repository succeeds and lands on nothing, so
+#: there is no sha to record -- but that is a known state, not a lost one, and
+#: treating it as unknown refused to publish a new project's first commit. Not
+#: hexadecimal, so it can never be read as a sha.
+EMPTY_CLONE_BASE = "empty"
+
+#: Case-insensitive fragments only attribution produces, checked in every
+#: commit message the worker is about to push. Not the bare word "claude": the
+#: runner profile is `claude-code`, and a worker message may name it.
+ATTRIBUTION_MARKERS = (
+    "co-authored-by",
+    "generated with",
+    "anthropic.com",
+    "claude.com/claude-code",
+    "claude.ai/code",
+)
+
+
+@dataclass(frozen=True)
+class _Commit:
+    sha: str
+    author: tuple[str, str]
+    committer: tuple[str, str]
+    signed: bool
+    message: str
+
+
+def _split_ident(value: str) -> tuple[str, str]:
+    """`Name <email> 1700000000 +0000` -> ("Name", "email")."""
+    lt = value.find("<")
+    gt = value.find(">", lt + 1)
+    if lt < 0 or gt < 0:
+        return value.strip(), ""
+    return value[:lt].strip(), value[lt + 1 : gt].strip()
+
+
+def _parse_commit_object(sha: str, raw: str) -> _Commit:
+    """Read a commit from `git cat-file commit` output: the object as stored,
+    which is exactly what a push transfers. No pretty format, mailmap or
+    `log.*` setting from the agent's config stands between it and the bytes."""
+    header, _, message = raw.partition("\n\n")
+    author = committer = ("", "")
+    signed = False
+    for line in header.split("\n"):
+        if line.startswith("author "):
+            author = _split_ident(line[len("author "):])
+        elif line.startswith("committer "):
+            committer = _split_ident(line[len("committer "):])
+        elif line.startswith("gpgsig"):
+            # `gpgsig` and `gpgsig-sha256`. Continuation lines start with a
+            # space, so they never match a header name here.
+            signed = True
+    return _Commit(sha=sha, author=author, committer=committer, signed=signed, message=message)
+
+
+def _read_commit(run: Any, g: list[str], sha: str) -> _Commit:
+    code, raw = run([*g, "cat-file", "commit", sha], f"publish-read-{sha[:12]}")
+    if code != 0:
+        raise GitError(f"could not read commit {sha[:12]}")
+    return _parse_commit_object(sha, raw)
+
+
+def _worker_idents(run: Any, g: list[str]) -> tuple[tuple[str, str], tuple[str, str]]:
+    """The author and committer git WILL write for the worker, asked of git.
+
+    Asked rather than restated because git normalises an identity -- it trims
+    surrounding punctuation and whitespace -- so comparing a commit against the
+    configured string would refuse every push from a worker whose configured
+    name ends in, say, a full stop. `g` carries `_worker_identity`, which
+    outranks anything the agent put in the clone's config.
+    """
+    idents = []
+    for var in ("GIT_AUTHOR_IDENT", "GIT_COMMITTER_IDENT"):
+        code, text = run([*g, "var", var], f"publish-{var.lower().replace('_', '-')}")
+        if code != 0:
+            raise GitError(f"git could not state the worker's identity ({var})")
+        idents.append(_split_ident(text.strip()))
+    return idents[0], idents[1]
+
+
+def _foreign(commit: _Commit, author: tuple[str, str], committer: tuple[str, str]) -> list[str]:
+    """Every reason `commit` is not one the worker wrote. Empty when it is."""
+    problems = []
+    if commit.author != author:
+        problems.append(f"authored by {commit.author[0]} <{commit.author[1]}>")
+    if commit.committer != committer:
+        problems.append(f"committed by {commit.committer[0]} <{commit.committer[1]}>")
+    if commit.signed:
+        # The worker never signs (`commit.gpgSign=false` on every call), so a
+        # signature is text from a program the worker did not choose.
+        problems.append("signed, and the worker never signs")
+    lowered = commit.message.lower()
+    found = [marker for marker in ATTRIBUTION_MARKERS if marker in lowered]
+    if found:
+        problems.append(f"its message carries attribution ({', '.join(found)})")
+    return problems
+
+
+def verify_worker_authorship(
+    *,
+    repo: Path,
+    base: str | None,
+    author_name: str,
+    author_email: str,
+    private_dir: Path,
+    logs_dir: Path,
+    timeout_seconds: int,
+    logger: Any,
+    git_binary: str = "git",
+) -> int:
+    """Refuse a push that would add a commit the worker did not write.
+
+    Returns how many commits were checked. Raises `GitError`, naming the
+    commit and every reason, when one of them is not the worker's.
+
+    THE FOLD MAKES THE PROPERTY; THIS CHECKS IT, where the work leaves. Every
+    way an agent's identity or attribution reached a pushed commit so far was
+    a route nobody had thought of -- a config key read before the one the
+    worker set, a cherry-pick's author -- and each was closed where it was
+    made. This does not depend on knowing the route: it reads the commits the
+    push is about to add and refuses any that is not authored AND committed by
+    the worker, is signed, or carries an attribution marker.
+
+    WHICH COMMITS: the first-parent chain from HEAD down to the clone base.
+    For `direct-pr` and a contributor that is everything the branch adds -- the
+    fold or the auto-commit. For an integrator it is also every merge commit;
+    the contributor commits those merges bring in are their second parents,
+    and each was checked by its own worker when it pushed. A contributor branch
+    pushed before this check existed is therefore not re-checked here.
+    """
+    empty = base == EMPTY_CLONE_BASE
+    if not empty and (not base or not _SHA_RE.match(base.strip())):
+        raise GitError(
+            "the clone base is unknown, so the worker cannot tell which commits "
+            "this push would add; nothing was pushed"
+        )
+    repo = Path(repo)
+    g = [git_binary, *_NO_HOOKS, *_worker_identity(author_name, author_email)]
+
+    def run(argv: list[str], slug: str) -> tuple[int, str]:
+        return _git_text(
+            argv,
+            repo=repo,
+            private_dir=private_dir,
+            logs_dir=logs_dir,
+            slug=slug,
+            timeout_seconds=timeout_seconds,
+            logger=logger,
+        )
+
+    if empty:
+        code, _ = run([*g, "rev-parse", "--verify", "--quiet", "HEAD"], "publish-verify-born")
+        if code != 0:
+            return 0
+        span = "HEAD"
+    else:
+        span = f"{(base or '').strip()}..HEAD"
+
+    code, text = run([*g, "rev-list", "--first-parent", span], "publish-verify-list")
+    if code != 0:
+        raise GitError("could not list the commits this push would add")
+    shas = text.split()
+    if not shas:
+        return 0
+
+    author, committer = _worker_idents(run, g)
+    for sha in shas:
+        problems = _foreign(_read_commit(run, g, sha), author, committer)
+        if problems:
+            raise GitError(
+                f"refusing to push commit {sha[:12]}: {'; '.join(problems)}. The "
+                f"worker pushes only commits it wrote, as {author[0]} <{author[1]}>"
+            )
+    logger.info("every commit this push adds is the worker's", commits=len(shas))
+    return len(shas)
 
 
 def push_branch(
@@ -698,10 +1117,14 @@ def push_branch(
         "-c", f"credential.helper=store --file={cred_file}",
     ]
     try:
+        # `--no-follow-tags`: the refspec names one branch, but `push.followTags`
+        # in the clone's config -- the agent's to set -- would push every
+        # annotated tag reachable from it as well, with a tagger and a message
+        # the agent chose. A swarm attempt has no tag to publish.
         code, _ = _git_text(
             [
-                git_binary, *config_args, "push", "--no-verify", "--porcelain",
-                "--", url, f"HEAD:refs/heads/{branch}",
+                git_binary, *config_args, "push", "--no-verify", "--no-follow-tags",
+                "--porcelain", "--", url, f"HEAD:refs/heads/{branch}",
             ],
             repo=repo,
             private_dir=private_dir,
@@ -813,9 +1236,9 @@ def merge_branches(
         "-c", f"credential.helper=store --file={cred_file}",
         # The merge commits are the worker's, not the agent's. Without these
         # git refuses to commit at all in a container with no global config,
-        # and the merge fails for a reason that reads like a conflict.
-        "-c", f"user.name={author_name}",
-        "-c", f"user.email={author_email}",
+        # and the merge fails for a reason that reads like a conflict. All six
+        # keys, not `user.*` alone: see `_worker_identity`.
+        *_worker_identity(author_name, author_email),
     ]
 
     try:

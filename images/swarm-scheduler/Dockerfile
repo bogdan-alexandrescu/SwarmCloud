@@ -12,10 +12,12 @@
 # missing recipe that does not fail the build is how an audited application ends
 # up undeployable in silence.
 #
-# Build from the REPOSITORY ROOT -- the frozen contract package and the
-# reconciler are both part of the image, and `apps/scheduler/pyproject.toml`
-# resolves `swarm-common` through `{ path = "../common" }`, so the two must keep
-# their relative positions inside the build context:
+# Build from the REPOSITORY ROOT -- the frozen contract package and the quota
+# broker's package are both part of the image (this line said "the reconciler",
+# copied from that image's Dockerfile; the reconciler was never copied in), and
+# `apps/scheduler/pyproject.toml` resolves them through `{ path = "../common" }`
+# and `{ path = "../quota-broker" }`, so all three must keep their relative
+# positions inside the build context:
 #
 #     docker build -f images/swarm-scheduler/Dockerfile \
 #         -t us-central1-docker.pkg.dev/$PROJECT/swarm-images/swarm-scheduler:$TAG .
@@ -38,7 +40,8 @@ ARG UV_IMAGE=ghcr.io/astral-sh/uv:0.12.15@sha256:62f8c047d0a0e9ece6b53fc63df9025
 FROM ${UV_IMAGE} AS uvbin
 
 # ---------------------------------------------------------------------------
-# builder: wheels for the frozen contract and the reconciler, then /opt/venv
+# builder: wheels for the frozen contract, the quota broker's package and the
+# scheduler, then /opt/venv
 # ---------------------------------------------------------------------------
 FROM ${PYTHON_IMAGE} AS builder
 
@@ -57,12 +60,19 @@ COPY --from=uvbin /uv /usr/local/bin/uv
 
 WORKDIR /src
 COPY apps/common/ /src/apps/common/
+# The quota broker's PACKAGE, not its service: admission reads the account
+# pool with the broker's own model and asks the broker's own function who an
+# account serves (scheduler/credentials.py, #169). `apps/scheduler/pyproject.toml`
+# resolves it through `{ path = "../quota-broker" }`, so it keeps the same
+# relative position as the frozen contract does.
+COPY apps/quota-broker/ /src/apps/quota-broker/
 COPY apps/scheduler/ /src/apps/scheduler/
 
 # Build `swarm-common` into a local wheelhouse first and resolve it from there:
 # no index has ever heard of it, so `--find-links` is what makes this build work
-# without a private registry.
+# without a private registry. `swarm-quota-broker` the same way.
 RUN uv build --wheel --out-dir /wheels /src/apps/common \
+ && uv build --wheel --out-dir /wheels /src/apps/quota-broker \
  && uv build --wheel --out-dir /wheels /src/apps/scheduler
 
 # `--without-pip`: the stdlib venv otherwise seeds pip, setuptools and wheel,

@@ -64,11 +64,17 @@ UNKNOWN = "UNKNOWN"
 #: dropped: a caller that passed `input` or `image` believing it would be
 #: honoured needs to be told it was not, and silently ignoring a key is how
 #: invariant 10 would get quietly tested.
+#:
+#: `inputs` is the runner's DECLARED inputs (#142) -- `sleep_seconds` for the
+#: mock, say -- checked per profile by `profiles.check_inputs`. It is not the
+#: API's raw `input` object, which stays refused: that would let a caller set
+#: `input.model` on a runner that reads it.
 _STEP_KEYS = frozenset(
     {
         "step_id",
         "prompt",
         "runner_profile",
+        "inputs",
         "depends_on",
         "input_from",
         "resource_class",
@@ -77,6 +83,15 @@ _STEP_KEYS = frozenset(
 )
 
 DEFAULT_PROFILE = "claude-code"
+
+#: What a workflow's `strategy` and `carrier` may be, for `swarm workflow
+#: --strategy/--carrier` to offer as choices. They are the API's
+#: (`swarm_api.validation.DISPATCH_STRATEGIES` / `DISPATCH_CARRIERS`), which
+#: this package cannot import -- it depends on swarm-common alone -- so this is
+#: a copy, and a copy is only safe while something compares it:
+#: `test_the_workflow_choices_are_the_apis` fails the moment they differ.
+STRATEGIES = ("collect", "direct-pr", "integrate")
+CARRIERS = ("checkpoints", "branches")
 
 
 # --------------------------------------------------------------------------
@@ -97,16 +112,21 @@ def build_steps(raw_steps: Any) -> list[dict[str, Any]]:
     keyboard costs nothing; the same refusal four minutes later costs a dispatch,
     a lease and a pod.
 
-    THE PROMPT IS ALSO THE ONLY WAY INPUT IS EXPRESSED, for the same reason
-    `swarm_dispatch` has no `input` parameter: invariant 10 says a caller names a
-    runner profile and supplies DATA, never an image, a command or a resource
-    spec. `prompt` becomes `input.prompt` and nothing else here reaches the
+    INPUT IS THE PROMPT, PLUS WHAT THE PROFILE DECLARES, and nothing else --
+    for the same reason `swarm_dispatch` has no raw `input` parameter:
+    invariant 10 says a caller names a runner profile and supplies DATA, never
+    an image, a command or a resource spec. `prompt` becomes `input.prompt`,
+    and a step's `inputs` becomes the rest of `input` only where the frozen
+    catalogue's `RunnerProfile.inputs` names them for its profile (#142,
+    contract request 25) -- the mock's `sleep_seconds`, for one. swarm-api
+    applies the same declaration to every caller. Nothing here reaches the
     runner's argv.
 
     Everything else about the DAG -- cycles, a dependency naming a step that is
     not in the workflow, an `input_from` whose source is not also a `depends_on`,
-    the step ceiling -- is checked by `swarm_api.validation` and is NOT restated
-    here. That validator is the one with the tests; a second opinion in this file
+    two parents of one step staging the same filename, an absolute or
+    traversing filename, the step ceiling -- is checked by
+    `swarm_api.validation` and is NOT restated here. That validator is the one with the tests; a second opinion in this file
     would be a second thing to keep in step with it.
     """
     if not isinstance(raw_steps, list) or not raw_steps:
@@ -119,10 +139,19 @@ def build_steps(raw_steps: Any) -> list[dict[str, Any]]:
             raise SwarmError(f"{where} is not an object")
         unknown = sorted(set(raw) - _STEP_KEYS)
         if unknown:
+            # THE WORDING HAS TO AGREE WITH THE LIST BESIDE IT. This said "a
+            # resource spec cannot be supplied at all" directly after listing
+            # `resource_class` as accepted (#88, SC-F6). What is refused is a
+            # spec -- cpu, memory, an image, a command, a backend; what is
+            # accepted is a NAME, from the catalogue, which is invariant 10.
             raise SwarmError(
                 f"{where} carries {unknown}, which this tool does not send. "
-                f"Accepted: {sorted(_STEP_KEYS)}. A step's data goes in `prompt`; "
-                "an image, a command or a resource spec cannot be supplied at all."
+                f"Accepted: {sorted(_STEP_KEYS)}. A step's data goes in `prompt`, "
+                "which becomes its `input.prompt`, and in `inputs`, for the inputs "
+                "its runner profile declares (`swarm_profiles` lists them); a runner "
+                "is chosen by naming a `runner_profile` and a size by naming a "
+                "`resource_class`. An image, a command, a backend or cpu and memory "
+                "figures are never sent."
             )
 
         step_id = str(raw.get("step_id") or "").strip()
@@ -147,12 +176,17 @@ def build_steps(raw_steps: Any) -> list[dict[str, Any]]:
         # sixteen good steps still ran, so the bad four cost real capacity to
         # learn something the catalogue already knew. Refusing here refuses the
         # SUBMISSION, before any of it is scheduled.
+        profile = catalogue.check(str(raw.get("runner_profile") or DEFAULT_PROFILE), where=where)
         step: dict[str, Any] = {
             "step_id": step_id,
-            "runner_profile": catalogue.check(
-                str(raw.get("runner_profile") or DEFAULT_PROFILE), where=where
-            ),
-            "input": {"prompt": prompt},
+            "runner_profile": profile,
+            # The prompt, and whatever the profile DECLARES and the step asked
+            # for -- checked by name and kind, and refused otherwise (#142).
+            # `check_inputs` refuses a `prompt` key, so it cannot replace this one.
+            "input": {
+                "prompt": prompt,
+                **catalogue.check_inputs(profile, raw.get("inputs"), where=where),
+            },
         }
 
         depends_on = raw.get("depends_on") or []
@@ -370,6 +404,12 @@ def step_rows(
             continue
 
         row["state"] = task.get("state")
+        if task.get("cancel_requested"):
+            # The step's own flag, which the state does NOT carry: a step
+            # holding capacity stays DISPATCHED or RUNNING, flagged, until its
+            # worker releases it. Without this a cancelled workflow showed its
+            # steps as plainly RUNNING (#88, SC-F2).
+            row["cancel_requested"] = True
         if task.get("park_reason"):
             row["park_reason"] = task["park_reason"]
         if task.get("blocked_by"):

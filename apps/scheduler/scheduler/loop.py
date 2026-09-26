@@ -33,15 +33,16 @@ from datetime import datetime, timedelta
 from typing import Any, Callable
 
 from swarm_common.admission import AdmissionConfig, AdmissionDenied
-from swarm_common.models import Lease, Task, Tenant, utcnow
+from swarm_common.models import EndCause, Lease, Task, Tenant, utcnow
 from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES, resolve_backend
 from swarm_common.states import PENDING_STATES, EventType, ParkReason, TaskState
 
+from .credentials import AccountPool, CredentialSource, credential_for
 from .dispatch import BackendRouter, DispatchError
 from .fairness import AgingConfig, round_robin_order
 from .metrics import SchedulerMetrics
 from .settings import SchedulerSettings
-from .store import GuardedWrite, SchedulerStore
+from .store import GuardedWrite, ParentEnd, SchedulerStore
 
 log = logging.getLogger(__name__)
 
@@ -56,6 +57,56 @@ PREWARM_REASONS = (
 _FAILED_PARENT_STATES = frozenset(
     {TaskState.FAILED, TaskState.CANCELLED, TaskState.DEAD_LETTERED}
 )
+
+
+#: A CANCELLED parent with one of these causes was ended by a FAILURE -- its
+#: own failed parent, or the fail_workflow sweep -- and passes a failure on.
+_FAILURE_SENT_CAUSES = frozenset({EndCause.FAILED_PARENT.value, EndCause.WORKFLOW_SWEEP.value})
+#: ... and with one of these, by a cancel somebody asked for, at that step or
+#: above it.
+_CANCEL_SENT_CAUSES = frozenset({EndCause.CANCEL_REQUESTED.value, EndCause.CANCELLED_PARENT.value})
+
+
+def _parent_cause(parents: dict[str, ParentEnd], failed: list[str]) -> EndCause | None:
+    """Why a dependant of `failed` is cancelled: after a failure, or after a cancel.
+
+    The text the cancel writes -- "an upstream workflow step did not succeed"
+    -- is the same for both, which is what made the outcome ledger count a
+    cancel somebody pressed as a failure (#185, decision 2).
+
+    A PARENT'S OWN END DECIDES, NOT ITS STATE (the review of #217). The rule
+    is transitive -- `_FAILED_PARENT_STATES` holds CANCELLED, so a step
+    cancelled after a failure is itself a "failed parent" to its own
+    dependants -- and read by state alone, every step two or more hops below a
+    FAILED one was recorded as "after a cancel" that nobody made. So:
+
+      * FAILED_PARENT when any parent is FAILED or DEAD_LETTERED, or is
+        CANCELLED by a failure (`failed_parent`, `workflow_sweep`). A failure
+        wins over a stop beside it: the failure is what the dependant could
+        not have survived.
+      * CANCELLED_PARENT only when every cancelled parent was ended by a
+        cancel somebody asked for (`cancel_requested`, `cancelled_parent`, or
+        -- for a parent that ended before causes were recorded -- the flag).
+      * None otherwise: a cancelled parent whose own end this read cannot name
+        (it ended before causes were recorded, with no flag, or carries a cause
+        this image does not know). The scheduler does not guess; the outcome
+        ledger splits a task without a cause by following its chain of parents
+        (`swarm_api.outcomes.cancel_cause`), which it can read and this sweep
+        does not.
+    """
+    ends = [parents[tid] for tid in failed if tid in parents]
+    if any(end.state in (TaskState.FAILED, TaskState.DEAD_LETTERED) for end in ends):
+        return EndCause.FAILED_PARENT
+    cancelled = [end for end in ends if end.state is TaskState.CANCELLED]
+    if any(end.end_cause in _FAILURE_SENT_CAUSES for end in cancelled):
+        return EndCause.FAILED_PARENT
+    if cancelled and all(
+        end.end_cause in _CANCEL_SENT_CAUSES or (end.end_cause is None and end.cancel_requested)
+        for end in cancelled
+    ):
+        return EndCause.CANCELLED_PARENT
+    return None
+
 
 #: The one `on_step_failure` value the scheduler acts on. Anything else,
 #: `continue` included, leaves only the dependency rule above in force.
@@ -187,11 +238,19 @@ class Scheduler:
         metrics: SchedulerMetrics | None = None,
         now: Callable[[], datetime] = utcnow,
         monotonic: Callable[[], float] = time.monotonic,
+        pool: AccountPool | None = None,
     ) -> None:
         self._settings = settings
         self._store = store
         self._router = router
         self._metrics = metrics or SchedulerMetrics()
+        # The account pool admission and the credential sweep ask about
+        # (credentials.py). `main.build_scheduler` hands the SAME instance to
+        # the Cloud Run dispatcher, so the Job's secret mount is decided on the
+        # list admission read, and `drain()` forgets it at the top of each run.
+        self._pool = pool if pool is not None else AccountPool.for_deployment(
+            settings, store.db
+        )
         self._now = now
         self._monotonic = monotonic
         self._aging = AgingConfig(
@@ -245,6 +304,8 @@ class Scheduler:
         self._topup_tenant_ids: list[str] | None = None
         self._workflow_verdicts = {}
         self._swept_workflows = set()
+        # A loan made or withdrawn since the last drain is seen by this one.
+        self._pool.forget()
 
         if self._store.dispatch_paused():
             self._metrics.paused.set(1)
@@ -384,7 +445,11 @@ class Scheduler:
         if task.cancel_requested:
             # It holds no capacity in READY, so it can be finished here.
             self._cancel(
-                task, "cancellation requested before admission", report, why="cancel_requested"
+                task,
+                "cancellation requested before admission",
+                report,
+                why="cancel_requested",
+                end_cause=EndCause.CANCEL_REQUESTED,
             )
             return False
 
@@ -413,7 +478,8 @@ class Scheduler:
             return False
 
         if task.depends_on:
-            states = self._store.task_states(task.depends_on)
+            parents = self._store.parent_ends(task.depends_on)
+            states = {tid: end.state for tid, end in parents.items()}
             failed = [tid for tid, state in states.items() if state in _FAILED_PARENT_STATES]
             if failed:
                 self._cancel(
@@ -422,6 +488,7 @@ class Scheduler:
                     report,
                     why="failed_parent",
                     detail={"failed_parents": failed},
+                    end_cause=_parent_cause(parents, failed),
                 )
                 return False
             if any(states.get(tid) is not TaskState.SUCCEEDED for tid in task.depends_on):
@@ -449,14 +516,19 @@ class Scheduler:
             )
             return False
 
-        if profile.provider and profile.provider not in tenant.credentials:
-            # Admitting this would start a container that can only fail, and it
-            # would hold a slot while doing so.
+        # ONE QUESTION, asked here, in the credential sweep and by the Cloud
+        # Run Job's secret mount: can this tenant run this profile, on a key of
+        # its own or on a pool account it may use (credentials.py, #169). No
+        # means a container that can only park or fail, holding a slot while
+        # it does, so it parks here, before any lease. The detail names what
+        # the account pool answered, so the park says what would clear it.
+        credential = credential_for(profile, tenant, self._pool)
+        if not credential.runnable:
             self._park(
                 task,
                 ParkReason.CREDENTIAL_MISSING,
                 report,
-                detail={"provider": profile.provider},
+                detail=credential.park_detail(),
             )
             return False
 
@@ -670,9 +742,10 @@ class Scheduler:
         report: DrainReport,
         *,
         why: str,
+        end_cause: EndCause | None,
         detail: dict[str, Any] | None = None,
     ) -> None:
-        outcome = self._store.cancel(task, text, detail)
+        outcome = self._store.cancel(task, text, detail, end_cause=end_cause)
         if outcome.applied:
             self._count_cancel(report, reason=why)
         else:
@@ -793,7 +866,9 @@ class Scheduler:
                 state,
                 self._settings.dependency_sweep_size,
             ):
-                outcome = self._store.cancel_if_not_started(step, reason, detail)
+                outcome = self._store.cancel_if_not_started(
+                    step, reason, detail, end_cause=EndCause.WORKFLOW_SWEEP
+                )
                 if outcome.applied:
                     self._count_cancel(report, reason="workflow_failed")
                     cancelled += 1
@@ -852,7 +927,8 @@ class Scheduler:
                 ):
                     promoted += 1
                 continue
-            states = self._store.task_states(task.depends_on)
+            parents = self._store.parent_ends(task.depends_on)
+            states = {tid: end.state for tid, end in parents.items()}
             failed = [tid for tid, state in states.items() if state in _FAILED_PARENT_STATES]
             if failed:
                 self._cancel(
@@ -861,6 +937,7 @@ class Scheduler:
                     report,
                     why="failed_parent",
                     detail={"failed_parents": failed},
+                    end_cause=_parent_cause(parents, failed),
                 )
                 continue
             if all(states.get(tid) is TaskState.SUCCEEDED for tid in task.depends_on):
@@ -874,14 +951,36 @@ class Scheduler:
         return promoted
 
     def _promote_credentials(self, report: DrainReport) -> int:
-        """Re-ready tasks whose tenant has since registered the missing key.
+        """Re-ready tasks that admission would now let run.
+
+        The same question admission asks (`credential_for`): the tenant has
+        since registered the missing key, or has since been lent -- or has
+        registered -- a pool account that serves the profile. Asked in any
+        other words, a task this sweep promotes could be parked again by
+        admission a moment later, or one admission would run could wait here
+        for a key nobody needs to register.
 
         A step of a failed `fail_workflow` workflow is cancelled here instead,
         which can happen long before its key is registered. `report` is
         required, not optional: that cancel, and any promotion the store
         refused to force, is counted in it.
+
+        A POOL ANSWER WAITS FOR THE PARK'S OWN INSTANT. "Could this tenant run
+        on paper" is not what a WORKER's CREDENTIAL_MISSING park is about. A
+        worker that could not reach the broker falls back to the tenant's key,
+        finds none, and parks for an hour (`lifecycle._park_credential_missing`);
+        one the broker refused, or that could read no account, parks on
+        `_park_no_account`'s fallback. The accounts in Firestore still say the
+        pool serves the tenant, so promoting on that answer -- which also
+        clears `next_eligible_at` -- started the task again on every drain, a
+        container that could only park, for as long as the cause lasted. So
+        when the answer is ACCOUNT_POOL and the park carries an instant still
+        ahead, the task waits for it. Admission's own parks set no instant and
+        are unaffected. A key registered meanwhile makes the answer TENANT_KEY,
+        which promotes at once: the wait never delays a fix an admin made.
         """
         promoted = 0
+        now = self._now()
         for task in self._store.parked_tasks(
             ParkReason.CREDENTIAL_MISSING, self._settings.dependency_sweep_size
         ):
@@ -893,11 +992,18 @@ class Scheduler:
             profile = RUNNER_PROFILES.get(task.runner_profile)
             if profile is None:
                 continue
-            if not profile.provider or profile.provider in tenant.credentials:
+            credential = credential_for(profile, tenant, self._pool)
+            if (
+                credential.source is CredentialSource.ACCOUNT_POOL
+                and task.next_eligible_at is not None
+                and task.next_eligible_at > now
+            ):
+                continue
+            if credential.runnable:
                 if self._promote(
                     task,
                     kind="credential",
-                    detail={"reason": "credential_registered", "provider": profile.provider},
+                    detail=credential.promote_detail(),
                     report=report,
                 ):
                     promoted += 1
@@ -907,19 +1013,40 @@ class Scheduler:
         """Promote quota-parked work just before its window reopens.
 
         BOUNDED by `prewarm_max_agents`, and safe by construction: the only
-        tasks promoted are ones whose provider pool carries a
-        `quota_derived_limit`, so if the estimate is wrong admission simply
-        refuses and the task stays READY -- which costs nothing (invariant 1).
-        No container is started ahead of time; that would be spending money on a
-        guess.
+        tasks promoted EARLY are ones with a `provider:{p}:tenant:{t}` pool,
+        whose `quota_derived_limit` holds admission shut, so if the estimate is
+        wrong admission simply refuses and the task stays READY -- which costs
+        nothing (invariant 1). No container is started ahead of time; that would
+        be spending money on a guess.
 
         A step of a failed `fail_workflow` workflow met here is cancelled rather
         than promoted.
+
+        THIS IS ALSO WHERE THESE PARKS END, not only where they end early.
+        Nothing else in the platform returns a PROVIDER_QUOTA_EXHAUSTED,
+        PROVIDER_COOLDOWN or PROVIDER_OUTAGE park to READY: the reconciler has
+        no rule for parked tasks. So the pool guard below applies to EARLY
+        promotion only. A task whose `next_eligible_at` has passed is promoted
+        whether or not the guard pool exists, because by then there is no
+        window left to promote it ahead of. Before this, a task with no
+        `provider:{p}:tenant:{t}` pool stayed PARKED for ever. Terraform
+        creates that pool only from a tenant's declared `providers`, and a
+        tenant that runs on a lent pool account declares none, so the worker's
+        wait on a spent, unobserved or paused account
+        (`lifecycle._park_no_account`) never ended (#171 review). A park with
+        no instant at all is still promoted only under a guard: without one
+        there is nothing to say the window has reopened.
+
+        NOT FIXED HERE: because the end of the wait lives in this sweep,
+        `enable_prewarm=False` or a zero `prewarm_max_agents` stops these parks
+        ending at all, not only ending early. docs/quota-management.md section
+        5 says so.
         """
         budget = max(0, self._settings.core.prewarm_max_agents)
         if budget == 0:
             return 0
-        horizon = self._now() + timedelta(seconds=self._settings.core.prewarm_lead_seconds)
+        now = self._now()
+        horizon = now + timedelta(seconds=self._settings.core.prewarm_lead_seconds)
         # Read once: the guard below needs to know which provider pools exist.
         pools = self._store.pools()
         promoted = 0
@@ -934,17 +1061,19 @@ class Scheduler:
                 eligible_at = task.next_eligible_at
                 if eligible_at is not None and eligible_at > horizon:
                     continue
+                due = eligible_at is not None and eligible_at <= now
                 guard = f"provider:{task.provider}:tenant:{task.tenant_id}"
-                if not task.provider or guard not in pools:
+                if not due and (not task.provider or guard not in pools):
                     # Without that pool there is nothing carrying the provider's
-                    # quota cap, so promoting early would let the task be
-                    # admitted BEFORE the window reopens -- a container started
-                    # on a guess. Leave it parked for the reconciler.
+                    # quota cap, so promoting EARLY would let the task be
+                    # admitted before the window reopens -- a container started
+                    # on a guess. It waits for its own instant instead.
                     continue
                 if self._promote(
                     task,
                     kind="prewarm",
-                    detail={"reason": "prewarm", "park_reason": reason.value,
+                    detail={"reason": "window_reopened" if due else "prewarm",
+                            "park_reason": reason.value,
                             "was_eligible_at": eligible_at.isoformat() if eligible_at else None},
                     report=report,
                 ):

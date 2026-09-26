@@ -12,16 +12,26 @@ The second is workflow DAG validation. A workflow whose `depends_on` graph has
 a cycle would sit in DEPENDENCY_INCOMPLETE forever, holding no capacity but also
 never completing and never erroring -- the worst kind of failure, because
 nothing alerts. So the cycle is rejected at submission with the exact cycle
-named.
+named. An `input_from` the worker would refuse gets the same treatment: caught
+at run time, it is caught only after every upstream step has spent its compute.
 """
 
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
-from typing import Any, Iterable, Sequence
+from dataclasses import dataclass, field
+from pathlib import PurePosixPath
+from typing import Any, Iterable, Mapping, Sequence
 
-from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES, RunnerProfile
+from swarm_common.profiles import (
+    INT64_MAX,
+    INT64_MIN,
+    RESOURCE_CLASSES,
+    RUNNER_PROFILES,
+    InputRefused,
+    RunnerProfile,
+    check_inputs,
+)
 
 from .errors import ValidationFailed
 
@@ -154,6 +164,110 @@ def validate_input_size(payload: Any, max_bytes: int, *, label: str = "input") -
     return size
 
 
+def validate_storable(payload: Any, *, label: str = "input", step_id: str | None = None) -> None:
+    """Refuse an integer, anywhere in `payload`, that Firestore cannot store.
+
+    Python reads a JSON integer of any length, and Firestore stores a signed
+    64-bit one, so `{"n": 10**30}` passed every check this module made and
+    raised when the task was written: a 500 at the store, where the caller
+    learns nothing, instead of a 422 here that names the path (the review of
+    #213). A declared runner input cannot get this far out of range --
+    `RunnerInput` requires both bounds, inside the same range -- but a profile
+    whose inputs are not declared yet (`browser`, `generic`, #218) is bounded
+    by size alone, and a task's metadata by size and its reserved keys. This is
+    the store's own limit, not a declaration, so it applies to every profile.
+
+    Walked with a stack, not recursion: a payload nested a thousand deep is
+    small enough to pass the size limit and deep enough to overflow Python's.
+    """
+    stack: list[tuple[str, Any]] = [(label, payload)]
+    while stack:
+        path, value = stack.pop()
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, int):
+            if not INT64_MIN <= value <= INT64_MAX:
+                message = (
+                    f"{path} is a {len(str(abs(value)))}-digit integer, outside the "
+                    f"signed 64-bit range Firestore stores ({INT64_MIN}..{INT64_MAX})"
+                )
+                detail: dict[str, Any] = {"path": path, "range": "signed 64-bit"}
+                if step_id is not None:
+                    detail["step_id"] = step_id
+                    message = f"step {step_id!r}: {message}"
+                raise ValidationFailed(message, detail=detail)
+        elif isinstance(value, Mapping):
+            stack.extend((f"{path}.{key}", item) for key, item in value.items())
+        elif isinstance(value, (list, tuple)):
+            stack.extend((f"{path}[{index}]", item) for index, item in enumerate(value))
+
+
+class InvalidInput(ValidationFailed):
+    """A task's or a step's `input` sets a key its runner profile does not
+    declare, or a declared key outside its bounds (contract request 25).
+
+    Its own code, like `invalid_dispatch` and `invalid_dag`, so a caller can
+    branch on it: this refusal is about what was sent to the runner, and its
+    detail names the key (`key`, and every refused key in `keys`), the bound
+    it broke (`expected`, for a declared key), what the profile does declare
+    (`declared`) and, on a workflow, the step (`step_id`).
+    """
+
+    code = "invalid_input"
+
+
+#: The one key of `input` every profile takes: the instructions. Everything
+#: else is what `RunnerProfile.inputs` declares.
+PROMPT_INPUT_KEY = "prompt"
+
+
+def validate_runner_input(
+    profile: RunnerProfile, payload: Mapping[str, Any], *, step_id: str | None = None
+) -> None:
+    """Refuse an `input` key the profile does not declare, or a value out of its bounds.
+
+    THE CATALOGUE IS THE RULE, and this keeps no copy of it: the owner accepted
+    contract request 25 on #142 (2026-09-25) as "`RunnerProfile.inputs` goes in
+    the frozen catalogue and the API enforces it for every caller, not only the
+    bridge". Until then the API bounded an input's SIZE and nothing else, so a
+    script or the Submit form could send the mock `quota_exhausted` -- which
+    parked on every attempt, and a park does not spend one -- or send
+    `claude-code` a `model`, which its runner passes as `--model`.
+
+    Every caller reaches this: `_build_task` calls it for a task and for each
+    task of a batch, and `submit_workflow` for each step before any task is
+    built. Values are checked, never rewritten: the input is stored as sent.
+
+    EVERY PROFILE IS ASKED, and the answer is the shared rule's. A profile
+    whose inputs are NOT DECLARED YET (`inputs is None`: `browser`, `generic`,
+    open with the owner on #218) is bounded by size alone, as every profile was
+    before, because its runner cannot start without keys nobody has decided on
+    yet -- and that is `check_inputs`'s answer, not a branch here. The review
+    of #213 found this function returning before it asked, while the shared
+    rule refused every key for the same profiles: two answers to one question.
+    The size is `validate_input_size`'s, which every caller runs first.
+    """
+    rest = {key: value for key, value in payload.items() if key != PROMPT_INPUT_KEY}
+    try:
+        check_inputs(profile, rest)
+    except InputRefused as refused:
+        # Only a profile that declares can refuse, so `inputs` is a mapping here.
+        declared = profile.inputs or {}
+        detail: dict[str, Any] = {
+            "runner_profile": profile.name,
+            "key": refused.key,
+            "keys": list(refused.keys),
+            "declared": {key: spec.describe() for key, spec in sorted(declared.items())},
+        }
+        if refused.expected is not None:
+            detail["expected"] = refused.expected
+        message = str(refused)
+        if step_id is not None:
+            detail["step_id"] = step_id
+            message = f"step {step_id!r}: {message}"
+        raise InvalidInput(message, detail=detail) from None
+
+
 def validate_batch_size(count: int, max_batch_size: int) -> None:
     if count <= 0:
         raise ValidationFailed("batch must contain at least one task")
@@ -209,11 +323,52 @@ DEFAULT_CARRIER = "checkpoints"
 #: must not have it silently overwritten by the platform.
 DISPATCH_METADATA_KEY = "dispatch"
 
+#: The key inside `task.metadata` the worker stages declared inputs from:
+#: `{upstream TASK id: filename}`. Written by workflow expansion only
+#: (`SubmissionService.submit_workflow`), which rewrites a step's
+#: `{upstream_step: filename}` to the task ids it has just minted. The worker
+#: spells it `agent_worker.inputs.METADATA_KEY`, and
+#: tests/unit/control_plane/test_input_from_is_reserved.py and
+#: test_input_from_submission.py hold the two equal: reserving a key the worker
+#: does not read would refuse nothing that matters. Defined once, here, beside
+#: the other reserved keys, and `submit_workflow` writes under it.
+INPUT_FROM_METADATA_KEY = "input_from"
+
+#: The key inside `task.metadata` naming the files a workflow step's dependants
+#: stage from it (#149). Written by workflow expansion only, on each UPSTREAM
+#: step's task (`swarm_api.expected_outputs.record_expected_outputs`). Defined
+#: here, beside the other reserved keys, because `expected_outputs` imports this
+#: module and the reservation below needs the key: the other way round is an
+#: import cycle. `swarm_api.expected_outputs` re-exports it under the same name,
+#: and tests/unit/control_plane/test_expected_outputs_seam.py holds it equal to
+#: the worker's `agent_worker.expected_outputs.METADATA_KEY`.
+EXPECTED_OUTPUTS_METADATA_KEY = "expected_outputs"
+
+#: Every key inside `task.metadata` this service writes and a caller may not,
+#: in the order a refusal names them. One tuple, checked by one function, so a
+#: caller who sent several is told about all of them in one 422 rather than one
+#: per round trip -- which is what #153's separate expected_outputs check did
+#: until it was folded in here.
+RESERVED_METADATA_KEYS = (
+    DISPATCH_METADATA_KEY,
+    INPUT_FROM_METADATA_KEY,
+    EXPECTED_OUTPUTS_METADATA_KEY,
+)
+
 #: Strategies and carriers that cannot work without somewhere to push to.
 _NEEDS_REPOSITORY_STRATEGIES = ("direct-pr", "integrate")
 
 
 class DispatchOptionError(ValidationFailed):
+    """422 `invalid_dispatch`: a refused dispatch option, or a reserved metadata key.
+
+    The `metadata.input_from` (#151) and `metadata.expected_outputs` (#149)
+    reservations answer with this code too, rather than new ones. The owner's
+    instruction was "reserved, like dispatch", and a caller branching on the
+    code should read every reservation the same way.
+    `detail.reserved_metadata_keys` says which keys it was.
+    """
+
     code = "invalid_dispatch"
 
 
@@ -274,20 +429,70 @@ def _accepted_value(name: str, value: Any, accepted: tuple[str, ...], detail_key
     return text
 
 
-def reject_reserved_metadata(metadata: dict[str, Any]) -> None:
-    """`metadata.dispatch` is computed by this service, never accepted from a caller.
+#: Why each reserved key is refused, and what the caller should send instead.
+#: A refusal that says only "reserved" leaves the caller guessing at the one
+#: part they can act on.
+_RESERVED_BECAUSE = {
+    DISPATCH_METADATA_KEY: (
+        f"metadata.{DISPATCH_METADATA_KEY} is reserved: it records the strategy "
+        "and carrier this service resolved for the dispatch. Use the top-level "
+        "`strategy` and `carrier` fields instead."
+    ),
+    INPUT_FROM_METADATA_KEY: (
+        f"metadata.{INPUT_FROM_METADATA_KEY} is reserved: it is set by workflow "
+        "expansion, which rewrites a step's `input_from` to the ids of the "
+        "upstream tasks it creates. To stage an upstream step's artifact, submit "
+        "a workflow (POST /v1/workflows) and declare `input_from` on the step "
+        "that needs it, with the upstream step in its `depends_on`."
+    ),
+    EXPECTED_OUTPUTS_METADATA_KEY: (
+        f"metadata.{EXPECTED_OUTPUTS_METADATA_KEY} is reserved: it is set by "
+        "workflow expansion, which records on each upstream step the files its "
+        "dependants' `input_from` stage from it. To have an agent told which "
+        "files a later step needs, submit a workflow (POST /v1/workflows) and "
+        "declare `input_from` on the step that needs them."
+    ),
+}
 
-    Accepting it would let a caller write a role, an integrates list, or a
-    strategy that never passed the checks below, straight into the document the
-    worker acts on.
+
+def reject_reserved_metadata(metadata: dict[str, Any]) -> None:
+    """Refuse a caller's metadata that names a key this service writes.
+
+    `metadata.dispatch`: accepting it would let a caller write a role, an
+    integrates list, or a strategy that never passed the checks below, straight
+    into the document the worker acts on.
+
+    `metadata.input_from` (owner decision on #151, 2026-09-25): the worker
+    stages whatever it names. Accepted from a caller, it arrived with no
+    dependency edge, so nothing guaranteed the upstream had run, and a bad
+    declaration was refused only at run time, after the task had been admitted
+    and had held capacity. Workflow expansion is the only writer, because only
+    it has checked the declaration against the DAG. ANY value is refused, `{}`
+    and None included: the key is reserved, not validated.
+
+    `metadata.expected_outputs` (owner decision on #149, point (d)): the worker
+    tells the agent, in the platform's voice, that later steps of its workflow
+    need these files. Accepted from a caller, that would be said about a task
+    no step stages from. Reserved, not validated, like `input_from`.
+
+    HOW THE SERVICE'S OWN WRITES GET PAST THIS: ORDER, NOT A FLAG. This runs on
+    the caller's metadata only, before any of the keys is added. `_build_task`
+    calls it, then adds `dispatch`. `submit_workflow` calls it on the workflow's
+    own metadata; it adds `input_from` to a step's task after `_build_task` has
+    returned, and `expected_outputs` to every built task just before the one
+    store write. Nothing a caller sends can reach the store under any of them.
+
+    Every reserved key present is named in the detail, in RESERVED_METADATA_KEYS
+    order, so a caller who sent several learns about all of them from one
+    refusal.
     """
-    if DISPATCH_METADATA_KEY in metadata:
-        raise DispatchOptionError(
-            f"metadata.{DISPATCH_METADATA_KEY} is reserved: it records the strategy "
-            "and carrier this service resolved for the dispatch. Use the top-level "
-            "`strategy` and `carrier` fields instead.",
-            detail={"reserved_metadata_keys": [DISPATCH_METADATA_KEY]},
-        )
+    present = [key for key in RESERVED_METADATA_KEYS if key in metadata]
+    if not present:
+        return
+    raise DispatchOptionError(
+        " ".join(_RESERVED_BECAUSE[key] for key in present),
+        detail={"reserved_metadata_keys": present},
+    )
 
 
 def resolve_dispatch_options(
@@ -390,10 +595,34 @@ class StepSpec:
 
     step_id: str
     depends_on: tuple[str, ...]
-    input_from: tuple[str, ...] = ()
+    #: upstream step_id -> artifact filename, exactly as submitted.
+    #:
+    #: THE FILENAMES ARE HERE, NOT ONLY THE IDS. This used to be a tuple of
+    #: parent ids, which is all the dependency rule needs. That is why two
+    #: parents staging the same `notes.md` into one step went unchecked until
+    #: the worker refused the step, after both parents had run (#64). Excluded
+    #: from the hash because a mapping has none.
+    input_from: Mapping[str, str] = field(default_factory=dict, hash=False)
 
 
 class DagError(ValidationFailed):
+    """Every workflow refusal `validate_dag` and its helpers make: 422 `invalid_dag`.
+
+    ONE CODE, ONE STATUS. The `input_from` refusals added for #64 (a filename
+    two parents stage into one step, an absolute or traversing filename) raise
+    this class too, not a subclass with a status of its own. The owner decided
+    so on #64 on 2026-09-25: the New Workflow screen (`SubmitWorkflow.tsx`
+    `KIND_BY_STATUS`) heads a 422 "That request was not valid", and a caller
+    branching on the status or on the code must read every refusal in the
+    family the same way. `test_every_invalid_dag_refusal_answers_one_status`
+    holds it.
+
+    A workflow-level `metadata.input_from` is NOT in this family. The key is
+    reserved (owner decision on #151), so `reject_reserved_metadata` refuses it
+    with 422 `invalid_dispatch` before `validate_dag` runs, whatever its value.
+    The same test pins that ordering and the one status both codes share.
+    """
+
     code = "invalid_dag"
 
 
@@ -406,7 +635,9 @@ def validate_dag(steps: Sequence[StepSpec], *, max_steps: int) -> list[str]:
       3. no step depends on itself
       4. every `depends_on` names a step IN THIS WORKFLOW
       5. every `input_from` source is also an upstream dependency
-      6. the graph is acyclic
+      6. every `input_from` filename is a relative path inside the workspace,
+         and no two parents of one step stage the same one
+      7. the graph is acyclic
 
     Returns a topological order, which the caller uses to create tasks parent
     before child so a child never observes a missing parent task document.
@@ -458,6 +689,7 @@ def validate_dag(steps: Sequence[StepSpec], *, max_steps: int) -> list[str]:
                     "not have run yet",
                     detail={"step_id": step.step_id, "input_from": source},
                 )
+        validate_staged_filenames(step)
 
     cycle = find_cycle(steps)
     if cycle:
@@ -466,6 +698,136 @@ def validate_dag(steps: Sequence[StepSpec], *, max_steps: int) -> list[str]:
             detail={"cycle": cycle},
         )
     return topological_order(steps)
+
+
+# --------------------------------------------------------------------------
+# input_from filenames: what the worker would refuse, refused here first
+# --------------------------------------------------------------------------
+#
+# The worker ALREADY enforces every rule below at run time
+# (`agent_worker/inputs.py`: `declared_inputs`, `_assert_distinct_destinations`,
+# `destination_for`), and it keeps doing so. That is defence in depth: the
+# worker reads a free-form dict, and it alone knows the reserved names.
+#
+# A step's `input_from` is the ONLY door a declaration has. A caller cannot
+# send `metadata.input_from` at all -- on a plain task, a batch or a workflow's
+# own `metadata` it is refused whole by `reject_reserved_metadata` (422
+# `invalid_dispatch`, #151), before `validate_dag` runs -- so every
+# `metadata.input_from` the worker reads was written by `submit_workflow` from
+# a step declaration that passed the checks here. There is no workflow-level
+# declaration to check separately.
+#
+# What checking here changes is WHEN the answer arrives. At run time it
+# arrives after every upstream step has run. Measured 2026-09-25 on wf_1e547922a981411991e2, that
+# was ~20 minutes of claude-code across nine steps, then four failed merges and
+# seventeen cancellations, for a mistake visible in the request body (#64).
+#
+# THE RULE IS RESTATED BECAUSE IT HAS TO BE, AND A TEST HOLDS THE COPY. The
+# swarm-api image ships apps/common and apps/swarm-api and nothing else, so
+# `agent_worker` cannot be imported here.
+# tests/unit/control_plane/test_input_from_submission.py runs the worker's own
+# functions against these rules: every filename accepted here must pass the
+# worker's `destination_for`, and the collision refused here must be one the
+# worker refuses.
+#
+# THE WORKER'S RESERVED NAMES ARE NOT RESTATED. The worker derives `repo`,
+# `.swarm` and the workspace control files from `Workspace` at run time, and a
+# copy here would be the mirrored-value shape behind three outages in this
+# repository (docs/mirrored-values.md). A reserved name is still refused: by
+# the worker, at staging.
+
+#: Path segments that make a filename name something other than a file inside
+#: the step's workspace. "" comes from a leading, doubled or trailing "/".
+#:
+#: STRICTER THAN THE WORKER on "" and ".". `destination_for` normalises
+#: `./notes.md` and `reports//notes.md` through `PurePosixPath` and would place
+#: them. Refusing them costs nothing, because such a name can never MATCH an
+#: artifact. The uploader names each artifact by its path relative to the
+#: artifacts directory (`relative_to(...).as_posix()` in
+#: `lifecycle._upload_outputs`), and that path never has an empty or "."
+#: segment, so the worker would refuse the name one step later with "did not
+#: produce an artifact named ...".
+_UNSAFE_SEGMENTS = ("", ".", "..")
+
+
+def _filename_problem(filename: str) -> str | None:
+    """Why `filename` cannot be staged into a workspace, or None if it can.
+
+    `filename` has already been stripped, as the worker strips it.
+    """
+    if not filename:
+        return "is empty"
+    if filename.startswith("/"):
+        return "is an absolute path"
+    if "\\" in filename or "\x00" in filename:
+        return "contains a backslash or a NUL character"
+    for segment in filename.split("/"):
+        if segment in _UNSAFE_SEGMENTS:
+            return f"contains the path segment {segment!r}"
+    return None
+
+
+def _distinct_name(source: str, filename: str) -> str:
+    """The filename the refusal suggests: the same name, prefixed with the parent's step id."""
+    path = PurePosixPath(filename)
+    return str(path.with_name(f"{source}-{path.name}"))
+
+
+def validate_staged_filenames(step: StepSpec) -> None:
+    """Refuse an `input_from` whose files cannot all land in this step's workspace.
+
+    There are two refusals. Each names the step, the parent and the filename,
+    because those three strings are what a person needs to fix the request:
+
+    * a filename that is empty, absolute, or has an empty, "." or ".." segment;
+    * two or more parents staging the SAME filename. `input_from` names the
+      artifact in the upstream's prefix AND the path it lands at here, so there
+      is no way to say "take both": one would overwrite the other. The fix is
+      on the upstream side: each parent writes its own filename.
+
+    Filenames are compared after `.strip()`, which is what the worker compares.
+    """
+    landing: dict[str, list[str]] = {}
+    for source, raw in step.input_from.items():
+        filename = raw.strip() if isinstance(raw, str) else ""
+        problem = _filename_problem(filename)
+        if problem is not None:
+            raise DagError(
+                f"step {step.step_id!r} stages input from {source!r} as {raw!r}, which "
+                f"{problem}. An input_from filename is where the artifact lands in "
+                "this step's workspace, so it must be a relative path inside it, "
+                "such as 'notes.md' or 'reports/notes.md', with no empty, '.' or "
+                "'..' segment. The worker would refuse it at run time, after "
+                f"{source!r} had already run.",
+                detail={
+                    "step_id": step.step_id,
+                    "input_from": source,
+                    "filename": raw,
+                    "problem": problem,
+                },
+            )
+        landing.setdefault(filename, []).append(source)
+
+    for filename, sources in landing.items():
+        if len(sources) < 2:
+            continue
+        parents = sorted(sources)
+        suggestion = " and ".join(repr(_distinct_name(p, filename)) for p in parents[:2])
+        raise DagError(
+            f"step {step.step_id!r} stages {filename!r} from {len(parents)} upstream "
+            f"steps ({', '.join(repr(p) for p in parents)}). An input_from filename "
+            "is both the artifact's name in the upstream step and the path it lands "
+            "at in this step's workspace, so these files would overwrite one another. "
+            "The worker refuses such a step at run time, after every one of those "
+            "upstream steps has already run. Give each parent a distinct artifact "
+            f"filename (have each upstream step write its own, e.g. {suggestion}) "
+            "and stage those instead.",
+            detail={
+                "step_id": step.step_id,
+                "filename": filename,
+                "colliding_upstream_steps": parents,
+            },
+        )
 
 
 def find_cycle(steps: Iterable[StepSpec]) -> list[str] | None:

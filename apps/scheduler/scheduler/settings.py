@@ -209,6 +209,12 @@ class SchedulerSettings:
     #:
     #: Empty means "this deployment has no pool", which is the documented
     #: backwards-compatible default and not a guess at a URL.
+    #:
+    #: ADMISSION READS IT TOO, and only for that yes or no (credentials.py,
+    #: #169). Set, a tenant with no key of its own may still be admitted for a
+    #: profile that takes a subscription token, if an account in the
+    #: `accounts` collection is owned by or lent to it. The scheduler reads
+    #: that collection from Firestore; it still never calls the broker.
     quota_broker_url: str = ""
     #: OIDC audience the worker asks the metadata server for. Cloud Run checks
     #: `aud` against the service URL unless the service declares a custom

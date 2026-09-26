@@ -178,6 +178,21 @@ export function poolKind(name: string): PoolKind {
   }
 }
 
+/**
+ * The pool a tenant's quota document for one provider feeds (CP-8, #85).
+ *
+ * `quota_broker/service.py` `apply_to_pools` writes a document's derived cap
+ * onto exactly this pool, and `pool_names_for` puts it in every task's list
+ * for that provider. Provider quota names it on each row, so a reader can see
+ * that the document's cap is ONE input to a pool whose own ceiling may be
+ * lower. `scripts/lib/check-contract-parity.sh` section 5 reads this template
+ * literal and holds it to `pool_names_for`, so the signature and the one-line
+ * body stay exactly this shape.
+ */
+export function providerTenantPool(provider: string, tenant: string): string {
+  return `provider:${provider}:tenant:${tenant}`
+}
+
 /** `provider:anthropic:tenant:u-bogdan` -> `anthropic · u-bogdan`. */
 export function poolLabel(name: string): string {
   if (name === 'global') return 'global'
@@ -185,6 +200,32 @@ export function poolLabel(name: string): string {
   if (parts.length <= 2) return parts[1] ?? name
   // provider:X:tenant:Y
   return `${parts[1]} · ${parts[3] ?? parts[2]}`
+}
+
+/**
+ * `poolLabel`, qualified by kind wherever another pool in `among` would print
+ * the same word (CP-15).
+ *
+ * `poolLabel` drops the kind, which is right almost everywhere and wrong in
+ * exactly one shape this platform has: `resource:browser` and
+ * `runner:browser` both print `browser`. A blocker list then read "Lift
+ * browser" twice and "browser and browser still binds" -- two different
+ * ceilings, owned by two different settings, under one name. Where that
+ * happens both are qualified, `browser · resource` and `browser · runner`;
+ * where it does not, nothing changes, so the short label stays the common
+ * case.
+ *
+ * `among` is whatever set the labels will be READ together in -- a blocker's
+ * pools, a profile's pools, every pool on a screen. Two pools of the SAME kind
+ * that still print one label differ only in the part `poolLabel` drops, so
+ * those fall back to the raw name, the one spelling left that cannot collide.
+ */
+export function poolLabelAmong(name: string, among: readonly string[]): string {
+  const label = poolLabel(name)
+  const rivals = among.filter((other) => other !== name && poolLabel(other) === label)
+  if (rivals.length === 0) return label
+  const kind = poolKind(name)
+  return rivals.some((other) => poolKind(other) === kind) ? name : `${label} · ${kind}`
 }
 
 /** What `headroomFor` hands a screen. Every field comes off the response. */
@@ -571,6 +612,15 @@ export interface DispatchConsequence {
   pushes: boolean
   /** The headline, with the real step count already in it. */
   headline: string
+  /**
+   * THE WORKFLOW CARD'S SHORT VALUE (WF-13, epic #83): a lowercase phrase that
+   * reads after the card's `opens` key -- "opens no pull request and pushes
+   * nothing". The headline is two sentences for a form where a choice is being
+   * made, and after a key it read "opens No pull request. Nothing is pushed."
+   * Built in the same switch, and its ceiling word ("up to") comes from
+   * `atMost`, so it never claims more than the count does.
+   */
+  opens: string
   /** What happens to the work itself. */
   detail: string
 }
@@ -581,43 +631,63 @@ export function consequenceOf(
 ): DispatchConsequence {
   const n = Math.max(1, steps)
   const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? '' : 's'}`
+  // THE CARD'S VALUE TAKES ITS CEILING WORD FROM THE ARM'S OWN `atMost` (WF-13):
+  // a count that can come out lower reads "up to", one that cannot is stated
+  // as it is. Read off the object rather than written into each string, so the
+  // phrase cannot claim more than the count it sits beside.
+  const withOpens = (c: Omit<DispatchConsequence, 'opens'>, what: string): DispatchConsequence => ({
+    ...c,
+    opens: `${c.atMost ? 'up to ' : ''}${what}`,
+  })
   switch (strategy) {
     case 'collect':
-      return {
-        pullRequests: 0,
-        atMost: false,
-        pushes: false,
-        headline: 'No pull request. Nothing is pushed.',
-        detail:
-          `Each of the ${plural(n, 'step')} harvests its patch into the task's own GCS ` +
-          'prefix and the run ends there. Nothing reaches the repository, so this is ' +
-          'the only strategy that works with a read-only token.',
-      }
+      return withOpens(
+        {
+          pullRequests: 0,
+          atMost: false,
+          pushes: false,
+          headline: 'No pull request. Nothing is pushed.',
+          detail:
+            `Each of the ${plural(n, 'step')} harvests its patch into the task's own GCS ` +
+            'prefix and the run ends there. Nothing reaches the repository, so this is ' +
+            'the only strategy that works with a read-only token.',
+        },
+        'no pull request and pushes nothing',
+      )
     case 'direct-pr':
-      return {
-        pullRequests: n,
-        atMost: true,
-        pushes: true,
-        headline: `Up to ${plural(n, 'pull request')} — one per step.`,
-        detail:
-          `Every step pushes its own branch and opens its own pull request, so ${plural(n, 'step')} ` +
-          `means ${plural(n, 'review')} to do and ${plural(n, 'branch')} to merge. A step whose agent ` +
-          'changed nothing opens none, which is why this is a ceiling and not a count.',
-      }
+      return withOpens(
+        {
+          pullRequests: n,
+          atMost: true,
+          pushes: true,
+          headline: `Up to ${plural(n, 'pull request')} — one per step.`,
+          detail:
+            `Every step pushes its own branch and opens its own pull request, so ${plural(n, 'step')} ` +
+            `means ${plural(n, 'review')} to do and ${plural(n, 'branch')} to merge. A step whose agent ` +
+            'changed nothing opens none, which is why this is a ceiling and not a count.',
+        },
+        plural(n, 'pull request'),
+      )
     case 'integrate':
-      return {
-        pullRequests: 1,
-        atMost: true,
-        pushes: true,
-        headline: 'Exactly one pull request for the whole workflow.',
-        detail:
-          n < 2
-            ? 'One final step receives the others’ work and opens the single pull ' +
-              'request. There are no other steps here yet, so there is nothing to integrate.'
-            : `The final step merges the other ${plural(n - 1, 'step')}’ branches into its own ` +
-              'and opens one pull request against the repository. Those steps push a branch each ' +
-              'and open nothing.',
-      }
+      // "Exactly one or none": the integrator is the only step that opens a
+      // pull request, and it opens none if nothing changed -- `atMost` is true,
+      // so the card says "up to 1".
+      return withOpens(
+        {
+          pullRequests: 1,
+          atMost: true,
+          pushes: true,
+          headline: 'Exactly one pull request for the whole workflow.',
+          detail:
+            n < 2
+              ? 'One final step receives the others’ work and opens the single pull ' +
+                'request. There are no other steps here yet, so there is nothing to integrate.'
+              : `The final step merges the other ${plural(n - 1, 'step')}’ branches into its own ` +
+                'and opens one pull request against the repository. Those steps push a branch each ' +
+                'and open nothing.',
+        },
+        '1 pull request, for all steps',
+      )
   }
 }
 
@@ -626,12 +696,6 @@ export const STRATEGY_LABEL: Readonly<Record<DispatchStrategy, string>> = {
   collect: 'Collect',
   'direct-pr': 'A PR per step',
   integrate: 'One PR for all steps',
-}
-
-/** Label and gloss for each carrier. See the honesty note in `CARRIER_NOTE`. */
-export const CARRIER_LABEL: Readonly<Record<DispatchCarrier, string>> = {
-  checkpoints: 'Checkpoints',
-  branches: 'Branches',
 }
 
 /**
@@ -716,7 +780,73 @@ export interface ResultSummary {
    * absence here can mean are kept apart.
    */
   staged_inputs?: StagedInputRef[]
+  /**
+   * Which artifacts are the agent CLI's own streams (#184), or null for a
+   * runner with no agent CLI (mock, browser). Absent on a summary written
+   * before the change.
+   */
+  agent_streams?: AgentStreams | null
+  /**
+   * What a claude-code or codex task with NO repository uploaded from its
+   * working folder, as `workdir/<path>` entries of `artifacts` (#184, owner
+   * decision of 2026-09-26), and what it did not. Absent on a repository task
+   * and on every other runner. Read it through `workdirNotUploadedOf`, which
+   * checks each entry rather than trusting the shape.
+   */
+  workdir_outputs?: WorkdirOutputs
   [k: string]: unknown
+}
+
+/**
+ * `result_summary.workdir_outputs`, as `Worker._upload_workdir_outputs`
+ * writes it. `not_uploaded` is the FIRST 50 files the worker did not upload,
+ * each with its reason ("over cap", a core dump, a name that is not UTF-8, a
+ * registered secret it could not redact...); `not_uploaded_count` is all of
+ * them, and the worker's log names every one. These are never in
+ * `artifacts_skipped`, whose readers call a name there dropped at the
+ * artifacts folder's size cap.
+ */
+export interface WorkdirOutputs {
+  prefix?: string
+  uploaded?: number
+  uploaded_bytes?: number
+  not_uploaded?: WorkdirNotUploaded[]
+  not_uploaded_count?: number
+  symlinks_skipped?: number
+  working_folder_is_symlink?: boolean
+  cap_files?: number
+  cap_bytes?: number
+}
+
+/** One working-folder file the worker did not upload, and why. */
+export interface WorkdirNotUploaded {
+  /** `workdir/<path>`. A name that was not UTF-8 is spelled as its bytes (`caf\xe9.txt`). */
+  name: string
+  bytes: number | null
+  reason: string
+}
+
+/**
+ * The working-folder files a summary lists as not uploaded, and how many
+ * there were in all. `null` when the summary has no such record -- a
+ * repository task, another runner, or a summary from before #184 -- which is
+ * not the same as a record of none. An entry that is not a named file is
+ * dropped here and still counted in `total`, which comes from the worker.
+ */
+export function workdirNotUploadedOf(
+  summary: ResultSummary | null | undefined,
+): { listed: WorkdirNotUploaded[]; total: number } | null {
+  const block: unknown = summary?.workdir_outputs
+  if (block === null || typeof block !== 'object') return null
+  const { not_uploaded: entries, not_uploaded_count: count } = block as { not_uploaded?: unknown; not_uploaded_count?: unknown }
+  const raw: unknown[] = Array.isArray(entries) ? entries : []
+  const listed = raw.filter((e): e is WorkdirNotUploaded => {
+    if (e === null || typeof e !== 'object') return false
+    const { name, reason } = e as { name?: unknown; reason?: unknown }
+    return typeof name === 'string' && typeof reason === 'string'
+  })
+  const total = typeof count === 'number' && Number.isFinite(count) && count >= listed.length ? count : listed.length
+  return { listed, total }
 }
 
 /**
@@ -1127,6 +1257,31 @@ export interface AttemptRow {
   cache_read_input_tokens: number | null
   cache_creation_input_tokens: number | null
   cost_usd: number | null
+  /**
+   * THE ATTEMPT'S CPU, typed on its document (contract request #15, accepted
+   * on #184 on 2026-09-25) and served on every row. Every runner the attempt
+   * started, combined; 1.0 is one whole vCPU.
+   *
+   *  - `cpu_seconds`      CPU time its runners consumed;
+   *  - `peak_cpu_cores`   the busiest sampling interval;
+   *  - `mean_cpu_cores`   cpu_seconds over RUNNER wall time;
+   *  - `cpu_limit_cores`  what they are a fraction of: the container's cgroup
+   *                       `cpu.max`, else the catalogue cpu of the class it
+   *                       was sized with. Which of the two is not recorded.
+   *
+   * The worker rewrites them with each periodic reading while a runner runs
+   * and when each runner is reaped, so on a running attempt they are LIVE, and
+   * the document records no time for them.
+   *
+   * NULL is not measured, never 0. OPTIONAL, and a missing key is a different
+   * fact again: an API older than the typed fields, which says nothing about
+   * the attempt. These replaced #188's `usage` block (`attempts?include=usage`),
+   * which read the figures off HEARTBEAT events; that block is not read.
+   */
+  cpu_seconds?: number | null
+  peak_cpu_cores?: number | null
+  mean_cpu_cores?: number | null
+  cpu_limit_cores?: number | null
 }
 
 // --------------------------------------------------------------------------
@@ -1261,8 +1416,9 @@ export function bytesLabel(bytes: number | null | undefined): string {
  *
  * So a row with an id and no uri is not a broken checkpoint. It means the
  * event that described it is not on the page of events we were handed, which
- * happens for real: the events route orders OLDEST first, caps the page and
- * returns no page token, and a worker heartbeats throughout, so the later
+ * happens for real: this screen reads one page of events, OLDEST first, and
+ * does not follow the page token the events route returns (help topic
+ * `event-paging`), and a worker heartbeats throughout, so the later
  * checkpoints of a long attempt are exactly the ones whose events fall off
  * the end. `uriKnown` is what lets the screen say that instead of drawing a
  * blank cell.
@@ -1386,8 +1542,9 @@ export function restoredFrom(attempt: AttemptRow, events: TaskEvent[] | null): R
  * live process.
  *
  * It is NOT the same claim as the final figure and must never be rendered as
- * one: it is the high-water mark AS OF that event, and the event page is
- * oldest-first with no page token, so on a long attempt the newest heartbeat
+ * one: it is the high-water mark AS OF that event, and this screen reads one
+ * page of events, oldest-first, without following the page token the route
+ * returns, so on a long attempt the newest heartbeat
  * available here can be old. Every caller therefore renders `at` beside it.
  */
 export interface HeartbeatReading {
@@ -1629,11 +1786,29 @@ export const TERMINAL_STATES: ReadonlySet<TaskState> = new Set<TaskState>([
   'SUCCEEDED', 'FAILED', 'CANCELLED', 'DEAD_LETTERED',
 ])
 
-export type Tone = 'ok' | 'bad' | 'live' | 'wait'
+/**
+ * A task state's tone, which is what its MARK is drawn from (design-system.md
+ * §6.6).
+ *
+ *   ok     SUCCEEDED                      the neutral disc
+ *   bad    FAILED, DEAD_LETTERED          the diamond
+ *   live   the four concurrency states    the haloed, pulsing disc
+ *   wait   QUEUED, READY, PARKED          the caution triangle
+ *   ended  CANCELLED                      the neutral flat bar (CH-22)
+ *
+ * `ended` IS A TONE OF ITS OWN (CH-22, owner decision 2026-09-25). CANCELLED
+ * was `wait`, so Agents drew it as the caution TRIANGLE and Workflows as a
+ * blue disc with an amber word: a task somebody chose to stop, drawn as work
+ * still waiting. It is terminal and it is not a verdict -- the flat bar, grey,
+ * the one `is-info` modifier (not a second one) -- and at 390, where the word
+ * is hidden, cancelled, queued and succeeded are three different shapes.
+ */
+export type Tone = 'ok' | 'bad' | 'live' | 'wait' | 'ended'
 
 export function stateTone(state: TaskState): Tone {
   if (state === 'SUCCEEDED') return 'ok'
   if (state === 'FAILED' || state === 'DEAD_LETTERED') return 'bad'
+  if (state === 'CANCELLED') return 'ended'
   if (CONCURRENCY_STATES.has(state)) return 'live'
   return 'wait'
 }
@@ -1981,28 +2156,178 @@ export function whyAgent(task: Task): string {
 }
 
 /**
+ * AG-14 (owner decision, 2026-09-25). WHETHER `whyAgent`'s LINE ASKS A PERSON
+ * TO ACT -- which is the only thing its `--warn` ink is allowed to say.
+ *
+ * Every why line was painted `--warn`, so a step waiting on the step before
+ * it -- what a healthy chain says about most of its steps for its whole life
+ * -- was the same yellow as a failure, and a colour on every line said
+ * nothing about any of them. The decision: warn for failures, for work that
+ * can never be admitted, for sign-in needed, and for stuck or silent workers;
+ * routine waits (queued, parked on quota, waiting on a dependency) and
+ * cancellations in plain ink.
+ *
+ * NOTHING NEW IS CLASSIFIED HERE. "Needs a person" is the partition this file
+ * already keeps and the trouble board already reads: `PARK_NEEDS_A_PERSON`
+ * (a missing credential, a spent budget, an operator pause -- no timer ends
+ * any of them) and `needsAPerson(blockerCeiling(...))` (a pool paused or set
+ * to zero by a person, which admits nothing until somebody acts: "can never
+ * be admitted"). The branches mirror `whyAgent`'s, so a line and its ink are
+ * decided from the same fields.
+ *
+ * STUCK OR SILENT WORKERS HAVE NO BRANCH HERE, because this reads a task
+ * document and a worker's silence is not on it: `whyAgent` writes nothing for
+ * a task that holds a slot, and the heartbeat is written to the lease. The
+ * inspector, which reads the task's events, writes its own `--warn` line for
+ * a worker `livenessOf` calls silent (`SilentWorker` in AgentDetail.tsx). The
+ * Agents list cannot until a tenant-scoped route serves the heartbeat (#179).
+ *
+ * WHAT "CAN NEVER BE ADMITTED" COVERS, stated because it is wider than one
+ * reason: a pool paused (MANUAL_PAUSE, as a blocker or as a park) or set to
+ * zero by a person, and a spent budget (BUDGET_EXHAUSTED) -- none admits the
+ * task again until somebody acts. "Sign-in needed" is CREDENTIAL_MISSING.
+ */
+export function whyNeedsAction(task: Task): boolean {
+  if (task.state === 'FAILED') return true
+  if (task.state === 'PARKED') {
+    return task.park_reason !== null && PARK_NEEDS_A_PERSON.has(String(task.park_reason))
+  }
+  if (task.state === 'READY' && task.blocked_by?.length) {
+    const b = leadBlocker(task.blocked_by)
+    if (!b) return false
+    return needsAPerson(blockerCeiling(b)) || PARK_NEEDS_A_PERSON.has(b.reason)
+  }
+  return false
+}
+
+/**
+ * What an `elapsed` figure is a measure of. A caller choosing the LABEL for the
+ * figure -- `run` in the inspector's facts strip, a column head -- reads this
+ * rather than parsing the text: a `run` key over a `never-ran` figure is the
+ * AG-3 contradiction all over again.
+ *
+ *   ran        a finished task that started: from its last start to its end
+ *   running    STARTING or RUNNING now; the figure is this attempt's run so
+ *              far and is still growing
+ *   waiting    live and not running. Only when NOTHING HAS STARTED AND NO
+ *              SLOT IS HELD (READY, PARKED, QUEUED, SUBMITTED with no
+ *              `started_at`) is there a figure: the task's age, all of it a
+ *              wait, as `waiting 4m 0s`, ticking. LEASED and DISPATCHED, and
+ *              any live state after an earlier attempt started, print the
+ *              state word alone and do not tick -- see `elapsed` for why. So
+ *              `waiting` does NOT imply a figure, and it does not imply that
+ *              nothing ran: `task.started_at !== null` is what says an
+ *              earlier attempt did.
+ *   never-ran  finished without ever starting; there is no run to time
+ *   unknown    no span the document can time: no creation time, a finished
+ *              task whose end was never recorded, or STARTING or RUNNING
+ *              with no start recorded
+ */
+export type ElapsedPhase = 'ran' | 'running' | 'waiting' | 'never-ran' | 'unknown'
+
+/**
+ * The two states in which the task document's `started_at` is THIS attempt's
+ * start, so `now - started_at` is time run. The worker writes `started_at` on
+ * DISPATCHED -> STARTING and nothing clears it, so in every other live state a
+ * `started_at` present is an earlier attempt's. `stepviews.ts` and `dag.ts`
+ * draw the same line for the same reason.
+ */
+const RUN_STATES: ReadonlySet<TaskState> = new Set<TaskState>(['STARTING', 'RUNNING'])
+
+/**
  * Column 6, "Elapsed".
  *
  * `started_at` is written on DISPATCHED -> STARTING, so a LEASED or
- * DISPATCHED task legitimately has none. That must read "queued 4m", never
- * "0s" and never "Invalid Date" -- and `completed_at` can be null on a row
- * that went terminal between two polls, so the terminal branch cannot assume
- * it.
+ * DISPATCHED task legitimately has none. That must never read "0s" or
+ * "Invalid Date" -- and `completed_at` can be null on a row that went
+ * terminal between two polls, so the terminal branch cannot assume it.
+ *
+ * WALL TIME IS NEVER REPORTED AS RUN TIME (AG-3). A terminal task that never
+ * started -- cancelled while it waited, failed at admission -- used to fall
+ * back from `started_at` to `created_at`, and the drawer printed that
+ * created-to-completed span as `run 27m 57s` beside a `never ran` chip. There
+ * is no run to time, so the answer is the words `never ran`.
+ *
+ * THE WORD SAYS WHAT AN UNSTARTED TASK IS DOING (AG-12). It was `queued` for
+ * every one of them, which on LEASED and DISPATCHED -- states that HOLD A POOL
+ * SLOT, in the tab that means exactly that -- contradicted the tab it sat in.
+ * A concurrency state is named by its own state word; everything else
+ * unstarted costs nothing and reads `waiting`. The word comes from the state,
+ * not from a list typed here.
+ *
+ * A STATE WORD IN FRONT OF A DURATION READS AS TIME IN THAT STATE, and the
+ * task document holds that time for NO state: nothing records when a task was
+ * leased, dispatched, parked or made ready. (`updated_at` is not it: it also
+ * moves on writes that change no state -- the scheduler's `record_blockers`, a
+ * cancel request, a checkpoint.)
+ * AG-12's first form printed the age after the word -- `leased 3h 0m` for a
+ * task that queued three hours and was leased a second ago -- which is what a
+ * stuck lease looks like, and an operator chases it. So the concurrency states
+ * print the word alone. The age is the inspector's `age` fact.
+ *
+ * A START ON THE DOCUMENT IS NOT A RUN IN PROGRESS. `started_at` survives a
+ * park, a promote back to READY and a reclaim -- nothing on the platform
+ * clears it -- so a task that ran, hit quota and parked forty minutes ago
+ * still carries its start. Timed from there it read `41m 0s`, ticking, phase
+ * `running`, on a task holding no capacity and running nothing. Only in
+ * `RUN_STATES` is the start this attempt's, so only there is the figure run
+ * time.
+ *
+ * AND THE AGE IS NOT A WAIT ONCE SOMETHING HAS RUN. The first fix for the
+ * above timed a task between attempts from `created_at` and printed `waiting
+ * 50m 0s`: fifty minutes of waiting for a task that ran for thirty-six of them.
+ * The age includes every earlier run and the document does not say how much,
+ * so between attempts there is no figure to give: the text is the state word,
+ * and nothing ticks. Only a task that has never started and holds no slot has
+ * a wait the document can time, and for it the whole age is one.
+ *
+ * NOTE ON WIDTH. Every form here fits the Agents list's `[age]` track, whose
+ * floor `shell.test.tsx` derives from this function over every state, started
+ * or not: the longest is `waiting 99d 23h`, 15 characters.
+ *
+ * WHAT THE TASK DOCUMENT CANNOT TELL APART. For a finished task the figure is
+ * last start to end. A task cancelled while PARKED, after an earlier attempt
+ * started, has a start and an end and nothing that says it was parked in
+ * between, so that span includes the parked time. The attempt documents do
+ * not settle it either -- a park writes no attempt end -- and the task is
+ * the only read the Agents list makes.
  */
-export function elapsed(task: Task, now: number): { text: string; ticking: boolean } {
+export function elapsed(
+  task: Task,
+  now: number,
+): { text: string; ticking: boolean; phase: ElapsedPhase } {
   const ms = (v: string | null) => (v ? new Date(v).getTime() : NaN)
   const created = ms(task.created_at)
   const started = ms(task.started_at)
   const completed = ms(task.completed_at)
 
-  if (Number.isFinite(completed)) {
-    const from = Number.isFinite(started) ? started : created
-    if (!Number.isFinite(from)) return { text: '\u2014', ticking: false }
-    return { text: formatDuration(completed - from), ticking: false }
+  if (TERMINAL_STATES.has(task.state)) {
+    if (!Number.isFinite(started)) return { text: 'never ran', ticking: false, phase: 'never-ran' }
+    // A finished task with no recorded end has no run length, and counting on
+    // to `now` would put a growing figure on a task that is over. Every
+    // terminal write sets `completed_at` with the state, so this is an older
+    // document or a writer that forgot; the figure is an absence either way.
+    return Number.isFinite(completed)
+      ? { text: formatDuration(completed - started), ticking: false, phase: 'ran' }
+      : { text: '\u2014', ticking: false, phase: 'unknown' }
   }
-  if (Number.isFinite(started)) return { text: formatDuration(now - started), ticking: true }
-  if (Number.isFinite(created)) return { text: `queued ${formatDuration(now - created)}`, ticking: true }
-  return { text: '\u2014', ticking: false }
+  if (RUN_STATES.has(task.state)) {
+    // STARTING or RUNNING with no start recorded: the worker writes the two in
+    // one update, so this is an older document or a writer that forgot. The
+    // age is not a run length, and the state chip already says RUNNING.
+    return Number.isFinite(started)
+      ? { text: formatDuration(now - started), ticking: true, phase: 'running' }
+      : { text: '\u2014', ticking: false, phase: 'unknown' }
+  }
+  if (Number.isFinite(started) || CONCURRENCY_STATES.has(task.state)) {
+    // Between attempts, or holding a slot before this attempt starts. The
+    // document has no time for either; see above.
+    return { text: task.state.toLowerCase(), ticking: false, phase: 'waiting' }
+  }
+  if (Number.isFinite(created)) {
+    return { text: `waiting ${formatDuration(now - created)}`, ticking: true, phase: 'waiting' }
+  }
+  return { text: '\u2014', ticking: false, phase: 'unknown' }
 }
 
 /**
@@ -2627,21 +2952,83 @@ export function timeAgo(when: Date | string | number, now: number = Date.now()):
 }
 
 /**
- * The five-cell bar, as `miniBar` in claudeswitch's internal/render/width.go
- * draws it: round to the nearest fifth, clamp, `▰` filled and `▱`
- * empty.
+ * An age as a bare span -- `40s`, `14m`, `3h`, `5d` -- for a mark or a range
+ * that says `old` after it (`5d old`, `readings 2m–14m old`).
  *
- * Returned as a count rather than a string so the component can draw real
- * elements -- a screen reader hearing five geometric-shape glyphs learns
- * nothing, and the percentage beside it is the accessible version of the
- * same fact.
+ * `timeAgo`'s buckets and rounding, so the two never disagree about the same
+ * instant, without its "just now": a range reading "just now–14m" is not
+ * something anyone says, and under five seconds is still a number of seconds.
  */
-export const BAR_CELLS = 5
-
-export function barFilled(pct: number): number {
-  const filled = Math.round((pct / 100) * BAR_CELLS)
-  return Math.max(0, Math.min(BAR_CELLS, filled))
+export function ageSpan(ms: number): string {
+  const s = Math.max(0, Math.round(ms / 1000))
+  if (s < 60) return `${s}s`
+  if (s < 3600) return `${Math.round(s / 60)}m`
+  const h = Math.round(s / 3600)
+  if (h < 48) return `${h}h`
+  return `${Math.round(h / 24)}d`
 }
+
+/**
+ * THE QUOTA BROKER'S SWEEP INTERVAL, stated once (CP-9, #85).
+ *
+ * It is the `quota-refresh` Cloud Scheduler job: the scheduler module's
+ * `quota_refresh_schedule`, `*\/5 * * * *` (terraform/modules/scheduler/
+ * variables.tf), which the root does not override. Every five minutes the
+ * broker's `sweep` retires expired cooldowns and re-asserts every provider
+ * pool. `scripts/lib/check-contract-parity.sh` section 7 holds this number to
+ * that cron, so a changed schedule with this constant left behind fails there
+ * rather than quietly calling current readings stale.
+ *
+ * A SWEEP, NOT A REPORT (#159 review). This was `QUOTA_REPORT_INTERVAL_
+ * SECONDS`, and the screen called it "the broker's reporting interval". No
+ * such report exists: the sweep rewrites a document only when its state or
+ * its derived cap changed, and `updated_at` moves when a WORKER reports -- at
+ * the end of a clean run, or on a 429 (`update_quota_state`). An AVAILABLE
+ * document nobody reports on keeps the `updated_at` of the last worker report
+ * or state change, which is what `Reported` prints.
+ *
+ * WHICH TICK THE OWNER'S "TWICE THE BROKER'S REPORTING INTERVAL" MEANT IS AN
+ * OPEN QUESTION TO THE OWNER (#85, CP-9): the sweep, a worker-report cadence
+ * (there is no fixed one), or a fixed age. Until it is answered the threshold
+ * stays twice the sweep, and the words say so rather than naming a report.
+ */
+export const QUOTA_SWEEP_INTERVAL_SECONDS = 300
+
+/**
+ * A quota reading older than this is drawn with the stale mark and its age,
+ * never with the ok verdict: twice the broker's sweep interval, the closest
+ * config value to the owner's rule (2026-09-25; see above for what is still
+ * open). One missed tick is a late tick; two is a reading nothing has
+ * confirmed since. On a quiet tenant that is most rows at rest: nothing has
+ * reported on them since, which is the true age of what they say.
+ */
+export const QUOTA_STALE_AFTER_MS = 2 * QUOTA_SWEEP_INTERVAL_SECONDS * 1000
+
+/**
+ * How old a quota document's reading is, and whether that is past
+ * `QUOTA_STALE_AFTER_MS`. `ageMs` is null when `updated_at` is missing or
+ * unparseable -- an age nobody recorded, which is not a fresh one, so it is
+ * stale too.
+ */
+export function quotaReadingAge(
+  q: Pick<QuotaState, 'updated_at'>,
+  now: number,
+): { stale: boolean; ageMs: number | null } {
+  const at = q.updated_at ? new Date(q.updated_at).getTime() : Number.NaN
+  if (!Number.isFinite(at)) return { stale: true, ageMs: null }
+  const ageMs = Math.max(0, now - at)
+  return { stale: ageMs > QUOTA_STALE_AFTER_MS, ageMs }
+}
+
+/*
+ * `BAR_CELLS` AND `barFilled` LIVED HERE AND ARE GONE (CP-25, #85). They drew
+ * Accounts' five-cell bar the way claudeswitch's `miniBar` does -- round to the
+ * nearest fifth, clamp -- which put a second proportion primitive beside
+ * §6.4's one and rounded 42% to three cells. The owner's decision collapsed it
+ * into the shared `UtilTrack` (primitives.tsx) at the exact percentage. What
+ * the table still shares with `cs status` is the figure, the `~` and the
+ * window labels.
+ */
 
 // ---------------------------------------------------------------------------
 // Adding an account: the two-step sign-in
@@ -2832,12 +3219,32 @@ export interface CheckpointsPage {
   latest_checkpoint: LatestCheckpointPointer
 }
 
-/** Which object was served: the completed record, or the live tail. */
-export type LogSource = 'final' | 'live'
-export type LogStatus = 'ok' | 'absent' | 'unreadable'
+/**
+ * Which object was served: the completed record, the live tail, or -- for the
+ * agent CLI's own streams on an attempt that ran before their final copies
+ * existed -- the artifact the runner wrote (`artifact`, #184's legacy
+ * fallback: `claude-code.stdout.log` on `task_73b5f4d9ca3641fbb914`).
+ */
+export type LogSource = 'final' | 'live' | 'artifact'
+/**
+ * `not_applicable` is the fourth answer #184 added, and only for the agent
+ * streams: the runner has no agent CLI (mock, browser), so no such stream was
+ * ever going to exist. It is not `absent`, which is a stream that should have
+ * been uploaded and was not.
+ */
+export type LogStatus = 'ok' | 'absent' | 'unreadable' | 'not_applicable'
+
+/**
+ * `stdout` and `stderr` are the RUNNER PROCESS's streams -- the platform's
+ * wrapper around the agent, whose stderr holds lines like `child started`.
+ * `agent_stdout` and `agent_stderr` are the agent CLI's own (#184). The first
+ * pair was shown for months under "Output, as the agent wrote it", which it is
+ * not.
+ */
+export type LogStreamName = 'stdout' | 'stderr' | 'agent_stdout' | 'agent_stderr'
 
 export interface LogStream {
-  stream: 'stdout' | 'stderr'
+  stream: LogStreamName
   source: LogSource | null
   status: LogStatus
   detail: string | null
@@ -2855,26 +3262,297 @@ export interface LogStream {
   redacted: boolean
   redaction_count: number
   /** From the `#swarm-tail` header, for a live window: where it sits in the
-   *  stream, so a reader can tell a gap from a continuation. */
-  tail_window: { object_offset: number; stream_size: number } | null
+   *  stream, so a reader can tell a gap from a continuation. `published_at` is
+   *  the header's `at=` (#184), absent on a tail written before it existed. */
+  tail_window: { object_offset: number; stream_size: number; published_at?: string | null } | null
+  /**
+   * The object's own GCS `updated` time, and the age the SERVER computed from
+   * it at `read_at` (#184). A live tail is republished every interval even when
+   * nothing changed, so this is the publisher's liveness, not new output.
+   * OPTIONAL because an API older than #184 sends neither; null means the
+   * server could not tell, which is different from not saying.
+   */
+  object_updated_at?: string | null
+  age_seconds?: number | null
+  /**
+   * Bytes of this window that are not UTF-8 (#188 review): JSON cannot carry
+   * them, so the server shows each as U+FFFD, COUNTS them here and says so in
+   * `detail`. Null when nothing was read; absent on an API older than it.
+   */
+  invalid_utf8_bytes?: number | null
+}
+
+/** Which attempt a log, transcript or answer read describes. */
+export interface LogAttempt {
+  status: 'latest' | 'requested' | 'unknown_attempt' | 'no_attempt_yet'
+  known: boolean
+  generation: number | null
+  created_at: string | null
+  completed_at: string | null
+  exit_code: number | null
 }
 
 export interface TaskLogs {
   task_id: string
   tenant_id: string
   attempt_id: string | null
-  attempt: {
-    status: 'latest' | 'requested' | 'unknown_attempt' | 'no_attempt_yet'
-    known: boolean
-    generation: number | null
-    created_at: string | null
-    completed_at: string | null
-    exit_code: number | null
-  }
+  attempt: LogAttempt
+  /** When the server read the objects (#184). Every `age_seconds` is from here. */
+  read_at?: string
   streams: LogStream[]
   prefix: string
   /** Stated by the server rather than assumed here. A deployment where
    *  redaction somehow stopped would otherwise look identical to a working one. */
+  redaction: { applied_at_read_time: boolean; rules: number }
+}
+
+// ---------------------------------------------------------------------------
+// The Artifacts tab (#184): the listing, the transcript, the answer
+// ---------------------------------------------------------------------------
+
+/**
+ * What kind of file an artifact is, as the SERVER decides it from the NAME --
+ * one table, `checkpoint_content.content_type_for` plus its image extensions.
+ * A hint for choosing a viewer, not a verdict about the bytes: the content
+ * route's NUL sniff and the raw route's magic-byte sniff stay authoritative.
+ * `.svg` is text, never an image.
+ */
+export type ArtifactKindName = 'markdown' | 'json' | 'ndjson' | 'log' | 'text' | 'image' | 'binary'
+
+/** Which agent stream an artifact IS, by exact name against `result_summary.agent_streams`. */
+export type AgentStreamRole = 'agent_stdout' | 'agent_stderr' | 'agent_transcript'
+
+/**
+ * One entry of `GET /v1/tasks/{id}/artifacts`. The three #184 fields are
+ * OPTIONAL: an API older than that change serves `{name, bytes, uri}` only, and
+ * the viewer then falls back to the name rule it always used (`artifactKind`).
+ */
+export interface ArtifactEntry extends ArtifactRef {
+  /** Null when the stored uri is not under this task. */
+  attempt_id?: string | null
+  kind?: ArtifactKindName | null
+  content_type?: string | null
+  role?: AgentStreamRole | null
+}
+
+/**
+ * The listing. `complete` is false -- and `artifacts` empty -- until the task's
+ * result summary is written at the end of its last attempt: artifacts are
+ * uploaded then, never live, so an empty incomplete list is "not yet", never
+ * "none".
+ */
+export interface ArtifactListing {
+  task_id: string
+  artifacts: ArtifactEntry[]
+  artifacts_skipped: string[]
+  artifact_bytes: number | null
+  complete: boolean
+  /** The attempt the manifest describes: the final one, and only it. */
+  attempt_id?: string | null
+}
+
+/** What `result_summary.agent_streams` names, or null for a runner with no agent CLI. */
+export interface AgentStreams {
+  stdout: string | null
+  stderr: string | null
+  transcript: string | null
+  /**
+   * Why no transcript artifact was written, when one was not:
+   *  - `too_large`: the transcript was over 4,000,000 characters;
+   *  - `capture_truncated`: the stdout it is built from was cut at the output
+   *    cap (the capture kept its start and its end), so a transcript built
+   *    from it would present a cut run as a whole one (#188 review).
+   */
+  transcript_skipped: 'too_large' | 'capture_truncated' | null
+  /**
+   * Whether the output cap cut that agent stream (#188 review): the capture
+   * kept its start and its end and wrote a notice where it dropped the middle.
+   * Null is NOT REPORTED -- never "not cut". Absent on a summary written
+   * before the change.
+   */
+  stdout_truncated?: boolean | null
+  stderr_truncated?: boolean | null
+}
+
+export type TranscriptStepKind =
+  | 'init'
+  | 'text'
+  | 'thinking'
+  | 'tool_call'
+  | 'tool_result'
+  | 'result'
+  | 'rate_limit'
+  | 'system'
+  | 'other'
+
+/**
+ * ONE STEP OF THE AGENT'S TRANSCRIPT, parsed and redacted by the SERVER
+ * (`GET /v1/tasks/{id}/transcript`). Every string was redacted after JSON
+ * decoding and capped at 16 KiB; a capped field is named in
+ * `truncated_fields`. `raw` is present only when the read asked for it.
+ */
+export interface TranscriptStep {
+  id: string
+  line_offset: number
+  block: number
+  kind: TranscriptStepKind
+  role: 'assistant' | 'user' | 'system' | null
+  /** Set on a sub-agent's steps: the tool call that spawned it. */
+  parent_tool_use_id: string | null
+  text: string | null
+  /**
+   * `input` is the tool input as pretty JSON TEXT, never an object. Every
+   * string here is null when the event did not carry one as a string
+   * (`transcript._Scrubber.text`), so an id is never assumed: two null ids are
+   * not a call and its result.
+   */
+  tool: { id: string | null; name: string | null; input: string | null } | null
+  /** `is_error` is null when the event carried no boolean there: not said, which is not `false`. */
+  tool_result: { tool_use_id: string | null; is_error: boolean | null; content: string | null; images: number } | null
+  meta: Record<string, unknown> | null
+  truncated_fields: string[]
+  raw: string | null
+}
+
+export type TranscriptFormat = 'claude-stream-json' | 'claude-json' | 'ndjson' | 'text'
+
+/** The object a transcript read parsed: the same one `/logs?stream=agent_stdout` would choose. */
+export interface TranscriptStream {
+  stream: 'agent_stdout'
+  source: LogSource | null
+  status: LogStatus
+  detail: string | null
+  uri: string | null
+  object_updated_at: string | null
+  age_seconds: number | null
+  total_bytes: number | null
+  offset: number
+  returned_bytes: number
+  next_offset: number | null
+  truncated: boolean
+  tail_window: { object_offset: number; stream_size: number; published_at?: string | null } | null
+}
+
+export interface TaskTranscript {
+  task_id: string
+  tenant_id: string
+  attempt_id: string | null
+  attempt: LogAttempt
+  read_at: string
+  stream: TranscriptStream
+  /** Sniffed from the content by the server, never trusted from the worker. */
+  format: TranscriptFormat | null
+  /** Null unless the stream was read AND its format parses. Never `[]` for "could not tell". */
+  steps: TranscriptStep[] | null
+  /** True only for a final or artifact read from offset 0 to the end. */
+  complete: boolean
+  /** The window does not start at the first step: earlier steps are not in it. */
+  window_starts_mid_stream: boolean
+  /** Lines that did not parse. Counted, never silently dropped. */
+  skipped_lines: number
+  answer_in_window: boolean
+  /**
+   * Whether the agent's stdout capture was cut at its size cap (#188 review):
+   * the capture kept the start and the end of the run and dropped the middle,
+   * with a notice line where (a `system` step, `meta.subtype:
+   * "capture_truncated"`). True makes `complete` false and puts the reason in
+   * `stream.detail`; false is known whole; null is nothing can be said.
+   * OPTIONAL: an API older than the change does not send it.
+   */
+  capture_truncated?: boolean | null
+  redaction: { applied_at_read_time: boolean; rules: number }
+  redaction_count: number
+}
+
+/**
+ * THE AGENT'S FINAL ANSWER (`GET /v1/tasks/{id}/answer`): the `result` of the
+ * LAST `type:"result"` event in its stdout, or -- only when there is none --
+ * the runner's summary, which is capped at 2,000 characters and says so with
+ * `complete: false`.
+ *
+ *  - `not_yet`    the attempt is still running and no result event exists yet.
+ *  - `absent`     the attempt ended and neither source exists.
+ *  - `unreadable` an object read failed; nothing may be concluded.
+ */
+export type AnswerStatus = 'ok' | 'not_yet' | 'absent' | 'unreadable'
+
+export interface TaskAnswer {
+  task_id: string
+  tenant_id: string
+  attempt_id: string | null
+  attempt: LogAttempt
+  read_at: string
+  status: AnswerStatus
+  source: 'agent_result_event' | 'runner_summary' | null
+  object: {
+    stream: 'agent_stdout'
+    source: LogSource
+    uri: string | null
+    object_updated_at: string | null
+  } | null
+  format: 'markdown' | 'text' | null
+  /** Null for every status but `ok`. `''` is a real, empty answer. */
+  content: string | null
+  /** false when the answer is known to be cut (the runner summary at its cap); null when nothing says. */
+  complete: boolean | null
+  /** The agent itself reported an error (e.g. `error_max_turns`). Still status `ok`. */
+  is_error: boolean | null
+  subtype: string | null
+  stop_reason: string | null
+  terminal_reason: string | null
+  num_turns: number | null
+  bytes: number | null
+  redacted: boolean
+  redaction_count: number
+  /**
+   * Whether the agent's stdout capture was cut at its size cap (#188 review),
+   * decided as the transcript decides it. The capture keeps the END of the
+   * run, where the result event is, so a cut capture can still answer whole;
+   * `detail` then says the rest of the run was not all kept. OPTIONAL: an API
+   * older than the change does not send it.
+   */
+  capture_truncated?: boolean | null
+  /** The server's sentence about this read -- on `ok` too, where it says a capture was cut or why a summary stands in. */
+  detail: string | null
+}
+
+// ---------------------------------------------------------------------------
+// The task's input, masked -- `GET /v1/tasks/{id}/input` (#184 follow-up)
+// ---------------------------------------------------------------------------
+
+/** One text of the copy: what `redaction.redact` made of it, and how many masks that took. */
+export interface MaskedText {
+  text: string
+  redaction_count: number
+}
+
+/**
+ * THE TASK'S INPUT AS A SCREEN MAY DRAW IT. The owner decided on 2026-09-25
+ * that Inputs and Details show "a read-time-redacted copy of the task's input,
+ * with 'masked N', like every other output" -- so neither draws `task.input`,
+ * which `GET /v1/tasks/{id}` still serves exactly as submitted.
+ *
+ *  - `prompt`  `input.prompt` when it is a string (possibly ''), masked as a
+ *              decoded string, as `/answer` masks its text;
+ *  - `rest`    the input without that prompt, as its JSON text, masked; null
+ *              when nothing else was submitted;
+ *  - `full`    the whole input as its JSON text, masked.
+ *
+ * `prompt_key` says what shape the input has, so a screen never goes back to
+ * the raw document to find out: `string`, `missing` (legitimate -- the key is
+ * a convention of the CLI and mock runners), or `other` (not text).
+ * `redaction_count` is `full`'s: every mask in the input, counted once.
+ */
+export interface TaskInputCopy {
+  task_id: string
+  tenant_id: string
+  read_at: string
+  prompt_key: 'string' | 'missing' | 'other'
+  prompt: MaskedText | null
+  rest: MaskedText | null
+  full: MaskedText
+  redacted: boolean
+  redaction_count: number
   redaction: { applied_at_read_time: boolean; rules: number }
 }
 
@@ -2918,15 +3596,28 @@ export interface ArtifactContent {
   redacted: boolean
   redaction_count: number
   redaction: { applied_at_read_time: boolean; rules: number }
+  /**
+   * The name table's answer for this artifact (#184), the same one the listing
+   * serves. OPTIONAL: an API older than #184 sends neither. On the checkpoint
+   * per-file route `content_type: null` is the allowlist REFUSING the name,
+   * which is why the viewer reads it only on that route.
+   */
+  content_type?: string | null
+  kind?: ArtifactKindName | null
+  /**
+   * Bytes of this window that are not UTF-8 (#188 review), each shown as
+   * U+FFFD because JSON cannot carry them, and said in `detail`. The raw route
+   * serves them exactly. Null when no window was read; absent on an older API.
+   */
+  invalid_utf8_bytes?: number | null
 }
 
 /**
- * How a viewer presents one artifact, decided from its NAME alone.
- *
- * Deliberately not from a server-supplied content type: nothing in the upload
- * path sets one (`lifecycle._upload_outputs` passes `content_type` for the two
- * log objects and for nothing else), so a viewer that branched on it would be
- * branching on `undefined` for every artifact a run actually produces.
+ * How a viewer presents one artifact, decided from its NAME alone -- the
+ * FALLBACK, used only when the listing served no `kind` (an API older than
+ * #184, or the Details pane's list, which reads the task's own manifest).
+ * The Artifacts tab chooses by the server's `kind` instead: one table, on the
+ * server, rather than a second copy of it here.
  */
 export type ArtifactKind = 'markdown' | 'transcript' | 'text'
 

@@ -48,6 +48,10 @@ on:
       # nothing -- and a form GitHub rejects fails nowhere a reviewer looks.
       - ".github/ISSUE_TEMPLATE/**"
       - ".github/labels.yml"
+      # The IAM refusal probe runs only when the owner dispatches it, so a pull
+      # request is the only place it is linted (actionlint below) and held to
+      # its shape (tests/unit/scripts/test_iam_refusal_probe.py).
+      - ".github/workflows/iam-refusal-probe.yml"
   workflow_dispatch:
 
 permissions:
@@ -215,12 +219,16 @@ jobs:
     # held to shellcheck -- turning that on is a separate change, not this one.
     # Pinned, like every other scanner here, so the gate cannot change its mind
     # between two runs of the same commit.
+    #
+    # iam-refusal-probe.yml is linted here for the same reason as release.yml,
+    # more so: it runs only when the owner dispatches it, once, so a broken
+    # expression in its revert gate would otherwise first show on that run.
     env:
       ACTIONLINT_VERSION: "1.7.7"
     steps:
       - uses: actions/checkout@v5
 
-      - name: actionlint release.yml and application.yml
+      - name: actionlint release.yml, application.yml and iam-refusal-probe.yml
         run: |
           set -euo pipefail
           curl -sSfL "https://raw.githubusercontent.com/rhysd/actionlint/v${ACTIONLINT_VERSION}/scripts/download-actionlint.bash" \
@@ -228,7 +236,8 @@ jobs:
           bash "${RUNNER_TEMP}/download-actionlint.bash" "${ACTIONLINT_VERSION}" "${RUNNER_TEMP}"
           "${RUNNER_TEMP}/actionlint" -version
           "${RUNNER_TEMP}/actionlint" -shellcheck= -pyflakes= \
-            .github/workflows/release.yml .github/workflows/application.yml
+            .github/workflows/release.yml .github/workflows/application.yml \
+            .github/workflows/iam-refusal-probe.yml
 
   python:
     name: format / unit tests

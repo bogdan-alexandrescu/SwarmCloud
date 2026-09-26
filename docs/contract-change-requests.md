@@ -27,13 +27,18 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 12 | `models.py`: the retry cap had no shared home, so one path forgot it | applied |
 | 13 | `models.py`: `Attempt` does not record which pool account it ran on | open |
 | 14 | `models.py`: a sub-agent has nowhere to name its parent | open |
-| 15 | `models.py`: `Attempt` records memory, disk and spend, but not CPU | open |
+| 15 | `models.py`: `Attempt` records memory, disk and spend, but not CPU | ACCEPTED 2026-09-25 (owner, on #184), applied in PR #210 |
 | 16 | `identity.py`: the tenant namespace name, `sanitize_name` included, has two copies | open |
 | 17 | `states.py`: a cancel that is only requested is recorded as `cancelled` (incident CR-1) | ACCEPTED 2026-09-24 (the owner's "#13"), applied in PR #44 |
 | 18 | `profiles.py`: `RunnerProfile.command` is the lifecycle's child argv, never a container command (incident CR-2) | ACCEPTED 2026-09-24 (the owner's "#14"), rename applied in PR #44 |
 | 19 | `states.py`: no `EventType` says "the reconciler evicted this execution" | open |
 | 20 | `models.py`: `Workflow.on_step_failure` is a bare `str`, and its vocabulary is stated four times | open |
 | 21 | `states.py`: the worker's exit codes have no shared home, and the reconciler now acts on one | open |
+| 22 | `profiles.py`: whether a runner profile can run on a pool account is stated by the worker and restated by the scheduler | open |
+| 23 | `models.py`: a task's end has no typed cause, so the outcome ledger classifies `last_error` text | ACCEPTED 2026-09-25 (#185, decision 9), applied in PR #217 |
+| 24 | `profiles.py`: whether a profile's cost is declared rather than measured is named outside the catalogue | ACCEPTED 2026-09-25 (#185, decision 9), applied in PR #217 |
+| 25 | `profiles.py`: a runner profile cannot declare the inputs a caller may send it, so the bridge names the mock's by profile | ACCEPTED 2026-09-25 (owner, on #142), applied in PR #213; both amendments confirmed by the owner 2026-09-26: `inputs=None` for `browser` and `generic` (#218), and the bounded park counted by the task's `attempt_count` rather than the state file |
+| 26 | `models.py`: the attempt's CPU figures carry no time and their limit no source | open |
 
 ---
 
@@ -205,6 +210,19 @@ work can be routed between agents for the first time") as one of "two
 frozen-contract REQUESTS, raised rather than made" -- and then recorded in a
 commit message, which is not a place anybody looks for an open decision.
 
+**Update 2026-09-25 (#151):** failure (a) below, a plain `POST /v1/tasks`
+carrying `metadata.input_from` past every DAG check, is closed on the unfrozen
+side. The owner decided that the key is reserved, like `dispatch`.
+`reject_reserved_metadata` now refuses it from callers with 422
+`invalid_dispatch`, on a task, a batch and a workflow's own `metadata`, whatever
+its value, and creates nothing. Workflow expansion is the only writer, and a
+step's own `input_from` is the only declaration a caller can make, so the
+`validate_dag` filename checks #64 added (PR #65) see every declaration that
+reaches the worker. `metadata.expected_outputs`, the other key workflow
+expansion writes (#149), is reserved by the same function. The request for a
+typed field is still open. It never depended on (a) alone: the five spellings
+below remain, and the worker still re-validates a free-form dict.
+
 ### What is asked for
 
 A field on `Task`, mirroring the one `WorkflowStep` already has:
@@ -227,16 +245,16 @@ One idea, five spellings:
 |---|---|---|
 | `swarm_common/models.py:333` `WorkflowStep.input_from` | `dict[str, str]` | step id |
 | `swarm-api/schemas.py:80` `WorkflowStepCreate.input_from` | `dict[str, str]` | step id |
-| `swarm-api/validation.py:358` `StepSpec.input_from` | `tuple[str, ...]` | step id, **no filenames** |
+| `swarm-api/validation.py` `StepSpec.input_from` | `Mapping[str, str]` | step id (was a tuple of ids with no filenames until #64) |
 | `task.metadata["input_from"]` | untyped | **task id** |
 | `swarm-ui/src/types.ts:1227` `WorkflowStep.input_from` | `string \| null` | -- |
 
-**Written by exactly one place.** `swarm-api/service.py:354-357`, inside
+**Written by exactly one place.** `swarm-api/service.py:389-392`, inside
 `submit_workflow`, translating step ids to the task ids it has just minted:
 
 ```python
 if source.input_from:
-    task.metadata["input_from"] = {
+    task.metadata[INPUT_FROM_METADATA_KEY] = {
         step_task_id[src]: filename for src, filename in source.input_from.items()
     }
 ```
@@ -248,12 +266,15 @@ re-validates every key and every value at runtime -- the key is a non-empty
 string, the value is a non-empty string, no two entries share a destination --
 because the contract types `metadata` as `dict[str, Any]` and says nothing about
 what is inside it. That defensiveness is correct and would still be wanted; the
-request is about the fifth row of that table, and about the submission path that
-never gets validated at all.
+request is about the fifth row of that table. It was also about the submission
+path that was never validated at all, a caller's own `metadata.input_from`, and
+that half is closed (#151, below).
 
-`StepSpec.input_from` being a *tuple of ids* is not sloppiness: `validate_dag`
-needs to know which step a file comes from, not which file. It is listed because
-it is a fourth shape somebody has to hold in their head while reading this.
+`StepSpec.input_from` was a *tuple of ids* because the dependency rule needs to
+know only which step a file comes from. That shape is also why the API could not
+see two parents staging one filename, a mistake that surfaced only after both
+parents had run. Since #64 it carries the filenames too, and `validate_dag`
+refuses that collision and any absolute or traversing filename at submission.
 
 ### Why: the failure it prevents
 
@@ -273,7 +294,12 @@ reject_reserved_metadata({"unit": "payments", "input_from": {"x": "y"}})
 `_build_task` then copies caller metadata verbatim (`service.py:205`,
 `metadata = dict(spec.metadata)`). So a plain `POST /v1/tasks` carrying
 `metadata.input_from` is stored as written and honoured by the worker, having
-passed none of the DAG checks.
+passed none of the DAG checks. A workflow's own `metadata.input_from` took the
+same route onto every step that declared no `input_from` of its own, which
+always included the root steps. #64 (PR #65) briefly checked that value's
+filenames at submission (`validate_workflow_input_from_metadata`), but the task
+ids it named still carried no dependency edge. That check was removed when #151
+reserved the key, below: there is no valid workflow-level value left to check.
 
 Be precise about what that is and is not. It is **not** a tenant escape:
 `inputs.fetch_upstream_task` (`inputs.py:226-254`) refuses a task belonging to
@@ -283,6 +309,24 @@ construction. It is an **ordering** bypass inside one tenant: the caller names
 any of their own tasks, with no dependency edge and no guarantee the upstream
 ran. A typed field gives the API one field to validate on every path, instead of
 one path validating a key the other path waves through.
+
+**Closed on the unfrozen side, 2026-09-25 (#151).** The paragraphs above describe
+the code before that date. The owner chose to refuse the key from callers rather
+than validate it for a standalone task. `reject_reserved_metadata` now reserves
+`input_from` alongside `dispatch`, so a `POST /v1/tasks` (or a batch) carrying it
+gets 422 `invalid_dispatch` and nothing is created. A workflow whose own
+`metadata` carries it is refused the same way, whatever the value, which also
+closes the path by which that value reached every root step verbatim. That
+refusal runs before `validate_dag`, so such a workflow answers
+`invalid_dispatch`, never `invalid_dag`, even when its declaration would also
+have broken the #64 filename rules. #65's workflow-level filename check and the
+tests that pinned a well-formed, `{}` or `null` workflow-level value as
+accepted went with it; its step-level checks are unchanged. The worker's
+checks stay as defence in depth, not as the only guard on any submission path.
+The test at
+`test_dispatch_strategy.py` quoted above no longer pins `input_from` as allowed.
+`tests/unit/control_plane/test_input_from_is_reserved.py` holds the refusal, the
+empty store after it, and workflow expansion still writing the key.
 
 **(b) The UI's copy is already wrong.** `codec.workflow_to_api:486` serves
 `"input_from": s.input_from`, a `dict[str, str]`. `swarm-ui/src/types.ts:1227`
@@ -314,8 +358,9 @@ well today. Two things then need doing on the **unfrozen** side regardless, and
 neither needs this request:
 
 * `reject_reserved_metadata` should reserve `input_from`, or `_build_task`
-  should validate it for a standalone task. Right now the DAG rule is
-  enforceable on only one of the two ways a task is created.
+  should validate it for a standalone task. **Done** the first way, by owner
+  decision on #151 (2026-09-25): the key is refused from callers on every path
+  that creates a task, and only workflow expansion writes it.
 * `swarm-ui/src/types.ts` should declare `input_from` as
   `Record<string, string>`. **Done**, along with the fixture in `api.ts` that
   built it as a bare string, and `check-contract-parity.sh` section 5 now
@@ -1416,8 +1461,14 @@ caller can draw.
 
 ## 15. `models.py`: `Attempt` records memory, disk and spend, but not CPU
 
-**Status:** open, raised 2026-09-24 by the worker-broker lane, which measured
-CPU without it and stopped at the frozen line.
+**Status: ACCEPTED — accepted by the owner on #184, 2026-09-25, as amended
+(four fields), and applied in PR #210.** The decision, in the owner's words
+([#184, 2026-09-25](https://github.com/bogdan-alexandrescu/SwarmCloud/issues/184#issuecomment-5840698104)): "Contract request #15 is approved: typed
+`Attempt` fields `cpu_seconds`, `peak_cpu_cores`, `mean_cpu_cores` and
+`cpu_limit_cores`. They replace the interim heartbeat-event path." Raised
+2026-09-24 by the worker-broker lane, which measured CPU without it and
+stopped at the frozen line. What was applied, and what it replaced, is under
+[Applied](#applied-2026-09-25-pr-210) at the end of this entry.
 
 ### What is there now, without the contract
 
@@ -1499,6 +1550,94 @@ event of each attempt. It is up to one heartbeat period stale at the end of a
 run (the last event before exit is not the exit), it is not queryable across
 attempts, and a "CPU per resource class over the last week" report means
 reading every attempt's event stream.
+
+### Amendment, 2026-09-25 (#184): add the mean and the limit
+
+**Status:** accepted with the request, 2026-09-25 (see the status line above).
+Raised by the #184 backend lane.
+
+**What changed.** The owner decided on #184 that Details shows CPU as the
+PEAK and the MEAN cores of the runtime's CPU limit, beside memory and
+workspace. The request above deliberately left `mean_cpu_cores` out; it is now
+asked for, together with the limit it is a fraction of. The requested change
+becomes four fields on `Attempt`, beside `peak_rss_bytes`:
+
+```python
+cpu_seconds: float | None = None
+peak_cpu_cores: float | None = None
+mean_cpu_cores: float | None = None
+cpu_limit_cores: float | None = None
+```
+
+`mean_cpu_cores` is the worker's figure -- CPU-seconds over RUNNER wall time,
+so setup, the clone and retry waits are excluded -- not an approximation from
+`started_at`/`completed_at`. `cpu_limit_cores` is what the kernel enforces
+(cgroup v2 `cpu.max`), or, where that reads `max` or cannot be read, the
+catalogue cpu of the class the container was SIZED with
+(`scheduler.dispatch.resource_class_for(task, profile)`, not the profile's own
+class). None means not measured throughout, never zero.
+
+**The interim, shipped without the contract (#184).** The worker now puts
+every figure on its HEARTBEAT events as flat keys in `detail`
+(`agent_worker.metrics.heartbeat_cpu_fields`): the existing `cpu_seconds` and
+`cpu_source`, plus `peak_cpu_cores`, `mean_cpu_cores` (kept current while the
+runner runs, not only at exit), `cpu_wall_seconds`, `cpu_limit_cores`,
+`cpu_limit_source` (`cgroup` or `resource_class`) and `final`. The periodic
+reading stays on every fifth heartbeat; one more, with `final: true`, is
+emitted when each runner is reaped, and never by an attempt that has been
+fenced. `GET /v1/tasks/{id}/attempts?include=usage` serves the newest reading
+per attempt from ONE descending read of the task's events
+(`swarm_api.attempt_usage`), with a status that says what the reading is
+(`final`, `live`, `last_reading`, `never_ran`, `absent`, `beyond_window`,
+`unread`). It works; it is not queryable across attempts, and it costs an
+events read per request, which is why it is opt-in.
+
+**What changes if this is accepted.** `control.record_resource_usage` writes
+the four fields at each runner's end (the same combined, attempt-wide figures
+the final HEARTBEAT carries); `codec.attempt_from_dict` / `attempt_to_api`
+read and serve them (`test_api_contract_shapes.py` pins the serialiser);
+`include=usage` prefers the typed fields for a `final` reading and reads
+events only for a live one. `apps/swarm-ui/src/types.ts` restates `Attempt`
+by hand and needs the same four fields.
+
+### Applied, 2026-09-25 (PR #210)
+
+The owner's decision went further than the amendment's last paragraph: the
+typed fields REPLACE the interim path, so nothing reads the events for a live
+reading either.
+
+* **The contract.** `Attempt` gains the four fields, `float | None = None`,
+  at the end of the class rather than beside `peak_rss_bytes`, so no
+  positional construction changes meaning. Nothing else in
+  `apps/common/swarm_common` changed.
+* **The worker** writes them on its own attempt document
+  (`control.record_cpu_usage`, from `metrics.attempt_cpu_fields`) with each
+  periodic reading, which is every fifth heartbeat, and when each runner is
+  reaped. They are the attempt's combined figures. A key that was not measured
+  is left out of the merge, never written as null.
+* **Removed:** the interim keys on the HEARTBEAT event (`peak_cpu_cores`,
+  `mean_cpu_cores`, `cpu_wall_seconds`, `cpu_limit_cores`,
+  `cpu_limit_source`, `final`), the `final` HEARTBEAT emitted when a runner
+  was reaped, `swarm_api.attempt_usage`, and `include=usage`. The HEARTBEAT
+  carries exactly what it did before #188. `cpu_seconds` and `cpu_source`
+  stay, because `reconciler.progress` reads them.
+* **The API** serves the four fields on every attempt row
+  (`codec.attempt_from_dict` / `attempt_to_api`, pinned by
+  `test_api_contract_shapes.py` and `test_attempt_cpu_fields.py`).
+* **The UI** restates them on `AttemptRow`, as optional fields, where a
+  missing key means an API older than the fields.
+  `test_ui_api_field_contract.py` holds them both ways.
+  `scripts/lib/check-contract-parity.sh` restates no `Attempt` field and did
+  not change.
+* **Attempts from before the typed fields.** Attempts that ran between #188's
+  deploy and this one carry their CPU only on HEARTBEAT events. A read-only
+  look at dev at 23:16 UTC on 2026-09-25 found one. Attempts from before #188
+  carry their cpu-seconds there too, with no cores. The UI keeps a legacy
+  reader for both over the drawer's own event page, and the server keeps
+  none. `docs/agent-output.md` says why.
+* **What the four fields cannot say.** The interim reading carried its time
+  (`measured_at`, `age_seconds`) and the limit's source (`cpu_limit_source`).
+  The accepted fields carry neither. Request #26 asks for both.
 
 ---
 
@@ -2017,7 +2156,15 @@ it cannot import `agent_worker`. The number is therefore stated twice:
   fails a task on.
 
 `tests/unit/worker/test_worker_cannot_start.py::test_the_reconcilers_78_is_the_workers_78`
-holds the two together in CI. That is the mirrored-value arrangement this
+holds the two together in CI.
+
+Since #198 the reconciler acts on every OTHER code too, but only to requeue,
+and without naming any of them: an execution that ended with anything but 78
+while its task was still DISPATCHED or STARTING is fenced, released and
+requeued in the pass that sees it (`reconciler.detect.detect_ended_at_startup`),
+with the code quoted in `last_error`. That rule needs no second number, so it
+adds no copy. It does depend on 78 being the only code that must NOT be
+requeued, which is the same fact this request would put in one place. That is the mirrored-value arrangement this
 repository has had three outages from. Here the failure would be quiet in both
 directions. If the worker's number moved and the reconciler's did not, a worker
 that cannot start would go back to being retried until its attempts ran out.
@@ -2064,3 +2211,582 @@ would then both be derived from it, and the parity test deleted.
 The parity test stays and does its job for these two copies. A third reader of
 exit codes (a UI badge, a smoke check, an alert on 78s) would have to restate
 the number again, and would need its own parity test to be safe.
+
+---
+
+## 22. `profiles.py`: whether a runner profile can run on a pool account is stated by the worker and restated by the scheduler
+
+**Status:** open, recorded 2026-09-25 by the lane that made admission and
+dispatch ask one question (branch `lane/pool-credential-admission`, #169). If
+another branch has taken 22 by the time this merges, renumber this one.
+
+### What is true today
+
+A pool account is a Claude subscription. Its token fills one variable,
+`CLAUDE_CODE_OAUTH_TOKEN`, and a runner profile can run on an account only if
+its `secrets` declare that name. `claude-code` does. `browser` does not.
+
+The frozen catalogue says nothing about this. It lists the names, and the
+meaning of one of them is decided outside it:
+
+* `agent_worker.accountlease.ACCOUNT_TOKEN_ENV`, which the worker checks before
+  it asks the broker for an account (`lifecycle._lease_account`);
+* `scheduler.credentials.SUBSCRIPTION_TOKEN_ENV`, which admission checks before
+  it lets a tenant with no key of its own through on the pool.
+
+The scheduler's image does not carry the worker, so it cannot import the
+worker's constant. `tests/unit/worker/test_pool_credential_parity.py` holds the
+two together. It compares the constants, and it also runs the real worker's
+credential resolution for every profile in the catalogue against the
+scheduler's `credential_for`.
+
+If they drifted, the failure would be quiet in both directions:
+
+* the scheduler expects the pool and the worker does not ask it: a keyless
+  tenant's task is admitted, a container starts, the worker parks it on
+  CREDENTIAL_MISSING, and the credential sweep promotes it again on the next
+  drain;
+* the worker would ask and the scheduler does not expect it: a tenant the pool
+  serves is parked at admission and never runs.
+
+### The requested change
+
+Add to `profiles.py`:
+
+```python
+#: The variable a Claude subscription token fills. A profile whose `secrets`
+#: name it can run on an account from the pool; one that does not, cannot.
+SUBSCRIPTION_TOKEN_ENV = "CLAUDE_CODE_OAUTH_TOKEN"
+
+
+@dataclass(frozen=True)
+class RunnerProfile:
+    ...
+
+    @property
+    def runs_on_a_pool_account(self) -> bool:
+        return self.provider is not None and SUBSCRIPTION_TOKEN_ENV in self.secrets
+```
+
+`agent_worker.accountlease.ACCOUNT_TOKEN_ENV` and
+`scheduler.credentials.SUBSCRIPTION_TOKEN_ENV` would then both be derived from
+it. The worker's `_lease_account` and the scheduler's `credential_for` would
+both ask `profile.runs_on_a_pool_account`, and the parity test could shrink to
+the behavioural half.
+
+### What it would break if accepted
+
+* **Nothing stored.** No document carries the name.
+* **`ACCOUNT_TOKEN_ENV` is imported by that name** in the worker and its tests.
+  Keeping it as an alias of the new constant avoids a rename in the same
+  change.
+* **The UI's catalogue mirror** (`apps/swarm-ui/src/types.ts`, section 5 of
+  `docs/mirrored-values.md`) mirrors `RunnerProfile` fields, not properties, so
+  a property adds nothing it has to follow.
+
+### If it is declined
+
+The parity test stays and does its job for these two copies. A third reader,
+for example a UI hint that says which profiles a lent account can run, would
+have to restate the name again and would need its own parity test.
+
+---
+
+## 23. `models.py`: a task's end has no typed cause, so the outcome ledger classifies `last_error` text
+
+**Status: ACCEPTED — accepted by the owner on 2026-09-25, in the decisions
+comment on #185 (item 9: "Contract requests 23 ... and 24 ... are accepted") —
+and applied in PR #217.** This edits `apps/common/swarm_common/models.py`,
+which is frozen, and is recorded here as such. Recorded 2026-09-25 by the lane
+that built `GET /v1/outcomes` (branch `lane/outcomes-api`, #185).
+
+### What was applied
+
+* `EndCause(str, Enum)` in `models.py`, beside `Task`, with the request's ten
+  values and ONE MORE, `INPUTS_UNAVAILABLE = "inputs_unavailable"`. It is the
+  same comment's item 4: the worker refusing to stage a declared input
+  (`agent_worker.errors.InputUnavailable`) is its own class, and a typed cause
+  that could not say so would have sent those tasks back to the text. 10 of
+  dev's 13 "runner errors" on 2026-09-25 were exactly that.
+  `CANCELLED_PARENT` is kept as requested: it is what item 2 (split "after a
+  cancel" from "after a failure") needs a writer to say.
+* `Task.end_cause: EndCause | None = None`, written by `to_firestore` as its
+  string value. None on a success, on every task that has not ended, and on
+  every document written before this change.
+* Every terminal writer records it beside `completed_at`, deciding it where the
+  terminal state is decided:
+  * the worker (`control.finish`, `control.fail_retryably`; the lifecycle
+    passes TIMEOUT, OUTPUTS_MISSING, INPUTS_UNAVAILABLE, CANNOT_START for a
+    78, RUNNER_ERROR, or CANCEL_REQUESTED). `finish` writes the field on EVERY
+    terminal state, None included; "runner stopped on SIGTERM" without a
+    requested cancel is the one end no value names, and carries None;
+  * the reconciler (`ControlStore.repair_task_state`, inside its transaction):
+    CANCEL_REQUESTED when the flag picks CANCELLED, else `failed_cause` --
+    CANNOT_START for an exit-78 finding, LOST_WORKER for a requeue downgraded
+    on spent attempts;
+  * the scheduler: `return_to_ready_after_failed_dispatch` (DISPATCH_FAILED, or
+    CANCEL_REQUESTED), `cancel` (a REQUIRED keyword: CANCEL_REQUESTED, or
+    FAILED_PARENT / CANCELLED_PARENT by `loop._parent_cause` from each
+    parent's OWN END -- a CANCELLED parent that is a failure's cascade or was
+    swept passes a failure down, and a failure wins -- or, for a parent
+    cancelled before the field existed with no flag, None, which the ledger
+    splits by the chain) and `cancel_if_not_started` (WORKFLOW_SWEEP);
+  * the API's cancel, only when that write ends the task (a pending task): a
+    flag on a task holding capacity ends nothing and records nothing.
+* `swarm_api.outcomes` reads `end_cause` first and falls back to its text
+  classifier only for a task without one. `DERIVE_VERSION` and
+  `CLASSIFIER_VERSION` went 1 -> 2, and a stored day is re-derived when EITHER
+  differs (the classifier's version had been written and never read).
+* **Corrected in review, before release (the review of #217):** the cascade
+  split first read only the direct parents' STATES, in both the scheduler and
+  the ledger's fallback. The dependency rule is transitive, so every step two
+  or more hops below a FAILED one was "after a cancel" nobody made. Both now
+  read each parent's own end, and the ledger follows untyped cascades up the
+  chain (`outcomes._read_cascade_ancestors`).
+
+### Proved by
+
+`tests/unit/control_plane/test_outcomes_end_cause.py` (the enum, the field, the
+classifier, the split, the versions), `tests/unit/control_plane/
+test_end_cause_writers.py` (scheduler and API), `tests/unit/worker/
+test_end_cause_worker.py` and `tests/unit/worker/test_end_cause_reconciler.py`,
+each pushed red before the change (PR #217 names the runs).
+
+The request as it was filed follows, unchanged.
+
+### What is true today
+
+The Timeline's "Why tasks failed" and "Why tasks were cancelled" cards need one
+fixed class per ended task. `Task` carries `state` and a free-text
+`last_error`, and nothing else about why the task ended. So
+`swarm_api.outcomes.classify_failure` and `cancel_cause` infer the class from
+text written by four writers the API image does not carry:
+
+* `agent_worker/lifecycle.py` (timeouts, runner errors);
+* `agent_worker/expected_outputs.py` (missing outputs);
+* `reconciler/detect.py` and `reconciler/repair.py` (could not start, lost
+  worker);
+* `scheduler/store.py` and `scheduler/loop.py` (dispatch failures, cascade
+  cancels, the fail_workflow sweep).
+
+`tests/unit/control_plane/test_outcomes_classifier_parity.py` pins every pattern
+to its writer's source, so a reworded message turns CI red. That is still a
+restatement of every writer's words, in a fifth place.
+
+One case is not recoverable from the text at all. "an upstream workflow step
+did not succeed" is written when a parent is FAILED, DEAD_LETTERED **or
+CANCELLED**. So a cancel caused by a person's cancel reads the same as one
+caused by a failure.
+
+### The requested change
+
+Add to `models.py`:
+
+```python
+class EndCause(str, Enum):
+    """Why a task reached its terminal state. Written by the terminal writer."""
+    TIMEOUT = "timeout"
+    CANNOT_START = "cannot_start"
+    LOST_WORKER = "lost_worker"
+    OUTPUTS_MISSING = "outputs_missing"
+    DISPATCH_FAILED = "dispatch_failed"
+    RUNNER_ERROR = "runner_error"
+    CANCEL_REQUESTED = "cancel_requested"
+    FAILED_PARENT = "failed_parent"
+    CANCELLED_PARENT = "cancelled_parent"
+    WORKFLOW_SWEEP = "workflow_sweep"
+```
+
+Add `end_cause: EndCause | None = None` to `Task`, set by the four terminal
+writers beside `completed_at`. `classify_failure` would then read the field
+first and fall back to the text only for tasks that ended before it existed.
+
+### What it would break if accepted
+
+* **Nothing stored.** The field is optional, and an old document decodes with
+  None.
+* **Every terminal writer changes**: the worker's `control.finish`, the
+  reconciler's `repair_task_state`, and the scheduler's cancel and
+  dispatch-failure paths. They are separate images, so the field would be
+  written by some before others during a rollout. The text fallback covers
+  that window.
+* **`DERIVE_VERSION` in `swarm_api.outcomes` must be bumped**, so that stored
+  days are re-derived with the new classes.
+
+### If it is declined
+
+The parity test stays and does its job. The cascade-cancel overclaim stays
+unless the ledger reads each cancelled step's parents at derive time, which is
+the recommended option on #185's open question.
+
+---
+
+## 24. `profiles.py`: whether a profile's cost is declared rather than measured is named outside the catalogue
+
+**Status: ACCEPTED — accepted by the owner on 2026-09-25, in the decisions
+comment on #185 (item 9) — and applied in PR #217.** This edits
+`apps/common/swarm_common/profiles.py`, which is frozen, and is recorded here as
+such. Recorded 2026-09-25 by the lane that built `GET /v1/outcomes` (branch
+`lane/outcomes-api`, #185).
+
+### What was applied
+
+* `RunnerProfile.cost_declared: bool = False`, set True on `mock`, exactly as
+  requested.
+* `swarm_api.outcomes.DECLARED_COST_PROFILES` is derived from the catalogue;
+  the module names no profile. `tests/unit/control_plane/
+  test_outcomes_end_cause.py` holds both, and that the source names none.
+* NOT served on `/v1/runtimes`, and NOT added to the UI's `RunnerProfile`: the
+  UI reads the declared set from `GET /v1/outcomes` (`groups.rows[].declared_cost`
+  and `totals.cost.declared.profiles`), so it has no copy to follow. The
+  catalogue mirror in `types.ts` is not field-for-field (it carries neither
+  `secrets_any_of` nor `supports_checkpoint`), so the "would gain a field to
+  follow" below did not arise.
+
+The request as it was filed follows, unchanged.
+
+### What is true today
+
+The Timeline marks cost that a runner **declares**, rather than cost measured
+from a provider bill: `mock` reports $0.00 on purpose. That lets a reader tell a
+deliberate zero from a real one. The catalogue has no field for it, so
+`swarm_api.outcomes.DECLARED_COST_PROFILES = frozenset({"mock"})` names it, and
+`test_outcomes_classifier_parity.py` holds every entry to a real profile.
+
+### The requested change
+
+Add `cost_declared: bool = False` to `RunnerProfile`, and set it True on
+`mock`. `DECLARED_COST_PROFILES` would then be derived from the catalogue.
+
+### What it would break if accepted
+
+* **Nothing stored.** No document carries the name.
+* **The UI's catalogue mirror** (`apps/swarm-ui/src/types.ts`, section 5 of
+  `docs/mirrored-values.md`) mirrors `RunnerProfile` field for field. The
+  parity check would require the new field there as well.
+
+### If it is declined
+
+The single named set stays, held to the catalogue by its test.
+
+---
+
+## 25. `profiles.py`: a runner profile cannot declare the inputs a caller may send it, so the bridge names the mock's by profile
+
+**Status: ACCEPTED by the owner on 2026-09-25 and applied the same day** (branch
+`lane/mock-inputs-contract`). This edits `apps/common/swarm_common/`, which is
+frozen, and is recorded here as such. The owner's comment on #142
+([issuecomment-5840939054](https://github.com/bogdan-alexandrescu/SwarmCloud/issues/142#issuecomment-5840939054)):
+"contract request 25 is accepted: `RunnerProfile.inputs` goes in the frozen
+catalogue and the API enforces it for every caller, not only the bridge." What
+was applied, and the one place it departs from the text below, is under
+*Applied* at the end of this entry. **That departure is an amendment the owner
+has NOT approved**: the field is typed `Mapping | None`, not the `Mapping` the
+request asked for, and for the two profiles left `None` the API does not
+enforce a declaration for every caller. It is recorded under *Amendment
+awaiting the owner* below, and the decision is
+[#218](https://github.com/bogdan-alexandrescu/SwarmCloud/issues/218). A
+second change awaits the owner's confirmation too: the bounded park is counted
+by the task's `attempt_count`, not by the state-file counter the acceptance
+named, because a failed checkpoint lost that one. It is under *Fixed after the
+second review of #213*, at the end.
+
+Recorded 2026-09-25 by the plugin lane that delivered #142 (branch
+`lane/plugin-cli-0.5.2`). Numbered 25 because #196 (the outcomes API) takes 23
+and 24.
+
+### What is true today
+
+A runner reads its task's `input`. The mock reads `sleep_seconds`, `steps`,
+`fail`, `artifact_text` and more (`agent_worker/runners/mock.py`); the CLI
+runners read `input.prompt` and `input.model` (`runners/cliagent.py`). The
+frozen catalogue says nothing about which keys a profile reads, or which of
+them a caller may set.
+
+#142 asked for the plugin to send the mock's test knobs, so a mock step can be
+caught RUNNING and cancelled, or fail or park on purpose (the park is withheld;
+see below). Invariant 10 is not
+at stake -- these are data, never an image, a command, a resource spec or a
+backend -- but an input means something only to the runner that reads it:
+`input.model` would select the model a `claude-code` agent runs, which is the
+contract change `tests/unit/mcp/test_model_flag_is_attribution_only.py` exists
+to stop. So the gate has to be per profile.
+
+With nothing in the catalogue to read, the bridge gates on the profile NAME,
+in one place: `DECLARED_INPUTS` in `apps/swarm-mcp/swarm_mcp/profiles.py`,
+which declares eight keys for `mock` and nothing for any other profile.
+`tests/unit/mcp/test_runner_inputs.py` holds every name there to
+`RUNNER_PROFILES` and every key to a `payload` read in the runner's source,
+which it finds from the profile's own `runner_argv`.
+
+Two of #142's asks are **not** declared, and why is what a catalogue field
+would have to carry too. `quota_exhausted` (and `retry_after_seconds`, which
+only shapes it) would let a caller start something they cannot stop: the mock
+raises its rate limit on every attempt, with no count, and a park does not
+spend an attempt, so the task parks and resumes until it is cancelled. A
+bounded park needs a counter in the mock (a `quota_exhausted_times`, kept in
+its state file the way `credential_revoked_times` keeps its own), which is a
+worker change. And `exit_code` is declared with values refused inside its
+range -- 0, 77, 78 and 143 -- because the worker reads those as a success, a
+rate limit, a refused credential and a cancellation; a failure on purpose that
+exits with one is not a failure. The API does not check
+input keys at all -- `validate_input_size` bounds the size -- so a caller that
+does not go through the bridge can still send anything.
+
+### The requested change
+
+Add to `profiles.py`:
+
+```python
+@dataclass(frozen=True)
+class RunnerInput:
+    kind: str                     # number | integer | boolean | string | filename
+    minimum: float | None = None
+    maximum: float | None = None
+    means: str = ""
+    #: Values inside the bounds that are refused anyway, each with what the
+    #: platform would read it as (the mock's exit codes 77, 78 and 143).
+    refused: tuple[tuple[Any, str], ...] = ()
+
+
+@dataclass(frozen=True)
+class RunnerProfile:
+    ...
+    #: The keys of `input`, besides `prompt`, a caller may set for this
+    #: profile. Empty for every profile that takes only a prompt.
+    inputs: Mapping[str, RunnerInput] = field(default_factory=dict)
+```
+
+and give `mock` the eight entries the bridge declares today. The bridge would
+then read `profile.inputs` and delete its table, and the API could refuse an
+undeclared key at submission, for every caller, with the same rule.
+
+### What it would break if accepted
+
+* **Nothing stored.** No document carries the field; tasks keep their `input`.
+* **The UI's catalogue mirror** (`apps/swarm-ui/src/types.ts`, section 5 of
+  `docs/mirrored-values.md`) would gain a field to follow, or state that it
+  does not.
+* **An API that refuses undeclared keys** would refuse a caller that sends one
+  today and has it ignored. That is the point, and it is a behaviour change to
+  announce, not to slip in.
+
+### If it is declined
+
+The bridge's table stays, gated on the profile name, with its two parity tests.
+Anything that is not the bridge -- the web UI's New Workflow screen, a script
+posting to `/v1/tasks` -- keeps sending whatever `input` it likes, and a new
+profile that should take inputs takes none from the plugin until someone edits
+the table.
+
+### Applied, 2026-09-25
+
+Accepted by the owner on #142 (the comment quoted under *Status*), together
+with "a bounded park for the mock (a `quota_exhausted_times` counter in its
+state file, like `credential_revoked_times`), after which `quota_exhausted` and
+a bounded `retry_after_seconds` join the declared inputs."
+
+**In `swarm_common/profiles.py`**, as requested: `RunnerInput` (kind, bounds,
+`means`, `refused`) and `RunnerProfile.inputs`. Beside them, so that the rule
+has one home as well as the data: `INPUT_KINDS`, `InputRefused` (carrying the
+key, every refused key and the bound) and `check_inputs(profile, raw)`, which
+swarm-api and the bridge both call. `RunnerInput.check` refuses NaN and
+Infinity, which `json.loads` reads and which every bound comparison lets
+through. `RunnerProfile.inputs` is frozen into a read-only mapping and excluded
+from the hash; `prompt` cannot be declared, because every profile takes it.
+
+**The mock declares ten keys**: the eight the bridge declared, plus
+`quota_exhausted` (boolean) and `retry_after_seconds` (integer 1..3600).
+`exit_code` stays 1..255 except 77, 78 and 143. Still not declared: `spend`,
+`provider`, `credential_revoked_times`, `credential_detail`, `quota_detail`,
+`reset_at`. `agent_worker/runners/mock.py` parks one attempt: as first
+applied, it recorded `quota_exhausted_times` and the parking attempt's id in
+`mock_state.json` before it raised, the park's checkpoint carried the file
+forward, and the next attempt ran. A retry in place is the same attempt and is
+refused again. The count has since moved to the task's `attempt_count`,
+because a failed checkpoint lost it; see *Fixed after the second review*
+below.
+
+**`claude-code` and `codex` declare nothing**, so `input.model` is refused from
+every caller, which is the attribution-only rule
+`test_model_flag_is_attribution_only.py` holds for the bridge.
+
+**The one departure: `browser` and `generic` are `inputs=None`, NOT DECLARED
+YET, and the API bounds them by size alone, as it bounded every profile
+before.** The text above says "Empty for every profile that takes only a
+prompt", and neither does: the browser runner refuses an input with neither
+`url` nor `actions`, and the generic runner cannot start without `command`,
+the name of an entry in its own catalogue. Declaring nothing for them would
+have refused every task they run, the smoke suite's GKE row included. The
+"What it would break" section above assumed an undeclared key is "ignored"
+today; for these two runners it is the work. So which keys they declare, with
+which bounds, is open, and it is the owner's to decide
+([#218](https://github.com/bogdan-alexandrescu/SwarmCloud/issues/218)):
+
+* `browser` reads `url`, `actions` (a list of objects, which `INPUT_KINDS` has
+  no kind for), `timeout_ms`, `launch_timeout_ms`, `viewport_width`,
+  `viewport_height`, `user_agent`, `extract_text` and `screenshot`;
+* `generic` reads `command`, `paths` (a list), `target`, `working_directory`
+  and the four limits in `runners/limits.py`. A declared input named `command`
+  would read as invariant 10 relaxed although it names a catalogue entry, not
+  an argv.
+
+**swarm-api** refuses an undeclared key, or a declared key out of its bounds,
+with 422 `invalid_input` at `POST /v1/tasks`, the batch and every workflow
+step, before anything is created (`validation.validate_runner_input`). The
+bridge's `DECLARED_INPUTS` and `InputSpec` are deleted; it reads the catalogue.
+
+**Downstream, changed in the same PR because each became a restatement the
+API now enforces:** the operational scripts sent `message`, `index` and
+`run_id`, which no runner read, and now send the prompt; the Submit form
+offered `model` to the CLI profiles and `timeout_seconds` to every profile,
+and now offers neither to a declared profile. Section 13 of
+`scripts/lib/check-contract-parity.sh` holds both to the declaration. The UI's
+catalogue mirror (`apps/swarm-ui/src/types.ts`) does not follow the field:
+nothing serves it to the browser yet, which the Submit form's comment records
+as a request.
+
+### Amendment awaiting the owner: `inputs` may be `None`
+
+**Not approved.** Recorded 2026-09-25 after the review of #213, which found
+it applied without being named as a change to what the owner accepted.
+
+| | as accepted | as applied |
+|---|---|---|
+| the type | `inputs: Mapping[str, RunnerInput] = field(default_factory=dict)` | `inputs: Mapping[str, RunnerInput] \| None = field(default_factory=dict, hash=False)` |
+| what it can mean | a declaration: some keys, or none ("Empty for every profile that takes only a prompt") | three things: some keys; none, so the prompt only (`claude-code`, `codex`); or **not declared yet** (`None`: `browser`, `generic`) |
+| what the API enforces | the declaration, for every caller | the declaration, for every caller, where there is one; for `None`, the input's size alone |
+
+**What `None` does, and where that is decided.** `swarm_common.profiles.
+check_inputs(profile, raw)` is the one place: for `None` it hands `raw` back
+unchecked, and `validate_input_size`, which every submission runs first,
+bounds it. `validate_runner_input` asks that function for every profile and
+keeps no branch of its own. Before the review it did: it returned early for
+`None` while `check_inputs` refused every key, so the one rule and the API
+answered the same question oppositely.
+`tests/unit/control_plane/test_runner_inputs_by_declaration.py` now holds the
+API's answer equal to the rule's for every available profile.
+
+**The bridge sends a `None` profile nothing.** That is the bridge's own send
+policy, not a copy of the rule: it sends a key only when a declaration names
+it, and it types `--input` by the declared kind. Letting it send a browser
+task's `actions` is #218's third question.
+
+**What would retire the amendment**, whichever way #218 goes: declare
+`browser` and `generic` (which needs a list kind, and a decision on a key
+named `command`), and put the field back to `Mapping` with no `None`; or
+approve `None` as it stands, and record that approval here with the owner's
+comment.
+
+### Fixed after the second review of #213, 2026-09-25
+
+Four engineering defects the review found, fixed in the same PR. None of them
+decides what `browser` or `generic` declare; that is still #218.
+
+**A declared number has both bounds, inside the range Firestore stores.**
+`steps`, `sleep_seconds` and `cpu_burn_seconds` were declared with a floor
+only, and Python reads a JSON integer at any length, so `steps: 10**30` passed
+every check and failed when the task was written: a 500 at the store, not a
+422 at the door. `RunnerInput.__post_init__` now refuses a `number` or
+`integer` declared without both `minimum` and `maximum`, and an `integer`
+whose bounds leave the signed 64-bit range. That range is two new names in
+`profiles.py`, `INT64_MIN` and `INT64_MAX`, which swarm-api imports rather
+than restates. The field types are unchanged from what was accepted; what
+changed is which values of them the catalogue will hold. The mock's ceilings:
+`sleep_seconds` and `cpu_burn_seconds` one hour (past the mock's 600 s timeout
+on purpose, so the timeout path can be exercised), `steps` a thousand (each
+step is a file every later checkpoint carries). A refusal repeats at most
+forty characters of the value it refuses. swarm-api's `validate_storable`
+also refuses, with 422 and the path, an integer anywhere in an input or a
+task's metadata that Firestore could not encode, which is the only number
+check a profile not declared yet gets.
+
+**Where the bounded park's count lives. A CHANGE TO WHAT THE OWNER WROTE, NOT
+YET CONFIRMED BY THE OWNER.** The acceptance above reads "a bounded park for
+the mock (a `quota_exhausted_times` counter in its state file, like
+`credential_revoked_times`)". Applied that way, the count reached the next
+attempt only through the park's checkpoint, and `Worker._checkpoint` logs a
+failed upload and parks anyway, as it must for a real provider. So a park
+whose checkpoint failed was followed by another, for as long as uploads kept
+failing: the bound held only while checkpoints did. The count is now the
+task's `attempt_count`, which admission increments in the lease's own
+transaction. The lifecycle writes it into every runner's input beside
+`attempt_id`, assigned rather than defaulted so no caller can set it, and the
+mock parks while it is 1: the task's first attempt, and no other. A mock
+started without it refuses to simulate the park and fails, which spends an
+attempt that `max_attempts` bounds. The bound itself, one park, is the
+owner's and is unchanged; so is the declaration's own wording, "park the first
+attempt". The other option the review named, failing retryably when the
+park's checkpoint fails, was not taken: it would change the park path for
+every runner, and a real provider that is refusing is still refusing on the
+retry. `tests/unit/worker/test_mock_bounded_park.py::test_the_bound_holds_when_the_parks_checkpoint_fails`
+makes every checkpoint of the parking attempt fail and requires the next
+attempt to finish.
+
+**The prose copies of the bounds are generated.** `docs/workflows.md` and
+`plugin/README.md` each carry a table of the mock's inputs between
+`runner-inputs:mock` markers, rendered from `RunnerInput.describe()` and
+`means`. `tests/unit/mcp/test_runner_input_prose.py` holds both equal to the
+catalogue, fails when a sentence in either, or in the delegate skill, states a
+number about a declared numeric key outside the table, and requires every
+example input to pass `check_inputs`.
+
+**The Submit form no longer offers `browser` a key its runner never reads.**
+`timeout_seconds` is read through `runners/limits.py` by generic and the CLI
+runners; the browser runner starts no child through it.
+`tests/unit/control_plane/test_submit_offers_only_what_runners_read.py` holds
+every offer to a profile not declared yet to a `payload` read in its runner.
+
+---
+
+## 26. `models.py`: the attempt's CPU figures carry no time and their limit no source
+
+**Status:** open, recorded 2026-09-25 by the #184 follow-up lane (PR #210),
+which applied request #15. A request, not a change. If another branch has
+taken 26 by the time this merges, renumber this one.
+
+### What is true today
+
+Request #15's four fields are on `Attempt`, and the worker rewrites them with
+each periodic reading while a runner runs. So on a running attempt they are
+a live reading. The interim path they replaced carried two more facts, and
+the accepted fields carry neither:
+
+* **When the figures were measured.** The HEARTBEAT reading had its event's
+  `at`, and `include=usage` served `measured_at` and `age_seconds`. Details
+  drew `latest heartbeat 20s ago`, aged on the server's clock (the #187
+  review's fix). Now it can only say `live reading · age not recorded`. A
+  worker that has stopped writing looks exactly like one that wrote a second
+  ago. The drawer's liveness badge is the only thing that says otherwise, and
+  it reads a different document.
+* **Where the limit came from.** `cpu_limit_source` said `cgroup` (the
+  container's `cpu.max`) or `resource_class` (the catalogue cpu of the class
+  it was sized with). Details now names the class when the limit equals that
+  class's cpu, and otherwise says `reported limit`. Nobody has read what Cloud
+  Run's `cpu.max` holds (#188, "not verified"), so this is not academic.
+
+### The requested change
+
+Add to `Attempt`, beside the four:
+
+```python
+cpu_measured_at: datetime | None = None   # when the four were last written
+cpu_limit_source: str | None = None       # "cgroup" | "resource_class"
+```
+
+Both optional and None by default, so nothing migrates. `cpu_measured_at` is
+the worker's clock at the reading, and the API would serve an age computed
+against its own `read_at`, as #188 did.
+
+### What it would break if accepted
+
+Nothing stored. `control.record_cpu_usage` would write two more keys,
+`codec` would read and serve them, `AttemptRow` would declare them, and
+Details would draw the age again. A string for the source is a vocabulary
+that would want a home (compare request #20).
+
+### If it is declined
+
+Details keeps `age not recorded` and `reported limit`. A stalled worker's CPU
+figures are not dated, and a limit is never attributed to the kernel.
+

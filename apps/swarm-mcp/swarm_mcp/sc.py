@@ -50,17 +50,21 @@ be replayed from.
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import os
 import shutil
 import sys
+import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Any, Callable, Sequence
 
+from swarm_common.states import CONCURRENCY_STATES, PENDING_STATES, TaskState
+
 from . import render
 from .client import SwarmClient, SwarmError
-from .follow import terminal_command
+from .invocation import help_command, terminal_command
 from .patches import explain_absence, patch_uri
 from .render import Finding, Snapshot, Style
 
@@ -166,12 +170,131 @@ def fetch_capacity(client: SwarmClient) -> dict[str, Any]:
     return client.request("GET", "/v1/capacity")
 
 
-def fetch_tasks(client: SwarmClient, *, limit: int = 100) -> list[dict[str, Any]]:
-    data = client.request("GET", f"/v1/tasks?limit={limit}")
-    tasks = data.get("tasks") if isinstance(data, dict) else None
-    if tasks is None:
+#: One page of `/v1/tasks`. The API clamps it to its own `max_page_size`, and
+#: `next_page_token` carries on from wherever that left it.
+TASK_PAGE = 100
+
+#: Pages followed for ONE state before `sc` stops and says it stopped. A tenant
+#: with two thousand queued tasks has a problem `sc` should report rather than
+#: download; the sentence it leaves in `Listing.incomplete` is the report.
+MAX_PAGES_PER_STATE = 20
+
+
+def _live_states() -> list[str]:
+    """Every state a task can still leave, in the frozen enum's order.
+
+    Read from the contract, as `render.RUNNING_STATES` is: a status tool with
+    its own list goes on missing a state for months after the contract gains
+    one.
+    """
+    return [
+        state.value
+        for state in TaskState
+        if state in CONCURRENCY_STATES or state in PENDING_STATES
+    ]
+
+
+def _tasks_page(client: SwarmClient, params: list[tuple[str, str]]) -> dict[str, Any]:
+    query = urllib.parse.urlencode(params)
+    data = client.request("GET", f"/v1/tasks?{query}")
+    if not isinstance(data, dict) or not isinstance(data.get("tasks"), list):
         raise SwarmError("GET /v1/tasks answered without a `tasks` field")
-    return list(tasks)
+    return data
+
+
+def _every_task_in(client: SwarmClient, state: str) -> tuple[list[dict[str, Any]], str | None, str | None]:
+    """All of this tenant's tasks in one state: `(tasks, tenant_id, gap)`.
+
+    `gap` is None when every page was read, and a sentence when the page
+    ceiling stopped the walk -- never a silent short list.
+    """
+    tasks: list[dict[str, Any]] = []
+    tenant: str | None = None
+    token: str | None = None
+    for _ in range(MAX_PAGES_PER_STATE):
+        params = [("state", state), ("limit", str(TASK_PAGE))]
+        if token:
+            params.append(("page_token", token))
+        data = _tasks_page(client, params)
+        tasks += [t for t in data["tasks"] if isinstance(t, dict)]
+        tenant = tenant or data.get("tenant_id")
+        token = data.get("next_page_token")
+        if not token:
+            return tasks, tenant, None
+    return tasks, tenant, (
+        f"more than {len(tasks)} {state} tasks exist; sc read the newest "
+        f"{len(tasks)} and stopped, so the {state} count is a floor, not a total"
+    )
+
+
+def fetch_tasks(client: SwarmClient, *, limit: int = TASK_PAGE) -> render.Listing:
+    """This tenant's tasks: EVERY live one, plus the newest `limit` of any state.
+
+    IT READ THE NEWEST 100 AND CALLED THEM THE TENANT'S TASKS. On 2026-09-25
+    (#88, SC-F11) the tenant had 324; `sc agents` read 100 of them and printed
+    "N running · M queued" as though it had counted all of them, so a task
+    older than the newest hundred -- a long PARKED step, a stuck DISPATCHED one
+    -- could not appear however alive it was.
+
+    So the LIVE states are asked for BY NAME (`?state=`, which the route has
+    always taken) and each is paged to the end with `next_page_token`. Those
+    are what AGENTS and the parked findings are about, and they are now
+    complete. The newest-`limit` window is still read beside them, for the one
+    thing that is about recent history rather than about now: the trouble
+    view's FAILED and DEAD_LETTERED counts, which name that window -- how many
+    tasks, and created since when (`render.TaskWindow`, #190).
+
+    Concurrently, because it is nine round trips where it was one, and a
+    status command that takes nine seconds gets replaced by a guess. The first
+    failure is raised as it came -- `collect` records it, and a failure is
+    never an empty list.
+    """
+    jobs: dict[str, Callable[[], Any]] = {
+        state: (lambda state=state: _every_task_in(client, state)) for state in _live_states()
+    }
+    jobs["recent"] = lambda: _tasks_page(client, [("limit", str(limit))])
+    with ThreadPoolExecutor(max_workers=len(jobs)) as pool:
+        futures = {name: pool.submit(fn) for name, fn in jobs.items()}
+        results = {name: future.result() for name, future in futures.items()}
+
+    merged: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    tenant: str | None = None
+    gaps: list[str] = []
+
+    def take(items: list[dict[str, Any]]) -> None:
+        for task in items:
+            key = render.task_id_of(task)
+            if key in seen and key != "?":
+                continue
+            seen.add(key)
+            merged.append(task)
+
+    for state in _live_states():
+        tasks, answered_for, gap = results[state]
+        tenant = tenant or answered_for
+        if gap:
+            gaps.append(gap)
+        take(tasks)
+    recent = results["recent"]
+    tenant = tenant or recent.get("tenant_id")
+    newest = [t for t in recent["tasks"] if isinstance(t, dict)]
+    take(newest)
+    # THE WINDOW SAYS WHAT IT IS (#190): how many the page held, whether that
+    # was every task (no next page), and when the oldest was created. A FAILED
+    # or DEAD_LETTERED count is taken over this page and nothing else, and the
+    # trouble view names it from here.
+    created = [
+        stamp for stamp in (render.parse_time(t.get("created_at")) for t in newest)
+        if stamp is not None
+    ]
+    window = render.TaskWindow(
+        limit=limit,
+        count=len(newest),
+        oldest=min(created).isoformat() if created else None,
+        whole=not recent.get("next_page_token"),
+    )
+    return render.Listing(merged, tenant_id=tenant, incomplete=gaps, window=window)
 
 
 def fetch_task(client: SwarmClient, task_id: str) -> dict[str, Any]:
@@ -234,7 +357,11 @@ def fetch_accounts(client: SwarmClient) -> list[dict[str, Any]]:
     accounts = data.get("accounts") if isinstance(data, dict) else None
     if accounts is None:
         raise SwarmError("the accounts response carried no `accounts` field")
-    return [a for a in accounts if isinstance(a, dict)]
+    # A Listing, so the section can say WHOSE pool this is: the route answers
+    # for the caller's resolved tenant and echoes it (#88, SC-F5).
+    return render.Listing(
+        [a for a in accounts if isinstance(a, dict)], tenant_id=data.get("tenant_id")
+    )
 
 
 #: Which fetches each subcommand actually needs. Asking for everything on every
@@ -480,6 +607,19 @@ def _dump(snap: Snapshot, out) -> None:
         "accounts_absent": snap.accounts_absent,
         "tasks": snap.tasks,
         "tasks_error": snap.tasks_error,
+        # What the task listing did NOT read, as it says on screen: `[]` is a
+        # whole listing, a sentence is a floor (#88, SC-F11).
+        "tasks_incomplete": render.listing_gaps(snap.tasks),
+        # The newest-N page the failed and dead-lettered counts are taken over
+        # (#190): its size, whether it held every task, and its oldest task's
+        # creation time. None when no task listing was read.
+        "tasks_window": (
+            dataclasses.asdict(render.listing_window(snap.tasks))
+            if render.listing_window(snap.tasks) is not None
+            else None
+        ),
+        # Whose the tenant-scoped figures are (#88, SC-F5).
+        "scope_tenant": render.scope_tenant(snap),
     }
     out.write(json.dumps(payload, indent=2, default=str) + "\n")
 
@@ -534,7 +674,9 @@ def _outranked(detection: Any, email: str) -> str:
         who = f"the service account {os.environ.get('SWARM_IMPERSONATE_SA', '').strip()}"
         remedy = "unset SWARM_IMPERSONATE_SA"
     else:
-        who, remedy = f"the {tier.value} tier", "see `swarm doctor`"
+        # Through `terminal_command`, like `sc whoami` below: typed bare, this
+        # was `command not found` on a plugin-only install (review of #201).
+        who, remedy = f"the {tier.value} tier", f"see `{terminal_command('swarm doctor')}`"
     return (
         f"warning     {detection.detail}, which ranks above a sign-in: the plugin's "
         f"tools and every other `sc` and `swarm` command on this machine will act as "
@@ -578,7 +720,9 @@ def cmd_login(_client, args, out) -> int:
     except SwarmError as exc:
         out.write(f"but {deployment.url} did not accept it: {exc}\n")
         return EXIT_FAIL
-    out.write(f"tenant      {me.get('tenant_id') or '(not reported)'}\n")
+    # `tenant_of`: the route nests the tenant, and the flat read printed
+    # "(not reported)" for one it had just served (#88, SC-F3).
+    out.write(f"tenant      {render.tenant_of(me) or '(not reported)'}\n")
     return EXIT_OK
 
 
@@ -624,8 +768,10 @@ def cmd_whoami(_client, args, out) -> int:
             shown["principal"] = signin.SignedIn(deployment).claims().get("email")
         with SwarmClient(deployment=deployment) as api:
             me = api.request("GET", "/v1/tenants/me") or {}
-        shown["tenant"] = me.get("tenant_id")
-        shown["principal"] = shown["principal"] or me.get("email")
+        # Nested under `tenant` and `principal`, which the flat reads missed
+        # (#88, SC-F3) -- through the one reader `render` keeps for it.
+        shown["tenant"] = render.tenant_of(me)
+        shown["principal"] = shown["principal"] or render.principal_of(me).get("email")
     except SwarmError as exc:
         shown["error"] = str(exc)
         code = EXIT_FAIL
@@ -778,7 +924,7 @@ def _common(parser: argparse.ArgumentParser, *, root: bool) -> None:
     )
     parser.add_argument(
         "--context",
-        help="which configured deployment to use (see `sc context list`)",
+        help=f"which configured deployment to use (see `{help_command('sc context list')}`)",
         **default(None),
     )
 
@@ -861,7 +1007,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ca.add_argument(
         "--client-id", default="",
-        help="its Desktop OAuth client id (needed for `sc login` at an IAP front door)",
+        help=(
+            "its Desktop OAuth client id "
+            f"(needed for `{help_command('sc login')}` at an IAP front door)"
+        ),
     )
     ca.add_argument(
         "--client-secret-stdin", action="store_true",

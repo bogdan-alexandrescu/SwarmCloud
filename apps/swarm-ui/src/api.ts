@@ -1,4 +1,4 @@
-import { noteFixtureProbe, read, write, type Result } from './fetch'
+import { noteFixtureProbe, read, route, write, type ApiRoute, type Result } from './fetch'
 // A VALUE import, not a type: the attempt fixture needs the terminal-state set
 // so a live task's newest attempt is rendered as live, and the task fixture
 // needs the concurrency set to decide which rows hold a lease -- invariant 1's
@@ -7,8 +7,10 @@ import { CONCURRENCY_STATES, TERMINAL_STATES } from './types'
 // The one rule for summing a nullable measurement: null until something
 // actually reported it, so an unmeasured sample never becomes a confident zero.
 import { sumReported } from './measure'
+import type { Outcomes } from './outcomes'
+import { ledgerFixture } from './outcomes.fixture'
 import type {
-  ArtifactContent,
+  ArtifactContent, ArtifactListing, LogStream, LogStreamName, TaskAnswer, TaskInputCopy, TaskTranscript, TranscriptStep,
   CheckpointsPage, TaskLogs,
   Capacity, DispatchControl, Me, ProvidersPage, Stats, Task, TaskEvent, TaskPage,
   AttemptRow, LeasePage, LeaseRow, Pool, ProfileAdmission, QuotaState, ResourceClassSpec,
@@ -33,14 +35,26 @@ export const USE_FIXTURES = import.meta.env.DEV && !import.meta.env.VITE_LIVE
 
 export async function loadCapacity(): Promise<Result<Capacity>> {
   if (USE_FIXTURES) return fixtureCapacity()
-  return read<Capacity>('/v1/capacity', (d) => d.pools.length === 0)
+  return read<Capacity>(route('/v1/capacity'), (d) => d.pools.length === 0)
 }
 
-export async function loadTasks(): Promise<Result<TaskPage>> {
+/**
+ * The largest page `GET /v1/tasks` serves. Page size caps at 200 server-side
+ * (deps.py:194-199); asking for more is silently clamped, which would make
+ * "200 tasks" look like the whole truth.
+ */
+export const TASK_PAGE_LIMIT = 200
+
+/**
+ * A page of the task list. `limit` is the full page unless a caller has a
+ * reason to ask for less -- the Agents list at phone width asks for 50
+ * (Agents.tsx, `PHONE_PAGE_LIMIT`).
+ */
+export async function loadTasks(limit: number = TASK_PAGE_LIMIT): Promise<Result<TaskPage>> {
   if (USE_FIXTURES) return fixtureTasks()
-  // Page size caps at 200 server-side (deps.py:194-199). Asking for more is
-  // silently clamped, which would make "200 tasks" look like the whole truth.
-  return read<TaskPage>('/v1/tasks?limit=200', (d) => d.tasks.length === 0)
+  // One route with the `?state=` and paged reads below: `/v1/tasks` (CH-18),
+  // whatever page size the caller asked for.
+  return read<TaskPage>(route('/v1/tasks', {}, `limit=${limit}`), (d) => d.tasks.length === 0)
 }
 
 /**
@@ -69,8 +83,8 @@ export async function loadWorkflowBoard(): Promise<Result<WorkflowBoard>> {
   if (USE_FIXTURES) return fixtureWorkflowBoard()
 
   const [wf, tasks] = await Promise.all([
-    read<{ workflows: Workflow[] }>('/v1/workflows?limit=100', (d) => d.workflows.length === 0),
-    read<TaskPage>('/v1/tasks?limit=200', (d) => d.tasks.length === 0),
+    read<{ workflows: Workflow[] }>(route('/v1/workflows?limit=100'), (d) => d.workflows.length === 0),
+    read<TaskPage>(route('/v1/tasks', {}, 'limit=200'), (d) => d.tasks.length === 0),
   ])
 
   // The workflow read decides whether there is a screen at all.
@@ -127,7 +141,7 @@ export async function loadWorkflows(): Promise<Result<WorkflowPage>> {
   // 100, matching loadWorkflowBoard: `max_workflow_steps` is 50 and the route's
   // step-read budget is what actually binds, so a larger page buys rows whose
   // rollup is incomplete rather than more information.
-  return read<WorkflowPage>('/v1/workflows?limit=100', (d) => d.workflows.length === 0)
+  return read<WorkflowPage>(route('/v1/workflows?limit=100'), (d) => d.workflows.length === 0)
 }
 
 /**
@@ -143,9 +157,12 @@ export async function loadWorkflows(): Promise<Result<WorkflowPage>> {
  *
  * 200 is `max_page_size`, the server's own cap (`paged_limit` clamps to it,
  * silently). Asking for more would be clamped to the same 200 and would make
- * a full page look like one that asked for less. The route still returns no
- * page token, so a page that comes back FULL is a window, and the charts say
- * so; that is seam S1, and it belongs to the API, not to this constant.
+ * a full page look like one that asked for less. The route pages -- since #19
+ * it returns `next_page_token` whenever more events exist, and takes
+ * `order=desc` -- but this client reads ONE page, oldest-first, and does not
+ * follow the page token, so a page that comes back FULL is a window, and the
+ * charts say so. That limit is this client's, not the API's (help topic
+ * `event-paging`).
  *
  * WHAT THIS CANNOT SEE. `MAX_PAGE_SIZE` is environment-overridable and set
  * nowhere in this repository today. A deployment that lowered it would clamp
@@ -198,10 +215,10 @@ export interface AgentDetail {
 export async function loadAgentDetail(taskId: string): Promise<Result<AgentDetail>> {
   if (USE_FIXTURES) return fixtureAgentDetail(taskId)
 
-  const path = `/v1/tasks/${encodeURIComponent(taskId)}`
+  const id = { id: taskId }
   const [task, events] = await Promise.all([
-    read<{ task: Task } | Task>(path, () => false),
-    read<{ events: TaskEvent[] }>(`${path}/events?limit=${EVENT_PAGE_LIMIT}`, () => false),
+    read<{ task: Task } | Task>(route('/v1/tasks/{id}', id), () => false),
+    read<{ events: TaskEvent[] }>(route(`/v1/tasks/{id}/events?limit=${EVENT_PAGE_LIMIT}`, id), () => false),
   ])
 
   if (task.status === 'loading' || task.status === 'error') return task
@@ -435,7 +452,7 @@ export type ResourceClasses = Record<string, ResourceClassSpec>
 export async function loadResourceClasses(): Promise<Result<{ resource_classes: ResourceClasses }>> {
   if (USE_FIXTURES) return fixtureResourceClasses()
   return read<{ resource_classes: ResourceClasses }>(
-    '/v1/resource-classes',
+    route('/v1/resource-classes'),
     (d) => Object.keys(d.resource_classes ?? {}).length === 0,
   )
 }
@@ -466,16 +483,14 @@ export async function loadCheckpoints(
   if (options.attemptId) query.set('attempt_id', options.attemptId)
   if (options.pageToken) query.set('page_token', options.pageToken)
   if (options.limit) query.set('limit', String(options.limit))
-  const suffix = query.toString() === '' ? '' : `?${query}`
-  // The path is a literal of its own and the query is concatenated after it,
+  // The path is a literal of its own and the query is passed beside it,
   // rather than interpolated into the same template. That is not style: the
   // UI/API seam test in test_runtimes_screen.py scans this file for versioned
   // path literals and compares their SHAPE against the router's declarations,
-  // and
-  // a trailing `${suffix}` inside the template normalises to a path segment
-  // the API does not serve. Keeping them apart keeps the seam checkable.
-  const path = `/v1/tasks/${encodeURIComponent(taskId)}/checkpoints`
-  return read<CheckpointsPage>(path + suffix, () => false)
+  // and a trailing `${suffix}` inside the template normalises to a path
+  // segment the API does not serve. Keeping them apart keeps the seam
+  // checkable -- and `route()` keys the registry by the literal (CH-18).
+  return read<CheckpointsPage>(route('/v1/tasks/{id}/checkpoints', { id: taskId }, query), () => false)
 }
 
 /**
@@ -492,28 +507,33 @@ export async function loadCheckpoints(
  * length of the text returned -- redaction makes the text shorter than the
  * bytes it came from. Windows are aligned to whitespace by the server so a
  * credential can never be split across two of them.
+ *
+ * `stream` IS REPEATABLE (#184), and a list is sent as one `stream=` per
+ * name, in order. No stream means `[stdout, stderr]` -- the RUNNER process's
+ * streams, exactly as before -- so every existing caller is unchanged.
+ * `agent_stdout` and `agent_stderr` are the agent CLI's own.
  */
 export async function loadTaskLogs(
   taskId: string,
   options: {
     attemptId?: string
-    stream?: 'stdout' | 'stderr'
+    stream?: LogStreamName | readonly LogStreamName[]
     source?: 'auto' | 'final' | 'live'
     offset?: number
     limitBytes?: number
   } = {},
 ): Promise<Result<TaskLogs>> {
-  if (USE_FIXTURES) return fixtureTaskLogs(taskId)
+  if (USE_FIXTURES) return fixtureTaskLogs(taskId, options.stream)
   const query = new URLSearchParams()
   if (options.attemptId) query.set('attempt_id', options.attemptId)
-  if (options.stream) query.set('stream', options.stream)
+  const streams: readonly LogStreamName[] =
+    options.stream === undefined ? [] : typeof options.stream === 'string' ? [options.stream] : options.stream
+  for (const s of streams) query.append('stream', s)
   if (options.source) query.set('source', options.source)
   if (options.offset !== undefined) query.set('offset', String(options.offset))
   if (options.limitBytes !== undefined) query.set('limit_bytes', String(options.limitBytes))
-  const suffix = query.toString() === '' ? '' : `?${query}`
   // Path literal and query kept apart; see loadCheckpoints above for why.
-  const path = `/v1/tasks/${encodeURIComponent(taskId)}/logs`
-  return read<TaskLogs>(path + suffix, () => false)
+  return read<TaskLogs>(route('/v1/tasks/{id}/logs', { id: taskId }, query), () => false)
 }
 
 /**
@@ -527,7 +547,7 @@ export async function loadTaskLogs(
  */
 async function fixtureCheckpoints(taskId: string): Promise<Result<CheckpointsPage>> {
   await new Promise((r) => setTimeout(r, 90))
-  noteFixtureProbe(`/v1/tasks/{id}/checkpoints`, 90, true)
+  noteFixtureProbe(route('/v1/tasks/{id}/checkpoints', { id: taskId }), 90, true)
   const prefix = `tenants/u-bogdan/tasks/${taskId}/checkpoints`
   return {
     status: 'ok',
@@ -613,16 +633,75 @@ async function fixtureCheckpoints(taskId: string): Promise<Result<CheckpointsPag
  * The distinction between `null` and `''` is the whole reason `LogStream.content`
  * is nullable, and a fixture that never produced `''` would leave the branch
  * that renders it unexercised.
+ *
+ * THE AGENT STREAMS (#184) are answered only when asked for by name, as the
+ * route does: `agent_stdout` is a live NDJSON tail published seconds ago, and
+ * `agent_stderr` is a measured empty object -- the reference task's shape.
  */
-async function fixtureTaskLogs(taskId: string): Promise<Result<TaskLogs>> {
+async function fixtureTaskLogs(
+  taskId: string,
+  asked?: LogStreamName | readonly LogStreamName[],
+): Promise<Result<TaskLogs>> {
   await new Promise((r) => setTimeout(r, 110))
-  noteFixtureProbe(`/v1/tasks/{id}/logs`, 110, true)
+  noteFixtureProbe(route('/v1/tasks/{id}/logs', { id: taskId }), 110, true)
   const body = [
     '[13:42:01] cloning https://github.com/saga-xyz/example.git',
     '[13:42:09] workspace ready at /workspace (tmpfs)',
     '[13:42:09] claude-code: starting',
     '[13:44:31] checkpoint ckpt_0002 written (18.4 MB)',
   ].join('\n')
+  const names: readonly LogStreamName[] =
+    asked === undefined ? ['stdout', 'stderr'] : typeof asked === 'string' ? [asked] : asked
+  if (names.some((n) => n === 'agent_stdout' || n === 'agent_stderr')) {
+    const agentOut = [
+      '{"type":"system","subtype":"init","model":"claude-opus-5"}',
+      '{"type":"assistant","message":{"content":[{"type":"text","text":"Reading the repository."}]}}',
+    ].join('\n')
+    const pick = (n: LogStreamName): LogStream => {
+      const content = n === 'agent_stdout' ? agentOut : n === 'agent_stderr' ? '' : n === 'stdout' ? body : ''
+      const size = new TextEncoder().encode(content).length
+      return {
+        stream: n,
+        source: 'live',
+        status: 'ok',
+        detail: null,
+        key: `tenants/u-bogdan/tasks/${taskId}/attempts/att_2/logs/live/${n}.tail.log`,
+        uri: `gs://swarm-logs/tenants/u-bogdan/tasks/${taskId}/attempts/att_2/logs/live/${n}.tail.log`,
+        content,
+        total_bytes: size,
+        offset: 0,
+        returned_bytes: size,
+        next_offset: null,
+        truncated: false,
+        redacted: false,
+        redaction_count: 0,
+        tail_window: size === 0 ? null : { object_offset: 0, stream_size: size, published_at: new Date(Date.now() - 3_000).toISOString() },
+        object_updated_at: new Date(Date.now() - 3_000).toISOString(),
+        age_seconds: 3,
+      }
+    }
+    return {
+      status: 'ok',
+      fetchedAt: Date.now(),
+      data: {
+        task_id: taskId,
+        tenant_id: 'u-bogdan',
+        attempt_id: 'att_2',
+        attempt: {
+          status: 'latest',
+          known: true,
+          generation: 2,
+          created_at: new Date(Date.now() - 9 * 60_000).toISOString(),
+          completed_at: null,
+          exit_code: null,
+        },
+        read_at: new Date().toISOString(),
+        prefix: `tenants/u-bogdan/tasks/${taskId}/attempts/att_2/`,
+        redaction: { applied_at_read_time: true, rules: 6 },
+        streams: names.map(pick),
+      },
+    }
+  }
   return {
     status: 'ok',
     fetchedAt: Date.now(),
@@ -707,8 +786,424 @@ export async function loadArtifactContent(
   if (options.offset !== undefined) query.set('offset', String(options.offset))
   if (options.limitBytes !== undefined) query.set('limit_bytes', String(options.limitBytes))
   // Path literal and query kept apart; see loadCheckpoints above for why.
-  const path = `/v1/tasks/${encodeURIComponent(taskId)}/artifacts/content`
-  return read<ArtifactContent>(path + `?${query}`, () => false)
+  return read<ArtifactContent>(route('/v1/tasks/{id}/artifacts/content', { id: taskId }, query), () => false)
+}
+
+// ---------------------------------------------------------------------------
+// The Artifacts tab (#184): what a task took in and what it produced
+// ---------------------------------------------------------------------------
+//
+// EVERY READ AND EVERY DOWNLOAD GOES THROUGH THE API, never a signed GCS URL
+// (the owner's decision, 2026-09-25), so read-time credential redaction and
+// the tenant check apply to every byte. Nothing here builds an object key, a
+// prefix or a `gs://` uri; a file is named by the NAME its manifest spells,
+// on the task that owns it -- a staged input by the UPSTREAM task's id.
+
+/**
+ * One task document, on its own: `GET /v1/tasks/{id}`. The Artifacts pane
+ * re-reads it every 5 s while the task runs, and the events, attempts and
+ * catalogue `loadAgentRun` adds are nothing that pane draws.
+ */
+export async function loadTask(taskId: string): Promise<Result<Task>> {
+  if (USE_FIXTURES) {
+    const detail = await fixtureAgentDetail(taskId)
+    return detail.status === 'ok' ? { status: 'ok', data: detail.data.task, fetchedAt: detail.fetchedAt } : (detail as Result<Task>)
+  }
+  const got = await read<{ task: Task } | Task>(route('/v1/tasks/{id}', { id: taskId }), () => false)
+  if (got.status === 'loading' || got.status === 'error') return got
+  if (got.status === 'empty') {
+    return {
+      status: 'error',
+      error: {
+        kind: 'not_found',
+        httpStatus: 404,
+        code: 'not_found',
+        message: 'This task does not exist, or it belongs to another tenant.',
+      },
+    }
+  }
+  // The route wraps the document in `{task}`; see loadAgentDetail.
+  const raw = got.data as { task?: Task } & Task
+  const task: Task = raw.task ?? raw
+  return got.status === 'stale'
+    ? { status: 'stale', data: task, fetchedAt: got.fetchedAt, error: got.error }
+    : { status: 'ok', data: task, fetchedAt: got.fetchedAt, serverAt: got.serverAt }
+}
+
+/**
+ * HOW MANY ENTRIES THE ARTIFACTS PANE ASKS THE LISTING FOR: 200, which is
+ * `max_page_size`, the server's own cap.
+ *
+ * WITHOUT IT THE LISTING WAS 50. The artifacts route goes through
+ * `paged_limit` (routes/tasks.py) like every list route, so a request with no
+ * `limit` got `default_page_size`. `store.list_artifacts` then returned
+ * `manifest.artifacts[:50]` with `complete: true` and nothing saying it had
+ * cut the list. A browser run that took 60 screenshots drew 50 rows and a
+ * chip reading 50. The route returns no `next_page_token` and accepts none, so
+ * one read goes no further than this. The pane lists anything past it from
+ * the task's own manifest, which is the record the route serves, and it says
+ * how many the route listed (Artifacts.tsx `Files`).
+ *
+ * This is its own constant, not `ATTEMPT_PAGE_LIMIT`, for the reason that one
+ * gives: the two routes share a cap today, and nothing makes them share one.
+ * A deployment that lowered `MAX_PAGE_SIZE` would clamp this read further.
+ * The pane still catches that, because it counts against the manifest and
+ * not against this number.
+ */
+export const ARTIFACT_PAGE_LIMIT = 200
+
+/**
+ * The artifact LISTING: `GET /v1/tasks/{id}/artifacts`. The manifest from the
+ * task's own result summary -- no GCS call -- plus, since #184, each file's
+ * `kind` and `role` from the server's one name table.
+ *
+ * No empty predicate: `artifacts: []` with `complete: true` is a real zero,
+ * and with `complete: false` it is "uploaded when the attempt ends". The
+ * screen tells the two apart by `complete`, which a collapse to `empty`
+ * would throw away.
+ *
+ * `limit` IS SENT, AT `ARTIFACT_PAGE_LIMIT`. See that constant for what not
+ * sending it cost.
+ */
+export async function loadArtifactListing(taskId: string): Promise<Result<ArtifactListing>> {
+  if (USE_FIXTURES) return fixtureArtifactListing(taskId)
+  return read<ArtifactListing>(
+    route('/v1/tasks/{id}/artifacts', { id: taskId }, `limit=${ARTIFACT_PAGE_LIMIT}`),
+    () => false,
+  )
+}
+
+/**
+ * THE URL OF ONE ARTIFACT'S BYTES, for an `<img src>`, an `open full` link or
+ * a `download` link: `GET /v1/tasks/{id}/artifacts/raw?name=&disposition=`.
+ *
+ * A URL AND NOT A READ, on purpose. The response is a byte stream, and `read`
+ * classifies any non-JSON 2xx as an expired session -- correctly, for a JSON
+ * route. The browser fetches this itself, with the same-origin session cookie
+ * every read already rides on, so the tenant check and read-time redaction
+ * (for text) happen on the server exactly as for the content route. The name
+ * is the manifest's, verbatim; the server resolves the object.
+ */
+export function artifactRawUrl(taskId: string, name: string, disposition: 'inline' | 'attachment'): string {
+  return route('/v1/tasks/{id}/artifacts/raw', { id: taskId }, new URLSearchParams({ name, disposition })).url
+}
+
+/**
+ * The agent's final answer: `GET /v1/tasks/{id}/answer`. See `TaskAnswer` for
+ * the four statuses; a failed READ of this route is a `Result` error, which is
+ * a fifth thing and is drawn as one.
+ */
+export async function loadAnswer(taskId: string, options: { attemptId?: string } = {}): Promise<Result<TaskAnswer>> {
+  if (USE_FIXTURES) return fixtureAnswer(taskId)
+  const query = new URLSearchParams()
+  if (options.attemptId) query.set('attempt_id', options.attemptId)
+  return read<TaskAnswer>(route('/v1/tasks/{id}/answer', { id: taskId }, query), () => false)
+}
+
+/**
+ * THE TASK'S INPUT, MASKED: `GET /v1/tasks/{id}/input` (#184 follow-up). What
+ * Inputs and Details draw -- the prompt, the rest of the input and the whole
+ * of it, each as the server's redactor left it, with its count. Never
+ * `task.input`, which is the document as submitted.
+ */
+export async function loadTaskInput(taskId: string): Promise<Result<TaskInputCopy>> {
+  if (USE_FIXTURES) return fixtureTaskInput(taskId)
+  return read<TaskInputCopy>(route('/v1/tasks/{id}/input', { id: taskId }), () => false)
+}
+
+/**
+ * The copies already read, by task. An input never changes once submitted, so
+ * each pane -- Details re-reads with the drawer every 10 s, Inputs with its
+ * pane every 5 s -- asks through here, and a copy that was READ is answered
+ * from memory without a request. A failed read is not kept: the next poll
+ * asks again, which is how a copy that failed once comes back.
+ */
+const INPUT_COPIES = new Map<string, Result<TaskInputCopy>>()
+/** Enough for every drawer a session opens; the oldest goes first past it. */
+const INPUT_COPIES_KEPT = 64
+/**
+ * THE READ IN FLIGHT, by task (PR #210 re-review). Details and Inputs ask for
+ * the same copy when a drawer opens, and each poll of a pane whose copy failed
+ * asks again: without this, a copy slower than the poll stacked one request
+ * per tick, each one more redaction of the whole input on the server. One
+ * request per task at a time; every asker shares its answer.
+ */
+const INPUT_READS = new Map<string, Promise<Result<TaskInputCopy>>>()
+
+export function loadTaskInputOnce(taskId: string): Promise<Result<TaskInputCopy>> {
+  const held = INPUT_COPIES.get(taskId)
+  if (held !== undefined) return Promise.resolve(held)
+  const flying = INPUT_READS.get(taskId)
+  if (flying !== undefined) return flying
+  const read = loadTaskInput(taskId)
+    .then((got) => {
+      if (got.status === 'ok') {
+        if (INPUT_COPIES.size >= INPUT_COPIES_KEPT) {
+          const oldest = INPUT_COPIES.keys().next().value
+          if (oldest !== undefined) INPUT_COPIES.delete(oldest)
+        }
+        INPUT_COPIES.set(taskId, got)
+      }
+      return got
+    })
+    .finally(() => {
+      INPUT_READS.delete(taskId)
+    })
+  INPUT_READS.set(taskId, read)
+  return read
+}
+
+/**
+ * The agent's transcript as steps, parsed and redacted by the server:
+ * `GET /v1/tasks/{id}/transcript`.
+ *
+ * With no `offset` the server serves the window `source` chooses: from the
+ * start of a final object, or the newest tail of a live one -- which is what
+ * the 5 s live read asks for, replacing its list each time. A final
+ * transcript is paged from `next_offset`. `includeRaw` adds each step's
+ * redacted source record, for `show records`.
+ */
+export async function loadTranscript(
+  taskId: string,
+  options: {
+    attemptId?: string
+    source?: 'auto' | 'final' | 'live'
+    offset?: number
+    limitBytes?: number
+    includeRaw?: boolean
+  } = {},
+): Promise<Result<TaskTranscript>> {
+  if (USE_FIXTURES) return fixtureTranscript(taskId, options.includeRaw === true)
+  const query = new URLSearchParams()
+  if (options.attemptId) query.set('attempt_id', options.attemptId)
+  if (options.source) query.set('source', options.source)
+  if (options.offset !== undefined) query.set('offset', String(options.offset))
+  if (options.limitBytes !== undefined) query.set('limit_bytes', String(options.limitBytes))
+  if (options.includeRaw) query.set('include_raw', 'true')
+  return read<TaskTranscript>(route('/v1/tasks/{id}/transcript', { id: taskId }, query), () => false)
+}
+
+/**
+ * `GET /v1/workflows/{id}`: the workflow, its steps and every step's task.
+ * The Artifacts pane reads it only for a task that IS a workflow step, to name
+ * the step that produced each staged file and to see whether that upstream
+ * run still lists it.
+ */
+export interface WorkflowRead {
+  workflow: Workflow
+  tasks: Task[]
+}
+
+export async function loadWorkflow(workflowId: string): Promise<Result<WorkflowRead>> {
+  if (USE_FIXTURES) return fixtureWorkflowRead(workflowId)
+  return read<WorkflowRead>(route('/v1/workflows/{id}', { id: workflowId }), () => false)
+}
+
+/**
+ * THE ARTIFACTS FIXTURES, derived from the task fixture so the joins are real:
+ * a finished task lists its files with the kinds and roles the server would
+ * give them, and an unfinished one lists nothing, incomplete -- "uploaded when
+ * the attempt ends", never "none".
+ */
+async function fixtureArtifactListing(taskId: string): Promise<Result<ArtifactListing>> {
+  await new Promise((r) => setTimeout(r, 40))
+  noteFixtureProbe(route('/v1/tasks/{id}/artifacts', { id: taskId }), 40, true)
+  const detail = await fixtureAgentDetail(taskId)
+  if (detail.status !== 'ok') return detail as Result<ArtifactListing>
+  const finished = detail.data.task.state === 'SUCCEEDED'
+  const uri = (name: string) => `gs://swarm-artifacts-dev/tenants/u-bogdan/tasks/${taskId}/attempts/att_fixture/artifacts/${name}`
+  return {
+    status: 'ok',
+    fetchedAt: Date.now(),
+    data: {
+      task_id: taskId,
+      complete: finished,
+      attempt_id: finished ? 'att_fixture' : null,
+      artifact_bytes: finished ? 118_823 : null,
+      artifacts_skipped: [],
+      artifacts: finished
+        ? [
+            { name: 'report.md', bytes: 8241, uri: uri('report.md'), attempt_id: 'att_fixture', kind: 'markdown', content_type: 'text/markdown', role: null },
+            { name: 'diff.patch', bytes: 91233, uri: uri('diff.patch'), attempt_id: 'att_fixture', kind: 'text', content_type: 'text/plain', role: null },
+            { name: 'claude-code.stdout.log', bytes: 9397, uri: uri('claude-code.stdout.log'), attempt_id: 'att_fixture', kind: 'log', content_type: 'text/plain', role: 'agent_stdout' },
+            { name: 'claude-code.stderr.log', bytes: 0, uri: uri('claude-code.stderr.log'), attempt_id: 'att_fixture', kind: 'log', content_type: 'text/plain', role: 'agent_stderr' },
+            { name: 'claude-transcript.json', bytes: 10181, uri: uri('claude-transcript.json'), attempt_id: 'att_fixture', kind: 'json', content_type: 'application/json', role: 'agent_transcript' },
+          ]
+        : [],
+    },
+  }
+}
+
+function fixtureAttemptBlock(finished: boolean): TaskAnswer['attempt'] {
+  return {
+    status: 'latest',
+    known: true,
+    generation: 1,
+    created_at: new Date(Date.now() - 9 * 60_000).toISOString(),
+    completed_at: finished ? new Date(Date.now() - 60_000).toISOString() : null,
+    exit_code: finished ? 0 : null,
+  }
+}
+
+/**
+ * The fixture's copy of a task's input. The fixture tasks carry no credential,
+ * so their copy is their input with a measured zero beside it -- the shape the
+ * server sends, not a masking done here.
+ */
+async function fixtureTaskInput(taskId: string): Promise<Result<TaskInputCopy>> {
+  await new Promise((r) => setTimeout(r, 30))
+  noteFixtureProbe(route('/v1/tasks/{id}/input', { id: taskId }), 30, true)
+  const detail = await fixtureAgentDetail(taskId)
+  if (detail.status !== 'ok') return detail as Result<TaskInputCopy>
+  const raw = detail.data.task.input
+  const input: Record<string, unknown> =
+    raw !== null && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {}
+  const prompt = input['prompt']
+  const others = Object.fromEntries(Object.entries(input).filter(([k]) => k !== 'prompt'))
+  const clean = (text: string) => ({ text, redaction_count: 0 })
+  return {
+    status: 'ok',
+    fetchedAt: Date.now(),
+    data: {
+      task_id: taskId,
+      tenant_id: detail.data.task.tenant_id,
+      read_at: new Date().toISOString(),
+      prompt_key: typeof prompt === 'string' ? 'string' : 'prompt' in input ? 'other' : 'missing',
+      prompt: typeof prompt === 'string' ? clean(prompt) : null,
+      rest: typeof prompt === 'string' && Object.keys(others).length > 0 ? clean(JSON.stringify(others, null, 2)) : null,
+      full: clean(JSON.stringify(input, null, 2)),
+      redacted: false,
+      redaction_count: 0,
+      redaction: { applied_at_read_time: true, rules: 11 },
+    },
+  }
+}
+
+async function fixtureAnswer(taskId: string): Promise<Result<TaskAnswer>> {
+  await new Promise((r) => setTimeout(r, 50))
+  noteFixtureProbe(route('/v1/tasks/{id}/answer', { id: taskId }), 50, true)
+  const detail = await fixtureAgentDetail(taskId)
+  if (detail.status !== 'ok') return detail as Result<TaskAnswer>
+  const state = detail.data.task.state
+  const finished = TERMINAL_STATES.has(state)
+  const content =
+    '## Summary\n\nThe capacity reservation is all-or-nothing across every pool.\n\n' +
+    '- concurrency counts from `LEASED`\n- a stale worker exits without running the agent\n'
+  const ok = state === 'SUCCEEDED'
+  return {
+    status: 'ok',
+    fetchedAt: Date.now(),
+    data: {
+      task_id: taskId,
+      tenant_id: 'u-bogdan',
+      attempt_id: 'att_fixture',
+      attempt: fixtureAttemptBlock(finished),
+      read_at: new Date().toISOString(),
+      status: ok ? 'ok' : finished ? 'absent' : 'not_yet',
+      source: ok ? 'agent_result_event' : null,
+      object: ok
+        ? { stream: 'agent_stdout', source: 'final', uri: null, object_updated_at: new Date(Date.now() - 60_000).toISOString() }
+        : null,
+      format: ok ? 'markdown' : null,
+      content: ok ? content : null,
+      complete: ok ? true : null,
+      is_error: ok ? false : null,
+      subtype: ok ? 'success' : null,
+      stop_reason: ok ? 'end_turn' : null,
+      terminal_reason: ok ? 'completed' : null,
+      num_turns: ok ? 7 : null,
+      bytes: ok ? new TextEncoder().encode(content).length : null,
+      redacted: false,
+      redaction_count: 0,
+      // What the server says of a capture that was not cut, as #188 sends it.
+      capture_truncated: ok ? false : null,
+      detail: null,
+    },
+  }
+}
+
+async function fixtureTranscript(taskId: string, includeRaw: boolean): Promise<Result<TaskTranscript>> {
+  await new Promise((r) => setTimeout(r, 60))
+  noteFixtureProbe(route('/v1/tasks/{id}/transcript', { id: taskId }), 60, true)
+  const detail = await fixtureAgentDetail(taskId)
+  if (detail.status !== 'ok') return detail as Result<TaskTranscript>
+  const finished = TERMINAL_STATES.has(detail.data.task.state)
+  const step = (n: number, over: Partial<TranscriptStep>): TranscriptStep => ({
+    id: `L${n * 120}:0`,
+    line_offset: n * 120,
+    block: 0,
+    kind: 'text',
+    role: 'assistant',
+    parent_tool_use_id: null,
+    text: null,
+    tool: null,
+    tool_result: null,
+    meta: null,
+    truncated_fields: [],
+    raw: includeRaw ? '{"type":"assistant"}' : null,
+    ...over,
+  })
+  const steps: TranscriptStep[] = [
+    step(0, { kind: 'init', role: 'system', meta: { model: 'claude-opus-5', permission_mode: 'bypassPermissions', tool_count: 14 } }),
+    step(1, { text: 'Reading the repository before changing anything.' }),
+    step(2, { kind: 'tool_call', tool: { id: 'toolu_01', name: 'Read', input: '{\n  "file_path": "CONTRACT.md"\n}' } }),
+    step(3, { kind: 'tool_result', role: 'user', tool_result: { tool_use_id: 'toolu_01', is_error: false, content: '# The contract\n...', images: 0 } }),
+    ...(finished
+      ? [step(4, { kind: 'result', role: null, text: '## Summary\n\nDone.', meta: { subtype: 'success', is_error: false, num_turns: 7 } })]
+      : []),
+  ]
+  const size = 4096
+  return {
+    status: 'ok',
+    fetchedAt: Date.now(),
+    data: {
+      task_id: taskId,
+      tenant_id: 'u-bogdan',
+      attempt_id: 'att_fixture',
+      attempt: fixtureAttemptBlock(finished),
+      read_at: new Date().toISOString(),
+      stream: {
+        stream: 'agent_stdout',
+        source: finished ? 'final' : 'live',
+        status: 'ok',
+        detail: null,
+        uri: `gs://swarm-artifacts-dev/tenants/u-bogdan/tasks/${taskId}/attempts/att_fixture/logs/agent_stdout.log`,
+        object_updated_at: new Date(Date.now() - 4_000).toISOString(),
+        age_seconds: 4,
+        total_bytes: size,
+        offset: 0,
+        returned_bytes: size,
+        next_offset: null,
+        truncated: false,
+        tail_window: finished ? null : { object_offset: 0, stream_size: size, published_at: new Date(Date.now() - 4_000).toISOString() },
+      },
+      format: 'claude-stream-json',
+      steps,
+      complete: finished,
+      window_starts_mid_stream: false,
+      skipped_lines: 0,
+      answer_in_window: finished,
+      // Known whole only for a whole final read, as #188 decides it.
+      capture_truncated: finished ? false : null,
+      redaction: { applied_at_read_time: true, rules: 6 },
+      redaction_count: 0,
+    },
+  }
+}
+
+async function fixtureWorkflowRead(workflowId: string): Promise<Result<WorkflowRead>> {
+  await new Promise((r) => setTimeout(r, 80))
+  noteFixtureProbe(route('/v1/workflows/{id}', { id: workflowId }), 80, true)
+  const workflow = fixtureWorkflowRows().find((w) => w.workflow_id === workflowId)
+  if (workflow === undefined) {
+    return {
+      status: 'error',
+      error: { kind: 'not_found', httpStatus: 404, code: 'not_found', message: 'This workflow does not exist, or it belongs to another tenant.' },
+    }
+  }
+  const page = await fixtureTasks()
+  const tasks = page.status === 'ok' ? page.data.tasks.filter((t) => t.workflow_id === workflowId) : []
+  return { status: 'ok', fetchedAt: Date.now(), data: { workflow, tasks } }
 }
 
 /**
@@ -725,7 +1220,7 @@ export async function loadArtifactContent(
  */
 export async function cancelTask(taskId: string): Promise<Result<CancelResult>> {
   if (USE_FIXTURES) return fixtureCancel(taskId)
-  return write(`/v1/tasks/${encodeURIComponent(taskId)}/cancel`, 'POST') as Promise<
+  return write(route('/v1/tasks/{id}/cancel', { id: taskId }), 'POST') as Promise<
     Result<CancelResult>
   >
 }
@@ -752,8 +1247,13 @@ async function fixtureArtifactContent(
   name: string,
 ): Promise<Result<ArtifactContent>> {
   await new Promise((r) => setTimeout(r, 30))
-  const path = `/v1/tasks/${taskId}/artifacts/content`
-  noteFixtureProbe(path, 30, true)
+  // The same `route()` call as the live path, so a fixture read lands in the
+  // same registry record a live one would (CH-18).
+  noteFixtureProbe(
+    route('/v1/tasks/{id}/artifacts/content', { id: taskId }, new URLSearchParams({ name })),
+    30,
+    true,
+  )
   const bodies: Record<string, string> = {
     'synthesis.md':
       '# Synthesis\n\nFive agents looked at the same question.\n\n' +
@@ -799,7 +1299,7 @@ async function fixtureArtifactContent(
 
 async function fixtureCancel(taskId: string): Promise<Result<CancelResult>> {
   await new Promise((r) => setTimeout(r, 60))
-  noteFixtureProbe(`/v1/tasks/${taskId}/cancel`, 60, true)
+  noteFixtureProbe(route('/v1/tasks/{id}/cancel', { id: taskId }), 60, true)
   // `released_immediately: false` is the fixture's answer on purpose: it is
   // the case the confirmation copy is written for, and a fixture that always
   // reported an instant stop would let that copy be developed against the
@@ -809,7 +1309,7 @@ async function fixtureCancel(taskId: string): Promise<Result<CancelResult>> {
 
 async function fixtureResourceClasses(): Promise<Result<{ resource_classes: ResourceClasses }>> {
   await new Promise((r) => setTimeout(r, 40))
-  noteFixtureProbe('/v1/resource-classes', 40, true)
+  noteFixtureProbe(route('/v1/resource-classes'), 40, true)
   return {
     status: 'ok',
     fetchedAt: Date.now(),
@@ -856,11 +1356,8 @@ export async function loadRuntimeTopology(): Promise<Result<RuntimeTopology>> {
   if (USE_FIXTURES) return fixtureRuntimeTopology()
 
   const [runtimes, capacity, classes] = await Promise.all([
-    read<{ runtimes: Record<string, Runtime> }>(
-      '/v1/runtimes',
-      (d) => Object.keys(d.runtimes ?? {}).length === 0,
-    ),
-    read<Capacity>('/v1/capacity', () => false),
+    readRuntimes(),
+    read<Capacity>(route('/v1/capacity'), () => false),
     loadResourceClasses(),
   ])
 
@@ -965,7 +1462,7 @@ const FIXTURE_RUNTIMES: Record<string, Runtime> = {
 
 async function fixtureRuntimeTopology(): Promise<Result<RuntimeTopology>> {
   await new Promise((r) => setTimeout(r, 60))
-  noteFixtureProbe('/v1/runtimes', 60, true)
+  noteFixtureProbe(route('/v1/runtimes'), 60, true)
   const capacity = await fixtureCapacity()
   return {
     status: 'ok',
@@ -1000,6 +1497,27 @@ async function fixtureRuntimeTopology(): Promise<Result<RuntimeTopology>> {
  * attempt document (QUEUED, PARKED, or READY and waiting for capacity).
  * `attempts: null` means the query failed and nothing may be concluded.
  */
+/**
+ * THE ONE READ OF `GET /v1/runtimes`. The catalogue screen reaches it through
+ * `loadRuntimeTopology`, and since #185 the Timeline's profile filter through
+ * `loadRunnerProfiles`; both call this, so the route has one reader and its
+ * payload one type. Two readers of one route drift, which is the rule
+ * tests/unit/control_plane/test_runtimes_screen.py holds.
+ */
+function readRuntimes(): Promise<Result<{ runtimes: Record<string, Runtime> }>> {
+  return read<{ runtimes: Record<string, Runtime> }>(
+    route('/v1/runtimes'),
+    (d) => Object.keys(d.runtimes ?? {}).length === 0,
+  )
+}
+
+/** The fixture catalogue's names, recorded as a read of the same route. */
+async function fixtureRuntimeNames(): Promise<Result<string[]>> {
+  await new Promise((r) => setTimeout(r, 90))
+  noteFixtureProbe(route('/v1/runtimes'), 90, true)
+  return { status: 'ok', fetchedAt: Date.now(), data: Object.keys(FIXTURE_RUNTIMES).sort() }
+}
+
 export interface AgentRun {
   task: Task
   /** null means the event read FAILED. An empty array means there are none. */
@@ -1017,14 +1535,29 @@ export interface AgentRun {
   classesRouteMissing: boolean
 }
 
+/**
+ * THE MASKED INPUT IS NOT PART OF THIS READ (PR #210 re-review). It was a
+ * fifth read in the `Promise.all` below, so the whole drawer -- the task's
+ * state, its events, its attempts -- waited on `/v1/tasks/{id}/input`, and a
+ * copy that took a minute blanked Details for a minute. Details' Input reads
+ * it on its own (`loadTaskInputOnce`, as Inputs does), so a slow or failed
+ * copy blanks only the blocks that draw it.
+ */
 export async function loadAgentRun(taskId: string): Promise<Result<AgentRun>> {
   if (USE_FIXTURES) return fixtureAgentRun(taskId)
 
-  const path = `/v1/tasks/${encodeURIComponent(taskId)}`
+  const id = { id: taskId }
   const [task, events, attempts, classes] = await Promise.all([
-    read<{ task: Task } | Task>(path, () => false),
-    read<{ events: TaskEvent[] }>(`${path}/events?limit=${EVENT_PAGE_LIMIT}`, () => false),
-    read<{ attempts: AttemptRow[] }>(`${path}/attempts?limit=${ATTEMPT_PAGE_LIMIT}`, (d) => d.attempts.length === 0),
+    read<{ task: Task } | Task>(route('/v1/tasks/{id}', id), () => false),
+    read<{ events: TaskEvent[] }>(route(`/v1/tasks/{id}/events?limit=${EVENT_PAGE_LIMIT}`, id), () => false),
+    // Each row carries the attempt's CPU as typed fields (contract request
+    // #15). The `include=usage` this read used to send asked the server for
+    // #188's interim reading off the task's events, which the typed fields
+    // replaced; nothing extra is asked for now.
+    read<{ attempts: AttemptRow[] }>(
+      route(`/v1/tasks/{id}/attempts?limit=${ATTEMPT_PAGE_LIMIT}`, id),
+      (d) => d.attempts.length === 0,
+    ),
     loadResourceClasses(),
   ])
 
@@ -1105,7 +1638,7 @@ async function fixtureAgentRun(taskId: string): Promise<Result<AgentRun>> {
       task: detail.data.task,
       events: detail.data.events,
       eventsDetail: detail.data.eventsDetail,
-      attempts: attempts.status === 'ok' ? attempts.data.attempts : null,
+      attempts: attempts.status === 'ok' ? attempts.data.attempts.map(fixtureCpu) : null,
       attemptsDetail: attempts.status === 'ok' ? null : 'The fixture attempt read did not complete.',
       classes: classes.status === 'ok' ? classes.data.resource_classes : null,
       classesDetail: null,
@@ -1114,24 +1647,37 @@ async function fixtureAgentRun(taskId: string): Promise<Result<AgentRun>> {
   }
 }
 
+/**
+ * The typed CPU fields (contract request #15) on one fixture attempt: none
+ * for one that never started, and the attempt's figures -- live while it
+ * runs, the figures at exit once it ended -- for the rest, so every shape of
+ * the Details CPU rows is looked at in development.
+ */
+function fixtureCpu(a: AttemptRow): AttemptRow {
+  if (a.started_at === null) {
+    return { ...a, cpu_seconds: null, peak_cpu_cores: null, mean_cpu_cores: null, cpu_limit_cores: null }
+  }
+  return { ...a, cpu_seconds: 402.311, peak_cpu_cores: 1.62, mean_cpu_cores: 0.842, cpu_limit_cores: 2 }
+}
+
 export async function loadStats(): Promise<Result<Stats>> {
   if (USE_FIXTURES) return fixtureStats()
   // A successful read always yields twelve numbers, because count_tasks_by_state
   // iterates the whole enum and writes a key for each. So there is no empty
   // state here -- and an error must never render as "0 RUNNING", because
   // "0 RUNNING" and "stats failed" are opposite facts.
-  return read<Stats>('/v1/stats', () => false)
+  return read<Stats>(route('/v1/stats'), () => false)
 }
 
 export async function loadDispatchControl(): Promise<Result<DispatchControl>> {
   if (USE_FIXTURES) return fixtureDispatch()
   // Admin-gated. A 403 here is information, not a failure.
-  return read<DispatchControl>('/v1/admin/dispatch', () => false)
+  return read<DispatchControl>(route('/v1/admin/dispatch'), () => false)
 }
 
 export async function loadProviders(): Promise<Result<ProvidersPage>> {
   if (USE_FIXTURES) return fixtureProviders()
-  return read<ProvidersPage>('/v1/providers', (d) => d.providers.length === 0)
+  return read<ProvidersPage>(route('/v1/providers'), (d) => d.providers.length === 0)
 }
 
 /** One page of tasks in one state. Server-side filter, backed by a real index. */
@@ -1145,14 +1691,14 @@ export async function loadTasksInState(state: TaskState): Promise<Result<TaskPag
       : { status: 'ok', fetchedAt: Date.now(), data: { ...page.data, tasks } }
   }
   return read<TaskPage>(
-    `/v1/tasks?state=${encodeURIComponent(state)}&limit=200`,
+    route('/v1/tasks', {}, new URLSearchParams({ state, limit: '200' })),
     (d) => d.tasks.length === 0,
   )
 }
 
 async function fixtureStats(): Promise<Result<Stats>> {
   await new Promise((r) => setTimeout(r, 220))
-  noteFixtureProbe('/v1/stats', 220, true)
+  noteFixtureProbe(route('/v1/stats'), 220, true)
   return {
     status: 'ok',
     fetchedAt: Date.now(),
@@ -1174,7 +1720,7 @@ async function fixtureDispatch(): Promise<Result<DispatchControl>> {
   await new Promise((r) => setTimeout(r, 120))
   // A non-admin genuinely cannot read this, and the board must render that as
   // information rather than breakage. The fixture exercises that path.
-  noteFixtureProbe('/v1/admin/dispatch', 120, false)
+  noteFixtureProbe(route('/v1/admin/dispatch'), 120, false)
   return {
     status: 'error',
     error: {
@@ -1188,7 +1734,7 @@ async function fixtureDispatch(): Promise<Result<DispatchControl>> {
 
 async function fixtureProviders(): Promise<Result<ProvidersPage>> {
   await new Promise((r) => setTimeout(r, 200))
-  noteFixtureProbe('/v1/providers', 200, true)
+  noteFixtureProbe(route('/v1/providers'), 200, true)
   return {
     status: 'ok',
     fetchedAt: Date.now(),
@@ -1224,9 +1770,15 @@ async function fixtureProviders(): Promise<Result<ProvidersPage>> {
   }
 }
 
-export async function loadMe(): Promise<Result<Me>> {
-  if (USE_FIXTURES) return fixtureMe()
-  return read<Me>('/v1/tenants/me', () => false)
+/**
+ * `GET /v1/tenants/me`. `frame` marks the product header's own read, which is
+ * the FRAME's and not the screen's: it lands in the tab-wide registry like any
+ * read, and the head's "newest read" -- the screen's own (CH-2) -- does not
+ * count it. Platform counts reads the same route as a screen, without it.
+ */
+export async function loadMe(options: { frame?: boolean } = {}): Promise<Result<Me>> {
+  if (USE_FIXTURES) return fixtureMe(options)
+  return read<Me>(route('/v1/tenants/me'), () => false, { frame: options.frame === true })
 }
 
 /**
@@ -1249,10 +1801,7 @@ export async function loadTaskWindow(budget: number): Promise<Result<TaskWindow>
   while (tasks.length < budget) {
     const qs = new URLSearchParams({ limit: '200' })
     if (token) qs.set('page_token', token)
-    const page: Result<TaskPage> = await read<TaskPage>(
-      `/v1/tasks?${qs.toString()}`,
-      () => false,
-    )
+    const page: Result<TaskPage> = await read<TaskPage>(route('/v1/tasks', {}, qs), () => false)
     if (page.status === 'error') {
       // Partial data plus a failure is still a failure to describe a window:
       // a span computed from half the rows would be wrong in a way nothing on
@@ -1290,9 +1839,9 @@ export async function loadTaskWindow(budget: number): Promise<Result<TaskWindow>
   } as Result<TaskWindow>
 }
 
-async function fixtureMe(): Promise<Result<Me>> {
+async function fixtureMe(options: { frame?: boolean } = {}): Promise<Result<Me>> {
   await new Promise((r) => setTimeout(r, 150))
-  noteFixtureProbe('/v1/tenants/me', 150, true)
+  noteFixtureProbe(route('/v1/tenants/me'), 150, true, undefined, { frame: options.frame === true })
   return {
     status: 'ok',
     fetchedAt: Date.now(),
@@ -1339,12 +1888,12 @@ async function fixtureWindow(budget: number): Promise<Result<TaskWindow>> {
 /** `GET /v1/admin/tenants`, admin-gated. A 403 here is information. */
 export async function loadTenants(): Promise<Result<{ tenants: Tenant[] }>> {
   if (USE_FIXTURES) return fixtureTenants()
-  return read<{ tenants: Tenant[] }>('/v1/admin/tenants', (d) => d.tenants.length === 0)
+  return read<{ tenants: Tenant[] }>(route('/v1/admin/tenants'), (d) => d.tenants.length === 0)
 }
 
 async function fixtureTenants(): Promise<Result<{ tenants: Tenant[] }>> {
   await new Promise((r) => setTimeout(r, 140))
-  noteFixtureProbe('/v1/admin/tenants', 140, false)
+  noteFixtureProbe(route('/v1/admin/tenants'), 140, false)
   return {
     status: 'error',
     error: {
@@ -1364,21 +1913,21 @@ async function fixtureTenants(): Promise<Result<{ tenants: Tenant[] }>> {
  */
 export async function loadLeases(): Promise<Result<LeasePage>> {
   if (USE_FIXTURES) return fixtureLeases()
-  return read<LeasePage>('/v1/admin/leases?active_only=true&limit=200', (d) => d.leases.length === 0)
+  return read<LeasePage>(route('/v1/admin/leases?active_only=true&limit=200'), (d) => d.leases.length === 0)
 }
 
 /** Every attempt of one task, newest first. Tenant-scoped. */
 export async function loadAttempts(taskId: string): Promise<Result<{ attempts: AttemptRow[] }>> {
   if (USE_FIXTURES) return fixtureAttempts(taskId)
   return read<{ attempts: AttemptRow[] }>(
-    `/v1/tasks/${encodeURIComponent(taskId)}/attempts?limit=${ATTEMPT_PAGE_LIMIT}`,
+    route(`/v1/tasks/{id}/attempts?limit=${ATTEMPT_PAGE_LIMIT}`, { id: taskId }),
     (d) => d.attempts.length === 0,
   )
 }
 
 async function fixtureLeases(): Promise<Result<LeasePage>> {
   await new Promise((r) => setTimeout(r, 180))
-  noteFixtureProbe('/v1/admin/leases', 180, true)
+  noteFixtureProbe(route('/v1/admin/leases'), 180, true)
   const iso = (secAgo: number) => new Date(Date.now() - secAgo * 1000).toISOString()
   const row = (
     id: string,
@@ -1443,7 +1992,7 @@ async function fixtureLeases(): Promise<Result<LeasePage>> {
 
 async function fixtureAttempts(taskId: string): Promise<Result<{ attempts: AttemptRow[] }>> {
   await new Promise((r) => setTimeout(r, 160))
-  noteFixtureProbe(`/v1/tasks/{id}/attempts`, 160, true)
+  noteFixtureProbe(route('/v1/tasks/{id}/attempts', { id: taskId }), 160, true)
   const iso = (m: number) => new Date(Date.now() - m * 60_000).toISOString()
   // THE NEWEST ATTEMPT FOLLOWS THE TASK'S STATE. A fixture that always returned
   // a finished attempt meant the live-agent path -- no exit code, no
@@ -1551,17 +2100,11 @@ export async function loadHolders(): Promise<Result<HoldersBoard>> {
   if (USE_FIXTURES) return fixtureHolders()
 
   const [leases, capacity] = await Promise.all([
-    // EMPTY ONLY WHEN THE ROUTE VOUCHES FOR IT. `empty` is drawn as a real
-    // zero ("no lease holds capacity"), and no rows is only that when no live
-    // lease was left out of the window. An API older than
-    // `active_beyond_window` cannot say so, and its empty page goes to the
-    // screen as a page, where Holders.tsx marks the coverage unreported
-    // rather than calling it a zero.
-    read<LeasePage>(
-      '/v1/admin/leases?active_only=true&limit=200',
-      (d) => d.leases.length === 0 && d.active_beyond_window === 0 && d.truncated !== true,
-    ),
-    read<Capacity>('/v1/capacity', () => false),
+    // NEVER `empty` FROM THE LEASE READ ALONE -- see `holdersAreEmpty`. The
+    // page comes back as a page, and whether it is a real zero is decided
+    // below with the counters in hand.
+    read<LeasePage>(route('/v1/admin/leases?active_only=true&limit=200'), () => false),
+    read<Capacity>(route('/v1/capacity'), () => false),
   ])
 
   if (leases.status === 'loading' || leases.status === 'error' || leases.status === 'empty') {
@@ -1576,11 +2119,40 @@ export async function loadHolders(): Promise<Result<HoldersBoard>> {
         : 'The pool read did not complete.'
       : null
 
+  if (leases.status === 'ok' && holdersAreEmpty(leases.data, pools)) {
+    return { status: 'empty', fetchedAt: leases.fetchedAt, serverAt: leases.serverAt }
+  }
+
   return {
     status: leases.status,
     fetchedAt: leases.fetchedAt,
     data: { page: leases.data, pools, poolsDetail: detail },
   } as Result<HoldersBoard>
+}
+
+/**
+ * WHETHER THE HOLDERS SCREEN MAY SAY "NOTHING HOLDS CAPACITY" (CP-7, visual QA
+ * 2026-09-25).
+ *
+ * `empty` is drawn as a REAL ZERO, and it is two claims, not one: no live
+ * lease exists, AND no pool counter is holding units. The second is the one
+ * that matters most here -- a counter left non-zero with nothing behind it is
+ * exactly the leak the drift card exists to find -- and it used to be dropped:
+ * the capacity read was issued alongside the lease read and then discarded
+ * whenever the lease page came back with no rows, so a leaked counter with
+ * zero live leases rendered as the calmest thing on the screen.
+ *
+ * So `empty` needs BOTH, measured: a lease page that vouches it left no live
+ * lease out (`active_beyond_window === 0`, not truncated -- an older API that
+ * cannot say goes to the screen as a page, where the coverage is marked
+ * unreported), and a counter read that succeeded with every `active` at 0.
+ * A counter read that FAILED is not a zero either: the page goes to the screen,
+ * where the drift card says the comparison was not made.
+ */
+function holdersAreEmpty(page: LeasePage, pools: Pool[] | null): boolean {
+  const noLiveLease =
+    page.leases.length === 0 && page.active_beyond_window === 0 && page.truncated !== true
+  return noLiveLease && pools !== null && pools.every((p) => p.active === 0)
 }
 
 async function fixtureHolders(): Promise<Result<HoldersBoard>> {
@@ -1596,12 +2168,12 @@ async function fixtureHolders(): Promise<Result<HoldersBoard>> {
 /** `GET /v1/admin/quota`. Admin-gated, so a 403 renders as information. */
 export async function loadAdminQuota(): Promise<Result<{ quota: QuotaState[] }>> {
   if (USE_FIXTURES) return fixtureAdminQuota()
-  return read<{ quota: QuotaState[] }>('/v1/admin/quota', (d) => d.quota.length === 0)
+  return read<{ quota: QuotaState[] }>(route('/v1/admin/quota'), (d) => d.quota.length === 0)
 }
 
 async function fixtureAdminQuota(): Promise<Result<{ quota: QuotaState[] }>> {
   await new Promise((r) => setTimeout(r, 170))
-  noteFixtureProbe('/v1/admin/quota', 170, true)
+  noteFixtureProbe(route('/v1/admin/quota'), 170, true)
   const q = (
     provider: string,
     tenant: string,
@@ -1647,16 +2219,18 @@ async function fixtureAdminQuota(): Promise<Result<{ quota: QuotaState[] }>> {
  */
 export async function setPoolLimit(poolName: string, limit: number): Promise<Result<unknown>> {
   const parts = poolName.split(':')
-  let path: string | null = null
+  let path: ApiRoute | null = null
 
-  if (poolName === 'global') path = '/v1/admin/limits/global'
-  else if (parts[0] === 'tenant' && parts[1]) path = `/v1/admin/limits/tenant/${encodeURIComponent(parts[1])}`
-  else if (parts[0] === 'resource' && parts[1]) path = `/v1/admin/limits/resource/${encodeURIComponent(parts[1])}`
-  else if (parts[0] === 'runner' && parts[1]) path = `/v1/admin/limits/runner/${encodeURIComponent(parts[1])}`
-  else if (parts[0] === 'backend' && parts[1]) path = `/v1/admin/limits/backend/${encodeURIComponent(parts[1])}`
+  // One route per pool KIND, each keyed by its template (CH-18): a limit set on
+  // two runners is one `/v1/admin/limits/runner/{name}` in the registry, not two.
+  if (poolName === 'global') path = route('/v1/admin/limits/global')
+  else if (parts[0] === 'tenant' && parts[1]) path = route('/v1/admin/limits/tenant/{name}', { name: parts[1] })
+  else if (parts[0] === 'resource' && parts[1]) path = route('/v1/admin/limits/resource/{name}', { name: parts[1] })
+  else if (parts[0] === 'runner' && parts[1]) path = route('/v1/admin/limits/runner/{name}', { name: parts[1] })
+  else if (parts[0] === 'backend' && parts[1]) path = route('/v1/admin/limits/backend/{name}', { name: parts[1] })
   else if (parts[0] === 'provider' && parts[1] && parts[2] === 'tenant' && parts[3])
-    path = `/v1/admin/limits/provider/${encodeURIComponent(parts[1])}/tenant/${encodeURIComponent(parts[3])}`
-  else if (parts[0] === 'provider' && parts[1]) path = `/v1/admin/limits/provider/${encodeURIComponent(parts[1])}`
+    path = route('/v1/admin/limits/provider/{name}/tenant/{tenant}', { name: parts[1], tenant: parts[3] })
+  else if (parts[0] === 'provider' && parts[1]) path = route('/v1/admin/limits/provider/{name}', { name: parts[1] })
 
   if (path === null) {
     // Fail loudly rather than POSTing somewhere plausible. A limit that
@@ -2162,9 +2736,37 @@ const FIXTURE_INPUT_CONTRACTS: Record<string, RunnerInputContract> = {
   "browser": {"required_keys": []}
 }
 
+/**
+ * Whether each of the five may be dispatched, as `/v1/capacity` now serves it
+ * (CP-3, visual QA 2026-09-25). A fixture whose `codex` is on offer develops
+ * Pools, Profile headroom and Submit against a platform that does not exist --
+ * which is how the disabled branch of all three shipped unexercised.
+ *
+ * A COPY OF THE FROZEN CATALOGUE'S TWO FIELDS, and therefore a strict-JSON
+ * literal: `test_capacity_serves_availability.py` reads it with the same
+ * `json_literal` the input-contract table above is held by and compares it to
+ * `RUNNER_PROFILES`, so re-enabling a profile there fails here until this
+ * follows.
+ *
+ * The value type is NAMED rather than written inline: the reader takes the
+ * first `{` after the declaration as the literal, and an inline object type
+ * would be that brace.
+ */
+interface FixtureAvailability {
+  available: boolean
+  disabled_reason: string
+}
+const FIXTURE_AVAILABILITY: Record<string, FixtureAvailability> = {
+  "mock": {"available": true, "disabled_reason": ""},
+  "generic": {"available": true, "disabled_reason": ""},
+  "claude-code": {"available": true, "disabled_reason": ""},
+  "codex": {"available": false, "disabled_reason": "codex is disabled on this platform. The provider refused the registered credential and the platform is focused on Claude. Use claude-code."},
+  "browser": {"available": true, "disabled_reason": ""}
+}
+
 async function fixtureCapacity(): Promise<Result<Capacity>> {
   await new Promise((r) => setTimeout(r, 400))
-  noteFixtureProbe('/v1/capacity', 400, true)
+  noteFixtureProbe(route('/v1/capacity'), 400, true)
   const pool = (
     name: string,
     hard: number,
@@ -2200,18 +2802,21 @@ async function fixtureCapacity(): Promise<Result<Capacity>> {
       runner_profiles: {
         mock: {
           resource_class: 'standard', backend: 'CLOUD_RUN_JOB', provider: null, units: 1,
+          ...FIXTURE_AVAILABILITY.mock,
           pools: ['global', 'tenant:u-bogdan', 'resource:standard', 'runner:mock', 'backend:CLOUD_RUN_JOB'],
           admission: FIXTURE_ADMISSION.mock,
           input_contract: FIXTURE_INPUT_CONTRACTS.mock,
         },
         generic: {
           resource_class: 'standard', backend: 'CLOUD_RUN_JOB', provider: null, units: 1,
+          ...FIXTURE_AVAILABILITY.generic,
           pools: ['global', 'tenant:u-bogdan', 'resource:standard', 'runner:generic', 'backend:CLOUD_RUN_JOB'],
           admission: FIXTURE_ADMISSION.generic,
           input_contract: FIXTURE_INPUT_CONTRACTS.generic,
         },
         'claude-code': {
           resource_class: 'standard', backend: 'CLOUD_RUN_JOB', provider: 'anthropic', units: 1,
+          ...FIXTURE_AVAILABILITY['claude-code'],
           pools: [
             'global', 'tenant:u-bogdan', 'resource:standard', 'runner:claude-code',
             'backend:CLOUD_RUN_JOB', 'provider:anthropic', 'provider:anthropic:tenant:u-bogdan',
@@ -2221,6 +2826,7 @@ async function fixtureCapacity(): Promise<Result<Capacity>> {
         },
         codex: {
           resource_class: 'standard', backend: 'CLOUD_RUN_JOB', provider: 'openai', units: 1,
+          ...FIXTURE_AVAILABILITY.codex,
           pools: [
             'global', 'tenant:u-bogdan', 'resource:standard', 'runner:codex',
             'backend:CLOUD_RUN_JOB', 'provider:openai',
@@ -2230,6 +2836,7 @@ async function fixtureCapacity(): Promise<Result<Capacity>> {
         },
         browser: {
           resource_class: 'browser', backend: 'GKE_AUTOPILOT', provider: 'anthropic', units: 2,
+          ...FIXTURE_AVAILABILITY.browser,
           pools: [
             'global', 'tenant:u-bogdan', 'resource:browser', 'runner:browser',
             'backend:GKE_AUTOPILOT', 'provider:anthropic', 'provider:anthropic:tenant:u-bogdan',
@@ -2267,7 +2874,7 @@ async function fixtureCapacity(): Promise<Result<Capacity>> {
 
 async function fixtureTasks(): Promise<Result<TaskPage>> {
   await new Promise((r) => setTimeout(r, 350))
-  noteFixtureProbe('/v1/tasks', 350, true)
+  noteFixtureProbe(route('/v1/tasks'), 350, true)
   const now = Date.now()
   const at = (minsAgo: number) => new Date(now - minsAgo * 60_000).toISOString()
 
@@ -2442,11 +3049,11 @@ async function fixtureTasks(): Promise<Result<TaskPage>> {
 
 async function fixtureWorkflowBoard(): Promise<Result<WorkflowBoard>> {
   await new Promise((r) => setTimeout(r, 300))
-  noteFixtureProbe('/v1/workflows', 300, true)
+  noteFixtureProbe(route('/v1/workflows'), 300, true)
   // A route a non-admin genuinely cannot read, so the strip's 403 cell -- the
   // one that must read as information rather than breakage -- is visible in
   // development instead of only in production.
-  noteFixtureProbe('/v1/admin/dispatch', 120, false)
+  noteFixtureProbe(route('/v1/admin/dispatch'), 120, false)
 
   // Reuse the task fixture so the join is a REAL join: if a step_id or task_id
   // stops matching, the fixture shows "state unknown" exactly as production
@@ -2637,7 +3244,7 @@ function fixtureWorkflowRows(): Workflow[] {
  */
 async function fixtureWorkflows(): Promise<Result<WorkflowPage>> {
   await new Promise((r) => setTimeout(r, 300))
-  noteFixtureProbe('/v1/workflows', 300, true)
+  noteFixtureProbe(route('/v1/workflows'), 300, true)
   const workflows = fixtureWorkflowRows()
   return {
     status: 'ok',
@@ -2745,8 +3352,8 @@ export async function loadAccountsBoard(): Promise<Result<AccountsBoard>> {
     // an empty pool would hide the register form -- the one control that fixes
     // an empty pool. Zero accounts is handled inside the body as a state panel
     // sitting above a form that is still there.
-    read<AccountsPage>('/v1/accounts', () => false),
-    read<{ tenants: Tenant[] }>('/v1/admin/tenants', () => false),
+    read<AccountsPage>(route('/v1/accounts'), () => false),
+    read<{ tenants: Tenant[] }>(route('/v1/admin/tenants'), () => false),
   ])
 
   if (accounts.status === 'loading' || accounts.status === 'error' || accounts.status === 'empty') {
@@ -2816,7 +3423,7 @@ export async function beginAccountSignIn(body: {
 }): Promise<Result<AccountAuthorization>> {
   const res = USE_FIXTURES
     ? await fixtureBeginSignIn(body)
-    : await write('/v1/accounts/authorize', 'POST', body)
+    : await write(route('/v1/accounts/authorize'), 'POST', body)
   if (res.status !== 'ok') return res as Result<AccountAuthorization>
 
   const b = res.data
@@ -2906,7 +3513,7 @@ export async function finishAccountSignIn(body: {
 }): Promise<Result<AccountExchangeResponse>> {
   const res = USE_FIXTURES
     ? await fixtureFinishSignIn(body)
-    : await write('/v1/accounts/exchange', 'POST', body)
+    : await write(route('/v1/accounts/exchange'), 'POST', body)
   if (res.status !== 'ok') return res as Result<AccountExchangeResponse>
 
   const b = res.data
@@ -2952,7 +3559,7 @@ export async function setAccountLending(
   lendTo: string[],
 ): Promise<Result<unknown>> {
   if (USE_FIXTURES) return fixtureLending(accountId, lendTo)
-  return write(`/v1/accounts/${encodeURIComponent(accountId)}/lending`, 'PUT', { lend_to: lendTo })
+  return write(route('/v1/accounts/{account_id}/lending', { account_id: accountId }), 'PUT', { lend_to: lendTo })
 }
 
 /** `PUT /v1/accounts/{id}/state`. `reason` is for the next person, so it is required here. */
@@ -2962,7 +3569,7 @@ export async function setAccountState(
   reason: string,
 ): Promise<Result<unknown>> {
   if (USE_FIXTURES) return fixtureState(accountId, state, reason)
-  return write(`/v1/accounts/${encodeURIComponent(accountId)}/state`, 'PUT', { state, reason })
+  return write(route('/v1/accounts/{account_id}/state', { account_id: accountId }), 'PUT', { state, reason })
 }
 
 /**
@@ -2977,7 +3584,7 @@ export async function setAccountState(
 export async function refreshAccount(accountId: string): Promise<Result<RefreshResponse>> {
   const res = USE_FIXTURES
     ? await fixtureRefresh(accountId)
-    : await write(`/v1/accounts/${encodeURIComponent(accountId)}/refresh`, 'POST')
+    : await write(route('/v1/accounts/{account_id}/refresh', { account_id: accountId }), 'POST')
   if (res.status !== 'ok') return res as Result<RefreshResponse>
 
   const body = res.data
@@ -3010,7 +3617,7 @@ export async function refreshAccount(accountId: string): Promise<Result<RefreshR
  */
 export async function removeAccount(accountId: string): Promise<Result<unknown>> {
   if (USE_FIXTURES) return fixtureRemove(accountId)
-  return write(`/v1/accounts/${encodeURIComponent(accountId)}`, 'DELETE')
+  return write(route('/v1/accounts/{account_id}', { account_id: accountId }), 'DELETE')
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -3133,11 +3740,11 @@ const FIXTURE_TENANT = 'u-bogdan'
 
 async function fixtureAccountsBoard(): Promise<Result<AccountsBoard>> {
   await new Promise((r) => setTimeout(r, 210))
-  noteFixtureProbe('/v1/accounts', 210, true)
+  noteFixtureProbe(route('/v1/accounts'), 210, true)
   // The admin tenant list is the one read a non-admin genuinely cannot do, and
   // the fixture exercises that branch rather than the happy one -- otherwise
   // the "no picker, and here is why" copy ships unlooked-at.
-  noteFixtureProbe('/v1/admin/tenants', 90, false, 'admin_required')
+  noteFixtureProbe(route('/v1/admin/tenants'), 90, false, 'admin_required')
   return {
     status: 'ok',
     fetchedAt: Date.now(),
@@ -3210,7 +3817,7 @@ async function fixtureBeginSignIn(body: {
   // the refusal above would put a wrong status on the Reference page, which
   // exists to say what these routes actually answered. A route with no row is
   // a route nothing has called yet: true, and not a claim about the platform.
-  noteFixtureProbe('/v1/accounts/authorize', 260, true)
+  noteFixtureProbe(route('/v1/accounts/authorize'), 260, true)
   return {
     status: 'ok',
     fetchedAt: Date.now(),
@@ -3301,7 +3908,7 @@ async function fixtureFinishSignIn(body: {
     : [...fixtureAccounts, account]
   // Single-use, and deleted only once the account exists.
   fixturePending.delete(body.state)
-  noteFixtureProbe('/v1/accounts/exchange', 480, true)
+  noteFixtureProbe(route('/v1/accounts/exchange'), 480, true)
   // `unnamed` -> the second sentinel: a 201 whose body names no account. The
   // account IS registered above and the record IS gone, which is exactly the
   // situation the treatment describes -- "look for the label in the pool" is
@@ -3407,12 +4014,12 @@ async function fixtureRemove(accountId: string): Promise<Result<unknown>> {
  */
 export async function loadAccountPool(): Promise<Result<AccountsPage>> {
   if (USE_FIXTURES) return fixtureAccountPool()
-  return read<AccountsPage>('/v1/accounts', (d) => d.accounts.length === 0)
+  return read<AccountsPage>(route('/v1/accounts'), (d) => d.accounts.length === 0)
 }
 
 async function fixtureAccountPool(): Promise<Result<AccountsPage>> {
   await new Promise((r) => setTimeout(r, 190))
-  noteFixtureProbe('/v1/accounts', 190, true)
+  noteFixtureProbe(route('/v1/accounts'), 190, true)
   return {
     status: 'ok',
     fetchedAt: Date.now(),
@@ -3757,7 +4364,7 @@ function rollUpAttempts(attempts: readonly AttemptRow[]): StepUsage {
  */
 async function fixtureStepAttempts(taskId: string): Promise<Result<{ attempts: AttemptRow[] }>> {
   await new Promise((r) => setTimeout(r, 70))
-  noteFixtureProbe('/v1/tasks/{id}/attempts', 70, true)
+  noteFixtureProbe(route('/v1/tasks/{id}/attempts', { id: taskId }), 70, true)
   const mk = (n: number, usage: Partial<AttemptRow>, checkpoints: string[] = []): AttemptRow => ({
     attempt_id: `${taskId}-a${n}`,
     task_id: taskId,
@@ -3862,7 +4469,7 @@ async function mapWithLimit<T, R>(
  */
 async function fixtureSpendAttempts(task: Task): Promise<Result<{ attempts: AttemptRow[] }>> {
   await new Promise((r) => setTimeout(r, 90))
-  noteFixtureProbe(`/v1/tasks/{id}/attempts`, 90, true)
+  noteFixtureProbe(route('/v1/tasks/{id}/attempts', { id: task.id }), 90, true)
   const seed = task.id.length + task.attempt_count
   const mk = (n: number, usage: Partial<AttemptRow>): AttemptRow => ({
     attempt_id: `${task.id}-a${n}`,
@@ -3908,4 +4515,64 @@ async function fixtureSpendAttempts(task: Task): Promise<Result<{ attempts: Atte
   // A retry that predates usage capture: real attempt, no figures on it.
   if (task.attempt_count > 1) rows.push(mk(task.attempt_count - 1, {}))
   return { status: 'ok', fetchedAt: Date.now(), data: { attempts: rows } }
+}
+
+// ---------------------------------------------------------------------------
+// The outcome ledger (#185): `GET /v1/outcomes`, and the catalogue its profile
+// filter offers.
+// ---------------------------------------------------------------------------
+
+/**
+ * One read of the outcome ledger. The query comes from `outcomesQuery` in
+ * outcomes.ts, which is the only place the page's view becomes route
+ * parameters, so no screen can send a combination the contract refuses.
+ *
+ * THE ROUTE IS THE TEMPLATE (CH-18): the query goes through `route()`'s third
+ * argument, so the probe registry keys this as `/v1/outcomes` however many
+ * spans and filters a reader tries.
+ *
+ * NEVER EMPTY. A span always has buckets -- a bucket with nothing in it is a
+ * measured zero the ledger draws -- so a 2xx is always `ok`, and "nothing
+ * happened in these fourteen days" is fourteen drawn zeroes, not an empty
+ * state.
+ */
+export async function loadOutcomes(query: URLSearchParams): Promise<Result<Outcomes>> {
+  if (USE_FIXTURES) return fixtureOutcomes(query)
+  return read<Outcomes>(route('/v1/outcomes', {}, query), () => false)
+}
+
+async function fixtureOutcomes(query: URLSearchParams): Promise<Result<Outcomes>> {
+  await new Promise((r) => setTimeout(r, 260))
+  const target = route('/v1/outcomes', {}, query)
+  // Platform scope is admin-only, and the fixture session is not an admin
+  // (`fixtureMe`), so the fixture answers it the way the route would.
+  if (query.get('scope') === 'platform') {
+    noteFixtureProbe(target, 260, false)
+    return {
+      status: 'error',
+      error: {
+        kind: 'admin_required',
+        httpStatus: 403,
+        code: 'forbidden',
+        message: 'admin group membership is required for this operation',
+      },
+    }
+  }
+  noteFixtureProbe(target, 260, true)
+  return { status: 'ok', fetchedAt: Date.now(), data: ledgerFixture() }
+}
+
+/**
+ * The runner profiles the catalogue serves, by name -- disabled ones too,
+ * because a task that ran on a profile since disabled still has outcomes to
+ * filter by. Never a hardcoded list: the catalogue is frozen contract data
+ * that can gain entries.
+ */
+export async function loadRunnerProfiles(): Promise<Result<string[]>> {
+  if (USE_FIXTURES) return fixtureRuntimeNames()
+  const r = await readRuntimes()
+  if (r.status === 'ok' || r.status === 'stale') {
+    return { status: 'ok', fetchedAt: r.fetchedAt, data: Object.keys(r.data.runtimes).sort() }
+  }
+  return r as Result<string[]>
 }

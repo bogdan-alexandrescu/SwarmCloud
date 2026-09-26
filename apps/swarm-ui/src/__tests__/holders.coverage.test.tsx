@@ -15,16 +15,39 @@
 // complete case failed there.
 
 import { render, screen } from '@testing-library/react'
+import type { ReactNode } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 
 import type { HoldersBoard } from '../api'
 import type { Result } from '../fetch'
+import type { LinkOut } from '../primitives'
 import type { LeasePage, LeaseRow, Pool } from '../types'
 
 const api = vi.hoisted(() => ({ loadHolders: vi.fn() }))
 vi.mock('../api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api')>()
   return { ...actual, ...api }
+})
+
+/**
+ * What `Screen` hands the shared empty state, recorded on the way through.
+ *
+ * A PASS-THROUGH, NOT A STUB: the real `Absent` still draws, so every other
+ * case in this file sees the same DOM it always did. It exists for CP-21, which
+ * is a claim about WHICH SLOT the way out arrives in -- `empty.link`, the one
+ * §6.9's shape reserves for it -- and a rendered anchor looks the same whether
+ * the primitive drew it or a screen typed it into the sentence.
+ */
+const absent = vi.hoisted(() => ({ calls: [] as { link?: LinkOut; children?: unknown }[] }))
+vi.mock('../primitives', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../primitives')>()
+  return {
+    ...actual,
+    Absent: (props: Parameters<typeof actual.Absent>[0]) => {
+      absent.calls.push(props)
+      return actual.Absent(props)
+    },
+  }
 })
 
 const { HoldersScreen } = await import('../Holders')
@@ -174,5 +197,83 @@ describe('Holders says whether its rows are every live lease', () => {
     expect(card.textContent).toContain('coverage unreported')
     expect(tableNote()).toContain('completeness unreported')
     expect(summary()).toContain('3 unreleased leases listed')
+  })
+})
+
+/**
+ * CP-7 (#85). A counter that leaked on a pool NO live lease names is the
+ * drift this card exists to find, and it was the one case it could not see:
+ * the card compared only pools some lease mentioned, so `tenant:eng` holding
+ * 2 units with no lease behind them was simply not a row, and the card drew
+ * `real zero` over it.
+ *
+ * Over EVERY live lease, a pool no lease names has a lease side of 0 by
+ * measurement, not by assumption, so it is compared. Over a cut window it is
+ * not -- a lease the window left out may name it -- which the second case
+ * holds.
+ */
+describe('with every live lease in hand, Drift compares every pool', () => {
+  function withLeakedPool(coverage: Record<string, unknown>): HoldersBoard {
+    const b = board(coverage)
+    return { ...b, pools: [...(b.pools ?? []), pool('tenant:eng', 2)] }
+  }
+
+  it('finds a counter no lease accounts for', async () => {
+    api.loadHolders.mockResolvedValue(ok(withLeakedPool({ active_beyond_window: 0, truncated: false })))
+    render(<HoldersScreen />)
+    await screen.findByText('Every holder', undefined, WAIT)
+    const card = driftCard()
+    expect(card.querySelector('.ctl-mark.is-zero'), 'a leaked counter was drawn as a real zero').toBeNull()
+    const row = [...card.querySelectorAll('tbody tr')].find((tr) => (tr.textContent ?? '').includes('tenant:eng'))
+    expect(row, 'the leaked pool is not compared').toBeTruthy()
+    expect(row!.querySelector('td[data-label="Delta"]')?.textContent).toBe('+2')
+  })
+
+  it('does not manufacture a delta over a cut window', async () => {
+    api.loadHolders.mockResolvedValue(ok(withLeakedPool({ active_beyond_window: 2, truncated: true })))
+    render(<HoldersScreen />)
+    await screen.findByText('Every holder', undefined, WAIT)
+    const rows = [...driftCard().querySelectorAll('tbody tr')].map((tr) => tr.textContent ?? '')
+    expect(rows.some((t) => t.includes('tenant:eng'))).toBe(false)
+  })
+})
+
+/**
+ * CP-21 (#85). The populated summary says `every tenant`; the empty state
+ * said nothing about scope, so "no unreleased leases" read as a claim about
+ * whoever was looking. And an empty state is a mark, a heading, one sentence
+ * and a way out (§6.9) -- it had no way out.
+ */
+describe('the empty state says whose leases it counted, and where to go', () => {
+  it('names its scope and links out', async () => {
+    api.loadHolders.mockResolvedValue({ status: 'empty', fetchedAt: Date.now(), serverAt: '2026-09-24T10:00:00Z' })
+    render(<HoldersScreen />)
+    await screen.findByText('No unreleased leases', undefined, WAIT)
+    const text = summary()
+    expect(text).toContain('every tenant')
+    const links = [...document.querySelectorAll('a[href^="#"]')]
+    expect(links.length, 'the empty state has no way out').toBeGreaterThan(0)
+  })
+
+  /**
+   * CP-21's other half: the way out goes in `Screen`'s `empty.link` slot, not
+   * in the body. #144 wrote the Pools link into the sentence because the slot
+   * did not exist yet; #145 added it and nothing moved the link.
+   *
+   * MUTATION: put the anchor back in `empty.body`. The primitive is handed no
+   * link, and the sentence carries an anchor of its own.
+   */
+  it('hands the way out to the empty state’s link slot, not to its sentence', async () => {
+    absent.calls.length = 0
+    api.loadHolders.mockResolvedValue({ status: 'empty', fetchedAt: Date.now(), serverAt: '2026-09-24T10:00:00Z' })
+    render(<HoldersScreen />)
+    await screen.findByText('No unreleased leases', undefined, WAIT)
+    expect(absent.calls.length, 'Screen drew the empty state without the shared primitive').toBeGreaterThan(0)
+    const last = absent.calls[absent.calls.length - 1]!
+    expect(last.link, 'the Pools link is not in the link slot').toEqual({ href: '#capacity/pools', label: 'Pools' })
+    const sentence = render(<>{last.children as ReactNode}</>)
+    expect(sentence.container.querySelector('a'), 'the sentence still carries a link of its own').toBeNull()
+    // The scope the populated summary states is still in the sentence.
+    expect(sentence.container.textContent).toContain('every tenant')
   })
 })

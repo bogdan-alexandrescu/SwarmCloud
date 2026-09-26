@@ -609,6 +609,31 @@ def account_id_for(owner_tenant: str, label: str) -> str:
     return f"{owner_tenant}:{label}"
 
 
+def accounts_serving(
+    accounts: Iterable[Account], tenant_id: str, provider: str
+) -> list[Account]:
+    """Every account the pool could hand `tenant_id` for `provider`, in any state.
+
+    THE POOL'S SCOPE, STATED ONCE: owned by the tenant or lent to it
+    (`may_serve`, which is invariant 9), and of the provider asked for. Two
+    things ask it:
+
+      * the assign route, which narrows it further -- state, headroom, what
+        this attempt already tried -- through `choose()` and `eligibility()`;
+      * the scheduler's admission (`scheduler.credentials`), which asks only
+        whether it is EMPTY. Empty is exactly the broker's
+        `no_accounts_registered`: the pool is not how this tenant runs, the
+        worker falls back to the tenant's own key, and a tenant with no key
+        then has nothing to run on. Anything else means the pool IS how it
+        runs, and a spent or paused account is a wait the worker parks on.
+
+    Before 2026-09-25 the route wrote this out inline and nothing else asked,
+    so admission could not tell a tenant the pool serves from one it does not
+    (#169).
+    """
+    return [a for a in accounts if a.provider == provider and a.may_serve(tenant_id)]
+
+
 def choose(
     accounts: Iterable[Account],
     tenant_id: str,
@@ -773,6 +798,7 @@ __all__ = [
     "DEFAULT_HOLD_TTL",
     "DEFAULT_STALE_AFTER",
     "account_id_for",
+    "accounts_serving",
     "choose",
     "due_for_refresh",
     "eligibility",

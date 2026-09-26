@@ -17,6 +17,7 @@ from pathlib import Path
 from swarm_common.config import Settings
 from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES, RunnerProfile, resolve_backend
 
+from . import standalone_outputs
 from .errors import ConfigError
 
 
@@ -92,6 +93,14 @@ class WorkerConfig:
     max_stderr_bytes: int = 8 * 1024 * 1024
     max_artifact_bytes: int = 512 * 1024 * 1024
     max_checkpoint_bytes: int = 2 * 1024 * 1024 * 1024
+    #: What a CLI agent with no repository may have uploaded from its working
+    #: folder, per attempt: 50 files and 25 MiB in total. The owner's numbers
+    #: (#184, 2026-09-26), kept in `standalone_outputs` beside the rules they
+    #: bound. Much lower than `max_artifact_bytes` on purpose: a file the agent
+    #: put in `$SWARM_ARTIFACTS_DIR` was meant to be kept, while the working
+    #: folder also holds whatever the agent generated on the way.
+    max_workdir_output_files: int = standalone_outputs.MAX_FILES
+    max_workdir_output_bytes: int = standalone_outputs.MAX_BYTES
 
     # --- live logs -----------------------------------------------------------
     # The complete streams are uploaded once, at exit. That is correct for the
@@ -100,8 +109,12 @@ class WorkerConfig:
     #
     # THE COST IS WORTH SEEING BEFORE TUNING THIS. One object write per stream
     # per interval per running agent. At 5s and 40 concurrent agents that is
-    # 16 writes/second, ~1.4M class-A operations a day, which is real money at
-    # GCS list prices. Raise the interval before raising the concurrency.
+    # 16 writes/second for the runner's two streams, ~1.4M class-A operations
+    # a day, which is real money at GCS list prices. A CLI or generic runner
+    # publishes its agent's two streams as well (#184), so up to 32
+    # writes/second (~2.8M a day) when every stream is non-empty; a zero-byte
+    # stream is skipped, and claude-code's stderr is usually empty. Raise the
+    # interval before raising the concurrency.
     #
     # It is a TAIL and not the whole file on purpose: GCS has no append, so
     # publishing the full stream would rewrite up to `max_stdout_bytes` every

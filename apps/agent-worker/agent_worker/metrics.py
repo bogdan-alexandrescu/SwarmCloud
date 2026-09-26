@@ -44,6 +44,13 @@ process group, because the CLI runners start the agent in a new session and a
 group reading would miss the agent entirely. With neither (macOS), only the
 kernel's total for reaped children is available, so there is a total and no
 peak. None means not measured, never zero.
+
+WHERE THEY GO. The first three, with the limit they are a fraction of, are
+typed fields on the attempt document (contract request #15, accepted on #184
+on 2026-09-25; `attempt_cpu_fields`), written while a runner runs and when it
+is reaped -- that is what Details draws. The cumulative `cpu_seconds` and
+`cpu_source` also ride on every periodic HEARTBEAT event, the one time series
+the platform keeps, for the reconciler's stuck-browser judgement.
 """
 
 from __future__ import annotations
@@ -255,6 +262,77 @@ def cgroup_cpu_seconds() -> float | None:
     return None
 
 
+def cgroup_cpu_limit_cores() -> float | None:
+    """The container's CPU LIMIT in cores, from cgroup v2 `cpu.max`; None if unknown.
+
+    `cpu.max` is `"<quota> <period>"` in microseconds -- `"200000 100000"` is
+    two cores -- or `"max <period>"` when nothing is enforced. The limit is what
+    a "requested vs used" CPU bar is drawn against, and reading it from the
+    cgroup is reading what the kernel enforces rather than what a catalogue
+    says was asked for. None for `max`, for a missing or unreadable file and
+    for anything that does not parse: the caller then falls back to the
+    resource class the container was sized with, and says that it did.
+    """
+    try:
+        parts = (CGROUP_ROOT / "cpu.max").read_text().split()
+    except OSError:
+        return None
+    if len(parts) != 2 or parts[0] == "max":
+        return None
+    try:
+        quota, period = int(parts[0]), int(parts[1])
+    except ValueError:
+        return None
+    if quota <= 0 or period <= 0:
+        return None
+    return quota / period
+
+
+#: The four CPU fields contract request #15 added to `Attempt`, in its order.
+ATTEMPT_CPU_FIELDS = ("cpu_seconds", "peak_cpu_cores", "mean_cpu_cores", "cpu_limit_cores")
+
+
+def attempt_cpu_fields(usage: ResourceUsage | None, *, limit_cores: float | None) -> dict[str, float]:
+    """The attempt document's CPU fields, rounded, with what was not measured LEFT OUT.
+
+    CONTRACT REQUEST #15, ACCEPTED on #184 (2026-09-25). `Attempt` carries
+    `cpu_seconds`, `peak_cpu_cores`, `mean_cpu_cores` and `cpu_limit_cores`,
+    and the worker writes them on its own attempt document
+    (`control.record_cpu_usage`) with each periodic reading and when each
+    runner is reaped. They REPLACE the interim home #188 gave them, flat keys
+    on HEARTBEAT events that the API read back with an events query per
+    request. The HEARTBEAT keeps only the cumulative `cpu_seconds` and
+    `cpu_source` it carried before, which the reconciler's stuck-browser
+    judgement (`reconciler.progress`) turns into a rate.
+
+    LEFT OUT, NOT WRITTEN AS NULL. The write is a merge, so an omitted key
+    keeps what an earlier write put there where a null would erase it -- and
+    a figure is never measured and then un-measured: `combine_usage` keeps
+    every runner's. None on the attempt still means not measured, never zero.
+
+    NOTHING WHEN NOTHING WAS MEASURED, not even the limit: a limit alone would
+    read as a reading with its figures missing, and the attempt has none.
+
+    `usage` is the ATTEMPT's (`combine_usage` over every runner it started).
+    Three decimal places throughout; 1.0 is one whole vCPU. The mean is over
+    RUNNER wall time, so setup, the clone and retry waits are not idle time.
+    """
+    if usage is None:
+        return {}
+    measured = {
+        "cpu_seconds": _rounded(usage.cpu_seconds),
+        "peak_cpu_cores": _rounded(usage.peak_cpu_cores),
+        "mean_cpu_cores": _rounded(usage.mean_cpu_cores),
+    }
+    fields = {name: value for name, value in measured.items() if value is not None}
+    if not fields:
+        return {}
+    limit = _rounded(limit_cores)
+    if limit is not None:
+        fields["cpu_limit_cores"] = limit
+    return fields
+
+
 def _proc_stat(entry: Path) -> tuple[int, int, int]:
     """(pid, ppid, CPU clock ticks including reaped children) from /proc/<pid>/stat.
 
@@ -442,6 +520,14 @@ class ResourceSampler:
         # mid-run (a heartbeat, a crash's export) pairs CPU-so-far with
         # time-so-far rather than with nothing.
         self.usage.cpu_wall_seconds = now - self._t_first
+        # AND THE MEAN WITH THEM (#184). It used to be set only in
+        # `_finish_cpu`, and `combine_usage` gives an attempt a mean only when
+        # some part has one -- so a RUNNING attempt never had a mean, and the
+        # Details pane could draw its peak and not its mean until it ended.
+        # The same floor `_finish_cpu` applies: a span shorter than the
+        # shortest rate interval is not turned into a mean.
+        if self.usage.cpu_wall_seconds >= self._min_interval:
+            self.usage.mean_cpu_cores = self.usage.cpu_seconds / self.usage.cpu_wall_seconds
         base_time, base_reading = self._cpu_base or (now, reading)
         elapsed = now - base_time
         if elapsed < self._min_interval:

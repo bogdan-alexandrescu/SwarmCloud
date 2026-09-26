@@ -112,6 +112,10 @@ The primary screen of this section. One table, three tabs, no sub-pages.
 
 **Tabs (a segmented control, not a dropdown):** `Live` · `Waiting` · `Recent`. Each carries a count badge from the rows it holds — not from `/v1/stats`, so the badge and the table can never disagree. The badge is suppressed, not zeroed, whenever the tab is in the partial or error state of §1.7.
 
+**The tab and Recent's state are addresses** (OV-10, owner decision 2026-09-25): `#work/running/live`, `#work/running/waiting`, `#work/running/recent`, and `#work/running/recent/failed` · `/cancelled` · `/succeeded`. A tab named in the address overrides where the list would have landed; an address naming none leaves the tab where it is. Any other tail under `running/` is the plain list, and nothing under `running/` opens an agent drawer. A tab or state click goes through App, which writes the address with `replaceState`, so clicks add no history; closing the drawer returns to the list address it was opened from. The Overview's failed-agents item opens `#work/running/recent/failed`, and its parked items `#work/running/waiting`. (`src/agentlist.ts` holds the two word lists; `tests/route.test.ts` round-trips every address.)
+
+**The Overview counts over the list's own page, at every width** (OV-10). The failed-agents figure and the list it opens describe one population because the list filters client-side over the same task read the check counts — never `loadTasksInState`, whose server-side FAILED list is a larger population under the same number. So the Overview reads the page this list reads: 200 rows, and `PHONE_PAGE_LIMIT` (50, §2.5) at 560px and under, one value in `src/agentlist.ts` that both screens use. Its headline says which: "7 failed tasks among the 50 most recent". Before this, the list read 50 rows on a phone and the Overview counted over 200, so a phone could show "7 failed among the 200 most recent" and open a list that said nothing had failed. The two can still differ by what changed between the two reads, and by nothing else.
+
 **Columns, desktop, in this order:**
 
 | # | Header | Content | Source |
@@ -136,7 +140,7 @@ Nine columns. Not fourteen. The things deliberately *not* columns: `tenant_id` (
 
   So an optimistic flip to CANCELLED is a lie for exactly the rows a user most wants to cancel. Render a persistent "cancelling…" chip on the row, driven by `cancel_requested == true && !isTerminal(state)`, and let the poll resolve it. That chip is also the honest render for a workflow-level cancel, which fans out through the same method (`store.py:578-601`).
 
-**Filters above the table:** state (folded into the tabs), `runner_profile` (5 known values from the frozen catalogue, so a select, not a text input), owner (see §2.4(c) — client-side, and labelled as such), and a "standalone only" toggle (client-side, §2.4(d)).
+**Filters above the table:** state (folded into the tabs, plus a state segment on `Recent` — all · failed · cancelled · succeeded, counted from the loaded rows like the tab badges; DEAD_LETTERED is never offered because nothing writes it, and the toolbar's "every count and filter runs over the N rows loaded" qualifier covers the segment), `runner_profile` (5 known values from the frozen catalogue, so a select, not a text input), owner (see §2.4(c) — client-side, and labelled as such), and a "standalone only" toggle (client-side, §2.4(d)).
 
 **Grouping, which the owner asked for and the first draft of this section dropped.** "Agents grouped by workflow" is half a list feature and half the graph. The list half: a `Group by workflow` toggle on the `Waiting` and `Recent` tabs that collapses rows under a workflow header showing the workflow id, the step count present in the loaded page, and the **computed** rollup (any member LEASED/DISPATCHED/STARTING/RUNNING → running; all SUCCEEDED → succeeded; any FAILED/CANCELLED → failed, respecting `on_step_failure`). Standalone agents collect under one "No workflow" group, last.
 
@@ -202,12 +206,17 @@ When a workflow parent fails, the scheduler's dependency sweep **cancels the chi
 **Column 6, "Elapsed":**
 
 ```
-completed_at != null -> completed_at - (started_at ?? created_at)   [static]
-started_at   != null -> now - started_at                            [ticking]
-otherwise            -> now - created_at, prefixed "queued "        [ticking]
+terminal, started_at == null            -> "never ran"                            [static]
+terminal, started and completed         -> completed_at - started_at              [static]
+terminal, started, no completed_at      -> "—"                                    [static]
+STARTING/RUNNING, started_at != null    -> now - started_at                       [ticking]
+STARTING/RUNNING, started_at == null    -> "—"                                    [static]
+LEASED/DISPATCHED, or any live state
+  with an earlier attempt's started_at  -> the state word alone ("leased")       [static]
+otherwise (never started, no slot held) -> "waiting " + (now - created_at)        [ticking]
 ```
 
-`started_at` is written on `DISPATCHED -> STARTING` (`agent_worker/control.py:410-413`), so a `LEASED` or `DISPATCHED` task legitimately has none. Render "queued 4m", not "0s", and never `Invalid Date`. Every timestamp in `task_to_api` is passed through as the Firestore value, so the parser must also survive `null` on `completed_at` for a row that went terminal between two polls.
+The first version of this table fell back to `created_at` and to any `started_at`, and both fallbacks printed a span as something it is not. `started_at` is written on `DISPATCHED -> STARTING` (`agent_worker/control.py`, `advance_to_running`) and **nothing clears it**: a park, a promote back to READY and a reclaim all leave it, so outside STARTING and RUNNING a start on the document is an earlier attempt's, and `now - started_at` there is not a run. `now - created_at` is a wait only while nothing has started; once an attempt has run it includes that run. And **no state records when the task entered it**, so a state word followed by the age (`leased 3h 0m`) reads as three hours held in a lease that was taken a second ago. Where the document holds no true span, the cell prints the state word and no figure; the age is the inspector's `age` fact. Never render "0s" or `Invalid Date`, and survive `null` on `completed_at` for a row that went terminal between two polls. `elapsed()` in `apps/swarm-ui/src/types.ts` is the implementation and its tests pin every row of this table.
 
 #### 2.4 What this screen cannot show yet
 

@@ -64,7 +64,7 @@ Check `park_reason`:
 
 | Reason | Meaning | Fix |
 |---|---|---|
-| `CREDENTIAL_MISSING` | the tenant has no key for this profile's provider | `create-secrets.sh --tenant <t> --provider <p> --stdin` |
+| `CREDENTIAL_MISSING` | the tenant has no key for this profile's provider, and no pool account can run the profile for it | `create-secrets.sh --tenant <t> --provider <p> --stdin`, or, when the `parked` event's `detail.account_pool` is `no_accounts_registered`, lend the tenant an account (`PUT /v1/accounts/<id>/lending`). `profile_takes_no_subscription` (every `browser` task) means only a key will do |
 | `PROVIDER_QUOTA_EXHAUSTED` | quota spent | wait for `next_eligible_at`, or raise the cap |
 | `PROVIDER_COOLDOWN` | backing off after 429s | wait; check AIMD state |
 | `DEPENDENCY_INCOMPLETE` | an upstream workflow step has not finished | check the workflow |
@@ -410,6 +410,7 @@ See [disaster-recovery.md](disaster-recovery.md).
 | `jobs.batch is forbidden` on a browser task | [gke-dispatch-403.md](gke-dispatch-403.md) — the 403 does **not** mean a permission problem |
 | Applying the dispatcher RBAC and redispatching | [runbooks/gke-dispatch-redispatch.md](runbooks/gke-dispatch-redispatch.md) |
 | A GKE dispatch failure that survives the obvious fix | [incidents/2026-09-24-gke-dispatch.md](incidents/2026-09-24-gke-dispatch.md) — seven causes behind one error message, and the commands that tell them apart |
+| A Cloud Run worker exits 69 at `validate_generation` with `ipv6:... Network is unreachable` | [incidents/2026-09-25-worker-startup-network.md](incidents/2026-09-25-worker-startup-network.md) — the IPv4 connection is the one that failed; the flow-log query that shows it |
 | Tenant isolation, secrets, groups | [multi-tenancy.md](multi-tenancy.md) |
 | Spend | [cost-control.md](cost-control.md) |
 | Rebuilding after a loss | [disaster-recovery.md](disaster-recovery.md) |

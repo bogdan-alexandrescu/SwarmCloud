@@ -486,8 +486,8 @@ resource "google_monitoring_alert_policy" "dispatch_failing_by_backend" {
 # So the two lines themselves are counted, and this policy watches the counts:
 #
 #   * "backend unavailable; skipping its findings" -- a whole backend was
-#     unreadable. Three or more such passes in fifteen minutes (the tick is
-#     */5) is not a blip. Grouped by backend, so one blind backend is not
+#     unreadable. More than ten such passes in fifteen minutes (the tick is
+#     */1, so fifteen passes) is not a blip. Grouped by backend, so one blind backend is not
 #     averaged away by a healthy one.
 #   * "not repairing: ..." -- one lease detected as dead and held back because
 #     the backend that would prove it could not be read. The SAME lease refused
@@ -599,9 +599,14 @@ resource "google_monitoring_alert_policy" "reconciler_blind" {
         "metric.type = \"logging.googleapis.com/user/${google_logging_metric.reconciler_backend_unavailable.name}\"",
       ])
 
-      # More than 2 in a trailing 15-minute window: three passes of a */5 tick.
+      # More than 10 in a trailing 15-minute window: most of the fifteen
+      # passes of a */1 tick. It was more than 2, all three passes of the */5
+      # tick, and the window is kept so the alert still means "blind for most
+      # of a quarter of an hour", not "blind for three minutes". Not all 15:
+      # a pass that overruns its tick answers 409 and logs nothing, and one
+      # skipped pass must not hide a backend that stayed blind.
       comparison      = "COMPARISON_GT"
-      threshold_value = 2
+      threshold_value = 10
       duration        = "0s"
 
       aggregations {
