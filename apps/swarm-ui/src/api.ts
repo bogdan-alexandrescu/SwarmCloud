@@ -913,26 +913,44 @@ export async function loadTaskInput(taskId: string): Promise<Result<TaskInputCop
 
 /**
  * The copies already read, by task. An input never changes once submitted, so
- * the drawer -- which re-reads its run every 10 s -- asks for it once and not
- * on every poll. Only a copy that was READ is kept: a failed read is asked
- * again with the next poll.
+ * each pane -- Details re-reads with the drawer every 10 s, Inputs with its
+ * pane every 5 s -- asks through here, and a copy that was READ is answered
+ * from memory without a request. A failed read is not kept: the next poll
+ * asks again, which is how a copy that failed once comes back.
  */
 const INPUT_COPIES = new Map<string, Result<TaskInputCopy>>()
 /** Enough for every drawer a session opens; the oldest goes first past it. */
 const INPUT_COPIES_KEPT = 64
+/**
+ * THE READ IN FLIGHT, by task (PR #210 re-review). Details and Inputs ask for
+ * the same copy when a drawer opens, and each poll of a pane whose copy failed
+ * asks again: without this, a copy slower than the poll stacked one request
+ * per tick, each one more redaction of the whole input on the server. One
+ * request per task at a time; every asker shares its answer.
+ */
+const INPUT_READS = new Map<string, Promise<Result<TaskInputCopy>>>()
 
-export async function loadTaskInputOnce(taskId: string): Promise<Result<TaskInputCopy>> {
+export function loadTaskInputOnce(taskId: string): Promise<Result<TaskInputCopy>> {
   const held = INPUT_COPIES.get(taskId)
-  if (held !== undefined) return held
-  const got = await loadTaskInput(taskId)
-  if (got.status === 'ok') {
-    if (INPUT_COPIES.size >= INPUT_COPIES_KEPT) {
-      const oldest = INPUT_COPIES.keys().next().value
-      if (oldest !== undefined) INPUT_COPIES.delete(oldest)
-    }
-    INPUT_COPIES.set(taskId, got)
-  }
-  return got
+  if (held !== undefined) return Promise.resolve(held)
+  const flying = INPUT_READS.get(taskId)
+  if (flying !== undefined) return flying
+  const read = loadTaskInput(taskId)
+    .then((got) => {
+      if (got.status === 'ok') {
+        if (INPUT_COPIES.size >= INPUT_COPIES_KEPT) {
+          const oldest = INPUT_COPIES.keys().next().value
+          if (oldest !== undefined) INPUT_COPIES.delete(oldest)
+        }
+        INPUT_COPIES.set(taskId, got)
+      }
+      return got
+    })
+    .finally(() => {
+      INPUT_READS.delete(taskId)
+    })
+  INPUT_READS.set(taskId, read)
+  return read
 }
 
 /**
@@ -1515,21 +1533,21 @@ export interface AgentRun {
   /** True when the API did not recognise /v1/resource-classes -- a deployment
    *  older than the route, which is a different fix from a failed read. */
   classesRouteMissing: boolean
-  /**
-   * The task's input as the API masked it (`GET /v1/tasks/{id}/input`), which
-   * is what Details draws -- never `task.input`. Its own Result, because a
-   * failed copy must not blank the run and must not be drawn as no input.
-   * OPTIONAL only so a run built without it (a test's) still type-checks;
-   * `loadAgentRun` always sets it, and Details draws a missing one as not read.
-   */
-  input?: Result<TaskInputCopy>
 }
 
+/**
+ * THE MASKED INPUT IS NOT PART OF THIS READ (PR #210 re-review). It was a
+ * fifth read in the `Promise.all` below, so the whole drawer -- the task's
+ * state, its events, its attempts -- waited on `/v1/tasks/{id}/input`, and a
+ * copy that took a minute blanked Details for a minute. Details' Input reads
+ * it on its own (`loadTaskInputOnce`, as Inputs does), so a slow or failed
+ * copy blanks only the blocks that draw it.
+ */
 export async function loadAgentRun(taskId: string): Promise<Result<AgentRun>> {
   if (USE_FIXTURES) return fixtureAgentRun(taskId)
 
   const id = { id: taskId }
-  const [task, events, attempts, classes, input] = await Promise.all([
+  const [task, events, attempts, classes] = await Promise.all([
     read<{ task: Task } | Task>(route('/v1/tasks/{id}', id), () => false),
     read<{ events: TaskEvent[] }>(route(`/v1/tasks/{id}/events?limit=${EVENT_PAGE_LIMIT}`, id), () => false),
     // Each row carries the attempt's CPU as typed fields (contract request
@@ -1541,9 +1559,6 @@ export async function loadAgentRun(taskId: string): Promise<Result<AgentRun>> {
       (d) => d.attempts.length === 0,
     ),
     loadResourceClasses(),
-    // The masked copy Details draws. Read once per task: an input never
-    // changes, and this read runs on every 10 s poll of the drawer.
-    loadTaskInputOnce(taskId),
   ])
 
   if (task.status === 'loading' || task.status === 'error') return task
@@ -1603,7 +1618,6 @@ export async function loadAgentRun(taskId: string): Promise<Result<AgentRun>> {
             ? 'The catalogue route returned no classes, which cannot happen for a healthy API — the frozen catalogue always has three.'
             : 'The resource-class read did not complete.',
       classesRouteMissing: classes.status === 'error' && classes.error.kind === 'not_found',
-      input,
     },
     fetchedAt: task.fetchedAt,
     error: task.status === 'stale' ? task.error : undefined,
@@ -1611,11 +1625,10 @@ export async function loadAgentRun(taskId: string): Promise<Result<AgentRun>> {
 }
 
 async function fixtureAgentRun(taskId: string): Promise<Result<AgentRun>> {
-  const [detail, attempts, classes, input] = await Promise.all([
+  const [detail, attempts, classes] = await Promise.all([
     fixtureAgentDetail(taskId),
     fixtureAttempts(taskId),
     fixtureResourceClasses(),
-    fixtureTaskInput(taskId),
   ])
   if (detail.status !== 'ok') return detail as Result<AgentRun>
   return {
@@ -1630,7 +1643,6 @@ async function fixtureAgentRun(taskId: string): Promise<Result<AgentRun>> {
       classes: classes.status === 'ok' ? classes.data.resource_classes : null,
       classesDetail: null,
       classesRouteMissing: false,
-      input,
     },
   }
 }

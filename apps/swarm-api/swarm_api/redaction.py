@@ -356,6 +356,40 @@ def _private_key_rule() -> Rule:
     )
 
 
+#: THE ENVIRONMENT-DUMP RULE, and the one that is deliberately wider than the
+#: shell's. `[A-Za-z0-9_.-]*` in front of the name is what turns `api_key=`
+#: into `ANTHROPIC_API_KEY=`, `GH_TOKEN=` and `db.password:`, and `api[-_]?key`
+#: is what catches `x-api-key:` (the shell rule's `api_?key` does not take a
+#: hyphen, so its filter lets that header through; the superset relation this
+#: module promises still holds). An agent that prints its own environment is
+#: the single most likely way a credential reaches a log object, and the shell
+#: rule as written does not catch the shape `env` actually produces.
+#:
+#: WHAT IT STILL DOES NOT CATCH, because the keyword must END the name:
+#: `AWS_SECRET_ACCESS_KEY=`, `private_key:`, `password_hash:` and plurals such
+#: as `secrets:`. A JSON document's keys are read by `JsonMasker`, which knows
+#: where a key ends and matches the keyword anywhere in it; in free text the
+#: rule would need a boundary it cannot see.
+#:
+#: ANCHORED TO THE START OF THE NAME (PR #210 re-review). Unanchored, the name
+#: prefix was rescanned from every position of a long run of name characters:
+#: a 40,000-character run took 57 s to 127 s, and `/v1/tasks/{id}/input` feeds
+#: this rule a caller's input of up to 256 KiB, inside `re`, holding the GIL of
+#: an instance every tenant shares. `(?<![A-Za-z0-9_.-])` lets a match start
+#: only where a run starts. The output is unchanged: a match that could start
+#: inside a run can also start at the run's first character, because the
+#: prefix takes any name characters.
+#: `tests/unit/control_plane/test_task_input_route.py` bounds it on 256 KiB.
+KEY_VALUE = _rule(
+    "key_value_assignment",
+    "api_?key",
+    r"(?<![A-Za-z0-9_.-])"
+    r"(\"?[A-Za-z0-9_.-]*"
+    r"(?:api[-_]?key|apikey|password|passwd|secret|token|credential|authorization)"
+    r"\"?[ \t]*[:=][ \t]*\"?)[^\",\s]+",
+    re.IGNORECASE,
+)
+
 #: Order matters and mirrors the shell filter's `-e` order: a narrow provider
 #: rule runs before the broad key/value rule, so `api_key=sk-live-...` is
 #: reduced by the `sk-` rule first and the survivor is masked by the second.
@@ -386,20 +420,7 @@ RULES: tuple[Rule, ...] = (
         "[Bb]earer",
         r"((?:[Bb]earer|[Bb]asic)[ \t]+)[A-Za-z0-9._~+/-]{12,}=*",
     ),
-    # THE ENVIRONMENT-DUMP RULE, and the one that is deliberately wider than
-    # the shell's. `[A-Za-z0-9_.-]*` in front of the name is what turns
-    # `api_key=` into `ANTHROPIC_API_KEY=`, `GH_TOKEN=`, `db.password:` and
-    # `x-api-key:`. An agent that prints its own environment is the single most
-    # likely way a credential reaches a log object, and the shell rule as
-    # written does not catch the shape `env` actually produces.
-    _rule(
-        "key_value_assignment",
-        "api_?key",
-        r"(\"?[A-Za-z0-9_.-]*"
-        r"(?:api_?key|apikey|password|passwd|secret|token|credential|authorization)"
-        r"\"?[ \t]*[:=][ \t]*\"?)[^\",\s]+",
-        re.IGNORECASE,
-    ),
+    KEY_VALUE,
 )
 
 
@@ -457,80 +478,338 @@ def redact(
     return Redacted(text=text, count=count)
 
 
-#: Bracket a string's stand-in in pass 2 of `redact_json`. Private-use code
-#: points: no rule matches them and `\s` does not include them, so the
-#: key/value rule's value class takes a stand-in whole or not at all.
+# --------------------------------------------------------------------------
+# A JSON document: masked by its structure, not by its text
+# --------------------------------------------------------------------------
+#
+# WHY NOT ONE `redact()` OVER THE JSON TEXT (the PR #210 review). JSON text
+# writes every quote inside a string as `\"`, and the key/value rule reads a
+# quote as a quote. A string holding `{"api_key": "<bare>"}` did not match at
+# all, and one holding `PASSWORD="<bare>"` had its backslash masked and its
+# value served.
+#
+# WHY NOT A SECOND PASS OVER THE JSON TEXT EITHER (the PR #210 re-review).
+# The fix-up masked every string, then ran the rules over the JSON text with
+# every string stood in, so the key/value rule still saw `"api_token": "..."`
+# with its key beside it. But that rule's value class takes the first run of
+# characters after the key, and under a key the document's shape decides what
+# that run is: `[` or `{` for a list or an object, whose strings were then
+# served in clear under `masked 1`; `null` or `true`, counted as a credential;
+# and the text stopped being JSON. A key that itself held `=` pushed the mask
+# onto the `:` after it. Every one of those is a question about the document's
+# STRUCTURE, answered here by reading the structure:
+#
+#   * every string, and every key, is masked as one DECODED string
+#     (`redact(decoded=True)`), the way `/answer` and `/transcript` mask the
+#     strings they decode out of JSON;
+#   * a value under a key that NAMES a credential (`_CREDENTIAL_KEY`) is masked
+#     WHOLE, as one leaf, counted once -- a string, a list, an object, and a
+#     number when the credential word ends the key (`_masks_whole` says which);
+#   * a private key written as a LIST of lines is masked from the element with
+#     its BEGIN marker through the one with its END (`_key_run_end`);
+#   * a literal any of those masked -- a value under a credential's name, or a
+#     value the key/value rule found beside `NAME=` -- is masked wherever else
+#     it appears in the document, the prompt included (`_learned_literals`).
+#
+# The text is `json.dumps(indent=2, ensure_ascii=False)` of the masked value,
+# so it is always the input's JSON, with every string still a string.
+
+#: A key that names a credential: the keyword ANYWHERE in the key, in any case,
+#: with `-` or `_` allowed inside the two-word names. Wider than the key/value
+#: rule, which needs the keyword to END the name because in free text it cannot
+#: see where a name ends: here a key is a whole string, so `AWS_SECRET_ACCESS_KEY`,
+#: `private_key`, `password_hash`, `secrets`, `api_keys` and `x-api-key` are all
+#: credentials' names.
+_CREDENTIAL_WORD = r"api[-_]?key|passw(?:or)?d|secret|token|credential|private[-_]?key|authorization"
+_CREDENTIAL_KEY = re.compile(_CREDENTIAL_WORD, re.IGNORECASE)
+#: The keyword ENDS the key: `password`, `DB_PASSWORD`, `github_token`. The key
+#: part of the key/value rule, with `api-key` and `private_key` added.
+_CREDENTIAL_KEY_AT_END = re.compile(r"(?:" + _CREDENTIAL_WORD + r")\Z", re.IGNORECASE)
+
+#: At most this many literals are carried from one place in a document to the
+#: others. Each is looked for in every string, so the work is this bound times
+#: the document's size -- 256 KiB at most for a task's input -- and a document
+#: built to hold thousands of `NAME=value` pairs must not buy that many passes
+#: over itself on a shared instance. An input with more named credentials than
+#: this still has each one masked where it is named; only the copies elsewhere
+#: past the first 256 are not looked for.
+MAX_LITERALS = 256
+
+#: Brackets a key's stand-in (`JsonMasker.json`). Private-use code points: no
+#: key holds one by accident, and the nonce beside them means none can spell one
+#: on purpose. The served text never holds one; each is replaced below.
 _STAND_IN_OPEN = ""
 _STAND_IN_CLOSE = ""
 
 
-def redact_json(value: Any, *, cache: dict[str, Redacted] | None = None) -> Redacted:
-    """A JSON value as the pretty-printed text a screen draws, masked, with the count.
+def _key_text(key: Any) -> str:
+    """A dict key as `json.dumps` writes it."""
+    if isinstance(key, str):
+        return key
+    if key is None or isinstance(key, (bool, int, float)):
+        return json.dumps(key)
+    return str(key)
 
-    The text is `json.dumps(value, indent=2, ensure_ascii=False)`, as
-    `JSON.stringify(value, null, 2)` draws it, with every credential masked.
 
-    WHY NOT ONE `redact()` OVER THAT TEXT (the PR #210 review). JSON text
-    writes every quote inside a string as `\\"`, and the key/value rule reads
-    a quote as a quote. A string holding `{"api_key": "<bare>"}` did not match
-    at all, and one holding `PASSWORD="<bare>"` had its backslash masked and
-    its value served. The same string masked DECODED came out masked, so
-    `/input` masked a prompt in its `prompt` block and served it in clear in
-    its `full` block, under a count that said nothing was found.
+def _holds_value(node: Any, *, numbers: bool) -> bool:
+    """Whether a list or object holds a non-blank string -- or a number, when `numbers`."""
+    if isinstance(node, str):
+        return node.strip() != ""
+    if isinstance(node, bool) or node is None:
+        return False
+    if isinstance(node, (int, float)):
+        return numbers
+    if isinstance(node, dict):
+        return any(_holds_value(item, numbers=numbers) for item in node.values())
+    if isinstance(node, (list, tuple)):
+        return any(_holds_value(item, numbers=numbers) for item in node)
+    return str(node).strip() != ""
 
-    WHY NOT EACH STRING ON ITS OWN EITHER: the key/value rule catches
-    `"api_token": "<bare>"` only with the key beside its value, and a key is
-    not inside any string.
 
-    So two passes, of the one set of `RULES`:
+def _masks_whole(key: str, value: Any) -> bool:
+    """Whether `value`, under `key`, is masked whole as one credential.
 
-      1. every string in the value, DECODED (`redact(decoded=True)`), the way
-         `/answer` and `/transcript` mask the strings they decode;
-      2. the JSON text of the value with every string replaced by an inert
-         stand-in, through `redact()`. This pass sees what only the
-         document's shape shows: a credential's name beside its value, a
-         credential in a key, a number under `password`. When pass 2 masks a
-         string's stand-in, the whole string is masked. The key/value rule
-         would have masked its first word.
+    Only under a key that names a credential. Then:
 
-    Pass 2 never reads what pass 1 masked, so nothing is masked or counted
-    twice. The count is pass 1's over every string plus pass 2's. Keys are
-    read by pass 2 only, in their JSON spelling. A value that is not JSON (a
-    Firestore timestamp in a hand-written document) is masked as its text.
-
-    `cache` maps a string to its pass-1 result. A caller that draws one string
-    in several blocks, like the prompt alone and inside the whole input,
-    masks it once and counts it the same way in each block.
+      * a string that is not blank. An empty or whitespace-only string is drawn
+        as it was sent: a `masked 1` over `""` tells the reader to rotate a
+        credential nobody sent;
+      * a list or an object holding such a string, masked as one leaf, so a
+        token split into lines, or `{"value": "..."}`, is not served piece by
+        piece under a count that says it was masked;
+      * a NUMBER only when the credential word ENDS the key: a PIN under
+        `password` is one, `input_tokens: 10` and `credential_revoked_times: 2`
+        -- keys this platform's own mock runner takes -- are counts;
+      * never `null`, `true`/`false`, `[]` or `{}`: none of them can be a
+        credential, and each counted one on the screen.
     """
-    memo: dict[str, Redacted] = {} if cache is None else cache
-    leaves: list[Redacted] = []
-    # A nonce, so no key in the document can spell a stand-in. The served
-    # text never holds one: each is replaced below or was masked by pass 2.
-    tag = secrets.token_hex(8)
+    if _CREDENTIAL_KEY.search(key) is None:
+        return False
+    if value is None or isinstance(value, bool):
+        return False
+    numbers = _CREDENTIAL_KEY_AT_END.search(key) is not None
+    if isinstance(value, (int, float)):
+        return numbers
+    return _holds_value(value, numbers=numbers)
 
-    def stand_in(node: Any) -> Any:
+
+def _leaf_texts(node: Any) -> list[str]:
+    """Every string, and every number as JSON writes it, inside `node`."""
+    if isinstance(node, str):
+        return [node]
+    if isinstance(node, bool) or node is None:
+        return []
+    if isinstance(node, (int, float)):
+        return [json.dumps(node)]
+    if isinstance(node, dict):
+        return [text for item in node.values() for text in _leaf_texts(item)]
+    if isinstance(node, (list, tuple)):
+        return [text for item in node for text in _leaf_texts(item)]
+    return [str(node)]
+
+
+def _assigned_values(text: str) -> list[str]:
+    """The values the key/value rule finds beside a credential's name in `text`, unmasked."""
+    return [m.group(0)[len(m.group(1)) :] for m in KEY_VALUE.pattern.finditer(text)]
+
+
+def _carried(literal: str) -> bool:
+    """Whether a literal masked in one place is looked for in every other.
+
+    Eight characters or more, as `redact(extra=...)` requires. Not one the rules
+    already mask wherever it appears (`sk-...`, a JWT), nor a private key's
+    marker, which the rules keep on purpose so a reader sees what leaked. And not
+    a run of mask characters, which would find every mask.
+    """
+    if len(literal.strip()) < 8 or literal.strip("*").strip() == "":
+        return False
+    if _PEM_HINT in literal:
+        return False
+    return redact(literal, decoded=True).count == 0
+
+
+def _learned_literals(document: Any) -> tuple[str, ...]:
+    """What `document` says is secret, to be masked wherever else it appears.
+
+    Two sources: every value masked whole under a credential's name (a string,
+    or the strings and numbers inside it), and every value the key/value rule
+    finds beside `NAME=` in a string or a key. Named values first, because a
+    name is better evidence than a pattern. Longest first, so a literal that
+    contains another is masked as itself.
+    """
+    named: list[str] = []
+    assigned: list[str] = []
+
+    def learn(node: Any) -> None:
         if isinstance(node, str):
-            found = memo.get(node)
-            if found is None:
-                found = memo[node] = redact(node, decoded=True)
-            leaves.append(found)
-            return f"{_STAND_IN_OPEN}{tag}.{len(leaves) - 1}{_STAND_IN_CLOSE}"
-        if isinstance(node, dict):
-            return {key: stand_in(item) for key, item in node.items()}
-        if isinstance(node, (list, tuple)):
-            return [stand_in(item) for item in node]
-        if node is None or isinstance(node, (bool, int, float)):
-            return node
-        return stand_in(str(node))
+            assigned.extend(_assigned_values(node))
+        elif isinstance(node, dict):
+            for key, item in node.items():
+                name = _key_text(key)
+                assigned.extend(_assigned_values(name))
+                if _masks_whole(name, item):
+                    named.extend(_leaf_texts(item))
+                else:
+                    learn(item)
+        elif isinstance(node, (list, tuple)):
+            for item in node:
+                learn(item)
+        elif node is not None and not isinstance(node, (bool, int, float)):
+            learn(str(node))
 
-    shaped = redact(json.dumps(stand_in(value), indent=2, ensure_ascii=False))
-    placed = re.compile(
-        '"' + re.escape(f"{_STAND_IN_OPEN}{tag}.") + r"(\d+)" + re.escape(_STAND_IN_CLOSE) + '"'
-    )
-    text = placed.sub(
-        lambda m: json.dumps(leaves[int(m.group(1))].text, ensure_ascii=False), shaped.text
-    )
-    return Redacted(text=text, count=sum(leaf.count for leaf in leaves) + shaped.count)
+    learn(document)
+    chosen: list[str] = []
+    seen: set[str] = set()
+    for candidate in named + assigned:
+        for literal in (candidate, candidate.strip()):
+            if literal in seen:
+                continue
+            seen.add(literal)
+            if len(chosen) < MAX_LITERALS and _carried(literal):
+                chosen.append(literal)
+    return tuple(sorted(chosen, key=len, reverse=True))
+
+
+def _open_key(text: str) -> bool:
+    """Whether `text` holds a private key's BEGIN marker with no END after the last one."""
+    if _PEM_HINT not in text:
+        return False
+    last = None
+    for last in _PEM_BEGIN.finditer(text):
+        pass
+    return last is not None and _PEM_END.search(text, last.end()) is None
+
+
+def _key_run_end(items: list[Any] | tuple[Any, ...], start: int) -> int:
+    """The last element of the key that element `start` of a list leaves open.
+
+    A private key stored as an ARRAY OF LINES -- `["-----BEGIN ...", "MIIE...",
+    ..., "-----END ..."]` -- holds its BEGIN in one string and its body in the
+    next ones, none of which carries a marker, so masking each string on its own
+    masked the BEGIN element to its end and served every body line and the END
+    (the PR #210 re-review). The same rule as a key in one string
+    (`mask_private_keys`, decoded): through the element holding the END marker
+    when it is within `PEM_BLOCK_MAX_CHARS`, else to the end of the run of
+    strings. A non-string element ends the run. `start` itself when nothing
+    follows it.
+    """
+    size = 0
+    last = start
+    for at in range(start + 1, len(items)):
+        item = items[at]
+        if not isinstance(item, str):
+            break
+        if size <= PEM_BLOCK_MAX_CHARS and _PEM_END.search(item) is not None:
+            return at
+        size += len(item) + 1
+        last = at
+    return last
+
+
+class JsonMasker:
+    """A JSON document's values as a screen may draw them, masked, with counts.
+
+    Built over the WHOLE document, so what one place says is secret is masked in
+    every block drawn from it: `/v1/tasks/{id}/input` draws the prompt, the rest
+    of the input and the whole of it from one masker, and a password named in
+    the rest is masked inside the prompt too, where the prompt block would
+    otherwise draw it in clear under `masked 0` beside `"password": "********"`
+    (the PR #210 re-review).
+
+    `text()` masks one string and `json()` one value as the pretty-printed text
+    `JSON.stringify(value, null, 2)` draws. Each string's result is kept, so a
+    string drawn in several blocks is masked and counted the same in each, and
+    a block's count is the sum of what its strings, keys and whole values
+    contributed: `json(whole)` counts what `text(prompt)` and `json(rest)` do.
+    """
+
+    def __init__(self, document: Any) -> None:
+        self._literals = _learned_literals(document)
+        self._memo: dict[str, Redacted] = {}
+        # A nonce, so no key in the document can spell a stand-in.
+        self._tag = secrets.token_hex(8)
+
+    def text(self, value: str) -> Redacted:
+        """One string, masked as a decoded string, then for the document's literals.
+
+        The literals go AFTER the rules, not first as `redact(extra=...)` puts
+        them: a literal that happened to hold a marker a rule starts from would
+        otherwise take the marker away from the rule. Each is looked for in what
+        the rules left, so a literal the rules already masked is not counted
+        again.
+        """
+        found = self._memo.get(value)
+        if found is None:
+            first = redact(value, decoded=True)
+            text, count = first.text, first.count
+            for literal in self._literals:
+                if literal in text:
+                    count += text.count(literal)
+                    text = text.replace(literal, MASK)
+            found = self._memo[value] = Redacted(text=text, count=count)
+        return found
+
+    def json(self, value: Any) -> Redacted:
+        """`value` as `json.dumps(value, indent=2, ensure_ascii=False)`, masked."""
+        keys: list[str] = []
+        total = 0
+
+        def walk(node: Any) -> Any:
+            nonlocal total
+            if isinstance(node, str):
+                masked = self.text(node)
+                total += masked.count
+                return masked.text
+            if isinstance(node, dict):
+                out: dict[str, Any] = {}
+                for key, item in node.items():
+                    raw = _key_text(key)
+                    name = self.text(raw)
+                    total += name.count
+                    # A key is stood in when masking changed it, or when it
+                    # now spells another key: two keys that mask to the same
+                    # text are two entries, not one.
+                    label = name.text
+                    if name.text != raw or label in out:
+                        keys.append(name.text)
+                        label = f"{_STAND_IN_OPEN}{self._tag}.{len(keys) - 1}{_STAND_IN_CLOSE}"
+                    if _masks_whole(raw, item):
+                        total += 1
+                        out[label] = MASK
+                    else:
+                        out[label] = walk(item)
+                return out
+            if isinstance(node, (list, tuple)):
+                items = list(node)
+                shaped: list[Any] = []
+                through = -1
+                for at, item in enumerate(items):
+                    if at <= through:
+                        # Key material of the block the element above opened:
+                        # its one mask was counted there.
+                        shaped.append(MASK)
+                        continue
+                    shaped.append(walk(item))
+                    if isinstance(item, str) and _open_key(item):
+                        through = _key_run_end(items, at)
+                return shaped
+            if node is None or isinstance(node, (bool, int, float)):
+                return node
+            # Not JSON: a Firestore timestamp in a hand-written document.
+            return walk(str(node))
+
+        text = json.dumps(walk(value), indent=2, ensure_ascii=False)
+        if keys:
+            placed = re.compile(
+                '"' + re.escape(f"{_STAND_IN_OPEN}{self._tag}.") + r"(\d+)" + re.escape(_STAND_IN_CLOSE) + '"'
+            )
+            text = placed.sub(lambda m: json.dumps(keys[int(m.group(1))], ensure_ascii=False), text)
+        return Redacted(text=text, count=total)
+
+
+def redact_json(value: Any) -> Redacted:
+    """One JSON value, masked by its structure as `JsonMasker` does, with the count."""
+    return JsonMasker(value).json(value)
 
 
 def redact_detail(message: str, *, limit: int = 400) -> str:

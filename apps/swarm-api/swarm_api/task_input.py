@@ -10,24 +10,33 @@ platform's own documents -- was drawn in clear on the two screens that mask
 every other byte they show.
 
 THE SAME REDACTOR, NOT A SECOND ONE. Every text below comes from
-`redaction.redact` and its one set of `RULES`, and the count is its count:
+`redaction.redact` and its one set of `RULES`, and the count is its count,
+applied by `redaction.JsonMasker` over the input's structure:
 
-  * the prompt as one DECODED string (`redact(decoded=True)`), the way
-    `/answer` and `/transcript` treat the strings they decode out of JSON: a
-    private key with no END is masked to the end of the string;
-  * the rest of the input, and the whole of it, through `redact_json`: every
-    string masked decoded, as the prompt is, then the JSON text the UI draws
-    (`indent=2`, as `JSON.stringify(input, null, 2)`) masked for what only the
-    document's shape shows -- `"api_token": "<a value with no recognisable
-    prefix>"` is caught by its key, which no string holds.
+  * every string, the prompt included, and every key, as one DECODED string
+    (`redact(decoded=True)`), the way `/answer` and `/transcript` treat the
+    strings they decode out of JSON: a private key with no END is masked to
+    the end of the string;
+  * a value under a key that names a credential -- `"api_token": "<a value
+    with no recognisable prefix>"`, a list of lines under `private_key`, a PIN
+    under `password` -- masked whole and counted once, which no rule over any
+    one string could see;
+  * a private key stored as a list of lines, masked from BEGIN to END;
+  * a literal any of those masked, masked wherever else the input holds it.
 
-WHY NOT ONE `redact()` OVER THE JSON TEXT, which is what this served first
-(the PR #210 review). JSON text writes a quote inside a string as `\\"`, and
-the key/value rule reads a quote as a quote: a prompt holding
-`{"api_key": "<bare>"}` or `PASSWORD="<bare>"` came out masked in `prompt`
-and in clear in `full`, with `full`'s count saying nothing was found. The
-prompt's string is masked once (`cache`), and the same result is used in each
-block, so `full`'s count is always `prompt`'s plus `rest`'s.
+ONE MASKER FOR ALL THREE BLOCKS (the PR #210 re-review). The masker is built
+over the WHOLE input, so the blocks drawn side by side agree about every
+literal in them. Before, a password named in the rest of the input was drawn
+`"********"` in the rest block, `masked 1`, and in clear in the prompt block
+directly above it, `masked 0`; and a `DB_PASSWORD=<value>` the prompt block
+masked was served in clear under a key the rule does not know. Each string is
+masked once and the result reused, so `full`'s count is always `prompt`'s plus
+`rest`'s.
+
+WHY NOT A RULE OVER THE JSON TEXT, which is what this served first and then
+second (the PR #210 review and re-review): see "A JSON document" in
+`redaction.py`. The first leaked quoted secrets; the second masked a list's
+opening bracket under `password`, served the list, and stopped being JSON.
 
 THE TASK DOCUMENT IS UNCHANGED, and `GET /v1/tasks/{id}` still serves the
 input as submitted -- to the tenant that submitted it, for the CLI and MCP
@@ -48,7 +57,7 @@ from typing import Any
 
 from swarm_common.models import Task
 
-from .redaction import RULES, Redacted, redact, redact_json
+from .redaction import RULES, JsonMasker, Redacted
 
 
 def _served(scrubbed: Redacted) -> dict[str, Any]:
@@ -73,18 +82,17 @@ def input_copy(task: Task, *, read_at: datetime) -> dict[str, Any]:
     else:
         prompt_key = "missing"
 
-    # One pass-1 result per distinct string, shared by every block below, so
-    # the prompt drawn alone and the prompt inside `full` are one masking.
-    masked: dict[str, Redacted] = {}
-    prompt = None
-    if isinstance(raw_prompt, str):
-        prompt = masked[raw_prompt] = redact(raw_prompt, decoded=True)
+    # One masker over the whole input, shared by every block below: the prompt
+    # drawn alone and the prompt inside `full` are one masking, and what the
+    # rest of the input names as a credential is masked in the prompt too.
+    masker = JsonMasker(submitted)
+    prompt = masker.text(raw_prompt) if isinstance(raw_prompt, str) else None
     rest = None
     if prompt_key == "string":
         others = {k: v for k, v in submitted.items() if k != "prompt"}
         if others:
-            rest = redact_json(others, cache=masked)
-    full = redact_json(submitted, cache=masked)
+            rest = masker.json(others)
+    full = masker.json(submitted)
 
     return {
         "task_id": task.id,

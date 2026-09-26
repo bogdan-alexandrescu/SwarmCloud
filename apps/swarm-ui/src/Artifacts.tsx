@@ -261,7 +261,7 @@ function Body({ v, reading }: { v: ArtifactsView; reading: ScreenReading }) {
   const now = useNow(AGE_TICK_MS)
   return (
     <div className="run-stack arts">
-      <Inputs v={v} />
+      <Inputs v={v} reading={reading} />
       <Outputs v={v} />
       <Logs v={v} reading={reading} now={now} />
     </div>
@@ -272,11 +272,11 @@ function Body({ v, reading }: { v: ArtifactsView; reading: ScreenReading }) {
 // Inputs
 // ---------------------------------------------------------------------------
 
-function Inputs({ v }: { v: ArtifactsView }) {
+function Inputs({ v, reading }: { v: ArtifactsView; reading: ScreenReading }) {
   return (
     <section className="section arts-inputs">
       <h2>Inputs</h2>
-      <Prompt taskId={v.task.id} />
+      <Prompt taskId={v.task.id} readAt={reading.fetchedAt} />
       <Repository task={v.task} />
       <StagedFiles v={v} />
     </section>
@@ -302,9 +302,16 @@ function Inputs({ v }: { v: ArtifactsView }) {
  * ITS OWN READ, NOT THE POLL'S. The input never changes, so it is read once
  * per task (and shared with the Details pane, `loadTaskInputOnce`), and a
  * slow or failed copy holds up nothing else on the pane.
+ *
+ * A FAILED COPY IS ASKED AGAIN WITH THE PANE'S POLL (PR #210 review). The key
+ * was the constant `input`, so one failed read said `the masked input not
+ * read` for as long as the pane stayed open. The key now follows the pane's
+ * read (`readAt`): a copy already read is answered from memory without a
+ * request, and one that failed is asked for again. A pane that has stopped
+ * polling -- a settled finish -- stops asking with it.
  */
-function Prompt({ taskId }: { taskId: string }) {
-  const { state } = useRead<TaskInputCopy>(() => loadTaskInputOnce(taskId), taskId, 'input', null)
+function Prompt({ taskId, readAt }: { taskId: string; readAt: number }) {
+  const { state } = useRead<TaskInputCopy>(() => loadTaskInputOnce(taskId), taskId, `input:${readAt}`, null)
   const copy = state.status === 'ok' || state.status === 'stale' ? state.data : null
   // What this block draws, masked: the prompt and the rest, or the whole input.
   const masked =
@@ -1089,7 +1096,9 @@ function ReadFailed({ error, what }: { error: ApiError | null; what: string }) {
         say={`${error === null ? 'The read did not complete' : errorHeading(error)}. Nothing may be concluded about ${what}: it is not empty and it is not missing.`}
       />{' '}
       {what} not read
-      {error !== null && <span className="ctl-sub">{error.message}</span>}
+      {/* A separator before the server's words: the flex gap parts them on
+          screen, and nothing parted them in the text (PR #210 review). */}
+      {error !== null && <span className="ctl-sub">{` · ${error.message}`}</span>}
     </p>
   )
 }

@@ -1,5 +1,5 @@
 import { useCallback, useState, type CSSProperties, type ReactNode } from 'react'
-import { EVENT_PAGE_LIMIT, loadAgentRun, type AgentRun } from './api'
+import { EVENT_PAGE_LIMIT, loadAgentRun, loadTaskInputOnce, type AgentRun } from './api'
 import { AttemptDurations } from './charts/AttemptPhases'
 import { CheckpointStrip } from './charts/CheckpointStrip'
 import { DiffstatChart } from './charts/Diffstat'
@@ -13,7 +13,7 @@ import { HELP, type TopicId } from './help'
 import { HelpCard } from './HelpCard'
 import { LivenessBadge, livenessOf } from './Liveness'
 import { Absent, Mark, Metric, UtilRow, type MarkKind } from './primitives'
-import { RunFiles } from './RunFiles'
+import { RunFiles, useRead } from './RunFiles'
 import { Screen, timeAgo, type ScreenReading } from './Shell'
 import { StagedInputs } from './StagedInputs'
 import { StopRun } from './StopRun'
@@ -298,7 +298,7 @@ export function Run({
           a real zero. The runner's log was drawn here too, and lives in
           Artifacts › Logs only now (#184, owner decision of 2026-09-25). */}
       <RunFiles task={task} attempts={run.attempts} readAt={reading?.fetchedAt ?? null} now={now} />
-      <Input run={run} />
+      <Input run={run} readAt={reading?.fetchedAt ?? null} />
       <Timeline task={task} events={events} detail={run.eventsDetail} attempts={run.attempts} />
     </div>
   )
@@ -1789,7 +1789,11 @@ function AttemptResources({
  *   heartbeat event  its typed fields are empty and a HEARTBEAT of it on this
  *                    page carries a figure (`interimReading`): peak, mean and
  *                    cpu-seconds from #188's window, or the cpu-seconds only,
- *                    as every heartbeat before #188 carried them.
+ *                    as every heartbeat before #188 carried them -- and, on a
+ *                    full page, `page full; newer readings may exist`;
+ *   events not read  its typed fields are empty and the event read failed,
+ *                    so the page that could hold its reading was not looked
+ *                    at: not `never measured`.
  *
  * TWO ROWS, peak and mean, as the owner decided ("as built"). The ceiling is
  * the limit the worker wrote, labelled by the class read here when that class
@@ -1800,7 +1804,7 @@ function AttemptResources({
  * track's over-ceiling hatch.
  *
  * ONE ROW WHEN THERE IS NOTHING TO SPLIT. With nothing measured -- not served,
- * never ran, not yet written, never measured -- two identical hatched rows
+ * never ran, events not read, not yet written, never measured -- two identical hatched rows
  * would say one fact twice. The one row still says WHICH kind of nothing.
  *
  * THE STRIP UNDER THE ROWS IS HOW ANY OF THAT REACHES A PHONE. The `by`
@@ -1884,9 +1888,17 @@ type CpuFrom =
   /**
    * A HEARTBEAT reading, for an attempt whose typed fields are empty.
    * `secondsOnly`: the event carries cpu-seconds and no cores, as every
-   * HEARTBEAT before #188 did.
+   * HEARTBEAT before #188 did. `pageFull`: the page holds as many events as
+   * this screen asks for, so the route has more, and a newer reading of this
+   * attempt may be among them.
    */
-  | { kind: 'heartbeat'; figures: CpuFigures; final: boolean; secondsOnly: boolean }
+  | { kind: 'heartbeat'; figures: CpuFigures; final: boolean; secondsOnly: boolean; pageFull: boolean }
+  /**
+   * The typed fields are empty and the EVENT READ FAILED, so whether a
+   * heartbeat of this attempt carries a figure is unknown (PR #210
+   * re-review). Not `never measured`: that says the page was looked at.
+   */
+  | { kind: 'unread'; figures: CpuFigures }
 
 function measuredAny(f: CpuFigures): boolean {
   return f.cpu_seconds !== null || f.peak_cpu_cores !== null || f.mean_cpu_cores !== null
@@ -1912,6 +1924,8 @@ function cpuOf(a: AttemptRow, events: TaskEvent[] | null): CpuFrom {
     cpu_limit_cores: a.cpu_limit_cores ?? null,
   }
   if (measuredAny(figures)) return { kind: 'attempt', figures }
+  // The legacy reader needs the page; a failed event read is not an empty one.
+  if (events === null) return { kind: 'unread', figures }
   return interimReading(a, events) ?? { kind: 'attempt', figures }
 }
 
@@ -1938,17 +1952,20 @@ function cpuOf(a: AttemptRow, events: TaskEvent[] | null): CpuFrom {
  * server read is added: the drawer already holds the page. The page is the
  * task's first `EVENT_PAGE_LIMIT` events, so on a long attempt the newest
  * reading here can be an early one, and the words say it is the newest ON
- * THIS PAGE. It reads nothing on any attempt the worker wrote typed fields
- * for, which is every measured attempt after this change.
+ * THIS PAGE. When the page is FULL and the reading is not the one taken at
+ * exit, the strip says so -- `page full; newer readings may exist` -- because
+ * then there are more events than this page holds (PR #210 review). It reads
+ * nothing on any attempt the worker wrote typed fields for, which is every
+ * measured attempt after this change.
  */
-function interimReading(a: AttemptRow, events: TaskEvent[] | null): CpuFrom | null {
+function interimReading(a: AttemptRow, events: TaskEvent[]): CpuFrom | null {
   const n = (d: Record<string, unknown>, key: string): number | null => {
     const v = d[key]
     return typeof v === 'number' && Number.isFinite(v) ? v : null
   }
   let best: { figures: CpuFigures; detail: Record<string, unknown> } | null = null
   let bestAt = -Infinity
-  for (const e of events ?? []) {
+  for (const e of events) {
     if (e.type !== 'heartbeat' || e.attempt_id !== a.attempt_id || e.detail === null) continue
     const t = Date.parse(e.at)
     if (!Number.isFinite(t) || t <= bestAt) continue
@@ -1967,7 +1984,13 @@ function interimReading(a: AttemptRow, events: TaskEvent[] | null): CpuFrom | nu
   const found = best
   if (found === null) return null
   const secondsOnly = found.figures.peak_cpu_cores === null && found.figures.mean_cpu_cores === null
-  return { kind: 'heartbeat', figures: found.figures, final: found.detail['final'] === true, secondsOnly }
+  return {
+    kind: 'heartbeat',
+    figures: found.figures,
+    final: found.detail['final'] === true,
+    secondsOnly,
+    pageFull: events.length >= EVENT_PAGE_LIMIT,
+  }
 }
 
 /**
@@ -2024,24 +2047,46 @@ function cpuReading(from: CpuFrom, a: AttemptRow, end: AttemptEnd): CpuReading {
       say: 'This attempt never started, so it used no CPU. That is a fact about the attempt, not a missing measurement.',
     }
   }
+  if (from.kind === 'unread') {
+    // THE PAGE WAS NOT READ, so nothing can be said about what it holds. On
+    // every attempt from before the typed fields this was `never measured`,
+    // a claim about a page no one had looked at (PR #210 re-review).
+    return {
+      measured: false,
+      by: 'events not read',
+      strip: 'events not read',
+      mark: 'unread',
+      say: 'No CPU figures were written on this attempt, and the task’s events could not be read, so whether one of its heartbeat events carries a reading is unknown. This is neither a zero nor a missing measurement.',
+    }
+  }
+  // A FULL PAGE, AND A READING THAT IS NOT THE ONE AT EXIT: the route has
+  // more events than this page, and a newer reading of this attempt may be
+  // among them (PR #210 review). A reading taken when the runner was reaped
+  // is the attempt's last whatever else is off the page.
+  const pageFull = from.kind === 'heartbeat' && from.pageFull && !from.final
+  const pageFullSay = pageFull
+    ? ` This page is full — the task has more events than it holds — so newer readings of this attempt may exist that this one does not include.`
+    : ' The page is the task’s first events, so on a long attempt this reading can be an early one, not the total at exit.'
   if (from.kind === 'heartbeat' && from.secondsOnly) {
     // Before #188 a heartbeat carried the cumulative cpu-seconds and nothing
     // else about CPU. The cores it never carried are em dashes, not zeros.
     return {
       measured: true,
       by: 'heartbeat event',
-      strip: 'heartbeat event · cpu-seconds only',
+      strip: `heartbeat event · cpu-seconds only${pageFull ? ' · page full; newer readings may exist' : ''}`,
       mark: 'partial',
-      say: 'No CPU figures were written on this attempt. Its newest heartbeat event on this page with a figure carries its cumulative cpu-seconds and no peak or mean cores (every heartbeat before #188 carried only that), so the peak and mean are unknown: em dashes, not zeros. The page is the task’s first events, so on a long attempt this reading can be an early one, not the total at exit.',
+      say: `No CPU figures were written on this attempt. Its newest heartbeat event on this page with a figure carries its cumulative cpu-seconds and no peak or mean cores (every heartbeat before #188 carried only that), so the peak and mean are unknown: em dashes, not zeros.${pageFullSay}`,
     }
   }
   if (from.kind === 'heartbeat') {
     return {
       measured: true,
       by: 'heartbeat event',
-      strip: from.final ? 'heartbeat event · at exit' : 'heartbeat event',
+      strip: from.final
+        ? 'heartbeat event · at exit'
+        : `heartbeat event${pageFull ? ' · page full; newer readings may exist' : ''}`,
       mark: 'partial',
-      say: `This attempt ran before the attempt carried its CPU figures (contract request #15), so they are read from its newest heartbeat event on this page${from.final ? ', taken when its runner was reaped' : ', a periodic one: not the figures at exit'}. Nothing was written on the attempt itself.`,
+      say: `This attempt ran before the attempt carried its CPU figures (contract request #15), so they are read from its newest heartbeat event on this page${from.final ? ', taken when its runner was reaped' : ', a periodic one: not the figures at exit'}. Nothing was written on the attempt itself.${pageFull ? pageFullSay : ''}`,
     }
   }
   if (!measuredAny(from.figures)) {
@@ -3163,15 +3208,26 @@ function PublishOutcome({ git, task }: { git: GitSummary; task: Task }) {
  * object, when there is no prompt string (`RestOfInput`). A screen that only
  * rendered `prompt` would show nothing for a runner that names it differently.
  *
- * MASKED, WITH A COUNT (#184, owner decision of 2026-09-25). Both come from
- * `run.input`, the API's read-time-redacted copy (`GET /v1/tasks/{id}/input`),
- * never from `task.input`, which is the document as submitted: a token pasted
- * into a prompt was drawn here in clear, on the one screen that masks every
- * other byte it shows. Each block says `masked N` beside it, in the ink the
- * artifact viewer's count takes. When the copy was not read, the block says
- * so -- it is never replaced by the raw input.
+ * MASKED, WITH A COUNT (#184, owner decision of 2026-09-25). The prompt and
+ * the input under it come from the API's read-time-redacted copy (`GET
+ * /v1/tasks/{id}/input`), never from `task.input`, which is the document as
+ * submitted: a token pasted into a prompt was drawn here in clear. Each block
+ * says `masked N` beside it, in the ink the artifact viewer's count takes.
+ * When the copy was not read, the block says so -- it is never replaced by
+ * the raw input.
+ *
+ * THE METADATA TABLE IS NOT MASKED. It draws `task.metadata` as submitted: the
+ * owner's decision named the input, and whether the caller's metadata is
+ * masked too is still his to make (recorded on PR #210). So this section does
+ * NOT mask every byte it shows, and nothing here says it does.
+ *
+ * ITS OWN READ, NOT THE DRAWER'S (PR #210 re-review). The copy rode in
+ * `loadAgentRun`'s `Promise.all`, so the whole drawer waited on it. It is read
+ * here, through the same once-per-task cache the Artifacts pane uses, and a
+ * failed read is asked again with each re-read of the drawer (`readAt`), so a
+ * copy that failed once is not `input not read` until the drawer is reopened.
  */
-function Input({ run }: { run: AgentRun }) {
+function Input({ run, readAt }: { run: AgentRun; readAt: number | null }) {
   const { task } = run
   // The sizing behind the class NAME. A caller picks `resource_class` and
   // `runner_profile` by name and nothing else -- which is the rule that keeps
@@ -3181,9 +3237,17 @@ function Input({ run }: { run: AgentRun }) {
   // rather than left implicit in a bar three panels up.
   const cls = run.classes?.[task.resource_class] ?? null
   const noCeiling = ceilingNote(run)
+  // A copy that was read is answered from memory on every later ask, so a
+  // key that changes with each read of the drawer costs no request once the
+  // copy is in hand -- and re-asks one that failed.
+  const { state: copy } = useRead<TaskInputCopy>(
+    () => loadTaskInputOnce(task.id),
+    task.id,
+    `input:${readAt ?? ''}`,
+    null,
+  )
   // A stale copy is still a copy the API masked; only its refresh failed.
-  const copy = run.input
-  const served = copy !== undefined && (copy.status === 'ok' || copy.status === 'stale') ? copy.data : null
+  const served = copy.status === 'ok' || copy.status === 'stale' ? copy.data : null
   const metadata = task.metadata
 
   return (
@@ -3271,7 +3335,11 @@ function Input({ run }: { run: AgentRun }) {
             />{' '}
             {served.prompt_key === 'other' ? 'prompt is not text' : 'no prompt key'}
           </p>
-        ) : served.prompt.text.trim() === '' ? (
+        ) : served.prompt.text === '' ? (
+          // EMPTY MEANS THE EMPTY STRING, as the Artifacts pane reads it. A
+          // prompt of whitespace was sent as whitespace and is drawn as it
+          // was sent; calling it empty contradicted that pane on the same
+          // served copy (PR #210 re-review).
           <p className="att-none">
             <Mark kind="zero" say="The prompt was submitted empty. A real, empty prompt, not a missing one." /> empty
             prompt
@@ -3402,15 +3470,15 @@ export function MaskedNote({ count }: { count: number }) {
  * the unmasked prompt this read exists to replace -- so a failed or missing
  * copy is said as one, and the input is not shown.
  */
-function InputNotRead({ copy }: { copy: Result<TaskInputCopy> | undefined }) {
-  if (copy !== undefined && copy.status === 'loading') {
+function InputNotRead({ copy }: { copy: Result<TaskInputCopy> }) {
+  if (copy.status === 'loading') {
     return (
       <p className="att-none">
         <Mark kind="pending" say="Reading the masked copy of this task's input. The read is in flight." /> reading
       </p>
     )
   }
-  if (copy !== undefined && copy.status === 'error' && copy.error.kind === 'not_found' && copy.error.code === null) {
+  if (copy.status === 'error' && copy.error.kind === 'not_found' && copy.error.code === null) {
     return (
       <p className="att-none">
         <Mark
@@ -3421,7 +3489,7 @@ function InputNotRead({ copy }: { copy: Result<TaskInputCopy> | undefined }) {
       </p>
     )
   }
-  const message = copy !== undefined && copy.status === 'error' ? copy.error.message : null
+  const message = copy.status === 'error' ? copy.error.message : null
   return (
     <p className="att-none">
       <Mark
@@ -3429,7 +3497,11 @@ function InputNotRead({ copy }: { copy: Result<TaskInputCopy> | undefined }) {
         say="The masked copy of this task's input could not be read, so it is not shown — and it is not drawn unmasked instead. Nothing may be concluded about the input: it is not empty and it is not missing."
       />{' '}
       input not read
-      {message !== null && <span className="ctl-sub">{message}</span>}
+      {/* A SEPARATOR BEFORE THE SERVER'S WORDS. `.att-none` is a flex row, so
+          the gap parted them on screen, but its text ran them together --
+          `input not readBusy.` -- which is what a screen reader and a copy
+          read (PR #210 review). */}
+      {message !== null && <span className="ctl-sub">{` · ${message}`}</span>}
     </p>
   )
 }

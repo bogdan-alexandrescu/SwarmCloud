@@ -356,24 +356,61 @@ with its own `redaction_count`:
 * `full`: the whole input, as its JSON text.
 
 The redactor is `redaction.redact`, the one every other route uses, with its
-one set of rules. It is not a second one. `rest` and `full` go through
-`redaction.redact_json`, which runs it twice:
+one set of rules. It is not a second one. It is applied by
+`redaction.JsonMasker`, which reads the input's **structure**:
 
-1. Every string in the input is masked as a decoded string, as the prompt is.
-2. The JSON text is masked with every string replaced by an inert stand-in.
-   This pass catches what only the document's shape shows: a credential's name
-   beside its value (`"api_token": "<a value with no recognisable prefix>"`), a
-   credential in a key, or a number under `password`. A string whose stand-in
-   it masks is masked whole.
+1. Every string, the prompt included, and every key, is masked as one decoded
+   string, the way `/answer` and `/transcript` mask the strings they decode.
+2. A value under a key that **names a credential** is masked whole, as one
+   leaf, counted once. The keyword may sit anywhere in the key, in any case,
+   with `-` or `_` inside the two-word names: `api_token`,
+   `AWS_SECRET_ACCESS_KEY`, `private_key`, `password_hash`, `secrets`,
+   `x-api-key`. That covers a string, a list or an object holding one (a token
+   split into lines, `{"value": "..."}`), and a number when the keyword ends the
+   key (a PIN under `password`). It never covers `null`, `""`, `[]`, `{}` or a
+   boolean, which cannot be credentials and are drawn as sent and not counted.
+   A number under `input_tokens`, `max_tokens` or `credential_revoked_times`
+   (the mock runner takes that one) is a count, not a credential.
+3. A private key stored as a **list of lines** is masked from the element with
+   its BEGIN marker through the one with its END, one count, because no body
+   line holds a marker.
+4. A literal that any of those masked (a value under a credential's name, or a
+   value the key/value rule found beside `NAME=` in a string or a key) is
+   masked **wherever else the input holds it**, the prompt included. At most
+   256 literals are carried, so an input built to hold thousands cannot buy
+   that many passes over itself.
 
-**Why not one `redact()` over the JSON text.** That is what the route first
-served, and the PR #210 review found the hole in it. JSON text writes a quote
-inside a string as `\"`, and the key/value rule reads a quote as a quote. A
-prompt holding `{"api_key": "<bare>"}` or `PASSWORD="<bare>"` came out masked
-in `prompt` and in clear in `full`, and `full`'s count said nothing was found.
-Pass 2 never reads what pass 1 masked, so no mask is counted twice. The
-prompt's string is masked once and the result is shared, so `full`'s count is
-always `prompt`'s plus `rest`'s.
+The served text is `json.dumps(indent=2)` of the masked value, so it is always
+the input's JSON.
+
+**Why not a rule over the JSON text.** The route first served one `redact()`
+over the JSON text, and the PR #210 review found the hole. JSON text writes a
+quote inside a string as `\"`, and the key/value rule reads a quote as a
+quote. A prompt holding `{"api_key": "<bare>"}` or `PASSWORD="<bare>"` came out
+masked in `prompt` and in clear in `full`, under a count of 0. The fix-up
+masked every string and then ran the rules over the JSON text with the strings
+stood in. The re-review found that the rule's value class, the first run of
+characters after the key, was a list's `[` or an object's `{` under
+`password`: the strings inside were served under `masked 1`, the text stopped
+being JSON, and `null`, `true`, `[]` and `{}` were each counted as a
+credential. A key holding `=` pushed the mask onto the `:` after it. Each of
+those is a question about the document's structure, so the structure answers
+it now.
+
+**The blocks agree.** One masker is built over the whole input and shared by
+`prompt`, `rest` and `full`. Before, a password named in the rest was
+`"********"` in the rest block and in clear in the prompt block directly above
+it. Each string is masked once, so `full`'s count is always `prompt`'s plus
+`rest`'s.
+
+**The key/value rule is anchored.** Its name prefix was re-scanned from every
+position of a long run of name characters, so 40,000 characters took about a
+minute, and this route feeds it up to 256 KiB of a caller's input, holding the
+GIL of an instance all tenants share. The rule now starts a match only where a
+run of name characters starts, which masks exactly what it masked before. A
+256 KiB run takes about 25 ms. The same change lets the rule take `x-api-key:`,
+which the module's docstring had claimed and the rule did not catch; the
+shell filter in `scripts/lib/common.sh` still does not take the hyphen.
 
 `prompt_key` (`string`, `missing`, `other`) says what shape the input has, so
 a screen never goes back to the raw document to find out. Under a string
@@ -387,7 +424,12 @@ change does not make it.
 
 The UI reads the copy once per task, because an input never changes. A copy
 that could not be read, or an API that does not serve one, is drawn as that.
-The raw input is never drawn in its place.
+The raw input is never drawn in its place. A failed copy is asked for again
+with the next poll of the pane that draws it, and the read is Details' own:
+it is not part of the drawer's `loadAgentRun`, so a slow copy blanks only the
+input blocks. Details' metadata table is not masked; it draws
+`task.metadata` as submitted, and whether it should be masked is a decision
+for the owner, recorded on PR #210.
 
 ## CPU in Details: peak and mean of the limit, as typed attempt fields
 
@@ -407,7 +449,11 @@ attempt's, meaning every runner it started, combined.
 * **The worker writes them on its own attempt document**
   (`control.record_cpu_usage`). It writes them with each periodic reading
   while a runner runs, which is every fifth heartbeat, the same cadence as
-  the HEARTBEAT event. It writes them again when each runner is reaped. A key
+  the HEARTBEAT event. It writes them again when each runner is reaped, and
+  on every exit beside the attempt's spend (`_upload_outputs`, `_cleanup`),
+  which covers a runner still alive at a crash or killed at cleanup without
+  being reaped. A failed memory-peak write no longer skips the CPU write after
+  it: the memory peak is telemetry too, and its failure is logged. A key
   that was not measured is left out, not written as null, because the write
   is a merge and a null would erase an earlier figure. Nothing is written
   when nothing was measured, not even the limit.
@@ -469,10 +515,13 @@ count. When that event has no cores, the peak and mean rows draw em dashes, the
 mean row keeps the cpu-seconds, and the strip says `cpu-seconds only`. The
 reader adds no server read, because the page is already held. The page is the
 task's first 200 events, oldest first, so on a long attempt the newest reading
-on it can be an early one. The mark says so, and when no heartbeat on the page
-carries a figure the row says `never measured` without claiming anything
-about events past the page. The reader does nothing for an attempt the worker
-wrote typed fields for.
+on it can be an early one. The mark says so, and when the page is full (200
+events) and the reading is not the one taken at exit, the strip says
+`page full; newer readings may exist`. When no heartbeat on the page carries a
+figure the row says `never measured` without claiming anything about events
+past the page. When the event read FAILED, the row says `events not read`
+with the not-read mark, because nothing can be said about a page nobody read.
+The reader does nothing for an attempt the worker wrote typed fields for.
 
 Neither kind of attempt ages out, so the reader stays as long as those attempts
 can be opened. The owner can decide to drop it; the cost is that every attempt

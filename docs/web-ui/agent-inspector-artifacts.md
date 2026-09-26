@@ -172,11 +172,12 @@ This pane said `as submitted · not masked`, and Details said nothing.
 
 Both now read `GET /v1/tasks/{id}/input`. It serves the prompt, the rest of the
 input and the whole input, each as the API's one redactor (`redaction.redact`)
-leaves it, each with its own count (`TaskInputCopy`). The rest and the whole
-input are masked string by string and then as JSON (`redaction.redact_json`,
-see `docs/agent-output.md`), so a secret quoted inside the prompt is masked in
-every block that holds it. The UI does no masking of its own, and it never
-goes back to `task.input`:
+leaves it, each with its own count (`TaskInputCopy`). Every string and key is
+masked, a value under a credential's name is masked whole, and what one block
+masks every block masks (`redaction.JsonMasker`, see `docs/agent-output.md`),
+so a secret quoted inside the prompt, or named in the rest of the input, is
+masked in every block that holds it. The UI does no masking of its own, and it
+never goes back to `task.input`:
 
 * **Inputs** draws the prompt and the rest. Its `masked N` is the sum of those
   two blocks' counts.
@@ -189,13 +190,24 @@ goes back to `task.input`:
 * The count is drawn as the artifact viewer's is: no mark, plain ink at zero,
   and `--warn` above zero.
 * A copy that is loading, failed, or not served by an older API is drawn as
-  that (`reading`, `input not read`, `not served by this API`). The raw input
-  is not drawn in its place.
+  that (`reading`, `input not read · <the server's words>`,
+  `not served by this API`). The raw input is not drawn in its place.
+* `empty prompt` means the empty string, in both panes. A prompt of
+  whitespace is drawn as sent.
+* Details' metadata table draws `task.metadata` as submitted. It is not
+  masked: the owner's decision named the input, and whether metadata is
+  masked too is his to make (recorded on PR #210).
 
-The input never changes after submission, so it is read once per task
-(`loadTaskInputOnce`) and shared between the two panes. It is not re-read on
-the drawer's 10 s poll or this pane's 5 s poll. It is also not part of this
-pane's poll, so a slow copy holds up nothing else.
+The input never changes after submission, so a copy that was read is kept
+per task (`loadTaskInputOnce`) and shared between the two panes. Each pane
+asks through it on its own poll, the drawer's 10 s and this pane's 5 s: a copy
+already read is answered from memory without a request, and one that failed
+is asked for again, so one failure does not last until the drawer is
+reopened. One request per task is in flight at a time, whoever asks. The copy
+is not part of either pane's main read: Details used to read it inside
+`loadAgentRun`'s `Promise.all`, so the whole drawer waited on it, and it now
+reads it itself, as this pane does, so a slow copy blanks only the input
+blocks.
 
 ## CPU in Details
 
@@ -226,7 +238,8 @@ time for them, so the answer comes from what is known about the attempt's end
 | finish recorded | `at exit` |
 | running | `live reading` (strip: `live reading · age not recorded`) |
 | ended with no recorded finish (kill, reclaim) | `last written` |
-| ran before the typed fields, with a reading on this page | `heartbeat event` (strip: `heartbeat event · cpu-seconds only` when the event has no cores) |
+| ran before the typed fields, with a reading on this page | `heartbeat event` (strip: `heartbeat event · cpu-seconds only` when the event has no cores, and `· page full; newer readings may exist` on a full page when the reading is not the one at exit) |
+| ran before the typed fields, and the event read failed | `events not read` |
 | never started | `never ran` |
 | running, nothing written yet | `not yet written` |
 | ended, nothing written | `never measured` |
@@ -252,8 +265,10 @@ drawer's own event page that carries a figure (`interimReading`) and labels it
 With cpu-seconds only, the peak and mean rows draw em dashes, never zeros; the
 mean row keeps `N cpu-s`, and the strip says `cpu-seconds only`. No read is
 added for this. The page is the task's first 200 events, so a long run's
-newest reading on it can be an early one, and the mark says so. The reader
-does nothing for an attempt with typed fields.
+newest reading on it can be an early one, and the mark says so; on a full page
+the strip says `page full; newer readings may exist`. When the event read
+failed there is no page to look at, and the row says `events not read`, not
+`never measured`. The reader does nothing for an attempt with typed fields.
 
 The first version of this reader asked for `peak_cpu_cores` only, and the PR
 #210 review found that every attempt from before #188 then read
@@ -268,7 +283,7 @@ beside the memory row's (`.att-rss-note`). The words come from the same
 function as the `by` column:
 
 * the mark and its words (`live reading · age not recorded`, `last written`,
-  `heartbeat event`, `never ran`, `not yet written`, `never measured`,
+  `heartbeat event`, `never ran`, `events not read`, `not yet written`, `never measured`,
   `not served`) show at every width, as the memory strip's do;
 * the cpu-seconds and the ceiling's source show in the strip only at 560px and
   under, because above that the `by` column beside each bar already says them;

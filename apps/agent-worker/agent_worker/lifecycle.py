@@ -2512,10 +2512,13 @@ class Worker:
         HEARTBEAT events, plus a `final` HEARTBEAT when each runner was reaped,
         which the API read back with an events query per request.
 
-        Called with each periodic reading (`_heartbeat`) and when each runner
-        is reaped (`_stop_sampler`). The figures are the ATTEMPT's, every
-        runner so far plus the live one, so an in-place restart continues them
-        rather than starting again. Written only when they changed.
+        Called with each periodic reading (`_heartbeat`), when each runner is
+        reaped (`_stop_sampler`), and on every exit beside the spend
+        (`_upload_outputs`, `_cleanup`), which covers a runner still alive at a
+        crash or killed at cleanup without being reaped. The figures are the
+        ATTEMPT's, every runner so far plus the live one, so an in-place
+        restart continues them rather than starting again. Written only when
+        they changed.
 
         NOT FENCED, like the memory peaks beside them: the attempt document is
         this attempt's own, and the fence guards the task, its lease and its
@@ -3337,6 +3340,13 @@ class Worker:
         # here yet: a runner still alive when the worker crashed, and a
         # mid-run fence, which uploads nothing.
         self._record_spend()
+        # THE CPU BESIDE IT (PR #210 review), for the exit whose runner is
+        # still alive -- the crash handler -- or was never reaped through
+        # `_stop_sampler`: without this the attempt kept its last periodic
+        # reading, up to one reading behind, drawn as the figures at exit.
+        # Written only when the figures changed, so an orderly exit that just
+        # reaped its runner writes nothing twice.
+        self._record_cpu()
         # BEFORE the redaction pass, not after: the harvest writes a patch into
         # `artifacts/`, and `_redact_before_upload` is what scrubs everything
         # in there. A patch produced afterwards would be the one file in the
@@ -3554,11 +3564,19 @@ class Worker:
         # and a near miss in the first -- on the one document a sizing report
         # reads.
         attempt = self._attempt_usage() or usage
-        self.control.record_resource_usage(
-            peak_rss_bytes=attempt.peak_rss_bytes,
-            peak_disk_bytes=attempt.peak_disk_bytes,
-            oom_near_miss=attempt.oom_near_miss,
-        )
+        # NOT FATAL, AND IT MUST NOT SKIP THE CPU WRITE BELOW (PR #210 review).
+        # Unguarded, a Firestore error here raised out of every site that
+        # reaps a runner, and the attempt's CPU figures for this runner were
+        # never written: Details then drew the previous periodic reading as
+        # the figures at exit. The memory peak is telemetry like the CPU.
+        try:
+            self.control.record_resource_usage(
+                peak_rss_bytes=attempt.peak_rss_bytes,
+                peak_disk_bytes=attempt.peak_disk_bytes,
+                oom_near_miss=attempt.oom_near_miss,
+            )
+        except Exception as exc:
+            self.log.warning("could not record resource usage", error=f"{type(exc).__name__}: {exc}")
         if usage.oom_near_miss:
             self.log.error(
                 "OOM NEAR MISS: this attempt came within a hair of its memory limit",
@@ -3702,6 +3720,12 @@ class Worker:
         # usage write on that same path already does.
         self._collect_spend()
         self._record_spend()
+        # And the CPU, for the same two exits: a runner killed just above was
+        # never reaped through `_stop_sampler`, so its last stretch is on no
+        # attempt document yet. The live sampler is still attached, so
+        # `_attempt_usage` includes it. Never raises; nothing on the fenced
+        # path touches the lease by writing its own attempt document.
+        self._record_cpu()
         # AFTER the child is gone and BEFORE the workspace is destroyed. Giving
         # the account back while an agent could still be making calls on it
         # would let the broker hand the same subscription to another agent and
