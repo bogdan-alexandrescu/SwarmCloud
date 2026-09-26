@@ -533,13 +533,29 @@ def test_add_provider_refuses_the_flags_of_a_full_registration(tmp_path, flag: l
     assert fakes.writes() == [] and fakes.gcloud_changes() == [], out
 
 
-@pytest.mark.parametrize("provider", ["anthropic-refresh", "Git", "git/x", ""])
-def test_add_provider_refuses_a_provider_it_must_not_bind(tmp_path, provider: str) -> None:
-    """`<p>-refresh` names the half only the quota broker may read."""
+@pytest.mark.parametrize(
+    ("provider", "reason"),
+    [
+        ("anthropic-refresh", "quota broker"),
+        ("Git", "lowercase"),
+        ("git/x", "lowercase"),
+        ("", "needs a provider name"),
+    ],
+    ids=["refresh-half", "uppercase", "slash", "empty"],
+)
+def test_add_provider_refuses_a_provider_it_must_not_bind(
+    tmp_path, provider: str, reason: str
+) -> None:
+    """`<p>-refresh` names the half only the quota broker may read.
+
+    The reason is asserted, not only the exit code: a script that did not know
+    --add-provider at all also exits non-zero here, having refused nothing.
+    """
     fakes = Fakes(tmp_path, _tenant_document(["anthropic"]))
     proc = fakes.run([str(REGISTER), "--tenant", "eng", "--add-provider", provider])
     out = _out(proc)
     assert proc.returncode != 0, out
+    assert reason in out, out
     assert fakes.writes() == [] and fakes.gcloud_changes() == [], out
 
 
