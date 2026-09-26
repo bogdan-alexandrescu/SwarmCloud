@@ -105,7 +105,7 @@ COLLECTION = "outcome_days"
 #: worker's spend write, its terminal write and Firestore's commit skew with a
 #: wide margin; after it nothing can land in the day (see the module docstring).
 #: A bucket is `open`, not `sealed`, for the same fifteen minutes after its end.
-OUTCOMES_SEAL_GRACE_S = 600  # MUTATION M1
+OUTCOMES_SEAL_GRACE_S = 900
 
 #: A live doc's cut trails its build by this much, so a task committed a little
 #: after the build with a `completed_at` a little before it is still caught by

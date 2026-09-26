@@ -3967,9 +3967,10 @@ a.copy { display: inline-block; text-decoration: none; }
   background: var(--bad);
   box-shadow: inset 2px 0 0 var(--surface);
 }
-/* MUTATION M1: .ol-k.is-ended and .ol-meter > .ol-seg.cancelled dropped */
 .wf-meter > .wf-seg.cancelled,
-.ol-k.is-after-cancel {
+.ol-k.is-ended,
+.ol-k.is-after-cancel,
+.ol-meter > .ol-seg.cancelled {
   background: repeating-linear-gradient(to bottom, var(--text-faint) 0 3px, transparent 3px 5px);
 }
 /* "STILL OPEN" HAS NO SEGMENT TO DRAW ANY MORE. Its 45° hatch was a rule for
@@ -11702,7 +11703,8 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 }
 /* TS-3's cue that older buckets are off the left edge, only while they are. */
 .ol-plot.has-older {
-  /* MUTATION M1: the fade removed */
+  -webkit-mask-image: linear-gradient(to right, transparent 0, #000 var(--ctl-s5));
+  mask-image: linear-gradient(to right, transparent 0, #000 var(--ctl-s5));
 }
 .ol-drawing { position: relative; display: none; isolation: isolate; }
 .ol-drawing.is-narrow { display: block; }
@@ -11966,7 +11968,7 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
     gap: var(--ctl-s2);
   }
   .ol-span-more { display: inline-flex; }
-  .ol-table-toggle { min-height: 40px; } /* MUTATION M1 */
+  .ol-table-toggle { min-height: 44px; }
   .ol-pick > summary { display: flex; align-items: center; min-height: 44px; }
   .ol-step {
     display: inline-flex;

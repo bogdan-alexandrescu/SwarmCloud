@@ -170,7 +170,7 @@ function geometry(d: LedgerDrawn, n: number): Geo {
     left: d.left,
     lane,
     axisY,
-    bar: Math.max(1, Math.min(pitch - 2, pitch * 0.66, 36)), // MUTATION M1
+    bar: Math.max(1, Math.min(pitch - 2, pitch * 0.66, 28)),
     x0: (i) => d.left + i * pitch,
     cx: (i) => d.left + i * pitch + pitch / 2,
   }
