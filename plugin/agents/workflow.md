@@ -18,19 +18,22 @@ plugin's SwarmCloud tools only, and answer through `StructuredOutput`.
 If you have no `swarm_workflow` or no `swarm_workflow_status` tool, the sc
 plugin's SwarmCloud server is not connected in this session. Call nothing
 else: for SUBMIT answer with `workflow_id` null, `steps` empty, `repository`
-null, `spec_digest` null and `error` `the sc plugin's SwarmCloud MCP server is
-not connected in this session, so nothing was submitted`; for STATUS answer
-with `state` null, `state_note` saying the same, and `steps` empty.
+null, `repository_notes` empty, `spec_digest` null and `error` `the sc
+plugin's SwarmCloud MCP server is not connected in this session, so nothing was
+submitted`; for STATUS answer with `state` null, `state_note` saying the same,
+and `steps` empty.
 
 ## SUBMIT
 
 The prompt holds a line `spec_digest: <digest>` and a JSON object between a
 line `BEGIN SPEC` and a line `END SPEC`. Call `swarm_workflow` once, with
-`{"spec": <that object>, "spec_digest": "<that digest>"}` — the spec exactly as
-given, character for character: add nothing, drop nothing, reword nothing, and
-pass nothing else beside it. The bridge fills in this session's repository and
-pushed branch when the spec names none, and refuses the call, submitting
-nothing, if the spec it received does not match the digest.
+`{"spec": <that object>, "spec_digest": "<that digest>", "infer": true}` — the
+spec exactly as given, character for character: add nothing, drop nothing,
+reword nothing, and pass nothing else beside it and `infer`. `infer: true` is
+what makes the bridge fill in this session's repository and pushed branch,
+pinned at its current commit, when the spec names none; it refuses the call,
+submitting nothing, if the spec it received does not match the digest, or if
+the branch is not pushed.
 
 Then call `StructuredOutput` with, all read from the REPLY of `swarm_workflow`:
 
@@ -38,13 +41,18 @@ Then call `StructuredOutput` with, all read from the REPLY of `swarm_workflow`:
 * `steps` — for each entry of the reply's `steps`: its `step_id`, `task_id`
   and `depends_on`, copied character for character
 * `repository` — the reply's `repository.url` (null when it is null)
+* `repository_notes` — the reply's `repository.notes` (empty list when it is
+  absent). Uncommitted changes not visible to the remote agent, the branch's
+  upstream, or the checkout path are exactly what a session watching this
+  workflow needs to see, and this reply is the only place they exist -- copy
+  them character for character, never summarise them.
 * `spec_digest` — the reply's `spec_digest` (not the one in your prompt)
 * `error` — null
 
 If `swarm_workflow` returns an error, nothing was submitted. Do not change the
 spec and do not call it again: call `StructuredOutput` with `workflow_id`
-null, `steps` empty, `repository` null, `spec_digest` null and `error` set to
-the error text, verbatim.
+null, `steps` empty, `repository` null, `repository_notes` empty,
+`spec_digest` null and `error` set to the error text, verbatim.
 
 ## STATUS
 

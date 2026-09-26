@@ -449,6 +449,12 @@ export interface Task {
   last_error: string | null
   result_summary: Record<string, unknown> | null
   latest_checkpoint: string | null
+  /**
+   * Contract request 23 (#217). Written by every terminal writer beside
+   * `completed_at`. Null on SUCCEEDED and on a task that ended before this
+   * field existed.
+   */
+  end_cause: string | null
 
   /**
    * THE FENCING GENERATION. `models.py:177`, now served by `task_to_api`.

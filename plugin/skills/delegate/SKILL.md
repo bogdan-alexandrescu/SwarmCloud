@@ -103,25 +103,29 @@ at the ref the dispatch names. Everything follows from that:
   dispatch against one that is already on the remote.
 * **There is no history.** One commit deep. `git log`, `git blame` and
   `git bisect` have nothing to work with.
-* **With no `repo`, the tool clones this checkout's pushed branch.** Since
-  2026-09-26, `swarm_dispatch` and `swarm_workflow` infer the repository and
-  branch from the git checkout the bridge runs in when neither `repo` nor `ref`
-  is given — and REFUSE, before anything is dispatched, a detached HEAD, a
+* **With no `repo`, `infer: true` clones this checkout's pushed branch.**
+  Repository inference is opt-in (owner decision, 2026-09-26): pass `infer:
+  true` to have `swarm_dispatch` or `swarm_workflow` infer the repository and
+  branch from the git checkout the bridge runs in, pinned at its current
+  commit — and REFUSE, before anything is dispatched, a detached HEAD, a
   branch that is not on its remote under its own name, or a branch with
   commits that are not there, naming `git push -u <remote> <branch>`. The
-  branch is cloned by its OWN name, never its upstream: a lane made with
+  branch is checked by its OWN name, never its upstream: a lane made with
   `git checkout -b <lane> origin/main` tracks main, and main is never sent in
-  its place. Never suggest pushing a branch to a differently named one — a
-  `git push origin <lane>:main` lands unreviewed commits on the default branch.
-  Uncommitted changes are not refused; the reply's `repository.notes` says how
-  many the agent will not see. Read that block back to the developer: it is
-  the answer to "which ref will the agents see".
-* **Outside a checkout, or with `no_repository: true`, nothing is cloned.** The
-  task still runs and still succeeds; `swarm_result` then reports *"this task
-  cloned no repository, so there is no code to apply"*, and the work exists
-  only as its answer. The reply's `repository` block says which of the two
-  happened. The terminal's `swarm dispatch` does not infer: it falls back to
-  `$SWARM_REPO` when `--repo` is not given.
+  its place; what is actually sent is the commit that branch is pinned at, not
+  the branch name, which can move after the dispatch is sent. Never suggest
+  pushing a branch to a differently named one — a `git push origin
+  <lane>:main` lands unreviewed commits on the default branch. Uncommitted
+  changes are not refused; the reply's `repository.notes` says how many the
+  agent will not see. Read that block back to the developer: it is the answer
+  to "which ref will the agents see".
+* **With no `repo` and no `infer`, nothing is cloned.** Same with `infer:
+  false`, or outside a checkout. The task still runs and still succeeds;
+  `swarm_result` then reports *"this task cloned no repository, so there is no
+  code to apply"*, and the work exists only as its answer. The reply's
+  `repository` block says which of the two happened. The terminal's `swarm
+  dispatch` does not infer: it falls back to `$SWARM_REPO` when `--repo` is
+  not given.
 
 So: before dispatching anything that touches code, say out loud which ref the
 agents will see, and check that the work they depend on is on it.
@@ -171,7 +175,7 @@ succeeded.
 | what is the shared pool at | `swarm_accounts` |
 | why did four of them die at once | `swarm_trouble` |
 
-`swarm_dispatch` takes `prompt`, `profile`, `repo`, `ref`, `no_repository`,
+`swarm_dispatch` takes `prompt`, `profile`, `repo`, `ref`, `infer`,
 `strategy`, `label` and `inputs`. The profile is a **name** from the frozen
 catalogue, and the image, command and resource class come from the name. There
 is no parameter for an image, a command or a model, and asking for one is not

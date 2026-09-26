@@ -6,7 +6,15 @@ works on the checkout in front of it without being told which one; a remote
 step that had to be handed a repository URL and a branch by every caller would
 make "run this step remotely" a different, fussier act than "run this step".
 So `swarm_dispatch` and `swarm_workflow` infer both from the git checkout the
-bridge runs in, when the caller names neither.
+bridge runs in -- but only when the caller passes `infer: true`. That opt-in
+was added the SAME day this module was: `sc:remote` and `/sc:run` pass it on
+every call; a plain `swarm_dispatch` or `swarm_workflow` call goes back to
+what it did before this module existed -- a repository only when `repo` is
+named -- unless it opts in too. What travels for an inferred repository is the
+commit the branch is PINNED at when the dispatch is made, not the branch name:
+a remote task can sit QUEUED for a long time, and a caller who pushes again to
+the same branch in the meantime must not silently move what an already-sent
+dispatch will clone.
 
 WHY IT REFUSES RATHER THAN GUESSES. A remote agent gets a fresh
 `--depth 1 --single-branch` clone of what is on the remote
@@ -200,32 +208,40 @@ def resolve(
     *,
     repo: Any = None,
     ref: Any = None,
-    no_repository: bool = False,
+    infer: bool = False,
     where: Path | None = None,
 ) -> Repository:
-    """The repository and ref to send, from the caller or from the checkout.
+    """The repository and ref to send, from the caller, from the checkout, or nothing.
 
-    * `no_repository` -- nothing is cloned, whatever else was passed.
-    * `repo` given -- sent as given, with `ref` as given; git is not consulted.
-    * only `ref` given -- the URL is inferred, the ref is the caller's.
-    * neither -- both are inferred, and the branch must be pushed (see the
-      module docstring for why that is a refusal and not a warning).
+    Owner decision, 2026-09-26: inference is OPT-IN. `swarm_dispatch` and
+    `swarm_workflow` go back to their pre-PR behaviour -- a repository only
+    when `repo` is given -- unless the caller passes `infer: true`. `sc:remote`
+    and `/sc:run` are the two callers that pass it on every call; anything
+    else naming neither `repo` nor `infer` gets `source: "none"`, exactly as
+    before this PR, and git is never even consulted.
+
+    * `repo` given -- sent as given, with `ref` as given; git is not consulted,
+      whatever `infer` says.
+    * `infer` false (the default) and no `repo` -- nothing is cloned.
+    * `infer` true, only `ref` given -- the URL is inferred, the ref is the
+      caller's.
+    * `infer` true, neither given -- both are inferred: the URL from the
+      checkout's remote, and the ref the COMMIT the pushed branch is at, not
+      the branch name -- a moving branch pointer is not what a pinned remote
+      clone should chase. The branch must still be pushed under its own name
+      (see the module docstring for why that is a refusal and not a warning).
     """
     repo_text = str(repo).strip() if isinstance(repo, str) else ""
     ref_text = str(ref).strip() if isinstance(ref, str) else ""
-    if no_repository:
-        if repo_text or ref_text:
-            raise SwarmError(
-                "`no_repository` says clone nothing, and `repo`/`ref` name something to "
-                "clone; pass one or the other"
-            )
-        return Repository(
-            url=None, ref=None, source="none",
-            notes=["no_repository was set: this task clones nothing, so it can "
-                   "produce no patch and no pull request"],
-        )
     if repo_text:
         return Repository(url=repo_text, ref=ref_text or None, source="given")
+    if not infer:
+        return Repository(
+            url=None, ref=None, source="none",
+            notes=["no repository was named and `infer` was not requested: this task "
+                   "clones nothing, so it can produce no patch and no pull request. Pass "
+                   "`repo`, or `infer: true` to clone this checkout's pushed branch"],
+        )
 
     here = where if where is not None else directory()
     try:
@@ -293,9 +309,16 @@ def resolve(
             "pushed"
         )
     commit = _out(_git(here, "rev-parse", "HEAD")) or None
+    if not commit:
+        raise SwarmError(
+            f"`git rev-parse HEAD` in {top} could not be read, so the commit to pin cannot "
+            "be named. Pass `repo` and `ref` explicitly"
+        )
     notes = [
-        f"inferred from the checkout at {top}: {on_remote}, pushed at {commit[:12] if commit else 'an unread commit'} "
-        f"(checked against this checkout's remote-tracking ref; nothing was fetched)"
+        f"inferred from the checkout at {top}: {on_remote}, pushed at {commit[:12]} "
+        f"(checked against this checkout's remote-tracking ref; nothing was fetched); the "
+        f"commit is what is sent, not the branch name, so a later push to {branch!r} does "
+        "not move what this dispatch clones"
     ]
     if elsewhere:
         notes.append(
@@ -314,7 +337,10 @@ def resolve(
             f"{len(dirty)} uncommitted change(s) in this checkout are NOT visible to the "
             "remote agent: it clones only what is pushed"
         )
-    return Repository(url=url, ref=branch, source="checkout", commit=commit, notes=notes)
+    # THE COMMIT, NOT THE BRANCH NAME (owner decision, 2026-09-26): a remote
+    # dispatch is pinned at what was pushed when it was inferred, not at
+    # whatever `branch` points to by the time the task actually runs.
+    return Repository(url=url, ref=commit, source="checkout", commit=commit, notes=notes)
 
 
 def _push_remote(here: Path, branch: str) -> str | None:

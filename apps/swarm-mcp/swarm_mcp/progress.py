@@ -103,6 +103,16 @@ MAX_WAIT_SECONDS = 300
 #: How often a gathering call re-reads the routes.
 POLL_SECONDS = 5.0
 
+#: The longest a gathering call backs off to while every task it follows stays
+#: PENDING (owner decision, 2026-09-26, proxy cost bound). A QUEUED, PARKED or
+#: READY task holds no capacity (invariant 1) and cannot produce a new line
+#: until it leaves that state -- which `started` below already ends the call
+#: for, at once -- so polling it every `POLL_SECONDS` for a whole window is
+#: four routes' worth of reads that can only ever answer "still pending". The
+#: interval doubles each poll while that holds, capped here, and resets to
+#: `POLL_SECONDS` the moment it does not.
+PENDING_POLL_CAP_SECONDS = 30.0
+
 #: How much of the answer `answer_excerpt` carries -- what a workflow step's
 #: row returns in place of the whole answer (`sc:step`).
 EXCERPT_CHARS = 500
@@ -452,6 +462,8 @@ def watch(
     read_ok: set[str] = set()
     #: Tasks that are not the step this row expects: task id -> their step id.
     wrong_step: dict[str, Any] = {}
+    #: The next sleep, backed off while every known task stays PENDING (below).
+    interval = POLL_SECONDS
 
     def given_up(task_id: str) -> bool:
         task = latest.get(task_id) or {}
@@ -512,7 +524,16 @@ def watch(
         remaining = deadline - clock()
         if remaining <= 0:
             break
-        sleep(min(POLL_SECONDS, remaining))
+        sleep(min(interval, remaining))
+        # BACK OFF while every task known so far is still PENDING: nothing has
+        # happened that a poll could report, and `started` above already ends
+        # the call the moment one leaves that state. Reset the instant a known
+        # task is not pending (already terminal, running, or unreadable) --
+        # that case wants the ordinary cadence, not this one.
+        if latest and all(task.get("state") in _PENDING for task in latest.values()):
+            interval = min(interval * 2, PENDING_POLL_CAP_SECONDS)
+        else:
+            interval = POLL_SECONDS
 
     # THE STREAK, per task, carried to the next call in the token: one good
     # read in this call clears it; a call in which every read failed adds one.
@@ -735,6 +756,11 @@ def outcome(client: SwarmClient, task: dict[str, Any]) -> dict[str, Any]:
     out["pr_url"] = described.get("pull_request")
     out["artifacts"] = _artifacts(task)
     out["last_error"] = task.get("last_error")
+    # Contract request 23 (#217): the outcome ledger's own classification,
+    # read first and typed, rather than a workflow row sorting free-text
+    # `last_error` itself. Null on SUCCEEDED and on a task that ended before
+    # this field existed -- never a reason to guess one.
+    out["end_cause"] = task.get("end_cause")
     out["commits"] = described.get("commits")
     out["patch"] = described.get("patch")
     if described.get("no_patch_because"):

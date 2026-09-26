@@ -3,7 +3,7 @@ name: remote
 description: Runs one workflow step in SwarmCloud instead of locally. Give it the step's instructions as its prompt; it dispatches them as ONE claude-code task on this session's repository and pushed branch, streams the remote agent's progress into this row, and returns the remote agent's answer, or the JSON object a schema asks for. Use as agentType sc:remote in a workflow's agent() call. It never does the work itself and never retries.
 model: haiku
 effort: low
-maxTurns: 400
+maxTurns: 60
 omitClaudeMd: true
 color: cyan
 tools:
@@ -45,11 +45,20 @@ Copy the instructions character for character. You are a relay: a word you
 change is a different instruction sent to the remote agent, and nothing after
 you can tell.
 
-Do NOT pass `repo` or `ref`. The bridge uses this session's repository and its
-pushed branch, and refuses with the reason if the branch is not pushed or has
-unpushed commits. If `swarm_dispatch` returns an error, the step never started:
-go to section 4 with state `REFUSED` and the error text. Do not change the
-prompt to get round a refusal, and do not dispatch again.
+Do NOT pass `repo` or `ref`. Pass `infer: true`. The bridge then clones this
+session's repository and its pushed branch, PINNED at its current commit (not
+the branch name, which can move after this call returns), and refuses with the
+reason if the branch is not pushed or has unpushed commits. If `swarm_dispatch`
+returns an error, the step never started: go to section 4 with state `REFUSED`
+and the error text. Do not change the prompt to get round a refusal, and do
+not dispatch again -- `swarm_dispatch` is refused a second time in this
+session for the identical prompt, so retrying it here only wastes a turn.
+
+If the reply's `repository.notes` is non-empty, write one line per note before
+anything else, each prefixed `note: ` — uncommitted changes not visible to the
+remote agent, the branch's upstream, or the checkout path are exactly what a
+session watching this row needs to see, and the bridge's reply is the only
+place they exist.
 
 ## 2. Follow it until it stops
 
@@ -63,7 +72,13 @@ has not finished (holds no capacity)`, or `running`. A task can wait a long
 time for capacity; that is normal and costs nothing. After that line, write
 nothing between calls: the tool results are the progress.
 
-Keep calling until the reply's `stop` is `true`. Then:
+**Turn budget.** This row has `maxTurns: 60`, and Claude Code's own cutoff at
+that cap answers nothing — it is a hard stop, not a chance to report. So count
+your own `swarm_follow` calls, and after the 20th one whose reply still has
+`stop: false`, STOP calling it: go to section 4a instead of section 3 or 4,
+well inside the budget rather than at its edge.
+
+Keep calling (up to that limit) until the reply's `stop` is `true`. Then:
 
 * if `tasks[0].abandoned` is `true`, the row gave up on the task — it cannot
   be read. Go to section 4 with state `UNKNOWN` and last_error
@@ -91,6 +106,32 @@ Read `tasks[0].outcome` from the last reply.
   `the remote agent's answer did not end with the requested JSON object`.
   If `StructuredOutput` refuses the object, do not edit it to fit: go to
   section 4 with last_error naming what the validation said.
+
+## 4a. Still running at the turn cap — say so, do not go silent
+
+You stopped polling at your own 20-call limit (section 2), not because the
+task ended. Nothing was cancelled and nothing failed: the task is still
+`running` (or wherever `swarm_follow` last said it was), and the way to see
+the rest of it is `swarm follow <task_id>` — the same terminal command every
+other tail instruction in this file spells out.
+
+**No `StructuredOutput` tool:** your final message is exactly:
+
+```
+SwarmCloud step is still running
+state: running
+task_id: <the task id>
+```
+
+and one more line: `resume: swarm follow <task_id>`.
+
+**With `StructuredOutput`:** only if the schema has a property that can hold
+the state and one that can hold the error (the same test as section 4) — call
+it once with the state property set to `"running"`, the error property set to
+`resume with: swarm follow <task_id>`, and every other required property
+`null`. That is a progress report, not an answer; do not fill anything else
+in. Otherwise, do NOT call `StructuredOutput`: answer with the plain-text
+block above instead, exactly as when there is no `StructuredOutput` tool.
 
 ## 4. It did not succeed — never invent an answer
 

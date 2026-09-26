@@ -68,10 +68,15 @@ const SUBMITTED = {
       },
     },
     repository: { type: ['string', 'null'] },
+    // Owner decision, 2026-09-26: every inference note the bridge's reply
+    // carries (uncommitted changes not visible, the branch's upstream, the
+    // checkout path) must reach here -- it exists only in that reply, and a
+    // session watching this workflow has no other way to see it.
+    repository_notes: { type: 'array', items: { type: 'string' } },
     spec_digest: { type: ['string', 'null'] },
     error: { type: ['string', 'null'] },
   },
-  required: ['workflow_id', 'steps', 'repository', 'spec_digest', 'error'],
+  required: ['workflow_id', 'steps', 'repository', 'repository_notes', 'spec_digest', 'error'],
 }
 
 const STEP_RESULT = {
@@ -343,6 +348,9 @@ if (problems.length > 0) {
 
 const where = submitted.repository ? ' · clones ' + submitted.repository : ' · clones no repository'
 log(submitted.workflow_id + ' submitted · ' + submitted.steps.length + ' step(s)' + where)
+// Every inference note the bridge made, verbatim: it exists only in this
+// reply, and this is the one place a session watching the workflow can see it.
+for (const note of submitted.repository_notes || []) log(submitted.workflow_id + ' repository note: ' + note)
 
 const depth = levelsOf(submitted.steps)
 const ordered = submitted.steps.slice().sort((a, b) => (depth[a.step_id] || 0) - (depth[b.step_id] || 0))

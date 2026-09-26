@@ -619,23 +619,36 @@ start. A session that later moved into a worktree can point it elsewhere with
 checkout nothing is cloned, and the dispatch reply says so rather than leaving
 a null.
 
-**Which branch is sent: the branch's own name, never its upstream.** This
+**Inference is opt-in: `infer: true`, not the default.** A plain
+`swarm_dispatch` or `swarm_workflow` call names a repository only when given,
+exactly as before this feature existed. `sc:remote` and `/sc:run` pass
+`infer: true` on every call; anything else naming neither `repo` nor `infer`
+clones nothing.
+
+**Which branch is checked: its own name, never its upstream.** This
 repository's lane recipe, `git checkout -b <lane> origin/main`, leaves the
 lane's upstream at `origin/main`. The bridge ignores the upstream for this: it
-checks `<remote>/<lane>` — the remote being the one `git push` would use — and
-sends `<lane>`. A lane pushed without `-u` is accepted; a lane never pushed is
-refused with `git push -u origin <lane>`. The upstream is only reported, in the
-reply's `repository.notes`. (Reading the upstream instead once measured a
-pushed lane against main, refused it, and recommended
-`git push origin <lane>:main`.)
+checks `<remote>/<lane>` — the remote being the one `git push` would use.
+A lane pushed without `-u` is accepted; a lane never pushed is refused with
+`git push -u origin <lane>`. The upstream is only reported, in the reply's
+`repository.notes`. (Reading the upstream instead once measured a pushed lane
+against main, refused it, and recommended `git push origin <lane>:main`.)
+
+**What is actually SENT is the commit, not the branch name.** A branch name is
+a moving pointer; a remote task can sit QUEUED for a while, and a caller who
+pushes again to the same branch before it starts must not silently move what
+an already-sent dispatch clones. So `infer: true` sends the commit the branch
+was pushed AT, pinned, and the reply's `repository.commit` and `repository.ref`
+are the same value.
 
 ### What the bridge gained for it
 
-* `swarm_dispatch` takes `strategy` (`collect` | `direct-pr`) and
-  `no_repository`, and infers `repo`/`ref` from the checkout when neither is
-  given: the ref is the branch's own name on the remote `git push` would use,
-  the URL is made https and stripped of any credential, and the reply carries
-  a `repository` block saying what will be cloned and how that was decided.
+* `swarm_dispatch` takes `strategy` (`collect` | `direct-pr`) and `infer`, and
+  with `infer: true` and neither `repo` nor `ref` given, infers both from the
+  checkout: the ref sent is the commit the checkout's pushed branch is pinned
+  at (never the branch name, which can move after the call returns), the URL
+  is made https and stripped of any credential, and the reply carries a
+  `repository` block saying what will be cloned and how that was decided.
 * `swarm_follow` takes `since` — the cursor as one opaque token — and
   `format: "lines"`: claude-code's `stream-json` narrated as short lines,
   capped per call with the count left out stated, a `wait_seconds` window that

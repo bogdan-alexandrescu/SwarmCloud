@@ -34,6 +34,7 @@ import json
 import sys
 import threading
 import time
+import weakref
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
@@ -113,22 +114,27 @@ TOOLS: list[dict[str, Any]] = [
                 "repo": {
                     "type": "string",
                     "description": (
-                        "Repository to clone (https or ssh). OMIT IT to clone the "
-                        "repository and branch of the git checkout this bridge runs "
-                        "in: the branch must be pushed and have no unpushed commits, "
-                        "or the dispatch is refused with the command that fixes it; "
-                        "uncommitted changes are reported as invisible to the agent. "
-                        "Outside a checkout nothing is cloned and the reply says so."
+                        "Repository to clone (https or ssh). Omit it, and omit "
+                        "`infer`, to dispatch with no repository at all -- the task "
+                        "can then produce no patch and no pull request. Pass `infer: "
+                        "true` instead of this to clone the repository and PUSHED "
+                        "branch of the git checkout this bridge runs in, pinned at "
+                        "its current commit."
                     ),
                 },
                 "ref": {"type": "string", "description": "Branch, tag or commit."},
-                "no_repository": {
+                "infer": {
                     "type": "boolean",
                     "default": False,
                     "description": (
-                        "Clone nothing, even inside a checkout. The task can then "
-                        "produce no patch and no pull request -- its work exists only "
-                        "as its answer."
+                        "With no `repo`: clone this checkout's repository and PUSHED "
+                        "branch, pinned at its current commit -- never the branch "
+                        "name, which can move after this dispatch is sent. The "
+                        "branch must be pushed and have no unpushed commits, or the "
+                        "dispatch is refused with the command that fixes it; "
+                        "uncommitted changes are reported as invisible to the agent. "
+                        "Outside a checkout nothing is cloned and the reply says why. "
+                        "Ignored when `repo` is given."
                     ),
                 },
                 "strategy": {
@@ -447,9 +453,10 @@ TOOLS: list[dict[str, Any]] = [
             "`spec`: a whole workflow spec object exactly as the terminal's "
             "workflow command reads it (`steps`, `strategy`, `carrier`, `repository_url`, "
             "`repository_ref`, `on_step_failure`, `priority`, `label`), nothing "
-            "else beside it but `no_repository`. With no repository named, EVERY "
-            "step clones the repository and pushed branch of the checkout this "
-            "bridge runs in, under the same rules as swarm_dispatch."
+            "else beside it but `infer`. With no repository named and no `infer`, "
+            "no step clones a repository. `infer: true` clones the repository and "
+            "pushed branch of the checkout this bridge runs in for EVERY step, "
+            "pinned at its current commit, under the same rules as swarm_dispatch."
         ),
         "inputSchema": {
             "type": "object",
@@ -474,10 +481,14 @@ TOOLS: list[dict[str, Any]] = [
                         "carries the digest of what was received either way."
                     ),
                 },
-                "no_repository": {
+                "infer": {
                     "type": "boolean",
                     "default": False,
-                    "description": "Clone nothing for any step, even inside a checkout.",
+                    "description": (
+                        "With no repository named in `steps`/`spec`: clone this "
+                        "checkout's pushed branch, pinned at its current commit, for "
+                        "every step. Omitted, no step clones a repository."
+                    ),
                 },
                 "steps": {
                     "type": "array",
@@ -785,8 +796,8 @@ def _flag(args: dict[str, Any], name: str) -> bool:
     """A boolean argument, read strictly.
 
     `bool(args.get(name))` reads the STRING "false" -- which a model sends as
-    often as `false` -- as true, and for `no_repository` that is a dispatch
-    that silently clones nothing.
+    often as `false` -- as true, and for `infer` that is a dispatch that
+    silently clones a repository the caller asked NOT to infer.
     """
     value = args.get(name)
     if isinstance(value, str):
@@ -818,6 +829,45 @@ def _dispatch_strategy(value: Any) -> str | None:
             + ", ".join(_DISPATCH_STRATEGIES)
         )
     return text
+
+
+#: Signatures of dispatches already sent, per CLIENT (one proxy session):
+#: `id(client)` isn't safe (a garbage-collected client can hand its address to
+#: a new object), so this is keyed on the client itself, and an entry
+#: disappears the moment its client does.
+_DISPATCHED: "weakref.WeakKeyDictionary[Any, set[tuple]]" = weakref.WeakKeyDictionary()
+
+
+def _dispatch_signature(profile: str, prompt: str, strategy: str | None, repository, inputs: Any) -> tuple:
+    return (
+        profile, prompt, strategy or "collect", repository.url, repository.ref,
+        json.dumps(inputs or {}, sort_keys=True, default=str),
+    )
+
+
+def _refuse_a_repeat_dispatch(client: Any, signature: tuple) -> None:
+    """`sc:remote` keeps `swarm_dispatch` in its tool list for its whole row --
+    Claude Code has no way to narrow a plugin agent's tools mid-turn -- so
+    nothing stops a haiku row calling it a second time with its own
+    instructions unchanged. This is the fallback: an IDENTICAL second dispatch
+    from the same client (the same proxy session) is refused rather than paid
+    for. A genuinely different prompt -- a different row's own step -- is a
+    different signature and is never refused. Checked BEFORE the round trip;
+    the signature is recorded separately, only once the dispatch actually
+    reaches the API, so a retry after a FAILED dispatch is never blocked by
+    its own earlier attempt.
+    """
+    if signature in _DISPATCHED.get(client, ()):
+        raise SwarmError(
+            "this exact prompt (profile, repository and strategy unchanged) was already "
+            "dispatched once in this session; swarm_dispatch is refused a second time for "
+            "it. `sc:remote` dispatches its instructions exactly once -- follow the task "
+            "already running, or change the prompt if this is genuinely different work"
+        )
+
+
+def _remember_dispatch(client: Any, signature: tuple) -> None:
+    _DISPATCHED.setdefault(client, set()).add(signature)
 
 
 def _accepted_strategy(task: dict[str, Any], sent: str | None) -> str:
@@ -944,14 +994,17 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
         inputs = catalogue.check_inputs(profile, args.get("inputs"), where="swarm_dispatch")
         strategy = _dispatch_strategy(args.get("strategy"))
         # WHAT IS CLONED, decided before anything travels: the caller's repo,
-        # or the checkout this bridge runs in -- refused when its branch is not
-        # pushed, because a remote agent on an older tip succeeds on the wrong
-        # base (see `checkout`).
+        # or -- only with `infer: true` -- the checkout this bridge runs in,
+        # refused when its branch is not pushed, because a remote agent on an
+        # older tip succeeds on the wrong base (see `checkout`). Neither given
+        # and `infer` not set: nothing is cloned, exactly as before this PR.
         repository = checkout.resolve(
             repo=args.get("repo"),
             ref=args.get("ref"),
-            no_repository=_flag(args, "no_repository"),
+            infer=_flag(args, "infer"),
         )
+        signature = _dispatch_signature(profile, args["prompt"], strategy, repository, inputs)
+        _refuse_a_repeat_dispatch(client, signature)
         if strategy == "direct-pr" and not repository.url:
             raise SwarmError(
                 "strategy 'direct-pr' pushes the agent's branch and opens a pull "
@@ -978,6 +1031,11 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
             raise SwarmError(
                 f"the API accepted the task but its response named no id: {sorted(task)}"
             )
+        # Recorded only now that the dispatch actually reached the API: a
+        # dispatch that raised above (a bad profile, a refused repository, a
+        # transport failure) never marks its signature, so retrying it after
+        # fixing the problem is never refused as a repeat.
+        _remember_dispatch(client, signature)
         return json.dumps(
             {
                 "task_id": task_id,
@@ -1214,7 +1272,7 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
             }
             repo, ref = args.get("repo"), args.get("ref")
         repository = checkout.resolve(
-            repo=repo, ref=ref, no_repository=_flag(args, "no_repository")
+            repo=repo, ref=ref, infer=_flag(args, "infer")
         )
         envelope = workflows.submit(
             client,
