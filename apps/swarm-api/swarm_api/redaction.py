@@ -963,16 +963,45 @@ def _mask_literals(text: str, literals: Iterable[str]) -> tuple[str, int]:
 JSON_LINE_MAX_CHARS = 1024 * 1024
 
 
+class _DuplicateKey(ValueError):
+    """Raised out of `_reject_duplicate_keys` and caught where `json.loads` is."""
+
+
+def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """`dict(pairs)`, but first check no key repeats at this object level.
+
+    Plain `json.loads` keeps only the LAST value of a repeated key -- so
+    `{"note":"export PASSWORD=hunter2","note":"ok"}` decodes to `{"note":
+    "ok"}` and `JsonMasker` never sees the secret half at all: the document
+    parses cleanly, the walk finds nothing to mask, and the line was about to
+    be served byte for byte (PR #229 review). A key that repeats at ANY level
+    of the document makes the whole line untrustworthy to decode, so the line
+    falls back to the text rule instead of being trusted as JSON.
+    """
+    seen: set[str] = set()
+    for key, _ in pairs:
+        if key in seen:
+            raise _DuplicateKey(key)
+        seen.add(key)
+    return dict(pairs)
+
+
 def _json_document(line: str) -> Any | None:
-    """The object or list `line` holds, when the whole line is one; else None."""
+    """The object or list `line` holds, when the whole line is one; else None.
+
+    `object_pairs_hook=_reject_duplicate_keys`: a line whose JSON has a
+    repeated key anywhere is treated as not-a-document, so it is masked by
+    the text rule instead of being decoded down to the surviving key and
+    served as if that were the whole truth.
+    """
     body = line.strip()
     if len(body) < 2 or len(body) > JSON_LINE_MAX_CHARS:
         return None
     if not ((body[0] == "{" and body[-1] == "}") or (body[0] == "[" and body[-1] == "]")):
         return None
     try:
-        document = json.loads(body)
-    except ValueError:
+        document = json.loads(body, object_pairs_hook=_reject_duplicate_keys)
+    except (ValueError, _DuplicateKey):
         return None
     return document if isinstance(document, (dict, list)) else None
 
@@ -992,16 +1021,29 @@ def redact_lines(
     answers each of those from the document's structure, and every string in
     it is masked decoded, as `/transcript` masks the same event.
 
-      * A line whose masking changed nothing is served BYTE FOR BYTE as stored.
-        A line that was masked is written back as compact JSON (`","`, `":"`,
-        what an agent CLI writes), so it stays one line and one document.
+      * A line whose masking changed nothing is served BYTE FOR BYTE as stored
+        -- but only once the TEXT rule has also had a look at it and found
+        nothing either (the PR #229 review): the structural walk masks
+        string leaves and credential-named keys' whole values, and nothing
+        else, so a non-string scalar the walk cannot touch is still caught by
+        the text rule before the line is trusted as clean.
+      * A line whose JSON has the SAME KEY TWICE, at any level, is not
+        decoded at all: plain `json.loads` keeps only the last value of a
+        repeated key, so `{"note":"export PASSWORD=hunter2","note":"ok"}`
+        would parse to `{"note": "ok"}`, the walk would find nothing to mask
+        in "ok", and the secret half would never have been decoded in the
+        first place (the PR #229 review). Such a line falls back to the text
+        rule below instead, over the ORIGINAL bytes, where the secret still is.
+      * A line that was masked (structurally) is written back as compact JSON
+        (`","`, `":"`, what an agent CLI writes), so it stays one line and one
+        document.
       * Everything that is not a whole document -- plain text, a line a window
-        cut, a document over `JSON_LINE_MAX_CHARS` -- is masked by `redact`,
-        in runs, so a private key printed over many lines is still one block.
-        `inside_key` applies to the window's first run only, which is where a
-        paged reader's look-back found the key open.
+        cut, a duplicate-keyed line, a document over `JSON_LINE_MAX_CHARS` --
+        is masked by `redact`, in runs, so a private key printed over many
+        lines is still one block. `inside_key` applies to the window's first
+        run only, which is where a paged reader's look-back found the key open.
       * `literals`: values the task named as secret (`TaskMasking.literals`),
-        masked after the rules wherever they appear, in both halves.
+        masked after the rules wherever they appear, in every case above.
     """
     literals = tuple(literals)
     pieces: list[str] = []
@@ -1041,7 +1083,19 @@ def redact_lines(
             pieces.append(masked.text + ending)
             count += masked.count
         else:
-            pieces.append(line)
+            # The structural walk found nothing to mask -- but it only masks
+            # STRING leaves and credential-named keys' whole values; a scalar
+            # that is not a string (`"api_key": null`) is not one, and the
+            # text rule may still find a credential shape the walk cannot see
+            # at all. Run it over the stored line before trusting "nothing
+            # here" enough to serve the line byte for byte (the PR #229 review).
+            scrubbed = redact(line)
+            safety, found = _mask_literals(scrubbed.text, literals)
+            if scrubbed.count or found:
+                pieces.append(safety)
+                count += scrubbed.count + found
+            else:
+                pieces.append(line)
     flush()
     return Redacted(text="".join(pieces), count=count)
 
