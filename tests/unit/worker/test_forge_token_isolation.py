@@ -640,6 +640,9 @@ def _spawn_escaped_daemon(worker, origin: Path, attacker: Path, tmp_path: Path) 
     pid (== its process-group id, after setsid)."""
     pidfile = tmp_path / "daemon.pid"
     lootfile = tmp_path / "daemon.loot"
+    # DEVNULL, not capture_output: the launched process double-forks a daemon
+    # that would inherit a capture pipe and hold it open for its whole life,
+    # blocking this call. The launcher itself exits as soon as it has forked.
     subprocess.run(
         [
             sys.executable, str(_DAEMON_HELPER),
@@ -647,7 +650,9 @@ def _spawn_escaped_daemon(worker, origin: Path, attacker: Path, tmp_path: Path) 
             f"file://{origin}", f"file://{attacker}",
         ],
         check=True,
-        capture_output=True,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
         timeout=15,
     )
     for _ in range(500):

