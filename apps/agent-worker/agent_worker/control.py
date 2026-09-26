@@ -894,6 +894,32 @@ class ControlPlane:
             merge=True,
         )
 
+    def record_cpu_usage(self, fields: dict[str, float]) -> None:
+        """The attempt's CPU, onto the attempt, as typed fields (request #15).
+
+        `fields` is `metrics.attempt_cpu_fields`: the attempt's own figures,
+        every runner combined, with anything not measured already left out.
+        Only the four keys the frozen `Attempt` declares are written, and only
+        as numbers -- `bool` excluded, for the reason `record_spend` gives. A
+        key that is absent is left as it is on the document: the write is a
+        merge, so a null would erase a figure an earlier write recorded.
+
+        The attempt document is this attempt's own. A superseded attempt still
+        writes it, as it writes its memory peak -- the fence guards the task,
+        its lease and its event stream, which this does not touch.
+        """
+        from .metrics import ATTEMPT_CPU_FIELDS
+
+        doc: dict[str, Any] = {
+            key: float(fields[key])
+            for key in ATTEMPT_CPU_FIELDS
+            if isinstance(fields.get(key), (int, float)) and not isinstance(fields.get(key), bool)
+        }
+        if not doc:
+            return
+        doc["tenant_id"] = self.tenant_id
+        self._attempt_ref().set(doc, merge=True)
+
     def record_spend(self, usage: dict[str, Any]) -> None:
         """Token counts and cost, onto the attempt, as typed fields.
 

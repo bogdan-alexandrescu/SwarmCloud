@@ -391,7 +391,10 @@ def test_a_minimal_document_decodes_to_the_declared_defaults(codec: Codec):
 @pytest.mark.parametrize(
     "field_name",
     ("input_tokens", "output_tokens", "cache_read_input_tokens",
-     "cache_creation_input_tokens", "cost_usd", "exit_code", "peak_rss_bytes"),
+     "cache_creation_input_tokens", "cost_usd", "exit_code", "peak_rss_bytes",
+     # Contract request #15 (accepted 2026-09-25): an idle agent's 0.0 cores
+     # is a measurement, not a missing one.
+     "cpu_seconds", "peak_cpu_cores", "mean_cpu_cores", "cpu_limit_cores"),
 )
 def test_a_measured_zero_is_not_turned_back_into_not_measured(field_name: str):
     """`data.get(k) or None` would undo the fix while looking like it.
