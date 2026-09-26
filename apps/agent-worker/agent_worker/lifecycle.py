@@ -119,7 +119,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
-from swarm_common.models import ProviderState, retries_exhausted, utcnow
+from swarm_common.models import EndCause, ProviderState, retries_exhausted, utcnow
 from swarm_common.profiles import RESOURCE_CLASSES
 from swarm_common.states import EventType, ParkReason, TaskState
 
@@ -151,6 +151,7 @@ from .errors import (
     ExitCode,
     FencedError,
     FencedWriteRefused,
+    InputUnavailable,
     TenantMismatchError,
     WorkerError,
 )
@@ -467,6 +468,7 @@ class Worker:
                     state=TaskState.CANCELLED,
                     exit_code=None,
                     error="cancelled before execution started",
+                    end_cause=EndCause.CANCEL_REQUESTED,
                 )
             except FencedWriteRefused as exc:
                 # Fenced between the gate above and this write.
@@ -497,11 +499,21 @@ class Worker:
             return self._exit_tenant_mismatch(exc)
         except WorkerError as exc:
             self.log.exception("worker failed", exc)
-            fenced = self._safe_finish(TaskState.FAILED, exit_code=exc.exit_code, error=str(exc))
+            fenced = self._safe_finish(
+                TaskState.FAILED,
+                exit_code=exc.exit_code,
+                error=str(exc),
+                end_cause=_end_cause_of(exc),
+            )
             return exc.exit_code if fenced is None else fenced
         except Exception as exc:  # never exit without a durable terminal state
             self.log.exception("worker crashed", exc)
-            fenced = self._safe_finish(TaskState.FAILED, exit_code=ExitCode.FAILED, error=str(exc))
+            fenced = self._safe_finish(
+                TaskState.FAILED,
+                exit_code=ExitCode.FAILED,
+                error=str(exc),
+                end_cause=EndCause.RUNNER_ERROR,
+            )
             return ExitCode.FAILED if fenced is None else fenced
         finally:
             self._cleanup()
@@ -970,6 +982,7 @@ class Worker:
                 exit_code=None,
                 error="cancelled by request",
                 result_summary=summary,
+                end_cause=EndCause.CANCEL_REQUESTED,
             )
             return Outcome(exit_code=ExitCode.CANCELLED, state=TaskState.CANCELLED)
 
@@ -1229,6 +1242,7 @@ class Worker:
                 exit_code=result.exit_code,
                 error=error,
                 result_summary=summary,
+                end_cause=EndCause.TIMEOUT,
             )
             return Outcome(exit_code=ExitCode.TIMEOUT, state=TaskState.FAILED)
 
@@ -1236,7 +1250,11 @@ class Worker:
             if runner_result is None:
                 error = "runner exited 0 without writing result.json"
                 self.control.finish(
-                    state=TaskState.FAILED, exit_code=0, error=error, result_summary=summary
+                    state=TaskState.FAILED,
+                    exit_code=0,
+                    error=error,
+                    result_summary=summary,
+                    end_cause=EndCause.RUNNER_ERROR,
                 )
                 return Outcome(exit_code=ExitCode.FAILED, state=TaskState.FAILED)
             if self.cfg.provider:
@@ -1263,6 +1281,7 @@ class Worker:
         error = (runner_result or {}).get("error") or _tail_text(ws.stderr_path)
         self.control.finish(
             state=TaskState.FAILED,
+            end_cause=EndCause.RUNNER_ERROR,
             exit_code=result.exit_code,
             # `last_error` is a Firestore field and a failing CLI is exactly the
             # thing that echoes its own configuration, so the tail is scrubbed.
@@ -2153,6 +2172,7 @@ class Worker:
             result_summary=summary,
             retry_delay_seconds=EXPECTED_OUTPUT_RETRY_DELAY_SECONDS,
             detail={"missing": self._scrub(list(missing))},
+            end_cause=EndCause.OUTPUTS_MISSING,
         )
         self.log.info(
             "the attempt failed for missing expected outputs",
@@ -4135,7 +4155,14 @@ class Worker:
         finally:
             self._signal_mode = previous
 
-    def _safe_finish(self, state: TaskState, *, exit_code: int, error: str) -> int | None:
+    def _safe_finish(
+        self,
+        state: TaskState,
+        *,
+        exit_code: int,
+        error: str,
+        end_cause: EndCause | None = None,
+    ) -> int | None:
         """The crash path's terminal write. Never raises.
 
         Returns None, or `ExitCode.GENERATION_FENCED` when the write was
@@ -4151,6 +4178,7 @@ class Worker:
                 exit_code=exit_code,
                 error=self._scrub(error[:4000]),
                 result_summary=summary,
+                end_cause=end_cause,
             )
         except FencedError as exc:
             return self._stand_down(exc, where="crash")
@@ -4198,6 +4226,24 @@ class Worker:
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
+
+
+def _end_cause_of(exc: BaseException) -> EndCause:
+    """Why a deliberate worker failure ended its task, as the typed end cause.
+
+    INPUTS_UNAVAILABLE for a declared input the worker refused to stage: the
+    agent never started, so it is not the runner's error (#185, decision 4).
+    CANNOT_START for an error that exits 78, the worker's own CANNOT-START.
+    RUNNER_ERROR for every other one, which is how the outcome ledger's text
+    classifier has always read a worker-written end with an exit code, so a
+    task written with a cause and one written before the field existed land
+    in the same class.
+    """
+    if isinstance(exc, InputUnavailable):
+        return EndCause.INPUTS_UNAVAILABLE
+    if getattr(exc, "exit_code", None) == ExitCode.CONFIG:
+        return EndCause.CANNOT_START
+    return EndCause.RUNNER_ERROR
 
 
 def _runner_argv(cfg: WorkerConfig) -> list[str]:

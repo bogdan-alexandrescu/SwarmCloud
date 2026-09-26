@@ -569,16 +569,26 @@ function LedgerFacts({ data, pending, view }: { data: Outcomes | null; pending: 
  * the foot says which this one is. The days are the rollup's tenant-days
  * (`dayDocWords`), and a live one need not be today: yesterday stays live for
  * the seal grace after midnight UTC.
+ *
+ * A CACHE HIT BUILT NOTHING. The route hands back the payload it kept, with
+ * `cached: true` and the rest untouched, so `derived_now` -- like
+ * `generated_at` and `reads` -- is the kept read's: the foot names that read
+ * by its time instead of saying "this read" beside "0 reads this request"
+ * (epic #222). The days built are rollup documents too (tenant-days over this
+ * span and, when there is one, the span before it), so they take
+ * `dayDocWords` like the sealed ones.
  */
 function Provenance({ data }: { data: Outcomes }) {
   const c = data.coverage
+  const generated = new Date(data.generated_at).toLocaleTimeString(undefined, { timeZone: data.tz, hourCycle: 'h23' })
+  const built = `${c.derived_now} ${dayDocWords(data, c.derived_now)} built by ${data.cached ? `the ${generated} read` : 'this read'}`
   const clauses: ReactNode[] = [
     `${c.days.sealed} ${dayDocWords(data, c.days.sealed)} sealed`,
     c.days.live > 0 ? `${c.days.live} live` : null,
     data.cached ? `from the ${OUTCOMES_CACHE_S} s cache · 0 reads this request` : `${data.reads} reads`,
     cacheable(data) ? `cached ${OUTCOMES_CACHE_S} s` : 'not cached: partial, the next read continues the build',
-    `generated ${new Date(data.generated_at).toLocaleTimeString(undefined, { timeZone: data.tz, hourCycle: 'h23' })}`,
-    c.derived_now > 0 ? `${c.derived_now} days built by this read` : null,
+    `generated ${generated}`,
+    c.derived_now > 0 ? built : null,
     c.reopened > 0 ? `${c.reopened} re-ended tasks counted once` : null,
   ]
   return (

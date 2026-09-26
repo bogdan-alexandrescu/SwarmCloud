@@ -125,14 +125,18 @@ describe('the marks keep TS-4’s forms and the pick keeps no hue', () => {
   })
 
   it('draws each TS-4 legend key by the very rule its segment uses (TS-22)', () => {
+    // RE-POINTED (#185, decision 7): the pairs were the row-window Timeline's
+    // `.chart-legend .k.*` keys, deleted with the rules that drew them. The
+    // segments a key names now are the card's outcome track -- the same rule,
+    // by selector, as the key.
     const f = fragment(
-      '<p class="chart-legend"><i class="k succeeded"></i><i class="k failed"></i><i class="k cancelled"></i></p>' +
+      '<span class="ctl-track ol-meter"><i class="ol-seg succeeded"></i><i class="ol-seg failed"></i><i class="ol-seg cancelled"></i></span>' +
         '<p class="ol-legend"><i class="ol-k is-ok"></i><i class="ol-k is-bad"></i><i class="ol-k is-ended"></i></p>',
     )
     const pairs: Array<[string, string]> = [
-      ['.k.succeeded', '.ol-k.is-ok'],
-      ['.k.failed', '.ol-k.is-bad'],
-      ['.k.cancelled', '.ol-k.is-ended'],
+      ['.ol-seg.succeeded', '.ol-k.is-ok'],
+      ['.ol-seg.failed', '.ol-k.is-bad'],
+      ['.ol-seg.cancelled', '.ol-k.is-ended'],
     ]
     for (const [ts4, ol] of pairs) {
       expect(won(pick(f, ol), ['background', 'background-image'], WIDE), `${ol} is drawn its own way`).toBe(

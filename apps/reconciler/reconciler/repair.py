@@ -27,7 +27,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Any
 
-from swarm_common.models import utcnow
+from swarm_common.models import EndCause, utcnow
 from swarm_common.states import EventType, TaskState
 
 from .backends import Backend, NamespacedBackend, NamespacedListing, Probe, ProbeOutcome
@@ -1128,6 +1128,9 @@ class Reconciler:
                     error=error,
                     # A retry time means nothing on a task that will not retry.
                     next_eligible_at=None if cannot_start else utcnow(),
+                    # Why it ends if it ends FAILED: the worker could not start,
+                    # or (spent attempts on a requeue) its worker was lost.
+                    failed_cause=EndCause.CANNOT_START if cannot_start else EndCause.LOST_WORKER,
                     **guard,
                 )
                 if repaired is not None:

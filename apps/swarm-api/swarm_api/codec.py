@@ -18,6 +18,7 @@ from typing import Any
 
 from swarm_common.models import (
     Attempt,
+    EndCause,
     Lease,
     QuotaState,
     SlotPool,
@@ -55,6 +56,18 @@ def _required_datetime(value: Any) -> datetime:
 # --------------------------------------------------------------------------
 # Task
 # --------------------------------------------------------------------------
+
+def _end_cause(value: Any) -> EndCause | None:
+    """A stored end cause, or None -- for an old document, and for a value this
+    image does not know. A newer writer's cause must not make a task unreadable
+    here; the outcome ledger reads the raw string and counts it as `other`."""
+    if value is None:
+        return None
+    try:
+        return EndCause(value)
+    except ValueError:
+        return None
+
 
 def task_to_firestore(task: Task) -> dict[str, Any]:
     return task.to_firestore()
@@ -95,6 +108,7 @@ def task_from_dict(data: dict[str, Any]) -> Task:
         last_error=data.get("last_error"),
         result_summary=data.get("result_summary"),
         latest_checkpoint=data.get("latest_checkpoint"),
+        end_cause=_end_cause(data.get("end_cause")),
     )
 
 

@@ -30,7 +30,7 @@ from swarm_api.deps import build_context
 from swarm_api.groups import GroupLookupError, StaticGroups
 from swarm_api.main import create_app
 from swarm_api.metrics import ApiMetrics
-from swarm_api.outcomes import Outcomes, wilson
+from swarm_api.outcomes import DERIVE_VERSION, Outcomes, wilson
 from swarm_api.waker import NullWaker
 
 from .conftest import ADMIN_GROUP, api_settings, auth_header, seed_task, seed_tenant
@@ -270,8 +270,10 @@ def test_every_bucket_is_served_with_its_exact_counts(api):
 
     sep22 = buckets[3]
     assert sep22["succeeded"] == 2 and sep22["failed"] == 1 and sep22["dead_lettered"] == 0
+    # c4 followed f1, which FAILED: after a failure, not after a cancel (#185, decision 2).
     assert sep22["cancelled"] == {
-        "total": 4, "requested": 3, "after_failure": 1, "workflow_sweep": 0, "other": 0,
+        "total": 4, "requested": 3, "after_failure": 1, "after_cancel": 0,
+        "workflow_sweep": 0, "other": 0,
     }
     assert sep22["ended"] == 7
     assert sep22["rate"] == wilson(2, 3)
@@ -437,6 +439,8 @@ def test_the_filters_narrow_every_figure(api):
     standalone = ok(api, "alice", kind="standalone", **WEEK)
     assert standalone["workflows_failed"]["applicable"] is False
     assert standalone["workflows_failed"]["rows"] == []
+    # Not applicable is not a measured zero (the review of #196).
+    assert standalone["workflows_failed"]["with_failed_steps"] is None
 
     people = ok(api, "alice", group="submitted_by", **WEEK)["groups"]
     assert sorted(row["key"] for row in people["rows"]) == ["alice@saga.xyz", "bob@saga.xyz"]
@@ -859,7 +863,9 @@ def test_a_day_on_another_derive_version_is_re_derived(api, db, clock):
     db.docs["outcome_days/eng_2026-09-20"]["derive_version"] = 0
     clock.now = NOW + timedelta(minutes=2)
     assert ok(api, "alice", **WEEK)["coverage"]["derived_now"] == 1
-    assert db.docs["outcome_days/eng_2026-09-20"]["derive_version"] == 1
+    # The module's own version, not a number restated here: it moves with every
+    # change to the tuple or the classifier (it went 1 -> 2 on 2026-09-25).
+    assert db.docs["outcome_days/eng_2026-09-20"]["derive_version"] == DERIVE_VERSION
 
 
 def test_the_live_day_folds_in_what_ended_since_its_cut(api, db, clock):
