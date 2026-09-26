@@ -443,9 +443,29 @@ export interface Task {
   timeout_seconds: number | null
   /** When a PARKED task becomes eligible again. Null unless it is parked. */
   next_eligible_at: string | null
+  /**
+   * MASKED, like `input` (owner decision, 2026-09-26: masked everywhere). The
+   * caller's keys come through the API's masker; the platform's own
+   * (`dispatch`, `input_from`, `expected_outputs`, which submission refuses
+   * from callers) as stored. `metadata_redaction_count` is how many masks it
+   * took.
+   */
   metadata: Record<string, unknown> | null
   repository_ref: string | null
+  /**
+   * THE MASKED INPUT. `GET /v1/tasks/{id}` serves the input the API masked at
+   * read time, never the input as submitted -- even to the tenant that
+   * submitted it (owner decision, 2026-09-26). Screens still draw the
+   * `/input` copy, which carries the prompt and the rest as blocks.
+   */
   input: unknown
+  /**
+   * How many credential-shaped strings the API masked in `input` and in
+   * `metadata`. OPTIONAL: an API older than the change sends neither, and
+   * serves both unmasked, so absent is not zero.
+   */
+  input_redaction_count?: number | null
+  metadata_redaction_count?: number | null
   last_error: string | null
   result_summary: Record<string, unknown> | null
   latest_checkpoint: string | null
@@ -1207,11 +1227,11 @@ export interface AttemptRow {
    *  - `mean_cpu_cores`   cpu_seconds over RUNNER wall time;
    *  - `cpu_limit_cores`  what they are a fraction of: the container's cgroup
    *                       `cpu.max`, else the catalogue cpu of the class it
-   *                       was sized with. Which of the two is not recorded.
+   *                       was sized with; `cpu_limit_source` says which.
    *
    * The worker rewrites them with each periodic reading while a runner runs
-   * and when each runner is reaped, so on a running attempt they are LIVE, and
-   * the document records no time for them.
+   * and when each runner is reaped, so on a running attempt they are LIVE,
+   * and `cpu_measured_at` dates them (request #26).
    *
    * NULL is not measured, never 0. OPTIONAL, and a missing key is a different
    * fact again: an API older than the typed fields, which says nothing about
@@ -1222,6 +1242,22 @@ export interface AttemptRow {
   peak_cpu_cores?: number | null
   mean_cpu_cores?: number | null
   cpu_limit_cores?: number | null
+  /**
+   * WHEN AND FROM WHERE (contract request #26, accepted on #184, 2026-09-26):
+   *
+   *  - `cpu_measured_at`          the worker's clock when it last wrote the four;
+   *  - `cpu_limit_source`         `cgroup` (the container's `cpu.max`) or
+   *                               `resource_class` (the catalogue cpu of the class
+   *                               it was sized with);
+   *  - `cpu_reading_age_seconds`  the reading's age by the API's clock at its
+   *                               `read_at` -- aged on the server, never here.
+   *
+   * Null on every attempt from before the change: not recorded. OPTIONAL, and a
+   * missing key is an API older than the fields.
+   */
+  cpu_measured_at?: string | null
+  cpu_limit_source?: string | null
+  cpu_reading_age_seconds?: number | null
 }
 
 // --------------------------------------------------------------------------
@@ -2547,7 +2583,10 @@ export interface WorkflowStep {
   input_from: Record<string, string>
   timeout_seconds?: number | null
   task_id?: string | null
+  /** The step's input, MASKED by the API as its task's is (owner decision, 2026-09-26). */
   input?: unknown
+  /** How many masks that took. Absent from an API older than the change. */
+  input_redaction_count?: number | null
 }
 
 /**
@@ -3491,9 +3530,28 @@ export interface TaskInputCopy {
   prompt: MaskedText | null
   rest: MaskedText | null
   full: MaskedText
+  /**
+   * THE TASK'S METADATA, masked by the same masker as the input (the owner's
+   * "mask it everywhere", 2026-09-26). OPTIONAL: an API older than the change
+   * does not send it, and Details then says the masked metadata is not served
+   * rather than drawing `task.metadata`.
+   */
+  metadata?: MaskedMetadata
   redacted: boolean
   redaction_count: number
   redaction: { applied_at_read_time: boolean; rules: number }
+}
+
+/**
+ * `GET /v1/tasks/{id}/input`'s `metadata`: the task's metadata as an object,
+ * the caller's keys masked, with the count, and the keys served as stored
+ * because only the platform writes them (`dispatch`, `input_from`,
+ * `expected_outputs`: submission refuses them from every caller).
+ */
+export interface MaskedMetadata {
+  value: Record<string, unknown>
+  redaction_count: number
+  platform_keys: string[]
 }
 
 // ---------------------------------------------------------------------------

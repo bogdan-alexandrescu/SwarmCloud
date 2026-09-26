@@ -78,9 +78,13 @@ def list_attempts(
         until=until,
     )
     rows = page.items
+    read_at = ctx.now()
     return {
         "tenant_id": tenant_id,
-        "attempts": [attempt_to_api(attempt) for attempt in rows],
+        # The clock each row's `cpu_reading_age_seconds` is taken against
+        # (contract request #26).
+        "read_at": read_at,
+        "attempts": [attempt_to_api(attempt, read_at=read_at) for attempt in rows],
         "next_page_token": page.next_page_token,
         "coverage": {
             "attempts": len(rows),

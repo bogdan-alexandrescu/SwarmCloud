@@ -15,9 +15,10 @@ is `ghp_` once decoded -- and the browser must never receive the bytes to
 decode itself. So each string field of each step goes through
 `swarm_api.redaction.redact` and is then capped (`FIELD_CAP_CHARS`, named in
 `truncated_fields` when it bit), and the event's own record (`raw`) is only
-served on request, re-serialised from the decoded event and redacted the same
-way. Image bytes inside a tool result are COUNTED, never served: base64 in a
-JSON string would be a way around the raw route's image path.
+served on request, re-serialised from the decoded event after it was masked by
+its structure (below). Image bytes inside a tool result are COUNTED, never
+served: base64 in a JSON string would be a way around the raw route's image
+path.
 
 AT LEAST AS FAR AS THE RAW LINE (#188 review). Decoding turns a private key's
 `\\n` escapes into real newlines, and the line-scoped rule then masked the
@@ -25,6 +26,17 @@ BEGIN line and served the body that `/logs` masks over the same bytes. Each
 string is redacted with `decoded=True`: a key is masked as a block, and one
 with no END to the end of the string, which is what the line rule masked of
 the raw line holding it.
+
+A TOOL'S INPUT AND AN EVENT'S RECORD ARE MASKED BY THEIR STRUCTURE (#221,
+owner decision 2026-09-26). Both used to be `json.dumps` of a decoded object,
+redacted as ONE string: JSON TEXT, where a quote inside a string is `\\"`. An
+agent's Bash call `export DB_PASSWORD="<v>"` was served with its backslash
+masked and `<v>` in clear, under a count of 1, and `"api_key": "<v>"` inside a
+curl body was not matched at all. Both now go through `redaction.JsonMasker`
+-- every string and key masked as a decoded string, a value under a
+credential's name masked whole -- which is what `/input` does with a task's
+input. The text is the same `json.dumps` the step always carried (indented for
+a tool's input, one line for `raw`), so a clean record reads as it did.
 
 A CAPTURE CUT AT ITS CAP. Where the worker's output capture dropped the
 middle of a stream, it wrote a line starting `TRUNCATION_MARK`. That line is a
@@ -52,7 +64,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .agent_streams import TRUNCATION_MARK
-from .redaction import redact
+from .redaction import JsonMasker, Redacted, redact
 
 #: The longest any one string field of a step may be, in characters (16 KiB).
 #: A tool result that printed a whole file is the common case that reaches it,
@@ -102,7 +114,22 @@ class _Scrubber:
         # `decoded=True`: masked at least as far as the raw line would be.
         cleaned = redact(value, decoded=True)
         self.count += cleaned.count
-        out = cleaned.text
+        return self._capped(cleaned.text, name=name, truncated=truncated)
+
+    def json(self, value: Any, *, name: str, truncated: list[str], indent: int | None) -> str:
+        """A decoded JSON value, masked by its structure (`JsonMasker`), as its text.
+
+        NOT `text(json.dumps(value))`: that is JSON TEXT, where a quote inside
+        a string is `\\"` and the key/value rule used to stop at the backslash
+        (#221). The masker masks each string decoded, and a value under a
+        credential's name whole.
+        """
+        cleaned = JsonMasker(value).json(value, indent=indent)
+        self.count += cleaned.count
+        return self._capped(cleaned.text, name=name, truncated=truncated)
+
+    @staticmethod
+    def _capped(out: str, *, name: str, truncated: list[str]) -> str:
         if len(out) > FIELD_CAP_CHARS:
             out = out[:FIELD_CAP_CHARS]
             truncated.append(name)
@@ -227,7 +254,9 @@ def map_event(
     kind = event.get("type")
     uuid = event.get("uuid") if isinstance(event.get("uuid"), str) and event.get("uuid") else None
     parent = event.get("parent_tool_use_id")
-    raw = json.dumps(event, ensure_ascii=False) if include_raw else None
+    # Masked ONCE per event, by its structure (#221), and counted on every
+    # step that carries it, as the record always was.
+    raw = JsonMasker(event).json(event, indent=None) if include_raw else None
 
     def step(block: int, **fields: Any) -> dict[str, Any]:
         return _step(
@@ -329,7 +358,7 @@ def _step(
     kind: str,
     role: str | None,
     parent: Any,
-    raw: str | None,
+    raw: Redacted | None,
     text: Any = None,
     tool: dict[str, Any] | None = None,
     tool_result: dict[str, Any] | None = None,
@@ -352,14 +381,17 @@ def _step(
         "raw": None,
     }
     if tool is not None:
+        served_id = scrubber.text(tool.get("id"), name="tool.id", truncated=truncated)
+        served_name = scrubber.text(tool.get("name"), name="tool.name", truncated=truncated)
         tool_input = tool.get("input")
-        if tool_input is not None and not isinstance(tool_input, str):
-            tool_input = json.dumps(tool_input, indent=2, ensure_ascii=False)
-        out["tool"] = {
-            "id": scrubber.text(tool.get("id"), name="tool.id", truncated=truncated),
-            "name": scrubber.text(tool.get("name"), name="tool.name", truncated=truncated),
-            "input": scrubber.text(tool_input, name="tool.input", truncated=truncated),
-        }
+        if tool_input is None or isinstance(tool_input, str):
+            # A string input is one decoded string already.
+            served_input = scrubber.text(tool_input, name="tool.input", truncated=truncated)
+        else:
+            # A decoded object: masked by its structure, never as its JSON
+            # text (#221), and served as the same indented text as before.
+            served_input = scrubber.json(tool_input, name="tool.input", truncated=truncated, indent=2)
+        out["tool"] = {"id": served_id, "name": served_name, "input": served_input}
     if tool_result is not None:
         content_text, images = _tool_result_content(tool_result.get("content"))
         is_error = tool_result.get("is_error")
@@ -380,7 +412,8 @@ def _step(
                 cleaned[key] = value
         out["meta"] = cleaned
     if raw is not None:
-        out["raw"] = scrubber.text(raw, name="raw", truncated=truncated)
+        scrubber.count += raw.count
+        out["raw"] = scrubber._capped(raw.text, name="raw", truncated=truncated)
     return out
 
 

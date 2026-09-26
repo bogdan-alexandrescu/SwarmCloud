@@ -254,7 +254,40 @@ def describe_task(task: dict[str, Any]) -> dict[str, Any]:
         out["no_pull_request_because"] = git.get("publish_reason")
     if task.get("last_error"):
         out["error"] = task["last_error"]
+    out["masked"] = masked_counts(task)
     return out
+
+
+def masked_counts(task: dict[str, Any]) -> dict[str, int | None]:
+    """How many credential-shaped strings the API masked in the task's input and metadata.
+
+    MASKED EVERYWHERE (owner decision, 2026-09-26, on #184). The API serves a
+    task's `input` and `metadata` masked at read time, with
+    `input_redaction_count` and `metadata_redaction_count` beside them, and
+    never the raw input -- even to the tenant that submitted it. This hands
+    the two counts on, so a result says `masked N` as the screens do.
+
+    None, NOT 0, when the API did not send a count: a deployment older than
+    the change serves the input as submitted and counts nothing, and a 0 would
+    say it looked and found nothing.
+    """
+
+    def count(key: str) -> int | None:
+        value = task.get(key)
+        return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+    return {"input": count("input_redaction_count"), "metadata": count("metadata_redaction_count")}
+
+
+def masked_words(task: dict[str, Any]) -> str:
+    """`masked N` for a terminal line: the input's and the metadata's masks together.
+
+    `masked —` when the API sent no count at all (an older deployment, whose
+    input is NOT masked), so a line never claims a masking that did not happen.
+    """
+    counts = masked_counts(task)
+    known = [n for n in counts.values() if n is not None]
+    return f"masked {sum(known)}" if known else "masked —"
 
 
 #: The states that mean "this went wrong", as the frozen vocabulary spells

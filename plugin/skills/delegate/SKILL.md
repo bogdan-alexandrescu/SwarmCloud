@@ -307,6 +307,16 @@ cannot work out from the task — the mapping lives in the frozen catalogue — 
 a `null` there means the catalogue does not hold that profile any more, which is
 "unknown", never a default. Do not fill it in.
 
+Every result, every `swarm_status` row and every `swarm_workflow_status` step
+also carries `masked: {input, metadata}`: how many credential-shaped strings
+the API masked in the task's input and metadata. The API serves both masked to
+everyone, the submitter included, so a prompt read back is the masked copy, and
+`swarm status` / `swarm result` / `swarm workflow-status` print it as
+`masked N`. A count above zero means a credential was sent in the task: say so
+to the developer, because it sits unmasked in the task document the runner
+read. `null` (or `masked —` in a terminal) is a deployment that sent no count,
+whose input is not masked; it is never zero.
+
 Two more, from outside that list:
 
 * A task in `FAILED` or `DEAD_LETTERED` carries `error` in the result **and a

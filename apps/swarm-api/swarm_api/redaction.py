@@ -41,6 +41,17 @@ redacts, this redacts, and possibly more. `tests/unit/control_plane/
 test_log_redaction.py` pins both halves, including a drift check that fails
 when a rule is added to the shell filter and not here.
 
+THE KEY/VALUE RULE IS ONE RULE IN BOTH PLACES FOR JSON TEXT (#221, owner
+decision 2026-09-26). A quote inside a JSON string is written `\\"`, so a
+stream-json log line holds an agent's `export DB_PASSWORD="<v>"` as
+`DB_PASSWORD=\\"<v>\\"`, and `"api_key": "<v>"` inside a tool's input as
+`\\"api_key\\": \\"<v>\\"`. Both rules now take an escaped quote around the
+key and before the value, and stop a value opened by one at the next
+backslash, which in JSON text always begins an escape. The shell filter does
+it in two expressions, because sed has no conditional group; the test file
+runs both filters over the same lines and holds their output EQUAL on every
+key/value case, not merely both masked.
+
 The PRIVATE KEY family is the other place it is wider: a key is masked as a
 BLOCK, not as the rest of one line -- see `mask_private_keys`.
 """
@@ -380,13 +391,39 @@ def _private_key_rule() -> Rule:
 #: inside a run can also start at the run's first character, because the
 #: prefix takes any name characters.
 #: `tests/unit/control_plane/test_task_input_route.py` bounds it on 256 KiB.
+#:
+#: ESCAPED QUOTES (#221, owner decision 2026-09-26). In JSON TEXT a quote
+#: inside a string is `\"`, and the rule read a quote as a quote: over a raw
+#: stream-json line, `DB_PASSWORD=\"<v>\"` had its backslash masked and `<v>`
+#: served under a count of 1, and `\"api_key\": \"<v>\"` did not match at all.
+#: `/logs` serves exactly those lines, and there is no decoded document to walk
+#: there, so the rule itself now takes `\"` where it took `"` -- around the key
+#: and before the value -- and a value OPENED by `\"` stops at the next
+#: backslash (group 2 records that it was), because in JSON text a backslash
+#: always begins an escape: `\"` closing the value, or a `\n` after it. A value
+#: NOT opened by one keeps its old class, backslashes included, so a plain
+#: `password=ab\cd` is still masked whole; it may not START with `\"`, so an
+#: escaped empty value is left alone rather than having its backslash masked.
+#:
+#: A LIST'S FIRST ELEMENT (the reach limit in PR #210's comment 5841681051).
+#: `{"password": ["<v>"]}` masked the `[` and served `<v>`. An optional `[`
+#: after the separator now lets the value start at the first element. Only the
+#: first: `["a", "b"]` still serves `b` in free text, and an object under a
+#: credential's name still serves its strings. A JSON document the API can
+#: DECODE goes through `JsonMasker`, which masks either whole.
+#:
+#: THE SHELL FILTER HAS THE SAME RULE (`scripts/lib/common.sh` `redact`), in two
+#: expressions -- the escaped form, then the plain one -- because sed has no
+#: conditional group. `tests/unit/control_plane/test_log_redaction.py` runs both
+#: over the same lines and holds their output equal.
 KEY_VALUE = _rule(
     "key_value_assignment",
     "api_?key",
     r"(?<![A-Za-z0-9_.-])"
-    r"(\"?[A-Za-z0-9_.-]*"
+    r"((?:\\?\")?[A-Za-z0-9_.-]*"
     r"(?:api[-_]?key|apikey|password|passwd|secret|token|credential|authorization)"
-    r"\"?[ \t]*[:=][ \t]*\"?)[^\",\s]+",
+    r"(?:\\?\")?[ \t]*[:=][ \t]*(?:\[[ \t]*)?(?:(\\\")|\"?))"
+    r"(?(2)[^\"\\,\s]+|(?!\\\")[^\",\s]+)",
     re.IGNORECASE,
 )
 
@@ -721,6 +758,14 @@ class JsonMasker:
     string drawn in several blocks is masked and counted the same in each, and
     a block's count is the sum of what its strings, keys and whole values
     contributed: `json(whole)` counts what `text(prompt)` and `json(rest)` do.
+
+    `value()` is the same masking as a JSON VALUE rather than its text (the
+    owner's "masked everywhere", 2026-09-26): `GET /v1/tasks/{id}` serves a
+    task's `input` and `metadata` as objects a client reads keys out of, so the
+    masked copy has to stay an object. It counts exactly what `json()` counts
+    for the same value, and `json.dumps` of it is `json()`'s text, except where
+    two keys of one object mask to the same text: an object cannot hold one key
+    twice, so the second is served as `<masked key> (2)`, and so on.
     """
 
     def __init__(self, document: Any) -> None:
@@ -749,9 +794,13 @@ class JsonMasker:
             found = self._memo[value] = Redacted(text=text, count=count)
         return found
 
-    def json(self, value: Any) -> Redacted:
-        """`value` as `json.dumps(value, indent=2, ensure_ascii=False)`, masked."""
-        keys: list[str] = []
+    def _walk(self, value: Any, *, label_for: Callable[[dict[str, Any], str, str], str]) -> tuple[Any, int]:
+        """`value` with every string, key and credential masked, and the count.
+
+        `label_for(out, raw_key, masked_key)` names the entry a key becomes in
+        the object being built: `json()` stands a changed or colliding key in
+        and restores it in the text, `value()` numbers a collision.
+        """
         total = 0
 
         def walk(node: Any) -> Any:
@@ -766,13 +815,7 @@ class JsonMasker:
                     raw = _key_text(key)
                     name = self.text(raw)
                     total += name.count
-                    # A key is stood in when masking changed it, or when it
-                    # now spells another key: two keys that mask to the same
-                    # text are two entries, not one.
-                    label = name.text
-                    if name.text != raw or label in out:
-                        keys.append(name.text)
-                        label = f"{_STAND_IN_OPEN}{self._tag}.{len(keys) - 1}{_STAND_IN_CLOSE}"
+                    label = label_for(out, raw, name.text)
                     if _masks_whole(raw, item):
                         total += 1
                         out[label] = MASK
@@ -798,7 +841,27 @@ class JsonMasker:
             # Not JSON: a Firestore timestamp in a hand-written document.
             return walk(str(node))
 
-        text = json.dumps(walk(value), indent=2, ensure_ascii=False)
+        return walk(value), total
+
+    def json(self, value: Any, *, indent: int | None = 2) -> Redacted:
+        """`value` as `json.dumps(value, indent=indent, ensure_ascii=False)`, masked.
+
+        `indent=None` is the one-line text `json.dumps` writes by default, which
+        is what a transcript step's `raw` record has always been.
+        """
+        keys: list[str] = []
+
+        def stand_in(out: dict[str, Any], raw: str, masked: str) -> str:
+            # A key is stood in when masking changed it, or when it now spells
+            # another key: two keys that mask to the same text are two
+            # entries, not one.
+            if masked != raw or masked in out:
+                keys.append(masked)
+                return f"{_STAND_IN_OPEN}{self._tag}.{len(keys) - 1}{_STAND_IN_CLOSE}"
+            return masked
+
+        shaped, total = self._walk(value, label_for=stand_in)
+        text = json.dumps(shaped, indent=indent, ensure_ascii=False)
         if keys:
             placed = re.compile(
                 '"' + re.escape(f"{_STAND_IN_OPEN}{self._tag}.") + r"(\d+)" + re.escape(_STAND_IN_CLOSE) + '"'
@@ -806,10 +869,23 @@ class JsonMasker:
             text = placed.sub(lambda m: json.dumps(keys[int(m.group(1))], ensure_ascii=False), text)
         return Redacted(text=text, count=total)
 
+    def value(self, value: Any) -> tuple[Any, int]:
+        """`value` as a JSON value, masked exactly as `json()` masks it, and the count."""
 
-def redact_json(value: Any) -> Redacted:
+        def numbered(out: dict[str, Any], _raw: str, masked: str) -> str:
+            if masked not in out:
+                return masked
+            n = 2
+            while f"{masked} ({n})" in out:
+                n += 1
+            return f"{masked} ({n})"
+
+        return self._walk(value, label_for=numbered)
+
+
+def redact_json(value: Any, *, indent: int | None = 2) -> Redacted:
     """One JSON value, masked by its structure as `JsonMasker` does, with the count."""
-    return JsonMasker(value).json(value)
+    return JsonMasker(value).json(value, indent=indent)
 
 
 def redact_detail(message: str, *, limit: int = 400) -> str:

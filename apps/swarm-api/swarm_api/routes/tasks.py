@@ -210,6 +210,12 @@ def list_attempts(
     worker's newest HEARTBEAT reading. That parameter is no longer read: an
     older client that still sends it gets the same rows, with the figures in
     them.
+
+    And when they were written (contract request #26, accepted on #184,
+    2026-09-26): `cpu_measured_at`, the worker's clock at the reading;
+    `cpu_limit_source`, `cgroup` or `resource_class`; and
+    `cpu_reading_age_seconds`, the reading's age against this response's
+    `read_at`. All three are null on an attempt from before the change.
     """
     # Resolve the task first so a wrong id is a 404 about the TASK rather than
     # an empty attempt list, which would read as "this task never ran".
@@ -217,7 +223,13 @@ def list_attempts(
     attempts = ctx.store.list_attempts(
         tenant_id, task_id, limit=paged_limit(ctx, limit)
     )
-    return {"task_id": task_id, "attempts": [attempt_to_api(a) for a in attempts]}
+    read_at = ctx.now()
+    return {
+        "task_id": task_id,
+        # The clock each row's `cpu_reading_age_seconds` is taken against.
+        "read_at": read_at,
+        "attempts": [attempt_to_api(a, read_at=read_at) for a in attempts],
+    }
 
 
 @router.get("/{task_id}/artifacts")
@@ -504,10 +516,11 @@ def read_input(
 
     The prompt, the rest of the input and the whole input, each as
     `redaction.redact` returns it with its own `redaction_count` -- the same
-    redactor, and the same count, every other output this API serves carries.
-    The Artifacts pane's Inputs and the drawer's Details draw this, never the
-    `input` of `GET /v1/tasks/{id}`, which stays as submitted. See
-    `swarm_api.task_input`.
+    redactor, and the same count, every other output this API serves carries
+    -- and the task's metadata as `metadata`, from the same masker, with its
+    own count. `GET /v1/tasks/{id}` serves the same masking of the input and
+    the metadata as objects (owner decision, 2026-09-26: masked everywhere).
+    See `swarm_api.task_input`.
     """
     task = ctx.store.get_task(tenant_id, task_id)
     return input_copy(task, read_at=ctx.now())

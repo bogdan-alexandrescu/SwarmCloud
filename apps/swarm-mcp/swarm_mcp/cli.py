@@ -66,6 +66,8 @@ from .patches import (
     explain_absence,
     explain_failure,
     integrate,
+    masked_counts,
+    masked_words,
     object_size,
     patch_uri,
 )
@@ -308,11 +310,30 @@ def cmd_dispatch(client: SwarmClient, args) -> int:
 
 
 def cmd_status(client: SwarmClient, args) -> int:
+    # `masked N` (owner decision, 2026-09-26): the API serves the task's input
+    # and metadata masked, and this is how many credential-shaped strings it
+    # masked in them; `masked —` from a deployment that sent no count.
     for task_id in _expand(client, list(args.task_ids)):
         task = client.task(task_id)
         step = f"  step {task['step_id']}" if task.get("step_id") else ""
-        print(f"{task_id}  {task.get('state')}  {task.get('runner_profile', '')}{step}")
+        print(
+            f"{task_id}  {task.get('state')}  {task.get('runner_profile', '')}{step}"
+            f"  {masked_words(task)}"
+        )
     return EXIT_OK
+
+
+def _masked_line(task: dict) -> str:
+    """`swarm result`'s masking line: the total, then the input's and the metadata's.
+
+    The input and the metadata are served masked (owner decision, 2026-09-26);
+    a count the API did not send is an em dash, never 0.
+    """
+    counts = masked_counts(task)
+    parts = " · ".join(
+        f"{name} {'—' if n is None else n}" for name, n in (("input", counts["input"]), ("metadata", counts["metadata"]))
+    )
+    return f"  {masked_words(task)}  ({parts})"
 
 
 def cmd_tail(client: SwarmClient, args) -> int:
@@ -703,6 +724,7 @@ def cmd_result(client: SwarmClient, args) -> int:
     git = summary.get("git") or {}
     state = task.get("state")
     print(f"{args.task_id}  {state}")
+    print(_masked_line(task))
     if task.get("step_id"):
         print(f"  step    {task['step_id']} of {task.get('workflow_id') or '?'}")
     # WHY IT ENDED, as `sc task` prints it. `swarm result` never said why a
@@ -919,6 +941,11 @@ def cmd_workflow_status(client: SwarmClient, args) -> int:
     reasons: list[str] = []
     for row in steps:
         line = f"  {row['step_id']}  {row.get('state') or '—'}  {row.get('task_id') or '—'}"
+        # The step task's `masked N` (owner decision, 2026-09-26), from the
+        # task the read joined; a step with no task read has no count to say.
+        if isinstance(row.get("masked"), dict):
+            known = [n for n in row["masked"].values() if isinstance(n, int)]
+            line += f"  masked {sum(known)}" if known else "  masked —"
         if row.get("cancel_requested") and row.get("state") not in TERMINAL:
             line += "  cancel requested; stops when the worker releases it"
         print(line)

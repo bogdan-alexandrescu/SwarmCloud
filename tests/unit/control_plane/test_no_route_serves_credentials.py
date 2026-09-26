@@ -21,10 +21,11 @@ THREE SENTINELS, three different claims:
     task. It must not reach this caller through any route, including the
     admin ones that cross tenants.
   * OWN_TASK_SECRET is credential-shaped text the caller put in their own
-    task. This one is allowed back to its own tenant -- it is their prompt --
-    and the assertion is the narrower, true one: it never reaches a DIFFERENT
-    tenant, and it is redacted out of the log stream, which is the surface
-    that is served as raw bytes.
+    task. It never reaches a DIFFERENT tenant, and it is redacted out of the
+    log stream, which is the surface that is served as raw bytes. Since the
+    owner's decision of 2026-09-26 it does not come back in the task's input
+    or metadata to its OWN tenant either -- both are served masked -- though
+    it still does through `last_error`, which is served as stored.
 
 Offline: FakeFirestore, an in-memory credential store and an in-memory object
 reader. No credentials, no emulator, no network.
@@ -270,15 +271,25 @@ def test_the_task_owners_own_text_does_come_back_to_them(leaky):
     """The control, without which every assertion above could pass vacuously.
 
     If the API served nothing at all, or the sentinel never reached a document,
-    the sweeps would be green and would mean nothing. Alice's own prompt IS
-    hers to read.
+    the sweeps would be green and would mean nothing. Alice's own task text
+    comes back to her -- through `last_error`, which is served as stored.
+
+    HER PROMPT AND METADATA DO NOT, any more (owner decision, 2026-09-26, on
+    #184: "the API never serves a credential-shaped string back, even to the
+    submitter"). They come back masked, with their counts; the sweep over
+    every route's `input` and `metadata` is `test_task_masked_everywhere.py`.
     """
     response = leaky.get("/v1/tasks/task_mine", headers=auth_header("alice"))
     assert response.status_code == 200, response.text
-    assert OWN_TASK_SECRET in response.text, (
+    task = response.json()["task"]
+    assert OWN_TASK_SECRET in (task["last_error"] or ""), (
         "the fixture's sentinel never reached a served payload, so the leak "
         "sweeps above were comparing against nothing"
     )
+    assert OWN_TASK_SECRET not in str(task["input"]), "the owner's prompt came back raw"
+    assert OWN_TASK_SECRET not in str(task["metadata"]), "the owner's metadata came back raw"
+    assert task["input_redaction_count"] == 1
+    assert task["metadata_redaction_count"] == 1
 
 
 def test_a_tenants_credential_list_is_provider_names_and_never_key_material():
