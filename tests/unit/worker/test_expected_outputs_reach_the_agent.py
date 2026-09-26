@@ -17,7 +17,9 @@ the worker's half:
   instructions speak for the platform and a caller could otherwise put words
   in its mouth;
 * a CLI runner appends them, with the ABSOLUTE artifacts path, to the prompt it
-  passes the agent, and passes the prompt unchanged when there are none;
+  passes the agent. With none, the prompt gets only the one line every CLI
+  prompt now ends with, naming `$SWARM_ARTIFACTS_DIR` (#184, owner decision of
+  2026-09-26; `test_standalone_outputs.py` holds that line for both runners);
 * a name the platform writes itself -- the worker's `swarm-work.patch`, the
   runner's own stdout and stderr logs and transcript -- is never in those
   instructions. Telling an agent to write a file the platform then overwrites,
@@ -207,13 +209,24 @@ def test_the_agent_is_told_the_names_and_the_absolute_artifacts_path(tmp_path, m
     assert "outside the repository" in prompt
 
 
-def test_the_prompt_is_passed_unchanged_when_nothing_is_expected(tmp_path, monkeypatch):
+def _deliverables_line(artifacts: Path) -> str:
+    """The one line every CLI prompt ends with (#184, owner decision of 2026-09-26)."""
+    return (
+        f"Write deliverables to {artifacts} ($SWARM_ARTIFACTS_DIR); "
+        "files there are uploaded and shown in Artifacts."
+    )
+
+
+def test_a_prompt_with_nothing_expected_gets_only_the_deliverables_line(tmp_path, monkeypatch):
+    """Until 2026-09-26 this prompt was passed unchanged. The owner's decision on
+    #184 is that every claude-code and codex prompt names $SWARM_ARTIFACTS_DIR,
+    so the one line is appended and nothing else."""
     for payload in (
         {"prompt": "do the thing"},
         {"prompt": "do the thing", RUNNER_INPUT_KEY: []},
     ):
-        prompt, _ = _prompt_the_agent_received(tmp_path, monkeypatch, dict(payload))
-        assert prompt == "do the thing", payload
+        prompt, artifacts = _prompt_the_agent_received(tmp_path, monkeypatch, dict(payload))
+        assert prompt == f"do the thing\n\n{_deliverables_line(artifacts)}", payload
 
 
 def test_the_runners_own_files_are_never_in_the_instructions(tmp_path, monkeypatch):
@@ -232,13 +245,13 @@ def test_the_runners_own_files_are_never_in_the_instructions(tmp_path, monkeypat
         assert name not in prompt, f"the agent was told to write the runner's own {name}"
 
 
-def test_the_prompt_is_unchanged_when_every_expected_name_is_the_runners_own(
+def test_a_prompt_whose_every_expected_name_is_the_runners_own_gets_only_the_line(
     tmp_path, monkeypatch
 ):
-    prompt, _ = _prompt_the_agent_received(
+    prompt, artifacts = _prompt_the_agent_received(
         tmp_path, monkeypatch, {"prompt": "scan", RUNNER_INPUT_KEY: ["fake.stdout.log"]}
     )
-    assert prompt == "scan"
+    assert prompt == f"scan\n\n{_deliverables_line(artifacts)}"
 
 
 # ---------------------------------------------------------------------------
