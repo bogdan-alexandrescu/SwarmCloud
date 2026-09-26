@@ -1115,9 +1115,10 @@ describe('the overflow inventory, as rules that cannot be quietly dropped', () =
     // 1`, and it never took effect: both wrappers are `overflow-x: auto`, which
     // makes the wrapper the head's scroll container on both axes, and no
     // wrapper ever scrolls vertically. What it did do was draw every head cell
-    // as a layer of its own, the likely source of the faint seams at the
-    // Workflows Table's fractional column edges. MUTATION: put `position:
-    // sticky` back on either head.
+    // as a layer of its own. (It was taken for the source of the faint seams
+    // at the Workflows Table's fractional column edges; the dev check at
+    // release 350c244 found them still there without it -- #178, and the
+    // WF-21 case below.) MUTATION: put `position: sticky` back on either head.
     const stickyHeads = flatRules(STYLES).filter(
       (r) => /thead\s+th/.test(r.selector) && /position:\s*sticky/.test(r.body),
     )
@@ -1147,33 +1148,38 @@ describe('the overflow inventory, as rules that cannot be quietly dropped', () =
   })
 
   /**
-   * WF-21 (#178) — THE TABLE HEAD'S FILL IS PAINTED ONCE, ON `thead`.
+   * WF-21 (#178) — THE TABLE HEAD'S FILL IS ON `thead`, NOT ON EACH `th`.
    *
-   * Checked on dev at release 350c244 (2026-09-26, #178): with the head no
-   * longer sticky (#160, the case above), the Workflows Table still showed a
-   * 1px line of ground at four fractional column edges -- runner|waited at
-   * x=592.391, waited|ran 671.398, attempts|cost 883.594, cost|tokens
-   * 1033.648 -- in light and in dark, and none at the edges that sit on whole
-   * pixels. Each head cell painted its own `--surface-2`, so two fills met at
-   * every column edge, and where the edge falls inside a device pixel neither
-   * fill covers that pixel whole: the ground shows through as a seam. `thead`
-   * is one box, so the head's fill has no internal edge to seam at.
+   * #178's prepared step, applied as the owner decided it. Checked on dev at
+   * release 350c244 (2026-09-26): with the head no longer sticky (#160, the
+   * case above), the Workflows Table still showed a 1px line of ground at four
+   * fractional column edges -- runner|waited at x=592.391, waited|ran 671.398,
+   * attempts|cost 883.594, cost|tokens 1033.648 -- in light and in dark, and
+   * none at the edges that sit on whole pixels.
    *
-   * THE ONE HEAD CELL THAT STILL PAINTS is the held corner below 900px
-   * (CH-13, design-system §7.3). It is sticky and the other head cells scroll
-   * under it, so a see-through corner would show their labels through the
-   * name's head. It paints the same `--surface-2` as `thead`, so there is no
-   * step between it and the head beside it either.
+   * MOVING THE FILL DOES NOT REMOVE THAT SEAM, and nothing here claims it
+   * does. Chrome paints a row group's background into each cell's rect (the
+   * CSS table-layer model), so a fill on `thead` is painted with exactly the
+   * per-cell geometry of the `th` fill it replaced. Measured in Chrome
+   * 153.0.8010.53 at 2x with this sheet: the two render pixel-identically, and
+   * under a 0.37px translate -- the only way the seam has been reproduced off
+   * dev -- both seam at 8 of 8 column edges. What makes dev paint the cells on
+   * that path is not identified. #178 stays open.
    *
-   * WHAT THIS CANNOT SEE: the seam. jsdom has no layout; this holds the rule
-   * the dev check found wanting from coming back. Whether the seams are gone
-   * is for the screenshots at 1440 on dev after the release.
+   * WHAT THIS HOLDS is the decided placement, so it is not undone without a
+   * decision: `thead` carries `--surface-2`, and no head cell paints a fill of
+   * its own except the held corner below 900px (CH-13, design-system §7.3).
+   * The corner is sticky and the other head cells scroll under it, so it has
+   * to be opaque; it paints the same `--surface-2`. The first cell of a grouped
+   * head's SECOND row (Tenants' `Max active`) is not the corner, is not held,
+   * and paints nothing.
    *
    * MUTATIONS: put a `background` back on `.ctl-table thead th` or on
    * `table.pools thead th`; give a fill to any other rule that reaches a head
-   * cell (a bare `th`, `.ctl-table th`); drop the fill from either `thead`.
+   * cell (a bare `th`, `.ctl-table th`); drop the fill from either `thead`;
+   * widen the corner's rules from the head's first row to every head row.
    */
-  describe('WF-21 (#178): the table head fill is painted once, on thead', () => {
+  describe('WF-21 (#178): the table head fill is on thead, not on each th', () => {
     const THEMES = ['dark', 'light'] as const
     const WIDTHS = [1440, 390] as const
     const FILL = ['background', 'background-color'] as const
@@ -1182,7 +1188,9 @@ describe('the overflow inventory, as rules that cannot be quietly dropped', () =
      * The two head rules in the sheet: `.ctl-table` (the Workflows Table and
      * most tables) and `table.pools` (Pools, Profile headroom, Accounts,
      * Tenants). Each with a numeric column, whose own class must not bring a
-     * fill back either. Scrolling tables, so the held corner is in them.
+     * fill back either. Scrolling tables, so the held corner is in them. The
+     * third is Tenants' grouped head (AH-12): the name's head spans both rows,
+     * so the first cell of the second row is a figure's head.
      */
     function heads(): HTMLElement {
       const host = document.createElement('div')
@@ -1192,12 +1200,19 @@ describe('the overflow inventory, as rules that cannot be quietly dropped', () =
         '</tr></thead><tbody><tr><th scope="row">plan</th><td>claude-code</td><td class="is-num">$0.10</td></tr></tbody></table></div>' +
         '<div class="table-wrap is-scroll"><table class="pools"><thead><tr>' +
         '<th scope="col">Pool</th><th scope="col">Scope</th><th scope="col" class="n">Units free</th>' +
-        '</tr></thead><tbody><tr><th scope="row">global</th><td>platform</td><td class="n">5</td></tr></tbody></table></div>'
+        '</tr></thead><tbody><tr><th scope="row">global</th><td>platform</td><td class="n">5</td></tr></tbody></table></div>' +
+        '<div class="table-wrap is-scroll"><table class="pools"><thead>' +
+        '<tr><th scope="col" rowspan="2">Tenant</th><th scope="colgroup" colspan="2">Configured</th><th scope="col" rowspan="2">Kind</th></tr>' +
+        '<tr><th scope="col" class="n">Max active</th><th scope="col" class="n">Units</th></tr>' +
+        '</thead><tbody><tr><th scope="row">eng</th><td class="n">20</td><td class="n">20</td><td>group</td></tr></tbody></table></div>'
       document.body.appendChild(host)
-      expect(host.querySelectorAll('thead').length).toBe(2)
-      expect(host.querySelectorAll('thead th').length).toBe(6)
+      expect(host.querySelectorAll('thead').length).toBe(3)
+      expect(host.querySelectorAll('thead th').length).toBe(11)
       return host
     }
+
+    /** The held corner: the first cell of the head's FIRST row. */
+    const isCorner = (th: Element): boolean => th === th.closest('thead')!.firstElementChild!.firstElementChild
 
     const won = (el: Element, prop: string | readonly string[], env: CascadeEnv): string | null => {
       const r = cascade(STYLES, el, prop, env)
@@ -1228,7 +1243,7 @@ describe('the overflow inventory, as rules that cannot be quietly dropped', () =
             }
           }
         }
-        expect(asked).toBe(THEMES.length * WIDTHS.length * 2)
+        expect(asked).toBe(THEMES.length * WIDTHS.length * 3)
       } finally {
         host.remove()
       }
@@ -1236,33 +1251,38 @@ describe('the overflow inventory, as rules that cannot be quietly dropped', () =
 
     // MUTATION: put a `background` back on `.ctl-table thead th` or
     // `table.pools thead th`, or give one to any rule that reaches a head cell
-    // (a bare `th`, `.ctl-table th`, `.is-num`); or take the held corner's fill
-    // away, so the head cells scrolling under it show through.
+    // (a bare `th`, `.ctl-table th`, `.is-num`); take the held corner's fill
+    // away, so the head cells scrolling under it show through; or widen the
+    // corner's rules to every head row, which fills `Max active`.
     it('gives no head cell a fill of its own but the held corner below 900px', () => {
       const host = heads()
       try {
         let asked = 0
+        let corners = 0
         for (const theme of THEMES) {
           for (const width of WIDTHS) {
             const env: CascadeEnv = { width, theme }
             for (const th of host.querySelectorAll('thead th')) {
               const v = won(th, FILL, env)
-              if (width < 900 && th === th.parentElement!.firstElementChild) {
+              if (width < 900 && isCorner(th)) {
                 // The held corner: sticky, so it paints, and in the head's colour.
                 expect(won(th, 'position', env), `${theme}: the corner that paints is not held`).toBe('sticky')
                 expect(v, `${theme}: the held corner is see-through, or not the head's colour`).toBe('var(--surface-2)')
+                corners += 1
               } else {
                 expect(
                   v,
-                  `${theme} at ${width}: head cell "${th.textContent}" paints a fill of its own again -- the per-cell ` +
-                    'fill that left a 1px seam at every fractional column edge',
+                  `${theme} at ${width}: head cell "${th.textContent}" paints a fill of its own; the head's fill is ` +
+                    'on thead (#178)',
                 ).toBeNull()
               }
               asked += 1
             }
           }
         }
-        expect(asked).toBe(THEMES.length * WIDTHS.length * 6)
+        expect(asked).toBe(THEMES.length * WIDTHS.length * 11)
+        // One corner per table, at 390 only, in each theme.
+        expect(corners).toBe(THEMES.length * 3)
       } finally {
         host.remove()
       }
@@ -1271,9 +1291,10 @@ describe('the overflow inventory, as rules that cannot be quietly dropped', () =
     // THE WHOLE SHEET, not only the rules the fixture's markup reaches: a fill
     // added under a class the fixture lacks is caught here. MUTATION: any
     // `thead th` rule that declares a background, at any width, other than the
-    // held corner's two below 900px.
+    // held corner's two below 900px -- including those two widened back to
+    // every head row's first cell.
     it('has no rule in the sheet that gives a head cell a fill, but the held corner', () => {
-      const CORNER = '.is-scroll > table > thead > tr > th:first-child'
+      const CORNER = '.is-scroll > table > thead > tr:first-child > th:first-child'
       let scanned = 0
       const offenders = flatRules(STYLES).flatMap((r) => {
         if (!declarations(r.body).some((d) => d.property === 'background' || d.property === 'background-color')) return []

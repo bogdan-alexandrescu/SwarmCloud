@@ -172,16 +172,18 @@ describe('the held first column keeps a readable width at 390 (#222)', () => {
     expect(expectFloored(await roster(), 'Tenants')).toBe(4)
   })
 
-  it('leaves the Tenants grouped head’s second row without a floor', async () => {
+  it('leaves the Tenants grouped head’s second row out of the held column', async () => {
     // `Max active` is the first cell of the head's second row, a figure's head
-    // from the middle of the table. Floored at 20ch it would widen the
-    // Configured group for nothing. MUTATION: drop `min-width` from the
-    // grouped-head reset.
+    // from the middle of the table: not held, and no floor -- at 20ch it would
+    // widen the Configured group for nothing. THE PROPERTY, not the rule that
+    // gives it: the held rules name only the head's first row, so nothing here
+    // needs undoing. MUTATION: widen the held rule's head branch in the CH-13
+    // block back to every head row (`thead > tr > th:first-child`).
     const table = await roster()
     const maxActive = table.querySelector(':scope > thead > tr:nth-child(2) > th:first-child')!
     expect((maxActive.textContent ?? '').trim()).toBe('Max active')
-    expect(painted(maxActive, 'position', PHONE)).toBe('static')
-    expect(painted(maxActive, 'min-width', PHONE), 'a Configured head carries the held column’s floor').toBe('0')
+    expect(painted(maxActive, 'position', PHONE) ?? 'static', 'a Configured head is held at the left edge').not.toBe('sticky')
+    expect(painted(maxActive, 'min-width', PHONE) ?? '0', 'a Configured head carries the held column’s floor').not.toMatch(HELD)
   })
 
   it('floors the Timeline’s Table view, Reliability and Workflows that failed', () => {

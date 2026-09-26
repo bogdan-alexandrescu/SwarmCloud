@@ -1657,7 +1657,7 @@ body {
    clip then guarantees nothing inside it -- the census sentence or the 54px
    meter -- paints into `[shape]`, at any width, whatever the template gives
    the track. `.wf-progress-text` below is what gives way first. */
-.wf-progress { display: flex; align-items: center; gap: var(--ctl-s2); min-width: 0; overflow: hidden; }
+.wf-progress { display: flex; align-items: center; gap: var(--ctl-s2); min-width: 0; }
 /* A FILLED METER IS A CLAIM THAT THE NUMBERS BEHIND IT ARE A CENSUS. When the
    server reports an incomplete rollup, `.wf-meter-fill` IS NOT RENDERED -- the
    React branch does not draw it -- because a two-thirds-full bar over a failed
@@ -1734,8 +1734,7 @@ body {
      not to this rule. workflow.board.test.tsx holds the containment at every
      width the sentence is drawn. */
   flex: 0 1 auto;
-  min-width: 0;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  overflow: hidden;
 }
 /* NO STRIKE-THROUGH. Struck text says "this figure is wrong"; what an
    underived rollup means is "the census behind this figure was not taken",
