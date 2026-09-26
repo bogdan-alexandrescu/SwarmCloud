@@ -845,19 +845,20 @@ def cmd_workflow(client: SwarmClient, args) -> int:
         document = json.loads(raw)
     except json.JSONDecodeError as exc:
         raise SwarmError(f"{args.spec} is not valid JSON: {exc}") from exc
-    if not isinstance(document, dict):
-        raise SwarmError(f"{args.spec} must hold an object with a `steps` list")
+    # The same reader `swarm_workflow`'s `spec` goes through, so the terminal
+    # and the tool agree about what a spec file may hold.
+    spec = workflows.read_spec(document, where=args.spec)
 
     envelope = workflows.submit(
         client,
-        steps=workflows.build_steps(document.get("steps")),
-        strategy=args.strategy or document.get("strategy"),
-        carrier=args.carrier or document.get("carrier"),
-        repository_url=args.repo or document.get("repository_url"),
-        repository_ref=args.ref or document.get("repository_ref"),
-        on_step_failure=document.get("on_step_failure"),
-        priority=document.get("priority"),
-        label=args.label or document.get("label"),
+        steps=spec["steps"],
+        strategy=args.strategy or spec["strategy"],
+        carrier=args.carrier or spec["carrier"],
+        repository_url=args.repo or spec["repository_url"],
+        repository_ref=args.ref or spec["repository_ref"],
+        on_step_failure=spec["on_step_failure"],
+        priority=spec["priority"],
+        label=args.label or spec["label"],
     )
     workflow = envelope["workflow"]
     workflow_id = workflow.get("workflow_id")
