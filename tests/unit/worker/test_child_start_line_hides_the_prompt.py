@@ -70,9 +70,11 @@ def test_the_start_line_logs_the_prompts_length_and_the_agent_still_gets_the_pro
     assert len(started) == 1, err
     logged = started[0]["argv"]
     assert "zork-grue-lantern-brass-4471" not in err, "the runner's stderr printed the prompt"
-    assert logged[-1] == f"<prompt: {len(PROMPT)} characters>", logged
-    # The control: the agent was started with the prompt, unchanged.
+    # The control: the agent was started with the prompt, kept whole at the
+    # front of its last argument (`with_instructions` appends the platform's
+    # instructions after it since #225).
     received = json.loads(seen.read_text())
-    assert received[-1] == PROMPT, received
+    assert received[-1].startswith(PROMPT), received
+    assert logged[-1] == f"<prompt: {len(received[-1])} characters>", logged
     # Everything else is logged as it was passed: the binary, then its flags.
     assert logged[1:-1] == received[:-1], (logged, received)
