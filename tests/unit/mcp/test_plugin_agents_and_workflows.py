@@ -32,8 +32,9 @@ import subprocess
 from pathlib import Path
 
 import pytest
+import yaml
 
-from swarm_mcp import server
+from swarm_mcp import progress, server, workflows
 
 from test_plugin_skills import _PREFIX, _scoped_prefix
 
@@ -141,6 +142,11 @@ def _load(path: Path) -> tuple[dict[str, object], str]:
     return _frontmatter(text), _split(text)[1]
 
 
+def _yaml(path: Path) -> object:
+    """The frontmatter as a REAL YAML parser reads it (PyYAML, safe loader)."""
+    return yaml.safe_load("\n".join(_split(path.read_text())[0]))
+
+
 def _granted(entries) -> dict[str, set[str]]:
     return {
         prefix: {e[len(prefix):] for e in entries if isinstance(e, str) and e.startswith(prefix)}
@@ -178,6 +184,22 @@ def test_an_agents_frontmatter_parses_with_only_keys_a_plugin_agent_honours(path
 
 
 @pytest.mark.parametrize("path", _AGENTS, ids=lambda p: p.stem)
+def test_an_agents_frontmatter_reads_the_same_under_a_real_yaml_parser(path):
+    """The strict reader above proves the file matches THIS test's grammar.
+    That is not the host's: a real YAML parser reads `a: b` inside a scalar as
+    a mapping, `#` as a comment, `yes` as a boolean. So the same text goes
+    through PyYAML too, and the two must agree on every key and value.
+    (Claude Code's own parser is a JavaScript one; it is not run here.)"""
+    strict, _ = _load(path)
+    real = _yaml(path)
+    assert isinstance(real, dict), f"{path.name}: a YAML parser reads the frontmatter as {type(real).__name__}"
+    assert real == strict, (
+        f"{path.name}: a YAML parser reads different values: "
+        f"{ {k: real.get(k) for k in set(real) | set(strict) if real.get(k) != strict.get(k)} }"
+    )
+
+
+@pytest.mark.parametrize("path", _AGENTS, ids=lambda p: p.stem)
 def test_an_agent_is_pinned_to_haiku_at_low_effort(path):
     """A row that only relays a remote task needs no larger model. The pin is
     on the agent, so the workflow script names no model of its own."""
@@ -191,31 +213,95 @@ def test_an_agent_is_pinned_to_haiku_at_low_effort(path):
 
 
 @pytest.mark.parametrize("path", _AGENTS, ids=lambda p: p.stem)
-def test_an_agents_tools_are_the_swarmcloud_ones_it_needs_under_both_names(path):
-    """`tools` is matched, not resolved: a wrong spelling grants nothing, and an
-    agent none of whose entries resolve does not start. The plugin's own server
-    is scoped (`mcp__plugin_<plugin>_<server>__<tool>`, derived from
-    plugin.json), the checkout's `.mcp.json` registers `mcp__swarmcloud__*`;
-    both are listed so the agent starts under either."""
+def test_an_agents_tools_are_the_swarmcloud_ones_it_needs_from_the_plugins_server_only(path):
+    """`tools` is matched, not resolved: a wrong spelling grants nothing, and
+    Claude Code refuses to launch an agent none of whose entries resolve.
+
+    ONLY the plugin's scoped server (`mcp__plugin_<plugin>_<server>__<tool>`,
+    derived from plugin.json). In this repository's checkout the project
+    `.mcp.json` server loads as well -- Claude Code merges two servers only
+    when their commands are identical, and these are not -- and it is a
+    DIFFERENT program: the checked-out branch, in developer mode, against the
+    deployment in the tfvars. Granted both, an agent calls either, per call:
+    one row submits through one deployment and another follows through the
+    other and reads 404, and a stale checkout bridge drops arguments it does
+    not know. A plugin agent runs where its plugin's server runs, or not at
+    all."""
     fields, _ = _load(path)
     tools = fields.get("tools")
     assert isinstance(tools, list) and tools, f"{path.name} has no tools list"
-    stray = sorted(
-        t for t in tools
-        if t != "StructuredOutput" and not any(str(t).startswith(p) for p in _PREFIXES)
-    )
-    assert not stray, (
-        f"{path.name} grants {stray}: only SwarmCloud's tools, and StructuredOutput -- the "
-        "channel a schema-bearing agent() call answers through -- are allowed"
-    )
-    per_prefix = _granted(tools)
     project, scoped = _PREFIXES
-    assert per_prefix[project] == per_prefix[scoped], (
-        f"{path.name}: only under {project}: {sorted(per_prefix[project] - per_prefix[scoped])}; "
-        f"only under {scoped}: {sorted(per_prefix[scoped] - per_prefix[project])}"
+    checkout_names = sorted(t for t in tools if str(t).startswith(project))
+    assert not checkout_names, (
+        f"{path.name} grants the checkout's server too: {checkout_names}. A plugin agent must "
+        f"reach only its own plugin's server, {scoped}*"
     )
-    assert per_prefix[scoped] <= _REAL, f"{path.name} names tools the bridge does not serve"
-    assert per_prefix[scoped] == EXPECTED_TOOLS[path.stem]
+    stray = sorted(t for t in tools if t != "StructuredOutput" and not str(t).startswith(scoped))
+    assert not stray, (
+        f"{path.name} grants {stray}: only the plugin's SwarmCloud tools, and StructuredOutput "
+        "-- the channel a schema-bearing agent() call answers through -- are allowed"
+    )
+    granted = _granted(tools)[scoped]
+    assert granted <= _REAL, f"{path.name} names tools the bridge does not serve"
+    assert granted == EXPECTED_TOOLS[path.stem]
+    assert len(tools) == len(set(tools)), f"{path.name} lists a tool twice"
+
+
+@pytest.mark.parametrize("path", _AGENTS, ids=lambda p: p.stem)
+def test_an_agent_says_what_to_answer_when_its_server_is_not_connected(path):
+    """With only the plugin's server granted, that server being down leaves an
+    agent with `StructuredOutput` at most. Its instructions must say what to
+    answer then -- a failure naming the cause -- rather than leave a haiku row
+    to improvise one."""
+    _, body = _load(path)
+    assert "is not connected in this session" in " ".join(body.split()), (
+        f"{path.name} does not say what to do when the sc plugin's SwarmCloud server is missing"
+    )
+
+
+_NUMBER_WORDS = {2: "two", 3: "three", 4: "four", 5: "five", 6: "six"}
+
+
+def test_the_step_agent_states_the_bridges_read_failure_limit():
+    """`sc:step` is told when the bridge will stop it on a task it cannot
+    read. The number is the bridge's; written as a word for a haiku reader, it
+    is a mirrored value (docs/mirrored-values.md) and is held to the constant."""
+    word = _NUMBER_WORDS[progress.READ_FAILURE_LIMIT]
+    _, body = _load(_PLUGIN / "agents" / "step.md")
+    assert f"other failures after {word} calls in a row" in " ".join(body.split()), (
+        f"step.md must say the bridge stops after {word} calls in a row (READ_FAILURE_LIMIT)"
+    )
+
+
+@pytest.mark.parametrize("name", ["remote", "step"])
+def test_a_following_agent_stops_on_the_bridges_stop(name):
+    """`all_finished` never becomes true for a task that cannot be read or is
+    the wrong step; an agent that waited for it would poll to its turn limit."""
+    _, body = _load(_PLUGIN / "agents" / f"{name}.md")
+    flat = " ".join(body.split())
+    assert "`stop` is `true`" in flat, f"{name}.md does not stop on the reply's `stop`"
+    assert "abandoned_because" in flat, f"{name}.md does not hand back why the row gave up"
+
+
+def test_the_step_agent_passes_its_step_id_to_the_bridge():
+    _, body = _load(_PLUGIN / "agents" / "step.md")
+    assert '`step_id: "<step_id>"`' in " ".join(body.split())
+
+
+def test_a_schema_mode_failure_is_documented_as_a_throw_and_never_filled_in():
+    """Claude Code's workflow docs: with a schema, a subagent whose output
+    still fails validation after five attempts makes the `agent()` call FAIL
+    WITH AN ERROR. The README once promised `null`; a workflow written against
+    that has no catch, and a relay pressed five times for an object may build
+    one -- `{counts: {}}` reads as "no TODOs"."""
+    readme = " ".join((_PLUGIN / "README.md").read_text().split())
+    assert "receives `null` for that step" not in readme, "the README still promises null for a failed schema-mode step"
+    assert "the call can THROW" in readme
+    assert ".catch(" in readme, "the README's schema-mode sc:remote example must catch the call"
+    _, body = _load(_PLUGIN / "agents" / "remote.md")
+    flat = " ".join(body.split())
+    assert "do NOT call `StructuredOutput` — not the first time, and not when you are asked again" in flat
+    assert "an object built to validate is an invented answer" in flat
 
 
 @pytest.mark.parametrize("path", _AGENTS, ids=lambda p: p.stem)
@@ -534,9 +620,19 @@ _SPEC = {
     ],
 }
 
+def _bridge_digest(spec) -> str | None:
+    """`workflows.spec_digest`, looked up when called: a bridge without it
+    fails the tests that need it by name, not this module's collection."""
+    digest = getattr(workflows, "spec_digest", None)
+    return digest(spec) if digest is not None else None
+
+
 _SUBMITTED = {
     "workflow_id": "wf_1",
     "repository": "https://github.com/acme/widgets.git",
+    # The bridge's digest of the spec it received -- Python's, so every run.js
+    # test that starts a row also proves the script's digest agrees with it.
+    "spec_digest": _bridge_digest(_SPEC),
     "error": None,
     "steps": [
         {"step_id": "report", "task_id": "task_4", "depends_on": ["join"]},
@@ -570,8 +666,9 @@ def test_run_js_submits_once_then_starts_one_step_row_per_step(tmp_path):
 
     assert (submit["agentType"], submit["phase"], submit["label"]) == ("sc:workflow", "Submit", "submit")
     lines = submit["prompt"].split("\n")
-    assert lines[:2] == ["SUBMIT", "BEGIN SPEC"] and lines[-1] == "END SPEC"
-    assert json.loads("\n".join(lines[2:-1])) == _SPEC, "the spec must reach the submitting agent verbatim"
+    assert lines[:3] == ["SUBMIT", "spec_digest: " + workflows.spec_digest(_SPEC), "BEGIN SPEC"]
+    assert lines[-1] == "END SPEC"
+    assert json.loads("\n".join(lines[3:-1])) == _SPEC, "the spec must reach the submitting agent verbatim"
 
     # One row per step, labelled by step id, grouped by DAG level -- or by the
     # stage the spec gives -- and started shallowest first.
@@ -585,6 +682,9 @@ def test_run_js_submits_once_then_starts_one_step_row_per_step(tmp_path):
     by_label = {c["label"]: c["prompt"] for c in steps}
     assert "task_id: task_3" in by_label["join"] and "workflow_id: wf_1" in by_label["join"]
     assert "depends_on: scan-01, scan-02" in by_label["join"]
+    # The row's own step id, which it hands to swarm_follow as the check that
+    # the task it follows is this step.
+    assert "step_id: join" in by_label["join"]
 
     # The agents pin the model; the script names none.
     assert all(c["model"] is None for c in got["calls"])
@@ -622,14 +722,116 @@ def test_run_js_returns_the_state_swarmcloud_derived_not_one_of_its_own(tmp_path
 
 
 def test_run_js_starts_no_step_when_the_submission_is_refused(tmp_path):
-    refused = {"workflow_id": None, "steps": [], "repository": None,
-               "error": "branch 'lane/y' has no upstream: it has never been pushed"}
+    refused = {"workflow_id": None, "steps": [], "repository": None, "spec_digest": None,
+               "error": "branch 'lane/y' is not on origin under its own name"}
     got = _run(tmp_path, _SPEC, {"SUBMIT": refused})
 
     assert len(got["calls"]) == 1
     assert got["result"]["state"] == "NOT_SUBMITTED"
     assert got["result"]["error"] == refused["error"]
     assert got["logs"] == ["not submitted · " + refused["error"]]
+
+
+@pytest.mark.parametrize(
+    ("answer", "why"),
+    [
+        (None, "stopped before it answered"),
+        ({"__throw": "StructuredOutput failed validation after 5 attempts"}, "failed validation"),
+        ({"workflow_id": None, "steps": [], "repository": None, "spec_digest": None, "error": None},
+         "neither a workflow id nor an error"),
+    ],
+    ids=["stopped", "threw", "said-nothing"],
+)
+def test_run_js_reports_a_submission_it_cannot_see_as_unknown_not_as_not_submitted(tmp_path, answer, why):
+    """`agent()` resolves to null when the row is stopped and throws when
+    validation runs out -- both possibly AFTER swarm_workflow created the
+    workflow. Claude Code re-runs a failed or stopped agent on relaunch and the
+    API has no idempotency key: calling this NOT_SUBMITTED invites a second
+    copy of every task."""
+    got = _run(tmp_path, _SPEC, {"SUBMIT": answer})
+
+    assert "error" not in got, got.get("error")
+    assert len(got["calls"]) == 1, "no row may start when the submission cannot be seen"
+    result = got["result"]
+    assert result["state"] == "SUBMISSION_UNKNOWN"
+    assert why in result["error"] and "second copy" in result["error"]
+    assert "label scan" in result["error"], "the spec's label is how the workflow is found again"
+    assert got["logs"][0].startswith("submission outcome unknown · ")
+
+
+def _unverified(tmp_path, submitted) -> dict:
+    got = _run(tmp_path, _SPEC, {**_ANSWERS, "SUBMIT": submitted})
+    assert "error" not in got, got.get("error")
+    assert [c["agentType"] for c in got["calls"]] == ["sc:workflow"], "a row started on an unverified reply"
+    assert got["result"]["state"] == "SUBMITTED_UNVERIFIED"
+    assert got["result"]["workflow_id"] == "wf_1", "the workflow exists; its id must be handed back"
+    assert "swarm_workflow_cancel" in got["result"]["error"]
+    return got
+
+
+def test_run_js_starts_no_row_when_the_reply_drops_a_step(tmp_path):
+    """The relay retyped the reply and lost a step. Its task still runs."""
+    dropped = {**_SUBMITTED, "steps": [s for s in _SUBMITTED["steps"] if s["step_id"] != "scan-02"]}
+    got = _unverified(tmp_path, dropped)
+    assert "wf_1 · step scan-02 is in the spec and missing from the reply" in got["logs"], got["logs"]
+
+
+def test_run_js_starts_no_row_when_the_reply_changes_a_dependency_or_reuses_a_task(tmp_path):
+    steps = [dict(s) for s in _SUBMITTED["steps"]]
+    by_id = {s["step_id"]: s for s in steps}
+    by_id["join"]["depends_on"] = ["scan-01"]
+    by_id["scan-02"]["task_id"] = "task_1"
+    got = _unverified(tmp_path, {**_SUBMITTED, "steps": steps})
+    error = got["result"]["error"]
+    assert "step join depends on [scan-01] in the reply and on [scan-01, scan-02] in the spec" in error, error
+    assert "task task_1 is named for both" in error, error
+
+
+def test_run_js_starts_no_row_when_the_digest_is_not_the_specs(tmp_path):
+    """The spec SwarmCloud received is not the spec given: a dropped or
+    reworded step would run under this workflow's name."""
+    got = _unverified(tmp_path, {**_SUBMITTED, "spec_digest": "fnv1a32:00000000"})
+    assert "the relay changed it on the way" in got["result"]["error"]
+
+    missing = _unverified(tmp_path, {**_SUBMITTED, "spec_digest": None})
+    assert "carries no spec digest" in missing["result"]["error"]
+
+
+def test_run_js_keeps_every_rows_result_when_the_result_row_fails(tmp_path):
+    got = _run(tmp_path, _SPEC, {**_ANSWERS, "STATUS": {"__throw": "StructuredOutput failed validation after 5 attempts"}})
+
+    assert "error" not in got, got.get("error")
+    result = got["result"]
+    assert {row["step_id"] for row in result["steps"]} == {"scan-01", "scan-02", "join", "report"}
+    assert result["state"] is None
+    assert "the row reading the workflow state failed" in result["state_note"]
+    assert got["logs"][-1].startswith("wf_1 state not read · ")
+
+
+def test_run_js_digests_a_spec_exactly_as_the_bridge_does(tmp_path):
+    """run.js cannot import Python, so its digest is a second implementation
+    (docs/mirrored-values.md). A mismatch would make swarm_workflow refuse
+    EVERY /sc:run submission as a changed spec. Held here over the cases where
+    two JSON writers differ: non-ASCII, astral characters, control characters,
+    unsorted and nested keys, an integral float."""
+    spec = {
+        "label": "scän 🚀 日本",
+        "steps": [
+            {"step_id": "b", "prompt": "tab\there, bell\u0007, quote \" and backslash \\", "timeout_seconds": 60.0,
+             "inputs": {"z": [1, 2.5, None, True], "a": {"y": "é", "x": ""}}},
+            {"step_id": "a", "prompt": "line\nbreak\r\n", "depends_on": ["b"]},
+        ],
+        "priority": 3,
+    }
+    got = _run(tmp_path, spec, {"SUBMIT": None})
+    submit = got["calls"][0]["prompt"].split("\n")
+    assert submit[1] == "spec_digest: " + workflows.spec_digest(spec), (
+        f"run.js digested the spec as {submit[1]!r}; the bridge as {workflows.spec_digest(spec)!r}"
+    )
+    # The control shows the comparison could fail: a one-character change moves it.
+    changed = json.loads(json.dumps(spec))
+    changed["steps"][1]["prompt"] = "line\nbreak\r"
+    assert workflows.spec_digest(changed) != workflows.spec_digest(spec)
 
 
 def test_run_js_takes_the_spec_as_json_text_and_refuses_what_is_not_a_spec(tmp_path):

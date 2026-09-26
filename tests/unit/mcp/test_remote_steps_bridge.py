@@ -19,6 +19,14 @@ those agents need and the MCP tools lacked is built here and held here:
 * the stdio loop answers tool calls concurrently, so a dozen step agents each
   holding a follow open do not queue behind one another.
 
+The review of PR #230 added what those rows need to be SAFE, not just able:
+the branch is judged by its own name on its remote, never its upstream (a lane
+made from `origin/main` was refused when pushed and told to push to main); a
+row stops on a task it can never read or that is another step, instead of
+polling it to its turn limit; a spec retyped by a relay is checked against the
+digest its script computed, before anything is sent; and an argument a tool
+does not declare is refused rather than dropped.
+
 Invariant 10 is asserted alongside: none of it adds a model, image, command or
 resource parameter.
 
@@ -171,7 +179,11 @@ def test_a_branch_with_unpushed_commits_is_refused_before_anything_travels(pushe
 
     message = str(caught.value)
     assert "1 commit(s)" in message and "not on origin/lane/x" in message, message
-    assert "git push origin lane/x:lane/x" in message, message
+    # The fix is always the branch pushed under its own name. A
+    # `branch:remote_branch` form is how the refusal came to recommend
+    # `git push origin <lane>:main`.
+    assert "git push -u origin lane/x" in message, message
+    assert "lane/x:" not in message, message
     assert recorder.sent == [], "a refused dispatch reached the API"
 
 
@@ -208,14 +220,111 @@ def test_uncommitted_changes_are_named_as_invisible_rather_than_refused(pushed):
 
 
 @needs_git
-def test_the_ref_sent_is_the_branch_name_on_the_remote_not_the_local_one(pushed):
-    """A local branch may track a differently-named remote branch. The remote
-    agent clones by the REMOTE name; the local one does not exist there."""
+def test_a_branch_whose_upstream_has_another_name_is_judged_by_its_own_name(pushed):
+    """An upstream is where a branch was STARTED from as often as where it is
+    pushed -- `git checkout -b mine origin/lane/x` makes lane/x the upstream.
+    Sending the upstream's name would clone somebody else's branch; the
+    branch's own name is what `git push -u` publishes."""
     _git(pushed, "checkout", "--quiet", "-b", "mine")
     _git(pushed, "branch", "--quiet", "--set-upstream-to=origin/lane/x")
     recorder = _Recorder()
 
+    with pytest.raises(SwarmError) as caught:
+        _dispatch(recorder)
+
+    message = str(caught.value)
+    assert "git push -u origin mine" in message, message
+    assert "mine:" not in message, message
+    assert "origin/lane/x" in message, "the refusal should say what the upstream is and that it is not sent"
+    assert recorder.sent == []
+
+    _git(pushed, "update-ref", "refs/remotes/origin/mine", "HEAD")
     _dispatch(recorder)
+    assert _sent_payload(recorder)["repository_ref"] == "mine"
+
+
+@pytest.fixture()
+def lane_from_main(tmp_path, monkeypatch):
+    """This repository's own lane recipe: `git checkout -b lane/x origin/main`.
+
+    `--track` is spelled out because it is what `branch.autoSetupMerge=true`
+    (git's default) does for a remote-tracking start point, and a CI runner's
+    global config must not decide what this fixture is. So the lane's
+    UPSTREAM is origin/main, and it has one commit main does not.
+    """
+    repo = tmp_path / "lane"
+    repo.mkdir()
+    _git(repo, "init", "--quiet", "--initial-branch=main")
+    (repo / "a.txt").write_text("a\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "--quiet", "-m", "base")
+    _git(repo, "remote", "add", "origin", "git@github.com:acme/widgets.git")
+    _git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+    _git(repo, "checkout", "--quiet", "-b", "lane/x", "--track", "origin/main")
+    (repo / "b.txt").write_text("b\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "--quiet", "-m", "the lane's work")
+    monkeypatch.setenv("SWARM_CHECKOUT_DIR", str(repo))
+    return repo
+
+
+@needs_git
+def test_a_lane_from_origin_main_pushed_without_u_is_accepted(lane_from_main):
+    """`git push origin lane/x` leaves the upstream at origin/main. The lane IS
+    pushed -- origin/lane/x is its HEAD -- and it is main that is one commit
+    behind. Measured against the upstream it was refused as unpushed."""
+    _git(lane_from_main, "update-ref", "refs/remotes/origin/lane/x", "HEAD")
+    recorder = _Recorder()
+
+    reply = _dispatch(recorder)
+
+    payload = _sent_payload(recorder)
+    assert payload["repository_ref"] == "lane/x", "the lane is cloned by its own name, never as main"
+    assert payload["repository_url"] == "https://github.com/acme/widgets.git"
+    assert reply["repository"]["commit"] == _head(lane_from_main)
+    assert any("upstream is origin/main" in note for note in reply["repository"]["notes"]), reply["repository"]
+
+
+@needs_git
+def test_a_lane_from_origin_main_never_pushed_is_refused_without_a_push_to_main(lane_from_main):
+    """The usual state right after the lane recipe. The refusal is read by a
+    developer or a Claude session and RUN; `git push origin lane/x:main` would
+    land unreviewed commits on the default branch."""
+    recorder = _Recorder()
+
+    with pytest.raises(SwarmError) as caught:
+        _dispatch(recorder)
+
+    message = str(caught.value)
+    assert "git push -u origin lane/x" in message, message
+    assert ":main" not in message and "lane/x:" not in message, message
+    assert recorder.sent == []
+
+
+@needs_git
+def test_a_pushed_lane_with_a_new_local_commit_is_refused_against_its_own_branch(lane_from_main):
+    _git(lane_from_main, "update-ref", "refs/remotes/origin/lane/x", "HEAD")
+    (lane_from_main / "c.txt").write_text("c\n")
+    _git(lane_from_main, "add", "-A")
+    _git(lane_from_main, "commit", "--quiet", "-m", "not pushed yet")
+    recorder = _Recorder()
+
+    with pytest.raises(SwarmError) as caught:
+        _dispatch(recorder)
+
+    message = str(caught.value)
+    # One commit ahead of ITS OWN branch -- not two, which is main's distance.
+    assert "1 commit(s)" in message and "not on origin/lane/x" in message, message
+    assert "git push -u origin lane/x" in message, message
+    assert recorder.sent == []
+
+
+@needs_git
+def test_a_workflow_from_a_lane_clones_the_lane_not_its_upstream(lane_from_main):
+    _git(lane_from_main, "update-ref", "refs/remotes/origin/lane/x", "HEAD")
+    recorder = _Recorder()
+
+    server._call(recorder, "swarm_workflow", {"spec": {"steps": [{"step_id": "a", "prompt": "x"}]}})
 
     assert _sent_payload(recorder)["repository_ref"] == "lane/x"
 
@@ -551,6 +660,7 @@ def test_the_first_call_returns_at_once_and_says_the_task_is_waiting(swarm, worl
     assert got["polls"] == 1
     assert any("waiting · READY" in line and "holds no capacity" in line for line in got["lines"]), got["lines"]
     assert got["since"] and got["all_finished"] is False
+    assert got["stop"] is False, "a waiting task is not a reason to stop following it"
 
 
 def test_a_window_returns_when_the_task_finishes_with_its_outcome(swarm, world, progress):
@@ -597,7 +707,7 @@ def test_a_window_returns_when_the_task_finishes_with_its_outcome(swarm, world, 
     clock.on_sleep = _finish
     got = progress.watch(swarm, ["task_a"], since=first["since"], wait_seconds=90, sleep=clock.sleep, clock=clock.clock)
 
-    assert got["all_finished"] is True
+    assert got["all_finished"] is True and got["stop"] is True
     assert got["polls"] == 3, "the window should end on the poll that saw the task finish"
     assert any("tool Read: a.py" in line for line in got["lines"]), got["lines"]
     assert not any("assistant: Scanning." in line for line in got["lines"]), "a line was repeated"
@@ -704,8 +814,281 @@ def test_only_an_object_the_answer_ends_with_is_its_json(progress):
 def test_the_lines_format_goes_through_the_tool(swarm, world):
     world.task("task_a", state="QUEUED")
     reply = json.loads(server._call(swarm, "swarm_follow", {"task_ids": ["task_a"], "format": "lines"}))
-    assert set(reply) >= {"since", "lines", "tasks", "all_finished", "truncated"}
+    assert set(reply) >= {"since", "lines", "tasks", "all_finished", "stop", "truncated"}
     assert any("waiting · QUEUED" in line for line in reply["lines"]), reply["lines"]
+    assert reply["stop"] is False, "a queued task is still going somewhere; the row must keep following"
+
+
+# --------------------------------------------------------------------------
+# swarm_follow format=lines: when a row stops
+# --------------------------------------------------------------------------
+
+
+def test_a_task_the_api_does_not_have_stops_the_row_at_once(swarm, world, progress):
+    """A mis-copied id, another deployment's task, another tenant's: 404.
+    `follow` rightly reports it as `read: failed`, not an error -- and a row
+    that only stopped on errors or on `all_finished` would have polled it for
+    its whole turn limit, one 90-second window at a time."""
+    clock = _Time()
+    first = progress.watch(swarm, ["task_nobody_has"], sleep=clock.sleep, clock=clock.clock)
+
+    assert first["stop"] is True and first["all_finished"] is False
+    row = first["tasks"][0]
+    assert row["abandoned"] is True and "outcome" not in row
+    assert "HTTP 404" in row["abandoned_because"] and "Nothing was cancelled" in row["abandoned_because"]
+    assert row["abandoned_because"] in first["stop_because"]
+    assert any("stopped following" in line for line in first["lines"]), first["lines"]
+
+    # A later call, with a window, does not wait the window out on a 404.
+    again = progress.watch(
+        swarm, ["task_nobody_has"], since=first["since"], wait_seconds=90,
+        sleep=clock.sleep, clock=clock.clock,
+    )
+    assert again["stop"] is True and clock.slept == [] and again["polls"] == 1
+
+
+def test_a_task_that_cannot_be_read_for_three_calls_stops_the_row(swarm, world, progress, monkeypatch):
+    """A failure with no HTTP status -- a reset connection, a token that did
+    not mint -- may pass. Three calls in a row that read nothing will not be
+    followed by a fourth, and the streak rides in `since`."""
+    world.task("task_a", state="RUNNING")
+
+    def _unreachable(task_id):  # noqa: ARG001
+        raise SwarmError("connection reset by peer")
+
+    monkeypatch.setattr(swarm, "task", _unreachable)
+    clock = _Time()
+    since = None
+    replies = []
+    for _ in range(progress.READ_FAILURE_LIMIT):
+        reply = progress.watch(swarm, ["task_a"], since=since, wait_seconds=10, sleep=clock.sleep, clock=clock.clock)
+        replies.append(reply)
+        since = reply["since"]
+
+    assert [r["stop"] for r in replies] == [False] * (progress.READ_FAILURE_LIMIT - 1) + [True]
+    assert [r["tasks"][0].get("read_failures") for r in replies] == list(range(1, progress.READ_FAILURE_LIMIT + 1))
+    last = replies[-1]["tasks"][0]
+    assert last["abandoned"] is True
+    assert f"{progress.READ_FAILURE_LIMIT} calls in a row" in last["abandoned_because"]
+    assert "UNKNOWN" in last["abandoned_because"]
+
+
+def test_one_good_read_clears_the_streak(swarm, world, progress, monkeypatch):
+    world.task("task_a", state="RUNNING")
+    real_task = swarm.task
+
+    def _timed_out(task_id):  # noqa: ARG001
+        raise SwarmError("timed out")
+
+    monkeypatch.setattr(swarm, "task", _timed_out)
+    first = progress.watch(swarm, ["task_a"])
+    assert first["tasks"][0]["read_failures"] == 1
+
+    monkeypatch.setattr(swarm, "task", real_task)
+    second = progress.watch(swarm, ["task_a"], since=first["since"])
+
+    assert "read_failures" not in second["tasks"][0]
+    assert progress.read_failures(second["since"]) == {}
+    assert second["stop"] is False
+
+
+def test_a_task_that_is_another_step_is_not_followed(swarm, world, progress):
+    """/sc:run hands each row its task id through a relay that retypes it. A
+    row labelled scan-03 that followed scan-07's task would return scan-07's
+    answer, cost and pull request under scan-03's name."""
+    world.task("task_a", state="SUCCEEDED")
+    world.db.docs["tasks/task_a"]["step_id"] = "scan-07"
+
+    got = progress.watch(swarm, ["task_a"], step_id="scan-03")
+
+    assert got["stop"] is True and got["all_finished"] is False
+    row = got["tasks"][0]
+    assert row["abandoned"] is True and "outcome" not in row, "another step's outcome must not be handed back"
+    assert "'scan-07'" in row["abandoned_because"] and "'scan-03'" in row["abandoned_because"]
+
+    right = progress.watch(swarm, ["task_a"], step_id="scan-07")
+    assert right["stop"] is True and right["tasks"][0]["outcome"]["state"] == "SUCCEEDED"
+
+
+def test_step_id_goes_through_the_tool_and_is_refused_where_it_cannot_be_checked(swarm, world):
+    world.task("task_a", state="QUEUED")
+    world.db.docs["tasks/task_a"]["step_id"] = "scan-07"
+
+    reply = json.loads(server._call(
+        swarm, "swarm_follow", {"task_ids": ["task_a"], "format": "lines", "step_id": "scan-03"},
+    ))
+    assert reply["stop"] is True and reply["tasks"][0]["abandoned"] is True
+
+    # Asked for and not performed would be worse than not asked for.
+    with pytest.raises(SwarmError, match="format"):
+        server._call(swarm, "swarm_follow", {"task_ids": ["task_a"], "step_id": "scan-07"})
+    with pytest.raises(SwarmError, match="ONE task"):
+        server._call(
+            swarm, "swarm_follow",
+            {"task_ids": ["task_a", "task_b"], "format": "lines", "step_id": "scan-07"},
+        )
+
+
+def test_a_finished_task_stops_the_row_with_its_outcome(swarm, world, progress):
+    world.task("task_a", state="SUCCEEDED")
+    got = progress.watch(swarm, ["task_a"])
+    assert got["stop"] is True and got["all_finished"] is True
+    assert got["tasks"][0]["outcome"]["state"] == "SUCCEEDED"
+    assert "stop_because" not in got
+
+
+def test_since_carries_the_failed_read_streak(progress):
+    token = progress.encode_since({}, {}, {}, {}, {"task_a": 2, "task_b": 0})
+    assert progress.read_failures(token) == {"task_a": 2}
+    assert progress.read_failures("not-a-token!!") == {}
+    assert progress.read_failures(None) == {}
+
+
+# --------------------------------------------------------------------------
+# swarm_workflow: the spec digest
+# --------------------------------------------------------------------------
+
+
+def test_the_digest_is_fnv1a_32_over_utf8():
+    """The published FNV-1a test vectors, so the function is the algorithm its
+    name says -- run.js implements the same one and must agree with it."""
+    from swarm_mcp import workflows
+
+    assert workflows.fnv1a32(b"") == 0x811C9DC5
+    assert workflows.fnv1a32(b"a") == 0xE40C292C
+    assert workflows.fnv1a32(b"foobar") == 0xBF9CF968
+
+
+def test_the_digest_is_of_the_spec_not_of_how_it_was_written():
+    from swarm_mcp import workflows
+
+    one = {"label": "scan", "steps": [{"step_id": "a", "prompt": "x", "timeout_seconds": 60}]}
+    same = json.loads('{"steps": [{"timeout_seconds": 60.0, "prompt": "x", "step_id": "a"}], "label": "scan"}')
+    assert workflows.spec_digest(one) == workflows.spec_digest(same)
+    assert workflows.spec_digest(one).startswith("fnv1a32:") and len(workflows.spec_digest(one)) == 16
+
+    tidied = {"label": "scan", "steps": [{"step_id": "a", "prompt": "x.", "timeout_seconds": 60}]}
+    assert workflows.spec_digest(tidied) != workflows.spec_digest(one)
+
+
+def test_a_spec_that_arrives_different_from_its_digest_submits_nothing():
+    """The relay dropped a step. Checked before the round trip, the changed
+    spec is never submitted -- there is nothing to cancel afterwards."""
+    from swarm_mcp import workflows
+
+    meant = json.loads(json.dumps(_SPEC))
+    arrived = {**meant, "steps": meant["steps"][:1]}
+    recorder = _Recorder()
+
+    with pytest.raises(SwarmError) as caught:
+        server._call(recorder, "swarm_workflow", {"spec": arrived, "spec_digest": workflows.spec_digest(meant)})
+
+    assert "NOTHING was submitted" in str(caught.value)
+    assert workflows.spec_digest(arrived) in str(caught.value)
+    assert recorder.sent == []
+
+
+def test_the_reply_carries_the_digest_of_what_was_received():
+    from swarm_mcp import workflows
+
+    spec = json.loads(json.dumps(_SPEC))
+    unchecked = json.loads(server._call(_Recorder(), "swarm_workflow", {"spec": spec}))
+    assert unchecked["spec_digest"] == workflows.spec_digest(spec)
+    assert unchecked["spec_digest_checked"] is False
+
+    checked = json.loads(server._call(
+        _Recorder(), "swarm_workflow", {"spec": spec, "spec_digest": workflows.spec_digest(spec)},
+    ))
+    assert checked["spec_digest_checked"] is True
+
+
+def test_a_spec_digest_without_a_spec_is_refused():
+    with pytest.raises(SwarmError, match="checks a whole `spec`"):
+        server._call(_Recorder(), "swarm_workflow", {
+            "steps": [{"step_id": "a", "prompt": "x"}], "spec_digest": "fnv1a32:00000000",
+        })
+
+
+# --------------------------------------------------------------------------
+# Every tool: an argument it does not declare is refused, not dropped
+# --------------------------------------------------------------------------
+
+
+def test_an_argument_a_tool_does_not_declare_is_refused_before_anything_travels():
+    """A bridge older than its caller dropped what it did not know: a plugin
+    agent's `strategy: direct-pr` became a `collect` task that returned as if
+    nothing were wrong. `model` is also invariant 10's argument."""
+    recorder = _Recorder()
+    with pytest.raises(SwarmError) as caught:
+        server._call(recorder, "swarm_dispatch", {"prompt": "x", "model": "opus", "strategee": "direct-pr"})
+
+    message = str(caught.value)
+    assert "'model'" in message and "'strategee'" in message and "'strategy'" in message, message
+    assert recorder.sent == []
+
+
+def test_every_argument_a_tool_reads_is_one_its_schema_declares():
+    """The refusal reads the schema, so an argument `_call` reads and the
+    schema forgot would now be refused on every call. Read `_call`'s source
+    for every `args[...]`/`args.get(...)` of each tool and hold it to that
+    tool's schema."""
+    import ast
+    import inspect as pyinspect
+    import re
+    import textwrap
+
+    source = textwrap.dedent(pyinspect.getsource(server._call))
+    tree = ast.parse(source)
+    declared = {t["name"]: set(t["inputSchema"].get("properties") or {}) for t in server.TOOLS}
+    read: dict[str, set[str]] = {}
+
+    def names_tested(test) -> set[str]:
+        found = set()
+        for node in ast.walk(test):
+            if isinstance(node, ast.Compare) and isinstance(node.left, ast.Name) and node.left.id == "name":
+                for comparator in node.comparators:
+                    if isinstance(comparator, ast.Constant) and isinstance(comparator.value, str):
+                        found.add(comparator.value)
+                    if isinstance(comparator, ast.Tuple):
+                        found |= {e.value for e in comparator.elts if isinstance(e, ast.Constant)}
+                    if isinstance(comparator, ast.Name):
+                        # `name in _SC_VIEWS`: the module's own table, read.
+                        table = getattr(server, comparator.id, None)
+                        assert isinstance(table, (dict, tuple, list, set, frozenset)), comparator.id
+                        found |= {key for key in table if isinstance(key, str)}
+        return found
+
+    def keys_read(node) -> set[str]:
+        keys = set()
+        for sub in ast.walk(node):
+            if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Attribute) and sub.func.attr == "get" \
+                    and isinstance(sub.func.value, ast.Name) and sub.func.value.id == "args" \
+                    and sub.args and isinstance(sub.args[0], ast.Constant):
+                keys.add(sub.args[0].value)
+            if isinstance(sub, ast.Subscript) and isinstance(sub.value, ast.Name) and sub.value.id == "args" \
+                    and isinstance(sub.slice, ast.Constant):
+                keys.add(sub.slice.value)
+            if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name) and sub.func.id in ("_flag", "_int_arg") \
+                    and len(sub.args) >= 2 and isinstance(sub.args[1], ast.Constant):
+                keys.add(sub.args[1].value)
+        return keys
+
+    function = tree.body[0]
+    for statement in function.body:
+        if isinstance(statement, ast.If):
+            for tool in names_tested(statement.test):
+                read.setdefault(tool, set()).update(keys_read(statement))
+    # Printed as a count, not trusted as a pass: a walker that matched nothing
+    # would report "no undeclared arguments" over no tools at all.
+    assert len(read) >= 15, f"only {sorted(read)} were read from _call's branches"
+    assert "swarm_trouble" in read and "width" in read["swarm_trouble"], read.get("swarm_trouble")
+    undeclared = {
+        tool: sorted(keys - declared[tool])
+        for tool, keys in read.items()
+        if tool in declared and keys - declared[tool]
+    }
+    assert not undeclared, f"_call reads arguments its schemas do not declare: {undeclared}"
+    assert re.search(r"_refuse_unknown_arguments\(name, args\)", source)
 
 
 # --------------------------------------------------------------------------
