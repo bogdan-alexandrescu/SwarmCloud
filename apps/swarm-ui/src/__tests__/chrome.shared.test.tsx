@@ -581,7 +581,10 @@ describe('CH-13: one rule for tables below 900px', () => {
 
     const held = sub.closest('th')!
     expect(won(held, 'position', PHONE)).toBe('sticky')
-    for (const prop of ['width', 'max-width']) {
+    // `min-width` TOO (#222): a cell's `width` is not a floor in automatic
+    // table layout, and without one a table laid out at its min-content width
+    // squeezes the held column to one character.
+    for (const prop of ['width', 'min-width', 'max-width']) {
       const v = won(held, prop, PHONE) ?? ''
       const m = /^min\((\d+(?:\.\d+)?)vw,\s*\d+ch\)$/.exec(v)
       expect(m, `the held column's ${prop} is ${JSON.stringify(v)}, not a ceiling`).not.toBeNull()
