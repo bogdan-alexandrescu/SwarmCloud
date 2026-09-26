@@ -1942,13 +1942,26 @@ class Worker:
             # or the summary before it is known to be one they can all carry.
             if not standalone_mod.storable(name):
                 not_uploaded.append(
-                    {"name": standalone_mod.shown(name), "bytes": size, "reason": standalone_mod.NOT_UTF8}
+                    {
+                        "name": standalone_mod.shown(self._scrub(name)),
+                        "bytes": size,
+                        "reason": standalone_mod.NOT_UTF8,
+                    }
                 )
                 continue
             key = f"{cfg.artifact_prefix}/{name}"
             if len(key.encode("utf-8")) > standalone_mod.MAX_OBJECT_NAME_BYTES:
+                # SCRUB FIRST, THEN CUT (#232 review): `shown` cuts a long name
+                # to 256 characters for the log and the summary. Cutting a raw
+                # name let a registered secret crossing that character survive
+                # in part -- cutting the string is fine, cutting a key in half
+                # is not.
                 not_uploaded.append(
-                    {"name": standalone_mod.shown(name), "bytes": size, "reason": standalone_mod.NAME_TOO_LONG}
+                    {
+                        "name": standalone_mod.shown(self._scrub(name)),
+                        "bytes": size,
+                        "reason": standalone_mod.NAME_TOO_LONG,
+                    }
                 )
                 continue
             if standalone_mod.is_core_dump(relative):
@@ -4008,7 +4021,10 @@ class Worker:
             except OSError:
                 continue
         plan = manifest_mod.plan(
-            found, first=self._artifacts_first(), cap=self.cfg.max_artifact_files
+            found,
+            first=self._artifacts_first(),
+            cap=self.cfg.max_artifact_files,
+            declared=self._expected_outputs,
         )
         skipped: list[str] = []
         for shown in plan.unstorable:
@@ -4026,7 +4042,9 @@ class Worker:
             if entry["reason"] == manifest_mod.NAME_TOO_LONG:
                 # Listed as #225 lists a name it could not upload: cut short,
                 # so 50 of them cannot take the summary near 1 MiB either.
-                skipped.append(standalone_mod.shown(entry["name"]))
+                # SCRUBBED FIRST (#232 review): cutting a raw name let a
+                # registered secret crossing character 256 survive in part.
+                skipped.append(standalone_mod.shown(self._scrub(entry["name"])))
         # Past the cap: COUNTED in the summary (`artifacts_over_cap`, below),
         # and every name in the log -- the owner's shape for #228, through the
         # helper #225's working-folder cap uses. Not in `artifacts_skipped`,
@@ -4037,7 +4055,10 @@ class Worker:
         self._artifacts_not_uploaded = tuple(entry["name"] for entry in plan.not_uploaded)
         self._log_not_uploaded(
             "files in $SWARM_ARTIFACTS_DIR were not uploaded",
-            [{**entry, "name": standalone_mod.shown(entry["name"])} for entry in plan.not_uploaded],
+            [
+                {**entry, "name": standalone_mod.shown(self._scrub(entry["name"]))}
+                for entry in plan.not_uploaded
+            ],
             cap_files=self.cfg.max_artifact_files,
             cap_name_bytes=manifest_mod.MAX_NAME_BYTES,
         )

@@ -221,7 +221,10 @@ What decision 2 does, and the reason for each rule:
     `artifacts_skipped` and the log.
   * *A name too long to be an object's* (GCS allows 1,024 bytes of UTF-8 for
     the whole key, the attempt's prefix included). Listed with its name cut to
-    256 characters, so 50 of them cannot take the summary near 1 MiB.
+    256 characters, so 50 of them cannot take the summary near 1 MiB --
+    scrubbed of any registered secret BEFORE the cut, not after, so a key
+    that happens to cross that character cannot survive in the fragment kept
+    (#232 review).
   * *A core dump*: `core` or `core.<pid>`, at any depth. A program the agent
     built and ran crashes with the working folder as its cwd, and its core
     holds its memory, environment block included, which inherited the CLI's
@@ -297,34 +300,56 @@ The owner decided on 2026-09-26, recorded on #228:
 The rules this needed, and why:
 
 * **Which 500.** The names a later step's `expected_outputs` declares come
-  first, so a declared output is never the one dropped. They always fit: each
-  dependant's `input_from` maps one upstream step to one filename, and a
-  workflow has at most 50 steps. Then the files the platform writes into the
-  folder: the agent CLI's stream captures and transcript, which
-  `agent_streams` and the tab's answer and transcript read, and the harvest's
-  patch. Then everything else, shallowest first and then by path, the rule
-  #225 chose for the working folder, so a top-level report is not pushed out
-  by a generated tree beside it. The byte cap is applied in the same order.
+  first, so a declared output is never the one dropped. There are at most 49
+  of them for one task: each dependant's `input_from` maps one upstream step
+  to one filename, and a workflow has at most 50 steps including this one.
+  Then the files the platform writes into the folder: the agent CLI's stream
+  captures and transcript, which `agent_streams` and the tab's answer and
+  transcript read, and the harvest's patch. Then everything else, shallowest
+  first and then by path, the rule #225 chose for the working folder, so a
+  top-level report is not pushed out by a generated tree beside it. The byte
+  cap is applied in the same order.
 * **The manifest is still listed by path.** The order decides which files
   are taken. It does not change the order a reader sees them in, or which of
   them the listing route's first page holds.
 * **A name longer than 256 bytes is not uploaded**
-  (`artifact_manifest.MAX_NAME_BYTES`). The count cap alone does not bound the
-  document. Every
-  entry carries its name twice, as `name` and at the end of its `uri`, and GCS
-  allows 1,024 bytes of object name, so 500 entries at that length are about
-  1 MB on their own. At 256 bytes and the longest ids a deployment makes, 500
-  entries are at most 343 KiB. The worst case of everything else the document
-  can hold is the input (256 KiB), #225's working-folder block (about
-  155 KiB), the two skipped lists (about 67 KiB) and the runner envelope
-  (about 12 KiB). That is about 833 KiB in all. At 512 bytes the sum would pass
-  1 MiB. 256 bytes is a nested path: Linux allows 255 bytes for one file name.
-  A declared name is held to the bound too, and a declared output with a
-  longer name fails its attempt as "written but not uploaded". Such a name is
-  logged with the reason `name is longer than the manifest's 256 bytes`, and
-  listed in `artifacts_skipped`, both cut to 256 characters as #225 cuts a name
-  it lists. A path can be 4,096 bytes, and 100 of those would pass Cloud
-  Logging's 256 KiB entry.
+  (`artifact_manifest.MAX_NAME_BYTES`) -- UNLESS a later step declared it
+  (#232 review, `artifact_manifest.MAX_DECLARED_NAMES`). A declared name is
+  only put first, not excused from upload: holding it to this bound too made
+  a declared output over 256 bytes fail every attempt as "written but not
+  uploaded" -- worse than before #228, because `_publish_withheld` had by then
+  already published, so the retry's push was refused as a non-fast-forward. A
+  declared name is held only to GCS's own object-name limit, 1,024 bytes,
+  same as the pre-#228 code and same as any other upload that is too long for
+  GCS: it fails at upload time and is counted in `artifacts_skipped` like any
+  other upload error, not turned away here.
+* **The 256-byte bound exists because the count cap alone does not bound the
+  document.** Every entry carries its name twice, as `name` and at the end of
+  its `uri`, and GCS allows 1,024 bytes of object name, so 500 entries at that
+  length are about 1 MB on their own. At 256 bytes, an entry is at most
+  702 bytes; 500 of them would be 343 KiB, but up to 49 are exempt (above) and
+  held only to the GCS length instead, so the manifest's worst case is 49
+  entries at about 2,238 bytes (107 KiB) plus 451 at 702 bytes (309 KiB):
+  about 416 KiB. The worst case of everything else the document can hold is
+  the input (256 KiB -- see the caveat below), #225's working-folder block
+  (about 155 KiB), the two skipped lists (about 67 KiB) and the runner
+  envelope (about 12 KiB). That is about 906 KiB in all, leaving about
+  118 KiB. At 512 bytes the manifest alone would pass that, and the sum would
+  pass 1 MiB. 256 bytes is a nested path: Linux allows 255 bytes for one file
+  name. A name over the bound (not declared) is logged with the reason `name
+  is longer than the manifest's 256 bytes`, and listed in `artifacts_skipped`,
+  both cut to 256 characters as #225 cuts a name it lists -- scrubbed of any
+  registered secret BEFORE the cut, not after, so a key that happens to cross
+  that character cannot survive in the fragment that is kept (#232 review). A
+  path can be 4,096 bytes, and 100 of those would pass Cloud Logging's 256 KiB
+  entry.
+  * **The caveat this budget does not cover (#232 review, tracked on the wave
+    epic, not fixed here):** "the input costs at most 256 KiB" assumes the
+    submitted bytes are roughly what Firestore ends up storing. Firestore
+    counts a number as a flat 8 bytes whatever its digit count, so an input
+    dense with small integers can cost more once decoded than the same count
+    of submitted bytes as text. This is the API's input-size check to
+    tighten, not this cap.
 * **Only what leaves the pod is redacted.** The pass that scrubs registered
   secrets now runs over the files that will be uploaded, not the whole
   folder. A file past the cap is not rewritten, and it is not reported in

@@ -47,22 +47,55 @@ MAX_FILES = 500
 #: tenant, `task_` and `att_` ids of 25 and 24 characters) an entry is
 #: 190 + 2 * N bytes as Firestore counts them, N being the name's length. At
 #: the GCS limit that is about 2,000 bytes, and 500 of them are 1 MB on their
-#: own. At 256 an entry is at most 702 bytes, and 500 are 343 KiB. What else
-#: the document can hold at the same time, at its worst: the task's input
-#: (`max_input_bytes`, 256 KiB), #225's working-folder block (50 entries at
-#: the GCS limit, about 100 KiB, and 50 listed as not uploaded, about 55 KiB),
+#: own. At 256 an entry is at most 702 bytes. 500 of them would be 343 KiB,
+#: but up to `MAX_DECLARED_NAMES` (49) are exempt from this bound (#232
+#: review) and held only to the GCS limit instead, so the manifest's worst
+#: case is 49 entries at about 2,238 bytes (107 KiB) plus 451 at 702 bytes
+#: (309 KiB): about 416 KiB. What else the document can hold at the same
+#: time, at its worst: the task's input (`max_input_bytes`, 256 KiB -- SEE THE
+#: CAVEAT BELOW), #225's working-folder block (50 entries at the GCS limit,
+#: about 100 KiB, and 50 listed as not uploaded, about 55 KiB),
 #: `artifacts_skipped` and `redaction_skipped` (50 each, names cut short, about
 #: 67 KiB together), and the runner envelope (about 12 KiB of ASCII). About
-#: 833 KiB in all, leaving the rest of the task document -- its metadata, its
-#: timestamps -- about 190 KiB. At 512 the manifest alone would be 593 KiB,
+#: 906 KiB in all, leaving the rest of the task document -- its metadata, its
+#: timestamps -- about 118 KiB. At 512 the manifest alone would be 593 KiB,
 #: and the sum would pass 1 MiB.
 #:
+#: THE CAVEAT (#232 review, not fixed here -- it is the API's input-size
+#: check, tracked on the wave epic): "the input costs at most `max_input_bytes`
+#: in Firestore" assumes a roughly text-shaped input, where a byte of the
+#: serialized JSON costs about a byte of Firestore string. Firestore counts a
+#: number as a flat 8 bytes whatever its digit count, so an input dense with
+#: small integers (a long list of small numbers, say) can cost MORE Firestore
+#: bytes once decoded than the same count of bytes as text -- `max_input_bytes`
+#: bounds the submitted bytes, not what they become once Firestore has parsed
+#: them into native values. This budget is sized for the ordinary case, not a
+#: proof for every input shape.
+#:
 #: 256 bytes is also a path, not a file name: Linux allows 255 bytes for one
-#: component, so only a nested path can pass this. A name a later step
-#: DECLARES is held to it too (a declared name is only put first, not
-#: excused), and a declared name over it fails the attempt as missing, named
-#: in the log as written and not uploaded.
+#: component, so only a nested path can pass this.
+#:
+#: A name a later step DECLARES is EXEMPT from this bound (#232 review): it is
+#: only put first (`upload_order`), not excused from upload. Holding it to the
+#: bound too made a declared output over 256 bytes fail every attempt
+#: ("written but not uploaded"), and `_publish_withheld` had by then already
+#: published, so the retry's push was refused as a non-fast-forward -- worse
+#: than #228 shipped with, so this restores the pre-#228 behaviour for
+#: declared names. There are at most `max_workflow_steps - 1` = 49 of them for
+#: any one task: each dependant's `input_from` maps one upstream step to one
+#: filename, and a workflow has at most 50 steps including this one. Held only
+#: to GCS's own object-name limit (`standalone.MAX_OBJECT_NAME_BYTES`, 1,024
+#: bytes), the same way the pre-#228 code was, and the same way an upload that
+#: is too long for GCS fails today: at upload time, counted in
+#: `artifacts_skipped` like any other upload error, not before. 49 entries at
+#: that length are about 107 KiB rather than the 34 KiB 49 entries at 256 bytes
+#: would be -- see the revised total below.
 MAX_NAME_BYTES = 256
+
+#: At most this many declared names are exempt from `MAX_NAME_BYTES` above.
+#: Not enforced here -- a workflow's step count already bounds it -- documented
+#: so the arithmetic below has a number to use.
+MAX_DECLARED_NAMES = 49
 
 #: The reasons a file in the folder is named in the log as not uploaded.
 #: "over cap" is the owner's wording, one spelling for both caps.
@@ -120,7 +153,10 @@ class Plan:
     it: no object can be named with it and no Firestore string can carry it
     (#225 review). `not_uploaded` is `{"name", "bytes", "reason"}` for every
     file past the cap (`OVER_CAP`) or over the name bound (`NAME_TOO_LONG`),
-    with its WHOLE name, for the log. Neither takes a place under the cap.
+    with its WHOLE name, for the log. Neither takes a place under the cap. A
+    DECLARED name is never given `NAME_TOO_LONG` (#232 review, `plan`'s
+    `declared`): it can still be `OVER_CAP`, or fail to upload for its own
+    reasons, which is a different list (`Worker._written_not_uploaded`).
     """
 
     take: tuple[str, ...] = ()
@@ -133,15 +169,22 @@ class Plan:
         return sum(1 for entry in self.not_uploaded if entry["reason"] == OVER_CAP)
 
 
-def plan(files: Mapping[str, int], *, first: Sequence[str], cap: int) -> Plan:
-    """Decide which of `files` (name -> size) are uploaded. See `upload_order`."""
+def plan(
+    files: Mapping[str, int], *, first: Sequence[str], cap: int, declared: Sequence[str] = ()
+) -> Plan:
+    """Decide which of `files` (name -> size) are uploaded. See `upload_order`.
+
+    `declared` (a later step's `expected_outputs`) is exempt from
+    `MAX_NAME_BYTES`: see the constant's docstring for why that is safe.
+    """
+    declared_names = frozenset(declared)
     take: list[str] = []
     unstorable: list[str] = []
     not_uploaded: list[dict[str, Any]] = []
     for name, size in upload_order(files, first=first):
         if not standalone.storable(name):
             unstorable.append(standalone.shown(name))
-        elif not fits(name):
+        elif not fits(name) and name not in declared_names:
             not_uploaded.append({"name": name, "bytes": size, "reason": NAME_TOO_LONG})
         elif len(take) >= cap:
             not_uploaded.append({"name": name, "bytes": size, "reason": OVER_CAP})
