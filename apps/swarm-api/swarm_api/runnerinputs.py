@@ -3,8 +3,9 @@
 A caller names a `runner_profile` and supplies an `input` dict. The platform
 checks which keys it carries -- only those the profile declares in the frozen
 catalogue, `RunnerProfile.inputs` (contract request 25,
-`validation.validate_runner_input`) -- but it never acts on them: the runner
-does, and some runners refuse the attempt outright when a key is MISSING,
+`validation.validate_runner_input`), or for `browser` and `generic`, which
+have not declared yet (#218), only its size -- but it never acts on them: the
+runner does, and some runners refuse the attempt outright when a key is MISSING,
 which is the other half and the one this module serves. `run_cli_agent` is the one that matters
 (apps/agent-worker/agent_worker/runners/cliagent.py):
 

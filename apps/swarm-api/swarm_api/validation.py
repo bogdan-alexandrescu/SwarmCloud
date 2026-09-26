@@ -198,21 +198,26 @@ def validate_runner_input(
     task of a batch, and `submit_workflow` for each step before any task is
     built. Values are checked, never rewritten: the input is stored as sent.
 
-    A profile whose inputs are NOT DECLARED YET (`inputs is None`: `browser`,
-    `generic`) is bounded by size alone, as every profile was before, because
-    its runner cannot start without keys nobody has decided on yet.
+    EVERY PROFILE IS ASKED, and the answer is the shared rule's. A profile
+    whose inputs are NOT DECLARED YET (`inputs is None`: `browser`, `generic`,
+    open with the owner on #218) is bounded by size alone, as every profile was
+    before, because its runner cannot start without keys nobody has decided on
+    yet -- and that is `check_inputs`'s answer, not a branch here. The review
+    of #213 found this function returning before it asked, while the shared
+    rule refused every key for the same profiles: two answers to one question.
+    The size is `validate_input_size`'s, which every caller runs first.
     """
-    if profile.inputs is None:
-        return
     rest = {key: value for key, value in payload.items() if key != PROMPT_INPUT_KEY}
     try:
         check_inputs(profile, rest)
     except InputRefused as refused:
+        # Only a profile that declares can refuse, so `inputs` is a mapping here.
+        declared = profile.inputs or {}
         detail: dict[str, Any] = {
             "runner_profile": profile.name,
             "key": refused.key,
             "keys": list(refused.keys),
-            "declared": {key: spec.describe() for key, spec in sorted(profile.inputs.items())},
+            "declared": {key: spec.describe() for key, spec in sorted(declared.items())},
         }
         if refused.expected is not None:
             detail["expected"] = refused.expected

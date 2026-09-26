@@ -98,7 +98,8 @@ RESOURCE_CLASSES: dict[str, ResourceClass] = {
 # choose the model a `claude-code` agent runs. So what may be sent is declared
 # per profile, here, once. swarm-api refuses anything else at submission and
 # the plugin's bridge refuses it sooner; both read this, and neither keeps a
-# table of its own.
+# table of its own. Two profiles, `browser` and `generic`, have not declared
+# yet (#218), and the API bounds what is sent to them by size alone.
 
 #: The kinds an input can be. `filename` is a bare file name with no
 #: directory: the worker keeps only the last path segment of an artifact name
@@ -278,10 +279,11 @@ class RunnerProfile:
     #: live migration on the Cloud Run ephemeral-disk path.
     checkpoint_interval_seconds: int = 120
     #: The keys of `input`, besides `prompt`, a caller may set for this
-    #: profile, each with its kind and bounds (contract request 25). swarm-api
-    #: refuses any other key, from every caller, with 422 `invalid_input`; the
-    #: plugin's bridge reads the same declaration to refuse it before it
-    #: travels.
+    #: profile, each with its kind and bounds (contract request 25). For a
+    #: profile that declares, swarm-api refuses any other key, from every
+    #: caller, with 422 `invalid_input`; the plugin's bridge reads the same
+    #: declaration to refuse it before it travels. `check_inputs` below is the
+    #: rule both call, and the one place each of the three meanings is read.
     #:
     #: EMPTY IS A DECLARATION: the profile takes its prompt and nothing else.
     #: That is what closes `input.model` on `claude-code`, which its runner
@@ -291,8 +293,10 @@ class RunnerProfile:
     #: as it was for every profile before this field existed. It exists for
     #: the runners whose work IS their input -- `browser` cannot start without
     #: `url` or `actions`, `generic` without `command` -- where an empty
-    #: declaration would refuse every task they run. What they declare is an
-    #: open question in docs/contract-change-requests.md (25), not a default.
+    #: declaration would refuse every task they run. What they declare is the
+    #: owner's open question #218, recorded under contract request 25 in
+    #: docs/contract-change-requests.md as an amendment awaiting approval:
+    #: the request as accepted typed this field `Mapping`, with no None.
     #:
     #: Excluded from the hash: a mapping is not hashable, and a profile's
     #: identity is its name.
@@ -492,11 +496,22 @@ def check_inputs(profile: RunnerProfile, raw: Mapping[str, Any]) -> dict[str, An
     integral float for an integer input becomes an int), or raises
     InputRefused: for every key the profile does not declare, naming them all,
     or for the first declared key whose value is out of its bounds, naming the
-    bound. A profile whose inputs are not declared yet (`inputs is None`)
-    declares nothing here; a caller that bounds such a profile by size alone
-    decides that before it asks.
+    bound.
+
+    NOT DECLARED YET IS DECIDED HERE, AND ONLY HERE. A profile whose inputs are
+    not declared yet (`inputs is None`: `browser` and `generic`, open with the
+    owner on #218) has no declaration to check a key against, so `raw` comes
+    back as it was sent and only its size bounds it, which the caller that
+    measures the size enforces (`validate_input_size` in swarm-api). The review
+    of #213 found this decided twice and differently: this function refused
+    every key while the API returned before asking and accepted every key, so
+    the one rule and the API gave opposite answers for the same profile. The
+    plugin's bridge sending such a profile nothing is its own send policy, not
+    this rule (#218's third question).
     """
-    declared = profile.inputs or {}
+    if profile.inputs is None:
+        return dict(raw)
+    declared = profile.inputs
     unknown = sorted(set(raw) - set(declared))
     if unknown:
         if declared:

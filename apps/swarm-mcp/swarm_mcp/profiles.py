@@ -56,9 +56,11 @@ from .client import SwarmError
 # module keeps no copy of it. Until contract request 25 was accepted (#142,
 # 2026-09-25) the bridge held the one table, `DECLARED_INPUTS`, keyed by
 # profile NAME; swarm-api now refuses an undeclared key from every caller with
-# 422 `invalid_input`, reading the same field, so a table here would be a
-# second answer to one question -- the plugin refusing what the API accepts,
-# or sending what it refuses. What is left here is the bridge's own framing:
+# 422 `invalid_input` wherever a profile declares, reading the same field and
+# calling the same rule (`swarm_common.profiles.check_inputs`), so a table
+# here would be a second answer to one question -- the plugin refusing what
+# the API accepts, or sending what it refuses. What is left here is the
+# bridge's own framing:
 # where a refusal happened (`where`), what to call next (`swarm_profiles`),
 # and `swarm dispatch --input KEY=VALUE` typed by the declaration.
 #
@@ -72,8 +74,13 @@ from .client import SwarmError
 # refused by name -- never dropped, never passed through.
 #
 # A PROFILE WHOSE INPUTS ARE NOT DECLARED YET (`inputs is None`: `browser`,
-# `generic`) is bounded by size alone at the API. The bridge sends it none:
-# it has no declaration to type a value by or to check one against.
+# `generic`, open with the owner on #218) is bounded by size alone at the API:
+# the shared rule hands its input back unchecked, and it decides that in one
+# place. THE BRIDGE SENDS IT NONE, and that is not a second answer to the
+# rule's question but the bridge's own send policy: it sends a key only when a
+# declaration names it, which gives `--input` a kind to type the value by, and
+# neither profile has one. Letting `swarm_dispatch` send a browser task's
+# `actions` would be a new plugin capability, #218's third question.
 #
 # tests/unit/mcp/test_runner_inputs.py holds the bridge to the catalogue, every
 # declared key to a `payload` read in the runner's source, and every exit code
@@ -113,8 +120,12 @@ def check_inputs(name: str, raw: Any, *, where: str = "") -> dict[str, Any]:
     profile = RUNNER_PROFILES[name]
     declared = declared_inputs(name)
     if raw and not declared:
+        # The bridge's send policy (see the header): only what a declaration
+        # names travels. The wording tells "takes only a prompt" from "has not
+        # declared yet", because the second is an open question, not a rule.
         not_yet = (
-            " yet -- the catalogue has not decided which keys it takes"
+            " yet (which keys it takes is open with the owner on #218), and the "
+            "bridge sends only what a declaration names"
             if profile.inputs is None
             else ""
         )

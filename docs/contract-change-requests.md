@@ -37,7 +37,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 22 | `profiles.py`: whether a runner profile can run on a pool account is stated by the worker and restated by the scheduler | open |
 | 23 | `models.py`: a task's end has no typed cause, so the outcome ledger classifies `last_error` text | open |
 | 24 | `profiles.py`: whether a profile's cost is declared rather than measured is named outside the catalogue | open |
-| 25 | `profiles.py`: a runner profile cannot declare the inputs a caller may send it, so the bridge names the mock's by profile | ACCEPTED and applied 2026-09-25 |
+| 25 | `profiles.py`: a runner profile cannot declare the inputs a caller may send it, so the bridge names the mock's by profile | ACCEPTED and applied 2026-09-25; one amendment, `inputs=None` for `browser` and `generic`, awaits the owner (#218) |
 
 ---
 
@@ -2359,7 +2359,12 @@ frozen, and is recorded here as such. The owner's comment on #142
 "contract request 25 is accepted: `RunnerProfile.inputs` goes in the frozen
 catalogue and the API enforces it for every caller, not only the bridge." What
 was applied, and the one place it departs from the text below, is under
-*Applied* at the end of this entry.
+*Applied* at the end of this entry. **That departure is an amendment the owner
+has NOT approved**: the field is typed `Mapping | None`, not the `Mapping` the
+request asked for, and for the two profiles left `None` the API does not
+enforce a declaration for every caller. It is recorded under *Amendment
+awaiting the owner* below, and the decision is
+[#218](https://github.com/bogdan-alexandrescu/SwarmCloud/issues/218).
 
 Recorded 2026-09-25 by the plugin lane that delivered #142 (branch
 `lane/plugin-cli-0.5.2`). Numbered 25 because #196 (the outcomes API) takes 23
@@ -2512,3 +2517,35 @@ and now offers neither to a declared profile. Section 13 of
 catalogue mirror (`apps/swarm-ui/src/types.ts`) does not follow the field:
 nothing serves it to the browser yet, which the Submit form's comment records
 as a request.
+
+### Amendment awaiting the owner: `inputs` may be `None`
+
+**Not approved.** Recorded 2026-09-25 after the review of #213, which found
+it applied without being named as a change to what the owner accepted.
+
+| | as accepted | as applied |
+|---|---|---|
+| the type | `inputs: Mapping[str, RunnerInput] = field(default_factory=dict)` | `inputs: Mapping[str, RunnerInput] \| None = field(default_factory=dict, hash=False)` |
+| what it can mean | a declaration: some keys, or none ("Empty for every profile that takes only a prompt") | three things: some keys; none, so the prompt only (`claude-code`, `codex`); or **not declared yet** (`None`: `browser`, `generic`) |
+| what the API enforces | the declaration, for every caller | the declaration, for every caller, where there is one; for `None`, the input's size alone |
+
+**What `None` does, and where that is decided.** `swarm_common.profiles.
+check_inputs(profile, raw)` is the one place: for `None` it hands `raw` back
+unchecked, and `validate_input_size`, which every submission runs first,
+bounds it. `validate_runner_input` asks that function for every profile and
+keeps no branch of its own. Before the review it did: it returned early for
+`None` while `check_inputs` refused every key, so the one rule and the API
+answered the same question oppositely.
+`tests/unit/control_plane/test_runner_inputs_by_declaration.py` now holds the
+API's answer equal to the rule's for every available profile.
+
+**The bridge sends a `None` profile nothing.** That is the bridge's own send
+policy, not a copy of the rule: it sends a key only when a declaration names
+it, and it types `--input` by the declared kind. Letting it send a browser
+task's `actions` is #218's third question.
+
+**What would retire the amendment**, whichever way #218 goes: declare
+`browser` and `generic` (which needs a list kind, and a decision on a key
+named `command`), and put the field back to `Mapping` with no `None`; or
+approve `None` as it stands, and record that approval here with the owner's
+comment.

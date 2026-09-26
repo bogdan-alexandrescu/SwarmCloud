@@ -425,14 +425,20 @@ park's checkpoint carries forward. Before 0.5.3 the rate limit fired on every
 attempt, a park does not spend one, and the step parked until cancelled, which
 is why 0.5.2 withheld both keys. `exit_code` refuses 0, 77, 78 and 143, which
 the worker reads as a success, a rate limit, a refused credential and a
-cancellation. Every other profile declares none and takes none. A key the
-profile does not declare is refused by name, never dropped, and never an
-image, a command, a resource spec, a backend or a model: `input.model` is read
-by the CLI runners, and a caller setting it would be choosing the model a
-`claude-code` agent runs. The declarations are the frozen catalogue's own,
-`RunnerProfile.inputs` (contract request 25), and the API refuses an
-undeclared key from every caller with 422 `invalid_input`, so the bridge's
-refusal is only the earlier of two identical answers.
+cancellation. `claude-code` and `codex` declare none and take only the prompt.
+A key the profile does not declare is refused by name, never dropped, and
+never an image, a command, a resource spec, a backend or a model:
+`input.model` is read by the CLI runners, and a caller setting it would be
+choosing the model a `claude-code` agent runs. The declarations are the frozen
+catalogue's own, `RunnerProfile.inputs` (contract request 25), and for a
+profile that declares, the API refuses an undeclared key with 422
+`invalid_input` whoever sends it, so the bridge's refusal is only the earlier
+of two identical answers. **`browser` and `generic` have not declared their
+inputs yet** ([#218](https://github.com/bogdan-alexandrescu/SwarmCloud/issues/218)):
+each runner's work is its input (a url or actions, a command name), and
+nobody has decided which keys they take. The bridge sends them none; the API
+bounds what any other caller sends them by size alone, as it bounded every
+profile before 0.5.3.
 
 ## What keeps these honest
 
