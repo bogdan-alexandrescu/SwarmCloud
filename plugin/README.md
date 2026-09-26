@@ -418,21 +418,50 @@ deleted, so the runs that name it stay readable.
 step can sleep long enough to be cancelled, or fail on purpose: `inputs` on a
 `swarm_dispatch` call or a `swarm_workflow` step, `--input sleep_seconds=120`
 on `swarm dispatch`, `"inputs": {...}` on a step in a `swarm workflow` spec.
-Nothing a caller sends can park a mock step. The mock's `quota_exhausted` fires
-on every attempt, and a park does not spend one, so the task would park and
-resume until someone cancelled it. A bounded park needs a counter in the
-mock itself. `exit_code` refuses 0, 77, 78 and 143, which the worker reads as a
-success, a rate limit, a refused credential and a cancellation.
-Every other profile declares none and takes none. A key the profile does not
-declare is refused by name, never dropped, and never an image, a command, a
-resource spec, a backend or a model: `input.model` is read by the CLI runners,
-and a caller setting it would be choosing the model a `claude-code` agent
-runs. The declarations live in one table in `swarm_mcp/profiles.py` until the
-frozen catalogue can carry them (contract request 25).
+`{"quota_exhausted": true}` parks a mock step once, on a simulated rate limit
+with the `retry_after_seconds` you give it, and the attempt after the park
+finishes: the mock parks the task's first attempt only, counted by the task's
+own `attempt_count`, so the bound holds even when the park's checkpoint fails
+to upload. Before 0.5.3 the rate limit fired on every attempt, a park does not
+spend one, and the step parked until cancelled, which is why 0.5.2 withheld
+both keys. `exit_code` refuses the codes the worker reads as a success, a rate
+limit, a refused credential and a cancellation. Every key's kind and bounds
+are in the table below, which is generated from the catalogue rather than
+restated here. `claude-code` and `codex` declare none and take only the prompt.
+A key the profile does not declare is refused by name, never dropped, and
+never an image, a command, a resource spec, a backend or a model:
+`input.model` is read by the CLI runners, and a caller setting it would be
+choosing the model a `claude-code` agent runs. The declarations are the frozen
+catalogue's own, `RunnerProfile.inputs` (contract request 25), and for a
+profile that declares, the API refuses an undeclared key with 422
+`invalid_input` whoever sends it, so the bridge's refusal is only the earlier
+of two identical answers. **`browser` and `generic` have not declared their
+inputs yet** ([#218](https://github.com/bogdan-alexandrescu/SwarmCloud/issues/218)):
+each runner's work is its input (a url or actions, a command name), and
+nobody has decided which keys they take. The bridge sends them none; the API
+bounds what any other caller sends them by size alone, as it bounded every
+profile before 0.5.3.
+
+What `mock` declares, as `swarm_profiles` lists it:
+
+<!-- runner-inputs:mock generated from RUNNER_PROFILES["mock"].inputs; tests/unit/mcp/test_runner_input_prose.py fails when it differs -->
+| input | kind and bounds | what the mock runner does with it |
+|---|---|---|
+| `sleep_seconds` | number 0..3600 | how long the run sleeps, in total |
+| `cpu_burn_seconds` | number 0..3600 | how long it burns CPU, in total |
+| `steps` | integer 1..1000 | how many progress files, and checkpoints, it writes |
+| `fail` | boolean | fail on purpose, after the steps |
+| `fail_message` | string | the error a failure reports |
+| `exit_code` | integer 1..255 except 77, 78, 143 | the exit code a failure uses |
+| `artifact_text` | string | what the output artifact holds |
+| `artifact_name` | filename | the output artifact's file name |
+| `quota_exhausted` | boolean | park the first attempt on a simulated provider rate limit; the next one runs |
+| `retry_after_seconds` | integer 1..3600 | the retry-after that simulated rate limit reports |
+<!-- /runner-inputs:mock -->
 
 ## What keeps these honest
 
-Four files, all in `make test`, all offline — bar one test, which CI runs:
+Five files, all in `make test`, all offline — bar one test, which CI runs:
 
 `tests/unit/mcp/test_plugin_bridge_install.py` covers whether the server can
 **start** on a machine that has only the plugin: the declaration names nothing
@@ -465,3 +494,8 @@ writes, and that the skill never tells a session a tool which exists is missing.
 file or this README must be one the argparse parsers really accept, nothing the
 bridge returns may tell a model to run a bare `swarm`, and the marketplace
 manifest must exist and agree with `plugin.json` about this plugin's name.
+
+`tests/unit/mcp/test_runner_input_prose.py` holds the runner-inputs table above,
+and the one in `docs/workflows.md`, equal to the frozen catalogue, fails when a
+sentence here, there or in the delegate skill states a bound the table does not
+own, and requires every example input to be one the catalogue accepts.

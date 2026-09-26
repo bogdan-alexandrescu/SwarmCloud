@@ -1529,7 +1529,7 @@ def build_parser() -> argparse.ArgumentParser:
     d.add_argument("--timeout", type=int, default=None)
     # DATA FOR THE RUNNER, and only what its profile declares (#142). Refused by
     # name for any other key and for any profile that declares none; the names
-    # in the help are read from the one table that decides.
+    # in the help are read from the frozen catalogue, the one declaration.
     d.add_argument(
         "--input",
         action="append",
@@ -1539,7 +1539,7 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "an input the profile declares, e.g. --input sleep_seconds=120; "
             "repeatable. Declared today by: "
-            f"{', '.join(sorted(catalogue.DECLARED_INPUTS)) or 'no profile'} "
+            f"{', '.join(catalogue.declaring()) or 'no profile'} "
             f"(`{help_command('swarm profiles')}` lists each one's inputs)"
         ),
     )

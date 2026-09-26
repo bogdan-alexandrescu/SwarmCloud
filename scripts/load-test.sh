@@ -61,7 +61,7 @@ INTERVAL_US=$(( 1000000 / (RATE > 0 ? RATE : 1) ))
 for i in $(seq 1 "${COUNT}"); do
   started_ns="$(date -u +%s)"
   if id="$(submit_task "${PROFILE}" \
-        "$(jq -nc --argjson i "${i}" '{message:"load", index:$i}')" \
+        "$(jq -nc --argjson i "${i}" '{prompt: ("load " + ($i|tostring))}')" \
         '{"metadata":{"source":"load-test"}}' 2>/dev/null)"; then
     TASK_IDS+=("${id}")
     jq -nc --arg id "${id}" --argjson submitted "${started_ns}" \

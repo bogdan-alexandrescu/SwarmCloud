@@ -794,6 +794,15 @@ class Worker:
             payload.setdefault("model", cfg.model)
         payload.setdefault("task_id", cfg.task_id)
         payload.setdefault("attempt_id", cfg.attempt_id)
+        # This attempt's number: the task's `attempt_count`, which admission
+        # increments in the lease's own transaction, so 1 on the first lease
+        # and one more on every lease after, a park's next attempt included.
+        # A platform record, not the workspace's: it reaches the runner
+        # whether or not a checkpoint did, which is what bounds the mock's
+        # simulated park (runners/mock.py, the review of #213). ASSIGNED, not
+        # `setdefault`: a count a caller could set would be a bound a caller
+        # could lift.
+        payload["attempt_count"] = int(task.get("attempt_count") or 0)
         payload.setdefault("resumed_from_checkpoint", bool(self._restored_from))
         ws.input_path.write_text(json.dumps(payload, indent=2, default=str))
 

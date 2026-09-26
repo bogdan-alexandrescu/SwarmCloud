@@ -116,9 +116,11 @@ def build_steps(raw_steps: Any) -> list[dict[str, Any]]:
     for the same reason `swarm_dispatch` has no raw `input` parameter:
     invariant 10 says a caller names a runner profile and supplies DATA, never
     an image, a command or a resource spec. `prompt` becomes `input.prompt`,
-    and a step's `inputs` becomes the rest of `input` only where
-    `profiles.DECLARED_INPUTS` names them for its profile (#142) -- the mock's
-    `sleep_seconds`, for one. Nothing here reaches the runner's argv.
+    and a step's `inputs` becomes the rest of `input` only where the frozen
+    catalogue's `RunnerProfile.inputs` names them for its profile (#142,
+    contract request 25) -- the mock's `sleep_seconds`, for one. swarm-api
+    applies the same declaration to every caller. Nothing here reaches the
+    runner's argv.
 
     Everything else about the DAG -- cycles, a dependency naming a step that is
     not in the workflow, an `input_from` whose source is not also a `depends_on`,
