@@ -311,6 +311,25 @@ jobs:
           print("ok")
           PY
 
+      - name: allow unprivileged user namespaces, so the real-kill reap test runs
+        # tests/unit/worker/test_procman_reap.py runs the worker's REAL
+        # `os.kill(-1, SIGKILL)` -- the pre-publish reap (procman.py) -- inside
+        # `unshare --user --pid`, the only place it can run without killing
+        # the test runner itself. ubuntu-24.04 restricts unprivileged user
+        # namespaces through AppArmor: measured in run 36214178409, `unshare:
+        # write failed /proc/self/uid_map: Operation not permitted`. Before
+        # that the test SKIPPED unnoticed (run 36213792704); under CI it now
+        # fails instead. This relaxes the restriction on this job's VM only,
+        # which GitHub discards when the job ends. Guarded, so an image that
+        # does not have the setting simply skips the step.
+        run: |
+          knob=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
+          if [ -e "$knob" ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          else
+            echo "no $knob on this image; nothing to relax"
+          fi
+
       - name: unit tests
         # No emulator, no credentials. The admission logic is pure so the
         # concurrency invariant can be tested exhaustively and fast.

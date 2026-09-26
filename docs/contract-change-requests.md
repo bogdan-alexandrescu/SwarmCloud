@@ -37,7 +37,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 22 | `profiles.py`: whether a runner profile can run on a pool account is stated by the worker and restated by the scheduler | open |
 | 23 | `models.py`: a task's end has no typed cause, so the outcome ledger classifies `last_error` text | ACCEPTED 2026-09-25 (#185, decision 9), applied in PR #217 |
 | 24 | `profiles.py`: whether a profile's cost is declared rather than measured is named outside the catalogue | ACCEPTED 2026-09-25 (#185, decision 9), applied in PR #217 |
-| 25 | `profiles.py`: a runner profile cannot declare the inputs a caller may send it, so the bridge names the mock's by profile | open |
+| 25 | `profiles.py`: a runner profile cannot declare the inputs a caller may send it, so the bridge names the mock's by profile | ACCEPTED 2026-09-25 (owner, on #142), applied in PR #213; both amendments confirmed by the owner 2026-09-26: `inputs=None` for `browser` and `generic` (#218), and the bounded park counted by the task's `attempt_count` rather than the state file |
 | 26 | `models.py`: the attempt's CPU figures carry no time and their limit no source | open |
 
 ---
@@ -2473,10 +2473,27 @@ The single named set stays, held to the catalogue by its test.
 
 ## 25. `profiles.py`: a runner profile cannot declare the inputs a caller may send it, so the bridge names the mock's by profile
 
-**Status:** open, recorded 2026-09-25 by the plugin lane that delivered #142
-(branch `lane/plugin-cli-0.5.2`). Numbered 25 because #196 (the outcomes API)
-takes 23 and 24; if another branch has taken 25 by the time this merges,
-renumber this one.
+**Status: ACCEPTED by the owner on 2026-09-25 and applied the same day** (branch
+`lane/mock-inputs-contract`). This edits `apps/common/swarm_common/`, which is
+frozen, and is recorded here as such. The owner's comment on #142
+([issuecomment-5840939054](https://github.com/bogdan-alexandrescu/SwarmCloud/issues/142#issuecomment-5840939054)):
+"contract request 25 is accepted: `RunnerProfile.inputs` goes in the frozen
+catalogue and the API enforces it for every caller, not only the bridge." What
+was applied, and the one place it departs from the text below, is under
+*Applied* at the end of this entry. **That departure is an amendment the owner
+has NOT approved**: the field is typed `Mapping | None`, not the `Mapping` the
+request asked for, and for the two profiles left `None` the API does not
+enforce a declaration for every caller. It is recorded under *Amendment
+awaiting the owner* below, and the decision is
+[#218](https://github.com/bogdan-alexandrescu/SwarmCloud/issues/218). A
+second change awaits the owner's confirmation too: the bounded park is counted
+by the task's `attempt_count`, not by the state-file counter the acceptance
+named, because a failed checkpoint lost that one. It is under *Fixed after the
+second review of #213*, at the end.
+
+Recorded 2026-09-25 by the plugin lane that delivered #142 (branch
+`lane/plugin-cli-0.5.2`). Numbered 25 because #196 (the outcomes API) takes 23
+and 24.
 
 ### What is true today
 
@@ -2561,6 +2578,164 @@ Anything that is not the bridge -- the web UI's New Workflow screen, a script
 posting to `/v1/tasks` -- keeps sending whatever `input` it likes, and a new
 profile that should take inputs takes none from the plugin until someone edits
 the table.
+
+### Applied, 2026-09-25
+
+Accepted by the owner on #142 (the comment quoted under *Status*), together
+with "a bounded park for the mock (a `quota_exhausted_times` counter in its
+state file, like `credential_revoked_times`), after which `quota_exhausted` and
+a bounded `retry_after_seconds` join the declared inputs."
+
+**In `swarm_common/profiles.py`**, as requested: `RunnerInput` (kind, bounds,
+`means`, `refused`) and `RunnerProfile.inputs`. Beside them, so that the rule
+has one home as well as the data: `INPUT_KINDS`, `InputRefused` (carrying the
+key, every refused key and the bound) and `check_inputs(profile, raw)`, which
+swarm-api and the bridge both call. `RunnerInput.check` refuses NaN and
+Infinity, which `json.loads` reads and which every bound comparison lets
+through. `RunnerProfile.inputs` is frozen into a read-only mapping and excluded
+from the hash; `prompt` cannot be declared, because every profile takes it.
+
+**The mock declares ten keys**: the eight the bridge declared, plus
+`quota_exhausted` (boolean) and `retry_after_seconds` (integer 1..3600).
+`exit_code` stays 1..255 except 77, 78 and 143. Still not declared: `spend`,
+`provider`, `credential_revoked_times`, `credential_detail`, `quota_detail`,
+`reset_at`. `agent_worker/runners/mock.py` parks one attempt: as first
+applied, it recorded `quota_exhausted_times` and the parking attempt's id in
+`mock_state.json` before it raised, the park's checkpoint carried the file
+forward, and the next attempt ran. A retry in place is the same attempt and is
+refused again. The count has since moved to the task's `attempt_count`,
+because a failed checkpoint lost it; see *Fixed after the second review*
+below.
+
+**`claude-code` and `codex` declare nothing**, so `input.model` is refused from
+every caller, which is the attribution-only rule
+`test_model_flag_is_attribution_only.py` holds for the bridge.
+
+**The one departure: `browser` and `generic` are `inputs=None`, NOT DECLARED
+YET, and the API bounds them by size alone, as it bounded every profile
+before.** The text above says "Empty for every profile that takes only a
+prompt", and neither does: the browser runner refuses an input with neither
+`url` nor `actions`, and the generic runner cannot start without `command`,
+the name of an entry in its own catalogue. Declaring nothing for them would
+have refused every task they run, the smoke suite's GKE row included. The
+"What it would break" section above assumed an undeclared key is "ignored"
+today; for these two runners it is the work. So which keys they declare, with
+which bounds, is open, and it is the owner's to decide
+([#218](https://github.com/bogdan-alexandrescu/SwarmCloud/issues/218)):
+
+* `browser` reads `url`, `actions` (a list of objects, which `INPUT_KINDS` has
+  no kind for), `timeout_ms`, `launch_timeout_ms`, `viewport_width`,
+  `viewport_height`, `user_agent`, `extract_text` and `screenshot`;
+* `generic` reads `command`, `paths` (a list), `target`, `working_directory`
+  and the four limits in `runners/limits.py`. A declared input named `command`
+  would read as invariant 10 relaxed although it names a catalogue entry, not
+  an argv.
+
+**swarm-api** refuses an undeclared key, or a declared key out of its bounds,
+with 422 `invalid_input` at `POST /v1/tasks`, the batch and every workflow
+step, before anything is created (`validation.validate_runner_input`). The
+bridge's `DECLARED_INPUTS` and `InputSpec` are deleted; it reads the catalogue.
+
+**Downstream, changed in the same PR because each became a restatement the
+API now enforces:** the operational scripts sent `message`, `index` and
+`run_id`, which no runner read, and now send the prompt; the Submit form
+offered `model` to the CLI profiles and `timeout_seconds` to every profile,
+and now offers neither to a declared profile. Section 13 of
+`scripts/lib/check-contract-parity.sh` holds both to the declaration. The UI's
+catalogue mirror (`apps/swarm-ui/src/types.ts`) does not follow the field:
+nothing serves it to the browser yet, which the Submit form's comment records
+as a request.
+
+### Amendment awaiting the owner: `inputs` may be `None`
+
+**Not approved.** Recorded 2026-09-25 after the review of #213, which found
+it applied without being named as a change to what the owner accepted.
+
+| | as accepted | as applied |
+|---|---|---|
+| the type | `inputs: Mapping[str, RunnerInput] = field(default_factory=dict)` | `inputs: Mapping[str, RunnerInput] \| None = field(default_factory=dict, hash=False)` |
+| what it can mean | a declaration: some keys, or none ("Empty for every profile that takes only a prompt") | three things: some keys; none, so the prompt only (`claude-code`, `codex`); or **not declared yet** (`None`: `browser`, `generic`) |
+| what the API enforces | the declaration, for every caller | the declaration, for every caller, where there is one; for `None`, the input's size alone |
+
+**What `None` does, and where that is decided.** `swarm_common.profiles.
+check_inputs(profile, raw)` is the one place: for `None` it hands `raw` back
+unchecked, and `validate_input_size`, which every submission runs first,
+bounds it. `validate_runner_input` asks that function for every profile and
+keeps no branch of its own. Before the review it did: it returned early for
+`None` while `check_inputs` refused every key, so the one rule and the API
+answered the same question oppositely.
+`tests/unit/control_plane/test_runner_inputs_by_declaration.py` now holds the
+API's answer equal to the rule's for every available profile.
+
+**The bridge sends a `None` profile nothing.** That is the bridge's own send
+policy, not a copy of the rule: it sends a key only when a declaration names
+it, and it types `--input` by the declared kind. Letting it send a browser
+task's `actions` is #218's third question.
+
+**What would retire the amendment**, whichever way #218 goes: declare
+`browser` and `generic` (which needs a list kind, and a decision on a key
+named `command`), and put the field back to `Mapping` with no `None`; or
+approve `None` as it stands, and record that approval here with the owner's
+comment.
+
+### Fixed after the second review of #213, 2026-09-25
+
+Four engineering defects the review found, fixed in the same PR. None of them
+decides what `browser` or `generic` declare; that is still #218.
+
+**A declared number has both bounds, inside the range Firestore stores.**
+`steps`, `sleep_seconds` and `cpu_burn_seconds` were declared with a floor
+only, and Python reads a JSON integer at any length, so `steps: 10**30` passed
+every check and failed when the task was written: a 500 at the store, not a
+422 at the door. `RunnerInput.__post_init__` now refuses a `number` or
+`integer` declared without both `minimum` and `maximum`, and an `integer`
+whose bounds leave the signed 64-bit range. That range is two new names in
+`profiles.py`, `INT64_MIN` and `INT64_MAX`, which swarm-api imports rather
+than restates. The field types are unchanged from what was accepted; what
+changed is which values of them the catalogue will hold. The mock's ceilings:
+`sleep_seconds` and `cpu_burn_seconds` one hour (past the mock's 600 s timeout
+on purpose, so the timeout path can be exercised), `steps` a thousand (each
+step is a file every later checkpoint carries). A refusal repeats at most
+forty characters of the value it refuses. swarm-api's `validate_storable`
+also refuses, with 422 and the path, an integer anywhere in an input or a
+task's metadata that Firestore could not encode, which is the only number
+check a profile not declared yet gets.
+
+**Where the bounded park's count lives. A CHANGE TO WHAT THE OWNER WROTE, NOT
+YET CONFIRMED BY THE OWNER.** The acceptance above reads "a bounded park for
+the mock (a `quota_exhausted_times` counter in its state file, like
+`credential_revoked_times`)". Applied that way, the count reached the next
+attempt only through the park's checkpoint, and `Worker._checkpoint` logs a
+failed upload and parks anyway, as it must for a real provider. So a park
+whose checkpoint failed was followed by another, for as long as uploads kept
+failing: the bound held only while checkpoints did. The count is now the
+task's `attempt_count`, which admission increments in the lease's own
+transaction. The lifecycle writes it into every runner's input beside
+`attempt_id`, assigned rather than defaulted so no caller can set it, and the
+mock parks while it is 1: the task's first attempt, and no other. A mock
+started without it refuses to simulate the park and fails, which spends an
+attempt that `max_attempts` bounds. The bound itself, one park, is the
+owner's and is unchanged; so is the declaration's own wording, "park the first
+attempt". The other option the review named, failing retryably when the
+park's checkpoint fails, was not taken: it would change the park path for
+every runner, and a real provider that is refusing is still refusing on the
+retry. `tests/unit/worker/test_mock_bounded_park.py::test_the_bound_holds_when_the_parks_checkpoint_fails`
+makes every checkpoint of the parking attempt fail and requires the next
+attempt to finish.
+
+**The prose copies of the bounds are generated.** `docs/workflows.md` and
+`plugin/README.md` each carry a table of the mock's inputs between
+`runner-inputs:mock` markers, rendered from `RunnerInput.describe()` and
+`means`. `tests/unit/mcp/test_runner_input_prose.py` holds both equal to the
+catalogue, fails when a sentence in either, or in the delegate skill, states a
+number about a declared numeric key outside the table, and requires every
+example input to pass `check_inputs`.
+
+**The Submit form no longer offers `browser` a key its runner never reads.**
+`timeout_seconds` is read through `runners/limits.py` by generic and the CLI
+runners; the browser runner starts no child through it.
+`tests/unit/control_plane/test_submit_offers_only_what_runners_read.py` holds
+every offer to a profile not declared yet to a `payload` read in its runner.
 
 ---
 
