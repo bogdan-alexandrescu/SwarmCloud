@@ -111,6 +111,15 @@ at all — it would hand the agent a corrupted working tree and let it continue.
 The manifest records `seq`, `created_at`, `generation`, `archive_bytes`,
 `archive_sha256` and `file_count`. The digest is verified on restore.
 
+It also records `clone_base`: the commit the attempt's clone landed on, as the
+worker knew it (`"empty"` for a repository that had no commits). A resumed
+attempt publishes from that value and not from `work/.swarm/clone-base`, the
+copy in the archived tree, because the tree is the agent's to write: an agent
+that moved the marker onto a later commit of its own kept its earlier commits
+out of the fold that makes every pushed commit the worker's. A manifest written
+before the field existed holds `null`; that attempt's work is harvested against
+the marker and is not pushed.
+
 ---
 
 ## 3. Restore

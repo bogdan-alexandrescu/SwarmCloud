@@ -376,7 +376,7 @@ def test_the_push_still_reaches_the_intended_remote_with_the_agents_changes(
 
     branch = f"{config.git_branch_prefix}{config.task_id}"
     landed = refs(origin)
-    assert branch in landed and landed[branch] != landed["main"]
+    assert branch in landed and landed[branch] != landed["main"], out
     assert "agent.txt" in tree_at(origin, branch)
     assert out["published"] is True
     assert out["auto_committed"] is True
@@ -410,6 +410,7 @@ def test_integrate_merges_contributor_branches_and_opens_one_pull_request(
     )
 
     branch = f"{config.git_branch_prefix}{config.task_id}"
+    assert branch in refs(origin), out
     landed = tree_at(origin, branch)
     assert {"t-a.txt", "t-b.txt", "t-int.txt"} <= landed, (
         f"the single pull request does not contain the whole workflow: {sorted(landed)}"
