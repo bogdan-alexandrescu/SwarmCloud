@@ -257,6 +257,62 @@ def test_an_expected_output_past_the_500th_file_is_still_uploaded(
     assert not [line for line in _logged_files(log_stream) if line.startswith("zz/late-report.md")]
 
 
+def test_a_declared_name_longer_than_the_manifest_bound_is_still_uploaded(
+    db, worker_factory, series_cli
+):
+    """A later step's `expected_outputs` can declare a name over 256 bytes --
+    nothing on the API side enforces the manifest's own bound on what a
+    caller may ask for. Before #228 that upload always succeeded. #228's
+    manifest bound then held a declared name to it too, so a declared output
+    over 256 bytes failed EVERY attempt as "written but not uploaded" (#232
+    review) -- worse than before #228, because `_publish_withheld` had by
+    then already published, and the retry's push was refused as a
+    non-fast-forward. A declared name is exempt from the manifest bound, put
+    first as it always was, and held only to GCS's own object-name limit."""
+    long_name = f"{'d' * 140}/{'e' * 159}"
+    assert len(long_name.encode("utf-8")) == 300
+    _seed(db, {"series": [[long_name, 1]]}, metadata={"expected_outputs": [long_name]})
+
+    assert _run(worker_factory) == ExitCode.OK
+    _succeeded(db)
+    assert long_name in _folder_names(db)
+    summary = _summary(db)
+    assert "expected_outputs_missing" not in summary, summary.get("expected_outputs_missing")
+    assert long_name not in (summary.get("artifacts_skipped") or [])
+
+
+# ---------------------------------------------------------------------------
+# platform files first: they never lose their head-of-queue place
+# ---------------------------------------------------------------------------
+
+
+def test_platform_files_come_first_even_when_a_plain_sort_would_lose_them(
+    db, worker_factory, series_cli, log_stream
+):
+    """No test showed the transcript, the captures and the harvest's patch
+    (`_artifacts_first`'s platform names) actually come first: every other
+    test's competing files are nested paths, so depth alone -- not the head
+    priority `upload_order` gives platform names -- kept them out of the way.
+    Here 600 competing files are TOP LEVEL, same depth as the platform names,
+    and sort before them alphabetically (`0000.txt` < `claude-code...`), and
+    the cap is 5: a plain sort with no head priority would fill it entirely
+    from the competitors and drop every platform file. They are uploaded
+    anyway, because `upload_order` puts them first outright."""
+    written = 600
+    _seed(db, {"series": [["{:04d}.txt", written]]})
+
+    assert _run(worker_factory, max_artifact_files=5) == ExitCode.OK
+    _succeeded(db)
+    names = _folder_names(db)
+    assert len(names) == 5
+    assert RUNNER_OWN_ARTIFACTS <= set(names), sorted(RUNNER_OWN_ARTIFACTS - set(names))
+    # The cap's two remaining slots go to the earliest-sorting competitors.
+    assert {"0000.txt", "0001.txt"} <= set(names), names
+    summary = _summary(db)
+    assert summary[OVER_CAP_KEY] == (written + len(RUNNER_OWN_ARTIFACTS)) - 5
+    assert summary[CAP_KEY] == 5
+
+
 # ---------------------------------------------------------------------------
 # the document stays bounded at the cap
 # ---------------------------------------------------------------------------
@@ -287,13 +343,31 @@ def test_the_summary_stays_bounded_at_the_cap_with_the_longest_names(
     rest -- the working-folder block of #225, the runner envelope, the git
     summary, the metadata -- are counted.
 
-    Before the cap every one of the 1,200 was listed: about 1.4 MB of summary."""
+    Before the cap every one of the 1,200 was listed: about 1.4 MB of summary.
+
+    THE OVER-BOUND NAMES ARE THE SHALLOWER ONES (#232 review). Both groups are
+    two directories deep, so depth ties and the tiebreak is the path itself:
+    `over_bound` starts with `a`/`b`, `at_bound` with `m`/`n`, so `over_bound`
+    sorts FIRST. With the 256-byte bound enforced, every `over_bound` name is
+    turned away by `NAME_TOO_LONG` regardless of sorting first, and the cap is
+    filled from `at_bound` instead -- so this test still passes. Put the
+    over-bound names DEEPER (as this test used to), and they would sort after
+    the at-bound ones and never reach the front of the queue either way: the
+    cap alone would keep them out, whether or not the length bound did
+    anything at all, and a MAX_NAME_BYTES of 256, 1024 or 4096 would produce
+    the identical `names` this test checks. Sorting the over-bound names first
+    means that if the length bound were ever relaxed or removed, THEY would
+    fill the cap instead of `at_bound`, and `max(len(name))` below would jump
+    to 700 and the budget assertion would fail -- which is what proves this
+    test is pinned to the bound, not just to the cap."""
     task_id = "task_" + "0" * 20
     attempt_id = "att_" + "0" * 20
-    at_bound = f"{'d' * 120}/{'e' * 120}/{{:04d}}{'x' * 10}"
-    over_bound = f"{'p' * 200}/{'q' * 200}/{'r' * 200}/{{:04d}}{'y' * 93}"
+    at_bound = f"{'m' * 120}/{'n' * 120}/{{:04d}}{'o' * 10}"
+    over_bound = f"{'a' * 245}/{'b' * 245}/{{:04d}}{'c' * 204}"
     assert len(at_bound.format(0).encode("utf-8")) == MAX_NAME_BYTES
     assert len(over_bound.format(0).encode("utf-8")) == 700
+    assert at_bound.count("/") == over_bound.count("/"), "a depth tie is the point: see the docstring"
+    assert over_bound < at_bound, "over_bound must sort FIRST, or the cap alone would explain this test"
     _seed(db, {"series": [[at_bound, 600], [over_bound, 600]]}, task_id=task_id, attempt_id=attempt_id)
     store = ProductionLengthUris(tmp_path / "gcs", bucket=BUCKET)
     worker, _config, _exporter = build_worker(
@@ -306,7 +380,7 @@ def test_the_summary_stays_bounded_at_the_cap_with_the_longest_names(
     names = _folder_names(db, task_id)
     assert len(names) == CAP
     assert max(len(name.encode("utf-8")) for name in names) == MAX_NAME_BYTES
-    assert not [name for name in names if name.startswith("p" * 200)]
+    assert not [name for name in names if name.startswith("a" * 245)]
 
     budget = (
         FIRESTORE_DOCUMENT_BYTES
@@ -342,6 +416,66 @@ def test_a_name_longer_than_the_manifest_bound_is_not_uploaded_and_is_named(
     skipped = _summary(db).get("artifacts_skipped") or []
     assert [name for name in skipped if name.startswith("a" * 200)], skipped
     assert all(len(name) <= MAX_NAME_BYTES + 3 for name in skipped), [len(n) for n in skipped]
+
+
+# ---------------------------------------------------------------------------
+# a too-long name is scrubbed before it is cut, not after (#232 review)
+# ---------------------------------------------------------------------------
+
+
+def test_a_secret_crossing_the_name_cut_leaves_no_fragment(db, store, tmp_path):
+    """`shown` cuts a too-long name to 256 characters for the log and the
+    summary. Cutting the RAW name let a registered secret that crosses that
+    character survive in part: `shown(name)` kept the first 256 characters,
+    which held the key's opening bytes, before anything had a chance to
+    replace them. `shown(self._scrub(name))` scrubs the whole name first, so
+    the key is gone before there is anything left to cut in half.
+
+    The name is 320 bytes over two path components (each under a filesystem's
+    255-byte limit), with a stand-in provider key placed so it starts before
+    character 256 and ends after it -- crossing the cut, not sitting inside or
+    outside it."""
+    key = "sk-ant-api03-" + "S" * 40
+    body = "a" * 230 + key + "z" * 36
+    assert len(body) == 319
+    long_name = body[:150] + "/" + body[150:]
+    assert len(long_name.encode("utf-8")) == 320
+    start = long_name.index(key)
+    end = start + len(key)
+    assert start < 256 < end, "the key must cross the 256th character, not sit on one side of it"
+    # The exact fragment a CUT-BEFORE-SCRUB bug leaves behind: the part of the
+    # key before character 256. A weaker check for the WHOLE key would never
+    # go red on the bug this test is for -- cutting to 256 characters means
+    # the whole key is never there to find, only this leading piece of it.
+    leaked_fragment = key[: 256 - start]
+    assert 0 < len(leaked_fragment) < len(key)
+
+    seed_attempt(db, runner_profile="claude-code")
+    seed_tenant(db, credentials=["anthropic"])
+    log = io.StringIO()
+    worker, _config, _ = build_worker(
+        db,
+        store,
+        tmp_path,
+        log,
+        runner_profile="claude-code",
+        secret_client=FakeSecretClient({f"swarm-tenant-{TENANT}-anthropic": key}),
+    )
+    worker.ws = ws = workspace_mod.create(tmp_path / "ws", "att_1")
+    worker._build_child_env()  # registers the key for redaction
+
+    (ws.artifacts / long_name.split("/")[0]).mkdir(parents=True)
+    (ws.artifacts / long_name).write_text("x\n")
+
+    summary = worker._upload_outputs()
+
+    skipped = summary.get("artifacts_skipped") or []
+    assert skipped, "the long name must have been dropped for this test to mean anything"
+    assert not any(leaked_fragment in name for name in skipped), skipped
+    assert leaked_fragment not in log.getvalue(), log.getvalue()
+    # The control: scrubbing must not have missed the key entirely, only cut
+    # around it -- the fragment is a genuine prefix of the registered value.
+    assert key.startswith(leaked_fragment)
 
 
 # ---------------------------------------------------------------------------

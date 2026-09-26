@@ -531,6 +531,24 @@ def test_a_file_written_but_not_uploaded_is_named_as_such(db, worker_factory, lo
     assert "not written" not in missing_lines[0]["message"]
 
 
+def test_written_not_uploaded_lists_a_declared_name_dropped_over_the_byte_cap(
+    db, worker_factory
+):
+    """`_written_not_uploaded` (~2128-2137) had no test that called it
+    directly: every test above reaches it only through the message it feeds
+    `missing_error`/`missing_line`. `notes.md` is declared, genuinely written
+    by the runner, and genuinely not uploaded -- dropped by the byte cap, not
+    missing because the agent never wrote it -- so it belongs in
+    `artifacts_skipped`, and this is what the method must return for it."""
+    _seed(db, ["notes.md"], artifact_name="notes.md")
+    worker, _config, _exporter = worker_factory(max_artifact_bytes=4)
+
+    assert worker.run() == ExitCode.FAILED
+    summary = db.doc("tasks/task_1")["result_summary"]
+    assert summary.get("artifacts_skipped") == ["notes.md"], summary.get("artifacts_skipped")
+    assert worker._written_not_uploaded(summary) == ["notes.md"]
+
+
 # ---------------------------------------------------------------------------
 # the pure pieces
 # ---------------------------------------------------------------------------
