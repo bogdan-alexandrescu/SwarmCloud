@@ -113,7 +113,30 @@ def _bounded_keys() -> set[str]:
 
 #: A backticked span that is an example rather than a name: it holds a JSON
 #: object or a `key=value` flag.
-_EXAMPLE_SPAN = re.compile(r"`[^`\n]*[{=][^`\n]*`")
+_EXAMPLE_SPAN = re.compile(r"`[^`]*[{=][^`]*`")
+_CODE_SPAN = re.compile(r"`[^`]*`")
+_HIDDEN = re.compile("\x00([0-9]+)\x00")
+
+
+def _clauses(flat: str) -> list[str]:
+    """`flat` cut into clauses, never inside a backticked span.
+
+    A clause ends at a full stop, a semicolon or a colon followed by a space,
+    so `0.5.3` and `e.g. {` stay whole -- and the colon inside an example like
+    `{"quota_exhausted": true}` does not end one, which would leave half an
+    example in each clause and a bare number in the second.
+    """
+    spans: list[str] = []
+
+    def hide(match: re.Match[str]) -> str:
+        spans.append(match.group(0))
+        return f"\x00{len(spans) - 1}\x00"
+
+    hidden = _CODE_SPAN.sub(hide, flat)
+    return [
+        _HIDDEN.sub(lambda m: spans[int(m.group(1))], clause)
+        for clause in re.split(r"(?<=[.;:])\s+", hidden)
+    ]
 
 
 @pytest.mark.parametrize("rel", PROSE)
@@ -122,10 +145,7 @@ def test_no_sentence_outside_the_tables_restates_a_bound(rel):
     assert keys, "no declared number to look for; this test reads nothing"
     offenders = []
     for paragraph in re.split(r"\n\s*\n", _outside_tables(_read(rel))):
-        flat = " ".join(paragraph.split())
-        # A clause ends at a full stop, a semicolon or a colon followed by a
-        # space, so `0.5.3` and `e.g. {` stay whole.
-        for clause in re.split(r"(?<=[.;:])\s+", flat):
+        for clause in _clauses(" ".join(paragraph.split())):
             named = sorted(key for key in keys if f"`{key}`" in clause)
             if named and re.search(r"\d", _EXAMPLE_SPAN.sub("", clause)):
                 offenders.append(f"{named}: {clause}")
@@ -137,7 +157,7 @@ def test_no_sentence_outside_the_tables_restates_a_bound(rel):
 
 def _json_examples(text: str) -> list[dict]:
     found = []
-    for span in re.findall(r"`(\{[^`\n]*\})`", text):
+    for span in re.findall(r"`(\{[^`]*\})`", " ".join(text.split())):
         try:
             value = json.loads(span)
         except ValueError:
@@ -164,7 +184,7 @@ def test_every_example_value_is_one_the_catalogue_accepts(rel):
             check_inputs(mock, sent)
         except InputRefused as refused:
             pytest.fail(f"{rel} shows {example}, which the catalogue refuses: {refused}")
-    for key, value in re.findall(r"--input\s+([a-z_]+)=([^\s`]+)", text):
+    for key, value in re.findall(r"--input\s+([a-z_]+)=([^\s`]+)", " ".join(text.split())):
         if key not in declared:
             continue
         checked += 1

@@ -24,6 +24,8 @@ from pathlib import PurePosixPath
 from typing import Any, Iterable, Mapping, Sequence
 
 from swarm_common.profiles import (
+    INT64_MAX,
+    INT64_MIN,
     RESOURCE_CLASSES,
     RUNNER_PROFILES,
     InputRefused,
@@ -160,6 +162,44 @@ def validate_input_size(payload: Any, max_bytes: int, *, label: str = "input") -
             detail={"bytes": size, "max_bytes": max_bytes},
         )
     return size
+
+
+def validate_storable(payload: Any, *, label: str = "input", step_id: str | None = None) -> None:
+    """Refuse an integer, anywhere in `payload`, that Firestore cannot store.
+
+    Python reads a JSON integer of any length, and Firestore stores a signed
+    64-bit one, so `{"n": 10**30}` passed every check this module made and
+    raised when the task was written: a 500 at the store, where the caller
+    learns nothing, instead of a 422 here that names the path (the review of
+    #213). A declared runner input cannot get this far out of range --
+    `RunnerInput` requires both bounds, inside the same range -- but a profile
+    whose inputs are not declared yet (`browser`, `generic`, #218) is bounded
+    by size alone, and a task's metadata by size and its reserved keys. This is
+    the store's own limit, not a declaration, so it applies to every profile.
+
+    Walked with a stack, not recursion: a payload nested a thousand deep is
+    small enough to pass the size limit and deep enough to overflow Python's.
+    """
+    stack: list[tuple[str, Any]] = [(label, payload)]
+    while stack:
+        path, value = stack.pop()
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, int):
+            if not INT64_MIN <= value <= INT64_MAX:
+                message = (
+                    f"{path} is a {len(str(abs(value)))}-digit integer, outside the "
+                    f"signed 64-bit range Firestore stores ({INT64_MIN}..{INT64_MAX})"
+                )
+                detail: dict[str, Any] = {"path": path, "range": "signed 64-bit"}
+                if step_id is not None:
+                    detail["step_id"] = step_id
+                    message = f"step {step_id!r}: {message}"
+                raise ValidationFailed(message, detail=detail)
+        elif isinstance(value, Mapping):
+            stack.extend((f"{path}.{key}", item) for key, item in value.items())
+        elif isinstance(value, (list, tuple)):
+            stack.extend((f"{path}[{index}]", item) for index, item in enumerate(value))
 
 
 class InvalidInput(ValidationFailed):

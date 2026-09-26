@@ -262,7 +262,9 @@ interface Suggestion {
  * gone. `generic` and `browser` have not declared their inputs yet and are
  * bounded by size only, so their entries are still the runner census.
  * scripts/lib/check-contract-parity.sh (section 13) holds every entry for a
- * declared profile to the declaration.
+ * declared profile to the declaration, and
+ * tests/unit/control_plane/test_submit_offers_only_what_runners_read.py holds
+ * every entry for a profile not declared yet to a key its runner reads.
  *
  * REQUESTED, NOT CHANGED (CLAUDE.md's reporting rule): `/v1/capacity` should
  * serve each profile's declared inputs beside `required_keys`, so this
@@ -287,14 +289,16 @@ const SUGGESTED: Record<string, Suggestion[]> = {
     { name: 'working_directory', kind: 'text', note: 'a directory inside the workspace to run in' },
     { name: 'timeout_seconds', kind: 'number', note: 'lowers the child wall clock; the platform ceiling still wins' },
   ],
-  // runners/browser.py:76-107.
+  // runners/browser.py:76-107. No `timeout_seconds`: the browser runner starts
+  // no child through runners/limits.py and never reads it, so an offer here
+  // told a user their run was shorter while the platform's ceiling applied
+  // unchanged (the review of #213).
   browser: [
     { name: 'url', kind: 'text', note: 'opened first, before any action below' },
     { name: 'actions', kind: 'actions', note: 'run in order after the first page loads' },
     { name: 'timeout_ms', kind: 'number', note: 'per-action ceiling' },
     { name: 'viewport_width', kind: 'number', note: 'defaults to 1280' },
     { name: 'viewport_height', kind: 'number', note: 'defaults to 900' },
-    { name: 'timeout_seconds', kind: 'number', note: 'lowers the child wall clock; the platform ceiling still wins' },
   ],
   // runners/mock.py module docstring: every key optional, by design.
   mock: [
@@ -308,8 +312,8 @@ const SUGGESTED: Record<string, Suggestion[]> = {
 }
 
 /** `timeout_seconds` (`runners/limits.py`, which a caller may only LOWER) is
- *  offered only to the two profiles whose inputs are not declared yet: a
- *  declared profile that does not declare it refuses it. */
+ *  offered to `generic` alone: a declared profile that does not declare it
+ *  refuses it, and the browser runner never reads it. */
 function suggestionsFor(profile: string): Suggestion[] {
   return SUGGESTED[profile] ?? []
 }

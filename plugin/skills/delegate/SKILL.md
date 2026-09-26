@@ -170,8 +170,9 @@ mock step RUNNING long enough to cancel, `{"fail": true}` fails it on purpose,
 and `{"quota_exhausted": true, "retry_after_seconds": 60}` parks it ONCE on a
 simulated rate limit; the attempt after the park runs to the end. Report that
 step as parked while it waits, not as failed. `exit_code` takes a failure's
-code, but not 77, 78 or 143, which the worker reads as a rate limit, a refused
-credential and a cancellation. `claude-code` and `codex` declare none and take
+code, but not one the worker reads as a rate limit, a refused credential or a
+cancellation; `swarm_profiles` names those, with every key's bounds, so do
+not quote a bound from memory. `claude-code` and `codex` declare none and take
 only the prompt. For a profile that declares, a key it does not declare is
 refused before anything is dispatched, by the bridge and by the API alike.
 `browser` and `generic` have **not declared their inputs yet** (#218): the

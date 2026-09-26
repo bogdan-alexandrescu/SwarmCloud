@@ -37,7 +37,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 22 | `profiles.py`: whether a runner profile can run on a pool account is stated by the worker and restated by the scheduler | open |
 | 23 | `models.py`: a task's end has no typed cause, so the outcome ledger classifies `last_error` text | open |
 | 24 | `profiles.py`: whether a profile's cost is declared rather than measured is named outside the catalogue | open |
-| 25 | `profiles.py`: a runner profile cannot declare the inputs a caller may send it, so the bridge names the mock's by profile | ACCEPTED and applied 2026-09-25; one amendment, `inputs=None` for `browser` and `generic`, awaits the owner (#218) |
+| 25 | `profiles.py`: a runner profile cannot declare the inputs a caller may send it, so the bridge names the mock's by profile | ACCEPTED and applied 2026-09-25; two changes await the owner: the amendment `inputs=None` for `browser` and `generic` (#218), and the bounded park counted by the task's `attempt_count` rather than the state file the acceptance named |
 
 ---
 
@@ -2364,7 +2364,11 @@ has NOT approved**: the field is typed `Mapping | None`, not the `Mapping` the
 request asked for, and for the two profiles left `None` the API does not
 enforce a declaration for every caller. It is recorded under *Amendment
 awaiting the owner* below, and the decision is
-[#218](https://github.com/bogdan-alexandrescu/SwarmCloud/issues/218).
+[#218](https://github.com/bogdan-alexandrescu/SwarmCloud/issues/218). A
+second change awaits the owner's confirmation too: the bounded park is counted
+by the task's `attempt_count`, not by the state-file counter the acceptance
+named, because a failed checkpoint lost that one. It is under *Fixed after the
+second review of #213*, at the end.
 
 Recorded 2026-09-25 by the plugin lane that delivered #142 (branch
 `lane/plugin-cli-0.5.2`). Numbered 25 because #196 (the outcomes API) takes 23
@@ -2474,10 +2478,13 @@ from the hash; `prompt` cannot be declared, because every profile takes it.
 `quota_exhausted` (boolean) and `retry_after_seconds` (integer 1..3600).
 `exit_code` stays 1..255 except 77, 78 and 143. Still not declared: `spend`,
 `provider`, `credential_revoked_times`, `credential_detail`, `quota_detail`,
-`reset_at`. `agent_worker/runners/mock.py` parks one attempt: it records
-`quota_exhausted_times` and the parking attempt's id in `mock_state.json`
-before it raises, the park's checkpoint carries the file forward, and the next
-attempt runs. A retry in place is the same attempt and is refused again.
+`reset_at`. `agent_worker/runners/mock.py` parks one attempt: as first
+applied, it recorded `quota_exhausted_times` and the parking attempt's id in
+`mock_state.json` before it raised, the park's checkpoint carried the file
+forward, and the next attempt ran. A retry in place is the same attempt and is
+refused again. The count has since moved to the task's `attempt_count`,
+because a failed checkpoint lost it; see *Fixed after the second review*
+below.
 
 **`claude-code` and `codex` declare nothing**, so `input.model` is refused from
 every caller, which is the attribution-only rule
@@ -2549,3 +2556,62 @@ task's `actions` is #218's third question.
 named `command`), and put the field back to `Mapping` with no `None`; or
 approve `None` as it stands, and record that approval here with the owner's
 comment.
+
+### Fixed after the second review of #213, 2026-09-25
+
+Four engineering defects the review found, fixed in the same PR. None of them
+decides what `browser` or `generic` declare; that is still #218.
+
+**A declared number has both bounds, inside the range Firestore stores.**
+`steps`, `sleep_seconds` and `cpu_burn_seconds` were declared with a floor
+only, and Python reads a JSON integer at any length, so `steps: 10**30` passed
+every check and failed when the task was written: a 500 at the store, not a
+422 at the door. `RunnerInput.__post_init__` now refuses a `number` or
+`integer` declared without both `minimum` and `maximum`, and an `integer`
+whose bounds leave the signed 64-bit range. That range is two new names in
+`profiles.py`, `INT64_MIN` and `INT64_MAX`, which swarm-api imports rather
+than restates. The field types are unchanged from what was accepted; what
+changed is which values of them the catalogue will hold. The mock's ceilings:
+`sleep_seconds` and `cpu_burn_seconds` one hour (past the mock's 600 s timeout
+on purpose, so the timeout path can be exercised), `steps` a thousand (each
+step is a file every later checkpoint carries). A refusal repeats at most
+forty characters of the value it refuses. swarm-api's `validate_storable`
+also refuses, with 422 and the path, an integer anywhere in an input or a
+task's metadata that Firestore could not encode, which is the only number
+check a profile not declared yet gets.
+
+**Where the bounded park's count lives. A CHANGE TO WHAT THE OWNER WROTE, NOT
+YET CONFIRMED BY THE OWNER.** The acceptance above reads "a bounded park for
+the mock (a `quota_exhausted_times` counter in its state file, like
+`credential_revoked_times`)". Applied that way, the count reached the next
+attempt only through the park's checkpoint, and `Worker._checkpoint` logs a
+failed upload and parks anyway, as it must for a real provider. So a park
+whose checkpoint failed was followed by another, for as long as uploads kept
+failing: the bound held only while checkpoints did. The count is now the
+task's `attempt_count`, which admission increments in the lease's own
+transaction. The lifecycle writes it into every runner's input beside
+`attempt_id`, assigned rather than defaulted so no caller can set it, and the
+mock parks while it is 1: the task's first attempt, and no other. A mock
+started without it refuses to simulate the park and fails, which spends an
+attempt that `max_attempts` bounds. The bound itself, one park, is the
+owner's and is unchanged; so is the declaration's own wording, "park the first
+attempt". The other option the review named, failing retryably when the
+park's checkpoint fails, was not taken: it would change the park path for
+every runner, and a real provider that is refusing is still refusing on the
+retry. `tests/unit/worker/test_mock_bounded_park.py::test_the_bound_holds_when_the_parks_checkpoint_fails`
+makes every checkpoint of the parking attempt fail and requires the next
+attempt to finish.
+
+**The prose copies of the bounds are generated.** `docs/workflows.md` and
+`plugin/README.md` each carry a table of the mock's inputs between
+`runner-inputs:mock` markers, rendered from `RunnerInput.describe()` and
+`means`. `tests/unit/mcp/test_runner_input_prose.py` holds both equal to the
+catalogue, fails when a sentence in either, or in the delegate skill, states a
+number about a declared numeric key outside the table, and requires every
+example input to pass `check_inputs`.
+
+**The Submit form no longer offers `browser` a key its runner never reads.**
+`timeout_seconds` is read through `runners/limits.py` by generic and the CLI
+runners; the browser runner starts no child through it.
+`tests/unit/control_plane/test_submit_offers_only_what_runners_read.py` holds
+every offer to a profile not declared yet to a `payload` read in its runner.

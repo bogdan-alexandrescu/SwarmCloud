@@ -65,9 +65,36 @@ and each step here.
 
 | the profile | what `input` may carry |
 |---|---|
-| `mock` | `prompt`, and its declared test knobs: `sleep_seconds`, `cpu_burn_seconds`, `steps`, `fail`, `fail_message`, `exit_code` (1..255 except 77, 78, 143), `artifact_text`, `artifact_name`, `quota_exhausted`, `retry_after_seconds` (1..3600) |
+| `mock` | `prompt`, and its declared test knobs, in the table below |
 | `claude-code`, `codex` | `prompt` and nothing else |
 | `browser`, `generic` | **not declared yet**: anything, bounded by `max_input_bytes` alone, as before |
+
+What the mock declares, with each key's kind and bounds. This table is
+generated from the catalogue, not written: a bound stated anywhere else in
+this file would be a copy nothing compares, so none is.
+
+<!-- runner-inputs:mock generated from RUNNER_PROFILES["mock"].inputs; tests/unit/mcp/test_runner_input_prose.py fails when it differs -->
+| input | kind and bounds | what the mock runner does with it |
+|---|---|---|
+| `sleep_seconds` | number 0..3600 | how long the run sleeps, in total |
+| `cpu_burn_seconds` | number 0..3600 | how long it burns CPU, in total |
+| `steps` | integer 1..1000 | how many progress files, and checkpoints, it writes |
+| `fail` | boolean | fail on purpose, after the steps |
+| `fail_message` | string | the error a failure reports |
+| `exit_code` | integer 1..255 except 77, 78, 143 | the exit code a failure uses |
+| `artifact_text` | string | what the output artifact holds |
+| `artifact_name` | filename | the output artifact's file name |
+| `quota_exhausted` | boolean | park the first attempt on a simulated provider rate limit; the next one runs |
+| `retry_after_seconds` | integer 1..3600 | the retry-after that simulated rate limit reports |
+<!-- /runner-inputs:mock -->
+
+Every declared number has a floor and a ceiling, and an integer's bounds lie
+inside the signed 64-bit range; the catalogue refuses a declaration without
+them. Python reads a JSON integer at any length and Firestore stores 64 bits,
+so an unbounded number passed every check and failed at the task write with a
+500. The API also refuses, with 422, an integer anywhere in an input or a
+task's metadata that Firestore could not store, which is the only number check
+a profile not declared yet gets.
 
 A key the profile does not declare, or a declared one outside its bounds, is
 refused with 422 `invalid_input`. The detail names the key (`key`, and every
@@ -86,11 +113,15 @@ empty declaration would refuse every task they run. Which keys they declare,
 with which bounds, is an open question recorded under request 25 in
 [contract-change-requests.md](contract-change-requests.md) and tracked as #218.
 
-`{"quota_exhausted": true}` parks a mock step ONCE. The mock counts the
-attempts it has parked in its own state file, which the park's checkpoint
-carries forward, and the attempt after the park runs to the end. It parked on
-every attempt until 2026-09-25, and a park does not spend an attempt, so such a
-task never ended.
+`{"quota_exhausted": true}` parks a mock step ONCE: the task's first attempt,
+and no other. The attempt is counted by the task's own `attempt_count`, which
+admission increments in the lease's own transaction and the worker hands to
+the runner, so the bound holds even when the park's checkpoint fails to
+upload; the attempt after the park runs to the end, from that checkpoint when
+there is one. It parked on every attempt until 2026-09-25, and a park does not
+spend an attempt, so such a task never ended. Its first bound was a count in
+the mock's own working directory, which only the checkpoint carried forward,
+so a park whose upload failed was followed by another (the review of #213).
 
 ## Artifacts pass by reference
 

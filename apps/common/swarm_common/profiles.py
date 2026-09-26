@@ -106,6 +106,17 @@ RESOURCE_CLASSES: dict[str, ResourceClass] = {
 #: (`RunnerContext.artifact_path`), so `../x` would quietly become `x`.
 INPUT_KINDS = ("number", "integer", "boolean", "string", "filename")
 
+#: The signed 64-bit range, which is what Firestore stores an integer in.
+#: Python reads a JSON integer of any length, so an integer input whose bounds
+#: reached past this would accept a value the task write then fails to encode:
+#: a 500 at the store instead of a 422 at the door (the review of #213).
+INT64_MIN = -(2**63)
+INT64_MAX = 2**63 - 1
+
+#: How much of a refused value a refusal repeats. A caller who sent three
+#: hundred digits needs the bound, not the digits back.
+_SHOWN_VALUE_CHARS = 40
+
 
 class InputRefused(ValueError):
     """An input a profile does not accept, and why.
@@ -137,6 +148,12 @@ class RunnerInput:
     The bounds are what the runner can do anything useful with. A value outside
     them is refused at submission rather than coerced, or crashed on, after
     admission has spent a lease on it.
+
+    A NUMBER HAS BOTH BOUNDS, and an integer's bounds lie inside the signed
+    64-bit range. A declaration without them is refused here, not left to
+    review: the mock's `steps`, `sleep_seconds` and `cpu_burn_seconds` were
+    declared with a floor only, so `steps: 10**30` passed every check and
+    failed at the Firestore write (the review of #213).
     """
 
     kind: str
@@ -155,23 +172,33 @@ class RunnerInput:
         numeric = self.kind in ("number", "integer")
         if not numeric and (self.minimum is not None or self.maximum is not None or self.refused):
             raise ValueError(f"a {self.kind} input has no bounds; only a number or an integer does")
+        if numeric and (self.minimum is None or self.maximum is None):
+            raise ValueError(
+                f"a {self.kind} input declares both a minimum and a maximum; without "
+                "one, a JSON number of any size passes and fails at the store instead"
+            )
         for bound in (self.minimum, self.maximum):
             if bound is not None and not math.isfinite(bound):
                 raise ValueError("an input's bounds must be finite numbers")
         if self.minimum is not None and self.maximum is not None and self.minimum > self.maximum:
             raise ValueError(f"input bounds {self.minimum}..{self.maximum} admit nothing")
+        # Both bounds are set for an integer by now: the check above refused it.
+        if self.kind == "integer" and not (
+            self.minimum >= INT64_MIN and self.maximum <= INT64_MAX
+        ):
+            raise ValueError(
+                f"integer input bounds {self.minimum}..{self.maximum} leave the signed "
+                "64-bit range Firestore stores"
+            )
         for _, reads_as in self.refused:
             if not reads_as:
                 raise ValueError("a refused value must say what the platform would read it as")
 
     def describe(self) -> str:
         """`integer 1..255 except 77, 78, 143`: the kind and the bound, as a caller reads it."""
+        # `__post_init__` gives a number both bounds and anything else neither.
         if self.minimum is not None and self.maximum is not None:
             text = f"{self.kind} {self.minimum:g}..{self.maximum:g}"
-        elif self.minimum is not None:
-            text = f"{self.kind} >= {self.minimum:g}"
-        elif self.maximum is not None:
-            text = f"{self.kind} <= {self.maximum:g}"
         else:
             text = self.kind
         if self.refused:
@@ -185,8 +212,11 @@ class RunnerInput:
         wanted = f"input {key!r} must be {article} {expected}"
 
         def refuse(detail: str = "") -> InputRefused:
+            shown = repr(value)
+            if len(shown) > _SHOWN_VALUE_CHARS:
+                shown = f"{shown[:_SHOWN_VALUE_CHARS]}... ({len(shown)} characters)"
             return InputRefused(
-                f"{wanted}, not {value!r}{detail}", key=key, expected=expected
+                f"{wanted}, not {shown}{detail}", key=key, expected=expected
             )
 
         if self.kind in ("number", "integer"):
@@ -335,10 +365,28 @@ class RunnerProfile:
 #: limit. tests/unit/mcp/test_runner_inputs.py holds every key here to a
 #: `payload` read in the mock's source.
 _MOCK_INPUTS: dict[str, RunnerInput] = {
-    "sleep_seconds": RunnerInput("number", minimum=0, means="how long the run sleeps, in total"),
-    "cpu_burn_seconds": RunnerInput("number", minimum=0, means="how long it burns CPU, in total"),
+    # ONE HOUR, for both. Deliberately past the mock's own 600 s timeout
+    # (`RUNNER_PROFILES["mock"].timeout_seconds`, which a caller may lower and
+    # never raise): a sleep, or a burn, longer than the timeout is how the
+    # timeout path is exercised, and #142's 120 s cancel check sits well inside
+    # either. Six timeouts' worth is room for any such test; past it a value is
+    # a typo, and without a ceiling at all `10**30` failed at the task write.
+    "sleep_seconds": RunnerInput(
+        "number", minimum=0, maximum=3600, means="how long the run sleeps, in total"
+    ),
+    "cpu_burn_seconds": RunnerInput(
+        "number", minimum=0, maximum=3600, means="how long it burns CPU, in total"
+    ),
+    # A THOUSAND. Each step writes a small progress file into `work/`, and
+    # every later checkpoint carries every one, so this bounds the files a
+    # mock checkpoint can hold to a thousand. The largest any test or script
+    # sends is 60 (tests/unit/worker/startup_harness.py); a checkpoint that
+    # holds partial work needs two.
     "steps": RunnerInput(
-        "integer", minimum=1, means="how many progress files, and checkpoints, it writes"
+        "integer",
+        minimum=1,
+        maximum=1000,
+        means="how many progress files, and checkpoints, it writes",
     ),
     "fail": RunnerInput("boolean", means="fail on purpose, after the steps"),
     "fail_message": RunnerInput("string", means="the error a failure reports"),
@@ -368,9 +416,11 @@ _MOCK_INPUTS: dict[str, RunnerInput] = {
     # THE BOUNDED PARK. Withheld by the review of PR #201, because the mock
     # raised its rate limit on every attempt and a park does not spend one, so
     # a task sent this parked and resumed until someone cancelled it. The mock
-    # now counts the attempts it has parked in its state file
-    # (`quota_exhausted_times` in mock_state.json, carried to the next attempt
-    # by the park's own checkpoint) and parks one attempt only.
+    # now parks the task's FIRST attempt only, by the task's `attempt_count`,
+    # which admission increments in the lease's own transaction and the
+    # lifecycle hands every runner. Not by a count in its own `work/`: that
+    # reached the next attempt only through the park's checkpoint, and a park
+    # whose checkpoint failed lost it (the review of #213).
     "quota_exhausted": RunnerInput(
         "boolean",
         means="park the first attempt on a simulated provider rate limit; the next one runs",
