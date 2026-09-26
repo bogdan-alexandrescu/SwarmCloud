@@ -64,7 +64,7 @@ _FAILED_PARENT_STATES = frozenset(
 _FAILURE_SENT_CAUSES = frozenset({EndCause.FAILED_PARENT.value, EndCause.WORKFLOW_SWEEP.value})
 #: ... and with one of these, by a cancel somebody asked for, at that step or
 #: above it.
-_CANCEL_SENT_CAUSES = frozenset({EndCause.CANCEL_REQUESTED.value, EndCause.CANCELLED_PARENT.value})
+_CANCEL_SENT_CAUSES = frozenset({EndCause.CANCEL_REQUESTED.value})  # MUTATION M2a
 
 
 def _parent_cause(parents: dict[str, ParentEnd], failed: list[str]) -> EndCause | None:
