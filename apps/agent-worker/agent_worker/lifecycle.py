@@ -7,7 +7,8 @@ load-bearing in a way the rest are not.
     2.  STARTING -> RUNNING
     3.  create the isolated workspace
     4.  restore the latest checkpoint, if any
-    5.  optional shallow git clone
+    5.  optional shallow git clone, with the tenant token only if the
+        entrypoint made this process non-dumpable (hardening.py)
     5b. stage every artifact this step declared in `input_from`
     5c. link `work/artifacts` to `artifacts/`, unless the name is taken (#149)
     6.  resolve the tenant's provider credential
@@ -165,6 +166,7 @@ from .gitops import (
     summarize_work,
     verify_worker_authorship,
 )
+from .hardening import FAILED, MemoryProtection
 from .metrics import (
     ResourceSampler,
     ResourceUsage,
@@ -296,6 +298,12 @@ class WorkerDeps:
     #: The entrypoint's phase tracker, carried on so the lifecycle's phases
     #: continue the same clock. None builds one on the worker's logger.
     phases: Phases | None = None
+    #: What the entrypoint's `hardening.make_non_dumpable` established before
+    #: any credential was read. The tenant git token is held only when the
+    #: agent cannot read this process's memory (`Worker._git_token_refusal`).
+    #: None means nothing established it, and is treated as FAILED: a worker
+    #: built some other way holds no token rather than an unprotected one.
+    memory: MemoryProtection | None = None
 
 
 @dataclass
@@ -316,6 +324,7 @@ class Worker:
         self.db = deps.db
         self.metrics = deps.metrics_exporter
         self.secret_client = deps.secret_client
+        self.memory = deps.memory
         self.ws: workspace_mod.Workspace | None = None
         self.checkpoints = CheckpointManager(
             store=deps.store,
@@ -1622,6 +1631,10 @@ class Worker:
                 "commit": self._clone_base,
             }
         ref = self.cfg.repository_ref or task.get("repository_ref")
+        # A worker whose memory the agent may read clones WITHOUT the token, so
+        # the token is never in this process at all. A public repository still
+        # clones; a private one fails, and the error below says why.
+        refusal = self._git_token_refusal()
         try:
             clone = shallow_clone(
                 url=url,
@@ -1635,9 +1648,14 @@ class Worker:
                 logs_dir=ws.logs,
                 timeout_seconds=self.cfg.git_clone_timeout_seconds,
                 logger=self.log,
-                token=self._git_token(),
+                token=None if refusal else self._git_token(),
             )
         except GitError as exc:
+            if refusal:
+                raise WorkerError(
+                    f"repository clone failed: {exc}; cloned without the tenant git "
+                    f"token because {refusal}"
+                ) from exc
             raise WorkerError(f"repository clone failed: {exc}") from exc
         self._repo_url = clone.url
         self._clone_base = clone.commit
@@ -1646,12 +1664,15 @@ class Worker:
         self._publish_base = clone.commit or (EMPTY_CLONE_BASE if clone.empty else None)
         self.checkpoints.clone_base = self._publish_base
         self._write_clone_base(clone.commit)
-        return {
+        info: dict[str, Any] = {
             "path": REPO_DIR_NAME,
             "url": clone.url,
             "ref": clone.ref,
             "commit": clone.commit,
         }
+        if refusal:
+            info["git_token_refused"] = refusal
+        return info
 
     def _stage_declared_inputs(self, task: dict[str, Any]) -> list[inputs_mod.StagedInput]:
         """Honour `metadata.input_from`: {upstream_task_id: artifact_filename}.
@@ -1940,7 +1961,15 @@ class Worker:
         None is not an error. A public repository clones without a credential
         and a private one fails with git's own message, which is the correct
         diagnosis to surface.
+
+        Nor is it read at all when `_git_token_refusal` names a reason: once
+        read, the token stays in this process's heap for the rest of the
+        attempt, next to an agent that may be able to read it there.
         """
+        refusal = self._git_token_refusal()
+        if refusal:
+            self.log.error("not reading the tenant git credential", reason=refusal)
+            return None
         if self.secret_client is None:
             return None
         try:
@@ -1956,6 +1985,20 @@ class Worker:
                 error=str(exc),
             )
             return None
+
+    def _git_token_refusal(self) -> str | None:
+        """Why this worker must not hold the tenant git token, or None.
+
+        The token sits in the worker's heap from the moment it is read, and the
+        agent runs beside it as the same uid. The entrypoint made this process
+        non-dumpable so the agent cannot read that heap (hardening.py). When
+        that did not happen, the token is not read, the clone runs without it,
+        and the publish is refused.
+        """
+        memory = self.memory or MemoryProtection(
+            FAILED, "the entrypoint established no memory protection for this worker"
+        )
+        return memory.git_token_refusal
 
     def _build_child_env(self) -> dict[str, str]:
         ws = self.ws
@@ -3123,6 +3166,14 @@ class Worker:
         url = self._repo_url or cfg.repository_url
         if not url:
             return {"published": False, "publish_reason": "the repository URL is unknown"}
+
+        # Before the token is read, not after: see `_git_token_refusal`. Asked
+        # here as well as inside `_git_token`, so the publish says WHY it did
+        # not happen instead of reporting a forge that refused an anonymous probe.
+        refusal = self._git_token_refusal()
+        if refusal:
+            self.log.error("not publishing: the tenant git token is refused", reason=refusal)
+            return {"published": False, "publish_reason": f"refusing to publish: {refusal}"}
 
         token = self._git_token()
         try:

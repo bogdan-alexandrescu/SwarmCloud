@@ -19,6 +19,7 @@ import pytest
 
 from agent_worker.config import WorkerConfig
 from agent_worker.control import ControlPlane
+from agent_worker.hardening import PROTECTED, MemoryProtection
 from agent_worker.lifecycle import Worker, WorkerDeps
 from agent_worker.logs import build_logger
 from agent_worker.objectstore import LocalObjectStore
@@ -31,6 +32,15 @@ from fakes import FakeFirestore, FakeSecretClient, FakeTransactionRunner, Record
 TENANT = "eng"
 PROJECT = "saga-agents-staging"
 BUCKET = "saga-agents-staging-swarm-artifacts"
+
+#: What the entrypoint hands a worker whose `prctl(PR_SET_DUMPABLE, 0)` worked
+#: (`hardening.make_non_dumpable`). A worker holds the tenant git token only
+#: with this. The workers here are built in the test process, where the
+#: entrypoint never ran, so they are given its success explicitly, the way
+#: `reap_before_publish` is given a scoped stand-in. The tests of the refusal
+#: set their own, and `test_worker_memory_protection.py` runs the real call in
+#: a child process.
+ENTRYPOINT_MEMORY = MemoryProtection(PROTECTED, "stand-in for the entrypoint's prctl")
 
 
 @pytest.fixture
@@ -226,6 +236,7 @@ def build_worker(
         db=db,
         metrics_exporter=exporter,
         secret_client=secret_client or FakeSecretClient(),
+        memory=ENTRYPOINT_MEMORY,
     )
     worker = Worker(config, deps)
     # The production reaper runs `os.kill(-1, SIGKILL)`, which would take this

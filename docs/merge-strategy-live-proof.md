@@ -298,6 +298,28 @@ token-bearing commands also disable submodule recursion
 on-demand default would fetch a submodule named in an untrusted contributor
 branch's `.gitmodules` and carry the credential to whatever host it lists.
 
+**Nor does the reap close the worker's own memory.** The worker reads the token
+at the clone and holds it in its heap until the publish, and the agent runs
+beside it for all of that time as the same uid. Where the kernel lets one
+process of a uid ptrace another, or open its `/proc/<pid>/mem`, a running agent
+could read the token out of the worker long before any reap. So the
+entrypoint's first act after its proof-of-life line, before the configuration,
+any client or any credential, is `prctl(PR_SET_DUMPABLE, 0)`, read back from the
+kernel (`agent_worker/hardening.py`). The kernel then refuses ptrace attach and
+`/proc/<pid>/mem` and `environ` to any process without CAP_SYS_PTRACE over the
+worker, and the pod drops every capability. The runner, the agent and git are
+unaffected: a process becomes dumpable again when it execs a program. The cost
+is that the worker leaves no core dump, and an external debugger cannot attach;
+the SIGTERM stack dump remains. If the call fails on Linux, the worker never
+reads the token: the clone runs without it, and the publish is refused with the
+reason. `tests/unit/worker/test_worker_memory_protection.py` starts the real
+entrypoint as a process on Linux CI. It checks that the process is
+non-dumpable by the time it reads its configuration, and that a sibling process
+of the same uid is refused both reads. A control runs the same entrypoint with
+the call disabled and reads the canary out of it. The container's environment
+is also PID 1's, at `/proc/1/environ`, which this does not cover; the worker
+keeps no credential in its environment for that reason.
+
 The property this guarantees: **no configuration, file or ref the agent can
 write can cause the tenant token to be sent anywhere except the forge host of
 the task's `repository_url` over verified TLS, or be handed to any program other
