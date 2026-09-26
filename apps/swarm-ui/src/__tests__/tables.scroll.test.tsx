@@ -15,8 +15,9 @@
 // `is-scroll` its prose and controls ran off the right edge, and the held-
 // column rule made that one cell sticky as well.
 //
-// WHAT NONE OF THIS CAN SEE: a pixel. Whether 20ch reads well as a held column
-// under a thumb is for the next release's screenshots.
+// WHAT NONE OF THIS CAN SEE: a pixel. Whether the held column -- 45vw at 390,
+// 175.5px, since 20ch of its face is wider there -- reads well under a thumb
+// is for the next release's screenshots.
 
 import { describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen } from '@testing-library/react'

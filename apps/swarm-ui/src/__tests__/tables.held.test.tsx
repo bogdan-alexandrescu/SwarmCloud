@@ -86,8 +86,10 @@ function heldColumn(table: Element): Element[] {
 /**
  * THE PROPERTY: at 390 every held cell's `min-width` is its `width`, and both
  * are the shared ceiling -- so its min-content width is the ceiling, and a
- * table laid out at min-content still gives the name its 20ch. A phone rule
- * only: at 1440 nothing floors a first column in viewport units.
+ * table laid out at min-content still gives the name that ceiling: 45vw at
+ * 390, 175.5px, because 20ch of a row header's 14px sans is wider (191.7px,
+ * measured in Chrome, #223). A phone rule only: at 1440 nothing floors a
+ * first column in viewport units.
  *
  * MUTATION: drop `min-width` from the held-column rule in the CH-13 block of
  * styles.css (the 24-29px column on dev), or give it any value but the
@@ -174,11 +176,13 @@ describe('the held first column keeps a readable width at 390 (#222)', () => {
 
   it('leaves the Tenants grouped head’s second row out of the held column', async () => {
     // `Max active` is the first cell of the head's second row, a figure's head
-    // from the middle of the table: not held, and no floor -- at 20ch it would
-    // widen the Configured group for nothing. THE PROPERTY, not the rule that
+    // from the middle of the table: not held, and no floor -- at the held
+    // width it would widen the Configured group for nothing. THE PROPERTY, not the rule that
     // gives it: the held rules name only the head's first row, so nothing here
-    // needs undoing. MUTATION: widen the held rule's head branch in the CH-13
-    // block back to every head row (`thead > tr > th:first-child`).
+    // needs undoing. shell.test.tsx's WF-21 two-row case holds the same for
+    // every held rule, the corner's fill and CP-18's restatements included.
+    // MUTATION: widen the held rule's head branch in the CH-13 block back to
+    // every head row (`thead > tr > th:first-child`).
     const table = await roster()
     const maxActive = table.querySelector(':scope > thead > tr:nth-child(2) > th:first-child')!
     expect((maxActive.textContent ?? '').trim()).toBe('Max active')

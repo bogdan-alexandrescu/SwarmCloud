@@ -1036,6 +1036,7 @@ export function WorkflowCard({
 
       {expanded && (
         <div className="wf-body" id={bodyId}>
+          <CensusFact roll={roll} />
           <StateDrift drift={workflow.drift} />
           <WorkflowDispatchLine workflow={workflow} taskById={taskById} />
           {/* THE CARD'S OWN VIEW STRIP: which of the three drawings this is,
@@ -1150,13 +1151,13 @@ export function dotClass(header: { tone: Tone | 'unknown'; derived: boolean }): 
  * 0% bar because a 0% bar has an axis tick and this has none.
  *
  * THE SENTENCE CARRIES ITSELF IN ITS `title` (#222). `.wf-progress-text` is
- * contained in its column now and ends in an ellipsis where the column is
- * narrower than the census. At 1440 that is every census with a tail: the
- * sentence gets 134.5px beside the meter, so "1/5 done · 1 not started"
- * (173px) and "10/30 done · 1 failed · 19 cancelled" (260px) are both cut,
- * and only a bare "N/N done" is whole (styles.css, the `[progress]` note). So
- * the whole sentence is on the element that was cut (design-system.md §7.3:
- * cut on screen, whole on hover).
+ * contained in its column and ends in an ellipsis where the column is
+ * narrower than the census. At 1440 the sentence gets 175.4px beside the
+ * meter since `[progress]`'s floor went to 29ch (#223): the running form "1/5
+ * done · 1 not started" (173px) is whole, and a longer census -- "10/30 done ·
+ * 1 failed · 19 cancelled" is 260px -- is cut (styles.css, the `[progress]`
+ * note). So the whole sentence is on the element that was cut, for a pointer,
+ * and the open card states it whole for everyone else (`CensusFact`).
  */
 function Progress({ roll }: { roll: Rollup }) {
   if (!roll.trustworthy) {
@@ -1200,6 +1201,34 @@ function Progress({ roll }: { roll: Rollup }) {
       </span>
       <span className="wf-progress-text" title={roll.text}>{roll.text}</span>
     </span>
+  )
+}
+
+/**
+ * THE CENSUS, WHOLE, AS THE OPEN CARD'S FIRST FACT (#223, owner decision
+ * 2026-09-26).
+ *
+ * The row cuts the census where `[progress]` is narrower than the sentence
+ * (at 1440, anything longer than the running form's 24 characters) and
+ * draws no sentence at all at 560px and below. The cut text keeps the whole
+ * sentence in its `title`, but a `title` is whole on hover only, and a phone
+ * has no hover. design-system.md §7.3's rule for a cut value is cut on
+ * screen, whole somewhere a reader can get to without a pointer: here, the
+ * card the reader opened to see more of this workflow.
+ *
+ * `progress`, because it is the row's `[progress]` cell said whole. The same
+ * `roll.text` the row prints, so the two cannot disagree. A plain value, not a
+ * `.ctl-mark`: an unread census already says so in its own words ("2 of 6
+ * steps unread"), and the hatch on the row is its mark.
+ */
+function CensusFact({ roll }: { roll: Rollup }) {
+  return (
+    <ul className="ctl-facts wf-census">
+      <li className="ctl-fact">
+        <b>progress</b>
+        {roll.text}
+      </li>
+    </ul>
   )
 }
 

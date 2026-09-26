@@ -1295,7 +1295,9 @@ describe('the overflow inventory, as rules that cannot be quietly dropped', () =
         for (const theme of THEMES) {
           for (const width of WIDTHS) {
             for (const thead of host.querySelectorAll('thead')) {
-              const v = won(thead, 'box-shadow', { width, theme })
+              // `?? 'none'`: a head with no shadow at all must fail on this
+              // message, not on `toMatch` refusing a null (the first red run).
+              const v = won(thead, 'box-shadow', { width, theme }) ?? 'none'
               expect(
                 v,
                 `${theme} at ${width}: \`${thead.closest('table')!.className || '.ctl-table > table'} thead\` ` +

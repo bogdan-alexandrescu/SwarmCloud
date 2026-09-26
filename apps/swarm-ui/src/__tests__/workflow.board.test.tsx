@@ -1666,14 +1666,15 @@ describe('the QA pass: the collapsed row', () => {
    * value).
    *
    * WHAT IT COSTS, which this cannot see (jsdom has no layout). Measured in
-   * Chrome against this sheet, 1440 viewport: `[progress]` resolves to its
-   * 24ch floor, 196.5px, and the 54px meter and its 8px gap leave the
-   * sentence 134.5px. EVERY CENSUS WITH A TAIL IS CUT: "1/5 done · 1 not
-   * started" and "0/3 done · 3 not started" need 173px, "3/12 done · 1 failed
-   * · 8 not started" and the sentence above 260px. Only a bare "N/N done" is
-   * whole. On main the 173px form was whole and painted 26.9px over the
-   * shape. Showing the common forms whole is a change to `.wf-bar`'s template,
-   * not to these rules.
+   * Chrome against this sheet, 1440 viewport, when `[progress]`'s floor was
+   * 24ch: 196.5px, and the 54px meter and its 8px gap left the sentence
+   * 134.5px, so every census with a tail was cut. The floor is 29ch now
+   * (owner decision 2026-09-26, the next describe): the sentence gets
+   * 175.4px, the running form "1/5 done · 1 not started" (173px) is whole,
+   * and a longer one -- "12/30 done · 18 not started" (195px), "3/12 done · 1
+   * failed · 8 not started" and the sentence above (260px) -- is still cut.
+   * That is what these rules are still for, and why the open card states the
+   * census whole.
    *
    * ONE CASE PER DECLARATION, so a CI run shows each one failing on its own:
    * the first run that went red on this stopped at `flex-shrink`, and what came
@@ -1758,6 +1759,24 @@ describe('the QA pass: the collapsed row', () => {
         expect(won(cell, 'min-width', width), `${width}: the progress cell is as wide as what it holds`).toBe('0')
         expect(won(cell, ['overflow', 'overflow-x'], width), `${width}: the progress cell paints past its track`).toBe('hidden')
       })
+    })
+
+    // AND THE ROW CLIPS AT ITS OWN BORDER, at every template's width
+    // including the phone's (#223). With `[progress]` at 29ch the row's fixed
+    // tracks and floors add up to more than a narrow row -- measured in Chrome
+    // against this sheet, below 550px (620px for a `state not derived` row),
+    // which the work column reaches with the inspector open beside it -- and
+    // the grid then ran past the row's right edge: the flags and the caret
+    // painted outside the box, towards the inspector. MUTATION: drop
+    // `overflow: hidden` from `.wf-bar`.
+    it('clips the row at its own border at every width', () => {
+      const bar = card(ended('wf_long', 30, { SUCCEEDED: 10, FAILED: 1, CANCELLED: 19 })).container.querySelector('.wf-bar')!
+      let asked = 0
+      for (const width of [...WIDTHS, 390]) {
+        expect(won(bar, ['overflow', 'overflow-x'], width), `${width}: the row's grid paints past its border`).toBe('hidden')
+        asked += 1
+      }
+      expect(asked).toBe(WIDTHS.length + 1)
     })
   })
 
