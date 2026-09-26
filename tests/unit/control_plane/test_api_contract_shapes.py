@@ -43,6 +43,7 @@ import pytest
 
 from swarm_common.models import (
     Attempt,
+    EndCause,
     Lease,
     ProviderState,
     QuotaState,
@@ -136,6 +137,8 @@ def _distinct(annotation: str, name: str, index: int, default: Any) -> Any:
         return TaskState.RUNNING if default is not TaskState.RUNNING else TaskState.PARKED
     if base == "ParkReason":
         return ParkReason.PROVIDER_COOLDOWN
+    if base == "EndCause":
+        return EndCause.WORKFLOW_SWEEP
     if base == "EventType":
         return next(iter(EventType))
     if base == "ProviderState":
@@ -215,6 +218,13 @@ CODECS: tuple[Codec, ...] = (
             # entry is the thing to delete.
             "current_generation": "served on the lease and attempt rows instead",
             "current_lease_id": "served on the lease and attempt rows instead",
+            # Contract request 23 (2026-09-25). The typed cause is the outcome
+            # ledger's input: GET /v1/outcomes classifies every ended task by
+            # it and serves the classes. The task page says why a task ended
+            # in `last_error`, which every writer still writes; serving the
+            # cause here as well is a public shape change nobody has asked
+            # for, and would be a second answer to "why" beside that one.
+            "end_cause": "classified and served by GET /v1/outcomes; the task says why in last_error",
         },
         api_computed=("dispatch",),
     ),
@@ -381,7 +391,10 @@ def test_a_minimal_document_decodes_to_the_declared_defaults(codec: Codec):
 @pytest.mark.parametrize(
     "field_name",
     ("input_tokens", "output_tokens", "cache_read_input_tokens",
-     "cache_creation_input_tokens", "cost_usd", "exit_code", "peak_rss_bytes"),
+     "cache_creation_input_tokens", "cost_usd", "exit_code", "peak_rss_bytes",
+     # Contract request #15 (accepted 2026-09-25): an idle agent's 0.0 cores
+     # is a measurement, not a missing one.
+     "cpu_seconds", "peak_cpu_cores", "mean_cpu_cores", "cpu_limit_cores"),
 )
 def test_a_measured_zero_is_not_turned_back_into_not_measured(field_name: str):
     """`data.get(k) or None` would undo the fix while looking like it.

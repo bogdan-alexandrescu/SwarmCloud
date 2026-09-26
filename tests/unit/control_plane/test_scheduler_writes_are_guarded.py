@@ -71,7 +71,7 @@ from typing import Any, Callable
 import pytest
 
 from swarm_common.admission import AdmissionConfig
-from swarm_common.models import Lease, Task, utcnow
+from swarm_common.models import EndCause, Lease, Task, utcnow
 from swarm_common.states import ParkReason, TaskState
 
 from agent_worker.control import ControlPlane
@@ -404,7 +404,11 @@ class TestCancel:
         lease = _admit(db, "task_c1")
 
         outcome = store.cancel(
-            snapshot, "an upstream workflow step did not succeed", {"failed_parents": ["task_parent"]}
+            snapshot,
+            "an upstream workflow step did not succeed",
+            {"failed_parents": ["task_parent"]},
+            # Required since contract request 23: every cancel says why.
+            end_cause=EndCause.FAILED_PARENT,
         )
 
         stored = _doc(db, "task_c1")

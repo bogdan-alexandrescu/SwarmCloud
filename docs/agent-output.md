@@ -4,8 +4,10 @@ The task drawer has three panes: Details, Attempts and Artifacts. The
 Artifacts pane shows a task's inputs, its outputs and its logs, and updates
 every 5 seconds while the task runs (#184, owner decisions of 2026-09-25).
 This document covers the backend half: what the worker writes, what the API
-serves, and the reasons for both. Each section records a constraint that a
-later change could silently break.
+serves, and the reasons for both, including where an agent is told to put its
+deliverables and what a task with no repository uploads from its working
+folder (owner decisions of 2026-09-26). Each section records a constraint that
+a later change could silently break.
 
 ## Every byte goes through the API, never through a signed URL
 
@@ -105,6 +107,163 @@ Lines that a tool numbered (`cat -n`, or an agent's file-read tool) still count
 as key lines. Every scan is linear, not one backtracking pattern: a lazy
 BEGIN-to-END regex is quadratic on text with many BEGIN markers and no END,
 and agent output can take that shape.
+
+## Where an agent's deliverables go, and a task with no repository
+
+The post-deploy QA of #184 found a hole the Artifacts tab could not show
+around. `task_0e5b1f8b7bc1448fafdf`, a claude-code task with no repository,
+wrote `answer.md` and `primes.txt` in its working folder. Only
+`$SWARM_ARTIFACTS_DIR` was ever uploaded, so the task SUCCEEDED and its
+Outputs held the runner's logs and nothing the agent made. No prompt had told
+it where a deliverable goes unless a later workflow step expected one (#149).
+
+The owner decided three things on 2026-09-26 (recorded on #184):
+
+1. **Every claude-code and codex prompt ends with one line** naming the
+   directory:
+
+   ```
+   Files written to /workspace/<attempt>/artifacts ($SWARM_ARTIFACTS_DIR) are uploaded and shown in Artifacts.
+   ```
+
+   **It is information, in the owner's words, not an order.** The first build
+   said "Write deliverables to ...", from a paraphrase of the decision. That
+   order reached every repository task too, and decision 3 says a repository
+   task's deliverable is its diff or pull request: an agent asked to write
+   `docs/design.md`, and told last thing to write deliverables to the
+   artifacts folder, can put the document there and leave the pull request
+   empty (#225 review). A test holds a repository task's prompt to this one
+   line and no order.
+
+   It is built once, by `expected_outputs.deliverables_line`, and appended by
+   `with_instructions`, which `cliagent.run_cli_agent` calls for both runners.
+   When later steps expect files, their list follows the line and says "write
+   each one there" -- the one order the text gives, because a dependant cannot
+   run without those files (#149) -- so the directory is named once. The path
+   is absolute beside the variable's name, because an agent has already
+   reported the variable as unset and written nothing. A prompt is no longer
+   passed through byte for byte when nothing is expected; that was the old
+   rule, and the tests that held it now hold the line instead. The line must
+   never carry a word the rate-limit or credential heuristics look for: a CLI
+   that echoes its prompt would turn it into evidence.
+2. **A task with no repository also uploads what its agent CREATED in its
+   working folder**, when the attempt ends (`agent_worker.standalone_outputs`).
+3. **A repository task is unchanged.** Its diff or pull request is the
+   deliverable, plus the artifacts folder. `result_summary.workdir_outputs` is
+   absent on such a task, and nothing is named `workdir/`.
+
+What decision 2 does, and the reason for each rule:
+
+* **Which tasks.** No repository URL (read from the same two places the clone
+  reads it), and a runner whose child is a provider's coding-agent CLI:
+  claude-code and codex, the runners the line reaches
+  (`runners.streams.cli_agent_spec`). Not `mock`, which writes `progress/`
+  and `mock_state.json` into its working folder on every smoke test. Not
+  `generic`, which its own module calls "the platform's escape valve for work
+  that is not an agent". Not `browser`, which writes its outputs into the
+  artifacts folder itself.
+* **Created, not existing.** The worker lists `work/` once per attempt, just
+  before the first runner starts, and uploads what is there at the end and
+  was not there then. An in-place restart does not take a second list, so a
+  first run's files are not "existing" to the second. A staged input
+  (`input_from`) and the control files (`input.json`, `result.json`,
+  `quota.json`, `credential.json`) were there first, and a file the agent only
+  edited was not created by it.
+* **A resumed attempt.** A checkpoint restores `work/`, so an earlier
+  attempt's files are on disk before this runner starts. They still count as
+  created, unless they are a staged input: the platform puts nothing else in a
+  standalone task's `work/`. The manifest a reader sees is the final
+  attempt's, and without this a task that parked once would show only what
+  its last attempt wrote.
+* **Named `workdir/<path>`**, in the same manifest as every artifact
+  (`result_summary.artifacts`). The Artifacts tab lists and serves them
+  through the routes above, with the same tenant check and read-time
+  redaction, and no route changed. The prefix keeps a file of the same name in
+  `$SWARM_ARTIFACTS_DIR` in its place (if the artifacts folder holds
+  `workdir/<path>` itself, that file wins and the working-folder copy is
+  listed with the reason). It also keeps #149's rejected option (c) rejected:
+  a dependant's `input_from` and the expected-outputs check both match by
+  exact name, so `scan-01.md` left in the working folder is
+  `workdir/scan-01.md` and does not satisfy a later step that stages
+  `scan-01.md`.
+* **Caps: 50 files and 25 MiB per attempt** (the owner's numbers;
+  `WorkerConfig.max_workdir_output_files` and `max_workdir_output_bytes`), and
+  never past what `max_artifact_bytes` leaves. Files are taken shallowest
+  first, then by path, so a top-level answer is not pushed out by a generated
+  tree. A file that does not fit is **listed, never dropped silently**: in
+  `result_summary.workdir_outputs.not_uploaded` as
+  `{"name", "bytes", "reason": "over cap"}`, drawn in Artifacts > Outputs
+  under "not uploaded from the working folder" with each file's reason, and
+  in the worker's WARNING lines.
+* **Every name is somewhere.** `not_uploaded` holds the first 50 entries and
+  `not_uploaded_count` the whole number, because the summary is a Firestore
+  document with a 1 MiB limit. The worker's log names every file it did not
+  upload, 100 to a WARNING line (a line stays well under Cloud Logging's
+  256 KiB entry), and the tab says how many only the log names. The first
+  build logged the first 50 too, so past 50 a name was nowhere.
+* **Not in `artifacts_skipped`.** Every reader of that list calls a name in it
+  dropped at the artifacts folder's size cap: the tab's "dropped at the size
+  cap", a dependant's "exceeded its artifact size cap". A working-folder file
+  is dropped by another cap, or for a reason that is no cap at all, so the
+  first build's copy there mislabelled a file the 50-file cap dropped.
+* **Listed and not uploaded, with the reason** (#225 review):
+  * *A name that is not UTF-8* (`name is not valid UTF-8`). `os.walk` decodes
+    such a name into a str holding lone surrogates. GCS names objects in
+    UTF-8, a protobuf string field -- so a Firestore write -- cannot carry a
+    lone surrogate, and the worker logs UTF-8 to stdout. One such name in the
+    summary made `finish` raise, and the next attempt restored the same file
+    from the checkpoint and failed the same way, until the task had spent
+    every attempt. The name is listed as the bytes it was, `caf\xe9.txt`,
+    spelled the way `ls -b` and the API's checkpoint listing spell it. That
+    is a display and never a key. The artifacts folder had the same hole: a
+    file there with such a name is not uploaded, and is named the same way in
+    `artifacts_skipped` and the log.
+  * *A name too long to be an object's* (GCS allows 1,024 bytes of UTF-8 for
+    the whole key, the attempt's prefix included). Listed with its name cut to
+    256 characters, so 50 of them cannot take the summary near 1 MiB.
+  * *A core dump*: `core` or `core.<pid>`, at any depth. A program the agent
+    built and ran crashes with the working folder as its cwd, and its core
+    holds its memory, environment block included, which inherited the CLI's
+    credential. Listed, so a reader learns that something crashed.
+  * *A file holding a registered secret the worker could not redact*, or one
+    it could not scan. See the last rule below.
+* **Skipped without a listing:** every name that starts with a dot, folder or
+  file. The owner named dot folders; dot files are skipped too, because the
+  CLI runners set HOME to the working folder, and the CLIs write their own
+  state there (`.claude.json`, `.claude/`, `.codex/`), some of it describing
+  the account the agent ran as. Also `node_modules`, `__pycache__`, a folder
+  whose name ends in "cache" or "caches" or that holds `CACHEDIR.TAG` (the
+  Cache Directory Tagging convention), and a virtual environment: `.venv`, or
+  any folder holding `pyvenv.cfg`.
+* **Symlinks are never followed.** The scan does not descend into a linked
+  folder or read a linked file, and it counts them
+  (`workdir_outputs.symlinks_skipped`). The read then opens each path
+  component with `O_NOFOLLOW`, relative to the folder above it, and the file
+  itself with `O_NONBLOCK`. A path swapped for a link after the scan (an
+  orphaned agent process can still be running), or a FIFO swapped in for a
+  file, is refused rather than followed or waited on. A working folder that
+  was itself replaced by a link is not walked at all.
+* **Redacted before upload as well as at read time.** Each file is copied into
+  the worker's own scratch folder (`private/`, which is in no child's
+  environment), scrubbed of registered secrets exactly as an artifact is, and
+  uploaded from there. The agent's file is left as it was.
+* **A file the rewrite cannot clean stays in the pod.** For
+  `$SWARM_ARTIFACTS_DIR` the trade is to upload a binary file as-is, even when
+  its raw bytes hold a registered value, and report it in
+  `redaction_skipped`: the agent chose to deliver that file, and corrupting it
+  to take a key out is worse. The working-folder upload is a net under files
+  nobody chose to deliver, so that trade does not carry over. A file whose raw
+  bytes hold a registered value after the rewrite declined it (`holds a
+  registered secret that could not be redacted`), or that could not be
+  scanned at all, is not uploaded, and is listed with the reason. A binary
+  file with no registered value in it -- a PNG the agent drew -- is uploaded
+  as before. Binary files are served raw with `X-Swarm-Redaction:
+  not-applied`, so read-time redaction would not have covered this one.
+
+What this does not do: it does not tell the agent about the net. The line says
+what happens to a file written to `$SWARM_ARTIFACTS_DIR`. A file caught in the
+working folder is a net under the agent that wrote somewhere else, not a
+second place to write.
 
 ## Two kinds of stdout, and the label that was wrong
 
@@ -335,26 +494,200 @@ The answer route gives one of four answers:
 * `absent`: the attempt ended and left nothing.
 * `unreadable`: a read failed, and nothing further down the chain is tried.
 
-## CPU in Details: peak and mean of the limit
+## The task's input is masked too, with a count
+
+The owner decided on 2026-09-25 (#184) that the Artifacts pane's Inputs and
+the drawer's Details show "a read-time-redacted copy of the task's input,
+with 'masked N', like every other output". Both used to draw `task.input`
+straight off `GET /v1/tasks/{id}`. The Artifacts pane said so
+(`as submitted · not masked`) and Details said nothing. A token pasted into a
+prompt was drawn in clear on the two screens that mask every other byte they
+show.
+
+`GET /v1/tasks/{id}/input` (`swarm_api.task_input`) serves three texts, each
+with its own `redaction_count`:
+
+* `prompt`: `input.prompt` when it is a string. It is masked as one decoded
+  string, the way `/answer` and `/transcript` mask the strings they decode
+  out of JSON, so a private key with no END is masked to the end of the
+  string.
+* `rest`: the input without that prompt, as its JSON text.
+* `full`: the whole input, as its JSON text.
+
+The redactor is `redaction.redact`, the one every other route uses, with its
+one set of rules. It is not a second one. It is applied by
+`redaction.JsonMasker`, which reads the input's **structure**:
+
+1. Every string, the prompt included, and every key, is masked as one decoded
+   string, the way `/answer` and `/transcript` mask the strings they decode.
+2. A value under a key that **names a credential** is masked whole, as one
+   leaf, counted once. The keyword may sit anywhere in the key, in any case,
+   with `-` or `_` inside the two-word names: `api_token`,
+   `AWS_SECRET_ACCESS_KEY`, `private_key`, `password_hash`, `secrets`,
+   `x-api-key`. That covers a string, a list or an object holding one (a token
+   split into lines, `{"value": "..."}`), and a number when the keyword ends the
+   key (a PIN under `password`). It never covers `null`, `""`, `[]`, `{}` or a
+   boolean, which cannot be credentials and are drawn as sent and not counted.
+   A number under `input_tokens`, `max_tokens` or `credential_revoked_times`
+   (the mock runner takes that one) is a count, not a credential.
+3. A private key stored as a **list of lines** is masked from the element with
+   its BEGIN marker through the one with its END, one count, because no body
+   line holds a marker.
+4. A literal that any of those masked (a value under a credential's name, or a
+   value the key/value rule found beside `NAME=` in a string or a key) is
+   masked **wherever else the input holds it**, the prompt included. At most
+   256 literals are carried, so an input built to hold thousands cannot buy
+   that many passes over itself.
+
+The served text is `json.dumps(indent=2)` of the masked value, so it is always
+the input's JSON.
+
+**Why not a rule over the JSON text.** The route first served one `redact()`
+over the JSON text, and the PR #210 review found the hole. JSON text writes a
+quote inside a string as `\"`, and the key/value rule reads a quote as a
+quote. A prompt holding `{"api_key": "<bare>"}` or `PASSWORD="<bare>"` came out
+masked in `prompt` and in clear in `full`, under a count of 0. The fix-up
+masked every string and then ran the rules over the JSON text with the strings
+stood in. The re-review found that the rule's value class, the first run of
+characters after the key, was a list's `[` or an object's `{` under
+`password`: the strings inside were served under `masked 1`, the text stopped
+being JSON, and `null`, `true`, `[]` and `{}` were each counted as a
+credential. A key holding `=` pushed the mask onto the `:` after it. Each of
+those is a question about the document's structure, so the structure answers
+it now.
+
+**The blocks agree.** One masker is built over the whole input and shared by
+`prompt`, `rest` and `full`. Before, a password named in the rest was
+`"********"` in the rest block and in clear in the prompt block directly above
+it. Each string is masked once, so `full`'s count is always `prompt`'s plus
+`rest`'s.
+
+**The key/value rule is anchored.** Its name prefix was re-scanned from every
+position of a long run of name characters, so 40,000 characters took about a
+minute, and this route feeds it up to 256 KiB of a caller's input, holding the
+GIL of an instance all tenants share. The rule now starts a match only where a
+run of name characters starts, which masks exactly what it masked before. A
+256 KiB run takes about 25 ms. The same change lets the rule take `x-api-key:`,
+which the module's docstring had claimed and the rule did not catch; the
+shell filter in `scripts/lib/common.sh` still does not take the hyphen.
+
+`prompt_key` (`string`, `missing`, `other`) says what shape the input has, so
+a screen never goes back to the raw document to find out. Under a string
+prompt, both panes draw `rest` below it. They draw `full` only when there is no
+prompt string, so the prompt is never on screen twice.
+
+`GET /v1/tasks/{id}` still serves the input as submitted. The caller is the
+tenant that submitted it, and the CLI and MCP clients read it. Whether that
+route should mask too is a separate decision, recorded on the PR, and this
+change does not make it.
+
+The UI reads the copy once per task, because an input never changes. A copy
+that could not be read, or an API that does not serve one, is drawn as that.
+The raw input is never drawn in its place. A failed copy is asked for again
+with the next poll of the pane that draws it, and the read is Details' own:
+it is not part of the drawer's `loadAgentRun`, so a slow copy blanks only the
+input blocks. Details' metadata table is not masked; it draws
+`task.metadata` as submitted, and whether it should be masked is a decision
+for the owner, recorded on PR #210.
+
+## CPU in Details: peak and mean of the limit, as typed attempt fields
 
 The worker already sampled CPU (`agent_worker.metrics`), but nothing
 displayed the figures. The mean existed only after a runner stopped, and the
 limit was recorded nowhere.
 
-The frozen `Attempt` has no CPU fields, so until contract request #15
-(amended for this) is decided, the figures ride on the HEARTBEAT events'
-`detail`. They include peak cores, mean cores (now kept current while the
-runner runs), CPU-seconds, and the CPU limit with its source. The limit is
-read from cgroup v2 `cpu.max`. When that is unavailable, the worker uses the
-catalogue cpu of the class the container was *sized* with, which is the
-task's own class and not the profile's.
+#188 put the figures on HEARTBEAT events, because the frozen `Attempt` had no
+CPU fields. `GET /v1/tasks/{id}/attempts?include=usage` read them back with
+one descending events read per request. That was the interim path.
 
-A reading with `final: true` is emitted when each runner is reaped. A fenced
-attempt never emits one, because the event stream belongs to the generation
-that owns the task.
+**Contract request #15 was accepted on #184 (2026-09-25), and it replaces the
+interim path.** `Attempt` carries four fields: `cpu_seconds`,
+`peak_cpu_cores`, `mean_cpu_cores` and `cpu_limit_cores`. Each is the
+attempt's, meaning every runner it started, combined.
 
-`GET /v1/tasks/{id}/attempts?include=usage` is opt-in, because the Overview
-calls that route once per task. It serves the newest reading per attempt
-from one descending read of the task's events. Each reading has a status:
-`final`, `live`, `last_reading`, `never_ran`, `absent`, `beyond_window`, or
-`unread`. None means "not measured" and is never drawn as zero.
+* **The worker writes them on its own attempt document**
+  (`control.record_cpu_usage`). It writes them with each periodic reading
+  while a runner runs, which is every fifth heartbeat, the same cadence as
+  the HEARTBEAT event. It writes them again when each runner is reaped, and
+  on every exit beside the attempt's spend (`_upload_outputs`, `_cleanup`),
+  which covers a runner still alive at a crash or killed at cleanup without
+  being reaped. A failed memory-peak write no longer skips the CPU write after
+  it: the memory peak is telemetry too, and its failure is logged. A key
+  that was not measured is left out, not written as null, because the write
+  is a merge and a null would erase an earlier figure. Nothing is written
+  when nothing was measured, not even the limit.
+* **The limit** is cgroup v2 `cpu.max` when that says anything. Otherwise it
+  is the catalogue cpu of the class the container was *sized* with, which is
+  the task's own class and not the profile's. Which of the two supplied it is
+  no longer recorded (see below).
+* **The HEARTBEAT event is back to what it carried before #188:**
+  `elapsed_seconds`, `peak_rss_bytes`, `checkpoints`, the cumulative
+  `cpu_seconds` and `cpu_source`. The reconciler's stuck-browser judgement
+  (`reconciler.progress`) turns two consecutive `cpu_seconds` into a rate,
+  and it is the reason those two stay. The `final` HEARTBEAT that #188 emitted
+  when a runner was reaped is gone.
+* **The API serves the four fields on every attempt row** (`attempt_to_api`),
+  with no opt-in, because serving them costs no read the route was not already
+  making. `include=usage` is no longer read. `swarm_api.attempt_usage`, the
+  events reader, is removed. `attempt_is_over`, which `/answer` also uses,
+  moved to `swarm_api.attempt_state`.
+* **The attempt document is not fenced** for these writes, like the memory
+  peaks beside them. It is the attempt's own document, and the fence guards
+  the task, its lease and its event stream, none of which this touches. The
+  tenant-mismatch exit writes nothing.
+
+### What the typed fields cannot say
+
+The four accepted fields carry no time and no limit source. So:
+
+* **A live reading has no age.** Details calls a running attempt's figures a
+  `live reading` and says `age not recorded`. The #187 review moved the CPU
+  age onto the server's clock, and there is no server time to age now. An age
+  taken from the browser's clock would be a guess drawn as a measurement.
+* **The limit's source is not known.** Details names the class when the class
+  read on the page has the same cpu as the limit. Otherwise it says
+  `reported limit`. It no longer says `cgroup limit`.
+
+Contract request #26 asks for both, and the owner decides.
+
+### Attempts from before the typed fields
+
+Attempts that ran between #188's deploy to dev (about 23:08 UTC on
+2026-09-25) and this change's deploy carry their CPU only on HEARTBEAT
+events. A read-only look at dev's Firestore at 23:16 UTC that day visited the
+40 newest tasks. It found one such task, `task_49dde08b768b49748588` (mock,
+the #188 deploy's smoke), with two interim readings, one of them `final`.
+Every attempt that runs before this change deploys adds another.
+
+**Attempts from before #188 were measured too.** Every HEARTBEAT before #188
+carried `cpu_seconds` and `cpu_source`, and no cores. #188's reader drew those
+cpu-seconds on main. The PR #210 review found that the legacy reader asked for
+`peak_cpu_cores` only, so those attempts read `never measured`, with a sentence
+saying no heartbeat on the page carried a figure while the page held one.
+
+Their typed fields are null, and "never measured" would be false of both kinds
+of attempt. So Details keeps one small legacy reader, `interimReading`, in the
+UI. For an attempt whose typed fields carry nothing, it takes the newest
+HEARTBEAT of that attempt on the drawer's own event page that carries a
+**figure**, and labels it `heartbeat event`. A key with no value does not
+count. When that event has no cores, the peak and mean rows draw em dashes, the
+mean row keeps the cpu-seconds, and the strip says `cpu-seconds only`. The
+reader adds no server read, because the page is already held. The page is the
+task's first 200 events, oldest first, so on a long attempt the newest reading
+on it can be an early one. The mark says so, and when the page is full (200
+events) and the reading is not the one taken at exit, the strip says
+`page full; newer readings may exist`. When no heartbeat on the page carries a
+figure the row says `never measured` without claiming anything about events
+past the page. When the event read FAILED, the row says `events not read`
+with the not-read mark, because nothing can be said about a page nobody read.
+The reader does nothing for an attempt the worker wrote typed fields for.
+
+Neither kind of attempt ages out, so the reader stays as long as those attempts
+can be opened. The owner can decide to drop it; the cost is that every attempt
+from before this change reads `never measured`.
+
+Keeping the server-side reader for those attempts was the alternative. It was
+not chosen, because the owner's decision was that the typed fields replace
+the path. That reader cost an events query per drawer read. The UI reader
+costs nothing, because it reads the page the drawer already holds, and the
+price is that it sees only the task's first 200 events.

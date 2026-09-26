@@ -1220,13 +1220,38 @@ fs_request() {
       fi
       ;;
     *)
-      local detail
+      # THE ERROR'S STATUS AND MESSAGE, NOT ITS FIRST THREE LINES. Firestore
+      # pretty-prints its error body, so `head -n 3` of it was always
+      #     {
+      #       "error": {
+      #         "code": 400,
+      # -- the one part the HTTP status line had already said. FAILED_PRECONDITION
+      # (a conditional write refused because the document moved) and
+      # INVALID_ARGUMENT (a query parameter Firestore rejected) both arrived as
+      # `"code": 400,`, and they need opposite responses: run it again, versus
+      # fix the request. So when the body parses as Firestore's error object --
+      # alone, or as the first element of the array runQuery answers with -- its
+      # status and message are printed; anything else (an HTML page from a
+      # proxy, a truncated body) falls back to its first lines, as before.
+      local detail summary
       detail="$(head -c 600 "${out}" 2>/dev/null || true)"
+      summary="$(jq -r '
+        (if type == "array" then .[0] else . end)
+        | objects | .error | objects
+        | [(.status // "" | tostring), (.message // "" | tostring)]
+        | map(select(. != "")) | join(": ")
+        | select(. != "") | .[0:600]' "${out}" 2>/dev/null || true)"
       rm -f "${out}"
-      # Exits here on a dead session, naming it as one.
-      die_if_auth_failure "${detail}"
+      # Exits here on a dead session, naming it as one. Handed the summary when
+      # there is one, because it prints the first two lines of what it is given
+      # -- which, of the pretty-printed body, are `{` and `"error": {`.
+      die_if_auth_failure "${summary:-${detail}}"
       err "Firestore ${method} returned HTTP ${status}. This is NOT an empty result."
-      printf '%s\n' "${detail}" | redact | head -n 3 | sed 's/^/     /' >&2
+      if [[ -n "${summary}" ]]; then
+        printf '%s\n' "${summary}" | redact | sed 's/^/     /' >&2
+      else
+        printf '%s\n' "${detail}" | redact | head -n 3 | sed 's/^/     /' >&2
+      fi
       return 1
       ;;
   esac
@@ -1265,15 +1290,27 @@ fs_list_docs() {
   printf '%s' "${raw}" | jq -c "${FS_JQ} .[] | doc"
 }
 
-# fs_patch DOC_PATH FIELD_MASK_CSV JSON_FIELDS
+# fs_patch DOC_PATH FIELD_MASK_CSV JSON_FIELDS [UPDATE_TIME]
+#
+# UPDATE_TIME is optional: the document's `updateTime` exactly as the caller
+# read it. Given, it goes on the request as the precondition
+# `currentDocument.updateTime`, and Firestore applies the write only if the
+# document still exists at that version -- otherwise it refuses with
+# FAILED_PRECONDITION and this returns non-zero. That is what makes a
+# read-modify-write of one field safe: without it, a list read at one moment
+# and written back at the next silently drops whatever was added in between,
+# and a PATCH is an upsert that recreates a document deleted in between.
 fs_patch() {
-  local doc="$1" mask="$2" fields="$3"
+  local doc="$1" mask="$2" fields="$3" update_time="${4:-}"
   local url="" part
   url="$(fs_base)/${doc}?"
   IFS=',' read -r -a _mask_parts <<<"${mask}"
   for part in "${_mask_parts[@]}"; do
     url+="updateMask.fieldPaths=${part}&"
   done
+  if [[ -n "${update_time}" ]]; then
+    url+="currentDocument.updateTime=${update_time}&"
+  fi
   fs_request PATCH "${url%&}" "{\"fields\":${fields}}" >/dev/null
 }
 

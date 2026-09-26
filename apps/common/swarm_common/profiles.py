@@ -287,6 +287,17 @@ class RunnerProfile:
     #: a subscription token, never both, so requiring all of them would refuse a
     #: tenant who supplied exactly the one they pay for.
     secrets_any_of: bool = False
+    #: True when this runner DECLARES what an attempt cost rather than measuring
+    #: it from a provider's bill. The mock reports $0.00 on purpose; a reader
+    #: has to be able to tell that deliberate zero from a real one, so every
+    #: cost figure over a declared profile is marked as declared
+    #: (`swarm_api.outcomes`, "Reported cost · not a bill").
+    #:
+    #: Contract request 24, ACCEPTED by the owner on 2026-09-25 (#185, the
+    #: decisions comment, item 9). Until then the outcome ledger named `mock`
+    #: in a set of its own, a restatement of the catalogue held to it only by
+    #: a test.
+    cost_declared: bool = False
     #: Whether this profile may be dispatched AT ALL.
     #:
     #: A profile is disabled, not deleted, when its provider stops working.
@@ -447,6 +458,7 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         backend=Backend.CLOUD_RUN_JOB,
         runner_argv=("python", "-m", "agent_worker.runners.mock"),
         provider=None,          # no key required -- smoke tests must always work
+        cost_declared=True,     # its $0.00 is declared, not measured (request 24)
         timeout_seconds=600,
         checkpoint_interval_seconds=30,
         inputs=_MOCK_INPUTS,
