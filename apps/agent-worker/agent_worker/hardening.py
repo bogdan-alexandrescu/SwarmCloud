@@ -41,7 +41,8 @@ diagnosed with.
 
 WHAT IT DOES NOT COVER. The container's environment is also PID 1's (tini's),
 at `/proc/1/environ`, and this changes nothing there. The worker keeps no
-credential in its environment for that reason (worker-job-v2.yaml).
+credential in its environment for that reason (kubernetes/README.md, "No
+provider key in a Job's environment").
 
 IF IT FAILS. On Linux a failed call means the agent may be able to read the
 worker's memory. The worker then never reads the tenant's git token: the clone
