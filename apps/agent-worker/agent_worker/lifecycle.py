@@ -2875,7 +2875,7 @@ class Worker:
             # THE LIVE READING DETAILS DRAWS, on the attempt itself (contract
             # request #15): the same cadence as the event, so a running
             # attempt's figures are never more than one reading behind it.
-            self._record_cpu()
+            # MUTATION (PR proof, reverted in the next commit): no live write.
 
     def _usage_reading(self) -> dict[str, Any]:
         """One HEARTBEAT event's detail: the attempt's usage so far.
