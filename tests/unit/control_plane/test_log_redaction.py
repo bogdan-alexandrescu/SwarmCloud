@@ -484,6 +484,16 @@ def test_a_planted_sentinel_cannot_shield_a_value():
 _KV_SECRET = "hunter2-very-secret"
 _KV_BARE = "q8Zr7Lm2Xv9T"
 
+#: The PR #229 review's two lines, built rather than hand-escaped: a tool
+#: call's command that quotes its own quotes, as one stream-json line.
+_BASH_C = json.dumps(
+    {"command": 'bash -c "export DB_PASSWORD=\\"' + _KV_SECRET + '\\" && ./deploy.sh"'}
+)
+_CURL_D = json.dumps(
+    {"command": 'curl -d "{\\"api_key\\": \\"' + _KV_BARE + '\\"}" https://api'}
+)
+assert '\\\\\\"' + _KV_SECRET in _BASH_C, "the fixture must hold the value two escapes deep"
+
 #: (line as it sits in JSON text, what must not survive, what both filters give)
 ESCAPED_KEY_VALUE = [
     (
@@ -507,6 +517,11 @@ ESCAPED_KEY_VALUE = [
     # credential key had its `[` masked and its value served.
     ('{"password": ["hunter2-list-value"]}', "hunter2-list", '{"password": ["********"]}'),
     ('{\\"password\\": [\\"hunter2-list-value\\"]}', "hunter2-list", '{\\"password\\": [\\"********\\"]}'),
+    # ONE LEVEL DEEPER (the PR #229 review): a command that quotes its own
+    # quotes, as a stream-json line holds it -- three backslashes, then the
+    # quote. Both filters masked the backslashes and served the value.
+    (_BASH_C, _KV_SECRET, _BASH_C.replace(_KV_SECRET, "********")),
+    (_CURL_D, _KV_BARE, _CURL_D.replace(_KV_BARE, "********")),
 ]
 
 #: Controls: masked exactly as before the change, by both filters.
@@ -542,6 +557,28 @@ def test_an_escaped_empty_value_is_left_alone_by_both_filters():
     assert redact(line).text == line
     assert redact(line).count == 0
     assert _house_filter([line]) == [line]
+    # And two escapes deep (the PR #229 review), where a run of backslashes
+    # opens the value: still nothing in it, so still nothing masked.
+    deeper = json.dumps(json.dumps(json.dumps({"password": "", "note": "none here"})))
+    assert '\\\\\\"password\\\\\\": \\\\\\"\\\\\\"' in deeper, deeper
+    assert redact(deeper).text == deeper
+    assert redact(deeper).count == 0
+    assert _house_filter([deeper]) == [deeper]
+
+
+def test_a_long_run_of_backslashes_is_linear_not_quadratic():
+    """The run before the key is tried at every position of the text, so it is
+    bounded (`\\\\{0,15}`); unbounded, 256 KiB of backslashes -- text an agent
+    chooses, on an instance every tenant shares -- rescans the rest of the run
+    from each of its positions."""
+    import time
+
+    run = "\\" * (256 * 1024)
+    started = time.monotonic()
+    for text in (run, "password=" + run + "x", '"' + run + '"api_key": "v"', run + '"'):
+        redact(text)
+    elapsed = time.monotonic() - started
+    assert elapsed < 5.0, f"four 256 KiB runs of backslashes took {elapsed:.1f}s"
 
 
 def test_the_transcripts_old_call_on_a_tool_input_no_longer_serves_the_value():

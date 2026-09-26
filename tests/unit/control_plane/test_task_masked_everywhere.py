@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import importlib
 import json
+from datetime import datetime, timezone
 from typing import Any
 
 from swarm_api.redaction import MASK
@@ -219,6 +220,63 @@ def test_a_workflow_read_serves_its_steps_and_tasks_masked(client, db):
     assert by_step["research"]["input_redaction_count"] == 1
 
 
+def test_a_workflow_step_is_masked_by_its_tasks_masker_so_the_metadatas_literal_is_masked_in_both(
+    client, db
+):
+    """THE PR #229 REVIEW. The step copy was masked by a masker over the step's
+    input alone, so a literal only the workflow's metadata named was masked in
+    `tasks[0].input` and served in `workflow.steps[0].input` of the SAME
+    response -- and in the create response and the list."""
+    created = client.post(
+        "/v1/workflows",
+        headers=auth_header("alice"),
+        json={
+            "metadata": {"deploy_secret": LITERAL},
+            "steps": [{"step_id": "s1", "runner_profile": "mock",
+                       "input": {"prompt": f"use {LITERAL} to deploy"}}],
+        },
+    )
+    assert created.status_code == 201, created.text
+    assert LITERAL not in created.text, "the create response served the step's input in clear"
+    workflow_id = created.json()["workflow"]["workflow_id"]
+
+    body = _get(client, f"/v1/workflows/{workflow_id}")
+    listing = _get(client, "/v1/workflows?limit=50")
+    assert LITERAL not in json.dumps(body)
+    assert LITERAL not in json.dumps(listing)
+
+    (step,) = body["workflow"]["steps"]
+    (task,) = body["tasks"]
+    assert step["input"] == task["input"] == {"prompt": f"use {MASK} to deploy"}
+    assert step["input_redaction_count"] == task["input_redaction_count"] == 1
+    assert step["input_masked_by"] == "task"
+    (listed,) = [w for w in listing["workflows"] if w["workflow_id"] == workflow_id]
+    assert listed["steps"][0]["input"] == {"prompt": f"use {MASK} to deploy"}
+    assert listed["steps"][0]["input_masked_by"] == "task"
+
+
+def test_a_workflow_whose_step_tasks_were_not_read_serves_no_step_input(client, db):
+    """Masked by a masker that never saw the metadata is the defect; with no
+    step task read, the list serves the step's input as null and says why."""
+    seed_tenant(db, "eng")
+    moment = datetime.now(timezone.utc)
+    db.docs["workflows/wf_orphan"] = {
+        "workflow_id": "wf_orphan", "tenant_id": "eng", "created_at": moment,
+        "updated_at": moment, "state": "QUEUED", "submitted_by": "alice@saga.xyz",
+        "steps": [{"step_id": "s1", "runner_profile": "mock",
+                   "input": {"prompt": f"use {LITERAL}"}, "depends_on": [],
+                   "resource_class": "standard", "input_from": {}, "timeout_seconds": 600,
+                   "task_id": "task_gone"}],
+        "on_step_failure": "fail_workflow", "priority": 0, "cancel_requested": False,
+    }
+    listing = _get(client, "/v1/workflows?limit=50")
+
+    (listed,) = [w for w in listing["workflows"] if w["workflow_id"] == "wf_orphan"]
+    (step,) = listed["steps"]
+    assert step["input"] is None and step["input_redaction_count"] is None
+    assert step["input_masked_by"] == "not_read"
+
+
 # ---------------------------------------------------------------------------
 # The sweep: no GET route serves a planted secret inside an input or metadata
 # ---------------------------------------------------------------------------
@@ -243,19 +301,64 @@ def _inputs_and_metadata(node: Any, out: list[Any]) -> list[Any]:
     return out
 
 
-def test_no_get_route_serves_a_planted_secret_inside_an_input_or_metadata(client, db):
-    """Swept, not listed: a route added tomorrow is covered the day it exists.
+def test_no_get_route_serves_a_planted_secret_inside_an_input_or_metadata(client, db, objects):
+    """Swept, not listed: a route added tomorrow is covered the day it exists,
+    as long as its path parameters are among the ones filled in below -- a
+    route with any other parameter is skipped, and counted, and the count is
+    asserted, so a new one is noticed rather than silently left out (the PR
+    #229 review found this sweep skipped every checkpoint route while its
+    docstring said "covered").
 
-    Narrower than `test_no_route_serves_credentials.py` on purpose. That file
-    allows a task's own text back to its own tenant through `last_error` and
-    `result_summary`, which are not the input; the owner's decision is that
-    the INPUT and the METADATA never come back raw, even to their submitter.
+    Since the PR #229 review the claim is the whole body, not only `input` and
+    `metadata`: the secrets are planted in everything the task collected about
+    itself too -- `last_error`, `result_summary`, an attempt's `error`, an
+    event's `detail`, `repository_url`, the runner's stderr log and the
+    `input.json` inside a checkpoint -- and no JSON body any GET route serves
+    may hold one. The one route not held to it is the whole checkpoint archive,
+    which is not JSON: the owner's decision of 2026-09-24 serves it byte for
+    byte, and whether that stands under "masked everywhere" is the owner's
+    open question (docs/agent-output.md).
     """
+    from .test_checkpoint_content import put_checkpoint, tar_gz
+
     _task(
         db,
         input_doc={"prompt": f"use {OPENAI} with DB_PASSWORD={BARE}"},
         metadata={"note": OPENAI, "ci_token": BARE},
         task_id="task_mine",
+    )
+    collected = f"the agent printed {OPENAI} and {BARE}"
+    db.docs["tasks/task_mine"].update(
+        {
+            "last_error": collected,
+            "result_summary": {"runner": {"summary": collected}},
+            "repository_url": f"https://x-access-token:{BARE}@github.com/o/r",
+        }
+    )
+    db.docs["attempts/att_mine"] = {
+        "attempt_id": "att_mine", "task_id": "task_mine", "tenant_id": "eng", "generation": 1,
+        "lease_id": "lease_mine", "backend": "CLOUD_RUN_JOB",
+        "created_at": db.docs["tasks/task_mine"]["created_at"], "exit_code": 1,
+        "error": collected,
+    }
+    db.docs["tasks/task_mine/events/ev_mine"] = {
+        "event_id": "ev_mine", "task_id": "task_mine", "tenant_id": "eng", "type": "failed",
+        "at": db.docs["tasks/task_mine"]["created_at"], "attempt_id": "att_mine",
+        "lease_id": "lease_mine", "generation": 1, "detail": {"error": collected},
+    }
+    base = "tenants/eng/tasks/task_mine/attempts/att_mine"
+    objects.put(
+        f"{base}/logs/stderr.log",
+        json.dumps({"message": "child started", "argv": ["claude", "-p", collected]}) + "\n"
+        + f"plain text: {collected}\n",
+    )
+    worker_input = {**db.docs["tasks/task_mine"]["input"], "task_id": "task_mine",
+                    "attempt_id": "att_mine", "resumed_from_checkpoint": False}
+    put_checkpoint(
+        objects, task="task_mine", attempt="att_mine",
+        archive=tar_gz([("input.json", "file", json.dumps(worker_input, indent=2)),
+                        ("notes.md", "file", f"{collected}\n")]),
+        file_count=2,
     )
     db.docs["workflows/wf_mine"] = {
         "workflow_id": "wf_mine", "tenant_id": "eng", "created_at": db.docs["tasks/task_mine"]["created_at"],
@@ -271,6 +374,8 @@ def test_no_get_route_serves_a_planted_secret_inside_an_input_or_metadata(client
 
     swept = 0
     carried = 0
+    skipped: list[str] = []
+    served_ok: set[str] = set()
     for name in ROUTER_MODULES:
         module = importlib.import_module(f"swarm_api.routes.{name}")
         for route in module.router.routes:
@@ -280,8 +385,11 @@ def test_no_get_route_serves_a_planted_secret_inside_an_input_or_metadata(client
                 route.path.replace("{task_id}", "task_mine")
                 .replace("{workflow_id}", "wf_mine")
                 .replace("{tenant_id}", "eng")
+                .replace("{checkpoint_id}", "ckpt-00001")
+                .replace("{path:path}", "input.json")
             )
             if "{" in path:
+                skipped.append(route.path)
                 continue
             path += QUERY_FOR.get(path, "")
             for user in ("alice", "root"):
@@ -292,11 +400,26 @@ def test_no_get_route_serves_a_planted_secret_inside_an_input_or_metadata(client
                         body = response.json()
                     except ValueError:
                         continue
+                    if response.status_code == 200:
+                        served_ok.add(route.path)
                     found = _inputs_and_metadata(body, [])
                     carried += len(found)
                     text = json.dumps(found, default=str)
                     assert OPENAI not in text and BARE not in text, (
                         f"{path} as {user} served a planted secret inside an input or metadata"
                     )
+                    whole = json.dumps(body, default=str)
+                    assert OPENAI not in whole and BARE not in whole, (
+                        f"{path} as {user} served a planted secret: {whole[:2000]}"
+                    )
     assert swept > 20, f"the sweep visited only {swept} route reads"
     assert carried > 0, "no route served an input or metadata at all, so the sweep proved nothing"
+    assert skipped == [], f"these GET routes have a path parameter the sweep does not fill: {skipped}"
+    # The planted fields were really served, so the whole-body check compared
+    # against something: each of these reached a 200 with JSON.
+    for template in (
+        "/v1/tasks/{task_id}", "/v1/tasks/{task_id}/attempts", "/v1/tasks/{task_id}/events",
+        "/v1/tasks/{task_id}/logs", "/v1/tasks/{task_id}/checkpoints/{checkpoint_id}/files/{path:path}",
+        "/v1/attempts", "/v1/workflows/{workflow_id}",
+    ):
+        assert template in served_ok, f"{template} never answered 200, so the sweep proved nothing there"
