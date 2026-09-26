@@ -25,7 +25,7 @@ from typing import Any, Callable, Iterable
 
 from swarm_common.admission import _snapshot
 from swarm_common.admission import release_lease_in_transaction
-from swarm_common.models import TaskEvent, new_id, retries_exhausted, utcnow
+from swarm_common.models import EndCause, TaskEvent, new_id, retries_exhausted, utcnow
 from swarm_common.states import (
     CONCURRENCY_STATES,
     TERMINAL_STATES,
@@ -306,8 +306,16 @@ class ControlStore:
         error: str | None = None,
         next_eligible_at: datetime | None = None,
         only_from: tuple[TaskState, ...] | None = None,
+        failed_cause: EndCause = EndCause.LOST_WORKER,
     ) -> TaskState | None:
         """Move a task out of a concurrency state it can no longer justify.
+
+        THE END CAUSE IS DECIDED HERE, INSIDE THE TRANSACTION, because the
+        terminal state is (contract request 23). A CANCELLED end is always
+        CANCEL_REQUESTED: only the flag, re-read below, picks it. A FAILED end
+        is `failed_cause` -- LOST_WORKER for a requeue this downgraded on spent
+        attempts, which is every caller but the one that fails a worker that
+        could not start (CANNOT_START).
 
         Re-reads inside the transaction and refuses an illegal transition rather
         than forcing one: if a worker wrote SUCCEEDED between the snapshot and
@@ -413,6 +421,11 @@ class ControlStore:
                 payload["next_eligible_at"] = next_eligible_at
             if target in TERMINAL_STATES:
                 payload["completed_at"] = utcnow()
+                payload["end_cause"] = (
+                    EndCause.CANCEL_REQUESTED
+                    if target is TaskState.CANCELLED
+                    else failed_cause
+                ).value
             txn.update(task_ref, payload)
             return target
 

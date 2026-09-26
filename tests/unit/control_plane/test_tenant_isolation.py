@@ -343,12 +343,14 @@ def test_the_colliding_principal_cannot_read_or_cancel_through_any_route(db):
         ("GET", f"/v1/tasks/{task_id}/checkpoints"),
         ("GET", f"/v1/tasks/{task_id}/logs"),
         # The Artifacts tab's reads (#184): the agent's raw bytes, its
-        # transcript, its answer, and the CPU readings off its events.
+        # transcript, its answer, and the masked copy of what it was asked.
+        # (The CPU readings are typed attempt fields now, request #15, and
+        # ride on `/attempts` above.)
         ("GET", f"/v1/tasks/{task_id}/logs?stream=agent_stdout"),
         ("GET", f"/v1/tasks/{task_id}/artifacts/raw?name=x"),
         ("GET", f"/v1/tasks/{task_id}/transcript"),
         ("GET", f"/v1/tasks/{task_id}/answer"),
-        ("GET", f"/v1/tasks/{task_id}/attempts?include=usage"),
+        ("GET", f"/v1/tasks/{task_id}/input"),
         # Every attempt of the tenant, across tasks: the spend of every run
         # the colliding principal did not start.
         ("GET", "/v1/attempts"),

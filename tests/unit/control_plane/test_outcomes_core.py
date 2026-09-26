@@ -296,14 +296,16 @@ def test_a_missing_time_zone_database_is_a_503_not_a_bad_zone(monkeypatch):
 # --------------------------------------------------------------------------
 
 def test_the_vocabulary_order_is_fixed():
+    # #185 decisions 4 and 2 (2026-09-25): inputs_unavailable before
+    # outputs_missing, after_cancel after after_failure, classifier version 2.
     assert [c["key"] for c in VOCAB["failure_classes"]] == [
         "runner_error", "timeout", "lost_worker", "could_not_start",
-        "outputs_missing", "dispatch_failed", "other", "no_reason",
+        "inputs_unavailable", "outputs_missing", "dispatch_failed", "other", "no_reason",
     ]
     assert [c["key"] for c in VOCAB["cancel_causes"]] == [
-        "requested", "after_failure", "workflow_sweep", "other",
+        "requested", "after_failure", "after_cancel", "workflow_sweep", "other",
     ]
-    assert VOCAB["classifier_version"] == 1
+    assert VOCAB["classifier_version"] == 2
 
 
 @pytest.mark.parametrize(
@@ -344,7 +346,10 @@ def test_exit_76_is_not_trusted_to_mean_timeout():
         (True, None, "requested"),
         (True, "an upstream workflow step did not succeed", "requested"),
         (False, "cancelled on request; runner stopped on SIGTERM", "requested"),
-        (False, "an upstream workflow step did not succeed", "after_failure"),
+        # With no parent read, the cascade text cannot say whether a failure
+        # or a cancel caused it (#185, decision 2): never a guessed failure.
+        # test_outcomes_end_cause.py splits it by the parents' states.
+        (False, "an upstream workflow step did not succeed", "other"),
         (
             False,
             "workflow step synthesis is FAILED and on_step_failure is fail_workflow, "
