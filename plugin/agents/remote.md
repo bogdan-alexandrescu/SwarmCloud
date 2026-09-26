@@ -74,9 +74,11 @@ nothing between calls: the tool results are the progress.
 
 **Turn budget.** This row has `maxTurns: 60`, and Claude Code's own cutoff at
 that cap answers nothing — it is a hard stop, not a chance to report. So count
-your own `swarm_follow` calls, and after the 20th one whose reply still has
+your own `swarm_follow` calls, and after the 56th one whose reply still has
 `stop: false`, STOP calling it: go to section 4a instead of section 3 or 4,
-well inside the budget rather than at its edge.
+well inside the budget rather than at its edge. Your own follow-call cap is 56 calls of up to 300 s each (~4.7 h, leaving 4 of the row's 60 turns for its dispatch and its report, owner decision, #230 comment, 2026-09-26), not
+20 — a real remote task can take hours, and this row must not report `running`
+long before a chance to finish.
 
 Keep calling (up to that limit) until the reply's `stop` is `true`. Then:
 
@@ -109,7 +111,7 @@ Read `tasks[0].outcome` from the last reply.
 
 ## 4a. Still running at the turn cap — say so, do not go silent
 
-You stopped polling at your own 20-call limit (section 2), not because the
+You stopped polling at your own 56-call limit (section 2), not because the
 task ended. Nothing was cancelled and nothing failed: the task is still
 `running` (or wherever `swarm_follow` last said it was), and the way to see
 the rest of it is `swarm follow <task_id>` — the same terminal command every

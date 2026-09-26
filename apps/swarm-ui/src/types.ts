@@ -454,7 +454,7 @@ export interface Task {
    * `completed_at`. Null on SUCCEEDED and on a task that ended before this
    * field existed.
    */
-  end_cause: string | null
+  end_cause?: string | null
 
   /**
    * THE FENCING GENERATION. `models.py:177`, now served by `task_to_api`.

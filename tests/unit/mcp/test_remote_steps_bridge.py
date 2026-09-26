@@ -886,7 +886,7 @@ def test_a_failed_task_hands_back_its_error_and_no_invented_answer(swarm, world,
     doc = world.db.docs["tasks/task_a"]
     doc["last_error"] = "claude-code exited 1: boom"
     doc["result_summary"] = {}
-    doc["end_cause"] = "TIMEOUT"
+    doc["end_cause"] = "timeout"
     world.db.docs["attempts/att_1"].update({"exit_code": 1, "error": "boom"})
 
     outcome = progress.outcome(swarm, swarm.task("task_a"))
@@ -895,7 +895,7 @@ def test_a_failed_task_hands_back_its_error_and_no_invented_answer(swarm, world,
     # Contract request 23 (#217): a task's typed end_cause, so a workflow row
     # reading `outcome` gets the same classification the outcome ledger does,
     # not free-text `last_error` it must sort out itself.
-    assert outcome["end_cause"] == "TIMEOUT"
+    assert outcome["end_cause"] == "timeout"
     assert outcome["last_error"] == "claude-code exited 1: boom"
     assert outcome["answer"] is None and outcome["answer_json"] is None
     why = outcome["answer_unavailable_because"]

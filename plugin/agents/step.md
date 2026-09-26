@@ -44,9 +44,12 @@ calls: the tool results are the progress. Stop when the reply's `stop` is
 
 **Turn budget.** This row has `maxTurns: 60`, and Claude Code's own cutoff at
 that cap answers nothing -- it is a hard stop, not a chance to report. So
-count your own `swarm_follow` calls in this section, and after the 20th one
+count your own `swarm_follow` calls in this section, and after the 56th one
 whose reply still has `stop: false`, stop calling it and go to section 2a
-instead of section 3, well inside the budget rather than at its edge.
+instead of section 3, well inside the budget rather than at its edge. Your own
+follow-call cap is 56 calls of up to 300 s each (~4.7 h, leaving 4 of the row's 60 turns for its dispatch and its report, owner decision, #230
+comment, 2026-09-26), not 20 -- a real remote task can take hours, and this
+row must not report `running` long before a chance to finish.
 
 The bridge stops a row that can never finish: a task it cannot read (a 404 or
 403 at once, other failures after three calls in a row), or a task that is not
@@ -64,7 +67,7 @@ empty for everything else.
 
 ## 2a. Still running at the turn cap -- say so, do not go silent
 
-You stopped polling at your own 20-call limit, not because the task ended.
+You stopped polling at your own 56-call limit, not because the task ended.
 Nothing was cancelled and nothing failed. Call `StructuredOutput` with
 `state: "running"`, `last_error` set to `resume with: swarm follow <task_id>`,
 and null or empty for everything else -- a progress report, not the step's
