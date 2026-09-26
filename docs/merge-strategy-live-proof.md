@@ -83,9 +83,11 @@ Three things have to be true, and the second is the one that gets forgotten:
    provider the tenant keeps. A re-run also rewrites `display_name`,
    `max_active` and `capacity_units` (to defaults of 20 and 40 unless they are
    given), writes `gcs_prefix` without the trailing slash that terraform writes,
-   and creates the prefix marker object. Pass the tenant's current values, or
-   make the two changes on their own: the one secret binding, and a Firestore
-   PATCH whose update mask is `credentials` alone.
+   and creates the prefix marker object. So make the two changes on their own:
+   `scripts/register-tenant.sh --tenant eng --add-provider git` is exactly the
+   one secret binding and a Firestore PATCH whose update mask is `credentials`
+   alone, conditional on the document not having changed since it was read.
+   Points 2 and 3 are then one command.
 
 **No Terraform change is required**, and that is worth stating because it looks
 like it should be. `terraform/infra/locals.tf` builds `secret_env` from a
