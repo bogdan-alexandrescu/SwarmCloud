@@ -21,6 +21,14 @@
 // And the review of #196: `workflows_failed` counts are null, not 0, when the
 // block does not apply (kind=standalone).
 //
+// And three findings of the post-deploy QA of #197 (epic #222, 2026-09-26, at
+// 1440 and 390): the decided lane's "0" and its failed-side max printed into
+// each other, with no minimum gap between scale labels where the inspector
+// charts' `ValueAxis` keeps one; the provenance foot of a cache hit said
+// "0 reads this request" and "N days built by this read" together; and the
+// "requested (and other)" bars, anchored to the SVG's origin, painted one row
+// of a 3px mark, against lane 3's baseline rule. Pushed before the fix.
+//
 // WRITTEN TO FAIL ON THE PAGE BEFORE THE CHANGE, IN VITEST. Every payload the
 // new causes need is written through a cast (`as unknown as Record<...>`), so
 // this file typechecks against the old `outcomes.ts` and the run reaches the
@@ -181,9 +189,22 @@ function barsInside(root: HTMLElement, marks: Element, outline: Element): number
   const top = num(outline, 'y') + 0.5
   const bottom = num(outline, 'y') + num(outline, 'height') - 0.5
   if (bottom <= top) return 0
+  return paintedIn(
+    root,
+    [...marks.querySelectorAll('rect')].filter((el) => el !== outline),
+    top,
+    bottom,
+  )
+}
+
+/**
+ * How many pixels of TS-4's flat bars the given rects paint between `top` and
+ * `bottom`, down the column: a patterned rect through its pattern's bars,
+ * repeated from the PATTERN's origin (its `y`), a `.ol-flat` rect as itself.
+ */
+function paintedIn(root: HTMLElement, rects: Iterable<Element>, top: number, bottom: number): number {
   let px = 0
-  for (const el of marks.querySelectorAll('rect')) {
-    if (el === outline) continue
+  for (const el of rects) {
     const y0 = num(el, 'y')
     const y1 = y0 + num(el, 'height')
     const url = /^url\(#(.+)\)$/.exec(el.getAttribute('fill') ?? '')
@@ -499,4 +520,127 @@ describe('Workflows that failed, when the block does not apply', () => {
     expect(c.textContent).toContain('standalone tasks only')
     expect(c.textContent).not.toMatch(/\bnull\b|\d+ of \d+/)
   })
+})
+
+// ---------------------------------------------------------------------------
+// The post-deploy QA of #197 (epic #222, 2026-09-26)
+// ---------------------------------------------------------------------------
+
+/**
+ * The gap the inspector charts' vertical value axes keep between two labels
+ * (`ValueAxis`, `minGapPx={14}` in AttemptPhases and PeakMemory). A --t-micro
+ * digit is ~9px tall, so 14px baseline to baseline leaves ~5px between glyphs.
+ */
+const LABEL_GAP = 14
+
+/** Every scale label in one drawing's gutter, top to bottom. */
+function gutterLabels(root: HTMLElement, key: string): Array<{ text: string; y: number }> {
+  return [...root.querySelectorAll(`.ol-drawing.is-${key} .ol-gutter text`)]
+    .map((t) => ({ text: (t.textContent ?? '').trim(), y: num(t, 'y') }))
+    .sort((a, b) => a.y - b.y)
+}
+
+/** The fixture with every bucket's succeeded and failed swapped: at most 9 up and 111 down. */
+function failuresOutnumber(): Outcomes {
+  const d = ledgerFixture()
+  for (const b of d.buckets) {
+    const s = b.succeeded
+    b.succeeded = b.failed
+    b.failed = s
+  }
+  return d
+}
+
+describe('the decided lane’s scale labels keep the inspector charts’ gap (epic #222)', () => {
+  // QA at 1440 and 390: the decided lane's "0" and its failed-side max "7"
+  // printed 4px and 9px into each other. Both sides share one count scale, so
+  // the zero sits wherever the split puts it -- near the floor when successes
+  // outnumber failures, near the top the other way -- and the gutter drew all
+  // three labels whatever the distance. `ValueAxis` has the rule: the value
+  // the axis must show first, then the top, then the floor, each dropped
+  // rather than printed on one already kept.
+  const CASES: Array<[string, () => Outcomes, string]> = [
+    ['the dev split, 111 up and 9 down', ledgerFixture, '111'],
+    ['failures outnumbering successes, 9 up and 111 down', failuresOutnumber, '111'],
+  ]
+  for (const key of ['wide', 'mid', 'narrow'] as const) {
+    for (const [name, payload, larger] of CASES) {
+      it(`keeps every scale label ${LABEL_GAP}px from the next, with ${name}, in the ${key} drawing`, async () => {
+        // MUTATION: print the decided lane's three labels unconditionally again.
+        const root = await timeline(payload())
+        const labels = gutterLabels(root, key)
+        expect(labels.length, 'the gutter drew no labels').toBeGreaterThanOrEqual(4)
+        for (let i = 1; i < labels.length; i++) {
+          const a = labels[i - 1]!
+          const b = labels[i]!
+          expect(b.y - a.y, `"${a.text}" at ${a.y} and "${b.text}" at ${b.y} print into each other`).toBeGreaterThanOrEqual(LABEL_GAP)
+        }
+        const texts = labels.map((l) => l.text)
+        // The zero both sides hang from is the value the axis must show, and
+        // the side that sets the scale keeps its max.
+        expect(texts, 'the decided lane lost its zero').toContain('0')
+        expect(texts, 'the larger side lost its max').toContain(larger)
+      })
+    }
+  }
+})
+
+describe('the provenance foot of a cache hit (epic #222)', () => {
+  // QA: "from the 60 s cache · 0 reads this request" beside "28 days built by
+  // this read". On a hit the route hands back the ORIGINAL payload with
+  // `cached: true` (swarm_api.outcomes `read`), so `coverage.derived_now` --
+  // like `generated_at` and `reads` -- belongs to the read the cache kept.
+  const at = (d: Outcomes) => new Date(d.generated_at).toLocaleTimeString(undefined, { timeZone: d.tz, hourCycle: 'h23' })
+
+  it('says the days were built by the read the cache kept, at its time, not by this request', async () => {
+    // MUTATION: say "built by this read" whatever `cached` says.
+    const d = ledgerFixture()
+    d.cached = true
+    d.coverage.derived_now = 28
+    const root = await timeline(d)
+    const prov = root.querySelector('.ol-prov')!.textContent ?? ''
+    expect(prov).toContain('0 reads this request')
+    expect(prov, 'a cache hit claims this request built the days').not.toContain('this read')
+    expect(prov).toContain(`28 UTC days built by the ${at(d)} read`)
+  })
+
+  it('says this read built them when it did, in the rollup’s own unit', async () => {
+    const d = ledgerFixture()
+    d.coverage.derived_now = 28
+    const root = await timeline(d)
+    expect(root.querySelector('.ol-prov')!.textContent).toContain('28 UTC days built by this read')
+  })
+
+  it('counts them as tenant-days in platform scope, as it counts the sealed ones', async () => {
+    const d = ledgerFixture()
+    d.scope = { kind: 'platform', tenants: ['eng', 'personal', 'verify'], excluded: [], tenants_complete: true }
+    d.cached = true
+    d.coverage.derived_now = 60
+    const root = await timeline(d, { view: 'scope=platform' }, { admin: true })
+    expect(root.querySelector('.ol-prov')!.textContent).toContain(`60 tenant-days built by the ${at(d)} read`)
+  })
+})
+
+describe('the requested bars stand on lane 3’s baseline (observed on #217, epic #222)', () => {
+  // The flat bars of "requested (and other)" were a pattern anchored to the
+  // SVG's origin. Lane 3's baseline is y ≡ 1 (mod 5) in every drawing (366,
+  // 306, 266), so a 3px mark -- one requested cancel beside 305 -- painted
+  // its bottom row alone, against the baseline rule: a thicker baseline, not
+  // a bar. Anchored to the baseline, every requested mark stands on a whole
+  // 3px bar, and the columns still line up, since they share the baseline.
+  for (const key of ['wide', 'mid', 'narrow'] as const) {
+    it(`stands every requested mark on one whole flat bar, in the ${key} drawing`, async () => {
+      // MUTATION: anchor the pattern to the SVG's origin again.
+      const root = await timeline()
+      const base = laneThreeBase(root, key)
+      const marks = [...root.querySelectorAll(`.ol-drawing.is-${key} .ol-bucket .ol-m-ended`)]
+      // 19, 20, 22, 23, 24 and 25 Sep; 19 and 23 Sep are one requested cancel each (3px).
+      expect(marks.length, 'the fixture drew no requested mark').toBe(6)
+      for (const m of marks) {
+        const i = m.closest('.ol-bucket')?.getAttribute('data-i')
+        expect(num(m, 'y') + num(m, 'height'), `bucket ${i}: the requested mark is not on the baseline`).toBeCloseTo(base, 1)
+        expect(paintedIn(root, [m], base - WHOLE_BAR, base), `bucket ${i}: the requested mark's bottom ${WHOLE_BAR}px are not one whole bar`).toBe(WHOLE_BAR)
+      }
+    })
+  }
 })
