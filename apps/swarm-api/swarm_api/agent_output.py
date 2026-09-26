@@ -61,7 +61,7 @@ from .inspect import (
     parse_tail_header,
 )
 from .objects import ObjectAbsent, ObjectReader, ObjectSlice, ObjectUnreadable
-from .redaction import RULES as REDACTION_RULES, open_key_start, redact, redact_detail
+from .redaction import RULES as REDACTION_RULES, open_key_start, redact, redact_detail, redact_lines
 from .task_input import masking_for
 from .transcript import last_result_event, parse_window
 
@@ -235,7 +235,11 @@ class AgentOutputService:
           * TEXT -- no NUL in the head. Served as `text/plain; charset=utf-8`
             WHATEVER the name says, so an `.html` or an `.svg` an agent wrote
             is shown as its source and never rendered; redacted window by
-            window on the way out. Bytes that are not UTF-8 pass through
+            window on the way out, by the SAME masking `/artifacts/content`
+            applies (`redaction.redact_lines`, plus this task's own learned
+            literals -- the PR #229 review: this route used to run `redact`
+            alone, which is `redact_lines` minus the structural JSON pass and
+            minus the task's literals). Bytes that are not UTF-8 pass through
             exactly as stored -- only a credential-shaped run changes -- so
             a Latin-1 file downloads as itself, not as U+FFFD.
           * BINARY -- anything else. `application/octet-stream`, always an
@@ -302,7 +306,12 @@ class AgentOutputService:
             "X-Swarm-Redaction": redaction,
         }
         if kind == "text":
-            chunks = self._redacted_text(reader, key, first)
+            # The task's own masker (the PR #229 review): a value only the
+            # task's input or metadata named as secret is masked in a text
+            # artifact's raw download too, the same literals `/artifacts/
+            # content` masks it with.
+            literals = masking_for(task).literals
+            chunks = self._redacted_text(reader, key, first, literals=literals)
         else:
             chunks = self._verbatim(reader, key, first)
         return RawArtifact(chunks=chunks, media_type=media_type, headers=headers, kind=kind)
@@ -341,7 +350,12 @@ class AgentOutputService:
             at = piece.end
 
     def _redacted_text(
-        self, reader: ObjectReader, key: str, first: ObjectSlice
+        self,
+        reader: ObjectReader,
+        key: str,
+        first: ObjectSlice,
+        *,
+        literals: tuple[str, ...] = (),
     ) -> Iterator[bytes]:
         """The whole object, redacted one whitespace-bounded window at a time.
 
@@ -353,6 +367,12 @@ class AgentOutputService:
         whole into the next (up to `redaction.PEM_BLOCK_MAX_CHARS`), so it is
         masked as one block. Concatenated, the windows are the redaction of the
         whole object.
+
+        `literals`: this task's own learned literals (the PR #229 review),
+        passed to `_scrub` so a window that IS a whole JSON line is masked by
+        its structure too, exactly as `/artifacts/content` masks the same
+        bytes -- window boundaries are unchanged, only what each window is
+        masked with.
         """
         total = first.total_bytes
         carry = b""
@@ -362,7 +382,7 @@ class AgentOutputService:
             buffer = carry + piece.data
             if at >= total:
                 if buffer:
-                    yield _scrub(buffer)
+                    yield _scrub(buffer, literals=literals)
                 return
             cut = _last_boundary(buffer)
             if cut >= 0:
@@ -371,11 +391,11 @@ class AgentOutputService:
                     # -1 when the key is all this window holds: carry it.
                     cut = _last_boundary(buffer[:begin])
             if cut >= 0:
-                yield _scrub(buffer[: cut + 1])
+                yield _scrub(buffer[: cut + 1], literals=literals)
                 carry = buffer[cut + 1 :]
             elif len(buffer) >= MAX_TEXT_CARRY:
                 split = _char_boundary(buffer) or len(buffer)
-                yield _scrub(buffer[:split])
+                yield _scrub(buffer[:split], literals=literals)
                 carry = buffer[split:]
             else:
                 carry = buffer
