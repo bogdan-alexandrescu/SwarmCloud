@@ -543,8 +543,10 @@ function InputsCell({ inputs }: { inputs: StepInputs }) {
  * `.ctl-table`, the shared table primitive, so the rhythm, the head and the row
  * tones are the ones every other table in this console already draws. The
  * head is NOT sticky (WF-21): the wrapper scrolls sideways only, so a sticky
- * head never stuck, and making each head cell a layer of its own is the likely
- * source of the faint seams this table showed at fractional column edges.
+ * head never stuck. The faint seams this table shows at fractional column
+ * edges were first put down to that stickiness; they survived its removal, and
+ * moving the head's fill to `thead` does not remove them either (styles.css
+ * `.ctl-table thead`, #178).
  * A failed step's row takes `is-bad` (a full-height rule down its first cell,
  * which survives greyscale); an unread one takes `is-warn`.
  *

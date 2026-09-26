@@ -1151,10 +1151,12 @@ export function dotClass(header: { tone: Tone | 'unknown'; derived: boolean }): 
  *
  * THE SENTENCE CARRIES ITSELF IN ITS `title` (#222). `.wf-progress-text` is
  * contained in its column now and ends in an ellipsis where the column is
- * narrower than the census -- "10/30 done · 1 failed · 19 cancelled" is about
- * 260px, and at 1440 the column leaves it about half that -- so the whole
- * sentence is on the element that was cut (design-system.md §7.3: cut on
- * screen, whole on hover).
+ * narrower than the census. At 1440 that is every census with a tail: the
+ * sentence gets 134.5px beside the meter, so "1/5 done · 1 not started"
+ * (173px) and "10/30 done · 1 failed · 19 cancelled" (260px) are both cut,
+ * and only a bare "N/N done" is whole (styles.css, the `[progress]` note). So
+ * the whole sentence is on the element that was cut (design-system.md §7.3:
+ * cut on screen, whole on hover).
  */
 function Progress({ roll }: { roll: Rollup }) {
   if (!roll.trustworthy) {

@@ -1190,8 +1190,8 @@ Rows `--row-h` (30px), cells `4px 10px`, **no row rule at all** (§13.3 — the
 old comment beside it already argued that "twenty of these down one table
 identify nothing the rows do not already identify", and then drew them anyway),
 header in the label treatment with the one `--line-soft` hairline a panel's
-interior is allowed, under `thead`, **on a `--surface-2` fill painted once, on
-`thead` itself — never on each `th`** (WF-21, below). `.is-num` is right-aligned mono `tabular-nums`. `.ctl-sub`
+interior is allowed, under `thead`, **on a `--surface-2` fill declared on
+`thead`, not on each `th`** (WF-21, below). `.is-num` is right-aligned mono `tabular-nums`. `.ctl-sub`
 is the raw id under the readable name at `--t-micro`/`--lh-flush` so the row
 keeps the height it was signed off at.
 
@@ -1205,32 +1205,56 @@ layer of its own. `shell.test.tsx` holds that no `thead th` rule is sticky, and
 that any positioned table cell with a z-index (CH-13's sticky first column)
 ranks under the drawer's band.
 
-**The head's fill is on `thead`, painted once (WF-21, #178, 2026-09-26).**
-Taking the stickiness off did not remove the seams. Checked on dev at release
-350c244, at 1440, the Workflows Table's head still showed a 1px line of ground
-at four fractional column edges in light and in dark: runner|waited at
-x=592.391, waited|ran 671.398, attempts|cost 883.594 and cost|tokens 1033.648.
-Edges that sit on whole pixels showed none. The cause was that each `th`
-painted its own `--surface-2`. Two fills met at every column edge, and where an
-edge fell inside a device pixel neither fill covered that pixel whole, so the
-ground showed through. `thead` is one box, so a fill painted there has no
-internal edge to seam at. `.ctl-table thead` and `table.pools thead` carry
-`background: var(--surface-2)`, and no `thead th` rule declares a background.
+**The head's fill is on `thead`, not on each `th` (WF-21, #178, 2026-09-26) —
+and that does not remove the seams.** Taking the stickiness off did not remove
+them either. Checked on dev at release 350c244, at 1440, the Workflows Table's
+head still showed a 1px line of ground at four fractional column edges in light
+and in dark: runner|waited at x=592.391, waited|ran 671.398, attempts|cost
+883.594 and cost|tokens 1033.648. Edges that sit on whole pixels showed none.
+Where a column edge falls inside a device pixel and the cell fills are drawn
+anti-aliased, neither neighbouring fill covers that pixel whole, so the ground
+shows through.
 
-There is one exception: the held corner of a scrolling table below 900px
-(§7.3). It is sticky, and the other head cells scroll under it. If it had no
-fill of its own, their labels would show through the name's head. It paints
-the same `--surface-2` as `thead`, so no step shows beside it.
+#178's prepared fix moved the fill from each `th` to `thead`, on the reasoning
+that `thead` is one box with no internal edge to seam at. **That premise is
+false in Chrome.** Chrome paints a row group's background into each cell's rect
+(the CSS table-layer model), so the `thead` fill uses exactly the per-cell
+geometry of the `th` fill it replaced. Measured in Chrome 153.0.8010.53 at 2x,
+with this stylesheet on a nine-column copy of the Workflows Table (2026-09-26):
 
-`shell.test.tsx` holds all of this through `cascade`, in both themes, at 1440
-and 390: `thead` resolves to `--surface-2`, and `--surface-2` is a different
-step from the panel's `--surface`. No head cell declares a fill except the
-held corner, and no rule anywhere in the sheet gives a `thead th` one. If a
-per-cell fill comes back, the test goes red.
+- With no transform, neither placement seams at any device scale tried, so the
+  path dev takes is not reproduced as it stands.
+- Under a 0.37px `translateX` on an ancestor, which forces the anti-aliased
+  path, the per-`th` fill seams at 8 of 8 column edges and the `thead` fill
+  seams at the same 8, pixel-identical: (243,245,247) in light and (26,31,37)
+  in dark, against dev's (243,246,249) and (26,30,37).
+- What puts dev on that path is not identified. No ancestor of the table is
+  transformed in the stylesheet, and a screenshot clipped at a fractional
+  offset does not reproduce it.
+- In the same measurement, a fill the row group paints itself as one rectangle
+  — `box-shadow: inset 0 0 0 100vmax var(--surface-2)` on `thead` — seamed at
+  0 of 8, alone or over the `thead` background. Adopting it changes the decided
+  treatment; it has not been adopted. Firefox and Safari were not checked.
 
-This has not been verified rendered. The screenshots at 1440 on dev, after the
-release that carries this change, will show whether the seams are gone. #178
-stays open until they do.
+The fill stays on `thead` because that is the placement decided for #178, and
+#178 stays open. `.ctl-table thead` and `table.pools thead` carry
+`background: var(--surface-2)`, and no head cell declares a fill of its own
+except the held corner.
+
+That exception is the held corner of a scrolling table below 900px (§7.3). It
+is sticky, and the other head cells scroll under it. If it had no fill of its
+own, their labels would show through the name's head. It paints the same
+`--surface-2` as `thead`, so no step shows beside it. The first cell of a
+grouped head's *second* row (Tenants' `Max active`) is not the corner and
+paints nothing: the held rules name the head's first row (§7.3).
+
+`shell.test.tsx` holds the placement through `cascade`, in both themes, at
+1440 and 390: `thead` resolves to `--surface-2`, and `--surface-2` is a
+different step from the panel's `--surface`. No head cell declares a fill
+except the held corner — a grouped head is in the fixture — and no rule
+anywhere in the sheet gives a `thead th` one. If a per-cell fill comes back,
+the test goes red. It holds where the fill is declared, not whether a seam
+shows: jsdom has no layout.
 
 Row tones are a **wash plus a form**, never a text colour: `.is-bad` a
 full-height 3px rule on the first cell, `.is-warn` a half-height one, `.is-paused`
@@ -1297,10 +1321,27 @@ cut. So a nowrap item in a row cell carries four things:
 - the whole value in its `title`.
 
 The cell clips at its track. `.wf-progress` and `.wf-progress-text` are the
-worked case, and `workflow.board.test.tsx` checks them at every width that
-draws the sentence. What this costs: a long census is cut at 1440. Giving
-`[progress]` room for the common sentences would be a change to the row's
-template.
+worked case, and `workflow.board.test.tsx` checks each of the four on its own
+at every width that draws the sentence.
+
+**What this costs: every census with a tail is cut at 1440**, not only a
+long one. Measured in Chrome against the stylesheet, `[progress]` resolves to
+its 24ch floor, 196.5px, and the 54px meter and its 8px gap leave the sentence
+134.5px. "1/5 done · 1 not started" and "0/3 done · 3 not started" need
+173px, and "3/12 done · 1 failed · 8 not started" and "10/30 done · 1 failed
+· 19 cancelled" need 260px. Only a bare "N/N done" is whole. The running form
+loses exactly what the 24ch floor was raised to keep: the count of what has
+not started. On main that form was whole and painted 26.9px over the shape
+instead. Showing it again is a change to the row's template, and it is
+undecided:
+
+- a `[progress]` floor of about 29ch holds the running form (meter, gap and
+  173px), and the long terminal form stays cut;
+- about 40ch holds every form known today;
+- or the meter gets a track of its own, and `[progress]` holds only the
+  sentence.
+
+Each takes its room from `[name]`, `[shape]` and `[mix]`.
 
 *(Scoped 2026-09-25, CH-13.)* This is the rule for a `.ctl-line` LIST. A
 `.ctl-table` below 900px follows §7.3 instead: a data table scrolls with its
@@ -1615,8 +1656,12 @@ that did not:
   - **The fix.** A `min-width` counts toward the min-content width, so the
     column keeps its 20ch however its table is laid out.
 
-  The grouped head's second row (Tenants' `Max active`) takes `min-width: 0`
-  along with the rest of its reset. `tables.held.test.tsx` renders the five
+  The grouped head's second row (Tenants' `Max active`) is outside the held
+  rules altogether: their head branch names the head's first row
+  (`thead > tr:first-child > th:first-child`), so it is not held, takes no
+  floor and paints no fill of its own. Until #223 a reset rule un-held it
+  and undid every declaration but one, the corner's `--surface-2`.
+  `tables.held.test.tsx` renders the five
   tables that showed the squeeze. It asks the cascade at 390 for every held
   cell and requires its floor to equal its ceiling. `tables.scroll.test.tsx`
   and `chrome.shared.test.tsx` make the same check on Pools, Profile headroom
