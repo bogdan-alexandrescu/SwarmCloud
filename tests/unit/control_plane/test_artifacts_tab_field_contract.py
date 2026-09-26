@@ -20,8 +20,15 @@ read both diffs side by side found the client short of what the server sends:
 The first three are exactly what this file checks mechanically: BOTH
 DIRECTIONS, as the first file does -- every required client field is served,
 and every served field is declared -- for every shape the tab reads, from the
-real routes over one populated task. The fourth is a meaning, not a name, and
-`details.cpu.test.tsx` holds it.
+real routes over one populated task. The fourth was a meaning, not a name,
+and `details.cpu.test.tsx` held it.
+
+THE FOLLOW-UP (#184, owner decisions of 2026-09-25). `AttemptUsage` is gone:
+contract request #15 was accepted, the CPU figures are typed `Attempt` fields
+served on every attempt row, and `test_ui_api_field_contract.py` holds
+`AttemptRow` both ways. What is new here is `TaskInputCopy`, the masked copy
+of the task's input that Inputs and Details draw (`GET /v1/tasks/{id}/input`),
+and its three texts' inline shape.
 
 The helpers are the first file's, imported rather than copied, so there is one
 reader of `types.ts` interfaces. `extends` is resolved here because
@@ -38,8 +45,6 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import pytest
-
-from swarm_common.states import EventType
 
 from .conftest import PROJECT, auth_header, seed_task, seed_tenant
 from .test_ui_api_field_contract import TYPES_TS, _interface_body, _source
@@ -116,22 +121,18 @@ def served(client, db, objects) -> dict[str, dict[str, Any]]:
             "transcript_skipped": None, "stdout_truncated": False, "stderr_truncated": False,
         },
     }
+    # A prompt, and something else beside it, so every text of the copy is
+    # populated: the prompt, the rest, and the whole.
+    db.docs["tasks/task_a"]["input"] = {"prompt": "Audit the capacity code.", "steps": 2}
     db.docs["attempts/att_1"] = {
         "attempt_id": "att_1", "task_id": "task_a", "tenant_id": "eng", "generation": 1,
         "lease_id": "lease_att_1", "backend": "CLOUD_RUN_JOB", "created_at": NOW,
         "started_at": NOW + timedelta(seconds=5), "completed_at": NOW + timedelta(minutes=2),
         "exit_code": 0, "checkpoints": [],
-    }
-    db.docs["tasks/task_a/events/ev_hb"] = {
-        "event_id": "ev_hb", "task_id": "task_a", "tenant_id": "eng",
-        "type": EventType.HEARTBEAT.value, "at": NOW + timedelta(minutes=2),
-        "attempt_id": "att_1", "lease_id": "lease_att_1", "generation": 1,
-        "detail": {
-            "elapsed_seconds": 115.0, "checkpoints": 0, "final": True,
-            "cpu_seconds": 42.5, "peak_cpu_cores": 1.875, "mean_cpu_cores": 0.472,
-            "cpu_wall_seconds": 90.041, "cpu_source": "cgroup", "cpu_limit_cores": 2.0,
-            "cpu_limit_source": "resource_class", "peak_rss_bytes": 734003200,
-        },
+        # Contract request #15: typed, on the attempt, where the interim path
+        # put them on a HEARTBEAT event.
+        "cpu_seconds": 42.5, "peak_cpu_cores": 1.875, "mean_cpu_cores": 0.472,
+        "cpu_limit_cores": 2.0,
     }
     for name, body in artifacts.items():
         objects.put(f"{BASE}/artifacts/{name}", body)
@@ -146,15 +147,16 @@ def served(client, db, objects) -> dict[str, dict[str, Any]]:
     listing = get("/artifacts?limit=200")
     logs = get("/logs?stream=agent_stdout&stream=stdout")
     transcript = get("/transcript")
-    attempts = get("/attempts?include=usage")
+    attempts = get("/attempts")
+    task_input = get("/input")
 
     # Each shape is asserted to be the populated one, so a comparison is never
     # made against an absent row whose optional fields prove nothing.
     assert listing["artifacts"], "the listing served no entry"
     assert [s["status"] for s in logs["streams"]] == ["ok", "ok"], logs["streams"]
     assert transcript["stream"]["status"] == "ok" and transcript["steps"], transcript
-    usage = attempts["attempts"][0]["usage"]
-    assert usage is not None and usage["status"] == "final", usage
+    assert attempts["attempts"][0]["peak_cpu_cores"] == 1.875, attempts
+    assert task_input["prompt"] is not None and task_input["rest"] is not None, task_input
 
     return {
         "ArtifactListing": listing,
@@ -167,15 +169,24 @@ def served(client, db, objects) -> dict[str, dict[str, Any]]:
         "TranscriptStream": transcript["stream"],
         "TranscriptStep": next(s for s in transcript["steps"] if s["kind"] == "tool_call"),
         "TaskAnswer": get("/answer"),
-        "AttemptUsage": usage,
+        "AttemptRow": attempts["attempts"][0],
+        "TaskInputCopy": task_input,
+        "MaskedText": task_input["prompt"],
     }
 
 
 SHAPES = (
     "ArtifactListing", "ArtifactEntry", "ArtifactContent", "TaskLogs", "LogAttempt",
     "LogStream", "TaskTranscript", "TranscriptStream", "TranscriptStep", "TaskAnswer",
-    "AttemptUsage",
+    "AttemptRow", "TaskInputCopy", "MaskedText",
 )
+
+
+def test_the_interim_usage_type_is_gone_with_its_route():
+    """`AttemptUsage` described `attempts?include=usage`, which the typed
+    fields replaced. A client type for a payload nobody sends is a screen
+    that can only ever draw `not served`."""
+    assert "export interface AttemptUsage" not in _source(TYPES_TS)
 
 
 @pytest.mark.parametrize("shape", SHAPES)

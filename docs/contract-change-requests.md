@@ -27,7 +27,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 12 | `models.py`: the retry cap had no shared home, so one path forgot it | applied |
 | 13 | `models.py`: `Attempt` does not record which pool account it ran on | open |
 | 14 | `models.py`: a sub-agent has nowhere to name its parent | open |
-| 15 | `models.py`: `Attempt` records memory, disk and spend, but not CPU | open |
+| 15 | `models.py`: `Attempt` records memory, disk and spend, but not CPU | ACCEPTED 2026-09-25 (owner, on #184), applied in PR #210 |
 | 16 | `identity.py`: the tenant namespace name, `sanitize_name` included, has two copies | open |
 | 17 | `states.py`: a cancel that is only requested is recorded as `cancelled` (incident CR-1) | ACCEPTED 2026-09-24 (the owner's "#13"), applied in PR #44 |
 | 18 | `profiles.py`: `RunnerProfile.command` is the lifecycle's child argv, never a container command (incident CR-2) | ACCEPTED 2026-09-24 (the owner's "#14"), rename applied in PR #44 |
@@ -38,6 +38,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 23 | `models.py`: a task's end has no typed cause, so the outcome ledger classifies `last_error` text | open |
 | 24 | `profiles.py`: whether a profile's cost is declared rather than measured is named outside the catalogue | open |
 | 25 | `profiles.py`: a runner profile cannot declare the inputs a caller may send it, so the bridge names the mock's by profile | open |
+| 26 | `models.py`: the attempt's CPU figures carry no time and their limit no source | open |
 
 ---
 
@@ -1460,8 +1461,14 @@ caller can draw.
 
 ## 15. `models.py`: `Attempt` records memory, disk and spend, but not CPU
 
-**Status:** open, raised 2026-09-24 by the worker-broker lane, which measured
-CPU without it and stopped at the frozen line.
+**Status: ACCEPTED — accepted by the owner on #184, 2026-09-25, as amended
+(four fields), and applied in PR #210.** The decision, in the owner's words
+([#184, 2026-09-25](https://github.com/bogdan-alexandrescu/SwarmCloud/issues/184#issuecomment-5840698104)): "Contract request #15 is approved: typed
+`Attempt` fields `cpu_seconds`, `peak_cpu_cores`, `mean_cpu_cores` and
+`cpu_limit_cores`. They replace the interim heartbeat-event path." Raised
+2026-09-24 by the worker-broker lane, which measured CPU without it and
+stopped at the frozen line. What was applied, and what it replaced, is under
+[Applied](#applied-2026-09-25-pr-210) at the end of this entry.
 
 ### What is there now, without the contract
 
@@ -1546,7 +1553,8 @@ reading every attempt's event stream.
 
 ### Amendment, 2026-09-25 (#184): add the mean and the limit
 
-**Status:** open; the owner decides. Raised by the #184 backend lane.
+**Status:** accepted with the request, 2026-09-25 (see the status line above).
+Raised by the #184 backend lane.
 
 **What changed.** The owner decided on #184 that Details shows CPU as the
 PEAK and the MEAN cores of the runtime's CPU limit, beside memory and
@@ -1591,6 +1599,45 @@ read and serve them (`test_api_contract_shapes.py` pins the serialiser);
 `include=usage` prefers the typed fields for a `final` reading and reads
 events only for a live one. `apps/swarm-ui/src/types.ts` restates `Attempt`
 by hand and needs the same four fields.
+
+### Applied, 2026-09-25 (PR #210)
+
+The owner's decision went further than the amendment's last paragraph: the
+typed fields REPLACE the interim path, so nothing reads the events for a live
+reading either.
+
+* **The contract.** `Attempt` gains the four fields, `float | None = None`,
+  at the end of the class rather than beside `peak_rss_bytes`, so no
+  positional construction changes meaning. Nothing else in
+  `apps/common/swarm_common` changed.
+* **The worker** writes them on its own attempt document
+  (`control.record_cpu_usage`, from `metrics.attempt_cpu_fields`) with each
+  periodic reading, which is every fifth heartbeat, and when each runner is
+  reaped. They are the attempt's combined figures. A key that was not measured
+  is left out of the merge, never written as null.
+* **Removed:** the interim keys on the HEARTBEAT event (`peak_cpu_cores`,
+  `mean_cpu_cores`, `cpu_wall_seconds`, `cpu_limit_cores`,
+  `cpu_limit_source`, `final`), the `final` HEARTBEAT emitted when a runner
+  was reaped, `swarm_api.attempt_usage`, and `include=usage`. The HEARTBEAT
+  carries exactly what it did before #188. `cpu_seconds` and `cpu_source`
+  stay, because `reconciler.progress` reads them.
+* **The API** serves the four fields on every attempt row
+  (`codec.attempt_from_dict` / `attempt_to_api`, pinned by
+  `test_api_contract_shapes.py` and `test_attempt_cpu_fields.py`).
+* **The UI** restates them on `AttemptRow`, as optional fields, where a
+  missing key means an API older than the fields.
+  `test_ui_api_field_contract.py` holds them both ways.
+  `scripts/lib/check-contract-parity.sh` restates no `Attempt` field and did
+  not change.
+* **Attempts from before the typed fields.** Attempts that ran between #188's
+  deploy and this one carry their CPU only on HEARTBEAT events. A read-only
+  look at dev at 23:16 UTC on 2026-09-25 found one. Attempts from before #188
+  carry their cpu-seconds there too, with no cores. The UI keeps a legacy
+  reader for both over the drawer's own event page, and the server keeps
+  none. `docs/agent-output.md` says why.
+* **What the four fields cannot say.** The interim reading carried its time
+  (`measured_at`, `age_seconds`) and the limit's source (`cpu_limit_source`).
+  The accepted fields carry neither. Request #26 asks for both.
 
 ---
 
@@ -2440,3 +2487,57 @@ Anything that is not the bridge -- the web UI's New Workflow screen, a script
 posting to `/v1/tasks` -- keeps sending whatever `input` it likes, and a new
 profile that should take inputs takes none from the plugin until someone edits
 the table.
+
+---
+
+## 26. `models.py`: the attempt's CPU figures carry no time and their limit no source
+
+**Status:** open, recorded 2026-09-25 by the #184 follow-up lane (PR #210),
+which applied request #15. A request, not a change. If another branch has
+taken 26 by the time this merges, renumber this one.
+
+### What is true today
+
+Request #15's four fields are on `Attempt`, and the worker rewrites them with
+each periodic reading while a runner runs. So on a running attempt they are
+a live reading. The interim path they replaced carried two more facts, and
+the accepted fields carry neither:
+
+* **When the figures were measured.** The HEARTBEAT reading had its event's
+  `at`, and `include=usage` served `measured_at` and `age_seconds`. Details
+  drew `latest heartbeat 20s ago`, aged on the server's clock (the #187
+  review's fix). Now it can only say `live reading · age not recorded`. A
+  worker that has stopped writing looks exactly like one that wrote a second
+  ago. The drawer's liveness badge is the only thing that says otherwise, and
+  it reads a different document.
+* **Where the limit came from.** `cpu_limit_source` said `cgroup` (the
+  container's `cpu.max`) or `resource_class` (the catalogue cpu of the class
+  it was sized with). Details now names the class when the limit equals that
+  class's cpu, and otherwise says `reported limit`. Nobody has read what Cloud
+  Run's `cpu.max` holds (#188, "not verified"), so this is not academic.
+
+### The requested change
+
+Add to `Attempt`, beside the four:
+
+```python
+cpu_measured_at: datetime | None = None   # when the four were last written
+cpu_limit_source: str | None = None       # "cgroup" | "resource_class"
+```
+
+Both optional and None by default, so nothing migrates. `cpu_measured_at` is
+the worker's clock at the reading, and the API would serve an age computed
+against its own `read_at`, as #188 did.
+
+### What it would break if accepted
+
+Nothing stored. `control.record_cpu_usage` would write two more keys,
+`codec` would read and serve them, `AttemptRow` would declare them, and
+Details would draw the age again. A string for the source is a vocabulary
+that would want a home (compare request #20).
+
+### If it is declined
+
+Details keeps `age not recorded` and `reported limit`. A stalled worker's CPU
+figures are not dated, and a limit is never attributed to the kernel.
+

@@ -44,6 +44,13 @@ process group, because the CLI runners start the agent in a new session and a
 group reading would miss the agent entirely. With neither (macOS), only the
 kernel's total for reaped children is available, so there is a total and no
 peak. None means not measured, never zero.
+
+WHERE THEY GO. The first three, with the limit they are a fraction of, are
+typed fields on the attempt document (contract request #15, accepted on #184
+on 2026-09-25; `attempt_cpu_fields`), written while a runner runs and when it
+is reaped -- that is what Details draws. The cumulative `cpu_seconds` and
+`cpu_source` also ride on every periodic HEARTBEAT event, the one time series
+the platform keeps, for the reconciler's stuck-browser judgement.
 """
 
 from __future__ import annotations
@@ -281,44 +288,49 @@ def cgroup_cpu_limit_cores() -> float | None:
     return quota / period
 
 
-def heartbeat_cpu_fields(
-    usage: ResourceUsage | None,
-    *,
-    limit_cores: float | None,
-    limit_source: str | None,
-    final: bool,
-) -> dict[str, Any]:
-    """The CPU keys of one HEARTBEAT event's detail, rounded, None never 0.
+#: The four CPU fields contract request #15 added to `Attempt`, in its order.
+ATTEMPT_CPU_FIELDS = ("cpu_seconds", "peak_cpu_cores", "mean_cpu_cores", "cpu_limit_cores")
 
-    THE INTERIM HOME OF THE CPU FIGURES (#184). `swarm_common.models.Attempt`
-    is frozen and has no CPU fields, so `record_resource_usage` cannot carry
-    them; contract request #15 asks for typed ones. Until it is decided they
-    ride on the HEARTBEAT event, which the API reads for
-    `GET /v1/tasks/{id}/attempts?include=usage`:
 
-      * `cpu_seconds` -- cumulative, every runner of the attempt. EXISTING, and
-        its meaning is unchanged: the reconciler's stuck-browser judgement
-        (`reconciler.progress`) turns two consecutive totals into a rate.
-      * `peak_cpu_cores`, `mean_cpu_cores`, `cpu_wall_seconds` -- see
-        `ResourceUsage`; the mean is over RUNNER wall time only.
-      * `cpu_source` -- EXISTING: cgroup, proc or rusage.
-      * `cpu_limit_cores` and `cpu_limit_source` -- `"cgroup"` when read from
-        `cpu.max`, `"resource_class"` when it is the catalogue cpu of the class
-        the container was sized with; both None when neither is known.
-      * `final` -- True only on the reading taken after a runner is reaped.
+def attempt_cpu_fields(usage: ResourceUsage | None, *, limit_cores: float | None) -> dict[str, float]:
+    """The attempt document's CPU fields, rounded, with what was not measured LEFT OUT.
 
-    Three decimal places throughout. 1.0 is one whole vCPU.
+    CONTRACT REQUEST #15, ACCEPTED on #184 (2026-09-25). `Attempt` carries
+    `cpu_seconds`, `peak_cpu_cores`, `mean_cpu_cores` and `cpu_limit_cores`,
+    and the worker writes them on its own attempt document
+    (`control.record_cpu_usage`) with each periodic reading and when each
+    runner is reaped. They REPLACE the interim home #188 gave them, flat keys
+    on HEARTBEAT events that the API read back with an events query per
+    request. The HEARTBEAT keeps only the cumulative `cpu_seconds` and
+    `cpu_source` it carried before, which the reconciler's stuck-browser
+    judgement (`reconciler.progress`) turns into a rate.
+
+    LEFT OUT, NOT WRITTEN AS NULL. The write is a merge, so an omitted key
+    keeps what an earlier write put there where a null would erase it -- and
+    a figure is never measured and then un-measured: `combine_usage` keeps
+    every runner's. None on the attempt still means not measured, never zero.
+
+    NOTHING WHEN NOTHING WAS MEASURED, not even the limit: a limit alone would
+    read as a reading with its figures missing, and the attempt has none.
+
+    `usage` is the ATTEMPT's (`combine_usage` over every runner it started).
+    Three decimal places throughout; 1.0 is one whole vCPU. The mean is over
+    RUNNER wall time, so setup, the clone and retry waits are not idle time.
     """
-    return {
-        "cpu_seconds": _rounded(usage.cpu_seconds) if usage else None,
-        "peak_cpu_cores": _rounded(usage.peak_cpu_cores) if usage else None,
-        "mean_cpu_cores": _rounded(usage.mean_cpu_cores) if usage else None,
-        "cpu_wall_seconds": _rounded(usage.cpu_wall_seconds) if usage else None,
-        "cpu_source": usage.cpu_source if usage else None,
-        "cpu_limit_cores": _rounded(limit_cores),
-        "cpu_limit_source": limit_source if limit_cores is not None else None,
-        "final": bool(final),
+    if usage is None:
+        return {}
+    measured = {
+        "cpu_seconds": _rounded(usage.cpu_seconds),
+        "peak_cpu_cores": _rounded(usage.peak_cpu_cores),
+        "mean_cpu_cores": _rounded(usage.mean_cpu_cores),
     }
+    fields = {name: value for name, value in measured.items() if value is not None}
+    if not fields:
+        return {}
+    limit = _rounded(limit_cores)
+    if limit is not None:
+        fields["cpu_limit_cores"] = limit
+    return fields
 
 
 def _proc_stat(entry: Path) -> tuple[int, int, int]:
