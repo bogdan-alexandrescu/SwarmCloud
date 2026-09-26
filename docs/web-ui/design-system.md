@@ -1189,8 +1189,9 @@ fewer is `.is-stacked`** — the one rule for tables below 900px is §7.3.
 Rows `--row-h` (30px), cells `4px 10px`, **no row rule at all** (§13.3 — the
 old comment beside it already argued that "twenty of these down one table
 identify nothing the rows do not already identify", and then drew them anyway),
-header on `--surface-2` in the label treatment with the one `--line-soft`
-hairline a panel's interior is allowed, under `thead`. `.is-num` is right-aligned mono `tabular-nums`. `.ctl-sub`
+header in the label treatment with the one `--line-soft` hairline a panel's
+interior is allowed, under `thead`, **on a `--surface-2` fill declared on
+`thead`, not on each `th`** (WF-21, below). `.is-num` is right-aligned mono `tabular-nums`. `.ctl-sub`
 is the raw id under the readable name at `--t-micro`/`--lh-flush` so the row
 keeps the height it was signed off at.
 
@@ -1200,13 +1201,93 @@ the declaration never took effect: `.ctl-table` and `.table-wrap` are
 `overflow-x: auto`, which makes the wrapper the head's scroll container on both
 axes, and no wrapper ever scrolls vertically. Below 899px the stacked tables
 hide the head anyway. What it did do was draw every head cell as a positioned
-layer of its own — the likely cause of the faint vertical seams the Workflows
-Table showed at fractional column edges. Not yet verified rendered: the next
-release is to be looked at at 1440 in light and dark, and if a seam survives,
-the head's fill moves from each `th` to `thead`, painted once. `shell.test.tsx`
-holds that no `thead th` rule is sticky, and that any positioned table cell
-with a z-index (CH-13's sticky first column, when it lands) ranks under the
-drawer's band.
+layer of its own. `shell.test.tsx` holds that no `thead th` rule is sticky, and
+that any positioned table cell with a z-index (CH-13's sticky first column)
+ranks under the drawer's band.
+
+**The head's fill is on `thead`, not on each `th` (WF-21, #178, 2026-09-26) —
+and that does not remove the seams.** Taking the stickiness off did not remove
+them either. Checked on dev at release 350c244, at 1440, the Workflows Table's
+head still showed a 1px line of ground at four fractional column edges in light
+and in dark: runner|waited at x=592.391, waited|ran 671.398, attempts|cost
+883.594 and cost|tokens 1033.648. Edges that sit on whole pixels showed none.
+Where a column edge falls inside a device pixel and the cell fills are drawn
+anti-aliased, neither neighbouring fill covers that pixel whole, so the ground
+shows through.
+
+#178's prepared fix moved the fill from each `th` to `thead`, on the reasoning
+that `thead` is one box with no internal edge to seam at. **That premise is
+false in Chrome.** Chrome paints a row group's background into each cell's rect
+(the CSS table-layer model), so the `thead` fill uses exactly the per-cell
+geometry of the `th` fill it replaced. Measured in Chrome 153.0.8010.53 at 2x,
+with this stylesheet on a nine-column copy of the Workflows Table (2026-09-26):
+
+- With no transform, neither placement seams at any device scale tried, so the
+  path dev takes is not reproduced as it stands.
+- Under a 0.37px `translateX` on an ancestor, which forces the anti-aliased
+  path, the per-`th` fill seams at 8 of 8 column edges and the `thead` fill
+  seams at the same 8, pixel-identical: (243,245,247) in light and (26,31,37)
+  in dark, against dev's (243,246,249) and (26,30,37).
+- What puts dev on that path is not identified. No ancestor of the table is
+  transformed in the stylesheet, and a screenshot clipped at a fractional
+  offset does not reproduce it.
+- In the same measurement, a fill the row group paints itself as one rectangle
+  — `box-shadow: inset 0 0 0 100vmax var(--surface-2)` on `thead` — seamed at
+  0 of 8, alone or over the `thead` background. Firefox and Safari were not
+  checked.
+
+**So `thead` paints its fill twice, and one of the two is one rectangle**
+(#178, owner decision 2026-09-26, recorded on #178 and #223).
+`.ctl-table thead` and `table.pools thead` carry
+`background: var(--surface-2)` and
+`box-shadow: inset 0 0 0 100vmax var(--surface-2)`. The shadow is what
+Chrome paints once for the whole row group, so a pixel the cell fills leave
+partly uncovered still holds `--surface-2`. The background stays so that an
+engine which does not paint a row group's shadow draws exactly what it drew
+before. Without a transform the head is pixel-identical to the background
+alone, except the anti-aliased pixels of the wrapper's two rounded top
+corners. No head cell declares a fill of its own, under any selector that
+reaches one, except the held corner.
+
+**That is one exception, in one rule** (owner-approved, 2026-09-26). The held
+corner of a scrolling table below 900px (§7.3) is sticky, and the other head
+cells scroll under it; if it had no fill of its own, their labels would show
+through the name's head. It paints the same `--surface-2` as `thead`, so no
+step shows beside it. One rule in the sheet gives it that fill —
+`.is-scroll > table > thead > tr:first-child > th:first-child:not([colspan])`
+inside `@media (max-width: 899px)` — and that rule matches only the corner:
+the first cell of the head's *first* row, and only if it is one column wide.
+The held rule the corner shares its position and width with declares no fill
+for it. So:
+
+- the first cell of a grouped head's *second* row (Tenants' `Max active`) is
+  not the corner: not held, no held width, no fill;
+- a group cell that opens a head's first row by spanning columns is not the
+  corner either (no table draws one today; the test renders one);
+- the CP-18 restatements of the held width on Pools and Profile headroom
+  name the same one corner (§7.3).
+
+`shell.test.tsx` holds all of it through `cascade`, in both themes, at 1440
+and 390:
+
+- `thead` resolves to `--surface-2`, a different step from the panel's
+  `--surface`, and carries the inset shadow in the same colour;
+- no head cell declares a fill except the held corner. The fixture has the
+  Workflows Table's own head (`.wf-table`, `data-col`, `aria-sort`, the sort
+  buttons), `role="columnheader"` cells and Tenants' grouped head;
+- a case with four two-row heads — Tenants as drawn, a head that opens with a
+  spanning group, and CP-18's two restated contexts — holds, sizes and fills
+  only the real corner;
+- over the whole sheet, no rule gives a head cell a fill under any name:
+  `thead th`, but also `th[aria-sort]`, `.wf-table th[data-col]`,
+  `[role=columnheader]`, `tr > th`, `:is(th, td)`, or an untyped subject
+  under `thead`. The classifier that reads a selector's subject has a case of
+  its own, and exactly one rule — the corner's — is excused.
+
+If a per-cell fill comes back under any name, the shadow goes, or the corner
+rule widens, the test goes red. It holds what is declared, not whether a seam
+shows: jsdom has no layout, and the 1440 screenshots on dev after the release
+are the check.
 
 Row tones are a **wash plus a form**, never a text colour: `.is-bad` a
 full-height 3px rule on the first cell, `.is-warn` a half-height one, `.is-paused`
@@ -1258,6 +1339,96 @@ horizontal scroll, no wrapping, no per-screen phone markup.
 is a different and worse thing than a row. **Cells do not wrap** — `nowrap` plus
 `text-overflow: ellipsis` is what makes the row height a constant, which is what
 makes the drops clean.
+
+**A cell's contents must be able to shrink, or the ellipsis never fires** (#222,
+2026-09-26). This came up on the Workflows row at 1440 on dev, release 350c244.
+The census sentence was a `flex: 0 0 auto` item, so it could not shrink, and
+"10/30 done · 1 failed · 19 cancelled" painted over the stage shape beside it.
+A grid does not widen a track for an item that overflows it. The item paints
+over the next track instead, and a box as wide as its own text has nothing to
+cut. So a nowrap item in a row cell carries four things:
+
+- a non-zero `flex-shrink`;
+- `min-width: 0`;
+- `overflow: hidden` and `text-overflow: ellipsis`;
+- the whole value in its `title`.
+
+The cell clips at its track. `.wf-progress` and `.wf-progress-text` are the
+worked case, and `workflow.board.test.tsx` checks each of the four on its own
+at every width that draws the sentence.
+
+**`[progress]`'s floor is 33ch in a row at least 620px wide, and 12ch in a
+narrower one** (owner decisions 2026-09-26, on #223).
+
+At 24ch the floor was 196.5px, and the 54px meter and its 8px gap left the
+sentence 134.5px. So once the sentence was contained, every census with a tail
+was cut. The running form "1/5 done · 1 not started" (173px) lost exactly what
+the 24ch floor had been raised to keep: the count of what has not started. At
+33ch the floor is 270.2px and the sentence gets 208.2px, which holds the
+two-digit running form "12/30 done · 18 not started" (27 characters).
+
+Measured in Chrome 153 on macOS against the stylesheet, at a 1150px row (the
+1440 work column):
+
+| Census | Needs | At 24ch | At 29ch | At 33ch |
+|---|---|---|---|---|
+| 5/5 done | 58px | whole | whole | whole |
+| 1/5 done · 1 not started | 173px | cut | whole | whole |
+| 12/30 done · 18 not started | 195px | cut | cut | **whole** |
+| 10/30 done · 1 failed · 19 cancelled | 260px | cut | cut | cut (208px shown) |
+
+**What 33ch costs.** The room comes out of `[name]`, `[shape]` and `[mix]`. At
+every row width from 800 to 1150px they are 29.0, 20.1 and 24.6px narrower
+than at 24ch, and 12.9, 8.9 and 10.9px narrower than at 29ch. At a 1150px row
+that leaves 150.7, 104.4 and 127.5px. A 22-character workflow id needs 180px:
+it was whole at 24ch, and at 33ch it shows 151px and ends in an ellipsis, with
+the whole id in its `title`. A failed, cancelled or dead-lettered clause is
+still cut, and the containment above stays for it.
+
+**The floor gives way in a narrow row.** With the inspector open beside the
+board, the work column at 1440 is a few hundred pixels, and there a fixed
+floor ran the row's grid past its right edge. So `.wf-card > .wf-h` is the
+`wf-row` size container, and `@container wf-row (min-width: 620px)` sets
+`--wf-progress-floor: 33ch` on `.wf-bar`. Below that width the template's
+fallback applies, which is 12ch (98.25px), and the sentence gets 36px, so
+every census is cut in such a row. It is a container query and not a media
+query, because opening the inspector does not change the viewport. It changes
+only the floor; the template is still written once.
+
+Measured in Chrome, the caret stays inside the row down to these widths, with
+an age of "23h ago" / "just now":
+
+| State word | Caret inside down to | At 33ch, outside from 620px until |
+|---|---|---|
+| running | 445 / 455px | — / 625px |
+| succeeded | 460 / 465px | 630 / 640px |
+| dead_lettered | 490 / 495px | 660 / 670px |
+| state not derived | 520 / 525px | 690 / 695px |
+
+The right-hand column is the cost of switching at 620px: just past it, the
+33ch floor is too wide for a long state word. There the last resort applies.
+`.wf-bar` is `overflow: hidden`, so the caret is clipped rather than painted
+outside the row, and nothing on the row paints outside it at any width. Its
+focus ring is an outline, which the clip does not cut.
+
+**A cut census is whole without a pointer, in the open card.** The row's
+`title` is whole on hover only, and a phone has no hover; below 561px the row
+draws no sentence at all. So the open card's first line is the census as a
+fact, `progress` and the whole sentence (`.wf-census`, `CensusFact` in
+`Workflows.tsx`), which wraps and is never clipped. That is §7.3's rule for a
+cut value, applied: cut on screen, whole somewhere a reader can get to.
+
+`workflow.board.test.tsx` holds:
+
+- the floor against the two-digit running form at a 1150px row;
+- the floor at 480, 619 and 620px rows (12, 12 and 33ch), and a running row's
+  caret inside the row at 480 and 620px;
+- the containment at every width the sentence is drawn;
+- the row's clip at every template's width;
+- the open card's census at 1440 and 390.
+
+jsdom has no fonts or layout, so the per-character widths and the two
+`max-content` tracks are the Chrome measurements, written into the test.
 
 *(Scoped 2026-09-25, CH-13.)* This is the rule for a `.ctl-line` LIST. A
 `.ctl-table` below 900px follows §7.3 instead: a data table scrolls with its
@@ -1544,8 +1715,7 @@ that did not:
 - **The held column has a ceiling:** `width` and `max-width` of
   `min(45vw, 20ch)`, wrapping at spaces and, for an id with none, anywhere. A
   **width**, not only a max-width, because a max-width on a table cell is
-  ignored by more than one engine, and a wrapping cell with no width is
-  squeezed to one character when the table overflows. Without it a held cell
+  ignored by more than one engine. Without it a held cell
   was as wide as its longest line: on API reads, a task read's concrete URL is
   ~53 characters, ~400px of mono in a 356px scrollport, and a sticky cell wider
   than the scrollport covers it at every offset — every other column scrolled
@@ -1553,6 +1723,44 @@ that did not:
   is cut instead of wrapped: API reads' `lastUrl` (up to 110 characters for a
   checkpoint file) is one line, ellipsized, whole in its `title`, and adds
   nothing to the column's width (`width: 0; min-width: 100%`).
+- **…and the ceiling is also its floor: `min-width: min(45vw, 20ch)`** (#222,
+  2026-09-26). On its own, the width did not hold the column. On dev at release
+  350c244 (390×844), the held column of Capacity › Runtimes, Admin › Tenants
+  and the Timeline's three tables resolved to 24–29px. That is the cell's
+  padding and one character, so every name printed one character per line.
+  - **Why the width did not take.** In automatic table layout, a cell's
+    `width` counts only toward its column's *max-content* width. The column's
+    *min-content* width is built from each cell's `max(min-width, min-content
+    width)` (CSS Tables 3).
+  - **Why those tables hit it.** They are `width: 100%` of the scrollport, and
+    their other cells are nowrap. Their columns' min-content widths add up to
+    more than a phone, and a table cannot be narrower than that sum, so it is
+    laid out at exactly that width. Every column gets its min-content width,
+    and a cell that may break between any two characters is one character wide.
+  - **Why Pools and Profile headroom never showed it.** Below 900px they are
+    `width: max-content` (the bullet above), and that gives every column its
+    max-content width.
+  - **The fix.** A `min-width` counts toward the min-content width, so the
+    column keeps its ceiling however its table is laid out.
+  - **At 390 that ceiling is 45vw, not 20ch** (owner decision 2026-09-26: it
+    stays `min(45vw, 20ch)`). 45vw is 175.5px there, and 20ch of a held row
+    header's own 14px sans is 191.7px (measured in Chrome 153 on macOS), so
+    `min()` takes the viewport term. On a phone the held column is 45vw; 20ch
+    caps it only where 45vw is the wider of the two, above about 426px.
+
+  The grouped head's second row (Tenants' `Max active`) is outside the held
+  rules altogether. Every held rule that names a head cell names one: the
+  corner, `thead > tr:first-child > th:first-child:not([colspan])` — the
+  held rule's head branch, the corner's fill (§6.7) and the CP-18
+  restatements on Pools and Profile headroom. So `Max active` is not held,
+  takes no width or floor, and paints no fill of its own, and neither does a
+  group cell that spans columns. Until #223 a reset rule un-held it and
+  undid every declaration but one, the corner's `--surface-2`.
+  `tables.held.test.tsx` renders the five
+  tables that showed the squeeze. It asks the cascade at 390 for every held
+  cell and requires its floor to equal its ceiling. `tables.scroll.test.tsx`
+  and `chrome.shared.test.tsx` make the same check on Pools, Profile headroom
+  and API reads.
 - **A cell that spans the row is not the held column** (`:not([colspan])`),
   and what it holds stays in view. An expanded account's detail is one cell
   across the account table's five columns — 909px in a 358px phone — so under
@@ -1563,8 +1771,10 @@ that did not:
 
 `tables.scroll.test.tsx` renders Pools, Profile headroom and Accounts and asks
 the cascade at 390 about the elements they drew; `chrome.shared.test.tsx`
-renders API reads over a real task URL. A bare `.is-scroll` fixture is not
-enough: the first one passed while Pools and Profile headroom did not scroll.
+renders API reads over a real task URL; `tables.held.test.tsx` renders
+Runtimes, Tenants and the Timeline's three tables. A bare `.is-scroll` fixture
+is not enough: the first one passed while Pools and Profile headroom did not
+scroll.
 
 Tables not yet classified, and why: Overview's Running rows (three columns
 inside a card, which fit) and the inspector's metadata key/value table (two
@@ -3148,8 +3358,8 @@ Nothing here was seen rendered: every claim is a rule the cascade chooses, a
 DOM the components produced, or a ratio computed from the tokens. Whether the
 phone header fits one row at 390 with a long tenant id, how the held first
 column reads under a thumb, and how the flat-bar segments look at a one-task
-height are for the next release's screenshots. So are: whether a 20ch held
-column reads well on Pools and Accounts; whether the failed segment's 2px
+height are for the next release's screenshots. So are: whether the held
+column — 45vw at 390, 175.5px (§7.3) — reads well on Pools and Accounts; whether the failed segment's 2px
 ground-coloured cut reads as a rule at a 26px column width; and the expanded
 account's width in a desktop window narrower than 900px with a classic
 scrollbar, where `100vw` counts the scrollbar and the detail would overhang

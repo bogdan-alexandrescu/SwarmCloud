@@ -10,7 +10,7 @@
     {
       "name": "sc",
       "source": "./plugin",
-      "description": "SwarmCloud from inside a Claude Code session: read the cluster with the `sc` skill and /sc command, run this session's work out there with the `delegate` skill. `delegate` works through the plugin's own `swarmcloud` MCP server, which fetches the swarm-mcp bridge from this repository at the tag matching the plugin's version and needs only uv. The `sc` skill and /sc run `uv run sc` in the session's directory, so they need a checkout of this repository. At install it asks for YOUR deployment's URL and, for a deployment behind IAP, its Desktop OAuth client, then `sc login` signs you in as yourself."
+      "description": "SwarmCloud from inside a Claude Code session: read the cluster with the `sc` skill and /sc command, run this session's work out there with the `delegate` skill, and run a Claude Code workflow's steps in SwarmCloud with the `sc:remote` agent and `/sc:run`, each step still a running row in /workflows. `delegate` works through the plugin's own `swarmcloud` MCP server, which fetches the swarm-mcp bridge from this repository at the tag matching the plugin's version and needs only uv. The `sc` skill and /sc run `uv run sc` in the session's directory, so they need a checkout of this repository. At install it asks for YOUR deployment's URL and, for a deployment behind IAP, its Desktop OAuth client, then `sc login` signs you in as yourself."
     }
   ]
 }

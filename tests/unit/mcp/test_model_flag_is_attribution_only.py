@@ -12,7 +12,8 @@ seam was built at both ends and never executed end to end:
     entire environment and carries identifiers and endpoints ONLY, so no MODEL
     derived from a task ever reaches a container. The worker's `cfg.model`
     comes from the Job definition's own MODEL, and `runners/cliagent.py` reads
-    `input.model` or that same environment -- never `task.model`.
+    that environment and nothing else -- never `task.model`, and since #226
+    never `input.model` either, which the API refuses (#213).
 
 So the flag changed what the record SAID and never what ran.
 
@@ -111,9 +112,10 @@ def test_model_travels_as_a_top_level_field_and_never_as_runner_input() -> None:
     assert recorder.payload is not None
     assert recorder.payload["model"] == MODEL, "it is sent, and stored, for attribution"
     assert "model" not in recorder.payload["input"], (
-        "input.model IS read by the runner. Putting it there would make the flag "
-        "select a model, which is the contract change this test exists to stop "
-        "happening by accident"
+        "input.model is refused by the API (claude-code declares no input, "
+        "#213), and until #226 the runner read it: putting it there would make "
+        "the flag either fail every dispatch or select a model, which is the "
+        "contract change this test exists to stop happening by accident"
     )
 
 
