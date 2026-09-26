@@ -4,8 +4,10 @@ The task drawer has three panes: Details, Attempts and Artifacts. The
 Artifacts pane shows a task's inputs, its outputs and its logs, and updates
 every 5 seconds while the task runs (#184, owner decisions of 2026-09-25).
 This document covers the backend half: what the worker writes, what the API
-serves, and the reasons for both. Each section records a constraint that a
-later change could silently break.
+serves, and the reasons for both, including where an agent is told to put its
+deliverables and what a task with no repository uploads from its working
+folder (owner decisions of 2026-09-26). Each section records a constraint that
+a later change could silently break.
 
 ## Every byte goes through the API, never through a signed URL
 
@@ -105,6 +107,109 @@ Lines that a tool numbered (`cat -n`, or an agent's file-read tool) still count
 as key lines. Every scan is linear, not one backtracking pattern: a lazy
 BEGIN-to-END regex is quadratic on text with many BEGIN markers and no END,
 and agent output can take that shape.
+
+## Where an agent's deliverables go, and a task with no repository
+
+The post-deploy QA of #184 found a hole the Artifacts tab could not show
+around. `task_0e5b1f8b7bc1448fafdf`, a claude-code task with no repository,
+wrote `answer.md` and `primes.txt` in its working folder. Only
+`$SWARM_ARTIFACTS_DIR` was ever uploaded, so the task SUCCEEDED and its
+Outputs held the runner's logs and nothing the agent made. No prompt had told
+it where a deliverable goes unless a later workflow step expected one (#149).
+
+The owner decided three things on 2026-09-26 (recorded on #184):
+
+1. **Every claude-code and codex prompt ends with one line** naming the
+   directory:
+
+   ```
+   Write deliverables to /workspace/<attempt>/artifacts ($SWARM_ARTIFACTS_DIR); files there are uploaded and shown in Artifacts.
+   ```
+
+   It is built once, by `expected_outputs.deliverables_line`, and appended by
+   `with_instructions`, which `cliagent.run_cli_agent` calls for both runners.
+   When later steps expect files, their list follows the line and says "write
+   each one there", so the directory is named once. The path is absolute
+   beside the variable's name, because an agent has already reported the
+   variable as unset and written nothing. A prompt is no longer passed through
+   byte for byte when nothing is expected; that was the old rule, and the
+   tests that held it now hold the line instead. The line must never carry a
+   word the rate-limit or credential heuristics look for: a CLI that echoes
+   its prompt would turn it into evidence.
+2. **A task with no repository also uploads what its agent CREATED in its
+   working folder**, when the attempt ends (`agent_worker.standalone_outputs`).
+3. **A repository task is unchanged.** Its diff or pull request is the
+   deliverable, plus the artifacts folder. `result_summary.workdir_outputs` is
+   absent on such a task, and nothing is named `workdir/`.
+
+What decision 2 does, and the reason for each rule:
+
+* **Which tasks.** No repository URL (read from the same two places the clone
+  reads it), and a runner whose child is a provider's coding-agent CLI:
+  claude-code and codex, the runners the line reaches
+  (`runners.streams.cli_agent_spec`). Not `mock`, which writes `progress/`
+  and `mock_state.json` into its working folder on every smoke test. Not
+  `generic`, which its own module calls "the platform's escape valve for work
+  that is not an agent". Not `browser`, which writes its outputs into the
+  artifacts folder itself.
+* **Created, not existing.** The worker lists `work/` once per attempt, just
+  before the first runner starts, and uploads what is there at the end and
+  was not there then. An in-place restart does not take a second list, so a
+  first run's files are not "existing" to the second. A staged input
+  (`input_from`) and the control files (`input.json`, `result.json`,
+  `quota.json`, `credential.json`) were there first, and a file the agent only
+  edited was not created by it.
+* **A resumed attempt.** A checkpoint restores `work/`, so an earlier
+  attempt's files are on disk before this runner starts. They still count as
+  created, unless they are a staged input: the platform puts nothing else in a
+  standalone task's `work/`. The manifest a reader sees is the final
+  attempt's, and without this a task that parked once would show only what
+  its last attempt wrote.
+* **Named `workdir/<path>`**, in the same manifest as every artifact
+  (`result_summary.artifacts`). The Artifacts tab lists and serves them
+  through the routes above, with the same tenant check and read-time
+  redaction, and no route changed. The prefix keeps a file of the same name in
+  `$SWARM_ARTIFACTS_DIR` in its place (if the artifacts folder holds
+  `workdir/<path>` itself, that file wins and the working-folder copy is
+  listed with the reason). It also keeps #149's rejected option (c) rejected:
+  a dependant's `input_from` and the expected-outputs check both match by
+  exact name, so `scan-01.md` left in the working folder is
+  `workdir/scan-01.md` and does not satisfy a later step that stages
+  `scan-01.md`.
+* **Caps: 50 files and 25 MiB per attempt** (the owner's numbers;
+  `WorkerConfig.max_workdir_output_files` and `max_workdir_output_bytes`), and
+  never past what `max_artifact_bytes` leaves. Files are taken shallowest
+  first, then by path, so a top-level answer is not pushed out by a generated
+  tree. A file that does not fit is **listed, never dropped silently**: in
+  `result_summary.workdir_outputs.not_uploaded` as
+  `{"name", "bytes", "reason": "over cap"}`, in `artifacts_skipped` (which
+  the Artifacts tab already shows as "N over cap" with the names), and in one
+  WARNING line. `not_uploaded` is capped at 50 entries like
+  `artifacts_skipped`; `not_uploaded_count` is the whole number.
+* **Skipped without a listing:** every name that starts with a dot, folder or
+  file. The owner named dot folders; dot files are skipped too, because the
+  CLI runners set HOME to the working folder, and the CLIs write their own
+  state there (`.claude.json`, `.claude/`, `.codex/`), some of it describing
+  the account the agent ran as. Also `node_modules`, `__pycache__`, a folder
+  whose name ends in "cache" or "caches" or that holds `CACHEDIR.TAG` (the
+  Cache Directory Tagging convention), and a virtual environment: `.venv`, or
+  any folder holding `pyvenv.cfg`.
+* **Symlinks are never followed.** The scan does not descend into a linked
+  folder or read a linked file, and it counts them
+  (`workdir_outputs.symlinks_skipped`). The read then opens each path
+  component with `O_NOFOLLOW`, relative to the folder above it, and the file
+  itself with `O_NONBLOCK`. A path swapped for a link after the scan (an
+  orphaned agent process can still be running), or a FIFO swapped in for a
+  file, is refused rather than followed or waited on. A working folder that
+  was itself replaced by a link is not walked at all.
+* **Redacted before upload as well as at read time.** Each file is copied into
+  the worker's own scratch folder (`private/`, which is in no child's
+  environment), scrubbed of registered secrets exactly as an artifact is, and
+  uploaded from there. The agent's file is left as it was.
+
+What this does not do: it does not tell the agent about the net. The line says
+where deliverables go. A file caught in the working folder is a net under the
+agent that did not listen, not a second place to write.
 
 ## Two kinds of stdout, and the label that was wrong
 

@@ -84,7 +84,12 @@ Two things are deliberately NOT done here.
   That was option (c) on #149, and the owner rejected it. The `./artifacts`
   link is not a copy: a file written through it is written into the artifacts
   directory in the first place. A file left anywhere else -- the repository, or
-  the working directory outside `./artifacts` -- stays there.
+  the working directory outside `./artifacts` -- does not become the artifact
+  a dependant stages. For a task with NO repository the worker does upload
+  what the agent created in its working folder (#184, owner decision of
+  2026-09-26; `agent_worker.standalone_outputs`), but under `workdir/<path>`,
+  so `scan-01.md` left in the working folder is `workdir/scan-01.md` in the
+  manifest and still does not satisfy an expected `scan-01.md`.
 * **A malformed declaration does not fail the attempt.** An entry that cannot
   name a file in the artifacts directory is not a promise anyone can keep, and
   no dependant can stage it either (`inputs.destination_for` refuses the same
@@ -201,46 +206,77 @@ def without_platform_names(names: Sequence[str], platform_written: Iterable[str]
     return tuple(name for name in names if name not in own)
 
 
+def deliverables_line(artifacts_dir: Path | str) -> str:
+    """The ONE line every claude-code and codex prompt ends with (#184).
+
+    Owner decision, 2026-09-26: every prompt the worker hands a CLI agent
+    names `$SWARM_ARTIFACTS_DIR` and says what happens to the files there.
+    Found in the post-deploy QA of #184 (`task_0e5b1f8b7bc1448fafdf`): a task
+    with no repository wrote its answer into its working folder, and the
+    Artifacts tab showed only the runner's logs, because no prompt had said
+    where a deliverable goes unless a later workflow step expected one.
+
+    The directory is given as an ABSOLUTE path beside the variable's name. The
+    name alone is not enough: an agent has reported `SWARM_ARTIFACTS_DIR` as
+    "not set in this environment" and written nothing (wf_bcdc9180e4fb4a209f31,
+    recorded in `runners/cliagent.py`).
+
+    Built here and appended by `with_instructions`, which `run_cli_agent`
+    calls for claude-code and codex alike, so the line exists once, not once
+    per runner. It must never carry a rate-limit or credential marker
+    (`cliagent._RATE_LIMIT_MARKERS`): a CLI that echoes its prompt would turn
+    it into evidence.
+    """
+    directory = os.path.abspath(os.fspath(artifacts_dir))
+    return (
+        f"Write deliverables to {directory} ($SWARM_ARTIFACTS_DIR); files there "
+        "are uploaded and shown in Artifacts."
+    )
+
+
 def agent_instructions(names: Sequence[str], artifacts_dir: Path | str) -> str:
     """The lines a CLI runner appends to the agent's prompt.
 
-    The directory is given as an ABSOLUTE path, and every file with its full
-    path too. The variable name alone is not enough, because an agent has
-    already reported `SWARM_ARTIFACTS_DIR` as "not set in this environment"
-    and written nothing (wf_bcdc9180e4fb4a209f31, recorded in
-    `runners/cliagent.py`). "Outside the repository" is said because the
-    working directory is where an agent assumes its output belongs.
+    Always `deliverables_line`, once. Then, when later steps of a workflow
+    stage files from this one, their names and each file's full path. The
+    directory is not named a second time: "there" is the directory the first
+    line named, so the prompt carries that line exactly once. "Outside the
+    repository" is said because the working directory is where an agent
+    assumes its output belongs.
 
     The `./artifacts` link is deliberately not mentioned. It is a net under
     the agent that reads this path and writes somewhere else anyway, and it
     may be absent (`workspace.link_artifacts` skips a name already taken), so
     naming it here would be a promise this text cannot check. For the same
-    reason the last sentence names the repository and not "the working
+    reason the list's last sentence names the repository and not "the working
     directory": a file written through the link IS written in the working
-    directory's `./artifacts`, and it does reach later steps.
+    directory's `./artifacts`, and it does reach later steps. Nor does it
+    mention the working-folder upload of a task with no repository
+    (`agent_worker.standalone_outputs`): that is a net as well, and a file it
+    catches is named `workdir/<path>`, which no later step stages by the bare
+    name.
     """
     directory = os.path.abspath(os.fspath(artifacts_dir))
-    listed = ", ".join(names)
-    lines = [
-        "---",
-        f"Later steps of this workflow need these files from you: {listed}.",
-        f"Write each one to {directory} (this is $SWARM_ARTIFACTS_DIR), which is "
-        "outside the repository and outside your working directory. Files "
-        "written anywhere else, the repository included, do not reach those "
-        "steps.",
-    ]
-    lines += [f"- {PurePosixPath(directory) / name}" for name in names]
+    lines = [deliverables_line(directory)]
+    if names:
+        listed = ", ".join(names)
+        lines += [
+            f"Later steps of this workflow need these files from you: {listed}.",
+            "Write each one there, which is outside the repository and outside "
+            "your working directory. Files written anywhere else, the "
+            "repository included, do not reach those steps.",
+        ]
+        lines += [f"- {PurePosixPath(directory) / name}" for name in names]
     return "\n".join(lines)
 
 
 def with_instructions(prompt: str, names: Sequence[str], artifacts_dir: Path | str) -> str:
-    """`prompt` with `agent_instructions` appended, or `prompt` unchanged.
+    """`prompt`, a blank line, then `agent_instructions`.
 
-    Unchanged means the identical string, so a task no dependant stages from
-    runs exactly as it did before this module existed.
+    The caller's own prompt comes first and is kept whole. Until #184's
+    owner decision of 2026-09-26 a prompt with no expected names was passed
+    unchanged; now every prompt ends with `deliverables_line`.
     """
-    if not names:
-        return prompt
     return f"{prompt}\n\n{agent_instructions(names, artifacts_dir)}"
 
 
