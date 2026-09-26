@@ -497,7 +497,7 @@ SENT_UNKNOWN = "unknown"
 #: is an end the ledger cannot name.
 _SENT_BY_CANCEL_CAUSE: dict[str, str] = {
     "requested": SENT_CANCEL,
-    "after_cancel": SENT_UNKNOWN,  # MUTATION M2b
+    "after_cancel": SENT_CANCEL,
     "after_failure": SENT_FAILURE,
     "workflow_sweep": SENT_FAILURE,
     "other": SENT_UNKNOWN,

@@ -156,7 +156,7 @@ const FLAT_PERIOD = 5
  * (`innerBars`), not from a page-anchored pattern, so a bar always lands
  * inside the outline whatever height the stack below leaves it at.
  */
-const MIN_AFTER_CANCEL_PX = 3 // MUTATION M2c
+const MIN_AFTER_CANCEL_PX = 1 + FLAT_PERIOD + 1
 
 /**
  * Lane 3's three marks, stacked up from the baseline: requested (and other),
@@ -178,7 +178,7 @@ function laneThreeStack(flatN: number, cascN: number, afterN: number, k: number,
   })
   let over = marks.reduce((s, m) => s + m.h, 0) - laneH
   for (const m of [...marks].sort((a, b) => b.h - a.h)) {
-    if (over <= Infinity) break // MUTATION M2d
+    if (over <= 0) break
     const give = Math.min(over, m.h - m.min)
     m.h -= give
     over -= give
