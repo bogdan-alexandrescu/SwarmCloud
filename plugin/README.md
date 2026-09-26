@@ -429,9 +429,9 @@ limit, a refused credential and a cancellation. Every key's kind and bounds
 are in the table below, which is generated from the catalogue rather than
 restated here. `claude-code` and `codex` declare none and take only the prompt.
 A key the profile does not declare is refused by name, never dropped, and
-never an image, a command, a resource spec, a backend or a model:
-`input.model` is read by the CLI runners, and a caller setting it would be
-choosing the model a `claude-code` agent runs. The declarations are the frozen
+never an image, a command, a resource spec, a backend or a model: the model a
+`claude-code` agent runs is its Job's own `MODEL`, set in Terraform, and the
+runner reads no `input.model` (#226). The declarations are the frozen
 catalogue's own, `RunnerProfile.inputs` (contract request 25), and for a
 profile that declares, the API refuses an undeclared key with 422
 `invalid_input` whoever sends it, so the bridge's refusal is only the earlier

@@ -1058,8 +1058,9 @@ class SwarmClient:
         `model` field -- what `TaskCreate` calls "recorded for attribution and
         cost reporting; it selects nothing about the container" -- and nothing
         carries it into the execution environment: `worker_env` carries
-        identifiers and endpoints only, and the runner reads `input.model` or
-        the Job's own MODEL, neither of which this sets. Sending it changes what
+        identifiers and endpoints only, and the runner reads only the Job's own
+        MODEL, set per profile in Terraform (#226), which this does not set
+        either. Sending it changes what
         the task record says and never what runs. That is deliberate rather than
         unfinished; choosing a model per task is an execution parameter from a
         caller, which invariant 10 forbids without a contract change.

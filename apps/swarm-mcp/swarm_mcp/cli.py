@@ -1505,9 +1505,10 @@ def build_parser() -> argparse.ArgumentParser:
     # worker's entire environment and deliberately carries "identifiers and
     # endpoints" only, so no MODEL reaches the container from a task; the
     # worker's own `cfg.model` is read from the Job definition's MODEL, and the
-    # runner's `--model` argument comes from `input.model`, which this flag does
-    # not set. So `--model` changed what the task record SAYS and never what
-    # ran -- the worst shape a flag can have.
+    # runner's `--model` argument comes from that and nothing else (#226; it
+    # used to take `input.model` first, which this flag never set either). So
+    # `--model` changed what the task record SAYS and never what ran -- the
+    # worst shape a flag can have.
     #
     # Documented rather than refused. The field is real, it round-trips through
     # `codec.task_to_api`, and `swarm result --json` prints it, so a caller

@@ -68,7 +68,8 @@ UNKNOWN = "UNKNOWN"
 #: `inputs` is the runner's DECLARED inputs (#142) -- `sleep_seconds` for the
 #: mock, say -- checked per profile by `profiles.check_inputs`. It is not the
 #: API's raw `input` object, which stays refused: that would let a caller set
-#: `input.model` on a runner that reads it.
+#: any key a runner reads. (`input.model` was one, until #226 made the model the
+#: Job's `MODEL`.)
 _STEP_KEYS = frozenset(
     {
         "step_id",
