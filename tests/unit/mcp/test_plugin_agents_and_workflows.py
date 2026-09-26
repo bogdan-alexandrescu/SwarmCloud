@@ -224,6 +224,26 @@ def test_a_proxy_row_is_capped_well_under_claude_codes_own_turn_limit(name):
 
 
 @pytest.mark.parametrize("name", ["remote", "step"])
+def test_a_proxy_rows_own_follow_call_cap_is_sixty_not_twenty(name):
+    """Owner decision (#230 comment, 2026-09-26): a proxy row's OWN count of
+    its `swarm_follow` calls -- distinct from Claude Code's `maxTurns: 60` --
+    is 60 calls of up to 300s each, not 20. 20 calls stopped a row reporting
+    `running` well before a real remote task -- which can take hours -- had a
+    chance to finish, on a turn budget that had room for more polling."""
+    _, body = _load(_PLUGIN / "agents" / f"{name}.md")
+    flat = " ".join(body.split())
+    assert "the 60th one" in flat, (
+        f"{name}.md must count its own swarm_follow calls to 60, not fewer"
+    )
+    assert "60-call limit" in flat, (
+        f"{name}.md must name its own follow-call cap as 60"
+    )
+    assert "20th one" not in flat and "20-call limit" not in flat, (
+        f"{name}.md still names the old 20-call follow cap"
+    )
+
+
+@pytest.mark.parametrize("name", ["remote", "step"])
 def test_a_proxy_row_at_its_turn_cap_reports_running_not_silence(name):
     """Claude Code's own `maxTurns` is a hard kill with no chance to answer.
     A row must stop ASKING before that -- well inside its 60-turn budget --
