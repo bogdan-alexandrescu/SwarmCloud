@@ -31,6 +31,7 @@ tenant a credential compromise for all of them (invariant 9).
 from __future__ import annotations
 
 import re
+import shutil
 import stat
 from dataclasses import dataclass
 from pathlib import Path
@@ -168,6 +169,11 @@ def shallow_clone(
         "GIT_TERMINAL_PROMPT": "0",            # never block waiting for a password
         "GIT_ASKPASS": "/bin/true",
         "GIT_CONFIG_NOSYSTEM": "1",
+        # /dev/null, not just HOME: `GIT_CONFIG_NOSYSTEM` disables /etc/gitconfig
+        # but NOT `~/.gitconfig`, and pointing the global file at /dev/null is
+        # what stops an inherited user config from carrying an `insteadOf`, a
+        # proxy or a credential helper into a command that holds the token.
+        "GIT_CONFIG_GLOBAL": "/dev/null",
         "GIT_SSH_COMMAND": "ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new",
         "LC_ALL": "C",
     }
@@ -333,6 +339,9 @@ def _git_env(private_dir: Path) -> dict[str, str]:
         "GIT_TERMINAL_PROMPT": "0",
         "GIT_ASKPASS": "/bin/true",
         "GIT_CONFIG_NOSYSTEM": "1",
+        # See `shallow_clone`: NOSYSTEM leaves `~/.gitconfig` in play, so the
+        # global file is pinned to /dev/null on every git the worker runs.
+        "GIT_CONFIG_GLOBAL": "/dev/null",
         "GIT_SSH_COMMAND": "ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new",
         "LC_ALL": "C",
     }
@@ -345,6 +354,36 @@ def _git_env(private_dir: Path) -> dict[str, str]:
 #: supposed to be finished with. Both belts are worn -- `--no-verify` on the
 #: commands that accept it, and a hooks path that cannot contain anything.
 _NO_HOOKS = ["-c", "core.hooksPath=/dev/null"]
+
+
+#: Prepended to every git invocation that carries the tenant token -- the push,
+#: and the integrator's fetch-and-merge. It is meaningful ONLY because those
+#: commands run in a worker-owned publish repository (`prepare_publish_repo`),
+#: never in the repository the agent worked in.
+#:
+#: The reason the repository has to be worker-owned rather than the clone with
+#: overrides bolted on: `url.<host>.insteadOf` / `pushInsteadOf` rewrites the
+#: destination of a push -- including a URL passed explicitly on the command
+#: line -- and there is NO `-c` that disables URL rewriting, nor a way to
+#: enumerate every `url.*` key a repository config (or a config it `include`s)
+#: might carry. So the credential's destination is safe only because the
+#: repository the worker built has no such key in it.
+#:
+#: The overrides below are belt to that suspenders: each neutralises a setting a
+#: `-c` CAN override, so that even a change that later reintroduced inherited
+#: configuration could not move the credential. The worker's own credential
+#: helper is appended by the caller AFTER the empty `credential.helper` here,
+#: which discards any accumulated helper list before the worker's is added
+#: (git treats an empty value as a reset).
+_TOKEN_SAFE = [
+    *_NO_HOOKS,                                 # no repository hook runs
+    "-c", "protocol.version=2",
+    "-c", "credential.helper=",                 # reset: no inherited helper survives
+    "-c", "http.sslVerify=true",                # only over verified TLS
+    "-c", "http.proxy=",                        # no proxy may sit in front of the forge
+    "-c", "http.extraHeader=",                  # no injected header rides with the request
+    "-c", "core.fsmonitor=",                    # no filesystem-monitor program is run
+]
 
 
 def _git_text(
@@ -650,6 +689,113 @@ def commit_dirty(
     return text.strip() if code == 0 else None
 
 
+def prepare_publish_repo(
+    *,
+    source_repo: Path,
+    work_head: str | None,
+    publish_dir: Path,
+    private_dir: Path,
+    logs_dir: Path,
+    timeout_seconds: int,
+    logger: Any,
+    git_binary: str = "git",
+    local_branch: str = "swarm-publish",
+) -> Path:
+    """Build a fresh, worker-owned repository holding the agent's committed work.
+
+    WHY THIS EXISTS. The push and the integrator's merge authenticate with the
+    tenant's token, and a token that reaches many repositories makes where it is
+    allowed to go a tenant-isolation guarantee (invariant 9). Run inside the
+    repository the agent just edited, those commands honour that repository's
+    `.git/config` -- which the agent can write. A `credential.helper` there is
+    handed the token when the request succeeds; a `url.<host>.insteadOf` /
+    `pushInsteadOf` there redirects the authenticated push, and the credential
+    with it, to a host of the agent's choosing. No `-c` override disables
+    `insteadOf`, so the only robust defence is to run the token-bearing commands
+    in a repository whose configuration the worker wrote.
+
+    This builds that repository. It is created empty with `git init`, so its
+    config is the worker's; the agent's committed work is transferred in by a
+    LOCAL fetch of the source's current HEAD, carrying NO token -- so nothing the
+    source repository's configuration could do can move a credential that is not
+    present. The remote is never taken from here; the caller passes the validated
+    `repository_url` to `push_branch` / `merge_branches`.
+
+    `source_repo` is the agent's clone, whose HEAD the worker has just set (the
+    harvest's `commit_dirty` runs first, so HEAD already carries the auto-commit
+    when there was one). `work_head`, when known, is only checked against what
+    was transferred; it is never trusted as a ref name from the agent.
+    """
+    source_repo = Path(source_repo)
+    publish_dir = Path(publish_dir)
+    private_dir = Path(private_dir)
+    private_dir.mkdir(parents=True, exist_ok=True)
+    if publish_dir.exists():
+        shutil.rmtree(publish_dir, ignore_errors=True)
+    publish_dir.mkdir(parents=True, exist_ok=True)
+
+    def step(argv: list[str], slug: str) -> tuple[int, str]:
+        return _git_text(
+            argv,
+            repo=publish_dir,
+            private_dir=private_dir,
+            logs_dir=logs_dir,
+            slug=slug,
+            timeout_seconds=timeout_seconds,
+            logger=logger,
+        )
+
+    init_code, _ = _git_text(
+        [git_binary, *_NO_HOOKS, "init", "--quiet", str(publish_dir)],
+        repo=private_dir,
+        private_dir=private_dir,
+        logs_dir=logs_dir,
+        slug="publish-init",
+        timeout_seconds=timeout_seconds,
+        logger=logger,
+    )
+    if init_code != 0:
+        raise GitError("could not initialise the worker's publish repository")
+
+    # Transfer by LOCAL PATH and by the source's own HEAD ref. No token is in
+    # the environment or in any config for this step, so even if the source
+    # repository's configuration were consulted it could not move a credential.
+    # `--no-tags`/`--no-recurse-submodules` keep it to exactly the commit line.
+    fetch_code, _ = step(
+        [
+            git_binary, *_NO_HOOKS, "fetch", "--no-tags", "--no-recurse-submodules",
+            "--", str(source_repo), "HEAD",
+        ],
+        "publish-transfer",
+    )
+    if fetch_code != 0:
+        raise GitError("could not transfer the agent's work into the publish repository")
+
+    checkout_code, _ = step(
+        [git_binary, *_NO_HOOKS, "checkout", "--quiet", "-B", local_branch, "FETCH_HEAD"],
+        "publish-checkout",
+    )
+    if checkout_code != 0:
+        raise GitError("could not check out the transferred work in the publish repository")
+
+    if work_head:
+        head_code, head_text = step(
+            [git_binary, *_NO_HOOKS, "rev-parse", "HEAD"], "publish-verify-head"
+        )
+        got = head_text.strip() if head_code == 0 else ""
+        if got and got != work_head:
+            # The source's HEAD moved between the worker computing `work_head`
+            # and this transfer. In a single-threaded attempt that cannot happen
+            # from the worker itself, so it means something else wrote the clone;
+            # refuse rather than push a commit the worker did not vouch for.
+            raise GitError(
+                "the transferred HEAD does not match the work the worker committed"
+            )
+
+    logger.info("publish repository prepared", branch=local_branch)
+    return publish_dir
+
+
 def push_branch(
     *,
     repo: Path,
@@ -665,6 +811,13 @@ def push_branch(
     protected: tuple[str, ...] = (),
 ) -> str:
     """Push HEAD to `refs/heads/<branch>` on `url`. Returns the pushed sha.
+
+    `repo` MUST be a worker-owned publish repository (`prepare_publish_repo`),
+    never the clone the agent worked in: this command carries the tenant token,
+    and a repository whose `.git/config` the agent can write could redirect it
+    (`url.*.insteadOf`) or hand it to a helper the agent added. `_TOKEN_SAFE`
+    below is belt to that suspenders -- it resets the credential-helper list to
+    the worker's own and pins the transport -- but the guarantee is the repository.
 
     THREE REFUSALS, none of which the agent can talk its way past:
 
@@ -692,9 +845,11 @@ def push_branch(
     private_dir.mkdir(parents=True, exist_ok=True)
 
     cred_file = _write_credentials(url, token, private_dir)
+    # `_TOKEN_SAFE` first (which ends by RESETTING the credential-helper list),
+    # then the worker's own helper -- so the worker's is the only helper git can
+    # consult for this token.
     config_args = [
-        *_NO_HOOKS,
-        "-c", "protocol.version=2",
+        *_TOKEN_SAFE,
         "-c", f"credential.helper=store --file={cred_file}",
     ]
     try:
@@ -783,6 +938,11 @@ def merge_branches(
 ) -> MergeOutcome:
     """Merge each contributor branch into the current HEAD, in the order given.
 
+    `repo` MUST be a worker-owned publish repository (`prepare_publish_repo`):
+    the contributor `fetch` below carries the tenant token, so it needs the same
+    isolation as the push -- run in the clone, an `insteadOf` the agent wrote
+    would redirect the authenticated fetch to another host.
+
     ORDER IS THE CALLER'S, AND IT MATTERS. swarm-api builds `integrates` from
     the topological prefix of the workflow, so branch N may depend on branch
     N-1 having landed. Merging in any other order turns a clean sequence into
@@ -807,9 +967,12 @@ def merge_branches(
     missing: list[str] = []
 
     cred_file = _write_credentials(url, token, private_dir)
+    # As in `push_branch`: `_TOKEN_SAFE` resets the credential-helper list before
+    # the worker's own helper is added, and this runs in a worker-owned publish
+    # repository. The contributor fetch below carries the token, so it must be as
+    # isolated as the push.
     config_args = [
-        *_NO_HOOKS,
-        "-c", "protocol.version=2",
+        *_TOKEN_SAFE,
         "-c", f"credential.helper=store --file={cred_file}",
         # The merge commits are the worker's, not the agent's. Without these
         # git refuses to commit at all in a container with no global config,

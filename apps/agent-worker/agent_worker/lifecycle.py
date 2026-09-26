@@ -157,6 +157,7 @@ from .gitops import (
     MergeOutcome,
     commit_dirty,
     merge_branches,
+    prepare_publish_repo,
     push_branch,
     shallow_clone,
     summarize_work,
@@ -268,6 +269,12 @@ REPO_DIR_NAME = "repo"
 WORKER_STATE_DIR = ".swarm"
 CLONE_BASE_FILE = "clone-base"
 PATCH_NAME = "swarm-work.patch"
+
+#: The worker-owned repository the token-bearing git commands run in. It lives
+#: under `ws.private` -- never checkpointed, never uploaded, never named in the
+#: agent's environment -- so the push and the integrator's fetch authenticate
+#: from configuration the agent could not write. See `gitops.prepare_publish_repo`.
+PUBLISH_DIR_NAME = "publish"
 
 
 @dataclass
@@ -3113,6 +3120,10 @@ class Worker:
         auto_committed = False
         merge: MergeOutcome | None = None
         try:
+            # This commits the agent's uncommitted work IN THE CLONE -- a local
+            # step that carries no token, so the clone's own config cannot leak
+            # one here. It sets the clone's HEAD, which is what the publish repo
+            # transfers below.
             new_sha = commit_dirty(
                 repo=repo,
                 message=(
@@ -3132,12 +3143,31 @@ class Worker:
                 auto_committed = True
                 work_head = new_sha
 
+            # EVERYTHING THAT CARRIES THE TOKEN RUNS HERE, NOT IN THE CLONE.
+            #
+            # The push and the integrator's contributor fetch authenticate with
+            # the tenant token. Run in `repo` (the clone), a `credential.helper`
+            # or a `url.*.insteadOf` the agent wrote into `.git/config` would
+            # receive or redirect that token. So the work is transferred into a
+            # fresh, worker-owned repository -- by a local, token-less fetch --
+            # and the push and merge happen there instead. See
+            # `gitops.prepare_publish_repo` and docs/merge-strategy-live-proof.md §6.
+            publish_repo = prepare_publish_repo(
+                source_repo=repo,
+                work_head=work_head,
+                publish_dir=ws.private / PUBLISH_DIR_NAME,
+                private_dir=ws.private,
+                logs_dir=ws.logs,
+                timeout_seconds=cfg.git_clone_timeout_seconds,
+                logger=self.log,
+            )
+
             # THE INTEGRATOR MERGES BEFORE IT PUSHES.
             #
-            # Its own commit has to be in the tree first (above), and every
-            # contributor's branch has to be in it before the push, or the
-            # single pull request this strategy promises would contain only
-            # the integrator's own step.
+            # Its own commit has to be in the tree first (transferred above), and
+            # every contributor's branch has to be in it before the push, or the
+            # single pull request this strategy promises would contain only the
+            # integrator's own step.
             #
             # The branch names are DERIVED from the upstream task ids with the
             # same prefix the contributors pushed under -- never taken from
@@ -3149,7 +3179,7 @@ class Worker:
                 ]
                 if upstream:
                     merge = merge_branches(
-                        repo=repo,
+                        repo=publish_repo,
                         url=url,
                         branches=upstream,
                         token=token,
@@ -3169,7 +3199,7 @@ class Worker:
                     }
 
             pushed = push_branch(
-                repo=repo,
+                repo=publish_repo,
                 url=url,
                 branch=branch,
                 token=token,

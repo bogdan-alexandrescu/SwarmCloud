@@ -196,6 +196,47 @@ from the task id and re-checked before the push, the default branch is refused,
 nothing is ever force-pushed, and hooks are disabled on every git invocation so
 a `.git/hooks/pre-commit` the agent wrote cannot execute.
 
-They are mitigations, not a boundary. The smallest version of this decision is
-a fine-grained PAT on one repository that nothing important depends on, and
-that is what section 5 assumes.
+**The token-bearing commands run in a repository the worker owns, never in the
+clone.** This is the mitigation that closes the widest gap. A git repository
+honours its own `.git/config`, and the agent has write access to the tree it
+worked in — so running the push (and the integrator's contributor fetch) inside
+that clone let repository-local configuration the agent controls take effect
+while the token was in hand. Two settings are enough to move it:
+
+* `credential.helper` is multi-valued, and git invokes **every** configured
+  helper — so a helper the agent added is handed the credential (git calls it
+  with `store` once the request succeeds), alongside the worker's own.
+* `url.<host>.insteadOf` / `pushInsteadOf` rewrites the destination of a push —
+  *including a URL passed explicitly on the command line* — so the authenticated
+  push, and the credential git sends with it, goes to a host of the agent's
+  choosing. There is **no `-c` override that disables URL rewriting**, and a
+  repository config can `include` another file that reintroduces anything a
+  blocklist stripped. So per-invocation overrides are not a defence you can
+  finish writing.
+
+The fix is therefore structural, not a longer blocklist. `gitops.prepare_publish_repo`
+builds a fresh repository under the worker's private scratch (never checkpointed,
+never uploaded, never named in the agent's environment), `git init`-ed so its
+config is the worker's. The agent's committed work is transferred in by a
+**local, token-less** fetch of the commit the worker computed — no credential is
+present during the transfer, so nothing the clone's configuration could do can
+move one. The remote is set from the validated `repository_url`, never read back
+from the clone; the credential-helper list is reset to the worker's own helper
+before it is added; and the transport is pinned (verified TLS, no proxy, no
+injected header). The integrator's merges happen in this repository too.
+
+The property this guarantees: **no configuration, file or ref the agent can
+write can cause the tenant token to be sent anywhere except the forge host of
+the task's `repository_url` over verified TLS, or be handed to any program other
+than the worker's own credential mechanism.** It is proven offline by
+`tests/unit/worker/test_forge_token_isolation.py` (real git, local `file://`
+remotes, no network): a `url.*.insteadOf` / `pushInsteadOf` the agent writes into
+the clone cannot redirect the push, and the repository the worker authenticates
+from carries no credential helper the agent wrote (with a control confirming the
+clone itself would have leaked).
+
+They are mitigations, not a boundary. The token still belongs to a platform that
+runs model-written code, and a compromise of the worker itself is outside what
+any of this protects against. The smallest version of this decision is a
+fine-grained PAT on one repository that nothing important depends on, and that is
+what section 5 assumes.
