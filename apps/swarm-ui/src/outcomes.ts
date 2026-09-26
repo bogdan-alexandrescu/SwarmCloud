@@ -41,9 +41,11 @@ export interface CancelSplit {
   requested: number
   after_failure: number
   /**
-   * A cascade cancel whose parent was CANCELLED, not FAILED (#185, decision 2).
-   * The scheduler writes the same words for both; the route splits them by the
-   * task's `end_cause`, or by its parents' states for a task without one.
+   * A cascade cancel that followed a cancel somebody asked for, at its parent
+   * or further up the chain -- not a failure (#185, decision 2). The scheduler
+   * writes the same words for both; the route splits them by the task's
+   * `end_cause`, or, for a task without one, by what each parent's own end
+   * sent down (a CANCELLED parent can be a failure's cascade itself).
    */
   after_cancel: number
   workflow_sweep: number

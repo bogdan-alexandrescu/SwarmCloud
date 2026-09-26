@@ -3292,13 +3292,29 @@ are added to TS-4's own rules by selector, so those cannot drift.
 **After a cancel, in the same vocabulary (#185, decision 2).** The scheduler
 writes one sentence after a failed parent and after a cancelled one, so lane 3
 drew both as the failure's outline. The route splits them now -- by the task's
-typed `end_cause`, or by its parents' states for a task that ended before the
-field existed -- and lane 3 draws the new cause with no new form: it IS a
-cancel (TS-4's flat bars) AND a cascade (the 1px `--text-dim` outline), so it is
-both marks at once, stacked between the plain bars below and the bare outline
-above. No hue on any of the three. Its key, `.ol-k.is-after-cancel`, is on
-TS-4's cancelled rule by selector and carries the outline beside `.ol-k.is-after`.
-`timeline.causes.test.tsx` holds the marks, the key, the words and the Table.
+typed `end_cause`, or, for a task that ended before the field existed, by what
+each parent's own end sent down, up the chain (a CANCELLED parent is often a
+failure's cascade itself; the review of #217) -- and lane 3 draws the new cause
+with no new form: it IS a cancel (TS-4's flat bars) AND a cascade (the 1px
+`--text-dim` outline), so it is both marks at once, stacked between the plain
+bars below and the bare outline above. No hue on any of the three. Its key,
+`.ol-k.is-after-cancel`, is on TS-4's cancelled rule by selector and carries the
+outline beside `.ol-k.is-after`. `timeline.causes.test.tsx` holds the marks, the
+key, the words and the Table.
+
+**The bars are the mark's own, and it is never under 7px (the review of #217).**
+The first cut filled the outline with the page-anchored `-flat` pattern. Lane 3's
+baseline sits at y ≡ 1 (mod 5) in all three drawings (366, 306, 266), so a 3-4px
+mark on it had its only interior rows in the pattern's 2px gap, and drew as the
+bare "after a failure" outline pixel for pixel -- at every count under about 21
+of 305, which is most buckets. The mark now draws its bars as `.ol-flat` rects
+counted from its own top inner edge, exactly as its key's gradient runs from the
+top of its border, and is at least one period of them: 1px outline, a 3px bar,
+the 2px gap, 1px outline. A minimum is height the count did not earn, so the
+lane takes it back from its tallest mark rather than letting the column rise
+into the label above. `timeline.causes.test.tsx` measures the bar pixels inside
+each outline in the wide, mid and narrow drawings, and every lane-3 mark
+against the lane's top and base.
 
 **What retired with the window.** The Rows control and its rule; the window
 bar's `Last N tasks` / `All N tasks`; the People table (grouping by person is

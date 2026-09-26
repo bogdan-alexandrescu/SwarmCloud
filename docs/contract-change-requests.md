@@ -2279,15 +2279,23 @@ that built `GET /v1/outcomes` (branch `lane/outcomes-api`, #185).
     on spent attempts;
   * the scheduler: `return_to_ready_after_failed_dispatch` (DISPATCH_FAILED, or
     CANCEL_REQUESTED), `cancel` (a REQUIRED keyword: CANCEL_REQUESTED, or
-    FAILED_PARENT / CANCELLED_PARENT from the parents' states by
-    `loop._parent_cause`, where a failure wins) and `cancel_if_not_started`
-    (WORKFLOW_SWEEP);
+    FAILED_PARENT / CANCELLED_PARENT by `loop._parent_cause` from each
+    parent's OWN END -- a CANCELLED parent that is a failure's cascade or was
+    swept passes a failure down, and a failure wins -- or, for a parent
+    cancelled before the field existed with no flag, None, which the ledger
+    splits by the chain) and `cancel_if_not_started` (WORKFLOW_SWEEP);
   * the API's cancel, only when that write ends the task (a pending task): a
     flag on a task holding capacity ends nothing and records nothing.
 * `swarm_api.outcomes` reads `end_cause` first and falls back to its text
   classifier only for a task without one. `DERIVE_VERSION` and
   `CLASSIFIER_VERSION` went 1 -> 2, and a stored day is re-derived when EITHER
   differs (the classifier's version had been written and never read).
+* **Corrected in review, before release (the review of #217):** the cascade
+  split first read only the direct parents' STATES, in both the scheduler and
+  the ledger's fallback. The dependency rule is transitive, so every step two
+  or more hops below a FAILED one was "after a cancel" nobody made. Both now
+  read each parent's own end, and the ledger follows untyped cascades up the
+  chain (`outcomes._read_cascade_ancestors`).
 
 ### Proved by
 

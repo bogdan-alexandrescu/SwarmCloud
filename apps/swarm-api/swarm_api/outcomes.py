@@ -57,11 +57,15 @@ end cause is classified by it and nothing else (`classify_failure`,
 `cancel_cause`); the `last_error` prefix classifier below is the fallback for
 tasks that ended before the field existed, or for an end no cause names.
 
-A CANCEL CASCADE IS SPLIT BY ITS PARENTS (decision 2). "an upstream workflow
-step did not succeed" is written after a FAILED parent and after a CANCELLED
-one. A task that carries `end_cause` says which; one that does not is split at
-derive time by reading its `depends_on` parents -- the documents the wait
-figure already reads -- into "after a failure" and "after a cancel".
+A CANCEL CASCADE IS SPLIT BY ITS PARENTS' OWN ENDS (decision 2). "an upstream
+workflow step did not succeed" is written after a FAILED parent and after a
+CANCELLED one. A task that carries `end_cause` says which; one that does not is
+split at derive time by what each `depends_on` parent's end sent down -- NOT by
+the parent's state (the review of #217). The rule is transitive, so a
+CANCELLED parent is often a failure's cascade itself: a FAILED -> b -> c makes
+`c` "after a failure". A parent that is itself an untyped cascade is named by
+its own parents, so the derive reads the chain above such a task
+(`_read_cascade_ancestors`); an end it cannot name is `other`, never a guess.
 """
 
 from __future__ import annotations
@@ -136,7 +140,9 @@ _CACHE_MAX_ENTRIES = 256
 #: acted on).
 #:
 #: 2 (2026-09-25, #185 decisions 2, 4 and 9): the cancel cascade is split into
-#: after_failure and after_cancel by the parents' states, InputUnavailable is
+#: after_failure and after_cancel by the parents' own ends, up the chain (the
+#: review of #217 corrected a one-hop split in the same pull request, before
+#: version 2 was released, so no day was ever stored under it), InputUnavailable is
 #: its own class, and `Task.end_cause` is read before any text. Every sealed
 #: day was classified by version 1's rules, so every one is re-derived.
 DERIVE_VERSION = 2
@@ -348,13 +354,9 @@ _REQUESTED_PREFIX = "cancelled on request; "
 #: scheduler/loop.py, a step whose parent did not succeed. It fires for a
 #: FAILED, DEAD_LETTERED **or CANCELLED** parent (loop.py
 #: `_FAILED_PARENT_STATES`), so the text alone cannot say which: `cancel_cause`
-#: splits it by the parents' states (decision 2).
+#: splits it by what each parent's own end sent down (`parent_end`; decision
+#: 2, and the review of #217 for the chain).
 _AFTER_FAILURE_TEXT = "an upstream workflow step did not succeed"
-#: A parent in one of these states made its dependant's cancel "after a
-#: failure"; CANCELLED made it "after a cancel". A failure wins when a step had
-#: both, as the scheduler's own end cause does (loop.py `_parent_cause`).
-_PARENT_FAILED_STATES = frozenset({TaskState.FAILED.value, TaskState.DEAD_LETTERED.value})
-_PARENT_CANCELLED_STATE = TaskState.CANCELLED.value
 #: scheduler/loop.py, the fail_workflow sweep.
 _SWEEP_RE = re.compile(
     r"workflow step .+ is (?:FAILED|DEAD_LETTERED) and on_step_failure is "
@@ -432,24 +434,33 @@ def cancel_cause(
     last_error: str | None,
     *,
     end_cause: Any = None,
-    parent_states: Sequence[Any] | None = None,
+    parent_ends: Sequence[str | None] | None = None,
 ) -> str:
     """Why a CANCELLED task was cancelled.
 
     Stage 0 is the task's own `end_cause`, exactly as in `classify_failure`:
-    the scheduler writes FAILED_PARENT or CANCELLED_PARENT from the parents it
-    read when it cancelled, so a task that carries one is never split again.
+    the scheduler writes FAILED_PARENT or CANCELLED_PARENT from its parents'
+    own ends when it cancels, so a task that carries one is never split again.
 
     The FALLBACK, for a task with no end cause: `requested` covers both the
     flag (the API cancel and the workflow cancel set it on every step) and the
     prefix the terminal writers put on a cancel they ended on a request.
 
-    "an upstream workflow step did not succeed" is split by `parent_states`,
-    the states of the task's `depends_on` parents as the derive read them
-    (None for one it could not read): a FAILED or DEAD_LETTERED parent makes it
-    `after_failure`, else a CANCELLED one makes it `after_cancel`. With no
-    parent read in either state the text cannot say which, and it is `other`
-    -- never guessed to be a failure, which is the overclaim decision 2 ends.
+    "an upstream workflow step did not succeed" is split by `parent_ends`:
+    what each `depends_on` parent's OWN END sent down, as `parent_end` reads it
+    -- SENT_FAILURE, SENT_CANCEL, SENT_UNKNOWN, or None for a parent that sent
+    nothing (it succeeded, or has not ended). NOT the parents' states (the
+    review of #217): a CANCELLED parent may itself be a failure's cascade, and
+    read by its state every step two or more hops below a failure was "after a
+    cancel" nobody made. So:
+
+      * any parent sent a failure: `after_failure` -- a failure wins, as the
+        scheduler's own cause does;
+      * else any parent's end cannot be named: `other`, because that parent
+        may have been the failure;
+      * else any parent sent a cancel: `after_cancel`;
+      * else (no parent read at all): `other` -- never guessed to be a
+        failure, which is the overclaim decision 2 ends, nor a cancel.
 
     Everything unrecognised is `other` -- including the worker's "runner
     stopped on SIGTERM" without the flag, and a null last_error without the
@@ -462,15 +473,103 @@ def cancel_cause(
     if cancel_requested or text.startswith(_REQUESTED_PREFIX):
         return "requested"
     if text == _AFTER_FAILURE_TEXT:
-        states = {_state_value(s) for s in (parent_states or ()) if s is not None}
-        if states & _PARENT_FAILED_STATES:
+        sent = set(parent_ends or ())
+        if SENT_FAILURE in sent:
             return "after_failure"
-        if _PARENT_CANCELLED_STATE in states:
+        if SENT_UNKNOWN in sent:
+            return "other"
+        if SENT_CANCEL in sent:
             return "after_cancel"
         return "other"
     if _SWEEP_RE.fullmatch(text):
         return "workflow_sweep"
     return "other"
+
+
+#: What one parent's end sent down to its dependant (`parent_end`).
+SENT_FAILURE = "failure"
+SENT_CANCEL = "cancel"
+SENT_UNKNOWN = "unknown"
+
+#: A cancelled parent's own cancel cause, as what it sent down. A requested
+#: cancel and a cancel's cascade send a cancel; a failure's cascade and the
+#: fail_workflow sweep (which only a failure starts) send a failure; `other`
+#: is an end the ledger cannot name.
+_SENT_BY_CANCEL_CAUSE: dict[str, str] = {
+    "requested": SENT_CANCEL,
+    "after_cancel": SENT_CANCEL,
+    "after_failure": SENT_FAILURE,
+    "workflow_sweep": SENT_FAILURE,
+    "other": SENT_UNKNOWN,
+}
+
+
+def _is_untyped_cascade(doc: Mapping[str, Any]) -> bool:
+    """A CANCELLED task that carries no cause and says only "an upstream
+    workflow step did not succeed": its own end is whatever its parents sent,
+    so it can be named only by reading them in turn."""
+    if str(doc.get("state")) != TaskState.CANCELLED.value:
+        return False
+    if _cause_value(doc.get("end_cause")) is not None or doc.get("cancel_requested"):
+        return False
+    return str(doc.get("last_error") or "").lstrip() == _AFTER_FAILURE_TEXT
+
+
+def parent_end(
+    parent: Mapping[str, Any] | None,
+    docs: Mapping[str, Mapping[str, Any] | None],
+    _memo: dict[str, str | None] | None = None,
+    _open: frozenset[str] = frozenset(),
+) -> str | None:
+    """What one `depends_on` parent's end sent down to its dependant. Pure.
+
+    SENT_FAILURE for a parent that FAILED or was DEAD_LETTERED, or was
+    CANCELLED by a failure; SENT_CANCEL for one CANCELLED by a cancel somebody
+    asked for, at that step or above it; SENT_UNKNOWN for one CANCELLED for a
+    reason nothing records, and for a parent that could not be read (`None`:
+    missing, or another tenant's); None for a parent that sent nothing --
+    SUCCEEDED, or not ended.
+
+    A CANCELLED parent is named by its own `cancel_cause`, and that is where
+    the chain is followed: a parent that is itself an untyped cascade is named
+    by ITS parents, looked up in `docs`, and so on up (the review of #217).
+    `docs` holds whatever the derive read; an ancestor it does not hold is
+    SENT_UNKNOWN, never a guess. `_memo` keeps a wide chain linear, and `_open`
+    -- the ids being resolved on this path -- ends a cycle, which a DAG
+    validated at submission never has but a corrupt document could.
+    """
+    if parent is None:
+        return SENT_UNKNOWN
+    state = str(parent.get("state"))
+    if state in _FAILED_VALUES:
+        return SENT_FAILURE
+    if state != TaskState.CANCELLED.value:
+        return None
+    parent_id = str(parent.get("id") or "")
+    memo = {} if _memo is None else _memo
+    if parent_id and parent_id in memo:
+        return memo[parent_id]
+    if parent_id in _open:
+        return SENT_UNKNOWN
+    ends: list[str | None] | None = None
+    if _is_untyped_cascade(parent):
+        above = _open | {parent_id}
+        ends = [
+            parent_end(docs.get(str(grand_id)), docs, memo, above)
+            if str(grand_id) in docs
+            else SENT_UNKNOWN
+            for grand_id in (parent.get("depends_on") or [])
+        ]
+    cause = cancel_cause(
+        bool(parent.get("cancel_requested")),
+        parent.get("last_error"),
+        end_cause=parent.get("end_cause"),
+        parent_ends=ends,
+    )
+    sent = _SENT_BY_CANCEL_CAUSE.get(cause, SENT_UNKNOWN)
+    if parent_id:
+        memo[parent_id] = sent
+    return sent
 
 
 def exit_label(code: int | None) -> str:
@@ -1121,8 +1220,12 @@ def tuple_from_docs(
     `parents` maps a depends_on task id to its document, or to None when it
     could not be read inside this tenant (missing, or another tenant's): that
     task's `eligible` is then None and its wait is excluded, never guessed.
-    The same documents split a cascade cancel with no `end_cause` into "after a
-    failure" and "after a cancel" (`cancel_cause`): no read is added for it.
+    The same map splits a cascade cancel with no `end_cause` into "after a
+    failure" and "after a cancel" (`cancel_cause`), by what each parent's own
+    end sent down (`parent_end`) -- which, for a parent that is itself such a
+    cascade, is read from ITS parents in the same map, and so on up the chain.
+    `Outcomes._tuples` puts those ancestors in the map; a caller that does not
+    gets `other` for a chain it cut short, never a guess.
 
     first_start is min(Attempt.started_at). Task.started_at is never used: every
     STARTING transition overwrites it (agent_worker/control.py).
@@ -1142,9 +1245,15 @@ def tuple_from_docs(
             eligible = None
             break
         eligible = max(eligible or 0, finished)
-    parent_states = [
-        (parents.get(parent_id) or {}).get("state") for parent_id in depends_on
-    ]
+    # Only a cascade with no cause of its own is split by its parents, so only
+    # that one walks up the chain.
+    parent_ends: list[str | None] | None = None
+    if _is_untyped_cascade(task):
+        memo: dict[str, str | None] = {}
+        mine = frozenset({str(task.get("id") or "")})
+        parent_ends = [
+            parent_end(parents.get(parent_id), parents, memo, mine) for parent_id in depends_on
+        ]
 
     state = str(task.get("state"))
     last_error = task.get("last_error")
@@ -1177,7 +1286,7 @@ def tuple_from_docs(
                 bool(task.get("cancel_requested")),
                 last_error,
                 end_cause=end_cause,
-                parent_states=parent_states,
+                parent_ends=parent_ends,
             )
             if state == TaskState.CANCELLED.value
             else None
@@ -1782,9 +1891,10 @@ def _workflows_failed(kept: Sequence[Mapping[str, Any]], params: Params) -> dict
     the owner-chosen rollup path; until then a row reads UNKNOWN / null.
 
     `cascade_cancelled` counts the cancels THE FAILURE caused: after a failure
-    and the fail_workflow sweep. A step cancelled after a CANCELLED parent
-    (`after_cancel`) is left out -- somebody stopped that branch, the failure
-    did not.
+    -- however many steps below it, through steps the failure's own cascade
+    cancelled -- and the fail_workflow sweep. A step cancelled after a cancel
+    (`after_cancel`: somebody stopped it, or a step above it) is left out --
+    somebody stopped that branch, the failure did not.
 
     Under kind=standalone the block does not apply, and its counts are null
     rather than 0: nothing was counted, so no count is a measurement (the
@@ -2080,6 +2190,44 @@ class Outcomes:
                     out[snap.id] = data
         return out
 
+    def _read_cascade_ancestors(
+        self,
+        tenant_id: str,
+        ended: Sequence[dict[str, Any]],
+        known: dict[str, dict[str, Any] | None],
+        meter: _Meter,
+    ) -> None:
+        """Read into `known` the chain above every ended cascade that carries no cause.
+
+        A cascade with no cause is split by what its parents' ends sent down
+        (`parent_end`), and a parent that is ITSELF such a cascade is named only
+        by its own parents (the review of #217): a -> b -> c with `a` FAILED
+        makes `c` "after a failure", although `c`'s parent is CANCELLED. The
+        wait figure's read already holds each ended task's parents; this reads
+        the rest of each chain -- one batched, tenant-checked `get_all` per
+        level, and only above cascades with no cause. A task that ended after
+        contract request 23 carries its cause and costs nothing here.
+
+        It ends. Each document joins the walk at most once (`walked`), and a
+        chain is bounded by the workflow it lives in: every `depends_on` names
+        a step of the same workflow, validated at submission against
+        `max_workflow_steps`. The reads are metered like every other read of
+        the derive, so they count against its budget.
+        """
+        walked: set[str] = set()
+        frontier = [doc for doc in ended if _is_untyped_cascade(doc)]
+        while frontier:
+            walked.update(str(doc.get("id")) for doc in frontier)
+            above = {str(parent) for doc in frontier for parent in (doc.get("depends_on") or [])}
+            missing = sorted(parent for parent in above if parent not in known)
+            if missing:
+                known.update(self._get_tasks(tenant_id, missing, meter))
+            frontier = [
+                doc
+                for parent in sorted(above - walked)
+                if (doc := known.get(parent)) is not None and _is_untyped_cascade(doc)
+            ]
+
     def _tuples(
         self,
         tenant_id: str,
@@ -2112,6 +2260,7 @@ class Outcomes:
         )
         if wanted:
             known.update(self._get_tasks(tenant_id, wanted, meter))
+        self._read_cascade_ancestors(tenant_id, mine_ended, known, meter)
         ended = [
             tuple_from_docs(doc, attempts.get(str(doc["id"]), []), known) for doc in mine_ended
         ]

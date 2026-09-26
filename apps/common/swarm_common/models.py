@@ -195,6 +195,14 @@ class EndCause(str, Enum):
     without a requested cancel); the ledger falls back to its text classifier
     for exactly those, never for a task that carries a cause.
 
+    FAILED_PARENT and CANCELLED_PARENT are decided by each parent's OWN END,
+    not its state: a CANCELLED parent that is itself a failure's cascade (or
+    was taken by the workflow sweep) passes a failure down, so a failure's
+    cascade stays FAILED_PARENT however many steps down it reaches (the review
+    of PR #217). A cascade below a parent cancelled before this field existed,
+    with no cancel flag, is written with None: the scheduler cannot name that
+    parent's end, and the ledger splits the step by its chain of parents.
+
     INPUTS_UNAVAILABLE was not in the request as filed. It is the owner's
     decision item 4 on the same comment: the worker refusing to stage a
     declared `input_from` artifact (`agent_worker.errors.InputUnavailable`) is

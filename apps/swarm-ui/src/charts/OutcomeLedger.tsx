@@ -27,13 +27,20 @@
 //      verdict), stacked up from the axis:
 //        requested (and other)  TS-4's flat "ended" bars -- a cancel;
 //        after a cancel         the flat bars inside a 1px outline -- a
-//                               cascade (the outline) of a cancel (the bars);
-//        after a failure        the 1px outline alone, no fill -- a cascade of
-//                               something that was not a cancel (workflow
-//                               sweeps included, which only a failure starts).
+//                               cascade (the outline) that began at a cancel
+//                               somebody asked for (the bars);
+//        after a failure        the 1px outline alone, no fill -- a cascade
+//                               that began at a failure, however many steps
+//                               down it reached (workflow sweeps included,
+//                               which only a failure starts).
 //      The two cascades used to be one outline, because the scheduler writes
-//      the same words for both; the route splits them now (#185, decision 2),
-//      and the readout names each.
+//      the same words for both; the route splits them now (#185, decision 2)
+//      by where each chain began, not by the state of the step just above
+//      (the review of #217), and the readout names each. The after-a-cancel
+//      mark is never under 7px and its bars start at its own top, so a bar
+//      always shows inside the outline: at 3-4px on a page-anchored pattern
+//      it drew as the after-a-failure outline pixel for pixel. The minimum
+//      heights come out of the tallest mark, never out of the lane's top.
 //   4  Throughput (owner decision, from the Flow concept): submitted per bucket
 //      against finished per bucket, answering "are we keeping up". THE ONLY
 //      LANE ON THE SUBMISSION-TIME BASIS, and its label says so. Submitted is a
@@ -131,6 +138,67 @@ const PHONE_HOUR_STRIDE = 3
 
 /** A failed column that is not zero is never thinner than the 2px cut plus 2px of `--bad` (WF-1). */
 const MIN_FAILED_PX = 4
+
+/** A lane-3 mark that counts anything is never under one flat bar's height. */
+const MIN_CANCEL_PX = 3
+
+/** TS-4's flat "ended" bars: a 3px bar every 5px (§15.3). */
+const FLAT_BAR = 3
+const FLAT_PERIOD = 5
+
+/**
+ * AN "AFTER A CANCEL" MARK IS NEVER UNDER 7px: its 1px outline, one whole
+ * 3px flat bar and the 2px gap after it, and the outline again -- exactly one
+ * period of its key (`.ol-k.is-after-cancel`: the bars from the top inner edge
+ * of a 1px border). Anything shorter has no room for a bar, and at 3-4px it
+ * drew as the bare "after a failure" outline pixel for pixel (the review of
+ * #217). The bars inside it are drawn from the MARK's own top edge
+ * (`innerBars`), not from a page-anchored pattern, so a bar always lands
+ * inside the outline whatever height the stack below leaves it at.
+ */
+const MIN_AFTER_CANCEL_PX = 1 + FLAT_PERIOD + 1
+
+/**
+ * Lane 3's three marks, stacked up from the baseline: requested (and other),
+ * after a cancel, after a failure. Each is its count on the lane's scale, but
+ * never under its minimum -- and THE MINIMUMS ARE TAKEN BACK FROM THE TALLEST
+ * MARK when the stack would pass the lane's top. A minimum is extra height on
+ * top of the count's, so a full column with a small cascade on it rose past
+ * the lane into its label; now the column's total stays on the scale, and the
+ * readout and the Table carry the exact split.
+ */
+function laneThreeStack(flatN: number, cascN: number, afterN: number, k: number, laneH: number): [number, number, number] {
+  const marks = [
+    { n: flatN, min: MIN_CANCEL_PX },
+    { n: cascN, min: MIN_AFTER_CANCEL_PX },
+    { n: afterN, min: MIN_CANCEL_PX },
+  ].map((m) => {
+    const min = m.n === 0 ? 0 : m.min
+    return { min, h: m.n === 0 ? 0 : Math.max(min, m.n * k) }
+  })
+  let over = marks.reduce((s, m) => s + m.h, 0) - laneH
+  for (const m of [...marks].sort((a, b) => b.h - a.h)) {
+    if (over <= 0) break
+    const give = Math.min(over, m.h - m.min)
+    m.h -= give
+    over -= give
+  }
+  return [marks[0]!.h, marks[1]!.h, marks[2]!.h]
+}
+
+/**
+ * The flat bars inside an "after a cancel" outline whose outer edges are
+ * `top` and `bottom`: from the outline's inner top edge, a 3px bar every 5px,
+ * cut at its inner bottom edge -- the key's own drawing, anchored to the mark.
+ */
+function innerBars(top: number, bottom: number): Array<{ y: number; h: number }> {
+  const bars: Array<{ y: number; h: number }> = []
+  const floor = bottom - 1
+  for (let y = top + 1; y < floor; y += FLAT_PERIOD) {
+    bars.push({ y: r1(y), h: r1(Math.min(FLAT_BAR, floor - y)) })
+  }
+  return bars
+}
 
 const TOP = 26
 
@@ -486,9 +554,13 @@ function Drawing({
               const flatN = (b.cancelled?.requested ?? 0) + (b.cancelled?.other ?? 0)
               const cascN = b.cancelled?.after_cancel ?? 0
               const afterN = (b.cancelled?.after_failure ?? 0) + (b.cancelled?.workflow_sweep ?? 0)
-              const flatH = flatN === 0 ? 0 : Math.max(3, flatN * k3)
-              const cascH = cascN === 0 ? 0 : Math.max(3, cascN * k3)
-              const afterH = afterN === 0 ? 0 : Math.max(3, afterN * k3)
+              const [flatH, cascH, afterH] = laneThreeStack(flatN, cascN, afterN, k3, L3.h)
+              // The stack's edges, rounded ONCE each, so neighbouring marks
+              // share an edge exactly and none passes the lane's top or base.
+              const e0 = L3.y + L3.h
+              const e1 = r1(e0 - flatH)
+              const e2 = r1(e0 - flatH - cascH)
+              const e3 = r1(e0 - flatH - cascH - afterH)
               const fin = b.ended ?? 0
               const sub = b.submitted ?? 0
               return (
@@ -504,35 +576,38 @@ function Drawing({
                   {ok === 0 && bad === 0 && tick(zeroY, 'z2')}
                   {/* Lane 3 */}
                   {flatH > 0 && (
-                    <rect className="ol-m-ended" x={x} y={r1(L3.y + L3.h - flatH)} width={w} height={r1(flatH)} fill={`url(#${flat})`} />
+                    <rect className="ol-m-ended" x={x} y={e1} width={w} height={r1(e0 - e1)} fill={`url(#${flat})`} />
                   )}
                   {cascH > 0 && (
-                    <>
-                      {/* After a cancel: the flat bars (a cancel) in the outline (a cascade). */}
-                      <rect
-                        className="ol-m-ended is-after-cancel"
-                        x={x}
-                        y={r1(L3.y + L3.h - flatH - cascH)}
-                        width={w}
-                        height={r1(cascH)}
-                        fill={`url(#${flat})`}
-                      />
+                    <g className="ol-m-casc">
+                      {/* After a cancel: the flat bars (a cancel) in the outline (a cascade),
+                          the bars counted from the mark's own top so one always shows. */}
+                      {innerBars(e2, e1).map((bar) => (
+                        <rect
+                          key={bar.y}
+                          className="ol-flat"
+                          x={r1(x + 1)}
+                          y={bar.y}
+                          width={r1(Math.max(1, w - 2))}
+                          height={bar.h}
+                        />
+                      ))}
                       <rect
                         className="ol-m-after-cancel"
                         x={r1(x + 0.5)}
-                        y={r1(L3.y + L3.h - flatH - cascH + 0.5)}
+                        y={r1(e2 + 0.5)}
                         width={r1(Math.max(0, w - 1))}
-                        height={r1(Math.max(0, cascH - 1))}
+                        height={r1(Math.max(0, e1 - e2 - 1))}
                       />
-                    </>
+                    </g>
                   )}
                   {afterH > 0 && (
                     <rect
                       className="ol-m-after"
                       x={r1(x + 0.5)}
-                      y={r1(L3.y + L3.h - flatH - cascH - afterH + 0.5)}
+                      y={r1(e3 + 0.5)}
                       width={r1(Math.max(0, w - 1))}
-                      height={r1(Math.max(0, afterH - 1))}
+                      height={r1(Math.max(0, e2 - e3 - 1))}
                     />
                   )}
                   {flatN + cascN + afterN === 0 && tick(L3.y + L3.h, 'z3')}

@@ -187,19 +187,40 @@ decision 9) and applied in PR #217.
 The scheduler writes "an upstream workflow step did not succeed" when a parent
 is FAILED, DEAD_LETTERED **or CANCELLED** (`scheduler/loop.py`,
 `_FAILED_PARENT_STATES`), so the text alone counted a cancel somebody pressed
-as a failure. Two halves close it:
+as a failure.
 
-* the scheduler now records `failed_parent` or `cancelled_parent` from the
-  parents it read when it cancelled (a failure wins when a step had both);
-* a task without that cause is split AT DERIVE TIME by the states of its
-  `depends_on` parents -- the documents the wait figure already reads, so it
-  costs no read. A FAILED or DEAD_LETTERED parent makes it "after a failure",
-  else a CANCELLED one "after a cancel". With no parent readable in either
-  state the text cannot say which, and it is `other`: never a guessed failure.
+**A parent's own end decides, not its state.** The dependency rule is
+transitive: a step cancelled after a failure is itself a "failed parent" to its
+own dependants. So under `continue`, `a` FAILED -> `b` -> `c` -> `d` cancels
+`b` after `a`, then `c` after `b` (CANCELLED), then `d` after `c`. Read by the
+parent's state, `c` and `d` were "after a cancel" -- a cancel nobody made --
+and left out of the workflow's failure cascade. The first cut of this change
+did exactly that, one hop deep, and the review of #217 caught it before
+release. Two halves now close it:
+
+* the scheduler records `failed_parent` when any parent FAILED or was
+  DEAD_LETTERED, or was CANCELLED **by a failure** (its own cause
+  `failed_parent` or `workflow_sweep`); `cancelled_parent` only when every
+  cancelled parent was ended by a requested cancel (`cancel_requested`,
+  `cancelled_parent`, or the cancel flag on a parent from before causes). A
+  parent cancelled before causes, with no flag, has an end the scheduler
+  cannot name, and the cascade is written with **no cause**, for the ledger;
+* a task without a cause is split AT DERIVE TIME by what each `depends_on`
+  parent's end sent down: a FAILED or DEAD_LETTERED parent, or one cancelled
+  after a failure or by the sweep, sent a failure; one cancelled on request or
+  after a cancel sent a cancel. A parent that is itself an untyped cascade is
+  named by its own parents, and so on up: the derive reads the chain above
+  such a task (`_read_cascade_ancestors`), one batched, tenant-checked
+  `get_all` per level, only for cascades that carry no cause -- every task on
+  dev when this shipped, none that ends after it. A failure anywhere wins; a
+  parent whose end cannot be named (unreadable, or cancelled for no recorded
+  reason) makes the step `other`, because it may have been the failure; only
+  then does a cancel make it "after a cancel". Nothing read: `other`.
 
 `workflows_failed.rows[].cascade_cancelled` counts only the failure's cascade
-(after a failure and the fail_workflow sweep). A step that followed a CANCELLED
-parent was stopped by a person, not by the failure.
+(after a failure, however far down, and the fail_workflow sweep). A step
+"after a cancel" followed a cancel somebody asked for, at its parent or
+further up -- not the failure.
 
 ### The text classifier (the fallback)
 

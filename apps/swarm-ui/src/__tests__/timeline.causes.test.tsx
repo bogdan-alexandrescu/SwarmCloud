@@ -2,12 +2,15 @@
 //
 // The owner's decisions of 2026-09-25 on #185 that reach the page:
 //
-//   2  A cancel whose parent was CANCELLED is "after a cancel", not "after a
-//      failure". The scheduler writes the same words for both, so lane 3 drew
-//      them as one outline. The route splits them now, and lane 3 draws the
-//      new cause as the two cancel marks TS-4 already has, together: the flat
-//      "ended" bars (a cancel) inside the 1px outline (a cascade). The readout
-//      and the Table say which is which.
+//   2  A cascade that began at a cancel somebody asked for is "after a
+//      cancel", not "after a failure". The scheduler writes the same words for
+//      both, so lane 3 drew them as one outline. The route splits them now, and
+//      lane 3 draws the new cause as the two cancel marks TS-4 already has,
+//      together: the flat "ended" bars (a cancel) inside the 1px outline (a
+//      cascade). The readout and the Table say which is which. The review of
+//      #217 found the bars invisible at 3-4px -- a page-anchored pattern whose
+//      gap fell inside the outline -- so the cases below measure the bar
+//      pixels inside each outline, in every drawing, rather than the rect.
 //   7  The row-window Timeline's stylesheet (`.window-bar`, `.chart .col`,
 //      `.stackcol`, `.chart-legend`, `.col-label`, ...) is deleted, and the
 //      tests that read it re-pointed at the ledger's own rules.

@@ -1073,7 +1073,7 @@ class Store:
         POINT READS, NOT A QUERY. Each `WorkflowStep` already carries its
         `task_id`, so the ids are in hand and a query would only re-derive them
         -- and a query per workflow costs the same documents plus a round trip
-        each. This is the pattern `SchedulerStore.task_states` already uses for
+        each. This is the pattern `SchedulerStore.parent_ends` already uses for
         `depends_on`, for the same reason: a bounded number of point reads is not
         a scan.
 

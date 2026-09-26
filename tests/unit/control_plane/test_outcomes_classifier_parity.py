@@ -229,6 +229,39 @@ def test_the_failed_parent_text_is_the_schedulers_and_says_neither_which_parent_
     assert split({"state": "CANCELLED", "cancel_requested": True}) == "after_cancel"
 
 
+def test_the_scheduler_and_the_ledger_read_a_cancelled_parent_the_same_way():
+    """ONE RULE IN TWO IMAGES (docs/mirrored-values.md). The scheduler decides a
+    cascade's `failed_parent` / `cancelled_parent` from each parent's own end
+    (`loop._parent_cause`); the ledger splits a cascade that carries no cause
+    by the same parents (`outcomes.parent_end`). Were they to disagree, a task
+    ended after the deploy and one ended before it would land in different
+    columns for the same history. Every typed cause, none, and the flag."""
+    from scheduler.loop import _parent_cause
+    from scheduler.store import ParentEnd
+    from swarm_api.outcomes import SENT_CANCEL, SENT_FAILURE, SENT_UNKNOWN, parent_end
+    from swarm_common.models import EndCause
+    from swarm_common.states import TaskState
+
+    as_sent = {
+        EndCause.FAILED_PARENT: SENT_FAILURE,
+        EndCause.CANCELLED_PARENT: SENT_CANCEL,
+        None: SENT_UNKNOWN,
+    }
+    visited = 0
+    for cause in [None, *(c.value for c in EndCause)]:
+        for requested in (False, True):
+            scheduler = _parent_cause(
+                {"p": ParentEnd(TaskState.CANCELLED, cause, requested)}, ["p"]
+            )
+            parent = {
+                "id": "p", "state": "CANCELLED", "end_cause": cause,
+                "cancel_requested": requested, "last_error": None,
+            }
+            assert parent_end(parent, {}) == as_sent[scheduler], (cause, requested, scheduler)
+            visited += 1
+    assert visited == 2 * (1 + len(EndCause))
+
+
 def test_the_sweep_text_is_the_schedulers():
     loop = _src("apps/scheduler/scheduler/loop.py")
     assert 'f"workflow step {label} is {first[\'state\']} and on_step_failure is "' in loop

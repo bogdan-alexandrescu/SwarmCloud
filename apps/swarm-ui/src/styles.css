@@ -11760,7 +11760,10 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 .ol-m-cut { fill: var(--surface); }
 /* Lane 3: the flat "ended" bars (a cancel), the bare outline a failure's
    cancels take, and the two together for a cancel's cancels -- the bars
-   inside the outline (#185, decision 2). No hue on any of the three. */
+   inside the outline (#185, decision 2). No hue on any of the three. One rule
+   fills the bar in the page's `-flat` pattern AND the bars an after-a-cancel
+   mark draws from its own top (the review of #217: the pattern's bars fell
+   in its gap at 3-4px), so the two cannot drift apart. */
 .ol-flat { fill: var(--text-faint); }
 .ol-m-after,
 .ol-m-after-cancel { fill: none; stroke: var(--text-dim); stroke-width: 1; }

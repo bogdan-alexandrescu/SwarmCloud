@@ -12,7 +12,7 @@ these exist today as `tasks-state-priority-created` and
     tasks:  state ASC, priority DESC, created_at ASC
     tasks:  tenant_id ASC, state ASC, priority DESC, created_at ASC
 
-`parked_tasks` and `task_states` use equality filters only, which Firestore
+`parked_tasks` and `parent_ends` use equality filters only, which Firestore
 serves from single-field indexes by merge join, so they need no composite index.
 So do `workflow_steps_in_state` (tenant_id, workflow_id, state, all `==`), the
 point read in `workflow_on_step_failure`, and `tasks_in_state` (state `==`),
@@ -174,6 +174,24 @@ class GuardedWrite:
 
 
 @dataclass(frozen=True)
+class ParentEnd:
+    """One `depends_on` parent as the dependency rule reads it: its state, and
+    -- for one that ended -- why (contract request 23).
+
+    The state alone decides WHETHER a dependant is cancelled. The cause is what
+    decides the dependant's own `end_cause`: a CANCELLED parent may itself be a
+    failure's cascade (`failed_parent`) or the fail_workflow sweep's, and then
+    what it passes down is a failure, not a cancel (the review of #217).
+    `end_cause` is the stored string, unparsed, so a value this image does not
+    know stays distinguishable from none at all.
+    """
+
+    state: TaskState
+    end_cause: str | None = None
+    cancel_requested: bool = False
+
+
+@dataclass(frozen=True)
 class _Settled:
     """`return_to_ready_after_failed_dispatch`'s transaction, as data, so the
     event and the log line are written once, after it commits -- never once per
@@ -307,15 +325,25 @@ class SchedulerStore:
             return None
         return task_from_dict(snap.to_dict())
 
-    def task_states(self, task_ids: Sequence[str]) -> dict[str, TaskState]:
-        """States of a task's parents. `depends_on` is capped at the workflow
-        step limit, so this is a bounded number of point reads, not a scan."""
-        states: dict[str, TaskState] = {}
+    def parent_ends(self, task_ids: Sequence[str]) -> dict[str, ParentEnd]:
+        """A task's parents: each one's state and, for one that ended, why.
+
+        `depends_on` is capped at the workflow step limit, so this is a bounded
+        number of point reads, not a scan. The cause rides on the read the state
+        already needed: no document is read for it (the review of #217).
+        """
+        ends: dict[str, ParentEnd] = {}
         for task_id in dict.fromkeys(task_ids):
             snap = self._db.collection(TASKS).document(task_id).get()
             if snap.exists:
-                states[task_id] = TaskState(snap.to_dict()["state"])
-        return states
+                data = snap.to_dict()
+                cause = data.get("end_cause")
+                ends[task_id] = ParentEnd(
+                    state=TaskState(data["state"]),
+                    end_cause=str(cause) if cause is not None else None,
+                    cancel_requested=bool(data.get("cancel_requested")),
+                )
+        return ends
 
     def workflow_on_step_failure(
         self,
@@ -1046,14 +1074,17 @@ class SchedulerStore:
         reason: str,
         detail: dict[str, Any] | None = None,
         *,
-        end_cause: EndCause,
+        end_cause: EndCause | None,
     ) -> GuardedWrite:
         """Terminate a task that can never become runnable.
 
         `end_cause` is REQUIRED, not defaulted: every caller knows why it is
         cancelling -- a requested cancel, or a parent that failed or was
         cancelled -- and a default would let a new caller write a cause it did
-        not decide (contract request 23).
+        not decide (contract request 23). It is None, passed explicitly, for
+        the one cascade the scheduler cannot name: a parent cancelled before
+        causes were recorded, with no flag (`loop._parent_cause`). The field is
+        written as null then, so the outcome ledger splits it by the chain.
 
         Only called for tasks that hold NO capacity, so there is no lease to
         release: a task holding a lease is cancelled through the worker or the
@@ -1077,7 +1108,7 @@ class SchedulerStore:
                 "blocked_by": [],
                 "completed_at": now,
                 "last_error": reason[:1000],
-                "end_cause": end_cause.value,
+                "end_cause": end_cause.value if end_cause is not None else None,
                 "updated_at": now,
             },
         )
