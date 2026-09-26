@@ -232,3 +232,40 @@ The inspector charts' tests, each read back off the rendered SVG:
 These were proved the way CLAUDE.md asks: the defect committed on the branch
 and the named tests watched going red in CI, then reverted. The run ids are in
 the pull request.
+
+## The outcome ledger (`OutcomeLedger.tsx`, #185)
+
+The Timeline's chart: four aligned lanes on one time axis — success rate,
+decided work, cancels on their own scale, and throughput — over the buckets
+`GET /v1/outcomes` serves. It imports no charting library, so the guard above
+is unchanged: every mark is a `<rect>` or a polyline between two values the
+server measured, on a scale whose domain is those values with no `.nice()`,
+and "not read" is the shared `HatchDef`.
+
+What it must not imply, and how it is prevented:
+
+| Rule | How |
+|---|---|
+| A bucket with nothing decided has a 0 % rate | the rate lane draws no point where `rate` is null, and the line breaks there; the y scale is fixed at 0–100 % |
+| One of two reads as an outage | a point under five decided is hollow, and the Wilson band is drawn behind the line |
+| An unread bucket is a quiet one | one hatched band across all four lanes, no mark, no digit, and its column is named `not read` |
+| An empty bucket is missing data | a measured zero is the axis tick in each lane |
+| 305 cancels hide 8 failures | cancels have their own lane and scale, with the max printed; failures hang from the decided lane's zero, never under 4px |
+| Arrivals share the outcomes' time basis | the throughput lane's label says it is the only lane on the submission-time basis |
+| A scale scrolls away from its lane | each drawing's ticks are in a gutter SVG and its lane labels are HTML over the plot's left edge, both outside `.ol-plot`, the one layer that scrolls; the plot's SVG keeps the drawing's coordinates (its viewBox starts at the left margin) |
+| A legend key names one mark and prints another's number | the flat bars' key prints requested + other, the outline's after_failure + workflow_sweep; the cancelled total is unkeyed |
+| A span's totals read as whole when a bucket was not read | the readout's `all N days` carries the partial mark and `read of n`, and with nothing read the legend is the not-read mark with no count; no lane prints a `max` over no bucket |
+
+**Drawn three times, not scaled** (§7.2): 1080, 640 and 300 units
+(`LEDGER_DRAWN`), each with its own geometry and label stride; the figure is
+the `ol-chart` container and the sheet shows the drawing whose authored width
+the box holds. The narrow drawing's column floor is 26px, past which it grows
+and scrolls from the newest end. **The SVGs are `aria-hidden`**; over each sits
+one HTML column per bucket, `role="img"`, named with its full time and every
+count, and the columns are one tab stop with a roving tabindex. The roots of
+the drawings' pick layers are `role="group"`, as every chart root is.
+
+Tests: `activity.timeline.test.tsx` (the marks, the names, the readout and the
+keyboard, on a payload in the contract's exact shape), `timeline.ledger.rules.test.ts`
+(which drawing the cascade shows at a container width, and TS-4's forms), and
+`outcomes.view.test.ts` (the axis labels in the server's zone).
