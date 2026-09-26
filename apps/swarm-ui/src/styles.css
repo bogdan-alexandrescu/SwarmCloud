@@ -1634,6 +1634,19 @@ body {
   line-height: var(--lh-meta); font-weight: 400;
   background: var(--surface); border: 1px solid var(--line);
   border-radius: var(--ctl-radius-sm); padding: var(--ctl-s2) var(--ctl-s3);
+  /* THE ROW CLIPS AT ITS OWN BORDER (#223). Its fixed tracks and floors --
+     with `[progress]` at 29ch -- add up to more than a narrow row: measured
+     in Chrome against this sheet, the grid ran past the row's right edge
+     below a 550px row (620px for a row whose word is `state not derived`),
+     against 505px and 580px at 24ch. The work column gets that narrow when
+     the inspector is open beside it (from 1100px up it is a column of its
+     own, 480px and resizable), and there `[name]`, `[shape]` and `[mix]`
+     are already 0px wide at either floor. Unclipped, the flags and the caret
+     painted past the border, towards the inspector. Clipped, nothing on the
+     row paints outside it at any width; the row's own focus ring is an
+     outline, which its overflow does not clip. workflow.board.test.tsx holds
+     it at every template's width. */
+  overflow: hidden;
   cursor: pointer;
   transition: border-color var(--ctl-dur) ease;
 }
