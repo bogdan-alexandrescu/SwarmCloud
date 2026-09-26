@@ -100,7 +100,8 @@ def _refused(response, key: str) -> dict:
 #: The keys the owner decided the mock does NOT declare: they write platform
 #: records rather than shape a run -- the attempt's spend, whose quota document
 #: a park writes, a simulated credential refusal and its text, a simulated rate
-#: limit's text and reset time -- and the park count the mock keeps itself.
+#: limit's text and reset time -- and `attempt_count`, which the lifecycle
+#: writes from the task document and the mock bounds its park by.
 MOCK_WITHHELD = (
     "spend",
     "provider",
@@ -108,7 +109,7 @@ MOCK_WITHHELD = (
     "credential_detail",
     "quota_detail",
     "reset_at",
-    "quota_exhausted_times",
+    "attempt_count",
 )
 
 #: What the operational scripts sent the mock until this change, which it
@@ -160,8 +161,12 @@ def test_a_refused_step_is_named(client, db):
         ("exit_code", 77, "77"),
         ("exit_code", 78, "78"),
         ("exit_code", 143, "143"),
-        ("sleep_seconds", -1, ">= 0"),
-        ("steps", 0, ">= 1"),
+        ("sleep_seconds", -1, "0..3600"),
+        ("sleep_seconds", 3600.5, "0..3600"),
+        ("cpu_burn_seconds", -0.1, "0..3600"),
+        ("cpu_burn_seconds", 3601, "0..3600"),
+        ("steps", 0, "1..1000"),
+        ("steps", 1001, "1..1000"),
         ("quota_exhausted", "yes", "boolean"),
         ("fail", 1, "boolean"),
         ("artifact_name", "../escape.txt", "filename"),
@@ -188,6 +193,118 @@ def test_nan_and_infinity_are_not_numbers(client, db, door, key, literal):
         body = '{"steps": [{"step_id": "a", "runner_profile": "mock", "input": %s}]}' % one
     _refused(_raw(client, door, body), key)
     assert not _tasks(db)
+
+
+# -- a number Firestore cannot store ---------------------------------------------------
+
+#: Python reads a JSON integer of any length, and Firestore stores a signed
+#: 64-bit one. Before every declared number had a ceiling, the API accepted
+#: `steps: 10**30` and the task write raised on encoding it: a 500 at the
+#: store instead of a 422 at the door.
+HUGE = 10**30
+PAST_INT64 = 2**63
+NUMERIC_MOCK_INPUTS = ("steps", "sleep_seconds", "cpu_burn_seconds", "retry_after_seconds", "exit_code")
+
+
+@pytest.mark.parametrize("door", DOORS)
+@pytest.mark.parametrize("key", NUMERIC_MOCK_INPUTS)
+@pytest.mark.parametrize("value", [HUGE, PAST_INT64, -HUGE], ids=["1e30", "2**63", "-1e30"])
+def test_a_huge_integer_is_refused_at_the_door_not_at_the_write(client, db, door, key, value):
+    body = _refused(DOORS[door](client, "mock", {"prompt": "x", key: value}), key)
+    assert body["detail"]["expected"], body
+    assert not _tasks(db), "a refused submission created a task"
+
+
+def test_a_refusal_does_not_echo_a_huge_number_back(client, db):
+    """`InputRefused` names the key and the bound, and repeats a value no
+    longer than it has to: three hundred digits are not a clue."""
+    body = _refused(_task(client, "mock", {"prompt": "x", "steps": 10**300}), "steps")
+    assert len(body["message"]) < 300, body["message"]
+    assert "1..1000" in body["message"], body["message"]
+
+
+def test_every_declared_number_has_a_floor_and_a_ceiling_firestore_can_store():
+    """THE RULE IS STRUCTURAL, not a habit of whoever writes the next input:
+    `RunnerInput` refuses a number declared without both bounds, and an integer
+    whose bounds leave the signed 64-bit range. This walks the catalogue so a
+    declaration that slipped past it would still be caught here."""
+    lowest, highest = -(2**63), 2**63 - 1
+    checked = 0
+    for name, profile in RUNNER_PROFILES.items():
+        for key, spec in (profile.inputs or {}).items():
+            if spec.kind not in ("number", "integer"):
+                continue
+            checked += 1
+            assert spec.minimum is not None and spec.maximum is not None, (
+                f"{name}.{key} is a {spec.kind} with no "
+                f"{'floor' if spec.minimum is None else 'ceiling'}"
+            )
+            if spec.kind == "integer":
+                assert lowest <= spec.minimum and spec.maximum <= highest, f"{name}.{key}"
+    assert checked >= len(NUMERIC_MOCK_INPUTS), f"checked {checked} numeric inputs"
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"kind": "integer", "minimum": 1},
+        {"kind": "number", "maximum": 5},
+        {"kind": "integer"},
+        {"kind": "number"},
+        {"kind": "integer", "minimum": 0, "maximum": 2**63},
+        {"kind": "integer", "minimum": -(2**63) - 1, "maximum": 0},
+    ],
+    ids=["no-ceiling", "no-floor", "integer-unbounded", "number-unbounded",
+         "ceiling-past-int64", "floor-past-int64"],
+)
+def test_the_catalogue_refuses_a_number_it_could_not_store(kwargs):
+    from swarm_common.profiles import RunnerInput
+
+    with pytest.raises(ValueError):
+        RunnerInput(**kwargs)
+
+
+#: A profile whose inputs are not declared yet has no bound to break, so the
+#: store's own limit is the only one: the API refuses what Firestore cannot
+#: encode, wherever in the input it sits.
+UNSTORABLE_UNDECLARED = {
+    "a browser viewport": ("browser", {"url": "https://example.com", "viewport_width": HUGE}),
+    "a nested generic value": (
+        "generic", {"command": "pytest", "paths": ["tests"], "extra": {"deep": [1, -PAST_INT64 - 1]}},
+    ),
+}
+
+
+@pytest.mark.parametrize("door", DOORS)
+@pytest.mark.parametrize("case", UNSTORABLE_UNDECLARED)
+def test_a_profile_not_declared_yet_refuses_an_integer_firestore_cannot_store(client, db, door, case):
+    name, input = UNSTORABLE_UNDECLARED[case]
+    response = DOORS[door](client, name, input)
+    assert response.status_code == 422, response.text
+    body = response.json()
+    assert body["detail"]["path"].startswith("input."), body
+    assert "64-bit" in body["message"], body
+    assert not _tasks(db), "a refused submission created a task"
+
+
+def test_metadata_with_an_integer_firestore_cannot_store_is_refused(client, db):
+    response = client.post(
+        "/v1/tasks", headers=auth_header("alice"),
+        json={"runner_profile": "mock", "input": {"prompt": "x"}, "metadata": {"run": {"n": HUGE}}},
+    )
+    assert response.status_code == 422, response.text
+    assert response.json()["detail"]["path"] == "metadata.run.n", response.text
+    assert not _tasks(db)
+
+
+@pytest.mark.parametrize("value", [2**63 - 1, -(2**63)], ids=["int64-max", "int64-min"])
+def test_the_edges_of_the_signed_64_bit_range_are_storable(client, value):
+    """The refusal is Firestore's range, not a guess at it: both ends are kept."""
+    response = client.post(
+        "/v1/tasks", headers=auth_header("alice"),
+        json={"runner_profile": "browser", "input": {"url": "https://example.com", "n": value}},
+    )
+    assert response.status_code == 201, response.text
 
 
 # -- what is accepted -----------------------------------------------------------------

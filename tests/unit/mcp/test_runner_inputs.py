@@ -45,7 +45,9 @@ _REPO = Path(__file__).resolve().parents[3]
 #: (invariant 10), the model the CLI runners would select, and the mock's own
 #: keys that write platform records -- spend figures, a provider's identity,
 #: a simulated credential refusal, the text and the reset time of a simulated
-#: rate limit -- and the park count the mock keeps in its own state file.
+#: rate limit -- and `attempt_count`, which the lifecycle writes from the task
+#: document and the mock bounds its park by: a count a caller could set is a
+#: bound a caller could lift.
 _NEVER = (
     "image",
     "command",
@@ -62,7 +64,7 @@ _NEVER = (
     "credential_detail",
     "quota_detail",
     "reset_at",
-    "quota_exhausted_times",
+    "attempt_count",
     "prompt",
 )
 
@@ -356,9 +358,10 @@ def test_the_park_knobs_are_declared_now_that_the_park_is_bounded():
     """Withheld by the review of PR #201 because the mock raised its rate limit
     on EVERY attempt and a park does not spend one, so a step sent
     `{"quota_exhausted": true}` re-leased and re-parked until `swarm cancel`.
-    The mock now counts its parks in its state file and parks at most once per
-    task (tests/unit/worker/test_mock_bounded_park.py proves the count survives
-    the park), so the owner declared both."""
+    The mock now parks the task's first attempt only, by the `attempt_count`
+    admission writes in the lease's own transaction
+    (tests/unit/worker/test_mock_bounded_park.py proves the bound holds even
+    when the park's checkpoint fails), so the owner declared both."""
     assert catalogue.check_inputs(
         "mock", {"quota_exhausted": True, "retry_after_seconds": 60}
     ) == {"quota_exhausted": True, "retry_after_seconds": 60}
