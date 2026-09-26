@@ -132,7 +132,7 @@ function oneUnread(): Outcomes {
  */
 function nothingRead(): Outcomes {
   const d = ledgerFixture()
-  const none = { total: 0, requested: 0, after_failure: 0, workflow_sweep: 0, other: 0 }
+  const none = { total: 0, requested: 0, after_failure: 0, after_cancel: 0, workflow_sweep: 0, other: 0 }
   const zeroClasses = Object.fromEntries(Object.keys(d.totals.failure_classes).map((k) => [k, 0])) as Outcomes['totals']['failure_classes']
   const noCost = { sum_usd: null, attempts: 0, reporting: 0 }
   d.buckets = d.buckets.map((b) => unread(b))
@@ -233,7 +233,8 @@ function bucketMarks(root: HTMLElement, i: number, key: 'wide' | 'mid' | 'narrow
 /**
  * The readout's figures, in order: rate, succeeded, failed, dead-lettered,
  * cancelled (all causes, no key), requested or other (the flat bars' key),
- * after a failure (the outline's key), submitted, finished.
+ * after a failure (the outline's key), after a cancel (the outlined bars' key,
+ * #185 decision 2), submitted, finished.
  */
 function readout(root: HTMLElement): string[] {
   return [...root.querySelectorAll('.ol-legend .ol-n')].map((n) => (n.textContent ?? '').trim())
@@ -656,7 +657,7 @@ describe('the ledger', () => {
 describe('the readout', () => {
   it('reads out the span’s totals by default, with every cancel cause and the submitted count', async () => {
     const root = await timeline()
-    expect(readout(root)).toEqual(['90.7 %', '272', '28', '0', '416', '401', '15', '730', '716'])
+    expect(readout(root)).toEqual(['90.7 %', '272', '28', '0', '416', '401', '15', '0', '730', '716'])
     const legend = root.querySelector<HTMLElement>('.ol-legend')!
     expect(legend.textContent).toContain('272 of 300 · 95 % 86.8–93.5 %')
     expect(legend.textContent).toContain('requested 401 · other 0')
@@ -671,7 +672,7 @@ describe('the readout', () => {
     const root = await timeline()
     const c = cols(root)
     fireEvent.mouseEnter(c[10]!)
-    expect(readout(root)).toEqual(['75.8 %', '25', '8', '0', '305', '297', '8', '338', '338'])
+    expect(readout(root)).toEqual(['75.8 %', '25', '8', '0', '305', '297', '8', '0', '338', '338'])
     expect(root.querySelector('.ol-at')!.textContent).toContain(DAY('2026-09-22T00:00:00+03:00'))
     expect(c[10]!.classList.contains('is-picked')).toBe(true)
     fireEvent.click(within(root.querySelector<HTMLElement>('.ol-actions')!).getByRole('button', { name: 'all' }))
@@ -712,7 +713,7 @@ describe('the readout', () => {
     const row = table.querySelectorAll('.ol-table tbody tr')[10]!
     expect(row.textContent).toContain(`${b.cancelled!.total} · ${flat} / ${outline}`)
     const head = [...table.querySelectorAll('.ol-table thead th')].map((th) => th.textContent ?? '')
-    expect(head).toContain('Cancelled · requested or other / after a failure')
+    expect(head).toContain('Cancelled · requested or other / after a failure / after a cancel')
   })
 
   it('is one tab stop, starting on the newest bucket, moved by the arrows, Home and End', async () => {
@@ -1033,9 +1034,10 @@ describe('the eight cards', () => {
     const c = card(root, /^Why tasks failed/)
     const rows = [...c.querySelectorAll('.ol-row')]
     expect(rows.map((r) => r.getAttribute('data-row'))).toEqual([
-      'runner error', 'timeout', 'lost worker', 'could not start', 'outputs missing', 'dispatch failed', 'other', 'no reason recorded',
+      'runner error', 'timeout', 'lost worker', 'could not start', 'inputs unavailable', 'outputs missing',
+      'dispatch failed', 'other', 'no reason recorded',
     ])
-    expect(rows.map((r) => r.querySelector('.ol-row-n')!.textContent)).toEqual(['1', '0', '7', '0', '6', '8', '6', '0'])
+    expect(rows.map((r) => r.querySelector('.ol-row-n')!.textContent)).toEqual(['1', '0', '7', '0', '0', '6', '8', '6', '0'])
     const timeout = rows[1]!
     expect(timeout.querySelector('.ctl-util-track.is-zero'), 'a zero class is an empty bar, not a real zero').not.toBeNull()
     expect(c.querySelector('.ctl-card-note')!.textContent).toBe('28 · by class')
@@ -1188,7 +1190,9 @@ describe('the eight cards', () => {
   it('draws a card’s mini strips in the band its bucket count needs, so the sheet can drop them where they do not fit', async () => {
     const root = await timeline(thirtyDays())
     const strips = [...card(root, /^Why tasks failed/).querySelectorAll('.ol-strip')]
-    expect(strips).toHaveLength(8)
+    // One per class in the route's vocabulary: nine since "inputs unavailable" (#185, decision 4).
+    expect(strips).toHaveLength(ledgerFixture().vocab.failure_classes.length)
+    expect(strips).toHaveLength(9)
     for (const s of strips) {
       expect(s.classList.contains('is-n31'), `a 30-bucket strip is not in the ≤31 band: ${s.getAttribute('class')}`).toBe(true)
       expect(Number(s.getAttribute('width'))).toBe(30 * 6)
@@ -1204,8 +1208,10 @@ describe('the eight cards', () => {
     const root = await timeline()
     const c = card(root, /^Why tasks were cancelled/)
     const rows = [...c.querySelectorAll('.ol-row')]
-    expect(rows.map((r) => r.getAttribute('data-row'))).toEqual(['requested', 'after a failure', 'workflow sweep', 'other'])
-    expect(rows.map((r) => r.querySelector('.ol-row-n')!.textContent)).toEqual(['401', '12', '3', '0'])
+    expect(rows.map((r) => r.getAttribute('data-row'))).toEqual([
+      'requested', 'after a failure', 'after a cancel', 'workflow sweep', 'other',
+    ])
+    expect(rows.map((r) => r.querySelector('.ol-row-n')!.textContent)).toEqual(['401', '12', '0', '3', '0'])
   })
 })
 

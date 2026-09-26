@@ -267,7 +267,7 @@ export function LedgerTable({ data }: { data: Outcomes }) {
             <th scope="col" className="is-num">Failed</th>
             <th scope="col" className="is-num">Dead-lettered</th>
             <th scope="col" className="is-num">Rate · k of n · 95 %</th>
-            <th scope="col" className="is-num">Cancelled · requested or other / after a failure</th>
+            <th scope="col" className="is-num">Cancelled · requested or other / after a failure / after a cancel</th>
             {/* The one column on the submission-time basis says so, in the
                 route's word, as the throughput lane's label does. */}
             <th scope="col" className="is-num">Submitted · by {data.basis.submitted}</th>
@@ -302,9 +302,11 @@ export function LedgerTable({ data }: { data: Outcomes }) {
                     )}
                   </td>
                   <td className="is-num">
-                    {/* The same two sums lane 3 draws: the flat bars and the outline. */}
+                    {/* The same three sums lane 3 draws: the flat bars, the outline,
+                        and the outlined bars. */}
                     {b.cancelled?.total} · {(b.cancelled?.requested ?? 0) + (b.cancelled?.other ?? 0)} /{' '}
-                    {(b.cancelled?.after_failure ?? 0) + (b.cancelled?.workflow_sweep ?? 0)}
+                    {(b.cancelled?.after_failure ?? 0) + (b.cancelled?.workflow_sweep ?? 0)} /{' '}
+                    {b.cancelled?.after_cancel ?? 0}
                   </td>
                   <td className="is-num">{b.submitted}</td>
                   <td className="is-num">{b.ended}</td>
@@ -384,8 +386,10 @@ export function WorkflowsFailedCard({
   const classLabel = new Map(data.vocab.failure_classes.map((c) => [c.key, c.label]))
   const cov = spanCoverage(data)
   // The kind filter is a fact about the view, not a measurement, so it is
-  // checked before coverage: no step can be in a standalone-only view.
-  if (!w.applicable) {
+  // checked before coverage: no step can be in a standalone-only view. The
+  // route sends the counts as null then, never 0 (a count nobody made), and
+  // only then -- the second half narrows them for the card below.
+  if (!w.applicable || w.with_failed_steps === null || w.with_ended_steps === null || w.rows_total === null) {
     return (
       <Card title="Workflows that failed, and where" className="is-wide ol-workflows">
         <Absent
@@ -1081,6 +1085,15 @@ export function OpenWorkCard({
   const s = open.stats
   const counts = s?.status === 'ok' ? (platform ? s.data.platform_tasks_by_state : s.data.tasks_by_state) : undefined
   const n = (state: string) => counts?.[state] ?? 0
+  // PARK REASONS ARE ALWAYS THE CALLER'S OWN TENANT'S (#185, decision 8).
+  // `GET /v1/tasks`, which lists the parked tasks, is tenant-scoped, so in
+  // platform scope the counts above are every tenant's and the reasons below
+  // are one tenant's. The card says so wherever a reason -- or the absence of
+  // one -- is drawn, and a "reasons for k of n" counts n in that tenant, not
+  // over the platform (it read `platform_tasks_by_state` until 2026-09-25, so
+  // "reasons for 50 of 120" set one tenant's list against every tenant's).
+  const ownParked = s?.status === 'ok' ? s.data.tasks_by_state?.PARKED : undefined
+  const reasonScope = platform ? `park reasons: ${tenant === null ? 'your tenant' : `tenant ${tenant}`} only` : null
   const running = [...CONCURRENCY_STATES].reduce((sum, st) => sum + n(st), 0)
   const parkedTasks = open.parked?.status === 'ok' ? open.parked.data.tasks : open.parked?.status === 'empty' ? [] : null
   const reasons = new Map<string, number>()
@@ -1138,11 +1151,15 @@ export function OpenWorkCard({
           )}
           {more && (
             <p className="ol-line">
-              <Mark kind="partial" say={`Reasons are counted over the first ${parkedTasks.length} parked tasks; more exist.`} /> reasons for {parkedTasks.length} of {counts === undefined ? 'more' : n('PARKED')}
+              <Mark kind="partial" say={`Reasons are counted over the first ${parkedTasks.length} parked tasks; more exist.`} /> reasons for {parkedTasks.length} of {ownParked === undefined ? 'more' : ownParked}
             </p>
           )}
-          {platform && tenant !== null && <p className="ol-line ol-q">park reasons: tenant {tenant} only</p>}
+          {reasonScope !== null && <p className="ol-line ol-q ol-reason-scope">{reasonScope}</p>}
         </>
+      ) : reasonScope !== null ? (
+        // Nothing parked IN THIS TENANT, which is not "nothing parked": the
+        // platform count above may be more than zero.
+        <p className="ol-line ol-q ol-reason-scope">{reasonScope} · none parked there</p>
       ) : null}
       <p className="ol-line">
         <a className="ctl-link" href={WAITING_HREF}>

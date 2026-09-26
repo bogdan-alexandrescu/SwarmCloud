@@ -168,6 +168,62 @@ class Lease:
 # Tasks
 # --------------------------------------------------------------------------
 
+class EndCause(str, Enum):
+    """Why a task reached a FAILED or CANCELLED state, written by the writer that ended it.
+
+    Contract request 23, ACCEPTED by the owner on 2026-09-25 (#185, the
+    decisions comment, item 9). Until this existed the outcome ledger
+    (`swarm_api.outcomes`) read `last_error` -- free text from four writers the
+    API image does not carry -- and sorted it into classes by prefix. One case
+    was not recoverable from the text at all: "an upstream workflow step did
+    not succeed" is written after a FAILED parent and after a CANCELLED one,
+    so a cancel somebody pressed read the same as a failure.
+
+    Each value is written by exactly one kind of writer, beside `completed_at`:
+
+      * the worker (`agent_worker.control`): TIMEOUT, OUTPUTS_MISSING,
+        INPUTS_UNAVAILABLE, CANNOT_START, RUNNER_ERROR, CANCEL_REQUESTED;
+      * the reconciler (`repair_task_state`): LOST_WORKER, CANNOT_START,
+        CANCEL_REQUESTED;
+      * the scheduler: DISPATCH_FAILED, FAILED_PARENT, CANCELLED_PARENT,
+        WORKFLOW_SWEEP, CANCEL_REQUESTED;
+      * the API's cancel: CANCEL_REQUESTED.
+
+    SUCCEEDED carries None: nothing about a success needs a cause. So does a
+    task that ended before this field existed, and one a writer ended for a
+    reason with no value here (the worker's "runner stopped on SIGTERM"
+    without a requested cancel); the ledger falls back to its text classifier
+    for exactly those, never for a task that carries a cause.
+
+    FAILED_PARENT and CANCELLED_PARENT are decided by each parent's OWN END,
+    not its state: a CANCELLED parent that is itself a failure's cascade (or
+    was taken by the workflow sweep) passes a failure down, so a failure's
+    cascade stays FAILED_PARENT however many steps down it reaches (the review
+    of PR #217). A cascade below a parent cancelled before this field existed,
+    with no cancel flag, is written with None: the scheduler cannot name that
+    parent's end, and the ledger splits the step by its chain of parents.
+
+    INPUTS_UNAVAILABLE was not in the request as filed. It is the owner's
+    decision item 4 on the same comment: the worker refusing to stage a
+    declared `input_from` artifact (`agent_worker.errors.InputUnavailable`) is
+    its own class, not a runner error -- 10 of dev's 13 "runner errors" on
+    2026-09-25 were exactly that. CANCELLED_PARENT is the request's own, and
+    what decision item 2 (split "after a cancel" from "after a failure") needs.
+    """
+
+    TIMEOUT = "timeout"
+    CANNOT_START = "cannot_start"
+    LOST_WORKER = "lost_worker"
+    OUTPUTS_MISSING = "outputs_missing"
+    INPUTS_UNAVAILABLE = "inputs_unavailable"
+    DISPATCH_FAILED = "dispatch_failed"
+    RUNNER_ERROR = "runner_error"
+    CANCEL_REQUESTED = "cancel_requested"
+    FAILED_PARENT = "failed_parent"
+    CANCELLED_PARENT = "cancelled_parent"
+    WORKFLOW_SWEEP = "workflow_sweep"
+
+
 @dataclass
 class Task:
     id: str
@@ -203,6 +259,10 @@ class Task:
     last_error: str | None = None
     result_summary: dict[str, Any] | None = None
     latest_checkpoint: str | None = None
+    #: Why the task ended, typed. See `EndCause` (contract request 23). None on
+    #: every task that has not ended, on a success, and on anything written
+    #: before 2026-09-25 -- an old document decodes exactly as it did.
+    end_cause: EndCause | None = None
 
     def retries_exhausted(self) -> bool:
         """This task has used its last attempt. See `retries_exhausted`."""
@@ -212,6 +272,9 @@ class Task:
         d = asdict(self)
         d["state"] = self.state.value
         d["park_reason"] = self.park_reason.value if self.park_reason else None
+        d["end_cause"] = (
+            self.end_cause.value if isinstance(self.end_cause, EndCause) else self.end_cause
+        )
         return d
 
 

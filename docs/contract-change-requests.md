@@ -35,8 +35,8 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 20 | `models.py`: `Workflow.on_step_failure` is a bare `str`, and its vocabulary is stated four times | open |
 | 21 | `states.py`: the worker's exit codes have no shared home, and the reconciler now acts on one | open |
 | 22 | `profiles.py`: whether a runner profile can run on a pool account is stated by the worker and restated by the scheduler | open |
-| 23 | `models.py`: a task's end has no typed cause, so the outcome ledger classifies `last_error` text | open |
-| 24 | `profiles.py`: whether a profile's cost is declared rather than measured is named outside the catalogue | open |
+| 23 | `models.py`: a task's end has no typed cause, so the outcome ledger classifies `last_error` text | ACCEPTED 2026-09-25 (#185, decision 9), applied in PR #217 |
+| 24 | `profiles.py`: whether a profile's cost is declared rather than measured is named outside the catalogue | ACCEPTED 2026-09-25 (#185, decision 9), applied in PR #217 |
 | 25 | `profiles.py`: a runner profile cannot declare the inputs a caller may send it, so the bridge names the mock's by profile | open |
 | 26 | `models.py`: the attempt's CPU figures carry no time and their limit no source | open |
 
@@ -2294,9 +2294,65 @@ have to restate the name again and would need its own parity test.
 
 ## 23. `models.py`: a task's end has no typed cause, so the outcome ledger classifies `last_error` text
 
-**Status:** open, recorded 2026-09-25 by the lane that built `GET /v1/outcomes`
-(branch `lane/outcomes-api`, #185). If another branch has taken 23 by the time
-this merges, renumber this one.
+**Status: ACCEPTED — accepted by the owner on 2026-09-25, in the decisions
+comment on #185 (item 9: "Contract requests 23 ... and 24 ... are accepted") —
+and applied in PR #217.** This edits `apps/common/swarm_common/models.py`,
+which is frozen, and is recorded here as such. Recorded 2026-09-25 by the lane
+that built `GET /v1/outcomes` (branch `lane/outcomes-api`, #185).
+
+### What was applied
+
+* `EndCause(str, Enum)` in `models.py`, beside `Task`, with the request's ten
+  values and ONE MORE, `INPUTS_UNAVAILABLE = "inputs_unavailable"`. It is the
+  same comment's item 4: the worker refusing to stage a declared input
+  (`agent_worker.errors.InputUnavailable`) is its own class, and a typed cause
+  that could not say so would have sent those tasks back to the text. 10 of
+  dev's 13 "runner errors" on 2026-09-25 were exactly that.
+  `CANCELLED_PARENT` is kept as requested: it is what item 2 (split "after a
+  cancel" from "after a failure") needs a writer to say.
+* `Task.end_cause: EndCause | None = None`, written by `to_firestore` as its
+  string value. None on a success, on every task that has not ended, and on
+  every document written before this change.
+* Every terminal writer records it beside `completed_at`, deciding it where the
+  terminal state is decided:
+  * the worker (`control.finish`, `control.fail_retryably`; the lifecycle
+    passes TIMEOUT, OUTPUTS_MISSING, INPUTS_UNAVAILABLE, CANNOT_START for a
+    78, RUNNER_ERROR, or CANCEL_REQUESTED). `finish` writes the field on EVERY
+    terminal state, None included; "runner stopped on SIGTERM" without a
+    requested cancel is the one end no value names, and carries None;
+  * the reconciler (`ControlStore.repair_task_state`, inside its transaction):
+    CANCEL_REQUESTED when the flag picks CANCELLED, else `failed_cause` --
+    CANNOT_START for an exit-78 finding, LOST_WORKER for a requeue downgraded
+    on spent attempts;
+  * the scheduler: `return_to_ready_after_failed_dispatch` (DISPATCH_FAILED, or
+    CANCEL_REQUESTED), `cancel` (a REQUIRED keyword: CANCEL_REQUESTED, or
+    FAILED_PARENT / CANCELLED_PARENT by `loop._parent_cause` from each
+    parent's OWN END -- a CANCELLED parent that is a failure's cascade or was
+    swept passes a failure down, and a failure wins -- or, for a parent
+    cancelled before the field existed with no flag, None, which the ledger
+    splits by the chain) and `cancel_if_not_started` (WORKFLOW_SWEEP);
+  * the API's cancel, only when that write ends the task (a pending task): a
+    flag on a task holding capacity ends nothing and records nothing.
+* `swarm_api.outcomes` reads `end_cause` first and falls back to its text
+  classifier only for a task without one. `DERIVE_VERSION` and
+  `CLASSIFIER_VERSION` went 1 -> 2, and a stored day is re-derived when EITHER
+  differs (the classifier's version had been written and never read).
+* **Corrected in review, before release (the review of #217):** the cascade
+  split first read only the direct parents' STATES, in both the scheduler and
+  the ledger's fallback. The dependency rule is transitive, so every step two
+  or more hops below a FAILED one was "after a cancel" nobody made. Both now
+  read each parent's own end, and the ledger follows untyped cascades up the
+  chain (`outcomes._read_cascade_ancestors`).
+
+### Proved by
+
+`tests/unit/control_plane/test_outcomes_end_cause.py` (the enum, the field, the
+classifier, the split, the versions), `tests/unit/control_plane/
+test_end_cause_writers.py` (scheduler and API), `tests/unit/worker/
+test_end_cause_worker.py` and `tests/unit/worker/test_end_cause_reconciler.py`,
+each pushed red before the change (PR #217 names the runs).
+
+The request as it was filed follows, unchanged.
 
 ### What is true today
 
@@ -2367,9 +2423,27 @@ the recommended option on #185's open question.
 
 ## 24. `profiles.py`: whether a profile's cost is declared rather than measured is named outside the catalogue
 
-**Status:** open, recorded 2026-09-25 by the lane that built `GET /v1/outcomes`
-(branch `lane/outcomes-api`, #185). If another branch has taken 24 by the time
-this merges, renumber this one.
+**Status: ACCEPTED — accepted by the owner on 2026-09-25, in the decisions
+comment on #185 (item 9) — and applied in PR #217.** This edits
+`apps/common/swarm_common/profiles.py`, which is frozen, and is recorded here as
+such. Recorded 2026-09-25 by the lane that built `GET /v1/outcomes` (branch
+`lane/outcomes-api`, #185).
+
+### What was applied
+
+* `RunnerProfile.cost_declared: bool = False`, set True on `mock`, exactly as
+  requested.
+* `swarm_api.outcomes.DECLARED_COST_PROFILES` is derived from the catalogue;
+  the module names no profile. `tests/unit/control_plane/
+  test_outcomes_end_cause.py` holds both, and that the source names none.
+* NOT served on `/v1/runtimes`, and NOT added to the UI's `RunnerProfile`: the
+  UI reads the declared set from `GET /v1/outcomes` (`groups.rows[].declared_cost`
+  and `totals.cost.declared.profiles`), so it has no copy to follow. The
+  catalogue mirror in `types.ts` is not field-for-field (it carries neither
+  `secrets_any_of` nor `supports_checkpoint`), so the "would gain a field to
+  follow" below did not arise.
+
+The request as it was filed follows, unchanged.
 
 ### What is true today
 
