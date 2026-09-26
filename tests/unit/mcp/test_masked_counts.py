@@ -127,7 +127,9 @@ def test_result_says_masked_n_and_what_it_was_in(swarm, db, capsys):
     cli.cmd_result(swarm, argparse.Namespace(task_id=task_id, json=False))
     printed = capsys.readouterr().out
     assert BARE not in printed and OPENAI not in printed
-    line = next((ln for ln in printed.splitlines() if "masked" in ln), None)
+    # The line that STARTS with the words: the task id above it spells
+    # `...masked` too, which a bare `in` matched on the first run.
+    line = next((ln for ln in printed.splitlines() if ln.strip().startswith("masked ")), None)
     assert line is not None, printed
     assert line.strip() == "masked 3  (input 2 · metadata 1)", line
 
