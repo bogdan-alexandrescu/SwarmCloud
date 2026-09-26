@@ -1233,13 +1233,19 @@ with this stylesheet on a nine-column copy of the Workflows Table (2026-09-26):
   offset does not reproduce it.
 - In the same measurement, a fill the row group paints itself as one rectangle
   — `box-shadow: inset 0 0 0 100vmax var(--surface-2)` on `thead` — seamed at
-  0 of 8, alone or over the `thead` background. Adopting it changes the decided
-  treatment; it has not been adopted. Firefox and Safari were not checked.
+  0 of 8, alone or over the `thead` background. Firefox and Safari were not
+  checked.
 
-The fill stays on `thead` because that is the placement decided for #178, and
-#178 stays open. `.ctl-table thead` and `table.pools thead` carry
-`background: var(--surface-2)`, and no head cell declares a fill of its own
-except the held corner.
+**So `thead` paints its fill twice, and one of the two is one rectangle**
+(#178). `.ctl-table thead` and `table.pools thead` carry
+`background: var(--surface-2)` and
+`box-shadow: inset 0 0 0 100vmax var(--surface-2)`. The shadow is what
+Chrome paints once for the whole row group, so a pixel the cell fills leave
+partly uncovered still holds `--surface-2`. The background stays so that an
+engine which does not paint a row group's shadow draws exactly what it drew
+before. Without a transform the head is pixel-identical to the background
+alone, except the anti-aliased pixels of the wrapper's two rounded top
+corners. No head cell declares a fill of its own except the held corner.
 
 That exception is the held corner of a scrolling table below 900px (§7.3). It
 is sticky, and the other head cells scroll under it. If it had no fill of its
@@ -1252,9 +1258,10 @@ paints nothing: the held rules name the head's first row (§7.3).
 1440 and 390: `thead` resolves to `--surface-2`, and `--surface-2` is a
 different step from the panel's `--surface`. No head cell declares a fill
 except the held corner — a grouped head is in the fixture — and no rule
-anywhere in the sheet gives a `thead th` one. If a per-cell fill comes back,
-the test goes red. It holds where the fill is declared, not whether a seam
-shows: jsdom has no layout.
+anywhere in the sheet gives a `thead th` one. `thead` carries the inset
+shadow in the fill's colour. If a per-cell fill comes back or the shadow
+goes, the test goes red. It holds what is declared, not whether a seam
+shows: jsdom has no layout, and the 1440 screenshots on dev are the check.
 
 Row tones are a **wash plus a form**, never a text colour: `.is-bad` a
 full-height 3px rule on the first cell, `.is-warn` a half-height one, `.is-paused`

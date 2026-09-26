@@ -2753,8 +2753,12 @@ table.pools th, table.pools td {
    the 1px seam at fractional column edges: Chrome paints a row group's
    background into each cell's rect, the same geometry as a per-cell fill.
    No head cell but the held corner below 900px declares a background;
-   shell.test.tsx holds that. */
-table.pools thead { background: var(--surface-2); }
+   shell.test.tsx holds that. The inset shadow is the one-rectangle fill
+   `.ctl-table thead` explains. */
+table.pools thead {
+  background: var(--surface-2);
+  box-shadow: inset 0 0 0 100vmax var(--surface-2);
+}
 table.pools thead th {
   border-bottom: 1px solid var(--line-soft);
   font: 600 var(--t-meta)/var(--lh-meta) var(--mono);
@@ -7009,12 +7013,26 @@ a.ctl-metric:focus-visible { outline: 2px solid var(--info); outline-offset: 2px
    sheet: the two render pixel-identically, and under a 0.37px translate --
    the only way the seam has been reproduced off dev -- both seam at 8 of 8
    column edges. What puts dev on that anti-aliased path is not identified.
-   #178 stays open; the placement stays because it is the one decided.
+   SO THE ROW GROUP ALSO PAINTS ITS FILL AS ONE RECTANGLE (#178): an
+   inset `box-shadow` of the same `--surface-2`, spread past any head's
+   size (100vmax) and clipped to `thead`'s own box. Chrome paints a row
+   group's shadow once, as one rectangle for the whole group, so at a
+   fractional edge the pixel the two cell fills leave partly uncovered
+   still holds `--surface-2`, and no ground shows. Measured in the same
+   setup: 0 of 8 edges seam, in both themes. Without a transform the head
+   is pixel-identical to the background alone except the anti-aliased
+   pixels of the wrapper's two rounded top corners, which two layers of
+   one fill cover a little more. The background stays: an engine that
+   does not paint a row group's shadow still gets the fill, and draws
+   exactly what it drew before. Firefox and Safari were not checked.
    No head cell declares a background of its own -- shell.test.tsx holds that,
    in both themes -- except the held corner below 900px (CH-13, further down),
    which is sticky with the head cells scrolling under it and has to paint the
    same `--surface-2` itself or their labels show through it. */
-.ctl-table thead { background: var(--surface-2); }
+.ctl-table thead {
+  background: var(--surface-2);
+  box-shadow: inset 0 0 0 100vmax var(--surface-2);
+}
 .ctl-table thead th {
   border-bottom: 1px solid var(--line-soft);
   font: 600 var(--t-meta)/var(--lh-meta) var(--mono);

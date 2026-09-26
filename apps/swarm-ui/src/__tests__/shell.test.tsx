@@ -1164,7 +1164,13 @@ describe('the overflow inventory, as rules that cannot be quietly dropped', () =
    * 153.0.8010.53 at 2x with this sheet: the two render pixel-identically, and
    * under a 0.37px translate -- the only way the seam has been reproduced off
    * dev -- both seam at 8 of 8 column edges. What makes dev paint the cells on
-   * that path is not identified. #178 stays open.
+   * that path is not identified.
+   *
+   * SO `thead` ALSO PAINTS ITS FILL AS ONE RECTANGLE: an inset `box-shadow`
+   * of the same `--surface-2`, which Chrome paints once for the whole row
+   * group. In the same measurement it seamed at 0 of 8 edges, in both
+   * themes. The background stays under it for an engine that does not
+   * paint a row group's shadow. The second case below holds the shadow.
    *
    * WHAT THIS HOLDS is the decided placement, so it is not undone without a
    * decision: `thead` carries `--surface-2`, and no head cell paints a fill of
@@ -1239,6 +1245,32 @@ describe('the overflow inventory, as rules that cannot be quietly dropped', () =
                 won(thead, FILL, { width, theme }),
                 `${theme} at ${width}: \`${thead.closest('table')!.className || '.ctl-table > table'} thead\` does not carry the head's fill`,
               ).toBe('var(--surface-2)')
+              asked += 1
+            }
+          }
+        }
+        expect(asked).toBe(THEMES.length * WIDTHS.length * 3)
+      } finally {
+        host.remove()
+      }
+    })
+
+    // MUTATION: drop the inset shadow from `.ctl-table thead` or
+    // `table.pools thead`, give it another colour than the fill's, or make it
+    // an outer shadow (which paints outside the head, not in it).
+    it('paints the head fill as one rectangle too: an inset --surface-2 shadow on thead', () => {
+      const host = heads()
+      try {
+        let asked = 0
+        for (const theme of THEMES) {
+          for (const width of WIDTHS) {
+            for (const thead of host.querySelectorAll('thead')) {
+              const v = won(thead, 'box-shadow', { width, theme })
+              expect(
+                v,
+                `${theme} at ${width}: \`${thead.closest('table')!.className || '.ctl-table > table'} thead\` ` +
+                  'has no one-rectangle fill, so its cells seam at fractional edges',
+              ).toMatch(/^inset\s+0\s+0\s+0\s+100vmax\s+var\(--surface-2\)$/)
               asked += 1
             }
           }
