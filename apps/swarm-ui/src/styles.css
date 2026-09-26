@@ -1652,7 +1652,12 @@ body {
 .wf-state.wait { color: var(--warn-ink); }
 .wf-state.unknown { color: var(--text-faint); }
 
-.wf-progress { display: flex; align-items: center; gap: var(--ctl-s2); min-width: 0; }
+/* `overflow: hidden` BOUNDS THE CELL AT ITS OWN TRACK (#222). `min-width: 0`
+   lets the `[progress]` track, not the sentence, decide the cell's width; the
+   clip then guarantees nothing inside it -- the census sentence or the 54px
+   meter -- paints into `[shape]`, at any width, whatever the template gives
+   the track. `.wf-progress-text` below is what gives way first. */
+.wf-progress { display: flex; align-items: center; gap: var(--ctl-s2); min-width: 0; overflow: hidden; }
 /* A FILLED METER IS A CLAIM THAT THE NUMBERS BEHIND IT ARE A CENSUS. When the
    server reports an incomplete rollup, `.wf-meter-fill` IS NOT RENDERED -- the
    React branch does not draw it -- because a two-thirds-full bar over a failed
@@ -1706,17 +1711,30 @@ body {
 .wf-meter > .wf-seg.dead-lettered { min-width: 4px; }
 .wf-progress-text {
   font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim);
-  /* THE TEXT DOES NOT GIVE WAY; THE ROW DOES. The grid column was never the
-     constraint -- it was wide enough. Inside it this is a flex item with no
-     basis beside a `flex: none` 54px meter, so it absorbed every pixel of
-     pressure and ellipsed "1/5 done · 1 not started" to "1/5 done · 1 not st…".
-     What the ellipsis removed was the count of what has NOT started, which is
-     the half of the sentence the row is scanned for.
-     `flex: 0 0 auto` makes the sentence incompressible; if something must give
-     it is the shape and mix columns, which are `fr` and degrade meaningfully.
-     `text-overflow` stays as the last resort for a string nobody anticipated,
-     but it is no longer reached by the strings we know about. */
-  flex: 0 0 auto;
+  /* THE SENTENCE GIVES WAY, AND SAYS SO WHERE IT IS CUT (#222). This was
+     `flex: 0 0 auto`, on the argument that the grid column was wide enough
+     and that the shape and mix columns, being `fr`, would give way instead if
+     anything had to. They cannot: every `.wf-bar` is its own grid, and a grid
+     does not widen a track for an item that overflows it -- the item paints
+     over the next track. On dev at release 350c244, at 1440, "10/30 done · 1
+     failed · 19 cancelled" (36 characters of 12px mono, about 260px) painted
+     over the stage shape beside it: `[progress]` is `minmax(24ch, 1.2fr)`,
+     24ch of the row's own 13px sans, and the 54px meter and its gap take 62px
+     of that. The ellipsis here never fired, because a box as wide as its
+     content has nothing to cut.
+
+     So the text shrinks (`flex: 0 1 auto` with `min-width: 0`) and ends in an
+     ellipsis on one line -- §6.8: a row's cells do not wrap, which is what
+     keeps its height constant -- and `.wf-progress` clips at its track. The
+     whole sentence is in the text's `title` (Workflows.tsx `Progress`), and
+     the meter's accessible name gives the same counts in words. THE COST IS
+     THE ONE THE OLD RULE ARGUED AGAINST: a long census is cut at 1440, and
+     what goes is its tail, where "N not started" sits. Giving `[progress]`
+     enough room for the common sentences is a change to `.wf-bar`'s template,
+     not to this rule. workflow.board.test.tsx holds the containment at every
+     width the sentence is drawn. */
+  flex: 0 1 auto;
+  min-width: 0;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 /* NO STRIKE-THROUGH. Struck text says "this figure is wrong"; what an
@@ -2716,9 +2734,14 @@ table.pools th, table.pools td {
    is `overflow-x: auto` -- so the wrapper is the head's scroll container on
    both axes, and no wrapper ever scrolls vertically. What the declaration did
    do was make every head cell a layer of its own. `.ctl-table thead th` carries
-   the same note. */
+   the same note.
+
+   THE FILL IS ON `thead`, PAINTED ONCE (WF-21, #178), for the reason
+   `.ctl-table thead` gives: a fill on each `th` meets its neighbour's at every
+   column edge, and at a fractional edge the ground shows through as a 1px
+   seam. No `thead th` rule declares a background; shell.test.tsx holds that. */
+table.pools thead { background: var(--surface-2); }
 table.pools thead th {
-  background: var(--surface-2);
   border-bottom: 1px solid var(--line-soft);
   font: 600 var(--t-meta)/var(--lh-meta) var(--mono);
   color: var(--text-faint);
@@ -6952,15 +6975,27 @@ a.ctl-metric:focus-visible { outline: 2px solid var(--info); outline-offset: 2px
    which makes the table's own wrapper the head's scroll container on BOTH
    axes, and that wrapper never scrolls vertically -- so the head never stuck
    to anything. What the declaration did do was draw every head cell as a
-   positioned layer of its own, which is the likely source of the faint
-   vertical seams the Workflows Table showed at fractional column edges
-   (runner|waited, waited|ran, attempts|cost, cost|tokens). Below 899px the
-   stacked tables hide the head anyway. Not verified rendered: the next release
-   has to be looked at at 1440, light and dark, and if a seam survives, the fill
-   moves from each `th` to `thead` once. shell.test.tsx holds that no head is
-   sticky, and that any positioned cell still ranks under the drawer's band. */
+   positioned layer of its own. Below 899px the stacked tables hide the head
+   anyway. shell.test.tsx holds that no head is sticky, and that any positioned
+   cell still ranks under the drawer's band.
+
+   THE FILL IS ON `thead`, PAINTED ONCE (WF-21, #178). Taking the stickiness
+   off was not enough: checked on dev at release 350c244 (2026-09-26), the
+   Workflows Table's head still showed a 1px line of ground at four fractional
+   column edges -- runner|waited at x=592.391, waited|ran 671.398,
+   attempts|cost 883.594, cost|tokens 1033.648 -- in light and in dark, and
+   none at the edges that sit on whole pixels. Each `th` painted its own
+   `--surface-2`, so two fills met at every column edge, and where that edge
+   falls inside a device pixel neither fill covers the pixel whole and the
+   ground shows through. `thead` is one box: the head's fill has no internal
+   edge to seam at. So no `thead th` rule declares a background -- shell.test.tsx
+   holds that, in both themes -- with ONE exception: the held corner below
+   900px (CH-13, further down), which is sticky with the head cells scrolling
+   under it, and has to paint the same `--surface-2` itself or their labels
+   show through it. Not verified rendered: whether the seams are gone is for
+   the 1440 screenshots on dev after the release that carries this. */
+.ctl-table thead { background: var(--surface-2); }
 .ctl-table thead th {
-  background: var(--surface-2);
   border-bottom: 1px solid var(--line-soft);
   font: 600 var(--t-meta)/var(--lh-meta) var(--mono);
   color: var(--text-faint);
@@ -10018,10 +10053,26 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
    sticky cell wider than the scrollport covers it at every offset: the other
    columns scrolled underneath and were never visible at all. So the cell has a
    WIDTH, not only a max-width (a max-width on a table cell is ignored by more
-   than one engine, and a wrapping cell with no width is squeezed to one
-   character when the table overflows), and it wraps -- at spaces, and at any
-   character for an id with none. A raw-id line under the name that is a
-   locator rather than a name ellipsizes instead (API reads, below).
+   than one engine), and it wraps -- at spaces, and at any character for an id
+   with none. A raw-id line under the name that is a locator rather than a name
+   ellipsizes instead (API reads, below).
+
+   AND THE CEILING IS ALSO THE FLOOR: `min-width` is the same value (#222).
+   The width alone did not hold the column. Measured on dev at release
+   350c244, 390x844: the held column of Runtimes, Tenants and the Timeline's
+   three tables resolved to 24-29px -- the cell's padding and ONE character --
+   and printed every name one character per line. In automatic table layout a
+   cell's `width` counts only toward its column's MAX-content width; the
+   column's MIN-content width is built from each cell's `max(min-width,
+   min-content width)` (CSS Tables 3). Those tables are `width: 100%` of the
+   scrollport and their other cells are nowrap, so their columns' min-content
+   widths add up to more than the phone: a table cannot be narrower than that,
+   so it is laid out AT it, every column at its min-content width, and a cell
+   that may break between any two characters is one character wide. Pools and
+   Profile headroom never showed it because their tables are `max-content`
+   below 900px (further down), which hands every column its max-content width.
+   A `min-width` enters the min-content width, so the column holds its 20ch
+   either way. tables.held.test.tsx renders the five tables that showed it.
 
    A CELL THAT SPANS THE ROW IS NOT THE HELD COLUMN (`:not([colspan])`): an
    expanded account's detail is one cell across all five columns, and held it
@@ -10035,12 +10086,16 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
     z-index: 1;
     background-color: var(--surface);
     width: min(45vw, 20ch);
+    min-width: min(45vw, 20ch);
     max-width: min(45vw, 20ch);
     white-space: normal;
     overflow-wrap: anywhere;
   }
-  /* The corner cell is sticky both ways: the head's own `top: 0` and this
-     `left: 0`. It paints over both the held column and the head row. */
+  /* The corner cell is held at `left: 0` and paints over both the held column
+     and the head row. IT IS THE ONE HEAD CELL THAT PAINTS ITS OWN FILL (WF-21,
+     #178 moved every other head fill to `thead`): the head cells scroll under
+     it, and a see-through sticky cell shows their labels through the name's
+     head. The same `--surface-2` as `thead`, so no step shows beside it. */
   .is-scroll > table > thead > tr > th:first-child {
     z-index: 2;
     background-color: var(--surface-2);
@@ -10052,11 +10107,14 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
      `rowspan`, so the first cell of the second row is a figure's head from
      the middle of the table. Held, `Max active` sat at the left edge over the
      Tenant head at every scroll offset. It scrolls with its column; the fill
-     stays the head's `--surface-2` from the corner rule above. */
+     stays the head's `--surface-2` from the corner rule above. It takes no
+     floor either: at 20ch `Max active` would widen the Configured group for
+     nothing. */
   .is-scroll > table > thead > tr + tr > th:first-child {
     position: static;
     z-index: auto;
     width: auto;
+    min-width: 0;
     max-width: none;
     white-space: nowrap;
     overflow-wrap: normal;

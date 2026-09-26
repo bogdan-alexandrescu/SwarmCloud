@@ -1148,13 +1148,20 @@ export function dotClass(header: { tone: Tone | 'unknown'; derived: boolean }): 
  * axis, because there is no scale to start (design-system.md §6.4). That mark
  * survives every breakpoint, survives greyscale, and cannot be mistaken for a
  * 0% bar because a 0% bar has an axis tick and this has none.
+ *
+ * THE SENTENCE CARRIES ITSELF IN ITS `title` (#222). `.wf-progress-text` is
+ * contained in its column now and ends in an ellipsis where the column is
+ * narrower than the census -- "10/30 done · 1 failed · 19 cancelled" is about
+ * 260px, and at 1440 the column leaves it about half that -- so the whole
+ * sentence is on the element that was cut (design-system.md §7.3: cut on
+ * screen, whole on hover).
  */
 function Progress({ roll }: { roll: Rollup }) {
   if (!roll.trustworthy) {
     return (
       <span className="wf-progress untrusted">
         <span className="ctl-track wf-meter is-unknown" role="img" aria-label={roll.why} />
-        <span className="wf-progress-text">{roll.text}</span>
+        <span className="wf-progress-text" title={roll.text}>{roll.text}</span>
       </span>
     )
   }
@@ -1179,7 +1186,7 @@ function Progress({ roll }: { roll: Rollup }) {
             />
           ))}
         </span>
-        <span className="wf-progress-text">{roll.text}</span>
+        <span className="wf-progress-text" title={roll.text}>{roll.text}</span>
       </span>
     )
   }
@@ -1189,7 +1196,7 @@ function Progress({ roll }: { roll: Rollup }) {
       <span className="ctl-track wf-meter" role="img" aria-label={roll.why} title={roll.text}>
         <span className="ctl-util-fill wf-meter-fill" style={{ width: `${pct}%` }} />
       </span>
-      <span className="wf-progress-text">{roll.text}</span>
+      <span className="wf-progress-text" title={roll.text}>{roll.text}</span>
     </span>
   )
 }
