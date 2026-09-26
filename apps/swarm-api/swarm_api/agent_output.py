@@ -423,6 +423,10 @@ class AgentOutputService:
         """
         ins = self._ins
         task, _prefix = ins._scoped(tenant_id, task_id)
+        # The task's own masker (the PR #229 fix-up): a value only its input
+        # or metadata named as secret is masked wherever the agent echoes it
+        # in this transcript too, the same literals `/input` masks it with.
+        masking = masking_for(task)
         if offset < 0:
             raise ValidationFailed("offset must not be negative")
         if source not in ("auto", "final", "live"):
@@ -537,6 +541,7 @@ class AgentOutputService:
                     opened.source in ("final", "artifact") and start == 0 and complete_object
                 ),
                 include_raw=include_raw,
+                literals=masking.literals,
             )
             seen_cut = parsed.capture_truncated
             body.update(
@@ -591,6 +596,10 @@ class AgentOutputService:
         """
         ins = self._ins
         task, _prefix = ins._scoped(tenant_id, task_id)
+        # The task's own masker (the PR #229 fix-up): the result event's
+        # content is masked with the same literals `/input` masks the task's
+        # input and metadata with, not the rules alone.
+        masking = masking_for(task)
         attempts = ins._attempt_order(tenant_id, task_id)
         chosen, attempt_status = ins._choose_attempt(attempts, attempt_id)
         read_at = ins._now()
@@ -687,7 +696,7 @@ class AgentOutputService:
                 )
                 event = last_result_event(data, starts_mid_line=starts_mid_line)
                 if event is not None:
-                    self._fill_from_event(body, event, opened, chunk)
+                    self._fill_from_event(body, event, opened, chunk, literals=masking.literals)
                     if body["capture_truncated"] is True:
                         body["detail"] = (
                             CAPTURE_CUT_DETAIL + "; the result event, its last line, was "
@@ -708,7 +717,7 @@ class AgentOutputService:
             # The same masking `GET /v1/tasks/{id}` gives this string inside
             # `result_summary` (the PR #229 review): the rules, and every
             # literal the task's input and metadata named.
-            masked, masked_count = masking_for(task).text(text)
+            masked, masked_count = masking.text(text)
             body.update(
                 status="ok",
                 source="runner_summary",
@@ -758,11 +767,21 @@ class AgentOutputService:
 
     @staticmethod
     def _fill_from_event(
-        body: dict[str, Any], event: dict[str, Any], opened: OpenedStream, chunk: ObjectSlice
+        body: dict[str, Any],
+        event: dict[str, Any],
+        opened: OpenedStream,
+        chunk: ObjectSlice,
+        *,
+        literals: tuple[str, ...] = (),
     ) -> None:
+        """`literals`: the task's masker's learned literals (the PR #229
+        fix-up), applied after the rules like every other reader of them --
+        so the result event the agent produced is masked with the SAME
+        literals `/input` masks the task's own input and metadata with.
+        """
         result = event.get("result")
         text = result if isinstance(result, str) else None
-        scrubbed = redact(text, decoded=True) if text is not None else None
+        scrubbed = redact(text, decoded=True, extra=literals) if text is not None else None
         is_error = event.get("is_error")
         num_turns = event.get("num_turns")
         body.update(

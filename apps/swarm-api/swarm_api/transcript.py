@@ -55,13 +55,22 @@ stream is:
 
 A line that does not parse inside an otherwise-JSON window is COUNTED in
 `skipped_lines`, never silently dropped.
+
+THE TASK'S OWN LITERALS TOO (the PR #229 fix-up, owner decision 2026-09-26). A
+value named only in the task's input or metadata -- never a rule any string
+here would match on its own -- is masked wherever the agent echoes it, the same
+way `/input` masks it: `agent_output.read_transcript` passes `masking_for(task)
+.literals` down as `parse_window`'s `literals`, and every `_Scrubber` call in
+this module applies them after the rules, exactly as `JsonMasker.text()` does.
+No second masker is built; these are the SAME literals the task's one masker
+already learned.
 """
 
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
-from typing import Any
+from dataclasses import dataclass, field
+from typing import Any, Iterable
 
 from .agent_streams import TRUNCATION_MARK
 from .redaction import JsonMasker, Redacted, redact
@@ -104,15 +113,24 @@ class ParsedWindow:
 
 @dataclass
 class _Scrubber:
-    """Redacts and caps every string of one window, and counts what it masked."""
+    """Redacts and caps every string of one window, and counts what it masked.
+
+    `literals`: the task's OWN masker's learned literals (`task_input.
+    TaskMasking.literals`, the same tuple `/input` and `redaction.redact_lines`
+    apply) -- the PR #229 fix-up. A value named only in the task's input or
+    metadata, echoed by the agent in its transcript, is looked for here after
+    the rules run, exactly as `JsonMasker.text()` applies them, so a literal a
+    rule already caught is never counted twice.
+    """
 
     count: int = 0
+    literals: tuple[str, ...] = field(default_factory=tuple)
 
     def text(self, value: Any, *, name: str, truncated: list[str]) -> str | None:
         if not isinstance(value, str):
             return None
         # `decoded=True`: masked at least as far as the raw line would be.
-        cleaned = redact(value, decoded=True)
+        cleaned = redact(value, decoded=True, extra=self.literals)
         self.count += cleaned.count
         return self._capped(cleaned.text, name=name, truncated=truncated)
 
@@ -124,7 +142,7 @@ class _Scrubber:
         (#221). The masker masks each string decoded, and a value under a
         credential's name whole.
         """
-        cleaned = JsonMasker(value).json(value, indent=indent)
+        cleaned = JsonMasker(value, literals=self.literals).json(value, indent=indent)
         self.count += cleaned.count
         return self._capped(cleaned.text, name=name, truncated=truncated)
 
@@ -157,15 +175,24 @@ def _decode(line: bytes) -> tuple[bool, Any]:
 
 
 def parse_window(
-    data: bytes, *, base_offset: int, whole_object: bool, include_raw: bool = False
+    data: bytes,
+    *,
+    base_offset: int,
+    whole_object: bool,
+    include_raw: bool = False,
+    literals: Iterable[str] = (),
 ) -> ParsedWindow:
     """Steps for one window of WHOLE lines, starting at stream offset `base_offset`.
 
     `whole_object` is True when the window is the entire object (offset 0 and
     the end of it), which is the only case a single `result` event can be told
     apart as `claude-json` rather than the last page of a stream.
+
+    `literals`: the task's masker's learned literals (the PR #229 fix-up),
+    passed down to every step's `_Scrubber` so a value the task's input or
+    metadata named as secret is masked wherever the agent echoes it too.
     """
-    scrubber = _Scrubber()
+    scrubber = _Scrubber(literals=tuple(literals))
     # In order: `(offset, event)` for a JSON object, `(offset, line)` for the
     # capture's notice that it cut the stream here.
     records: list[tuple[int, dict[str, Any] | bytes]] = []
@@ -255,8 +282,10 @@ def map_event(
     uuid = event.get("uuid") if isinstance(event.get("uuid"), str) and event.get("uuid") else None
     parent = event.get("parent_tool_use_id")
     # Masked ONCE per event, by its structure (#221), and counted on every
-    # step that carries it, as the record always was.
-    raw = JsonMasker(event).json(event, indent=None) if include_raw else None
+    # step that carries it, as the record always was. `scrubber.literals`:
+    # the task's own masker's literals (the PR #229 fix-up), same as every
+    # other string this event contributes.
+    raw = JsonMasker(event, literals=scrubber.literals).json(event, indent=None) if include_raw else None
 
     def step(block: int, **fields: Any) -> dict[str, Any]:
         return _step(
