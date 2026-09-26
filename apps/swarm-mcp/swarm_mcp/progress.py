@@ -37,6 +37,19 @@ it did not do are the difference between a usable row and an unusable one:
    once, and it still holds no connection: it re-reads the same routes every
    few seconds, exactly as a caller would.
 
+4. KNOWING WHEN TO STOP. `follow` reports a task it cannot read as
+   `read: failed`, not as an error, and rightly: a transport blip is not the
+   end of a task. But a row that polls a task it can NEVER read -- a
+   mis-copied id (404), a task of another tenant or another deployment (404),
+   a read this identity is refused (403) -- would otherwise follow it until
+   its turn limit: hundreds of windows, hours of a row that looks "running",
+   thousands of requests. So each task's failed-read streak rides in the
+   `since` token; a 403 or 404 ends it at once, and `READ_FAILURE_LIMIT` calls
+   in a row that could not read it at all end it too. The reply then says
+   `stop: true`, and the task's row says why (`abandoned_because`). The same
+   `stop` ends a row handed ANOTHER step's task: given the `step_id` it
+   expects, a task that is a different step is not followed at all.
+
 The outcome block (`outcome`) is what a finished row hands back to its
 workflow: the agent's answer, the attempt's spend, the duration, the pull
 request, the artifacts and -- on a failure -- the error and the per-attempt
@@ -98,6 +111,20 @@ EXCERPT_CHARS = 500
 #: task's, readable in the console and from the answer route.
 MAX_ANSWER_CHARS = 16_000
 
+#: How many CALLS in a row may fail to read a task before a row stops following
+#: it. A call gathers for up to `MAX_WAIT_SECONDS` and re-reads every
+#: `POLL_SECONDS`, so this is several minutes of every read failing -- long
+#: enough for a token refresh or a deploy to pass, short enough that a row does
+#: not sit "running" for hours on a task it will never read. One successful
+#: read in a call resets it.
+READ_FAILURE_LIMIT = 3
+
+#: The HTTP statuses of a read that will fail the same way next time: 404 is a
+#: task this deployment does not have -- a mis-copied id, another deployment,
+#: or another tenant's task, which the API answers as absent (invariant 9) --
+#: and 403 a read this identity is refused. The row stops on the first one.
+PERMANENT_READ_STATUSES = frozenset({403, 404})
+
 #: The frozen vocabulary's waiting states, as strings.
 _PENDING = frozenset(state.value for state in PENDING_STATES)
 
@@ -133,13 +160,15 @@ def encode_since(
     states: dict[str, Any],
     said: dict[str, Any],
     groups: dict[str, str] | None = None,
+    failures: dict[str, int] | None = None,
 ) -> str:
     """The cursor, the states last reported, the one-off lines already said,
-    and which tasks are read from the runner's streams rather than the agent's.
+    which tasks are read from the runner's streams rather than the agent's,
+    and how many calls in a row could not read each task.
 
     base64url of compact JSON: opaque to the caller, readable by anyone
     debugging a row, and carrying nothing the follow report did not already
-    show -- byte positions, event counts, attempt ids and state names.
+    show -- byte positions, event counts, attempt ids, state names and counts.
     """
     payload = {
         "v": SINCE_VERSION,
@@ -147,9 +176,42 @@ def encode_since(
         "s": {k: v for k, v in states.items() if v is not None},
         "m": {k: sorted(v) for k, v in said.items() if v},
         "g": {k: v for k, v in (groups or {}).items() if v == "runner"},
+        "f": {k: int(v) for k, v in (failures or {}).items() if v},
     }
     raw = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
     return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def _payload(token: Any) -> dict[str, Any] | None:
+    """A token's JSON, or None when it is absent, unreadable or of another version."""
+    if not isinstance(token, str) or not token:
+        return None
+    try:
+        padded = token + "=" * (-len(token) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")))
+    except (ValueError, binascii.Error, UnicodeError):
+        return None
+    if not isinstance(payload, dict) or payload.get("v") != SINCE_VERSION:
+        return None
+    return payload
+
+
+def read_failures(token: Any) -> dict[str, int]:
+    """Each task's count of calls in a row that could not read it, from a token.
+
+    Zero for a token that cannot be read: a lost streak costs a few more
+    windows before a row stops, which is recoverable; a streak that appeared
+    from nowhere would stop a row that can still read its task.
+    """
+    payload = _payload(token)
+    raw = payload.get("f") if payload is not None else None
+    if not isinstance(raw, dict):
+        return {}
+    return {
+        str(k): int(v)
+        for k, v in raw.items()
+        if isinstance(v, int) and not isinstance(v, bool) and v > 0
+    }
 
 
 def decode_since(
@@ -160,7 +222,7 @@ def decode_since(
     A token that cannot be read starts from the BEGINNING and says so -- the
     rule `follow._normalise` states: a position that quietly became zero costs
     a repeat, a position that quietly became large loses output, and only one
-    of those is recoverable.
+    of those is recoverable. The failed-read streak is `read_failures`.
     """
     if token is None or token == "":
         return {}, {}, {}, {}, None
@@ -172,14 +234,8 @@ def decode_since(
         "the `since` token could not be read, so this call started each task from "
         "the beginning; what follows may repeat lines an earlier call showed",
     )
-    if not isinstance(token, str):
-        return fresh
-    try:
-        padded = token + "=" * (-len(token) % 4)
-        payload = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")))
-    except (ValueError, binascii.Error, UnicodeError):
-        return fresh
-    if not isinstance(payload, dict) or payload.get("v") != SINCE_VERSION:
+    payload = _payload(token)
+    if payload is None:
         return fresh
     cursor = payload.get("c") if isinstance(payload.get("c"), dict) else {}
     states = payload.get("s") if isinstance(payload.get("s"), dict) else {}
@@ -342,14 +398,23 @@ def watch(
     max_new_events: int = DEFAULT_EVENT_PAGE,
     max_lines: int = DEFAULT_MAX_LINES,
     include_heartbeats: bool = False,
+    step_id: str | None = None,
     sleep: Callable[[float], None] = time.sleep,
     clock: Callable[[], float] = time.monotonic,
 ) -> dict[str, Any]:
     """Everything these tasks produced in one window, as short lines.
 
-    Returns `{since, tasks, lines, all_finished, truncated, truncation, ...}`.
-    `since` is what to pass next time. A task that has finished carries its
-    `outcome` (see `outcome`).
+    Returns `{since, tasks, lines, all_finished, stop, truncated, truncation,
+    ...}`. `since` is what to pass next time. A task that has finished carries
+    its `outcome` (see `outcome`). `stop` is true when calling again cannot
+    change anything: every task has finished, or has been given up on -- it
+    could not be read (see `READ_FAILURE_LIMIT`), or it is not the `step_id`
+    this row expects -- and a task given up on carries `abandoned_because`.
+
+    `step_id`, with exactly one task: the workflow step that task must be. A
+    row of `/sc:run` is handed its task id through a relay that retypes it; a
+    task that turns out to be ANOTHER step is not followed, because its
+    answer, cost and pull request would be reported under this step's name.
 
     THE WINDOW. Without `since` this reads once and returns, so a new row says
     at once what its task is doing. With it, it re-reads every
@@ -364,7 +429,13 @@ def watch(
     it is switched to the runner's streams in the same poll, and stays
     switched (the token remembers it).
     """
+    if step_id is not None and len(task_ids) != 1:
+        raise SwarmError(
+            f"`step_id` names the step of ONE task, and {len(task_ids)} task ids were "
+            "given; follow one task with it, or pass no `step_id`"
+        )
     cursor, states, said, groups, note = decode_since(since)
+    failures = read_failures(since)
     first_call = since in (None, "")
     wait = max(0.0, min(float(wait_seconds or 0), MAX_WAIT_SECONDS))
     budget = max(0, int(max_log_bytes))
@@ -377,6 +448,20 @@ def watch(
     started = False
     latest: dict[str, dict[str, Any]] = {}
     truncation: list[str] = []
+    #: Tasks read successfully at least once in THIS call; their streak resets.
+    read_ok: set[str] = set()
+    #: Tasks that are not the step this row expects: task id -> their step id.
+    wrong_step: dict[str, Any] = {}
+
+    def given_up(task_id: str) -> bool:
+        task = latest.get(task_id) or {}
+        if task_id in wrong_step:
+            return True
+        return (
+            task_id not in read_ok
+            and task.get("read") == "failed"
+            and task.get("http_status") in PERMANENT_READ_STATUSES
+        )
 
     while True:
         polls += 1
@@ -393,6 +478,10 @@ def watch(
             for task in report["tasks"]:
                 task_id = task["task_id"]
                 latest[task_id] = task
+                if task.get("read") == "ok":
+                    read_ok.add(task_id)
+                    if step_id is not None and task.get("step_id") != step_id:
+                        wrong_step[task_id] = task.get("step_id")
                 before = states.get(task_id)
                 now = task.get("state") if task.get("read") == "ok" else None
                 # A failed read is `render`'s line (`! <error>`); a finished
@@ -411,15 +500,59 @@ def watch(
                 if " ! " in line and lines and lines[-1] == line:
                     continue  # the same failed read, polled again inside one window
                 lines.append(line)
-        finished = bool(latest) and all(
-            latest[t].get("read") == "ok" and latest[t].get("terminal") for t in latest
+        # Settled: nothing another poll could change -- each task has finished,
+        # or is one this row will not follow (unreadable for good, or the
+        # wrong step). A 404 must not be polled for the rest of a window.
+        settled = bool(latest) and all(
+            (latest[t].get("read") == "ok" and latest[t].get("terminal")) or given_up(t)
+            for t in latest
         )
-        if finished or spent >= budget or first_call or started:
+        if settled or spent >= budget or first_call or started:
             break
         remaining = deadline - clock()
         if remaining <= 0:
             break
         sleep(min(POLL_SECONDS, remaining))
+
+    # THE STREAK, per task, carried to the next call in the token: one good
+    # read in this call clears it; a call in which every read failed adds one.
+    abandoned: dict[str, str] = {}
+    for task_id in task_ids:
+        task = latest.get(task_id) or {}
+        if task_id in wrong_step:
+            abandoned[task_id] = (
+                f"task {task_id} is workflow step {wrong_step[task_id]!r}, not "
+                f"{step_id!r}: this row was handed another step's task id, and following "
+                "it would report that step's answer, cost and pull request under this "
+                "step's name. Nothing was cancelled; SwarmCloud runs both steps as before"
+            )
+            continue
+        if task_id in read_ok:
+            failures.pop(task_id, None)
+            continue
+        if task.get("read") != "failed":
+            continue
+        failures[task_id] = failures.get(task_id, 0) + 1
+        status = task.get("http_status")
+        error = clip(task.get("error") or "no error text", 240)
+        if status in PERMANENT_READ_STATUSES:
+            abandoned[task_id] = (
+                f"task {task_id} cannot be read: HTTP {status} -- {error}. A 404 is a task "
+                "this deployment does not have (a mis-copied id, another deployment, or "
+                "another tenant's task); a 403 is a read this identity is refused. Neither "
+                "changes by asking again, so this row stopped following it. Nothing was "
+                "cancelled"
+            )
+        elif failures[task_id] >= READ_FAILURE_LIMIT:
+            abandoned[task_id] = (
+                f"task {task_id} could not be read on {failures[task_id]} calls in a row "
+                f"(the last: {error}), so this row stopped following it. Whether the task "
+                "is still running is UNKNOWN: nothing was cancelled"
+            )
+    for task_id, why in abandoned.items():
+        task = latest.get(task_id) or {}
+        label = task_label(task_id, task.get("step_id"))
+        lines.append(f"[{label}] ! stopped following: {why}")
 
     shown, left_out = _bounded(lines, max(1, int(max_lines)))
     if left_out:
@@ -450,7 +583,18 @@ def watch(
         }
         if task.get("park_reason"):
             row["park_reason"] = task["park_reason"]
-        if task.get("read") == "ok" and task.get("terminal"):
+        if task.get("read") == "failed":
+            row["read_error"] = task.get("error")
+            row["http_status"] = task.get("http_status")
+        if failures.get(task_id):
+            row["read_failures"] = failures[task_id]
+        if task_id in abandoned:
+            # Given up on: no outcome, even for a finished task -- a wrong
+            # step's outcome is exactly what must not be handed back.
+            row["abandoned"] = True
+            row["abandoned_because"] = abandoned[task_id]
+            all_finished = False
+        elif task.get("read") == "ok" and task.get("terminal"):
             try:
                 row["outcome"] = outcome(client, client.task(task_id))
             except SwarmError as exc:
@@ -463,12 +607,20 @@ def watch(
             all_finished = False
         tasks.append(row)
 
-    return {
-        "since": encode_since(cursor, states, said, groups),
+    # STOP when another call cannot change the answer: every task finished with
+    # its outcome, or given up on. Not when a finished task's outcome could not
+    # be re-read -- the next call tries again, and a persistent failure there
+    # is a failed read, which the streak ends.
+    stop = bool(tasks) and all(
+        t.get("abandoned") or (t["terminal"] and t.get("outcome") is not None) for t in tasks
+    )
+    reply: dict[str, Any] = {
+        "since": encode_since(cursor, states, said, groups, failures),
         "tasks": tasks,
         "lines": shown,
         "all_finished": all_finished,
-        "still_running": [t["task_id"] for t in tasks if not t["terminal"]],
+        "stop": stop,
+        "still_running": [t["task_id"] for t in tasks if not t["terminal"] and not t.get("abandoned")],
         "polls": polls,
         "log_bytes_read": spent,
         "truncated": bool(truncation) or bool(left_out),
@@ -476,9 +628,13 @@ def watch(
         "notes": notes,
         "next": (
             "Pass `since` back unchanged on the next call; nothing above is returned "
-            "again. Stop when `all_finished` is true and read each task's `outcome`."
+            "again. Stop when `stop` is true: then read each task's `outcome`, or its "
+            "`abandoned_because` when this row gave up on it."
         ),
     }
+    if abandoned:
+        reply["stop_because"] = "; ".join(abandoned.values())
+    return reply
 
 
 def _poll(

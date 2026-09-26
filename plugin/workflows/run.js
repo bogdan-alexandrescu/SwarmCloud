@@ -3,7 +3,7 @@ export const meta = {
   description: 'Run a SwarmCloud workflow spec with every step executing in SwarmCloud and shown here as a running agent with its live progress',
   whenToUse: 'You have a SwarmCloud workflow spec, the JSON that swarm workflow reads, and want each step visible in /workflows while it runs remotely. Pass the spec object as args.',
   phases: [
-    { title: 'Submit', detail: 'one sc:workflow agent submits the spec with swarm_workflow' },
+    { title: 'Submit', detail: 'one sc:workflow agent submits the spec with swarm_workflow, checked against the digest this script computed' },
     { title: 'Result', detail: 'one sc:workflow agent reads the workflow state SwarmCloud derived' },
   ],
 }
@@ -24,6 +24,28 @@ export const meta = {
 // Steps are grouped under 'Level N' -- their depth in the DAG -- or under the
 // `stage` the spec gives a step. Neither is known before the spec is read, so
 // they are not in meta.phases and each gets a progress group of its own.
+//
+// NOTHING CROSSES THE RELAY UNCHECKED. A script cannot call a tool, so the
+// spec reaches swarm_workflow through an agent that RETYPES it, and the
+// step-to-task map comes back the same way. A haiku relay can drop a step,
+// swap two task ids or tidy a prompt, and nothing downstream would notice. So:
+//   * the script computes the spec's digest (specDigest, the same function as
+//     swarm_mcp.workflows.spec_digest) and the agent passes it beside the
+//     spec: swarm_workflow refuses, before sending anything, a spec that
+//     arrived different;
+//   * the reply must carry that digest back, the spec's step ids exactly, each
+//     step's depends_on exactly, and one distinct task per step -- or no row
+//     starts;
+//   * each sc:step row passes its step_id to swarm_follow, which will not
+//     follow a task that is a different step.
+//
+// A SUBMISSION WHOSE OUTCOME IS UNKNOWN IS NOT 'NOT SUBMITTED'. agent()
+// resolves to null when its row is stopped and throws when StructuredOutput
+// validation runs out of attempts -- either can happen after swarm_workflow
+// created the workflow. Claude Code re-runs a failed or stopped agent on
+// relaunch and the API has no idempotency key, so calling that NOT_SUBMITTED
+// would invite a second copy. Only an explicit refusal from swarm_workflow is
+// NOT_SUBMITTED.
 //
 // This script derives nothing SwarmCloud decides. The workflow's final state
 // is read back from swarm_workflow_status, which serves the state the server
@@ -46,9 +68,10 @@ const SUBMITTED = {
       },
     },
     repository: { type: ['string', 'null'] },
+    spec_digest: { type: ['string', 'null'] },
     error: { type: ['string', 'null'] },
   },
-  required: ['workflow_id', 'steps', 'repository', 'error'],
+  required: ['workflow_id', 'steps', 'repository', 'spec_digest', 'error'],
 }
 
 const STEP_RESULT = {
@@ -103,6 +126,44 @@ function readSpec(given) {
   return spec
 }
 
+// The spec as canonical JSON: keys sorted, no whitespace, each scalar exactly
+// as JSON.stringify writes it. swarm_mcp.workflows.spec_digest builds the same
+// text in Python, and the plugin's tests run this function and hold the two
+// digests equal.
+function canonical(value) {
+  if (Array.isArray(value)) return '[' + value.map((item) => canonical(item)).join(',') + ']'
+  if (value !== null && typeof value === 'object') {
+    const keys = Object.keys(value).sort()
+    return '{' + keys.map((key) => JSON.stringify(key) + ':' + canonical(value[key])).join(',') + '}'
+  }
+  return JSON.stringify(value)
+}
+
+// FNV-1a over the canonical text's UTF-8 bytes, 32 bits: 'fnv1a32:' and eight
+// hex digits. Written out because a workflow script has no crypto, no imports
+// and no guaranteed TextEncoder. It catches a careless relay, which is its job.
+function specDigest(spec) {
+  const text = canonical(spec)
+  let hash = 0x811c9dc5
+  for (let i = 0; i < text.length; i++) {
+    let code = text.charCodeAt(i)
+    if (code >= 0xd800 && code <= 0xdbff && i + 1 < text.length) {
+      const low = text.charCodeAt(i + 1)
+      if (low >= 0xdc00 && low <= 0xdfff) {
+        code = 0x10000 + (code - 0xd800) * 1024 + (low - 0xdc00)
+        i++
+      }
+    }
+    let bytes
+    if (code < 0x80) bytes = [code]
+    else if (code < 0x800) bytes = [0xc0 | (code >> 6), 0x80 | (code & 63)]
+    else if (code < 0x10000) bytes = [0xe0 | (code >> 12), 0x80 | ((code >> 6) & 63), 0x80 | (code & 63)]
+    else bytes = [0xf0 | (code >> 18), 0x80 | ((code >> 12) & 63), 0x80 | ((code >> 6) & 63), 0x80 | (code & 63)]
+    for (const byte of bytes) hash = Math.imul(hash ^ byte, 0x01000193) >>> 0
+  }
+  return 'fnv1a32:' + ('0000000' + hash.toString(16)).slice(-8)
+}
+
 // Each step's depth in the DAG: 0 for a step with no parents, else one more
 // than its deepest parent. Only for grouping rows; SwarmCloud schedules.
 function levelsOf(steps) {
@@ -149,6 +210,10 @@ function clip(text, limit) {
   return flat.length <= limit ? flat : flat.slice(0, limit - 1) + '…'
 }
 
+function failureText(error) {
+  return String((error && error.message) || error)
+}
+
 // One narrator line per finished step: 'scan-03 SUCCEEDED · 4m12s · $0.21 · PR #231'.
 function narrate(stepId, result) {
   if (!result || result.row_error) {
@@ -162,8 +227,58 @@ function narrate(stepId, result) {
   return parts.join(' · ')
 }
 
-function submitPrompt(spec) {
-  return ['SUBMIT', 'BEGIN SPEC', JSON.stringify(spec, null, 2), 'END SPEC'].join('\n')
+function sameSet(left, right) {
+  const a = (left || []).slice().sort()
+  const b = (right || []).slice().sort()
+  return a.length === b.length && a.every((item, index) => item === b[index])
+}
+
+// Every way the Submit reply can differ from the spec this script was given.
+// Empty means the relay carried both directions faithfully.
+function mismatches(spec, submitted, digest) {
+  const problems = []
+  if (submitted.spec_digest !== digest) {
+    problems.push(
+      submitted.spec_digest
+        ? 'SwarmCloud received a spec with digest ' + submitted.spec_digest + ', and the spec given has ' + digest + ': the relay changed it on the way'
+        : 'the reply carries no spec digest, so what SwarmCloud received cannot be shown to be the spec given (' + digest + ')',
+    )
+  }
+  if (submitted.error) problems.push('the reply names a workflow and also an error: ' + clip(submitted.error, 160))
+  const given = {}
+  for (const step of spec.steps) given[step.step_id] = step
+  const seen = {}
+  const owner = {}
+  for (const step of submitted.steps || []) {
+    const id = step && step.step_id
+    if (seen[id]) {
+      problems.push('step ' + id + ' appears twice in the reply')
+      continue
+    }
+    seen[id] = true
+    if (!given[id]) {
+      problems.push('the reply names a step the spec does not have: ' + id)
+      continue
+    }
+    if (!sameSet(step.depends_on, given[id].depends_on)) {
+      problems.push('step ' + id + ' depends on [' + (step.depends_on || []).join(', ') + '] in the reply and on [' + (given[id].depends_on || []).join(', ') + '] in the spec')
+    }
+    if (typeof step.task_id !== 'string' || !step.task_id) {
+      problems.push('the reply names no task for step ' + id)
+    } else if (owner[step.task_id]) {
+      problems.push('task ' + step.task_id + ' is named for both ' + owner[step.task_id] + ' and ' + id)
+    } else {
+      owner[step.task_id] = id
+    }
+  }
+  for (const step of spec.steps) {
+    if (!seen[step.step_id]) problems.push('step ' + step.step_id + ' is in the spec and missing from the reply')
+  }
+  return problems
+}
+
+function submitPrompt(spec, digest) {
+  return ['SUBMIT', 'spec_digest: ' + digest, 'BEGIN SPEC', JSON.stringify(spec, null, 2), 'END SPEC'].join('\n')
 }
 
 function stepPrompt(workflowId, step) {
@@ -177,25 +292,55 @@ function stepPrompt(workflowId, step) {
 }
 
 const spec = readSpec(args)
+const digest = specDigest(spec)
+const specLabel = typeof spec.label === 'string' && spec.label.trim() ? spec.label.trim() : null
 const stages = {}
 for (const step of spec.steps) {
   if (step && typeof step.stage === 'string' && step.stage.trim()) stages[step.step_id] = step.stage.trim()
 }
 
 phase('Submit')
-const submitted = await agent(submitPrompt(spec), {
-  label: 'submit',
-  phase: 'Submit',
-  agentType: 'sc:workflow',
-  schema: SUBMITTED,
-})
-if (!submitted || submitted.error || !submitted.workflow_id) {
-  const why = submitted
-    ? submitted.error || 'the submission answered with no workflow id'
-    : 'the submitting agent stopped before it answered'
-  log('not submitted · ' + clip(why, 200))
-  return { workflow_id: null, state: 'NOT_SUBMITTED', error: why, steps: [] }
+let submitted = null
+let submitFailure = null
+try {
+  submitted = await agent(submitPrompt(spec, digest), {
+    label: 'submit',
+    phase: 'Submit',
+    agentType: 'sc:workflow',
+    schema: SUBMITTED,
+  })
+} catch (error) {
+  submitFailure = failureText(error)
 }
+
+if (!submitted || (!submitted.workflow_id && !submitted.error)) {
+  const why = submitFailure
+    ? 'the submitting row failed: ' + submitFailure
+    : submitted
+      ? 'the submitting row answered with neither a workflow id nor an error'
+      : 'the submitting row stopped before it answered'
+  const error = why + '. Whether SwarmCloud created the workflow is UNKNOWN: swarm_workflow may already have submitted it. Look for it in the console\'s workflow list' + (specLabel ? ' (label ' + specLabel + ')' : '') + ' before running /sc:run again, which would submit a second copy.'
+  log('submission outcome unknown · ' + clip(why, 200))
+  return { workflow_id: null, state: 'SUBMISSION_UNKNOWN', error: error, steps: [] }
+}
+
+if (!submitted.workflow_id) {
+  // An explicit refusal: swarm_workflow answered with an error, so nothing was sent.
+  log('not submitted · ' + clip(submitted.error, 200))
+  return { workflow_id: null, state: 'NOT_SUBMITTED', error: submitted.error, steps: [] }
+}
+
+const problems = mismatches(spec, submitted, digest)
+if (problems.length > 0) {
+  for (const problem of problems) log(submitted.workflow_id + ' · ' + clip(problem, 200))
+  return {
+    workflow_id: submitted.workflow_id,
+    state: 'SUBMITTED_UNVERIFIED',
+    error: 'SwarmCloud accepted workflow ' + submitted.workflow_id + ', but the reply relayed back does not match the spec given, so no row was started: ' + problems.join('; ') + '. The workflow runs regardless: read it with swarm_workflow_status, or cancel it with swarm_workflow_cancel if it is not what was meant.',
+    steps: [],
+  }
+}
+
 const where = submitted.repository ? ' · clones ' + submitted.repository : ' · clones no repository'
 log(submitted.workflow_id + ' submitted · ' + submitted.steps.length + ' step(s)' + where)
 
@@ -214,7 +359,7 @@ const rows = await pipeline(
         schema: STEP_RESULT,
       })
     } catch (error) {
-      return { row_error: String((error && error.message) || error) }
+      return { row_error: failureText(error) }
     }
   },
   (result, step) => {
@@ -229,15 +374,27 @@ const rows = await pipeline(
   },
 )
 
+// The rows are returned whatever happens here: a Result row that fails must
+// not take every step's result down with it.
 phase('Result')
-const final = await agent('STATUS\nworkflow_id: ' + submitted.workflow_id, {
-  label: 'workflow state',
-  phase: 'Result',
-  agentType: 'sc:workflow',
-  schema: WORKFLOW_STATE,
-})
+let final = null
+let finalFailure = null
+try {
+  final = await agent('STATUS\nworkflow_id: ' + submitted.workflow_id, {
+    label: 'workflow state',
+    phase: 'Result',
+    agentType: 'sc:workflow',
+    schema: WORKFLOW_STATE,
+  })
+} catch (error) {
+  finalFailure = failureText(error)
+}
 const state = final ? final.state : null
-const note = final ? final.state_note : 'the agent reading the workflow state stopped before it answered'
+const note = final
+  ? final.state_note
+  : finalFailure
+    ? 'the row reading the workflow state failed: ' + finalFailure
+    : 'the row reading the workflow state stopped before it answered'
 log(submitted.workflow_id + ' ' + (state || 'state not read') + (note ? ' · ' + clip(note, 160) : ''))
 
 return {

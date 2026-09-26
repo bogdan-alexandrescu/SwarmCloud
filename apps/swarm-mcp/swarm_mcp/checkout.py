@@ -17,12 +17,26 @@ back a patch against the wrong base. That is the failure the delegate skill's
 clean-checkout rule describes, and the inference is exactly where it would
 otherwise be reintroduced silently. So:
 
-  * a detached HEAD, a branch with no upstream, or a branch AHEAD of its
-    upstream is refused, and the refusal names the command that fixes it;
+  * a detached HEAD, a branch that is not on its remote under its OWN name,
+    or a branch AHEAD of that remote branch is refused, and the refusal names
+    the command that fixes it -- always `git push -u <remote> <branch>`;
   * uncommitted changes are not refused -- they are often unrelated -- but the
     reply says, with a count, that the remote agent will not see them;
-  * a branch BEHIND its upstream is not refused either: the agent sees more
-    than this checkout, not less, and the reply says so.
+  * a branch BEHIND its remote branch is not refused either: the agent sees
+    more than this checkout, not less, and the reply says so.
+
+WHAT "PUSHED" MEANS: `<remote>/<branch>`, the branch's SAME-NAMED remote
+branch -- never its upstream. The two differ in this repository's own lane
+recipe: `git checkout -b <lane> origin/main` sets the lane's upstream to
+`origin/main` (`branch.autoSetupMerge` defaults to true), so measuring against
+the upstream counted main's distance, refused a lane that WAS pushed, and told
+the reader to run `git push origin <lane>:main` -- a push of unreviewed commits
+onto the default branch. The remote agent clones by name, so the name is what
+is checked; the remote is the one `git push` would use (`pushRemote`, then
+`remote.pushDefault`, then the branch's own remote, then `origin`). `@{push}`
+is not used: under the default `push.default=simple` it does not resolve at all
+for a branch whose upstream has another name (measured 2026-09-25: "cannot
+resolve 'simple' push to a single destination").
 
 "Pushed" is judged against this checkout's REMOTE-TRACKING ref, which is as
 fresh as the last fetch or push. Nothing here fetches: a network call that can
@@ -223,11 +237,11 @@ def resolve(
 
     top = Path(_out(_git(here, "rev-parse", "--show-toplevel")) or here)
     branch = _out(_git(here, "symbolic-ref", "--quiet", "--short", "HEAD"))
-    remote = _out(_git(here, "config", f"branch.{branch}.remote")) if branch else ""
+    remote = _push_remote(here, branch)
     if ref_text:
         # The caller chose the ref, so whether THIS branch is pushed is not the
-        # question; only the URL is inferred. The remote is the branch's own
-        # when it has one, else `origin`.
+        # question; only the URL is inferred, from the remote `git push` would
+        # use.
         url = _remote_url(here, remote or "origin")
         return Repository(
             url=url, ref=ref_text, source="checkout",
@@ -241,46 +255,57 @@ def resolve(
             "agent could clone. Check out a branch and push it (`git switch -c <name>` "
             "then `git push -u origin <name>`), or pass `repo` and `ref` explicitly"
         )
-    merge = _out(_git(here, "config", f"branch.{branch}.merge"))
-    if not remote or not merge:
+    if remote is None:
         raise SwarmError(
-            f"branch {branch!r} in {top} has no upstream: it has never been pushed, so a "
-            f"remote agent cannot clone it. Push it first -- `git push -u origin {branch}` "
-            "-- or pass `repo` and `ref` explicitly"
-        )
-    if remote == ".":
-        raise SwarmError(
-            f"branch {branch!r} tracks another LOCAL branch ({merge}), which a remote agent "
-            f"cannot see. Push it -- `git push -u origin {branch}` -- or pass `repo` and "
-            "`ref` explicitly"
-        )
-    remote_branch = merge[len("refs/heads/"):] if merge.startswith("refs/heads/") else merge
-    upstream = f"{remote}/{remote_branch}"
-    tracking = _git(here, "rev-parse", "--verify", "--quiet", "@{upstream}")
-    if tracking.returncode != 0:
-        raise SwarmError(
-            f"branch {branch!r} names {upstream} as its upstream, but this checkout has no "
-            f"remote-tracking ref for it, so it was never pushed or fetched. Push it -- "
-            f"`git push -u {remote} {branch}` -- or pass `repo` and `ref` explicitly"
-        )
-    ahead = _count(here, "@{upstream}..HEAD")
-    if ahead:
-        raise SwarmError(
-            f"branch {branch!r} has {ahead} commit(s) that are not on {upstream}; a remote "
-            f"agent clones {upstream} and would work without them, on an older base. "
-            f"Push first -- `git push {remote} {branch}:{remote_branch}` -- or pass `ref` "
-            "explicitly to use what is already pushed"
+            f"the checkout at {top} has no remote to push {branch!r} to: none is called "
+            "origin and the branch names none, so its repository cannot be inferred. Add "
+            f"one and push it -- `git remote add origin <url>` then `git push -u origin "
+            f"{branch}` -- or pass `repo` and `ref` explicitly"
         )
     url = _remote_url(here, remote)
+    # THE BRANCH'S OWN NAME ON THE REMOTE, never its upstream: see the module
+    # docstring for the lane recipe that makes the two differ, and the push to
+    # main that reading the upstream used to recommend.
+    on_remote = f"{remote}/{branch}"
+    tracking = f"refs/remotes/{on_remote}"
+    push = f"git push -u {remote} {branch}"
+    upstream = _upstream(here)
+    elsewhere = upstream if upstream and upstream != on_remote else None
+    if _git(here, "rev-parse", "--verify", "--quiet", tracking).returncode != 0:
+        message = (
+            f"branch {branch!r} in {top} is not on {remote} under its own name: this "
+            f"checkout has no {on_remote}, so it was never pushed (or not since the last "
+            f"fetch), and a remote agent, which clones by name, cannot see it. Push it "
+            f"first -- `{push}` -- or pass `repo` and `ref` explicitly"
+        )
+        if elsewhere:
+            message += (
+                f". Its upstream is {elsewhere}, the branch it was started from; that is "
+                "never sent in its place"
+            )
+        raise SwarmError(message)
+    ahead = _count(here, f"{tracking}..HEAD")
+    if ahead:
+        raise SwarmError(
+            f"branch {branch!r} has {ahead} commit(s) that are not on {on_remote}; a remote "
+            f"agent clones {on_remote} and would work without them, on an older base. "
+            f"Push first -- `{push}` -- or pass `ref` explicitly to use what is already "
+            "pushed"
+        )
     commit = _out(_git(here, "rev-parse", "HEAD")) or None
     notes = [
-        f"inferred from the checkout at {top}: {upstream}, pushed at {commit[:12] if commit else 'an unread commit'} "
+        f"inferred from the checkout at {top}: {on_remote}, pushed at {commit[:12] if commit else 'an unread commit'} "
         f"(checked against this checkout's remote-tracking ref; nothing was fetched)"
     ]
-    behind = _count(here, "HEAD..@{upstream}")
+    if elsewhere:
+        notes.append(
+            f"the branch's upstream is {elsewhere}; what is cloned is the branch itself as "
+            f"pushed, {on_remote}, never its upstream"
+        )
+    behind = _count(here, f"HEAD..{tracking}")
     if behind:
         notes.append(
-            f"{upstream} has {behind} commit(s) this checkout does not; the remote agent "
+            f"{on_remote} has {behind} commit(s) this checkout does not; the remote agent "
             "will see them"
         )
     dirty = [line for line in (_git(here, "status", "--porcelain").stdout or "").splitlines() if line.strip()]
@@ -289,7 +314,39 @@ def resolve(
             f"{len(dirty)} uncommitted change(s) in this checkout are NOT visible to the "
             "remote agent: it clones only what is pushed"
         )
-    return Repository(url=url, ref=remote_branch, source="checkout", commit=commit, notes=notes)
+    return Repository(url=url, ref=branch, source="checkout", commit=commit, notes=notes)
+
+
+def _push_remote(here: Path, branch: str) -> str | None:
+    """The remote `git push` would send `branch` to, or None when there is none.
+
+    Git's own order: `branch.<name>.pushRemote`, `remote.pushDefault`, the
+    branch's `branch.<name>.remote` -- unless that is `.`, an upstream that is
+    another LOCAL branch -- then `origin`, or the one remote when there is only
+    one. A remote that is named but does not exist is refused by `_remote_url`,
+    by name.
+    """
+    keys = ["remote.pushDefault"]
+    if branch:
+        keys = [f"branch.{branch}.pushRemote", "remote.pushDefault", f"branch.{branch}.remote"]
+    for key in keys:
+        value = _out(_git(here, "config", key))
+        if value and value != ".":
+            return value
+    names = [name.strip() for name in _out(_git(here, "remote")).splitlines() if name.strip()]
+    if "origin" in names:
+        return "origin"
+    if len(names) == 1:
+        return names[0]
+    return None
+
+
+def _upstream(here: Path) -> str | None:
+    """HEAD's upstream as `<remote>/<branch>`, or None. Reported, never cloned."""
+    got = _git(here, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}")
+    if got.returncode != 0:
+        return None
+    return _out(got) or None
 
 
 def _nothing(here: Path, why: str, ref_text: str) -> Repository:

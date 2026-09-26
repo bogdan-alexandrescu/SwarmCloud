@@ -44,6 +44,7 @@ to disagree with it.
 
 from __future__ import annotations
 
+import json
 from typing import Any, Callable
 
 from . import profiles as catalogue
@@ -248,6 +249,64 @@ def build_steps(raw_steps: Any) -> list[dict[str, Any]]:
             raise SwarmError(f"{where}: stage must be a string -- the group /sc:run shows it under")
         steps.append(step)
     return steps
+
+
+def _canonical_numbers(value: Any) -> Any:
+    """`value` with every integral float made an int, recursively.
+
+    JavaScript has one number type, so `JSON.stringify(3.0)` is `3`, while
+    Python's `json.dumps(3.0)` is `3.0`. A relay that writes `3.0` for the 3 a
+    spec holds has not changed the spec, and must not fail its digest.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, dict):
+        return {key: _canonical_numbers(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_canonical_numbers(item) for item in value]
+    return value
+
+
+def spec_digest(spec: Any) -> str:
+    """`fnv1a32:<8 hex>` of a spec, the digest `/sc:run` computes in its script.
+
+    WHY A DIGEST. `/sc:run` cannot call a tool: it hands the spec to an agent
+    (`sc:workflow`, haiku) that RETYPES it into `swarm_workflow`. A dropped
+    step, two swapped prompts or a "tidied" instruction would be submitted and
+    run with no layer noticing. The script computes this digest over the spec
+    it was given, the agent passes it beside the spec, and `swarm_workflow`
+    refuses before sending anything when the spec it received digests
+    differently.
+
+    WHY THIS ONE. It must be computed identically by `plugin/workflows/run.js`,
+    which has no crypto, no imports and no `TextEncoder` guarantee: FNV-1a over
+    32 bits is a few lines of `Math.imul`. It detects accidents, not an
+    adversary, which is the job -- the relay is careless, not hostile.
+
+    THE CANONICAL FORM, which both sides must produce byte for byte: JSON with
+    keys sorted, no whitespace (`,` and `:`), non-ASCII characters as
+    themselves, encoded as UTF-8 -- `JSON.stringify` of each scalar in
+    JavaScript, which escapes exactly what `json.dumps(ensure_ascii=False)`
+    escapes. Integral floats are ints (`_canonical_numbers`). Keys sort by code
+    point here and by UTF-16 unit in JavaScript, which agree for every key a
+    spec has (ASCII). `tests/unit/mcp/test_plugin_agents_and_workflows.py`
+    runs run.js's implementation and holds the two equal.
+    """
+    text = json.dumps(
+        _canonical_numbers(spec), sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    )
+    return f"fnv1a32:{fnv1a32(text.encode('utf-8', 'surrogatepass')):08x}"
+
+
+def fnv1a32(data: bytes) -> int:
+    """32-bit FNV-1a: offset basis 0x811C9DC5, prime 0x01000193."""
+    value = 0x811C9DC5
+    for byte in data:
+        value ^= byte
+        value = (value * 0x01000193) & 0xFFFFFFFF
+    return value
 
 
 def read_spec(document: Any, *, where: str = "the workflow spec") -> dict[str, Any]:

@@ -216,7 +216,13 @@ TOOLS: list[dict[str, Any]] = [
             "`since`, returns at once. A finished task carries `outcome`: its "
             "answer, `answer_json` (the JSON object the answer ends with, if any), "
             "`cost_usd` (null when not recorded, never 0), `duration_s`, "
-            "`pr_url`, `artifacts`, `last_error` and, on a failure, `failure`."
+            "`pr_url`, `artifacts`, `last_error` and, on a failure, `failure`. "
+            "Stop calling when the reply says `stop: true`: every task has "
+            "finished, or the row gave up on one -- it cannot be read (a 404 or "
+            f"403 at once, other failures after {progress.READ_FAILURE_LIMIT} "
+            "calls in a row), or it is "
+            "not the `step_id` passed -- and that task says why in "
+            "`abandoned_because`."
         ),
         "inputSchema": {
             "type": "object",
@@ -294,6 +300,16 @@ TOOLS: list[dict[str, Any]] = [
                         "`lines` only: the most lines one call returns. Past it the "
                         "window's EARLIEST lines are left out and a line says how "
                         "many; every byte stays in the task's log."
+                    ),
+                },
+                "step_id": {
+                    "type": "string",
+                    "description": (
+                        "`lines` only, with exactly ONE task id: the workflow step "
+                        "that task must be. A task that is a different step is not "
+                        "followed -- the reply says `stop: true` and why -- so a "
+                        "mis-copied task id cannot report another step's work under "
+                        "this step's name."
                     ),
                 },
             },
@@ -445,6 +461,17 @@ TOOLS: list[dict[str, Any]] = [
                         "command reads -- instead of `steps` and the "
                         "parameters beside it. A step may carry `stage`, the group "
                         "/sc:run shows it under; it is never sent."
+                    ),
+                },
+                "spec_digest": {
+                    "type": "string",
+                    "description": (
+                        "With `spec` only: the digest the caller computed of the spec "
+                        "it meant to send (`fnv1a32:` and eight hex digits, over the "
+                        "spec as sorted-key compact JSON). When it differs from the "
+                        "digest of the spec received, NOTHING is submitted: the spec "
+                        "was changed on the way here, by whoever retyped it. The reply "
+                        "carries the digest of what was received either way."
                     ),
                 },
                 "no_repository": {
@@ -734,7 +761,13 @@ TOOLS: list[dict[str, Any]] = [
             "could not be READ is itself reported -- silence about one is how "
             "an operator concludes it is fine."
         ),
-        "inputSchema": {"type": "object", "properties": {}},
+        # `width` is read by the view like the other four's; it was missing
+        # here, and now that an undeclared argument is refused it must be
+        # declared (`_refuse_unknown_arguments`).
+        "inputSchema": {
+            "type": "object",
+            "properties": {"width": {"type": "integer", "default": 80}},
+        },
     },
     {
         "name": "swarm_cancel",
@@ -867,7 +900,38 @@ _SC_VIEWS = {
 }
 
 
+#: The arguments each tool takes, read from its own schema so the two cannot
+#: disagree.
+_ACCEPTED = {
+    tool["name"]: frozenset((tool.get("inputSchema") or {}).get("properties") or {})
+    for tool in TOOLS
+}
+
+
+def _refuse_unknown_arguments(name: str, args: dict[str, Any]) -> None:
+    """An argument this bridge does not know is REFUSED, never dropped.
+
+    Dropping was the old behaviour, and it fails silently in exactly the case
+    that matters: a caller newer than the bridge. A plugin agent written for a
+    bridge that takes `strategy` and `step_id`, talking to one that does not,
+    had its `strategy: direct-pr` ignored -- the task ran as `collect` and
+    returned as if nothing were wrong. Refused, the caller reads which argument
+    this version lacks, and nothing is sent.
+    """
+    accepted = _ACCEPTED.get(name)
+    if accepted is None:
+        return  # an unknown TOOL is refused by name at the end of `_call`
+    unknown = sorted(str(key) for key in args if key not in accepted)
+    if unknown:
+        raise SwarmError(
+            f"{name} does not take {unknown}; it takes {sorted(accepted)}. Nothing was "
+            "done. An argument this bridge does not know is refused rather than ignored: "
+            "if a newer caller relies on it, this bridge is older than that caller"
+        )
+
+
 def _call(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
+    _refuse_unknown_arguments(name, args)
     if name == "swarm_dispatch":
         # CHECKED BEFORE THE ROUND TRIP. The API refuses an unknown or disabled
         # profile too and stays the authority; this only refuses sooner, with
@@ -942,6 +1006,16 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
             "shapes, and two positions for one task is a request to read from two places"
         )
 
+    expected_step = args.get("step_id") if name == "swarm_follow" else None
+    if expected_step is not None and (not isinstance(expected_step, str) or not expected_step.strip()):
+        raise SwarmError("`step_id` must be the step's id, a non-empty string")
+    if expected_step is not None and args.get("format") != "lines":
+        # Refused, not ignored: a caller that asked for the check and did not
+        # get it would believe the task it followed was its step.
+        raise SwarmError(
+            "`step_id` is checked only with `format: \"lines\"`; pass that, or no `step_id`"
+        )
+
     if name == "swarm_follow" and args.get("format") == "lines":
         # The row view (`progress.watch`): narrated lines, one opaque token, a
         # call that may gather for a window, and a finished task's outcome.
@@ -955,6 +1029,7 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
                 max_new_events=_int_arg(args, "max_new_events", DEFAULT_EVENT_PAGE),
                 max_lines=_int_arg(args, "max_lines", progress.DEFAULT_MAX_LINES),
                 include_heartbeats=_flag(args, "include_heartbeats"),
+                step_id=expected_step.strip() if isinstance(expected_step, str) else None,
             ),
             indent=1,
             default=str,
@@ -1096,6 +1171,8 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
         return result.render()
 
     if name == "swarm_workflow":
+        digest: str | None = None
+        expected_digest = args.get("spec_digest")
         if args.get("spec") is not None:
             beside = sorted(k for k in _SPEC_EXCLUSIVE if args.get(k) is not None)
             if beside:
@@ -1104,9 +1181,27 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
                     "those itself. Pass the whole spec, or `steps` with the parameters "
                     "beside it -- not both"
                 )
+            # THE DIGEST OF WHAT ARRIVED, before anything else reads it. /sc:run
+            # hands the spec to a relay that retypes it into this call; the
+            # digest the script computed is the only thing that can show the
+            # relay dropped a step or "tidied" a prompt, and it is checked
+            # before anything is sent, so a changed spec submits nothing.
+            digest = workflows.spec_digest(args["spec"])
+            if expected_digest not in (None, "") and str(expected_digest).strip() != digest:
+                raise SwarmError(
+                    f"the spec this tool received has digest {digest}, and `spec_digest` "
+                    f"says the spec meant was {str(expected_digest).strip()}: the spec was "
+                    "changed on its way here -- by whoever retyped it -- so NOTHING was "
+                    "submitted. Pass the spec exactly as given, character for character"
+                )
             fields = workflows.read_spec(args["spec"], where="swarm_workflow's `spec`")
             repo, ref = fields["repository_url"], fields["repository_ref"]
         else:
+            if expected_digest not in (None, ""):
+                raise SwarmError(
+                    "`spec_digest` checks a whole `spec`, and this call passed `steps`; "
+                    "pass the spec it was computed over, or no `spec_digest`"
+                )
             if args.get("steps") is None:
                 raise SwarmError("swarm_workflow needs `steps`, or a whole `spec`")
             fields = {
@@ -1167,6 +1262,11 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
                 "workflow state and this tool will not quote the stored one"
             ),
         }
+        if digest is not None:
+            # What was RECEIVED, so a caller that did not pass `spec_digest` can
+            # still compare it with the spec it meant.
+            created["spec_digest"] = digest
+            created["spec_digest_checked"] = expected_digest not in (None, "")
         task_ids = [str(s["task_id"]) for s in steps if s["task_id"]]
         if task_ids:
             created["follow_with"] = "swarm_follow"

@@ -107,11 +107,15 @@ at the ref the dispatch names. Everything follows from that:
   2026-09-26, `swarm_dispatch` and `swarm_workflow` infer the repository and
   branch from the git checkout the bridge runs in when neither `repo` nor `ref`
   is given — and REFUSE, before anything is dispatched, a detached HEAD, a
-  branch that was never pushed, or a branch with commits its upstream lacks,
-  naming the `git push` that fixes it. Uncommitted changes are not refused;
-  the reply's `repository.notes` says how many the agent will not see. Read
-  that block back to the developer: it is the answer to "which ref will the
-  agents see".
+  branch that is not on its remote under its own name, or a branch with
+  commits that are not there, naming `git push -u <remote> <branch>`. The
+  branch is cloned by its OWN name, never its upstream: a lane made with
+  `git checkout -b <lane> origin/main` tracks main, and main is never sent in
+  its place. Never suggest pushing a branch to a differently named one — a
+  `git push origin <lane>:main` lands unreviewed commits on the default branch.
+  Uncommitted changes are not refused; the reply's `repository.notes` says how
+  many the agent will not see. Read that block back to the developer: it is
+  the answer to "which ref will the agents see".
 * **Outside a checkout, or with `no_repository: true`, nothing is cloned.** The
   task still runs and still succeeds; `swarm_result` then reports *"this task
   cloned no repository, so there is no code to apply"*, and the work exists
@@ -424,20 +428,33 @@ ships both.
   `strategy: direct-pr`), follows it with `swarm_follow`, and returns the
   remote agent's answer — or, when the call passes a `schema`, the JSON object
   it asked the remote agent to end with. A failed task comes back as its
-  state, last error and task id, never an invented answer.
+  state, last error and task id, never an invented answer — and in SCHEMA mode
+  that means the `agent()` call THROWS unless the schema has a state and an
+  error field and every other required field is nullable. When writing such a
+  script, give the schema those fields and catch the call (the plugin README
+  shows the shape); an uncaught schema-mode failure aborts the whole script.
 * **A whole SwarmCloud workflow: `/sc:run <spec>`**, where the spec is the
   object `swarm workflow` reads. One `sc:workflow` row submits it through
-  `swarm_workflow`; SwarmCloud owns the DAG from then on. Each step gets an
+  `swarm_workflow`, checked by digest so a relay that changed the spec
+  submits nothing; SwarmCloud owns the DAG from then on. Each step gets an
   `sc:step` row, labelled with its step id and grouped as `Level N` or under
   the step's `stage`, that follows its own task and may show `waiting` for a
   long time — that task holds no capacity. The run ends with the state the
-  server derived, never one computed from the rows.
+  server derived, never one computed from the rows. Before any row starts it
+  can end `NOT_SUBMITTED` (refused; nothing sent), `SUBMISSION_UNKNOWN` (the
+  Submit row stopped or failed, possibly after the workflow was created — look
+  for it before running again, or it is submitted twice) or
+  `SUBMITTED_UNVERIFIED` (created, but the relayed reply does not match the
+  spec — it runs regardless; read or cancel it by its `workflow_id`).
 
 Say these differences BEFORE swapping a local step for a remote one, because
 each is a way the same prompt does different work:
 
 * **each step knows only its prompt** — no conversation, no other step's
   output (under `/sc:run`, only the `input_from` files SwarmCloud stages);
+* **its prompt is retyped by a relay** — the `sc:remote` row copies it into
+  `swarm_dispatch`, and a long prompt can arrive changed; the task's input in
+  the console is what the remote agent actually got;
 * **its tools are the runner's**, inside its container, not this session's
   tools, MCP servers or permission rules;
 * **its model is pinned on the job**, by the profile; a `model` option on the
