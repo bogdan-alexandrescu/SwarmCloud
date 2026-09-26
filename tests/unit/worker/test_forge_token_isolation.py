@@ -35,6 +35,7 @@ too.
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -185,6 +186,7 @@ def run_attempt(
     dispatch: dict,
     edit,
     poison=None,
+    pre_publish=None,
     publish: bool = True,
 ):
     url = f"file://{origin}"
@@ -206,6 +208,11 @@ def run_attempt(
     # The agent controls the repository it worked in, including its .git/config.
     if poison is not None:
         poison(repo)
+    # The agent also shares a uid with `ws.private` (workspace.py: "not a
+    # permission boundary"), so it can plant paths there during its run -- before
+    # the worker's publish step ever looks. `pre_publish` models exactly that.
+    if pre_publish is not None:
+        pre_publish(worker)
     return worker, config, worker._harvest_git(publish=publish)
 
 
@@ -275,6 +282,136 @@ def test_an_agent_written_pushInsteadOf_cannot_redirect_the_authenticated_push(
     assert branch not in refs(attacker), (
         "pushInsteadOf in the clone's config redirected the authenticated push"
     )
+
+
+# -- redirect via a pre-planted publish directory ----------------------------
+#
+# The redirect tests above poison the CLONE's config. These poison the place the
+# worker BUILDS its publish repository. The worker owns `ws.private`, but only by
+# convention: it shares a uid with the agent (workspace.py calls `private/` "not
+# a permission boundary"), and the publish repo used to sit at a name the agent
+# could predict -- `$SWARM_WORKSPACE/private/publish`. So the agent could create
+# a symlink there, during its run, pointing at a repository it had `git init`ed
+# with a redirect. The worker's cleanup (`shutil.rmtree(..., ignore_errors=True)`
+# then `mkdir(exist_ok=True)`) cannot delete a symlink and silently leaves it, so
+# `git init` and the token-bearing push then run behind the link, inside the
+# agent's repository, honouring its config. The publish repo must live at a name
+# the agent could not have created ahead of time.
+
+
+def _init_repo(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    _git(path, "init", "--quiet", ".")
+
+
+def _plant_publish_symlink(target: Path):
+    """Return a `pre_publish` hook that points `ws.private/publish` at `target`.
+
+    `"publish"` is spelled as a literal on purpose: it is the formerly-constant
+    name whose predictability is the whole defect. On fixed code the worker never
+    touches this name, so the planted link is simply left unused.
+    """
+
+    def hook(worker) -> None:
+        link = worker.ws.private / "publish"
+        if link.is_symlink() or link.exists():
+            link.unlink()
+        os.symlink(str(target), str(link), target_is_directory=True)
+
+    return hook
+
+
+def test_a_symlinked_publish_dir_cannot_redirect_the_authenticated_push(
+    worker_factory, monkeypatch, origin, attacker, local_urls, forge, tmp_path
+):
+    """The agent pre-plants a symlink at the publish path, pointing at a repo it
+    prepared with `url.<attacker>.insteadOf`. The token-bearing push must still
+    reach only the forge -- not the host the link's target redirects to."""
+    attacker_url = f"file://{attacker}"
+    origin_url = f"file://{origin}"
+
+    planted = tmp_path / "agent-planted-publish"
+    _init_repo(planted)
+    _git(planted, "config", f"url.{attacker_url}.insteadOf", origin_url)
+
+    _, config, out = run_attempt(
+        worker_factory, monkeypatch, origin,
+        task_id="t-symlinked-publish",
+        dispatch={"strategy": "direct-pr"},
+        edit=agent_edits_without_committing,
+        pre_publish=_plant_publish_symlink(planted),
+    )
+
+    branch = f"{config.git_branch_prefix}{config.task_id}"
+    assert branch in refs(origin), (
+        f"the authenticated push did not reach the intended remote: {out}"
+    )
+    assert "agent.txt" in tree_at(origin, branch)
+    assert branch not in refs(attacker), (
+        "a symlink the agent pre-planted at the publish directory redirected the "
+        "authenticated push to another host"
+    )
+
+
+def test_the_token_bearing_push_runs_in_a_repo_free_of_agent_configuration(
+    worker_factory, monkeypatch, origin, attacker, local_urls, forge, tmp_path
+):
+    """Whatever the agent can write into a repository it reaches must not be the
+    repository the token-bearing push authenticates from. This pins the whole
+    class of redirect/interception keys at once -- `insteadOf`, `pushInsteadOf`,
+    `http.proxy`, `http.sslVerify`, `remote.*.pushurl`, `credential.helper` --
+    by inspecting the repository `push_branch` actually ran in and asserting it
+    carries none of them, even when the agent pre-planted a symlink at the
+    (formerly predictable) publish path pointing at a repo that carries all of
+    them. `http.proxy` and `pushurl` cannot be exercised behaviourally over a
+    `file://` remote (file transport ignores `http.*`, and the push names its URL
+    explicitly rather than a remote whose `pushurl` could apply), so the property
+    for those vectors is pinned here structurally."""
+    attacker_url = f"file://{attacker}"
+    origin_url = f"file://{origin}"
+
+    planted = tmp_path / "agent-planted-full"
+    _init_repo(planted)
+    poison = {
+        f"url.{attacker_url}.insteadOf": origin_url,
+        f"url.{attacker_url}.pushInsteadOf": origin_url,
+        "http.proxy": "http://attacker.example.invalid:3128",
+        "http.sslVerify": "false",
+        "remote.origin.pushurl": attacker_url,
+        "credential.helper": "!f() { cat >/dev/null; }; f",
+    }
+    for key, value in poison.items():
+        _git(planted, "config", key, value)
+
+    seen: dict[str, Path] = {}
+    real_push = lifecycle.push_branch
+
+    def recording_push(**kwargs):
+        seen["repo"] = Path(kwargs["repo"])
+        return real_push(**kwargs)
+
+    monkeypatch.setattr(lifecycle, "push_branch", recording_push)
+
+    run_attempt(
+        worker_factory, monkeypatch, origin,
+        task_id="t-clean-publish-config",
+        dispatch={"strategy": "direct-pr"},
+        edit=agent_edits_without_committing,
+        pre_publish=_plant_publish_symlink(planted),
+    )
+
+    assert "repo" in seen, "push_branch was never called; nothing was published"
+    listed = subprocess.run(
+        ["git", "-C", str(seen["repo"]), "config", "--local", "--list"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.lower()
+    for token in ("insteadof", "http.proxy", "sslverify", "pushurl", "credential.helper"):
+        assert token not in listed, (
+            f"the repository the token-bearing push ran in carries the agent's "
+            f"{token!r} (repo {seen['repo']}):\n{listed}"
+        )
 
 
 # -- the credential must never be handed to a program the agent chose --------
