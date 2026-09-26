@@ -613,6 +613,78 @@ describe('Outputs lists every file the run uploaded, past one page of the listin
   })
 })
 
+describe('Outputs says which working-folder files were not uploaded, and why', () => {
+  // #225 REVIEW. A task with no repository uploads what its agent created in
+  // its working folder, within 50 files and 25 MiB (#184, owner decision of
+  // 2026-09-26). The worker records every file it did not upload, with the
+  // reason, in `result_summary.workdir_outputs`, and the pane drew none of
+  // it: a file over the cap, one holding a key the worker could not take
+  // out, and one whose name is not UTF-8 were all simply absent. The worker
+  // lists 50 and counts the rest, and its log names every one.
+  const NOT_UPLOADED = [
+    { name: 'workdir/f50.txt', bytes: 7, reason: 'over cap' },
+    { name: 'workdir/dump.bin', bytes: 4096, reason: 'holds a registered secret that could not be redacted' },
+    { name: 'workdir/caf\\xe9.txt', bytes: 5, reason: 'name is not valid UTF-8' },
+  ]
+  const WORKDIR = {
+    prefix: 'workdir/',
+    uploaded: 50,
+    uploaded_bytes: 4096,
+    not_uploaded: NOT_UPLOADED,
+    not_uploaded_count: 55,
+    symlinks_skipped: 0,
+    working_folder_is_symlink: false,
+    cap_files: 50,
+    cap_bytes: 26_214_400,
+  }
+
+  function standalone(workdir: unknown): Record<string, Route> {
+    return finishedRoutes({
+      [`/v1/tasks/${REF}`]: {
+        task: task({
+          repository_url: null,
+          repository_ref: null,
+          result_summary: {
+            artifacts: [],
+            logs: {},
+            agent_streams: { stdout: 'claude-code.stdout.log', stderr: 'claude-code.stderr.log', transcript: 'claude-transcript.json', transcript_skipped: null },
+            workdir_outputs: workdir,
+          },
+        }),
+      },
+    })
+  }
+
+  it('lists each one with its size and its reason, and says how many more only the worker log names', async () => {
+    await openPane(standalone(WORKDIR))
+    const out = await sectionReady('Outputs', /not uploaded from the working folder/)
+    const block = out.querySelector<HTMLElement>('.arts-unuploaded')
+    expect(block, 'the files the worker did not upload are not drawn').not.toBeNull()
+    expect(block!.querySelector('.count-chip')?.textContent, 'the count is the page, not the whole').toBe('55')
+    for (const e of NOT_UPLOADED) {
+      const r = row(block!, e.name)
+      expect(r.querySelector('td[data-label="Why"]')?.textContent, `${e.name} has no reason`).toBe(e.reason)
+      expect(r.querySelector('td[data-label="Size"]')?.textContent).toMatch(/\d+ (B|KiB)/)
+    }
+    expect(block!.textContent).toMatch(/52 more, named in the worker log/)
+    const table = block!.querySelector('table')
+    expect(
+      table?.parentElement?.classList.contains('ctl-table') && table.parentElement.classList.contains('is-stacked'),
+      'a table would scroll sideways at 390',
+    ).toBe(true)
+    // Not rows of the file list: nothing here can be downloaded.
+    expect(block!.querySelector('a[download]')).toBeNull()
+    expect(out.querySelector('.arts-files')?.contains(block!)).toBe(false)
+  })
+
+  it('draws nothing for a run that uploaded every file it created, or a task with a repository', async () => {
+    await openPane(standalone({ ...WORKDIR, not_uploaded: [], not_uploaded_count: 0 }))
+    const out = await sectionReady('Outputs', /bundle\.tar/)
+    expect(out.querySelector('.arts-unuploaded')).toBeNull()
+    expect(out.textContent).not.toMatch(/not uploaded from the working folder/)
+  })
+})
+
 // ---------------------------------------------------------------------------
 // Inputs
 // ---------------------------------------------------------------------------

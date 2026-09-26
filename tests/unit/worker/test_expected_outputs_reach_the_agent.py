@@ -210,10 +210,14 @@ def test_the_agent_is_told_the_names_and_the_absolute_artifacts_path(tmp_path, m
 
 
 def _deliverables_line(artifacts: Path) -> str:
-    """The one line every CLI prompt ends with (#184, owner decision of 2026-09-26)."""
+    """The one line every CLI prompt ends with (#184, owner decision of 2026-09-26).
+
+    In the owner's words, information and not an order (#225 review): a
+    repository task gets this line too, and its deliverable is its diff.
+    """
     return (
-        f"Write deliverables to {artifacts} ($SWARM_ARTIFACTS_DIR); "
-        "files there are uploaded and shown in Artifacts."
+        f"Files written to {artifacts} ($SWARM_ARTIFACTS_DIR) "
+        "are uploaded and shown in Artifacts."
     )
 
 

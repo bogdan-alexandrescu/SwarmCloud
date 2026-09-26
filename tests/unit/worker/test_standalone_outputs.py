@@ -9,8 +9,10 @@ the agent made.
 The owner's decision, recorded on #184 the same day, and what each test holds:
 
 1. Every claude-code and codex prompt gets ONE line naming
-   `$SWARM_ARTIFACTS_DIR` ("write deliverables there; files there are uploaded
-   and shown in Artifacts"), built in one place for both runners.
+   `$SWARM_ARTIFACTS_DIR`: files written there are uploaded and shown in
+   Artifacts. Built in one place for both runners, and worded as the owner
+   worded it -- information, not an order -- so a repository task is not told
+   to put its deliverable anywhere but its diff (decision 3).
 2. For a task with NO repository, the worker also uploads, when the attempt
    ends, the files the agent CREATED in its working folder: not files that were
    there before the runner started, not the artifacts folder a second time. At
@@ -37,6 +39,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -67,17 +70,37 @@ WORKDIR_KEY = "workdir_outputs"
 #: The owner's words for a file that did not fit.
 OVER_CAP = "over cap"
 
+#: The other reasons a created file is listed and not uploaded (#225 review).
+HOLDS_SECRET = "holds a registered secret that could not be redacted"
+CORE_DUMP = "a core dump"
+NOT_UTF8 = "name is not valid UTF-8"
+NAME_TOO_LONG = "name is longer than a storage object's 1024 bytes"
+
+#: The worker's WARNING line naming the files it did not upload.
+NOT_UPLOADED_LINE = "files the agent created in its working folder were not uploaded"
+
 #: The QA task's two files, as the agent wrote them.
 ANSWER = "# Answer\n\nThe first ten primes are listed in primes.txt.\n"
 PRIMES = "2\n3\n5\n7\n11\n13\n17\n19\n23\n29\n"
 
 
 def deliverables_line(artifacts_dir: Path | str) -> str:
-    """The owner's line, as it must reach the agent. Spelled out, not imported."""
+    """The owner's line, as it must reach the agent. Spelled out, not imported.
+
+    The owner's words on #184: "one line naming $SWARM_ARTIFACTS_DIR: files
+    written there are uploaded and shown in Artifacts". Information, not an
+    order: every repository task gets this line too, and decision 3 says its
+    deliverable is its diff or pull request.
+    """
     return (
-        f"Write deliverables to {os.path.abspath(artifacts_dir)} ($SWARM_ARTIFACTS_DIR); "
-        "files there are uploaded and shown in Artifacts."
+        f"Files written to {os.path.abspath(artifacts_dir)} ($SWARM_ARTIFACTS_DIR) "
+        "are uploaded and shown in Artifacts."
     )
+
+
+#: How every copy of the line starts, and ends once the directory is named.
+LINE_START = "Files written to "
+LINE_END = "/artifacts ($SWARM_ARTIFACTS_DIR) are uploaded and shown in Artifacts."
 
 
 #: A stand-in for `claude --print`. Its plan is the JSON value the prompt starts
@@ -119,6 +142,20 @@ for rel, text in sorted((plan.get("write_artifact") or {}).items()):
 key = os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("CLAUDE_CODE_OAUTH_TOKEN") or ""
 for rel in plan.get("write_key_into") or []:
     put(rel, ("token=" + key + "\n").encode("utf-8"))
+# Bytes that are not UTF-8 around the key, the way a core dump's environment
+# block holds it: the text rewrite cannot touch this file.
+for rel in plan.get("write_key_binary_into") or []:
+    put(rel, b"\x7fELF\x00\xff\xfe" + key.encode("utf-8") + b"\x00\xff")
+for rel, hexdata in sorted((plan.get("write_binary") or {}).items()):
+    put(rel, bytes.fromhex(hexdata))
+# Names that are not UTF-8, given as hex: an unzipped CP437 archive, a clone
+# with Latin-1 file names.
+for hexname, text in sorted((plan.get("write_raw_name") or {}).items()):
+    with open(bytes.fromhex(hexname), "wb") as fh:
+        fh.write(text.encode("utf-8"))
+for hexname, text in sorted((plan.get("write_raw_name_artifact") or {}).items()):
+    with open(os.path.join(os.fsencode(artifacts), bytes.fromhex(hexname)), "wb") as fh:
+        fh.write(text.encode("utf-8"))
 
 out = {"type": "result", "subtype": "success", "is_error": False, "result": "done"}
 if plan.get("echo_prompt"):
@@ -256,12 +293,12 @@ def test_a_claude_code_prompt_carries_the_deliverables_line_exactly_once(
     prompt = _agent_output(db)["prompt"]
     # The caller's own prompt first, whole.
     assert prompt.startswith(json.dumps(plan)), prompt
-    lines = [line for line in prompt.splitlines() if line.startswith("Write deliverables to ")]
+    lines = [line for line in prompt.splitlines() if line.startswith(LINE_START)]
     assert len(lines) == 1, prompt
-    assert lines[0].endswith(
-        "/artifacts ($SWARM_ARTIFACTS_DIR); files there are uploaded and shown in Artifacts."
-    ), lines[0]
+    assert lines[0].endswith(LINE_END), lines[0]
     assert os.path.isabs(lines[0].split(" ")[3])
+    # Information, in the owner's words, not an order.
+    assert "Write deliverables" not in prompt, prompt
 
 
 def test_the_deliverables_line_is_not_repeated_when_later_steps_expect_files(
@@ -272,7 +309,7 @@ def test_the_deliverables_line_is_not_repeated_when_later_steps_expect_files(
 
     assert _run(worker_factory) == ExitCode.OK
     prompt = _agent_output(db)["prompt"]
-    assert prompt.count("Write deliverables to ") == 1, prompt
+    assert prompt.count(LINE_START) == 1, prompt
     assert prompt.count("$SWARM_ARTIFACTS_DIR") == 1, prompt
     # The expected-output list is still there, with each file's full path.
     assert "Later steps of this workflow need these files from you: scan-01.md." in prompt
@@ -446,6 +483,67 @@ def test_a_registered_secret_in_a_working_folder_file_is_redacted_before_upload(
     assert "***REDACTED***" in body, body
 
 
+def _artifact_objects(store: LocalObjectStore) -> list[str]:
+    return store.list_keys(f"tenants/{TENANT}/tasks/task_1/attempts/att_1/artifacts/")
+
+
+def test_a_working_folder_file_holding_a_secret_it_cannot_redact_is_not_uploaded(
+    db, store, worker_factory, agent_cli
+):
+    """The artifacts folder's trade does not carry over (#225 review).
+
+    A binary file in `$SWARM_ARTIFACTS_DIR` is uploaded as-is even when its raw
+    bytes hold a registered secret: the agent chose to deliver it, and
+    corrupting it to take the key out is the wrong trade. The working-folder
+    upload is a net under files nobody chose to deliver, so a file the worker
+    has MEASURED to hold the tenant's credential, and cannot rewrite, stays in
+    the pod. A binary file with no key in it is uploaded exactly as before.
+    """
+    png = "89504e470d0a1a0a0000ff00"
+    _seed(db, {"write_key_binary_into": ["dump.bin"], "write_binary": {"picture.png": png}})
+
+    assert _run(worker_factory) == ExitCode.OK
+    _succeeded(db)
+    names = _workdir_names(db)
+    assert "workdir/dump.bin" not in names, names
+    assert "workdir/picture.png" in names, names
+    assert _object(store, "workdir/picture.png") == bytes.fromhex(png)
+
+    listed = {e["name"]: e for e in _summary(db)[WORKDIR_KEY]["not_uploaded"]}
+    assert listed["workdir/dump.bin"]["reason"] == HOLDS_SECRET, listed
+    # It never left the pod, so it is not reported as a file that left unredacted.
+    unredacted = _summary(db).get("redaction_skipped") or []
+    assert not [e for e in unredacted if "dump.bin" in str(e.get("file"))], unredacted
+    for key in _artifact_objects(store):
+        assert b"test-key-for-" not in store.download_bytes(key), key
+
+
+def test_a_core_dump_is_never_uploaded(db, store, worker_factory, agent_cli):
+    """A program the agent built and ran, crashing with the working folder as
+    its cwd, leaves `core` or `core.<pid>` there: its memory, environment
+    block included, and the CLI's credential is in that environment. Never a
+    deliverable, listed so a reader learns something crashed. A file whose name
+    only starts with "core" is an ordinary file."""
+    _seed(
+        db,
+        {
+            "write_key_binary_into": ["core"],
+            "write_binary": {"core.4242": "7f454c4602010100", "build/core.77": "7f454c46"},
+            "write": {"answer.md": ANSWER, "core.txt": "notes on the core module\n"},
+        },
+    )
+
+    assert _run(worker_factory) == ExitCode.OK
+    _succeeded(db)
+    assert _workdir_names(db) == {"workdir/answer.md", "workdir/core.txt"}, _names(db)
+    listed = {e["name"]: e["reason"] for e in _summary(db)[WORKDIR_KEY]["not_uploaded"]}
+    assert listed == {
+        "workdir/core": CORE_DUMP,
+        "workdir/core.4242": CORE_DUMP,
+        "workdir/build/core.77": CORE_DUMP,
+    }, listed
+
+
 # ---------------------------------------------------------------------------
 # 2. the caps: 50 files, 25 MiB, and nothing dropped silently
 # ---------------------------------------------------------------------------
@@ -475,10 +573,13 @@ def test_past_the_file_cap_the_rest_are_listed_as_not_uploaded_over_cap(
         {"name": f"workdir/f{index:02d}.txt", "bytes": len(f"file {index}\n"), "reason": OVER_CAP}
         for index in range(50, 55)
     ]
-    # And in `artifacts_skipped`, which the Artifacts tab already shows as
-    # "N over cap" with the names.
+    # NOT in `artifacts_skipped` (#225 review). Every reader of that list
+    # calls its names dropped at the artifacts folder's SIZE cap -- the tab's
+    # "dropped at the size cap", a dependant's "exceeded its artifact size
+    # cap" -- and these were dropped at the working folder's FILE cap. The
+    # tab reads them, with their reasons, from `workdir_outputs`.
     skipped = _summary(db).get("artifacts_skipped") or []
-    assert {f"workdir/f{index:02d}.txt" for index in range(50, 55)} <= set(skipped), skipped
+    assert not [name for name in skipped if name.startswith("workdir/")], skipped
 
 
 def test_past_the_byte_cap_a_file_is_listed_and_smaller_ones_still_fit(
@@ -493,7 +594,42 @@ def test_past_the_byte_cap_a_file_is_listed_and_smaller_ones_still_fit(
     block = _summary(db)[WORKDIR_KEY]
     assert block["not_uploaded"] == [{"name": "workdir/big.bin", "bytes": 2000, "reason": OVER_CAP}]
     assert block["uploaded_bytes"] == 20
-    assert "workdir/big.bin" in (_summary(db).get("artifacts_skipped") or [])
+    assert "workdir/big.bin" not in (_summary(db).get("artifacts_skipped") or [])
+
+
+def _logged(log_stream: Any, message: str) -> list[dict[str, Any]]:
+    records = []
+    for line in log_stream.getvalue().splitlines():
+        try:
+            record = json.loads(line)
+        except ValueError:
+            continue
+        if record.get("message") == message:
+            records.append(record)
+    return records
+
+
+def test_every_file_not_uploaded_is_named_in_the_worker_log_past_the_first_50(
+    db, worker_factory, agent_cli, log_stream
+):
+    """The attempt's result lists 50 and counts the rest, because it is a
+    Firestore document with a 1 MiB limit. The worker's log names EVERY one
+    (#225 review: past 50 the names were nowhere, though a comment said the
+    log carried them)."""
+    files = {f"f{index:03d}.txt": "x\n" for index in range(130)}
+    _seed(db, {"write": files})
+
+    assert _run(worker_factory, max_workdir_output_files=2) == ExitCode.OK
+    _succeeded(db)
+    block = _summary(db)[WORKDIR_KEY]
+    assert block["uploaded"] == 2
+    assert block["not_uploaded_count"] == 128
+    assert len(block["not_uploaded"]) == 50
+
+    logged = [name for record in _logged(log_stream, NOT_UPLOADED_LINE) for name in record["files"]]
+    assert sorted(logged) == [
+        f"workdir/f{index:03d}.txt: not uploaded: {OVER_CAP}" for index in range(2, 130)
+    ], logged
 
 
 # ---------------------------------------------------------------------------
@@ -612,6 +748,91 @@ def test_a_working_folder_replaced_by_a_link_is_not_walked(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# names the result summary and the bucket cannot carry (#225 review)
+# ---------------------------------------------------------------------------
+
+
+def _filesystem_takes_non_utf8_names(tmp_path: Path) -> bool:
+    probe = os.path.join(os.fsencode(tmp_path), b"probe-\xe9")
+    try:
+        with open(probe, "wb"):
+            pass
+    except OSError:
+        return False
+    os.unlink(probe)
+    return True
+
+
+def test_a_name_that_is_not_utf8_is_listed_escaped_and_the_result_is_still_written(
+    db, store, tmp_path, worker_factory, agent_cli, log_stream
+):
+    """`os.walk` hands a name that is not UTF-8 over as a str holding lone
+    surrogates. A protobuf string cannot carry one, so a single such name in
+    `result_summary` made `finish` raise, `_safe_finish` raise again, and the
+    reconciler re-run the task -- whose checkpoint brings the same file back,
+    so every attempt ended the same way. The name is listed as the bytes it
+    was, spelled the way `ls -b` and the API's checkpoint listing
+    (`checkpoint_content.displayable`) spell it, and never used as a key. The
+    artifacts folder had the same hole, and is held here too."""
+    if not _filesystem_takes_non_utf8_names(tmp_path):
+        # APFS refuses such names outright, so no agent on a Mac can make one.
+        # CI runs on Linux, where they are ordinary, and must not skip.
+        assert not sys.platform.startswith("linux"), "a Linux filesystem refused a non-UTF-8 name"
+        pytest.skip("this filesystem refuses names that are not UTF-8")
+    raw = b"caf\xe9.txt".hex()
+    _seed(
+        db,
+        {
+            "write": {"answer.md": ANSWER},
+            "write_raw_name": {raw: "cafe\n"},
+            "write_raw_name_artifact": {raw: "cafe\n"},
+        },
+    )
+
+    assert _run(worker_factory) == ExitCode.OK
+    _succeeded(db)
+    summary = _summary(db)
+    # What Firestore needs: every string in the document is UTF-8.
+    json.dumps(summary, ensure_ascii=False).encode("utf-8")
+    # And the worker's log, written to stdout as UTF-8 under LC_ALL=C.UTF-8.
+    for line in log_stream.getvalue().splitlines():
+        line.encode("utf-8")
+
+    listed = {e["name"]: e for e in summary[WORKDIR_KEY]["not_uploaded"]}
+    assert listed["workdir/caf\\xe9.txt"] == {
+        "name": "workdir/caf\\xe9.txt",
+        "bytes": 5,
+        "reason": NOT_UTF8,
+    }, listed
+    assert "workdir/answer.md" in _names(db)
+    assert "caf\\xe9.txt" in (summary.get("artifacts_skipped") or []), summary.get("artifacts_skipped")
+    assert not [name for name in _names(db) if name.endswith(".txt") and "caf" in name], _names(db)
+
+
+@pytest.mark.skipif(
+    not sys.platform.startswith("linux"), reason="a 1,200-byte path is past macOS's PATH_MAX"
+)
+def test_a_path_longer_than_a_storage_object_name_is_listed_shortened(
+    db, store, worker_factory, agent_cli
+):
+    """GCS names an object in at most 1,024 bytes of UTF-8, so a longer path
+    cannot be uploaded under its name. Its whole spelling -- up to 4,096 bytes
+    -- in each of 50 entries would also take a fifth of the 1 MiB Firestore
+    allows the task document. It is listed with its name cut short."""
+    deep = "/".join(["d" * 40] * 30) + "/f.txt"
+    _seed(db, {"write": {"answer.md": ANSWER, deep: "deep\n"}})
+
+    assert _run(worker_factory) == ExitCode.OK
+    _succeeded(db)
+    assert _workdir_names(db) == {"workdir/answer.md"}, _names(db)
+    (entry,) = _summary(db)[WORKDIR_KEY]["not_uploaded"]
+    assert entry["reason"] == NAME_TOO_LONG, entry
+    assert entry["bytes"] == 5
+    assert entry["name"].startswith("workdir/" + "d" * 40 + "/"), entry
+    assert len(entry["name"].encode("utf-8")) <= 300, len(entry["name"])
+
+
+# ---------------------------------------------------------------------------
 # 3. unchanged: a repository task, and runners that are not CLI agents
 # ---------------------------------------------------------------------------
 
@@ -646,7 +867,8 @@ def test_a_repository_task_is_unchanged(db, tmp_path, monkeypatch, worker_factor
         gitops, "validate_repository_url", lambda url: url if url.startswith(allowed) else real(url)
     )
 
-    _seed(db, {"write": {"answer.md": ANSWER, "repo/agent.txt": "a change\n"}})
+    plan = {"echo_prompt": True, "write": {"answer.md": ANSWER, "repo/agent.txt": "a change\n"}}
+    _seed(db, plan)
     db.doc("tasks/task_1")["repository_url"] = f"file://{origin}"
 
     assert _run(worker_factory) == ExitCode.OK
@@ -656,6 +878,22 @@ def test_a_repository_task_is_unchanged(db, tmp_path, monkeypatch, worker_factor
     assert summary["git"].get("dirty_count", 0) >= 1, summary["git"]
     assert _workdir_names(db) == set(), _names(db)
     assert WORKDIR_KEY not in summary
+
+    # ITS PROMPT (#225 review). Decision 1 reaches every claude-code prompt,
+    # this one included, and decision 3 says a repository task's deliverable
+    # is its diff or pull request. So the line it gets is the owner's
+    # information -- where files ARE uploaded from -- and nothing the platform
+    # appends orders the agent to write its deliverable anywhere. An order
+    # here is how "write docs/design.md" ends up in the artifacts folder and
+    # out of the pull request.
+    prompt = _agent_output(db)["prompt"]
+    assert prompt.startswith(json.dumps(plan)), prompt
+    appended = prompt[len(json.dumps(plan)):]
+    lines = [line for line in appended.splitlines() if line.strip()]
+    assert len(lines) == 1, appended
+    assert lines[0].startswith(LINE_START) and lines[0].endswith(LINE_END), lines[0]
+    assert "Write deliverables" not in prompt, prompt
+    assert not any(line.lstrip().lower().startswith("write") for line in lines), lines
 
 
 def test_a_mock_task_uploads_nothing_from_its_working_folder(db, worker_factory):
