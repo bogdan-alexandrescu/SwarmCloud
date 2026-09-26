@@ -4027,11 +4027,14 @@ class Worker:
             declared=self._expected_outputs,
         )
         skipped: list[str] = []
-        for shown in plan.unstorable:
+        for name in plan.unstorable:
             # A name whose bytes are not UTF-8 (#225 review): no object can be
             # named with it, and as a lone surrogate in the summary it made
             # `finish` raise, and the next attempt fail the same way. Named as
             # the bytes it was, in the log and the skipped list.
+            # SCRUBBED FIRST (#232 review): cutting a raw name let a
+            # registered secret crossing character 256 survive in part.
+            shown = standalone_mod.shown(self._scrub(name))
             self.log.warning(
                 "an artifact's name is not valid UTF-8, so no object can be "
                 "named with it; not uploaded",

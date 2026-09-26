@@ -149,9 +149,13 @@ class Plan:
     cap (`max_artifact_bytes`) and an upload error can still drop one of them;
     they are listed in `artifacts_skipped` as before.
 
-    `unstorable` is each name that is not UTF-8, as `standalone.shown` spells
-    it: no object can be named with it and no Firestore string can carry it
-    (#225 review). `not_uploaded` is `{"name", "bytes", "reason"}` for every
+    `unstorable` is each name that is not UTF-8, RAW (#232 review): no object
+    can be named with it and no Firestore string can carry it (#225 review).
+    The caller scrubs before it shows one -- `standalone.shown(self._scrub(name))`,
+    the same order the other three sites in `lifecycle.py` use -- because a
+    name cut to `standalone.shown`'s length FIRST can sever a registered
+    secret at the cut and leave its leading fragment unscrubbed. `not_uploaded`
+    is `{"name", "bytes", "reason"}` for every
     file past the cap (`OVER_CAP`) or over the name bound (`NAME_TOO_LONG`),
     with its WHOLE name, for the log. Neither takes a place under the cap. A
     DECLARED name is never given `NAME_TOO_LONG` (#232 review, `plan`'s
@@ -183,7 +187,9 @@ def plan(
     not_uploaded: list[dict[str, Any]] = []
     for name, size in upload_order(files, first=first):
         if not standalone.storable(name):
-            unstorable.append(standalone.shown(name))
+            # RAW, not `standalone.shown(name)`: the caller scrubs before it
+            # cuts (#232 review). See `Plan.unstorable`'s docstring.
+            unstorable.append(name)
         elif not fits(name) and name not in declared_names:
             not_uploaded.append({"name": name, "bytes": size, "reason": NAME_TOO_LONG})
         elif len(take) >= cap:
