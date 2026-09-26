@@ -110,6 +110,9 @@ if [[ "${ADD_PROVIDER_GIVEN}" -eq 1 ]]; then
   case "${ADD_PROVIDER}" in
     "")                die "--add-provider needs a provider name (e.g. anthropic, openai, git)" ;;
     *[!a-z0-9-]*)      die "provider '${ADD_PROVIDER}' must be lowercase letters, digits and hyphens" ;;
+    *-refresh)         die "provider '${ADD_PROVIDER}' names the -refresh half of a subscription credential,
+  which only the quota broker may read -- never the tenant's worker. Add '${ADD_PROVIDER%-refresh}'
+  instead: that binds the worker to the short-lived half the broker publishes." ;;
   esac
 fi
 
@@ -402,13 +405,19 @@ if [[ "${ADD_PROVIDER_GIVEN}" -eq 1 ]]; then
   permission and run this again. Nothing was changed."
       ;;
   esac
+  run gcloud secrets add-iam-policy-binding "${secret}" \
+    --project "${PROJECT_ID}" \
+    --member "serviceAccount:${GSA_EMAIL}" \
+    --role roles/secretmanager.secretAccessor --quiet >/dev/null
+  ok "${secret}: ${GSA_ID} may read it"
+
   # 2. the list.
   CURRENT_CREDS="$(jq -c '[(.credentials // [])[] | tostring]' <<<"${TENANT_DOC}")"
   if jq -e --arg p "${provider}" 'any(.[]; . == $p)' <<<"${CURRENT_CREDS}" >/dev/null; then
     ok "tenants/${TENANT_ID} already lists ${provider}; credentials unchanged: $(jq -r 'join(", ")' <<<"${CURRENT_CREDS}")"
   else
     # `unique` sorts, as `sorted(set(...))` does in register_credential.
-    NEW_CREDS="$(jq -c --arg p "${provider}" '[$p]' <<<"${CURRENT_CREDS}")"
+    NEW_CREDS="$(jq -c --arg p "${provider}" '. + [$p] | unique' <<<"${CURRENT_CREDS}")"
     UPDATE_TIME="$(jq -r '.updateTime // ""' <<<"${TENANT_RAW}")"
     [[ "${UPDATE_TIME}" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z$ ]] \
       || die "tenants/${TENANT_ID} came back without a usable updateTime ('${UPDATE_TIME}'), so the
@@ -419,6 +428,7 @@ if [[ "${ADD_PROVIDER_GIVEN}" -eq 1 ]]; then
     else
       fs_patch "tenants/${TENANT_ID}" "credentials" \
         "$(jq -c '{credentials:{arrayValue:{values:map({stringValue:.})}}}' <<<"${NEW_CREDS}")" \
+        "${UPDATE_TIME}" \
         || die "tenants/${TENANT_ID} was not updated (Firestore's answer is above). If it says
   FAILED_PRECONDITION, the document changed after it was read: run this again to add
   ${provider} to the list as it is now. The grant above is in place and inert on its own --
@@ -426,12 +436,6 @@ if [[ "${ADD_PROVIDER_GIVEN}" -eq 1 ]]; then
       ok "tenants/${TENANT_ID} credentials: $(jq -r 'join(", ")' <<<"${CURRENT_CREDS}") -> $(jq -r 'join(", ")' <<<"${NEW_CREDS}")"
     fi
   fi
-
-  run gcloud secrets add-iam-policy-binding "${secret}" \
-    --project "${PROJECT_ID}" \
-    --member "serviceAccount:${GSA_EMAIL}" \
-    --role roles/secretmanager.secretAccessor --quiet >/dev/null
-  ok "${secret}: ${GSA_ID} may read it"
 
   hr
   ok "tenant ${TENANT_ID} has ${provider}"
