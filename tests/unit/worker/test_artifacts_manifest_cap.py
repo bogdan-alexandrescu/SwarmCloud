@@ -34,6 +34,8 @@ searches for.
 from __future__ import annotations
 
 import io
+import os
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -49,6 +51,7 @@ from fakes import FakeSecretClient
 from test_standalone_outputs import (
     PROFILE,
     RUNNER_OWN_ARTIFACTS,
+    _filesystem_takes_non_utf8_names,
     _logged,
     _names,
     _run,
@@ -471,6 +474,81 @@ def test_a_secret_crossing_the_name_cut_leaves_no_fragment(db, store, tmp_path):
 
     skipped = summary.get("artifacts_skipped") or []
     assert skipped, "the long name must have been dropped for this test to mean anything"
+    assert not any(leaked_fragment in name for name in skipped), skipped
+    assert leaked_fragment not in log.getvalue(), log.getvalue()
+    # The control: scrubbing must not have missed the key entirely, only cut
+    # around it -- the fragment is a genuine prefix of the registered value.
+    assert key.startswith(leaked_fragment)
+
+
+def test_a_secret_crossing_the_unstorable_shown_cut_leaves_no_fragment(db, store, tmp_path):
+    """The same bug as the test above, on the OTHER branch that lists a name
+    with `standalone.shown`: a name that is not valid UTF-8.
+
+    `artifact_manifest.plan()` used to put the SHOWN (already 256-character-cut)
+    string into `Plan.unstorable`: `unstorable.append(standalone.shown(name))`.
+    `_upload_outputs` then logged and listed that string as-is, with no scrub
+    at all -- unlike the `NAME_TOO_LONG` branch beside it, which scrubs the raw
+    name before cutting it. A registered secret crossing character 256 of a
+    not-UTF-8 name reached the WARNING log and `artifacts_skipped` whole, not
+    even cut in half.
+
+    `plan()` now returns the RAW name in `unstorable`, and `_upload_outputs`
+    applies `standalone.shown(self._scrub(name))`, the same order the other
+    three sites in `lifecycle.py` use.
+
+    The name is ASCII except for its very last byte, `0xff`, which is not
+    valid UTF-8 (`os.walk` hands it back as the lone surrogate `\\udcff`), so
+    it lands in `unstorable`, not `not_uploaded`. The stand-in provider key
+    sits entirely in the ASCII part, starting before character 256 and ending
+    after it -- crossing the cut, not sitting on one side of it -- the same
+    layout the `NAME_TOO_LONG` test above uses, so the two tests are provably
+    testing the same class of bug on the two different branches."""
+    if not _filesystem_takes_non_utf8_names(tmp_path):
+        assert not sys.platform.startswith("linux"), "a Linux filesystem refused a non-UTF-8 name"
+        pytest.skip("this filesystem refuses names that are not UTF-8")
+
+    key = "sk-ant-api03-" + "S" * 40
+    body = "a" * 230 + key + "z" * 36
+    assert len(body) == 319
+    long_name = body[:150] + "/" + body[150:]
+    start = long_name.index(key)
+    end = start + len(key)
+    assert start < 256 < end, "the key must cross the 256th character, not sit on one side of it"
+    # The exact fragment a CUT-BEFORE-SCRUB bug leaves behind. Here it is
+    # never even cut -- the pre-fix code never scrubbed this branch at all --
+    # but the same fragment length keeps this test's shape aligned with the
+    # `NAME_TOO_LONG` test above.
+    leaked_fragment = key[: 256 - start]
+    assert 0 < len(leaked_fragment) < len(key)
+
+    seed_attempt(db, runner_profile="claude-code")
+    seed_tenant(db, credentials=["anthropic"])
+    log = io.StringIO()
+    worker, _config, _ = build_worker(
+        db,
+        store,
+        tmp_path,
+        log,
+        runner_profile="claude-code",
+        secret_client=FakeSecretClient({f"swarm-tenant-{TENANT}-anthropic": key}),
+    )
+    worker.ws = ws = workspace_mod.create(tmp_path / "ws", "att_1")
+    worker._build_child_env()  # registers the key for redaction
+
+    # Written as raw bytes, not `write_text`: a Python str cannot hold the
+    # invalid trailing byte that makes this name not UTF-8.
+    dir_bytes = body[:150].encode("utf-8")
+    file_bytes = body[150:].encode("utf-8") + b"\xff"
+    root = os.fsencode(ws.artifacts)
+    os.makedirs(os.path.join(root, dir_bytes))
+    with open(os.path.join(root, dir_bytes, file_bytes), "wb") as fh:
+        fh.write(b"x\n")
+
+    summary = worker._upload_outputs()
+
+    skipped = summary.get("artifacts_skipped") or []
+    assert skipped, "the not-UTF-8 name must have been dropped for this test to mean anything"
     assert not any(leaked_fragment in name for name in skipped), skipped
     assert leaked_fragment not in log.getvalue(), log.getvalue()
     # The control: scrubbing must not have missed the key entirely, only cut
