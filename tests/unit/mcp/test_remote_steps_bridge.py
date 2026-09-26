@@ -6,10 +6,14 @@ plugin's `sc:remote` agent, and a whole SwarmCloud workflow shown by `/sc:run`
 SwarmCloud. Both halves are agents whose only tools are the bridge's, so what
 those agents need and the MCP tools lacked is built here and held here:
 
-* `swarm_dispatch` takes a delivery `strategy` (collect | direct-pr) and, when a
-  caller names no repository, clones the repository and PUSHED branch of the
-  checkout the bridge runs in -- refusing, before anything travels, a branch a
-  remote agent could not see (`swarm_mcp.checkout`);
+* `swarm_dispatch` takes a delivery `strategy` (collect | direct-pr) and,
+  `infer: true` OPT-IN ONLY (owner decision, 2026-09-26: a repository only when
+  given, or inferred by request -- not by default), clones the repository and
+  PUSHED branch of the checkout the bridge runs in, pinned at its current
+  commit -- refusing, before anything travels, a branch a remote agent could
+  not see (`swarm_mcp.checkout`). `sc:remote` and `/sc:run` pass `infer: true`
+  on every call; a caller that names neither `repo` nor `infer` gets no
+  repository, exactly as before this PR;
 * `swarm_follow` takes an opaque `since` token, can answer as short narrated
   lines, can gather for a window, and hands a finished task's outcome back --
   its answer, the JSON object that answer ends with, its spend and the rest
@@ -152,15 +156,43 @@ def pushed(tmp_path, monkeypatch):
 
 
 @needs_git
-def test_an_unnamed_repository_is_the_checkouts_pushed_branch_over_https(pushed):
+def test_the_default_clones_nothing_even_inside_a_checkout(pushed):
+    """Owner decision, 2026-09-26: `swarm_dispatch` goes back to today's
+    behaviour -- a repository only when given, or `infer: true` to opt in.
+    Neither is passed here, so this is a no-op even inside a pushed checkout,
+    and git is never even consulted."""
     recorder = _Recorder()
     reply = _dispatch(recorder)
+
+    assert "repository_url" not in _sent_payload(recorder)
+    assert reply["repository"]["source"] == "none"
+
+
+@needs_git
+def test_no_repository_is_refused_as_an_unknown_argument(pushed):
+    """`no_repository` existed only to suppress the OLD always-on default. The
+    default is now off, so the flag is gone outright -- a caller still sending
+    it is refused by name, not silently ignored."""
+    recorder = _Recorder()
+    with pytest.raises(SwarmError, match="no_repository"):
+        _dispatch(recorder, no_repository=True)
+    assert recorder.sent == []
+
+
+@needs_git
+def test_infer_true_sends_the_checkouts_pushed_branch_pinned_at_its_commit(pushed):
+    """`infer: true` is the opt-in `sc:remote` and `/sc:run` pass on every
+    call. What travels is the commit the branch is pushed AT, not the branch
+    name -- a moving branch pointer is not what a pinned remote clone should
+    chase."""
+    recorder = _Recorder()
+    reply = _dispatch(recorder, infer=True)
 
     payload = _sent_payload(recorder)
     # https, because the worker authenticates a clone with an HTTPS token and
     # runs ssh with no key: `git@github.com:...` as written clones nothing.
     assert payload["repository_url"] == "https://github.com/acme/widgets.git"
-    assert payload["repository_ref"] == "lane/x"
+    assert payload["repository_ref"] == _head(pushed)
     assert reply["repository"]["source"] == "checkout"
     assert reply["repository"]["commit"] == _head(pushed)
 
@@ -175,7 +207,7 @@ def test_a_branch_with_unpushed_commits_is_refused_before_anything_travels(pushe
     recorder = _Recorder()
 
     with pytest.raises(SwarmError) as caught:
-        _dispatch(recorder)
+        _dispatch(recorder, infer=True)
 
     message = str(caught.value)
     assert "1 commit(s)" in message and "not on origin/lane/x" in message, message
@@ -193,7 +225,7 @@ def test_a_branch_that_was_never_pushed_is_refused_with_the_push_command(pushed)
     recorder = _Recorder()
 
     with pytest.raises(SwarmError) as caught:
-        _dispatch(recorder)
+        _dispatch(recorder, infer=True)
 
     assert "git push -u origin lane/y" in str(caught.value), str(caught.value)
     assert recorder.sent == []
@@ -203,7 +235,7 @@ def test_a_branch_that_was_never_pushed_is_refused_with_the_push_command(pushed)
 def test_a_detached_head_is_refused(pushed):
     _git(pushed, "checkout", "--quiet", "--detach")
     with pytest.raises(SwarmError, match="detached HEAD"):
-        _dispatch(_Recorder())
+        _dispatch(_Recorder(), infer=True)
 
 
 @needs_git
@@ -211,9 +243,9 @@ def test_uncommitted_changes_are_named_as_invisible_rather_than_refused(pushed):
     (pushed / "a.txt").write_text("edited here\n")
     recorder = _Recorder()
 
-    reply = _dispatch(recorder)
+    reply = _dispatch(recorder, infer=True)
 
-    assert _sent_payload(recorder)["repository_ref"] == "lane/x"
+    assert _sent_payload(recorder)["repository_ref"] == _head(pushed)
     assert any("NOT visible" in note and "1 uncommitted" in note for note in reply["repository"]["notes"]), (
         reply["repository"]
     )
@@ -230,7 +262,7 @@ def test_a_branch_whose_upstream_has_another_name_is_judged_by_its_own_name(push
     recorder = _Recorder()
 
     with pytest.raises(SwarmError) as caught:
-        _dispatch(recorder)
+        _dispatch(recorder, infer=True)
 
     message = str(caught.value)
     assert "git push -u origin mine" in message, message
@@ -239,8 +271,8 @@ def test_a_branch_whose_upstream_has_another_name_is_judged_by_its_own_name(push
     assert recorder.sent == []
 
     _git(pushed, "update-ref", "refs/remotes/origin/mine", "HEAD")
-    _dispatch(recorder)
-    assert _sent_payload(recorder)["repository_ref"] == "mine"
+    _dispatch(recorder, infer=True)
+    assert _sent_payload(recorder)["repository_ref"] == _head(pushed)
 
 
 @pytest.fixture()
@@ -276,12 +308,13 @@ def test_a_lane_from_origin_main_pushed_without_u_is_accepted(lane_from_main):
     _git(lane_from_main, "update-ref", "refs/remotes/origin/lane/x", "HEAD")
     recorder = _Recorder()
 
-    reply = _dispatch(recorder)
+    reply = _dispatch(recorder, infer=True)
 
     payload = _sent_payload(recorder)
-    assert payload["repository_ref"] == "lane/x", "the lane is cloned by its own name, never as main"
+    assert payload["repository_ref"] == _head(lane_from_main), "pinned at the lane's own head, never main's"
     assert payload["repository_url"] == "https://github.com/acme/widgets.git"
     assert reply["repository"]["commit"] == _head(lane_from_main)
+    assert any("lane/x" in note for note in reply["repository"]["notes"]), "still names the lane by its own branch"
     assert any("upstream is origin/main" in note for note in reply["repository"]["notes"]), reply["repository"]
 
 
@@ -293,7 +326,7 @@ def test_a_lane_from_origin_main_never_pushed_is_refused_without_a_push_to_main(
     recorder = _Recorder()
 
     with pytest.raises(SwarmError) as caught:
-        _dispatch(recorder)
+        _dispatch(recorder, infer=True)
 
     message = str(caught.value)
     assert "git push -u origin lane/x" in message, message
@@ -310,7 +343,7 @@ def test_a_pushed_lane_with_a_new_local_commit_is_refused_against_its_own_branch
     recorder = _Recorder()
 
     with pytest.raises(SwarmError) as caught:
-        _dispatch(recorder)
+        _dispatch(recorder, infer=True)
 
     message = str(caught.value)
     # One commit ahead of ITS OWN branch -- not two, which is main's distance.
@@ -324,17 +357,37 @@ def test_a_workflow_from_a_lane_clones_the_lane_not_its_upstream(lane_from_main)
     _git(lane_from_main, "update-ref", "refs/remotes/origin/lane/x", "HEAD")
     recorder = _Recorder()
 
-    server._call(recorder, "swarm_workflow", {"spec": {"steps": [{"step_id": "a", "prompt": "x"}]}})
+    server._call(
+        recorder, "swarm_workflow",
+        {"spec": {"steps": [{"step_id": "a", "prompt": "x"}]}, "infer": True},
+    )
 
-    assert _sent_payload(recorder)["repository_ref"] == "lane/x"
+    assert _sent_payload(recorder)["repository_ref"] == _head(lane_from_main)
+
+
+@needs_git
+def test_a_workflow_with_no_infer_clones_nothing(lane_from_main):
+    """`swarm_workflow` goes back to today's behaviour too: a repository only
+    when given, or `infer: true` to opt in."""
+    _git(lane_from_main, "update-ref", "refs/remotes/origin/lane/x", "HEAD")
+    recorder = _Recorder()
+
+    reply = json.loads(server._call(
+        recorder, "swarm_workflow", {"spec": {"steps": [{"step_id": "a", "prompt": "x"}]}},
+    ))
+
+    assert "repository_url" not in _sent_payload(recorder)
+    assert reply["repository"]["source"] == "none"
 
 
 @needs_git
 def test_outside_a_checkout_nothing_is_cloned_and_the_reply_says_why():
     """The conftest points the bridge at an empty directory. A null url with
-    no reason would read as a bridge that forgot."""
+    no reason would read as a bridge that forgot. `infer: true` is passed here
+    because the point of this test is that inference itself, when actually
+    requested, still safely produces nothing outside a checkout."""
     recorder = _Recorder()
-    reply = _dispatch(recorder)
+    reply = _dispatch(recorder, infer=True)
 
     payload = _sent_payload(recorder)
     assert "repository_url" not in payload and "repository_ref" not in payload
@@ -344,20 +397,19 @@ def test_outside_a_checkout_nothing_is_cloned_and_the_reply_says_why():
 
 
 @needs_git
-def test_no_repository_clones_nothing_even_inside_a_checkout(pushed):
+def test_the_string_false_is_not_read_as_true_for_infer(pushed):
+    """`bool("false")` is True. A model sends the string as often as the
+    boolean, and read loosely it would silently opt in to inference when the
+    caller meant not to."""
     recorder = _Recorder()
-    reply = _dispatch(recorder, no_repository=True)
-
+    _dispatch(recorder, infer="false")
     assert "repository_url" not in _sent_payload(recorder)
-    assert reply["repository"]["source"] == "none"
 
 
 @needs_git
-def test_the_string_false_is_not_read_as_true(pushed):
-    """`bool("false")` is True. A model sends the string as often as the
-    boolean, and read loosely it would silently clone nothing."""
+def test_the_string_true_is_read_as_true_for_infer(pushed):
     recorder = _Recorder()
-    _dispatch(recorder, no_repository="false")
+    _dispatch(recorder, infer="true")
     assert _sent_payload(recorder)["repository_url"] == "https://github.com/acme/widgets.git"
 
 
@@ -382,7 +434,7 @@ def test_a_credential_in_the_remote_url_never_leaves_this_machine(pushed):
     _git(pushed, "remote", "set-url", "origin", "https://x-access-token:ghp_S3CRET@github.com/acme/widgets.git")
     recorder = _Recorder()
 
-    reply = _dispatch(recorder)
+    reply = _dispatch(recorder, infer=True)
 
     assert _sent_payload(recorder)["repository_url"] == "https://github.com/acme/widgets.git"
     assert "ghp_S3CRET" not in json.dumps(recorder.sent) + json.dumps(reply)
@@ -464,6 +516,59 @@ def test_the_dispatch_schema_gains_no_execution_parameter():
     assert schema["properties"]["strategy"]["enum"] == ["collect", "direct-pr"]
 
 
+def test_the_dispatch_schema_offers_infer_not_no_repository():
+    """Owner decision, 2026-09-26: `no_repository` only existed to suppress an
+    always-on default that no longer exists; `infer` is the opt-in that
+    replaced it, on both `swarm_dispatch` and `swarm_workflow`."""
+    for tool_name in ("swarm_dispatch", "swarm_workflow"):
+        schema = next(t for t in server.TOOLS if t["name"] == tool_name)["inputSchema"]
+        assert "infer" in schema["properties"], tool_name
+        assert "no_repository" not in schema["properties"], tool_name
+
+
+# --------------------------------------------------------------------------
+# swarm_dispatch: at most one per proxy session (`sc:remote` keeps the tool
+# for its whole row, so nothing in Claude Code stops a haiku row calling it
+# twice; the bridge refuses an identical second call rather than pay for a
+# duplicate remote task)
+# --------------------------------------------------------------------------
+
+
+def test_a_second_identical_dispatch_from_the_same_client_is_refused():
+    recorder = _Recorder()
+    first = _dispatch(recorder, label="x")
+    assert first["task_id"] == "task_1"
+
+    with pytest.raises(SwarmError, match="already dispatched"):
+        _dispatch(recorder, label="x")
+
+    # Refused before the round trip: only the first call reached the API.
+    assert len(recorder.sent) == 1
+
+
+def test_a_different_prompt_from_the_same_client_is_not_refused():
+    """A session may legitimately run several `sc:remote` rows one after
+    another; each dispatches its OWN instructions once. Only an identical
+    repeat is a duplicate."""
+    recorder = _Recorder()
+    json.loads(server._call(recorder, "swarm_dispatch", {"prompt": "do the first thing"}))
+    json.loads(server._call(recorder, "swarm_dispatch", {"prompt": "do the second thing"}))
+
+    assert len(recorder.sent) == 2
+
+
+def test_an_identical_dispatch_from_a_different_client_is_not_refused():
+    """The guard is scoped to one proxy session (one client), not process-wide
+    -- otherwise a second, unrelated `sc:remote` row dispatching the same kind
+    of step later in the same bridge process would be wrongly blocked. Both
+    recorders are kept alive for the whole test: the guard must not be keyed
+    by an `id()` a garbage-collected client could hand to a new object."""
+    first_recorder = _Recorder()
+    second_recorder = _Recorder()
+    json.loads(server._call(first_recorder, "swarm_dispatch", {"prompt": "do it"}))
+    json.loads(server._call(second_recorder, "swarm_dispatch", {"prompt": "do it"}))
+
+
 # --------------------------------------------------------------------------
 # swarm_workflow: a whole spec, the same reader as the terminal
 # --------------------------------------------------------------------------
@@ -513,14 +618,14 @@ def test_a_spec_key_a_workflow_does_not_have_is_refused_not_dropped():
 
 
 @needs_git
-def test_a_workflow_that_names_no_repository_clones_the_checkouts_branch(pushed):
+def test_a_workflow_with_infer_true_clones_the_checkouts_branch_pinned_at_its_commit(pushed):
     recorder = _Recorder()
     spec = {"steps": [{"step_id": "a", "prompt": "x"}]}
-    reply = json.loads(server._call(recorder, "swarm_workflow", {"spec": spec}))
+    reply = json.loads(server._call(recorder, "swarm_workflow", {"spec": spec, "infer": True}))
 
     payload = _sent_payload(recorder)
     assert payload["repository_url"] == "https://github.com/acme/widgets.git"
-    assert payload["repository_ref"] == "lane/x"
+    assert payload["repository_ref"] == _head(pushed)
     assert reply["repository"]["source"] == "checkout"
 
 
@@ -663,6 +768,28 @@ def test_the_first_call_returns_at_once_and_says_the_task_is_waiting(swarm, worl
     assert got["stop"] is False, "a waiting task is not a reason to stop following it"
 
 
+def test_a_pending_task_backs_off_instead_of_polling_every_five_seconds(swarm, world, progress):
+    """Owner decision, 2026-09-26 (proxy cost bound): a QUEUED/READY/PARKED
+    task holds no capacity and cannot produce a new line while it stays that
+    way, so polling it every `POLL_SECONDS` for the whole `wait_seconds`
+    window is four routes' worth of reads for no new information. The
+    interval must grow while every task stays pending, reset the moment one
+    does not, and never exceed the window itself."""
+    world.task("task_a", state="QUEUED")
+    clock = _Time()
+    first = progress.watch(swarm, ["task_a"], sleep=clock.sleep, clock=clock.clock)
+    assert clock.slept == [], "the first call always returns at once"
+
+    got = progress.watch(
+        swarm, ["task_a"], since=first["since"], wait_seconds=70,
+        sleep=clock.sleep, clock=clock.clock,
+    )
+
+    assert clock.slept == [5.0, 10.0, 20.0, 30.0, 5.0], clock.slept
+    assert got["polls"] == 6
+    assert got["stop"] is False
+
+
 def test_a_window_returns_when_the_task_finishes_with_its_outcome(swarm, world, progress):
     """The whole of `sc:step`'s loop, against the real logs, events and
     attempts routes: narrated progress, then the outcome, in one call that
@@ -759,11 +886,16 @@ def test_a_failed_task_hands_back_its_error_and_no_invented_answer(swarm, world,
     doc = world.db.docs["tasks/task_a"]
     doc["last_error"] = "claude-code exited 1: boom"
     doc["result_summary"] = {}
+    doc["end_cause"] = "TIMEOUT"
     world.db.docs["attempts/att_1"].update({"exit_code": 1, "error": "boom"})
 
     outcome = progress.outcome(swarm, swarm.task("task_a"))
 
     assert outcome["state"] == "FAILED"
+    # Contract request 23 (#217): a task's typed end_cause, so a workflow row
+    # reading `outcome` gets the same classification the outcome ledger does,
+    # not free-text `last_error` it must sort out itself.
+    assert outcome["end_cause"] == "TIMEOUT"
     assert outcome["last_error"] == "claude-code exited 1: boom"
     assert outcome["answer"] is None and outcome["answer_json"] is None
     why = outcome["answer_unavailable_because"]

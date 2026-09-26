@@ -212,6 +212,32 @@ def test_an_agent_is_pinned_to_haiku_at_low_effort(path):
     )
 
 
+@pytest.mark.parametrize("name", ["remote", "step"])
+def test_a_proxy_row_is_capped_well_under_claude_codes_own_turn_limit(name):
+    """Owner decision, 2026-09-26 (proxy cost bound): a haiku row that only
+    relays a remote task must not be able to poll `swarm_follow` for hours
+    before Claude Code itself intervenes. `maxTurns: 60` is the bound; `sc:
+    workflow` submits once and reads state once, so it keeps its own smaller
+    cap."""
+    fields, _ = _load(_PLUGIN / "agents" / f"{name}.md")
+    assert fields.get("maxTurns") == 60, f"{name}.md must cap at 60 turns, found {fields.get('maxTurns')!r}"
+
+
+@pytest.mark.parametrize("name", ["remote", "step"])
+def test_a_proxy_row_at_its_turn_cap_reports_running_not_silence(name):
+    """Claude Code's own `maxTurns` is a hard kill with no chance to answer.
+    A row must stop ASKING before that -- well inside its 60-turn budget --
+    and answer with a state Claude Code can read, plus how to see the rest:
+    `swarm follow <task_id>` is the terminal command every other tail/follow
+    instruction in this file spells out too."""
+    _, body = _load(_PLUGIN / "agents" / f"{name}.md")
+    flat = " ".join(body.split())
+    assert "running" in flat.lower()
+    assert "swarm follow <task_id>" in flat, (
+        f"{name}.md must tell a capped row to say `swarm follow <task_id>` to resume"
+    )
+
+
 @pytest.mark.parametrize("path", _AGENTS, ids=lambda p: p.stem)
 def test_an_agents_tools_are_the_swarmcloud_ones_it_needs_from_the_plugins_server_only(path):
     """`tools` is matched, not resolved: a wrong spelling grants nothing, and
@@ -286,6 +312,24 @@ def test_a_following_agent_stops_on_the_bridges_stop(name):
 def test_the_step_agent_passes_its_step_id_to_the_bridge():
     _, body = _load(_PLUGIN / "agents" / "step.md")
     assert '`step_id: "<step_id>"`' in " ".join(body.split())
+
+
+def test_remote_infers_with_infer_true_not_repo_or_ref():
+    """Owner decision, 2026-09-26: repository inference is opt-in now, so
+    `sc:remote` must ask for it explicitly with `infer: true` -- passing
+    nothing gets nothing, exactly like a plain `swarm_dispatch` call."""
+    _, body = _load(_PLUGIN / "agents" / "remote.md")
+    flat = " ".join(body.split())
+    assert "Do NOT pass `repo` or `ref`" in flat
+    assert "`infer: true`" in flat
+    assert "commit" in flat.lower(), "remote.md must say the repository is pinned at a commit"
+
+
+def test_workflow_submits_with_infer_true_and_forwards_repository_notes():
+    _, body = _load(_PLUGIN / "agents" / "workflow.md")
+    flat = " ".join(body.split())
+    assert '"infer": true' in flat.lower() or "infer: true" in flat.lower()
+    assert "repository_notes" in flat
 
 
 def test_a_schema_mode_failure_is_documented_as_a_throw_and_never_filled_in():
@@ -704,6 +748,28 @@ def test_run_js_narrates_each_step_as_one_line(tmp_path):
         for line in logs
     ), logs
     assert logs[-1] == "wf_1 FAILED"
+
+
+def test_the_submit_schema_carries_repository_notes(tmp_path):
+    """Owner decision, 2026-09-26: every inference note (uncommitted changes
+    not visible, the branch's upstream, the checkout path) must reach the
+    calling workflow -- it cannot, unless `sc:workflow`'s answer schema has
+    somewhere to put it."""
+    got = _run(tmp_path, _SPEC, _ANSWERS)
+    submit = got["calls"][0]
+    assert "repository_notes" in submit["schema"]
+
+
+def test_run_js_logs_the_bridges_repository_inference_notes(tmp_path):
+    submitted = {**_SUBMITTED, "repository_notes": [
+        "inferred from the checkout at /work/widgets: origin/lane/x, pushed at abc123",
+        "3 uncommitted change(s) in this checkout are NOT visible to the remote agent",
+    ]}
+    got = _run(tmp_path, _SPEC, {**_ANSWERS, "SUBMIT": submitted})
+
+    assert "error" not in got, got.get("error")
+    assert any("3 uncommitted change(s)" in line for line in got["logs"]), got["logs"]
+    assert any("origin/lane/x" in line for line in got["logs"]), got["logs"]
 
 
 def test_run_js_returns_the_state_swarmcloud_derived_not_one_of_its_own(tmp_path):
