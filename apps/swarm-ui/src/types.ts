@@ -756,7 +756,14 @@ export interface ResultSummary {
   artifact_bytes?: number
   /** `{stdout: "gs://...", stderr: "gs://..."}`. A stream that failed to upload is absent. */
   logs?: Record<string, string>
-  /** Present only when something was dropped for exceeding max_artifact_bytes. */
+  /**
+   * Files written to `$SWARM_ARTIFACTS_DIR` and not uploaded, the first 50:
+   * over `max_artifact_bytes`, an upload that failed, a name that is not UTF-8
+   * (#225), or a name longer than a manifest entry may carry (#228). A name of
+   * the last two kinds is spelled for reading and cut short, never an address.
+   * Present only when there was one. The files past the FILE cap are not here:
+   * see `artifacts_over_cap`.
+   */
   artifacts_skipped?: string[]
   checkpoint?: { checkpoint_id?: string; [k: string]: unknown }
   /**
@@ -794,7 +801,34 @@ export interface ResultSummary {
    * checks each entry rather than trusting the shape.
    */
   workdir_outputs?: WorkdirOutputs
+  /**
+   * How many files `$SWARM_ARTIFACTS_DIR` held past the per-attempt file cap,
+   * and so were not uploaded (#228, owner decision of 2026-09-26: at most 500
+   * files, because each is an entry in the task's Firestore document, which
+   * holds 1 MiB). The worker's log names every one, 100 to a line; the
+   * summary counts them and lists none. Present only when there were some,
+   * beside `artifacts_cap_files`, the cap they were over. Read both through
+   * `artifactsOverCapOf`.
+   */
+  artifacts_over_cap?: number
+  artifacts_cap_files?: number
   [k: string]: unknown
+}
+
+/**
+ * The files `$SWARM_ARTIFACTS_DIR` held past its file cap, from a summary:
+ * how many, and the cap as the worker applied it. `null` when the summary
+ * records none -- every file fitted, or it was written before #228 -- which
+ * is not a count of zero. `cap` is null when the summary does not carry it,
+ * so a reader never restates a number the worker owns.
+ */
+export function artifactsOverCapOf(
+  summary: ResultSummary | null | undefined,
+): { count: number; cap: number | null } | null {
+  const count: unknown = summary?.artifacts_over_cap
+  if (typeof count !== 'number' || !Number.isFinite(count) || count <= 0) return null
+  const cap: unknown = summary?.artifacts_cap_files
+  return { count, cap: typeof cap === 'number' && Number.isFinite(cap) && cap > 0 ? cap : null }
 }
 
 /**

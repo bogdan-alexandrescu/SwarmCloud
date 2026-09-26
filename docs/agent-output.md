@@ -201,9 +201,10 @@ What decision 2 does, and the reason for each rule:
   upload, 100 to a WARNING line (a line stays well under Cloud Logging's
   256 KiB entry), and the tab says how many only the log names. The first
   build logged the first 50 too, so past 50 a name was nowhere.
-* **Not in `artifacts_skipped`.** Every reader of that list calls a name in it
-  dropped at the artifacts folder's size cap: the tab's "dropped at the size
-  cap", a dependant's "exceeded its artifact size cap". A working-folder file
+* **Not in `artifacts_skipped`.** Every reader of that list reads a name in it
+  as a file of the artifacts folder: the tab's note on that folder's file list
+  ("dropped at the size cap" until #228, "skipped" since), a dependant's
+  "exceeded its artifact size cap". A working-folder file
   is dropped by another cap, or for a reason that is no cap at all, so the
   first build's copy there mislabelled a file the 50-file cap dropped.
 * **Listed and not uploaded, with the reason** (#225 review):
@@ -264,6 +265,76 @@ What this does not do: it does not tell the agent about the net. The line says
 what happens to a file written to `$SWARM_ARTIFACTS_DIR`. A file caught in the
 working folder is a net under the agent that wrote somewhere else, not a
 second place to write.
+
+## At most 500 files from `$SWARM_ARTIFACTS_DIR`
+
+Found by reading on 2026-09-26 (#228), not measured: every file in the
+artifacts folder that fitted `max_artifact_bytes` became one entry in
+`result_summary.artifacts`, with no count cap. `result_summary` is a field of
+the task's Firestore document, which Firestore limits to 1 MiB. An entry is
+about 160 bytes at ordinary name lengths, so an agent that left about 6,000
+small files there would have taken the document past the limit: `finish`
+refused, `_safe_finish` refused again, and the task lost a result that may
+have succeeded. The fake Firestore the unit tests use does not enforce the
+limit, which is why nothing caught it. Since #225 every CLI prompt names the
+folder, so more agents write there.
+
+The owner decided on 2026-09-26, recorded on #228:
+
+* **At most 500 files are uploaded per attempt** (`artifact_manifest.MAX_FILES`,
+  `WorkerConfig.max_artifact_files`). The rest are not uploaded. The summary
+  **counts** them, `artifacts_over_cap`, beside `artifacts_cap_files`, the cap
+  they were over, and lists none of them. Both keys are absent when every file
+  fitted, so a reader never draws a zero as something dropped.
+* **Every name is in the worker log**, 100 to a WARNING line headed "files in
+  $SWARM_ARTIFACTS_DIR were not uploaded", each as `<name>: not uploaded: over
+  cap`. It is the same helper #225's working-folder cap logs through
+  (`Worker._log_not_uploaded`), so the two caps cannot drift apart.
+* **Artifacts > Outputs** shows "not uploaded from $SWARM_ARTIFACTS_DIR" with
+  the count, and #225's count line: "N over the 500-file cap, named in the
+  worker log". The cap is read from the summary, not restated in the UI.
+
+The rules this needed, and why:
+
+* **Which 500.** The names a later step's `expected_outputs` declares come
+  first, so a declared output is never the one dropped. They always fit: each
+  dependant's `input_from` maps one upstream step to one filename, and a
+  workflow has at most 50 steps. Then the files the platform writes into the
+  folder: the agent CLI's stream captures and transcript, which
+  `agent_streams` and the tab's answer and transcript read, and the harvest's
+  patch. Then everything else, shallowest first and then by path, the rule
+  #225 chose for the working folder, so a top-level report is not pushed out
+  by a generated tree beside it. The byte cap is applied in the same order.
+* **The manifest is still listed by path.** The order decides which files
+  are taken. It does not change the order a reader sees them in, or which of
+  them the listing route's first page holds.
+* **A name longer than 256 bytes is not uploaded**
+  (`artifact_manifest.MAX_NAME_BYTES`). The count cap alone does not bound the
+  document. Every
+  entry carries its name twice, as `name` and at the end of its `uri`, and GCS
+  allows 1,024 bytes of object name, so 500 entries at that length are about
+  1 MB on their own. At 256 bytes and the longest ids a deployment makes, 500
+  entries are at most 343 KiB. The worst case of everything else the document
+  can hold is the input (256 KiB), #225's working-folder block (about
+  155 KiB), the two skipped lists (about 67 KiB) and the runner envelope
+  (about 12 KiB). That is about 833 KiB in all. At 512 bytes the sum would pass
+  1 MiB. 256 bytes is a nested path: Linux allows 255 bytes for one file name.
+  A declared name is held to the bound too, and a declared output with a
+  longer name fails its attempt as "written but not uploaded". Such a name is
+  logged with the reason `name is longer than the manifest's 256 bytes`, and
+  listed in `artifacts_skipped`, both cut to 256 characters as #225 cuts a name
+  it lists. A path can be 4,096 bytes, and 100 of those would pass Cloud
+  Logging's 256 KiB entry.
+* **Only what leaves the pod is redacted.** The pass that scrubs registered
+  secrets now runs over the files that will be uploaded, not the whole
+  folder. A file past the cap is not rewritten, and it is not reported in
+  `redaction_skipped` as "uploaded as-is", because it was not uploaded. The
+  agent CLI's captures are scrubbed either way, because a copy of each always
+  goes to `logs/`.
+
+`tests/unit/worker/test_artifacts_manifest_cap.py` holds each rule. The size
+bound is measured with Firestore's own size rules, against a store that
+renders the longest URI a deployment makes.
 
 ## Two kinds of stdout, and the label that was wrong
 

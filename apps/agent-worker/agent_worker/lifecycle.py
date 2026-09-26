@@ -117,12 +117,13 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Iterator
+from typing import Any, Callable, Iterator, Sequence
 
 from swarm_common.models import EndCause, ProviderState, retries_exhausted, utcnow
 from swarm_common.profiles import RESOURCE_CLASSES
 from swarm_common.states import EventType, ParkReason, TaskState
 
+from . import artifact_manifest as manifest_mod
 from . import expected_outputs as expected_mod
 from . import inputs as inputs_mod
 from . import redact as redact_mod
@@ -367,6 +368,12 @@ class Worker:
         # `metadata.expected_outputs` (#149). Kept so `_finalise` can name any
         # the attempt did not upload; see `agent_worker.expected_outputs`.
         self._expected_outputs: tuple[str, ...] = ()
+        # Every file in the artifacts folder the last `_upload_outputs` did not
+        # upload for the file cap or the name bound (#228), by its WHOLE name.
+        # The summary counts them and does not list them, so a declared output
+        # among them is named here as written and not uploaded rather than as
+        # never written (`_written_not_uploaded`).
+        self._artifacts_not_uploaded: tuple[str, ...] = ()
         # A CLI agent's task with no repository has what its agent CREATED in
         # the working folder uploaded, under `workdir/` (#184, owner decision
         # of 2026-09-26; `agent_worker.standalone_outputs`). `_standalone` is
@@ -1984,23 +1991,13 @@ class Worker:
                 "a link is never followed out of the workspace"
             )
         # EVERY NAME, IN THE LOG. The summary below lists the first 50 and
-        # counts the rest (a Firestore document has a 1 MiB limit); these lines
-        # name all of them, `LOG_BATCH` to a line, so a line stays well under
-        # Cloud Logging's 256 KiB entry however many files the agent left.
-        batch = standalone_mod.LOG_BATCH
-        batches = (len(not_uploaded) + batch - 1) // batch
-        for index in range(batches):
-            self.log.warning(
-                "files the agent created in its working folder were not uploaded",
-                count=len(not_uploaded),
-                batch=f"{index + 1} of {batches}",
-                files=[
-                    f"{e['name']}: not uploaded: {e['reason']}"
-                    for e in not_uploaded[index * batch : (index + 1) * batch]
-                ],
-                cap_files=cfg.max_workdir_output_files,
-                cap_bytes=cfg.max_workdir_output_bytes,
-            )
+        # counts the rest (a Firestore document has a 1 MiB limit).
+        self._log_not_uploaded(
+            "files the agent created in its working folder were not uploaded",
+            not_uploaded,
+            cap_files=cfg.max_workdir_output_files,
+            cap_bytes=cfg.max_workdir_output_bytes,
+        )
         self.log.info(
             "uploaded what the agent created in its working folder",
             uploaded=len(uploaded),
@@ -2025,6 +2022,36 @@ class Worker:
                 "cap_bytes": cfg.max_workdir_output_bytes,
             },
         }
+
+    def _log_not_uploaded(
+        self, message: str, entries: Sequence[dict[str, Any]], **fields: Any
+    ) -> None:
+        """Name every file in `entries` in the worker's log, `LOG_BATCH` to a WARNING line.
+
+        `entries` are `{"name", "reason", ...}`, and each is written as
+        "<name>: not uploaded: <reason>". The ONE place both uploads name the
+        files they did not upload: the working folder's (#225 review: past 50
+        a name was nowhere) and the artifacts folder's, past its 500-file cap
+        (#228). A result summary lists at most the first 50 and counts the
+        rest, because it is a Firestore document with a 1 MiB limit; these
+        lines name all of them, and `LOG_BATCH` names to a line keep each well
+        under Cloud Logging's 256 KiB entry however many files the agent left.
+        Every line carries `count`, the whole number, and `batch`, "i of n".
+        Nothing is written for no entries.
+        """
+        batch = standalone_mod.LOG_BATCH
+        batches = (len(entries) + batch - 1) // batch
+        for index in range(batches):
+            self.log.warning(
+                message,
+                count=len(entries),
+                batch=f"{index + 1} of {batches}",
+                files=[
+                    f"{e['name']}: not uploaded: {e['reason']}"
+                    for e in entries[index * batch : (index + 1) * batch]
+                ],
+                **fields,
+            )
 
     def _declared_outputs(self, task: dict[str, Any]) -> tuple[str, ...]:
         """Honour `metadata.expected_outputs`: what later steps will stage from this one.
@@ -2080,7 +2107,7 @@ class Worker:
         missing = expected_mod.missing_outputs(self._expected_outputs, produced)
         if not missing:
             return []
-        skipped = summary.get("artifacts_skipped") or []
+        skipped = self._written_not_uploaded(summary)
         summary[expected_mod.MISSING_SUMMARY_KEY] = self._scrub(list(missing))
         self.log.warning(
             expected_mod.missing_line(
@@ -2097,6 +2124,17 @@ class Worker:
             missing=list(missing),
         )
         return list(missing)
+
+    def _written_not_uploaded(self, summary: dict[str, Any]) -> list[str]:
+        """Names written to the artifacts folder and not uploaded, for the missing-output lines.
+
+        `artifacts_skipped` (the byte cap, an upload error, a name that is not
+        UTF-8), and the files the last upload left out for the 500-file cap or
+        the name bound (#228), which the summary counts but does not list. A
+        declared output among them is "written but not uploaded", whose remedy
+        is the cap, not the agent's prompt (`expected_mod.missing_cause`).
+        """
+        return [*(summary.get("artifacts_skipped") or []), *self._artifacts_not_uploaded]
 
     def _publish_withheld(self, ran_clean: bool) -> str | None:
         """Why this attempt must not publish, or None when it may (#149).
@@ -2163,7 +2201,7 @@ class Worker:
         The retry starts with an empty artifacts directory, because only
         `work/` is checkpointed, so it must write every expected output again.
         """
-        skipped = summary.get("artifacts_skipped") or []
+        skipped = self._written_not_uploaded(summary)
         error = self._scrub(expected_mod.missing_error(missing, skipped=skipped))
         state = self.control.fail_retryably(
             exit_code=exit_code,
@@ -2976,8 +3014,22 @@ class Worker:
         """Redact every registered secret from a value bound for Firestore."""
         return self.log.scrub_value(value)
 
-    def _redact_before_upload(self) -> list[dict[str, Any]]:
-        """Scrub the captured streams and artifacts before they leave the pod.
+    def _redact_before_upload(self, artifacts: Sequence[Path]) -> list[dict[str, Any]]:
+        """Scrub the captured streams and `artifacts` before they leave the pod.
+
+        `artifacts` is the files of the artifacts folder that are going to be
+        uploaded (`artifact_manifest.plan`), not the whole folder (#228). A
+        file past the 500-file cap never leaves the pod, so rewriting it would
+        be work for nothing, and an entry for it in `redaction_skipped` -- "it
+        is uploaded as-is" -- would be false. A name that is not UTF-8 is not
+        in it either: no object can be named with it, so it never leaves the
+        pod and has no `redaction_skipped` entry to earn (#225 review).
+
+        The agent CLI's two captures are scrubbed WHATEVER the cap decided:
+        they live in the artifacts folder, and a copy of each goes to `logs/`
+        on every exit (`_stream_files`), in or out of the manifest. A link
+        planted at a capture's name is neither scrubbed nor copied: rewriting
+        it would rewrite whatever it points at.
 
         A log line is only one of four ways a provider key gets out. The other
         three are `stdout.log` and `stderr.log`, the runner's artifacts, and the
@@ -3006,14 +3058,15 @@ class Worker:
         if ws is None or not self.log.has_secrets:
             return []
         targets = [ws.stdout_path, ws.stderr_path]
-        # Not a file whose name is not UTF-8: `_upload_outputs` does not upload
-        # one (no object can be named with it), so it never leaves the pod and
-        # has no `redaction_skipped` entry to earn (#225 review).
-        targets += [
+        captures = [
             path
-            for path in sorted(ws.artifacts.rglob("*"))
-            if path.is_file() and not path.is_symlink() and standalone_mod.storable(str(path))
+            for _label, path in self._stream_files(ws)
+            if path not in targets and path.is_file() and not path.is_symlink()
         ]
+        targets += captures
+        # Each file once: a capture the cap took is in `artifacts` too.
+        seen = set(captures)
+        targets += [path for path in artifacts if path not in seen]
         targets.append(ws.result_path)
         unredacted: list[dict[str, Any]] = []
         for path in targets:
@@ -3772,6 +3825,21 @@ class Worker:
 
         return "\n".join(lines)
 
+    def _artifacts_first(self) -> list[str]:
+        """The names the artifacts folder's cap takes before any other (#228).
+
+        The expected outputs a later step declares, then the files the platform
+        writes into the folder itself: the agent CLI's stream captures and
+        transcript, and the harvest's patch. `artifact_manifest.upload_order`
+        says why each comes first.
+        """
+        first = list(self._expected_outputs)
+        files = agent_stream_files(self.cfg.runner_profile)
+        if files is not None:
+            first += files.names()
+        first.append(PATCH_NAME)
+        return first
+
     def _upload_outputs(self, *, publish: bool = False, withheld: str = "") -> dict[str, Any]:
         ws = self.ws
         if ws is None:
@@ -3792,35 +3860,72 @@ class Worker:
         # reaped its runner writes nothing twice.
         self._record_cpu()
         # BEFORE the redaction pass, not after: the harvest writes a patch into
-        # `artifacts/`, and `_redact_before_upload` is what scrubs everything
-        # in there. A patch produced afterwards would be the one file in the
+        # `artifacts/`, and `_redact_before_upload` is what scrubs what goes up
+        # from there. A patch produced afterwards would be the one file in the
         # upload that never had a provider key taken out of it.
         try:
             git_summary = self._harvest_git(publish=publish, withheld=withheld)
         except Exception as exc:  # pragma: no cover - defensive
             self.log.exception("the git harvest raised; continuing without it", exc)
             git_summary = {"error": "the git harvest failed unexpectedly"}
-        unredacted = self._redact_before_upload()
-        artifacts: list[dict[str, Any]] = []
-        skipped: list[str] = []
-        total = 0
-        for path in sorted(ws.artifacts.rglob("*")):
+        # WHICH FILES OF THE ARTIFACTS FOLDER, IN WHICH ORDER (#228, owner
+        # decision of 2026-09-26): at most `max_artifact_files`, a declared
+        # output first, no name past the manifest's bound; see
+        # `agent_worker.artifact_manifest`. Decided BEFORE the redaction pass,
+        # so the pass scrubs what is going to leave the pod and nothing else.
+        found: dict[str, int] = {}
+        for path in ws.artifacts.rglob("*"):
             if not path.is_file() or path.is_symlink():
                 continue
-            size = path.stat().st_size
-            rel = path.relative_to(ws.artifacts).as_posix()
-            if not standalone_mod.storable(rel):
-                # A name whose bytes are not UTF-8 (#225 review): no object can
-                # be named with it, and as a lone surrogate in the summary it
-                # made `finish` raise, and the next attempt fail the same way.
-                # Named as the bytes it was, in the log and the skipped list.
-                shown = standalone_mod.shown(rel)
-                self.log.warning(
-                    "an artifact's name is not valid UTF-8, so no object can be "
-                    "named with it; not uploaded",
-                    artifact=shown,
-                )
-                skipped.append(shown)
+            try:
+                found[path.relative_to(ws.artifacts).as_posix()] = path.stat().st_size
+            except OSError:
+                continue
+        plan = manifest_mod.plan(
+            found, first=self._artifacts_first(), cap=self.cfg.max_artifact_files
+        )
+        skipped: list[str] = []
+        for shown in plan.unstorable:
+            # A name whose bytes are not UTF-8 (#225 review): no object can be
+            # named with it, and as a lone surrogate in the summary it made
+            # `finish` raise, and the next attempt fail the same way. Named as
+            # the bytes it was, in the log and the skipped list.
+            self.log.warning(
+                "an artifact's name is not valid UTF-8, so no object can be "
+                "named with it; not uploaded",
+                artifact=shown,
+            )
+            skipped.append(shown)
+        for entry in plan.not_uploaded:
+            if entry["reason"] == manifest_mod.NAME_TOO_LONG:
+                # Listed as #225 lists a name it could not upload: cut short,
+                # so 50 of them cannot take the summary near 1 MiB either.
+                skipped.append(standalone_mod.shown(entry["name"]))
+        # Past the cap: COUNTED in the summary (`artifacts_over_cap`, below),
+        # and every name in the log -- the owner's shape for #228, through the
+        # helper #225's working-folder cap uses. Not in `artifacts_skipped`,
+        # whose readers call a name there dropped at the SIZE cap. A name over
+        # the bound is logged cut short, as #225 logs one: a path runs to
+        # 4,096 bytes, and 100 of those would pass Cloud Logging's 256 KiB
+        # entry. A name under it is logged whole (`shown` leaves it alone).
+        self._artifacts_not_uploaded = tuple(entry["name"] for entry in plan.not_uploaded)
+        self._log_not_uploaded(
+            "files in $SWARM_ARTIFACTS_DIR were not uploaded",
+            [{**entry, "name": standalone_mod.shown(entry["name"])} for entry in plan.not_uploaded],
+            cap_files=self.cfg.max_artifact_files,
+            cap_name_bytes=manifest_mod.MAX_NAME_BYTES,
+        )
+        unredacted = self._redact_before_upload([ws.artifacts / rel for rel in plan.take])
+        artifacts: list[dict[str, Any]] = []
+        total = 0
+        for rel in plan.take:
+            path = ws.artifacts / rel
+            try:
+                # After the redaction pass, which can change a file's length.
+                size = path.stat().st_size
+            except OSError as exc:
+                self.log.warning("artifact upload failed", artifact=rel, error=str(exc))
+                skipped.append(rel)
                 continue
             if total + size > self.cfg.max_artifact_bytes:
                 skipped.append(rel)
@@ -3834,6 +3939,10 @@ class Worker:
                 continue
             total += size
             artifacts.append({"name": rel, "bytes": size, "uri": self.store.uri(key)})
+        # LISTED IN PATH ORDER, as the manifest always has been: the order
+        # above decides which files are taken, not the order a reader sees
+        # them in, nor which of them the listing route's first page holds.
+        artifacts.sort(key=lambda entry: entry["name"].split("/"))
 
         # WHAT A CLI AGENT WITH NO REPOSITORY CREATED IN ITS WORKING FOLDER
         # (#184, owner decision of 2026-09-26), after the artifacts folder so a
@@ -3861,7 +3970,8 @@ class Worker:
         # `logs/agent_stdout.log` / `logs/agent_stderr.log`, so every reader of
         # an agent's own output reads one layout whatever the runner, and the
         # copy is not subject to `max_artifact_bytes`. Same scrubbed file:
-        # `_redact_before_upload` above ran over `artifacts/` already.
+        # `_redact_before_upload` above scrubbed the captures whether or not
+        # the file cap took them into the manifest.
         agent_files = agent_stream_files(self.cfg.runner_profile)
         logs: dict[str, str] = {}
         for label, path in self._stream_files(ws):
@@ -3890,6 +4000,13 @@ class Worker:
             summary["workdir_outputs"] = workdir["summary"]
         if skipped:
             summary["artifacts_skipped"] = skipped[:50]
+        if plan.over_cap:
+            # How many files the folder held past the cap, and the cap, so a
+            # reader can say "N over the 500-file cap" without restating the
+            # number (#228). Absent when every file fitted: a zero would read
+            # as something dropped.
+            summary["artifacts_over_cap"] = plan.over_cap
+            summary["artifacts_cap_files"] = self.cfg.max_artifact_files
         if unredacted:
             # Files that left the pod without being rewritten AND without a
             # clean scan. Capped like the list above; the log carries them all.

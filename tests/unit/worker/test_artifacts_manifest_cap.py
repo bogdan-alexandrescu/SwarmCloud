@@ -324,9 +324,11 @@ def test_the_summary_stays_bounded_at_the_cap_with_the_longest_names(
 def test_a_name_longer_than_the_manifest_bound_is_not_uploaded_and_is_named(
     db, worker_factory, series_cli, log_stream
 ):
-    """Named whole in the log with its reason, and in `artifacts_skipped` with
-    its name cut short as #225 cuts a name it lists, so 50 of them cannot take
-    the summary near 1 MiB either."""
+    """Named in the log with its reason, and in `artifacts_skipped`, both with
+    the name cut short as #225 cuts a name it lists: a path runs to 4,096
+    bytes, and 100 of them whole would pass Cloud Logging's 256 KiB entry, as
+    50 in the summary would take it toward 1 MiB. The cut keeps the start, so
+    the file can still be found."""
     long_name = f"{'a' * 200}/{'b' * 60}.txt"
     assert len(long_name.encode("utf-8")) > MAX_NAME_BYTES
     _seed(db, {"series": [["report.md", 1], [long_name, 1]]})
@@ -335,7 +337,8 @@ def test_a_name_longer_than_the_manifest_bound_is_not_uploaded_and_is_named(
     _succeeded(db)
     assert "report.md" in _folder_names(db)
     assert long_name not in _names(db)
-    assert f"{long_name}: not uploaded: {NAME_TOO_LONG}" in _logged_files(log_stream)
+    shown = long_name[:MAX_NAME_BYTES] + "..."
+    assert f"{shown}: not uploaded: {NAME_TOO_LONG}" in _logged_files(log_stream), _logged_files(log_stream)
     skipped = _summary(db).get("artifacts_skipped") or []
     assert [name for name in skipped if name.startswith("a" * 200)], skipped
     assert all(len(name) <= MAX_NAME_BYTES + 3 for name in skipped), [len(n) for n in skipped]
