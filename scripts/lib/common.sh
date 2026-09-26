@@ -1220,13 +1220,38 @@ fs_request() {
       fi
       ;;
     *)
-      local detail
+      # THE ERROR'S STATUS AND MESSAGE, NOT ITS FIRST THREE LINES. Firestore
+      # pretty-prints its error body, so `head -n 3` of it was always
+      #     {
+      #       "error": {
+      #         "code": 400,
+      # -- the one part the HTTP status line had already said. FAILED_PRECONDITION
+      # (a conditional write refused because the document moved) and
+      # INVALID_ARGUMENT (a query parameter Firestore rejected) both arrived as
+      # `"code": 400,`, and they need opposite responses: run it again, versus
+      # fix the request. So when the body parses as Firestore's error object --
+      # alone, or as the first element of the array runQuery answers with -- its
+      # status and message are printed; anything else (an HTML page from a
+      # proxy, a truncated body) falls back to its first lines, as before.
+      local detail summary
       detail="$(head -c 600 "${out}" 2>/dev/null || true)"
+      summary="$(jq -r '
+        (if type == "array" then .[0] else . end)
+        | objects | .error | objects
+        | [(.status // "" | tostring), (.message // "" | tostring)]
+        | map(select(. != "")) | join(": ")
+        | select(. != "") | .[0:600]' "${out}" 2>/dev/null || true)"
       rm -f "${out}"
-      # Exits here on a dead session, naming it as one.
-      die_if_auth_failure "${detail}"
+      # Exits here on a dead session, naming it as one. Handed the summary when
+      # there is one, because it prints the first two lines of what it is given
+      # -- which, of the pretty-printed body, are `{` and `"error": {`.
+      die_if_auth_failure "${summary:-${detail}}"
       err "Firestore ${method} returned HTTP ${status}. This is NOT an empty result."
-      printf '%s\n' "${detail}" | redact | head -n 3 | sed 's/^/     /' >&2
+      if [[ -n "${summary}" ]]; then
+        printf '%s\n' "${summary}" | redact | sed 's/^/     /' >&2
+      else
+        printf '%s\n' "${detail}" | redact | head -n 3 | sed 's/^/     /' >&2
+      fi
       return 1
       ;;
   esac

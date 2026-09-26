@@ -75,7 +75,10 @@ document can only be fetched by an id already known, and ids are
     --providers anthropic,openai --max-active 40 --capacity-units 80
 ```
 
-Re-running updates limits and wiring and fills in whatever is missing. It will
+Re-running updates limits and wiring and fills in whatever is missing — by
+writing the whole record, so `--providers` **replaces** the tenant's
+credentials and any limit not typed again goes back to its default. To add one
+provider, use `--add-provider` (section 5), which changes nothing else. It will
 **refuse** if `tenants/<id>` already names a different principal or kind: that
 is not idempotency, it is re-pointing a tenant, and one
 `--group contractors@saga.xyz --tenant eng` would otherwise hand every member of
@@ -291,7 +294,8 @@ described above. See [security.md](security.md#authentication) and
 ## 5. Tenant lifecycle
 
 ```bash
-# Register (or update)
+# Register. A re-run rewrites the whole record, --providers included, so it is
+# not how a provider is added: see --add-provider below.
 ./scripts/register-tenant.sh --group eng@saga.xyz --providers anthropic,openai
 
 # Add a provider key. Never passed as an argument: argv is readable via ps.
@@ -299,8 +303,11 @@ described above. See [security.md](security.md#authentication) and
 # ...then let eng's worker read it and list it for the tenant, keeping every
 # provider eng already has. NOT a re-run with --providers: that REPLACES the
 # tenant's credentials list, and resets max_active, capacity_units and
-# display_name to their defaults unless they are typed again.
-./scripts/register-tenant.sh --tenant eng --add-provider anthropic
+# display_name to their defaults unless they are typed again. It grants only a
+# secret whose labels say tenant=eng provider=anthropic and that holds an enabled
+# version: swarm-tenant-<tenant>-<provider> does not split (eng-team's git and
+# eng's team-git are one name), so the name alone cannot say whose key it is.
+./scripts/register-tenant.sh --tenant eng --add-provider anthropic   # or: make add-provider TENANT=eng PROVIDER=anthropic
 
 # Rotate, keeping the previous version enabled until workers pick up the new one
 ./scripts/create-secrets.sh --tenant eng --provider anthropic --stdin

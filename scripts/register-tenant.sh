@@ -95,6 +95,25 @@ done
 
 require_cmd gcloud jq curl python3
 
+# The providers anything on this platform reads a key for, one per line: what
+# swarm_api.validation.known_providers() lets a tenant register through the API
+# (every provider the runner catalogue references, disabled profiles included),
+# plus the forge token the worker reads outside that catalogue
+# (agent_worker.secrets.GIT_PROVIDER). Asked of the code rather than restated
+# here, as derive_tenant_id below asks swarm_common.identity: a second copy of
+# this list is the one that would drift.
+known_providers() {
+  python3 - "${REPO_ROOT}" <<'PY'
+import sys
+from pathlib import Path
+root = Path(sys.argv[1])
+sys.path[:0] = [str(root / "apps" / d) for d in ("common", "swarm-api", "agent-worker")]
+from swarm_api.validation import known_providers
+from agent_worker.secrets import GIT_PROVIDER
+print("\n".join(sorted(set(known_providers()) | {GIT_PROVIDER})))
+PY
+}
+
 if [[ "${ADD_PROVIDER_GIVEN}" -eq 1 ]]; then
   [[ -z "${FULL_ONLY_FLAGS}" ]] || die "--add-provider adds one provider and changes nothing else, so it does not take${FULL_ONLY_FLAGS}.
   Those belong to a full registration, which rewrites the whole tenant record. Drop them,
@@ -114,6 +133,21 @@ if [[ "${ADD_PROVIDER_GIVEN}" -eq 1 ]]; then
   which only the quota broker may read -- never the tenant's worker. Add '${ADD_PROVIDER%-refresh}'
   instead: that binds the worker to the short-lived half the broker publishes." ;;
   esac
+  # ONLY A PROVIDER SOMETHING READS. Listing any other name does nothing for the
+  # tenant, and the only thing it can do is name a secret -- which, since
+  # secret names do not split (see tenant_secret_state below), may be another
+  # tenant's: `--tenant eng-anthropic --add-provider refresh` names
+  # swarm-tenant-eng-anthropic-refresh, tenant eng's refresh half, and walks
+  # past the `*-refresh` refusal above. The ownership check below refuses that
+  # grant too; this refuses the name before anything is looked up.
+  KNOWN_PROVIDERS="$(known_providers)" \
+    || die "could not read the provider list from swarm_api.validation and agent_worker.secrets
+  (python's error is above), so '${ADD_PROVIDER}' cannot be checked against it. Nothing was changed."
+  if ! printf '%s\n' "${KNOWN_PROVIDERS}" | grep -Fqx -- "${ADD_PROVIDER}"; then
+    die "provider '${ADD_PROVIDER}' is not one this platform reads a key for. Known providers:
+  $(printf '%s\n' "${KNOWN_PROVIDERS}" | paste -sd, - | sed 's/,/, /g')
+  (swarm_api.validation.known_providers(), plus agent_worker.secrets.GIT_PROVIDER). Nothing was changed."
+  fi
 fi
 
 # --- limits ------------------------------------------------------------------
@@ -289,6 +323,114 @@ run() {
   "$@"
 }
 
+# --- whose secret is it? -----------------------------------------------------
+#
+# SECRET NAMES DO NOT SPLIT. `swarm-tenant-<tenant>-<provider>` joins two
+# values that may both contain hyphens with a hyphen, so one name is several
+# pairs at once:
+#
+#   tenant eng-team,      provider git       -> swarm-tenant-eng-team-git
+#   tenant eng,           provider team-git  -> swarm-tenant-eng-team-git
+#   tenant eng-anthropic, provider refresh   -> swarm-tenant-eng-anthropic-refresh
+#                                               = tenant eng's anthropic REFRESH half
+#
+# So a grant made on the name alone can bind one tenant's worker to another
+# tenant's key -- invariant 9 -- and the last line walks straight past the
+# `*-refresh` refusal, to the one secret no worker may read. The name cannot say
+# whose a secret is; its labels can. scripts/create-secrets.sh and
+# terraform/modules/secret_manager both label every tenant credential with
+# `tenant` and `provider` (the module's comment gives this same reason), and a
+# `-refresh` secret carries its BASE provider, so it never matches a worker's
+# provider. A grant is made only on a secret whose labels name this tenant and
+# this provider exactly. One with neither label is refused as well: nothing can
+# say whose it is.
+#
+# tenant_secret_state SECRET PROVIDER   (the tenant is TENANT_ID)
+#   0  this tenant's: labelled tenant=TENANT_ID provider=PROVIDER, with an
+#      ENABLED version
+#   1  absent -- gcloud answered NOT_FOUND
+#   2  cannot tell -- a lookup failed; the reason is printed
+#   3  labelled as another tenant's or provider's, or not labelled at all;
+#      SECRET_LABEL_TENANT / SECRET_LABEL_PROVIDER say what the labels are
+#   4  this tenant's, but with no ENABLED version: nothing for a worker to read
+#
+# Called as `tenant_secret_state ... || rc=$?`, never inside `$(...)`: the labels
+# come back in globals, which a subshell would throw away.
+SECRET_LABEL_TENANT=""
+SECRET_LABEL_PROVIDER=""
+tenant_secret_state() {
+  local secret="$1" provider="$2" out errfile reason rc=0 enabled=""
+  SECRET_LABEL_TENANT=""
+  SECRET_LABEL_PROVIDER=""
+  out="$(mktemp "${TMPDIR:-/tmp}/swarm-secret.XXXXXX")"
+  errfile="$(mktemp "${TMPDIR:-/tmp}/swarm-secret-err.XXXXXX")"
+
+  gcloud secrets describe "${secret}" --project "${PROJECT_ID}" --format=json \
+    >"${out}" 2>"${errfile}" || rc=$?
+  if [[ "${rc}" -ne 0 ]]; then
+    reason="$(cat "${errfile}")"
+    rm -f "${out}" "${errfile}"
+    die_if_auth_failure "${reason}"
+    # Only a recognisable NOT_FOUND is an absence; anything else is a failure
+    # to look, and must not send the operator off to create a secret.
+    gcloud_not_found "${reason}" && return 1
+    err "could not establish whether ${secret} exists:"
+    printf '%s\n' "${reason}" | redact | head -n 3 | sed 's/^/     /' >&2
+    return 2
+  fi
+  if ! jq -e 'type == "object"' "${out}" >/dev/null 2>&1; then
+    rm -f "${out}" "${errfile}"
+    err "gcloud described ${secret} but did not answer with a JSON object, so its labels cannot be read"
+    return 2
+  fi
+  SECRET_LABEL_TENANT="$(jq -r '.labels.tenant // ""' "${out}")"
+  SECRET_LABEL_PROVIDER="$(jq -r '.labels.provider // ""' "${out}")"
+  rm -f "${out}"
+  if [[ "${SECRET_LABEL_TENANT}" != "${TENANT_ID}" || "${SECRET_LABEL_PROVIDER}" != "${provider}" ]]; then
+    rm -f "${errfile}"
+    return 3
+  fi
+
+  # A secret with no ENABLED version is a name with nothing behind it: listing
+  # its provider admits the tenant's tasks for it and fails every one when the
+  # worker asks for the key.
+  if ! enabled="$(gcloud secrets versions list "${secret}" --project "${PROJECT_ID}" \
+       --filter='state=ENABLED' --limit=1 --format='value(name)' 2>"${errfile}")"; then
+    reason="$(cat "${errfile}")"
+    rm -f "${errfile}"
+    die_if_auth_failure "${reason}"
+    err "could not list the enabled versions of ${secret}:"
+    printf '%s\n' "${reason}" | redact | head -n 3 | sed 's/^/     /' >&2
+    return 2
+  fi
+  rm -f "${errfile}"
+  [[ -n "${enabled}" ]] || return 4
+  return 0
+}
+
+# refuse_foreign_secret SECRET PROVIDER  -- after tenant_secret_state returned 3.
+refuse_foreign_secret() {
+  local secret="$1" provider="$2"
+  if [[ -z "${SECRET_LABEL_TENANT}" && -z "${SECRET_LABEL_PROVIDER}" ]]; then
+    # Only an UNLABELLED secret gets a relabel command. One labelled as someone
+    # else's does not: pasting that command would make another tenant's key
+    # look like this tenant's, which is the grant being refused.
+    die "${secret} carries no tenant or provider label, so nothing says whose key it is.
+  swarm-tenant-<tenant>-<provider> does not split -- tenant eng-team's git and tenant eng's
+  team-git are the same name -- so ${GSA_ID} is granted only a secret labelled as this
+  tenant's. If you have checked that ${secret} really is tenant ${TENANT_ID}'s ${provider} key,
+  label it and run this again:
+      gcloud secrets update ${secret} --project ${PROJECT_ID} --update-labels=tenant=${TENANT_ID},provider=${provider}
+  Nothing was granted."
+  fi
+  die "${secret} is labelled tenant='${SECRET_LABEL_TENANT}' provider='${SECRET_LABEL_PROVIDER}',
+  not tenant='${TENANT_ID}' provider='${provider}'. It is another tenant's or another provider's
+  secret that happens to share this name: swarm-tenant-<tenant>-<provider> does not split, so
+  tenant eng-team's git and tenant eng's team-git are one name, and tenant eng-anthropic's
+  'refresh' is tenant eng's anthropic refresh half. Refusing to let ${GSA_ID} read it
+  (invariant 9: a tenant's key is readable by that tenant's worker alone). Nothing was granted."
+}
+
 # --- A. add one provider to a registered tenant, and change nothing else -----
 #
 # WHY THIS IS ITS OWN PATH. Adding a provider to a tenant that already has some
@@ -381,17 +523,18 @@ if [[ "${ADD_PROVIDER_GIVEN}" -eq 1 ]]; then
   fi
   ok "tenants/${TENANT_ID} belongs to ${DOC_KIND} ${DOC_PRINCIPAL}"
 
-  # 1. the grant. Tri-state, as at the custom roles in section 3: a denied or
-  # expired lookup is not an absent secret, and must not send the operator to
-  # create one.
+  # 1. the grant, and only on a secret that is this tenant's, for this
+  # provider, with a key in it (tenant_secret_state above). Tri-state, as at
+  # the custom roles in section 3: a denied or expired lookup is not an absent
+  # secret, and must not send the operator to create one.
   provider="${ADD_PROVIDER}"
   secret="swarm-tenant-${TENANT_ID}-${provider}"
   SECRET_RC=0
-  shared_resource_present "secret ${secret}" \
-    gcloud secrets describe "${secret}" --project "${PROJECT_ID}" --format='value(name)' \
-    || SECRET_RC=$?
+  tenant_secret_state "${secret}" "${provider}" || SECRET_RC=$?
   case "${SECRET_RC}" in
-    0) ;;
+    0)
+      ok "${secret} is labelled tenant=${TENANT_ID} provider=${provider} and has an enabled version"
+      ;;
     1)
       die "${secret} does not exist, so there is no ${provider} key for this tenant's worker
   to read. Store it first, then run this again:
@@ -399,17 +542,34 @@ if [[ "${ADD_PROVIDER_GIVEN}" -eq 1 ]]; then
   Nothing was changed: listing ${provider} with no secret behind it would admit this
   tenant's ${provider} tasks and fail every one of them when the worker asks for the key."
       ;;
+    3)
+      refuse_foreign_secret "${secret}" "${provider}"
+      ;;
+    4)
+      die "${secret} is tenant ${TENANT_ID}'s, but it has no ENABLED version, so there is no
+  ${provider} key in it for this tenant's worker to read. Nothing was changed: listing
+  ${provider} now would admit this tenant's ${provider} tasks and fail every one of them.
+  Store a key, then run this again:
+      scripts/create-secrets.sh --tenant ${TENANT_ID} --provider ${provider} --stdin
+  (A subscription credential is different: its versions here are written by the quota
+  broker from ${secret}-refresh on its next sweep. Run this again once one has been.)"
+      ;;
     *)
-      die "stopping: whether ${secret} exists could not be established (gcloud's answer is
-  above). That is a failure to LOOK, not a missing secret -- fix the session or the
-  permission and run this again. Nothing was changed."
+      die "stopping: whether ${secret} exists, and whose it is, could not be established
+  (gcloud's answer is above). That is a failure to LOOK, not a missing secret -- fix the
+  session or the permission and run this again. Nothing was changed."
       ;;
   esac
   run gcloud secrets add-iam-policy-binding "${secret}" \
     --project "${PROJECT_ID}" \
     --member "serviceAccount:${GSA_EMAIL}" \
     --role roles/secretmanager.secretAccessor --quiet >/dev/null
-  ok "${secret}: ${GSA_ID} may read it"
+  # A dry run granted nothing, so it must not say it did.
+  if [[ "${DRY_RUN}" -eq 1 ]]; then
+    dim "  would let ${GSA_ID} read ${secret}"
+  else
+    ok "${secret}: ${GSA_ID} may read it"
+  fi
 
   # 2. the list.
   CURRENT_CREDS="$(jq -c '[(.credentials // [])[] | tostring]' <<<"${TENANT_DOC}")"
@@ -438,8 +598,13 @@ if [[ "${ADD_PROVIDER_GIVEN}" -eq 1 ]]; then
   fi
 
   hr
-  ok "tenant ${TENANT_ID} has ${provider}"
-  dim "  nothing else was written: limits, display name, pool, namespace, other grants and the other providers are as they were"
+  if [[ "${DRY_RUN}" -eq 1 ]]; then
+    warn "DRY RUN: nothing was changed. Without --dry-run, tenant ${TENANT_ID} would have ${provider}"
+    dim "  and nothing else would be written: limits, display name, pool, namespace, other grants and the other providers would stay as they are"
+  else
+    ok "tenant ${TENANT_ID} has ${provider}"
+    dim "  nothing else was written: limits, display name, pool, namespace, other grants and the other providers are as they were"
+  fi
   exit 0
 fi
 
@@ -868,20 +1033,55 @@ for role in roles/logging.logWriter roles/monitoring.metricWriter; do
 done
 
 # --- 4. secrets ---------------------------------------------------------------
+#
+# EVERY SECRET IS CHECKED BEFORE ANY IS GRANTED, and granted only if its labels
+# say it is this tenant's, for that provider (tenant_secret_state, above
+# section A). This used to grant on the name alone, so `--providers team-git`
+# for tenant eng bound eng's worker to tenant eng-team's git key, and
+# `--providers anthropic-refresh` bound it to the refresh half only the quota
+# broker may read. It also read ANY failed describe -- a denied or expired
+# lookup included -- as "does not exist yet", and carried on.
+#
+# A missing secret, or one with no enabled version yet, is still a warning
+# here and not a refusal, as it always was for the full registration: the
+# grant on an empty secret is inert, and storing the key afterwards is the
+# documented order.
 if [[ "${#PROVIDERS[@]}" -gt 0 ]]; then
   step "Provider credentials"
+  GRANTABLE=()
   for provider in "${PROVIDERS[@]}"; do
     secret="swarm-tenant-${TENANT_ID}-${provider}"
-    if gcloud secrets describe "${secret}" --project "${PROJECT_ID}" \
-         --format='value(name)' >/dev/null 2>&1; then
-      run gcloud secrets add-iam-policy-binding "${secret}" \
-        --project "${PROJECT_ID}" \
-        --member "serviceAccount:${GSA_EMAIL}" \
-        --role roles/secretmanager.secretAccessor --quiet >/dev/null
-      ok "${secret}: ${GSA_ID} may read it"
+    SECRET_RC=0
+    tenant_secret_state "${secret}" "${provider}" || SECRET_RC=$?
+    case "${SECRET_RC}" in
+      0) GRANTABLE+=("${provider}") ;;
+      4)
+        GRANTABLE+=("${provider}")
+        warn "${secret} has no enabled version yet, so there is nothing in it to read"
+        dim "  store one with: scripts/create-secrets.sh --tenant ${TENANT_ID} --provider ${provider} --stdin"
+        ;;
+      1)
+        warn "${secret} does not exist yet"
+        dim "  create it with: scripts/create-secrets.sh --tenant ${TENANT_ID} --provider ${provider} --stdin"
+        ;;
+      3) refuse_foreign_secret "${secret}" "${provider}" ;;
+      *)
+        die "stopping: whether ${secret} exists, and whose it is, could not be established
+  (gcloud's answer is above). That is a failure to LOOK, not a missing secret. No secret
+  was granted; fix the session or the permission and run this again."
+        ;;
+    esac
+  done
+  for provider in ${GRANTABLE[@]+"${GRANTABLE[@]}"}; do
+    secret="swarm-tenant-${TENANT_ID}-${provider}"
+    run gcloud secrets add-iam-policy-binding "${secret}" \
+      --project "${PROJECT_ID}" \
+      --member "serviceAccount:${GSA_EMAIL}" \
+      --role roles/secretmanager.secretAccessor --quiet >/dev/null
+    if [[ "${DRY_RUN}" -eq 1 ]]; then
+      dim "  would let ${GSA_ID} read ${secret}"
     else
-      warn "${secret} does not exist yet"
-      dim "  create it with: scripts/create-secrets.sh --tenant ${TENANT_ID} --provider ${provider} --stdin"
+      ok "${secret}: ${GSA_ID} may read it"
     fi
   done
 fi
