@@ -451,6 +451,14 @@ _TOKEN_SAFE = [
     "-c", "http.sslVerify=true",                # only over verified TLS
     "-c", "http.proxy=",                        # no proxy may sit in front of the forge
     "-c", "http.extraHeader=",                  # no injected header rides with the request
+    # No submodule recursion on a token-bearing fetch. git's default for
+    # `fetch.recurseSubmodules` is `on-demand`, which fetches submodules named in
+    # a contributor branch's `.gitmodules` -- an untrusted file -- and would
+    # carry the credential to whatever hosts it lists. The integrator's fetch
+    # wants the branch, never its submodules; `submodule.recurse=false` covers
+    # the merge and any command that would otherwise recurse.
+    "-c", "fetch.recurseSubmodules=false",
+    "-c", "submodule.recurse=false",
 ]
 
 

@@ -173,7 +173,7 @@ from .metrics import (
     heartbeat_cpu_fields,
 )
 from .objectstore import ObjectStore
-from .procman import ChildProcess, ChildResult
+from .procman import ChildProcess, ChildResult, reap_foreign_processes
 from .quota import QuotaDecision, decide, read_runner_signal, signal_from_control
 from .runners.base import EXIT_QUOTA_EXHAUSTED, EXIT_TERMINATED, SPEND_KEYS
 from .runners.limits import GRACE_ENV, STDERR_ENV, STDOUT_ENV, TIMEOUT_ENV
@@ -342,6 +342,13 @@ class Worker:
         # exception that reaches it, decides the exit.
         self._startup_interrupt: StartupInterrupted | None = None
         self._child: ChildProcess | None = None
+        # How the publish path makes sure no process the agent started is alive
+        # before the tenant credential is used (`_publish_git`). A callable, not
+        # a direct call, so a unit test can substitute a scoped reaper: the real
+        # one runs `os.kill(-1, SIGKILL)`, which in a shared test process would
+        # kill the test runner. Returns the PIDs still alive after the reap --
+        # empty means clean, non-empty means refuse to publish.
+        self.reap_before_publish: Callable[[], tuple[int, ...]] = self._default_reap
         # The LIVE runner's sampler, or None between runners. The runners that
         # have ended are in `_runner_usage`, and `_attempt_usage` combines the
         # two: every figure this worker reports -- the attempt document, the
@@ -1114,6 +1121,10 @@ class Worker:
         self._stop_runner(reason="generation fenced")
         self._record_fenced_end(str(exc))
         return ExitCode.GENERATION_FENCED
+
+    def _default_reap(self) -> tuple[int, ...]:
+        """The production pre-publish reap. See `reap_foreign_processes`."""
+        return reap_foreign_processes(logger=self.log)
 
     def _stop_runner(self, *, reason: str) -> None:
         """Stop the live runner, if any, and take its usage and spend. Never raises.
@@ -3151,6 +3162,31 @@ class Worker:
 
         role = self._dispatch_role() if strategy == "integrate" else ""
         out["role"] = role or None
+
+        # NO AGENT PROCESS IS ALIVE ONCE THE TOKEN IS IN HAND. This is the one
+        # place the credential-bearing publish begins -- everything below carries
+        # or leads directly to the tenant token (`commit_dirty`/`fold` run in the
+        # clone, then `prepare_publish_repo` mkdtemps the publish repo and the
+        # fetch/merge/push authenticate). A process the agent double-forked into
+        # its own session survives the runner's group kill (procman.py), shares
+        # the worker's uid, and could watch `ws.private` to poison the publish
+        # repo before the push or read the short-lived credential file while it
+        # runs. So every such process is killed and its death verified BEFORE the
+        # publish repo is created; if any survives the bounded retry, the whole
+        # publish is refused rather than run with agent code still able to act.
+        survivors = self.reap_before_publish()
+        if survivors:
+            out["published"] = False
+            out["publish_reason"] = (
+                f"refusing to publish: {len(survivors)} process(es) the agent started "
+                f"are still alive after the pre-publish reap ({', '.join(str(p) for p in survivors[:10])}); "
+                "the tenant credential is not put in hand while agent code can run"
+            )
+            self.log.error(
+                "refusing to publish: agent processes survived the pre-publish reap",
+                surviving_pids=list(survivors),
+            )
+            return out
 
         auto_committed = False
         folded = 0

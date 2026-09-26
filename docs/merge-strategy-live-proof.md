@@ -276,6 +276,28 @@ silently leaves it, so `git init` and the push would run behind the link, back
 inside the agent's config. `mkdtemp` creates the directory with O_EXCL
 semantics, so the worker never lands on, nor follows, anything the agent planted.
 
+**Owning *where* the token-bearing commands run closes the config vector; it does
+not close a live agent process.** The runner is started `start_new_session=True`
+and stopped by a process-group kill (`procman.py`), so a process the agent
+double-forks and `setsid`s lands in its own session, survives that kill, and
+re-parents to tini — sharing the worker's uid the whole time. Such a process
+needs neither to predict the `mkdtemp` name nor to have written the clone's
+config: it can *watch* `ws.private`, notice the publish repository appear, and
+drop an `insteadOf` into it in the window between its creation and the push, or
+read the 0600 credential file while the push holds it. So before the first
+token-bearing step, `lifecycle._publish_git` calls `procman.reap_foreign_processes`
+once: `os.kill(-1, SIGKILL)` signals every process this uid may signal except PID
+1 (tini) and the worker itself, and a `/proc` scan then confirms nothing the uid
+owns is still alive (a bounded retry covers a fork racing the kill). If anything
+survives, the whole publish is **refused** with a stated reason rather than run
+while agent code can still act. This is safe because by that point the runner is
+already reaped, the resource sampler is a stopped thread, and the worker's own
+git helpers are synchronous — there is no worker-owned subprocess to protect. The
+token-bearing commands also disable submodule recursion
+(`fetch.recurseSubmodules=false`, `submodule.recurse=false`), because git's
+on-demand default would fetch a submodule named in an untrusted contributor
+branch's `.gitmodules` and carry the credential to whatever host it lists.
+
 The property this guarantees: **no configuration, file or ref the agent can
 write can cause the tenant token to be sent anywhere except the forge host of
 the task's `repository_url` over verified TLS, or be handed to any program other
@@ -287,7 +309,14 @@ path cannot either; the repository the push actually runs in carries none of the
 agent's redirect or interception keys (`insteadOf`, `pushInsteadOf`, `http.proxy`,
 `http.sslVerify`, `remote.*.pushurl`, `credential.helper`); and the repository
 the worker authenticates from carries no credential helper the agent wrote (each
-with a control confirming the clone itself would have leaked).
+with a control confirming the clone itself would have leaked). A real
+double-forked `setsid` daemon proves the *when*: the worker reaps it (verified
+dead through `/proc`) before it builds the publish repository and before the
+token-bearing push, refuses to publish if a survivor cannot be cleared, and the
+integrator's token-bearing fetch is asserted to disable submodule recursion.
+`tests/unit/worker/test_procman_reap.py` pins the reap mechanism itself and runs
+the real `os.kill(-1, SIGKILL)` inside a private PID namespace, where it cannot
+reach the test runner.
 
 They are mitigations, not a boundary. The token still belongs to a platform that
 runs model-written code, and a compromise of the worker itself is outside what
