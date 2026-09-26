@@ -347,6 +347,10 @@ def _publish(worker_factory, tmp_path, monkeypatch, dispatch, *, opened):
 
     monkeypatch.setattr(lifecycle, "probe_repository", lambda **kw: _Access())
     monkeypatch.setattr(lifecycle, "commit_dirty", lambda **kw: "")
+    # The publish path now transfers the work into a worker-owned repository
+    # before it pushes; with the git functions stubbed, that repository is not
+    # built, so the transfer is stubbed to hand back a path the stubs ignore.
+    monkeypatch.setattr(lifecycle, "prepare_publish_repo", lambda **kw: tmp_path)
     monkeypatch.setattr(lifecycle, "push_branch", lambda **kw: "deadbeef")
     monkeypatch.setattr(
         lifecycle,

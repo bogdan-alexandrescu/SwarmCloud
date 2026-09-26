@@ -715,16 +715,19 @@ def prepare_publish_repo(
     in a repository whose configuration the worker wrote.
 
     This builds that repository. It is created empty with `git init`, so its
-    config is the worker's; the agent's committed work is transferred in by a
-    LOCAL fetch of the source's current HEAD, carrying NO token -- so nothing the
-    source repository's configuration could do can move a credential that is not
-    present. The remote is never taken from here; the caller passes the validated
-    `repository_url` to `push_branch` / `merge_branches`.
+    config is the worker's. The agent's committed work is brought in WITHOUT
+    running git against the clone: the clone's object database is borrowed
+    through `objects/info/alternates` and its shallow boundary copied, then the
+    exact commit the worker resolved is checked out by sha. No `upload-pack`
+    runs in the clone, so its configuration never executes; no token is present;
+    and the commit is named by the worker's sha, never by a ref read back from
+    the clone. The remote is never taken from here either; the caller passes the
+    validated `repository_url` to `push_branch` / `merge_branches`.
 
-    `source_repo` is the agent's clone, whose HEAD the worker has just set (the
-    harvest's `commit_dirty` runs first, so HEAD already carries the auto-commit
-    when there was one). `work_head`, when known, is only checked against what
-    was transferred; it is never trusted as a ref name from the agent.
+    `source_repo` is the agent's clone. `work_head` is the commit the worker
+    resolved from it (the harvest's HEAD, or the auto-commit `commit_dirty`
+    made); it is required, and used as a sha, never as a ref name the agent
+    could redirect.
     """
     source_repo = Path(source_repo)
     publish_dir = Path(publish_dir)
@@ -745,6 +748,13 @@ def prepare_publish_repo(
             logger=logger,
         )
 
+    if not work_head:
+        # `work_head` is the commit the worker resolved from the clone before
+        # this ran (the harvest's HEAD, or the auto-commit). Without it there is
+        # nothing to publish, and we will not read a ref name back from the
+        # agent's repository to find one.
+        raise GitError("refusing to prepare a publish repository without a resolved commit")
+
     init_code, _ = _git_text(
         [git_binary, *_NO_HOOKS, "init", "--quiet", str(publish_dir)],
         repo=private_dir,
@@ -757,40 +767,35 @@ def prepare_publish_repo(
     if init_code != 0:
         raise GitError("could not initialise the worker's publish repository")
 
-    # Transfer by LOCAL PATH and by the source's own HEAD ref. No token is in
-    # the environment or in any config for this step, so even if the source
-    # repository's configuration were consulted it could not move a credential.
-    # `--no-tags`/`--no-recurse-submodules` keep it to exactly the commit line.
-    fetch_code, _ = step(
-        [
-            git_binary, *_NO_HOOKS, "fetch", "--no-tags", "--no-recurse-submodules",
-            "--", str(source_repo), "HEAD",
-        ],
-        "publish-transfer",
-    )
-    if fetch_code != 0:
-        raise GitError("could not transfer the agent's work into the publish repository")
+    # TRANSFER WITHOUT RUNNING GIT AGAINST THE AGENT'S REPOSITORY. Borrow the
+    # clone's object database through `objects/info/alternates` and carry its
+    # shallow boundary, then check out the exact worker-resolved commit. No
+    # `upload-pack` runs in the clone, so its configuration never executes; no
+    # token is present; and the commit is named by sha the worker computed,
+    # never by a ref read back from the clone. `git push` reads the borrowed
+    # objects through the alternate, which the workspace keeps alive until after
+    # the push.
+    agent_git = source_repo / ".git"
+    agent_objects = (agent_git / "objects").resolve()
+    if not agent_objects.is_dir():
+        raise GitError(f"the agent repository has no object store at {agent_objects}")
+    alternates = publish_dir / ".git" / "objects" / "info" / "alternates"
+    alternates.parent.mkdir(parents=True, exist_ok=True)
+    alternates.write_text(f"{agent_objects}\n")
+
+    # A shallow clone's history stops at a boundary whose parents are absent
+    # from the object store. The publish repo must know the same boundary, or
+    # git would look for ancestors that were never fetched.
+    agent_shallow = agent_git / "shallow"
+    if agent_shallow.exists():
+        shutil.copyfile(agent_shallow, publish_dir / ".git" / "shallow")
 
     checkout_code, _ = step(
-        [git_binary, *_NO_HOOKS, "checkout", "--quiet", "-B", local_branch, "FETCH_HEAD"],
+        [git_binary, *_NO_HOOKS, "checkout", "--quiet", "-f", "-B", local_branch, work_head],
         "publish-checkout",
     )
     if checkout_code != 0:
-        raise GitError("could not check out the transferred work in the publish repository")
-
-    if work_head:
-        head_code, head_text = step(
-            [git_binary, *_NO_HOOKS, "rev-parse", "HEAD"], "publish-verify-head"
-        )
-        got = head_text.strip() if head_code == 0 else ""
-        if got and got != work_head:
-            # The source's HEAD moved between the worker computing `work_head`
-            # and this transfer. In a single-threaded attempt that cannot happen
-            # from the worker itself, so it means something else wrote the clone;
-            # refuse rather than push a commit the worker did not vouch for.
-            raise GitError(
-                "the transferred HEAD does not match the work the worker committed"
-            )
+        raise GitError("could not check out the agent's work in the publish repository")
 
     logger.info("publish repository prepared", branch=local_branch)
     return publish_dir
