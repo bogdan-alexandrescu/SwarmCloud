@@ -1648,6 +1648,35 @@ iso_now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 # expression strips that byte from the input, so a line cannot carry its own
 # to shield a real value. tests/unit/control_plane/test_log_redaction.py runs
 # this function, on both halves.
+#
+# AN ESCAPED QUOTE IS A QUOTE (#221, owner decision 2026-09-26). In JSON text a
+# quote inside a string is `\"`, so a stream-json log line carries an agent's
+# `export DB_PASSWORD="<v>"` as `DB_PASSWORD=\"<v>\"`, and the assignment rule
+# read the backslash as the value: it masked `\` and printed `<v>`. The
+# expression before the assignment rule takes `\"` around the key and before
+# the value, and stops a value it opened at the next backslash, which in JSON
+# text always begins an escape. The assignment rule then refuses a value that
+# STARTS with `\"`, so it cannot re-mask what the first left, and a value with
+# a backslash inside it (`password=ab\cd`) is still masked whole, as before.
+# Both take an optional `[` before the value, so the first element of
+# `"password": ["<v>"]` is masked rather than the bracket. This is the same
+# rule as `swarm_api.redaction.KEY_VALUE`, written as two expressions because
+# sed has no conditional group; the test file runs both filters over the same
+# lines and holds their output equal. An escaped status word
+# (`\"token\": \"not set\"`) is not protected: it is log text, not
+# `swarm doctor` output, and the Python rule masks it too.
+#
+# AT ANY DEPTH OF ESCAPING (the PR #229 review). A command that quotes its own
+# quotes -- `bash -c "export DB_PASSWORD=\"<v>\""` -- sits in a stream-json
+# line one level deeper, as `\\\"` (three backslashes, then the quote), and the
+# first version took exactly one backslash: it masked the three and printed
+# `<v>`. Both expressions now take a RUN of backslashes wherever they took one,
+# and the assignment rule refuses a value that starts with a run of them and a
+# quote. What this filter still cannot do, being sed over text, is decode: a
+# value opened by an escaped quote stops at its first backslash (the owner's
+# rule), so a password holding one prints from there. `/logs` decodes a line
+# that is a JSON document and masks it by its structure instead
+# (`swarm_api.redaction.redact_lines`).
 redact() {
   # SOH: a byte no credential and no log line carries, and one no locale counts
   # as [[:space:]] -- which the assignment rule would otherwise match across.
@@ -1666,7 +1695,8 @@ redact() {
     -e 's/(-----BEGIN [A-Z ]*PRIVATE KEY-----).*/\1********/g' \
     -e 's/(([Bb]earer|[Bb]asic)[[:space:]]+)[A-Za-z0-9._~+\/-]{12,}=*/\1********/g' \
     -e "s/(${key})([[:space:]]*[:=][[:space:]]*\"?)((not set|unset|set|none|\\(none\\)|missing)([\",[:space:]]|\$))/\\1${keep}\\3\\4/Ig" \
-    -e 's/("?(api_?key|apikey|password|passwd|secret|token|credential|authorization)"?[[:space:]]*[:=][[:space:]]*"?)[^",[:space:]]+/\1********/Ig' \
+    -e 's/((\\*")?(api_?key|apikey|password|passwd|secret|token|credential|authorization)(\\*")?[[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?\\+")[^"\\,[:space:]]+/\1********/Ig' \
+    -e 's/("?(api_?key|apikey|password|passwd|secret|token|credential|authorization)"?[[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?"?)(\\+[^",[:space:]\\]|[^",[:space:]\\])[^",[:space:]]*/\1********/Ig' \
     -e "s/${keep}//g"
 }
 

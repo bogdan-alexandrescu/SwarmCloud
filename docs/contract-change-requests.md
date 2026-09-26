@@ -38,7 +38,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 23 | `models.py`: a task's end has no typed cause, so the outcome ledger classifies `last_error` text | ACCEPTED 2026-09-25 (#185, decision 9), applied in PR #217 |
 | 24 | `profiles.py`: whether a profile's cost is declared rather than measured is named outside the catalogue | ACCEPTED 2026-09-25 (#185, decision 9), applied in PR #217 |
 | 25 | `profiles.py`: a runner profile cannot declare the inputs a caller may send it, so the bridge names the mock's by profile | ACCEPTED 2026-09-25 (owner, on #142), applied in PR #213; both amendments confirmed by the owner 2026-09-26: `inputs=None` for `browser` and `generic` (#218), and the bounded park counted by the task's `attempt_count` rather than the state file |
-| 26 | `models.py`: the attempt's CPU figures carry no time and their limit no source | open |
+| 26 | `models.py`: the attempt's CPU figures carry no time and their limit no source | ACCEPTED 2026-09-26 (owner, on #184), applied in PR #229 |
 
 ---
 
@@ -1637,7 +1637,8 @@ reading either.
   none. `docs/agent-output.md` says why.
 * **What the four fields cannot say.** The interim reading carried its time
   (`measured_at`, `age_seconds`) and the limit's source (`cpu_limit_source`).
-  The accepted fields carry neither. Request #26 asks for both.
+  The accepted fields carry neither. Request #26 asks for both; the owner
+  accepted it on 2026-09-26 and PR #229 applied it.
 
 ---
 
@@ -2744,9 +2745,13 @@ every offer to a profile not declared yet to a `payload` read in its runner.
 
 ## 26. `models.py`: the attempt's CPU figures carry no time and their limit no source
 
-**Status:** open, recorded 2026-09-25 by the #184 follow-up lane (PR #210),
-which applied request #15. A request, not a change. If another branch has
-taken 26 by the time this merges, renumber this one.
+**Status: ACCEPTED — accepted by the owner on #184, 2026-09-26, and applied in
+PR #229.** The decision, in the owner's words
+([#184, 2026-09-26](https://github.com/bogdan-alexandrescu/SwarmCloud/issues/184#issuecomment-5841716442)):
+"Contract request #26 is accepted: typed `cpu_measured_at` and
+`cpu_limit_source` on Attempt." Recorded 2026-09-25 by the #184 follow-up
+lane (PR #210), which applied request #15. What was applied is under
+[Applied](#applied-2026-09-26-pr-229) at the end of this entry.
 
 ### What is true today
 
@@ -2792,4 +2797,34 @@ that would want a home (compare request #20).
 
 Details keeps `age not recorded` and `reported limit`. A stalled worker's CPU
 figures are not dated, and a limit is never attributed to the kernel.
+
+### Applied, 2026-09-26 (PR #229)
+
+* **The contract.** `Attempt` gains `cpu_measured_at: datetime | None = None`
+  and `cpu_limit_source: str | None = None`, at the end of the class, after
+  request #15's four. Nothing else in `apps/common/swarm_common` changed.
+* **The worker** writes them with the four. `metrics.attempt_cpu_fields`
+  takes the limit's source (`CPU_LIMIT_SOURCES`: `cgroup` or
+  `resource_class`) and puts it beside a limit only. `control.record_cpu_usage`
+  stamps `cpu_measured_at` with the worker's clock on every write that carries
+  a figure, and never writes a time, a limit or a source with no figure beside
+  it. The periodic reading (every fifth heartbeat) is now written even when the
+  figures did not move, because its time is what says the worker is still
+  reading; the reap and exit writes still skip an unchanged reading.
+* **The API** decodes and serves both on every attempt row, and serves
+  `cpu_reading_age_seconds`, the reading's age against the route's own
+  `read_at` (both attempt routes now carry `read_at`), clamped at zero. It is
+  declared computed in `test_api_contract_shapes.py`.
+* **The UI** restates the two fields and the age on `AttemptRow`, optional.
+  Details' CPU strip says `live reading · 20s ago` (and `last written · 3m
+  ago` for an attempt that ended with no recorded finish), and the ceiling's
+  source is `cgroup limit`, the class's name, or `class limit`, from the typed
+  source. `test_ui_api_field_contract.py` and
+  `test_artifacts_tab_field_contract.py` hold the fields both ways.
+* **Attempts from before the change** carry neither field. They keep the
+  legacy words, `age not recorded` and `reported limit`, and the legacy
+  heartbeat reader stays, as the owner decided on #184.
+* The source is a bare string, as this entry said it would be. Its vocabulary
+  is stated once in the worker (`metrics.CPU_LIMIT_SOURCES`) and read by the
+  UI's `limitSource`; compare request #20.
 

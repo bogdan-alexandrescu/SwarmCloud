@@ -84,14 +84,17 @@ export interface DispatchChoiceProps {
 }
 
 /**
- * The prefixes `repository_url` must start with: `_repo_scheme` in
- * `swarm_api/schemas.py`, on both `TaskCreate` and `WorkflowCreate`.
+ * The prefixes `repository_url` must start with: `check_repository_url` in
+ * `swarm_api/validation.py`, which `TaskCreate` and `WorkflowCreate` both call.
+ * (It also refuses a URL carrying a credential in its userinfo, since the PR
+ * #229 review; this form does not pre-warn on that, and the API's 422 names
+ * the tenant's git secret as the way to clone a private repository.)
  *
  * A SECOND COPY OF A SERVER RULE, KEPT FOR ONE REASON AND HELD TO THE FIRST.
  * The form only ever WARNS with it -- the API owns the refusal and names it --
  * so a drift here shows a wrong caution rather than blocking a valid submission.
- * `dispatch.test.ts` reads the validator's tuple out of `schemas.py` and fails
- * when the two disagree, so the drift is caught rather than shipped.
+ * `dispatch.test.ts` reads the validator's tuple out of `validation.py` and
+ * fails when the two disagree, so the drift is caught rather than shipped.
  */
 export const REPOSITORY_SCHEMES: readonly string[] = ['https://', 'ssh://', 'git@']
 

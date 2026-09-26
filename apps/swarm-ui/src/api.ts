@@ -1072,6 +1072,15 @@ async function fixtureTaskInput(taskId: string): Promise<Result<TaskInputCopy>> 
       prompt: typeof prompt === 'string' ? clean(prompt) : null,
       rest: typeof prompt === 'string' && Object.keys(others).length > 0 ? clean(JSON.stringify(others, null, 2)) : null,
       full: clean(JSON.stringify(input, null, 2)),
+      // The fixture's metadata carries no credential either: its copy is the
+      // metadata with a measured zero, platform keys named as the server does.
+      metadata: {
+        value: detail.data.task.metadata ?? {},
+        redaction_count: 0,
+        platform_keys: Object.keys(detail.data.task.metadata ?? {}).filter((k) =>
+          ['dispatch', 'input_from', 'expected_outputs'].includes(k),
+        ),
+      },
       redacted: false,
       redaction_count: 0,
       redaction: { applied_at_read_time: true, rules: 11 },
@@ -1655,9 +1664,30 @@ async function fixtureAgentRun(taskId: string): Promise<Result<AgentRun>> {
  */
 function fixtureCpu(a: AttemptRow): AttemptRow {
   if (a.started_at === null) {
-    return { ...a, cpu_seconds: null, peak_cpu_cores: null, mean_cpu_cores: null, cpu_limit_cores: null }
+    return {
+      ...a,
+      cpu_seconds: null,
+      peak_cpu_cores: null,
+      mean_cpu_cores: null,
+      cpu_limit_cores: null,
+      cpu_measured_at: null,
+      cpu_limit_source: null,
+      cpu_reading_age_seconds: null,
+    }
   }
-  return { ...a, cpu_seconds: 402.311, peak_cpu_cores: 1.62, mean_cpu_cores: 0.842, cpu_limit_cores: 2 }
+  // Contract request #26: dated and sourced. A running attempt's reading is
+  // 20 s old, an ended one's was written at its end.
+  const age = a.completed_at === null ? 20 : Math.max(0, (Date.now() - Date.parse(a.completed_at)) / 1000)
+  return {
+    ...a,
+    cpu_seconds: 402.311,
+    peak_cpu_cores: 1.62,
+    mean_cpu_cores: 0.842,
+    cpu_limit_cores: 2,
+    cpu_measured_at: new Date(Date.now() - age * 1000).toISOString(),
+    cpu_limit_source: 'cgroup',
+    cpu_reading_age_seconds: Math.round(age),
+  }
 }
 
 export async function loadStats(): Promise<Result<Stats>> {

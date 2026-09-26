@@ -22,6 +22,7 @@ from fastapi import APIRouter, Depends, Query
 from ..codec import attempt_to_api
 from ..deps import AppContext, get_context, paged_limit, tenant_scope
 from ..errors import ValidationFailed
+from ..task_input import masking_for
 
 router = APIRouter(prefix="/v1/attempts", tags=["attempts"])
 
@@ -78,9 +79,22 @@ def list_attempts(
         until=until,
     )
     rows = page.items
+    read_at = ctx.now()
+    # Each row's `error` is masked by its OWN task's masker (the PR #229
+    # review), as `/v1/tasks/{id}/attempts` masks it, so the two routes serve
+    # one attempt the same way. One batched read for the page's tasks; a row
+    # whose task is gone is masked by the rules alone.
+    tasks = ctx.store.tasks_by_id(tenant_id, (attempt.task_id for attempt in rows))
+    maskings = {task_id: masking_for(task) for task_id, task in tasks.items()}
     return {
         "tenant_id": tenant_id,
-        "attempts": [attempt_to_api(attempt) for attempt in rows],
+        # The clock each row's `cpu_reading_age_seconds` is taken against
+        # (contract request #26).
+        "read_at": read_at,
+        "attempts": [
+            attempt_to_api(attempt, masking=maskings.get(attempt.task_id), read_at=read_at)
+            for attempt in rows
+        ],
         "next_page_token": page.next_page_token,
         "coverage": {
             "attempts": len(rows),

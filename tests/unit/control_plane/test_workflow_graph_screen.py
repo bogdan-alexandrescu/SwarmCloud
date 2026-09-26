@@ -505,13 +505,22 @@ def test_the_checkpoint_and_log_loaders_now_have_a_caller():
 def test_the_log_footnote_no_longer_denies_a_route_that_exists():
     """MUTATION: restore "there is no log-tail read path on the API". The screen
     would again tell a reader not to look for something it can now show.
+
+    THE FOOTNOTE ITSELF IS GONE. `LogsFoot` sat under Details' log-location
+    rows, and the owner's decision of 2026-09-26 (#184) moved those rows to
+    Artifacts › Logs: "Details holds no log rows." So the claim is looked for
+    in the code of both panes -- the one that drew the footnote and the one
+    that draws the logs now -- rather than in a function that no longer exists.
     """
     agent = _src("AgentDetail.tsx")
-    foot = _decl(agent, "function LogsFoot(")
-    assert "no log-tail read path" not in foot, (
-        "the screen still states a constraint the API no longer has"
-    )
-    assert "not readable here at all" not in foot
+    assert "function LogsFoot(" not in agent, "Details draws a log footnote again, over no log rows"
+    for name in ("AgentDetail.tsx", "Artifacts.tsx"):
+        code = _code(_src(name))
+        assert code.strip(), f"{name} read as empty; the check would be vacuous"
+        assert "no log-tail read path" not in code, (
+            f"{name} still states a constraint the API no longer has"
+        )
+        assert "not readable here at all" not in code
 
 
 def test_the_log_window_keeps_absent_apart_from_empty():

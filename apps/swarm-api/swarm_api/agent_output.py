@@ -61,7 +61,8 @@ from .inspect import (
     parse_tail_header,
 )
 from .objects import ObjectAbsent, ObjectReader, ObjectSlice, ObjectUnreadable
-from .redaction import RULES as REDACTION_RULES, open_key_start, redact, redact_detail
+from .redaction import RULES as REDACTION_RULES, open_key_start, redact, redact_detail, redact_lines
+from .task_input import masking_for
 from .transcript import last_result_event, parse_window
 
 log = logging.getLogger(__name__)
@@ -234,7 +235,11 @@ class AgentOutputService:
           * TEXT -- no NUL in the head. Served as `text/plain; charset=utf-8`
             WHATEVER the name says, so an `.html` or an `.svg` an agent wrote
             is shown as its source and never rendered; redacted window by
-            window on the way out. Bytes that are not UTF-8 pass through
+            window on the way out, by the SAME masking `/artifacts/content`
+            applies (`redaction.redact_lines`, plus this task's own learned
+            literals -- the PR #229 review: this route used to run `redact`
+            alone, which is `redact_lines` minus the structural JSON pass and
+            minus the task's literals). Bytes that are not UTF-8 pass through
             exactly as stored -- only a credential-shaped run changes -- so
             a Latin-1 file downloads as itself, not as U+FFFD.
           * BINARY -- anything else. `application/octet-stream`, always an
@@ -301,7 +306,12 @@ class AgentOutputService:
             "X-Swarm-Redaction": redaction,
         }
         if kind == "text":
-            chunks = self._redacted_text(reader, key, first)
+            # The task's own masker (the PR #229 review): a value only the
+            # task's input or metadata named as secret is masked in a text
+            # artifact's raw download too, the same literals `/artifacts/
+            # content` masks it with.
+            literals = masking_for(task).literals
+            chunks = self._redacted_text(reader, key, first, literals=literals)
         else:
             chunks = self._verbatim(reader, key, first)
         return RawArtifact(chunks=chunks, media_type=media_type, headers=headers, kind=kind)
@@ -340,7 +350,12 @@ class AgentOutputService:
             at = piece.end
 
     def _redacted_text(
-        self, reader: ObjectReader, key: str, first: ObjectSlice
+        self,
+        reader: ObjectReader,
+        key: str,
+        first: ObjectSlice,
+        *,
+        literals: tuple[str, ...] = (),
     ) -> Iterator[bytes]:
         """The whole object, redacted one whitespace-bounded window at a time.
 
@@ -352,6 +367,12 @@ class AgentOutputService:
         whole into the next (up to `redaction.PEM_BLOCK_MAX_CHARS`), so it is
         masked as one block. Concatenated, the windows are the redaction of the
         whole object.
+
+        `literals`: this task's own learned literals (the PR #229 review),
+        passed to `_scrub` so a window that IS a whole JSON line is masked by
+        its structure too, exactly as `/artifacts/content` masks the same
+        bytes -- window boundaries are unchanged, only what each window is
+        masked with.
         """
         total = first.total_bytes
         carry = b""
@@ -361,7 +382,7 @@ class AgentOutputService:
             buffer = carry + piece.data
             if at >= total:
                 if buffer:
-                    yield _scrub(buffer)
+                    yield _scrub(buffer, literals=literals)
                 return
             cut = _last_boundary(buffer)
             if cut >= 0:
@@ -370,11 +391,11 @@ class AgentOutputService:
                     # -1 when the key is all this window holds: carry it.
                     cut = _last_boundary(buffer[:begin])
             if cut >= 0:
-                yield _scrub(buffer[: cut + 1])
+                yield _scrub(buffer[: cut + 1], literals=literals)
                 carry = buffer[cut + 1 :]
             elif len(buffer) >= MAX_TEXT_CARRY:
                 split = _char_boundary(buffer) or len(buffer)
-                yield _scrub(buffer[:split])
+                yield _scrub(buffer[:split], literals=literals)
                 carry = buffer[split:]
             else:
                 carry = buffer
@@ -422,6 +443,10 @@ class AgentOutputService:
         """
         ins = self._ins
         task, _prefix = ins._scoped(tenant_id, task_id)
+        # The task's own masker (the PR #229 fix-up): a value only its input
+        # or metadata named as secret is masked wherever the agent echoes it
+        # in this transcript too, the same literals `/input` masks it with.
+        masking = masking_for(task)
         if offset < 0:
             raise ValidationFailed("offset must not be negative")
         if source not in ("auto", "final", "live"):
@@ -536,6 +561,7 @@ class AgentOutputService:
                     opened.source in ("final", "artifact") and start == 0 and complete_object
                 ),
                 include_raw=include_raw,
+                literals=masking.literals,
             )
             seen_cut = parsed.capture_truncated
             body.update(
@@ -590,6 +616,10 @@ class AgentOutputService:
         """
         ins = self._ins
         task, _prefix = ins._scoped(tenant_id, task_id)
+        # The task's own masker (the PR #229 fix-up): the result event's
+        # content is masked with the same literals `/input` masks the task's
+        # input and metadata with, not the rules alone.
+        masking = masking_for(task)
         attempts = ins._attempt_order(tenant_id, task_id)
         chosen, attempt_status = ins._choose_attempt(attempts, attempt_id)
         read_at = ins._now()
@@ -686,7 +716,7 @@ class AgentOutputService:
                 )
                 event = last_result_event(data, starts_mid_line=starts_mid_line)
                 if event is not None:
-                    self._fill_from_event(body, event, opened, chunk)
+                    self._fill_from_event(body, event, opened, chunk, literals=masking.literals)
                     if body["capture_truncated"] is True:
                         body["detail"] = (
                             CAPTURE_CUT_DETAIL + "; the result event, its last line, was "
@@ -704,16 +734,19 @@ class AgentOutputService:
         runner = summary.get("runner") if isinstance(summary.get("runner"), dict) else {}
         text = runner.get("summary")
         if chosen == manifest_attempt(task) and isinstance(text, str) and text.strip():
-            scrubbed = redact(text, decoded=True)
+            # The same masking `GET /v1/tasks/{id}` gives this string inside
+            # `result_summary` (the PR #229 review): the rules, and every
+            # literal the task's input and metadata named.
+            masked, masked_count = masking.text(text)
             body.update(
                 status="ok",
                 source="runner_summary",
                 format="text",
-                content=scrubbed.text,
+                content=masked,
                 complete=False if len(text) >= RUNNER_SUMMARY_CAP else None,
                 bytes=len(text.encode("utf-8")),
-                redacted=scrubbed.any,
-                redaction_count=scrubbed.count,
+                redacted=masked_count > 0,
+                redaction_count=masked_count,
                 detail=cut_note + (
                     "the agent's output holds no result event, so this is the runner's "
                     "summary, which the runner cuts at 2,000 characters"
@@ -754,11 +787,21 @@ class AgentOutputService:
 
     @staticmethod
     def _fill_from_event(
-        body: dict[str, Any], event: dict[str, Any], opened: OpenedStream, chunk: ObjectSlice
+        body: dict[str, Any],
+        event: dict[str, Any],
+        opened: OpenedStream,
+        chunk: ObjectSlice,
+        *,
+        literals: tuple[str, ...] = (),
     ) -> None:
+        """`literals`: the task's masker's learned literals (the PR #229
+        fix-up), applied after the rules like every other reader of them --
+        so the result event the agent produced is masked with the SAME
+        literals `/input` masks the task's own input and metadata with.
+        """
         result = event.get("result")
         text = result if isinstance(result, str) else None
-        scrubbed = redact(text, decoded=True) if text is not None else None
+        scrubbed = redact(text, decoded=True, extra=literals) if text is not None else None
         is_error = event.get("is_error")
         num_turns = event.get("num_turns")
         body.update(

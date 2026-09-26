@@ -373,6 +373,25 @@ class Attempt:
     mean_cpu_cores: float | None = None
     cpu_limit_cores: float | None = None
 
+    # WHEN the four were measured, and WHERE the limit came from. Added
+    # 2026-09-26 as change request #26 in docs/contract-change-requests.md,
+    # accepted by the platform owner on #184.
+    #
+    #   cpu_measured_at   the worker's clock at the reading it last wrote. On a
+    #                     running attempt the four are a live reading, and
+    #                     without a time a worker that stopped writing an hour
+    #                     ago looked exactly like one that wrote a second ago;
+    #   cpu_limit_source  "cgroup" (the container's cgroup v2 `cpu.max`) or
+    #                     "resource_class" (the catalogue cpu of the class the
+    #                     container was sized with), which the interim
+    #                     HEARTBEAT path recorded and request #15 did not.
+    #
+    # Written with the four, never alone. None means not recorded: every
+    # attempt from before this change, which the API and the UI keep reading.
+    # At the end of the class for the reason given above.
+    cpu_measured_at: datetime | None = None
+    cpu_limit_source: str | None = None
+
 
 @dataclass
 class TaskEvent:

@@ -54,6 +54,7 @@ from .patches import (
     explain_absence,
     explain_failure,
     integrate,
+    masked_counts,
     patch_uri,
 )
 
@@ -324,7 +325,12 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "swarm_status",
-        "description": "Current state of one or more tasks. Returns immediately.",
+        "description": (
+            "Current state of one or more tasks. Returns immediately. `masked` "
+            "says how many credential-shaped strings the API masked in each "
+            "task's input and metadata, which it never serves raw; null means "
+            "the deployment sent no count."
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {"task_ids": {"type": "array", "items": {"type": "string"}}},
@@ -356,7 +362,12 @@ TOOLS: list[dict[str, Any]] = [
             "`commits`, `insertions`, `deletions` and `uncommitted_files` are "
             "null when nothing was counted -- the task cloned no repository, "
             "never started, or its harvest failed -- and `no_patch_because` says "
-            "which. Null is not zero; 0 is a count the harvest made."
+            "which. Null is not zero; 0 is a count the harvest made.\n"
+            "\n"
+            "`masked` counts the credential-shaped strings the API masked in the "
+            "task's `input` and `metadata`. The API serves both masked, to the "
+            "submitter too, so a prompt read back is the masked copy; null means "
+            "the deployment sent no count."
         ),
         "inputSchema": {
             "type": "object",
@@ -1132,13 +1143,15 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
         return json.dumps(report, indent=2, default=str)
 
     if name == "swarm_status":
-        return json.dumps(
-            [
-                {"task_id": t, "state": client.task(t).get("state")}
-                for t in args["task_ids"]
-            ],
-            indent=2,
-        )
+        # `masked` (owner decision, 2026-09-26): how many credential-shaped
+        # strings the API masked in each task's input and metadata, which it
+        # serves masked to everyone, the submitter included. Null for a count
+        # an older API did not send, never 0.
+        rows = []
+        for t in args["task_ids"]:
+            task = client.task(t)
+            rows.append({"task_id": t, "state": task.get("state"), "masked": masked_counts(task)})
+        return json.dumps(rows, indent=2)
 
     if name == "swarm_wait":
         # NOT `args.get(...) or 3600`. Zero is a legitimate value -- "tell me

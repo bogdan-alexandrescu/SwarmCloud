@@ -441,7 +441,7 @@ class Worker:
         # What `record_cpu_usage` last wrote onto the attempt (contract request
         # #15), so the periodic readings and each runner's end write once per
         # change rather than once per heartbeat.
-        self._cpu_recorded: dict[str, float] | None = None
+        self._cpu_recorded: dict[str, float | str] | None = None
         self._account_broker = deps.account_broker
         if self._account_broker is None and config.quota_broker_url:
             self._account_broker = AccountBroker(
@@ -2991,7 +2991,10 @@ class Worker:
             # THE LIVE READING DETAILS DRAWS, on the attempt itself (contract
             # request #15): the same cadence as the event, so a running
             # attempt's figures are never more than one reading behind it.
-            self._record_cpu()
+            # WRITTEN EVEN WHEN THE FIGURES DID NOT MOVE (request #26): the
+            # reading's time is what says the worker is still reading, and an
+            # idle agent's unchanged figures skipped would age as a stall.
+            self._record_cpu(periodic=True)
 
     def _usage_reading(self) -> dict[str, Any]:
         """One HEARTBEAT event's detail: the attempt's usage so far.
@@ -3024,7 +3027,7 @@ class Worker:
             "cpu_source": usage.cpu_source if usage else None,
         }
 
-    def _record_cpu(self) -> None:
+    def _record_cpu(self, *, periodic: bool = False) -> None:
         """The attempt's CPU, as typed fields on its own document. Never raises.
 
         CONTRACT REQUEST #15, accepted on #184 (2026-09-25): `cpu_seconds`,
@@ -3039,7 +3042,11 @@ class Worker:
         crash or killed at cleanup without being reaped. The figures are the
         ATTEMPT's, every runner so far plus the live one, so an in-place
         restart continues them rather than starting again. Written only when
-        they changed.
+        they changed -- except the periodic reading (`periodic`), which is
+        always written, because each write stamps `cpu_measured_at` (contract
+        request #26, accepted on #184, 2026-09-26) and a reader ages the
+        reading by it. With the figures goes `cpu_limit_source`: `cgroup` or
+        `resource_class`, from `_cpu_limit`.
 
         NOT FENCED, like the memory peaks beside them: the attempt document is
         this attempt's own, and the fence guards the task, its lease and its
@@ -3050,8 +3057,9 @@ class Worker:
         """
         if self._writes_forbidden:
             return
-        fields = attempt_cpu_fields(self._attempt_usage(), limit_cores=self._cpu_limit_cores())
-        if not fields or fields == self._cpu_recorded:
+        cores, source = self._cpu_limit()
+        fields = attempt_cpu_fields(self._attempt_usage(), limit_cores=cores, limit_source=source)
+        if not fields or (fields == self._cpu_recorded and not periodic):
             return
         try:
             self.control.record_cpu_usage(fields)
@@ -3060,8 +3068,8 @@ class Worker:
             return
         self._cpu_recorded = dict(fields)
 
-    def _cpu_limit_cores(self) -> float | None:
-        """The CPU limit the attempt's figures are a fraction of, in cores.
+    def _cpu_limit(self) -> tuple[float | None, str | None]:
+        """The CPU limit the attempt's figures are a fraction of, in cores, and its source.
 
         cgroup v2 `cpu.max` first: what the kernel enforces. Otherwise the
         catalogue cpu of the class the container was SIZED with, which is
@@ -3073,25 +3081,28 @@ class Worker:
         rather than imported (the worker image does not install the
         scheduler); `tests/unit/worker/test_cpu_sampler.py` compares the two.
 
-        WHERE IT CAME FROM IS NOT RECORDED. The interim HEARTBEAT carried a
-        `cpu_limit_source`; the four fields request #15 added do not, so the
-        attempt says what the limit was and not whether the kernel or the
-        catalogue said so. With `requests == limits` the two agree.
+        WHERE IT CAME FROM IS RECORDED AGAIN (contract request #26, accepted
+        on #184, 2026-09-26): `cgroup` when the kernel's `cpu.max` said it,
+        `resource_class` when the catalogue did. Request #15's four fields
+        dropped the interim HEARTBEAT's `cpu_limit_source`, and Details could
+        only say `reported limit`. With `requests == limits` the two agree;
+        nobody has yet read what Cloud Run's `cpu.max` holds, which is why the
+        source is worth saying.
 
-        None before the task document has been read: nothing yet says which
-        class this attempt was sized with, and a guess would be drawn as a
-        fact.
+        `(None, None)` before the task document has been read: nothing yet
+        says which class this attempt was sized with, and a guess would be
+        drawn as a fact.
         """
         try:
             cores = cgroup_cpu_limit_cores()
         except Exception:  # pragma: no cover - a telemetry read never fails an attempt
             cores = None
         if cores is not None:
-            return cores
+            return cores, "cgroup"
         sized = self._sized_resource_class()
         if sized is None:
-            return None
-        return float(RESOURCE_CLASSES[sized].cpu)
+            return None, None
+        return float(RESOURCE_CLASSES[sized].cpu), "resource_class"
 
     def _sized_resource_class(self) -> str | None:
         task = self._task

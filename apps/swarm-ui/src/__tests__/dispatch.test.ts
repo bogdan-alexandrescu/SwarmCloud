@@ -281,20 +281,23 @@ describe('DispatchChoice, the control', () => {
     expect(repositorySchemeRefused(' \t ')).toBe(false)
   })
 
-  it('TS-17: holds its prefixes to the validator in swarm_api/schemas.py, both copies of it', () => {
-    // THE SECOND COPY IS HELD TO THE FIRST. `_repo_scheme` is stated on
-    // TaskCreate and again on WorkflowCreate; the form's warning restates it.
-    // A prefix added there and not here would warn about a URL the API
-    // accepts -- a wrong caution, never a block, but a wrong one.
-    const schemas = readFileSync(
-      join(__dirname, '..', '..', '..', 'swarm-api', 'swarm_api', 'schemas.py'),
-      'utf8',
-    )
-    const tuples = [...schemas.matchAll(/value\.startswith\(\(([^)]*)\)\)/g)].map((m) =>
+  it('TS-17: holds its prefixes to the API validator, which both request models call', () => {
+    // THE FORM'S WARNING RESTATES THE API'S RULE, so it is held to it. The rule
+    // was stated twice, on TaskCreate and on WorkflowCreate; since the PR #229
+    // review it is ONE function, `validation.check_repository_url`, which both
+    // `_repo_scheme` validators call. A prefix added there and not here would
+    // warn about a URL the API accepts -- a wrong caution, never a block.
+    const api = join(__dirname, '..', '..', '..', 'swarm-api', 'swarm_api')
+    const validation = readFileSync(join(api, 'validation.py'), 'utf8')
+    const schemas = readFileSync(join(api, 'schemas.py'), 'utf8')
+    const tuples = [...validation.matchAll(/value\.startswith\(\(([^)]*)\)\)/g)].map((m) =>
       [...(m[1] ?? '').matchAll(/"([^"]*)"/g)].map((q) => q[1]).sort(),
     )
-    expect(tuples.length, 'no `_repo_scheme` prefix tuple found in schemas.py; this compared nothing').toBeGreaterThanOrEqual(2)
+    expect(tuples.length, 'no repository prefix tuple found in validation.py; this compared nothing').toBe(1)
     for (const t of tuples) expect(t).toEqual([...REPOSITORY_SCHEMES].sort())
+    // Both request models go through it, and neither restates it.
+    expect([...schemas.matchAll(/return check_repository_url\(value\)/g)].length).toBe(2)
+    expect(schemas).not.toMatch(/value\.startswith\(\(/)
   })
 
   it('TS-21: spaces its fields from the sheet, with no inline margin', () => {

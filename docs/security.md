@@ -225,7 +225,13 @@ there is nothing for a route to leak.
 It is a list of `sed` patterns, so it masks the shapes it knows — `sk-…`,
 `ya29.…`, JWTs, `AIza…`, `ghp_`/`gho_`/`github_pat_`, `xox*`, `AKIA`/`ASIA`, PEM
 headers, `Bearer <token>` bodies and `key|password|secret|token|credential|
-authorization` assignments — and nothing else. An opaque, high-entropy key from
+authorization` assignments, including one written as JSON text with escaped
+quotes at any depth (`PASSWORD=\"…\"`, `\"api_key\": \"…\"` since #221, and
+`\\\"…\\\"`, a command that quoted its own quotes, since the PR #229 review;
+the same rule as the API's) — and nothing else. Being sed over text, it cannot
+decode a JSON line the way `/logs` does (`redaction.redact_lines`), so a list's
+later elements under a credential's name, and a value opened by an escaped
+quote past its first backslash, still reach the terminal. An opaque, high-entropy key from
 a provider whose prefix is not on that list (Azure, Bedrock, a self-hosted
 gateway) reaches the terminal in cleartext, and `create-secrets.sh` already has a
 generic provider branch, so those providers are contemplated rather than

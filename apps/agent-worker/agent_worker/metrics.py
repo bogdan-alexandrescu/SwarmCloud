@@ -291,8 +291,16 @@ def cgroup_cpu_limit_cores() -> float | None:
 #: The four CPU fields contract request #15 added to `Attempt`, in its order.
 ATTEMPT_CPU_FIELDS = ("cpu_seconds", "peak_cpu_cores", "mean_cpu_cores", "cpu_limit_cores")
 
+#: Where `cpu_limit_cores` came from (contract request #26, accepted on #184,
+#: 2026-09-26): the container's cgroup `cpu.max`, or the catalogue cpu of the
+#: class it was sized with. The vocabulary `Attempt.cpu_limit_source` takes;
+#: the UI's `limitSource` words it (`cgroup limit`, `<class> limit`).
+CPU_LIMIT_SOURCES = ("cgroup", "resource_class")
 
-def attempt_cpu_fields(usage: ResourceUsage | None, *, limit_cores: float | None) -> dict[str, float]:
+
+def attempt_cpu_fields(
+    usage: ResourceUsage | None, *, limit_cores: float | None, limit_source: str | None = None
+) -> dict[str, float | str]:
     """The attempt document's CPU fields, rounded, with what was not measured LEFT OUT.
 
     CONTRACT REQUEST #15, ACCEPTED on #184 (2026-09-25). `Attempt` carries
@@ -313,6 +321,11 @@ def attempt_cpu_fields(usage: ResourceUsage | None, *, limit_cores: float | None
     NOTHING WHEN NOTHING WAS MEASURED, not even the limit: a limit alone would
     read as a reading with its figures missing, and the attempt has none.
 
+    `limit_source` (contract request #26) is `cgroup` or `resource_class`, and
+    is written as `cpu_limit_source` only beside a limit. The reading's time,
+    `cpu_measured_at`, is the control's to stamp when it writes
+    (`control.record_cpu_usage`), so that it is the time of the write.
+
     `usage` is the ATTEMPT's (`combine_usage` over every runner it started).
     Three decimal places throughout; 1.0 is one whole vCPU. The mean is over
     RUNNER wall time, so setup, the clone and retry waits are not idle time.
@@ -327,10 +340,15 @@ def attempt_cpu_fields(usage: ResourceUsage | None, *, limit_cores: float | None
     fields = {name: value for name, value in measured.items() if value is not None}
     if not fields:
         return {}
+    out: dict[str, float | str] = dict(fields)
     limit = _rounded(limit_cores)
     if limit is not None:
-        fields["cpu_limit_cores"] = limit
-    return fields
+        out["cpu_limit_cores"] = limit
+        # CONTRACT REQUEST #26 (accepted on #184, 2026-09-26): where the limit
+        # came from, only beside a limit. A source with no limit says nothing.
+        if limit_source in CPU_LIMIT_SOURCES:
+            out["cpu_limit_source"] = limit_source
+    return out
 
 
 def _proc_stat(entry: Path) -> tuple[int, int, int]:

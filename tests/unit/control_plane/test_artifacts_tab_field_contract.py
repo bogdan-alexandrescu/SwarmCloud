@@ -133,7 +133,12 @@ def served(client, db, objects) -> dict[str, dict[str, Any]]:
         # put them on a HEARTBEAT event.
         "cpu_seconds": 42.5, "peak_cpu_cores": 1.875, "mean_cpu_cores": 0.472,
         "cpu_limit_cores": 2.0,
+        # Contract request #26: dated and sourced, so the served row carries
+        # all three of its fields populated.
+        "cpu_measured_at": NOW + timedelta(minutes=2), "cpu_limit_source": "cgroup",
     }
+    # Caller metadata beside a platform key, so the masked block has both.
+    db.docs["tasks/task_a"]["metadata"] = {"dispatch": {"strategy": "collect"}, "note": "a label"}
     for name, body in artifacts.items():
         objects.put(f"{BASE}/artifacts/{name}", body)
     objects.put(f"{BASE}/logs/agent_stdout.log", STREAM_JSON)
@@ -172,13 +177,17 @@ def served(client, db, objects) -> dict[str, dict[str, Any]]:
         "AttemptRow": attempts["attempts"][0],
         "TaskInputCopy": task_input,
         "MaskedText": task_input["prompt"],
+        # The task's metadata, masked (the owner's "mask it everywhere",
+        # 2026-09-26). `.get`: an API without the block fails this shape by
+        # name rather than failing every shape in the fixture.
+        "MaskedMetadata": task_input.get("metadata"),
     }
 
 
 SHAPES = (
     "ArtifactListing", "ArtifactEntry", "ArtifactContent", "TaskLogs", "LogAttempt",
     "LogStream", "TaskTranscript", "TranscriptStream", "TranscriptStep", "TaskAnswer",
-    "AttemptRow", "TaskInputCopy", "MaskedText",
+    "AttemptRow", "TaskInputCopy", "MaskedText", "MaskedMetadata",
 )
 
 

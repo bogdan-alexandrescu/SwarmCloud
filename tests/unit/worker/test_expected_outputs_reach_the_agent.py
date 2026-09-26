@@ -46,7 +46,6 @@ from __future__ import annotations
 
 import io
 import json
-import tarfile
 from pathlib import Path
 from typing import Any
 
@@ -86,24 +85,28 @@ def _seed(db: Any, expected: Any, *, artifact_name: str = "notes.md") -> None:
     db.doc("tasks/task_1")["metadata"] = {METADATA_KEY: expected}
 
 
-def _runner_input(store: LocalObjectStore) -> dict[str, Any]:
-    """`input.json` as the runner saw it, from the final checkpoint of `work/`.
+@pytest.fixture(autouse=True)
+def _record_runner_input(runner_inputs: list[dict[str, Any]]) -> None:
+    """Every test here may ask what the runner was handed; see `runner_inputs`."""
+    _SEEN.clear()
+    _SEEN.append(runner_inputs)
 
-    The workspace is destroyed when the attempt ends; the checkpoint is the
-    archive of `work/` taken while the runner was running.
+
+#: The current test's `runner_inputs` list, so `_runner_input` keeps its shape.
+_SEEN: list[list[dict[str, Any]]] = []
+
+
+def _runner_input(store: LocalObjectStore) -> dict[str, Any]:
+    """`input.json` as the runner saw it, at the attempt's final checkpoint.
+
+    The workspace is destroyed when the attempt ends, and the checkpoint no
+    longer archives `input.json` (the PR #229 review), so `runner_inputs`
+    reads the file at the moment each checkpoint is taken. `store` is kept so
+    every caller reads as it did.
     """
-    keys = [
-        key
-        for key in store.list_keys(f"tenants/{TENANT}/tasks/task_1/attempts/att_1/")
-        if key.endswith("/archive.tar.gz")
-    ]
-    assert keys, "the attempt wrote no checkpoint"
-    with tarfile.open(
-        fileobj=io.BytesIO(store.download_bytes(sorted(keys)[-1])), mode="r:gz"
-    ) as archive:
-        member = archive.extractfile("input.json")
-        assert member is not None
-        return json.loads(member.read())
+    seen = _SEEN[0] if _SEEN else []
+    assert seen, "the attempt wrote no checkpoint"
+    return seen[-1]
 
 
 def _records(log_stream: io.StringIO) -> list[dict[str, Any]]:

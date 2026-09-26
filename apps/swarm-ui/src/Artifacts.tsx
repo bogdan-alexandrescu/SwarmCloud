@@ -1187,6 +1187,12 @@ const LOG_VIEWS: readonly { id: LogView; label: string }[] = [
  * -- behind the last choice, because it is the platform's and not the agent's
  * -- the runner process's streams, which the Details pane used to present as
  * the agent's output.
+ *
+ * EACH LOG'S OBJECT LOCATION IS HERE, beside its view (owner decision,
+ * 2026-09-26, on #184): every stream row carries its object's `gs://` uri and
+ * `copy gsutil`, and the transcript's facts carry the agent stdout object it
+ * is parsed from. Details' Output listed the same locations from
+ * `result_summary.logs`, away from the logs, and lists none now.
  */
 function Logs({ v, reading, now }: { v: ArtifactsView; reading: ScreenReading; now: number }) {
   const [view, setView] = useState<LogView>('transcript')
@@ -1454,8 +1460,16 @@ function TranscriptBody({
     })
   }
 
+  // FACTS ONLY FOR A PUBLISHED STREAM (#222, post-deploy QA of 2026-09-26).
+  // They were drawn whatever the stream's status, so a task that had published
+  // nothing read `source live [not measured] · masked 0` above `nothing
+  // published yet`, and a browser task `source — · masked 0`: a source for an
+  // object that does not exist and a masking count over bytes nobody read.
+  // The absent, unreadable and not-applicable answers say what they are below.
+  const published = t.stream.status === 'ok'
   return (
     <div className="arts-transcript">
+      {published && (
       <ul className="ctl-facts">
         <li className="ctl-fact">
           <b>source</b>
@@ -1506,12 +1520,34 @@ function TranscriptBody({
           <b>masked</b>
           <span className={`art-masked${masked > 0 ? ' is-warn' : ''}`}>{masked}</span>
         </li>
+        {/* THE OBJECT'S LOCATION, BESIDE ITS LIVE VIEW (owner decision,
+            2026-09-26, on #184). Details listed the log objects' locations
+            with `copy gsutil`; they moved here, beside the logs they point
+            to. The stream rows below the other views carry theirs; this is
+            the transcript's, the agent's stdout object it is parsed from.
+            Whole in the title and in the copy: a cut uri is a different uri. */}
+        {t.stream.uri !== null && (
+          <li className="ctl-fact arts-object">
+            <b>object</b>
+            <span className="mono uri" title={t.stream.uri}>
+              {t.stream.uri}
+            </span>
+            <button
+              type="button"
+              className="copy"
+              onClick={() => navigator.clipboard?.writeText(`gsutil cat ${t.stream.uri}`)}
+            >
+              copy gsutil
+            </button>
+          </li>
+        )}
         <li className="ctl-fact">
           <button type="button" className="copy" onClick={onRecords}>
             {records ? 'hide records' : 'show records'}
           </button>
         </li>
       </ul>
+      )}
       {/* THE SERVER'S OWN SENTENCE ABOUT THIS WINDOW, when it read one: a
           capture cut at its cap, a line longer than the window, a window that
           began inside such a line. The absent and unreadable answers draw it
@@ -1742,11 +1778,19 @@ function StepRow({
         </li>
       )
     case 'thinking':
+      // AN EMPTY THINKING TEXT IS NOT AN EXPANDABLE (#222, post-deploy QA of
+      // 2026-09-26). `text: ""` passed the null check and drew `▸ thinking`
+      // that opened onto nothing. It is drawn as the word and a real-zero
+      // mark, like a null one; a redacted block keeps its own sentence.
       return (
         <li className="arts-step is-thinking">
           {m.redacted === true || step.text === null ? (
             <span className="arts-step-kind">
               thinking <Mark kind="absent" say="The provider redacted this thinking block, so there is no text to show." />
+            </span>
+          ) : step.text === '' ? (
+            <span className="arts-step-kind">
+              thinking <Mark kind="zero" say="This thinking block carries an empty text: there is nothing to open." />
             </span>
           ) : (
             <details className="arts-more">
@@ -1854,7 +1898,7 @@ function StepRow({
     case 'rate_limit':
       return (
         <li className="arts-step is-meta">
-          <span className="arts-step-kind">rate limit</span> <Scalars meta={step.meta} />
+          <span className="arts-step-kind">rate limit</span> <RateLimitFacts meta={step.meta} />
           {record}
         </li>
       )
@@ -1910,11 +1954,73 @@ function StepRow({
   }
 }
 
-/** A step's top-level scalars, as `key value` pairs. */
-function Scalars({ meta }: { meta: Record<string, unknown> | null }) {
-  const pairs = Object.entries(meta ?? {}).filter(
-    ([, x]) => typeof x === 'string' || typeof x === 'number' || typeof x === 'boolean',
-  )
-  if (pairs.length === 0) return null
-  return <span className="ctl-sub">{pairs.map(([k, x]) => `${k} ${String(x)}`).join(' · ')}</span>
+/**
+ * A RATE-LIMIT READING IN WORDS, AND ITS RESET IN LOCAL TIME (#222,
+ * post-deploy QA of 2026-09-26). The step printed the server's flattened keys
+ * and an epoch -- `rate_limit_info.resetsAt 1790401200` -- which a reader has
+ * to decode before it says anything. Each known reading is worded; a reset is
+ * this browser's local time, said to be local; a key this screen does not
+ * know is its name in words, and a value it cannot word is printed as sent,
+ * never dropped.
+ */
+function RateLimitFacts({ meta }: { meta: Record<string, unknown> | null }) {
+  const words = Object.entries(meta ?? {})
+    .filter(([, x]) => typeof x === 'string' || typeof x === 'number' || typeof x === 'boolean')
+    .map(([k, x]) => rateLimitWords(k.replace(/^rate_limit_info\./, ''), x as string | number | boolean))
+  if (words.length === 0) return null
+  return <span className="ctl-sub">{words.join(' · ')}</span>
+}
+
+const RATE_LIMIT_STATUS: Record<string, string> = {
+  allowed: 'allowed',
+  allowed_warning: 'allowed, near the limit',
+  rejected: 'rejected',
+}
+
+const RATE_LIMIT_WINDOW: Record<string, string> = {
+  five_hour: '5-hour window',
+  seven_day: '7-day window',
+  seven_day_opus: '7-day Opus window',
+  seven_day_sonnet: '7-day Sonnet window',
+  overage: 'overage',
+}
+
+/** A moment from a reading's epoch (seconds, or milliseconds when that large), in local time. */
+function localMoment(epoch: number): string {
+  const ms = epoch > 1e12 ? epoch : epoch * 1000
+  const d = new Date(ms)
+  if (!Number.isFinite(d.getTime())) return String(epoch)
+  return `${d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })} local`
+}
+
+function rateLimitWords(key: string, value: string | number | boolean): string {
+  switch (key) {
+    case 'status':
+      return typeof value === 'string' ? (RATE_LIMIT_STATUS[value] ?? value.replace(/_/g, ' ')) : `status ${String(value)}`
+    case 'rateLimitType':
+      return typeof value === 'string' ? (RATE_LIMIT_WINDOW[value] ?? `${value.replace(/_/g, ' ')} window`) : `window ${String(value)}`
+    case 'resetsAt':
+      return typeof value === 'number' ? `resets ${localMoment(value)}` : `resets ${String(value)}`
+    case 'overageResetsAt':
+      return typeof value === 'number' ? `overage resets ${localMoment(value)}` : `overage resets ${String(value)}`
+    case 'utilization':
+      return typeof value === 'number' ? `${value <= 1 ? Math.round(value * 100) : value}% used` : `used ${String(value)}`
+    case 'surpassedThreshold':
+      return typeof value === 'number' ? `past ${value <= 1 ? Math.round(value * 100) : value}%` : `past ${String(value)}`
+    case 'isUsingOverage':
+      return value === true ? 'using overage' : value === false ? 'not using overage' : `overage ${String(value)}`
+    case 'overageStatus':
+      return `overage ${typeof value === 'string' ? value.replace(/_/g, ' ') : String(value)}`
+    default: {
+      // A key this screen does not know: its name in words, and a moment
+      // (a key ending in `At` or `_at` holding an epoch) in local time.
+      const name = key
+        .replace(/\./g, ' ')
+        .replace(/_/g, ' ')
+        .replace(/([a-z])([A-Z])/g, '$1 $2')
+        .toLowerCase()
+      const moment = typeof value === 'number' && /(At|_at)$/.test(key)
+      return `${name} ${moment ? localMoment(value as number) : String(value)}`
+    }
+  }
 }

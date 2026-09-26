@@ -13,7 +13,7 @@ from typing import Any, Literal
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 
-from .validation import DEFAULT_CARRIER, DEFAULT_STRATEGY
+from .validation import DEFAULT_CARRIER, DEFAULT_STRATEGY, check_repository_url
 
 
 class StrictModel(BaseModel):
@@ -53,11 +53,9 @@ class TaskCreate(StrictModel):
     @field_validator("repository_url")
     @classmethod
     def _repo_scheme(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        if not value.startswith(("https://", "git@", "ssh://")):
-            raise ValueError("repository_url must be an https://, ssh:// or git@ URL")
-        return value
+        # The scheme, and no credential in the URL (the PR #229 review): see
+        # `validation.check_repository_url`, which WorkflowCreate calls too.
+        return check_repository_url(value)
 
 
 class TaskBatchCreate(StrictModel):
@@ -106,13 +104,10 @@ class WorkflowCreate(StrictModel):
     @field_validator("repository_url")
     @classmethod
     def _repo_scheme(cls, value: str | None) -> str | None:
-        # The same rule TaskCreate applies, stated here because a workflow's
-        # repository reaches Task.repository_url without passing through it.
-        if value is None:
-            return None
-        if not value.startswith(("https://", "git@", "ssh://")):
-            raise ValueError("repository_url must be an https://, ssh:// or git@ URL")
-        return value
+        # The same rule TaskCreate applies -- the same function, not a second
+        # statement of it -- because a workflow's repository reaches
+        # Task.repository_url without passing through TaskCreate.
+        return check_repository_url(value)
 
 
 # --------------------------------------------------------------------------

@@ -561,6 +561,19 @@ open question for the owner.
   counted in `skipped_lines`; it is never dropped silently.
 * **Decoded strings are masked at least as far as their raw line.** Every
   string is redacted with `decoded=True` (see the section on private keys).
+* **A tool's input and an event's record are masked by their structure**
+  (#221, owner decision 2026-09-26). Both used to be `json.dumps` of a decoded
+  object, redacted as one string: JSON text, where a quote inside a string is
+  `\"`. An agent's `export DB_PASSWORD="<v>"` was served with its backslash
+  masked and `<v>` in clear, under a count of 1, and a curl body's
+  `{"api_key": "<v>"}` was not matched at all. Both now go through
+  `redaction.JsonMasker`, as the task's input does: every string and key
+  masked decoded, a value under a credential's name masked whole. The served
+  text is the same `json.dumps` as before (indented for the input, one line
+  for `raw`), so a clean record reads as it did. The masker errs toward
+  masking a key's value: claude-code's init event has
+  `"apiKeySource": "none"`, and `none` under a key naming an API key is masked
+  and counted in the opt-in record.
 * **A cut capture is never complete.** The capture's notice is a `system` step
   with `meta.subtype: "capture_truncated"`, not a skipped line.
   `capture_truncated` is `true` when the window holds the notice or the worker
@@ -663,24 +676,160 @@ run of name characters starts, which masks exactly what it masked before. A
 which the module's docstring had claimed and the rule did not catch; the
 shell filter in `scripts/lib/common.sh` still does not take the hyphen.
 
+**The key/value rule reads an escaped quote as a quote** (#221, owner decision
+2026-09-26). `/logs` serves raw stream-json lines, where there is no decoded
+document to walk: an agent's `export DB_PASSWORD="<v>"` sits in the line as
+`DB_PASSWORD=\"<v>\"`, and a curl body's pair as `\"api_key\": \"<v>\"`. The
+rule had its backslash masked and `<v>` served in the first case, and matched
+nothing in the second. It now takes `\"` where it took `"`, around the key and
+before the value, and a value opened by `\"` stops at the next backslash, which
+in JSON text always begins an escape. A value not opened by one keeps its old
+reach, backslashes included, so a plain `password=ab\cd` is still masked
+whole; an escaped empty value (`\"password\": \"\"`) is left alone rather
+than half-masked. The shell filter changed in the same PR, as the owner
+decided, so the two stay one rule: sed has no conditional group, so it is two
+expressions there (the escaped form, then the plain one, which refuses a value
+that starts with `\"`). `tests/unit/control_plane/test_log_redaction.py` runs
+both over the same lines and holds their output **equal**, not merely both
+masked. The superset relation (everything the shell filter masks, the API
+masks) still holds, and is now equality on every key/value line the tests name.
+
+**At any depth of escaping** (the PR #229 review). A command that quotes its
+own quotes -- `bash -c "export DB_PASSWORD=\"<v>\""`, `curl -d "{\"api_key\":
+...}"` -- sits in a stream-json line one level deeper, as `\\\"`: three
+backslashes, then the quote. The first version took exactly one backslash, so
+it masked the three and served `<v>` under a count of 1, and both filters
+agreed, so the parity test was green over the leak. Both now take a run of
+backslashes wherever they took one, and the tests hold both filters equal on
+the two-level `bash -c` and `curl -d` lines. The run before the key is bounded
+at 15 in Python, because that group is tried at every position of the text; a
+longer run still matches, from a later start, with the same output.
+
+**`/logs` masks a JSON line by its structure** (the PR #229 review). The rule
+over the text can only guess where a value ends inside JSON text: a list under
+a credential's name served every element after the first, an object served its
+strings, and a value holding a space or a backslash served the rest. So a log
+line that parses as a JSON document -- every line of claude-code's stream-json
+stdout -- is now decoded and masked by `JsonMasker`
+(`redaction.redact_lines`): every string decoded, as `/transcript` masks the
+same event, and a list or an object under a credential's name masked whole. A
+line nothing was masked in is served byte for byte; a masked line is written
+back as compact JSON. Lines that are not whole documents -- plain text, a line a
+window cut -- keep the rule over their text. `/artifacts/content` and the
+checkpoint file view mask a window the same way. The shell filter cannot
+decode, so in a terminal the text rule is all there is: a value opened by an
+escaped quote stops at its first backslash (the owner's rule), and a list's
+later elements are served.
+
+**A list's first element.** The same change lets the value start after a `[`,
+so `{"password": ["<v>"]}` masks `<v>` rather than the bracket (the reach
+limit PR #210 reported). In free text that is still the first element only:
+`["a", "b"]` serves `b`, and an object under a credential's name serves its
+strings. A line or document the API can decode goes through `JsonMasker`,
+which masks either whole -- on `/logs` too, since the PR #229 review.
+
 `prompt_key` (`string`, `missing`, `other`) says what shape the input has, so
 a screen never goes back to the raw document to find out. Under a string
 prompt, both panes draw `rest` below it. They draw `full` only when there is no
 prompt string, so the prompt is never on screen twice.
-
-`GET /v1/tasks/{id}` still serves the input as submitted. The caller is the
-tenant that submitted it, and the CLI and MCP clients read it. Whether that
-route should mask too is a separate decision, recorded on the PR, and this
-change does not make it.
 
 The UI reads the copy once per task, because an input never changes. A copy
 that could not be read, or an API that does not serve one, is drawn as that.
 The raw input is never drawn in its place. A failed copy is asked for again
 with the next poll of the pane that draws it, and the read is Details' own:
 it is not part of the drawer's `loadAgentRun`, so a slow copy blanks only the
-input blocks. Details' metadata table is not masked; it draws
-`task.metadata` as submitted, and whether it should be masked is a decision
-for the owner, recorded on PR #210.
+input blocks.
+
+### Masked everywhere: every route that serves a task (2026-09-26)
+
+PR #210 masked what the screens drew and left `GET /v1/tasks/{id}` serving
+the input as submitted, to the tenant that submitted it. The owner closed
+that on #184: "The API never serves a credential-shaped string back, even to
+the submitter." So `codec.task_to_api`, the one serializer every task route
+goes through, serves the input `task_input.TaskMasking` masks, with
+`input_redaction_count` beside it. That covers the task, the task list, the
+create and batch responses, the cancel response, and a workflow read's tasks.
+A workflow's steps serve their input masked by **their task's own masker**,
+each with its own count (`codec._step_to_api`): the frozen `Workflow` has no
+metadata, but every step task carries the workflow's, so a literal the
+workflow's metadata names is masked in `steps[i].input` exactly as in
+`tasks[i].input` of the same response. The list route, which reads the step
+tasks' states anyway, uses the tasks it read; a step whose task the read budget
+left unread borrows a sibling's copy of the workflow metadata, and a workflow
+none of whose step tasks were read serves its step inputs as `null` with
+`input_masked_by: "not_read"`. The task document is unchanged: masking is at
+read time, and the runner reads what was submitted.
+
+**What else carries the input, and how each is masked** (the PR #229 review,
+which found "nothing serves the raw input" false as first written):
+
+| where | what it held | now |
+|---|---|---|
+| `last_error`, each attempt's `error`, each event's `detail` | the agent's stderr tail, which echoes whatever the prompt made it run | every string masked by the task's masker -- the rules and every literal the input and metadata named -- with `last_error_redaction_count`, `error_redaction_count`, `detail_redaction_count`. String by string, never by key: the keys are the platform's (`credential` in a park's detail is which kind of credential, not one). |
+| `result_summary` | the agent's own summary text (up to 4,000 characters), its output tails | the same, with `result_summary_redaction_count`. An artifact's `name` and `uri`, a staged input's `filename` and `path`, and ids are served as stored (`task_input.LOOKUP_KEYS`): a client matches them exactly, and the rules would take `eye-tracking-summary.md` for a JWT. |
+| `repository_url` | a caller-supplied URL, often with the forge token in it | refused at submission when it carries userinfo that can hold a credential (`validation.check_repository_url`, a 422 naming the tenant's git secret as the way to clone a private repository); one stored before is served with the userinfo masked, `repository_url_redaction_count` beside it |
+| `input.json` in a checkpoint | the whole input, as the worker wrote it | no longer archived (the worker rewrites it at every attempt's prepare, after the restore); one in an older archive is served by the checkpoint file view whole, through the task's masker |
+| the runner's `child started` line | the prompt, inside argv | the prompt's length; `/logs` also masks the task's literals in every window |
+
+**One path still serves it as stored, and it is the owner's to rule on:** the
+whole checkpoint archive (`GET /v1/tasks/{id}/checkpoints/{n}/content`), which
+the owner decided on 2026-09-24 to serve byte for byte and unredacted. Every
+archive written before this change holds `input.json`. Whether that download
+stands under "masked everywhere" is an open question on the PR.
+
+A task's masker is kept per task (`task_input.masking_for`): the list route
+masks every row, the UI reads 200 rows, and `JsonMasker` over a 256 KiB input
+measured 57 ms, so a page of large prompts cost about 11 s of CPU on every
+refresh. The cache is keyed on the task and a digest of its input and metadata,
+so a changed document is a miss, never a stale answer, and it is bounded by
+size (32 MiB) and entries.
+
+The input stays an **object**: `JsonMasker.value()` is the masking `json()`
+does, as a JSON value rather than its text, with the same count. A client that
+reads `input.prompt` gets the masked prompt. Where two keys of one object mask
+to the same text, the second is served as `<masked key> (2)`, because an
+object cannot hold a key twice.
+
+The CLI and the MCP tools say `masked N`: `swarm status` ends each line with
+it, `swarm result` prints `masked 3  (input 2 · metadata 1)`, `swarm
+workflow-status` puts it on each step, and `swarm_status`, `swarm_result`,
+`swarm_wait`, `swarm_follow`'s outcome and `swarm_workflow_status` carry
+`masked: {input, metadata}`. A count the API did not send is `—` in a terminal
+and `null` in JSON, never 0: an older deployment serves the input unmasked, and
+0 would say it looked.
+
+**The metadata is masked too** (the owner's "mask it everywhere", 2026-09-26).
+Details drew `task.metadata` raw between two masked blocks, and
+`TaskCreate.metadata` is caller-supplied. The task's metadata is masked by the
+**same masker** as its input, so a literal the metadata names as a credential
+is masked in the prompt, and a value the prompt assigns (`DB_PASSWORD=<v>`) is
+masked in the metadata. It is served with `metadata_redaction_count` on the
+task, and as `/input`'s `metadata` block (`value`, `redaction_count`,
+`platform_keys`). Details draws only that block, with its own `masked N`.
+
+**The keys the platform writes stay readable, and one fact tells them apart.**
+`dispatch`, `input_from` and `expected_outputs` (`RESERVED_METADATA_KEYS`) are
+refused at submission from every caller, so a value under one of them was
+written by `SubmissionService` and by nothing else. They are served exactly as
+stored and never counted: the worker, the UI's workflow joins and
+`dispatch_of` read them, and a masked filename in `input_from` would be a
+staged input nobody can find. Details marks those rows `platform · as stored`.
+`unit`, `source` and `origin` are the labels this platform's own CLI, plugin
+and scripts write, but they are **not** reserved, so any caller can write them
+and nothing tells the platform's value from a caller's. They go through the
+masker like every caller key. A label is never credential-shaped, so it is
+served as written, and a credential put there is masked. Exempting them by name
+would be a place to store a secret the API serves raw.
+
+**What this costs.** Every task a route serves is masked on the way out: the
+list route masks up to a page of inputs, each up to `max_input_bytes`
+(256 KiB). The rules are linear on 256 KiB (about 25 ms for the key/value
+rule, PR #210) and at most 256 learned literals are carried, but a page of
+large inputs has not been measured on Cloud Run.
+
+**One known difference.** A workflow step's input is masked with the step's
+own masker. The frozen `Workflow` has no metadata, so a literal named only in
+the task's caller metadata is masked on the task and not on the step.
 
 ## CPU in Details: peak and mean of the limit, as typed attempt fields
 
@@ -728,19 +877,35 @@ attempt's, meaning every runner it started, combined.
   the task, its lease and its event stream, none of which this touches. The
   tenant-mismatch exit writes nothing.
 
-### What the typed fields cannot say
+### When the reading was taken, and where its limit came from (request #26)
 
-The four accepted fields carry no time and no limit source. So:
+The four fields of request #15 carried no time and no limit source, so a live
+reading said `age not recorded`, and a limit that was not its class's said
+`reported limit`. A worker that had stopped writing an hour ago looked exactly
+like one that wrote a second ago. **Contract request #26 was accepted on #184
+(2026-09-26)**: `Attempt` carries `cpu_measured_at` and `cpu_limit_source`.
 
-* **A live reading has no age.** Details calls a running attempt's figures a
-  `live reading` and says `age not recorded`. The #187 review moved the CPU
-  age onto the server's clock, and there is no server time to age now. An age
-  taken from the browser's clock would be a guess drawn as a measurement.
-* **The limit's source is not known.** Details names the class when the class
-  read on the page has the same cpu as the limit. Otherwise it says
-  `reported limit`. It no longer says `cgroup limit`.
-
-Contract request #26 asks for both, and the owner decides.
+* **The worker dates every write that carries a figure** (`cpu_measured_at`,
+  its own clock, stamped in `control.record_cpu_usage`) and sources the limit
+  (`cgroup` from the kernel's `cpu.max`, `resource_class` from the catalogue).
+  Neither is ever written without a figure beside it. **The periodic reading
+  is written even when the figures did not move.** An idle agent's figures
+  barely change, and skipping an unchanged write would make its reading age
+  as if the worker had stalled. The reap and exit writes still skip an
+  unchanged reading, because they add no time anyone reads.
+* **The API ages the reading on its own clock**:
+  `cpu_reading_age_seconds` is the route's `read_at` minus
+  `cpu_measured_at`, clamped at zero for a worker clock that runs ahead. Both
+  attempt routes serve `read_at`. The #187 review's point still holds: an age
+  taken from the browser's clock would be a guess drawn as a measurement, so
+  the UI never computes one from `cpu_measured_at`.
+* **Details says it**: `live reading · 20s ago` in the strip every width
+  shows, `last written · 3m ago` for an attempt that ended without a recorded
+  finish, and `cgroup limit`, the class's name, or `class limit` beside the
+  ceiling, from the typed source.
+* **An attempt from before the change** keeps the old words, `age not
+  recorded` and `reported limit`, and the legacy heartbeat reader below stays
+  (the owner kept it on #184).
 
 ### Attempts from before the typed fields
 
