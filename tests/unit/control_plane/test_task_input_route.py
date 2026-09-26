@@ -10,15 +10,21 @@ other byte they show.
 
 What is pinned:
 
-  * THE SAME REDACTOR, NOT A SECOND ONE. Every text this route serves is what
-    `swarm_api.redaction.redact` returns for it, count included -- the prompt
-    as a decoded string (as `/answer` and `/transcript` treat theirs), the rest
-    of the input as the JSON text the UI draws. A test that only looked for
-    `********` would pass a hand-rolled masker with a different reach.
-  * NEVER RAW. No planted secret appears anywhere in the response body.
+  * THE SAME REDACTOR, NOT A SECOND ONE. The prompt is what
+    `swarm_api.redaction.redact` returns for it as a decoded string (as
+    `/answer` and `/transcript` treat theirs), count included. The rest of the
+    input goes through the same rules, string by string and then as the JSON
+    text the UI draws (`redaction.redact_json`); where no string holds a quote,
+    that is exactly what one `redact()` over the JSON text returns. A test that
+    only looked for `********` would pass a hand-rolled masker with a
+    different reach.
+  * NEVER RAW. No planted secret appears anywhere in the response body --
+    including one QUOTED inside a string, which one `redact()` over the JSON
+    text served in clear (the PR #210 review; the section at the end).
   * THE KEY/VALUE RULE REACHES THE REST OF THE INPUT. `"api_token": "<no
     recognisable prefix>"` is caught only because the JSON text keeps the key
     beside its value; masking each value on its own would serve it in clear.
+  * ONE MASK, ONE COUNT: `full`'s count is `prompt`'s plus `rest`'s.
   * THE SHAPE OF THE INPUT IS SAID, not left for the client to re-derive from
     the raw document: a string prompt, a missing one, or one that is not a
     string.
@@ -81,6 +87,8 @@ def test_no_planted_secret_is_anywhere_in_the_response(client, db):
 
 
 def test_the_rest_of_the_input_is_its_json_text_masked_by_the_same_rules(client, db):
+    # No string here holds a quote, so the two passes serve exactly what one
+    # `redact()` over the JSON text serves: the same reach, the same count.
     doc = {"prompt": "summarise", "api_token": BARE, "steps": 3}
     a_task(db, doc)
     body = get(client).json()

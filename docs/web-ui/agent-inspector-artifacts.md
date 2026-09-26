@@ -172,13 +172,20 @@ This pane said `as submitted · not masked`, and Details said nothing.
 
 Both now read `GET /v1/tasks/{id}/input`. It serves the prompt, the rest of the
 input and the whole input, each as the API's one redactor (`redaction.redact`)
-leaves it, each with its own count (`TaskInputCopy`). The UI does no masking of
-its own, and it never goes back to `task.input`:
+leaves it, each with its own count (`TaskInputCopy`). The rest and the whole
+input are masked string by string and then as JSON (`redaction.redact_json`,
+see `docs/agent-output.md`), so a secret quoted inside the prompt is masked in
+every block that holds it. The UI does no masking of its own, and it never
+goes back to `task.input`:
 
 * **Inputs** draws the prompt and the rest. Its `masked N` is the sum of those
   two blocks' counts.
-* **Details** draws the prompt and the full input, each with its own
-  `masked N`.
+* **Details** draws the prompt and, under it, the rest of the input, each with
+  its own `masked N`. It says `nothing else submitted` when the prompt is the
+  whole input. It draws the full input only when there is no prompt string.
+  It used to draw the full input under the prompt, which put the prompt on
+  screen twice, and the full input was the block where the PR #210 review
+  found a quoted secret in clear.
 * The count is drawn as the artifact viewer's is: no mark, plain ink at zero,
   and `--warn` above zero.
 * A copy that is loading, failed, or not served by an older API is drawn as
@@ -219,7 +226,7 @@ time for them, so the answer comes from what is known about the attempt's end
 | finish recorded | `at exit` |
 | running | `live reading` (strip: `live reading · age not recorded`) |
 | ended with no recorded finish (kill, reclaim) | `last written` |
-| ran before the typed fields, with a reading on this page | `heartbeat event` |
+| ran before the typed fields, with a reading on this page | `heartbeat event` (strip: `heartbeat event · cpu-seconds only` when the event has no cores) |
 | never started | `never ran` |
 | running, nothing written yet | `not yet written` |
 | ended, nothing written | `never measured` |
@@ -235,14 +242,22 @@ is nothing server-side to age. Taking `timeAgo` off the browser's clock would
 reintroduce what the #187 review removed. The strip says
 `age not recorded`, and contract request #26 asks for a typed time.
 
-**The legacy reader.** Attempts that ran between #188's deploy and this change
-carry their CPU only on HEARTBEAT events. For an attempt whose typed fields
-are all null, Details takes the newest heartbeat on the drawer's own event
-page that carries the interim keys (`interimReading`) and labels it
-`heartbeat event`. No read is added for this. The page is oldest-first and
-capped, so a long run's final reading can be past it. It does nothing for an
-attempt with typed fields, and it can go once no attempt from that window is
-still opened.
+**The legacy reader.** Two kinds of attempt carry their CPU only on HEARTBEAT
+events. Attempts from #188's window have peak, mean and cpu-seconds there.
+Attempts from before #188 have the cpu-seconds only, because every heartbeat
+before #188 carried `cpu_seconds` and no cores. For an attempt whose typed
+fields are all null, Details takes the newest heartbeat of that attempt on the
+drawer's own event page that carries a figure (`interimReading`) and labels it
+`heartbeat event`. A heartbeat with the key and no value is not a reading.
+With cpu-seconds only, the peak and mean rows draw em dashes, never zeros; the
+mean row keeps `N cpu-s`, and the strip says `cpu-seconds only`. No read is
+added for this. The page is the task's first 200 events, so a long run's
+newest reading on it can be an early one, and the mark says so. The reader
+does nothing for an attempt with typed fields.
+
+The first version of this reader asked for `peak_cpu_cores` only, and the PR
+#210 review found that every attempt from before #188 then read
+`never measured` while the page held its cpu-seconds.
 
 ### At phone width
 

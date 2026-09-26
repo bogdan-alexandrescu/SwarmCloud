@@ -1629,10 +1629,11 @@ reading either.
   `test_ui_api_field_contract.py` holds them both ways.
   `scripts/lib/check-contract-parity.sh` restates no `Attempt` field and did
   not change.
-* **Attempts from the interim window.** Attempts that ran between #188's
+* **Attempts from before the typed fields.** Attempts that ran between #188's
   deploy and this one carry their CPU only on HEARTBEAT events. A read-only
-  look at dev at 23:16 UTC on 2026-09-25 found one. The UI keeps a legacy
-  reader for them over the drawer's own event page, and the server keeps
+  look at dev at 23:16 UTC on 2026-09-25 found one. Attempts from before #188
+  carry their cpu-seconds there too, with no cores. The UI keeps a legacy
+  reader for both over the drawer's own event page, and the server keeps
   none. `docs/agent-output.md` says why.
 * **What the four fields cannot say.** The interim reading carried its time
   (`measured_at`, `age_seconds`) and the limit's source (`cpu_limit_source`).

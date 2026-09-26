@@ -47,11 +47,13 @@ BLOCK, not as the rest of one line -- see `mask_private_keys`.
 
 from __future__ import annotations
 
+import json
 import re
+import secrets
 import string
 from bisect import bisect_left
 from dataclasses import dataclass
-from typing import Callable, Iterable
+from typing import Any, Callable, Iterable
 
 #: Same marker the shell filter leaves behind, so redacted output is
 #: recognisable wherever it is read.
@@ -453,6 +455,82 @@ def redact(
             text, found = rule.pattern.subn(r"\1" + MASK, text)
         count += found
     return Redacted(text=text, count=count)
+
+
+#: Bracket a string's stand-in in pass 2 of `redact_json`. Private-use code
+#: points: no rule matches them and `\s` does not include them, so the
+#: key/value rule's value class takes a stand-in whole or not at all.
+_STAND_IN_OPEN = ""
+_STAND_IN_CLOSE = ""
+
+
+def redact_json(value: Any, *, cache: dict[str, Redacted] | None = None) -> Redacted:
+    """A JSON value as the pretty-printed text a screen draws, masked, with the count.
+
+    The text is `json.dumps(value, indent=2, ensure_ascii=False)`, as
+    `JSON.stringify(value, null, 2)` draws it, with every credential masked.
+
+    WHY NOT ONE `redact()` OVER THAT TEXT (the PR #210 review). JSON text
+    writes every quote inside a string as `\\"`, and the key/value rule reads
+    a quote as a quote. A string holding `{"api_key": "<bare>"}` did not match
+    at all, and one holding `PASSWORD="<bare>"` had its backslash masked and
+    its value served. The same string masked DECODED came out masked, so
+    `/input` masked a prompt in its `prompt` block and served it in clear in
+    its `full` block, under a count that said nothing was found.
+
+    WHY NOT EACH STRING ON ITS OWN EITHER: the key/value rule catches
+    `"api_token": "<bare>"` only with the key beside its value, and a key is
+    not inside any string.
+
+    So two passes, of the one set of `RULES`:
+
+      1. every string in the value, DECODED (`redact(decoded=True)`), the way
+         `/answer` and `/transcript` mask the strings they decode;
+      2. the JSON text of the value with every string replaced by an inert
+         stand-in, through `redact()`. This pass sees what only the
+         document's shape shows: a credential's name beside its value, a
+         credential in a key, a number under `password`. When pass 2 masks a
+         string's stand-in, the whole string is masked. The key/value rule
+         would have masked its first word.
+
+    Pass 2 never reads what pass 1 masked, so nothing is masked or counted
+    twice. The count is pass 1's over every string plus pass 2's. Keys are
+    read by pass 2 only, in their JSON spelling. A value that is not JSON (a
+    Firestore timestamp in a hand-written document) is masked as its text.
+
+    `cache` maps a string to its pass-1 result. A caller that draws one string
+    in several blocks, like the prompt alone and inside the whole input,
+    masks it once and counts it the same way in each block.
+    """
+    memo: dict[str, Redacted] = {} if cache is None else cache
+    leaves: list[Redacted] = []
+    # A nonce, so no key in the document can spell a stand-in. The served
+    # text never holds one: each is replaced below or was masked by pass 2.
+    tag = secrets.token_hex(8)
+
+    def stand_in(node: Any) -> Any:
+        if isinstance(node, str):
+            found = memo.get(node)
+            if found is None:
+                found = memo[node] = redact(node, decoded=True)
+            leaves.append(found)
+            return f"{_STAND_IN_OPEN}{tag}.{len(leaves) - 1}{_STAND_IN_CLOSE}"
+        if isinstance(node, dict):
+            return {key: stand_in(item) for key, item in node.items()}
+        if isinstance(node, (list, tuple)):
+            return [stand_in(item) for item in node]
+        if node is None or isinstance(node, (bool, int, float)):
+            return node
+        return stand_in(str(node))
+
+    shaped = redact(json.dumps(stand_in(value), indent=2, ensure_ascii=False))
+    placed = re.compile(
+        '"' + re.escape(f"{_STAND_IN_OPEN}{tag}.") + r"(\d+)" + re.escape(_STAND_IN_CLOSE) + '"'
+    )
+    text = placed.sub(
+        lambda m: json.dumps(leaves[int(m.group(1))].text, ensure_ascii=False), shaped.text
+    )
+    return Redacted(text=text, count=sum(leaf.count for leaf in leaves) + shaped.count)
 
 
 def redact_detail(message: str, *, limit: int = 400) -> str:

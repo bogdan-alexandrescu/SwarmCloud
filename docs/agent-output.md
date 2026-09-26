@@ -355,12 +355,30 @@ with its own `redaction_count`:
 * `rest`: the input without that prompt, as its JSON text.
 * `full`: the whole input, as its JSON text.
 
-The redactor is `redaction.redact`, the one every other route uses. It is
-not a second one. The JSON is masked as text, not value by value, because the
-key/value rule is what catches `"api_token": "<a value with no recognisable
-prefix>"`, and that rule needs the key beside its value. `prompt_key`
-(`string`, `missing`, `other`) says what shape the input has, so a screen
-never goes back to the raw document to find out.
+The redactor is `redaction.redact`, the one every other route uses, with its
+one set of rules. It is not a second one. `rest` and `full` go through
+`redaction.redact_json`, which runs it twice:
+
+1. Every string in the input is masked as a decoded string, as the prompt is.
+2. The JSON text is masked with every string replaced by an inert stand-in.
+   This pass catches what only the document's shape shows: a credential's name
+   beside its value (`"api_token": "<a value with no recognisable prefix>"`), a
+   credential in a key, or a number under `password`. A string whose stand-in
+   it masks is masked whole.
+
+**Why not one `redact()` over the JSON text.** That is what the route first
+served, and the PR #210 review found the hole in it. JSON text writes a quote
+inside a string as `\"`, and the key/value rule reads a quote as a quote. A
+prompt holding `{"api_key": "<bare>"}` or `PASSWORD="<bare>"` came out masked
+in `prompt` and in clear in `full`, and `full`'s count said nothing was found.
+Pass 2 never reads what pass 1 masked, so no mask is counted twice. The
+prompt's string is masked once and the result is shared, so `full`'s count is
+always `prompt`'s plus `rest`'s.
+
+`prompt_key` (`string`, `missing`, `other`) says what shape the input has, so
+a screen never goes back to the raw document to find out. Under a string
+prompt, both panes draw `rest` below it. They draw `full` only when there is no
+prompt string, so the prompt is never on screen twice.
 
 `GET /v1/tasks/{id}` still serves the input as submitted. The caller is the
 tenant that submitted it, and the CLI and MCP clients read it. Whether that
@@ -436,17 +454,32 @@ events. A read-only look at dev's Firestore at 23:16 UTC that day visited the
 the #188 deploy's smoke), with two interim readings, one of them `final`.
 Every attempt that runs before this change deploys adds another.
 
-Their typed fields are null, and "never measured" would be false of them. So
-Details keeps one small legacy reader, `interimReading`, in the UI. For an
-attempt whose typed fields carry nothing, it takes the newest HEARTBEAT on the
-drawer's own event page that carries the interim keys, and labels it
-`heartbeat event`. It adds no server read, because the page is already held.
-Because it is oldest-first and capped, a long attempt's final reading can be
-past it, and then the row says `never measured` with a mark that names the
-cause. It reads nothing for any attempt the worker wrote typed fields for. It
-can go once no attempt from that window is still opened.
+**Attempts from before #188 were measured too.** Every HEARTBEAT before #188
+carried `cpu_seconds` and `cpu_source`, and no cores. #188's reader drew those
+cpu-seconds on main. The PR #210 review found that the legacy reader asked for
+`peak_cpu_cores` only, so those attempts read `never measured`, with a sentence
+saying no heartbeat on the page carried a figure while the page held one.
+
+Their typed fields are null, and "never measured" would be false of both kinds
+of attempt. So Details keeps one small legacy reader, `interimReading`, in the
+UI. For an attempt whose typed fields carry nothing, it takes the newest
+HEARTBEAT of that attempt on the drawer's own event page that carries a
+**figure**, and labels it `heartbeat event`. A key with no value does not
+count. When that event has no cores, the peak and mean rows draw em dashes, the
+mean row keeps the cpu-seconds, and the strip says `cpu-seconds only`. The
+reader adds no server read, because the page is already held. The page is the
+task's first 200 events, oldest first, so on a long attempt the newest reading
+on it can be an early one. The mark says so, and when no heartbeat on the page
+carries a figure the row says `never measured` without claiming anything
+about events past the page. The reader does nothing for an attempt the worker
+wrote typed fields for.
+
+Neither kind of attempt ages out, so the reader stays as long as those attempts
+can be opened. The owner can decide to drop it; the cost is that every attempt
+from before this change reads `never measured`.
 
 Keeping the server-side reader for those attempts was the alternative. It was
 not chosen, because the owner's decision was that the typed fields replace
-the path. That reader cost an events query per drawer read, for a window of a
-few hours on dev.
+the path. That reader cost an events query per drawer read. The UI reader
+costs nothing, because it reads the page the drawer already holds, and the
+price is that it sees only the task's first 200 events.

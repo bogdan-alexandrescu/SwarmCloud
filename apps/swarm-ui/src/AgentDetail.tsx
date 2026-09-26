@@ -1786,8 +1786,10 @@ function AttemptResources({
  *   last written     it ended without a recorded finish -- a kill, a reclaim
  *                    -- so these are the figures it last wrote, and none at
  *                    exit are coming;
- *   heartbeat event  it ran between #188 and the typed fields, so its figures
- *                    are on a HEARTBEAT event on this page (`interimReading`).
+ *   heartbeat event  its typed fields are empty and a HEARTBEAT of it on this
+ *                    page carries a figure (`interimReading`): peak, mean and
+ *                    cpu-seconds from #188's window, or the cpu-seconds only,
+ *                    as every heartbeat before #188 carried them.
  *
  * TWO ROWS, peak and mean, as the owner decided ("as built"). The ceiling is
  * the limit the worker wrote, labelled by the class read here when that class
@@ -1879,8 +1881,12 @@ type CpuFrom =
   | { kind: 'not_served' }
   /** The attempt's own typed fields -- the only source for any attempt after this change. */
   | { kind: 'attempt'; figures: CpuFigures }
-  /** An interim HEARTBEAT reading, for an attempt that ran before the typed fields. */
-  | { kind: 'heartbeat'; figures: CpuFigures; final: boolean }
+  /**
+   * A HEARTBEAT reading, for an attempt whose typed fields are empty.
+   * `secondsOnly`: the event carries cpu-seconds and no cores, as every
+   * HEARTBEAT before #188 did.
+   */
+  | { kind: 'heartbeat'; figures: CpuFigures; final: boolean; secondsOnly: boolean }
 
 function measuredAny(f: CpuFigures): boolean {
   return f.cpu_seconds !== null || f.peak_cpu_cores !== null || f.mean_cpu_cores !== null
@@ -1912,49 +1918,56 @@ function cpuOf(a: AttemptRow, events: TaskEvent[] | null): CpuFrom {
 /**
  * THE LEGACY READER, and the only thing left of #188's interim path.
  *
- * Between #188's deploy (2026-09-25, about 23:08 UTC on dev) and this
- * change's, the worker put its CPU figures on HEARTBEAT events -- the newest
- * with `final: true` when a runner was reaped -- and wrote none on the
- * attempt. A read-only look at dev's Firestore at 23:16 UTC found one such
- * attempt, and every attempt that runs until this change is deployed is
- * another. Their typed fields are null, and "never measured" would be false
- * of them: they were measured, somewhere else.
+ * TWO KINDS OF ATTEMPT HAVE EMPTY TYPED FIELDS AND WERE MEASURED ANYWAY:
  *
- * So, for an attempt whose typed fields carry nothing, the newest HEARTBEAT
- * of it ON THIS PAGE that carries the interim keys (`peak_cpu_cores` is the
- * mark: the HEARTBEAT before #188 never had it). No server read is added: the
- * drawer already holds the page. The page is oldest-first and capped, so a
- * long attempt's final reading can be past it, and then the row says so in
- * its mark rather than inventing one. It reads nothing on any attempt the
- * worker wrote typed fields for, which is every attempt after this change;
- * once no attempt from that window is still opened, it can go.
+ *   - From #188's window (its deploy, 2026-09-25 about 23:08 UTC on dev, to
+ *     this change's): the worker put peak, mean, cpu-seconds and the limit on
+ *     HEARTBEAT events -- the newest with `final: true` when a runner was
+ *     reaped -- and wrote none on the attempt. A read-only look at dev's
+ *     Firestore at 23:16 UTC found one such attempt.
+ *   - From BEFORE #188: every HEARTBEAT carried `cpu_seconds` and
+ *     `cpu_source`, and no cores (5262b74^ lifecycle.py `_heartbeat`). #188's
+ *     own reader drew those cpu-seconds on main. This reader first asked for
+ *     `peak_cpu_cores` only, and those attempts read `never measured` while
+ *     the page held their figure (the PR #210 review).
+ *
+ * "Never measured" would be false of both. So, for an attempt whose typed
+ * fields carry nothing, the newest HEARTBEAT of it ON THIS PAGE that carries a
+ * figure. When that event has no cores, the figures are the cpu-seconds
+ * alone (`secondsOnly`), and the peak and mean rows draw em dashes. No
+ * server read is added: the drawer already holds the page. The page is the
+ * task's first `EVENT_PAGE_LIMIT` events, so on a long attempt the newest
+ * reading here can be an early one, and the words say it is the newest ON
+ * THIS PAGE. It reads nothing on any attempt the worker wrote typed fields
+ * for, which is every measured attempt after this change.
  */
 function interimReading(a: AttemptRow, events: TaskEvent[] | null): CpuFrom | null {
-  let best: TaskEvent | null = null
-  let bestAt = -Infinity
-  for (const e of events ?? []) {
-    if (e.type !== 'heartbeat' || e.attempt_id !== a.attempt_id) continue
-    if (e.detail === null || !('peak_cpu_cores' in e.detail)) continue
-    const t = Date.parse(e.at)
-    if (!Number.isFinite(t) || t <= bestAt) continue
-    bestAt = t
-    best = e
-  }
-  const found = best
-  if (found === null) return null
-  const d = found.detail
-  if (d === null) return null
-  const n = (key: string): number | null => {
+  const n = (d: Record<string, unknown>, key: string): number | null => {
     const v = d[key]
     return typeof v === 'number' && Number.isFinite(v) ? v : null
   }
-  const figures: CpuFigures = {
-    cpu_seconds: n('cpu_seconds'),
-    peak_cpu_cores: n('peak_cpu_cores'),
-    mean_cpu_cores: n('mean_cpu_cores'),
-    cpu_limit_cores: n('cpu_limit_cores'),
+  let best: { figures: CpuFigures; detail: Record<string, unknown> } | null = null
+  let bestAt = -Infinity
+  for (const e of events ?? []) {
+    if (e.type !== 'heartbeat' || e.attempt_id !== a.attempt_id || e.detail === null) continue
+    const t = Date.parse(e.at)
+    if (!Number.isFinite(t) || t <= bestAt) continue
+    const d = e.detail
+    const figures: CpuFigures = {
+      cpu_seconds: n(d, 'cpu_seconds'),
+      peak_cpu_cores: n(d, 'peak_cpu_cores'),
+      mean_cpu_cores: n(d, 'mean_cpu_cores'),
+      cpu_limit_cores: n(d, 'cpu_limit_cores'),
+    }
+    // A figure, not a key: a heartbeat that carried the key empty is no reading.
+    if (!measuredAny(figures)) continue
+    bestAt = t
+    best = { figures, detail: d }
   }
-  return measuredAny(figures) ? { kind: 'heartbeat', figures, final: d['final'] === true } : null
+  const found = best
+  if (found === null) return null
+  const secondsOnly = found.figures.peak_cpu_cores === null && found.figures.mean_cpu_cores === null
+  return { kind: 'heartbeat', figures: found.figures, final: found.detail['final'] === true, secondsOnly }
 }
 
 /**
@@ -2011,6 +2024,17 @@ function cpuReading(from: CpuFrom, a: AttemptRow, end: AttemptEnd): CpuReading {
       say: 'This attempt never started, so it used no CPU. That is a fact about the attempt, not a missing measurement.',
     }
   }
+  if (from.kind === 'heartbeat' && from.secondsOnly) {
+    // Before #188 a heartbeat carried the cumulative cpu-seconds and nothing
+    // else about CPU. The cores it never carried are em dashes, not zeros.
+    return {
+      measured: true,
+      by: 'heartbeat event',
+      strip: 'heartbeat event · cpu-seconds only',
+      mark: 'partial',
+      say: 'No CPU figures were written on this attempt. Its newest heartbeat event on this page with a figure carries its cumulative cpu-seconds and no peak or mean cores (every heartbeat before #188 carried only that), so the peak and mean are unknown: em dashes, not zeros. The page is the task’s first events, so on a long attempt this reading can be an early one, not the total at exit.',
+    }
+  }
   if (from.kind === 'heartbeat') {
     return {
       measured: true,
@@ -2027,7 +2051,7 @@ function cpuReading(from: CpuFrom, a: AttemptRow, end: AttemptEnd): CpuReading {
           by: 'never measured',
           strip: 'never measured',
           mark: 'absent',
-          say: 'No CPU figures were written on this attempt, and no heartbeat event on this page carries any. What it used is unknown, which is why the figure is an em dash and not a zero.',
+          say: 'No CPU figures were written on this attempt, and none of its heartbeat events on this page carries one. The page is the task’s first events, so a later heartbeat is not read here. What the attempt used is unknown, which is why the figure is an em dash and not a zero.',
         }
       : {
           measured: false,
@@ -3135,9 +3159,9 @@ function PublishOutcome({ git, task }: { git: GitSummary; task: Task }) {
  * `input` is a free-form dict: the API accepts it whole and each runner reads
  * what it needs. `input.prompt` is the CONVENTION the CLI agents and the mock
  * runner use, not a schema field, so it is surfaced as the prompt when it is a
- * non-empty string and the whole object is still shown underneath. A screen
- * that only rendered `prompt` would show nothing for a runner that names it
- * differently.
+ * string, and the rest of the object is shown underneath -- or the whole
+ * object, when there is no prompt string (`RestOfInput`). A screen that only
+ * rendered `prompt` would show nothing for a runner that names it differently.
  *
  * MASKED, WITH A COUNT (#184, owner decision of 2026-09-25). Both come from
  * `run.input`, the API's read-time-redacted copy (`GET /v1/tasks/{id}/input`),
@@ -3307,18 +3331,55 @@ function Input({ run }: { run: AgentRun }) {
           declared no input and reported none. See StagedInputs.tsx. */}
       <StagedInputs task={task} />
 
-      {served !== null && (
-        <div className="section" style={SUB}>
-          <div className="ctl-toolbar att-sub-head">
-            <span className="ctl-eyebrow">full input</span>
-            <MaskedNote count={served.full.redaction_count} />
-          </div>
-          <pre className="json" style={{ maxHeight: 320, overflowY: 'auto' }}>
-            {served.full.text}
-          </pre>
-        </div>
-      )}
+      {served !== null && <RestOfInput served={served} />}
     </section>
+  )
+}
+
+/**
+ * WHAT IS UNDER THE PROMPT: the rest of the input when the prompt block drew
+ * a prompt, the whole input when it did not -- as the Artifacts pane draws
+ * them.
+ *
+ * NEVER THE WHOLE INPUT UNDER ITS OWN PROMPT (the PR #210 review). This block
+ * drew `full` under the prompt, so the prompt was on screen twice, once in
+ * each block's masking, and `full` was where a secret quoted inside the
+ * prompt came out in clear while the block above masked it. The route now
+ * masks both the same way; drawing `rest` is what keeps one prompt one block
+ * with one count. Each block's `masked N` is its own, so the two counts on
+ * screen add up to the input's.
+ */
+function RestOfInput({ served }: { served: TaskInputCopy }) {
+  if (served.prompt === null) {
+    return (
+      <div className="section" style={SUB}>
+        <div className="ctl-toolbar att-sub-head">
+          <span className="ctl-eyebrow">full input</span>
+          <MaskedNote count={served.full.redaction_count} />
+        </div>
+        <pre className="json" style={{ maxHeight: 320, overflowY: 'auto' }}>
+          {served.full.text}
+        </pre>
+      </div>
+    )
+  }
+  return (
+    <div className="section" style={SUB}>
+      <div className="ctl-toolbar att-sub-head">
+        <span className="ctl-eyebrow">rest of the input</span>
+        {served.rest !== null && <MaskedNote count={served.rest.redaction_count} />}
+      </div>
+      {served.rest === null ? (
+        <p className="att-none">
+          <Mark kind="zero" say="The prompt is the whole of this task's input: nothing else was submitted with it." />{' '}
+          nothing else submitted
+        </p>
+      ) : (
+        <pre className="json" style={{ maxHeight: 320, overflowY: 'auto' }}>
+          {served.rest.text}
+        </pre>
+      )}
+    </div>
   )
 }
 
