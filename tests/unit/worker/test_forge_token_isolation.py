@@ -35,6 +35,7 @@ too.
 
 from __future__ import annotations
 
+import errno
 import os
 import shutil
 import signal
@@ -47,7 +48,10 @@ import pytest
 
 from agent_worker import lifecycle, workspace as workspace_mod
 from agent_worker import gitops
+from agent_worker.errors import WorkerError
 from agent_worker.forge import PullRequest, RepoAccess, RepoRef
+from conftest import seed_tenant
+from fakes import FakeSecretClient
 
 pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
 
@@ -862,3 +866,144 @@ def test_the_integrator_fetch_does_not_recurse_into_submodules(
             f"the token-bearing fetch would recurse into submodules: {argv}"
         )
         assert "submodule.recurse=false" in argv, argv
+
+
+# -- a worker whose memory the agent may read holds no token ------------------
+#
+# The token stays in the worker's heap from the clone to the publish, and the
+# agent runs beside it as the same uid. The entrypoint makes the worker
+# non-dumpable before any credential is read (hardening.py). When that fails on
+# Linux, the token is never read: the clone runs without it and the publish is
+# refused with the reason. `test_worker_memory_protection.py` covers the call
+# itself and the real-process check.
+
+
+def _eperm(option: int, arg2: int) -> int:
+    raise OSError(errno.EPERM, os.strerror(errno.EPERM))
+
+
+def _failed_memory():
+    """What the entrypoint establishes when the kernel refuses the call."""
+    from agent_worker import hardening
+
+    memory = hardening.make_non_dumpable(platform="linux", prctl=_eperm)
+    assert memory.status == hardening.FAILED, memory
+    return memory
+
+
+def _protected_memory():
+    from agent_worker import hardening
+
+    return hardening.MemoryProtection(hardening.PROTECTED, "stand-in for the entrypoint")
+
+
+def test_publish_is_refused_when_the_worker_memory_is_not_protected(
+    worker_factory, monkeypatch, origin, local_urls, forge
+):
+    """The publish says why, and nothing that would carry the token runs: not
+    the forge probe, not the publish repository, not the push. The control is
+    `test_a_clean_publish_reaps_first_and_still_succeeds`, with the same
+    fixtures and a protected worker."""
+    ran = {"probe": 0, "prepare": False, "push": False}
+    real_probe = lifecycle.probe_repository
+    real_prepare = lifecycle.prepare_publish_repo
+    real_push = lifecycle.push_branch
+
+    def counting_probe(**kwargs):
+        ran["probe"] += 1
+        return real_probe(**kwargs)
+
+    def guard_prepare(**kwargs):
+        ran["prepare"] = True
+        return real_prepare(**kwargs)
+
+    def guard_push(**kwargs):
+        ran["push"] = True
+        return real_push(**kwargs)
+
+    monkeypatch.setattr(lifecycle, "probe_repository", counting_probe)
+    monkeypatch.setattr(lifecycle, "prepare_publish_repo", guard_prepare)
+    monkeypatch.setattr(lifecycle, "push_branch", guard_push)
+
+    def unprotect(worker) -> None:
+        worker.memory = _failed_memory()
+
+    _, config, out = run_attempt(
+        worker_factory, monkeypatch, origin,
+        task_id="t-mem-refused",
+        dispatch={"strategy": "direct-pr"},
+        edit=agent_edits_without_committing,
+        pre_publish=unprotect,
+    )
+
+    assert out["published"] is False, out
+    assert "could not make its memory unreadable" in out.get("publish_reason", ""), out
+    assert ran["probe"] == 0, "the forge was probed with the token of an unprotected worker"
+    assert ran["prepare"] is False, "the publish repository was built for an unprotected worker"
+    assert ran["push"] is False, "the token-bearing push ran from an unprotected worker"
+    branch = f"{config.git_branch_prefix}{config.task_id}"
+    assert branch not in refs(origin), "a branch was pushed by an unprotected worker"
+
+
+def _clone_as(worker_factory, origin_url: str, task_id: str, memory, client):
+    worker, config, _ = worker_factory(
+        task_id=task_id,
+        attempt_id=f"att-{task_id}",
+        lease_id=f"lease-{task_id}",
+        repository_url=origin_url,
+        secret_client=client,
+    )
+    worker.ws = workspace_mod.create(config.workspace_root, config.attempt_id)
+    worker.memory = memory
+    return worker._maybe_clone({"task_id": task_id, "metadata": {}})
+
+
+def test_the_clone_never_reads_the_token_when_the_worker_memory_is_not_protected(
+    worker_factory, monkeypatch, db, origin, local_urls
+):
+    """The clone runs without the token and the secret is never read, so the
+    token is never in the heap. A repository that needs no token still clones.
+    The control, a protected worker, reads the same secret and clones with it."""
+    seed_tenant(db, credentials=["git"])
+    tokens: list = []
+    real_clone = lifecycle.shallow_clone
+
+    def recording_clone(**kwargs):
+        tokens.append(kwargs.get("token"))
+        return real_clone(**kwargs)
+
+    monkeypatch.setattr(lifecycle, "shallow_clone", recording_clone)
+
+    client = FakeSecretClient()
+    info = _clone_as(worker_factory, f"file://{origin}", "t-mem-clone", _failed_memory(), client)
+    assert info and info.get("commit"), f"a repository needing no token did not clone: {info}"
+    assert tokens == [None], f"an unprotected worker cloned with the token: {tokens}"
+    assert not [s for s in client.accessed if s.endswith("-git")], (
+        f"an unprotected worker read the git secret: {client.accessed}"
+    )
+    assert "could not make its memory unreadable" in info.get("git_token_refused", ""), info
+
+    control_client = FakeSecretClient()
+    control = _clone_as(
+        worker_factory, f"file://{origin}", "t-mem-clone-ok", _protected_memory(), control_client
+    )
+    assert tokens[-1], "the protected control cloned without a token; the refusal proves nothing"
+    assert [s for s in control_client.accessed if s.endswith("-git")], control_client.accessed
+    assert "git_token_refused" not in control, control
+
+
+def test_a_clone_that_fails_without_the_token_says_the_token_was_refused(
+    worker_factory, local_urls, tmp_path
+):
+    """A private repository fails to clone anonymously. The error names the
+    refusal, not only git's authentication message."""
+    missing = tmp_path / "private-and-unreachable.git"
+    with pytest.raises(WorkerError) as raised:
+        _clone_as(
+            worker_factory, f"file://{missing}", "t-mem-clone-fail", _failed_memory(),
+            FakeSecretClient(),
+        )
+    message = str(raised.value)
+    assert message.startswith("repository clone failed"), message
+    assert "cloned without the tenant git token because" in message, message
+    assert "could not make its memory unreadable" in message, message
