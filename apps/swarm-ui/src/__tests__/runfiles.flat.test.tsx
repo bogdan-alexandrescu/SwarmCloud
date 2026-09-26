@@ -45,12 +45,17 @@
 //   * ONE SENTENCE, ONCE. With no attempt the route still names both streams,
 //     each carrying "this task has no attempt yet", so the fact was said three
 //     times: the strip, then once per row.
+//
+// THE LOG PANEL LEFT DETAILS (#184, owner decision of 2026-09-25): the runner
+// (platform) log lives in Artifacts › Logs only. Its rows were always the
+// shared `Stream`, and the pane draws them through `StreamsFrom`, so the log
+// cases below now render that -- the same encodings, where the log is drawn.
 
 import { describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, waitFor } from '@testing-library/react'
 
 import type { Result } from '../fetch'
-import type { CheckpointRecord, CheckpointsPage, LogStream, Task, TaskLogs } from '../types'
+import type { CheckpointRecord, CheckpointsPage, LogStream, LogStreamName, Task, TaskLogs } from '../types'
 import { painted } from './marks'
 import { attempt, task } from './runfixture'
 
@@ -65,6 +70,7 @@ vi.mock('../api', async (importOriginal) => {
 })
 
 import { RunFiles } from '../RunFiles'
+import { StreamsFrom } from '../Artifacts'
 
 const PREFIX = 'tenants/acme/tasks/tsk_files/checkpoints'
 const NOW = Date.now()
@@ -181,7 +187,7 @@ function logs(streams: LogStream[], over: Partial<TaskLogs> = {}): TaskLogs {
 const TASK: Task = task({ id: 'tsk_files', state: 'SUCCEEDED' })
 
 async function panel(
-  title: 'Checkpoints' | 'Runner log (platform)',
+  title: 'Checkpoints',
   reads: { checkpoints?: Result<CheckpointsPage>; logs?: Result<TaskLogs> },
   attempts = [attempt(1)],
   t: Task = TASK,
@@ -200,6 +206,32 @@ async function panel(
     },
     { timeout: 5000 },
   )
+}
+
+/**
+ * THE RUNNER'S LOG, WHERE IT LIVES NOW. It was a Details panel, `Runner log
+ * (platform)`, and the owner's decision of 2026-09-25 (#184) put it in
+ * Artifacts › Logs only, behind `runner (platform)`, where `StreamsFrom`
+ * draws it with the same `Stream` rows. The cases below held that panel's
+ * encodings; they hold them where the log is drawn now, with the arguments
+ * the panel took (the attempt records it no longer needs are ignored). The
+ * section around it stands in for the pane's.
+ */
+async function runnerLog(
+  reads: { logs: Result<TaskLogs> },
+  _attempts: readonly unknown[] = [],
+  t: Task = TASK,
+): Promise<HTMLElement> {
+  const read = reads.logs
+  const names: LogStreamName[] =
+    read.status === 'ok' ? read.data.streams.map((s) => s.stream) : ['stdout', 'stderr']
+  const { container } = render(
+    <section className="section">
+      <h2>Logs</h2>
+      <StreamsFrom logs={read} names={names} task={t} now={NOW} />
+    </section>,
+  )
+  return container.querySelector<HTMLElement>('section')!
 }
 
 /** Every element in a panel that draws a box of its own (§13.3's panel level). */
@@ -517,9 +549,9 @@ describe('the restore fact says what a retry would restore from', () => {
 // Logs
 // ---------------------------------------------------------------------------
 
-describe('the log panel is one table of streams', () => {
+describe('the runner log, in Artifacts › Logs, is one table of streams', () => {
   it('draws one box: a table with name, size and age, and no card per stream', async () => {
-    const s = await panel('Runner log (platform)', {
+    const s = await runnerLog({
       logs: ok(logs([stream('stdout'), stream('stderr', { content: '', total_bytes: 0, returned_bytes: 0 })])),
     })
     expect(boxes(s).map((b) => b.className)).toEqual(['ctl-table is-stacked'])
@@ -530,7 +562,7 @@ describe('the log panel is one table of streams', () => {
   })
 
   it('draws a measured empty stream as the real-zero mark, and the paragraph is gone', async () => {
-    const s = await panel('Runner log (platform)', {
+    const s = await runnerLog({
       logs: ok(logs([stream('stdout'), stream('stderr', { content: '', total_bytes: 0, returned_bytes: 0 })])),
     })
     const size = cell(rowFor(s, 'stderr'), 'Size')
@@ -540,7 +572,7 @@ describe('the log panel is one table of streams', () => {
   })
 
   it('marks a truncated window partial, a missing object absent and an unreadable one not read', async () => {
-    const s = await panel('Runner log (platform)', {
+    const s = await runnerLog({
       logs: ok(
         logs([
           stream('stdout', { truncated: true, returned_bytes: 1024, next_offset: 1024 }),
@@ -561,7 +593,7 @@ describe('the log panel is one table of streams', () => {
     expect(s.textContent).toContain('permission denied reading the object')
     expect(s.textContent, 'a lowercase detail still follows a full stop').not.toMatch(/\.\s+permission denied/)
 
-    const absent = await panel('Runner log (platform)', {
+    const absent = await runnerLog({
       logs: ok(logs([stream('stdout', { status: 'absent', source: null, content: null, total_bytes: null, returned_bytes: 0 })])),
     })
     const size = cell(rowFor(absent, 'stdout'), 'Size')
@@ -587,7 +619,7 @@ describe('the log panel is one table of streams', () => {
         total_bytes: null,
         returned_bytes: 0,
       })
-    const s = await panel('Runner log (platform)', {
+    const s = await runnerLog({
       logs: ok(
         logs([absentStream('stdout'), absentStream('stderr')], {
           attempt_id: null,
@@ -608,8 +640,7 @@ describe('the log panel is one table of streams', () => {
     const ended = { ...open, completed_at: iso(3), exit_code: 137 }
 
     // RUNNING, attempt open: the tail is being written.
-    const running = await panel(
-      'Runner log (platform)',
+    const running = await runnerLog(
       { logs: ok(logs([tail], { attempt: open })) },
       [attempt(1)],
       task({ id: 'tsk_files', state: 'RUNNING' }),
@@ -625,7 +656,7 @@ describe('the log panel is one table of streams', () => {
       [task({ id: 'tsk_files', state: 'PARKED', park_reason: 'PROVIDER_QUOTA_EXHAUSTED' }), open],
     ]
     for (const [t, a] of cases) {
-      const s = await panel('Runner log (platform)', { logs: ok(logs([tail], { attempt: a })) }, [attempt(1)], t)
+      const s = await runnerLog({ logs: ok(logs([tail], { attempt: a })) }, [attempt(1)], t)
       const age = cell(rowFor(s, 'stdout'), 'Age')
       expect(age.textContent ?? '', `a ${t.state} task's leftover tail is called live`).not.toMatch(/\blive\b/)
       expect(age.querySelector('.ctl-em')).not.toBeNull()
@@ -636,7 +667,7 @@ describe('the log panel is one table of streams', () => {
   })
 
   it('marks a final log whose attempt end is not recorded, rather than a bare dash', async () => {
-    const s = await panel('Runner log (platform)', {
+    const s = await runnerLog({
       logs: ok(
         logs([stream('stdout')], {
           attempt: { status: 'latest', known: true, generation: 1, created_at: iso(30), completed_at: null, exit_code: null },
@@ -673,7 +704,7 @@ describe("the log stream's gs:// uri is one line, whole in its title and in its 
     const writeText = vi.fn(async (_: string) => {})
     Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
     try {
-      const s = await panel('Runner log (platform)', { logs: ok(logs([stream('stdout')])) })
+      const s = await runnerLog({ logs: ok(logs([stream('stdout')])) })
       const head = rowFor(s, 'stdout').querySelector('th')!
       const uri = head.querySelector<HTMLElement>('.uri')
       expect(uri?.textContent, 'the row header draws no uri').toBe(URI)
@@ -691,7 +722,7 @@ describe("the log stream's gs:// uri is one line, whole in its title and in its 
   })
 
   it('cuts it to one line below 900px and in the inspector, rather than breaking it', async () => {
-    const s = await panel('Runner log (platform)', { logs: ok(logs([stream('stdout')])) })
+    const s = await runnerLog({ logs: ok(logs([stream('stdout')])) })
     const uri = rowFor(s, 'stdout').querySelector<HTMLElement>('th .uri')
     expect(uri, 'the row header draws no uri').not.toBeNull()
     // 390: the page's stacked block. 1440 with a 480px inspector: its

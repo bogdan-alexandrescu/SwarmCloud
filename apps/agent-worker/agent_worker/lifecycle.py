@@ -170,9 +170,9 @@ from .gitops import (
 from .metrics import (
     ResourceSampler,
     ResourceUsage,
+    attempt_cpu_fields,
     cgroup_cpu_limit_cores,
     combine_usage,
-    heartbeat_cpu_fields,
 )
 from .objectstore import ObjectStore
 from .procman import ChildProcess, ChildResult
@@ -409,11 +409,10 @@ class Worker:
         # Set on the tenant-mismatch exit, the one path that must write NOTHING
         # -- not even spend onto what may be another tenant's attempt.
         self._writes_forbidden = False
-        # Set the moment this attempt learns it has been superseded. The task's
-        # event stream then belongs to a newer generation, so nothing more is
-        # emitted into it from here -- the final resource reading included
-        # (`_emit_final_reading`); the attempt document stays writable.
-        self._fenced = False
+        # What `record_cpu_usage` last wrote onto the attempt (contract request
+        # #15), so the periodic readings and each runner's end write once per
+        # change rather than once per heartbeat.
+        self._cpu_recorded: dict[str, float] | None = None
         self._account_broker = deps.account_broker
         if self._account_broker is None and config.quota_broker_url:
             self._account_broker = AccountBroker(
@@ -1060,7 +1059,6 @@ class Worker:
         release any more.
         """
         cfg = self.cfg
-        self._fenced = True
         self.log.error(
             "generation fenced mid-run; stopping the runner",
             observed_generation=observed_generation,
@@ -1128,9 +1126,7 @@ class Worker:
         )
         # A runner still alive here (a crash, a fenced checkpoint mid-run) is
         # stopped before anything is recorded, so the attempt's end is not
-        # written while its agent is still working. `_fenced` first: stopping
-        # it reaps it, and a reaped runner otherwise emits its final reading.
-        self._fenced = True
+        # written while its agent is still working.
         self._stop_runner(reason="generation fenced")
         self._record_fenced_end(str(exc))
         return ExitCode.GENERATION_FENCED
@@ -2743,9 +2739,13 @@ class Worker:
         self.control.heartbeat()
         self._heartbeats += 1
         if self._heartbeats % HEARTBEAT_EVENT_EVERY == 1:
-            self.control.emit(EventType.HEARTBEAT, self._usage_reading(final=False))
+            self.control.emit(EventType.HEARTBEAT, self._usage_reading())
+            # THE LIVE READING DETAILS DRAWS, on the attempt itself (contract
+            # request #15): the same cadence as the event, so a running
+            # attempt's figures are never more than one reading behind it.
+            self._record_cpu()
 
-    def _usage_reading(self, *, final: bool) -> dict[str, Any]:
+    def _usage_reading(self) -> dict[str, Any]:
         """One HEARTBEAT event's detail: the attempt's usage so far.
 
         The ATTEMPT's usage, every runner so far plus the live one. A runner
@@ -2755,26 +2755,65 @@ class Worker:
         `cpu_seconds` is CUMULATIVE, not a rate: this event series is the only
         time series the platform keeps, and two consecutive totals give
         utilisation over exactly the span between them, where a point-in-time
-        rate would describe two seconds out of every heartbeat period. Every
-        CPU key is None while not measured, never 0; `metrics.
-        heartbeat_cpu_fields` names them all and why they live here for now.
+        rate would describe two seconds out of every heartbeat period. None
+        while not measured, never 0. `cpu_source` says whether it is the
+        container (cgroup) or the runner's process tree (proc).
+
+        EXACTLY WHAT IT CARRIED BEFORE #188. That change put the peak, the
+        mean, the limit and a `final` flag here too, because the frozen
+        `Attempt` had nowhere else for them. Contract request #15 gave them
+        typed fields on the attempt (`_record_cpu`), which replaced this
+        interim home; the reconciler's stuck-browser judgement
+        (`reconciler.progress`) is what still reads `cpu_seconds` here.
         """
         usage = self._attempt_usage()
-        limit_cores, limit_source = self._cpu_limit()
-        detail: dict[str, Any] = {
+        cpu_seconds = usage.cpu_seconds if usage else None
+        return {
             "elapsed_seconds": round(self._child.elapsed_seconds, 1) if self._child else 0,
             "peak_rss_bytes": usage.peak_rss_bytes if usage else None,
             "checkpoints": self.checkpoints.seq,
+            "cpu_seconds": round(cpu_seconds, 3) if cpu_seconds is not None else None,
+            "cpu_source": usage.cpu_source if usage else None,
         }
-        detail.update(
-            heartbeat_cpu_fields(
-                usage, limit_cores=limit_cores, limit_source=limit_source, final=final
-            )
-        )
-        return detail
 
-    def _cpu_limit(self) -> tuple[float | None, str | None]:
-        """The CPU limit a usage figure is a fraction of, and where it came from.
+    def _record_cpu(self) -> None:
+        """The attempt's CPU, as typed fields on its own document. Never raises.
+
+        CONTRACT REQUEST #15, accepted on #184 (2026-09-25): `cpu_seconds`,
+        `peak_cpu_cores`, `mean_cpu_cores` and `cpu_limit_cores` on `Attempt`,
+        REPLACING #188's interim path -- the same figures as flat keys on
+        HEARTBEAT events, plus a `final` HEARTBEAT when each runner was reaped,
+        which the API read back with an events query per request.
+
+        Called with each periodic reading (`_heartbeat`), when each runner is
+        reaped (`_stop_sampler`), and on every exit beside the spend
+        (`_upload_outputs`, `_cleanup`), which covers a runner still alive at a
+        crash or killed at cleanup without being reaped. The figures are the
+        ATTEMPT's, every runner so far plus the live one, so an in-place
+        restart continues them rather than starting again. Written only when
+        they changed.
+
+        NOT FENCED, like the memory peaks beside them: the attempt document is
+        this attempt's own, and the fence guards the task, its lease and its
+        event stream, none of which this touches. NOT WRITTEN on the
+        tenant-mismatch exit, which must write nothing at all.
+
+        Not fatal. A telemetry write that failed is logged; the attempt goes on.
+        """
+        if self._writes_forbidden:
+            return
+        fields = attempt_cpu_fields(self._attempt_usage(), limit_cores=self._cpu_limit_cores())
+        if not fields or fields == self._cpu_recorded:
+            return
+        try:
+            self.control.record_cpu_usage(fields)
+        except Exception as exc:
+            self.log.warning("could not record CPU usage", error=f"{type(exc).__name__}: {exc}")
+            return
+        self._cpu_recorded = dict(fields)
+
+    def _cpu_limit_cores(self) -> float | None:
+        """The CPU limit the attempt's figures are a fraction of, in cores.
 
         cgroup v2 `cpu.max` first: what the kernel enforces. Otherwise the
         catalogue cpu of the class the container was SIZED with, which is
@@ -2786,20 +2825,25 @@ class Worker:
         rather than imported (the worker image does not install the
         scheduler); `tests/unit/worker/test_cpu_sampler.py` compares the two.
 
-        (None, None) before the task document has been read: nothing yet says
-        which class this attempt was sized with, and a guess would be drawn as
-        a fact.
+        WHERE IT CAME FROM IS NOT RECORDED. The interim HEARTBEAT carried a
+        `cpu_limit_source`; the four fields request #15 added do not, so the
+        attempt says what the limit was and not whether the kernel or the
+        catalogue said so. With `requests == limits` the two agree.
+
+        None before the task document has been read: nothing yet says which
+        class this attempt was sized with, and a guess would be drawn as a
+        fact.
         """
         try:
             cores = cgroup_cpu_limit_cores()
         except Exception:  # pragma: no cover - a telemetry read never fails an attempt
             cores = None
         if cores is not None:
-            return cores, "cgroup"
+            return cores
         sized = self._sized_resource_class()
         if sized is None:
-            return None, None
-        return float(RESOURCE_CLASSES[sized].cpu), "resource_class"
+            return None
+        return float(RESOURCE_CLASSES[sized].cpu)
 
     def _sized_resource_class(self) -> str | None:
         task = self._task
@@ -2809,42 +2853,6 @@ class Worker:
         if isinstance(named, str) and named in RESOURCE_CLASSES:
             return named
         return self.cfg.profile.resource_class
-
-    def _emit_final_reading(self) -> None:
-        """One HEARTBEAT with `final: true`, the moment a runner is reaped. Never raises.
-
-        The periodic reading is every fifth heartbeat -- about every 150 s --
-        so without this an attempt's newest reading could be minutes older
-        than its end, and a run shorter than one period had none taken while
-        its runner was alive. `GET /v1/tasks/{id}/attempts?include=usage`
-        serves the newest reading per attempt, and `final` is what lets it
-        say "at exit" instead of "latest heartbeat". An in-place restart
-        emits one per runner; the newest wins.
-
-        NOT EMITTED BY AN ATTEMPT THAT IS NO LONGER THE TASK'S. The event
-        stream belongs to the task, and a superseded attempt writing into it
-        is exactly what the fence exists to stop (`_stand_down` says why not
-        even an event). `_fenced` covers the exits that already know;
-        `ensure_owner` covers a runner that ended on its own after a fence
-        landed and before anything had looked. Either refusal is logged and
-        the reading is dropped -- the attempt document still gets its peaks.
-        """
-        if self._writes_forbidden or self._fenced:
-            return
-        try:
-            self.control.ensure_owner(write="the final resource reading")
-            self.control.emit(EventType.HEARTBEAT, self._usage_reading(final=True))
-        except (FencedError, TenantMismatchError) as exc:
-            self.log.info(
-                "the final resource reading was not emitted: this attempt no longer "
-                "owns its task",
-                reason=str(exc),
-            )
-        except Exception as exc:
-            self.log.warning(
-                "could not emit the final resource reading",
-                error=f"{type(exc).__name__}: {exc}",
-            )
 
     def _checkpoint(self, label: str) -> CheckpointRecord | None:
         """Mandatory checkpoint. A failure here is logged, never swallowed.
@@ -3691,6 +3699,13 @@ class Worker:
         # here yet: a runner still alive when the worker crashed, and a
         # mid-run fence, which uploads nothing.
         self._record_spend()
+        # THE CPU BESIDE IT (PR #210 review), for the exit whose runner is
+        # still alive -- the crash handler -- or was never reaped through
+        # `_stop_sampler`: without this the attempt kept its last periodic
+        # reading, up to one reading behind, drawn as the figures at exit.
+        # Written only when the figures changed, so an orderly exit that just
+        # reaped its runner writes nothing twice.
+        self._record_cpu()
         # BEFORE the redaction pass, not after: the harvest writes a patch into
         # `artifacts/`, and `_redact_before_upload` is what scrubs everything
         # in there. A patch produced afterwards would be the one file in the
@@ -3929,11 +3944,19 @@ class Worker:
         # and a near miss in the first -- on the one document a sizing report
         # reads.
         attempt = self._attempt_usage() or usage
-        self.control.record_resource_usage(
-            peak_rss_bytes=attempt.peak_rss_bytes,
-            peak_disk_bytes=attempt.peak_disk_bytes,
-            oom_near_miss=attempt.oom_near_miss,
-        )
+        # NOT FATAL, AND IT MUST NOT SKIP THE CPU WRITE BELOW (PR #210 review).
+        # Unguarded, a Firestore error here raised out of every site that
+        # reaps a runner, and the attempt's CPU figures for this runner were
+        # never written: Details then drew the previous periodic reading as
+        # the figures at exit. The memory peak is telemetry like the CPU.
+        try:
+            self.control.record_resource_usage(
+                peak_rss_bytes=attempt.peak_rss_bytes,
+                peak_disk_bytes=attempt.peak_disk_bytes,
+                oom_near_miss=attempt.oom_near_miss,
+            )
+        except Exception as exc:
+            self.log.warning("could not record resource usage", error=f"{type(exc).__name__}: {exc}")
         if usage.oom_near_miss:
             self.log.error(
                 "OOM NEAR MISS: this attempt came within a hair of its memory limit",
@@ -3941,7 +3964,9 @@ class Worker:
                 limit_bytes=self.cfg.memory_limit_bytes,
                 resource_class=self.cfg.resource_class,
             )
-        self._emit_final_reading()
+        # The attempt's CPU at this runner's end, on the attempt (request #15)
+        # -- where #188 emitted a `final` HEARTBEAT into the task's events.
+        self._record_cpu()
 
     def _attempt_usage(self) -> ResourceUsage | None:
         """Every runner this attempt has started, combined; None if none has.
@@ -4075,6 +4100,12 @@ class Worker:
         # usage write on that same path already does.
         self._collect_spend()
         self._record_spend()
+        # And the CPU, for the same two exits: a runner killed just above was
+        # never reaped through `_stop_sampler`, so its last stretch is on no
+        # attempt document yet. The live sampler is still attached, so
+        # `_attempt_usage` includes it. Never raises; nothing on the fenced
+        # path touches the lease by writing its own attempt document.
+        self._record_cpu()
         # AFTER the child is gone and BEFORE the workspace is destroyed. Giving
         # the account back while an agent could still be making calls on it
         # would let the broker hand the same subscription to another agent and

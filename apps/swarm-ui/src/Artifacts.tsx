@@ -1,11 +1,12 @@
 import { Fragment, useCallback, useRef, useState, type ReactNode } from 'react'
-import { Chip, DRAWER_SETTLE_MS, Em, Mark } from './AgentDetail'
+import { Chip, DRAWER_SETTLE_MS, Em, Mark, MaskedNote } from './AgentDetail'
 import {
   ARTIFACT_PAGE_LIMIT,
   artifactRawUrl,
   loadAnswer,
   loadArtifactListing,
   loadTask,
+  loadTaskInputOnce,
   loadTaskLogs,
   loadTranscript,
   loadWorkflow,
@@ -29,6 +30,7 @@ import {
   type ResultSummary,
   type Task,
   type TaskAnswer,
+  type TaskInputCopy,
   type TaskLogs,
   type TaskTranscript,
   type TranscriptStep,
@@ -45,7 +47,8 @@ import { AGE_TICK_MS, useNow } from './useNow'
  * started` line. Nothing rendered an image. The owner's decisions of
  * 2026-09-25 are what this pane is built to:
  *
- *   Inputs   the prompt as submitted, the repository and ref and the commit
+ *   Inputs   the prompt as the API masked it, with its count, the repository
+ *            and ref and the commit
  *            actually cloned, and every file staged from an upstream step,
  *            each linking to the run that produced it;
  *   Outputs  the agent's final answer, rendered as Markdown, FIRST; then
@@ -258,7 +261,7 @@ function Body({ v, reading }: { v: ArtifactsView; reading: ScreenReading }) {
   const now = useNow(AGE_TICK_MS)
   return (
     <div className="run-stack arts">
-      <Inputs v={v} />
+      <Inputs v={v} reading={reading} />
       <Outputs v={v} />
       <Logs v={v} reading={reading} now={now} />
     </div>
@@ -269,11 +272,11 @@ function Body({ v, reading }: { v: ArtifactsView; reading: ScreenReading }) {
 // Inputs
 // ---------------------------------------------------------------------------
 
-function Inputs({ v }: { v: ArtifactsView }) {
+function Inputs({ v, reading }: { v: ArtifactsView; reading: ScreenReading }) {
   return (
     <section className="section arts-inputs">
       <h2>Inputs</h2>
-      <Prompt task={v.task} />
+      <Prompt taskId={v.task.id} readAt={reading.fetchedAt} />
       <Repository task={v.task} />
       <StagedFiles v={v} />
     </section>
@@ -281,55 +284,86 @@ function Inputs({ v }: { v: ArtifactsView }) {
 }
 
 /**
- * THE INPUT AS SUBMITTED, from the task document: the prompt, verbatim and
- * wrapped, when the input carries one; the whole input as JSON when it does
- * not. `no prompt` is drawn only when the KEY is missing -- an empty string is
- * a prompt somebody sent, and a missing input is a task sent without one.
+ * THE INPUT, AS THE API MASKED IT (#184, owner decision of 2026-09-25): the
+ * prompt wrapped, and the rest of the input as JSON below it, when the input
+ * carries a prompt; the whole input as JSON when it does not. `no prompt` is
+ * drawn only when the KEY is missing -- an empty string is a prompt somebody
+ * sent, and an empty input is a task sent without one.
  *
- * NOT MASKED, AND IT SAYS SO. Every byte this pane reads from the bucket is
- * redacted at read time; the input is served from Firestore exactly as it was
- * submitted. Whether it should be masked too is an open question to the owner
- * (#184), so the one-line qualifier states what is true today.
+ * NEVER THE TASK DOCUMENT. This read `task.input` and said `as submitted · not
+ * masked`, which was true: every byte this pane read from the bucket was
+ * redacted at read time and the input was not. The owner decided the input is
+ * masked too, "with 'masked N', like every other output", so it is read from
+ * `GET /v1/tasks/{id}/input` -- the same redactor, the same count -- and the
+ * count beside the eyebrow is over what this block draws. A copy that could
+ * not be read, or an API that does not serve one, is said as that; the raw
+ * input is never drawn in its place.
+ *
+ * ITS OWN READ, NOT THE POLL'S. The input never changes, so it is read once
+ * per task (and shared with the Details pane, `loadTaskInputOnce`), and a
+ * slow or failed copy holds up nothing else on the pane.
+ *
+ * A FAILED COPY IS ASKED AGAIN WITH THE PANE'S POLL (PR #210 review). The key
+ * was the constant `input`, so one failed read said `the masked input not
+ * read` for as long as the pane stayed open. The key now follows the pane's
+ * read (`readAt`): a copy already read is answered from memory without a
+ * request, and one that failed is asked for again. A pane that has stopped
+ * polling -- a settled finish -- stops asking with it.
  */
-function Prompt({ task }: { task: Task }) {
-  const input = task.input
-  const obj =
-    input !== null && typeof input === 'object' && !Array.isArray(input) ? (input as Record<string, unknown>) : null
-  const prompt = obj !== null && typeof obj.prompt === 'string' ? obj.prompt : null
-  const rest = obj === null ? {} : Object.fromEntries(Object.entries(obj).filter(([k]) => k !== 'prompt'))
+function Prompt({ taskId, readAt }: { taskId: string; readAt: number }) {
+  const { state } = useRead<TaskInputCopy>(() => loadTaskInputOnce(taskId), taskId, `input:${readAt}`, null)
+  const copy = state.status === 'ok' || state.status === 'stale' ? state.data : null
+  // What this block draws, masked: the prompt and the rest, or the whole input.
+  const masked =
+    copy === null
+      ? null
+      : copy.prompt !== null
+        ? copy.prompt.redaction_count + (copy.rest?.redaction_count ?? 0)
+        : copy.full.redaction_count
   return (
     <div className="arts-block">
       <div className="ctl-toolbar att-sub-head">
         <span className="ctl-eyebrow">prompt</span>
-        <span className="is-end ctl-card-note">as submitted · not masked</span>
+        {masked !== null && <MaskedNote count={masked} />}
       </div>
-      {input === null || input === undefined ? (
+      {state.status === 'loading' ? (
+        <p className="art-loading">
+          <Mark kind="pending" say="Reading the masked copy of the input. The read is in flight." />
+          <span className="ctl-pending art-loading-bar" />
+        </p>
+      ) : copy === null ? (
+        <ReadFailed error={state.status === 'error' ? state.error : null} what="the masked input" />
+      ) : copy.prompt !== null ? (
+        <>
+          {copy.prompt.text === '' ? (
+            <p className="att-none">
+              <Mark kind="zero" say="The prompt was submitted as an empty string. A real, empty prompt, not a missing one." />{' '}
+              empty prompt
+            </p>
+          ) : (
+            <pre className="arts-prompt">{copy.prompt.text}</pre>
+          )}
+          {copy.rest !== null && <pre className="art-text">{copy.rest.text}</pre>}
+        </>
+      ) : copy.prompt_key === 'missing' && copy.full.text === '{}' ? (
         <p className="att-none">
           <Mark kind="zero" say="This task was submitted with no input at all. Nothing is missing: nothing was sent." /> no
           input
         </p>
-      ) : prompt === '' ? (
-        <p className="att-none">
-          <Mark kind="zero" say="The prompt was submitted as an empty string. A real, empty prompt, not a missing one." />{' '}
-          empty prompt
-        </p>
-      ) : prompt !== null ? (
-        <pre className="arts-prompt">{prompt}</pre>
       ) : (
         <>
-          {obj !== null && !('prompt' in obj) && (
+          {copy.prompt_key === 'missing' && (
             <p className="att-none">
               <Mark
                 kind="zero"
-                say="This input has no prompt key. The runner takes its input as the object below, which is shown as it was submitted."
+                say="This input has no prompt key. The runner takes its input as the object below, shown as the API masked it."
               />{' '}
               no prompt
             </p>
           )}
-          <pre className="art-text">{JSON.stringify(input, null, 2)}</pre>
+          <pre className="art-text">{copy.full.text}</pre>
         </>
       )}
-      {prompt !== null && Object.keys(rest).length > 0 && <pre className="art-text">{JSON.stringify(rest, null, 2)}</pre>}
     </div>
   )
 }
@@ -1062,7 +1096,9 @@ function ReadFailed({ error, what }: { error: ApiError | null; what: string }) {
         say={`${error === null ? 'The read did not complete' : errorHeading(error)}. Nothing may be concluded about ${what}: it is not empty and it is not missing.`}
       />{' '}
       {what} not read
-      {error !== null && <span className="ctl-sub">{error.message}</span>}
+      {/* A separator before the server's words: the flex gap parts them on
+          screen, and nothing parted them in the text (PR #210 review). */}
+      {error !== null && <span className="ctl-sub">{` · ${error.message}`}</span>}
     </p>
   )
 }
@@ -1137,12 +1173,18 @@ function AgentStdout({ v, reading, now }: { v: ArtifactsView; reading: ScreenRea
 }
 
 /**
- * Some of a log read's streams, as the Details pane's runner log draws them:
- * one table -- stream, size, age, with the four answers as marks -- and each
- * stream's window below it. A stream the read did not return at all is
- * `not served`: an API older than #184 answers only the runner's two.
+ * Some of a log read's streams: one table -- stream, size, age, with the four
+ * answers as marks -- and each stream's window below it. A stream the read
+ * did not return at all is `not served`: an API older than #184 answers only
+ * the runner's two.
+ *
+ * THE ONE PLACE A LOG IS DRAWN. The Details pane drew the runner's two streams
+ * in a panel of its own with these same rows; the owner's decision of
+ * 2026-09-25 (#184) put the runner (platform) log in Artifacts › Logs only.
+ * EXPORTED so `runfiles.flat.test.tsx` holds the rows' encodings here, where
+ * the runner's log now lives.
  */
-function StreamsFrom({
+export function StreamsFrom({
   logs,
   names,
   task,

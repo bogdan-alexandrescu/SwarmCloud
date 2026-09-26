@@ -12,8 +12,10 @@ What is pinned here:
   * the two readers against real inputs: a cgroup v2 `cpu.stat` and a real
     CPU-burning process tree;
   * that the numbers reach the places a reader can get them: the exported
-    usage, the resource log line, and the HEARTBEAT event series, which is the
-    only time series the platform records;
+    usage, the resource log line, the HEARTBEAT event series (the cumulative
+    total, which is the only time series the platform records), and -- since
+    contract request #15 was accepted -- the four typed fields on the attempt
+    document, which Details draws;
   * that "not measured" stays None and is never written as zero;
   * that an attempt which restarts its runner in place reports ALL of its
     runners -- summed, maximised, one mean -- and not just the last one.
@@ -373,30 +375,44 @@ def test_an_attempt_that_restarts_its_runner_reports_every_runners_usage(
 
 
 # ---------------------------------------------------------------------------
-# #184: peak AND mean of the limit, drawn in Details
+# #184: peak AND mean of the limit, drawn in Details -- as typed fields
 #
 # The owner asked for CPU beside memory and workspace, as the peak and the mean
-# cores of the runtime's CPU limit. The mean existed only after a runner
-# stopped, the limit was nowhere, and the figures reached no reader. They ride
-# on the HEARTBEAT event (the frozen Attempt has no CPU fields; contract
-# request #15), so the event must carry every one of them -- including a final
-# reading taken the moment a runner is reaped.
+# cores of the runtime's CPU limit. #188 put the figures on the HEARTBEAT event,
+# because the frozen `Attempt` had no CPU fields, and emitted a `final`
+# reading when each runner was reaped.
+#
+# Contract request #15 was ACCEPTED on #184 (2026-09-25): `Attempt` gains
+# `cpu_seconds`, `peak_cpu_cores`, `mean_cpu_cores` and `cpu_limit_cores`, and
+# they REPLACE the interim path. So the worker writes them on its own attempt
+# document -- with each periodic reading while a runner runs, and when each
+# runner is reaped -- and the HEARTBEAT event goes back to what it carried
+# before #188: the cumulative `cpu_seconds` and `cpu_source` the reconciler's
+# stuck-browser judgement turns into a rate, and nothing else about CPU.
 # ---------------------------------------------------------------------------
 
-CPU_KEYS = (
-    "cpu_seconds",
-    "peak_cpu_cores",
-    "mean_cpu_cores",
-    "cpu_wall_seconds",
-    "cpu_source",
-    "cpu_limit_cores",
-    "cpu_limit_source",
-    "final",
-)
+#: The four typed fields, as `swarm_common.models.Attempt` declares them.
+CPU_FIELDS = ("cpu_seconds", "peak_cpu_cores", "mean_cpu_cores", "cpu_limit_cores")
+
+#: What a HEARTBEAT event's detail carried before #188, and carries again.
+HEARTBEAT_KEYS = {"elapsed_seconds", "peak_rss_bytes", "checkpoints", "cpu_seconds", "cpu_source"}
 
 
 def _heartbeats(db):
     return [e for e in db.events("task_1") if e["type"] == EventType.HEARTBEAT.value]
+
+
+def test_the_attempt_declares_the_four_fields_as_not_measured_by_default():
+    """None, never 0: an attempt fenced before its runner started measured
+    nothing, which an idle agent's 0.0 cores must not be confused with."""
+    from dataclasses import fields
+
+    from swarm_common.models import Attempt
+
+    declared = {f.name: f.default for f in fields(Attempt)}
+    for name in CPU_FIELDS:
+        assert name in declared, f"Attempt does not declare {name} (contract request #15)"
+        assert declared[name] is None, f"Attempt.{name} defaults to {declared[name]!r}, not None"
 
 
 def test_the_mean_is_kept_current_while_the_runner_runs():
@@ -442,71 +458,127 @@ def test_the_cpu_limit_is_read_from_cgroup_cpu_max(tmp_path: Path, monkeypatch):
         assert metrics.cgroup_cpu_limit_cores() == expected, text
 
 
-def test_the_heartbeat_cpu_fields_are_rounded_and_none_is_never_zero():
-    from agent_worker.metrics import ResourceUsage, heartbeat_cpu_fields
+def test_the_attempt_cpu_fields_are_rounded_and_what_was_not_measured_is_left_out():
+    """Left OUT, not written as null: the write is a merge, and an omitted key
+    keeps what an earlier write put there, where a null would erase it."""
+    from agent_worker.metrics import ResourceUsage, attempt_cpu_fields
 
     usage = ResourceUsage(
         cpu_seconds=1.23456, peak_cpu_cores=1.99999, mean_cpu_cores=0.5004,
         cpu_wall_seconds=2.46912, cpu_source="cgroup",
     )
-    assert heartbeat_cpu_fields(usage, limit_cores=2.0, limit_source="cgroup", final=True) == {
+    assert attempt_cpu_fields(usage, limit_cores=2.0) == {
         "cpu_seconds": 1.235,
         "peak_cpu_cores": 2.0,
         "mean_cpu_cores": 0.5,
-        "cpu_wall_seconds": 2.469,
-        "cpu_source": "cgroup",
         "cpu_limit_cores": 2.0,
-        "cpu_limit_source": "cgroup",
-        "final": True,
     }
-    assert heartbeat_cpu_fields(
-        None, limit_cores=None, limit_source="resource_class", final=False
-    ) == {
-        "cpu_seconds": None,
-        "peak_cpu_cores": None,
-        "mean_cpu_cores": None,
-        "cpu_wall_seconds": None,
-        "cpu_source": None,
-        "cpu_limit_cores": None,
-        "cpu_limit_source": None,
-        "final": False,
-    }
+    # Too short for a rate: a total and a limit, and no peak or mean at all.
+    short = ResourceUsage(cpu_seconds=0.1, cpu_source="proc")
+    assert attempt_cpu_fields(short, limit_cores=None) == {"cpu_seconds": 0.1}
+    # Nothing measured: nothing to write -- not even the limit, which alone
+    # would read as a reading.
+    assert attempt_cpu_fields(None, limit_cores=4.0) == {}
+    assert attempt_cpu_fields(ResourceUsage(), limit_cores=4.0) == {}
 
 
-def test_a_reaped_runner_leaves_a_final_reading(db, worker_factory):
-    """The periodic reading is every fifth heartbeat (~150 s in production), so
-    without this an attempt's newest figure could be minutes older than its
-    end -- and a short run had none taken at all."""
-    seed_attempt(db, task_input={"prompt": "short", "steps": 1, "sleep_seconds": 0.3})
+def test_a_reaped_runner_writes_its_attempt_and_emits_no_event(
+    db, worker_factory, monkeypatch, tmp_path: Path
+):
+    """#188 emitted a `final` HEARTBEAT the moment a runner was reaped; the
+    typed fields replace it. The attempt's figures -- every runner combined --
+    go on the attempt document, and nothing goes into the task's events."""
+    from agent_worker import metrics
+    from agent_worker.metrics import ResourceUsage
+
+    monkeypatch.setattr(metrics, "CGROUP_ROOT", tmp_path / "no-cgroup-here")
+    seed_attempt(db)
     worker, _, _ = worker_factory()
+    worker._task = {"resource_class": "large"}  # sized by the task's class: 8 vCPU
+    emitted: list = []
+    monkeypatch.setattr(
+        worker.control, "emit", lambda kind, detail=None, **_kw: emitted.append(kind)
+    )
+
+    class Reaped:
+        usage = ResourceUsage(
+            peak_rss_bytes=100, cpu_seconds=12.3456, peak_cpu_cores=1.23456,
+            mean_cpu_cores=0.5, cpu_wall_seconds=24.0, cpu_source="cgroup",
+        )
+
+        def stop(self):
+            return self.usage
+
+    worker._sampler = Reaped()
+    worker._stop_sampler()
+
+    assert emitted == [], f"a reaped runner still emitted {emitted}: the interim path is back"
+    doc = db.doc("attempts/att_1")
+    assert doc["cpu_seconds"] == 12.346
+    assert doc["peak_cpu_cores"] == 1.235
+    # The ATTEMPT's mean: total CPU over total runner time (`combine_usage`),
+    # not the runner's own figure copied through.
+    assert doc["mean_cpu_cores"] == round(12.3456 / 24.0, 3)
+    assert doc["cpu_limit_cores"] == 8.0
+    assert doc["peak_rss_bytes"] == 100, "the memory peak is written beside it, as before"
+
+
+def test_a_run_writes_the_attempts_own_figures_while_it_runs_and_at_the_end(
+    db, worker_factory, monkeypatch
+):
+    """The live reading Details draws for a RUNNING attempt is the attempt
+    document itself, rewritten with each periodic reading. The last write is
+    the attempt's combined figures -- the same ones the export reports."""
+    from agent_worker import lifecycle
+
+    # Every other heartbeat is a reading, so a short run is sure to take one
+    # while its runner is alive.
+    monkeypatch.setattr(lifecycle, "HEARTBEAT_EVENT_EVERY", 2)
+    seed_attempt(db, task_input={"prompt": "burn", "steps": 3, "sleep_seconds": 1.5,
+                                 "cpu_burn_seconds": 0.5})
+    worker, _, exporter = worker_factory(heartbeat_interval_seconds=1)
+
+    calls: list[tuple[dict, bool]] = []
+    real = worker.control.record_cpu_usage
+
+    def spy(fields):
+        calls.append((dict(fields), worker._sampler is not None))
+        return real(fields)
+
+    monkeypatch.setattr(worker.control, "record_cpu_usage", spy)
     assert worker.run() == ExitCode.OK
 
-    beats = _heartbeats(db)
-    finals = [b for b in beats if b["detail"].get("final") is True]
-    assert len(finals) == 1, f"expected one final reading, saw {len(finals)}: {beats}"
-    final = finals[0]["detail"]
-    for key in CPU_KEYS + ("peak_rss_bytes", "elapsed_seconds", "checkpoints"):
-        assert key in final, f"{key} is missing from the final reading: {final}"
-    assert final["cpu_seconds"] is not None, "the runner ran; its CPU was measured"
-    assert beats[-1] is finals[0], "the final reading is the attempt's newest"
-    events = db.events("task_1")
-    at_final = next(i for i, e in enumerate(events) if e is finals[0])
-    succeeded = next(i for i, e in enumerate(events) if e["type"] == EventType.SUCCEEDED.value)
-    assert at_final < succeeded, "the reading lands before the terminal event"
+    assert any(live for _, live in calls), f"nothing was written while the runner ran: {calls}"
+    # The figures at the end are the attempt's combined ones, the export's.
+    # (Not "the last call was after the reap": a reap whose figures equal the
+    # last periodic write is rightly not written twice.)
+    usage, _labels = exporter.exports[-1]
+    doc = db.doc("attempts/att_1")
+    assert doc["cpu_seconds"] == round(usage.cpu_seconds, 3)
+    for name in ("peak_cpu_cores", "mean_cpu_cores"):
+        figure = getattr(usage, name)
+        if figure is None:
+            assert name not in doc, f"{name} was written though it was never measured"
+        else:
+            assert doc[name] == round(figure, 3), name
 
 
-def test_every_periodic_reading_carries_every_cpu_key(db, worker_factory):
+def test_the_heartbeat_event_carries_only_what_it_carried_before_the_interim_path(
+    db, worker_factory
+):
+    """The reconciler's stuck-browser judgement (`reconciler.progress`) reads
+    `cpu_seconds` off consecutive HEARTBEAT events, so that key stays -- and
+    its meaning, the attempt's cumulative total. Every key #188 added for the
+    Details rows is gone from the event, and so is the `final` reading."""
     seed_attempt(db, task_input={"prompt": "burn", "steps": 2, "sleep_seconds": 1.5,
                                  "cpu_burn_seconds": 0.5})
     worker, _, _ = worker_factory(heartbeat_interval_seconds=1)
     assert worker.run() == ExitCode.OK
 
-    periodic = [b for b in _heartbeats(db) if b["detail"].get("final") is not True]
-    assert periodic, "no periodic reading at all"
-    for beat in periodic:
-        missing = [key for key in CPU_KEYS if key not in beat["detail"]]
-        assert not missing, f"a periodic reading lacks {missing}: {beat['detail']}"
-        assert beat["detail"]["final"] is False
+    beats = _heartbeats(db)
+    assert beats, "no heartbeat events at all"
+    for beat in beats:
+        assert set(beat["detail"]) == HEARTBEAT_KEYS, beat["detail"]
 
 
 def test_the_cpu_limit_falls_back_to_the_class_the_container_was_sized_with(
@@ -523,9 +595,7 @@ def test_the_cpu_limit_falls_back_to_the_class_the_container_was_sized_with(
     worker, _, _ = worker_factory()
     assert worker.run() == ExitCode.OK
 
-    final = next(b for b in _heartbeats(db) if b["detail"].get("final") is True)["detail"]
-    assert final["cpu_limit_cores"] == 8.0
-    assert final["cpu_limit_source"] == "resource_class"
+    assert db.doc("attempts/att_1")["cpu_limit_cores"] == 8.0
 
 
 def test_the_cpu_limit_comes_from_cgroup_when_there_is_one(db, worker_factory, monkeypatch, tmp_path):
@@ -539,9 +609,7 @@ def test_the_cpu_limit_comes_from_cgroup_when_there_is_one(db, worker_factory, m
     worker, _, _ = worker_factory()
     assert worker.run() == ExitCode.OK
 
-    final = next(b for b in _heartbeats(db) if b["detail"].get("final") is True)["detail"]
-    assert final["cpu_limit_cores"] == 3.0
-    assert final["cpu_limit_source"] == "cgroup"
+    assert db.doc("attempts/att_1")["cpu_limit_cores"] == 3.0
 
 
 def test_the_sized_class_is_the_one_the_scheduler_sizes_the_container_with(worker_factory):
@@ -560,31 +628,112 @@ def test_the_sized_class_is_the_one_the_scheduler_sizes_the_container_with(worke
         assert worker._sized_resource_class() == resource_class_for(task, profile), named
 
 
-def test_a_superseded_attempt_emits_no_final_reading(db, worker_factory, monkeypatch):
-    """The task's event stream belongs to whichever generation owns the task. A
-    fenced attempt writes its own attempt document and nothing else there."""
-    from agent_worker.errors import FencedWriteRefused
+def test_an_attempt_that_must_write_nothing_writes_no_cpu(db, worker_factory):
+    """The tenant-mismatch exit is the one path that writes NOTHING, not even
+    onto what may be another tenant's attempt document."""
+    from agent_worker.metrics import ResourceUsage
 
     seed_attempt(db)
     worker, _, _ = worker_factory()
-    emitted: list = []
-    monkeypatch.setattr(
-        worker.control, "emit", lambda kind, detail=None, **_kw: emitted.append((kind, detail))
-    )
+    worker._runner_usage.append(ResourceUsage(cpu_seconds=5.0, cpu_source="cgroup"))
+    worker._writes_forbidden = True
+    worker._record_cpu()
+    # The worker writes the attempt document when it starts; this one never
+    # started, so no document at all is the proof that nothing was written.
+    assert all(name not in db.documents.get("attempts/att_1", {}) for name in CPU_FIELDS)
 
-    def refused(*, write):
-        raise FencedWriteRefused(1, 2, "superseded", write=write)
+    worker._writes_forbidden = False
+    worker._record_cpu()
+    assert db.doc("attempts/att_1")["cpu_seconds"] == 5.0
 
-    monkeypatch.setattr(worker.control, "ensure_owner", refused)
-    worker._emit_final_reading()  # must not raise
-    assert emitted == [], "a fenced attempt emitted its final reading"
 
-    monkeypatch.setattr(worker.control, "ensure_owner", lambda *, write: None)
-    worker._fenced = True
-    worker._emit_final_reading()
-    assert emitted == [], "an attempt that knows it is fenced emitted anyway"
+# ---------------------------------------------------------------------------
+# Every exit writes the CPU, and a failed memory write does not skip it
+# (PR #210 review)
+# ---------------------------------------------------------------------------
+#
+# The typed fields were written with each periodic reading and when a runner
+# was reaped through `_stop_sampler`. Two gaps: a runner still alive at a crash,
+# or killed at cleanup, is never reaped through `_stop_sampler`, so the attempt
+# kept its last periodic reading -- up to one reading behind -- and Details drew
+# it as the figures at exit; and `_stop_sampler` wrote the memory peak first,
+# unguarded, so a Firestore error there skipped the CPU write after it.
 
-    worker._fenced = False
-    worker._emit_final_reading()
-    assert [kind for kind, _ in emitted] == [EventType.HEARTBEAT]
-    assert emitted[0][1]["final"] is True
+
+class _LiveSampler:
+    """A runner's sampler still attached: the runner was never reaped through `_stop_sampler`."""
+
+    def __init__(self, usage) -> None:
+        self.usage = usage
+
+    def stop(self):  # pragma: no cover - the paths under test do not stop it
+        return self.usage
+
+
+def _cpu_written(db) -> float | None:
+    return db.documents.get("attempts/att_1", {}).get("cpu_seconds")
+
+
+def test_the_upload_on_every_exit_writes_the_attempts_cpu_beside_its_spend(
+    db, worker_factory, monkeypatch, tmp_path: Path
+):
+    """`_upload_outputs` is where every orderly exit and the crash handler
+    record the attempt's spend ahead of its state; the CPU goes with it."""
+    from agent_worker import metrics
+    from agent_worker import workspace as workspace_mod
+    from agent_worker.metrics import ResourceUsage
+
+    monkeypatch.setattr(metrics, "CGROUP_ROOT", tmp_path / "no-cgroup-here")
+    seed_attempt(db)
+    worker, config, _ = worker_factory()
+    worker.ws = workspace_mod.create(config.workspace_root, config.attempt_id)
+    worker._sampler = _LiveSampler(ResourceUsage(cpu_seconds=7.5, cpu_source="cgroup"))
+
+    worker._upload_outputs()
+
+    assert _cpu_written(db) == 7.5, "the exit's upload recorded no CPU for a runner it never reaped"
+
+
+def test_cleanup_writes_the_cpu_of_a_runner_it_killed_without_reaping(
+    db, worker_factory, monkeypatch, tmp_path: Path
+):
+    """`_cleanup` is the spend backstop for a crash with a runner alive and for
+    a mid-run fence; the CPU backstop sits beside it."""
+    from agent_worker import metrics
+    from agent_worker.metrics import ResourceUsage
+
+    monkeypatch.setattr(metrics, "CGROUP_ROOT", tmp_path / "no-cgroup-here")
+    seed_attempt(db)
+    worker, _, _ = worker_factory()
+    worker._sampler = _LiveSampler(ResourceUsage(cpu_seconds=9.25, cpu_source="cgroup"))
+
+    worker._cleanup()
+
+    assert _cpu_written(db) == 9.25, "cleanup recorded no CPU for the runner it was left with"
+
+
+def test_a_failed_memory_write_does_not_skip_the_attempts_cpu_write(
+    db, worker_factory, monkeypatch, tmp_path: Path
+):
+    from agent_worker import metrics
+    from agent_worker.metrics import ResourceUsage
+
+    monkeypatch.setattr(metrics, "CGROUP_ROOT", tmp_path / "no-cgroup-here")
+    seed_attempt(db)
+    worker, _, _ = worker_factory()
+
+    def unavailable(**_kw):
+        raise RuntimeError("503 firestore unavailable")
+
+    monkeypatch.setattr(worker.control, "record_resource_usage", unavailable)
+
+    class Reaped:
+        usage = ResourceUsage(peak_rss_bytes=100, cpu_seconds=12.5, cpu_source="cgroup")
+
+        def stop(self):
+            return self.usage
+
+    worker._sampler = Reaped()
+    worker._stop_sampler()  # must not raise: the memory peak is telemetry too
+
+    assert _cpu_written(db) == 12.5, "a failed memory write skipped the CPU write after it"
