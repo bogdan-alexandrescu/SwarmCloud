@@ -93,8 +93,12 @@ RUNNER_OWN_ARTIFACTS = {
 FAKE_AGENT = r"""#!/usr/bin/env python3
 import json, os, pathlib, sys
 
+# The plan is the JSON value the prompt STARTS with. Every CLI prompt now ends
+# with the platform's line naming $SWARM_ARTIFACTS_DIR (#184), so only the
+# leading value is decoded; `json.loads` of the whole prompt would fail, and
+# the empty plan it fell back to would make every assertion below vacuous.
 try:
-    plan = json.loads(sys.argv[-1])
+    plan, _end = json.JSONDecoder().raw_decode(sys.argv[-1])
 except (ValueError, IndexError):
     plan = {}
 

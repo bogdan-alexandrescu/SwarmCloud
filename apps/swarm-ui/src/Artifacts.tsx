@@ -34,6 +34,7 @@ import {
   type TaskLogs,
   type TaskTranscript,
   type TranscriptStep,
+  workdirNotUploadedOf,
 } from './types'
 import { AGE_TICK_MS, useNow } from './useNow'
 
@@ -608,7 +609,72 @@ function Outputs({ v }: { v: ArtifactsView }) {
       <h2>Outputs</h2>
       <Answer v={v} />
       <Files v={v} />
+      <NotUploaded v={v} />
     </section>
+  )
+}
+
+/**
+ * WHAT A TASK WITH NO REPOSITORY LEFT IN ITS WORKING FOLDER AND DID NOT GET
+ * UPLOADED, and why (#225 review). The worker uploads what the agent created
+ * there within 50 files and 25 MiB (#184, owner decision of 2026-09-26), and
+ * records each file it did not upload with its reason: over the cap, a core
+ * dump, a name that is not UTF-8 or is too long to be an object's, a key it
+ * could not take out. None of it was drawn. These are not rows of the file
+ * list, because none of them can be downloaded, and not the file list's
+ * "over cap" note, which is the artifacts folder's size cap. The summary
+ * lists the first 50; the worker's log names every one, and the line under
+ * the table says so rather than implying the list is whole.
+ */
+function NotUploaded({ v }: { v: ArtifactsView }) {
+  const record = workdirNotUploadedOf(v.task.result_summary as ResultSummary | null)
+  if (record === null || record.total === 0) return null
+  const { listed, total } = record
+  const rest = total - listed.length
+  return (
+    <div className="arts-block arts-unuploaded">
+      <div className="ctl-toolbar att-sub-head">
+        <span className="ctl-eyebrow">not uploaded from the working folder</span>
+        <span className="count-chip">{total}</span>
+      </div>
+      {listed.length > 0 && (
+        <div className="ctl-table is-stacked">
+          <table role="table">
+            <thead role="rowgroup">
+              <tr role="row">
+                <th role="columnheader" scope="col">File</th>
+                <th role="columnheader" scope="col" className="is-num">Size</th>
+                <th role="columnheader" scope="col">Why</th>
+              </tr>
+            </thead>
+            <tbody role="rowgroup">
+              {listed.map((e, i) => (
+                <tr role="row" key={`${i}:${e.name}`}>
+                  <th role="rowheader" scope="row">
+                    <span className="mono">{e.name}</span>
+                  </th>
+                  <td role="cell" data-label="Size" className="is-num">
+                    {bytesLabel(e.bytes)}
+                  </td>
+                  <td role="cell" data-label="Why">
+                    {e.reason}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {rest > 0 && (
+        <p className="att-none">
+          <Mark
+            kind="partial"
+            say={`The attempt's result lists the first ${listed.length} of the ${total} files the worker did not upload from the working folder. The worker's log names every one.`}
+          />{' '}
+          {rest} more, named in the worker log
+        </p>
+      )}
+    </div>
   )
 }
 

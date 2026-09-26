@@ -43,10 +43,21 @@ anything you do not recognise is a stop-and-ask, not a scroll-past.
 Then register a tenant and give it a key:
 
 ```bash
-make register-tenant GROUP=eng@saga.xyz PROVIDERS=anthropic
+make register-tenant GROUP=eng@saga.xyz
 ./scripts/create-secrets.sh --tenant eng --provider anthropic --stdin
-make register-tenant GROUP=eng@saga.xyz PROVIDERS=anthropic   # re-run to bind the secret
+make add-provider TENANT=eng PROVIDER=anthropic   # let eng's worker read it, and list it
 ```
+
+Adding a provider is `make add-provider` (`register-tenant.sh --add-provider`),
+never a second `make register-tenant ... PROVIDERS=`. A re-run of the
+registration writes the whole tenant record: `--providers` **replaces** the
+tenant's `credentials`, so a tenant holding openai comes out holding anthropic
+alone, and `max_active`, `capacity_units` and `display_name` go back to their
+defaults unless typed again. `--add-provider` makes the only two changes adding
+a provider needs: it grants the tenant's worker `secretAccessor` on that one
+secret, and only after that adds the provider to `credentials`. The secret has
+to be labelled as this tenant's key for this provider and hold an enabled
+version before anything is granted. Add `DRY_RUN=1` to see what it would do.
 
 `register-tenant.sh` creates the service account, the IAM conditions, the
 Firestore documents *and* the whole GKE namespace — it calls
@@ -151,10 +162,13 @@ paused separately by another operator or by the quota broker.
 ## 5. Tenants and keys
 
 ```bash
-make register-tenant GROUP=eng@saga.xyz PROVIDERS=anthropic,openai
+# First registration. A re-run rewrites the whole record (see section 1), so it
+# is not how a provider is added.
+make register-tenant GROUP=eng@saga.xyz
 make register-tenant USER_EMAIL=alice@saga.xyz
 
 ./scripts/create-secrets.sh --tenant eng --provider anthropic --stdin
+make add-provider TENANT=eng PROVIDER=anthropic   # grant + list; keeps eng's other providers
 ./scripts/create-secrets.sh --list --tenant eng
 
 # Rotation: add the new version, let workers pick it up, then disable the old
