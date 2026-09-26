@@ -26,8 +26,11 @@ repository can send the token to a host other than the forge of the validated
 credential mechanism.
 
 Everything here runs against real git and local ``file://`` remotes, with only
-the HTTP forge faked -- no network. `probe_repository` and `open_pull_request`
-are the two functions replaced, exactly as in `test_strategy_end_to_end.py`.
+the HTTP forge faked -- no network, no credential. `probe_repository` and
+`open_pull_request` are the two functions replaced, exactly as in
+`test_strategy_end_to_end.py`; the second remote (`attacker`) is the tell that a
+push was redirected, since a branch only reaches it if the credential would have
+too.
 """
 
 from __future__ import annotations
