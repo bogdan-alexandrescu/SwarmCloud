@@ -44,6 +44,7 @@ from swarm_api.outcomes import (
     EXIT_LABELS,
     cancel_cause,
     classify_failure,
+    tuple_from_docs,
 )
 from swarm_common.profiles import RUNNER_PROFILES
 
@@ -213,13 +214,19 @@ def test_every_writer_that_ends_a_requested_cancel_uses_the_prefix():
 def test_the_failed_parent_text_is_the_schedulers_and_says_neither_which_parent_nor_why():
     """The scheduler writes the same words after a FAILED, a DEAD_LETTERED and a
     CANCELLED parent (`_FAILED_PARENT_STATES` holds all three), so the text is
-    split by the parents' states (#185, decision 2)."""
+    split by what each parent's own end sent down (#185, decision 2; the
+    review of #217). test_outcomes_end_cause.py holds every case."""
     loop = _src("apps/scheduler/scheduler/loop.py")
     assert loop.count('"an upstream workflow step did not succeed"') >= 2
     assert "_FAILED_PARENT_STATES = frozenset(" in loop
     text = "an upstream workflow step did not succeed"
-    assert cancel_cause(False, text, parent_states=["FAILED"]) == "after_failure"
-    assert cancel_cause(False, text, parent_states=["CANCELLED"]) == "after_cancel"
+
+    def split(parent: dict) -> str:
+        child = {"id": "k", "state": "CANCELLED", "last_error": text, "depends_on": ["p"]}
+        return tuple_from_docs(child, [], {"p": {"id": "p", **parent}})["cancel_cause"]
+
+    assert split({"state": "FAILED"}) == "after_failure"
+    assert split({"state": "CANCELLED", "cancel_requested": True}) == "after_cancel"
 
 
 def test_the_sweep_text_is_the_schedulers():

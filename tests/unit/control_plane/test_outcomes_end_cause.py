@@ -11,7 +11,9 @@ file pins them:
     classifier ONLY for a task without one. `RunnerProfile.cost_declared` says
     which runners declare their cost, and the ledger stops naming `mock`.
   * 2 -- a cancel cascade is split: "after a cancel" is not "after a failure".
-    A task without a cause is split at derive time by its parents' states.
+    A task without a cause is split at derive time by what each parent's OWN
+    END sent down -- not its state: a CANCELLED parent may itself be a
+    failure's cascade, so the split follows the chain up (the review of #217).
   * 4 -- the worker refusing to stage a declared input (`InputUnavailable`) is
     its own class, `inputs_unavailable`, not a runner error.
 
@@ -167,24 +169,117 @@ def test_the_workers_refusal_to_stage_an_input_is_its_own_class(text):
     assert outcomes.classify_failure("FAILED", text, 1) == "inputs_unavailable"
 
 
-def test_a_cascade_cancel_with_no_cause_is_split_by_its_parents():
-    cause = outcomes.cancel_cause
-    assert cause(False, CASCADE_TEXT, parent_states=["FAILED"]) == "after_failure"
-    assert cause(False, CASCADE_TEXT, parent_states=["DEAD_LETTERED"]) == "after_failure"
-    assert cause(False, CASCADE_TEXT, parent_states=["CANCELLED"]) == "after_cancel"
-    assert cause(False, CASCADE_TEXT, parent_states=["SUCCEEDED", "CANCELLED"]) == "after_cancel"
-    # A failure wins, as the scheduler's own end cause does.
-    assert cause(False, CASCADE_TEXT, parent_states=["CANCELLED", "FAILED"]) == "after_failure"
-    # No parent readable in either state: the text cannot say which, so it is
-    # not claimed to be a failure.
-    assert cause(False, CASCADE_TEXT, parent_states=[None]) == "other"
-    assert cause(False, CASCADE_TEXT, parent_states=[]) == "other"
+SWEEP_TEXT = (
+    "workflow step a is FAILED and on_step_failure is fail_workflow, "
+    "so steps that had not started were cancelled"
+)
+
+
+def _ended_doc(task_id: str, state: str, *, parents=(), text=None, cause=None, requested=False) -> dict:
+    """A task document as the ledger reads it, ended at 12:00 on 25 Sep."""
+    moment = datetime(2026, 9, 25, 12, tzinfo=UTC)
+    return {
+        "id": task_id, "tenant_id": "eng", "state": state, "created_at": moment,
+        "completed_at": moment, "depends_on": list(parents), "last_error": text,
+        "end_cause": cause, "cancel_requested": requested, "runner_profile": "mock",
+    }
+
+
+def _cascade(task_id: str, *parents: str, cause=None) -> dict:
+    """What the scheduler writes on a dependant of a parent that did not succeed."""
+    return _ended_doc(task_id, "CANCELLED", parents=parents, text=CASCADE_TEXT, cause=cause)
+
+
+def _split(task: dict, *docs: dict | None, unreadable: tuple[str, ...] = ()) -> str:
+    """The cancel cause the derive gives `task`, over the documents it holds.
+    `unreadable` names parents it could not read (missing, or another tenant's)."""
+    known: dict = {doc["id"]: doc for doc in docs if doc is not None}
+    known.update({task_id: None for task_id in unreadable})
+    return outcomes.tuple_from_docs(task, [], known)["cancel_cause"]
+
+
+#: One parent, as each terminal writer leaves it, and what it makes a cascade
+#: below it that carries no cause of its own.
+ONE_PARENT = [
+    ("failed", _ended_doc("p", "FAILED", text="runner exited 1"), "after_failure"),
+    ("dead-lettered", _ended_doc("p", "DEAD_LETTERED"), "after_failure"),
+    ("requested, by the flag", _ended_doc("p", "CANCELLED", requested=True), "after_cancel"),
+    ("requested, by the prefix", _ended_doc("p", "CANCELLED", text="cancelled on request; x"), "after_cancel"),
+    ("requested, typed", _ended_doc("p", "CANCELLED", cause="cancel_requested", requested=True), "after_cancel"),
+    ("a cancel's cascade, typed", _ended_doc("p", "CANCELLED", cause="cancelled_parent"), "after_cancel"),
+    # THE PARENT'S OWN END, NOT ITS STATE (the review of #217): a parent that
+    # is itself a failure's cascade, or the fail_workflow sweep's, is CANCELLED
+    # and passed on a failure.
+    ("a failure's cascade, typed", _ended_doc("p", "CANCELLED", cause="failed_parent"), "after_failure"),
+    ("swept, typed", _ended_doc("p", "CANCELLED", cause="workflow_sweep"), "after_failure"),
+    ("swept, by its text", _ended_doc("p", "CANCELLED", text=SWEEP_TEXT), "after_failure"),
+    # A parent cancelled for a reason nothing records: CANCELLED is not a
+    # cancel somebody made, so the cascade below it is not claimed as one.
+    ("cancelled, why unknown", _ended_doc("p", "CANCELLED"), "other"),
+    ("stopped on SIGTERM, no flag", _ended_doc("p", "CANCELLED", text="runner stopped on SIGTERM"), "other"),
+]
+
+
+@pytest.mark.parametrize("parent, expected", [(p, e) for _, p, e in ONE_PARENT], ids=[i for i, _, _ in ONE_PARENT])
+def test_a_cascade_cancel_with_no_cause_is_split_by_its_parent_s_own_end(parent, expected):
+    assert _split(_cascade("k", "p"), parent) == expected
+
+
+def test_a_cascade_with_several_parents_is_a_failure_s_if_any_parent_sent_one():
+    requested = _ended_doc("p1", "CANCELLED", requested=True)
+    failed = _ended_doc("p2", "FAILED")
+    ok_parent = _ended_doc("p3", "SUCCEEDED")
+    assert _split(_cascade("k", "p1", "p2"), requested, failed) == "after_failure"
+    assert _split(_cascade("k", "p3", "p1"), ok_parent, requested) == "after_cancel"
+    # A parent that sent something the read cannot name might have been the
+    # failure: the cascade is not claimed to be a cancel's.
+    unknown = _ended_doc("p4", "CANCELLED")
+    assert _split(_cascade("k", "p1", "p4"), requested, unknown) == "other"
+    assert _split(_cascade("k", "p1", "p5"), requested, unreadable=("p5",)) == "other"
+    # A failure wins over both.
+    assert _split(_cascade("k", "p4", "p2"), unknown, failed) == "after_failure"
+    # Nothing read at all: the text cannot say which.
+    assert _split(_cascade("k", "p5"), unreadable=("p5",)) == "other"
+    assert _split(_cascade("k")) == "other"
+
+
+def test_a_failure_s_cascade_is_a_failure_s_however_far_down_it_reaches():
+    """THE REVIEW OF #217. a FAILED -> b -> c -> d, none carrying a cause (every
+    task on dev before the deploy). `c`'s parent is CANCELLED, but by the
+    failure's cascade, so `c` and `d` are "after a failure" too. Read one hop
+    up, they were "after a cancel": a cancel nobody made, moved out of the
+    failure's cascade count by the very re-derive that was meant to fix it."""
+    a = _ended_doc("a", "FAILED", text="runner exited 1")
+    b, c, d = _cascade("b", "a"), _cascade("c", "b"), _cascade("d", "c")
+    for task in (b, c, d):
+        assert _split(task, a, b, c, d) == "after_failure", task["id"]
+    # A typed link anywhere in the chain is read as its writer said.
+    assert _split(d, _cascade("c", "b", cause="failed_parent")) == "after_failure"
+    assert _split(d, _cascade("c", "b", cause="cancelled_parent")) == "after_cancel"
+
+
+def test_a_cancel_s_cascade_is_a_cancel_s_however_far_down_it_reaches():
+    a = _ended_doc("a", "CANCELLED", requested=True)
+    b, c = _cascade("b", "a"), _cascade("c", "b")
+    assert _split(b, a, b, c) == "after_cancel"
+    assert _split(c, a, b, c) == "after_cancel"
+
+
+def test_a_chain_the_read_cannot_finish_is_not_guessed():
+    """`b` is an untyped cascade whose own parent was not read, and a corrupt
+    pair names each other: neither is claimed, and neither loops."""
+    b, c = _cascade("b", "a"), _cascade("c", "b")
+    assert _split(c, b, c) == "other"
+    x, y = _cascade("x", "y"), _cascade("y", "x")
+    assert _split(x, x, y) == "other"
 
 
 def test_a_cancel_that_carries_its_cause_is_never_split_again():
+    failed = _ended_doc("p", "FAILED")
+    requested = _ended_doc("p", "CANCELLED", requested=True)
+    assert _split(_cascade("k", "p", cause="cancelled_parent"), failed) == "after_cancel"
+    assert _split(_cascade("k", "p", cause="failed_parent"), requested) == "after_failure"
     cause = outcomes.cancel_cause
-    assert cause(False, CASCADE_TEXT, end_cause="cancelled_parent", parent_states=["FAILED"]) == "after_cancel"
-    assert cause(False, CASCADE_TEXT, end_cause="failed_parent", parent_states=["CANCELLED"]) == "after_failure"
     assert cause(False, "anything at all", end_cause="workflow_sweep") == "workflow_sweep"
     assert cause(True, "cancelled on request; x", end_cause="cancel_requested") == "requested"
     # A failure's cause on a cancelled task names no cancel cause.
@@ -254,6 +349,36 @@ def test_a_failure_s_cascade_count_leaves_out_what_a_cancel_took(api):
     rows = ok(api, "alice", **WEEK)["workflows_failed"]["rows"]
     wf1 = next(r for r in rows if r["workflow_id"] == "wf1")
     assert wf1["cascade_cancelled"] == 1
+
+
+def test_the_derive_follows_a_failure_s_cascade_up_through_days_it_did_not_read(api, db):
+    """THE REVIEW OF #217, through the route. wfc is a -> b -> c -> d under
+    `continue`, from before end causes: `a` FAILED and `b` was cancelled on 20
+    Sep, `c` and `d` on 21 Sep. Deriving 21 Sep reads `c`'s parent `b` for the
+    wait figure, but `b` is itself only a cascade, so the derive must read `a`
+    as well -- a day it was not deriving -- to know that `c` and `d` followed a
+    failure. Read one hop up they were two cancels nobody made, and the
+    workflow's failure took one step instead of three."""
+    common = {"created": at(20, 9), "workflow_id": "wfc", "attempt_count": 0}
+    task(db, "ca", state="FAILED", completed=at(20, 10), step_id="a", last_error="runner exited 1",
+         **{**common, "attempt_count": 1})
+    attempt(db, "a_ca", task_id="ca", created=at(20, 9, 30), started=at(20, 9, 31), exit_code=1)
+    task(db, "cb", state="CANCELLED", completed=at(20, 10, 1), step_id="b", depends_on=("ca",),
+         last_error=CASCADE_TEXT, **common)
+    task(db, "cc", state="CANCELLED", completed=at(21, 10, 2), step_id="c", depends_on=("cb",),
+         last_error=CASCADE_TEXT, **common)
+    task(db, "cd", state="CANCELLED", completed=at(21, 10, 3), step_id="d", depends_on=("cc",),
+         last_error=CASCADE_TEXT, **common)
+
+    body = ok(api, "alice", **WEEK)
+    sep20, sep21 = body["buckets"][1], body["buckets"][2]
+    assert sep20["cancelled"]["after_failure"] == 1
+    assert sep21["cancelled"] == {
+        "total": 2, "requested": 0, "after_failure": 2, "after_cancel": 0,
+        "workflow_sweep": 0, "other": 0,
+    }, "c and d followed a's failure, through b; nobody cancelled anything"
+    wfc = next(r for r in body["workflows_failed"]["rows"] if r["workflow_id"] == "wfc")
+    assert wfc["cascade_cancelled"] == 3
 
 
 def test_a_day_stored_by_another_classifier_is_derived_again(api, db, clock):

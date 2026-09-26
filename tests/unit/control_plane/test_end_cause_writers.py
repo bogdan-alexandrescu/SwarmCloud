@@ -34,6 +34,7 @@ from .test_on_step_failure import (
     CONTINUE,
     FAIL,
     FIVE_STEPS,
+    step,
     submit,
     worker_finished,
     worker_is_running,
@@ -65,25 +66,57 @@ def _ended(db, task_id: str, state: str, cause: str) -> None:
 # The scheduler: a dependant of a parent that did not succeed
 # --------------------------------------------------------------------------
 
+def _parent(db, task_id: str, state: str, cause: str | None, requested: bool) -> None:
+    """A parent as its terminal writer left it: its state, why, and the cancel flag."""
+    seed_task(db, task_id=task_id, tenant_id="eng", state=state, cancel_requested=requested)
+    _doc(db, task_id).update({"completed_at": NOW, "end_cause": cause})
+
+
 @pytest.mark.parametrize(
     "parents, cause",
     [
-        ({"task_p1": "FAILED"}, "failed_parent"),
-        ({"task_p1": "DEAD_LETTERED"}, "failed_parent"),
-        ({"task_p1": "CANCELLED"}, "cancelled_parent"),
+        ({"task_p1": ("FAILED", "runner_error", False)}, "failed_parent"),
+        ({"task_p1": ("DEAD_LETTERED", None, False)}, "failed_parent"),
+        ({"task_p1": ("CANCELLED", "cancel_requested", True)}, "cancelled_parent"),
+        # THE PARENT'S OWN END, NOT ITS STATE (the review of #217). A parent
+        # that is itself a failure's cascade -- or a step the fail_workflow
+        # sweep took -- passes the failure on: CANCELLED is only its state.
+        ({"task_p1": ("CANCELLED", "failed_parent", False)}, "failed_parent"),
+        ({"task_p1": ("CANCELLED", "workflow_sweep", False)}, "failed_parent"),
+        ({"task_p1": ("CANCELLED", "cancelled_parent", False)}, "cancelled_parent"),
+        # A cancel requested before the field existed: the flag says so.
+        ({"task_p1": ("CANCELLED", None, True)}, "cancelled_parent"),
+        # A parent cancelled before the field existed, with no flag, ended in a
+        # way this read cannot tell. The scheduler writes no cause rather than
+        # guess, and the ledger splits the step by its chain of parents.
+        ({"task_p1": ("CANCELLED", None, False)}, None),
         # A failure wins over a stop by hand beside it: the failure is what the
-        # dependant could not have survived.
-        ({"task_p1": "CANCELLED", "task_p2": "FAILED"}, "failed_parent"),
+        # dependant could not have survived. A failure's cascade is a failure.
+        (
+            {"task_p1": ("CANCELLED", "cancel_requested", True), "task_p2": ("FAILED", "timeout", False)},
+            "failed_parent",
+        ),
+        (
+            {
+                "task_p1": ("CANCELLED", "cancel_requested", True),
+                "task_p2": ("CANCELLED", "failed_parent", False),
+            },
+            "failed_parent",
+        ),
     ],
-    ids=["failed", "dead-lettered", "cancelled", "both"],
+    ids=[
+        "failed", "dead-lettered", "cancelled-on-request", "a-failure-s-cascade", "swept",
+        "a-cancel-s-cascade", "requested-before-the-field", "unknown-end", "both",
+        "a-cancel-beside-a-failure-s-cascade",
+    ],
 )
 def test_a_dependant_is_cancelled_with_the_cause_its_parents_gave_it(db, make_scheduler, parents, cause):
     """Both of the scheduler's cascade paths: admission meets a READY dependant,
     the dependency sweep a PARKED one. They write the same words -- "an upstream
     workflow step did not succeed" -- and now different causes (#185, decision 2)."""
     _world(db)
-    for task_id, state in parents.items():
-        seed_task(db, task_id=task_id, tenant_id="eng", state=state)
+    for task_id, (state, parent_cause, requested) in parents.items():
+        _parent(db, task_id, state, parent_cause, requested)
     seed_task(db, task_id="task_ready_child", tenant_id="eng", depends_on=tuple(parents))
     seed_task(
         db, task_id="task_parked_child", tenant_id="eng", state="PARKED",
@@ -95,6 +128,54 @@ def test_a_dependant_is_cancelled_with_the_cause_its_parents_gave_it(db, make_sc
     for child in ("task_ready_child", "task_parked_child"):
         _ended(db, child, "CANCELLED", cause)
         assert _doc(db, child)["last_error"] == "an upstream workflow step did not succeed"
+
+
+#: a -> b -> c -> d. Each step waits on the one before, so an end at `a`
+#: reaches `d` three cascades down.
+CHAIN = [step("a"), step("b", "a"), step("c", "b"), step("d", "c")]
+
+
+def _drain_the_chain(make_scheduler) -> None:
+    # The dependency sweep reads its PARKED slice once, so a grandchild sees
+    # its parent's cancel on this drain or the next. Four drains reach `d`
+    # whatever order the slice comes back in.
+    scheduler = make_scheduler()
+    for _ in range(4):
+        scheduler.drain()
+
+
+def test_a_failure_s_cascade_is_a_failure_s_however_far_down_it_reaches(client, db, make_scheduler):
+    """THE REVIEW OF #217. `_FAILED_PARENT_STATES` holds CANCELLED, so the
+    dependency rule is transitive: `b` is cancelled after `a` FAILED, then `c`
+    after `b`, then `d` after `c`. Read from the parents' STATES alone, `c`
+    and `d` were "after a cancel" -- a cancel nobody made -- and the
+    workflow's failure cascade counted one step where it took three."""
+    seed_pool(db, "global", hard_limit=10)
+    _, steps = submit(client, CHAIN, on_step_failure=CONTINUE)
+    worker_is_running(db, steps["a"])
+    worker_finished(db, steps["a"], "FAILED")
+    _doc(db, steps["a"])["end_cause"] = "runner_error"
+
+    _drain_the_chain(make_scheduler)
+
+    for name in ("b", "c", "d"):
+        _ended(db, steps[name], "CANCELLED", "failed_parent")
+
+
+def test_a_cancel_s_cascade_is_a_cancel_s_however_far_down_it_reaches(client, db, make_scheduler):
+    """The other side of the same rule: a stop by hand at `a` is "after a
+    cancel" all the way down, never promoted to a failure. A PIN: the code
+    before the review's fix already got this side right."""
+    seed_pool(db, "global", hard_limit=10)
+    _, steps = submit(client, CHAIN, on_step_failure=CONTINUE)
+    worker_is_running(db, steps["a"])
+    worker_finished(db, steps["a"], "CANCELLED")
+    _doc(db, steps["a"]).update({"end_cause": "cancel_requested", "cancel_requested": True})
+
+    _drain_the_chain(make_scheduler)
+
+    for name in ("b", "c", "d"):
+        _ended(db, steps[name], "CANCELLED", "cancelled_parent")
 
 
 def test_a_cancel_requested_before_admission_is_ended_as_requested(db, make_scheduler):

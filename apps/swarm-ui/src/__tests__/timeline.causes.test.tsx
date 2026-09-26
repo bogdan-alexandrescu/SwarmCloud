@@ -30,6 +30,7 @@ import STYLES from '../styles.css?raw'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, waitFor } from '@testing-library/react'
 
+import { LEDGER_DRAWN } from '../charts/OutcomeLedger'
 import type { Result } from '../fetch'
 import { ledgerFixture } from '../outcomes.fixture'
 import type { Outcomes } from '../outcomes'
@@ -154,6 +155,61 @@ function card(root: HTMLElement, title: RegExp): HTMLElement {
   return h!.closest('.ol-card') as HTMLElement
 }
 
+const num = (el: Element, attr: string, fallback = 0): number => {
+  const v = el.getAttribute(attr)
+  return v === null ? fallback : Number(v)
+}
+
+/** Length of the overlap of [a0, a1) and [b0, b1), in px. */
+const overlap = (a0: number, a1: number, b0: number, b1: number): number => Math.max(0, Math.min(a1, b1) - Math.max(a0, b0))
+
+/**
+ * HOW MANY PIXELS OF TS-4's FLAT BARS SHOW INSIDE AN OUTLINE, measured down
+ * the column, however the bars are drawn: through a `-flat` pattern -- whose
+ * bars repeat from the PATTERN's origin, not the mark's -- or as bars of their
+ * own under the `.ol-flat` rule. "Inside" is between the inner edges of the
+ * outline's 1px stroke, which is centred on the rect's edge.
+ *
+ * This is the check the review of #217 said was missing: the old mark kept a
+ * patterned rect (so "the bars exist" passed) whose bars, at 3-4px on the
+ * baseline, all fell under the stroke or in the pattern's 2px gap.
+ */
+function barsInside(root: HTMLElement, marks: Element, outline: Element): number {
+  const top = num(outline, 'y') + 0.5
+  const bottom = num(outline, 'y') + num(outline, 'height') - 0.5
+  if (bottom <= top) return 0
+  let px = 0
+  for (const el of marks.querySelectorAll('rect')) {
+    if (el === outline) continue
+    const y0 = num(el, 'y')
+    const y1 = y0 + num(el, 'height')
+    const url = /^url\(#(.+)\)$/.exec(el.getAttribute('fill') ?? '')
+    if (url !== null) {
+      const pattern = [...root.querySelectorAll('pattern')].find((p) => p.getAttribute('id') === url[1])
+      const bar = pattern?.querySelector('rect.ol-flat')
+      if (pattern === undefined || bar === null || bar === undefined) continue
+      expect(pattern.getAttribute('patternTransform'), 'the resolver does not read a transformed pattern').toBeNull()
+      const py = num(pattern, 'y')
+      const ph = num(pattern, 'height')
+      for (let k = Math.floor((y0 - py) / ph) - 1; py + k * ph < y1; k++) {
+        const b0 = py + k * ph + num(bar, 'y')
+        const b1 = b0 + num(bar, 'height')
+        px += overlap(Math.max(b0, y0), Math.min(b1, y1), top, bottom)
+      }
+    } else if (el.classList.contains('ol-flat')) {
+      px += overlap(y0, y1, top, bottom)
+    }
+  }
+  return Math.round(px * 100) / 100
+}
+
+/** Lane 3's baseline in one drawing: the third of the scale's four solid rules. */
+function laneThreeBase(root: HTMLElement, key: string): number {
+  const rules = [...root.querySelectorAll(`.ol-drawing.is-${key} .ol-scale line.ol-base`)]
+  expect(rules.length, 'the scale has four solid rules: rate 0, decided 0, cancelled, throughput').toBe(4)
+  return num(rules[2]!, 'y1')
+}
+
 const hosts: HTMLElement[] = []
 function fragment(html: string): HTMLElement {
   const host = document.createElement('div')
@@ -192,18 +248,17 @@ describe('lane 3 splits the cascade', () => {
     const marks = marksOf(root, SEP22)
     const outline = marks.querySelector('.ol-m-after-cancel')
     expect(outline, 'after a cancel has no outline of its own').not.toBeNull()
-    const bars = marks.querySelector('.ol-m-ended.is-after-cancel')
-    expect(bars, 'after a cancel is not drawn as a cancel (the flat bars)').not.toBeNull()
-    expect(bars!.getAttribute('fill') ?? '').toMatch(/^url\(#.*-flat\)$/)
-    expect(Number(bars!.getAttribute('height'))).toBeGreaterThanOrEqual(3)
+    expect(barsInside(root, marks, outline!), 'after a cancel is not drawn as a cancel (the flat bars)').toBeGreaterThanOrEqual(1)
     // The failure's cascade is still the bare outline, and still its own mark.
-    expect(marks.querySelector('.ol-m-after'), 'after a failure lost its outline').not.toBeNull()
+    const after = marks.querySelector('.ol-m-after')
+    expect(after, 'after a failure lost its outline').not.toBeNull()
+    expect(barsInside(root, marks, after!), 'after a failure is drawn with bars in it').toBe(0)
     // Stacked, not overlapping: the outlined bars sit above the flat bars and
     // below the bare outline.
     const flat = marks.querySelector('.ol-m-ended:not(.is-after-cancel)')!
     const y = (el: Element) => Number(el.getAttribute('y'))
-    expect(y(bars!)).toBeLessThan(y(flat))
-    expect(y(marks.querySelector('.ol-m-after')!)).toBeLessThan(y(bars!))
+    expect(y(outline!)).toBeLessThan(y(flat))
+    expect(y(after!)).toBeLessThan(y(outline!))
   })
 
   it('draws no outline at all for a bucket whose only cascade followed a cancel', async () => {
@@ -245,6 +300,83 @@ describe('lane 3 splits the cascade', () => {
     expect(bars.length).toBeGreaterThan(0)
     for (const bar of bars) expect(Number(bar.getAttribute('width'))).toBeLessThanOrEqual(28)
   })
+})
+
+describe('after a cancel shows its bars at every height it is drawn at (the review of #217)', () => {
+  // THE DEFECT: the bars were a pattern anchored to the SVG's origin, a 3px
+  // bar every 5px, and lane 3's baseline sits at y ≡ 1 (mod 5) in all three
+  // drawings (366, 306, 266). A 3-4px mark on the baseline has its only
+  // interior rows at 363-364: the pattern's gap. It drew as a bare outline,
+  // pixel for pixel the "after a failure" mark of the same count -- which is
+  // what most buckets are, since any count under ~21 of 305 is 3-4px.
+  //
+  // Buckets 0-4 (12-16 Sep) are rewritten with small counts, the common case,
+  // at different offsets above the baseline.
+  const SMALL: Array<[number, Partial<Record<string, number>>]> = [
+    [0, { after_cancel: 1 }],
+    [1, { after_failure: 1 }],
+    [2, { requested: 22, after_cancel: 1 }],
+    [3, { requested: 1, after_cancel: 1, after_failure: 1 }],
+    [4, { requested: 7, after_cancel: 21 }],
+  ]
+
+  function small(): Outcomes {
+    const d = ledgerFixture()
+    for (const [i, split] of SMALL) {
+      const c = d.buckets[i]!.cancelled as unknown as Record<string, number>
+      for (const key of ['requested', 'after_failure', 'after_cancel', 'workflow_sweep', 'other']) c[key] = split[key] ?? 0
+      c.total = Object.values(split).reduce<number>((n, v) => n + (v ?? 0), 0)
+    }
+    return d
+  }
+
+  for (const key of ['wide', 'mid', 'narrow'] as const) {
+    it(`fills the outline with the flat bars however few it counts, in the ${key} drawing`, async () => {
+      // MUTATION: anchor the bars to the page again, or drop the minimum height.
+      const root = await timeline(small())
+      const marks = (i: number) => {
+        const g = root.querySelector(`.ol-drawing.is-${key} .ol-bucket[data-i="${i}"]`)
+        expect(g, `bucket ${i} drew no marks in the ${key} drawing`).not.toBeNull()
+        return g!
+      }
+      for (const [i, split] of SMALL) {
+        const g = marks(i)
+        const cancel = g.querySelector('.ol-m-after-cancel')
+        const failure = g.querySelector('.ol-m-after')
+        expect(cancel !== null, `bucket ${i}: an after-a-cancel outline`).toBe((split.after_cancel ?? 0) > 0)
+        expect(failure !== null, `bucket ${i}: an after-a-failure outline`).toBe((split.after_failure ?? 0) > 0)
+        if (cancel !== null) {
+          expect(barsInside(root, g, cancel), `bucket ${i}: no flat bar shows inside the after-a-cancel outline`).toBeGreaterThanOrEqual(1)
+        }
+        if (failure !== null) {
+          expect(barsInside(root, g, failure), `bucket ${i}: the after-a-failure outline is not hollow`).toBe(0)
+        }
+      }
+    })
+
+    it(`keeps every cancel mark inside lane 3, minimum heights included, in the ${key} drawing`, async () => {
+      // A mark's minimum height is added to its count's, so a full column with
+      // a small cascade on top rose past the lane into the label above it.
+      // MUTATION: stack the minimums without taking them back from the column.
+      const root = await timeline(withCancelCascade())
+      const base = laneThreeBase(root, key)
+      const drawn = LEDGER_DRAWN.find((d) => d.key === key)!
+      const laneTop = base - drawn.lanes[2]
+      const within = `.ol-drawing.is-${key} .ol-bucket`
+      const rects = [
+        ...root.querySelectorAll(
+          ['.ol-m-ended', '.ol-m-after', '.ol-m-after-cancel', '.ol-flat'].map((c) => `${within} ${c}`).join(', '),
+        ),
+      ]
+      expect(rects.length).toBeGreaterThan(0)
+      for (const r of rects) {
+        const y = num(r, 'y')
+        const where = `${r.getAttribute('class')} in bucket ${r.closest('.ol-bucket')?.getAttribute('data-i')}`
+        expect(y, `${where} rises above lane 3`).toBeGreaterThanOrEqual(laneTop - 0.05)
+        expect(y + num(r, 'height'), `${where} falls below lane 3's baseline`).toBeLessThanOrEqual(base + 0.05)
+      }
+    })
+  }
 })
 
 describe('the sheet draws the new mark in TS-4’s cancel forms', () => {
