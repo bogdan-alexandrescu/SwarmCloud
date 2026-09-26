@@ -1147,6 +1147,116 @@ describe('the overflow inventory, as rules that cannot be quietly dropped', () =
   })
 
   /**
+   * WF-21 (#178) — THE TABLE HEAD'S FILL IS PAINTED ONCE, ON `thead`.
+   *
+   * Checked on dev at release 350c244 (2026-09-26, #178): with the head no
+   * longer sticky (#160, the case above), the Workflows Table still showed a
+   * 1px line of ground at four fractional column edges -- runner|waited at
+   * x=592.391, waited|ran 671.398, attempts|cost 883.594, cost|tokens
+   * 1033.648 -- in light and in dark, and none at the edges that sit on whole
+   * pixels. Each head cell painted its own `--surface-2`, so two fills met at
+   * every column edge, and where the edge falls inside a device pixel neither
+   * fill covers that pixel whole: the ground shows through as a seam. `thead`
+   * is one box, so the head's fill has no internal edge to seam at.
+   *
+   * THE ONE HEAD CELL THAT STILL PAINTS is the held corner below 900px
+   * (CH-13, design-system §7.3). It is sticky and the other head cells scroll
+   * under it, so a see-through corner would show their labels through the
+   * name's head. It paints the same `--surface-2` as `thead`, so there is no
+   * step between it and the head beside it either.
+   *
+   * WHAT THIS CANNOT SEE: the seam. jsdom has no layout; this holds the rule
+   * the dev check found wanting from coming back. Whether the seams are gone
+   * is for the screenshots at 1440 on dev after the release.
+   *
+   * MUTATIONS: put a `background` back on `.ctl-table thead th` or on
+   * `table.pools thead th`; give a fill to any other rule that reaches a head
+   * cell (a bare `th`, `.ctl-table th`); drop the fill from either `thead`.
+   */
+  it('paints the table head fill once, on thead, in both themes (WF-21, #178)', () => {
+    const host = document.createElement('div')
+    // The two head rules in the sheet: `.ctl-table` (the Workflows Table and
+    // most tables) and `table.pools` (Pools, Profile headroom, Accounts,
+    // Tenants). Each with a numeric column, whose own class must not bring a
+    // fill back either.
+    host.innerHTML =
+      '<div class="ctl-table is-scroll"><table><thead><tr>' +
+      '<th scope="col">Step</th><th scope="col">Runner</th><th scope="col" class="is-num">Cost</th>' +
+      '</tr></thead><tbody><tr><th scope="row">plan</th><td>claude-code</td><td class="is-num">$0.10</td></tr></tbody></table></div>' +
+      '<div class="table-wrap is-scroll"><table class="pools"><thead><tr>' +
+      '<th scope="col">Pool</th><th scope="col">Scope</th><th scope="col" class="n">Units free</th>' +
+      '</tr></thead><tbody><tr><th scope="row">global</th><td>platform</td><td class="n">5</td></tr></tbody></table></div>'
+    document.body.appendChild(host)
+    try {
+      const FILL = ['background', 'background-color'] as const
+      const won = (el: Element, prop: string | readonly string[], env: CascadeEnv): string | null => {
+        const r = cascade(STYLES, el, prop, env)
+        expect(r.unsupported, 'selectors the resolver could not evaluate').toEqual([])
+        return r.winner?.value ?? null
+      }
+      const heads = [...host.querySelectorAll('thead')]
+      const cells = [...host.querySelectorAll('thead th')]
+      expect(heads.length).toBe(2)
+      expect(cells.length).toBe(6)
+
+      let asked = 0
+      for (const theme of ['dark', 'light'] as const) {
+        const tokens = tokenTables(STYLES)[theme]
+        // THE FILL IS A STEP IN BOTH THEMES: `--surface-2` is declared for
+        // each, and it is not the panel's own `--surface`, or the head would
+        // be painted and invisible.
+        const fill = resolveVars('var(--surface-2)', tokens).trim()
+        expect(fill, `${theme}: --surface-2 is the panel's own fill`).not.toBe(
+          resolveVars('var(--surface)', tokens).trim(),
+        )
+        for (const width of [1440, 390]) {
+          const env: CascadeEnv = { width, theme }
+          for (const thead of heads) {
+            expect(
+              won(thead, FILL, env),
+              `${theme} at ${width}: \`${thead.closest('table')!.className || '.ctl-table > table'} thead\` does not carry the head's fill`,
+            ).toBe('var(--surface-2)')
+            asked += 1
+          }
+          for (const th of cells) {
+            const corner = th === th.parentElement!.firstElementChild
+            const v = won(th, FILL, env)
+            if (width < 900 && corner) {
+              // The held corner: sticky, so it paints, and in the head's colour.
+              expect(won(th, 'position', env), `${theme}: the corner that paints is not held`).toBe('sticky')
+              expect(v, `${theme}: the held corner is see-through, or not the head's colour`).toBe('var(--surface-2)')
+            } else {
+              expect(
+                v,
+                `${theme} at ${width}: head cell "${th.textContent}" paints a fill of its own again -- the per-cell ` +
+                  'fill that left a 1px seam at every fractional column edge',
+              ).toBeNull()
+            }
+            asked += 1
+          }
+        }
+      }
+      // COUNTED: two themes x two widths x (two heads + six cells).
+      expect(asked).toBe(2 * 2 * (2 + 6))
+
+      // AND NO RULE IN THE SHEET GIVES A HEAD CELL A FILL, at any width, but the
+      // held corner's two below 900px. The fixture above sees only the rules
+      // its markup reaches; this sees a fill added under a class it lacks.
+      const CORNER = '.is-scroll > table > thead > tr > th:first-child'
+      const offenders = flatRules(STYLES).flatMap((r) => {
+        if (!declarations(r.body).some((d) => d.property === 'background' || d.property === 'background-color')) return []
+        return splitTop(r.selector)
+          .filter((b) => /\bthead\b.*\bth\b/.test(b))
+          .filter((b) => !(b === CORNER && r.conditions.join(' ') === '@media (max-width: 899px)'))
+          .map((b) => `${b} (line ${r.line})`)
+      })
+      expect(offenders, 'a head cell paints its own fill; the fill is on thead').toEqual([])
+    } finally {
+      host.remove()
+    }
+  })
+
+  /**
    * F5 — two cells reading `/v1/a…` for two different routes.
    *
    * `/v1/admin/dispatch` and `/v1/admin/tenants` both rendered `/v1/a…`, both

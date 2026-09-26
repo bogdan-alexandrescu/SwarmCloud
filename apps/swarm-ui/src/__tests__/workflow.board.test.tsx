@@ -1646,6 +1646,81 @@ describe('the QA pass: the collapsed row', () => {
     // Every profile stays reachable whatever was folded.
     expect(narrow.title).toBe('Runner profiles: claude-code ×20, browser ×6, mock ×4')
   })
+
+  /**
+   * THE CENSUS SENTENCE STAYS IN ITS COLUMN (#222, the 2026-09-26 QA).
+   *
+   * At 1440 on dev, release 350c244, a finished row's "10/30 done · 1 failed ·
+   * 19 cancelled" painted over the stage shape beside it. `.wf-progress-text`
+   * was `flex: 0 0 auto` -- it could not shrink -- and nothing clipped it, so
+   * the flex item was as wide as its sentence and ran out of the `[progress]`
+   * track. A grid does not widen a fixed track for an item that overflows it;
+   * the item paints over the next track. The text's own ellipsis never fired,
+   * because a box as wide as its content has nothing to cut.
+   *
+   * Contained now at every width the sentence is drawn (it drops at 560px and
+   * below): the text is what gives way (shrinkable, `min-width: 0`), it ends
+   * in an ellipsis on one line (§6.8: a row's cells do not wrap), the progress
+   * cell clips at its own track's edge, and the whole sentence is in the
+   * text's `title` -- cut on screen, whole on hover (§7.3's rule for a cut
+   * value).
+   *
+   * MUTATIONS: `flex: 0 0 auto` back on `.wf-progress-text`; drop its
+   * `min-width: 0`, its ellipsis or its nowrap; drop `overflow: hidden` from
+   * `.wf-progress`; drop the text's `title`.
+   */
+  it('keeps the census sentence inside its column at every width it is drawn, whole in its title', () => {
+    const long = card(ended('wf_long', 30, { SUCCEEDED: 10, FAILED: 1, CANCELLED: 19 })).container
+    const unread = card(
+      workflow('wf_unread', chain().steps, {
+        rollup: {
+          state: 'UNKNOWN', complete: false, reason: 'step_read_budget_exhausted', counts: {},
+          unreadable_steps: ['build'], unstarted_steps: [], steps_read: 2,
+        },
+      }),
+    ).container
+    const text = long.querySelector('.wf-progress-text')!
+    expect(text.textContent).toBe('10/30 done · 1 failed · 19 cancelled')
+    // Both branches of `Progress` draw the text, and both are cut the same way.
+    for (const root of [long, unread]) {
+      const t = root.querySelector('.wf-progress-text')!
+      expect(t.getAttribute('title'), `"${t.textContent}" is not whole in its title`).toBe(t.textContent)
+    }
+
+    const cell = long.querySelector('.wf-progress')!
+    const won = (el: Element, prop: string | readonly string[], width: number): string | null => {
+      const r = cascade(STYLES, el, prop, { width })
+      expect(r.unsupported, 'selectors the resolver could not evaluate').toEqual([])
+      return r.winner?.value ?? null
+    }
+    /** `flex-shrink`, out of whichever of `flex` / `flex-shrink` won. */
+    const shrink = (el: Element, width: number): number => {
+      const w = cascade(STYLES, el, ['flex', 'flex-shrink'], { width }).winner
+      if (w === null) return 1
+      if (w.property === 'flex-shrink') return Number(w.value)
+      if (w.value === 'none') return 0
+      const parts = w.value.split(/\s+/)
+      return parts.length >= 2 && /^[\d.]+$/.test(parts[1]!) ? Number(parts[1]) : 1
+    }
+    // Every band of `.wf-bar`'s template that draws the sentence: the wide
+    // template and its 1100/900 edges, and the tablet one.
+    const WIDTHS = [1440, 1100, 901, 900, 700, 561]
+    let asked = 0
+    for (const width of WIDTHS) {
+      expect(won(text, 'display', width), `the sentence is not drawn at ${width}`).not.toBe('none')
+      expect(shrink(text, width), `${width}: the sentence cannot give way, so it paints past its column`).toBeGreaterThan(0)
+      expect(won(text, 'min-width', width), `${width}: the sentence cannot shrink below its own width`).toBe('0')
+      expect(won(text, ['overflow', 'overflow-x'], width)).toBe('hidden')
+      expect(won(text, 'text-overflow', width), `${width}: a cut sentence does not say it was cut`).toBe('ellipsis')
+      expect(won(text, 'white-space', width), `${width}: the sentence wraps and the row loses its height`).toBe('nowrap')
+      // The cell is bounded by its track and clips at its edge, so nothing in
+      // it -- the sentence or the 54px meter -- can reach the shape beside it.
+      expect(won(cell, 'min-width', width)).toBe('0')
+      expect(won(cell, ['overflow', 'overflow-x'], width), `${width}: the progress cell paints past its track`).toBe('hidden')
+      asked += 1
+    }
+    expect(asked).toBe(WIDTHS.length)
+  })
 })
 
 describe('foldMix', () => {
