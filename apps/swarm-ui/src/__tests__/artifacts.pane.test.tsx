@@ -31,6 +31,7 @@ import STYLES from '../styles.css?raw'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, render, waitFor } from '@testing-library/react'
 
+import { Markdown } from '../ArtifactViewer'
 import type { Task } from '../types'
 import { cascade, type CascadeEnv } from './cssgate'
 import { task as baseTask } from './runfixture'
@@ -1168,5 +1169,188 @@ describe('the pane holds at 390 wide and in the dark theme', () => {
     expect(rule('.arts-figure img')).toMatch(/max-width:\s*100%/)
     const wide = sheet.match(/(?:^|[;\s{])(?:min-)?width:\s*(\d+)px/g) ?? []
     expect(wide.filter((w) => Number(/(\d+)px/.exec(w)![1]) > 390), 'a fixed width wider than a phone').toEqual([])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The post-deploy QA's drawer findings (#222) and the log locations' move
+// ---------------------------------------------------------------------------
+//
+// Epic #222 (post-deploy QA of dev, 2026-09-26), each finding red first:
+//
+//   (b) at 390 the Logs card note ran 74 px past the drawer: `.ctl-card-note`
+//       is `flex: none`, and the <=560px override let it wrap but not shrink;
+//   (c) the transcript's facts row printed `source live [not measured] ·
+//       masked 0` above `nothing published yet`;
+//   (d) a thinking step with `text: ""` drew an expandable that opened onto
+//       nothing;
+//   (e) Markdown numbered lists restarted at 1 (ArtifactViewer.tsx, below);
+//   (f) the rate-limit step printed raw keys and an epoch.
+//
+// And the owner's decision of 2026-09-26: each log's object location and its
+// `copy gsutil` sit beside the log in Artifacts › Logs, now that Details lists
+// none.
+//
+// MUTATIONS: take `flex-shrink`/`min-width` out of the override; draw the facts
+// for an absent stream; check `step.text === null` alone; drop `start` from
+// the `<ol>`; print `Scalars` again; drop the transcript's object fact.
+
+/** Whether the shipped sheet lets `el` shrink below its content width at `env`. */
+function shrinks(el: Element, env: CascadeEnv): boolean {
+  const w = cascade(STYLES, el, ['flex', 'flex-shrink'], env).winner
+  if (w === null) return true // the initial flex-shrink is 1
+  if (w.property === 'flex-shrink') return Number(w.value) > 0
+  const parts = w.value.trim().split(/\s+/)
+  if (parts[0] === 'none') return false
+  if (parts.length >= 2 && /^[\d.]+$/.test(parts[1]!)) return Number(parts[1]) > 0
+  return true
+}
+
+describe('the drawer findings of the post-deploy QA (#222)', () => {
+  it('(b) lets the Logs card note shrink and wrap at 390, and keeps it on one line at 1440', async () => {
+    await openPane(finishedRoutes())
+    const logsSection = await sectionReady('Logs', /masking/)
+    const note = logsSection.querySelector<HTMLElement>('.ctl-toolbar.att-sub-head > .ctl-card-note')
+    expect(note, 'no card note in the Logs toolbar').not.toBeNull()
+    expect(shrinks(note!, { width: 390 }), 'the note cannot shrink at 390, so it overflows the drawer').toBe(true)
+    expect(cascade(STYLES, note!, 'min-width', { width: 390 }).winner?.value, 'the note keeps its content width as a floor').toBe('0')
+    // The desktop rule is the kit's: a qualifier on one line.
+    expect(shrinks(note!, { width: 1440 })).toBe(false)
+  })
+
+  it('(c) draws no facts over a transcript that has published nothing yet', async () => {
+    await openPane(
+      finishedRoutes({
+        [`/v1/tasks/${REF}`]: { task: task({ state: 'RUNNING', completed_at: null, result_summary: null }) },
+        [`/v1/tasks/${REF}/answer`]: answer({ status: 'not_yet', source: null, object: null, format: null, content: null, complete: null, is_error: null, subtype: null, num_turns: null, attempt: attemptBlock(false) }),
+        [`/v1/tasks/${REF}/transcript`]: transcript({
+          stream: stream({ status: 'absent', source: 'live', uri: null, total_bytes: null, returned_bytes: 0, age_seconds: null, object_updated_at: null }),
+          format: null,
+          steps: null,
+          complete: false,
+          attempt: attemptBlock(false),
+        }),
+        [`/v1/tasks/${REF}/logs`]: logs([logStream('agent_stderr'), logStream('stdout'), logStream('stderr')], false),
+      }),
+    )
+    const logsSection = await sectionReady('Logs', /nothing published yet/)
+    const view = logsSection.querySelector('.arts-transcript')!
+    expect(view.querySelector('.ctl-facts'), 'facts were drawn for a stream that does not exist').toBeNull()
+    expect(view.textContent, 'a masking count was drawn over bytes nobody read').not.toMatch(/masked\s*0/)
+  })
+
+  it('(c) and draws none for a runner that has no agent CLI', async () => {
+    await openPane(
+      finishedRoutes({
+        [`/v1/tasks/${REF}`]: { task: task({ runner_profile: 'mock' }) },
+        [`/v1/tasks/${REF}/transcript`]: transcript({ stream: stream({ status: 'not_applicable', source: null, uri: null, total_bytes: null, returned_bytes: 0 }), format: null, steps: null, complete: false }),
+      }),
+    )
+    const logsSection = await sectionReady('Logs', /no agent CLI/)
+    expect(logsSection.querySelector('.arts-transcript .ctl-facts')).toBeNull()
+  })
+
+  it('(d) draws a thinking step with an empty text as a word and a mark, never an empty expandable', async () => {
+    await openPane(
+      finishedRoutes({
+        [`/v1/tasks/${REF}/transcript`]: transcript({
+          stream: stream({ source: 'final' }),
+          format: 'claude-stream-json',
+          steps: [step(1, { kind: 'thinking', text: '' }), step(2, { kind: 'thinking', text: 'plan the work' })],
+        }),
+      }),
+    )
+    const logsSection = await sectionReady('Logs', /plan the work/)
+    const [empty, full] = [...logsSection.querySelectorAll<HTMLElement>('li.arts-step.is-thinking')]
+    expect(empty, 'the empty thinking step is not drawn').toBeTruthy()
+    expect(empty!.querySelector('details'), 'an empty thinking text is an expandable that opens onto nothing').toBeNull()
+    expect(empty!.textContent).toMatch(/thinking/)
+    expect(empty!.querySelector('.ctl-mark'), 'the empty text carries no mark saying so').not.toBeNull()
+    expect(full!.querySelector('details'), 'a thinking step with text lost its expandable').not.toBeNull()
+  })
+
+  it('(f) words a rate-limit reading and gives its reset in local time, never raw keys and an epoch', async () => {
+    const resetsAt = 1790401200
+    await openPane(
+      finishedRoutes({
+        [`/v1/tasks/${REF}/transcript`]: transcript({
+          stream: stream({ source: 'final' }),
+          format: 'claude-stream-json',
+          steps: [
+            step(1, {
+              kind: 'rate_limit',
+              role: null,
+              meta: {
+                'rate_limit_info.status': 'allowed',
+                'rate_limit_info.rateLimitType': 'five_hour',
+                'rate_limit_info.resetsAt': resetsAt,
+              },
+            }),
+          ],
+        }),
+      }),
+    )
+    const logsSection = await sectionReady('Logs', /rate limit/)
+    const li = [...logsSection.querySelectorAll<HTMLElement>('li.arts-step')].find((x) => /rate limit/.test(x.textContent ?? ''))!
+    const text = li.textContent ?? ''
+    expect(text, 'a raw key reached the screen').not.toMatch(/rate_limit_info|resetsAt|rateLimitType/)
+    expect(text, 'an epoch reached the screen').not.toContain(String(resetsAt))
+    expect(text).toMatch(/allowed/)
+    expect(text).toMatch(/5-hour window/)
+    const local = new Date(resetsAt * 1000).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
+    expect(text).toContain(`resets ${local} local`)
+  })
+
+  it('puts the transcript object’s location and its copy beside the transcript', async () => {
+    const writeText = vi.fn(async (_: string) => {})
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
+    try {
+      await openPane(finishedRoutes())
+      const logsSection = await sectionReady('Logs', /recorded only its final result/)
+      const where = uri(REF, 'claude-code.stdout.log')
+      const fact = [...logsSection.querySelectorAll<HTMLElement>('.arts-transcript .ctl-fact')].find((f) => (f.textContent ?? '').includes(where))
+      expect(fact, 'the transcript names no object location').toBeTruthy()
+      expect(fact!.querySelector('.uri')?.getAttribute('title'), 'the location is not whole in its title').toBe(where)
+      const copy = fact!.querySelector<HTMLButtonElement>('button.copy')
+      expect(copy?.textContent).toBe('copy gsutil')
+      fireEvent.click(copy!)
+      expect(writeText).toHaveBeenCalledWith(`gsutil cat ${where}`)
+    } finally {
+      delete (navigator as unknown as { clipboard?: unknown }).clipboard
+    }
+  })
+
+  it('keeps each stream’s location and its copy on its own row in the other views', async () => {
+    await openPane(finishedRoutes())
+    const logsSection = await sectionReady('Logs', /transcript/)
+    const choose = (label: string) => {
+      const b = [...logsSection.querySelectorAll<HTMLButtonElement>('[aria-label="Which log"] button')].find((x) => x.textContent === label)
+      fireEvent.click(b!)
+    }
+    choose('runner (platform)')
+    for (const name of ['stdout', 'stderr']) {
+      const head = await waitFor(() => row(logsSection, name).querySelector('th')!, WAIT)
+      expect(head.querySelector('.uri')?.textContent).toContain(`/logs/${name}.log`)
+      expect([...head.querySelectorAll('button.copy')].map((b) => b.textContent)).toContain('copy gsutil')
+    }
+  })
+})
+
+describe('Markdown keeps a numbered list’s own numbers (#222 e)', () => {
+  it('starts each list at its first item’s number when blank lines part the items', () => {
+    const { container } = render(<Markdown source={'1. first\n\n2. second\n\n3. third'} />)
+    const lists = [...container.querySelectorAll('ol')]
+    expect(lists.map((l) => l.textContent)).toEqual(['first', 'second', 'third'])
+    // Every list would read `1.` without a start: the answer said 1, 1, 1.
+    expect(lists.map((l) => l.getAttribute('start'))).toEqual([null, '2', '3'])
+  })
+
+  it('keeps a list that does not begin at 1 where it began, and a tight list as one list', () => {
+    const { container } = render(<Markdown source={'4. four\n5. five\n\ntext\n\n7) seven'} />)
+    const lists = [...container.querySelectorAll('ol')]
+    expect(lists).toHaveLength(2)
+    expect(lists[0]!.getAttribute('start')).toBe('4')
+    expect([...lists[0]!.querySelectorAll('li')].map((li) => li.textContent)).toEqual(['four', 'five'])
+    expect(lists[1]!.getAttribute('start')).toBe('7')
   })
 })

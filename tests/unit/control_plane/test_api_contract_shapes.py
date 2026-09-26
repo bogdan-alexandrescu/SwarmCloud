@@ -216,7 +216,9 @@ CODECS: tuple[Codec, ...] = (
             "current_generation": "served on the lease and attempt rows instead",
             "current_lease_id": "served on the lease and attempt rows instead",
         },
-        api_computed=("dispatch",),
+        # The input and metadata are served MASKED (owner decision,
+        # 2026-09-26), and these say how many masks each took.
+        api_computed=("dispatch", "input_redaction_count", "metadata_redaction_count"),
     ),
     Codec(
         name="TaskEvent",
@@ -233,6 +235,9 @@ CODECS: tuple[Codec, ...] = (
         decode=attempt_from_dict,
         required=("attempt_id", "task_id", "tenant_id", "created_at"),
         to_api=attempt_to_api,
+        # Contract request #26: the CPU reading's age, against the route's
+        # own clock, computed from `cpu_measured_at`.
+        api_computed=("cpu_reading_age_seconds",),
     ),
     Codec(
         name="Lease",

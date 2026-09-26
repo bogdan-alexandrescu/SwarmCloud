@@ -460,6 +460,130 @@ def test_a_planted_sentinel_cannot_shield_a_value():
 
 
 # --------------------------------------------------------------------------
+# An escaped quote is a quote, in both filters (#221)
+# --------------------------------------------------------------------------
+#
+# In JSON TEXT a quote inside a string is `\"`. A claude-code stream-json log
+# line holds an agent's `export DB_PASSWORD="<v>"` as `DB_PASSWORD=\"<v>\"`,
+# and a curl body's `{"api_key": "<v>"}` as `{\"api_key\": \"<v>\"}`. Both
+# key/value rules read a quote as a quote: the first shape had its BACKSLASH
+# masked and `<v>` served under a count of 1, and the second did not match at
+# all -- on `/logs`, and in the terminal. The owner decided on 2026-09-26 that
+# the rule itself takes the escaped quote, and that `scripts/lib/common.sh`
+# changes in the same PR so the two stay one rule. So these RUN both filters
+# over the same lines and hold their output EQUAL, not merely both masked: a
+# shell rule that masked the value and left a stray backslash, or the Python
+# one that masked one character more, is the drift this exists to catch.
+#
+# MUTATIONS: drop `\\?` from either side of the key in either filter; let the
+# escaped value run past a backslash; drop the escaped expression from the
+# shell filter; let the plain rule take a value that starts with `\"`; drop
+# the optional `[` from either filter.
+
+#: No recognisable prefix: only the key/value rule can catch these.
+_KV_SECRET = "hunter2-very-secret"
+_KV_BARE = "q8Zr7Lm2Xv9T"
+
+#: (line as it sits in JSON text, what must not survive, what both filters give)
+ESCAPED_KEY_VALUE = [
+    (
+        'export DB_PASSWORD=\\"' + _KV_SECRET + '\\" && ./deploy.sh',
+        _KV_SECRET,
+        'export DB_PASSWORD=\\"********\\" && ./deploy.sh',
+    ),
+    (
+        '{"type":"assistant","message":{"content":[{"type":"tool_use","input":'
+        '{"command":"export DB_PASSWORD=\\"' + _KV_SECRET + '\\""}}]}}',
+        _KV_SECRET,
+        '{"type":"assistant","message":{"content":[{"type":"tool_use","input":'
+        '{"command":"export DB_PASSWORD=\\"********\\""}}]}}',
+    ),
+    (
+        "curl -d '{\\\"api_key\\\": \\\"" + _KV_BARE + "\\\"}' https://example.com",
+        _KV_BARE,
+        "curl -d '{\\\"api_key\\\": \\\"********\\\"}' https://example.com",
+    ),
+    # The reach limit PR #210 reported (comment 5841681051): a list under a
+    # credential key had its `[` masked and its value served.
+    ('{"password": ["hunter2-list-value"]}', "hunter2-list", '{"password": ["********"]}'),
+    ('{\\"password\\": [\\"hunter2-list-value\\"]}', "hunter2-list", '{\\"password\\": [\\"********\\"]}'),
+]
+
+#: Controls: masked exactly as before the change, by both filters.
+UNCHANGED_KEY_VALUE = [
+    ('PASSWORD="bare-value-123"', "bare-value", 'PASSWORD="********"'),
+    # A backslash inside a value that was NOT opened by an escaped quote is
+    # part of the value: stopping there would serve the rest of a password.
+    ("password=ab\\cd-still-whole", "cd-still-whole", "password=********"),
+    ("GH_TOKEN=abcdef0123456789abcdef0123456789", "0123456789abc", "GH_TOKEN=********"),
+]
+
+
+@pytest.mark.parametrize(
+    "line,secret,expected",
+    ESCAPED_KEY_VALUE + UNCHANGED_KEY_VALUE,
+    ids=[f"kv-{n}" for n in range(len(ESCAPED_KEY_VALUE) + len(UNCHANGED_KEY_VALUE))],
+)
+def test_both_filters_mask_a_key_value_pair_in_json_text_the_same_way(line, secret, expected):
+    python = redact(line)
+    (shell,) = _house_filter([line])
+    assert secret not in python.text, f"the API served it: {python.text}"
+    assert secret not in shell, f"the terminal printed it: {shell}"
+    assert python.text == expected, python.text
+    assert shell == expected, f"the two filters are not one rule: {shell!r} vs {python.text!r}"
+    assert python.count == 1, "one credential, one mask"
+
+
+def test_an_escaped_empty_value_is_left_alone_by_both_filters():
+    """The value an escaped quote opens must hold something. Masked, an empty
+    one became `\\"********"` -- the backslash gone and a credential counted
+    that nobody sent."""
+    line = '{\\"password\\": \\"\\", \\"note\\": \\"none here\\"}'
+    assert redact(line).text == line
+    assert redact(line).count == 0
+    assert _house_filter([line]) == [line]
+
+
+def test_the_transcripts_old_call_on_a_tool_input_no_longer_serves_the_value():
+    """#221's repro, on the pure function: the transcript used to redact a
+    tool's input as `json.dumps(input, indent=2)` with `decoded=True`. The
+    transcript no longer does that (it masks by structure), but any caller
+    that still redacts JSON text now gets the value masked."""
+    quoted = json.dumps(
+        {"command": f'export DB_PASSWORD="{_KV_SECRET}" && ./deploy.sh'}, indent=2
+    )
+    got = redact(quoted, decoded=True)
+    assert _KV_SECRET not in got.text, got.text
+    assert got.count == 1
+    body = json.dumps({"command": f"curl -d '{{\"api_key\": \"{_KV_BARE}\"}}' https://x"}, indent=2)
+    got = redact(body, decoded=True)
+    assert _KV_BARE not in got.text, got.text
+    assert got.count == 1
+
+
+def test_the_log_route_masks_an_escaped_quoted_value_in_a_stream_json_line(client, db, objects):
+    """The `/logs` half of #221, through the route: a raw NDJSON line holds the
+    tool input as escaped JSON, and `inspect.py` redacts the window as text."""
+    line = json.dumps(
+        {
+            "type": "assistant",
+            "message": {"content": [{"type": "tool_use", "name": "Bash", "input": {
+                "command": f'export DB_PASSWORD="{_KV_SECRET}" && curl -d \'{{"api_key": "{_KV_BARE}"}}\' x'
+            }}]},
+        }
+    )
+    assert f'\\"{_KV_SECRET}\\"' in line, "the fixture must hold the value behind escaped quotes"
+    _seed(db, objects, body=line + "\n")
+
+    response = client.get("/v1/tasks/task_a/logs?stream=stdout", headers=auth_header("alice"))
+    assert response.status_code == 200, response.text
+    assert _KV_SECRET not in response.text
+    assert _KV_BARE not in response.text
+    entry = next(s for s in response.json()["streams"] if s["stream"] == "stdout")
+    assert entry["redaction_count"] == 2, entry["content"]
+
+
+# --------------------------------------------------------------------------
 # End to end, through the route
 # --------------------------------------------------------------------------
 
