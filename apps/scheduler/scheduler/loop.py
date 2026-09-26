@@ -61,7 +61,7 @@ _FAILED_PARENT_STATES = frozenset(
 
 #: A CANCELLED parent with one of these causes was ended by a FAILURE -- its
 #: own failed parent, or the fail_workflow sweep -- and passes a failure on.
-_FAILURE_SENT_CAUSES = frozenset({EndCause.FAILED_PARENT.value, EndCause.WORKFLOW_SWEEP.value})
+_FAILURE_SENT_CAUSES = frozenset({EndCause.FAILED_PARENT.value})  # MUTATION M3
 #: ... and with one of these, by a cancel somebody asked for, at that step or
 #: above it.
 _CANCEL_SENT_CAUSES = frozenset({EndCause.CANCEL_REQUESTED.value, EndCause.CANCELLED_PARENT.value})
