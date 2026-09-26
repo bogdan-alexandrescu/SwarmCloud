@@ -1838,10 +1838,17 @@ class Worker:
         it was, because a resumed attempt restores `work/` from the checkpoint
         taken before this runs.
 
-        Returns `uploaded` (manifest entries), `bytes`, `skipped` (the names
-        that belong in `artifacts_skipped`: over the cap or failed to upload),
-        `unredacted` (entries for `redaction_skipped`) and `summary`, which is
-        `result_summary.workdir_outputs`.
+        Listed and NOT uploaded, each with its reason (see
+        `agent_worker.standalone_outputs`): a name that is not UTF-8 or is too
+        long to be an object's, a core dump, a name the artifacts folder took,
+        a file over a cap, and -- unlike an artifact -- a file holding a
+        registered secret the worker could not redact, or could not scan.
+
+        Returns `uploaded` (manifest entries), `bytes` and `summary`, which is
+        `result_summary.workdir_outputs`. Nothing goes into
+        `artifacts_skipped` (every reader of it calls its names dropped at the
+        artifacts folder's size cap) or into `redaction_skipped` (no file this
+        uploads left the pod unredacted).
         """
         ws = self.ws
         cfg = self.cfg
@@ -1852,11 +1859,26 @@ class Worker:
         byte_cap = max(0, min(cfg.max_workdir_output_bytes, budget))
         uploaded: list[dict[str, Any]] = []
         not_uploaded: list[dict[str, Any]] = []
-        unredacted: list[dict[str, Any]] = []
         total = 0
         staging = ws.private / "workdir-output"
         for relative, size in standalone_mod.upload_order(new):
             name = standalone_mod.manifest_name(relative)
+            # NAMES FIRST: nothing below may put a name into a key, a log line
+            # or the summary before it is known to be one they can all carry.
+            if not standalone_mod.storable(name):
+                not_uploaded.append(
+                    {"name": standalone_mod.shown(name), "bytes": size, "reason": standalone_mod.NOT_UTF8}
+                )
+                continue
+            key = f"{cfg.artifact_prefix}/{name}"
+            if len(key.encode("utf-8")) > standalone_mod.MAX_OBJECT_NAME_BYTES:
+                not_uploaded.append(
+                    {"name": standalone_mod.shown(name), "bytes": size, "reason": standalone_mod.NAME_TOO_LONG}
+                )
+                continue
+            if standalone_mod.is_core_dump(relative):
+                not_uploaded.append({"name": name, "bytes": size, "reason": standalone_mod.CORE_DUMP})
+                continue
             if name in taken:
                 not_uploaded.append({"name": name, "bytes": size, "reason": standalone_mod.NAME_TAKEN})
                 continue
@@ -1890,15 +1912,30 @@ class Worker:
                 continue
             try:
                 if self.log.has_secrets:
-                    entry = self._redact_file(staging, label=name)
+                    entry = self._redact_file(staging, label=name, withheld=True)
                     if entry is not None:
-                        unredacted.append(entry)
+                        # Measured to hold a registered value it could not
+                        # rewrite, or not examinable at all: kept in the pod.
+                        # The agent never chose to deliver this file, so the
+                        # artifacts folder's "upload it as-is and say so"
+                        # does not apply (#225 review).
+                        not_uploaded.append(
+                            {
+                                "name": name,
+                                "bytes": size,
+                                "reason": (
+                                    standalone_mod.HOLDS_SECRET
+                                    if entry["secret_found"]
+                                    else standalone_mod.UNEXAMINED
+                                ),
+                            }
+                        )
+                        continue
                 final = staging.stat().st_size
                 if total + final > byte_cap:
                     # Redaction can lengthen a file; the cap is on what is uploaded.
                     not_uploaded.append({"name": name, "bytes": final, "reason": standalone_mod.OVER_CAP})
                     continue
-                key = f"{cfg.artifact_prefix}/{name}"
                 try:
                     self.store.upload_file(key, staging)
                 except Exception as exc:
@@ -1927,11 +1964,21 @@ class Worker:
                 "the working folder is a symlink, so nothing was uploaded from it; "
                 "a link is never followed out of the workspace"
             )
-        if not_uploaded:
+        # EVERY NAME, IN THE LOG. The summary below lists the first 50 and
+        # counts the rest (a Firestore document has a 1 MiB limit); these lines
+        # name all of them, `LOG_BATCH` to a line, so a line stays well under
+        # Cloud Logging's 256 KiB entry however many files the agent left.
+        batch = standalone_mod.LOG_BATCH
+        batches = (len(not_uploaded) + batch - 1) // batch
+        for index in range(batches):
             self.log.warning(
                 "files the agent created in its working folder were not uploaded",
                 count=len(not_uploaded),
-                files=[f"{e['name']}: not uploaded: {e['reason']}" for e in not_uploaded[:50]],
+                batch=f"{index + 1} of {batches}",
+                files=[
+                    f"{e['name']}: not uploaded: {e['reason']}"
+                    for e in not_uploaded[index * batch : (index + 1) * batch]
+                ],
                 cap_files=cfg.max_workdir_output_files,
                 cap_bytes=cfg.max_workdir_output_bytes,
             )
@@ -1941,22 +1988,16 @@ class Worker:
             bytes=total,
             symlinks_skipped=len(found.symlinks),
         )
-        skipped = [
-            e["name"]
-            for e in not_uploaded
-            if e["reason"] in (standalone_mod.OVER_CAP, standalone_mod.UPLOAD_FAILED)
-        ]
         return {
             "uploaded": uploaded,
             "bytes": total,
-            "skipped": skipped,
-            "unredacted": unredacted,
             "summary": {
                 "prefix": f"{standalone_mod.PREFIX}/",
                 "uploaded": len(uploaded),
                 "uploaded_bytes": total,
-                # Capped like `artifacts_skipped`; the count and the log carry
-                # the rest. "over cap" is the owner's wording.
+                # The first 50; `not_uploaded_count` is the whole number and
+                # the WARNING lines above name every one. "over cap" is the
+                # owner's wording.
                 "not_uploaded": not_uploaded[:50],
                 "not_uploaded_count": len(not_uploaded),
                 "symlinks_skipped": len(found.symlinks),
@@ -2945,10 +2986,13 @@ class Worker:
         if ws is None or not self.log.has_secrets:
             return []
         targets = [ws.stdout_path, ws.stderr_path]
+        # Not a file whose name is not UTF-8: `_upload_outputs` does not upload
+        # one (no object can be named with it), so it never leaves the pod and
+        # has no `redaction_skipped` entry to earn (#225 review).
         targets += [
             path
             for path in sorted(ws.artifacts.rglob("*"))
-            if path.is_file() and not path.is_symlink()
+            if path.is_file() and not path.is_symlink() and standalone_mod.storable(str(path))
         ]
         targets.append(ws.result_path)
         unredacted: list[dict[str, Any]] = []
@@ -2958,7 +3002,9 @@ class Worker:
                 unredacted.append(entry)
         return unredacted
 
-    def _redact_file(self, path: Path, *, label: str) -> dict[str, Any] | None:
+    def _redact_file(
+        self, path: Path, *, label: str, withheld: bool = False
+    ) -> dict[str, Any] | None:
         """Scrub one file bound for GCS in place; the `redaction_skipped` entry, or None.
 
         None when the file was rewritten, or was left alone and its raw bytes
@@ -2966,13 +3012,21 @@ class Worker:
         under the workspace, or the manifest name of a working-folder copy
         (`_upload_workdir_outputs`), whose scratch path means nothing to anyone.
         See `_redact_before_upload` for the trade this reports on.
+
+        `withheld` is the working-folder upload's answer to that trade: a file
+        this returns an entry for is NOT uploaded, and the lines say so. An
+        artifact the agent chose to deliver goes up as-is and is reported; a
+        file caught by the net under the working folder does not (#225
+        review). A file the rewrite raised on is unexamined, so with
+        `withheld` it gets an entry rather than a pass.
         """
+        label = standalone_mod.displayable(label)
         try:
             outcome = self.log.scrub_file_outcome(path, max_bytes=redact_mod.MAX_SCRUB_BYTES)
         except OSError as exc:  # a read-only or vanished file must not fail the attempt
-            self.log.warning(
-                "could not redact a file before upload", path=str(path), error=str(exc)
-            )
+            self.log.warning("could not redact a file before upload", file=label, error=str(exc))
+            if withheld:
+                return {"file": label, "reason": "unreadable", "bytes": None, "secret_found": None}
             return None
         if not outcome.skipped:
             return None
@@ -2990,7 +3044,18 @@ class Worker:
             )
             return None
         entry = {"file": label, "reason": outcome.value, "bytes": size, "secret_found": found}
-        if found:
+        if withheld:
+            self.log.warning(
+                "a working-folder file could not be redacted and "
+                + (
+                    "holds a registered secret"
+                    if found
+                    else "could not be scanned for one"
+                )
+                + "; it is NOT uploaded",
+                **entry,
+            )
+        elif found:
             self.log.error(
                 "A FILE THAT COULD NOT BE REDACTED CONTAINS A REGISTERED SECRET; "
                 "it is uploaded as-is",
@@ -3724,6 +3789,19 @@ class Worker:
                 continue
             size = path.stat().st_size
             rel = path.relative_to(ws.artifacts).as_posix()
+            if not standalone_mod.storable(rel):
+                # A name whose bytes are not UTF-8 (#225 review): no object can
+                # be named with it, and as a lone surrogate in the summary it
+                # made `finish` raise, and the next attempt fail the same way.
+                # Named as the bytes it was, in the log and the skipped list.
+                shown = standalone_mod.shown(rel)
+                self.log.warning(
+                    "an artifact's name is not valid UTF-8, so no object can be "
+                    "named with it; not uploaded",
+                    artifact=shown,
+                )
+                skipped.append(shown)
+                continue
             if total + size > self.cfg.max_artifact_bytes:
                 skipped.append(rel)
                 continue
@@ -3751,10 +3829,11 @@ class Worker:
             self.log.exception("the working-folder upload raised; continuing without it", exc)
             workdir = None
         if workdir is not None:
+            # Its files it did not upload stay in `workdir_outputs`, with their
+            # reasons, and out of `artifacts_skipped`, whose every reader calls
+            # a name there dropped at THIS folder's size cap (#225 review).
             artifacts.extend(workdir["uploaded"])
             total += workdir["bytes"]
-            skipped.extend(workdir["skipped"])
-            unredacted.extend(workdir["unredacted"])
 
         # THE RUNNER'S TWO STREAMS, AND THE AGENT'S TWO (#184). The agent
         # CLI's captures stay in `artifacts/` too -- a dependant's `input_from`

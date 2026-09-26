@@ -123,19 +123,29 @@ The owner decided three things on 2026-09-26 (recorded on #184):
    directory:
 
    ```
-   Write deliverables to /workspace/<attempt>/artifacts ($SWARM_ARTIFACTS_DIR); files there are uploaded and shown in Artifacts.
+   Files written to /workspace/<attempt>/artifacts ($SWARM_ARTIFACTS_DIR) are uploaded and shown in Artifacts.
    ```
+
+   **It is information, in the owner's words, not an order.** The first build
+   said "Write deliverables to ...", from a paraphrase of the decision. That
+   order reached every repository task too, and decision 3 says a repository
+   task's deliverable is its diff or pull request: an agent asked to write
+   `docs/design.md`, and told last thing to write deliverables to the
+   artifacts folder, can put the document there and leave the pull request
+   empty (#225 review). A test holds a repository task's prompt to this one
+   line and no order.
 
    It is built once, by `expected_outputs.deliverables_line`, and appended by
    `with_instructions`, which `cliagent.run_cli_agent` calls for both runners.
    When later steps expect files, their list follows the line and says "write
-   each one there", so the directory is named once. The path is absolute
-   beside the variable's name, because an agent has already reported the
-   variable as unset and written nothing. A prompt is no longer passed through
-   byte for byte when nothing is expected; that was the old rule, and the
-   tests that held it now hold the line instead. The line must never carry a
-   word the rate-limit or credential heuristics look for: a CLI that echoes
-   its prompt would turn it into evidence.
+   each one there" -- the one order the text gives, because a dependant cannot
+   run without those files (#149) -- so the directory is named once. The path
+   is absolute beside the variable's name, because an agent has already
+   reported the variable as unset and written nothing. A prompt is no longer
+   passed through byte for byte when nothing is expected; that was the old
+   rule, and the tests that held it now hold the line instead. The line must
+   never carry a word the rate-limit or credential heuristics look for: a CLI
+   that echoes its prompt would turn it into evidence.
 2. **A task with no repository also uploads what its agent CREATED in its
    working folder**, when the attempt ends (`agent_worker.standalone_outputs`).
 3. **A repository task is unchanged.** Its diff or pull request is the
@@ -182,10 +192,41 @@ What decision 2 does, and the reason for each rule:
   first, then by path, so a top-level answer is not pushed out by a generated
   tree. A file that does not fit is **listed, never dropped silently**: in
   `result_summary.workdir_outputs.not_uploaded` as
-  `{"name", "bytes", "reason": "over cap"}`, in `artifacts_skipped` (which
-  the Artifacts tab already shows as "N over cap" with the names), and in one
-  WARNING line. `not_uploaded` is capped at 50 entries like
-  `artifacts_skipped`; `not_uploaded_count` is the whole number.
+  `{"name", "bytes", "reason": "over cap"}`, drawn in Artifacts > Outputs
+  under "not uploaded from the working folder" with each file's reason, and
+  in the worker's WARNING lines.
+* **Every name is somewhere.** `not_uploaded` holds the first 50 entries and
+  `not_uploaded_count` the whole number, because the summary is a Firestore
+  document with a 1 MiB limit. The worker's log names every file it did not
+  upload, 100 to a WARNING line (a line stays well under Cloud Logging's
+  256 KiB entry), and the tab says how many only the log names. The first
+  build logged the first 50 too, so past 50 a name was nowhere.
+* **Not in `artifacts_skipped`.** Every reader of that list calls a name in it
+  dropped at the artifacts folder's size cap: the tab's "dropped at the size
+  cap", a dependant's "exceeded its artifact size cap". A working-folder file
+  is dropped by another cap, or for a reason that is no cap at all, so the
+  first build's copy there mislabelled a file the 50-file cap dropped.
+* **Listed and not uploaded, with the reason** (#225 review):
+  * *A name that is not UTF-8* (`name is not valid UTF-8`). `os.walk` decodes
+    such a name into a str holding lone surrogates. GCS names objects in
+    UTF-8, a protobuf string field -- so a Firestore write -- cannot carry a
+    lone surrogate, and the worker logs UTF-8 to stdout. One such name in the
+    summary made `finish` raise, and the next attempt restored the same file
+    from the checkpoint and failed the same way, until the task had spent
+    every attempt. The name is listed as the bytes it was, `caf\xe9.txt`,
+    spelled the way `ls -b` and the API's checkpoint listing spell it. That
+    is a display and never a key. The artifacts folder had the same hole: a
+    file there with such a name is not uploaded, and is named the same way in
+    `artifacts_skipped` and the log.
+  * *A name too long to be an object's* (GCS allows 1,024 bytes of UTF-8 for
+    the whole key, the attempt's prefix included). Listed with its name cut to
+    256 characters, so 50 of them cannot take the summary near 1 MiB.
+  * *A core dump*: `core` or `core.<pid>`, at any depth. A program the agent
+    built and ran crashes with the working folder as its cwd, and its core
+    holds its memory, environment block included, which inherited the CLI's
+    credential. Listed, so a reader learns that something crashed.
+  * *A file holding a registered secret the worker could not redact*, or one
+    it could not scan. See the last rule below.
 * **Skipped without a listing:** every name that starts with a dot, folder or
   file. The owner named dot folders; dot files are skipped too, because the
   CLI runners set HOME to the working folder, and the CLIs write their own
@@ -206,10 +247,23 @@ What decision 2 does, and the reason for each rule:
   the worker's own scratch folder (`private/`, which is in no child's
   environment), scrubbed of registered secrets exactly as an artifact is, and
   uploaded from there. The agent's file is left as it was.
+* **A file the rewrite cannot clean stays in the pod.** For
+  `$SWARM_ARTIFACTS_DIR` the trade is to upload a binary file as-is, even when
+  its raw bytes hold a registered value, and report it in
+  `redaction_skipped`: the agent chose to deliver that file, and corrupting it
+  to take a key out is worse. The working-folder upload is a net under files
+  nobody chose to deliver, so that trade does not carry over. A file whose raw
+  bytes hold a registered value after the rewrite declined it (`holds a
+  registered secret that could not be redacted`), or that could not be
+  scanned at all, is not uploaded, and is listed with the reason. A binary
+  file with no registered value in it -- a PNG the agent drew -- is uploaded
+  as before. Binary files are served raw with `X-Swarm-Redaction:
+  not-applied`, so read-time redaction would not have covered this one.
 
 What this does not do: it does not tell the agent about the net. The line says
-where deliverables go. A file caught in the working folder is a net under the
-agent that did not listen, not a second place to write.
+what happens to a file written to `$SWARM_ARTIFACTS_DIR`. A file caught in the
+working folder is a net under the agent that wrote somewhere else, not a
+second place to write.
 
 ## Two kinds of stdout, and the label that was wrong
 

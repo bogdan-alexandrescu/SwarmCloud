@@ -216,6 +216,17 @@ def deliverables_line(artifacts_dir: Path | str) -> str:
     Artifacts tab showed only the runner's logs, because no prompt had said
     where a deliverable goes unless a later workflow step expected one.
 
+    INFORMATION, IN THE OWNER'S WORDS, NOT AN ORDER (#225 review). The
+    decision on #184 reads "one line naming $SWARM_ARTIFACTS_DIR: files written
+    there are uploaded and shown in Artifacts". The first build said "Write
+    deliverables to ...", which came from a paraphrase of it. That order
+    reached every REPOSITORY task too, and the same decision says a repository
+    task's deliverable is its diff or pull request: an agent asked to write
+    `docs/design.md` and told, last thing, to write deliverables to the
+    artifacts folder can put the document there and leave the pull request
+    empty. The line says what happens to a file written there, and leaves
+    where to write to the task.
+
     The directory is given as an ABSOLUTE path beside the variable's name. The
     name alone is not enough: an agent has reported `SWARM_ARTIFACTS_DIR` as
     "not set in this environment" and written nothing (wf_bcdc9180e4fb4a209f31,
@@ -229,8 +240,8 @@ def deliverables_line(artifacts_dir: Path | str) -> str:
     """
     directory = os.path.abspath(os.fspath(artifacts_dir))
     return (
-        f"Write deliverables to {directory} ($SWARM_ARTIFACTS_DIR); files there "
-        "are uploaded and shown in Artifacts."
+        f"Files written to {directory} ($SWARM_ARTIFACTS_DIR) are uploaded and "
+        "shown in Artifacts."
     )
 
 
@@ -238,9 +249,10 @@ def agent_instructions(names: Sequence[str], artifacts_dir: Path | str) -> str:
     """The lines a CLI runner appends to the agent's prompt.
 
     Always `deliverables_line`, once. Then, when later steps of a workflow
-    stage files from this one, their names and each file's full path. The
-    directory is not named a second time: "there" is the directory the first
-    line named, so the prompt carries that line exactly once. "Outside the
+    stage files from this one, their names and each file's full path, as the
+    one order this text gives: a dependant cannot run without them (#149).
+    The directory is not named a second time: "there" is the directory the
+    first line named, so the prompt carries that line exactly once. "Outside the
     repository" is said because the working directory is where an agent
     assumes its output belongs.
 

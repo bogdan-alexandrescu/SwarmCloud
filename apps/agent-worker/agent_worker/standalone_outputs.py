@@ -12,7 +12,8 @@ The owner decided three things on 2026-09-26, recorded on #184:
 1. Every claude-code and codex prompt gets one line naming
    `$SWARM_ARTIFACTS_DIR`: files written there are uploaded and shown in
    Artifacts (`expected_outputs.deliverables_line`, appended by the one
-   instruction builder both CLI runners share).
+   instruction builder both CLI runners share). It is information in the
+   owner's words, not an order, because a repository task gets it too.
 2. For a task with NO repository, the worker also uploads, when the attempt
    ends, the files the agent CREATED in its working folder. That is this
    module.
@@ -65,8 +66,47 @@ the working-folder copy is listed as not uploaded, with the reason.
 CAPS: 50 files and 25 MiB in total per attempt (owner decision). Files are
 taken shallowest first, then by path, so a top-level `answer.md` is not pushed
 out by a generated tree. A file that does not fit is listed in the attempt's
-result as "not uploaded: over cap" (`result_summary.workdir_outputs` and
-`artifacts_skipped`), never dropped silently.
+result as "not uploaded: over cap" (`result_summary.workdir_outputs`), never
+dropped silently.
+
+NOT IN `artifacts_skipped` (#225 review). Every reader of that list calls its
+names dropped at the artifacts folder's size cap: the Artifacts tab's "dropped
+at the size cap", a dependant's "exceeded its artifact size cap"
+(`inputs.py`). A working-folder file is dropped by a different cap, or for a
+reason that is no cap at all, so it is listed only in
+`workdir_outputs.not_uploaded`, with its reason, and the tab draws that list.
+
+EVERY NAME IS IN THE LOG. `not_uploaded` holds the first 50 and
+`not_uploaded_count` the whole number, because the summary is a Firestore
+document with a 1 MiB limit. The worker's WARNING lines name every file it
+did not upload, `LOG_BATCH` to a line, so a line stays well under Cloud
+Logging's 256 KiB entry.
+
+LISTED, NOT UPLOADED, with the reason (#225 review):
+
+* **a name that is not UTF-8.** `os.walk` decodes such a name with
+  `surrogateescape`, into a str holding lone surrogates. GCS names objects in
+  UTF-8, a protobuf string field (so a Firestore write) cannot carry a lone
+  surrogate, and the worker's log is UTF-8 on stdout. One such name in the
+  summary made `finish` raise, and the next attempt restored the same file
+  from the checkpoint and failed the same way. The name is listed as the
+  bytes it was, `caf\\xe9.txt`, spelled as `ls -b` and the API's checkpoint
+  listing (`swarm_api.checkpoint_content.displayable`) spell it. That is a
+  display, and it is never used as a key.
+* **a name too long to be an object's**: GCS allows 1,024 bytes of UTF-8, and
+  the attempt's prefix comes first. It is listed with its name cut to
+  `SHOWN_NAME_CHARS`, so 50 of them cannot take the summary near 1 MiB.
+* **a core dump**: `core` or `core.<pid>`, wherever it is. A program the agent
+  built and ran crashes with the working folder as its cwd, and its core holds
+  its memory, environment block included, which inherited the CLI's
+  credential. Never a deliverable, and listed so a reader learns something
+  crashed.
+* **a file holding a registered secret the worker could not redact.** For
+  `$SWARM_ARTIFACTS_DIR` the trade is to upload a binary file as-is and say
+  so: the agent chose to deliver it, and corrupting it to take a key out is
+  worse. That trade does not carry over to a net under files nobody chose to
+  deliver. A working-folder file whose raw bytes hold a registered value, or
+  that could not be scanned at all, stays in the pod.
 
 SKIPPED, by design and without a listing:
 
@@ -96,6 +136,7 @@ from __future__ import annotations
 
 import errno
 import os
+import re
 import stat
 from dataclasses import dataclass
 from pathlib import Path
@@ -118,6 +159,19 @@ SKIPPED_DIRECTORY_NAMES = frozenset({"node_modules", "__pycache__", ".venv"})
 #: whatever it is called.
 SKIPPED_DIRECTORY_MARKERS = ("CACHEDIR.TAG", "pyvenv.cfg")
 
+#: GCS's limit on an object's name, in bytes of UTF-8. The whole key counts,
+#: the attempt's `tenants/<t>/tasks/<id>/attempts/<a>/artifacts/` prefix too.
+MAX_OBJECT_NAME_BYTES = 1024
+
+#: How much of a name that could not be uploaded is kept in the summary. A
+#: Linux path runs to 4,096 bytes; 50 of those in `not_uploaded` would be a
+#: fifth of the 1 MiB Firestore allows the task document.
+SHOWN_NAME_CHARS = 256
+
+#: Names per WARNING line when the worker logs every file it did not upload:
+#: at most about 100 KiB of names per line, under Cloud Logging's 256 KiB.
+LOG_BATCH = 100
+
 #: The reasons a created file is listed as not uploaded. "over cap" is the
 #: owner's wording ("not uploaded: over cap").
 OVER_CAP = "over cap"
@@ -125,11 +179,72 @@ NAME_TAKEN = "name taken by a file in $SWARM_ARTIFACTS_DIR"
 SYMLINK_REFUSED = "refused: a symlink or not a regular file when it was read"
 UNREADABLE = "unreadable"
 UPLOAD_FAILED = "upload failed"
+NOT_UTF8 = "name is not valid UTF-8"
+NAME_TOO_LONG = f"name is longer than a storage object's {MAX_OBJECT_NAME_BYTES} bytes"
+CORE_DUMP = "a core dump"
+HOLDS_SECRET = "holds a registered secret that could not be redacted"
+UNEXAMINED = "could be neither redacted nor scanned for a registered secret"
+
+_CORE_DUMP_NAME = re.compile(r"core(\.[0-9]+)?")
 
 
 def manifest_name(relative: str) -> str:
     """The manifest name of `work/<relative>`: `workdir/<relative>`."""
     return f"{PREFIX}/{relative}"
+
+
+def storable(name: str) -> bool:
+    """True when `name` is valid UTF-8: an object name, a Firestore string, a log field.
+
+    False for a str holding a lone surrogate, which is what `os.walk` makes of
+    a file name whose bytes are not UTF-8.
+    """
+    try:
+        name.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
+def displayable(text: str) -> str:
+    """`text` with every lone surrogate escaped, so any UTF-8 reader can carry it.
+
+    A byte `surrogateescape` carried is shown as that byte (`\\xe9`), any other
+    lone surrogate as `\\udxxx`. The same spelling as
+    `swarm_api.checkpoint_content.displayable`, the API's own listing of the
+    names a checkpoint holds; restated here because the worker does not import
+    the API, and held to it by a parity test
+    (`tests/unit/worker/test_standalone_outputs.py`), because a restated rule
+    is the one that drifts. The result is for reading, never an address.
+    """
+    if storable(text):
+        return text
+    out = []
+    for char in text:
+        code = ord(char)
+        if 0xDC80 <= code <= 0xDCFF:
+            out.append(f"\\x{code - 0xDC00:02x}")
+        elif 0xD800 <= code <= 0xDFFF:
+            out.append(f"\\u{code:04x}")
+        else:
+            out.append(char)
+    return "".join(out)
+
+
+def shown(name: str) -> str:
+    """`name` as the summary lists a file it could not upload: escaped, and cut short.
+
+    Cut with three ASCII dots, so what is left is still plainly a prefix.
+    """
+    text = displayable(name)
+    if len(text) > SHOWN_NAME_CHARS:
+        return text[:SHOWN_NAME_CHARS] + "..."
+    return text
+
+
+def is_core_dump(relative: str) -> bool:
+    """True for `core` or `core.<pid>` anywhere under the working folder."""
+    return _CORE_DUMP_NAME.fullmatch(relative.rsplit("/", 1)[-1]) is not None
 
 
 def is_hidden(name: str) -> bool:

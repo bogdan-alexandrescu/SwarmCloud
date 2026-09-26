@@ -809,6 +809,28 @@ def test_a_name_that_is_not_utf8_is_listed_escaped_and_the_result_is_still_writt
     assert not [name for name in _names(db) if name.endswith(".txt") and "caf" in name], _names(db)
 
 
+def test_a_name_is_escaped_exactly_as_the_api_escapes_a_checkpoint_member():
+    """Two copies of one spelling: the worker's, for a name it could not upload
+    (`standalone_outputs.displayable`), and the API's, for a checkpoint member
+    (`checkpoint_content.displayable`). A reader sees both, for the same kind
+    of file, so they are held together here rather than left to drift."""
+    from agent_worker import standalone_outputs as standalone
+    from swarm_api.checkpoint_content import displayable as api_displayable
+
+    latin1 = b"caf\xe9.txt".decode("utf-8", "surrogateescape")
+    samples = [
+        "plain.txt",
+        "ünïcödé/ok.md",
+        latin1,
+        "lone \ud800 high surrogate",
+        "two bytes \udcff\udc80 end",
+    ]
+    for text in samples:
+        assert standalone.displayable(text) == api_displayable(text), text
+        assert standalone.storable(standalone.displayable(text)), text
+    assert standalone.displayable(latin1) == "caf\\xe9.txt"
+
+
 @pytest.mark.skipif(
     not sys.platform.startswith("linux"), reason="a 1,200-byte path is past macOS's PATH_MAX"
 )
