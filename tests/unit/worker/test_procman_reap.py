@@ -144,28 +144,45 @@ def test_reap_kills_even_when_the_first_check_looks_clean():
 # -- the real kill, in a namespace where it cannot reach the test runner ------
 
 
-def _userns_pid_available() -> bool:
+def _userns_pid_probe() -> tuple[bool, str]:
+    """Whether this host lets an unprivileged user make a PID+user namespace,
+    and, when it does not, what `unshare` said."""
     if shutil.which("unshare") is None:
-        return False
+        return False, "no unshare binary on PATH"
     try:
         proc = subprocess.run(
             ["unshare", "--user", "--map-root-user", "--pid", "--fork", "--mount-proc", "true"],
             capture_output=True,
+            text=True,
             timeout=20,
         )
-    except (OSError, subprocess.SubprocessError):
-        return False
-    return proc.returncode == 0
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, f"{type(exc).__name__}: {exc}"
+    if proc.returncode != 0:
+        return False, f"unshare exited {proc.returncode}: {proc.stderr.strip()[:400]}"
+    return True, ""
 
 
-@pytest.mark.skipif(
-    not _userns_pid_available(),
-    reason="unprivileged PID+user namespaces are unavailable; cannot run os.kill(-1) safely",
-)
 def test_reap_kills_a_real_escaped_process_in_a_private_pid_namespace():
     """End-to-end with the real killer and the real /proc verifier. Inside a
     fresh PID namespace this helper is PID 1, so `os.kill(-1, SIGKILL)` reaches
-    only the victim it spawned -- never the test runner."""
+    only the victim it spawned -- never the test runner.
+
+    SKIPPED LOCALLY, NEVER IN CI. This is the only test that runs the real
+    kill, and a skip hides that as well as a pass would: on ubuntu-24.04 it
+    skipped unnoticed in PR #219's first green run (36213792704 had one skip
+    more than the run before the test existed). So under CI a host that cannot
+    make the namespace fails the test, with `unshare`'s own words, and the
+    workflow is what makes the namespace available.
+    """
+    available, why = _userns_pid_probe()
+    if not available:
+        if os.environ.get("CI") == "true":
+            pytest.fail(
+                "CI must run the real os.kill(-1) reap in a private PID namespace, "
+                f"and this runner cannot create one: {why}"
+            )
+        pytest.skip(f"unprivileged PID+user namespaces are unavailable here: {why}")
     helper = Path(__file__).with_name("reap_realproc_helper.py")
     env = dict(os.environ)
     env["PYTHONPATH"] = os.pathsep.join(p for p in sys.path if p)
