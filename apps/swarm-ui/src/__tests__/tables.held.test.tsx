@@ -150,7 +150,7 @@ describe('the held first column keeps a readable width at 390 (#222)', () => {
     expect(visited, 'the Runtimes sweep visited too few held cells to mean anything').toBeGreaterThanOrEqual(4)
   })
 
-  it('floors the Tenants roster, and leaves its grouped head’s second row unheld', async () => {
+  async function roster(): Promise<Element> {
     api.loadTenants.mockResolvedValue({
       status: 'ok',
       data: {
@@ -165,12 +165,20 @@ describe('the held first column keeps a readable width at 390 (#222)', () => {
     const { container } = render(<TenantsScreen />)
     await screen.findByText('u-sw-c90291', undefined, WAIT)
     const [table] = tablesIn(container, 'Tenants')
-    expect(expectFloored(table!, 'Tenants')).toBe(4)
+    return table!
+  }
+
+  it('floors the Tenants roster', async () => {
+    expect(expectFloored(await roster(), 'Tenants')).toBe(4)
+  })
+
+  it('leaves the Tenants grouped head’s second row without a floor', async () => {
     // `Max active` is the first cell of the head's second row, a figure's head
     // from the middle of the table. Floored at 20ch it would widen the
     // Configured group for nothing. MUTATION: drop `min-width` from the
     // grouped-head reset.
-    const maxActive = table!.querySelector(':scope > thead > tr:nth-child(2) > th:first-child')!
+    const table = await roster()
+    const maxActive = table.querySelector(':scope > thead > tr:nth-child(2) > th:first-child')!
     expect((maxActive.textContent ?? '').trim()).toBe('Max active')
     expect(painted(maxActive, 'position', PHONE)).toBe('static')
     expect(painted(maxActive, 'min-width', PHONE), 'a Configured head carries the held column’s floor').toBe('0')

@@ -1173,87 +1173,123 @@ describe('the overflow inventory, as rules that cannot be quietly dropped', () =
    * `table.pools thead th`; give a fill to any other rule that reaches a head
    * cell (a bare `th`, `.ctl-table th`); drop the fill from either `thead`.
    */
-  it('paints the table head fill once, on thead, in both themes (WF-21, #178)', () => {
-    const host = document.createElement('div')
-    // The two head rules in the sheet: `.ctl-table` (the Workflows Table and
-    // most tables) and `table.pools` (Pools, Profile headroom, Accounts,
-    // Tenants). Each with a numeric column, whose own class must not bring a
-    // fill back either.
-    host.innerHTML =
-      '<div class="ctl-table is-scroll"><table><thead><tr>' +
-      '<th scope="col">Step</th><th scope="col">Runner</th><th scope="col" class="is-num">Cost</th>' +
-      '</tr></thead><tbody><tr><th scope="row">plan</th><td>claude-code</td><td class="is-num">$0.10</td></tr></tbody></table></div>' +
-      '<div class="table-wrap is-scroll"><table class="pools"><thead><tr>' +
-      '<th scope="col">Pool</th><th scope="col">Scope</th><th scope="col" class="n">Units free</th>' +
-      '</tr></thead><tbody><tr><th scope="row">global</th><td>platform</td><td class="n">5</td></tr></tbody></table></div>'
-    document.body.appendChild(host)
-    try {
-      const FILL = ['background', 'background-color'] as const
-      const won = (el: Element, prop: string | readonly string[], env: CascadeEnv): string | null => {
-        const r = cascade(STYLES, el, prop, env)
-        expect(r.unsupported, 'selectors the resolver could not evaluate').toEqual([])
-        return r.winner?.value ?? null
-      }
-      const heads = [...host.querySelectorAll('thead')]
-      const cells = [...host.querySelectorAll('thead th')]
-      expect(heads.length).toBe(2)
-      expect(cells.length).toBe(6)
+  describe('WF-21 (#178): the table head fill is painted once, on thead', () => {
+    const THEMES = ['dark', 'light'] as const
+    const WIDTHS = [1440, 390] as const
+    const FILL = ['background', 'background-color'] as const
 
-      let asked = 0
-      for (const theme of ['dark', 'light'] as const) {
-        const tokens = tokenTables(STYLES)[theme]
-        // THE FILL IS A STEP IN BOTH THEMES: `--surface-2` is declared for
-        // each, and it is not the panel's own `--surface`, or the head would
-        // be painted and invisible.
-        const fill = resolveVars('var(--surface-2)', tokens).trim()
-        expect(fill, `${theme}: --surface-2 is the panel's own fill`).not.toBe(
-          resolveVars('var(--surface)', tokens).trim(),
-        )
-        for (const width of [1440, 390]) {
-          const env: CascadeEnv = { width, theme }
-          for (const thead of heads) {
-            expect(
-              won(thead, FILL, env),
-              `${theme} at ${width}: \`${thead.closest('table')!.className || '.ctl-table > table'} thead\` does not carry the head's fill`,
-            ).toBe('var(--surface-2)')
-            asked += 1
-          }
-          for (const th of cells) {
-            const corner = th === th.parentElement!.firstElementChild
-            const v = won(th, FILL, env)
-            if (width < 900 && corner) {
-              // The held corner: sticky, so it paints, and in the head's colour.
-              expect(won(th, 'position', env), `${theme}: the corner that paints is not held`).toBe('sticky')
-              expect(v, `${theme}: the held corner is see-through, or not the head's colour`).toBe('var(--surface-2)')
-            } else {
+    /**
+     * The two head rules in the sheet: `.ctl-table` (the Workflows Table and
+     * most tables) and `table.pools` (Pools, Profile headroom, Accounts,
+     * Tenants). Each with a numeric column, whose own class must not bring a
+     * fill back either. Scrolling tables, so the held corner is in them.
+     */
+    function heads(): HTMLElement {
+      const host = document.createElement('div')
+      host.innerHTML =
+        '<div class="ctl-table is-scroll"><table><thead><tr>' +
+        '<th scope="col">Step</th><th scope="col">Runner</th><th scope="col" class="is-num">Cost</th>' +
+        '</tr></thead><tbody><tr><th scope="row">plan</th><td>claude-code</td><td class="is-num">$0.10</td></tr></tbody></table></div>' +
+        '<div class="table-wrap is-scroll"><table class="pools"><thead><tr>' +
+        '<th scope="col">Pool</th><th scope="col">Scope</th><th scope="col" class="n">Units free</th>' +
+        '</tr></thead><tbody><tr><th scope="row">global</th><td>platform</td><td class="n">5</td></tr></tbody></table></div>'
+      document.body.appendChild(host)
+      expect(host.querySelectorAll('thead').length).toBe(2)
+      expect(host.querySelectorAll('thead th').length).toBe(6)
+      return host
+    }
+
+    const won = (el: Element, prop: string | readonly string[], env: CascadeEnv): string | null => {
+      const r = cascade(STYLES, el, prop, env)
+      expect(r.unsupported, 'selectors the resolver could not evaluate').toEqual([])
+      return r.winner?.value ?? null
+    }
+
+    // MUTATION: drop the fill from `.ctl-table thead` or `table.pools thead`.
+    it('fills thead with --surface-2 in both themes, at 1440 and at 390', () => {
+      const host = heads()
+      try {
+        let asked = 0
+        for (const theme of THEMES) {
+          const tokens = tokenTables(STYLES)[theme]
+          // A STEP IN BOTH THEMES: `--surface-2` is declared for each, and it
+          // is not the panel's own `--surface`, or the head would be painted
+          // and invisible.
+          expect(resolveVars('var(--surface-2)', tokens).trim(), `${theme}: --surface-2 is the panel's own fill`).not.toBe(
+            resolveVars('var(--surface)', tokens).trim(),
+          )
+          for (const width of WIDTHS) {
+            for (const thead of host.querySelectorAll('thead')) {
               expect(
-                v,
-                `${theme} at ${width}: head cell "${th.textContent}" paints a fill of its own again -- the per-cell ` +
-                  'fill that left a 1px seam at every fractional column edge',
-              ).toBeNull()
+                won(thead, FILL, { width, theme }),
+                `${theme} at ${width}: \`${thead.closest('table')!.className || '.ctl-table > table'} thead\` does not carry the head's fill`,
+              ).toBe('var(--surface-2)')
+              asked += 1
             }
-            asked += 1
           }
         }
+        expect(asked).toBe(THEMES.length * WIDTHS.length * 2)
+      } finally {
+        host.remove()
       }
-      // COUNTED: two themes x two widths x (two heads + six cells).
-      expect(asked).toBe(2 * 2 * (2 + 6))
+    })
 
-      // AND NO RULE IN THE SHEET GIVES A HEAD CELL A FILL, at any width, but the
-      // held corner's two below 900px. The fixture above sees only the rules
-      // its markup reaches; this sees a fill added under a class it lacks.
+    // MUTATION: put a `background` back on `.ctl-table thead th` or
+    // `table.pools thead th`, or give one to any rule that reaches a head cell
+    // (a bare `th`, `.ctl-table th`, `.is-num`); or take the held corner's fill
+    // away, so the head cells scrolling under it show through.
+    it('gives no head cell a fill of its own but the held corner below 900px', () => {
+      const host = heads()
+      try {
+        let asked = 0
+        for (const theme of THEMES) {
+          for (const width of WIDTHS) {
+            const env: CascadeEnv = { width, theme }
+            for (const th of host.querySelectorAll('thead th')) {
+              const v = won(th, FILL, env)
+              if (width < 900 && th === th.parentElement!.firstElementChild) {
+                // The held corner: sticky, so it paints, and in the head's colour.
+                expect(won(th, 'position', env), `${theme}: the corner that paints is not held`).toBe('sticky')
+                expect(v, `${theme}: the held corner is see-through, or not the head's colour`).toBe('var(--surface-2)')
+              } else {
+                expect(
+                  v,
+                  `${theme} at ${width}: head cell "${th.textContent}" paints a fill of its own again -- the per-cell ` +
+                    'fill that left a 1px seam at every fractional column edge',
+                ).toBeNull()
+              }
+              asked += 1
+            }
+          }
+        }
+        expect(asked).toBe(THEMES.length * WIDTHS.length * 6)
+      } finally {
+        host.remove()
+      }
+    })
+
+    // THE WHOLE SHEET, not only the rules the fixture's markup reaches: a fill
+    // added under a class the fixture lacks is caught here. MUTATION: any
+    // `thead th` rule that declares a background, at any width, other than the
+    // held corner's two below 900px.
+    it('has no rule in the sheet that gives a head cell a fill, but the held corner', () => {
       const CORNER = '.is-scroll > table > thead > tr > th:first-child'
+      let scanned = 0
       const offenders = flatRules(STYLES).flatMap((r) => {
         if (!declarations(r.body).some((d) => d.property === 'background' || d.property === 'background-color')) return []
         return splitTop(r.selector)
           .filter((b) => /\bthead\b.*\bth\b/.test(b))
-          .filter((b) => !(b === CORNER && r.conditions.join(' ') === '@media (max-width: 899px)'))
+          .filter((b) => {
+            scanned += 1
+            return !(b === CORNER && r.conditions.join(' ') === '@media (max-width: 899px)')
+          })
           .map((b) => `${b} (line ${r.line})`)
       })
+      // The corner's two rules are found and excused, so the scan RAN over
+      // head-cell rules rather than matching nothing.
+      expect(scanned, 'the scan found no head-cell rule with a fill at all, not even the corner').toBeGreaterThanOrEqual(2)
       expect(offenders, 'a head cell paints its own fill; the fill is on thead').toEqual([])
-    } finally {
-      host.remove()
-    }
+    })
   })
 
   /**

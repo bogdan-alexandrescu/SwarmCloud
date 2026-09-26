@@ -1667,26 +1667,12 @@ describe('the QA pass: the collapsed row', () => {
    *
    * MUTATIONS: `flex: 0 0 auto` back on `.wf-progress-text`; drop its
    * `min-width: 0`, its ellipsis or its nowrap; drop `overflow: hidden` from
-   * `.wf-progress`; drop the text's `title`.
+   * `.wf-progress`. (The case after this one holds the `title`.)
    */
-  it('keeps the census sentence inside its column at every width it is drawn, whole in its title', () => {
+  it('keeps the census sentence inside its column at every width it is drawn', () => {
     const long = card(ended('wf_long', 30, { SUCCEEDED: 10, FAILED: 1, CANCELLED: 19 })).container
-    const unread = card(
-      workflow('wf_unread', chain().steps, {
-        rollup: {
-          state: 'UNKNOWN', complete: false, reason: 'step_read_budget_exhausted', counts: {},
-          unreadable_steps: ['build'], unstarted_steps: [], steps_read: 2,
-        },
-      }),
-    ).container
     const text = long.querySelector('.wf-progress-text')!
     expect(text.textContent).toBe('10/30 done · 1 failed · 19 cancelled')
-    // Both branches of `Progress` draw the text, and both are cut the same way.
-    for (const root of [long, unread]) {
-      const t = root.querySelector('.wf-progress-text')!
-      expect(t.getAttribute('title'), `"${t.textContent}" is not whole in its title`).toBe(t.textContent)
-    }
-
     const cell = long.querySelector('.wf-progress')!
     const won = (el: Element, prop: string | readonly string[], width: number): string | null => {
       const r = cascade(STYLES, el, prop, { width })
@@ -1720,6 +1706,28 @@ describe('the QA pass: the collapsed row', () => {
       asked += 1
     }
     expect(asked).toBe(WIDTHS.length)
+  })
+
+  // MUTATION: drop the `title` from any of `Progress`'s three text spans.
+  it('keeps the whole census sentence in the title of the text that is cut', () => {
+    const long = card(ended('wf_long', 30, { SUCCEEDED: 10, FAILED: 1, CANCELLED: 19 })).container
+    const running = card(chain()).container
+    const unread = card(
+      workflow('wf_unread', chain().steps, {
+        rollup: {
+          state: 'UNKNOWN', complete: false, reason: 'step_read_budget_exhausted', counts: {},
+          unreadable_steps: ['build'], unstarted_steps: [], steps_read: 2,
+        },
+      }),
+    ).container
+    // All three branches of `Progress` -- a finished row's composition, a
+    // running row's meter, an unread census's hatch -- draw the text, and each
+    // is cut the same way.
+    for (const root of [long, running, unread]) {
+      const t = root.querySelector('.wf-progress-text')!
+      expect(t.textContent, 'the row drew no census sentence').not.toBe('')
+      expect(t.getAttribute('title'), `"${t.textContent}" is not whole in its title`).toBe(t.textContent)
+    }
   })
 })
 
