@@ -168,7 +168,7 @@ def test_reap_kills_a_real_escaped_process_in_a_private_pid_namespace():
     fresh PID namespace this helper is PID 1, so `os.kill(-1, SIGKILL)` reaches
     only the victim it spawned -- never the test runner.
 
-    SKIPPED LOCALLY, NEVER IN CI. This is the only test that runs the real
+    SKIPPED LOCALLY, NEVER IN THE UNIT JOB. This is the only test that runs the real
     kill, and a skip hides that as well as a pass would: on ubuntu-24.04 it
     skipped unnoticed in PR #219's first green run (36213792704 had one skip
     more than the run before the test existed). So under CI a host that cannot
@@ -177,9 +177,16 @@ def test_reap_kills_a_real_escaped_process_in_a_private_pid_namespace():
     """
     available, why = _userns_pid_probe()
     if not available:
-        if os.environ.get("CI") == "true":
+        # REQUIRED ONLY WHERE THE WORKFLOW MAKES IT POSSIBLE. application.yml's
+        # unit job relaxes the runner's user-namespace restriction and sets
+        # SWARM_REQUIRE_REAL_REAP=1, so there this test can never skip unseen.
+        # release.yml's verify job runs the same suite without that step; keying
+        # the failure on CI=true made every release fail verify (release run
+        # 36217895854, 2026-09-26). The proof lives in application.yml, which
+        # runs on every pull request and every push to main.
+        if os.environ.get("SWARM_REQUIRE_REAL_REAP") == "1":
             pytest.fail(
-                "CI must run the real os.kill(-1) reap in a private PID namespace, "
+                "the unit job must run the real os.kill(-1) reap in a private PID namespace, "
                 f"and this runner cannot create one: {why}"
             )
         pytest.skip(f"unprivileged PID+user namespaces are unavailable here: {why}")

@@ -265,6 +265,98 @@ what happens to a file written to `$SWARM_ARTIFACTS_DIR`. A file caught in the
 working folder is a net under the agent that wrote somewhere else, not a
 second place to write.
 
+## A step's environment: where the agent starts, HOME, and the model
+
+The owner compared a dispatched workflow with the same workflow run in a local
+Claude Code lane and decided, on 2026-09-26 (#226), that a step behaves like
+the local lane wherever the difference is a choice rather than a constraint.
+Two differences were choices.
+
+| | no repository | repository attached |
+|---|---|---|
+| the agent CLI's working directory | `work/` | `work/repo`, the checkout |
+| `HOME` | `work/` | `work/`, never the checkout |
+| `$SWARM_ARTIFACTS_DIR` | `/workspace/<attempt>/artifacts`, named in the prompt line | the same |
+| staged `input_from` files | in `work/`, so a relative name finds them | in `work/`, named in the prompt by absolute path |
+| `./artifacts` | `work/artifacts`, a link to `$SWARM_ARTIFACTS_DIR` | `work/repo/artifacts`, the same link, hidden from git; `work/artifacts` stays too |
+| `--model` (claude-code) | the Job's `MODEL`: `claude-opus-5-5` | the same |
+
+**The agent starts in the checkout.** Locally, Claude Code starts in the
+repository and loads its `CLAUDE.md` by itself. Here it started in `work/` with
+the checkout at `./repo`, and read `CLAUDE.md` only when a prompt said "read
+repo/CLAUDE.md first". Now the worker sets `SWARM_REPO_DIR` after the clone and
+`cliagent.agent_working_directory` starts the CLI there, for claude-code and
+codex alike (codex reads `AGENTS.md` the same way). The runner process itself
+still runs in `work/`; only the agent moves. The rules, and why:
+
+* **`SWARM_REPO_DIR` comes from the worker, never from `input`.** `input.repository`
+  is written with `setdefault`, so a caller's own would shadow the worker's.
+* **A checkout the worker named that is missing, or outside `work/`, fails the
+  runner.** Starting the agent in `work/` instead would run it without the code
+  and without its instructions, and it would still report success.
+* **HOME stays `work/`.** The CLI writes its own state under HOME
+  (`.claude.json`, `.claude/`, `.codex/`), some of it describing the account it
+  ran as. In the checkout that would be in the harvest's patch and on the pushed
+  branch. `work/` is still checkpointed whole, the checkout included, so moving
+  the agent changes nothing about what a resume restores.
+* **Staged inputs stay in `work/`, and the prompt names them.** They cannot move
+  into the checkout without becoming part of the agent's diff. The prompt line
+  the worker adds (`expected_outputs.agent_instructions`, the one place #184 put
+  it) gains, only for a repository task with staged inputs, "Earlier steps of
+  this workflow gave you these files, which are outside the repository:" and
+  one absolute path per file. A task with no repository keeps its prompt
+  exactly: it starts in `work/`, where "read scan-01.md" already works. A
+  caller's own `input.staged_inputs` is dropped with a WARNING, like
+  `input.expected_outputs`, because the line speaks for the platform.
+* **`./artifacts` works from the checkout.** #149's net catches the agent that
+  reads `$SWARM_ARTIFACTS_DIR` and writes `./artifacts/<name>` anyway, and from
+  the checkout that path is `work/repo/artifacts`. So the worker makes the same
+  link there, and hides it with the clone's own `.git/info/exclude` (local to
+  the clone, never committed or pushed), so it is in no patch, auto-commit or
+  pushed branch. It then asks git (`check-ignore`); a repository whose own
+  `.gitignore` un-ignores `artifacts` outranks the exclude file, and there the
+  link is taken away again with a WARNING, because a symlink to this attempt's
+  directory in the tenant's repository is worse than a missed guess. A
+  repository that already has an `artifacts` entry keeps it, also with a
+  WARNING. The link is never checkpointed, like `work/artifacts`.
+
+**The code profile runs a pinned model.** No Job set `MODEL`, so the CLI's
+default ran: the QA task of 2026-09-26 ran `claude-sonnet-5`, not the
+`claude-opus-5-5` the operator's local lanes run. Now:
+
+* `MODEL` is stated once, in `local.runner_models` in `terraform/infra/locals.tf`
+  (`claude-code = "claude-opus-5-5"`, with the reason beside it). It becomes
+  `MODEL` on every claude-code Cloud Run Job Terraform creates, and the
+  scheduler's `WORKER_MODELS`, which `CloudRunJobDispatcher._build_job` sets as
+  `MODEL` on the Jobs it creates for tenants Terraform does not list. A Job the
+  scheduler created before that is rebuilt once, before its next execution,
+  by the same check that moves it to a new image digest.
+* The worker reads `MODEL` into `WorkerConfig.model` and hands it to the runner,
+  which passes `--model`. Not codex: it is an OpenAI CLI, and an Anthropic model
+  name there would fail every run.
+* **A caller never chooses the model (invariant 10).** Until 2026-09-26 the
+  runner read `input.model` first, ahead of the Job's value, and the API and
+  the console's Submit form both let a caller send it, so a caller did choose
+  the model. Two changes closed that. #213 (contract request 25) made the API
+  refuse every key a profile's `RunnerProfile.inputs` does not declare, and
+  claude-code declares none, so `input.model` gets 422 `invalid_input` on a
+  task, a batch and a workflow step, and nothing is created
+  (`tests/unit/control_plane/test_input_model_is_refused.py` pins it for this
+  key). #226 made the runner never read `input.model` at all, and the worker
+  drops a stored one with a WARNING: a task queued before the refusal
+  shipped, or a profile whose inputs are not declared yet (`browser`,
+  `generic`, #218), which the API bounds by size alone. The top-level `model`
+  field is still accepted. It is attribution only, and selects nothing.
+* **What records the model that ran.** The runner's result carries the model it
+  asked for (`result_summary.runner.output.model`), and the CLI's own
+  `modelUsage` keys land in `result_summary.runner.usage.models`, the model or
+  models it says it actually used. Neither is on the attempt document:
+  `Attempt` in the frozen contract has no model field, and adding one is a
+  contract request, not an edit. The task's top-level `model` is the caller's
+  attribution, and can disagree with both.
+* Changing the model is an edit to `local.runner_models` and a release; nothing
+  a caller sends changes it.
+
 ## Two kinds of stdout, and the label that was wrong
 
 There are two processes, and each has its own streams:

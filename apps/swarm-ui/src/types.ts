@@ -479,6 +479,12 @@ export interface Task {
   /** Userinfo that could carry a credential is masked whole; submission refuses it now. */
   repository_url_redaction_count?: number | null
   latest_checkpoint: string | null
+  /**
+   * Contract request 23 (#217). Written by every terminal writer beside
+   * `completed_at`. Null on SUCCEEDED and on a task that ended before this
+   * field existed.
+   */
+  end_cause?: string | null
 
   /**
    * THE FENCING GENERATION. `models.py:177`, now served by `task_to_api`.
