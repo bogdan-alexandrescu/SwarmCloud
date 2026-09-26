@@ -7,7 +7,8 @@ load-bearing in a way the rest are not.
     2.  STARTING -> RUNNING
     3.  create the isolated workspace
     4.  restore the latest checkpoint, if any
-    5.  optional shallow git clone
+    5.  optional shallow git clone, with the tenant token only if the
+        entrypoint made this process non-dumpable (hardening.py)
     5b. stage every artifact this step declared in `input_from`
     5c. link `work/artifacts` to `artifacts/`, unless the name is taken (#149)
     6.  resolve the tenant's provider credential
@@ -163,11 +164,13 @@ from .gitops import (
     commit_dirty,
     fold_agent_commits,
     merge_branches,
+    prepare_publish_repo,
     push_branch,
     shallow_clone,
     summarize_work,
     verify_worker_authorship,
 )
+from .hardening import FAILED, MemoryProtection
 from .metrics import (
     ResourceSampler,
     ResourceUsage,
@@ -176,7 +179,7 @@ from .metrics import (
     combine_usage,
 )
 from .objectstore import ObjectStore
-from .procman import ChildProcess, ChildResult
+from .procman import ChildProcess, ChildResult, reap_foreign_processes
 from .quota import QuotaDecision, decide, read_runner_signal, signal_from_control
 from .runners.base import EXIT_QUOTA_EXHAUSTED, EXIT_TERMINATED, SPEND_KEYS
 from .runners.limits import GRACE_ENV, STDERR_ENV, STDOUT_ENV, TIMEOUT_ENV
@@ -276,6 +279,13 @@ WORKER_STATE_DIR = ".swarm"
 CLONE_BASE_FILE = "clone-base"
 PATCH_NAME = "swarm-work.patch"
 
+#: The worker-owned repository the token-bearing git commands run in lives under
+#: `ws.private` -- never checkpointed, never uploaded, never named in the agent's
+#: environment -- so the push and the integrator's fetch authenticate from
+#: configuration the agent could not write. `gitops.prepare_publish_repo` gives
+#: it an unpredictable name (`tempfile.mkdtemp`): `ws.private` shares a uid with
+#: the agent, so a constant name would let the agent pre-plant a symlink there.
+
 
 @dataclass
 class WorkerDeps:
@@ -292,6 +302,12 @@ class WorkerDeps:
     #: The entrypoint's phase tracker, carried on so the lifecycle's phases
     #: continue the same clock. None builds one on the worker's logger.
     phases: Phases | None = None
+    #: What the entrypoint's `hardening.make_non_dumpable` established before
+    #: any credential was read. The tenant git token is held only when the
+    #: agent cannot read this process's memory (`Worker._git_token_refusal`).
+    #: None means nothing established it, and is treated as FAILED: a worker
+    #: built some other way holds no token rather than an unprotected one.
+    memory: MemoryProtection | None = None
 
 
 @dataclass
@@ -312,6 +328,7 @@ class Worker:
         self.db = deps.db
         self.metrics = deps.metrics_exporter
         self.secret_client = deps.secret_client
+        self.memory = deps.memory
         self.ws: workspace_mod.Workspace | None = None
         self.checkpoints = CheckpointManager(
             store=deps.store,
@@ -338,6 +355,13 @@ class Worker:
         # exception that reaches it, decides the exit.
         self._startup_interrupt: StartupInterrupted | None = None
         self._child: ChildProcess | None = None
+        # How the publish path makes sure no process the agent started is alive
+        # before the tenant credential is used (`_publish_git`). A callable, not
+        # a direct call, so a unit test can substitute a scoped reaper: the real
+        # one runs `os.kill(-1, SIGKILL)`, which in a shared test process would
+        # kill the test runner. Returns the PIDs still alive after the reap --
+        # empty means clean, non-empty means refuse to publish.
+        self.reap_before_publish: Callable[[], tuple[int, ...]] = self._default_reap
         # The LIVE runner's sampler, or None between runners. The runners that
         # have ended are in `_runner_usage`, and `_attempt_usage` combines the
         # two: every figure this worker reports -- the attempt document, the
@@ -1153,6 +1177,10 @@ class Worker:
         self._record_fenced_end(str(exc))
         return ExitCode.GENERATION_FENCED
 
+    def _default_reap(self) -> tuple[int, ...]:
+        """The production pre-publish reap. See `reap_foreign_processes`."""
+        return reap_foreign_processes(logger=self.log)
+
     def _stop_runner(self, *, reason: str) -> None:
         """Stop the live runner, if any, and take its usage and spend. Never raises.
 
@@ -1655,6 +1683,10 @@ class Worker:
                 "commit": self._clone_base,
             }
         ref = self.cfg.repository_ref or task.get("repository_ref")
+        # A worker whose memory the agent may read clones WITHOUT the token, so
+        # the token is never in this process at all. A public repository still
+        # clones; a private one fails, and the error below says why.
+        refusal = self._git_token_refusal()
         try:
             clone = shallow_clone(
                 url=url,
@@ -1668,9 +1700,14 @@ class Worker:
                 logs_dir=ws.logs,
                 timeout_seconds=self.cfg.git_clone_timeout_seconds,
                 logger=self.log,
-                token=self._git_token(),
+                token=None if refusal else self._git_token(),
             )
         except GitError as exc:
+            if refusal:
+                raise WorkerError(
+                    f"repository clone failed: {exc}; cloned without the tenant git "
+                    f"token because {refusal}"
+                ) from exc
             raise WorkerError(f"repository clone failed: {exc}") from exc
         self._repo_url = clone.url
         self._clone_base = clone.commit
@@ -1679,12 +1716,15 @@ class Worker:
         self._publish_base = clone.commit or (EMPTY_CLONE_BASE if clone.empty else None)
         self.checkpoints.clone_base = self._publish_base
         self._write_clone_base(clone.commit)
-        return {
+        info: dict[str, Any] = {
             "path": REPO_DIR_NAME,
             "url": clone.url,
             "ref": clone.ref,
             "commit": clone.commit,
         }
+        if refusal:
+            info["git_token_refused"] = refusal
+        return info
 
     def _stage_declared_inputs(self, task: dict[str, Any]) -> list[inputs_mod.StagedInput]:
         """Honour `metadata.input_from`: {upstream_task_id: artifact_filename}.
@@ -2231,7 +2271,15 @@ class Worker:
         None is not an error. A public repository clones without a credential
         and a private one fails with git's own message, which is the correct
         diagnosis to surface.
+
+        Nor is it read at all when `_git_token_refusal` names a reason: once
+        read, the token stays in this process's heap for the rest of the
+        attempt, next to an agent that may be able to read it there.
         """
+        refusal = self._git_token_refusal()
+        if refusal:
+            self.log.error("not reading the tenant git credential", reason=refusal)
+            return None
         if self.secret_client is None:
             return None
         try:
@@ -2247,6 +2295,20 @@ class Worker:
                 error=str(exc),
             )
             return None
+
+    def _git_token_refusal(self) -> str | None:
+        """Why this worker must not hold the tenant git token, or None.
+
+        The token sits in the worker's heap from the moment it is read, and the
+        agent runs beside it as the same uid. The entrypoint made this process
+        non-dumpable so the agent cannot read that heap (hardening.py). When
+        that did not happen, the token is not read, the clone runs without it,
+        and the publish is refused.
+        """
+        memory = self.memory or MemoryProtection(
+            FAILED, "the entrypoint established no memory protection for this worker"
+        )
+        return memory.git_token_refusal
 
     def _build_child_env(self) -> dict[str, str]:
         ws = self.ws
@@ -3463,6 +3525,14 @@ class Worker:
         if not url:
             return {"published": False, "publish_reason": "the repository URL is unknown"}
 
+        # Before the token is read, not after: see `_git_token_refusal`. Asked
+        # here as well as inside `_git_token`, so the publish says WHY it did
+        # not happen instead of reporting a forge that refused an anonymous probe.
+        refusal = self._git_token_refusal()
+        if refusal:
+            self.log.error("not publishing: the tenant git token is refused", reason=refusal)
+            return {"published": False, "publish_reason": f"refusing to publish: {refusal}"}
+
         token = self._git_token()
         try:
             access = probe_repository(url=url, token=token)
@@ -3501,6 +3571,31 @@ class Worker:
 
         role = self._dispatch_role() if strategy == "integrate" else ""
         out["role"] = role or None
+
+        # NO AGENT PROCESS IS ALIVE ONCE THE TOKEN IS IN HAND. This is the one
+        # place the credential-bearing publish begins -- everything below carries
+        # or leads directly to the tenant token (`commit_dirty`/`fold` run in the
+        # clone, then `prepare_publish_repo` mkdtemps the publish repo and the
+        # fetch/merge/push authenticate). A process the agent double-forked into
+        # its own session survives the runner's group kill (procman.py), shares
+        # the worker's uid, and could watch `ws.private` to poison the publish
+        # repo before the push or read the short-lived credential file while it
+        # runs. So every such process is killed and its death verified BEFORE the
+        # publish repo is created; if any survives the bounded retry, the whole
+        # publish is refused rather than run with agent code still able to act.
+        survivors = self.reap_before_publish()
+        if survivors:
+            out["published"] = False
+            out["publish_reason"] = (
+                f"refusing to publish: {len(survivors)} process(es) the agent started "
+                f"are still alive after the pre-publish reap ({', '.join(str(p) for p in survivors[:10])}); "
+                "the tenant credential is not put in hand while agent code can run"
+            )
+            self.log.error(
+                "refusing to publish: agent processes survived the pre-publish reap",
+                surviving_pids=list(survivors),
+            )
+            return out
 
         auto_committed = False
         folded = 0
@@ -3567,10 +3662,30 @@ class Worker:
             folded = max(replaced - (1 if new_sha else 0), 0)
             out["agent_commits_folded"] = folded
 
+            # EVERYTHING THAT CARRIES THE TOKEN RUNS IN A REPOSITORY THE WORKER
+            # OWNS, NOT IN THE CLONE. The push and the integrator's contributor
+            # fetch authenticate with the tenant token; run in the clone, a
+            # `credential.helper` or `url.*.insteadOf` the agent wrote into
+            # `.git/config` would receive or redirect it. So the worker's folded
+            # commit is transferred into a fresh, worker-owned repository -- by
+            # borrowing the clone's objects, with no token and no git run against
+            # the clone -- and the merge, the authorship check and the push all
+            # happen there. See `gitops.prepare_publish_repo` and
+            # docs/merge-strategy-live-proof.md §6. The verify runs here too, so
+            # it sees the integrator's merge commits, which exist only here.
+            publish_repo = prepare_publish_repo(
+                source_repo=repo,
+                work_head=None,
+                private_dir=ws.private,
+                logs_dir=ws.logs,
+                timeout_seconds=cfg.git_clone_timeout_seconds,
+                logger=self.log,
+            )
+
             # THE INTEGRATOR MERGES BEFORE IT PUSHES.
             #
-            # Its own commit has to be in the tree first (above), and every
-            # contributor's branch has to be in it before the push, or the
+            # Its own commit has to be in the tree first (transferred above), and
+            # every contributor's branch has to be in it before the push, or the
             # single pull request this strategy promises would contain only
             # the integrator's own step.
             #
@@ -3584,7 +3699,7 @@ class Worker:
                 ]
                 if upstream:
                     merge = merge_branches(
-                        repo=repo,
+                        repo=publish_repo,
                         url=url,
                         branches=upstream,
                         token=token,
@@ -3606,9 +3721,11 @@ class Worker:
             # THE PROPERTY, CHECKED WHERE THE WORK LEAVES. The fold and the
             # identity arguments are how every pushed commit is made the
             # worker's; this reads the commits the push is about to add and
-            # refuses the push if any is not, whatever route got it there.
+            # refuses the push if any is not, whatever route got it there. It
+            # runs in the publish repo, so an integrator's merge commits are in
+            # its first-parent span.
             verify_worker_authorship(
-                repo=repo,
+                repo=publish_repo,
                 base=self._publish_base,
                 author_name=cfg.git_author_name,
                 author_email=cfg.git_author_email,
@@ -3619,7 +3736,7 @@ class Worker:
             )
 
             pushed = push_branch(
-                repo=repo,
+                repo=publish_repo,
                 url=url,
                 branch=branch,
                 token=token,
