@@ -21,7 +21,10 @@ keeps the providers the tenant already has -- rather than the spelling of a
 flag. The rest pin down `--add-provider`, the narrow path both hints now point
 at: one secretAccessor binding on that one secret, then the provider added to
 `credentials` under an update mask of `credentials` alone, conditional on the
-document not having changed since it was read.
+document not having changed since it was read. The grant is made only on a
+secret whose labels say it is this tenant's key for this provider and which
+holds an enabled version, because `swarm-tenant-<tenant>-<provider>` does not
+split: tenant eng-team's git and tenant eng's team-git are one name.
 
 Driven the way test_register_tenant_grants.py drives the script: the real
 scripts, with a fake `gcloud`, `curl` and `kubectl` first on PATH. Both fakes
@@ -65,6 +68,15 @@ pytestmark = pytest.mark.skipif(
 # Reads answer as a healthy project would; FAKE_SECRET_DESCRIBE_ERR makes the
 # secret lookup fail the way gcloud does.
 #
+# `secrets describe` answers with the secret's labels, as the real one does
+# with --format=json. By default they are what scripts/create-secrets.sh and
+# terraform/modules/secret_manager write: tenant=eng (FAKE_SECRET_TENANT), and
+# the provider the name carries after `swarm-tenant-<tenant>-` -- the BASE
+# provider for a `-refresh` secret, which is how both label that half.
+# FAKE_SECRET_LABELS replaces them with a JSON object of the test's choosing.
+# `secrets versions list` answers with one ENABLED version unless
+# FAKE_SECRET_NO_VERSIONS is set.
+#
 # The argv goes to jq on stdin, one per line, not through `--args`: jq keeps
 # parsing options after `--args` in some releases, and gcloud's own `--project`
 # would be read as one of jq's.
@@ -72,6 +84,11 @@ FAKE_GCLOUD = r"""#!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$@" | jq -Rnc '{tool:"gcloud", argv:[inputs]}' >>"${FAKE_LOG}"
 args="$*"
+name=""; prev=""
+for arg in "$@"; do
+  case "${prev}" in describe|list) name="${arg}" ;; esac
+  prev="${arg}"
+done
 case "${args}" in
   *"auth print-access-token"*)        echo "fake-access-token" ;;
   *"identity groups describe"*)       echo "groups/1" ;;
@@ -84,7 +101,19 @@ case "${args}" in
       printf '%s\n' "${FAKE_SECRET_DESCRIBE_ERR}" >&2
       exit 1
     fi
-    echo "projects/x/secrets/whatever" ;;
+    if [[ -n "${FAKE_SECRET_LABELS:-}" ]]; then
+      labels="${FAKE_SECRET_LABELS}"
+    else
+      tenant="${FAKE_SECRET_TENANT:-eng}"
+      provider="${name#swarm-tenant-"${tenant}"-}"
+      provider="${provider%-refresh}"
+      labels="$(jq -nc --arg t "${tenant}" --arg p "${provider}" '{tenant:$t, provider:$p}')"
+    fi
+    jq -nc --arg n "projects/x/secrets/${name}" --argjson l "${labels}" '{name:$n, labels:$l}' ;;
+  *"secrets versions list"*)
+    if [[ -z "${FAKE_SECRET_NO_VERSIONS:-}" ]]; then
+      echo "projects/x/secrets/${name}/versions/1"
+    fi ;;
   *"secrets versions add"*)           echo "projects/x/secrets/whatever/versions/2" ;;
   *"secrets get-iam-policy"*)         printf '%s' "${FAKE_SECRET_MEMBERS:-}" ;;
   *)                                  : ;;
@@ -149,34 +178,39 @@ exit 0
 """
 
 
+def _worker(tenant: str) -> str:
+    return f"swarm-agent-worker-{tenant}@{PROJECT}.iam.gserviceaccount.com"
+
+
 def _tenant_document(
     credentials: list[str],
     *,
-    principal: str = "eng@saga.xyz",
+    tenant: str = "eng",
+    principal: str | None = None,
     kind: str = "group",
-    service_account: str = WORKER,
+    service_account: str | None = None,
 ) -> str:
-    """tenants/eng as Firestore's REST API returns it, with non-default limits.
+    """tenants/<tenant> as Firestore's REST API returns it, with non-default limits.
 
     max_active 40 and capacity_units 80 are what a re-run without those flags
     would have reset to 20 and 40.
     """
     values = [{"stringValue": c} for c in credentials]
     fields = {
-        "tenant_id": {"stringValue": "eng"},
+        "tenant_id": {"stringValue": tenant},
         "kind": {"stringValue": kind},
-        "principal": {"stringValue": principal},
+        "principal": {"stringValue": principal or f"{tenant}@saga.xyz"},
         "display_name": {"stringValue": "Engineering"},
         "max_active": {"integerValue": "40"},
         "capacity_units": {"integerValue": "80"},
         "enabled": {"booleanValue": True},
         "credentials": {"arrayValue": {"values": values} if values else {}},
-        "service_account": {"stringValue": service_account},
-        "gcs_prefix": {"stringValue": "tenants/eng/"},
-        "namespace": {"stringValue": "swarm-tenant-eng"},
+        "service_account": {"stringValue": service_account or _worker(tenant)},
+        "gcs_prefix": {"stringValue": f"tenants/{tenant}/"},
+        "namespace": {"stringValue": f"swarm-tenant-{tenant}"},
     }
     return json.dumps({
-        "name": f"projects/{PROJECT}/databases/swarm/documents/tenants/eng",
+        "name": f"projects/{PROJECT}/databases/swarm/documents/tenants/{tenant}",
         "fields": fields,
         "createTime": "2026-09-20T10:00:00.000000Z",
         "updateTime": UPDATE_TIME,
@@ -465,6 +499,13 @@ def test_add_provider_on_a_dry_run_changes_nothing(tmp_path) -> None:
     assert fakes.gcloud_changes() == [], out
     assert "would run: gcloud secrets add-iam-policy-binding swarm-tenant-eng-git" in out, out
     assert '["anthropic"] -> ["anthropic","git"]' in out, out
+    # A dry run granted nothing and listed nothing, so it must not SAY it did:
+    # this printed "ok swarm-tenant-eng-git: swarm-agent-worker-eng may read it"
+    # and "ok tenant eng has git" under a banner saying nothing would change.
+    assert "may read it" not in out, f"a dry run reported a grant it did not make:\n{out}"
+    assert "tenant eng has git" not in out, f"a dry run reported a change it did not make:\n{out}"
+    assert "would let swarm-agent-worker-eng read swarm-tenant-eng-git" in out, out
+    assert "tenant eng would have git" in out, out
 
 
 def test_add_provider_refuses_a_tenant_that_is_not_registered(tmp_path) -> None:
@@ -540,8 +581,12 @@ def test_add_provider_refuses_the_flags_of_a_full_registration(tmp_path, flag: l
         ("Git", "lowercase"),
         ("git/x", "lowercase"),
         ("", "needs a provider name"),
+        # Nothing reads a key for either, and `refresh` is how tenant
+        # eng-anthropic would name tenant eng's refresh half.
+        ("gemini", "not one this platform reads a key for"),
+        ("refresh", "not one this platform reads a key for"),
     ],
-    ids=["refresh-half", "uppercase", "slash", "empty"],
+    ids=["refresh-half", "uppercase", "slash", "empty", "unknown", "bare-refresh"],
 )
 def test_add_provider_refuses_a_provider_it_must_not_bind(
     tmp_path, provider: str, reason: str
@@ -579,18 +624,113 @@ def test_add_provider_refuses_to_guess_which_identity_reads_the_key(tmp_path) ->
     assert fakes.writes() == [] and fakes.gcloud_changes() == [], out
 
 
-def test_a_document_that_changed_after_it_was_read_is_not_overwritten(tmp_path) -> None:
-    """Firestore refuses the conditional write; the run must stop and say why."""
+@pytest.mark.parametrize(
+    ("status", "message"),
+    [
+        # The document moved between the read and the write: run it again.
+        ("FAILED_PRECONDITION", "the stored version does not match the required base version"),
+        # The precondition parameter itself refused: fix the request, do not
+        # re-run it. Both arrive as HTTP 400.
+        (
+            "INVALID_ARGUMENT",
+            "Invalid value at 'current_document.update_time' "
+            "(type.googleapis.com/google.protobuf.Timestamp), Field 'updateTime', "
+            "Illegal timestamp format",
+        ),
+    ],
+    ids=["moved", "rejected-parameter"],
+)
+def test_a_refused_write_says_which_refusal_it_was(tmp_path, status: str, message: str) -> None:
+    """Firestore refuses the write; the run must stop and print Firestore's reason.
+
+    The body is PRETTY-PRINTED, as Firestore sends it. fs_request used to print
+    its first three lines, which are `{`, `"error": {` and `"code": 400,` -- so
+    both refusals read identically, and this test passed only because the
+    script's own closing message happens to contain the word FAILED_PRECONDITION.
+    What is asserted is Firestore's status AND message, on one line.
+    """
     fakes = Fakes(tmp_path, _tenant_document(["anthropic"]))
     proc = fakes.run(
         [str(REGISTER), "--tenant", "eng", "--add-provider", "git"],
-        FAKE_PATCH_ERROR=json.dumps({"error": {
-            "code": 400,
-            "message": "the stored version does not match the required base version",
-            "status": "FAILED_PRECONDITION",
-        }}),
+        FAKE_PATCH_ERROR=json.dumps(
+            {"error": {"code": 400, "message": message, "status": status}}, indent=2
+        ),
     )
     out = _out(proc)
     assert proc.returncode != 0, out
-    assert "FAILED_PRECONDITION" in out, out
+    assert f"{status}: {message}" in out, (
+        f"Firestore's {status} was not reported; the operator cannot tell a moved "
+        f"document from a rejected request:\n{out}"
+    )
     assert "run this again" in out, out
+
+
+# ---------------------------------------------------------------------------
+# Whose secret: names do not split, labels do
+# ---------------------------------------------------------------------------
+
+
+def test_add_provider_refuses_a_secret_labelled_as_another_tenants(tmp_path) -> None:
+    """swarm-tenant-eng-team-git is tenant eng-team's git AND tenant eng's team-git.
+
+    Here it is eng's: the labels create-secrets.sh wrote say tenant=eng,
+    provider=team-git. Granting eng-team's worker on the name alone would hand
+    it eng's key (invariant 9).
+    """
+    fakes = Fakes(tmp_path, _tenant_document(["openai"], tenant="eng-team"))
+    proc = fakes.run(
+        [str(REGISTER), "--tenant", "eng-team", "--add-provider", "git"],
+        FAKE_SECRET_LABELS=json.dumps({"tenant": "eng", "provider": "team-git"}),
+    )
+    out = _out(proc)
+    assert proc.returncode != 0, f"eng-team's worker was bound to eng's key:\n{out}"
+    assert "tenant='eng' provider='team-git'" in out, out
+    assert "update-labels" not in out, (
+        f"a secret labelled as ANOTHER tenant's came with a command to relabel it:\n{out}"
+    )
+    assert fakes.writes() == [] and fakes.gcloud_changes() == [], out
+
+
+def test_add_provider_refuses_a_secret_nothing_says_is_this_tenants(tmp_path) -> None:
+    fakes = Fakes(tmp_path, _tenant_document(["anthropic"]))
+    proc = fakes.run(
+        [str(REGISTER), "--tenant", "eng", "--add-provider", "git"],
+        FAKE_SECRET_LABELS="{}",
+    )
+    out = _out(proc)
+    assert proc.returncode != 0, out
+    assert "carries no tenant or provider label" in out, out
+    assert "--update-labels=tenant=eng,provider=git" in out, out
+    assert fakes.writes() == [] and fakes.gcloud_changes() == [], out
+
+
+def test_add_provider_refuses_a_secret_with_no_enabled_version(tmp_path) -> None:
+    """A name with nothing behind it: listing it admits tasks that all fail."""
+    fakes = Fakes(tmp_path, _tenant_document(["anthropic"]))
+    proc = fakes.run(
+        [str(REGISTER), "--tenant", "eng", "--add-provider", "git"],
+        FAKE_SECRET_NO_VERSIONS="1",
+    )
+    out = _out(proc)
+    assert proc.returncode != 0, f"a secret with no enabled version was granted and listed:\n{out}"
+    assert "no ENABLED version" in out, out
+    assert fakes.writes() == [] and fakes.gcloud_changes() == [], out
+
+
+def test_a_full_registration_does_not_grant_the_refresh_half_either(tmp_path) -> None:
+    """Section 4 granted on the name too, and --providers had no -refresh refusal.
+
+    swarm-tenant-eng-anthropic-refresh carries provider=anthropic, its BASE
+    provider, so it is never labelled as the `anthropic-refresh` the command
+    asked for. A dry run, so nothing could be created either way; what matters
+    is that no grant is even proposed.
+    """
+    fakes = Fakes(tmp_path, _tenant_document(["openai"]))
+    proc = fakes.run([
+        str(REGISTER), "--group", "eng@saga.xyz", "--providers", "anthropic-refresh",
+        "--dry-run", "--skip-k8s",
+    ])
+    out = _out(proc)
+    assert proc.returncode != 0, f"a full registration offered the worker the refresh half:\n{out}"
+    assert "add-iam-policy-binding swarm-tenant-eng-anthropic-refresh" not in out, out
+    assert "tenant='eng' provider='anthropic'" in out, out
