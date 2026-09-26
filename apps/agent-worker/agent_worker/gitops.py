@@ -33,6 +33,7 @@ from __future__ import annotations
 import re
 import shutil
 import stat
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
@@ -1111,7 +1112,6 @@ def prepare_publish_repo(
     *,
     source_repo: Path,
     work_head: str | None,
-    publish_dir: Path,
     private_dir: Path,
     logs_dir: Path,
     timeout_seconds: int,
@@ -1132,7 +1132,9 @@ def prepare_publish_repo(
     `insteadOf`, so the only robust defence is to run the token-bearing commands
     in a repository whose configuration the worker wrote.
 
-    This builds that repository. It is created empty with `git init`, so its
+    This builds that repository. It is created empty with `git init` under an
+    unpredictable name in the worker's private scratch (see the body: a constant
+    name the agent could predict let it pre-plant a symlink there), so its
     config is the worker's. The work is brought in WITHOUT running git against
     the clone: the clone's object database is borrowed through
     `objects/info/alternates` and its shallow boundary copied, then the exact
@@ -1148,12 +1150,23 @@ def prepare_publish_repo(
     None it is read from the clone's HEAD, which is the folded worker commit.
     """
     source_repo = Path(source_repo)
-    publish_dir = Path(publish_dir)
     private_dir = Path(private_dir)
     private_dir.mkdir(parents=True, exist_ok=True)
-    if publish_dir.exists():
-        shutil.rmtree(publish_dir, ignore_errors=True)
-    publish_dir.mkdir(parents=True, exist_ok=True)
+
+    # WHERE the publish repository lives is part of the guarantee, not an
+    # implementation detail. `private_dir` shares a uid with the agent
+    # (workspace.py: "not a permission boundary"), so during its run the agent
+    # can create any path under it -- including a SYMLINK at a name it can
+    # predict. A constant name was exactly that hole: `shutil.rmtree` refuses to
+    # delete a symlink and, with `ignore_errors=True`, swallows the refusal;
+    # `mkdir(exist_ok=True)` then no-ops on the surviving link; and `git init`
+    # at that path re-initialises the AGENT's repository behind it, honouring the
+    # `.git/config` the agent wrote there (`url.*.insteadOf`, a
+    # `credential.helper`, `http.proxy`) on the very push this repository exists
+    # to isolate. `mkdtemp` creates the directory with an unpredictable name and
+    # O_EXCL semantics, generated now -- after the agent has exited -- so the
+    # worker never lands on, nor follows, anything the agent could have planted.
+    publish_dir = Path(tempfile.mkdtemp(dir=str(private_dir), prefix="publish-"))
 
     agent_git = source_repo / ".git"
     agent_objects = (agent_git / "objects").resolve()

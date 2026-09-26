@@ -257,12 +257,24 @@ The fix is therefore structural, not a longer blocklist. `gitops.prepare_publish
 builds a fresh repository under the worker's private scratch (never checkpointed,
 never uploaded, never named in the agent's environment), `git init`-ed so its
 config is the worker's. The agent's committed work is transferred in by a
-**local, token-less** fetch of the commit the worker computed — no credential is
-present during the transfer, so nothing the clone's configuration could do can
+**local, token-less** transfer of the commit the worker computed — the clone's
+object store is borrowed and no git runs against the clone, so no credential is
+present during the transfer and nothing the clone's configuration could do can
 move one. The remote is set from the validated `repository_url`, never read back
 from the clone; the credential-helper list is reset to the worker's own helper
 before it is added; and the transport is pinned (verified TLS, no proxy, no
 injected header). The integrator's merges happen in this repository too.
+
+**That private scratch is not itself a permission boundary** — it shares a uid
+with the agent (`workspace.py` says so), so the agent can create paths inside it
+during its run. So the publish repository is built at an **unpredictable name**
+(`tempfile.mkdtemp`), generated only after the agent has exited. A constant name
+was a hole in its own right: the agent could pre-plant a symlink there pointing
+at a repository it wrote, and the worker's cleanup (`shutil.rmtree(...,
+ignore_errors=True)` then `mkdir(exist_ok=True)`) cannot delete a symlink and
+silently leaves it, so `git init` and the push would run behind the link, back
+inside the agent's config. `mkdtemp` creates the directory with O_EXCL
+semantics, so the worker never lands on, nor follows, anything the agent planted.
 
 The property this guarantees: **no configuration, file or ref the agent can
 write can cause the tenant token to be sent anywhere except the forge host of
@@ -270,9 +282,12 @@ the task's `repository_url` over verified TLS, or be handed to any program other
 than the worker's own credential mechanism.** It is proven offline by
 `tests/unit/worker/test_forge_token_isolation.py` (real git, local `file://`
 remotes, no network): a `url.*.insteadOf` / `pushInsteadOf` the agent writes into
-the clone cannot redirect the push, and the repository the worker authenticates
-from carries no credential helper the agent wrote (with a control confirming the
-clone itself would have leaked).
+the clone cannot redirect the push; a symlink the agent pre-plants at the publish
+path cannot either; the repository the push actually runs in carries none of the
+agent's redirect or interception keys (`insteadOf`, `pushInsteadOf`, `http.proxy`,
+`http.sslVerify`, `remote.*.pushurl`, `credential.helper`); and the repository
+the worker authenticates from carries no credential helper the agent wrote (each
+with a control confirming the clone itself would have leaked).
 
 They are mitigations, not a boundary. The token still belongs to a platform that
 runs model-written code, and a compromise of the worker itself is outside what

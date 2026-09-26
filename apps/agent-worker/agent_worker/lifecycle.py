@@ -273,11 +273,12 @@ WORKER_STATE_DIR = ".swarm"
 CLONE_BASE_FILE = "clone-base"
 PATCH_NAME = "swarm-work.patch"
 
-#: The worker-owned repository the token-bearing git commands run in. It lives
-#: under `ws.private` -- never checkpointed, never uploaded, never named in the
-#: agent's environment -- so the push and the integrator's fetch authenticate
-#: from configuration the agent could not write. See `gitops.prepare_publish_repo`.
-PUBLISH_DIR_NAME = "publish"
+#: The worker-owned repository the token-bearing git commands run in lives under
+#: `ws.private` -- never checkpointed, never uploaded, never named in the agent's
+#: environment -- so the push and the integrator's fetch authenticate from
+#: configuration the agent could not write. `gitops.prepare_publish_repo` gives
+#: it an unpredictable name (`tempfile.mkdtemp`): `ws.private` shares a uid with
+#: the agent, so a constant name would let the agent pre-plant a symlink there.
 
 
 @dataclass
@@ -3230,7 +3231,6 @@ class Worker:
             publish_repo = prepare_publish_repo(
                 source_repo=repo,
                 work_head=None,
-                publish_dir=ws.private / PUBLISH_DIR_NAME,
                 private_dir=ws.private,
                 logs_dir=ws.logs,
                 timeout_seconds=cfg.git_clone_timeout_seconds,
