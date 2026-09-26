@@ -34,6 +34,7 @@ constants, selected by the profile NAME the frozen catalogue already chose
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -51,6 +52,30 @@ class AgentStreamFiles:
         return tuple(name for name in (self.stdout, self.stderr, self.transcript) if name)
 
 
+def cli_agent_spec(profile: str) -> Any | None:
+    """The `CliAgentSpec` of a profile whose child is a provider's coding-agent CLI.
+
+    claude-code and codex, the two runners that go through
+    `cliagent.run_cli_agent`, and None for every other name. The ONE place
+    the worker learns which profiles those are: `agent_stream_files` below
+    builds their file names from it, and the lifecycle uses it to decide
+    which standalone tasks have their working folder uploaded
+    (`agent_worker.standalone_outputs`, #184).
+
+    The runner modules are imported inside the function so that importing this
+    module -- which the lifecycle does -- does not import every runner.
+    """
+    if profile == "claude-code":
+        from .claude_code import SPEC as claude_spec
+
+        return claude_spec
+    if profile == "codex":
+        from .codex import SPEC as codex_spec
+
+        return codex_spec
+    return None
+
+
 def agent_stream_files(profile: str) -> AgentStreamFiles | None:
     """The agent stream files of a runner profile, or None when it has no agent child.
 
@@ -58,20 +83,12 @@ def agent_stream_files(profile: str) -> AgentStreamFiles | None:
     `browser` (it drives Chromium in-process). None for a name this function
     does not know, rather than a guess: a guessed name is a tail of a file
     nothing writes.
-
-    The runner modules are imported inside the function so that importing this
-    module -- which the lifecycle does -- does not import every runner.
     """
-    if profile == "claude-code":
-        from .claude_code import SPEC as claude_spec
+    spec = cli_agent_spec(profile)
+    if spec is not None:
         from .cliagent import cli_stream_files
 
-        return cli_stream_files(claude_spec)
-    if profile == "codex":
-        from .cliagent import cli_stream_files
-        from .codex import SPEC as codex_spec
-
-        return cli_stream_files(codex_spec)
+        return cli_stream_files(spec)
     if profile == "generic":
         from .generic import STREAM_FILES
 

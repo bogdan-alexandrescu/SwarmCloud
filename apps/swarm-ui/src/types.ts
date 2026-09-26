@@ -786,7 +786,67 @@ export interface ResultSummary {
    * before the change.
    */
   agent_streams?: AgentStreams | null
+  /**
+   * What a claude-code or codex task with NO repository uploaded from its
+   * working folder, as `workdir/<path>` entries of `artifacts` (#184, owner
+   * decision of 2026-09-26), and what it did not. Absent on a repository task
+   * and on every other runner. Read it through `workdirNotUploadedOf`, which
+   * checks each entry rather than trusting the shape.
+   */
+  workdir_outputs?: WorkdirOutputs
   [k: string]: unknown
+}
+
+/**
+ * `result_summary.workdir_outputs`, as `Worker._upload_workdir_outputs`
+ * writes it. `not_uploaded` is the FIRST 50 files the worker did not upload,
+ * each with its reason ("over cap", a core dump, a name that is not UTF-8, a
+ * registered secret it could not redact...); `not_uploaded_count` is all of
+ * them, and the worker's log names every one. These are never in
+ * `artifacts_skipped`, whose readers call a name there dropped at the
+ * artifacts folder's size cap.
+ */
+export interface WorkdirOutputs {
+  prefix?: string
+  uploaded?: number
+  uploaded_bytes?: number
+  not_uploaded?: WorkdirNotUploaded[]
+  not_uploaded_count?: number
+  symlinks_skipped?: number
+  working_folder_is_symlink?: boolean
+  cap_files?: number
+  cap_bytes?: number
+}
+
+/** One working-folder file the worker did not upload, and why. */
+export interface WorkdirNotUploaded {
+  /** `workdir/<path>`. A name that was not UTF-8 is spelled as its bytes (`caf\xe9.txt`). */
+  name: string
+  bytes: number | null
+  reason: string
+}
+
+/**
+ * The working-folder files a summary lists as not uploaded, and how many
+ * there were in all. `null` when the summary has no such record -- a
+ * repository task, another runner, or a summary from before #184 -- which is
+ * not the same as a record of none. An entry that is not a named file is
+ * dropped here and still counted in `total`, which comes from the worker.
+ */
+export function workdirNotUploadedOf(
+  summary: ResultSummary | null | undefined,
+): { listed: WorkdirNotUploaded[]; total: number } | null {
+  const block: unknown = summary?.workdir_outputs
+  if (block === null || typeof block !== 'object') return null
+  const { not_uploaded: entries, not_uploaded_count: count } = block as { not_uploaded?: unknown; not_uploaded_count?: unknown }
+  const raw: unknown[] = Array.isArray(entries) ? entries : []
+  const listed = raw.filter((e): e is WorkdirNotUploaded => {
+    if (e === null || typeof e !== 'object') return false
+    const { name, reason } = e as { name?: unknown; reason?: unknown }
+    return typeof name === 'string' && typeof reason === 'string'
+  })
+  const total = typeof count === 'number' && Number.isFinite(count) && count >= listed.length ? count : listed.length
+  return { listed, total }
 }
 
 /**

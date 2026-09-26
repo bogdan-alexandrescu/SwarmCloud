@@ -454,7 +454,9 @@ for i in $(seq 1 "${PARALLEL}"); do
     # instead of routing it to /dev/null: `|| true` here only keeps one failed
     # background submission from aborting the others, it must not also erase
     # the one place the cause is recorded.
-    submit_task "${PROFILE}" "$(jq -nc --argjson i "${i}" '{message:"race", index:$i, sleep_seconds:20}')" \
+    # Prompt and sleep only: the API refuses an input key the profile does
+    # not declare (contract request 25), and `sleep_seconds` is the mock's.
+    submit_task "${PROFILE}" "$(jq -nc --argjson i "${i}" '{prompt: ("race " + ($i|tostring)), sleep_seconds: 20}')" \
       '{"metadata":{"source":"race-test"}}' >"${SUBMIT_DIR}/${i}.id" 2>"${SUBMIT_DIR}/${i}.err" || true
   ) &
 done

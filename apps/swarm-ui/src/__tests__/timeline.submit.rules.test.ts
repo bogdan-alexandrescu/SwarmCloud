@@ -56,30 +56,30 @@ function won(el: Element, prop: string | readonly string[], env: CascadeEnv, sta
 /** Every rule whose selector names this class, anywhere in it. */
 const naming = (needle: string) => flatRules(STYLES).filter((r) => r.selector.includes(needle))
 
+// RE-POINTED (#185, decision 7). The three TS-3 and TS-9 cases below read the
+// row-window Timeline's `.chart`, `.col`, `.col-label` and `.chart-legend .cl-n`
+// out of the sheet. Those rules are deleted with the page that drew them; the
+// same decisions are the ledger's now, and each case asks the ledger's rule.
 describe('epic #84: the Timeline and Submit rules', () => {
-  it('TS-3: a phone shows every third hour and a wide screen its own thinning', () => {
-    // MUTATION: drop either visibility rule, or the @media around the phone pair.
+  it('TS-3: a phone shows its own axis and a wide screen its own thinning', () => {
+    // The ledger's axes are drawn per drawing -- every third hour on the
+    // narrow one -- and the sheet shows exactly one drawing for the box it
+    // is in (activity.timeline "labels a phone's hourly axis every third
+    // hour..." holds the labels). MUTATION: show the wide drawing in a phone's
+    // box, or hide the narrow one there.
     const f = fragment(
-      '<div class="chart"><div class="col"><span class="col-label is-wide-only">01 AM</span></div>' +
-        '<div class="col"><span class="col-label is-phone-only">03 AM</span></div>' +
-        '<div class="col"><span class="col-label">06 AM</span></div></div>',
+      '<figure class="ol-chart"><div class="ol-drawing is-wide" id="w"></div>' +
+        '<div class="ol-drawing is-narrow" id="n"></div></figure>',
     )
-    const wide = pick(f, '.is-wide-only')
-    const phone = pick(f, '.is-phone-only')
-    const both = pick(f, '.col-label:not(.is-wide-only):not(.is-phone-only)')
-    expect(won(wide, 'visibility', PHONE), 'a wide-only label prints at phone width').toBe('hidden')
-    expect(won(phone, 'visibility', PHONE), 'a phone label is hidden at phone width').toBe('visible')
-    expect(won(wide, 'visibility', WIDE)).not.toBe('hidden')
-    expect(won(phone, 'visibility', WIDE), 'a phone-only label crowds the wide axis').toBe('hidden')
-    // A label on both axes is never hidden.
-    expect(won(both, 'visibility', PHONE)).toBeNull()
-    expect(won(both, 'visibility', WIDE)).toBeNull()
+    const shown = (env: CascadeEnv) => ['#w', '#n'].filter((id) => won(pick(f, id), 'display', env) !== 'none')
+    expect(shown({ ...PHONE, container: 358 }), 'a phone column').toEqual(['#n'])
+    expect(shown({ ...WIDE, container: 1144 }), 'the page-width column').toEqual(['#w'])
   })
 
-  it('TS-3: fades the chart\'s left edge only while older buckets are off-screen', () => {
-    // MUTATION: put the mask on `.chart` itself, or delete it.
-    const f = fragment('<div class="chart" id="a"></div><div class="chart has-older" id="b"></div>')
-    expect(won(pick(f, '#a'), ['mask-image', 'mask'], WIDE), 'a chart that fits is faded').toBeNull()
+  it("TS-3: fades the plot's left edge only while older buckets are off-screen", () => {
+    // MUTATION: put the mask on `.ol-plot` itself, or delete it.
+    const f = fragment('<div class="ol-plot" id="a"></div><div class="ol-plot has-older" id="b"></div>')
+    expect(won(pick(f, '#a'), ['mask-image', 'mask'], WIDE), 'a plot that fits is faded').toBeNull()
     const mask = won(pick(f, '#b'), ['mask-image', 'mask'], WIDE) ?? ''
     expect(mask, 'nothing cues the buckets off the left edge').toMatch(/^linear-gradient\(to right, transparent/)
     expect(won(pick(f, '#b'), '-webkit-mask-image', WIDE)).toBe(mask)
@@ -87,13 +87,16 @@ describe('epic #84: the Timeline and Submit rules', () => {
 
   it('TS-9: a picked column is backed by the hueless selection step, and a focused one is ringed', () => {
     // MUTATION: a hue on the pick, or no ring on the column.
-    const f = fragment('<div class="chart"><div class="col is-picked"></div><div class="col"></div></div>')
-    expect(won(pick(f, '.col.is-picked'), ['background', 'background-color'], WIDE)).toBe('var(--surface-2)')
-    const ring = won(pick(f, '.col:not(.is-picked)'), ['outline', 'outline-style', 'outline-width'], WIDE, ['focus-visible'])
+    const f = fragment(
+      '<svg class="ol-svg"><rect class="ol-sel"/><rect class="ol-sel-rule"/></svg>' +
+        '<div class="ol-cols"><div class="ol-col"></div></div>',
+    )
+    expect(won(pick(f, '.ol-sel'), 'fill', WIDE)).toBe('var(--surface-2)')
+    const ring = won(pick(f, '.ol-col'), ['outline', 'outline-style', 'outline-width'], WIDE, ['focus-visible'])
     expect(ring ?? '', 'a column Tab reaches draws no focus ring').toContain('var(--info)')
     // The readout's counts are ink, so they read as the figures they are.
-    const legend = fragment('<p class="chart-legend"><b class="cl-n">2</b></p>')
-    expect(won(pick(legend, '.cl-n'), 'color', WIDE)).toBe('var(--text)')
+    const legend = fragment('<p class="ol-legend"><b class="ol-n">2</b></p>')
+    expect(won(pick(legend, '.ol-n'), 'color', WIDE)).toBe('var(--text)')
   })
 
   it('TS-14: nothing on the dispatch control draws the dashed "unavailable" card any more', () => {

@@ -413,6 +413,9 @@ def payloads(db, tokens, group_map) -> dict[str, dict[str, Any]]:
         "platform_including": route_tests.ok(api, "root", tenant=["research", "eng"], **week),
         # An explicit range, as the from-to inputs and a zoom send it.
         "range": route_tests.ok(api, "alice", tz="UTC", since="2026-09-20", until="2026-09-24"),
+        # kind=standalone: `workflows_failed` does not apply, and its counts are
+        # null rather than 0 (the review of #196), which outcomes.ts must allow.
+        "standalone": route_tests.ok(api, "alice", kind="standalone", **week),
     }
 
     # A read past its derive budget: unread buckets, their reasons, coverage.unread.

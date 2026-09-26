@@ -61,7 +61,7 @@ TF_VAR_ARGS  := -var-file=$(CURDIR)/$(VAR_FILE)
         test tf-test ui-test ui-component-test lint \
         bench bench-ui bench-baseline \
         fmt security tf-init tf-plan tf-apply status logs pause-swarm resume-swarm \
-        destroy destroy-guard-proof purge-data dev kubectl register-tenant secrets clean
+        destroy destroy-guard-proof purge-data dev kubectl register-tenant add-provider secrets clean
 
 ## ---------------------------------------------------------------------------
 ## Getting started
@@ -371,6 +371,15 @@ resume-swarm: ## Resume exactly what pause-swarm paused
 register-tenant: ## Register a tenant (GROUP=eng@saga.xyz or USER=alice@saga.xyz)
 	@test -n "$${GROUP:-}$${USER_EMAIL:-}" || { echo "usage: make register-tenant GROUP=eng@saga.xyz [PROVIDERS=anthropic]"; exit 1; }
 	@$(SCRIPTS)/register-tenant.sh $${GROUP:+--group $$GROUP} $${USER_EMAIL:+--user $$USER_EMAIL} $${PROVIDERS:+--providers $$PROVIDERS}
+
+# NOT `make register-tenant PROVIDERS=...` again. A re-run writes the whole tenant
+# record: --providers REPLACES its credentials list, and max_active, capacity_units
+# and display_name go back to their defaults. This grants the tenant's worker the
+# one secret and adds the provider to the list, and writes nothing else. DRY_RUN
+# is matched as exactly 1, so an inherited DRY_RUN=0 does not turn it on.
+add-provider: ## Add one provider to a registered tenant, keeping the rest (TENANT=eng PROVIDER=git [DRY_RUN=1])
+	@test -n "$${TENANT:-}" -a -n "$${PROVIDER:-}" || { echo "usage: make add-provider TENANT=eng PROVIDER=git [DRY_RUN=1]"; exit 1; }
+	@$(SCRIPTS)/register-tenant.sh --tenant "$$TENANT" --add-provider "$$PROVIDER" $(if $(filter 1,$(DRY_RUN)),--dry-run)
 
 secrets: ## Store a tenant provider key (TENANT=eng PROVIDER=anthropic)
 	@test -n "$${TENANT:-}" -a -n "$${PROVIDER:-}" || { echo "usage: make secrets TENANT=eng PROVIDER=anthropic"; exit 1; }

@@ -9,12 +9,15 @@ One attempt, one directory tree, created empty and destroyed at the end:
         logs/          stdout.log, stderr.log
         tmp/           TMPDIR for the child, so a stray temp file cannot escape
         restore/       staging for a downloaded checkpoint archive (never checkpointed)
-        private/       the WORKER's own scratch: git credentials during a clone.
+        private/       the WORKER's own scratch: git credentials during a clone,
+                       and the one-file-at-a-time copy a standalone task's
+                       working-folder upload redacts before it sends it (#184).
                        Its path is never in the child's environment, it is never
-                       checkpointed and never uploaded. Same uid, so this is not
-                       a permission boundary -- it is the difference between a
-                       credential file the agent is handed the path to and one it
-                       would have to go looking for, and the clone deletes it.
+                       checkpointed and never walked for upload. Same uid, so
+                       this is not a permission boundary -- it is the difference
+                       between a credential file the agent is handed the path to
+                       and one it would have to go looking for, and the clone
+                       deletes it.
 
 The one rule worth stating out loud: **a resumed worker starts from an empty
 tree.** Cloud Run's ephemeral disk is per-execution, but GKE Jobs, local runs and

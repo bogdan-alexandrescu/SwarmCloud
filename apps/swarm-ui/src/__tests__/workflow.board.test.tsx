@@ -2567,8 +2567,10 @@ describe('the settlements: what a finished row draws, and what a healthy one doe
   /**
    * IN TS-4's VOCABULARY, which the settlement names: solid, the 2px rule on
    * failed, the flat 'ended' bars for cancelled. Asked as the Timeline's own
-   * drawing -- whatever the cascade gives `.stackcol > i.<outcome>` it must
-   * give the row's segment -- so the two cannot drift apart.
+   * drawing -- whatever the cascade gives the ledger's outcome track,
+   * `.ol-meter > .ol-seg.<outcome>`, it must give the row's segment -- so the
+   * two cannot drift apart. (It asked `.stackcol > i.<outcome>` until the
+   * row-window Timeline's rules were deleted, #185 decision 7.)
    *
    * DEAD-LETTERED TAKES THE FAILED FORM. TS-4's stack has no fourth form for
    * it: Activity counts a dead-lettered task as failed, and `stateTone` calls
@@ -2590,9 +2592,9 @@ describe('the settlements: what a finished row draws, and what a healthy one doe
       return el!
     }
     const stack = document.createElement('div')
-    stack.innerHTML = '<div class="stackcol"><i class="failed"></i><i class="cancelled"></i></div>'
+    stack.innerHTML = '<span class="ctl-track ol-meter"><i class="ol-seg failed"></i><i class="ol-seg cancelled"></i></span>'
     document.body.appendChild(stack)
-    const ts4 = (k: string) => stack.querySelector(`.stackcol > i.${k}`)!
+    const ts4 = (k: string) => stack.querySelector(`.ol-meter > .ol-seg.${k}`)!
     const FILL = ['background', 'background-color', 'background-image']
     const EDGE = ['box-shadow']
     const HUES = ['--ok', '--info', '--warn', '--bad', '--paused']

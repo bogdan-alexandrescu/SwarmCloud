@@ -23,7 +23,15 @@ from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 from typing import Any, Iterable, Mapping, Sequence
 
-from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES, RunnerProfile
+from swarm_common.profiles import (
+    INT64_MAX,
+    INT64_MIN,
+    RESOURCE_CLASSES,
+    RUNNER_PROFILES,
+    InputRefused,
+    RunnerProfile,
+    check_inputs,
+)
 
 from .errors import ValidationFailed
 
@@ -154,6 +162,110 @@ def validate_input_size(payload: Any, max_bytes: int, *, label: str = "input") -
             detail={"bytes": size, "max_bytes": max_bytes},
         )
     return size
+
+
+def validate_storable(payload: Any, *, label: str = "input", step_id: str | None = None) -> None:
+    """Refuse an integer, anywhere in `payload`, that Firestore cannot store.
+
+    Python reads a JSON integer of any length, and Firestore stores a signed
+    64-bit one, so `{"n": 10**30}` passed every check this module made and
+    raised when the task was written: a 500 at the store, where the caller
+    learns nothing, instead of a 422 here that names the path (the review of
+    #213). A declared runner input cannot get this far out of range --
+    `RunnerInput` requires both bounds, inside the same range -- but a profile
+    whose inputs are not declared yet (`browser`, `generic`, #218) is bounded
+    by size alone, and a task's metadata by size and its reserved keys. This is
+    the store's own limit, not a declaration, so it applies to every profile.
+
+    Walked with a stack, not recursion: a payload nested a thousand deep is
+    small enough to pass the size limit and deep enough to overflow Python's.
+    """
+    stack: list[tuple[str, Any]] = [(label, payload)]
+    while stack:
+        path, value = stack.pop()
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, int):
+            if not INT64_MIN <= value <= INT64_MAX:
+                message = (
+                    f"{path} is a {len(str(abs(value)))}-digit integer, outside the "
+                    f"signed 64-bit range Firestore stores ({INT64_MIN}..{INT64_MAX})"
+                )
+                detail: dict[str, Any] = {"path": path, "range": "signed 64-bit"}
+                if step_id is not None:
+                    detail["step_id"] = step_id
+                    message = f"step {step_id!r}: {message}"
+                raise ValidationFailed(message, detail=detail)
+        elif isinstance(value, Mapping):
+            stack.extend((f"{path}.{key}", item) for key, item in value.items())
+        elif isinstance(value, (list, tuple)):
+            stack.extend((f"{path}[{index}]", item) for index, item in enumerate(value))
+
+
+class InvalidInput(ValidationFailed):
+    """A task's or a step's `input` sets a key its runner profile does not
+    declare, or a declared key outside its bounds (contract request 25).
+
+    Its own code, like `invalid_dispatch` and `invalid_dag`, so a caller can
+    branch on it: this refusal is about what was sent to the runner, and its
+    detail names the key (`key`, and every refused key in `keys`), the bound
+    it broke (`expected`, for a declared key), what the profile does declare
+    (`declared`) and, on a workflow, the step (`step_id`).
+    """
+
+    code = "invalid_input"
+
+
+#: The one key of `input` every profile takes: the instructions. Everything
+#: else is what `RunnerProfile.inputs` declares.
+PROMPT_INPUT_KEY = "prompt"
+
+
+def validate_runner_input(
+    profile: RunnerProfile, payload: Mapping[str, Any], *, step_id: str | None = None
+) -> None:
+    """Refuse an `input` key the profile does not declare, or a value out of its bounds.
+
+    THE CATALOGUE IS THE RULE, and this keeps no copy of it: the owner accepted
+    contract request 25 on #142 (2026-09-25) as "`RunnerProfile.inputs` goes in
+    the frozen catalogue and the API enforces it for every caller, not only the
+    bridge". Until then the API bounded an input's SIZE and nothing else, so a
+    script or the Submit form could send the mock `quota_exhausted` -- which
+    parked on every attempt, and a park does not spend one -- or send
+    `claude-code` a `model`, which its runner passes as `--model`.
+
+    Every caller reaches this: `_build_task` calls it for a task and for each
+    task of a batch, and `submit_workflow` for each step before any task is
+    built. Values are checked, never rewritten: the input is stored as sent.
+
+    EVERY PROFILE IS ASKED, and the answer is the shared rule's. A profile
+    whose inputs are NOT DECLARED YET (`inputs is None`: `browser`, `generic`,
+    open with the owner on #218) is bounded by size alone, as every profile was
+    before, because its runner cannot start without keys nobody has decided on
+    yet -- and that is `check_inputs`'s answer, not a branch here. The review
+    of #213 found this function returning before it asked, while the shared
+    rule refused every key for the same profiles: two answers to one question.
+    The size is `validate_input_size`'s, which every caller runs first.
+    """
+    rest = {key: value for key, value in payload.items() if key != PROMPT_INPUT_KEY}
+    try:
+        check_inputs(profile, rest)
+    except InputRefused as refused:
+        # Only a profile that declares can refuse, so `inputs` is a mapping here.
+        declared = profile.inputs or {}
+        detail: dict[str, Any] = {
+            "runner_profile": profile.name,
+            "key": refused.key,
+            "keys": list(refused.keys),
+            "declared": {key: spec.describe() for key, spec in sorted(declared.items())},
+        }
+        if refused.expected is not None:
+            detail["expected"] = refused.expected
+        message = str(refused)
+        if step_id is not None:
+            detail["step_id"] = step_id
+            message = f"step {step_id!r}: {message}"
+        raise InvalidInput(message, detail=detail) from None
 
 
 def validate_batch_size(count: int, max_batch_size: int) -> None:

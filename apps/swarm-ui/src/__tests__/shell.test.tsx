@@ -381,18 +381,11 @@ describe('B4.3: the six moves', () => {
   })
 
   it('move 3: a bar is capped and packed left, not stretched to the glass', () => {
+    // RE-POINTED (#185, decision 7): the row-window chart's `.chart .col` and
+    // its 72px cap are deleted with the page that drew them. The ledger draws
+    // its bars in SVG, capped at 28px in its own geometry, and
+    // timeline.causes.test.tsx ("never draws a bar wider than 28px") holds it.
     const style = withStyles()
-    const chart = render(
-      <div className="chart">
-        <div className="col" />
-      </div>,
-    )
-    const col = getComputedStyle(chart.container.querySelector('.col')!)
-    expect(col.maxWidth).toBe('72px')
-    expect(getComputedStyle(chart.container.querySelector('.chart')!).justifyContent).toBe(
-      'flex-start',
-    )
-
     const row = render(<div className="split-row" />)
     const grid = getComputedStyle(row.container.querySelector('.split-row')!)
     // No `1fr` in the middle: a fraction is what stretched the bar to whatever
@@ -2275,7 +2268,7 @@ describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
         '<p class="sub">read 2s ago <button>refresh</button></p>' +
         '<div class="ctl-dock-tools"><a href="#a">API reads</a></div>' +
         '<p class="ctl-panel-note"><a href="#b">why</a></p>' +
-        '<p class="wb-more"><a href="#c">widen</a></p>' +
+        '<p class="ol-line"><a class="ctl-link" href="#c">open in Agents</a></p>' +
         '<div class="wf-inspect-head"><a class="wf-inspect-run" href="#d">run</a></div>' +
         '<p><a href="#e">What these mean</a></p>' +
         '</div>',
@@ -2284,7 +2277,7 @@ describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
       pick(f, '.sub button'),
       pick(f, '.ctl-dock-tools a'),
       pick(f, '.ctl-panel-note a'),
-      pick(f, '.wb-more a'),
+      pick(f, '.ol-line .ctl-link'),
       pick(f, '.wf-inspect-run'),
       pick(f, 'p:last-child a'),
     ]
@@ -2347,7 +2340,7 @@ describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
         '<div class="ctl-nav-util"><button>?</button></div></nav>' +
         '<div class="ctl-seg"><button>Live</button></div>' +
         '<span class="limit-edit"><input type="number"><button>save</button></span>' +
-        '<div class="wb-controls"><select></select></div>' +
+        '<button class="ol-table-toggle">Table</button>' +
         '<button class="sbf-go">Send</button>' +
         '<div class="wfb-step"><button class="sbf-offer">url</button></div>' +
         '<button class="ctl-q-glyph">?</button><button class="ov-refresh">refresh</button>' +
@@ -2363,7 +2356,7 @@ describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
       '.ctl-seg > button',
       '.limit-edit input',
       '.limit-edit button',
-      '.wb-controls select',
+      '.ol-table-toggle',
       '.sbf-go',
       '.wfb-step .sbf-offer',
     ]) {
@@ -2553,7 +2546,9 @@ describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
     // moved onto the shared strip (TS-11) and those two rules are deleted.
     // Not `.ctl-metric`, whose 3px `padding-bottom` is the reserved rule's
     // gap and not a spacing step.
-    for (const sel of ['.sub', '.window-bar', '.ctl-metrics', '.dsp', '.dsp-options', '.wfb-stage + .wfb-stage']) {
+    // `.ol-toolbar` where `.window-bar` was: the row window's bar went with it
+    // (#185, decision 7), and the ledger's toolbar is the one the page draws.
+    for (const sel of ['.sub', '.ol-toolbar', '.ctl-metrics', '.dsp', '.dsp-options', '.wfb-stage + .wfb-stage']) {
       const rules = flatRules(STYLES).filter((r) => r.conditions.length === 0 && r.selector === sel)
       expect(rules.length, `no top-level rule for ${sel}`).toBeGreaterThan(0)
       for (const r of rules) {
@@ -2567,12 +2562,23 @@ describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
     }
   })
 
-  it('TS-22: the "still open" legend key is the hatch its segment is', () => {
-    // MUTATION: give the key its own flat fill again.
-    const f = fragment('<p class="chart-legend"><i class="k open"></i></p><div class="stackcol"><i class="open"></i></div>')
-    const bar = won(pick(f, '.stackcol > i'), ['background', 'background-image'], WIDE)
-    expect(bar).toMatch(/gradient/)
-    expect(won(pick(f, '.k'), ['background', 'background-image'], WIDE)).toBe(bar)
+  it('TS-22: every legend key is drawn by the rule its segment is drawn by', () => {
+    // RE-POINTED (#185, decision 7). This case held the "still open" key to its
+    // hatched segment; both were the row-window Timeline's, and both are
+    // deleted with it -- the ledger draws only work that ended. TS-22's rule
+    // is held here for the pairs that remain: the Workflows row's segments and
+    // the ledger's keys share one declaration each.
+    // MUTATION: give a key its own fill again.
+    const f = fragment(
+      '<span class="wf-meter"><i class="wf-seg failed"></i><i class="wf-seg cancelled"></i></span>' +
+        '<p class="ol-legend"><i class="ol-k is-bad"></i><i class="ol-k is-ended"></i></p>',
+    )
+    const cancelled = won(pick(f, '.wf-seg.cancelled'), ['background', 'background-image'], WIDE)
+    expect(cancelled).toMatch(/gradient/)
+    expect(won(pick(f, '.ol-k.is-ended'), ['background', 'background-image'], WIDE)).toBe(cancelled)
+    expect(won(pick(f, '.ol-k.is-bad'), ['background', 'background-color'], WIDE)).toBe(
+      won(pick(f, '.wf-seg.failed'), ['background', 'background-color'], WIDE),
+    )
   })
 
   it('TS-24: the dependency disclosure has a marker, a hover and a focus ring', () => {

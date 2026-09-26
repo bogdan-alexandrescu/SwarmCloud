@@ -303,13 +303,16 @@ def run_cli_agent(
         if not re.fullmatch(r"[A-Za-z0-9._:\-]{1,128}", str(model)):
             raise RunnerFailure(f"input.model {model!r} contains unsupported characters")
         argv += [spec.model_flag, str(model)]
-    # WHAT LATER STEPS NEED FROM THIS ONE (#149). The worker puts the names in
-    # input.json when a dependant's `input_from` stages them from this task.
-    # They go into the PROMPT because the prompt is the one instruction channel
-    # every CLI runner shares. A system-prompt flag would have to exist in
-    # whichever CLI release the image carries, and `*_ARGS` can replace the
-    # whole flag set. With no names the prompt is passed unchanged, byte for
-    # byte. See agent_worker/expected_outputs.py for what is measured and why.
+    # WHERE DELIVERABLES GO, AND WHAT LATER STEPS NEED FROM THIS ONE. Every
+    # prompt ends with one line naming $SWARM_ARTIFACTS_DIR (#184, owner
+    # decision of 2026-09-26: `expected_mod.deliverables_line`). When a
+    # dependant's `input_from` stages files from this task, the worker has put
+    # their names in input.json, and they follow that line (#149). Both go into
+    # the PROMPT because the prompt is the one instruction channel every CLI
+    # runner shares. A system-prompt flag would have to exist in whichever CLI
+    # release the image carries, and `*_ARGS` can replace the whole flag set.
+    # This is the ONE call that builds them, for claude-code and codex alike.
+    # See agent_worker/expected_outputs.py for what is measured and why.
     expected = expected_mod.parse_names(payload.get(expected_mod.METADATA_KEY))
     # THIS RUNNER'S OWN FILES ARE LEFT OUT. A dependant may stage the upstream
     # runner's log or transcript, and the API records that name like any

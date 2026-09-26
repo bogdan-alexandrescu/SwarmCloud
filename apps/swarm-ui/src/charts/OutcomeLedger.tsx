@@ -22,9 +22,27 @@
 //      `--bad` with the 2px ground-coloured cut, never under 4px, all on ONE
 //      count scale through zero. A measured zero is the axis tick alone.
 //   3  Cancelled, on its OWN scale with its max printed, so 305 cancels on
-//      22 Sep can no longer flatten that day's 8 failures. Requested (and
-//      other) cancels are TS-4's flat "ended" bars; the cancels a failure
-//      caused are a 1px outline with no fill. No hue: a cancel is not a verdict.
+//      22 Sep can no longer flatten that day's 8 failures. Three marks, all in
+//      TS-4's cancel vocabulary and none with a hue (a cancel is not a
+//      verdict), stacked up from the axis:
+//        requested (and other)  TS-4's flat "ended" bars -- a cancel -- whose
+//                               pattern starts at the baseline, so a mark
+//                               always stands on one whole bar;
+//        after a cancel         the flat bars inside a 1px outline -- a
+//                               cascade (the outline) that began at a cancel
+//                               somebody asked for (the bars);
+//        after a failure        the 1px outline alone, no fill -- a cascade
+//                               that began at a failure, however many steps
+//                               down it reached (workflow sweeps included,
+//                               which only a failure starts).
+//      The two cascades used to be one outline, because the scheduler writes
+//      the same words for both; the route splits them now (#185, decision 2)
+//      by where each chain began, not by the state of the step just above
+//      (the review of #217), and the readout names each. The after-a-cancel
+//      mark is never under 7px and its bars start at its own top, so a bar
+//      always shows inside the outline: at 3-4px on a page-anchored pattern
+//      it drew as the after-a-failure outline pixel for pixel. The minimum
+//      heights come out of the tallest mark, never out of the lane's top.
 //   4  Throughput (owner decision, from the Flow concept): submitted per bucket
 //      against finished per bucket, answering "are we keeping up". THE ONLY
 //      LANE ON THE SUBMISSION-TIME BASIS, and its label says so. Submitted is a
@@ -94,7 +112,7 @@ import {
   type Outcomes,
 } from '../outcomes'
 import { Mark } from '../primitives'
-import { HatchDef, useHatchId } from './parts'
+import { HatchDef, VALUE_LABEL_GAP_PX, useHatchId } from './parts'
 
 /**
  * The three drawings. `w` is the nominal width; `floor` the narrowest a
@@ -122,6 +140,67 @@ const PHONE_HOUR_STRIDE = 3
 
 /** A failed column that is not zero is never thinner than the 2px cut plus 2px of `--bad` (WF-1). */
 const MIN_FAILED_PX = 4
+
+/** A lane-3 mark that counts anything is never under one flat bar's height. */
+const MIN_CANCEL_PX = 3
+
+/** TS-4's flat "ended" bars: a 3px bar every 5px (§15.3). */
+const FLAT_BAR = 3
+const FLAT_PERIOD = 5
+
+/**
+ * AN "AFTER A CANCEL" MARK IS NEVER UNDER 7px: its 1px outline, one whole
+ * 3px flat bar and the 2px gap after it, and the outline again -- exactly one
+ * period of its key (`.ol-k.is-after-cancel`: the bars from the top inner edge
+ * of a 1px border). Anything shorter has no room for a bar, and at 3-4px it
+ * drew as the bare "after a failure" outline pixel for pixel (the review of
+ * #217). The bars inside it are drawn from the MARK's own top edge
+ * (`innerBars`), not from a page-anchored pattern, so a bar always lands
+ * inside the outline whatever height the stack below leaves it at.
+ */
+const MIN_AFTER_CANCEL_PX = 1 + FLAT_PERIOD + 1
+
+/**
+ * Lane 3's three marks, stacked up from the baseline: requested (and other),
+ * after a cancel, after a failure. Each is its count on the lane's scale, but
+ * never under its minimum -- and THE MINIMUMS ARE TAKEN BACK FROM THE TALLEST
+ * MARK when the stack would pass the lane's top. A minimum is extra height on
+ * top of the count's, so a full column with a small cascade on it rose past
+ * the lane into its label; now the column's total stays on the scale, and the
+ * readout and the Table carry the exact split.
+ */
+function laneThreeStack(flatN: number, cascN: number, afterN: number, k: number, laneH: number): [number, number, number] {
+  const marks = [
+    { n: flatN, min: MIN_CANCEL_PX },
+    { n: cascN, min: MIN_AFTER_CANCEL_PX },
+    { n: afterN, min: MIN_CANCEL_PX },
+  ].map((m) => {
+    const min = m.n === 0 ? 0 : m.min
+    return { min, h: m.n === 0 ? 0 : Math.max(min, m.n * k) }
+  })
+  let over = marks.reduce((s, m) => s + m.h, 0) - laneH
+  for (const m of [...marks].sort((a, b) => b.h - a.h)) {
+    if (over <= 0) break
+    const give = Math.min(over, m.h - m.min)
+    m.h -= give
+    over -= give
+  }
+  return [marks[0]!.h, marks[1]!.h, marks[2]!.h]
+}
+
+/**
+ * The flat bars inside an "after a cancel" outline whose outer edges are
+ * `top` and `bottom`: from the outline's inner top edge, a 3px bar every 5px,
+ * cut at its inner bottom edge -- the key's own drawing, anchored to the mark.
+ */
+function innerBars(top: number, bottom: number): Array<{ y: number; h: number }> {
+  const bars: Array<{ y: number; h: number }> = []
+  const floor = bottom - 1
+  for (let y = top + 1; y < floor; y += FLAT_PERIOD) {
+    bars.push({ y: r1(y), h: r1(Math.min(FLAT_BAR, floor - y)) })
+  }
+  return bars
+}
 
 const TOP = 26
 
@@ -195,6 +274,39 @@ function scalesOf(buckets: readonly OutcomeBucket[]): Scales {
 }
 
 const r1 = (v: number) => Math.round(v * 10) / 10
+
+/** One label of the scale column: its text and its baseline. */
+interface GutterTick {
+  key: string
+  text: string
+  y: number
+}
+
+/**
+ * THE SCALE COLUMN'S LABELS NEVER PRINT INTO EACH OTHER (epic #222). The
+ * decided lane's zero sits wherever the split puts it -- near the floor when
+ * successes outnumber failures, near the top the other way -- and the gutter
+ * drew its "0" and both maxima whatever the distance: in the QA of #197 the
+ * "0" and the failed max "7" overprinted by 4px at 1440 and 9px at 390.
+ *
+ * THE RULE IS `ValueAxis`'s (TimeSeries.tsx), WITH ITS GAP: labels are kept in
+ * `ranked` order, and one within VALUE_LABEL_GAP_PX of a label already kept is
+ * dropped, never nudged off the value it names. The caller ranks the rate
+ * lane's fixed ticks first, then the decided lane's zero -- the value both
+ * sides hang from, ValueAxis's `keep` -- then its top, then its floor. So what
+ * gives way is the SMALLER side's max, next to the zero; the larger side's
+ * sits at least half the lane away. Both sides share one scale (`k2`), so the
+ * larger max still sets it, and the readout, the column's name and the Table
+ * print every count exactly.
+ */
+function gutterTicks(ranked: readonly GutterTick[]): GutterTick[] {
+  const kept: GutterTick[] = []
+  for (const t of ranked) {
+    if (kept.some((k) => Math.abs(k.y - t.y) < VALUE_LABEL_GAP_PX)) continue
+    kept.push(t)
+  }
+  return kept
+}
 
 /**
  * The lane labels, by drawing: the narrow one cannot carry the long form.
@@ -290,6 +402,16 @@ function Drawing({
   const zeroY = span2 === 0 ? L2.y + L2.h / 2 : L2.y + scales.up * k2
   const k3 = scales.cancelled === 0 ? 0 : L3.h / scales.cancelled
   const k4 = scales.flow === 0 ? 0 : L4.h / scales.flow
+  // Lane 3's baseline, which every mark in it stands on.
+  const base3 = L3.y + L3.h
+
+  // The scale column's labels, in the order they are kept (`gutterTicks`).
+  const ticks = gutterTicks([
+    ...[1, 0.5, 0].map((t) => ({ key: `r${t}`, text: `${t * 100}%`, y: ry(t) + 4 })),
+    { key: 'zero', text: '0', y: r1(zeroY) + 4 },
+    ...(scales.up > 0 ? [{ key: 'up', text: String(scales.up), y: L2.y + 8 }] : []),
+    ...(scales.down > 0 ? [{ key: 'down', text: String(scales.down), y: L2.y + L2.h }] : []),
+  ])
 
   // The rate line's runs: consecutive buckets with a rate. Unread and
   // nothing-decided buckets break it; the current bucket joins by a dash.
@@ -330,22 +452,11 @@ function Drawing({
         aria-hidden="true"
         focusable="false"
       >
-        {[1, 0.5, 0].map((t) => (
-          <text key={`r${t}`} className="ol-tick" x={g.left - 6} y={ry(t) + 4} textAnchor="end">{`${t * 100}%`}</text>
+        {ticks.map((t) => (
+          <text key={t.key} className="ol-tick" x={g.left - 6} y={t.y} textAnchor="end">
+            {t.text}
+          </text>
         ))}
-        <text className="ol-tick" x={g.left - 6} y={r1(zeroY) + 4} textAnchor="end">
-          0
-        </text>
-        {scales.up > 0 && (
-          <text className="ol-tick" x={g.left - 6} y={L2.y + 8} textAnchor="end">
-            {scales.up}
-          </text>
-        )}
-        {scales.down > 0 && (
-          <text className="ol-tick" x={g.left - 6} y={L2.y + L2.h} textAnchor="end">
-            {scales.down}
-          </text>
-        )}
       </svg>
 
       {/* THE LANE LABELS, pinned over the plot's left edge on the page's ground. */}
@@ -377,9 +488,19 @@ function Drawing({
           >
             <HatchDef id={hatch} />
             <defs>
-              {/* TS-4's flat "ended" bars: a 3px bar every 5px, anchored to the page so columns line up. */}
-              <pattern id={flat} width={4} height={5} patternUnits="userSpaceOnUse">
-                <rect className="ol-flat" x={0} y={0} width={4} height={3} />
+              {/* TS-4's flat "ended" bars: a 3px bar every 5px, ANCHORED TO LANE 3's BASELINE,
+                  so every "requested (and other)" mark stands on one whole bar and the columns
+                  still line up, since they share the baseline. From the SVG's origin the bars
+                  fell where they fell: the baseline is y ≡ 1 (mod 5) in all three drawings, so a
+                  3px mark painted its bottom row alone, against the baseline rule (epic #222). */}
+              <pattern
+                id={flat}
+                y={base3 - FLAT_BAR}
+                width={4}
+                height={FLAT_PERIOD}
+                patternUnits="userSpaceOnUse"
+              >
+                <rect className="ol-flat" x={0} y={0} width={4} height={FLAT_BAR} />
               </pattern>
             </defs>
 
@@ -475,9 +596,15 @@ function Drawing({
               const ok = b.succeeded ?? 0
               const bad = (b.failed ?? 0) + (b.dead_lettered ?? 0)
               const flatN = (b.cancelled?.requested ?? 0) + (b.cancelled?.other ?? 0)
+              const cascN = b.cancelled?.after_cancel ?? 0
               const afterN = (b.cancelled?.after_failure ?? 0) + (b.cancelled?.workflow_sweep ?? 0)
-              const flatH = flatN === 0 ? 0 : Math.max(3, flatN * k3)
-              const afterH = afterN === 0 ? 0 : Math.max(3, afterN * k3)
+              const [flatH, cascH, afterH] = laneThreeStack(flatN, cascN, afterN, k3, L3.h)
+              // The stack's edges, rounded ONCE each, so neighbouring marks
+              // share an edge exactly and none passes the lane's top or base.
+              const e0 = base3
+              const e1 = r1(e0 - flatH)
+              const e2 = r1(e0 - flatH - cascH)
+              const e3 = r1(e0 - flatH - cascH - afterH)
               const fin = b.ended ?? 0
               const sub = b.submitted ?? 0
               return (
@@ -493,18 +620,41 @@ function Drawing({
                   {ok === 0 && bad === 0 && tick(zeroY, 'z2')}
                   {/* Lane 3 */}
                   {flatH > 0 && (
-                    <rect className="ol-m-ended" x={x} y={r1(L3.y + L3.h - flatH)} width={w} height={r1(flatH)} fill={`url(#${flat})`} />
+                    <rect className="ol-m-ended" x={x} y={e1} width={w} height={r1(e0 - e1)} fill={`url(#${flat})`} />
+                  )}
+                  {cascH > 0 && (
+                    <g className="ol-m-casc">
+                      {/* After a cancel: the flat bars (a cancel) in the outline (a cascade),
+                          the bars counted from the mark's own top so one always shows. */}
+                      {innerBars(e2, e1).map((bar) => (
+                        <rect
+                          key={bar.y}
+                          className="ol-flat"
+                          x={r1(x + 1)}
+                          y={bar.y}
+                          width={r1(Math.max(1, w - 2))}
+                          height={bar.h}
+                        />
+                      ))}
+                      <rect
+                        className="ol-m-after-cancel"
+                        x={r1(x + 0.5)}
+                        y={r1(e2 + 0.5)}
+                        width={r1(Math.max(0, w - 1))}
+                        height={r1(Math.max(0, e1 - e2 - 1))}
+                      />
+                    </g>
                   )}
                   {afterH > 0 && (
                     <rect
                       className="ol-m-after"
                       x={r1(x + 0.5)}
-                      y={r1(L3.y + L3.h - flatH - afterH + 0.5)}
+                      y={r1(e3 + 0.5)}
                       width={r1(Math.max(0, w - 1))}
-                      height={r1(Math.max(0, afterH - 1))}
+                      height={r1(Math.max(0, e2 - e3 - 1))}
                     />
                   )}
-                  {flatN + afterN === 0 && tick(L3.y + L3.h, 'z3')}
+                  {flatN + cascN + afterN === 0 && tick(L3.y + L3.h, 'z3')}
                   {/* Lane 4: finished columns; the submitted line is drawn once below. */}
                   {fin > 0 && <rect className="ol-m-fin" x={x} y={r1(L4.y + L4.h - fin * k4)} width={w} height={r1(fin * k4)} />}
                   {fin === 0 && sub === 0 && tick(L4.y + L4.h, 'z4')}
@@ -580,6 +730,7 @@ interface Shown {
   requested: number
   other: number
   after_failure: number
+  after_cancel: number
   workflow_sweep: number
   cancelled: number
   submitted: number
@@ -597,6 +748,7 @@ function shownOf(data: Outcomes, b: OutcomeBucket | null): Shown {
       requested: t.cancelled.requested,
       other: t.cancelled.other,
       after_failure: t.cancelled.after_failure,
+      after_cancel: t.cancelled.after_cancel,
       workflow_sweep: t.cancelled.workflow_sweep,
       cancelled: t.cancelled.total,
       submitted: t.submitted,
@@ -611,6 +763,7 @@ function shownOf(data: Outcomes, b: OutcomeBucket | null): Shown {
     requested: b.cancelled?.requested ?? 0,
     other: b.cancelled?.other ?? 0,
     after_failure: b.cancelled?.after_failure ?? 0,
+    after_cancel: b.cancelled?.after_cancel ?? 0,
     workflow_sweep: b.cancelled?.workflow_sweep ?? 0,
     cancelled: b.cancelled?.total ?? 0,
     submitted: b.submitted ?? 0,
@@ -852,9 +1005,10 @@ export function OutcomeLedger({ data, picked, onPick, onZoom }: OutcomeLedgerPro
               dead-lettered <b className="ol-n">{shown.dead_lettered}</b>
             </span>
             {/* ONE NUMBER PER KEY, AND IT IS THE NUMBER THE KEY'S MARK DRAWS
-                (TS-9). The flat bars are requested + other and the outline is
-                after_failure + workflow_sweep -- lane 3's two marks -- so the
-                cancelled total, which no single mark draws, stands unkeyed. */}
+                (TS-9). The flat bars are requested + other, the outlined bars
+                after_cancel, and the bare outline after_failure +
+                workflow_sweep -- lane 3's three marks -- so the cancelled
+                total, which no single mark draws, stands unkeyed. */}
             <span className="ol-li">
               cancelled <b className="ol-n">{shown.cancelled}</b>
             </span>
@@ -869,6 +1023,10 @@ export function OutcomeLedger({ data, picked, onPick, onZoom }: OutcomeLedgerPro
               <i className="ol-k is-after" aria-hidden /> after a failure{' '}
               <b className="ol-n">{shown.after_failure + shown.workflow_sweep}</b>{' '}
               <span className="ol-q">incl. workflow sweep {shown.workflow_sweep}</span>
+            </span>
+            <span className="ol-li">
+              <i className="ol-k is-after-cancel" aria-hidden /> after a cancel{' '}
+              <b className="ol-n">{shown.after_cancel}</b>
             </span>
             <span className="ol-li">
               <i className="ol-k is-sub" aria-hidden /> submitted <b className="ol-n">{shown.submitted}</b>{' '}
