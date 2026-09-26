@@ -385,8 +385,10 @@ def test_the_week_reads_the_same_through_the_real_client(api):
 
     sep22 = buckets[3]
     assert (sep22["succeeded"], sep22["failed"], sep22["dead_lettered"]) == (2, 1, 0)
+    # c4 followed f1, which FAILED: after a failure, not after a cancel (#185, decision 2).
     assert sep22["cancelled"] == {
-        "total": 4, "requested": 3, "after_failure": 1, "workflow_sweep": 0, "other": 0,
+        "total": 4, "requested": 3, "after_failure": 1, "after_cancel": 0,
+        "workflow_sweep": 0, "other": 0,
     }
     assert sep22["rate"] == wilson(2, 3)
     assert sep22["failure_classes"]["timeout"] == 1

@@ -729,8 +729,13 @@ def test_the_bars_and_tabs_are_capped():
     """`flex: 1` drew two ~534px bars for seven tasks and three ~356px buttons
     for four-character labels. Every pixel of new page width made both worse."""
     css = src("styles.css")
-    col = re.search(r"\n\.chart \.col \{[^}]*\}", css, re.S)
-    assert col is not None and "max-width:" in col.group(0), ".chart .col is still uncapped"
+    # RE-POINTED (#185, decision 7): the row-window chart's `.chart .col` and
+    # its 72px cap are deleted with the page that drew them. The ledger draws
+    # its bars in SVG, and its geometry caps each at 28px however wide the
+    # drawing grows.
+    ledger = src("charts/OutcomeLedger.tsx")
+    bar = re.search(r"bar: Math\.max\(1, Math\.min\([^)]*\b28\)\)", ledger)
+    assert bar is not None, "the ledger's bar is no longer capped: it grows with the drawing"
     tab = re.search(r"\n\.tabs button \{[^}]*\}", css, re.S)
     assert tab is not None and "flex: 0 0 auto" in tab.group(0), ".tabs button still fills the row"
     split = re.search(r"\n\.split-row \{[^}]*\}", css, re.S)
