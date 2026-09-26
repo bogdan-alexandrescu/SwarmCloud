@@ -20,9 +20,11 @@
 //                    guess;
 //   last written     the attempt ended without a recorded finish (a kill, a
 //                    reclaim), so these are the figures it last wrote;
-//   heartbeat event  the attempt ran between #188 and the typed fields, so its
-//                    reading is on a HEARTBEAT event on this page, not on the
-//                    attempt -- the legacy reader, kept for those attempts;
+//   heartbeat event  the attempt's typed fields are empty and a HEARTBEAT of
+//                    it on this page carries a figure -- the legacy reader.
+//                    From the #188 window, peak, mean and cpu-seconds; from
+//                    before #188, the cpu-seconds only, and the rows draw the
+//                    cores as em dashes (`cpu-seconds only` in the strip);
 //   not served       an API older than the typed fields sends no key at all;
 //   never ran / not yet written / never measured -- three kinds of nothing,
 //                    one hatched row each, never a zero.
@@ -31,7 +33,8 @@
 // limit; drop the over-ceiling excess; say `never measured` for a row the API
 // did not serve; read the interim `usage` block again; claim an age for a live
 // reading; carry the reading's kind ONLY in `.ctl-util-by`, which the sheet
-// hides below 560px.
+// hides below 560px; take only a HEARTBEAT with `peak_cpu_cores` as a reading,
+// so a pre-#188 attempt's cpu-seconds read `never measured`.
 
 import STYLES from '../styles.css?raw'
 import { describe, expect, it, vi } from 'vitest'
@@ -201,6 +204,50 @@ describe('Details draws CPU as peak and mean cores of the limit, from the attemp
     expect(by(cpuRow(root, 'mean'))).toMatch(/40\.5 cpu-s/)
   })
 
+  it('reads an attempt from before #188 from the cpu-seconds its heartbeat events carry, and draws no cores for it', async () => {
+    // PR #210 REVIEW. Every HEARTBEAT before #188 carried `cpu_seconds` and
+    // `cpu_source` and no cores (5262b74^ lifecycle.py `_heartbeat`). #188's
+    // reader on main took those as a reading and drew the cpu-seconds; a
+    // legacy reader that asks for `peak_cpu_cores` only drew `never measured`
+    // on them, and said no heartbeat on the page carried a figure while the
+    // page held it.
+    const older = ev('heartbeat', new Date(Date.now() - 600_000).toISOString(), 'att_1', {
+      elapsed_seconds: 60, peak_rss_bytes: 1024, checkpoints: 0, cpu_seconds: 31.2, cpu_source: 'cgroup',
+    })
+    const newest = ev('heartbeat', new Date(Date.now() - 120_000).toISOString(), 'att_1', {
+      elapsed_seconds: 600, peak_rss_bytes: 734003200, checkpoints: 2, cpu_seconds: 402.3, cpu_source: 'cgroup',
+    })
+    const root = await mount(withCpu(NOTHING), {}, [older, newest])
+    expect(root.textContent, 'a measured attempt reads never measured').not.toMatch(/never measured/)
+    const peak = cpuRow(root, 'peak')
+    const mean = cpuRow(root, 'mean')
+    // No cores were recorded: em dashes, never zeros, and no fill.
+    for (const r of [peak, mean]) {
+      expect(r.querySelector('.ctl-util-figure .ctl-em'), 'an unrecorded figure is drawn as one').not.toBeNull()
+      expect(r.querySelector('.ctl-util-fill'), 'an unrecorded figure drew a fill').toBeNull()
+    }
+    expect(by(peak)).toMatch(/^heartbeat event/)
+    // The newest reading on the page, not the first one.
+    expect(by(mean)).toBe('heartbeat event · 402.3 cpu-s')
+    const strip = root.querySelector<HTMLElement>('.att-cpu-note')
+    expect(strip?.textContent ?? '', 'the strip does not say only the cpu-seconds were read').toMatch(/cpu-seconds only/)
+  })
+
+  it('says never measured when the attempt’s own heartbeats carried the key and no figure', async () => {
+    // THE CONTROL for the case above: the reader takes a figure, not a key,
+    // and only this attempt's.
+    const empty = ev('heartbeat', new Date(Date.now() - 60_000).toISOString(), 'att_1', {
+      elapsed_seconds: 60, peak_rss_bytes: null, checkpoints: 0, cpu_seconds: null, cpu_source: null,
+    })
+    const another = ev('heartbeat', new Date(Date.now() - 30_000).toISOString(), 'att_2', {
+      elapsed_seconds: 30, peak_rss_bytes: null, checkpoints: 0, cpu_seconds: 12.5, cpu_source: 'cgroup',
+    })
+    const root = await mount(withCpu(NOTHING), {}, [empty, another])
+    const rows = cpuRows(root)
+    expect(rows).toHaveLength(1)
+    expect(by(rows[0]!)).toBe('never measured')
+  })
+
   it.each([
     ['a row from an API older than the typed fields', undefined, {}, {}, 'not served'],
     ['an attempt that never started', NOTHING, { started_at: null, completed_at: null, exit_code: null }, {}, 'never ran'],
@@ -277,6 +324,20 @@ describe('the CPU reading reaches a phone, where the by column is hidden', () =>
     const byCell = cpuRows(root)[0]!.querySelector('.ctl-util-by')!
     expect(shownAt(byCell, PHONE, root), 'the by column shows at 390; this case no longer measures its defect').toBe(false)
     expect(shownAt(byCell, DESK, root), 'the by column is hidden at 1440').toBe(true)
+  })
+
+  it('shows a cpu-seconds-only heartbeat reading at 390, with its cpu-seconds, in the strip', async () => {
+    const newest = ev('heartbeat', new Date(Date.now() - 120_000).toISOString(), 'att_1', {
+      elapsed_seconds: 600, peak_rss_bytes: 734003200, checkpoints: 2, cpu_seconds: 402.3, cpu_source: 'cgroup',
+    })
+    const root = await mount(withCpu(NOTHING), {}, [newest])
+    const strip = root.querySelector<HTMLElement>('.att-cpu-note')
+    expect(strip, 'the CPU reading has no strip outside its rows').not.toBeNull()
+    for (const w of [/cpu-seconds only/, /402\.3 cpu-s/]) {
+      const at = carriers(strip!, w)
+      expect(at.length, `the strip does not say ${w}`).toBeGreaterThan(0)
+      expect(at.every((el) => shownAt(el, PHONE, root)), `${w} is in the strip but hidden at 390`).toBe(true)
+    }
   })
 
   it('names which reading the strip is about, beside the memory strip under it', async () => {

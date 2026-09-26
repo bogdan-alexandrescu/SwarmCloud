@@ -15,7 +15,8 @@
 //
 // MUTATIONS: put `<LogsPanel>` back in `RunFiles`; put `<Artifacts>` back in
 // `Output`; draw `task.input.prompt` again, or fall back to it when the copy
-// was not read.
+// was not read; draw `full` under a string prompt instead of `rest` (the
+// prompt twice, and the block the PR #210 review found a secret in).
 
 import { describe, expect, it, vi } from 'vitest'
 import { render, waitFor } from '@testing-library/react'
@@ -122,14 +123,14 @@ describe('Details has no artifact list of its own', () => {
 })
 
 describe('Details shows the task’s input as the API masked it, with its count', () => {
-  it('draws the served copy of the prompt and the full input, never the raw document', async () => {
+  it('draws the served copy of the prompt and the rest of the input, never the raw document', async () => {
     const root = await mount(agentRun())
     const input = section(root, 'Input')
     expect(input, 'no Input section').not.toBeNull()
     expect(root.textContent, 'the raw prompt reached the screen').not.toContain(SECRET)
     const pres = [...input!.querySelectorAll('pre')].map((p) => p.textContent ?? '')
     expect(pres, 'the masked prompt is not drawn').toContain(MASKED_PROMPT)
-    expect(pres.some((p) => p.includes('"steps": 2')), 'the full input is not drawn').toBe(true)
+    expect(pres.some((p) => p.includes('"steps": 2')), 'the rest of the input is not drawn').toBe(true)
   })
 
   it('says how much was masked beside the prompt, in the ink a finding takes', async () => {
@@ -140,6 +141,55 @@ describe('Details shows the task’s input as the API masked it, with its count'
     expect(counts[0]!.textContent).toBe('1')
     expect(counts[0]!.classList.contains('is-warn'), 'a count above zero is drawn as nothing to see').toBe(true)
     expect(counts[0]!.parentElement?.textContent ?? '').toMatch(/masked\s*1/)
+  })
+
+  it('draws the prompt once: the rest of the input under a prompt, never the whole input again', async () => {
+    // PR #210 REVIEW. Details drew `full` under the masked prompt, so the
+    // prompt was on screen twice -- and `full` was where a quoted secret the
+    // prompt block masked came out in clear. With a prompt, the block under
+    // it is `rest`, with `rest`'s count, as the Artifacts pane draws it.
+    const copy = inputCopy({
+      rest: { text: '{\n  "api_token": "********"\n}', redaction_count: 1 },
+      full: { text: '{\n  "prompt": "FULL-ONLY-COPY",\n  "api_token": "********"\n}', redaction_count: 2 },
+      redaction_count: 2,
+    })
+    const root = await mount(agentRun({}, { status: 'ok', data: copy, fetchedAt: Date.now() }))
+    const input = section(root, 'Input')!
+    expect(input.textContent, 'the whole input was drawn under its own prompt').not.toContain('FULL-ONLY-COPY')
+    const pres = [...input.querySelectorAll('pre')].map((p) => p.textContent ?? '')
+    expect(pres.filter((p) => p.includes('sk-proj01')), 'the prompt is drawn more than once').toHaveLength(1)
+    expect(pres.some((p) => p.includes('"api_token": "********"')), 'the rest of the input is not drawn').toBe(true)
+    const eyebrows = [...input.querySelectorAll('.ctl-eyebrow')].map((e) => e.textContent?.trim())
+    expect(eyebrows).toContain('rest of the input')
+    expect(eyebrows).not.toContain('full input')
+    // Each block's count is its own: the prompt's 1, the rest's 1 -- not the
+    // whole input's 2 beside the rest.
+    const counts = [...input.querySelectorAll('.art-masked')].map((c) => c.textContent)
+    expect(counts).toEqual(['1', '1'])
+  })
+
+  it('draws the whole input when there is no prompt string to draw above it', async () => {
+    const copy = inputCopy({
+      prompt_key: 'missing',
+      prompt: null,
+      rest: null,
+      full: { text: '{\n  "url": "https://example.com",\n  "password": "********"\n}', redaction_count: 1 },
+    })
+    const root = await mount(agentRun({}, { status: 'ok', data: copy, fetchedAt: Date.now() }))
+    const input = section(root, 'Input')!
+    const eyebrows = [...input.querySelectorAll('.ctl-eyebrow')].map((e) => e.textContent?.trim())
+    expect(eyebrows).toContain('full input')
+    const pres = [...input.querySelectorAll('pre')].map((p) => p.textContent ?? '')
+    expect(pres.some((p) => p.includes('"url": "https://example.com"')), 'the whole input is not drawn').toBe(true)
+  })
+
+  it('says nothing else was submitted when the prompt is the whole input', async () => {
+    const copy = inputCopy({ rest: null, full: { text: `{\n  "prompt": "${MASKED_PROMPT}"\n}`, redaction_count: 1 } })
+    const root = await mount(agentRun({}, { status: 'ok', data: copy, fetchedAt: Date.now() }))
+    const input = section(root, 'Input')!
+    const pres = [...input.querySelectorAll('pre')].map((p) => p.textContent ?? '')
+    expect(pres.filter((p) => p.includes('sk-proj01')), 'the prompt is drawn more than once').toHaveLength(1)
+    expect(input.textContent).toContain('nothing else submitted')
   })
 
   it('never falls back to the raw input when the copy could not be read', async () => {
