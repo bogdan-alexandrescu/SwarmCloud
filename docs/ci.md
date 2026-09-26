@@ -618,15 +618,19 @@ exercised, and this is what was found, not proof that there is nothing else.
 | 3 | `roles/iam.serviceAccountAdmin` (unscopable) carries `iam.serviceAccounts.setIamPolicy`. CI can grant itself `serviceAccountTokenCreator` on an account that reads logs (the compute account above, or `209012342332@cloudbuild`, which holds `roles/cloudbuild.builds.builder`) and act as it. | **no** |
 | 4 | `roles/logging.configWriter` keeps sinks and exclusions project-wide even when scoped. A sink can route every log to a `swarm-` bucket (`storage.admin`) or a Pub/Sub topic (`pubsub.admin`) that CI reads. | **no** |
 | 5 | `roles/logging.configWriter` unconditioned holds `logging.views.update`: CI can rewrite this view's filter, or make another view, and read the result through the grant. | yes, once `roles/logging.configWriter` is in `deployer_scoped_roles` |
-| 6 | `roles/resourcemanager.projectIamAdmin` unconditioned lets CI grant itself `roles/logging.viewer`. | yes, once scoped (but not route 2) |
+| 6 | `roles/resourcemanager.projectIamAdmin` unconditioned lets CI grant itself `roles/logging.viewer`, or any other role that reads logs. It is named in `deployer_scoped_roles` as of 2026-09-25 (#68). Once scoped, it may modify only the 15 roles terraform/infra grants, and none of them reads a log entry: the nine predefined ones are absent from [`log-reading-roles.json`](../terraform/bootstrap/log-reading-roles.json), and the six custom ones carried no `logging.` permission when read live on 2026-09-24. | **not yet**: it is still unconditioned in the live policy until the owner's targeted bootstrap apply lands. After that, yes for a direct grant, **but not route 2**, which reaches it two ways. `roles/iam.roleAdmin` can add `logging.logEntries.list` to any of the six custom roles on that list (`swarmJobDispatcher`, `swarmJobReaper`, `swarmSecretLister`, `swarmGkeDispatcher`, `swarmGkeReaper`, `swarmTenantWorkerFirestore`), and the scoped `projectIamAdmin` still lets CI grant that role to itself, because `hasOnly` limits which roles are modified, never whose members they gain. Or it can add `resourcemanager.projects.setIamPolicy`, which custom roles accept (measured 2026-09-25), to a custom role CI holds unconditioned (`swarmSecretProvisioner` today, `swarmDeployerProjectBuckets` once applied). Every later project `setIamPolicy`, `roles/logging.viewer` or `roles/owner` alike, is then authorised by that binding, and the condition is never evaluated (#79). |
 
-What bounds all six today is the ref pin, not IAM: only a workflow on
+What bounds all six today is the ref pin, not IAM (route 6's direct grant moves to IAM when the bootstrap apply in #68 lands; route 2 still reaches around it): only a workflow on
 `refs/heads/main` can mint the deployer's token, so each route has to be merged
 to `main` first. Closing 1 means building as an account without `roles/editor`;
 2 and 3 mean taking `roles/iam.roleAdmin` and `roles/iam.serviceAccountAdmin`
 off the deployer or replacing them with resource-level grants on `swarm-*`
-roles and accounts; 4 means moving sink management out of CI. Each changes
-what CI can do, none is made here, and which to make is the owner's decision.
+roles and accounts; 4 means moving sink management out of CI. For
+`roleAdmin` no resource-level grant was found: a role carries no allow policy
+of its own (the project's testable permissions include no
+`iam.roles.setIamPolicy`, read 2026-09-25), so closing 2 means moving the
+custom roles terraform/infra defines out of CI (#79). Each changes what CI can
+do, none is made here, and which to make is the owner's decision.
 
 ## The deployer's refusal is proven once, by a probe the owner dispatches
 

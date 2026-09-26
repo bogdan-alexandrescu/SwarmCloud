@@ -14,9 +14,12 @@
 #   * replayed against the live inventory of saga-agents-staging (read-only
 #     gcloud, 2026-09-24), every name of ours is admitted and every name of the
 #     other team's is refused;
+#   * the scoping terraform/bootstrap/terraform.tfvars names, read from the
+#     file, moves that role's grants and nothing else;
 #   * every project-level role terraform/infra grants is one the scoped
 #     projectIamAdmin may still grant -- the check that turns a mid-release 403
-#     into a failed pull request.
+#     into a failed pull request -- and every project-level grant declared in
+#     the files CI applies is one a parity assertion here reads.
 #
 # The replay compares names against the prefix lists the expressions are
 # rendered from, and a separate assertion holds each rendered expression to
@@ -541,9 +544,15 @@ run "the_iam_admin_condition_refuses_every_role_ci_does_not_hand_out" {
     error_message = "projectIamAdmin must be limited by modifiedGrantsByRole to exactly the grantable roles"
   }
 
+  # The plan terraform.tfvars produces is asserted in its own run below, from
+  # the file itself; this run's scoping is written out because it tests the
+  # condition, not the file.
+
   # Every role in the live project policy that terraform/infra does not grant
-  # (51 of 65, 2026-09-24). The deployer's own roles are here too: they are
-  # granted by bootstrap, which the owner applies, never by CI.
+  # (52 of 67, re-read 2026-09-24 with `gcloud projects get-iam-policy`; the
+  # first reading, 51 of 65, predates roles/logging.serviceAgent). The
+  # deployer's own roles are here too: they are granted by bootstrap, which the
+  # owner applies, never by CI.
   assert {
     condition = !anytrue([
       for r in [
@@ -584,6 +593,7 @@ run "the_iam_admin_condition_refuses_every_role_ci_does_not_hand_out" {
         "roles/iap.admin",
         "roles/logging.admin",
         "roles/logging.configWriter",
+        "roles/logging.serviceAgent",
         "roles/logging.viewer",
         "roles/monitoring.admin",
         "roles/monitoring.editor",
@@ -601,6 +611,69 @@ run "the_iam_admin_condition_refuses_every_role_ci_does_not_hand_out" {
       ] : contains(local.deployer_grantable_project_roles, r)
     ])
     error_message = "CI may grant a role terraform/infra never grants -- owner, editor, another team's, or its own"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# THE PLAN terraform/bootstrap/terraform.tfvars PRODUCES, from the file.
+#
+# terraform test never reads a root's terraform.tfvars, so every run above
+# writes its scoping out by hand -- right for testing a condition, wrong for
+# claiming "this is what the owner's apply does". These two runs read the file
+# (./bootstrap_tfvars) and plan bootstrap with exactly what it names.
+# ---------------------------------------------------------------------------
+
+run "terraform_tfvars_as_committed" {
+  command = plan
+
+  module {
+    source = "./bootstrap_tfvars"
+  }
+
+  assert {
+    condition     = output.path != "" && output.assignments == 1
+    error_message = "terraform/bootstrap/terraform.tfvars was not found, or does not hold exactly one top-level `deployer_scoped_roles = [...]`; the run below would plan an empty list and describe a file nobody applies"
+  }
+}
+
+run "the_scoping_terraform_tfvars_names_moves_its_own_grants_and_nothing_else" {
+  command = plan
+
+  module {
+    source = "../../terraform/bootstrap"
+  }
+
+  variables {
+    enable_github_wif     = true
+    github_repository     = "saga/agent-swarm-infra"
+    deployer_scoped_roles = run.terraform_tfvars_as_committed.deployer_scoped_roles
+  }
+
+  # For whatever the file names: each named role's project-wide grant is gone
+  # and its conditioned grant exists, and no other deployer grant moves. The
+  # first run in this file is the control -- with nothing switched, no
+  # conditioned grant exists.
+  assert {
+    condition = alltrue([
+      toset(keys(google_project_iam_member.deployer_roles)) == setsubtract(toset(var.deployer_roles), var.deployer_scoped_roles),
+      length(google_project_iam_member.deployer_secrets) == (contains(var.deployer_scoped_roles, "swarmSecretProvisioner") ? 0 : 1),
+      length(google_project_iam_member.deployer_secrets_scoped) == (contains(var.deployer_scoped_roles, "swarmSecretProvisioner") ? 1 : 0),
+      length(google_project_iam_member.deployer_network_admin) == (contains(var.deployer_scoped_roles, "roles/compute.networkAdmin") ? 1 : 0),
+      length(google_project_iam_member.deployer_security_admin) == (contains(var.deployer_scoped_roles, "roles/compute.securityAdmin") ? 1 : 0),
+      length(google_project_iam_member.deployer_container_admin) == (contains(var.deployer_scoped_roles, "roles/container.admin") ? 1 : 0),
+      length(google_project_iam_member.deployer_datastore_owner) == (contains(var.deployer_scoped_roles, "roles/datastore.owner") ? 1 : 0),
+      length(google_project_iam_member.deployer_logging_config_writer) == (contains(var.deployer_scoped_roles, "roles/logging.configWriter") ? 1 : 0),
+      length(google_project_iam_member.deployer_project_iam_admin) == (contains(var.deployer_scoped_roles, "roles/resourcemanager.projectIamAdmin") ? 1 : 0),
+    ])
+    error_message = "the scoping terraform.tfvars names moves a deployer grant other than its own roles' two halves; the owner's apply would do more than the tfvars line says"
+  }
+
+  # What the file names TODAY, and so what the targeted apply command in its
+  # comment, and the plan PR #73 derived (1 to add, 0 to change, 1 to destroy
+  # against a live policy with nothing scoped), describe.
+  assert {
+    condition     = var.deployer_scoped_roles == toset(["roles/resourcemanager.projectIamAdmin"])
+    error_message = "terraform/bootstrap/terraform.tfvars no longer scopes exactly roles/resourcemanager.projectIamAdmin, so the targeted apply command in its comment and the plan derived for it describe a different change. Update the command, that plan and this assertion together."
   }
 }
 
@@ -754,6 +827,54 @@ run "every_project_role_the_verify_identity_holds_is_grantable" {
       contains(run.every_switched_role_trades_its_project_wide_grant_for_a_conditioned_one.deployer_grantable_project_roles, google_project_iam_member.verify_reads_run.role),
     ])
     error_message = "terraform/infra/verify.tf grants a project-level role the scoped projectIamAdmin may not grant; add it to deployer_grantable_project_roles"
+  }
+}
+
+# The three runs above read grants by name, and a grant nobody named is checked
+# by none of them. This one reads the files CI applies and this file, as text
+# (./project_iam_inventory), and holds every declaration that writes the
+# project's IAM policy to the grants an assertion above actually passes, by its
+# role, to contains(...deployer_grantable_project_roles, ...). No list is kept
+# by hand: a grant dropped from a parity assertion is un-read here as surely as
+# a new grant nobody asserts on. Either fails this run -- the difference between
+# a red pull request and a release that 403s halfway through its apply once
+# projectIamAdmin is scoped.
+run "every_project_level_grant_ci_applies_is_read_by_a_parity_run" {
+  command = plan
+
+  module {
+    source = "./project_iam_inventory"
+  }
+
+  variables {
+    parity_test_file = "deployer_iam.tftest.hcl"
+  }
+
+  assert {
+    condition     = output.terraform_dir != "" && output.files_read > 0 && output.test_file_read
+    error_message = "the inventory read no terraform/infra or terraform/modules file, or not deployer_iam.tftest.hcl; the assertions below would be comparing against nothing"
+  }
+
+  # The defect: a grant CI applies that no parity assertion holds to the
+  # grantable list.
+  assert {
+    condition     = length(output.uncovered) == 0
+    error_message = "terraform/infra or a module under terraform/modules declares a project-level IAM grant that no assertion above passes, by its role, to contains(...deployer_grantable_project_roles, ...). Add that to the run planning its directory; unread, it is found by the release that applies it, as a 403, once projectIamAdmin is scoped"
+  }
+
+  # The control: every grant an assertion reads is found by the declaration
+  # scan, so the scan is matching real declarations and not passing on an empty
+  # list.
+  assert {
+    condition     = length(output.stale) == 0
+    error_message = "an assertion above reads a project-level grant the declaration scan did not find: the scan stopped matching, or the grant lives in a directory it does not read"
+  }
+
+  # A module fetched from a registry or a git URL, or from a path out of
+  # terraform/infra and terraform/modules, is one this scan never reads.
+  assert {
+    condition     = length(output.module_sources) > 0 && length(output.unscanned_module_sources) == 0
+    error_message = "terraform/infra or a module calls a module whose files the inventory does not scan (or no module block was found at all), so a project-level grant declared there would be checked by nothing"
   }
 }
 
