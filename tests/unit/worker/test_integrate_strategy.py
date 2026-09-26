@@ -351,6 +351,10 @@ def _publish(worker_factory, tmp_path, monkeypatch, dispatch, *, opened):
     # there is no clone base. The fold itself runs for real, against a real
     # remote, in test_strategy_end_to_end.py.
     monkeypatch.setattr(lifecycle, "fold_agent_commits", lambda **kw: 0)
+    # The check before the push reads commits, and there are none here. It
+    # runs for real in test_strategy_end_to_end.py. `raising=False` because it
+    # is added by the same change as this line.
+    monkeypatch.setattr(lifecycle, "verify_worker_authorship", lambda **kw: 0, raising=False)
     monkeypatch.setattr(lifecycle, "push_branch", lambda **kw: "deadbeef")
     monkeypatch.setattr(
         lifecycle,
