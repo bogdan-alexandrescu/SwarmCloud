@@ -1357,28 +1357,59 @@ The cell clips at its track. `.wf-progress` and `.wf-progress-text` are the
 worked case, and `workflow.board.test.tsx` checks each of the four on its own
 at every width that draws the sentence.
 
-**`[progress]`'s floor is 29ch, so the running form is whole at 1440**
-(owner decision 2026-09-26, on #223). At 24ch the floor was 196.5px, and the
-54px meter and its 8px gap left the sentence 134.5px, so once the sentence
-was contained every census with a tail was cut: the running form "1/5 done ·
-1 not started" (173px) lost exactly what the 24ch floor had been raised to
-keep, the count of what has not started. At 29ch the floor is 237.4px and
-the sentence gets 175.4px.
+**`[progress]`'s floor is 33ch in a row at least 620px wide, and 12ch in a
+narrower one** (owner decisions 2026-09-26, on #223).
 
-Measured in Chrome 153 on macOS against the stylesheet, at a 1150px row:
+At 24ch the floor was 196.5px, and the 54px meter and its 8px gap left the
+sentence 134.5px. So once the sentence was contained, every census with a tail
+was cut. The running form "1/5 done · 1 not started" (173px) lost exactly what
+the 24ch floor had been raised to keep: the count of what has not started. At
+33ch the floor is 270.2px and the sentence gets 208.2px, which holds the
+two-digit running form "12/30 done · 18 not started" (27 characters).
 
-| Census | Needs | At 24ch | At 29ch |
-|---|---|---|---|
-| 5/5 done | 58px | whole | whole |
-| 1/5 done · 1 not started | 173px | cut | **whole** |
-| 12/30 done · 18 not started | 195px | cut | cut |
-| 10/30 done · 1 failed · 19 cancelled | 260px | cut | cut |
+Measured in Chrome 153 on macOS against the stylesheet, at a 1150px row (the
+1440 work column):
 
-The room comes out of `[name]`, `[shape]` and `[mix]`: 16.1, 11.2 and 13.6px
-at every row width from 700 to 1150px. So 29ch holds a census of up to 24
-characters — the running form with single-digit counts. Two-digit counts, or a
-failed, cancelled or dead-lettered clause, are still cut, and the containment
-above stays for them.
+| Census | Needs | At 24ch | At 29ch | At 33ch |
+|---|---|---|---|---|
+| 5/5 done | 58px | whole | whole | whole |
+| 1/5 done · 1 not started | 173px | cut | whole | whole |
+| 12/30 done · 18 not started | 195px | cut | cut | **whole** |
+| 10/30 done · 1 failed · 19 cancelled | 260px | cut | cut | cut (208px shown) |
+
+**What 33ch costs.** The room comes out of `[name]`, `[shape]` and `[mix]`. At
+every row width from 800 to 1150px they are 29.0, 20.1 and 24.6px narrower
+than at 24ch, and 12.9, 8.9 and 10.9px narrower than at 29ch. At a 1150px row
+that leaves 150.7, 104.4 and 127.5px. A 22-character workflow id needs 180px:
+it was whole at 24ch, and at 33ch it shows 151px and ends in an ellipsis, with
+the whole id in its `title`. A failed, cancelled or dead-lettered clause is
+still cut, and the containment above stays for it.
+
+**The floor gives way in a narrow row.** With the inspector open beside the
+board, the work column at 1440 is a few hundred pixels, and there a fixed
+floor ran the row's grid past its right edge. So `.wf-card > .wf-h` is the
+`wf-row` size container, and `@container wf-row (min-width: 620px)` sets
+`--wf-progress-floor: 33ch` on `.wf-bar`. Below that width the template's
+fallback applies, which is 12ch (98.25px), and the sentence gets 36px, so
+every census is cut in such a row. It is a container query and not a media
+query, because opening the inspector does not change the viewport. It changes
+only the floor; the template is still written once.
+
+Measured in Chrome, the caret stays inside the row down to these widths, with
+an age of "23h ago" / "just now":
+
+| State word | Caret inside down to | At 33ch, outside from 620px until |
+|---|---|---|
+| running | 445 / 455px | — / 625px |
+| succeeded | 460 / 465px | 630 / 640px |
+| dead_lettered | 490 / 495px | 660 / 670px |
+| state not derived | 520 / 525px | 690 / 695px |
+
+The right-hand column is the cost of switching at 620px: just past it, the
+33ch floor is too wide for a long state word. There the last resort applies.
+`.wf-bar` is `overflow: hidden`, so the caret is clipped rather than painted
+outside the row, and nothing on the row paints outside it at any width. Its
+focus ring is an outline, which the clip does not cut.
 
 **A cut census is whole without a pointer, in the open card.** The row's
 `title` is whole on hover only, and a phone has no hover; below 561px the row
@@ -1387,19 +1418,17 @@ fact, `progress` and the whole sentence (`.wf-census`, `CensusFact` in
 `Workflows.tsx`), which wraps and is never clipped. That is §7.3's rule for a
 cut value, applied: cut on screen, whole somewhere a reader can get to.
 
-**And the row clips at its own border.** The row's fixed tracks and floors add
-up to more than a narrow row: measured in Chrome, the grid ran past the row's
-right edge below a 550px row at 29ch (620px when the word is `state not
-derived`), against 505px and 580px at 24ch. The work column reaches that only
-with the inspector open beside it, where `[name]`, `[shape]` and `[mix]` are
-already 0px at either floor. `.wf-bar` is `overflow: hidden`, so nothing on
-the row paints outside it at any width; its focus ring is an outline, which
-that does not clip.
+`workflow.board.test.tsx` holds:
 
-`workflow.board.test.tsx` holds the floor against the running form (at the
-measured per-character widths, since jsdom has no fonts), the containment at
-every width the sentence is drawn, the row's clip at every template's width,
-and the open card's census at 1440 and 390.
+- the floor against the two-digit running form at a 1150px row;
+- the floor at 480, 619 and 620px rows (12, 12 and 33ch), and a running row's
+  caret inside the row at 480 and 620px;
+- the containment at every width the sentence is drawn;
+- the row's clip at every template's width;
+- the open card's census at 1440 and 390.
+
+jsdom has no fonts or layout, so the per-character widths and the two
+`max-content` tracks are the Chrome measurements, written into the test.
 
 *(Scoped 2026-09-25, CH-13.)* This is the rule for a `.ctl-line` LIST. A
 `.ctl-table` below 900px follows §7.3 instead: a data table scrolls with its

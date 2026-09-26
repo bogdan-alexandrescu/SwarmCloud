@@ -1152,12 +1152,15 @@ export function dotClass(header: { tone: Tone | 'unknown'; derived: boolean }): 
  *
  * THE SENTENCE CARRIES ITSELF IN ITS `title` (#222). `.wf-progress-text` is
  * contained in its column and ends in an ellipsis where the column is
- * narrower than the census. At 1440 the sentence gets 175.4px beside the
- * meter since `[progress]`'s floor went to 29ch (#223): the running form "1/5
- * done · 1 not started" (173px) is whole, and a longer census -- "10/30 done ·
- * 1 failed · 19 cancelled" is 260px -- is cut (styles.css, the `[progress]`
- * note). So the whole sentence is on the element that was cut, for a pointer,
- * and the open card states it whole for everyone else (`CensusFact`).
+ * narrower than the census. At 1440 the sentence gets 208.2px beside the
+ * meter since `[progress]`'s floor went to 33ch in a row at least 620px wide
+ * (#223): the running forms up to "12/30 done · 18 not started" (195px) are
+ * whole, and a failed or cancelled clause -- "10/30 done · 1 failed · 19
+ * cancelled" is 260px -- is cut, as is every census in a narrower row, where
+ * the floor is 12ch and the sentence has 36px (styles.css, the `[progress]`
+ * note). So the whole sentence is on the element that was cut, for a
+ * pointer, and the open card states it whole for everyone else
+ * (`CensusFact`).
  */
 function Progress({ roll }: { roll: Rollup }) {
   if (!roll.trustworthy) {
@@ -1209,7 +1212,8 @@ function Progress({ roll }: { roll: Rollup }) {
  * 2026-09-26).
  *
  * The row cuts the census where `[progress]` is narrower than the sentence
- * (at 1440, anything longer than the running form's 24 characters) and
+ * (at 1440, anything longer than the two-digit running form's 27
+ * characters; in a row under 620px, where it has 36px, every one) and
  * draws no sentence at all at 560px and below. The cut text keeps the whole
  * sentence in its `title`, but a `title` is whole on hover only, and a phone
  * has no hover. design-system.md §7.3's rule for a cut value is cut on

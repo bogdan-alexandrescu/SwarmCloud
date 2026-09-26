@@ -1562,6 +1562,13 @@ body {
    inside it turns the uppercase back off for its own contents. B17's rule on
    `.id` is what keeps the id lowercase regardless. */
 .wf-h { margin: 0; }
+/* THE ROW'S WIDTH, FOR THE ROW. `.wf-bar` cannot ask a container query about
+   itself, and the heading around it is exactly as wide (the button is
+   `width: 100%`, and the heading has no padding), so the heading is the
+   container `[progress]`'s floor is chosen by (#223). A card is a stretched
+   item of the board's column, so the heading's width never came from its
+   contents, and inline-size containment changes nothing else about it. */
+.wf-card > .wf-h { container: wf-row / inline-size; }
 /* ONE `grid-template-columns` WITH NAMED LINES, AND THE BREAKPOINTS REDEFINE
    ONLY THAT ONE DECLARATION (§6.8). Hetzner writes every list this way; the
    value is that a column's job is readable in the template itself rather than
@@ -1599,20 +1606,42 @@ body {
        it was contained (`.wf-progress-text`) every census with a tail ended in
        an ellipsis at 1440.
 
-       29ch HOLDS THE RUNNING FORM (owner decision 2026-09-26, on #223):
-       237.4px, less the meter and its gap, leaves the sentence 175.4px, and
-       "1/5 done · 1 not started" -- 24 characters of the 12px mono -- needs
-       173px. The room comes out of `[name]`, `[shape]` and `[mix]`: about 17,
-       11 and 14px at a 1150px row (#223's review). What 29ch does NOT hold: a
-       census of more than 24 characters -- two-digit counts ("12/30 done · 18
-       not started") or a failed, cancelled or dead-lettered clause ("10/30
-       done · 1 failed · 19 cancelled", 260px) -- which stays cut. The
-       containment on `.wf-progress-text` stays for exactly that, so nothing
-       paints past this track at any width, and the open card states the whole
-       census as a fact (`.wf-census`), so a cut sentence reads whole without
-       a pointer. workflow.board.test.tsx holds the floor against the running
-       form. */
-    [progress] minmax(29ch, 1.2fr)
+       33ch HOLDS THE TWO-DIGIT RUNNING FORM, IN A ROW AT LEAST 620px WIDE
+       (owner decisions 2026-09-26, on #223). 33ch is 270.2px; less the meter
+       and its gap it leaves the sentence 208.2px, and "12/30 done · 18 not
+       started" -- 27 characters of the 12px mono -- needs 195px. Measured in
+       Chrome 153 against this sheet at a 1150px row (the 1440 work column):
+       "1/5 done · 1 not started" 173 of 173px and "12/30 done · 18 not
+       started" 195 of 195px are whole; "10/30 done · 1 failed · 19
+       cancelled" shows 208 of its 260px. THE COST, at every row from 800 to
+       1150px: `[name]`, `[shape]` and `[mix]` are 29.0, 20.1 and 24.6px
+       narrower than at 24ch (12.9, 8.9 and 10.9 than at 29ch). At 1150 that
+       is 150.7, 104.4 and 127.5px, so a 22-character workflow id (180px)
+       shows 151px of itself and ends in an ellipsis, whole in its `title`;
+       at 24ch it was whole.
+
+       BELOW 620px THE FLOOR IS 12ch (98.25px). The work column gets that
+       narrow at 1440 only with the inspector open beside it, where a 33ch
+       floor ran the row's grid past its right edge. The switch is a container
+       query on the row's own width (`.wf-h` is the `wf-row` container, just
+       below), and it changes only this floor, through
+       `--wf-progress-floor`: 12ch is the fallback here, 33ch is set by the
+       `@container` rule. Measured in Chrome, the caret stays inside the row
+       down to these widths, with an age of "23h ago" / "just now": `running`
+       445 / 455px, `succeeded` 460 / 465, `dead_lettered` 490 / 495, `state
+       not derived` 520 / 525. JUST PAST THE SWITCH the 33ch floor is too wide
+       for a long word: from 620px the caret is outside until 630 / 640px for
+       `succeeded`, 660 / 670 for `dead_lettered` and 690 / 695 for `state not
+       derived` (and at exactly 620 for `running` with "just now"). There
+       `.wf-bar`'s `overflow: hidden` is the last resort, and the caret is
+       clipped rather than painted outside.
+
+       The containment on `.wf-progress-text` stays for every census the
+       floor does not hold, and the open card states the whole census as a
+       fact (`.wf-census`), so a cut sentence reads whole without a pointer.
+       workflow.board.test.tsx holds the floor against the two-digit running
+       form at 1150 and the 12ch floor, and a running row's caret, at 480. */
+    [progress] minmax(var(--wf-progress-floor, 12ch), 1.2fr)
     [shape] minmax(0, 0.9fr)
     [mix] minmax(0, 1.1fr)
     [spend] 96px
@@ -1633,21 +1662,27 @@ body {
   line-height: var(--lh-meta); font-weight: 400;
   background: var(--surface); border: 1px solid var(--line);
   border-radius: var(--ctl-radius-sm); padding: var(--ctl-s2) var(--ctl-s3);
-  /* THE ROW CLIPS AT ITS OWN BORDER (#223). Its fixed tracks and floors --
-     with `[progress]` at 29ch -- add up to more than a narrow row: measured
-     in Chrome against this sheet, the grid ran past the row's right edge
-     below a 550px row (620px for a row whose word is `state not derived`),
-     against 505px and 580px at 24ch. The work column gets that narrow when
-     the inspector is open beside it (from 1100px up it is a column of its
-     own, 480px and resizable), and there `[name]`, `[shape]` and `[mix]`
-     are already 0px wide at either floor. Unclipped, the flags and the caret
-     painted past the border, towards the inspector. Clipped, nothing on the
-     row paints outside it at any width; the row's own focus ring is an
+  /* THE ROW CLIPS AT ITS OWN BORDER (#223), AS A LAST RESORT (owner
+     decision 2026-09-26). The first defence is the floor giving way in a
+     narrow row (`[progress]`, above): the work column gets narrow when the
+     inspector is open beside it (from 1100px up it is a column of its own,
+     480px and resizable), and there a fixed floor ran the grid past the
+     row's right edge, the flags and the caret painted outside the box. What
+     still overflows -- a row narrower than its fixed tracks, or a long state
+     word just past the 620px switch, both measured in the note above -- is
+     clipped here rather than painted outside. The row's own focus ring is an
      outline, which its overflow does not clip. workflow.board.test.tsx holds
      it at every template's width. */
   overflow: hidden;
   cursor: pointer;
   transition: border-color var(--ctl-dur) ease;
+}
+/* THE WIDE FLOOR, WHERE THE ROW HAS ROOM FOR IT: the `[progress]` note in
+   the template above. A container query, not a media query, because what
+   narrows the row at 1440 is the inspector opening beside the board, and no
+   media query fires for that. */
+@container wf-row (min-width: 620px) {
+  .wf-bar { --wf-progress-floor: 33ch; }
 }
 /* HUELESS ON HOVER (§1.3). The accent already carries the link colour, the
    focus ring and a live state on this same row; spending it on "the cursor is
@@ -1759,11 +1794,12 @@ body {
      meter's accessible name gives the same counts in words, and the open
      card states it whole as a fact (`.wf-census`), which is the route that
      needs no pointer (§7.3: cut on screen, whole somewhere a reader can get
-     to). At 1440 the sentence gets 175.4px since `[progress]`'s floor went
-     to 29ch (the note in the template above): the running form "1/5 done · 1
-     not started" (173px, measured) is whole, and a longer census -- two-digit
-     counts, or a failed or cancelled clause, up to 260px -- is still cut
-     here. The containment stays for exactly that. workflow.board.test.tsx
+     to). At 1440 the sentence gets 208.2px since `[progress]`'s floor went
+     to 33ch in a row at least 620px wide (the note in the template above):
+     the running forms, "12/30 done · 18 not started" (195px, measured) and
+     shorter, are whole, and a failed or cancelled clause -- up to 260px -- is
+     still cut, as is every census in a row under 620px. The containment
+     stays for exactly that. workflow.board.test.tsx
      holds it at every width the sentence is drawn. */
   flex: 0 1 auto;
   min-width: 0;

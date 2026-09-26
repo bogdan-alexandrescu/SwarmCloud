@@ -1668,13 +1668,14 @@ describe('the QA pass: the collapsed row', () => {
    * WHAT IT COSTS, which this cannot see (jsdom has no layout). Measured in
    * Chrome against this sheet, 1440 viewport, when `[progress]`'s floor was
    * 24ch: 196.5px, and the 54px meter and its 8px gap left the sentence
-   * 134.5px, so every census with a tail was cut. The floor is 29ch now
-   * (owner decision 2026-09-26, the next describe): the sentence gets
-   * 175.4px, the running form "1/5 done · 1 not started" (173px) is whole,
-   * and a longer one -- "12/30 done · 18 not started" (195px), "3/12 done · 1
-   * failed · 8 not started" and the sentence above (260px) -- is still cut.
-   * That is what these rules are still for, and why the open card states the
-   * census whole.
+   * 134.5px, so every census with a tail was cut. The floor is 33ch now in
+   * a row at least 620px wide, and 12ch in a narrower one (owner decisions
+   * 2026-09-26, the next describe): at 1440 the sentence gets 208.2px, the
+   * running forms up to "12/30 done · 18 not started" (195px) are whole, and
+   * "3/12 done · 1 failed · 8 not started" and the sentence above (260px)
+   * are still cut, as is every census in a row under 620px (36px). That is
+   * what these rules are still for, and why the open card states the census
+   * whole.
    *
    * ONE CASE PER DECLARATION, so a CI run shows each one failing on its own:
    * the first run that went red on this stopped at `flex-shrink`, and what came
@@ -1762,11 +1763,11 @@ describe('the QA pass: the collapsed row', () => {
     })
 
     // AND THE ROW CLIPS AT ITS OWN BORDER, at every template's width
-    // including the phone's (#223). With `[progress]` at 29ch the row's fixed
-    // tracks and floors add up to more than a narrow row -- measured in Chrome
-    // against this sheet, below 550px (620px for a `state not derived` row),
-    // which the work column reaches with the inspector open beside it -- and
-    // the grid then ran past the row's right edge: the flags and the caret
+    // including the phone's (#223), AS A LAST RESORT (owner decision
+    // 2026-09-26). The floor giving way to 12ch under 620px keeps a running
+    // row's caret inside down to 445px (the next describe); what still
+    // overflows -- a narrower row, or a long state word just past the 620px
+    // switch (styles.css, the `[progress]` note) -- is clipped rather than
     // painted outside the box, towards the inspector. MUTATION: drop
     // `overflow: hidden` from `.wf-bar`.
     it('clips the row at its own border at every width', () => {
@@ -1803,8 +1804,8 @@ describe('the QA pass: the collapsed row', () => {
   })
 
   /**
-   * THE CENSUS READS WHOLE WITHOUT A POINTER (owner decision 2026-09-26, on
-   * #223): in the row at 1440 for the running form, and in the open card for
+   * THE CENSUS READS WHOLE WITHOUT A POINTER (owner decisions 2026-09-26, on
+   * #223): in the row at 1440 for the running forms, and in the open card for
    * every form at every width.
    *
    * THE ROW. `[progress]`'s floor was 24ch, 196.5px of the row's 13px sans at
@@ -1812,12 +1813,17 @@ describe('the QA pass: the collapsed row', () => {
    * gap left the sentence 134.5px, and the running form "1/5 done · 1 not
    * started" -- 24 characters of the 12px mono, 173px measured, so 7.2px a
    * character -- showed as "1/5 done · 1 not st…": the count of what has not
-   * started, gone. The floor is 29ch now, 237.4px, which leaves 175.4px. The
-   * room comes out of `[name]`, `[shape]` and `[mix]`, about 17, 11 and 14px
-   * at a 1150px row (#223's review). jsdom has no fonts, so the two
-   * per-character widths are those Chrome measurements, written down; what is
-   * held is that the floor the sheet declares leaves the running form its
-   * room at them.
+   * started, gone. The floor is 33ch now in a row at least 620px wide,
+   * 270.2px, which leaves 208.2px: "12/30 done · 18 not started" (27
+   * characters, 195px measured) is whole. The room comes out of `[name]`,
+   * `[shape]` and `[mix]`, 29.0, 20.1 and 24.6px against 24ch at every row
+   * from 800 to 1150px. In a narrower row -- the work column with the
+   * inspector open -- the floor is 12ch, so the row's grid does not run past
+   * its right edge. jsdom has no fonts, so the per-character widths and the
+   * two `max-content` tracks are Chrome measurements, written down; what is
+   * held is that the floor the sheet declares, at the row width it is asked
+   * at, leaves the running form its room, and leaves a running row's caret
+   * inside a 480px row.
    *
    * THE OPEN CARD. A longer census is still cut at 1440 -- "10/30 done · 1
    * failed · 19 cancelled" is 260px -- and at 560px and below the row draws no
