@@ -30,7 +30,7 @@ from ..codec import attempt_to_api, task_to_api
 from ..deps import AppContext, current_auth, get_context, paged_limit, tenant_scope
 from ..errors import ValidationFailed
 from ..schemas import TaskBatchCreate, TaskCreate
-from ..task_input import input_copy
+from ..task_input import TaskMasking, input_copy, masking_for
 
 router = APIRouter(prefix="/v1/tasks", tags=["tasks"])
 
@@ -45,7 +45,15 @@ def agent_output_service(ctx: AppContext = Depends(get_context)) -> AgentOutputS
     return AgentOutputService(ctx.inspection)
 
 
-def _event_to_api(event) -> dict:
+def _event_to_api(event, masking: TaskMasking) -> dict:
+    """One event, its `detail` masked by the task's masker (the PR #229 review).
+
+    A FAILED event's `detail.error` is the stderr tail `last_error` is, and a
+    detail can quote the agent anywhere else; every string in it is masked by
+    the rules and the literals the task's input named, string by string --
+    never by key, because the keys are the platform's (`TaskMasking.leaves`).
+    """
+    detail, count = masking.leaves(event.detail)
     return {
         "event_id": event.event_id,
         "task_id": event.task_id,
@@ -54,7 +62,8 @@ def _event_to_api(event) -> dict:
         "attempt_id": event.attempt_id,
         "lease_id": event.lease_id,
         "generation": event.generation,
-        "detail": event.detail,
+        "detail": detail,
+        "detail_redaction_count": count,
     }
 
 
@@ -170,7 +179,11 @@ def list_events(
     it anywhere else is a 422 rather than a plausible wrong page. See
     `Store._keyset_page` for why events that share a timestamp are neither
     dropped nor repeated at a page boundary.
+
+    Each `detail` is masked by the task's masker, so the task is read first --
+    which `Store.list_events` does anyway for its tenant check.
     """
+    masking = masking_for(ctx.store.get_task(tenant_id, task_id))
     page = ctx.store.list_events(
         tenant_id,
         task_id,
@@ -180,7 +193,7 @@ def list_events(
     )
     return {
         "task_id": task_id,
-        "events": [_event_to_api(e) for e in page.items],
+        "events": [_event_to_api(e, masking) for e in page.items],
         "next_page_token": page.next_page_token,
     }
 
@@ -218,8 +231,9 @@ def list_attempts(
     `read_at`. All three are null on an attempt from before the change.
     """
     # Resolve the task first so a wrong id is a 404 about the TASK rather than
-    # an empty attempt list, which would read as "this task never ran".
-    ctx.store.get_task(tenant_id, task_id)
+    # an empty attempt list, which would read as "this task never ran". Its
+    # masker masks each attempt's `error` (the PR #229 review).
+    masking = masking_for(ctx.store.get_task(tenant_id, task_id))
     attempts = ctx.store.list_attempts(
         tenant_id, task_id, limit=paged_limit(ctx, limit)
     )
@@ -228,7 +242,7 @@ def list_attempts(
         "task_id": task_id,
         # The clock each row's `cpu_reading_age_seconds` is taken against.
         "read_at": read_at,
-        "attempts": [attempt_to_api(a, read_at=read_at) for a in attempts],
+        "attempts": [attempt_to_api(a, masking=masking, read_at=read_at) for a in attempts],
     }
 
 

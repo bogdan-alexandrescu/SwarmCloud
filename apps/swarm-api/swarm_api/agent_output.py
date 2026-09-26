@@ -62,6 +62,7 @@ from .inspect import (
 )
 from .objects import ObjectAbsent, ObjectReader, ObjectSlice, ObjectUnreadable
 from .redaction import RULES as REDACTION_RULES, open_key_start, redact, redact_detail
+from .task_input import masking_for
 from .transcript import last_result_event, parse_window
 
 log = logging.getLogger(__name__)
@@ -704,16 +705,19 @@ class AgentOutputService:
         runner = summary.get("runner") if isinstance(summary.get("runner"), dict) else {}
         text = runner.get("summary")
         if chosen == manifest_attempt(task) and isinstance(text, str) and text.strip():
-            scrubbed = redact(text, decoded=True)
+            # The same masking `GET /v1/tasks/{id}` gives this string inside
+            # `result_summary` (the PR #229 review): the rules, and every
+            # literal the task's input and metadata named.
+            masked, masked_count = masking_for(task).text(text)
             body.update(
                 status="ok",
                 source="runner_summary",
                 format="text",
-                content=scrubbed.text,
+                content=masked,
                 complete=False if len(text) >= RUNNER_SUMMARY_CAP else None,
                 bytes=len(text.encode("utf-8")),
-                redacted=scrubbed.any,
-                redaction_count=scrubbed.count,
+                redacted=masked_count > 0,
+                redaction_count=masked_count,
                 detail=cut_note + (
                     "the agent's output holds no result event, so this is the runner's "
                     "summary, which the runner cuts at 2,000 characters"

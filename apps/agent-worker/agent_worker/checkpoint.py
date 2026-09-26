@@ -199,9 +199,18 @@ class CheckpointManager:
         # directory (3.11 checks `is_dir(follow_symlinks=False)`), so
         # `_write_archive` meets the link as one entry and never its contents.
         # Those files are the artifacts, which are uploaded on their own.
+        #
+        # AND SO IS `input.json` (the PR #229 review). It is the task's whole
+        # input, written by `AgentLifecycle._prepare`, and archived it was
+        # served back out of every checkpoint -- as bytes by the archive
+        # download, and by the file view through the text rules only -- while
+        # every task route serves the input masked. Nothing needs it restored:
+        # `_prepare` writes it from the task document at every attempt, AFTER
+        # the restore (STEP 4) and before the runner starts, so a resumed
+        # attempt reads the one it wrote, never an archived one.
         skip = frozenset(
             path for path in (ws.artifacts_link(),) if ws.is_artifacts_link(path)
-        )
+        ) | {ws.input_path}
         with tempfile.TemporaryDirectory(prefix="swarm-ckpt-") as tmpdir:
             archive_path = Path(tmpdir) / ARCHIVE_NAME
             file_count = self._write_archive(ws.work, archive_path, skip=skip)

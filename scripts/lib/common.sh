@@ -1665,6 +1665,18 @@ iso_now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 # lines and holds their output equal. An escaped status word
 # (`\"token\": \"not set\"`) is not protected: it is log text, not
 # `swarm doctor` output, and the Python rule masks it too.
+#
+# AT ANY DEPTH OF ESCAPING (the PR #229 review). A command that quotes its own
+# quotes -- `bash -c "export DB_PASSWORD=\"<v>\""` -- sits in a stream-json
+# line one level deeper, as `\\\"` (three backslashes, then the quote), and the
+# first version took exactly one backslash: it masked the three and printed
+# `<v>`. Both expressions now take a RUN of backslashes wherever they took one,
+# and the assignment rule refuses a value that starts with a run of them and a
+# quote. What this filter still cannot do, being sed over text, is decode: a
+# value opened by an escaped quote stops at its first backslash (the owner's
+# rule), so a password holding one prints from there. `/logs` decodes a line
+# that is a JSON document and masks it by its structure instead
+# (`swarm_api.redaction.redact_lines`).
 redact() {
   # SOH: a byte no credential and no log line carries, and one no locale counts
   # as [[:space:]] -- which the assignment rule would otherwise match across.
@@ -1683,8 +1695,8 @@ redact() {
     -e 's/(-----BEGIN [A-Z ]*PRIVATE KEY-----).*/\1********/g' \
     -e 's/(([Bb]earer|[Bb]asic)[[:space:]]+)[A-Za-z0-9._~+\/-]{12,}=*/\1********/g' \
     -e "s/(${key})([[:space:]]*[:=][[:space:]]*\"?)((not set|unset|set|none|\\(none\\)|missing)([\",[:space:]]|\$))/\\1${keep}\\3\\4/Ig" \
-    -e 's/((\\?")?(api_?key|apikey|password|passwd|secret|token|credential|authorization)(\\?")?[[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?\\")[^"\\,[:space:]]+/\1********/Ig' \
-    -e 's/("?(api_?key|apikey|password|passwd|secret|token|credential|authorization)"?[[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?"?)(\\[^",[:space:]]|[^",[:space:]\\])[^",[:space:]]*/\1********/Ig' \
+    -e 's/((\\*")?(api_?key|apikey|password|passwd|secret|token|credential|authorization)(\\*")?[[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?\\+")[^"\\,[:space:]]+/\1********/Ig' \
+    -e 's/("?(api_?key|apikey|password|passwd|secret|token|credential|authorization)"?[[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?"?)(\\+[^",[:space:]\\]|[^",[:space:]\\])[^",[:space:]]*/\1********/Ig' \
     -e "s/${keep}//g"
 }
 

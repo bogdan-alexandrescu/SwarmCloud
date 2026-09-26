@@ -602,12 +602,39 @@ both over the same lines and holds their output **equal**, not merely both
 masked. The superset relation (everything the shell filter masks, the API
 masks) still holds, and is now equality on every key/value line the tests name.
 
+**At any depth of escaping** (the PR #229 review). A command that quotes its
+own quotes -- `bash -c "export DB_PASSWORD=\"<v>\""`, `curl -d "{\"api_key\":
+...}"` -- sits in a stream-json line one level deeper, as `\\\"`: three
+backslashes, then the quote. The first version took exactly one backslash, so
+it masked the three and served `<v>` under a count of 1, and both filters
+agreed, so the parity test was green over the leak. Both now take a run of
+backslashes wherever they took one, and the tests hold both filters equal on
+the two-level `bash -c` and `curl -d` lines. The run before the key is bounded
+at 15 in Python, because that group is tried at every position of the text; a
+longer run still matches, from a later start, with the same output.
+
+**`/logs` masks a JSON line by its structure** (the PR #229 review). The rule
+over the text can only guess where a value ends inside JSON text: a list under
+a credential's name served every element after the first, an object served its
+strings, and a value holding a space or a backslash served the rest. So a log
+line that parses as a JSON document -- every line of claude-code's stream-json
+stdout -- is now decoded and masked by `JsonMasker`
+(`redaction.redact_lines`): every string decoded, as `/transcript` masks the
+same event, and a list or an object under a credential's name masked whole. A
+line nothing was masked in is served byte for byte; a masked line is written
+back as compact JSON. Lines that are not whole documents -- plain text, a line a
+window cut -- keep the rule over their text. `/artifacts/content` and the
+checkpoint file view mask a window the same way. The shell filter cannot
+decode, so in a terminal the text rule is all there is: a value opened by an
+escaped quote stops at its first backslash (the owner's rule), and a list's
+later elements are served.
+
 **A list's first element.** The same change lets the value start after a `[`,
 so `{"password": ["<v>"]}` masks `<v>` rather than the bracket (the reach
-limit PR #210 reported). Only the first element: in free text `["a", "b"]`
-still serves `b`, and an object under a credential's name still serves its
-strings. A document the API can decode goes through `JsonMasker`, which masks
-either whole.
+limit PR #210 reported). In free text that is still the first element only:
+`["a", "b"]` serves `b`, and an object under a credential's name serves its
+strings. A line or document the API can decode goes through `JsonMasker`,
+which masks either whole -- on `/logs` too, since the PR #229 review.
 
 `prompt_key` (`string`, `missing`, `other`) says what shape the input has, so
 a screen never goes back to the raw document to find out. Under a string
@@ -630,10 +657,40 @@ the submitter." So `codec.task_to_api`, the one serializer every task route
 goes through, serves the input `task_input.TaskMasking` masks, with
 `input_redaction_count` beside it. That covers the task, the task list, the
 create and batch responses, the cancel response, and a workflow read's tasks.
-A workflow's steps serve their input the same way, each with its own count
-(`codec._step_to_api`). **Nothing serves the raw input any more.** The task
-document is unchanged: masking is at read time, and the runner reads what was
-submitted.
+A workflow's steps serve their input masked by **their task's own masker**,
+each with its own count (`codec._step_to_api`): the frozen `Workflow` has no
+metadata, but every step task carries the workflow's, so a literal the
+workflow's metadata names is masked in `steps[i].input` exactly as in
+`tasks[i].input` of the same response. The list route, which reads the step
+tasks' states anyway, uses the tasks it read; a step whose task the read budget
+left unread borrows a sibling's copy of the workflow metadata, and a workflow
+none of whose step tasks were read serves its step inputs as `null` with
+`input_masked_by: "not_read"`. The task document is unchanged: masking is at
+read time, and the runner reads what was submitted.
+
+**What else carries the input, and how each is masked** (the PR #229 review,
+which found "nothing serves the raw input" false as first written):
+
+| where | what it held | now |
+|---|---|---|
+| `last_error`, each attempt's `error`, each event's `detail` | the agent's stderr tail, which echoes whatever the prompt made it run | every string masked by the task's masker -- the rules and every literal the input and metadata named -- with `last_error_redaction_count`, `error_redaction_count`, `detail_redaction_count`. String by string, never by key: the keys are the platform's (`credential` in a park's detail is which kind of credential, not one). |
+| `result_summary` | the agent's own summary text (up to 4,000 characters), its output tails | the same, with `result_summary_redaction_count`. An artifact's `name` and `uri`, a staged input's `filename` and `path`, and ids are served as stored (`task_input.LOOKUP_KEYS`): a client matches them exactly, and the rules would take `eye-tracking-summary.md` for a JWT. |
+| `repository_url` | a caller-supplied URL, often with the forge token in it | refused at submission when it carries userinfo that can hold a credential (`validation.check_repository_url`, a 422 naming the tenant's git secret as the way to clone a private repository); one stored before is served with the userinfo masked, `repository_url_redaction_count` beside it |
+| `input.json` in a checkpoint | the whole input, as the worker wrote it | no longer archived (the worker rewrites it at every attempt's prepare, after the restore); one in an older archive is served by the checkpoint file view whole, through the task's masker |
+| the runner's `child started` line | the prompt, inside argv | the prompt's length; `/logs` also masks the task's literals in every window |
+
+**One path still serves it as stored, and it is the owner's to rule on:** the
+whole checkpoint archive (`GET /v1/tasks/{id}/checkpoints/{n}/content`), which
+the owner decided on 2026-09-24 to serve byte for byte and unredacted. Every
+archive written before this change holds `input.json`. Whether that download
+stands under "masked everywhere" is an open question on the PR.
+
+A task's masker is kept per task (`task_input.masking_for`): the list route
+masks every row, the UI reads 200 rows, and `JsonMasker` over a 256 KiB input
+measured 57 ms, so a page of large prompts cost about 11 s of CPU on every
+refresh. The cache is keyed on the task and a digest of its input and metadata,
+so a changed document is a miss, never a stale answer, and it is bounded by
+size (32 MiB) and entries.
 
 The input stays an **object**: `JsonMasker.value()` is the masking `json()`
 does, as a JSON value rather than its text, with the same count. A client that

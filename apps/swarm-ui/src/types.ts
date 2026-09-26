@@ -466,8 +466,18 @@ export interface Task {
    */
   input_redaction_count?: number | null
   metadata_redaction_count?: number | null
+  /**
+   * MASKED too, since the PR #229 review: the agent's stderr tail and its own
+   * summary text, by the input's masker, string by string (an artifact's
+   * `name` and `uri` as stored). Each count is how many masks that took;
+   * optional for the reason the two above are.
+   */
   last_error: string | null
+  last_error_redaction_count?: number | null
   result_summary: Record<string, unknown> | null
+  result_summary_redaction_count?: number | null
+  /** Userinfo that could carry a credential is masked whole; submission refuses it now. */
+  repository_url_redaction_count?: number | null
   latest_checkpoint: string | null
 
   /**
@@ -752,7 +762,9 @@ export interface TaskEvent {
   attempt_id: string | null
   lease_id: string | null
   generation: number | null
+  /** Every string in it masked by the task's masker (the PR #229 review); keys as written. */
   detail: Record<string, unknown> | null
+  detail_redaction_count?: number | null
 }
 
 /**
@@ -1267,7 +1279,9 @@ export interface AttemptRow {
   started_at: string | null
   completed_at: string | null
   exit_code: number | null
+  /** The stderr tail `last_error` is, masked by the task's masker (the PR #229 review). */
   error: string | null
+  error_redaction_count?: number | null
   peak_rss_bytes: number | null
   peak_disk_bytes: number | null
   oom_near_miss: boolean
@@ -2643,10 +2657,16 @@ export interface WorkflowStep {
   input_from: Record<string, string>
   timeout_seconds?: number | null
   task_id?: string | null
-  /** The step's input, MASKED by the API as its task's is (owner decision, 2026-09-26). */
+  /**
+   * The step's input, MASKED by its TASK's masker (the PR #229 review), so a
+   * literal the workflow's metadata names is masked here as on the task. Null
+   * when the route read none of the workflow's step tasks.
+   */
   input?: unknown
   /** How many masks that took. Absent from an API older than the change. */
   input_redaction_count?: number | null
+  /** `task` (its own task's masker), `workflow` (a sibling's copy of the metadata) or `not_read`. */
+  input_masked_by?: 'task' | 'workflow' | 'not_read'
 }
 
 /**

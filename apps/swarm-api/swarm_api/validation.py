@@ -359,6 +359,80 @@ RESERVED_METADATA_KEYS = (
 _NEEDS_REPOSITORY_STRATEGIES = ("direct-pr", "integrate")
 
 
+# --------------------------------------------------------------------------
+# A repository URL carries no credential
+# --------------------------------------------------------------------------
+#
+# WHY (the PR #229 review). `repository_url` is caller-supplied, and the usual
+# way to hand a tool a private repository is to put the token in it:
+# `https://x-access-token:ghp_...@github.com/o/r`. `_repo_scheme` checked the
+# scheme only, so the token was stored on the task, served on every task route
+# beside the masked input, drawn in Details' `repo` fact directly above the
+# masked prompt, written into the clone's argv (which the worker logs), and
+# echoed into stderr -- and so into `last_error` -- by a failed clone.
+#
+# The platform has its own path for a private repository, and it is the only
+# one: the tenant's forge token lives in Secret Manager as
+# `swarm-tenant-<tenant>-git` (`scripts/create-secrets.sh --stdin`), and the
+# worker writes it into a 0600 credential file for git at clone time
+# (`agent_worker.gitops`), never into argv. So a URL carrying userinfo is
+# refused at submission, and one stored before this is masked on the way out
+# (`task_input.TaskMasking.repository_url`). ONE definition of "userinfo that
+# can carry a credential", used by both, below.
+#
+#   * `https://` -- ANY userinfo. A forge token is as often the user name
+#     (`https://ghp_...@github.com/o/r`) as the password.
+#   * `ssh://`  -- a password (`user:pass@`). A bare user name is the ssh
+#     login (`ssh://git@github.com/o/r`) and is not a credential.
+#   * `git@host:path` -- the scp form. Its user is the fixed `git` login.
+
+#: What the refusal tells a caller to do instead.
+REPOSITORY_CREDENTIAL_PATH = (
+    "a private repository is cloned with the tenant's forge token, which an "
+    "operator stores in Secret Manager as swarm-tenant-<tenant>-git "
+    "(scripts/create-secrets.sh --stdin); the worker hands it to git at clone "
+    "time, never in the URL"
+)
+
+
+def repository_userinfo(url: str) -> tuple[int, int] | None:
+    """Where the credential-bearing userinfo of `url` is, as `(start, end)`; else None.
+
+    `end` is the index of the `@` that closes it. None for a URL with no
+    userinfo, an ssh login name, and the scp form.
+    """
+    scheme, sep, rest = url.partition("://")
+    if not sep:
+        return None
+    start = len(scheme) + len(sep)
+    ends = [at for at in (rest.find("/"), rest.find("?"), rest.find("#")) if at >= 0]
+    authority = rest[: min(ends)] if ends else rest
+    at = authority.rfind("@")
+    if at < 0:
+        return None
+    userinfo = authority[:at]
+    if scheme.lower() == "ssh" and ":" not in userinfo:
+        return None
+    return start, start + at
+
+
+def check_repository_url(value: str | None) -> str | None:
+    """The one `repository_url` rule, for `TaskCreate` and `WorkflowCreate` alike.
+
+    Raises ValueError, which pydantic turns into the 422 naming the field.
+    """
+    if value is None:
+        return None
+    if not value.startswith(("https://", "git@", "ssh://")):
+        raise ValueError("repository_url must be an https://, ssh:// or git@ URL")
+    if repository_userinfo(value) is not None:
+        raise ValueError(
+            "repository_url must not carry a credential (a user name or token before "
+            "'@'); " + REPOSITORY_CREDENTIAL_PATH
+        )
+    return value
+
+
 class DispatchOptionError(ValidationFailed):
     """422 `invalid_dispatch`: a refused dispatch option, or a reserved metadata key.
 
