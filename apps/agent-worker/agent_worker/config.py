@@ -17,6 +17,7 @@ from pathlib import Path
 from swarm_common.config import Settings
 from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES, RunnerProfile, resolve_backend
 
+from . import standalone_outputs
 from .errors import ConfigError
 
 
@@ -92,6 +93,14 @@ class WorkerConfig:
     max_stderr_bytes: int = 8 * 1024 * 1024
     max_artifact_bytes: int = 512 * 1024 * 1024
     max_checkpoint_bytes: int = 2 * 1024 * 1024 * 1024
+    #: What a CLI agent with no repository may have uploaded from its working
+    #: folder, per attempt: 50 files and 25 MiB in total. The owner's numbers
+    #: (#184, 2026-09-26), kept in `standalone_outputs` beside the rules they
+    #: bound. Much lower than `max_artifact_bytes` on purpose: a file the agent
+    #: put in `$SWARM_ARTIFACTS_DIR` was meant to be kept, while the working
+    #: folder also holds whatever the agent generated on the way.
+    max_workdir_output_files: int = standalone_outputs.MAX_FILES
+    max_workdir_output_bytes: int = standalone_outputs.MAX_BYTES
 
     # --- live logs -----------------------------------------------------------
     # The complete streams are uploaded once, at exit. That is correct for the

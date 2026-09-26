@@ -83,9 +83,11 @@ Three things have to be true, and the second is the one that gets forgotten:
    provider the tenant keeps. A re-run also rewrites `display_name`,
    `max_active` and `capacity_units` (to defaults of 20 and 40 unless they are
    given), writes `gcs_prefix` without the trailing slash that terraform writes,
-   and creates the prefix marker object. Pass the tenant's current values, or
-   make the two changes on their own: the one secret binding, and a Firestore
-   PATCH whose update mask is `credentials` alone.
+   and creates the prefix marker object. So make the two changes on their own:
+   `scripts/register-tenant.sh --tenant eng --add-provider git` is exactly the
+   one secret binding and a Firestore PATCH whose update mask is `credentials`
+   alone, conditional on the document not having changed since it was read.
+   Points 2 and 3 are then one command.
 
 **No Terraform change is required**, and that is worth stating because it looks
 like it should be. `terraform/infra/locals.tf` builds `secret_env` from a
@@ -233,9 +235,117 @@ from the task id and re-checked before the push, the default branch is refused,
 nothing is ever force-pushed, and hooks are disabled on every git invocation so
 a `.git/hooks/pre-commit` the agent wrote cannot execute.
 
-They are mitigations, not a boundary. The smallest version of this decision
-would have been a fine-grained PAT on one repository that nothing important
-depends on, and section 5 was first written assuming it. The owner chose a
-classic PAT instead (section 3). The proofs therefore run with a token that
-reaches every repository the account can reach, and each of the mitigations
-above matters in proportion.
+**The token-bearing commands run in a repository the worker owns, never in the
+clone.** This is the mitigation that closes the widest gap, and it matters most
+now that the token is a classic PAT reaching every repository the account can
+(section 3). A git repository honours its own `.git/config`, and the agent has
+write access to the tree it worked in — so running the push (and the
+integrator's contributor fetch) inside that clone let repository-local
+configuration the agent controls take effect while the token was in hand. Two
+settings are enough to move it:
+
+* `credential.helper` is multi-valued, and git invokes **every** configured
+  helper — so a helper the agent added is handed the credential (git calls it
+  with `store` once the request succeeds), alongside the worker's own.
+* `url.<host>.insteadOf` / `pushInsteadOf` rewrites the destination of a push —
+  *including a URL passed explicitly on the command line* — so the authenticated
+  push, and the credential git sends with it, goes to a host of the agent's
+  choosing. There is **no `-c` override that disables URL rewriting**, and a
+  repository config can `include` another file that reintroduces anything a
+  blocklist stripped. So per-invocation overrides are not a defence you can
+  finish writing.
+
+The fix is therefore structural, not a longer blocklist. `gitops.prepare_publish_repo`
+builds a fresh repository under the worker's private scratch (never checkpointed,
+never uploaded, never named in the agent's environment), `git init`-ed so its
+config is the worker's. The agent's committed work is transferred in by a
+**local, token-less** transfer of the commit the worker computed — the clone's
+object store is borrowed and no git runs against the clone, so no credential is
+present during the transfer and nothing the clone's configuration could do can
+move one. The remote is set from the validated `repository_url`, never read back
+from the clone; the credential-helper list is reset to the worker's own helper
+before it is added; and the transport is pinned (verified TLS, no proxy, no
+injected header). The integrator's merges happen in this repository too.
+
+**That private scratch is not itself a permission boundary** — it shares a uid
+with the agent (`workspace.py` says so), so the agent can create paths inside it
+during its run. So the publish repository is built at an **unpredictable name**
+(`tempfile.mkdtemp`), generated only after the agent has exited. A constant name
+was a hole in its own right: the agent could pre-plant a symlink there pointing
+at a repository it wrote, and the worker's cleanup (`shutil.rmtree(...,
+ignore_errors=True)` then `mkdir(exist_ok=True)`) cannot delete a symlink and
+silently leaves it, so `git init` and the push would run behind the link, back
+inside the agent's config. `mkdtemp` creates the directory with O_EXCL
+semantics, so the worker never lands on, nor follows, anything the agent planted.
+
+**Owning *where* the token-bearing commands run closes the config vector; it does
+not close a live agent process.** The runner is started `start_new_session=True`
+and stopped by a process-group kill (`procman.py`), so a process the agent
+double-forks and `setsid`s lands in its own session, survives that kill, and
+re-parents to tini — sharing the worker's uid the whole time. Such a process
+needs neither to predict the `mkdtemp` name nor to have written the clone's
+config: it can *watch* `ws.private`, notice the publish repository appear, and
+drop an `insteadOf` into it in the window between its creation and the push, or
+read the 0600 credential file while the push holds it. So before the first
+token-bearing step, `lifecycle._publish_git` calls `procman.reap_foreign_processes`
+once: `os.kill(-1, SIGKILL)` signals every process this uid may signal except PID
+1 (tini) and the worker itself, and a `/proc` scan then confirms nothing the uid
+owns is still alive (a bounded retry covers a fork racing the kill). If anything
+survives, the whole publish is **refused** with a stated reason rather than run
+while agent code can still act. This is safe because by that point the runner is
+already reaped, the resource sampler is a stopped thread, and the worker's own
+git helpers are synchronous — there is no worker-owned subprocess to protect. The
+token-bearing commands also disable submodule recursion
+(`fetch.recurseSubmodules=false`, `submodule.recurse=false`), because git's
+on-demand default would fetch a submodule named in an untrusted contributor
+branch's `.gitmodules` and carry the credential to whatever host it lists.
+
+**Nor does the reap close the worker's own memory.** The worker reads the token
+at the clone and holds it in its heap until the publish, and the agent runs
+beside it for all of that time as the same uid. Where the kernel lets one
+process of a uid ptrace another, or open its `/proc/<pid>/mem`, a running agent
+could read the token out of the worker long before any reap. So the
+entrypoint's first act after its proof-of-life line, before the configuration,
+any client or any credential, is `prctl(PR_SET_DUMPABLE, 0)`, read back from the
+kernel (`agent_worker/hardening.py`). The kernel then refuses ptrace attach and
+`/proc/<pid>/mem` and `environ` to any process without CAP_SYS_PTRACE over the
+worker, and the pod drops every capability. The runner, the agent and git are
+unaffected: a process becomes dumpable again when it execs a program. The cost
+is that the worker leaves no core dump, and an external debugger cannot attach;
+the SIGTERM stack dump remains. If the call fails on Linux, the worker never
+reads the token: the clone runs without it, and the publish is refused with the
+reason. `tests/unit/worker/test_worker_memory_protection.py` starts the real
+entrypoint as a process on Linux CI. It checks that the process is
+non-dumpable by the time it reads its configuration, and that a sibling process
+of the same uid is refused both reads. A control runs the same entrypoint with
+the call disabled and reads the canary out of it. The container's environment
+is also PID 1's, at `/proc/1/environ`, which this does not cover; the worker
+keeps no credential in its environment for that reason.
+
+The property this guarantees: **no configuration, file or ref the agent can
+write can cause the tenant token to be sent anywhere except the forge host of
+the task's `repository_url` over verified TLS, or be handed to any program other
+than the worker's own credential mechanism.** It is proven offline by
+`tests/unit/worker/test_forge_token_isolation.py` (real git, local `file://`
+remotes, no network): a `url.*.insteadOf` / `pushInsteadOf` the agent writes into
+the clone cannot redirect the push; a symlink the agent pre-plants at the publish
+path cannot either; the repository the push actually runs in carries none of the
+agent's redirect or interception keys (`insteadOf`, `pushInsteadOf`, `http.proxy`,
+`http.sslVerify`, `remote.*.pushurl`, `credential.helper`); and the repository
+the worker authenticates from carries no credential helper the agent wrote (each
+with a control confirming the clone itself would have leaked). A real
+double-forked `setsid` daemon proves the *when*: the worker reaps it (verified
+dead through `/proc`) before it builds the publish repository and before the
+token-bearing push, refuses to publish if a survivor cannot be cleared, and the
+integrator's token-bearing fetch is asserted to disable submodule recursion.
+`tests/unit/worker/test_procman_reap.py` pins the reap mechanism itself and runs
+the real `os.kill(-1, SIGKILL)` inside a private PID namespace, where it cannot
+reach the test runner.
+
+They are mitigations, not a boundary. The token still belongs to a platform that
+runs model-written code, and a compromise of the worker itself is outside what
+any of this protects against. The smallest version of this decision would have
+been a fine-grained PAT on one repository that nothing important depends on, and
+section 5 was first written assuming it; the owner chose a classic PAT instead
+(section 3), so the proofs run with a token that reaches every repository the
+account can reach, and each mitigation above matters in proportion.
