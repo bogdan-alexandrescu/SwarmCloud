@@ -57,7 +57,7 @@ import {
   type ZoomTier,
 } from '../dag'
 import type { Task, TaskDispatch, TaskState, Workflow, WorkflowStep } from '../types'
-import { cascade } from './cssgate'
+import { cascade, splitTop, type CascadeEnv } from './cssgate'
 import { colour, resolveSheet, resolveVars, tokenTables, type RGBA } from './spaceprobe'
 
 // ---------------------------------------------------------------------------
@@ -1781,6 +1781,115 @@ describe('the QA pass: the collapsed row', () => {
       expect(t.textContent, 'the row drew no census sentence').not.toBe('')
       expect(t.getAttribute('title'), `"${t.textContent}" is not whole in its title`).toBe(t.textContent)
     }
+  })
+
+  /**
+   * THE CENSUS READS WHOLE WITHOUT A POINTER (owner decision 2026-09-26, on
+   * #223): in the row at 1440 for the running form, and in the open card for
+   * every form at every width.
+   *
+   * THE ROW. `[progress]`'s floor was 24ch, 196.5px of the row's 13px sans at
+   * 1440 (measured in Chrome against this sheet). The 54px meter and its 8px
+   * gap left the sentence 134.5px, and the running form "1/5 done · 1 not
+   * started" -- 24 characters of the 12px mono, 173px measured, so 7.2px a
+   * character -- showed as "1/5 done · 1 not st…": the count of what has not
+   * started, gone. The floor is 29ch now, 237.4px, which leaves 175.4px. The
+   * room comes out of `[name]`, `[shape]` and `[mix]`, about 17, 11 and 14px
+   * at a 1150px row (#223's review). jsdom has no fonts, so the two
+   * per-character widths are those Chrome measurements, written down; what is
+   * held is that the floor the sheet declares leaves the running form its
+   * room at them.
+   *
+   * THE OPEN CARD. A longer census is still cut at 1440 -- "10/30 done · 1
+   * failed · 19 cancelled" is 260px -- and at 560px and below the row draws no
+   * sentence at all. A `title` is whole on hover only, and a phone has no
+   * hover. So the open card states the census as a fact, whole, at every
+   * width: §7.3's rule for a cut value is cut on screen and whole somewhere a
+   * reader can get to without a pointer.
+   */
+  describe('the census reads whole without a pointer', () => {
+    const WIDE: CascadeEnv = { width: 1440 }
+    const PHONE: CascadeEnv = { width: 390 }
+    /** One `ch` of the row's 13px sans, from 24ch = 196.5px measured at 1440. */
+    const SANS_13_CH = 196.5 / 24
+    /** One character of the census's 12px mono, from 24 characters = 173px measured. */
+    const MONO_12_CHAR = 173 / 24
+    const RUNNING = '1/5 done · 1 not started'
+    const LONG = '10/30 done · 1 failed · 19 cancelled'
+
+    /** Five steps: one done, three running, one not started. */
+    function running(): Workflow {
+      return workflow('wf_running', Array.from({ length: 5 }, (_, i) => step(`r-${i}`, [])), {
+        rollup: {
+          state: 'RUNNING',
+          complete: true,
+          reason: 'steps_hold_capacity',
+          counts: { SUCCEEDED: 1, RUNNING: 3, unstarted: 1 },
+          unreadable_steps: [],
+          unstarted_steps: [],
+          steps_read: 5,
+        },
+      })
+    }
+    const won = (el: Element, prop: string | readonly string[], env: CascadeEnv): string | null => {
+      const r = cascade(STYLES, el, prop, env)
+      expect(r.unsupported, 'selectors the resolver could not evaluate').toEqual([])
+      return r.winner?.value ?? null
+    }
+    const px = (v: string | null): number =>
+      Number(/^([\d.]+)px$/.exec(resolveVars(v ?? '', tokenTables(STYLES).dark).trim())?.[1] ?? Number.NaN)
+
+    // MUTATION: the `[progress]` floor back to 24ch, or anything under 29ch;
+    // the meter wider, or its gap larger, without the floor following.
+    it('gives [progress] a floor at 1440 that holds the running form whole', () => {
+      const bar = card(running()).container.querySelector('.wf-bar')!
+      expect(bar.querySelector('.wf-progress-text')!.textContent, 'the fixture is not the running form').toBe(RUNNING)
+      const template = won(bar, 'grid-template-columns', WIDE)
+      const parts = splitTop(template ?? '', ' ')
+      const at = parts.indexOf('[progress]')
+      expect(at, `the wide template names no [progress] line: ${template}`).toBeGreaterThanOrEqual(0)
+      const floor = /^minmax\(\s*([\d.]+)ch\s*,/.exec(parts[at + 1] ?? '')
+      expect(floor, `[progress] has no floor in ch: ${parts[at + 1]}`).not.toBeNull()
+      const meter = px(won(bar.querySelector('.wf-meter')!, 'width', WIDE))
+      const gap = px(won(bar.querySelector('.wf-progress')!, ['gap', 'column-gap'], WIDE))
+      expect(Number.isFinite(meter) && Number.isFinite(gap), `the meter (${meter}) or its gap (${gap}) is not a length`).toBe(true)
+      const room = Number(floor![1]) * SANS_13_CH - meter - gap
+      const needs = RUNNING.length * MONO_12_CHAR
+      expect(
+        room,
+        `at 1440 "${RUNNING}" gets ${room.toFixed(1)}px of the ${needs.toFixed(1)}px it needs, so it is cut`,
+      ).toBeGreaterThanOrEqual(needs)
+    })
+
+    // MUTATION: take the census out of the open card; hide it at a width; or
+    // cut it the way the row does (one line, an ellipsis).
+    it('states the whole census in the open card, at 1440 and at 390', () => {
+      const { container } = card(ended('wf_long', 30, { SUCCEEDED: 10, FAILED: 1, CANCELLED: 19 }), new Map(), true)
+      const rowText = container.querySelector('.wf-bar .wf-progress-text')!
+      expect(rowText.textContent).toBe(LONG)
+      const body = container.querySelector('.wf-body')
+      expect(body, 'the card did not open').not.toBeNull()
+      const fact = [...body!.querySelectorAll('.ctl-fact')].find((li) => li.querySelector('b')?.textContent === 'progress')
+      expect(fact, 'the open card does not state the census').toBeTruthy()
+      expect((fact!.textContent ?? '').slice('progress'.length), 'the open card cuts or rewords the census').toBe(LONG)
+      // Every box from the fact up to the open body.
+      const boxes: Element[] = []
+      for (let el: Element | null = fact!; el !== null && el !== body!.parentElement; el = el.parentElement) boxes.push(el)
+      let asked = 0
+      for (const env of [WIDE, PHONE]) {
+        for (const el of boxes) {
+          const what = `${env.width}: \`${el.tagName.toLowerCase()}${el.className ? `.${el.className.split(' ').join('.')}` : ''}\``
+          expect(won(el, 'display', env), `${what} hides the census`).not.toBe('none')
+          expect(won(el, 'white-space', env) ?? 'normal', `${what} holds the census to one line`).not.toBe('nowrap')
+          expect(won(el, 'text-overflow', env) ?? 'clip', `${what} cuts the census`).not.toBe('ellipsis')
+          asked += 1
+        }
+      }
+      expect(asked).toBe(boxes.length * 2)
+      // At 390 the row draws no sentence at all, so the open card is the one
+      // place the census reads on a phone.
+      expect(won(rowText, 'display', PHONE)).toBe('none')
+    })
   })
 })
 

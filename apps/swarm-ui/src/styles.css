@@ -2757,7 +2757,6 @@ table.pools th, table.pools td {
    `.ctl-table thead` explains. */
 table.pools thead {
   background: var(--surface-2);
-  box-shadow: inset 0 0 0 100vmax var(--surface-2);
 }
 table.pools thead th {
   border-bottom: 1px solid var(--line-soft);
@@ -12170,3 +12169,12 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
   }
   .ol-row { grid-template-columns: minmax(96px, 120px) minmax(40px, 1fr) 40px; }
 }
+
+/* RED ONLY (#223 fix-up), REMOVED BY THE NEXT COMMIT: four head-cell fills
+   written without `thead`, which the widened sheet scan in shell.test.tsx must
+   report; and `table.pools thead` above has lost its inset shadow, which the
+   shadow case must report. */
+.wf-red-probe th[aria-sort],
+.wf-red-probe .wf-table th[data-col],
+.wf-red-probe [role=columnheader],
+.wf-red-probe tr > th { background-color: var(--surface-2); }
