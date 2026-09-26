@@ -2487,7 +2487,8 @@ the name of an entry in its own catalogue. Declaring nothing for them would
 have refused every task they run, the smoke suite's GKE row included. The
 "What it would break" section above assumed an undeclared key is "ignored"
 today; for these two runners it is the work. So which keys they declare, with
-which bounds, is open, and it is the owner's to decide:
+which bounds, is open, and it is the owner's to decide
+([#218](https://github.com/bogdan-alexandrescu/SwarmCloud/issues/218)):
 
 * `browser` reads `url`, `actions` (a list of objects, which `INPUT_KINDS` has
   no kind for), `timeout_ms`, `launch_timeout_ms`, `viewport_width`,

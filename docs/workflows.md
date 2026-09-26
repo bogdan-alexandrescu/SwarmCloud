@@ -84,7 +84,7 @@ The browser runner cannot start without `url` or `actions`, and the generic
 runner cannot start without the name of a command in its own catalogue, so an
 empty declaration would refuse every task they run. Which keys they declare,
 with which bounds, is an open question recorded under request 25 in
-[contract-change-requests.md](contract-change-requests.md).
+[contract-change-requests.md](contract-change-requests.md) and tracked as #218.
 
 `{"quota_exhausted": true}` parks a mock step ONCE. The mock counts the
 attempts it has parked in its own state file, which the park's checkpoint
