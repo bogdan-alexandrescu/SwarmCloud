@@ -14,9 +14,12 @@ and supplies DATA, never an image, a command, a resource spec or a backend
 parameter. Runner inputs are data, but they are read by one runner and mean
 nothing -- or something else -- to another: `input.model` IS read by the CLI
 runners and would select a model (test_model_flag_is_attribution_only.py). So
-the gate is per PROFILE, by name, in one place (`swarm_mcp.profiles`), until
-the frozen catalogue can declare a profile's inputs itself (contract request
-25). A profile that declares none takes none.
+the gate is per PROFILE, and it is the frozen catalogue's own
+`RunnerProfile.inputs` (contract request 25, accepted by the owner on #142,
+2026-09-25). Until then the bridge kept a table of its own keyed by profile
+name; the API enforces the same declaration now, for every caller, so a second
+copy here would be two answers to one question. A profile that declares none
+takes none.
 
 Offline: the transport is a recorder; nothing is sent anywhere.
 """
@@ -41,7 +44,10 @@ _REPO = Path(__file__).resolve().parents[3]
 #: What a caller may never name, whatever a profile declares: execution detail
 #: (invariant 10), the model the CLI runners would select, and the mock's own
 #: keys that write platform records -- spend figures, a provider's identity,
-#: a simulated credential refusal.
+#: a simulated credential refusal, the text and the reset time of a simulated
+#: rate limit -- and `attempt_count`, which the lifecycle writes from the task
+#: document and the mock bounds its park by: a count a caller could set is a
+#: bound a caller could lift.
 _NEVER = (
     "image",
     "command",
@@ -55,8 +61,17 @@ _NEVER = (
     "spend",
     "provider",
     "credential_revoked_times",
+    "credential_detail",
+    "quota_detail",
+    "reset_at",
+    "attempt_count",
     "prompt",
 )
+
+
+def _declared(name: str) -> dict:
+    """What the frozen catalogue declares for `name`; `{}` for none."""
+    return dict(RUNNER_PROFILES[name].inputs or {})
 
 
 class _Recorder:
@@ -146,11 +161,23 @@ def test_an_undeclared_key_is_refused_and_the_declared_ones_are_offered(key):
         ("artifact_name", "nested/out.txt"),
         ("artifact_name", ""),
         ("artifact_text", 7),
+        ("quota_exhausted", "yes"),
+        ("retry_after_seconds", 0),
+        ("retry_after_seconds", 3601),
+        ("retry_after_seconds", 90.5),
+        # json.loads reads NaN and Infinity, and every comparison with NaN is
+        # False, so a bound written as `value < minimum` lets it through.
+        ("retry_after_seconds", float("nan")),
+        ("retry_after_seconds", float("inf")),
+        ("sleep_seconds", float("nan")),
+        ("sleep_seconds", float("inf")),
+        ("cpu_burn_seconds", float("-inf")),
     ],
 )
 def test_a_value_of_the_wrong_kind_is_refused_before_it_travels(key, value):
     """The runner would coerce or crash after admission; refused here it costs
-    nothing. A bool is not a number, whatever Python thinks."""
+    nothing. A bool is not a number, whatever Python thinks, and neither NaN
+    nor Infinity is one a runner can sleep for or a worker can wait out."""
     with pytest.raises(SwarmError) as caught:
         workflows.build_steps(
             [{"step_id": "a", "runner_profile": "mock", "prompt": "x", "inputs": {key: value}}]
@@ -256,12 +283,36 @@ def test_the_tool_schemas_offer_inputs_and_still_no_execution_detail():
 # -- the one place, and what it is held to ----------------------------------------
 
 
-def test_every_profile_that_declares_inputs_is_in_the_frozen_catalogue():
-    """The gate is by NAME, so a renamed profile would keep a declaration that
-    admits nothing and a new one would silently take none."""
-    stray = sorted(set(catalogue.DECLARED_INPUTS) - set(RUNNER_PROFILES))
-    assert not stray, f"inputs are declared for profiles the catalogue does not hold: {stray}"
-    assert catalogue.DECLARED_INPUTS, "no profile declares an input; #142 is undone"
+def test_the_bridge_keeps_no_table_of_its_own():
+    """THE MIRRORED COPY IS THE DEFECT. The bridge's `DECLARED_INPUTS` was the
+    declaration until contract request 25 put it in the frozen catalogue, where
+    the API reads it too. Kept, it would be a second answer to "what may a
+    caller send", and the day the two disagreed the plugin would refuse what
+    the API accepts, or send what the API refuses."""
+    assert not hasattr(catalogue, "DECLARED_INPUTS"), (
+        "swarm_mcp.profiles still carries its own input table; the frozen "
+        "catalogue's RunnerProfile.inputs is the one declaration"
+    )
+    assert not hasattr(catalogue, "InputSpec"), (
+        "swarm_mcp.profiles still defines its own input type; "
+        "swarm_common.profiles.RunnerInput is the one"
+    )
+    for name in RUNNER_PROFILES:
+        assert catalogue.declared_inputs(name) == _declared(name), name
+    assert _declared("mock"), "the mock declares no input; #142 is undone"
+
+
+def test_only_the_mock_declares_inputs_and_no_declaration_names_execution_detail():
+    """The owner's decision on #142: the mock declares its test knobs and every
+    other profile declares none (or, for the runners whose work IS their input,
+    has not declared yet). And no declaration, anywhere, names an image, a
+    command, a resource spec, a backend, a model or a key the mock writes
+    platform records with."""
+    declaring = sorted(name for name in RUNNER_PROFILES if _declared(name))
+    assert declaring == ["mock"], declaring
+    for name in RUNNER_PROFILES:
+        named = sorted(set(_declared(name)) & set(_NEVER))
+        assert not named, f"{name} declares {named}"
 
 
 def test_every_declared_input_is_one_its_runner_reads():
@@ -270,7 +321,10 @@ def test_every_declared_input_is_one_its_runner_reads():
     from the catalogue's own `runner_argv` (`python -m agent_worker.runners.X`),
     and its source is read, never imported."""
     checked = 0
-    for name, declared in catalogue.DECLARED_INPUTS.items():
+    for name in RUNNER_PROFILES:
+        declared = _declared(name)
+        if not declared:
+            continue
         module = RUNNER_PROFILES[name].runner_argv[-1]
         path = _REPO / "apps" / "agent-worker" / (module.replace(".", "/") + ".py")
         source = path.read_text()
@@ -286,7 +340,7 @@ def test_the_profiles_view_says_what_each_profile_takes():
     """A caller learns the inputs from `swarm_profiles` / `swarm profiles`, not
     from a sentence of prose that can go stale."""
     entries = {entry["name"]: entry for entry in catalogue.catalogue()}
-    assert set(entries["mock"]["inputs"]) == set(catalogue.DECLARED_INPUTS["mock"])
+    assert set(entries["mock"]["inputs"]) == set(_declared("mock"))
     assert "inputs" not in entries["claude-code"] or not entries["claude-code"]["inputs"]
 
 
@@ -294,94 +348,46 @@ def test_swarm_profiles_prints_the_declared_inputs(capsys):
     assert cli.cmd_profiles(None, argparse.Namespace(json=False)) == cli.EXIT_OK
     printed = capsys.readouterr().out
     assert "sleep_seconds" in printed, printed
+    assert "quota_exhausted" in printed, printed
 
 
-# -- review of PR #201: no declared input can make a task that never ends ----------
+# -- the bounded park (owner decision on #142, 2026-09-25) --------------------------
 
 
-def _runner_source(name: str) -> tuple[Path, str]:
-    module = RUNNER_PROFILES[name].runner_argv[-1]
-    path = _REPO / "apps" / "agent-worker" / (module.replace(".", "/") + ".py")
-    return path, path.read_text()
+def test_the_park_knobs_are_declared_now_that_the_park_is_bounded():
+    """Withheld by the review of PR #201 because the mock raised its rate limit
+    on EVERY attempt and a park does not spend one, so a step sent
+    `{"quota_exhausted": true}` re-leased and re-parked until `swarm cancel`.
+    The mock now parks the task's first attempt only, by the `attempt_count`
+    admission writes in the lease's own transaction
+    (tests/unit/worker/test_mock_bounded_park.py proves the bound holds even
+    when the park's checkpoint fails), so the owner declared both."""
+    assert catalogue.check_inputs(
+        "mock", {"quota_exhausted": True, "retry_after_seconds": 60}
+    ) == {"quota_exhausted": True, "retry_after_seconds": 60}
 
 
-def _payload_keys(node: ast.AST) -> set[str]:
-    """Every `payload.get("k")` / `payload["k"]` key read anywhere under `node`."""
-    keys: set[str] = set()
-    for sub in ast.walk(node):
-        if (
-            isinstance(sub, ast.Call)
-            and isinstance(sub.func, ast.Attribute)
-            and sub.func.attr == "get"
-            and isinstance(sub.func.value, ast.Name)
-            and sub.func.value.id == "payload"
-            and sub.args
-            and isinstance(sub.args[0], ast.Constant)
-        ):
-            keys.add(sub.args[0].value)
-        if (
-            isinstance(sub, ast.Subscript)
-            and isinstance(sub.value, ast.Name)
-            and sub.value.id == "payload"
-            and isinstance(sub.slice, ast.Constant)
-        ):
-            keys.add(sub.slice.value)
-    return keys
+@pytest.mark.parametrize("value", [1, 46, 3600, 90.0])
+def test_retry_after_seconds_takes_one_second_to_one_hour(value):
+    out = catalogue.check_inputs("mock", {"retry_after_seconds": value})
+    assert out == {"retry_after_seconds": int(value)}
+    assert isinstance(out["retry_after_seconds"], int)
 
 
-def _raises(node: ast.If, signal: str) -> bool:
-    """Does this `if`'s body raise `signal(...)`?"""
-    return any(
-        isinstance(sub, ast.Raise)
-        and isinstance(sub.exc, ast.Call)
-        and isinstance(sub.exc.func, ast.Name)
-        and sub.exc.func.id == signal
-        for stmt in node.body
-        for sub in ast.walk(stmt)
+def test_the_park_knobs_travel_on_a_dispatch():
+    recorder = _Recorder()
+    args = cli.build_parser().parse_args(
+        ["dispatch", "park", "--profile", "mock",
+         "--input", "quota_exhausted=true",
+         "--input", "retry_after_seconds=120"]
     )
 
+    assert cli.cmd_dispatch(recorder, args) == cli.EXIT_OK
 
-def test_no_declared_input_reaches_the_runners_rate_limit_signal():
-    """`quota_exhausted` was declared, and the mock raises its rate limit on
-    EVERY attempt: the check runs before any saved state and keeps no count,
-    unlike `credential_revoked_times`. A park does not spend an attempt --
-    neither `control.park` nor the scheduler's promotion reads
-    `retries_exhausted` -- so the task re-leased and re-parked, a new Cloud Run
-    execution each time, until someone ran `swarm cancel`. The delegate skill
-    told the model `{"quota_exhausted": true}` "parks it", as if once.
-
-    So nothing a caller may send reaches `QuotaExhaustedSignal`: no key read in
-    the condition that raises it, nor in the signal it raises (its provider,
-    its retry-after). Read from the runner's own source, never imported."""
-    checked = 0
-    for name, declared in catalogue.DECLARED_INPUTS.items():
-        path, source = _runner_source(name)
-        branches = [
-            node
-            for node in ast.walk(ast.parse(source))
-            if isinstance(node, ast.If) and _raises(node, "QuotaExhaustedSignal")
-        ]
-        if name == "mock":
-            assert branches, (
-                f"{path.relative_to(_REPO)} no longer raises a rate limit; re-read this test"
-            )
-        for branch in branches:
-            checked += 1
-            reaches = sorted(_payload_keys(branch) & set(declared))
-            assert not reaches, (
-                f"{name} declares {reaches}, which reach the runner's rate limit at "
-                f"{path.relative_to(_REPO)}:{branch.lineno} -- a task that parks on every "
-                "attempt and never ends"
-            )
-    assert checked, "no rate-limit branch was checked; the loop ran over nothing"
-
-
-@pytest.mark.parametrize("key,value", [("quota_exhausted", True), ("retry_after_seconds", 46)])
-def test_the_rate_limit_knobs_are_refused_by_name(key, value):
-    """The two keys the finding's session sent. Refused, never dropped."""
-    with pytest.raises(SwarmError) as caught:
-        catalogue.check_inputs("mock", {key: value})
-    assert key in str(caught.value), caught.value
+    (_, _, payload), = recorder.sent
+    assert payload["input"] == {
+        "prompt": "park", "quota_exhausted": True, "retry_after_seconds": 120,
+    }
 
 
 def _worker_exit_codes() -> dict[str, int]:
@@ -456,10 +462,11 @@ def _subcommand(name: str) -> argparse.ArgumentParser:
 
 
 def test_every_input_the_bridge_or_the_skill_shows_is_one_that_is_declared():
-    """The skill said `{"quota_exhausted": true}` parks a mock step, and the PR
-    said so too. An example is what a model copies, so each one names a key
-    `mock` declares -- read from the texts a session actually sees: the
-    delegate skill's `inputs` paragraph, the tool schema, the CLI's help."""
+    """During #201 the skill said `{"quota_exhausted": true}` parks a mock
+    step while the key was not declared, and the PR said so too. An example is
+    what a model copies, so each one names a key `mock` declares -- read from
+    the texts a session actually sees: the delegate skill's `inputs`
+    paragraph, the tool schema, the CLI's help."""
     skill = (_REPO / "plugin" / "skills" / "delegate" / "SKILL.md").read_text()
     paragraph = [p for p in re.split(r"\n\s*\n", skill) if p.startswith("`inputs`")]
     assert len(paragraph) == 1, "the delegate skill's `inputs` paragraph moved"
@@ -477,5 +484,76 @@ def test_every_input_the_bridge_or_the_skill_shows_is_one_that_is_declared():
     for where, text in texts.items():
         shown = _examples(text)
         assert shown, f"{where} shows no example any more; this test reads nothing there"
-        undeclared = sorted(shown - set(catalogue.DECLARED_INPUTS["mock"]))
+        undeclared = sorted(shown - set(_declared("mock")))
         assert not undeclared, f"{where} shows {undeclared} as inputs, which mock does not declare"
+
+
+# -- the profiles whose inputs are not declared yet (#218) ------------------------
+
+#: The profiles the frozen catalogue has not declared inputs for yet
+#: (`inputs is None`). What they should declare is open with the owner on #218.
+_UNDECLARED = sorted(name for name, p in RUNNER_PROFILES.items() if p.inputs is None)
+
+
+@pytest.mark.parametrize("name", _UNDECLARED or ["<none>"])
+def test_the_bridge_sends_nothing_to_a_profile_that_has_not_declared_yet(name):
+    """THE BRIDGE'S OWN SEND POLICY, not a second copy of the rule. The API
+    bounds what a caller sends these by size alone; the bridge sends them
+    nothing, because it sends only what a declaration names and neither has
+    one. Letting `swarm_dispatch` send a browser task's `actions` would be a
+    new plugin capability, which is #218's third question for the owner."""
+    if name == "<none>":
+        pytest.skip("every profile declares its inputs now; #218 is settled")
+    with pytest.raises(SwarmError) as caught:
+        workflows.build_steps(
+            [{"step_id": "a", "runner_profile": name, "prompt": "x",
+              "inputs": {"url": "https://example.com"}}]
+        )
+    message = str(caught.value)
+    assert name in message, message
+    assert "yet" in message, "the refusal says the profile has not declared, not that it takes nothing"
+
+
+def _inputs_paragraphs() -> dict[str, str]:
+    """The paragraph each of the plugin's two texts gives to runner inputs."""
+    skill = (_REPO / "plugin" / "skills" / "delegate" / "SKILL.md").read_text()
+    readme = (_REPO / "plugin" / "README.md").read_text()
+    found = {
+        "delegate SKILL.md": [p for p in re.split(r"\n\s*\n", skill) if p.startswith("`inputs`")],
+        "plugin/README.md": [
+            p for p in re.split(r"\n\s*\n", readme) if p.startswith("**Beside the prompt")
+        ],
+    }
+    for where, paragraphs in found.items():
+        assert len(paragraphs) == 1, f"{where}'s runner-inputs paragraph moved"
+    return {where: " ".join(paragraphs[0].split()) for where, paragraphs in found.items()}
+
+
+def test_the_plugin_says_which_profiles_the_api_bounds_by_size_alone():
+    """The review of #213: the delegate skill said an undeclared key is refused
+    "by the bridge, and by the API for every other caller", and the README that
+    "the API refuses an undeclared key from every caller" and that "every other
+    profile declares none and takes none". For `browser` and `generic`, whose
+    inputs are not declared yet, the API takes any key under the size limit, so
+    an operator who read either believed those two were policed. Each text
+    names every profile not declared yet and says it is bounded by size; the
+    claims the review quoted do not come back while one exists."""
+    for where, text in _inputs_paragraphs().items():
+        for name in _UNDECLARED:
+            assert f"`{name}`" in text, (
+                f"{where} does not name {name}, whose inputs are not declared yet"
+            )
+        if _UNDECLARED:
+            assert "size" in text, f"{where} does not say what bounds {_UNDECLARED}"
+            for claim in (
+                "for every other caller",
+                "from every caller",
+                "Every other profile declares none",
+            ):
+                assert claim not in text, (
+                    f"{where} says {claim!r}, which is false for {_UNDECLARED}"
+                )
+        else:
+            assert "not declared yet" not in text, (
+                f"{where} still says a profile has not declared its inputs; none is left"
+            )

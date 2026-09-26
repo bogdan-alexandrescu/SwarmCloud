@@ -19,6 +19,7 @@ import pytest
 
 from agent_worker.config import WorkerConfig
 from agent_worker.control import ControlPlane
+from agent_worker.hardening import PROTECTED, MemoryProtection
 from agent_worker.lifecycle import Worker, WorkerDeps
 from agent_worker.logs import build_logger
 from agent_worker.objectstore import LocalObjectStore
@@ -31,6 +32,15 @@ from fakes import FakeFirestore, FakeSecretClient, FakeTransactionRunner, Record
 TENANT = "eng"
 PROJECT = "saga-agents-staging"
 BUCKET = "saga-agents-staging-swarm-artifacts"
+
+#: What the entrypoint hands a worker whose `prctl(PR_SET_DUMPABLE, 0)` worked
+#: (`hardening.make_non_dumpable`). A worker holds the tenant git token only
+#: with this. The workers here are built in the test process, where the
+#: entrypoint never ran, so they are given its success explicitly, the way
+#: `reap_before_publish` is given a scoped stand-in. The tests of the refusal
+#: set their own, and `test_worker_memory_protection.py` runs the real call in
+#: a child process.
+ENTRYPOINT_MEMORY = MemoryProtection(PROTECTED, "stand-in for the entrypoint's prctl")
 
 
 @pytest.fixture
@@ -90,6 +100,7 @@ def seed_attempt(
     lease_released: bool = False,
     latest_checkpoint: str | None = None,
     pool_active: int = 1,
+    attempt_count: int = 1,
 ) -> dict[str, str]:
     """Create the documents a dispatched attempt would find in Firestore."""
     profile = RUNNER_PROFILES[runner_profile]
@@ -116,7 +127,9 @@ def seed_attempt(
             "submitted_by": "alice@saga.xyz",
             "created_at": now,
             "updated_at": now,
-            "attempt_count": 1,
+            # What admission writes in the lease's own transaction: one more
+            # for every lease, a park's next attempt included.
+            "attempt_count": attempt_count,
             "max_attempts": 3,
             "current_lease_id": lease_id,
             "current_generation": task_generation if task_generation is not None else generation,
@@ -172,6 +185,7 @@ def build_worker(
     max_in_worker_retry_delay_seconds: int = 45,
     secret_client: Any | None = None,
     txn_runner: Any | None = None,
+    reap_before_publish: Any | None = None,
     **overrides: Any,
 ) -> tuple[Worker, WorkerConfig, RecordingExporter]:
     profile = RUNNER_PROFILES[runner_profile]
@@ -225,8 +239,16 @@ def build_worker(
         db=db,
         metrics_exporter=exporter,
         secret_client=secret_client or FakeSecretClient(),
+        memory=ENTRYPOINT_MEMORY,
     )
-    return Worker(config, deps), config, exporter
+    worker = Worker(config, deps)
+    # The production reaper runs `os.kill(-1, SIGKILL)`, which would take this
+    # test process (and its whole session) down. Every worker built here gets a
+    # scoped stand-in by default: `() ` means "nothing the agent started is
+    # alive", which is the clean case the publish tests assume. The tests that
+    # exercise the reap itself (test_forge_token_isolation.py) set their own.
+    worker.reap_before_publish = reap_before_publish or (lambda: ())
+    return worker, config, exporter
 
 
 @pytest.fixture

@@ -59,14 +59,14 @@ PROTOCOL_VERSION = "2024-11-05"
 #: (#142). An open object in the schema because what it may hold depends on the
 #: profile named beside it; `profiles.check_inputs` refuses anything the
 #: profile does not declare, before anything travels. The profiles that declare
-#: any are read from the table that decides.
+#: any are read from the frozen catalogue, which swarm-api enforces too.
 _INPUTS_SCHEMA: dict[str, Any] = {
     "type": "object",
     "description": (
         "Data for the runner beside the prompt -- ONLY the inputs the named "
         "profile declares, which swarm_profiles lists under `inputs`; any other "
         "key, or any input at all for a profile that declares none, is refused. "
-        f"Declared today by: {', '.join(sorted(catalogue.DECLARED_INPUTS)) or 'no profile'}"
+        f"Declared today by: {', '.join(catalogue.declaring()) or 'no profile'}"
         " -- e.g. {\"sleep_seconds\": 120} keeps a mock step RUNNING long enough "
         "to cancel. Never an image, a command, a resource spec, a backend or a model."
     ),
