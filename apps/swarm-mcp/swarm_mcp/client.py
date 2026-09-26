@@ -1189,8 +1189,8 @@ class SwarmClient:
         `content` could not tell a cut answer from a whole one, or a failed
         read from an agent that said nothing.
         """
-        query = f"?{urllib.parse.urlencode({'attempt_id': attempt_id})}" if attempt_id else ""
-        data = self.request("GET", f"/v1/tasks/{task_id}/answer{query}")
+        query = urllib.parse.urlencode({"attempt_id": attempt_id} if attempt_id else {})
+        data = self.request("GET", f"/v1/tasks/{task_id}/answer?{query}")
         if not isinstance(data, dict) or "status" not in data:
             raise SwarmError(
                 f"GET /v1/tasks/{task_id}/answer answered without a `status`; this "

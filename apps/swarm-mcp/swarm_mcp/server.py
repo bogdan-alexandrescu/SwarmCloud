@@ -428,8 +428,8 @@ TOOLS: list[dict[str, Any]] = [
             "without holding anything open.\n"
             "\n"
             "Pass the DAG either as `steps` with the parameters beside it, or as "
-            "`spec`: a whole `swarm workflow` spec object exactly as the terminal "
-            "command reads it (`steps`, `strategy`, `carrier`, `repository_url`, "
+            "`spec`: a whole workflow spec object exactly as the terminal's "
+            "workflow command reads it (`steps`, `strategy`, `carrier`, `repository_url`, "
             "`repository_ref`, `on_step_failure`, `priority`, `label`), nothing "
             "else beside it but `no_repository`. With no repository named, EVERY "
             "step clones the repository and pushed branch of the checkout this "
@@ -441,7 +441,8 @@ TOOLS: list[dict[str, Any]] = [
                 "spec": {
                     "type": "object",
                     "description": (
-                        "A whole `swarm workflow` spec, instead of `steps` and the "
+                        "A whole workflow spec -- the file the terminal's workflow "
+                        "command reads -- instead of `steps` and the "
                         "parameters beside it. A step may carry `stage`, the group "
                         "/sc:run shows it under; it is never sent."
                     ),
