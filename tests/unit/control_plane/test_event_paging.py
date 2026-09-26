@@ -183,9 +183,12 @@ def test_the_event_row_shape_is_unchanged(client, db):
     task_id = _task(db)
     _history(db, task_id, 2)
     row = _page(client, task_id)["events"][0]
+    # `detail_redaction_count` is the one key added since (the PR #229 review):
+    # every string in `detail` is masked by the task's masker, and this says
+    # how many masks that took.
     assert set(row) == {
         "event_id", "task_id", "type", "at", "attempt_id", "lease_id",
-        "generation", "detail",
+        "generation", "detail", "detail_redaction_count",
     }
 
 
