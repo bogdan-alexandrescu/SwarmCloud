@@ -206,6 +206,14 @@ function barsInside(root: HTMLElement, marks: Element, outline: Element): number
   return Math.round(px * 100) / 100
 }
 
+/**
+ * One whole TS-4 flat bar, 3px: what an after-a-cancel mark must show inside
+ * its outline, as its key does. A 1px sliver between two 1px strokes reads as
+ * a solid 3px block, not as bars in an outline -- so "some bar pixel" is not
+ * the bar, and a mark too short to hold a whole one is the defect again.
+ */
+const WHOLE_BAR = 3
+
 /** Lane 3's baseline in one drawing: the third of the scale's four solid rules. */
 function laneThreeBase(root: HTMLElement, key: string): number {
   const rules = [...root.querySelectorAll(`.ol-drawing.is-${key} .ol-scale line.ol-base`)]
@@ -251,7 +259,7 @@ describe('lane 3 splits the cascade', () => {
     const marks = marksOf(root, SEP22)
     const outline = marks.querySelector('.ol-m-after-cancel')
     expect(outline, 'after a cancel has no outline of its own').not.toBeNull()
-    expect(barsInside(root, marks, outline!), 'after a cancel is not drawn as a cancel (the flat bars)').toBeGreaterThanOrEqual(1)
+    expect(barsInside(root, marks, outline!), 'after a cancel is not drawn as a cancel (a whole flat bar)').toBeGreaterThanOrEqual(WHOLE_BAR)
     // The failure's cascade is still the bare outline, and still its own mark.
     const after = marks.querySelector('.ol-m-after')
     expect(after, 'after a failure lost its outline').not.toBeNull()
@@ -349,7 +357,7 @@ describe('after a cancel shows its bars at every height it is drawn at (the revi
         expect(cancel !== null, `bucket ${i}: an after-a-cancel outline`).toBe((split.after_cancel ?? 0) > 0)
         expect(failure !== null, `bucket ${i}: an after-a-failure outline`).toBe((split.after_failure ?? 0) > 0)
         if (cancel !== null) {
-          expect(barsInside(root, g, cancel), `bucket ${i}: no flat bar shows inside the after-a-cancel outline`).toBeGreaterThanOrEqual(1)
+          expect(barsInside(root, g, cancel), `bucket ${i}: no whole flat bar shows inside the after-a-cancel outline`).toBeGreaterThanOrEqual(WHOLE_BAR)
         }
         if (failure !== null) {
           expect(barsInside(root, g, failure), `bucket ${i}: the after-a-failure outline is not hollow`).toBe(0)
