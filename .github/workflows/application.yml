@@ -334,6 +334,11 @@ jobs:
         # No emulator, no credentials. The admission logic is pure so the
         # concurrency invariant can be tested exhaustively and fast.
         # -n auto, for the reason the integration step below gives at length.
+        # SWARM_REQUIRE_REAL_REAP: the step above made private PID namespaces
+        # possible, so the real-kill test must run here, never skip
+        # (tests/unit/worker/test_procman_reap.py says why).
+        env:
+          SWARM_REQUIRE_REAL_REAP: "1"
         run: uv run pytest tests/unit -q -n auto
 
       - name: the plugin's bridge installs from git, the way the plugin fetches it
