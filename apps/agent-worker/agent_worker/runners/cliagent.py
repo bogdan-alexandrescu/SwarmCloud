@@ -232,6 +232,37 @@ def _find_binary(spec: CliAgentSpec) -> str:
     return resolved
 
 
+def agent_working_directory(ctx: RunnerContext) -> Path:
+    """Where the agent CLI starts: the checkout when the task has one, else `work/`.
+
+    Owner decision of 2026-09-26 (#226): a SwarmCloud step behaves like a local
+    lane wherever the difference is a choice. Locally Claude Code starts in the
+    repository and loads its `CLAUDE.md` by itself; here it started in `work/`,
+    with the checkout at `./repo`, and read `CLAUDE.md` only when a prompt told
+    it to. So with a repository attached it starts in `work/repo`.
+
+    `ctx.repo_dir` comes from `SWARM_REPO_DIR`, which the worker sets after the
+    clone and a caller cannot. A checkout the worker named that is not there,
+    or not inside `work/`, FAILS the runner: starting the agent in `work/`
+    instead would run it without the code and without its instructions, and it
+    would still report success.
+    """
+    if ctx.repo_dir is None:
+        return ctx.work_dir
+    repo = Path(ctx.repo_dir)
+    try:
+        inside = repo.resolve().is_relative_to(Path(ctx.work_dir).resolve())
+    except OSError:
+        inside = False
+    if not inside or not repo.is_dir():
+        raise RunnerFailure(
+            f"the repository checkout {str(repo)!r} is not a directory inside the "
+            "work directory; the agent is not started outside it, where it would "
+            "have neither the code nor the repository's CLAUDE.md"
+        )
+    return repo
+
+
 def detect_rate_limit(text: str) -> tuple[bool, int | None, str | None]:
     """Look for a provider rate limit in CLI output.
 
@@ -298,11 +329,25 @@ def run_cli_agent(
 
     binary = _find_binary(spec)
     argv: list[str] = [binary, *_argv_prefix(spec), *extra_args]
-    model = payload.get("model") or os.environ.get("MODEL", "").strip()
+    # THE MODEL IS THE JOB'S, NEVER THE CALLER'S (#226, owner decision of
+    # 2026-09-26). `MODEL` is set on the profile's Cloud Run Job by Terraform
+    # (`local.runner_models` in terraform/infra/locals.tf; `MODEL` on a Job the
+    # scheduler creates comes from the same value) and the worker hands its
+    # `config.model` to this process under the same name
+    # (`lifecycle._build_child_env`). This used to read `input.model` first,
+    # so a caller of the API or the console chose the model an agent ran -- an
+    # execution parameter from a caller, which invariant 10 forbids. The API
+    # now refuses `input.model` (claude-code and codex declare no input, #213)
+    # and the worker drops a stored one; it is not read here either way.
+    model = os.environ.get("MODEL", "").strip() or None
     if model and spec.model_flag:
-        if not re.fullmatch(r"[A-Za-z0-9._:\-]{1,128}", str(model)):
-            raise RunnerFailure(f"input.model {model!r} contains unsupported characters")
-        argv += [spec.model_flag, str(model)]
+        if not re.fullmatch(r"[A-Za-z0-9._:\-]{1,128}", model):
+            raise RunnerFailure(f"MODEL {model!r} contains unsupported characters")
+        argv += [spec.model_flag, model]
+    # WHERE THE AGENT STARTS (#226). In the checkout when the task has one, so
+    # Claude Code loads the repository's own CLAUDE.md (and codex its
+    # AGENTS.md) the way a local lane does; in `work/` otherwise, as before.
+    cwd = agent_working_directory(ctx)
     # WHERE DELIVERABLES GO, AND WHAT LATER STEPS NEED FROM THIS ONE. Every
     # prompt ends with one line naming $SWARM_ARTIFACTS_DIR (#184, owner
     # decision of 2026-09-26: `expected_mod.deliverables_line`). When a
@@ -322,9 +367,19 @@ def run_cli_agent(
     files = cli_stream_files(spec)
     own_files = files.names()
     told = expected_mod.without_platform_names(expected.names, own_files)
+    # STAGED INPUTS BY ABSOLUTE PATH, ONLY WHEN THE AGENT STARTS IN THE
+    # CHECKOUT (#226). They land in `work/`, which is then the checkout's
+    # parent, so a prompt's "read scan-01.md" resolves inside the repository
+    # and finds nothing. A task with no repository starts in `work/`, where the
+    # relative name works, and the owner kept its prompt unchanged.
+    staged = (
+        expected_mod.staged_paths(payload.get("staged_inputs"), ctx.work_dir)
+        if cwd != ctx.work_dir
+        else ()
+    )
     # The prompt is the only caller-controlled value that reaches argv, and it
     # is passed as a single trailing argument with no shell in the picture.
-    argv.append(expected_mod.with_instructions(prompt, told, ctx.artifacts_dir))
+    argv.append(expected_mod.with_instructions(prompt, told, ctx.artifacts_dir, staged))
     # ...and it is the one argument `run_child`'s `child started` line must not
     # print (the PR #229 review): this process's stderr is served by `/logs`,
     # and the task routes serve the prompt masked. Its length says what the
@@ -333,11 +388,25 @@ def run_cli_agent(
 
     limits = resolve_limits(payload, platform_ceilings())
     log = StructuredLogger(stream=sys.stderr, component=f"{spec.name}-runner")
+    log.info(
+        "the agent starts in the repository checkout"
+        if cwd != ctx.work_dir
+        else "the agent starts in the work directory; the task has no repository",
+        cwd=str(cwd),
+        home=str(ctx.work_dir),
+        model=model,
+    )
     if told:
         log.info(
             "told the agent which files later steps need and where to write them",
             expected_outputs=list(told),
             artifacts_dir=os.path.abspath(ctx.artifacts_dir),
+        )
+    if staged:
+        log.info(
+            "named the staged inputs in the prompt by absolute path, because the "
+            "agent starts in the checkout and they are in the work directory",
+            staged_inputs=list(staged),
         )
     if len(told) != len(expected.names):
         log.info(
@@ -368,6 +437,11 @@ def run_cli_agent(
 
     env = {
         "PATH": BASE_PATH,
+        # HOME IS THE ATTEMPT'S OWN `work/`, NEVER THE CHECKOUT, even when the
+        # agent starts in the checkout (#226, owner decision of 2026-09-26).
+        # The CLI writes its own state under HOME (`.claude.json`, `.claude/`,
+        # `.codex/`), some of it describing the account it ran as; in the
+        # checkout that would be in the harvest's patch and the pushed branch.
         "HOME": str(ctx.work_dir),
         "TMPDIR": os.environ.get("TMPDIR", "/tmp"),
         "LC_ALL": "C.UTF-8",
@@ -405,7 +479,7 @@ def run_cli_agent(
 
     result = run_child(
         argv,
-        cwd=ctx.work_dir,
+        cwd=cwd,
         env=env,
         stdout_path=stdout_path,
         stderr_path=stderr_path,
@@ -537,7 +611,10 @@ def run_cli_agent(
         # output may carry the key that produced it.
         "summary": scrub_text(_summarise(parsed, raw_stdout), secrets),
         "provider": spec.provider,
-        "model": str(model) if model else None,
+        # The model this runner ASKED for, the Job's MODEL. What the CLI says it
+        # actually used is `modelUsage` in `structured_output`, which the worker
+        # lifts into `result_summary.runner.usage.models`.
+        "model": model if model and spec.model_flag else None,
         "exit_code": result.exit_code,
         # A streamed (one-object-per-line) run parses to a LIST, which this
         # field never carried -- so its numbers were dropped even on success.

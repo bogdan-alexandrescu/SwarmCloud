@@ -232,7 +232,8 @@ def validate_runner_input(
     bridge". Until then the API bounded an input's SIZE and nothing else, so a
     script or the Submit form could send the mock `quota_exhausted` -- which
     parked on every attempt, and a park does not spend one -- or send
-    `claude-code` a `model`, which its runner passes as `--model`.
+    `claude-code` a `model`, which its runner passed as `--model` (until #226,
+    when the model became the Job's `MODEL` and the runner stopped reading it).
 
     Every caller reaches this: `_build_task` calls it for a task and for each
     task of a batch, and `submit_workflow` for each step before any task is

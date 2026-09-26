@@ -168,6 +168,13 @@ class WorkerConfig:
 
     # --- misc ----------------------------------------------------------------
     provider: str | None = None
+    #: The model the agent CLI runs, from the Job's `MODEL` (#226). Set per
+    #: runner profile in Terraform (`local.runner_models`, today
+    #: `claude-code = "claude-opus-5-5"`), and on a Job the scheduler creates
+    #: from the same value (`WORKER_MODELS`). The lifecycle hands it to the
+    #: runner as `MODEL` and the runner passes it as `--model`. Never read from
+    #: a task: a caller's `input.model` is refused at the API and dropped by
+    #: the lifecycle (invariant 10). None leaves the CLI on its own default.
     model: str | None = None
     extra_env: dict[str, str] = field(default_factory=dict)
 

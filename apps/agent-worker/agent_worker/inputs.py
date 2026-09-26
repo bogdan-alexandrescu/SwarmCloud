@@ -10,7 +10,11 @@ where the agent will find it.
 
     metadata.input_from: {"task_abc": "summary.md"}
       -> tenants/<tenant>/tasks/task_abc/attempts/<the one that SUCCEEDED>/artifacts/summary.md
-      -> <workspace>/work/summary.md          (the agent's current directory)
+      -> <workspace>/work/summary.md          (the work directory; the agent's
+                                               current directory unless the task
+                                               has a repository, when it starts
+                                               in work/repo and the prompt names
+                                               this path in full -- #226)
 
 Three properties are worth stating out loud, because each of them is a decision
 that could reasonably have gone the other way.
@@ -83,7 +87,9 @@ class StagedInput:
 
     upstream_task_id: str
     filename: str
-    #: Relative to the work directory, which is the agent's current directory.
+    #: Relative to the work directory: the agent's current directory for a task
+    #: with no repository, the checkout's parent for one with a repository
+    #: (#226), when `expected_outputs.staged_paths` names it in the prompt.
     path: str
     size_bytes: int
     uri: str | None = None
