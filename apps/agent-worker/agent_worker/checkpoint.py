@@ -66,6 +66,14 @@ class CheckpointRecord:
     archive_sha256: str
     file_count: int
     uri: str
+    #: The commit the attempt's clone landed on, as the WORKER knew it, or
+    #: `gitops.EMPTY_CLONE_BASE` for an empty repository; None when there was
+    #: no clone, or the manifest predates this field. It is here, and not only
+    #: in `work/.swarm/clone-base`, because that file is in the agent's working
+    #: directory: the publish decides which commits it replaces from this base,
+    #: and an agent that could move it could keep its own commits out of the
+    #: fold. The manifest is written by the worker, outside the archived tree.
+    clone_base: str | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "CheckpointRecord":
@@ -156,6 +164,10 @@ class CheckpointManager:
         self._log = logger
         self._max_bytes = max_bytes
         self._seq = 0
+        #: Written into every manifest `create` uploads. The lifecycle sets it
+        #: once the clone has landed, or once it has been read back from the
+        #: checkpoint a resumed attempt restored, so it carries forward.
+        self.clone_base: str | None = None
 
     @property
     def seq(self) -> int:
@@ -216,6 +228,7 @@ class CheckpointManager:
                 archive_sha256=digest,
                 file_count=file_count,
                 uri=self._store.uri(f"{prefix}/"),
+                clone_base=self.clone_base,
             )
             # Commit marker. Nothing before this line is discoverable.
             self._store.upload_bytes(
