@@ -88,14 +88,18 @@ describe('an absence is not drawn in the colour of an outcome', () => {
   for (const theme of THEMES) {
     it(`separates --ctl-absent from CANCELLED in the ${theme} theme`, () => {
       const absent = resolved('var(--ctl-absent)', theme)
-      // The two places CANCELLED is painted: the bar and its legend key.
+      // The places CANCELLED is painted: a segment and its legend key.
       // RE-POINTED (TS-4): the segment is the neutral flat bar now, a stripe
       // pattern rather than a flat fill, so its colour is read out of the
       // pattern -- every colour it paints, the transparent gaps excepted --
       // through the cascade, which also reads the one rule the bar and its
       // key share. The claim is unchanged: no colour a cancelled segment
       // paints is the absence colour.
-      for (const selector of ['.stackcol > i.cancelled', '.chart-legend > .k.cancelled']) {
+      // RE-POINTED AGAIN (#185, decision 7): `.stackcol` and `.chart-legend`
+      // were the row-window Timeline's and are deleted with it. A cancelled
+      // segment is the ledger card's and the Workflows row's now, and its key
+      // the ledger's.
+      for (const selector of ['.ol-meter > i.ol-seg.cancelled', '.wf-meter > i.wf-seg.cancelled', '.ol-legend > i.ol-k.is-ended']) {
         const value = painted(build(selector, hosts), ['background', 'background-image', 'background-color'], {
           width: 1440,
           theme,
@@ -462,17 +466,26 @@ describe('the outcome stack is four shapes, not four hues (TS-4)', () => {
   //   open       the 45° hatch             unchanged: not an outcome yet
   //
   // MUTATION: give any two the same form, or draw a key its own way again.
+  //
+  // RE-POINTED (#185, decision 7): the stack these cases built was the
+  // row-window Timeline's `.stackcol > i.<outcome>` with its `.chart-legend`
+  // keys, deleted with it. The forms are asked of the segments the page draws
+  // now -- the ledger card's outcome track, `.ol-meter > .ol-seg.<outcome>` --
+  // and of the ledger's keys. "open" retired with the stack: the ledger places
+  // work by the bucket it ENDED in, so it draws no open segment, and the sheet
+  // no longer carries a rule for one.
   const hosts: HTMLElement[] = []
   afterEach(() => {
     for (const h of hosts.splice(0)) h.remove()
   })
-  const OUTCOMES = ['succeeded', 'failed', 'cancelled', 'open'] as const
+  const OUTCOMES = ['succeeded', 'failed', 'cancelled'] as const
+  const KEY: Record<(typeof OUTCOMES)[number], string> = { succeeded: 'is-ok', failed: 'is-bad', cancelled: 'is-ended' }
   const WIDE = { width: 1440 }
   const fill = (el: Element): string =>
     painted(el, ['background', 'background-image', 'background-color'], WIDE) ?? ''
 
   it('draws each outcome in a silhouette of its own', () => {
-    const shapes = OUTCOMES.map((o) => shapeOf(build(`.stackcol > i.${o}`, hosts), WIDE))
+    const shapes = OUTCOMES.map((o) => shapeOf(build(`.ol-meter > i.ol-seg.${o}`, hosts), WIDE))
     for (let i = 0; i < shapes.length; i++) {
       for (let j = i + 1; j < shapes.length; j++) {
         expect(shapes[i], `${OUTCOMES[i]} and ${OUTCOMES[j]} are one shape in greyscale`).not.toBe(shapes[j])
@@ -480,8 +493,8 @@ describe('the outcome stack is four shapes, not four hues (TS-4)', () => {
     }
   })
 
-  it('names the forms: succeeded solid, failed ruled, cancelled flat bars, open hatched', () => {
-    const seg = (o: string): HTMLElement => build(`.stackcol > i.${o}`, hosts)
+  it('names the forms: succeeded solid, failed ruled, cancelled flat bars', () => {
+    const seg = (o: string): HTMLElement => build(`.ol-meter > i.ol-seg.${o}`, hosts)
     const succeeded = seg('succeeded')
     expect(fill(succeeded), 'succeeded is the one flat fill').not.toMatch(/gradient/)
     expect(painted(succeeded, 'box-shadow', WIDE) ?? 'none').toBe('none')
@@ -499,8 +512,6 @@ describe('the outcome stack is four shapes, not four hues (TS-4)', () => {
     expect(cancelled, 'cancelled is not drawn as flat bars').toMatch(/^repeating-linear-gradient\(\s*to bottom/)
     expect(stateHueIn(cancelled, 'light'), 'the ended bar is neutral').toBeNull()
     expect(stateHueIn(cancelled, 'dark'), 'the ended bar is neutral').toBeNull()
-
-    expect(fill(seg('open')), 'still open lost its hatch').toMatch(/45deg/)
   })
 
   for (const theme of THEMES) {
@@ -510,7 +521,7 @@ describe('the outcome stack is four shapes, not four hues (TS-4)', () => {
       // of that hue is 1:1, and --bad-ink (1.28:1 dark) or --text (1.26:1
       // light) are barely better. §1.2's 3:1 floor for a graphical object.
       // MUTATION: the rule in --bad, --bad-ink or --text.
-      const failed = build('.stackcol > i.failed', hosts)
+      const failed = build('.ol-meter > i.ol-seg.failed', hosts)
       const rule = /var\(--[\w-]+\)$/.exec(painted(failed, 'box-shadow', WIDE) ?? '')
       expect(rule, 'no rule colour to measure').not.toBeNull()
       const ratio = contrast(resolveColour(rule![0], theme), resolveColour(fill(failed), theme))
@@ -520,8 +531,8 @@ describe('the outcome stack is four shapes, not four hues (TS-4)', () => {
 
   it('draws every legend key as the segment it names', () => {
     for (const o of OUTCOMES) {
-      const bar = build(`.stackcol > i.${o}`, hosts)
-      const key = build(`.chart-legend > .k.${o}`, hosts)
+      const bar = build(`.ol-meter > i.ol-seg.${o}`, hosts)
+      const key = build(`.ol-legend > i.ol-k.${KEY[o]}`, hosts)
       expect(fill(key), `the ${o} key`).toBe(fill(bar))
       expect(painted(key, 'box-shadow', WIDE), `the ${o} key's rule`).toBe(painted(bar, 'box-shadow', WIDE))
     }

@@ -25,13 +25,12 @@ from fastapi.responses import StreamingResponse
 from swarm_common.states import TaskState
 
 from ..agent_output import AgentOutputService
-from ..attempt_usage import usage_blocks
 from ..auth import AuthContext
 from ..codec import attempt_to_api, task_to_api
 from ..deps import AppContext, current_auth, get_context, paged_limit, tenant_scope
 from ..errors import ValidationFailed
-from ..redaction import redact_detail
 from ..schemas import TaskBatchCreate, TaskCreate
+from ..task_input import input_copy
 
 router = APIRouter(prefix="/v1/tasks", tags=["tasks"])
 
@@ -190,7 +189,6 @@ def list_events(
 def list_attempts(
     task_id: str,
     limit: int | None = Query(default=None, ge=1),
-    include: str | None = Query(default=None),
     tenant_id: str = Depends(tenant_scope),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
@@ -205,49 +203,21 @@ def list_attempts(
     Tenant-scoped like events and artifacts, not admin-gated: these are the
     caller's own attempts.
 
-    `include=usage` (#184) adds each attempt's CPU -- peak and mean cores,
-    CPU-seconds, the limit they are a fraction of -- from the worker's newest
-    HEARTBEAT reading, in a `usage` block per row, and a `usage_read` block
-    saying what was read (`swarm_api.attempt_usage`). OPT-IN, because it costs
-    one events read per request and the Overview's spend rollup calls this
-    route once per task. A failed events read makes every block `unread` and
-    the route still answers: the attempt rows are real either way.
+    Each row carries the attempt's CPU -- `cpu_seconds`, `peak_cpu_cores`,
+    `mean_cpu_cores`, `cpu_limit_cores` -- as typed fields (contract request
+    #15, accepted on #184, 2026-09-25). They replaced #188's opt-in
+    `include=usage`, which read the task's events once per request to find the
+    worker's newest HEARTBEAT reading. That parameter is no longer read: an
+    older client that still sends it gets the same rows, with the figures in
+    them.
     """
-    if include not in (None, "usage"):
-        raise ValidationFailed(
-            "include must be usage, or left out", detail={"include": include}
-        )
     # Resolve the task first so a wrong id is a 404 about the TASK rather than
     # an empty attempt list, which would read as "this task never ran".
-    task = ctx.store.get_task(tenant_id, task_id)
+    ctx.store.get_task(tenant_id, task_id)
     attempts = ctx.store.list_attempts(
         tenant_id, task_id, limit=paged_limit(ctx, limit)
     )
-    rows = [attempt_to_api(a) for a in attempts]
-    body: dict = {"task_id": task_id, "attempts": rows}
-    if include != "usage":
-        return body
-
-    page_size = ctx.settings.max_page_size
-    read_at = ctx.now()
-    events = None
-    read_error = None
-    window_full = False
-    try:
-        page = ctx.store.list_events(tenant_id, task_id, limit=page_size, descending=True)
-        events = list(page.items)
-        window_full = len(events) >= page_size
-    except Exception as exc:  # noqa: BLE001 - every failure is the same answer: not read
-        read_error = "the task's events could not be read: " + redact_detail(
-            f"{type(exc).__name__}: {exc}"
-        )
-    blocks, usage_read = usage_blocks(
-        attempts, task, events, read_at=read_at, window_full=window_full, read_error=read_error
-    )
-    for row in rows:
-        row["usage"] = blocks.get(row["attempt_id"])
-    body["usage_read"] = usage_read
-    return body
+    return {"task_id": task_id, "attempts": [attempt_to_api(a) for a in attempts]}
 
 
 @router.get("/{task_id}/artifacts")
@@ -522,3 +492,22 @@ def read_answer(
     neither) or `unreadable` (a read failed; nothing further down is tried).
     """
     return service.read_answer(tenant_id, task_id, attempt_id=attempt_id)
+
+
+@router.get("/{task_id}/input")
+def read_input(
+    task_id: str,
+    tenant_id: str = Depends(tenant_scope),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """The task's input as a screen may draw it: masked at read time, counted (#184).
+
+    The prompt, the rest of the input and the whole input, each as
+    `redaction.redact` returns it with its own `redaction_count` -- the same
+    redactor, and the same count, every other output this API serves carries.
+    The Artifacts pane's Inputs and the drawer's Details draw this, never the
+    `input` of `GET /v1/tasks/{id}`, which stays as submitted. See
+    `swarm_api.task_input`.
+    """
+    task = ctx.store.get_task(tenant_id, task_id)
+    return input_copy(task, read_at=ctx.now())

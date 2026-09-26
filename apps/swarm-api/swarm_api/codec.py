@@ -18,6 +18,7 @@ from typing import Any
 
 from swarm_common.models import (
     Attempt,
+    EndCause,
     Lease,
     QuotaState,
     SlotPool,
@@ -55,6 +56,18 @@ def _required_datetime(value: Any) -> datetime:
 # --------------------------------------------------------------------------
 # Task
 # --------------------------------------------------------------------------
+
+def _end_cause(value: Any) -> EndCause | None:
+    """A stored end cause, or None -- for an old document, and for a value this
+    image does not know. A newer writer's cause must not make a task unreadable
+    here; the outcome ledger reads the raw string and counts it as `other`."""
+    if value is None:
+        return None
+    try:
+        return EndCause(value)
+    except ValueError:
+        return None
+
 
 def task_to_firestore(task: Task) -> dict[str, Any]:
     return task.to_firestore()
@@ -95,6 +108,7 @@ def task_from_dict(data: dict[str, Any]) -> Task:
         last_error=data.get("last_error"),
         result_summary=data.get("result_summary"),
         latest_checkpoint=data.get("latest_checkpoint"),
+        end_cause=_end_cause(data.get("end_cause")),
     )
 
 
@@ -309,6 +323,14 @@ def attempt_from_dict(data: dict[str, Any]) -> Attempt:
         cache_read_input_tokens=data.get("cache_read_input_tokens"),
         cache_creation_input_tokens=data.get("cache_creation_input_tokens"),
         cost_usd=data.get("cost_usd"),
+        # CONTRACT REQUEST #15 (accepted on #184, 2026-09-25): the attempt's
+        # CPU, written by `control.record_cpu_usage`. `is None`-safe for the
+        # reason the spend fields are: an idle agent's 0.0 cores is a
+        # measurement, and `or None` would erase it.
+        cpu_seconds=data.get("cpu_seconds"),
+        peak_cpu_cores=data.get("peak_cpu_cores"),
+        mean_cpu_cores=data.get("mean_cpu_cores"),
+        cpu_limit_cores=data.get("cpu_limit_cores"),
     )
 
 
@@ -433,6 +455,14 @@ def attempt_to_api(attempt: Attempt) -> dict[str, Any]:
         "cache_read_input_tokens": attempt.cache_read_input_tokens,
         "cache_creation_input_tokens": attempt.cache_creation_input_tokens,
         "cost_usd": attempt.cost_usd,
+        # The attempt's CPU (request #15), on EVERY row: serving it costs no
+        # read the route was not already making. It replaced #188's opt-in
+        # `include=usage`, which read the task's events per request. Null is
+        # not measured, never zero.
+        "cpu_seconds": attempt.cpu_seconds,
+        "peak_cpu_cores": attempt.peak_cpu_cores,
+        "mean_cpu_cores": attempt.mean_cpu_cores,
+        "cpu_limit_cores": attempt.cpu_limit_cores,
     }
 
 

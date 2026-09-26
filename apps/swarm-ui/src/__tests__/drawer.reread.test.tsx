@@ -15,8 +15,10 @@
 //      listing was read once, at open, and compared with attempt records from
 //      the latest poll, so every checkpoint written while someone watched was
 //      drawn as lost.
-//   3. The log panel follows the task. It was read once, so a task that
-//      started while the drawer was open still said it had no attempt.
+//   3. The log panel followed the task: it was read once, so a task that
+//      started while the drawer was open still said it had no attempt. The
+//      panel has since moved to Artifacts › Logs only (#184, 2026-09-25), so
+//      what is held now is that no Details poll reads a log at all.
 //   4. A finish is watched to its end. `finish()` writes the terminal state,
 //      then the attempt's end, then the terminal event; a poll that lands
 //      between them used to stop the drawer on a half-written finish.
@@ -379,14 +381,17 @@ describe('a checkpoint written while the drawer is open is not drawn as lost', (
 // 3. The log panel follows the task
 // ---------------------------------------------------------------------------
 
-describe('the log panel is re-read with the drawer', () => {
+describe('the runner log is not in Details, so no Details poll reads it', () => {
   /**
-   * THE REVIEW'S CASE (a). Opened on a READY task, the panel says there is no
-   * attempt. Ten seconds later the chip reads RUNNING -- and the panel, read
-   * once at open, went on saying there was no attempt for as long as the
-   * drawer stayed open.
+   * THE REVIEW'S CASE (a) was a log panel read once at open, which went on
+   * saying there was no attempt under a RUNNING chip. The owner's decision of
+   * 2026-09-25 (#184) moved the runner's log to Artifacts › Logs only, where
+   * the pane's own 5 s poll re-reads it (artifacts.pane.test.tsx, "live").
+   * What is left to hold here is that the drawer's Details poll no longer
+   * reads it at all -- a panel removed from the screen and still fetched on
+   * every 10 s tick is a request nobody sees the answer to.
    */
-  it('stops saying there is no attempt once one has started', async () => {
+  it('reads no log at open or on any re-read, before or after the task starts', async () => {
     fakeClock()
     api.loadCheckpoints.mockImplementation(async () => NO_BODY)
     let started = false
@@ -396,15 +401,13 @@ describe('the log panel is re-read with the drawer', () => {
     api.loadTaskLogs.mockImplementation(async () => ok(logs(started ? 'latest' : 'no_attempt_yet')))
 
     const root = await openDrawer()
-    // #184: the panel is the RUNNER's log and is titled so; it still follows the drawer.
-    const panel = () => section(root, 'Runner log (platform)')?.textContent ?? ''
-    expect(panel()).toMatch(/no attempt yet/i)
+    expect(section(root, 'Runner log (platform)'), 'Details still draws the runner log').toBeUndefined()
 
     started = true
     await advance(DRAWER_POLL_MS)
     expect(root.querySelector('.ctl-chip')?.textContent).toMatch(/RUNNING/i)
-    expect(panel(), 'the log panel still says no attempt under a RUNNING chip').not.toMatch(/no attempt yet/i)
-    expect(panel()).toMatch(/Latest attempt att_1/)
+    expect(api.loadAgentRun, 'the drawer did not re-read').toHaveBeenCalledTimes(2)
+    expect(api.loadTaskLogs, 'a Details poll read the runner log').not.toHaveBeenCalled()
   })
 })
 

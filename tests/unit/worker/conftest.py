@@ -100,6 +100,7 @@ def seed_attempt(
     lease_released: bool = False,
     latest_checkpoint: str | None = None,
     pool_active: int = 1,
+    attempt_count: int = 1,
 ) -> dict[str, str]:
     """Create the documents a dispatched attempt would find in Firestore."""
     profile = RUNNER_PROFILES[runner_profile]
@@ -126,7 +127,9 @@ def seed_attempt(
             "submitted_by": "alice@saga.xyz",
             "created_at": now,
             "updated_at": now,
-            "attempt_count": 1,
+            # What admission writes in the lease's own transaction: one more
+            # for every lease, a park's next attempt included.
+            "attempt_count": attempt_count,
             "max_attempts": 3,
             "current_lease_id": lease_id,
             "current_generation": task_generation if task_generation is not None else generation,

@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { Chip, Em } from './AgentDetail'
-import { loadCheckpoints, loadTaskLogs } from './api'
+import { loadCheckpoints } from './api'
 import { CheckpointBrowser } from './CheckpointBrowser'
 import { Absent, Mark } from './primitives'
 import { FailedPanel } from './Shell'
@@ -62,6 +62,14 @@ import {
  * value is a kind of nothing. The sentences that stay are the two no cell can
  * hold: a checkpoint written and since reclaimed, and a restore pointer that
  * names nothing the listing holds.
+ *
+ * THE LOG PANEL LEFT DETAILS (#184, owner decision of 2026-09-25). It drew the
+ * RUNNER's streams, the platform's wrapper around the agent, and "the runner
+ * (platform) log lives in Artifacts › Logs only". Its rows were already shared
+ * with that pane, so they stay here and are exported: `Stream`, `attemptLine`,
+ * `servedAge` and `WindowSize` are what `Artifacts.tsx`'s `StreamsFrom` draws
+ * every stream with, the runner's included. What went is the panel, its title
+ * and its read of `/logs` on every drawer poll.
  */
 export function RunFiles({
   task,
@@ -89,12 +97,7 @@ export function RunFiles({
    */
   now?: number | null
 }) {
-  return (
-    <>
-      <CheckpointsPanel task={task} attempts={attempts ?? null} readAt={readAt} now={now} />
-      <LogsPanel task={task} readAt={readAt} now={now} />
-    </>
-  )
+  return <CheckpointsPanel task={task} attempts={attempts ?? null} readAt={readAt} now={now} />
 }
 
 /**
@@ -862,133 +865,14 @@ function ObjectRow({ object }: { object: CheckpointFile }) {
 // Logs
 // ---------------------------------------------------------------------------
 
-/**
- * WHAT THIS PANEL SHOWS, SAID IN ITS TITLE (#184).
- *
- * It was headed "Output, as the agent wrote it", and it is not that. The route
- * with no `stream` serves the RUNNER PROCESS's stdout and stderr -- the
- * platform's wrapper around the agent -- and on `task_73b5f4d9ca3641fbb914`
- * that was an empty stdout and one runner JSON line on stderr (`child
- * started`, with its argv), while the agent's 7,124-character answer sat in an
- * artifact the drawer only listed by name. A reader who opened this panel for
- * the agent's output was told, in a heading, that a platform log line was it.
- *
- * The agent's own streams, its transcript and its answer are the Artifacts
- * pane's Logs and Outputs. Whether this panel stays here as well is an open
- * question to the owner (#184); until it is answered it stays, named for what
- * it is.
+/*
+ * THE STREAM ROWS, shared with the Artifacts pane's Logs, which is the one
+ * place a log is drawn now. The runner log panel that stood here -- titled
+ * `Runner log (platform)`, and before #184 "Output, as the agent wrote it",
+ * over the runner process's streams -- was removed from Details by the
+ * owner's decision of 2026-09-25 (#184): it lives in Artifacts › Logs only,
+ * behind `runner (platform)`, where `StreamsFrom` draws it with these rows.
  */
-export const RUNNER_LOG_TITLE = 'Runner log (platform)'
-
-function LogsPanel({ task, readAt, now }: { task: Task; readAt: number | null; now: number | null }) {
-  // RE-READ WITH THE DRAWER. Read once, this panel said "no attempt yet"
-  // beside a RUNNING chip for as long as the drawer stayed open, and kept a
-  // `live tail -- the attempt is still writing` header over a task that had
-  // finished, without ever fetching the final log. The drawer's read moving
-  // is what moves it; when the drawer stops re-reading a finished task, the
-  // read that stopped it was the last, and the final log is what it fetched.
-  const { state } = useRead<TaskLogs>(() => loadTaskLogs(task.id), task.id, `${readAt ?? ''}`, null)
-
-  if (state.status === 'loading') {
-    return (
-      <Panel title={RUNNER_LOG_TITLE}>
-        <Reading />
-      </Panel>
-    )
-  }
-  if (state.status === 'error') {
-    return (
-      <Panel title={RUNNER_LOG_TITLE}>
-        <FailedPanel error={state.error} onRetry={() => window.location.reload()} />
-      </Panel>
-    )
-  }
-  if (state.status === 'empty') {
-    return (
-      <Panel title={RUNNER_LOG_TITLE}>
-        <Absent
-          kind="failed"
-          heading="No stream result"
-          say="The log route answered with no body, which is not a stream result, and nothing can be concluded from it."
-        />
-      </Panel>
-    )
-  }
-
-  const logs = state.data
-  const applied = logs.redaction.applied_at_read_time
-  const rules = logs.redaction.rules
-  // NO ATTEMPT, NO TABLE (fix-up on #170). The route still names both streams
-  // when there is no attempt (`_no_attempt_entry`, inspect.py), each absent
-  // and each carrying "this task has no attempt yet, so no log object can
-  // exist" -- so the panel said the one fact three times: in the strip, then
-  // once per row. It is the empty state's heading, once, and nothing else.
-  const noAttempt = logs.attempt.status === 'no_attempt_yet' || logs.attempt.status === 'unknown_attempt'
-  return (
-    <Panel title={RUNNER_LOG_TITLE}>
-      <ul className="ctl-facts">
-        {!noAttempt && <li className="ctl-fact">{attemptLine(logs)}</li>}
-        {/* STATED BY THE SERVER RATHER THAN ASSUMED HERE, and drawn by the rule
-            the artifact viewer's masked count follows (AG-5): a measured fact,
-            in plain ink when masking ran and in `--warn` when this API says it
-            did not -- a deployment where redaction stopped would otherwise
-            look identical to a working one. */}
-        <li className="ctl-fact">
-          <b>masking</b>
-          <span className={`art-masked${applied ? '' : ' is-warn'}`}>
-            {applied ? `at read time · ${rules} rule${rules === 1 ? '' : 's'}` : 'not applied at read time'}
-          </span>
-        </li>
-      </ul>
-      {logs.attempt.status === 'no_attempt_yet' ? (
-        // A MEASURED NOTHING: no attempt has run, so no log can exist -- the
-        // state a QUEUED or PARKED task is legitimately in.
-        <Absent kind="zero" heading="No attempt yet" say="This task has no attempt yet, so nothing has written a log." />
-      ) : logs.attempt.status === 'unknown_attempt' ? (
-        // Not a zero: the attempt asked for is not one this task has, so
-        // nothing about its logs was read.
-        <Absent
-          kind="failed"
-          heading="No such attempt"
-          say="The attempt asked for is not one this task has, so there is no log of it to read."
-        />
-      ) : logs.streams.length === 0 ? (
-        // A MEASURED NOTHING. The route answered and named no stream.
-        <Absent kind="zero" heading="No stream" say="The log route answered and returned no stream for this attempt." />
-      ) : (
-        <>
-          <div className="ctl-table is-stacked">
-            <table role="table">
-              <thead role="rowgroup">
-                <tr role="row">
-                  <th role="columnheader" scope="col">Stream</th>
-                  <th role="columnheader" scope="col" className="is-num">Size</th>
-                  <th role="columnheader" scope="col">Age</th>
-                </tr>
-              </thead>
-              <tbody role="rowgroup">
-                {logs.streams.map((s) => (
-                  <Stream key={s.stream} stream={s} logs={logs} task={task} now={now} />
-                ))}
-              </tbody>
-            </table>
-          </div>
-          {/* THE WINDOWS THEMSELVES, below the table and not inside it: the
-              table says what each stream is, the window is what the agent
-              wrote, and only a stream with text in it has one. */}
-          {logs.streams
-            .filter((s) => s.status === 'ok' && s.content !== null && s.content !== '')
-            .map((s) => (
-              <div key={s.stream} className="rf-window">
-                <span className="ctl-eyebrow">{s.stream}</span>
-                <pre className="logwin-body">{s.content}</pre>
-              </div>
-            ))}
-        </>
-      )}
-    </Panel>
-  )
-}
 
 /** Which attempt the window below belongs to. `no_attempt_yet` is the state a
  *  QUEUED or PARKED task is legitimately in and must not read as a failure. */

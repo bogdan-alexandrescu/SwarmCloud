@@ -55,6 +55,7 @@ from google.cloud.firestore_v1.base_query import FieldFilter
 from swarm_common.admission import _snapshot
 from swarm_common.models import (
     Attempt,
+    EndCause,
     Lease,
     ProviderState,
     QuotaState,
@@ -815,6 +816,11 @@ class Store:
                 assert_transition(task.state, TaskState.CANCELLED)
                 patch["state"] = TaskState.CANCELLED.value
                 patch["completed_at"] = now
+                # Why it ended, typed, beside when (contract request 23). Only
+                # here, where THIS write ends the task: a flag on a task that
+                # holds capacity ends nothing, and the worker or the reconciler
+                # that ends it writes the same cause.
+                patch["end_cause"] = EndCause.CANCEL_REQUESTED.value
                 patch["park_reason"] = None
                 patch["blocked_by"] = []
             txn.update(ref, patch)
@@ -1067,7 +1073,7 @@ class Store:
         POINT READS, NOT A QUERY. Each `WorkflowStep` already carries its
         `task_id`, so the ids are in hand and a query would only re-derive them
         -- and a query per workflow costs the same documents plus a round trip
-        each. This is the pattern `SchedulerStore.task_states` already uses for
+        each. This is the pattern `SchedulerStore.parent_ends` already uses for
         `depends_on`, for the same reason: a bounded number of point reads is not
         a scan.
 

@@ -119,7 +119,7 @@ SUBMIT_START="$(bench_now_ms)"
 REJECTED=0
 for i in $(seq 1 "${COUNT}"); do
   if id="$(submit_task "${PROFILE}" \
-        "$(jq -nc --argjson i "${i}" '{message:"bench-admission", index:$i}')" \
+        "$(jq -nc --argjson i "${i}" '{prompt: ("bench-admission " + ($i|tostring))}')" \
         '{"metadata":{"source":"bench-admission"}}' 2>/dev/null)"; then
     TASK_IDS+=("${id}")
   else

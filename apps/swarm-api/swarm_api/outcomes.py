@@ -49,10 +49,23 @@ the route runs before any of this is reached.
 NOTHING IS BUILT AT IMPORT. No Firestore client, no cache: the 60 s cache lives
 on the `Outcomes` instance the composition root builds.
 
-NOT TOUCHED: `apps/common/swarm_common`. Two things here would be better
-there and are filed as requests instead -- a typed end cause that retires the
-`last_error` classifier (docs/contract-change-requests.md, entry 23) and a
-profile flag for declared cost (entry 24).
+WHY A TASK ENDED IS READ FROM THE TASK, THEN FROM ITS TEXT. Contract requests
+23 and 24 were accepted by the owner on 2026-09-25 (#185, decision 9):
+`Task.end_cause` is written by every terminal writer, and `RunnerProfile.
+cost_declared` says which runners declare their cost. A task that carries an
+end cause is classified by it and nothing else (`classify_failure`,
+`cancel_cause`); the `last_error` prefix classifier below is the fallback for
+tasks that ended before the field existed, or for an end no cause names.
+
+A CANCEL CASCADE IS SPLIT BY ITS PARENTS' OWN ENDS (decision 2). "an upstream
+workflow step did not succeed" is written after a FAILED parent and after a
+CANCELLED one. A task that carries `end_cause` says which; one that does not is
+split at derive time by what each `depends_on` parent's end sent down -- NOT by
+the parent's state (the review of #217). The rule is transitive, so a
+CANCELLED parent is often a failure's cascade itself: a FAILED -> b -> c makes
+`c` "after a failure". A parent that is itself an untyped cascade is named by
+its own parents, so the derive reads the chain above such a task
+(`_read_cascade_ancestors`); an end it cannot name is `other`, never a guess.
 """
 
 from __future__ import annotations
@@ -74,7 +87,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError, available_timezones
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 
-from swarm_common.models import utcnow
+from swarm_common.models import EndCause, utcnow
 from swarm_common.profiles import RUNNER_PROFILES
 from swarm_common.states import TERMINAL_STATES, TaskState
 
@@ -121,9 +134,19 @@ OUTCOMES_CACHE_S = 60
 _CACHE_MAX_ENTRIES = 256
 
 #: Bumped with ANY change to the tuple shape or to the classifier. A stored day
-#: on another version is re-derived on the next read that needs it.
-DERIVE_VERSION = 1
-CLASSIFIER_VERSION = 1
+#: on another version of EITHER is re-derived on the next read that needs it
+#: (`_decode_stored` checks both; until 2026-09-25 it checked only
+#: DERIVE_VERSION, so a classifier bump alone would have been stored and never
+#: acted on).
+#:
+#: 2 (2026-09-25, #185 decisions 2, 4 and 9): the cancel cascade is split into
+#: after_failure and after_cancel by the parents' own ends, up the chain (the
+#: review of #217 corrected a one-hop split in the same pull request, before
+#: version 2 was released, so no day was ever stored under it), InputUnavailable is
+#: its own class, and `Task.end_cause` is read before any text. Every sealed
+#: day was classified by version 1's rules, so every one is re-derived.
+DERIVE_VERSION = 2
+CLASSIFIER_VERSION = 2
 
 #: Firestore caps a document at 1 MiB. A day whose tuples pass this many bytes
 #: is split into shard documents `{id}_s{n}`. The whole write is one batch, and
@@ -182,28 +205,39 @@ EXIT_LABELS: dict[int, str] = {
 
 #: Runner profiles whose cost is DECLARED by the runner rather than measured
 #: from a provider. Included in every sum and marked, so a reader can tell a
-#: `mock` run's deliberate $0.00 from a real bill. Named once, here, until
-#: contract request 24 gives `RunnerProfile` a flag for it.
-DECLARED_COST_PROFILES: frozenset[str] = frozenset({"mock"})
+#: runner's deliberate $0.00 from a real bill. READ FROM THE CATALOGUE
+#: (`RunnerProfile.cost_declared`, contract request 24, accepted 2026-09-25),
+#: never named here: a profile that starts declaring its cost is marked the
+#: moment the catalogue says so.
+DECLARED_COST_PROFILES: frozenset[str] = frozenset(
+    name for name, profile in RUNNER_PROFILES.items() if profile.cost_declared
+)
 
 # --------------------------------------------------------------------------
 # Vocabulary, served in every response so no client restates the order
 # --------------------------------------------------------------------------
 
-#: FIXED order. A filter never re-ranks it.
+#: FIXED order. A filter never re-ranks it. `inputs_unavailable` (decision 4,
+#: 2026-09-25) sits before `outputs_missing` because that is the order an
+#: attempt meets them in: its inputs are staged before the agent starts, and
+#: its outputs are checked after the agent ends.
 FAILURE_CLASSES: tuple[tuple[str, str], ...] = (
     ("runner_error", "runner error"),
     ("timeout", "timeout"),
     ("lost_worker", "lost worker"),
     ("could_not_start", "could not start"),
+    ("inputs_unavailable", "inputs unavailable"),
     ("outputs_missing", "outputs missing"),
     ("dispatch_failed", "dispatch failed"),
     ("other", "other"),
     ("no_reason", "no reason recorded"),
 )
+#: `after_cancel` (decision 2) follows `after_failure`: both are the cascade
+#: a parent's end sent down its dependants, and they differ only in which end.
 CANCEL_CAUSES: tuple[tuple[str, str], ...] = (
     ("requested", "requested"),
     ("after_failure", "after a failure"),
+    ("after_cancel", "after a cancel"),
     ("workflow_sweep", "workflow sweep"),
     ("other", "other"),
 )
@@ -245,10 +279,42 @@ def _check_coverage() -> None:
 _check_coverage()
 
 # --------------------------------------------------------------------------
-# The classifier. Every pattern is pinned against its writer's source literal
-# by tests/unit/control_plane/test_outcomes_classifier_parity.py, so a
-# reworded message turns CI red instead of drifting into "other".
+# The classifier. A task that carries `end_cause` is classified by it alone
+# (`_FAILURE_OF_CAUSE`, `_CANCEL_OF_CAUSE`). The text rules below are the
+# FALLBACK, for tasks that ended before the field existed. Every pattern is
+# pinned against its writer's source literal by
+# tests/unit/control_plane/test_outcomes_classifier_parity.py, so a reworded
+# message turns CI red instead of drifting into "other".
 # --------------------------------------------------------------------------
+
+#: What each typed end cause is, as a failure class. Keyed by the frozen enum,
+#: so a value added there and not here is caught by
+#: `test_every_end_cause_has_exactly_one_class`, not read as "other".
+_FAILURE_OF_CAUSE: dict[str, str] = {
+    EndCause.TIMEOUT.value: "timeout",
+    EndCause.CANNOT_START.value: "could_not_start",
+    EndCause.LOST_WORKER.value: "lost_worker",
+    EndCause.OUTPUTS_MISSING.value: "outputs_missing",
+    EndCause.INPUTS_UNAVAILABLE.value: "inputs_unavailable",
+    EndCause.DISPATCH_FAILED.value: "dispatch_failed",
+    EndCause.RUNNER_ERROR.value: "runner_error",
+}
+#: ... and as a cancel cause. The two maps partition `EndCause`.
+_CANCEL_OF_CAUSE: dict[str, str] = {
+    EndCause.CANCEL_REQUESTED.value: "requested",
+    EndCause.FAILED_PARENT.value: "after_failure",
+    EndCause.CANCELLED_PARENT.value: "after_cancel",
+    EndCause.WORKFLOW_SWEEP.value: "workflow_sweep",
+}
+
+
+def _cause_value(end_cause: Any) -> str | None:
+    """The stored end cause as its string value, or None when there is none."""
+    if end_cause is None:
+        return None
+    value = end_cause.value if isinstance(end_cause, EndCause) else str(end_cause).strip()
+    return value or None
+
 
 #: agent_worker/lifecycle.py, the timeout branch of the terminal write.
 _TIMEOUT_RE = re.compile(r"runner exceeded its [0-9.]+s timeout and was killed")
@@ -261,6 +327,23 @@ _CANNOT_START_RE = re.compile(
 _LOST_WORKER_RE = re.compile(r"reconciled: ")
 #: agent_worker/expected_outputs.py, via lifecycle._fail_for_missing_outputs.
 _OUTPUTS_MISSING_RE = re.compile(r"expected outputs missing")
+#: agent_worker/inputs.py: every `InputUnavailable` the worker raises while it
+#: stages a declared `input_from` artifact, before the agent starts. The worker
+#: ends the task with `str(exc)` as the whole `last_error`, so each message
+#: opens with its own literal. On dev, 2026-09-25, 10 of 13 "runner errors"
+#: were two of these: "upstream task X did not produce an artifact named Y"
+#: (6) and "upstream tasks X, Y all stage Z" (4). The parity test renders the
+#: opening literal of EVERY raise in inputs.py and holds each to this pattern.
+_INPUTS_UNAVAILABLE_RE = re.compile(
+    r"(?:upstream tasks? \S"
+    r"|metadata\.input_from\b"
+    r"|input artifact "
+    r"|the recorded location of "
+    r"|the \S+ declared inputs total "
+    r"|could not stage .+ from upstream task "
+    r"|staging .+ from upstream task )",
+    re.DOTALL,
+)
 #: scheduler/store.py `f"{error_code} (attempt {reference})"`; the codes are
 #: dispatch.py's DispatchError codes and loop.py's scheduler_internal_error.
 _DISPATCH_FAILED_RE = re.compile(r"[a-z][a-z0-9_]* \(attempt [^)]+\)")
@@ -268,9 +351,11 @@ _DISPATCH_FAILED_RE = re.compile(r"[a-z][a-z0-9_]* \(attempt [^)]+\)")
 #: agent_worker/control.py, scheduler/store.py and reconciler/repair.py prefix
 #: every cancel they end on a request with this.
 _REQUESTED_PREFIX = "cancelled on request; "
-#: scheduler/loop.py, a step whose parent did not succeed. NOTE it fires for a
-#: CANCELLED parent too (loop.py `_FAILED_PARENT_STATES`) -- recorded as an open
-#: question in the PR, not silently re-labelled here.
+#: scheduler/loop.py, a step whose parent did not succeed. It fires for a
+#: FAILED, DEAD_LETTERED **or CANCELLED** parent (loop.py
+#: `_FAILED_PARENT_STATES`), so the text alone cannot say which: `cancel_cause`
+#: splits it by what each parent's own end sent down (`parent_end`; decision
+#: 2, and the review of #217 for the chain).
 _AFTER_FAILURE_TEXT = "an upstream workflow step did not succeed"
 #: scheduler/loop.py, the fail_workflow sweep.
 _SWEEP_RE = re.compile(
@@ -285,9 +370,21 @@ def _state_value(state: Any) -> str:
 
 
 def classify_failure(
-    state: Any, last_error: str | None, final_attempt_exit_code: int | None
+    state: Any,
+    last_error: str | None,
+    final_attempt_exit_code: int | None,
+    *,
+    end_cause: Any = None,
 ) -> str | None:
     """Why a FAILED or DEAD_LETTERED task failed, as one fixed class. First match wins.
+
+    Stage 0 is the task's own `end_cause` (contract request 23). A task that
+    carries one is classified by it and by nothing else: the writer that ended
+    the task said why, and no text is read over it. A cause that names no
+    failure (a cancel's cause on a failed task, or a value this image does not
+    know) is `other` -- counted, never dropped, and never re-guessed from text.
+
+    Everything below is the FALLBACK, for a task with no end cause.
 
     Stage 1 is the exit code, and only where its meaning on a failed task is
     unambiguous: 78 is the worker's CANNOT-START. DELIBERATELY NOT 76 -> timeout:
@@ -307,6 +404,9 @@ def classify_failure(
     """
     if _state_value(state) not in _FAILED_VALUES:
         return None
+    cause = _cause_value(end_cause)
+    if cause is not None:
+        return _FAILURE_OF_CAUSE.get(cause, "other")
     if final_attempt_exit_code == EXIT_CANNOT_START:
         return "could_not_start"
     text = str(last_error).lstrip() if last_error is not None else ""
@@ -320,6 +420,8 @@ def classify_failure(
         return "lost_worker"
     if _OUTPUTS_MISSING_RE.match(text):
         return "outputs_missing"
+    if _INPUTS_UNAVAILABLE_RE.match(text):
+        return "inputs_unavailable"
     if _DISPATCH_FAILED_RE.fullmatch(text):
         return "dispatch_failed"
     if final_attempt_exit_code is not None:
@@ -327,23 +429,147 @@ def classify_failure(
     return "other"
 
 
-def cancel_cause(cancel_requested: bool, last_error: str | None) -> str:
+def cancel_cause(
+    cancel_requested: bool,
+    last_error: str | None,
+    *,
+    end_cause: Any = None,
+    parent_ends: Sequence[str | None] | None = None,
+) -> str:
     """Why a CANCELLED task was cancelled.
 
-    `requested` covers both the flag (the API cancel and the workflow cancel set
-    it on every step) and the prefix the terminal writers put on a cancel they
-    ended on a request. Everything unrecognised is `other` -- including the
-    worker's "runner stopped on SIGTERM" without the flag, and a null
-    last_error without the flag.
+    Stage 0 is the task's own `end_cause`, exactly as in `classify_failure`:
+    the scheduler writes FAILED_PARENT or CANCELLED_PARENT from its parents'
+    own ends when it cancels, so a task that carries one is never split again.
+
+    The FALLBACK, for a task with no end cause: `requested` covers both the
+    flag (the API cancel and the workflow cancel set it on every step) and the
+    prefix the terminal writers put on a cancel they ended on a request.
+
+    "an upstream workflow step did not succeed" is split by `parent_ends`:
+    what each `depends_on` parent's OWN END sent down, as `parent_end` reads it
+    -- SENT_FAILURE, SENT_CANCEL, SENT_UNKNOWN, or None for a parent that sent
+    nothing (it succeeded, or has not ended). NOT the parents' states (the
+    review of #217): a CANCELLED parent may itself be a failure's cascade, and
+    read by its state every step two or more hops below a failure was "after a
+    cancel" nobody made. So:
+
+      * any parent sent a failure: `after_failure` -- a failure wins, as the
+        scheduler's own cause does;
+      * else any parent's end cannot be named: `other`, because that parent
+        may have been the failure;
+      * else any parent sent a cancel: `after_cancel`;
+      * else (no parent read at all): `other` -- never guessed to be a
+        failure, which is the overclaim decision 2 ends, nor a cancel.
+
+    Everything unrecognised is `other` -- including the worker's "runner
+    stopped on SIGTERM" without the flag, and a null last_error without the
+    flag.
     """
+    cause = _cause_value(end_cause)
+    if cause is not None:
+        return _CANCEL_OF_CAUSE.get(cause, "other")
     text = str(last_error).lstrip() if last_error is not None else ""
     if cancel_requested or text.startswith(_REQUESTED_PREFIX):
         return "requested"
     if text == _AFTER_FAILURE_TEXT:
-        return "after_failure"
+        sent = set(parent_ends or ())
+        if SENT_FAILURE in sent:
+            return "after_failure"
+        if SENT_UNKNOWN in sent:
+            return "other"
+        if SENT_CANCEL in sent:
+            return "after_cancel"
+        return "other"
     if _SWEEP_RE.fullmatch(text):
         return "workflow_sweep"
     return "other"
+
+
+#: What one parent's end sent down to its dependant (`parent_end`).
+SENT_FAILURE = "failure"
+SENT_CANCEL = "cancel"
+SENT_UNKNOWN = "unknown"
+
+#: A cancelled parent's own cancel cause, as what it sent down. A requested
+#: cancel and a cancel's cascade send a cancel; a failure's cascade and the
+#: fail_workflow sweep (which only a failure starts) send a failure; `other`
+#: is an end the ledger cannot name.
+_SENT_BY_CANCEL_CAUSE: dict[str, str] = {
+    "requested": SENT_CANCEL,
+    "after_cancel": SENT_CANCEL,
+    "after_failure": SENT_FAILURE,
+    "workflow_sweep": SENT_FAILURE,
+    "other": SENT_UNKNOWN,
+}
+
+
+def _is_untyped_cascade(doc: Mapping[str, Any]) -> bool:
+    """A CANCELLED task that carries no cause and says only "an upstream
+    workflow step did not succeed": its own end is whatever its parents sent,
+    so it can be named only by reading them in turn."""
+    if str(doc.get("state")) != TaskState.CANCELLED.value:
+        return False
+    if _cause_value(doc.get("end_cause")) is not None or doc.get("cancel_requested"):
+        return False
+    return str(doc.get("last_error") or "").lstrip() == _AFTER_FAILURE_TEXT
+
+
+def parent_end(
+    parent: Mapping[str, Any] | None,
+    docs: Mapping[str, Mapping[str, Any] | None],
+    _memo: dict[str, str | None] | None = None,
+    _open: frozenset[str] = frozenset(),
+) -> str | None:
+    """What one `depends_on` parent's end sent down to its dependant. Pure.
+
+    SENT_FAILURE for a parent that FAILED or was DEAD_LETTERED, or was
+    CANCELLED by a failure; SENT_CANCEL for one CANCELLED by a cancel somebody
+    asked for, at that step or above it; SENT_UNKNOWN for one CANCELLED for a
+    reason nothing records, and for a parent that could not be read (`None`:
+    missing, or another tenant's); None for a parent that sent nothing --
+    SUCCEEDED, or not ended.
+
+    A CANCELLED parent is named by its own `cancel_cause`, and that is where
+    the chain is followed: a parent that is itself an untyped cascade is named
+    by ITS parents, looked up in `docs`, and so on up (the review of #217).
+    `docs` holds whatever the derive read; an ancestor it does not hold is
+    SENT_UNKNOWN, never a guess. `_memo` keeps a wide chain linear, and `_open`
+    -- the ids being resolved on this path -- ends a cycle, which a DAG
+    validated at submission never has but a corrupt document could.
+    """
+    if parent is None:
+        return SENT_UNKNOWN
+    state = str(parent.get("state"))
+    if state in _FAILED_VALUES:
+        return SENT_FAILURE
+    if state != TaskState.CANCELLED.value:
+        return None
+    parent_id = str(parent.get("id") or "")
+    memo = {} if _memo is None else _memo
+    if parent_id and parent_id in memo:
+        return memo[parent_id]
+    if parent_id in _open:
+        return SENT_UNKNOWN
+    ends: list[str | None] | None = None
+    if _is_untyped_cascade(parent):
+        above = _open | {parent_id}
+        ends = [
+            parent_end(docs.get(str(grand_id)), docs, memo, above)
+            if str(grand_id) in docs
+            else SENT_UNKNOWN
+            for grand_id in (parent.get("depends_on") or [])
+        ]
+    cause = cancel_cause(
+        bool(parent.get("cancel_requested")),
+        parent.get("last_error"),
+        end_cause=parent.get("end_cause"),
+        parent_ends=ends,
+    )
+    sent = _SENT_BY_CANCEL_CAUSE.get(cause, SENT_UNKNOWN)
+    if parent_id:
+        memo[parent_id] = sent
+    return sent
 
 
 def exit_label(code: int | None) -> str:
@@ -994,6 +1220,12 @@ def tuple_from_docs(
     `parents` maps a depends_on task id to its document, or to None when it
     could not be read inside this tenant (missing, or another tenant's): that
     task's `eligible` is then None and its wait is excluded, never guessed.
+    The same map splits a cascade cancel with no `end_cause` into "after a
+    failure" and "after a cancel" (`cancel_cause`), by what each parent's own
+    end sent down (`parent_end`) -- which, for a parent that is itself such a
+    cascade, is read from ITS parents in the same map, and so on up the chain.
+    `Outcomes._tuples` puts those ancestors in the map; a caller that does not
+    gets `other` for a chain it cut short, never a guess.
 
     first_start is min(Attempt.started_at). Task.started_at is never used: every
     STARTING transition overwrites it (agent_worker/control.py).
@@ -1013,9 +1245,19 @@ def tuple_from_docs(
             eligible = None
             break
         eligible = max(eligible or 0, finished)
+    # Only a cascade with no cause of its own is split by its parents, so only
+    # that one walks up the chain.
+    parent_ends: list[str | None] | None = None
+    if _is_untyped_cascade(task):
+        memo: dict[str, str | None] = {}
+        mine = frozenset({str(task.get("id") or "")})
+        parent_ends = [
+            parent_end(parents.get(parent_id), parents, memo, mine) for parent_id in depends_on
+        ]
 
     state = str(task.get("state"))
     last_error = task.get("last_error")
+    end_cause = task.get("end_cause")
     final_exit = final.get("exit_code") if final is not None else None
     cost, started, reporting = _spend(ordered)
     lowest = _int(ordered[0].get("generation")) if ordered else 0
@@ -1038,9 +1280,14 @@ def tuple_from_docs(
         "attempt_count": _int(task.get("attempt_count")),
         "att_docs": len(ordered),
         "timeout_s": _int(timeout) if timeout is not None else None,
-        "failure_class": classify_failure(state, last_error, final_exit),
+        "failure_class": classify_failure(state, last_error, final_exit, end_cause=end_cause),
         "cancel_cause": (
-            cancel_cause(bool(task.get("cancel_requested")), last_error)
+            cancel_cause(
+                bool(task.get("cancel_requested")),
+                last_error,
+                end_cause=end_cause,
+                parent_ends=parent_ends,
+            )
             if state == TaskState.CANCELLED.value
             else None
         ),
@@ -1153,8 +1400,8 @@ class StoredDay:
 @dataclass
 class _Stored:
     exists: bool = False
-    #: None when missing OR not usable (another derive version, or an encoding
-    #: that did not decode) -- either way the day is derived again.
+    #: None when missing OR not usable (another derive or classifier version,
+    #: or an encoding that did not decode) -- either way the day is derived again.
     doc: StoredDay | None = None
     #: Extra shards the stored base names, so a smaller rewrite deletes the rest.
     shards: int = 0
@@ -1191,7 +1438,14 @@ class _Meter:
 
 
 def _decode_stored(base: Mapping[str, Any], shards: Sequence[Mapping[str, Any] | None]) -> StoredDay | None:
+    # BOTH versions, because each stored tuple carries its class as the
+    # classifier of its day decided it. A day on another CLASSIFIER_VERSION
+    # holds classes this code would not assign, and serving it would mix two
+    # classifiers in one card. Until 2026-09-25 only DERIVE_VERSION was read
+    # here, so the classifier's version was written and never acted on.
     if _int(base.get("derive_version"), -1) != DERIVE_VERSION:
+        return None
+    if _int(base.get("classifier_version"), -1) != CLASSIFIER_VERSION:
         return None
     try:
         built_at = as_datetime(base.get("built_at"))
@@ -1634,13 +1888,24 @@ def _groups(
 def _workflows_failed(kept: Sequence[Mapping[str, Any]], params: Params) -> dict[str, Any]:
     """Which workflows had a step end FAILED or DEAD_LETTERED in the span, and
     where it first broke. `state` and `steps` are filled in by the service from
-    the owner-chosen rollup path; until then a row reads UNKNOWN / null."""
+    the owner-chosen rollup path; until then a row reads UNKNOWN / null.
+
+    `cascade_cancelled` counts the cancels THE FAILURE caused: after a failure
+    -- however many steps below it, through steps the failure's own cascade
+    cancelled -- and the fail_workflow sweep. A step cancelled after a cancel
+    (`after_cancel`: somebody stopped it, or a step above it) is left out --
+    somebody stopped that branch, the failure did not.
+
+    Under kind=standalone the block does not apply, and its counts are null
+    rather than 0: nothing was counted, so no count is a measurement (the
+    review of #196 found 0 served here, which reads as "no workflow failed").
+    """
     if params.kind == "standalone":
         return {
             "applicable": False,
-            "with_ended_steps": 0,
-            "with_failed_steps": 0,
-            "rows_total": 0,
+            "with_ended_steps": None,
+            "with_failed_steps": None,
+            "rows_total": None,
             "rows": [],
             "failing_steps": [],
         }
@@ -1925,6 +2190,44 @@ class Outcomes:
                     out[snap.id] = data
         return out
 
+    def _read_cascade_ancestors(
+        self,
+        tenant_id: str,
+        ended: Sequence[dict[str, Any]],
+        known: dict[str, dict[str, Any] | None],
+        meter: _Meter,
+    ) -> None:
+        """Read into `known` the chain above every ended cascade that carries no cause.
+
+        A cascade with no cause is split by what its parents' ends sent down
+        (`parent_end`), and a parent that is ITSELF such a cascade is named only
+        by its own parents (the review of #217): a -> b -> c with `a` FAILED
+        makes `c` "after a failure", although `c`'s parent is CANCELLED. The
+        wait figure's read already holds each ended task's parents; this reads
+        the rest of each chain -- one batched, tenant-checked `get_all` per
+        level, and only above cascades with no cause. A task that ended after
+        contract request 23 carries its cause and costs nothing here.
+
+        It ends. Each document joins the walk at most once (`walked`), and a
+        chain is bounded by the workflow it lives in: every `depends_on` names
+        a step of the same workflow, validated at submission against
+        `max_workflow_steps`. The reads are metered like every other read of
+        the derive, so they count against its budget.
+        """
+        walked: set[str] = set()
+        frontier = [doc for doc in ended if _is_untyped_cascade(doc)]
+        while frontier:
+            walked.update(str(doc.get("id")) for doc in frontier)
+            above = {str(parent) for doc in frontier for parent in (doc.get("depends_on") or [])}
+            missing = sorted(parent for parent in above if parent not in known)
+            if missing:
+                known.update(self._get_tasks(tenant_id, missing, meter))
+            frontier = [
+                doc
+                for parent in sorted(above - walked)
+                if (doc := known.get(parent)) is not None and _is_untyped_cascade(doc)
+            ]
+
     def _tuples(
         self,
         tenant_id: str,
@@ -1957,6 +2260,7 @@ class Outcomes:
         )
         if wanted:
             known.update(self._get_tasks(tenant_id, wanted, meter))
+        self._read_cascade_ancestors(tenant_id, mine_ended, known, meter)
         ended = [
             tuple_from_docs(doc, attempts.get(str(doc["id"]), []), known) for doc in mine_ended
         ]
@@ -2476,8 +2780,8 @@ class Outcomes:
                 if doc is None:
                     if not entry.exists and not build_missing:
                         continue
-                    # Missing, or on another derive version: exactly what the
-                    # next read would rebuild.
+                    # Missing, or on another derive or classifier version:
+                    # exactly what the next read would rebuild.
                     data = self.derive_day(tenant_id, day, meter)
                     self._write(tenant_id, day, data, sealed=sealable, now=now, prior_shards=entry.shards)
                     report["built"] += 1

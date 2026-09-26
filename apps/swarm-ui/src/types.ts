@@ -786,7 +786,67 @@ export interface ResultSummary {
    * before the change.
    */
   agent_streams?: AgentStreams | null
+  /**
+   * What a claude-code or codex task with NO repository uploaded from its
+   * working folder, as `workdir/<path>` entries of `artifacts` (#184, owner
+   * decision of 2026-09-26), and what it did not. Absent on a repository task
+   * and on every other runner. Read it through `workdirNotUploadedOf`, which
+   * checks each entry rather than trusting the shape.
+   */
+  workdir_outputs?: WorkdirOutputs
   [k: string]: unknown
+}
+
+/**
+ * `result_summary.workdir_outputs`, as `Worker._upload_workdir_outputs`
+ * writes it. `not_uploaded` is the FIRST 50 files the worker did not upload,
+ * each with its reason ("over cap", a core dump, a name that is not UTF-8, a
+ * registered secret it could not redact...); `not_uploaded_count` is all of
+ * them, and the worker's log names every one. These are never in
+ * `artifacts_skipped`, whose readers call a name there dropped at the
+ * artifacts folder's size cap.
+ */
+export interface WorkdirOutputs {
+  prefix?: string
+  uploaded?: number
+  uploaded_bytes?: number
+  not_uploaded?: WorkdirNotUploaded[]
+  not_uploaded_count?: number
+  symlinks_skipped?: number
+  working_folder_is_symlink?: boolean
+  cap_files?: number
+  cap_bytes?: number
+}
+
+/** One working-folder file the worker did not upload, and why. */
+export interface WorkdirNotUploaded {
+  /** `workdir/<path>`. A name that was not UTF-8 is spelled as its bytes (`caf\xe9.txt`). */
+  name: string
+  bytes: number | null
+  reason: string
+}
+
+/**
+ * The working-folder files a summary lists as not uploaded, and how many
+ * there were in all. `null` when the summary has no such record -- a
+ * repository task, another runner, or a summary from before #184 -- which is
+ * not the same as a record of none. An entry that is not a named file is
+ * dropped here and still counted in `total`, which comes from the worker.
+ */
+export function workdirNotUploadedOf(
+  summary: ResultSummary | null | undefined,
+): { listed: WorkdirNotUploaded[]; total: number } | null {
+  const block: unknown = summary?.workdir_outputs
+  if (block === null || typeof block !== 'object') return null
+  const { not_uploaded: entries, not_uploaded_count: count } = block as { not_uploaded?: unknown; not_uploaded_count?: unknown }
+  const raw: unknown[] = Array.isArray(entries) ? entries : []
+  const listed = raw.filter((e): e is WorkdirNotUploaded => {
+    if (e === null || typeof e !== 'object') return false
+    const { name, reason } = e as { name?: unknown; reason?: unknown }
+    return typeof name === 'string' && typeof reason === 'string'
+  })
+  const total = typeof count === 'number' && Number.isFinite(count) && count >= listed.length ? count : listed.length
+  return { listed, total }
 }
 
 /**
@@ -1198,17 +1258,30 @@ export interface AttemptRow {
   cache_creation_input_tokens: number | null
   cost_usd: number | null
   /**
-   * The attempt's CPU reading, served only when the read asked for
-   * `include=usage` (#184). OPTIONAL, and its absence means the API did not
-   * serve it -- a deployment older than the change, or a read that did not
-   * ask -- never "no CPU was used". The typed Attempt fields that would
-   * replace it are contract request #15.
+   * THE ATTEMPT'S CPU, typed on its document (contract request #15, accepted
+   * on #184 on 2026-09-25) and served on every row. Every runner the attempt
+   * started, combined; 1.0 is one whole vCPU.
    *
-   * NULL IS READ AS NOT SERVED TOO. The route fills `usage` from a map keyed by
-   * attempt id (`routes/tasks.py` `blocks.get(...)`), so a row the map missed
-   * arrives as `null`, not as a missing key -- and it is the same fact.
+   *  - `cpu_seconds`      CPU time its runners consumed;
+   *  - `peak_cpu_cores`   the busiest sampling interval;
+   *  - `mean_cpu_cores`   cpu_seconds over RUNNER wall time;
+   *  - `cpu_limit_cores`  what they are a fraction of: the container's cgroup
+   *                       `cpu.max`, else the catalogue cpu of the class it
+   *                       was sized with. Which of the two is not recorded.
+   *
+   * The worker rewrites them with each periodic reading while a runner runs
+   * and when each runner is reaped, so on a running attempt they are LIVE, and
+   * the document records no time for them.
+   *
+   * NULL is not measured, never 0. OPTIONAL, and a missing key is a different
+   * fact again: an API older than the typed fields, which says nothing about
+   * the attempt. These replaced #188's `usage` block (`attempts?include=usage`),
+   * which read the figures off HEARTBEAT events; that block is not read.
    */
-  usage?: AttemptUsage | null
+  cpu_seconds?: number | null
+  peak_cpu_cores?: number | null
+  mean_cpu_cores?: number | null
+  cpu_limit_cores?: number | null
 }
 
 // --------------------------------------------------------------------------
@@ -3443,45 +3516,44 @@ export interface TaskAnswer {
   detail: string | null
 }
 
-/**
- * HOW AN ATTEMPT'S CPU READING WAS FOUND, from `attempts?include=usage`: the
- * newest HEARTBEAT event carrying `cpu_seconds` for that attempt.
- *
- *  - `final`         the reading emitted when the runner was reaped.
- *  - `live`          a periodic reading, and the attempt has not ended.
- *  - `last_reading`  a periodic reading, and the attempt ended without a final one.
- *  - `never_ran`     the attempt never started.
- *  - `absent`        the event window reached past the attempt and found none.
- *  - `beyond_window` the event window was full and did not reach the attempt.
- *  - `unread`        the events read failed.
- */
-export type UsageStatus = 'final' | 'live' | 'last_reading' | 'never_ran' | 'absent' | 'beyond_window' | 'unread'
+// ---------------------------------------------------------------------------
+// The task's input, masked -- `GET /v1/tasks/{id}/input` (#184 follow-up)
+// ---------------------------------------------------------------------------
 
-export interface AttemptUsage {
-  status: UsageStatus
-  detail: string | null
-  event_id: string | null
-  measured_at: string | null
-  age_seconds: number | null
-  final: boolean | null
-  /** Every CPU figure: null is NOT MEASURED, never 0. 1.0 is one full vCPU. */
-  cpu_seconds: number | null
-  peak_cpu_cores: number | null
-  mean_cpu_cores: number | null
-  cpu_wall_seconds: number | null
-  cpu_source: string | null
-  /**
-   * The limit the figures are a fraction of, and WHERE IT CAME FROM, as the
-   * worker decided it (`agent_worker.metrics.heartbeat_cpu_fields`,
-   * `lifecycle._cpu_limit`): `cgroup` when read from the container's own
-   * `cpu.max`, `resource_class` when `cpu.max` said nothing and this is the
-   * catalogue cpu of the class the container was SIZED with. Both null when
-   * neither is known. A non-null limit is NOT always the cgroup's: the
-   * source says which, and a label must read it.
-   */
-  cpu_limit_cores: number | null
-  cpu_limit_source: 'cgroup' | 'resource_class' | null
-  peak_rss_bytes: number | null
+/** One text of the copy: what `redaction.redact` made of it, and how many masks that took. */
+export interface MaskedText {
+  text: string
+  redaction_count: number
+}
+
+/**
+ * THE TASK'S INPUT AS A SCREEN MAY DRAW IT. The owner decided on 2026-09-25
+ * that Inputs and Details show "a read-time-redacted copy of the task's input,
+ * with 'masked N', like every other output" -- so neither draws `task.input`,
+ * which `GET /v1/tasks/{id}` still serves exactly as submitted.
+ *
+ *  - `prompt`  `input.prompt` when it is a string (possibly ''), masked as a
+ *              decoded string, as `/answer` masks its text;
+ *  - `rest`    the input without that prompt, as its JSON text, masked; null
+ *              when nothing else was submitted;
+ *  - `full`    the whole input as its JSON text, masked.
+ *
+ * `prompt_key` says what shape the input has, so a screen never goes back to
+ * the raw document to find out: `string`, `missing` (legitimate -- the key is
+ * a convention of the CLI and mock runners), or `other` (not text).
+ * `redaction_count` is `full`'s: every mask in the input, counted once.
+ */
+export interface TaskInputCopy {
+  task_id: string
+  tenant_id: string
+  read_at: string
+  prompt_key: 'string' | 'missing' | 'other'
+  prompt: MaskedText | null
+  rest: MaskedText | null
+  full: MaskedText
+  redacted: boolean
+  redaction_count: number
+  redaction: { applied_at_read_time: boolean; rules: number }
 }
 
 // ---------------------------------------------------------------------------

@@ -16,7 +16,9 @@ load-bearing in a way the rest are not.
     8.  while it runs: heartbeat, MANDATORY periodic checkpoint, watch for
         cancellation / quota exhaustion / a generation change
     9.  capture stdout and stderr
-    10. upload artifacts and a final checkpoint
+    10. upload artifacts and a final checkpoint; for a CLI agent with no
+        repository, also what it created in its working folder, under
+        `workdir/` (#184)
     11. persist the terminal state, or READY for a retry when a clean run left
         out an expected output and the task has attempts left (#149)
     12. release the lease
@@ -118,13 +120,14 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
-from swarm_common.models import ProviderState, retries_exhausted, utcnow
+from swarm_common.models import EndCause, ProviderState, retries_exhausted, utcnow
 from swarm_common.profiles import RESOURCE_CLASSES
 from swarm_common.states import EventType, ParkReason, TaskState
 
 from . import expected_outputs as expected_mod
 from . import inputs as inputs_mod
 from . import redact as redact_mod
+from . import standalone_outputs as standalone_mod
 from . import workspace as workspace_mod
 from .accountlease import (
     ACCOUNT_TOKEN_ENV,
@@ -149,6 +152,7 @@ from .errors import (
     ExitCode,
     FencedError,
     FencedWriteRefused,
+    InputUnavailable,
     TenantMismatchError,
     WorkerError,
 )
@@ -170,16 +174,16 @@ from .hardening import FAILED, MemoryProtection
 from .metrics import (
     ResourceSampler,
     ResourceUsage,
+    attempt_cpu_fields,
     cgroup_cpu_limit_cores,
     combine_usage,
-    heartbeat_cpu_fields,
 )
 from .objectstore import ObjectStore
 from .procman import ChildProcess, ChildResult, reap_foreign_processes
 from .quota import QuotaDecision, decide, read_runner_signal, signal_from_control
 from .runners.base import EXIT_QUOTA_EXHAUSTED, EXIT_TERMINATED, SPEND_KEYS
 from .runners.limits import GRACE_ENV, STDERR_ENV, STDOUT_ENV, TIMEOUT_ENV
-from .runners.streams import agent_stream_files
+from .runners.streams import agent_stream_files, cli_agent_spec
 from .secrets import (
     CredentialMissing,
     SecretError,
@@ -387,6 +391,17 @@ class Worker:
         # `metadata.expected_outputs` (#149). Kept so `_finalise` can name any
         # the attempt did not upload; see `agent_worker.expected_outputs`.
         self._expected_outputs: tuple[str, ...] = ()
+        # A CLI agent's task with no repository has what its agent CREATED in
+        # the working folder uploaded, under `workdir/` (#184, owner decision
+        # of 2026-09-26; `agent_worker.standalone_outputs`). `_standalone` is
+        # decided in `_prepare`, once the task is known. `_restored_workdir` is
+        # what a checkpoint brought back into `work/`. `_workdir_baseline` is
+        # what was there just before the attempt's FIRST runner started,
+        # less what an earlier attempt's agent created; None until then, and
+        # None means nothing is uploaded from the working folder.
+        self._standalone = False
+        self._restored_workdir: frozenset[str] = frozenset()
+        self._workdir_baseline: frozenset[str] | None = None
         self._heartbeats = 0
         self._deadline = time.monotonic() + config.timeout_seconds
         # The account this attempt holds, if the pool gave it one. Set once and
@@ -419,11 +434,10 @@ class Worker:
         # Set on the tenant-mismatch exit, the one path that must write NOTHING
         # -- not even spend onto what may be another tenant's attempt.
         self._writes_forbidden = False
-        # Set the moment this attempt learns it has been superseded. The task's
-        # event stream then belongs to a newer generation, so nothing more is
-        # emitted into it from here -- the final resource reading included
-        # (`_emit_final_reading`); the attempt document stays writable.
-        self._fenced = False
+        # What `record_cpu_usage` last wrote onto the attempt (contract request
+        # #15), so the periodic readings and each runner's end write once per
+        # change rather than once per heartbeat.
+        self._cpu_recorded: dict[str, float] | None = None
         self._account_broker = deps.account_broker
         if self._account_broker is None and config.quota_broker_url:
             self._account_broker = AccountBroker(
@@ -478,6 +492,7 @@ class Worker:
                     state=TaskState.CANCELLED,
                     exit_code=None,
                     error="cancelled before execution started",
+                    end_cause=EndCause.CANCEL_REQUESTED,
                 )
             except FencedWriteRefused as exc:
                 # Fenced between the gate above and this write.
@@ -508,11 +523,21 @@ class Worker:
             return self._exit_tenant_mismatch(exc)
         except WorkerError as exc:
             self.log.exception("worker failed", exc)
-            fenced = self._safe_finish(TaskState.FAILED, exit_code=exc.exit_code, error=str(exc))
+            fenced = self._safe_finish(
+                TaskState.FAILED,
+                exit_code=exc.exit_code,
+                error=str(exc),
+                end_cause=_end_cause_of(exc),
+            )
             return exc.exit_code if fenced is None else fenced
         except Exception as exc:  # never exit without a durable terminal state
             self.log.exception("worker crashed", exc)
-            fenced = self._safe_finish(TaskState.FAILED, exit_code=ExitCode.FAILED, error=str(exc))
+            fenced = self._safe_finish(
+                TaskState.FAILED,
+                exit_code=ExitCode.FAILED,
+                error=str(exc),
+                end_cause=EndCause.RUNNER_ERROR,
+            )
             return ExitCode.FAILED if fenced is None else fenced
         finally:
             self._cleanup()
@@ -567,6 +592,11 @@ class Worker:
         cfg = self.cfg
         ws = self.ws
         assert ws is not None
+
+        # What is in the working folder before the FIRST runner starts: once
+        # per attempt, so an in-place restart below does not make the first
+        # run's files "existing" ones (#184, standalone tasks only).
+        self._take_workdir_baseline()
 
         # ---- STEPS 7-9: run the child, supervised -----------------------
         attempt_number = 0
@@ -708,7 +738,16 @@ class Worker:
         # caller's dispatch strategy and re-fetching it there would be a
         # second read of a document that cannot have changed.
         self._task = task
+        self._standalone = self._uploads_working_folder(task)
         self._restore_checkpoint(task.get("latest_checkpoint"))
+        if self._standalone and self._restored_from is not None:
+            # What the checkpoint brought back, BEFORE the worker stages
+            # anything: whatever in here is not a staged input was written by
+            # an earlier attempt's agent, and counts as created (see
+            # `agent_worker.standalone_outputs`, "A resumed attempt").
+            self._restored_workdir = frozenset(
+                standalone_mod.scan(ws.work, reserved=self._workdir_reserved()).files
+            )
         # Restoring a large checkpoint is unbounded; prove liveness after it.
         self._heartbeat()
 
@@ -779,6 +818,15 @@ class Worker:
             payload.setdefault("model", cfg.model)
         payload.setdefault("task_id", cfg.task_id)
         payload.setdefault("attempt_id", cfg.attempt_id)
+        # This attempt's number: the task's `attempt_count`, which admission
+        # increments in the lease's own transaction, so 1 on the first lease
+        # and one more on every lease after, a park's next attempt included.
+        # A platform record, not the workspace's: it reaches the runner
+        # whether or not a checkpoint did, which is what bounds the mock's
+        # simulated park (runners/mock.py, the review of #213). ASSIGNED, not
+        # `setdefault`: a count a caller could set would be a bound a caller
+        # could lift.
+        payload["attempt_count"] = int(task.get("attempt_count") or 0)
         payload.setdefault("resumed_from_checkpoint", bool(self._restored_from))
         ws.input_path.write_text(json.dumps(payload, indent=2, default=str))
 
@@ -967,6 +1015,7 @@ class Worker:
                 exit_code=None,
                 error="cancelled by request",
                 result_summary=summary,
+                end_cause=EndCause.CANCEL_REQUESTED,
             )
             return Outcome(exit_code=ExitCode.CANCELLED, state=TaskState.CANCELLED)
 
@@ -1056,7 +1105,6 @@ class Worker:
         release any more.
         """
         cfg = self.cfg
-        self._fenced = True
         self.log.error(
             "generation fenced mid-run; stopping the runner",
             observed_generation=observed_generation,
@@ -1124,9 +1172,7 @@ class Worker:
         )
         # A runner still alive here (a crash, a fenced checkpoint mid-run) is
         # stopped before anything is recorded, so the attempt's end is not
-        # written while its agent is still working. `_fenced` first: stopping
-        # it reaps it, and a reaped runner otherwise emits its final reading.
-        self._fenced = True
+        # written while its agent is still working.
         self._stop_runner(reason="generation fenced")
         self._record_fenced_end(str(exc))
         return ExitCode.GENERATION_FENCED
@@ -1233,6 +1279,7 @@ class Worker:
                 exit_code=result.exit_code,
                 error=error,
                 result_summary=summary,
+                end_cause=EndCause.TIMEOUT,
             )
             return Outcome(exit_code=ExitCode.TIMEOUT, state=TaskState.FAILED)
 
@@ -1240,7 +1287,11 @@ class Worker:
             if runner_result is None:
                 error = "runner exited 0 without writing result.json"
                 self.control.finish(
-                    state=TaskState.FAILED, exit_code=0, error=error, result_summary=summary
+                    state=TaskState.FAILED,
+                    exit_code=0,
+                    error=error,
+                    result_summary=summary,
+                    end_cause=EndCause.RUNNER_ERROR,
                 )
                 return Outcome(exit_code=ExitCode.FAILED, state=TaskState.FAILED)
             if self.cfg.provider:
@@ -1267,6 +1318,7 @@ class Worker:
         error = (runner_result or {}).get("error") or _tail_text(ws.stderr_path)
         self.control.finish(
             state=TaskState.FAILED,
+            end_cause=EndCause.RUNNER_ERROR,
             exit_code=result.exit_code,
             # `last_error` is a Firestore field and a failing CLI is exactly the
             # thing that echoes its own configuration, so the tail is scrubbed.
@@ -1766,6 +1818,263 @@ class Worker:
             ],
         )
 
+    # -- the working folder of a task with no repository (#184) --------------
+    def _uploads_working_folder(self, task: dict[str, Any]) -> bool:
+        """True when this attempt uploads what its agent creates in `work/`.
+
+        A task with NO repository, on a runner whose child is a provider's
+        coding-agent CLI (`cli_agent_spec`: claude-code, codex). The URL is
+        read from the same two places `_maybe_clone` reads it, so "no
+        repository" here and "nothing to clone" there are the same answer. A
+        repository task is unchanged: its diff or pull request is the
+        deliverable (owner decision of 2026-09-26). See
+        `agent_worker.standalone_outputs` for why mock, generic and browser
+        are not included.
+        """
+        if cli_agent_spec(self.cfg.runner_profile) is None:
+            return False
+        return not (self.cfg.repository_url or task.get("repository_url"))
+
+    def _workdir_reserved(self) -> frozenset[str]:
+        """Top-level names in `work/` that are the worker's, never the agent's.
+
+        The control files, found by inspection (`control_file_names`), and the
+        `./artifacts` link when it is the worker's own link: its target is
+        uploaded already, and a second copy under `workdir/` would be the
+        artifacts twice. A real `work/artifacts` folder (the link was not made
+        because the name was taken) is the agent's, and is scanned.
+        """
+        ws = self.ws
+        assert ws is not None
+        names = set(ws.control_file_names())
+        link = ws.artifacts_link()
+        if ws.is_artifacts_link(link):
+            names.add(link.name)
+        return frozenset(names)
+
+    def _take_workdir_baseline(self) -> None:
+        """Record what `work/` holds before the attempt's first runner starts.
+
+        Once per attempt. Files a checkpoint restored count as created unless
+        they are a staged input: the platform puts nothing else in a standalone
+        task's `work/` but its control files, which are skipped by name.
+        """
+        ws = self.ws
+        if not self._standalone or self._workdir_baseline is not None or ws is None:
+            return
+        try:
+            present = frozenset(
+                standalone_mod.scan(ws.work, reserved=self._workdir_reserved()).files
+            )
+        except Exception as exc:  # pragma: no cover - defensive; never fails the attempt
+            # No baseline means nothing is uploaded from the working folder:
+            # the behaviour before #184, said once, rather than a failed run.
+            self.log.warning(
+                "could not list the working folder before the runner started; nothing "
+                "will be uploaded from it for this attempt",
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            return
+        staged = {item.path for item in self._staged_inputs}
+        carried = (self._restored_workdir - staged) & present
+        self._workdir_baseline = present - carried
+        self.log.info(
+            "no repository: what the agent creates in its working folder is uploaded "
+            f"when the attempt ends, under {standalone_mod.PREFIX}/",
+            present_before=len(self._workdir_baseline),
+            created_by_an_earlier_attempt=len(carried),
+            cap_files=self.cfg.max_workdir_output_files,
+            cap_bytes=self.cfg.max_workdir_output_bytes,
+        )
+
+    def _upload_workdir_outputs(self, *, taken: set[str], budget: int) -> dict[str, Any] | None:
+        """Upload what the agent created in `work/`, within the caps. Never raises.
+
+        None when this attempt does not upload its working folder: a
+        repository task, a runner that is not a CLI agent, or an attempt whose
+        runner never started (no baseline, so nothing can have been created).
+
+        `taken` is the manifest names already uploaded from the artifacts
+        folder: a file there named `workdir/<path>` keeps its place. `budget`
+        is what `max_artifact_bytes` leaves, so this upload never takes the
+        attempt past the cap every artifact is under.
+
+        Each file is copied, without following any symlink, into the worker's
+        own scratch folder (`ws.private`, which is in no child's environment),
+        redacted there exactly as an artifact is (`_redact_file`), uploaded as
+        `workdir/<path>`, and the copy deleted. The agent's own file is left as
+        it was, because a resumed attempt restores `work/` from the checkpoint
+        taken before this runs.
+
+        Listed and NOT uploaded, each with its reason (see
+        `agent_worker.standalone_outputs`): a name that is not UTF-8 or is too
+        long to be an object's, a core dump, a name the artifacts folder took,
+        a file over a cap, and -- unlike an artifact -- a file holding a
+        registered secret the worker could not redact, or could not scan.
+
+        Returns `uploaded` (manifest entries), `bytes` and `summary`, which is
+        `result_summary.workdir_outputs`. Nothing goes into
+        `artifacts_skipped` (every reader of it calls its names dropped at the
+        artifacts folder's size cap) or into `redaction_skipped` (no file this
+        uploads left the pod unredacted).
+        """
+        ws = self.ws
+        cfg = self.cfg
+        if ws is None or self._workdir_baseline is None:
+            return None
+        found = standalone_mod.scan(ws.work, reserved=self._workdir_reserved())
+        new = standalone_mod.created(found, self._workdir_baseline)
+        byte_cap = max(0, min(cfg.max_workdir_output_bytes, budget))
+        uploaded: list[dict[str, Any]] = []
+        not_uploaded: list[dict[str, Any]] = []
+        total = 0
+        staging = ws.private / "workdir-output"
+        for relative, size in standalone_mod.upload_order(new):
+            name = standalone_mod.manifest_name(relative)
+            # NAMES FIRST: nothing below may put a name into a key, a log line
+            # or the summary before it is known to be one they can all carry.
+            if not standalone_mod.storable(name):
+                not_uploaded.append(
+                    {"name": standalone_mod.shown(name), "bytes": size, "reason": standalone_mod.NOT_UTF8}
+                )
+                continue
+            key = f"{cfg.artifact_prefix}/{name}"
+            if len(key.encode("utf-8")) > standalone_mod.MAX_OBJECT_NAME_BYTES:
+                not_uploaded.append(
+                    {"name": standalone_mod.shown(name), "bytes": size, "reason": standalone_mod.NAME_TOO_LONG}
+                )
+                continue
+            if standalone_mod.is_core_dump(relative):
+                not_uploaded.append({"name": name, "bytes": size, "reason": standalone_mod.CORE_DUMP})
+                continue
+            if name in taken:
+                not_uploaded.append({"name": name, "bytes": size, "reason": standalone_mod.NAME_TAKEN})
+                continue
+            if len(uploaded) >= cfg.max_workdir_output_files or total + size > byte_cap:
+                not_uploaded.append({"name": name, "bytes": size, "reason": standalone_mod.OVER_CAP})
+                continue
+            try:
+                ws.private.mkdir(parents=True, exist_ok=True)
+                standalone_mod.copy_without_following(
+                    ws.work, relative, staging, limit=byte_cap - total
+                )
+            except standalone_mod.OverCap:
+                not_uploaded.append({"name": name, "bytes": size, "reason": standalone_mod.OVER_CAP})
+                continue
+            except standalone_mod.Refused as exc:
+                self.log.warning(
+                    "refused a working-folder file: a symlink, or not a regular file, "
+                    "when it was read; nothing was followed",
+                    file=self._scrub(name),
+                    error=str(exc),
+                )
+                not_uploaded.append(
+                    {"name": name, "bytes": size, "reason": standalone_mod.SYMLINK_REFUSED}
+                )
+                continue
+            except OSError as exc:
+                self.log.warning(
+                    "could not read a working-folder file", file=self._scrub(name), error=str(exc)
+                )
+                not_uploaded.append({"name": name, "bytes": size, "reason": standalone_mod.UNREADABLE})
+                continue
+            try:
+                if self.log.has_secrets:
+                    entry = self._redact_file(staging, label=name, withheld=True)
+                    if entry is not None:
+                        # Measured to hold a registered value it could not
+                        # rewrite, or not examinable at all: kept in the pod.
+                        # The agent never chose to deliver this file, so the
+                        # artifacts folder's "upload it as-is and say so"
+                        # does not apply (#225 review).
+                        not_uploaded.append(
+                            {
+                                "name": name,
+                                "bytes": size,
+                                "reason": (
+                                    standalone_mod.HOLDS_SECRET
+                                    if entry["secret_found"]
+                                    else standalone_mod.UNEXAMINED
+                                ),
+                            }
+                        )
+                        continue
+                final = staging.stat().st_size
+                if total + final > byte_cap:
+                    # Redaction can lengthen a file; the cap is on what is uploaded.
+                    not_uploaded.append({"name": name, "bytes": final, "reason": standalone_mod.OVER_CAP})
+                    continue
+                try:
+                    self.store.upload_file(key, staging)
+                except Exception as exc:
+                    self.log.warning(
+                        "working-folder upload failed", artifact=self._scrub(name), error=str(exc)
+                    )
+                    not_uploaded.append(
+                        {"name": name, "bytes": final, "reason": standalone_mod.UPLOAD_FAILED}
+                    )
+                    continue
+            except OSError as exc:
+                self.log.warning(
+                    "could not prepare a working-folder file for upload",
+                    file=self._scrub(name),
+                    error=str(exc),
+                )
+                not_uploaded.append({"name": name, "bytes": size, "reason": standalone_mod.UNREADABLE})
+                continue
+            finally:
+                staging.unlink(missing_ok=True)
+            total += final
+            uploaded.append({"name": name, "bytes": final, "uri": self.store.uri(key)})
+
+        if ws.work.is_symlink():
+            self.log.warning(
+                "the working folder is a symlink, so nothing was uploaded from it; "
+                "a link is never followed out of the workspace"
+            )
+        # EVERY NAME, IN THE LOG. The summary below lists the first 50 and
+        # counts the rest (a Firestore document has a 1 MiB limit); these lines
+        # name all of them, `LOG_BATCH` to a line, so a line stays well under
+        # Cloud Logging's 256 KiB entry however many files the agent left.
+        batch = standalone_mod.LOG_BATCH
+        batches = (len(not_uploaded) + batch - 1) // batch
+        for index in range(batches):
+            self.log.warning(
+                "files the agent created in its working folder were not uploaded",
+                count=len(not_uploaded),
+                batch=f"{index + 1} of {batches}",
+                files=[
+                    f"{e['name']}: not uploaded: {e['reason']}"
+                    for e in not_uploaded[index * batch : (index + 1) * batch]
+                ],
+                cap_files=cfg.max_workdir_output_files,
+                cap_bytes=cfg.max_workdir_output_bytes,
+            )
+        self.log.info(
+            "uploaded what the agent created in its working folder",
+            uploaded=len(uploaded),
+            bytes=total,
+            symlinks_skipped=len(found.symlinks),
+        )
+        return {
+            "uploaded": uploaded,
+            "bytes": total,
+            "summary": {
+                "prefix": f"{standalone_mod.PREFIX}/",
+                "uploaded": len(uploaded),
+                "uploaded_bytes": total,
+                # The first 50; `not_uploaded_count` is the whole number and
+                # the WARNING lines above name every one. "over cap" is the
+                # owner's wording.
+                "not_uploaded": not_uploaded[:50],
+                "not_uploaded_count": len(not_uploaded),
+                "symlinks_skipped": len(found.symlinks),
+                "working_folder_is_symlink": ws.work.is_symlink(),
+                "cap_files": cfg.max_workdir_output_files,
+                "cap_bytes": cfg.max_workdir_output_bytes,
+            },
+        }
+
     def _declared_outputs(self, task: dict[str, Any]) -> tuple[str, ...]:
         """Honour `metadata.expected_outputs`: what later steps will stage from this one.
 
@@ -1912,6 +2221,7 @@ class Worker:
             result_summary=summary,
             retry_delay_seconds=EXPECTED_OUTPUT_RETRY_DELAY_SECONDS,
             detail={"missing": self._scrub(list(missing))},
+            end_cause=EndCause.OUTPUTS_MISSING,
         )
         self.log.info(
             "the attempt failed for missing expected outputs",
@@ -2561,9 +2871,13 @@ class Worker:
         self.control.heartbeat()
         self._heartbeats += 1
         if self._heartbeats % HEARTBEAT_EVENT_EVERY == 1:
-            self.control.emit(EventType.HEARTBEAT, self._usage_reading(final=False))
+            self.control.emit(EventType.HEARTBEAT, self._usage_reading())
+            # THE LIVE READING DETAILS DRAWS, on the attempt itself (contract
+            # request #15): the same cadence as the event, so a running
+            # attempt's figures are never more than one reading behind it.
+            self._record_cpu()
 
-    def _usage_reading(self, *, final: bool) -> dict[str, Any]:
+    def _usage_reading(self) -> dict[str, Any]:
         """One HEARTBEAT event's detail: the attempt's usage so far.
 
         The ATTEMPT's usage, every runner so far plus the live one. A runner
@@ -2573,26 +2887,65 @@ class Worker:
         `cpu_seconds` is CUMULATIVE, not a rate: this event series is the only
         time series the platform keeps, and two consecutive totals give
         utilisation over exactly the span between them, where a point-in-time
-        rate would describe two seconds out of every heartbeat period. Every
-        CPU key is None while not measured, never 0; `metrics.
-        heartbeat_cpu_fields` names them all and why they live here for now.
+        rate would describe two seconds out of every heartbeat period. None
+        while not measured, never 0. `cpu_source` says whether it is the
+        container (cgroup) or the runner's process tree (proc).
+
+        EXACTLY WHAT IT CARRIED BEFORE #188. That change put the peak, the
+        mean, the limit and a `final` flag here too, because the frozen
+        `Attempt` had nowhere else for them. Contract request #15 gave them
+        typed fields on the attempt (`_record_cpu`), which replaced this
+        interim home; the reconciler's stuck-browser judgement
+        (`reconciler.progress`) is what still reads `cpu_seconds` here.
         """
         usage = self._attempt_usage()
-        limit_cores, limit_source = self._cpu_limit()
-        detail: dict[str, Any] = {
+        cpu_seconds = usage.cpu_seconds if usage else None
+        return {
             "elapsed_seconds": round(self._child.elapsed_seconds, 1) if self._child else 0,
             "peak_rss_bytes": usage.peak_rss_bytes if usage else None,
             "checkpoints": self.checkpoints.seq,
+            "cpu_seconds": round(cpu_seconds, 3) if cpu_seconds is not None else None,
+            "cpu_source": usage.cpu_source if usage else None,
         }
-        detail.update(
-            heartbeat_cpu_fields(
-                usage, limit_cores=limit_cores, limit_source=limit_source, final=final
-            )
-        )
-        return detail
 
-    def _cpu_limit(self) -> tuple[float | None, str | None]:
-        """The CPU limit a usage figure is a fraction of, and where it came from.
+    def _record_cpu(self) -> None:
+        """The attempt's CPU, as typed fields on its own document. Never raises.
+
+        CONTRACT REQUEST #15, accepted on #184 (2026-09-25): `cpu_seconds`,
+        `peak_cpu_cores`, `mean_cpu_cores` and `cpu_limit_cores` on `Attempt`,
+        REPLACING #188's interim path -- the same figures as flat keys on
+        HEARTBEAT events, plus a `final` HEARTBEAT when each runner was reaped,
+        which the API read back with an events query per request.
+
+        Called with each periodic reading (`_heartbeat`), when each runner is
+        reaped (`_stop_sampler`), and on every exit beside the spend
+        (`_upload_outputs`, `_cleanup`), which covers a runner still alive at a
+        crash or killed at cleanup without being reaped. The figures are the
+        ATTEMPT's, every runner so far plus the live one, so an in-place
+        restart continues them rather than starting again. Written only when
+        they changed.
+
+        NOT FENCED, like the memory peaks beside them: the attempt document is
+        this attempt's own, and the fence guards the task, its lease and its
+        event stream, none of which this touches. NOT WRITTEN on the
+        tenant-mismatch exit, which must write nothing at all.
+
+        Not fatal. A telemetry write that failed is logged; the attempt goes on.
+        """
+        if self._writes_forbidden:
+            return
+        fields = attempt_cpu_fields(self._attempt_usage(), limit_cores=self._cpu_limit_cores())
+        if not fields or fields == self._cpu_recorded:
+            return
+        try:
+            self.control.record_cpu_usage(fields)
+        except Exception as exc:
+            self.log.warning("could not record CPU usage", error=f"{type(exc).__name__}: {exc}")
+            return
+        self._cpu_recorded = dict(fields)
+
+    def _cpu_limit_cores(self) -> float | None:
+        """The CPU limit the attempt's figures are a fraction of, in cores.
 
         cgroup v2 `cpu.max` first: what the kernel enforces. Otherwise the
         catalogue cpu of the class the container was SIZED with, which is
@@ -2604,20 +2957,25 @@ class Worker:
         rather than imported (the worker image does not install the
         scheduler); `tests/unit/worker/test_cpu_sampler.py` compares the two.
 
-        (None, None) before the task document has been read: nothing yet says
-        which class this attempt was sized with, and a guess would be drawn as
-        a fact.
+        WHERE IT CAME FROM IS NOT RECORDED. The interim HEARTBEAT carried a
+        `cpu_limit_source`; the four fields request #15 added do not, so the
+        attempt says what the limit was and not whether the kernel or the
+        catalogue said so. With `requests == limits` the two agree.
+
+        None before the task document has been read: nothing yet says which
+        class this attempt was sized with, and a guess would be drawn as a
+        fact.
         """
         try:
             cores = cgroup_cpu_limit_cores()
         except Exception:  # pragma: no cover - a telemetry read never fails an attempt
             cores = None
         if cores is not None:
-            return cores, "cgroup"
+            return cores
         sized = self._sized_resource_class()
         if sized is None:
-            return None, None
-        return float(RESOURCE_CLASSES[sized].cpu), "resource_class"
+            return None
+        return float(RESOURCE_CLASSES[sized].cpu)
 
     def _sized_resource_class(self) -> str | None:
         task = self._task
@@ -2627,42 +2985,6 @@ class Worker:
         if isinstance(named, str) and named in RESOURCE_CLASSES:
             return named
         return self.cfg.profile.resource_class
-
-    def _emit_final_reading(self) -> None:
-        """One HEARTBEAT with `final: true`, the moment a runner is reaped. Never raises.
-
-        The periodic reading is every fifth heartbeat -- about every 150 s --
-        so without this an attempt's newest reading could be minutes older
-        than its end, and a run shorter than one period had none taken while
-        its runner was alive. `GET /v1/tasks/{id}/attempts?include=usage`
-        serves the newest reading per attempt, and `final` is what lets it
-        say "at exit" instead of "latest heartbeat". An in-place restart
-        emits one per runner; the newest wins.
-
-        NOT EMITTED BY AN ATTEMPT THAT IS NO LONGER THE TASK'S. The event
-        stream belongs to the task, and a superseded attempt writing into it
-        is exactly what the fence exists to stop (`_stand_down` says why not
-        even an event). `_fenced` covers the exits that already know;
-        `ensure_owner` covers a runner that ended on its own after a fence
-        landed and before anything had looked. Either refusal is logged and
-        the reading is dropped -- the attempt document still gets its peaks.
-        """
-        if self._writes_forbidden or self._fenced:
-            return
-        try:
-            self.control.ensure_owner(write="the final resource reading")
-            self.control.emit(EventType.HEARTBEAT, self._usage_reading(final=True))
-        except (FencedError, TenantMismatchError) as exc:
-            self.log.info(
-                "the final resource reading was not emitted: this attempt no longer "
-                "owns its task",
-                reason=str(exc),
-            )
-        except Exception as exc:
-            self.log.warning(
-                "could not emit the final resource reading",
-                error=f"{type(exc).__name__}: {exc}",
-            )
 
     def _checkpoint(self, label: str) -> CheckpointRecord | None:
         """Mandatory checkpoint. A failure here is logged, never swallowed.
@@ -2755,51 +3077,87 @@ class Worker:
         if ws is None or not self.log.has_secrets:
             return []
         targets = [ws.stdout_path, ws.stderr_path]
+        # Not a file whose name is not UTF-8: `_upload_outputs` does not upload
+        # one (no object can be named with it), so it never leaves the pod and
+        # has no `redaction_skipped` entry to earn (#225 review).
         targets += [
             path
             for path in sorted(ws.artifacts.rglob("*"))
-            if path.is_file() and not path.is_symlink()
+            if path.is_file() and not path.is_symlink() and standalone_mod.storable(str(path))
         ]
         targets.append(ws.result_path)
         unredacted: list[dict[str, Any]] = []
         for path in targets:
-            try:
-                outcome = self.log.scrub_file_outcome(path, max_bytes=redact_mod.MAX_SCRUB_BYTES)
-            except OSError as exc:  # a read-only or vanished file must not fail the attempt
-                self.log.warning(
-                    "could not redact a file before upload", path=str(path), error=str(exc)
-                )
-                continue
-            if not outcome.skipped:
-                continue
-            found = self.log.file_contains_secret(path)
-            try:
-                size: int | None = path.stat().st_size
-            except OSError:
-                size = None
-            label = _workspace_label(ws, path)
-            if found is False:
-                self.log.info(
-                    "file not rewritten, and its raw bytes hold no registered secret",
-                    file=label,
-                    reason=outcome.value,
-                    bytes=size,
-                )
-                continue
-            entry = {"file": label, "reason": outcome.value, "bytes": size, "secret_found": found}
-            unredacted.append(entry)
-            if found:
-                self.log.error(
-                    "A FILE THAT COULD NOT BE REDACTED CONTAINS A REGISTERED SECRET; "
-                    "it is uploaded as-is",
-                    **entry,
-                )
-            else:
-                self.log.warning(
-                    "a file could be neither redacted nor scanned; it is uploaded unexamined",
-                    **entry,
-                )
+            entry = self._redact_file(path, label=_workspace_label(ws, path))
+            if entry is not None:
+                unredacted.append(entry)
         return unredacted
+
+    def _redact_file(
+        self, path: Path, *, label: str, withheld: bool = False
+    ) -> dict[str, Any] | None:
+        """Scrub one file bound for GCS in place; the `redaction_skipped` entry, or None.
+
+        None when the file was rewritten, or was left alone and its raw bytes
+        hold no registered value. `label` is what a reader can place: a path
+        under the workspace, or the manifest name of a working-folder copy
+        (`_upload_workdir_outputs`), whose scratch path means nothing to anyone.
+        See `_redact_before_upload` for the trade this reports on.
+
+        `withheld` is the working-folder upload's answer to that trade: a file
+        this returns an entry for is NOT uploaded, and the lines say so. An
+        artifact the agent chose to deliver goes up as-is and is reported; a
+        file caught by the net under the working folder does not (#225
+        review). A file the rewrite raised on is unexamined, so with
+        `withheld` it gets an entry rather than a pass.
+        """
+        label = standalone_mod.displayable(label)
+        try:
+            outcome = self.log.scrub_file_outcome(path, max_bytes=redact_mod.MAX_SCRUB_BYTES)
+        except OSError as exc:  # a read-only or vanished file must not fail the attempt
+            self.log.warning("could not redact a file before upload", file=label, error=str(exc))
+            if withheld:
+                return {"file": label, "reason": "unreadable", "bytes": None, "secret_found": None}
+            return None
+        if not outcome.skipped:
+            return None
+        found = self.log.file_contains_secret(path)
+        try:
+            size: int | None = path.stat().st_size
+        except OSError:
+            size = None
+        if found is False:
+            self.log.info(
+                "file not rewritten, and its raw bytes hold no registered secret",
+                file=label,
+                reason=outcome.value,
+                bytes=size,
+            )
+            return None
+        entry = {"file": label, "reason": outcome.value, "bytes": size, "secret_found": found}
+        if withheld:
+            self.log.warning(
+                "a working-folder file could not be redacted and "
+                + (
+                    "holds a registered secret"
+                    if found
+                    else "could not be scanned for one"
+                )
+                + "; it is NOT uploaded",
+                **entry,
+            )
+        elif found:
+            self.log.error(
+                "A FILE THAT COULD NOT BE REDACTED CONTAINS A REGISTERED SECRET; "
+                "it is uploaded as-is",
+                **entry,
+            )
+        else:
+            self.log.warning(
+                "a file could be neither redacted nor scanned; it is uploaded unexamined",
+                **entry,
+            )
+        return entry
 
     # -- live logs ----------------------------------------------------------
     def _publish_live_logs(self) -> None:
@@ -3552,6 +3910,13 @@ class Worker:
         # here yet: a runner still alive when the worker crashed, and a
         # mid-run fence, which uploads nothing.
         self._record_spend()
+        # THE CPU BESIDE IT (PR #210 review), for the exit whose runner is
+        # still alive -- the crash handler -- or was never reaped through
+        # `_stop_sampler`: without this the attempt kept its last periodic
+        # reading, up to one reading behind, drawn as the figures at exit.
+        # Written only when the figures changed, so an orderly exit that just
+        # reaped its runner writes nothing twice.
+        self._record_cpu()
         # BEFORE the redaction pass, not after: the harvest writes a patch into
         # `artifacts/`, and `_redact_before_upload` is what scrubs everything
         # in there. A patch produced afterwards would be the one file in the
@@ -3570,6 +3935,19 @@ class Worker:
                 continue
             size = path.stat().st_size
             rel = path.relative_to(ws.artifacts).as_posix()
+            if not standalone_mod.storable(rel):
+                # A name whose bytes are not UTF-8 (#225 review): no object can
+                # be named with it, and as a lone surrogate in the summary it
+                # made `finish` raise, and the next attempt fail the same way.
+                # Named as the bytes it was, in the log and the skipped list.
+                shown = standalone_mod.shown(rel)
+                self.log.warning(
+                    "an artifact's name is not valid UTF-8, so no object can be "
+                    "named with it; not uploaded",
+                    artifact=shown,
+                )
+                skipped.append(shown)
+                continue
             if total + size > self.cfg.max_artifact_bytes:
                 skipped.append(rel)
                 continue
@@ -3582,6 +3960,26 @@ class Worker:
                 continue
             total += size
             artifacts.append({"name": rel, "bytes": size, "uri": self.store.uri(key)})
+
+        # WHAT A CLI AGENT WITH NO REPOSITORY CREATED IN ITS WORKING FOLDER
+        # (#184, owner decision of 2026-09-26), after the artifacts folder so a
+        # file there keeps its name, and into the same manifest under
+        # `workdir/`, so the Artifacts tab lists and serves it like any other.
+        # A repository task returns None here and is unchanged.
+        try:
+            workdir = self._upload_workdir_outputs(
+                taken={entry["name"] for entry in artifacts},
+                budget=self.cfg.max_artifact_bytes - total,
+            )
+        except Exception as exc:  # pragma: no cover - defensive; teardown path
+            self.log.exception("the working-folder upload raised; continuing without it", exc)
+            workdir = None
+        if workdir is not None:
+            # Its files it did not upload stay in `workdir_outputs`, with their
+            # reasons, and out of `artifacts_skipped`, whose every reader calls
+            # a name there dropped at THIS folder's size cap (#225 review).
+            artifacts.extend(workdir["uploaded"])
+            total += workdir["bytes"]
 
         # THE RUNNER'S TWO STREAMS, AND THE AGENT'S TWO (#184). The agent
         # CLI's captures stay in `artifacts/` too -- a dependant's `input_from`
@@ -3614,6 +4012,8 @@ class Worker:
         }
         if git_summary is not None:
             summary["git"] = git_summary
+        if workdir is not None:
+            summary["workdir_outputs"] = workdir["summary"]
         if skipped:
             summary["artifacts_skipped"] = skipped[:50]
         if unredacted:
@@ -3769,11 +4169,19 @@ class Worker:
         # and a near miss in the first -- on the one document a sizing report
         # reads.
         attempt = self._attempt_usage() or usage
-        self.control.record_resource_usage(
-            peak_rss_bytes=attempt.peak_rss_bytes,
-            peak_disk_bytes=attempt.peak_disk_bytes,
-            oom_near_miss=attempt.oom_near_miss,
-        )
+        # NOT FATAL, AND IT MUST NOT SKIP THE CPU WRITE BELOW (PR #210 review).
+        # Unguarded, a Firestore error here raised out of every site that
+        # reaps a runner, and the attempt's CPU figures for this runner were
+        # never written: Details then drew the previous periodic reading as
+        # the figures at exit. The memory peak is telemetry like the CPU.
+        try:
+            self.control.record_resource_usage(
+                peak_rss_bytes=attempt.peak_rss_bytes,
+                peak_disk_bytes=attempt.peak_disk_bytes,
+                oom_near_miss=attempt.oom_near_miss,
+            )
+        except Exception as exc:
+            self.log.warning("could not record resource usage", error=f"{type(exc).__name__}: {exc}")
         if usage.oom_near_miss:
             self.log.error(
                 "OOM NEAR MISS: this attempt came within a hair of its memory limit",
@@ -3781,7 +4189,9 @@ class Worker:
                 limit_bytes=self.cfg.memory_limit_bytes,
                 resource_class=self.cfg.resource_class,
             )
-        self._emit_final_reading()
+        # The attempt's CPU at this runner's end, on the attempt (request #15)
+        # -- where #188 emitted a `final` HEARTBEAT into the task's events.
+        self._record_cpu()
 
     def _attempt_usage(self) -> ResourceUsage | None:
         """Every runner this attempt has started, combined; None if none has.
@@ -3871,7 +4281,14 @@ class Worker:
         finally:
             self._signal_mode = previous
 
-    def _safe_finish(self, state: TaskState, *, exit_code: int, error: str) -> int | None:
+    def _safe_finish(
+        self,
+        state: TaskState,
+        *,
+        exit_code: int,
+        error: str,
+        end_cause: EndCause | None = None,
+    ) -> int | None:
         """The crash path's terminal write. Never raises.
 
         Returns None, or `ExitCode.GENERATION_FENCED` when the write was
@@ -3887,6 +4304,7 @@ class Worker:
                 exit_code=exit_code,
                 error=self._scrub(error[:4000]),
                 result_summary=summary,
+                end_cause=end_cause,
             )
         except FencedError as exc:
             return self._stand_down(exc, where="crash")
@@ -3915,6 +4333,12 @@ class Worker:
         # usage write on that same path already does.
         self._collect_spend()
         self._record_spend()
+        # And the CPU, for the same two exits: a runner killed just above was
+        # never reaped through `_stop_sampler`, so its last stretch is on no
+        # attempt document yet. The live sampler is still attached, so
+        # `_attempt_usage` includes it. Never raises; nothing on the fenced
+        # path touches the lease by writing its own attempt document.
+        self._record_cpu()
         # AFTER the child is gone and BEFORE the workspace is destroyed. Giving
         # the account back while an agent could still be making calls on it
         # would let the broker hand the same subscription to another agent and
@@ -3928,6 +4352,24 @@ class Worker:
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
+
+
+def _end_cause_of(exc: BaseException) -> EndCause:
+    """Why a deliberate worker failure ended its task, as the typed end cause.
+
+    INPUTS_UNAVAILABLE for a declared input the worker refused to stage: the
+    agent never started, so it is not the runner's error (#185, decision 4).
+    CANNOT_START for an error that exits 78, the worker's own CANNOT-START.
+    RUNNER_ERROR for every other one, which is how the outcome ledger's text
+    classifier has always read a worker-written end with an exit code, so a
+    task written with a cause and one written before the field existed land
+    in the same class.
+    """
+    if isinstance(exc, InputUnavailable):
+        return EndCause.INPUTS_UNAVAILABLE
+    if getattr(exc, "exit_code", None) == ExitCode.CONFIG:
+        return EndCause.CANNOT_START
+    return EndCause.RUNNER_ERROR
 
 
 def _runner_argv(cfg: WorkerConfig) -> list[str]:
