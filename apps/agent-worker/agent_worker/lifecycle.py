@@ -153,13 +153,16 @@ from .errors import (
 )
 from .forge import ForgeError, probe_repository, open_pull_request
 from .gitops import (
+    EMPTY_CLONE_BASE,
     GitError,
     MergeOutcome,
     commit_dirty,
+    fold_agent_commits,
     merge_branches,
     push_branch,
     shallow_clone,
     summarize_work,
+    verify_worker_authorship,
 )
 from .metrics import (
     ResourceSampler,
@@ -343,6 +346,14 @@ class Worker:
         self._repo_url: str | None = None
         self._task: dict[str, Any] | None = None
         self._clone_base: str | None = None
+        # The clone base the PUBLISH trusts, which is not always the one above.
+        # `_clone_base` may come from `work/.swarm/clone-base`, a file in the
+        # agent's own working directory; that is good enough to describe the
+        # work and not good enough to decide what reaches a forge. This one is
+        # only ever the worker's own knowledge: the commit its clone landed on
+        # in this process, or the base a previous attempt's worker recorded in
+        # the checkpoint manifest. `EMPTY_CLONE_BASE` for an empty repository.
+        self._publish_base: str | None = None
         # What `metadata.input_from` put in the workspace. Kept so the result
         # summary can report which upstream artifact this attempt actually ran
         # on -- the question every debugging of a wrong workflow output starts
@@ -1571,7 +1582,21 @@ class Worker:
             # because by now the agent's own commits sit on top of it and HEAD
             # no longer answers "what did this repository look like on arrival".
             self.log.info("repository already present from checkpoint; skipping clone")
-            self._clone_base = self._read_clone_base()
+            # THE BASE THE PUSH TRUSTS COMES FROM THE MANIFEST, NOT THE TREE.
+            # The marker file sits in `work/`, the agent's working directory,
+            # and travels in the archive the agent's own files travel in. An
+            # agent that wrote a later commit of its own into it lifted the
+            # fold's floor above its earlier commits, and those were pushed as
+            # the agent wrote them. The manifest is written by the worker,
+            # outside that tree. A manifest from before the worker recorded a
+            # base holds none, and then nothing is published -- the marker
+            # still gives the harvest its diff base, so the work is described.
+            recorded = self._restored_from.clone_base if self._restored_from else None
+            self._publish_base = recorded
+            self.checkpoints.clone_base = recorded
+            self._clone_base = (
+                recorded if recorded and recorded != EMPTY_CLONE_BASE else None
+            ) or self._read_clone_base()
             return {
                 "path": REPO_DIR_NAME,
                 "from_checkpoint": True,
@@ -1597,6 +1622,10 @@ class Worker:
             raise WorkerError(f"repository clone failed: {exc}") from exc
         self._repo_url = clone.url
         self._clone_base = clone.commit
+        # Known in this process, so trusted; and recorded in every checkpoint
+        # manifest from here on, so a resumed attempt can trust it too.
+        self._publish_base = clone.commit or (EMPTY_CLONE_BASE if clone.empty else None)
+        self.checkpoints.clone_base = self._publish_base
         self._write_clone_base(clone.commit)
         return {
             "path": REPO_DIR_NAME,
@@ -2926,7 +2955,12 @@ class Worker:
 
         base = self._clone_base or self._read_clone_base()
         out: dict[str, Any] = {"base": base}
-        if base is None:
+        if base is None and self._publish_base == EMPTY_CLONE_BASE:
+            out["note"] = (
+                "the repository was empty when it was cloned, so there is no "
+                "base to diff against; uncommitted files are still listed"
+            )
+        elif base is None:
             out["note"] = (
                 "the clone base is unknown, so no diff could be computed; "
                 "uncommitted files are still listed"
@@ -3111,6 +3145,7 @@ class Worker:
         out["role"] = role or None
 
         auto_committed = False
+        folded = 0
         merge: MergeOutcome | None = None
         try:
             new_sha = commit_dirty(
@@ -3131,6 +3166,48 @@ class Worker:
             if new_sha:
                 auto_committed = True
                 work_head = new_sha
+
+            # EVERY COMMIT THIS PUSHES IS THE WORKER'S. Whatever the agent
+            # committed itself -- possibly as Claude, possibly with a
+            # Co-Authored-By trailer and a "Generated with" line, which is what
+            # Claude Code adds by default -- is folded into one commit the
+            # worker writes. See `gitops.fold_agent_commits` for why this is
+            # done here and not with a setting in the image.
+            # `_publish_base`, never the workspace marker: see `_maybe_clone`.
+            if self._publish_base is None and self._clone_base:
+                # Said precisely, because "unknown" would be false: the harvest
+                # above HAD a base, and a reader comparing the two would think
+                # one of them was a bug.
+                raise GitError(
+                    "the clone base is known only from the marker in the "
+                    "workspace, which the agent can write: this attempt resumed "
+                    "from a checkpoint that does not record the base, so the "
+                    "worker cannot tell which commits are the agent's. Nothing "
+                    "was pushed; the harvest still describes the work against "
+                    "that marker"
+                )
+            replaced = fold_agent_commits(
+                repo=repo,
+                base=self._publish_base,
+                keep=new_sha,
+                message=(
+                    f"swarm: work from {cfg.task_id}\n\n"
+                    "Everything the agent changed in this attempt, committed or "
+                    "not, as one commit made by the worker. The worker writes "
+                    "every commit it pushes, so no author, trailer or footer "
+                    "added inside the agent's container reaches this branch."
+                ),
+                author_name=cfg.git_author_name,
+                author_email=cfg.git_author_email,
+                private_dir=ws.private,
+                logs_dir=ws.logs,
+                timeout_seconds=cfg.git_harvest_timeout_seconds,
+                logger=self.log,
+            )
+            # The worker's own auto-commit is among what was replaced when
+            # there was one; the rest were the agent's.
+            folded = max(replaced - (1 if new_sha else 0), 0)
+            out["agent_commits_folded"] = folded
 
             # THE INTEGRATOR MERGES BEFORE IT PUSHES.
             #
@@ -3167,6 +3244,21 @@ class Worker:
                         "missing": list(merge.missing),
                         "complete": merge.complete,
                     }
+
+            # THE PROPERTY, CHECKED WHERE THE WORK LEAVES. The fold and the
+            # identity arguments are how every pushed commit is made the
+            # worker's; this reads the commits the push is about to add and
+            # refuses the push if any is not, whatever route got it there.
+            verify_worker_authorship(
+                repo=repo,
+                base=self._publish_base,
+                author_name=cfg.git_author_name,
+                author_email=cfg.git_author_email,
+                private_dir=ws.private,
+                logs_dir=ws.logs,
+                timeout_seconds=cfg.git_harvest_timeout_seconds,
+                logger=self.log,
+            )
 
             pushed = push_branch(
                 repo=repo,
@@ -3221,7 +3313,7 @@ class Worker:
 
         title = f"[swarm] {cfg.task_id}"
         body = self._pull_request_body(
-            branch=branch, auto_committed=auto_committed, merge=merge
+            branch=branch, auto_committed=auto_committed, merge=merge, folded=folded
         )
         try:
             pr = open_pull_request(
@@ -3263,6 +3355,7 @@ class Worker:
         branch: str,
         auto_committed: bool,
         merge: "MergeOutcome | None" = None,
+        folded: int = 0,
     ) -> str:
         """The body a reviewer reads. Provenance first, prompt second.
 
@@ -3285,7 +3378,17 @@ class Worker:
             lines.append(f"- base commit: `{self._clone_base}`")
         if self._last_checkpoint is not None:
             lines.append(f"- checkpoint: `{self._last_checkpoint.uri}`")
-        if auto_committed:
+        if folded:
+            # Said on the page, because a reviewer who knows the agent made
+            # several commits would otherwise look for them. They are in the
+            # run result; here they are one commit the worker wrote.
+            lines += [
+                "",
+                f"The agent's {folded} commit(s) and any changes it left "
+                "uncommitted are one commit on this branch, made by the worker. "
+                "The worker writes every commit it pushes.",
+            ]
+        elif auto_committed:
             lines += [
                 "",
                 "One commit on this branch was made by the worker, not the agent: "
