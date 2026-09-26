@@ -420,23 +420,26 @@ def test_a_workflow_that_names_no_repository_clones_the_checkouts_branch(pushed)
 # --------------------------------------------------------------------------
 
 
-def test_since_carries_the_cursor_the_states_and_what_was_said(progress):
+def test_since_carries_the_cursor_the_states_what_was_said_and_whose_streams(progress):
     cursor = {"task_a": {"events": 3, "attempt_id": "att_1", "streams": {}}}
-    token = progress.encode_since(cursor, {"task_a": "RUNNING"}, {"task_a": {"terminal"}})
+    token = progress.encode_since(
+        cursor, {"task_a": "RUNNING"}, {"task_a": {"terminal"}}, {"task_a": "runner"}
+    )
 
     assert isinstance(token, str) and "{" not in token
-    back_cursor, back_states, back_said, note = progress.decode_since(token)
+    back_cursor, back_states, back_said, back_groups, note = progress.decode_since(token)
     assert back_cursor == cursor
     assert back_states == {"task_a": "RUNNING"}
     assert back_said == {"task_a": {"terminal"}}
+    assert back_groups == {"task_a": "runner"}
     assert note is None
 
 
 def test_an_unreadable_since_starts_over_and_says_so(progress):
     """Re-reading costs a repeat; skipping ahead loses output silently. Only
     one of those is recoverable, so an unreadable token re-reads -- and says."""
-    cursor, states, said, note = progress.decode_since("not-a-token!!")
-    assert (cursor, states, said) == ({}, {}, {})
+    cursor, states, said, groups, note = progress.decode_since("not-a-token!!")
+    assert (cursor, states, said, groups) == ({}, {}, {}, {})
     assert "from the beginning" in note
 
 
@@ -561,10 +564,15 @@ def test_a_window_returns_when_the_task_finishes_with_its_outcome(swarm, world, 
         {"type": "system", "subtype": "init", "model": "claude-x", "tools": []},
         {"type": "assistant", "message": {"content": [{"type": "text", "text": "Scanning."}]}},
     ]
-    world.live("task_a", "att_1", _stream(*started))
+    # The AGENT's stream-json is `agent_stdout`; `stdout` is the runner's own
+    # JSON log, which a row must not narrate as the agent's work.
+    world.live("task_a", "att_1", _stream(*started), stream="agent_stdout")
+    world.live("task_a", "att_1", '{"event": "runner log line", "level": "info"}\n')
     clock = _Time()
     first = progress.watch(swarm, ["task_a"], sleep=clock.sleep, clock=clock.clock)
     assert any("assistant: Scanning." in line for line in first["lines"]), first["lines"]
+    assert not any("runner log line" in line for line in first["lines"]), first["lines"]
+    assert first["tasks"][0]["streams"] == "agent"
 
     answer = 'Found two issues.\n```json\n{"issues": 2, "files": ["a.py"]}\n```'
     finished = started + [
@@ -584,7 +592,7 @@ def test_a_window_returns_when_the_task_finishes_with_its_outcome(swarm, world, 
                 "git": {"commit_count": 1, "pull_request": {"number": 231, "url": "https://github.com/acme/widgets/pull/231"}},
             }
             world.db.docs["attempts/att_1"]["cost_usd"] = 0.21
-            world.final("task_a", "att_1", _stream(*finished))
+            world.final("task_a", "att_1", _stream(*finished), stream="agent_stdout")
 
     clock.on_sleep = _finish
     got = progress.watch(swarm, ["task_a"], since=first["since"], wait_seconds=90, sleep=clock.sleep, clock=clock.clock)
@@ -594,10 +602,12 @@ def test_a_window_returns_when_the_task_finishes_with_its_outcome(swarm, world, 
     assert any("tool Read: a.py" in line for line in got["lines"]), got["lines"]
     assert not any("assistant: Scanning." in line for line in got["lines"]), "a line was repeated"
     outcome = got["tasks"][0]["outcome"]
-    # The WHOLE answer, from the stream's last `result` event -- the runner's
-    # summary holds only its first characters, and would have lost the JSON.
+    # The WHOLE answer, from the stream's last `result` event, through the
+    # API's answer route -- the runner's summary holds only its first
+    # characters, and would have lost the JSON.
     assert outcome["answer"] == answer
-    assert outcome["answer_source"].startswith("the final `result` event")
+    assert outcome["answer_source"] == "agent_result_event"
+    assert "answer_truncated" not in outcome
     assert outcome["answer_json"] == {"issues": 2, "files": ["a.py"]}
     assert outcome["cost_usd"] == 0.21
     assert outcome["duration_s"] == 252.0
@@ -646,10 +656,42 @@ def test_a_failed_task_hands_back_its_error_and_no_invented_answer(swarm, world,
     assert outcome["state"] == "FAILED"
     assert outcome["last_error"] == "claude-code exited 1: boom"
     assert outcome["answer"] is None and outcome["answer_json"] is None
-    assert "no `result` event" in outcome["answer_unavailable_because"]
+    why = outcome["answer_unavailable_because"]
+    assert "absent" in why and "neither a result event" in why, why
     # Not measured is null, never 0.
     assert outcome["cost_usd"] is None and "NOT MEASURED" in outcome["cost_note"]
     assert outcome["failure"]["last_attempt"]["exit_code"] == 1
+
+
+def test_a_runner_with_no_agent_is_read_from_its_own_streams(swarm, world, progress):
+    """The mock starts no agent CLI, so the route answers `not_applicable` for
+    `agent_stdout`. The row falls back to the runner's streams in the same
+    call, and the token remembers it."""
+    world.task("task_a", state="RUNNING")
+    world.attempt("task_a", "att_1")
+    world.live("task_a", "att_1", "mock says hello\n")
+
+    first = progress.watch(swarm, ["task_a"])
+    assert any(line.endswith("mock says hello") for line in first["lines"]), first["lines"]
+    assert first["tasks"][0]["streams"] == "runner"
+    assert progress.decode_since(first["since"])[3] == {"task_a": "runner"}
+
+    world.live("task_a", "att_1", "mock says hello\nand goodbye\n")
+    second = progress.watch(swarm, ["task_a"], since=first["since"])
+    assert [line for line in second["lines"] if "mock says" in line] == [], "a line was repeated"
+    assert any(line.endswith("and goodbye") for line in second["lines"]), second["lines"]
+
+
+def test_the_stream_names_are_the_apis():
+    """`apps/swarm-mcp` depends on swarm-common alone and cannot import
+    swarm-api, so the stream names are copies -- held to the API's here, where
+    both are importable."""
+    from swarm_api import agent_streams, inspect
+
+    from swarm_mcp import follow
+
+    assert follow.STREAMS == inspect.STREAMS
+    assert follow.AGENT_STREAMS == agent_streams.AGENT_STREAMS
 
 
 def test_only_an_object_the_answer_ends_with_is_its_json(progress):

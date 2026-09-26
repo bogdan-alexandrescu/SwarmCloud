@@ -32,12 +32,15 @@ from __future__ import annotations
 
 import json
 import sys
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
 from swarm_common.profiles import RESOURCE_CLASSES
 
+from . import checkout, progress
 from . import profiles as catalogue
 from . import workflows
 from .client import TERMINAL, SwarmClient, SwarmError, task_id_of
@@ -54,6 +57,18 @@ from .patches import (
 )
 
 PROTOCOL_VERSION = "2024-11-05"
+
+#: What `swarm_dispatch` takes as `strategy`: the API's strategies
+#: (`workflows.STRATEGIES`) less `integrate`, which names the final step of a
+#: WORKFLOW and which the API refuses for a single task. A subset of that
+#: tuple, not a restatement: a strategy the API drops is dropped here too.
+_DISPATCH_STRATEGIES = tuple(s for s in workflows.STRATEGIES if s != "integrate")
+
+#: The `swarm_workflow` parameters a `spec` carries itself, so passing one of
+#: them beside a spec is two answers to one question.
+_SPEC_EXCLUSIVE = (
+    "steps", "repo", "ref", "strategy", "carrier", "on_step_failure", "priority", "label",
+)
 
 #: A runner's DECLARED inputs, for `swarm_dispatch` and a `swarm_workflow` step
 #: (#142). An open object in the schema because what it may hold depends on the
@@ -95,8 +110,40 @@ TOOLS: list[dict[str, Any]] = [
                         "they cannot be supplied here."
                     ),
                 },
-                "repo": {"type": "string", "description": "Repository to clone (https or ssh)."},
+                "repo": {
+                    "type": "string",
+                    "description": (
+                        "Repository to clone (https or ssh). OMIT IT to clone the "
+                        "repository and branch of the git checkout this bridge runs "
+                        "in: the branch must be pushed and have no unpushed commits, "
+                        "or the dispatch is refused with the command that fixes it; "
+                        "uncommitted changes are reported as invisible to the agent. "
+                        "Outside a checkout nothing is cloned and the reply says so."
+                    ),
+                },
                 "ref": {"type": "string", "description": "Branch, tag or commit."},
+                "no_repository": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": (
+                        "Clone nothing, even inside a checkout. The task can then "
+                        "produce no patch and no pull request -- its work exists only "
+                        "as its answer."
+                    ),
+                },
+                "strategy": {
+                    "type": "string",
+                    "enum": list(_DISPATCH_STRATEGIES),
+                    "default": "collect",
+                    "description": (
+                        "How the work comes back. `collect` (default): the agent's "
+                        "changes are harvested as a patch and nothing is pushed -- "
+                        "bring them in with swarm_apply. `direct-pr`: the agent's "
+                        "branch is pushed as swarm/<task> and a pull request opened, "
+                        "which needs a repository and a forge token that can push. "
+                        "`integrate` is a workflow strategy; use swarm_workflow."
+                    ),
+                },
                 "label": {"type": "string", "description": "A short name, for the UI."},
                 "inputs": _INPUTS_SCHEMA,
             },
@@ -157,7 +204,19 @@ TOOLS: list[dict[str, Any]] = [
             "task's `read` -- `failed` means the task could not be read at all, "
             "which is not the same as an agent that printed nothing; and each "
             "stream's `status` -- `absent`, `unreadable` and `up_to_date` are "
-            "three different facts and none of them mean 'the agent is idle'."
+            "three different facts and none of them mean 'the agent is idle'.\n"
+            "\n"
+            "FOR AN AGENT THAT IS THE ROW OF A WORKFLOW (`sc:remote`, `sc:step`), "
+            "pass `format: \"lines\"`: the answer is then short narrated lines -- "
+            "what the remote agent said, which tools it called, where a waiting "
+            "task is waiting and why -- plus an opaque `since` token to pass back "
+            "unchanged, instead of the full report. With `wait_seconds` a call "
+            "gathers for up to that long (max 300) and returns early when every "
+            "task has finished or a task starts; the first call, without "
+            "`since`, returns at once. A finished task carries `outcome`: its "
+            "answer, `answer_json` (the JSON object the answer ends with, if any), "
+            "`cost_usd` (null when not recorded, never 0), `duration_s`, "
+            "`pr_url`, `artifacts`, `last_error` and, on a failure, `failure`."
         ),
         "inputSchema": {
             "type": "object",
@@ -197,6 +256,44 @@ TOOLS: list[dict[str, Any]] = [
                         "Heartbeat events are hidden by default -- at one every "
                         "few seconds they bury the agent's own output. The count "
                         "hidden is always reported."
+                    ),
+                },
+                "since": {
+                    "type": "string",
+                    "description": (
+                        "The `since` string a previous call returned, passed back "
+                        "UNCHANGED -- the same position as `cursor`, as one opaque "
+                        "token. Omit it on the first call. Pass `since` or "
+                        "`cursor`, not both."
+                    ),
+                },
+                "format": {
+                    "type": "string",
+                    "enum": ["json", "lines"],
+                    "default": "json",
+                    "description": (
+                        "`json` (default): the full report. `lines`: short "
+                        "narrated lines, a `since` token and, for a finished task, "
+                        "its `outcome` -- the shape a workflow row reads."
+                    ),
+                },
+                "wait_seconds": {
+                    "type": "integer",
+                    "default": 0,
+                    "description": (
+                        "`lines` only: gather for up to this many seconds (max "
+                        "300) before returning; returns early when every task has "
+                        "finished, a task starts, or the read budget is spent. A "
+                        "call without `since` always returns at once."
+                    ),
+                },
+                "max_lines": {
+                    "type": "integer",
+                    "default": progress.DEFAULT_MAX_LINES,
+                    "description": (
+                        "`lines` only: the most lines one call returns. Past it the "
+                        "window's EARLIEST lines are left out and a line says how "
+                        "many; every byte stays in the task's log."
                     ),
                 },
             },
@@ -328,11 +425,32 @@ TOOLS: list[dict[str, Any]] = [
             "per-step state, or swarm_follow with the returned task ids to "
             "narrate events and log lines as they arrive. swarm_follow takes a "
             "cursor and returns the next one, so a session can report progress "
-            "without holding anything open."
+            "without holding anything open.\n"
+            "\n"
+            "Pass the DAG either as `steps` with the parameters beside it, or as "
+            "`spec`: a whole `swarm workflow` spec object exactly as the terminal "
+            "command reads it (`steps`, `strategy`, `carrier`, `repository_url`, "
+            "`repository_ref`, `on_step_failure`, `priority`, `label`), nothing "
+            "else beside it but `no_repository`. With no repository named, EVERY "
+            "step clones the repository and pushed branch of the checkout this "
+            "bridge runs in, under the same rules as swarm_dispatch."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
+                "spec": {
+                    "type": "object",
+                    "description": (
+                        "A whole `swarm workflow` spec, instead of `steps` and the "
+                        "parameters beside it. A step may carry `stage`, the group "
+                        "/sc:run shows it under; it is never sent."
+                    ),
+                },
+                "no_repository": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Clone nothing for any step, even inside a checkout.",
+                },
                 "steps": {
                     "type": "array",
                     "minItems": 1,
@@ -391,6 +509,13 @@ TOOLS: list[dict[str, Any]] = [
                             },
                             "timeout_seconds": {"type": "integer"},
                             "inputs": _INPUTS_SCHEMA,
+                            "stage": {
+                                "type": "string",
+                                "description": (
+                                    "Display only: the group /sc:run shows this "
+                                    "step under. Never sent to the platform."
+                                ),
+                            },
                         },
                         "required": ["step_id", "prompt"],
                     },
@@ -442,7 +567,10 @@ TOOLS: list[dict[str, Any]] = [
                 "priority": {"type": "integer"},
                 "label": {"type": "string", "description": "A short name, for the UI."},
             },
-            "required": ["steps"],
+            # `steps` OR `spec`, checked in `_call` -- JSON Schema's oneOf is
+            # not something every MCP host renders, and a host that cannot show
+            # it shows no required field at all.
+            "required": [],
         },
     },
     {
@@ -619,6 +747,53 @@ TOOLS: list[dict[str, Any]] = [
 ]
 
 
+def _flag(args: dict[str, Any], name: str) -> bool:
+    """A boolean argument, read strictly.
+
+    `bool(args.get(name))` reads the STRING "false" -- which a model sends as
+    often as `false` -- as true, and for `no_repository` that is a dispatch
+    that silently clones nothing.
+    """
+    value = args.get(name)
+    if isinstance(value, str):
+        return value.strip().lower() in ("true", "1", "yes")
+    return value is True
+
+
+def _dispatch_strategy(value: Any) -> str | None:
+    """`collect`, `direct-pr`, or None for the API's default (collect).
+
+    Refused BEFORE the round trip, with the reason, for the two ways to get it
+    wrong: `integrate` names a final step of a workflow and a single task has
+    none (the API refuses it too, as `invalid_dispatch`), and anything else is
+    a typo.
+    """
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    text = str(value).strip()
+    if text == "integrate":
+        raise SwarmError(
+            "strategy 'integrate' makes one workflow step apply every other step's "
+            "work and open ONE pull request; a single task has nothing to integrate. "
+            "Use `collect` (the default) or `direct-pr` here, or submit the units as "
+            "a workflow with swarm_workflow"
+        )
+    if text not in _DISPATCH_STRATEGIES:
+        raise SwarmError(
+            f"unknown strategy {value!r}; swarm_dispatch accepts "
+            + ", ".join(_DISPATCH_STRATEGIES)
+        )
+    return text
+
+
+def _accepted_strategy(task: dict[str, Any], sent: str | None) -> str:
+    """The strategy the API RECORDED for this task, else what was sent, else its default."""
+    block = (task.get("metadata") or {}).get("dispatch")
+    if isinstance(block, dict) and isinstance(block.get("strategy"), str):
+        return block["strategy"]
+    return sent or "collect"
+
+
 def _int_arg(args: dict[str, Any], name: str, default: int) -> int:
     """An integer argument, with zero surviving as zero.
 
@@ -702,13 +877,30 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
         # The inputs this profile DECLARES, and nothing else, refused by name
         # before anything travels (#142).
         inputs = catalogue.check_inputs(profile, args.get("inputs"), where="swarm_dispatch")
+        strategy = _dispatch_strategy(args.get("strategy"))
+        # WHAT IS CLONED, decided before anything travels: the caller's repo,
+        # or the checkout this bridge runs in -- refused when its branch is not
+        # pushed, because a remote agent on an older tip succeeds on the wrong
+        # base (see `checkout`).
+        repository = checkout.resolve(
+            repo=args.get("repo"),
+            ref=args.get("ref"),
+            no_repository=_flag(args, "no_repository"),
+        )
+        if strategy == "direct-pr" and not repository.url:
+            raise SwarmError(
+                "strategy 'direct-pr' pushes the agent's branch and opens a pull "
+                "request, so it needs a repository, and this dispatch has none: "
+                + "; ".join(repository.notes)
+            )
         task = client.dispatch(
             prompt=args["prompt"],
             runner_profile=profile,
-            repository_url=args.get("repo"),
-            repository_ref=args.get("ref"),
+            repository_url=repository.url,
+            repository_ref=repository.ref,
             metadata={"unit": args["label"]} if args.get("label") else None,
             inputs=inputs or None,
+            strategy=strategy,
         )
         task_id = task_id_of(task)
         if not task_id:
@@ -725,6 +917,10 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
             {
                 "task_id": task_id,
                 "state": task.get("state"),
+                "strategy": _accepted_strategy(task, strategy),
+                # What the agent will see, and how that was decided -- a null
+                # url with the reason, never a silent no-clone.
+                "repository": repository.as_dict(),
                 # THE TOOL FIRST, the terminal second. `swarm_follow` is the one
                 # a model can actually call; the tail below is for a human's
                 # background shell. Handing back only the shell command was how
@@ -736,6 +932,33 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
             indent=2,
         )
 
+    if name == "swarm_follow" and (args.get("format") or "json") not in ("json", "lines"):
+        raise SwarmError(f"unknown format {args.get('format')!r}; swarm_follow takes json or lines")
+
+    if name == "swarm_follow" and args.get("since") not in (None, "") and args.get("cursor"):
+        raise SwarmError(
+            "pass `since` or `cursor`, not both: they are the same position in two "
+            "shapes, and two positions for one task is a request to read from two places"
+        )
+
+    if name == "swarm_follow" and args.get("format") == "lines":
+        # The row view (`progress.watch`): narrated lines, one opaque token, a
+        # call that may gather for a window, and a finished task's outcome.
+        return json.dumps(
+            progress.watch(
+                client,
+                list(args["task_ids"]),
+                since=args.get("since"),
+                wait_seconds=_int_arg(args, "wait_seconds", 0),
+                max_log_bytes=_int_arg(args, "max_log_bytes", progress.DEFAULT_LINES_LOG_BUDGET),
+                max_new_events=_int_arg(args, "max_new_events", DEFAULT_EVENT_PAGE),
+                max_lines=_int_arg(args, "max_lines", progress.DEFAULT_MAX_LINES),
+                include_heartbeats=_flag(args, "include_heartbeats"),
+            ),
+            indent=1,
+            default=str,
+        )
+
     if name == "swarm_follow":
         # `cursor` crosses the model boundary, so it arrives as whatever the
         # model sent -- including a string it decided to quote. `follow`
@@ -743,10 +966,11 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
         # from the beginning rather than skipping ahead: a position that
         # quietly became zero costs a repeat, a position that quietly became
         # large loses output silently, and only one of those is recoverable.
+        since_cursor, since_states, since_said, _groups, since_note = progress.decode_since(args.get("since"))
         report = follow(
             client,
             list(args["task_ids"]),
-            cursor=args.get("cursor"),
+            cursor=since_cursor if args.get("since") not in (None, "") else args.get("cursor"),
             # NOT `args.get(...) or DEFAULT`, for the reason swarm_wait's
             # timeout spells out: zero is a legitimate value here too -- "tell
             # me the events and the states, spend nothing on logs" -- and it is
@@ -762,6 +986,15 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
         for task in report["tasks"]:
             if task["read"] == "ok" and task["terminal"]:
                 task["result"] = describe_task(client.task(task["task_id"]))
+        # The same position as `cursor`, as one token, for a caller that would
+        # rather not copy a nested object back by hand.
+        report["since"] = progress.encode_since(
+            report["cursor"],
+            {**since_states, **{t["task_id"]: t.get("state") for t in report["tasks"]}},
+            since_said,
+        )
+        if since_note:
+            report["since_note"] = since_note
         return json.dumps(report, indent=2, default=str)
 
     if name == "swarm_status":
@@ -862,16 +1095,41 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
         return result.render()
 
     if name == "swarm_workflow":
+        if args.get("spec") is not None:
+            beside = sorted(k for k in _SPEC_EXCLUSIVE if args.get(k) is not None)
+            if beside:
+                raise SwarmError(
+                    f"swarm_workflow was given `spec` AND {beside}; a spec carries all of "
+                    "those itself. Pass the whole spec, or `steps` with the parameters "
+                    "beside it -- not both"
+                )
+            fields = workflows.read_spec(args["spec"], where="swarm_workflow's `spec`")
+            repo, ref = fields["repository_url"], fields["repository_ref"]
+        else:
+            if args.get("steps") is None:
+                raise SwarmError("swarm_workflow needs `steps`, or a whole `spec`")
+            fields = {
+                "steps": workflows.build_steps(args.get("steps")),
+                "strategy": args.get("strategy"),
+                "carrier": args.get("carrier"),
+                "on_step_failure": args.get("on_step_failure"),
+                "priority": args.get("priority"),
+                "label": args.get("label"),
+            }
+            repo, ref = args.get("repo"), args.get("ref")
+        repository = checkout.resolve(
+            repo=repo, ref=ref, no_repository=_flag(args, "no_repository")
+        )
         envelope = workflows.submit(
             client,
-            steps=workflows.build_steps(args.get("steps")),
-            strategy=args.get("strategy"),
-            carrier=args.get("carrier"),
-            repository_url=args.get("repo"),
-            repository_ref=args.get("ref"),
-            on_step_failure=args.get("on_step_failure"),
-            priority=args.get("priority"),
-            label=args.get("label"),
+            steps=fields["steps"],
+            strategy=fields["strategy"],
+            carrier=fields["carrier"],
+            repository_url=repository.url,
+            repository_ref=repository.ref,
+            on_step_failure=fields["on_step_failure"],
+            priority=fields["priority"],
+            label=fields["label"],
         )
         workflow = envelope["workflow"]
         workflow_id = workflow.get("workflow_id")
@@ -897,6 +1155,7 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
             "workflow_id": workflow_id,
             "steps": steps,
             "dispatch": envelope.get("dispatch"),
+            "repository": repository.as_dict(),
             # NO STATE HERE, deliberately. The create response is the one read
             # that honestly says `state_source: "stored"`: the step tasks were
             # written microseconds ago and deriving over them would spend a read
@@ -990,74 +1249,112 @@ def _tool_error_text(exc: SwarmError) -> str:
     return text
 
 
+#: ONE LINE AT A TIME ON STDOUT. Tool calls answer from worker threads (see
+#: `serve`), and two responses interleaved mid-line are two unparseable lines
+#: to the host.
+_WRITE_LOCK = threading.Lock()
+
+#: How many tool calls may be in flight at once. A workflow of a dozen steps is
+#: a dozen `sc:step` agents, each holding a `swarm_follow` open for its window,
+#: plus the session's own calls; this leaves room for all of them.
+MAX_CONCURRENT_CALLS = 32
+
+
 def _respond(message_id: Any, result: Any) -> None:
-    sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": message_id, "result": result}) + "\n")
-    sys.stdout.flush()
+    line = json.dumps({"jsonrpc": "2.0", "id": message_id, "result": result}) + "\n"
+    with _WRITE_LOCK:
+        sys.stdout.write(line)
+        sys.stdout.flush()
 
 
 def _error(message_id: Any, code: int, message: str) -> None:
-    sys.stdout.write(
-        json.dumps({"jsonrpc": "2.0", "id": message_id, "error": {"code": code, "message": message}})
-        + "\n"
-    )
-    sys.stdout.flush()
+    line = json.dumps(
+        {"jsonrpc": "2.0", "id": message_id, "error": {"code": code, "message": message}}
+    ) + "\n"
+    with _WRITE_LOCK:
+        sys.stdout.write(line)
+        sys.stdout.flush()
 
 
 def serve(stdin=None, stdout=None) -> int:
-    """The stdio loop. One JSON-RPC message per line, both directions."""
+    """The stdio loop. One JSON-RPC message per line, both directions.
+
+    TOOL CALLS RUN CONCURRENTLY, and answer in the order they finish. This loop
+    answered one call at a time, so one `swarm_wait` -- which blocks for up to
+    an hour by design -- held every other tool call in the session behind it,
+    and a workflow's step agents, each following its own task, would each have
+    waited for all the others' windows in turn. JSON-RPC matches a response to
+    its request by `id`, not by order, so nothing a host relies on changes.
+    `initialize` and `tools/list` still answer inline, before anything else is
+    read. The client is shared: `SwarmClient` already serialises token mints
+    behind its own lock, because `sc` fetches concurrently.
+    """
     stream = stdin or sys.stdin
     # Built lazily: constructing a client shells out to gcloud, and a host that
-    # merely LISTS this server's tools should not trigger an auth prompt.
-    client: SwarmClient | None = None
+    # merely LISTS this server's tools should not trigger an auth prompt. Built
+    # once, under a lock, by whichever call needs it first.
+    held: dict[str, SwarmClient] = {}
+    building = threading.Lock()
 
-    for line in stream:
-        line = line.strip()
-        if not line:
-            continue
+    def _client() -> SwarmClient:
+        with building:
+            if "client" not in held:
+                held["client"] = SwarmClient()
+            return held["client"]
+
+    def _answer(message_id: Any, params: dict[str, Any]) -> None:
         try:
-            message = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-
-        method = message.get("method")
-        message_id = message.get("id")
-
-        if method == "initialize":
+            text = _call(_client(), params.get("name", ""), params.get("arguments") or {})
+            _respond(message_id, {"content": [{"type": "text", "text": text}]})
+        except SwarmError as exc:
+            # isError, not a JSON-RPC error: the CALL failed, the protocol
+            # did not, and a host that saw a transport error would drop the
+            # session rather than show the operator what went wrong.
             _respond(
                 message_id,
-                {
-                    "protocolVersion": PROTOCOL_VERSION,
-                    "capabilities": {"tools": {}},
-                    "serverInfo": {"name": "swarmcloud", "version": "0.1.0"},
-                },
+                {"content": [{"type": "text", "text": _tool_error_text(exc)}], "isError": True},
             )
-        elif method == "notifications/initialized":
-            continue  # a notification has no id and takes no response
-        elif method == "tools/list":
-            _respond(message_id, {"tools": TOOLS})
-        elif method == "tools/call":
-            params = message.get("params") or {}
+        except Exception as exc:  # pragma: no cover - defensive
+            _respond(
+                message_id,
+                {"content": [{"type": "text", "text": f"{type(exc).__name__}: {exc}"}],
+                 "isError": True},
+            )
+
+    with ThreadPoolExecutor(
+        max_workers=MAX_CONCURRENT_CALLS, thread_name_prefix="swarm-mcp-call"
+    ) as calls:
+        for line in stream:
+            line = line.strip()
+            if not line:
+                continue
             try:
-                if client is None:
-                    client = SwarmClient()
-                text = _call(client, params.get("name", ""), params.get("arguments") or {})
-                _respond(message_id, {"content": [{"type": "text", "text": text}]})
-            except SwarmError as exc:
-                # isError, not a JSON-RPC error: the CALL failed, the protocol
-                # did not, and a host that saw a transport error would drop the
-                # session rather than show the operator what went wrong.
+                message = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+            method = message.get("method")
+            message_id = message.get("id")
+
+            if method == "initialize":
                 _respond(
                     message_id,
-                    {"content": [{"type": "text", "text": _tool_error_text(exc)}], "isError": True},
+                    {
+                        "protocolVersion": PROTOCOL_VERSION,
+                        "capabilities": {"tools": {}},
+                        "serverInfo": {"name": "swarmcloud", "version": "0.1.0"},
+                    },
                 )
-            except Exception as exc:  # pragma: no cover - defensive
-                _respond(
-                    message_id,
-                    {"content": [{"type": "text", "text": f"{type(exc).__name__}: {exc}"}],
-                     "isError": True},
-                )
-        elif message_id is not None:
-            _error(message_id, -32601, f"method not found: {method}")
+            elif method == "notifications/initialized":
+                continue  # a notification has no id and takes no response
+            elif method == "tools/list":
+                _respond(message_id, {"tools": TOOLS})
+            elif method == "tools/call":
+                calls.submit(_answer, message_id, message.get("params") or {})
+            elif message_id is not None:
+                _error(message_id, -32601, f"method not found: {method}")
+        # Leaving the `with` waits for every call still running, so a host
+        # that closes stdin after its last request still gets every answer.
     return 0
 
 

@@ -79,6 +79,33 @@ _STEP_KEYS = frozenset(
         "input_from",
         "resource_class",
         "timeout_seconds",
+        "stage",
+    }
+)
+
+#: A step key that is READ HERE AND NEVER SENT. `stage` names the group a step
+#: is shown under in Claude Code's `/workflows` when the spec is run with
+#: `/sc:run`; the platform has no such field (`WorkflowStepCreate` forbids
+#: extras) and nothing executes from it. Accepted rather than refused so one
+#: spec file serves `/sc:run` and `swarm workflow` alike -- and named here, so
+#: it is the one key this module drops knowingly.
+DISPLAY_ONLY_STEP_KEYS = frozenset({"stage"})
+
+#: The top-level keys a `swarm workflow` spec may carry -- the file the
+#: terminal command reads and the object `swarm_workflow`'s `spec` takes. One
+#: reader for both (`read_spec`), so the two cannot come to disagree about what
+#: a spec is. An unknown key is refused, as a step's is: a spec carrying
+#: `image` or `model` at the top must be told it was not honoured.
+SPEC_KEYS = frozenset(
+    {
+        "steps",
+        "strategy",
+        "carrier",
+        "repository_url",
+        "repository_ref",
+        "on_step_failure",
+        "priority",
+        "label",
     }
 )
 
@@ -215,8 +242,41 @@ def build_steps(raw_steps: Any) -> list[dict[str, Any]]:
             )
         if raw.get("timeout_seconds") is not None:
             step["timeout_seconds"] = int(raw["timeout_seconds"])
+        if raw.get("stage") is not None and not isinstance(raw.get("stage"), str):
+            raise SwarmError(f"{where}: stage must be a string -- the group /sc:run shows it under")
         steps.append(step)
     return steps
+
+
+def read_spec(document: Any, *, where: str = "the workflow spec") -> dict[str, Any]:
+    """A whole `swarm workflow` spec, checked, as `submit`'s keyword arguments.
+
+    Returns `steps` built by `build_steps`, and the spec's `strategy`,
+    `carrier`, `repository_url`, `repository_ref`, `on_step_failure`,
+    `priority` and `label` as given (None when absent). The caller decides what
+    overrides them -- the terminal's flags, or the repository the bridge infers
+    from a checkout.
+    """
+    if not isinstance(document, dict):
+        raise SwarmError(f"{where} must be an object with a `steps` list")
+    unknown = sorted(set(document) - SPEC_KEYS)
+    if unknown:
+        raise SwarmError(
+            f"{where} carries {unknown}, which a workflow spec does not have. "
+            f"Accepted: {sorted(SPEC_KEYS)}. A step's runner is chosen by naming its "
+            "`runner_profile`; an image, a command, a backend, a model or a resource "
+            "spec is never sent."
+        )
+    return {
+        "steps": build_steps(document.get("steps")),
+        "strategy": document.get("strategy"),
+        "carrier": document.get("carrier"),
+        "repository_url": document.get("repository_url"),
+        "repository_ref": document.get("repository_ref"),
+        "on_step_failure": document.get("on_step_failure"),
+        "priority": document.get("priority"),
+        "label": document.get("label"),
+    }
 
 
 def submit(

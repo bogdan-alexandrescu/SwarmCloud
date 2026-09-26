@@ -103,12 +103,21 @@ at the ref the dispatch names. Everything follows from that:
   dispatch against one that is already on the remote.
 * **There is no history.** One commit deep. `git log`, `git blame` and
   `git bisect` have nothing to work with.
-* **Dispatching with no `repo` at all clones nothing.** The task still runs and
-  still succeeds; `swarm_result` then reports *"this task cloned no repository,
-  so there is no code to apply"*, and the work exists only as transcript. The
-  `repo` argument is optional in the tool and has no default — the terminal's
-  `swarm dispatch` falls back to `$SWARM_REPO` when `--repo` is not given, the
-  tool does not.
+* **With no `repo`, the tool clones this checkout's pushed branch.** Since
+  2026-09-26, `swarm_dispatch` and `swarm_workflow` infer the repository and
+  branch from the git checkout the bridge runs in when neither `repo` nor `ref`
+  is given — and REFUSE, before anything is dispatched, a detached HEAD, a
+  branch that was never pushed, or a branch with commits its upstream lacks,
+  naming the `git push` that fixes it. Uncommitted changes are not refused;
+  the reply's `repository.notes` says how many the agent will not see. Read
+  that block back to the developer: it is the answer to "which ref will the
+  agents see".
+* **Outside a checkout, or with `no_repository: true`, nothing is cloned.** The
+  task still runs and still succeeds; `swarm_result` then reports *"this task
+  cloned no repository, so there is no code to apply"*, and the work exists
+  only as its answer. The reply's `repository` block says which of the two
+  happened. The terminal's `swarm dispatch` does not infer: it falls back to
+  `$SWARM_REPO` when `--repo` is not given.
 
 So: before dispatching anything that touches code, say out loud which ref the
 agents will see, and check that the work they depend on is on it.
@@ -158,10 +167,18 @@ succeeded.
 | what is the shared pool at | `swarm_accounts` |
 | why did four of them die at once | `swarm_trouble` |
 
-`swarm_dispatch` takes `prompt`, `profile`, `repo`, `ref`, `label` and
-`inputs`. The profile is a **name** from the frozen catalogue, and the image,
-command and resource class come from the name. There is no parameter for an
-image and asking for one is not a thing a caller may do.
+`swarm_dispatch` takes `prompt`, `profile`, `repo`, `ref`, `no_repository`,
+`strategy`, `label` and `inputs`. The profile is a **name** from the frozen
+catalogue, and the image, command and resource class come from the name. There
+is no parameter for an image, a command or a model, and asking for one is not
+a thing a caller may do.
+
+`strategy` is how the work comes back: `collect` (the default) harvests a patch
+and pushes nothing — bring it in with `swarm_apply`; `direct-pr` pushes the
+agent's branch as `swarm/<task>` and opens a pull request, which needs a
+repository and a forge token that can push, and is refused before dispatch
+when there is no repository. `integrate` is a workflow strategy and is refused
+for a single task.
 
 `inputs` — on `swarm_dispatch` and on each `swarm_workflow` step — carries only
 what the named profile **declares**, which `swarm_profiles` lists under
@@ -218,6 +235,16 @@ held connection because a long-lived tail inside a subprocess dies.
 It caps what it returns and SAYS when it capped. A silent truncation reads as
 "that was all the output", so pass the cap on to the developer rather than
 summarising past it.
+
+Two options make it easier to hold: `since` is the same cursor as one opaque
+string — pass back exactly what the last call returned — and
+`format: "lines"` answers with short narrated lines (what the remote agent
+said, which tools it called, where a waiting task waits and why) instead of the
+full report. A finished task then carries an `outcome`: its answer, the JSON
+object that answer ends with, `cost_usd`, `duration_s`, `pr_url`, `artifacts`
+and `last_error`. `wait_seconds` makes a `lines` call gather for up to that long
+and return early when a task finishes or starts, which is what the plugin's
+workflow agents use.
 
 
 An MCP tool returns exactly **once**, so nothing here streams and no tool
@@ -379,6 +406,46 @@ Afterwards, say what landed: the files, the conflicted ones, and the fact that
 nothing was committed. A developer must never discover a three-way merge they
 did not ask for.
 
+## A Claude Code workflow whose steps run in SwarmCloud
+
+When the developer wants a Claude Code workflow — the `/workflows` view, a row
+per agent — but the work done remotely, there are two modes, and the plugin
+ships both.
+
+* **One step at a time: `agentType: 'sc:remote'`** on an `agent()` call in a
+  workflow script. The prompt is what the remote agent is told. The row
+  dispatches it as one `claude-code` task on this checkout's pushed branch
+  (strategy `collect`, or `direct-pr` when the prompt's first line is
+  `strategy: direct-pr`), follows it with `swarm_follow`, and returns the
+  remote agent's answer — or, when the call passes a `schema`, the JSON object
+  it asked the remote agent to end with. A failed task comes back as its
+  state, last error and task id, never an invented answer.
+* **A whole SwarmCloud workflow: `/sc:run <spec>`**, where the spec is the
+  object `swarm workflow` reads. One `sc:workflow` row submits it through
+  `swarm_workflow`; SwarmCloud owns the DAG from then on. Each step gets an
+  `sc:step` row, labelled with its step id and grouped as `Level N` or under
+  the step's `stage`, that follows its own task and may show `waiting` for a
+  long time — that task holds no capacity. The run ends with the state the
+  server derived, never one computed from the rows.
+
+Say these differences BEFORE swapping a local step for a remote one, because
+each is a way the same prompt does different work:
+
+* **each step knows only its prompt** — no conversation, no other step's
+  output (under `/sc:run`, only the `input_from` files SwarmCloud stages);
+* **its tools are the runner's**, inside its container, not this session's
+  tools, MCP servers or permission rules;
+* **its model is pinned on the job**, by the profile; a `model` option on the
+  `agent()` call changes only the local row's model (invariant 10);
+* **it sees a depth-1 clone of the pushed branch**: no history, no
+  uncommitted work — the clean-checkout rule above, unchanged;
+* **the tokens `/workflows` shows are the row's**, a haiku relay, not the
+  remote agent's; the remote spend is the outcome's `cost_usd`, from the
+  shared pool;
+* **stopping a row does not cancel its task** — `swarm_cancel` or
+  `swarm workflow-cancel` does — and relaunching a run re-dispatches an
+  `sc:remote` row that had not finished, which is a second task.
+
 ## The honesty constraint
 
 **Seamless must not mean hidden.** Three things a developer must always be able
@@ -403,11 +470,14 @@ pool is far worse than a surprise locally.
   mean exactly what the `sc` skill says they mean, and the one that matters
   here is that **an em dash is "not measured", never zero** — a dead poller
   must not read as a healthy pool.
-* **Dollars are not on this surface.** Per-attempt spend is recorded as
-  `cost_usd` on the attempt and is reachable from the API and the console; no
-  tool in this plugin returns it and no view of `sc` prints it. When asked what
-  something cost: give the pool movement, say the per-attempt figure is not
-  available from this session and where it is, and **do not estimate one**.
+* **Dollars are on this surface in exactly one place.** Per-attempt spend is
+  recorded as `cost_usd` on the attempt. A FINISHED task's `outcome` from
+  `swarm_follow` with `format: "lines"` carries `cost_usd` summed over its
+  attempts, and it is `null` — NOT MEASURED, never $0 — when no attempt
+  recorded one; `cost_note` says when only some did, which makes the sum a
+  floor. No other tool returns it and no view of `sc` prints it. When asked
+  what something cost: quote that figure for a finished task, give the pool
+  movement for everything else, and **do not estimate one**.
 * For scale only, from a measured run on 2026-09-22: one join step of a
   six-step workflow cost **$0.0937**. That is an order of magnitude for one
   step of one workflow. It is not a quote for anything else and must never be

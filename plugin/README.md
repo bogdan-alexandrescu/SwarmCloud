@@ -289,6 +289,14 @@ does not work. `delegate` therefore lists **both** spellings of all eighteen
 tools, and `tests/unit/mcp/test_plugin_skills.py` holds the two lists in
 lockstep and derives the scoped prefix from `plugin.json` itself.
 
+The agents in `plugin/agents/` do the same in their `tools` lists, for a
+sharper reason: an agent none of whose `tools` entries resolve does not start
+at all. Claude Code's plugin reference gives the scoped form as
+`mcp__plugin_<plugin>_<server>__<tool>`, and a session with the Slack plugin
+installed lists its tools as `mcp__plugin_slack_slack__*` — the same shape.
+`tests/unit/mcp/test_plugin_agents_and_workflows.py` holds each agent's two
+lists equal.
+
 ### What is still repository-bound, and why
 
 **The MCP half is not.** Since 0.4.1 the server is fetched by uv rather than
@@ -430,9 +438,110 @@ and a caller setting it would be choosing the model a `claude-code` agent
 runs. The declarations live in one table in `swarm_mcp/profiles.py` until the
 frozen catalogue can carry them (contract request 25).
 
+## Running a Claude Code workflow's steps in SwarmCloud
+
+Owner decision, 2026-09-26: a Claude Code workflow shows as running in Claude
+Code while every step executes in SwarmCloud. Claude Code has no hook that
+replaces how `agent()` runs, so the plugin ships agents whose only job is to BE
+the row: each one dispatches or adopts a SwarmCloud task, follows it, and
+returns what it produced. `/workflows` then lists the row with its label,
+phase, state and elapsed time, and its transcript shows the remote agent's
+progress — narrated by the bridge, a line per thing the agent did.
+
+There are two modes.
+
+**One step: the `sc:remote` agent.** In any workflow script, give a step
+`agentType: 'sc:remote'` and its prompt is what the remote agent is told:
+
+```js
+const notes = await agent('Survey apps/swarm-mcp for blocking calls and write up each one.',
+  { agentType: 'sc:remote', label: 'survey-mcp' })
+
+const fix = await agent('strategy: direct-pr\nFix the flaky test in tests/unit/mcp/test_x.py.',
+  { agentType: 'sc:remote', label: 'fix-flake' })
+
+const counts = await agent('Count the TODO markers per package.',
+  { agentType: 'sc:remote', schema: { type: 'object', properties: { counts: { type: 'object' } }, required: ['counts'] } })
+```
+
+It dispatches the prompt as ONE `claude-code` task on this session's
+repository and pushed branch, with strategy `collect` — or `direct-pr` when
+the prompt's first line is `strategy: direct-pr`, which it removes. It follows
+the task until it finishes and returns the remote agent's answer. When the call
+passes a `schema`, it appends one instruction to the prompt asking the remote
+agent to END its answer with a JSON object matching that schema, and returns
+the object the bridge parses out of the answer. When the task fails, it returns
+the state, the last error and the task id, never an answer of its own; in
+schema mode the calling workflow then receives `null` for that step, unless the
+schema itself has a field for a state or an error.
+
+**A whole SwarmCloud workflow: `/sc:run`.** Its argument is a SwarmCloud
+workflow spec — the same object `swarm workflow` reads. One `sc:workflow` agent
+submits it (phase `Submit`), and SwarmCloud owns the DAG from then on:
+dependencies, `input_from` staging, `on_step_failure`, retries. The script
+starts one `sc:step` row per step, labelled with its `step_id`, under phase
+`Level N` — its depth in the DAG — or under the step's `stage` when the spec
+gives one (`stage` is display-only and never sent). A row follows its own task
+only, so it may start before its parents finish; it then says it is waiting,
+and why, in its first lines, and a waiting task holds no capacity. Each
+finished step is one narrator line, `scan-03 SUCCEEDED · 4m12s · $0.21 · PR #231`.
+The run returns every step's result and the workflow's state as
+`swarm_workflow_status` reads it — derived by the server, never by the script.
+
+All three agents run on **haiku at low effort** (`model` and `effort` in their
+frontmatter), load no `CLAUDE.md`, and can call only the SwarmCloud tools they
+need — `sc:remote` dispatch and follow, `sc:step` follow, `sc:workflow` submit
+and read — listed under both of the bridge's names (below).
+
+### What differs from a local step — read before swapping one in
+
+| | A local `agent()` step | The same step through `sc:remote` or `/sc:run` |
+|---|---|---|
+| What it knows | the prompt, the session's files, its own tools | **only its prompt**. No conversation, no other step's output — except, under `/sc:run`, the `input_from` files SwarmCloud stages |
+| Which code it sees | the working tree, uncommitted edits included | a **depth-1 clone of the pushed branch**: no history, no uncommitted work. The bridge refuses a branch that is unpushed or has unpushed commits, and names uncommitted changes as invisible |
+| Tools | the session's tools, MCP servers and permission rules | the `claude-code` runner's own tools inside its container; none of the session's MCP servers or permission rules |
+| Model | the workflow's `model` option, or the session's | **pinned on the job**: the profile's model. A caller cannot choose it (invariant 10), so a `model` option on the `agent()` call changes only the local row's model |
+| Tokens in `/workflows` | the step's own | **the row's** — haiku relaying the remote run. The remote agent's spend is the outcome's `cost_usd`, drawn from the shared subscription pool; `null` means not recorded, never $0 |
+| Stopping the row | stops the step | stops the ROW only. The SwarmCloud task keeps running; cancel it with `swarm_cancel`, or `swarm workflow-cancel` for a workflow |
+| Relaunching the run | re-runs agents that did not finish | the same, and for `sc:remote` a re-run row DISPATCHES AGAIN — a second task. Under `/sc:run` the finished `Submit` is replayed from cache, so rows re-follow the same tasks |
+| Concurrency | the workflow's agent cap | rows beyond the cap start later; their tasks run on SwarmCloud's schedule regardless |
+
+**Which checkout is inferred.** The bridge reads the git checkout of the
+directory its MCP server was started in — the session's working directory at
+start. A session that later moved into a worktree can point it elsewhere with
+`SWARM_CHECKOUT_DIR` in the environment Claude Code starts from. Outside any
+checkout nothing is cloned, and the dispatch reply says so rather than leaving
+a null.
+
+### What the bridge gained for it
+
+* `swarm_dispatch` takes `strategy` (`collect` | `direct-pr`) and
+  `no_repository`, and infers `repo`/`ref` from the checkout when neither is
+  given: the ref is the upstream branch's name on the remote, the URL is made
+  https and stripped of any credential, and the reply carries a `repository`
+  block saying what will be cloned and how that was decided.
+* `swarm_follow` takes `since` — the cursor as one opaque token — and
+  `format: "lines"`: claude-code's `stream-json` narrated as short lines,
+  capped per call with the count left out stated, a `wait_seconds` window that
+  returns early when a task finishes or starts, and, for a finished task, an
+  `outcome` with the whole answer (from the API's `/v1/tasks/{id}/answer`,
+  which reads the agent stream's final `result` event, because the runner's
+  summary keeps only its first 2000 characters), `answer_json`, `cost_usd`,
+  `duration_s`, `pr_url`, `artifacts`, `last_error` and, on a failure,
+  `failure`. The narrated stream is the AGENT's own (`agent_stdout`), not the
+  runner's JSON log; a runner with no agent CLI, such as `mock`, is read from
+  its own streams instead.
+* `swarm_workflow` takes `spec`, a whole `swarm workflow` spec, read by the
+  same function the terminal uses, and infers the repository the same way.
+* The stdio loop answers tool calls concurrently. It answered one at a time,
+  so a single `swarm_wait` held every other call, and a dozen rows each
+  following their task for a window would have queued behind one another.
+
+None of it adds a model, an image, a command or a resource parameter.
+
 ## What keeps these honest
 
-Four files, all in `make test`, all offline — bar one test, which CI runs:
+Six files, all in `make test`, all offline — bar one test, which CI runs:
 
 `tests/unit/mcp/test_plugin_bridge_install.py` covers whether the server can
 **start** on a machine that has only the plugin: the declaration names nothing
@@ -465,3 +574,22 @@ writes, and that the skill never tells a session a tool which exists is missing.
 file or this README must be one the argparse parsers really accept, nothing the
 bridge returns may tell a model to run a bare `swarm`, and the marketplace
 manifest must exist and agree with `plugin.json` about this plugin's name.
+
+`tests/unit/mcp/test_plugin_agents_and_workflows.py` covers the agents and
+`/sc:run`, whose loader fails quietly: a plugin agent whose frontmatter does not
+parse loads with every field ignored, and `mcpServers`, `permissionMode`,
+`hooks` and `initialPrompt` do nothing in a plugin agent. Each
+`plugin/agents/*.md` must parse strictly, use only the keys a plugin agent
+honours, pin haiku at low effort, and grant exactly the SwarmCloud tools it
+needs under both names. `run.js` must open with a pure-literal `meta` and read
+only the workflow globals — and it is RUN, under node with those globals
+stubbed, to prove it submits once, starts one `sc:step` row per step by level
+or stage, narrates each step in one line and returns the state SwarmCloud
+derived. CI fails rather than skips when node is missing.
+
+`tests/unit/mcp/test_remote_steps_bridge.py` covers what those agents need from
+the bridge: the inferred repository and every refusal of an unpushed branch,
+the dispatch `strategy`, `since`, the narrated lines, the gathering window and
+the outcome against the real logs, events and attempts routes, the spec-shaped
+workflow submit, and a stdio loop in which one blocked call does not hold the
+next.

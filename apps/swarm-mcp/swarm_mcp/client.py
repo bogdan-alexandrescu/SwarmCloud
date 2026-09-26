@@ -1041,6 +1041,7 @@ class SwarmClient:
         timeout_seconds: int | None = None,
         model: str | None = None,
         inputs: dict[str, Any] | None = None,
+        strategy: str | None = None,
     ) -> dict[str, Any]:
         """Submit one task.
 
@@ -1063,6 +1064,13 @@ class SwarmClient:
         the task record says and never what runs. That is deliberate rather than
         unfinished; choosing a model per task is an execution parameter from a
         caller, which invariant 10 forbids without a contract change.
+
+        `strategy` is how the work comes back -- `collect` (the API's default:
+        the patch is harvested, nothing is pushed) or `direct-pr` (the agent's
+        branch is pushed and a pull request opened). It is a delivery choice,
+        not an execution parameter: it selects no image, command, resource or
+        model. Sent only when given, so a caller that names none gets exactly
+        the payload it got before the field existed.
         """
         payload: dict[str, Any] = {
             "runner_profile": runner_profile,
@@ -1077,6 +1085,8 @@ class SwarmClient:
             payload["timeout_seconds"] = timeout_seconds
         if model:
             payload["model"] = model
+        if strategy:
+            payload["strategy"] = strategy
         # UNWRAPPED HERE, not by each caller. `cmd_dispatch` printed
         # `task.get("task_id", "")` off the envelope and printed an empty line,
         # which a shell then piped into `swarm tail`.
@@ -1165,6 +1175,26 @@ class SwarmClient:
             raise SwarmError(
                 f"GET /v1/tasks/{task_id}/logs answered without a `streams` list; "
                 "this deployment's logs route is not the one this client speaks to"
+            )
+        return data
+
+    def answer(self, task_id: str, *, attempt_id: str | None = None) -> dict[str, Any]:
+        """`GET /v1/tasks/{id}/answer`: the agent's final answer, as the route serves it.
+
+        NOT FLATTENED TO THE TEXT. The route says which of four things is true
+        -- `ok`, `not_yet`, `absent`, `unreadable` -- and where the answer came
+        from: the last `result` event of the agent's own stdout, whole, or the
+        runner's summary, which is cut at 2,000 characters and marked
+        `complete: false` when it may have been. A caller that kept only
+        `content` could not tell a cut answer from a whole one, or a failed
+        read from an agent that said nothing.
+        """
+        query = f"?{urllib.parse.urlencode({'attempt_id': attempt_id})}" if attempt_id else ""
+        data = self.request("GET", f"/v1/tasks/{task_id}/answer{query}")
+        if not isinstance(data, dict) or "status" not in data:
+            raise SwarmError(
+                f"GET /v1/tasks/{task_id}/answer answered without a `status`; this "
+                "deployment's answer route is not the one this client speaks to"
             )
         return data
 
