@@ -17,7 +17,7 @@ from pathlib import Path
 from swarm_common.config import Settings
 from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES, RunnerProfile, resolve_backend
 
-from . import standalone_outputs
+from . import artifact_manifest, standalone_outputs
 from .errors import ConfigError
 
 
@@ -92,6 +92,13 @@ class WorkerConfig:
     max_stdout_bytes: int = 32 * 1024 * 1024
     max_stderr_bytes: int = 8 * 1024 * 1024
     max_artifact_bytes: int = 512 * 1024 * 1024
+    #: At most this many files are uploaded from `$SWARM_ARTIFACTS_DIR` per
+    #: attempt: 500, the owner's number (#228, 2026-09-26). Each is an entry in
+    #: `result_summary.artifacts`, on the task's Firestore document, which holds
+    #: 1 MiB; about 6,000 small files took it past that. The rest are counted
+    #: and named in the log. The order they are taken in, and the bound on a
+    #: name's length that keeps 500 entries small, are in `artifact_manifest`.
+    max_artifact_files: int = artifact_manifest.MAX_FILES
     max_checkpoint_bytes: int = 2 * 1024 * 1024 * 1024
     #: What a CLI agent with no repository may have uploaded from its working
     #: folder, per attempt: 50 files and 25 MiB in total. The owner's numbers

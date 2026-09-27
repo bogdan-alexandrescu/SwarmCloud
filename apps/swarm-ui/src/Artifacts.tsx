@@ -20,6 +20,7 @@ import { attemptLine, servedAge, Stream, useRead } from './RunFiles'
 import { Id, Screen, type ScreenReading } from './Shell'
 import {
   ageSpan,
+  artifactsOverCapOf,
   bytesLabel,
   TERMINAL_STATES,
   type ArtifactEntry,
@@ -609,6 +610,7 @@ function Outputs({ v }: { v: ArtifactsView }) {
       <h2>Outputs</h2>
       <Answer v={v} />
       <Files v={v} />
+      <OverCap v={v} />
       <NotUploaded v={v} />
     </section>
   )
@@ -622,7 +624,7 @@ function Outputs({ v }: { v: ArtifactsView }) {
  * dump, a name that is not UTF-8 or is too long to be an object's, a key it
  * could not take out. None of it was drawn. These are not rows of the file
  * list, because none of them can be downloaded, and not the file list's
- * "over cap" note, which is the artifacts folder's size cap. The summary
+ * "skipped" note, which is the artifacts folder's own. The summary
  * lists the first 50; the worker's log names every one, and the line under
  * the table says so rather than implying the list is whole.
  */
@@ -666,15 +668,58 @@ function NotUploaded({ v }: { v: ArtifactsView }) {
         </div>
       )}
       {rest > 0 && (
-        <p className="att-none">
-          <Mark
-            kind="partial"
-            say={`The attempt's result lists the first ${listed.length} of the ${total} files the worker did not upload from the working folder. The worker's log names every one.`}
-          />{' '}
+        <InWorkerLog
+          say={`The attempt's result lists the first ${listed.length} of the ${total} files the worker did not upload from the working folder. The worker's log names every one.`}
+        >
           {rest} more, named in the worker log
-        </p>
+        </InWorkerLog>
       )}
     </div>
+  )
+}
+
+/**
+ * THE FILES IN $SWARM_ARTIFACTS_DIR PAST THE PER-ATTEMPT FILE CAP (#228, owner
+ * decision of 2026-09-26). The worker uploads at most 500 files from the
+ * folder, because each is an entry in the task's Firestore document and a
+ * document holds 1 MiB; about 6,000 small files would have cost the task its
+ * result. The rest are not uploaded, the summary COUNTS them
+ * (`artifacts_over_cap`) and lists none, and the worker's log names every
+ * one, 100 to a line. So this is a count and #225's count line, not a table:
+ * there are no names here to draw. Without it the file list would read as
+ * the whole of what the agent wrote. The cap is read from the summary
+ * (`artifacts_cap_files`), never restated here.
+ */
+function OverCap({ v }: { v: ArtifactsView }) {
+  const over = artifactsOverCapOf(v.task.result_summary as ResultSummary | null)
+  if (over === null) return null
+  const cap = over.cap === null ? 'file cap' : `${over.cap}-file cap`
+  return (
+    <div className="arts-block arts-overcap">
+      <div className="ctl-toolbar att-sub-head">
+        <span className="ctl-eyebrow">not uploaded from $SWARM_ARTIFACTS_DIR</span>
+        <span className="count-chip">{over.count}</span>
+      </div>
+      <InWorkerLog
+        say={`The worker uploads at most ${over.cap === null ? 'a fixed number of' : over.cap} files from $SWARM_ARTIFACTS_DIR per attempt, because each is an entry in the task's record, which has a size limit. ${over.count} more ${over.count === 1 ? 'was' : 'were'} there and ${over.count === 1 ? 'was' : 'were'} not uploaded. The worker's log names every one.`}
+      >
+        {over.count} over the {cap}, named in the worker log
+      </InWorkerLog>
+    </div>
+  )
+}
+
+/**
+ * THE LINE UNDER A NOT-UPLOADED BLOCK: a mark that says what is drawn is not
+ * the whole, and where the rest are named. #225 drew it for the working
+ * folder's files past the first 50; #228's artifacts-folder cap draws the
+ * same line, so the two read alike.
+ */
+function InWorkerLog({ say, children }: { say: string; children: ReactNode }) {
+  return (
+    <p className="att-none">
+      <Mark kind="partial" say={say} /> {children}
+    </p>
   )
 }
 
@@ -917,14 +962,20 @@ function Files({ v }: { v: ArtifactsView }) {
       </span>,
     )
   }
+  // `artifacts_skipped` names files written to $SWARM_ARTIFACTS_DIR and not
+  // uploaded for more than the size cap: an upload that failed, a name that
+  // is not UTF-8 (#225 review), and a name longer than a manifest entry may
+  // carry (#228), which is listed cut short. So the note says "skipped", not
+  // "over cap", and its words name every reason. The files past the FILE cap
+  // are not here; they are counted under Outputs (`OverCap`).
   if (skipped.length > 0) {
     notes.push(
       <span key="skipped">
         <Mark
           kind="partial"
-          say={`At least ${skipped.length} file${skipped.length === 1 ? ' was' : 's were'} dropped at the size cap, so this list is incomplete: ${skipped.join(', ')}`}
+          say={`At least ${skipped.length} file${skipped.length === 1 ? ' was' : 's were'} written and not uploaded -- over the size cap, a name too long or not valid UTF-8, or an upload that failed -- so this list is incomplete: ${skipped.join(', ')}`}
         />{' '}
-        {skipped.length} over cap
+        {skipped.length} skipped
       </span>,
     )
   }
