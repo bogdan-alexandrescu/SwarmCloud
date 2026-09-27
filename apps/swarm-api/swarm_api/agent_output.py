@@ -928,16 +928,21 @@ def _align_lines(
     return raw, start, start + len(raw), False, None
 
 
-def _scrub(data: bytes) -> bytes:
+def _scrub(data: bytes, *, literals: tuple[str, ...] = ()) -> bytes:
     """One window of a text download, redacted, every other byte exactly as stored.
 
     `surrogateescape` both ways (#188 review): a byte that is not UTF-8 becomes
     a lone surrogate, which no rule matches and the encode turns back into the
     same byte. It used to be `errors="replace"`, which turned every such byte
     into U+FFFD -- a Latin-1 CSV downloaded corrupted, and nothing said so.
+
+    `redact_lines`, not `redact` alone (the PR #229 review): a window that IS
+    a whole JSON line is masked by its structure too, exactly as
+    `/artifacts/content` masks the same bytes, and `literals` -- this task's
+    own learned literals -- are applied in every case, the same as there.
     """
     text = data.decode("utf-8", errors="surrogateescape")
-    return redact(text).text.encode("utf-8", errors="surrogateescape")
+    return redact_lines(text, literals=literals).text.encode("utf-8", errors="surrogateescape")
 
 
 def _char_boundary(data: bytes) -> int:
