@@ -111,7 +111,9 @@ ARG SETUPTOOLS_VERSION=80.9.0
 ARG WHEEL_VERSION=0.46.2
 ARG INSTALL_AGENT_CLIS=1
 # Pinned on 2026-09-15; CI bumps these deliberately rather than by rebuilding.
-ARG CLAUDE_CODE_VERSION=2.1.273
+# Claude Code 2.1.283 (2026-09-27): 2.1.273 refused the pinned MODEL=claude-opus-5-5
+# as unrecognized_model, so every claude-code task failed (task_2ad43c35a18448fca83b).
+ARG CLAUDE_CODE_VERSION=2.1.283
 ARG CODEX_VERSION=0.154.0
 
 ENV DEBIAN_FRONTEND=noninteractive \
