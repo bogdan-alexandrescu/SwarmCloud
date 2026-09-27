@@ -1108,9 +1108,10 @@ describe('the overflow inventory, as rules that cannot be quietly dropped', () =
     // 1`, and it never took effect: both wrappers are `overflow-x: auto`, which
     // makes the wrapper the head's scroll container on both axes, and no
     // wrapper ever scrolls vertically. What it did do was draw every head cell
-    // as a layer of its own, the likely source of the faint seams at the
-    // Workflows Table's fractional column edges. MUTATION: put `position:
-    // sticky` back on either head.
+    // as a layer of its own. (It was taken for the source of the faint seams
+    // at the Workflows Table's fractional column edges; the dev check at
+    // release 350c244 found them still there without it -- #178, and the
+    // WF-21 case below.) MUTATION: put `position: sticky` back on either head.
     const stickyHeads = flatRules(STYLES).filter(
       (r) => /thead\s+th/.test(r.selector) && /position:\s*sticky/.test(r.body),
     )
@@ -1137,6 +1138,447 @@ describe('the overflow inventory, as rules that cannot be quietly dropped', () =
       'the drag handle must stay above the band and the ✕ at the drawer\'s top edge',
     ).toBeGreaterThan(z(close))
     style.remove()
+  })
+
+  /**
+   * WF-21 (#178) — THE TABLE HEAD'S FILL IS ON `thead`, NOT ON EACH `th`, AND
+   * `thead` ALSO PAINTS IT AS ONE RECTANGLE.
+   *
+   * Checked on dev at release 350c244 (2026-09-26): with the head no longer
+   * sticky (#160, the case above), the Workflows Table still showed a 1px line
+   * of ground at four fractional column edges -- runner|waited at x=592.391,
+   * waited|ran 671.398, attempts|cost 883.594, cost|tokens 1033.648 -- in light
+   * and in dark, and none at the edges that sit on whole pixels.
+   *
+   * MOVING THE FILL TO `thead` DID NOT REMOVE THAT SEAM. Chrome paints a row
+   * group's background into each cell's rect (the CSS table-layer model), so a
+   * fill on `thead` is painted with exactly the per-cell geometry of the `th`
+   * fill it replaced. Measured in Chrome 153.0.8010.53 at 2x with this sheet:
+   * the two render pixel-identically, and under a 0.37px translate -- the only
+   * way the seam has been reproduced off dev -- both seam at 8 of 8 column
+   * edges. What makes dev paint the cells on that path is not identified.
+   *
+   * SO `thead` ALSO PAINTS ITS FILL AS ONE RECTANGLE (owner decision,
+   * 2026-09-26, recorded on #178 and #223): an inset `box-shadow` of the same
+   * `--surface-2`, which Chrome paints once for the whole row group. In the
+   * same measurement it seamed at 0 of 8 edges, in both themes. The background
+   * stays under it for an engine that does not paint a row group's shadow.
+   *
+   * WHAT THIS HOLDS, so neither half is undone without a decision: `thead`
+   * resolves to `--surface-2` and carries the inset shadow in the same colour,
+   * and no head cell paints a fill of its own -- under any name -- except the
+   * held corner below 900px (CH-13, design-system §7.3). The corner is sticky
+   * and the other head cells scroll under it, so it has to be opaque; it paints
+   * the same `--surface-2`, from ONE rule that matches only the corner: the
+   * first cell of the head's FIRST row, and not a cell that spans columns. The
+   * first cell of a grouped head's SECOND row (Tenants' `Max active`) is not the
+   * corner, is not held, and paints nothing.
+   *
+   * jsdom has no layout, so none of this sees a seam. It holds what is
+   * declared; the 1440 screenshots on dev after the release are the check.
+   *
+   * MUTATIONS: put a `background` back on `.ctl-table thead th` or on
+   * `table.pools thead th`, or on any rule that reaches a head cell by another
+   * name (a bare `th`, `.ctl-table th`, `th[aria-sort]`, `[role=columnheader]`,
+   * `.wf-table th[data-col]`, `tr > th`); drop the fill or the shadow from
+   * either `thead`; widen the corner's rules to every head row, or to a cell
+   * that spans columns; give the held rule's head branch a fill of its own.
+   */
+  describe('WF-21 (#178): the table head fill is on thead, and thead paints it as one rectangle', () => {
+    const THEMES = ['dark', 'light'] as const
+    const WIDTHS = [1440, 390] as const
+    const FILL = ['background', 'background-color'] as const
+    /** The one rule in the sheet that gives a head cell a fill, and where it lives. */
+    const CORNER = '.is-scroll > table > thead > tr:first-child > th:first-child:not([colspan])'
+    const PHONE_BLOCK = '@media (max-width: 899px)'
+
+    /** Tenants' grouped head (AH-12), as `Activity.tsx` draws it: the name's head spans both rows. */
+    const TENANTS =
+      '<div class="table-wrap is-scroll"><table class="pools"><thead>' +
+      '<tr><th role="columnheader" scope="col" rowspan="2">Tenant</th>' +
+      '<th role="columnheader" scope="colgroup" colspan="2" class="n">Configured</th>' +
+      '<th role="columnheader" scope="col" rowspan="2">Kind</th></tr>' +
+      '<tr><th role="columnheader" scope="col" class="n">Max active</th>' +
+      '<th role="columnheader" scope="col" class="n">Units</th></tr>' +
+      '</thead><tbody><tr><th role="rowheader" scope="row">eng</th><td class="n">20</td><td class="n">20</td>' +
+      '<td>group</td></tr></tbody></table></div>'
+
+    /**
+     * The head rules in the sheet, each with a numeric column whose own class
+     * must not bring a fill back, in scrolling tables so the held corner is in
+     * them:
+     *  - `.ctl-table`, plain;
+     *  - THE WORKFLOWS TABLE'S OWN HEAD, as `WorkflowTable` draws it: `.wf-table`,
+     *    each cell a `data-col`, the sorted one with `aria-sort`, each label a
+     *    sort button. It is the table the seams were measured on;
+     *  - `table.pools`, with the explicit `role="columnheader"` Runtimes,
+     *    Tenants and API reads draw;
+     *  - Tenants' grouped head, where the first cell of the second row is a
+     *    figure's head from the middle of the table.
+     */
+    function heads(): HTMLElement {
+      const host = document.createElement('div')
+      host.innerHTML =
+        '<div class="ctl-table is-scroll"><table><thead><tr>' +
+        '<th scope="col">Step</th><th scope="col">Runner</th><th scope="col" class="is-num">Cost</th>' +
+        '</tr></thead><tbody><tr><th scope="row">plan</th><td>claude-code</td><td class="is-num">$0.10</td></tr></tbody></table></div>' +
+        '<div class="ctl-table wf-table is-scroll"><table><thead><tr>' +
+        '<th data-col="step" aria-sort="ascending"><button type="button" class="wf-sort">Step</button></th>' +
+        '<th data-col="runner"><button type="button" class="wf-sort">Runner</button></th>' +
+        '<th data-col="cost" class="is-num"><button type="button" class="wf-sort">Cost</button></th>' +
+        '</tr></thead><tbody><tr><td data-col="step">plan</td><td data-col="runner">claude-code</td>' +
+        '<td data-col="cost" class="is-num">$0.10</td></tr></tbody></table></div>' +
+        '<div class="table-wrap is-scroll"><table class="pools"><thead><tr>' +
+        '<th role="columnheader" scope="col">Pool</th><th role="columnheader" scope="col">Scope</th>' +
+        '<th role="columnheader" scope="col" class="n">Units free</th>' +
+        '</tr></thead><tbody><tr><th scope="row">global</th><td>platform</td><td class="n">5</td></tr></tbody></table></div>' +
+        TENANTS
+      document.body.appendChild(host)
+      expect(host.querySelectorAll('thead').length).toBe(4)
+      expect(host.querySelectorAll('thead th').length).toBe(14)
+      return host
+    }
+
+    /** The held corner: the first cell of the head's FIRST row, spanning one column. */
+    const isCorner = (th: Element): boolean =>
+      th === th.closest('thead')!.firstElementChild!.firstElementChild && !th.hasAttribute('colspan')
+
+    const won = (el: Element, prop: string | readonly string[], env: CascadeEnv): string | null => {
+      const r = cascade(STYLES, el, prop, env)
+      expect(r.unsupported, 'selectors the resolver could not evaluate').toEqual([])
+      return r.winner?.value ?? null
+    }
+
+    // MUTATION: drop the fill from `.ctl-table thead` or `table.pools thead`.
+    it('fills thead with --surface-2 in both themes, at 1440 and at 390', () => {
+      const host = heads()
+      try {
+        let asked = 0
+        for (const theme of THEMES) {
+          const tokens = tokenTables(STYLES)[theme]
+          // A STEP IN BOTH THEMES: `--surface-2` is declared for each, and it
+          // is not the panel's own `--surface`, or the head would be painted
+          // and invisible.
+          expect(resolveVars('var(--surface-2)', tokens).trim(), `${theme}: --surface-2 is the panel's own fill`).not.toBe(
+            resolveVars('var(--surface)', tokens).trim(),
+          )
+          for (const width of WIDTHS) {
+            for (const thead of host.querySelectorAll('thead')) {
+              expect(
+                won(thead, FILL, { width, theme }),
+                `${theme} at ${width}: \`${thead.closest('table')!.className || '.ctl-table > table'} thead\` does not carry the head's fill`,
+              ).toBe('var(--surface-2)')
+              asked += 1
+            }
+          }
+        }
+        expect(asked).toBe(THEMES.length * WIDTHS.length * 4)
+      } finally {
+        host.remove()
+      }
+    })
+
+    // MUTATION: drop the inset shadow from `.ctl-table thead` or
+    // `table.pools thead`, give it another colour than the fill's, or make it
+    // an outer shadow (which paints outside the head, not in it).
+    it('paints the head fill as one rectangle too: an inset --surface-2 shadow on thead', () => {
+      const host = heads()
+      try {
+        let asked = 0
+        for (const theme of THEMES) {
+          for (const width of WIDTHS) {
+            for (const thead of host.querySelectorAll('thead')) {
+              // `?? 'none'`: a head with no shadow at all must fail on this
+              // message, not on `toMatch` refusing a null (the first red run).
+              const v = won(thead, 'box-shadow', { width, theme }) ?? 'none'
+              expect(
+                v,
+                `${theme} at ${width}: \`${thead.closest('table')!.className || '.ctl-table > table'} thead\` ` +
+                  'has no one-rectangle fill, so its cells seam at fractional edges',
+              ).toMatch(/^inset\s+0\s+0\s+0\s+100vmax\s+var\(--surface-2\)$/)
+              asked += 1
+            }
+          }
+        }
+        expect(asked).toBe(THEMES.length * WIDTHS.length * 4)
+      } finally {
+        host.remove()
+      }
+    })
+
+    // MUTATION: put a `background` back on `.ctl-table thead th` or
+    // `table.pools thead th`, or give one to any rule that reaches a head cell
+    // (a bare `th`, `.ctl-table th`, `.is-num`, `th[aria-sort]`,
+    // `[role=columnheader]`); take the held corner's fill away, so the head
+    // cells scrolling under it show through; or widen the corner's rules to
+    // every head row, which fills `Max active`.
+    it('gives no head cell a fill of its own but the held corner below 900px', () => {
+      const host = heads()
+      try {
+        let asked = 0
+        let corners = 0
+        for (const theme of THEMES) {
+          for (const width of WIDTHS) {
+            const env: CascadeEnv = { width, theme }
+            for (const th of host.querySelectorAll('thead th')) {
+              const v = won(th, FILL, env)
+              if (width < 900 && isCorner(th)) {
+                // The held corner: sticky, so it paints, and in the head's colour.
+                expect(won(th, 'position', env), `${theme}: the corner that paints is not held`).toBe('sticky')
+                expect(v, `${theme}: the held corner is see-through, or not the head's colour`).toBe('var(--surface-2)')
+                corners += 1
+              } else {
+                expect(
+                  v,
+                  `${theme} at ${width}: head cell "${th.textContent}" paints a fill of its own; the head's fill is ` +
+                    'on thead (#178)',
+                ).toBeNull()
+              }
+              asked += 1
+            }
+          }
+        }
+        expect(asked).toBe(THEMES.length * WIDTHS.length * 14)
+        // One corner per table, at 390 only, in each theme.
+        expect(corners).toBe(THEMES.length * 4)
+      } finally {
+        host.remove()
+      }
+    })
+
+    /**
+     * A HEAD WITH TWO ROWS, IN EVERY PLACE A HELD RULE NAMES A HEAD CELL
+     * (#223's review). Four of them:
+     *  - Tenants', as drawn: the name's head spans both rows, so the first
+     *    cell of the second row is `Max active`;
+     *  - one that opens with a group spanning the name column, so the head's
+     *    first cell spans two columns and is the head of no one column;
+     *  - Pools' family table and Profile headroom's table (CP-18), which below
+     *    900px restate the held ceiling on their head's first cell because
+     *    CP-18's own percentage widths out-rank it -- the restatement is a held
+     *    rule too, and it must name the same one corner.
+     * At 390 each is scrolling with its name column held: only a corner that is
+     * the first row's first cell AND one column wide is held, carries the held
+     * width, and paints. Every other head cell is not sticky, takes no held
+     * width, and paints nothing. At 1440 nothing is held and nothing paints.
+     *
+     * MUTATION: widen the held rule's head branch, the corner's rule, or either
+     * CP-18 restatement back to every head row (`thead > tr > th:first-child`),
+     * or drop `:not([colspan])` from any of them.
+     */
+    it('holds, sizes and fills only the real corner of a two-row head, in both themes, at 1440 and 390', () => {
+      const host = document.createElement('div')
+      host.innerHTML =
+        TENANTS +
+        '<div class="table-wrap is-scroll"><table class="pools"><thead>' +
+        '<tr><th role="columnheader" scope="colgroup" colspan="2">Identity</th>' +
+        '<th role="columnheader" scope="col" rowspan="2" class="n">Seats</th></tr>' +
+        '<tr><th role="columnheader" scope="col">Name</th><th role="columnheader" scope="col">Group</th></tr>' +
+        '</thead><tbody><tr><th role="rowheader" scope="row">eng</th><td>group</td><td class="n">20</td></tr></tbody></table></div>' +
+        '<div class="cap-families"><div class="ctl-table is-scroll"><table><thead>' +
+        '<tr><th scope="col" rowspan="2">Family</th><th scope="colgroup" colspan="2" class="is-num">Units</th></tr>' +
+        '<tr><th scope="col" class="is-num">In use</th><th scope="col" class="is-num">Ceiling</th></tr>' +
+        '</thead><tbody><tr><th scope="row">global</th><td class="is-num">3</td><td class="is-num">8</td></tr></tbody></table></div></div>' +
+        '<section class="section panel"><dl class="kv"><dt>weight</dt><dd>1</dd></dl><div class="table-wrap is-scroll">' +
+        '<table class="pools"><thead>' +
+        '<tr><th scope="col" rowspan="2">Headroom</th><th scope="colgroup" colspan="2" class="n">Units</th></tr>' +
+        '<tr><th scope="col" class="n">Free</th><th scope="col" class="n">Held</th></tr>' +
+        '</thead><tbody><tr><th scope="row">global</th><td class="n">5</td><td class="n">3</td></tr></tbody></table></div></section>'
+      document.body.appendChild(host)
+      try {
+        expect(host.querySelectorAll('thead').length).toBe(4)
+        expect(host.querySelectorAll('thead > tr:nth-child(2)').length, 'a fixture head lost its second row').toBe(4)
+        const CORNERS = ['Tenant', 'Family', 'Headroom']
+        const HELD = /min\(45vw,\s*20ch\)/
+        let asked = 0
+        let held = 0
+        for (const theme of THEMES) {
+          for (const width of WIDTHS) {
+            const env: CascadeEnv = { width, theme }
+            for (const th of host.querySelectorAll('thead th')) {
+              const name = (th.textContent ?? '').trim()
+              const position = won(th, 'position', env) ?? 'static'
+              const fill = won(th, FILL, env)
+              if (width < 900 && CORNERS.includes(name)) {
+                expect(position, `${theme} at ${width}: the corner "${name}" is not held`).toBe('sticky')
+                expect(won(th, 'width', env), `${theme}: the corner "${name}" lost the held width`).toMatch(HELD)
+                expect(fill, `${theme}: the corner "${name}" is see-through, or not the head's colour`).toBe(
+                  'var(--surface-2)',
+                )
+                held += 1
+              } else {
+                expect(position, `${theme} at ${width}: head cell "${name}" is held, and it is not the corner`).not.toBe(
+                  'sticky',
+                )
+                expect(won(th, 'width', env) ?? 'auto', `${theme} at ${width}: head cell "${name}" takes the held width`).not.toMatch(
+                  HELD,
+                )
+                expect(won(th, 'min-width', env) ?? '0', `${theme} at ${width}: head cell "${name}" takes the held floor`).not.toMatch(
+                  HELD,
+                )
+                expect(fill, `${theme} at ${width}: head cell "${name}" paints a fill of its own`).toBeNull()
+              }
+              asked += 1
+            }
+          }
+        }
+        expect(asked).toBe(THEMES.length * WIDTHS.length * 17)
+        // Three real corners, at 390 only, in each theme; the spanning group is not one.
+        expect(held).toBe(THEMES.length * CORNERS.length)
+      } finally {
+        host.remove()
+      }
+    })
+
+    /**
+     * A selector branch's compounds, split at its combinators -- whitespace,
+     * `>`, `+`, `~` -- outside brackets, parentheses and quotes, so
+     * `:not([scope="row"])` and `:is(th, td)` stay whole. `next` is the
+     * combinator after the compound: `' '` or `'>'` makes it an ancestor of
+     * what follows, `'+'` or `'~'` a sibling, `''` the subject.
+     */
+    function compounds(branch: string): { text: string; next: string }[] {
+      const out: { text: string; next: string }[] = []
+      let cur = ''
+      let comb = ''
+      let depth = 0
+      let quote = ''
+      const flush = (): void => {
+        if (cur !== '') out.push({ text: cur, next: '' })
+        cur = ''
+      }
+      for (const c of branch.trim()) {
+        if (quote !== '') {
+          cur += c
+          if (c === quote) quote = ''
+          continue
+        }
+        if (depth === 0 && /[\s>+~]/.test(c)) {
+          flush()
+          if (!/\s/.test(c)) comb = c
+          else if (comb === '') comb = ' '
+          continue
+        }
+        if (cur === '' && out.length > 0) {
+          out[out.length - 1]!.next = comb
+          comb = ''
+        }
+        if (c === '"' || c === "'") quote = c
+        else if (c === '(' || c === '[') depth += 1
+        else if (c === ')' || c === ']') depth -= 1
+        cur += c
+      }
+      flush()
+      return out
+    }
+    const typeOf = (compound: string): string => (/^(?:[a-z][a-z0-9-]*|\*)/i.exec(compound)?.[0] ?? '').toLowerCase()
+    const namesTh = (compound: string): boolean =>
+      typeOf(compound) === 'th' || /:(?:is|where)\((?:[^)]*[\s,])?th\b/.test(compound)
+    /** Names a head cell by what it is, whatever its tag. */
+    const HEAD_CELL = /\[\s*(?:role\s*=\s*["']?columnheader|aria-sort|scope\s*=\s*["']?col(?:group)?["']?\s*\]|data-col)/
+    /** Names a body cell by what it is. */
+    const BODY_CELL = /\[\s*(?:role\s*=\s*["']?(?:rowheader|cell)|scope\s*=\s*["']?row)/
+
+    /**
+     * Whether a selector branch can land on a head cell, however it is
+     * written. What gets the fill is its SUBJECT, the last compound, so that is
+     * what is read:
+     *  - a subject inside a head cell (`thead th .wf-sort`), a pseudo-element
+     *    (`th::after`), a body cell by name (`[scope=row]`, `[role=rowheader]`)
+     *    or anything under `tbody` / `tfoot` is not a head cell;
+     *  - a `th` subject is one wherever it is not ruled out that way --
+     *    `.ctl-table th`, `tr > th`, `th[aria-sort]`, `.wf-table th[data-col]`,
+     *    `:is(th, td)`, none of which says `thead`;
+     *  - an untyped subject is one when it names a head cell
+     *    (`[role=columnheader]`, `[aria-sort]`, `[scope=col]`, `[data-col]`) or
+     *    sits under a `thead`;
+     *  - a `tr` or `td` under a `thead` is one too: a row's fill is painted
+     *    into each cell's rect, the geometry #178 is about.
+     */
+    function reachesHeadCell(branch: string): boolean {
+      const parts = compounds(branch)
+      const subject = parts[parts.length - 1]?.text ?? ''
+      const ancestors = parts.slice(0, -1).filter((p) => p.next === ' ' || p.next === '>').map((p) => p.text)
+      if (subject.includes('::')) return false
+      if (ancestors.some(namesTh)) return false
+      if (BODY_CELL.test(subject)) return false
+      if (ancestors.some((a) => typeOf(a) === 'tbody' || typeOf(a) === 'tfoot')) return false
+      const inHead = ancestors.some((a) => typeOf(a) === 'thead')
+      const t = typeOf(subject)
+      if (t !== '' && t !== '*' && !namesTh(subject)) return inHead && (t === 'tr' || t === 'td')
+      return namesTh(subject) || HEAD_CELL.test(subject) || inHead
+    }
+
+    /** Every branch in the sheet that declares a fill and can land on a head cell, with where it is. */
+    function headCellFills(): { branch: string; line: number; where: string }[] {
+      return flatRules(STYLES).flatMap((r) => {
+        if (!declarations(r.body).some((d) => d.property === 'background' || d.property === 'background-color')) return []
+        return splitTop(r.selector)
+          .filter(reachesHeadCell)
+          .map((branch) => ({ branch, line: r.line, where: r.conditions.join(' ') }))
+      })
+    }
+
+    // THE CLASSIFIER ITSELF, on the forms it exists to catch and the ones it
+    // must pass, so the two sheet cases below are not a scan that matches
+    // nothing. MUTATION: drop any branch of `reachesHeadCell`.
+    it('reads a head-cell fill however the selector names the cell', () => {
+      const HEAD = [
+        '.ctl-table thead th',
+        'table.pools thead > tr > th.n',
+        '.ctl-table th',
+        'th[aria-sort]',
+        '.wf-table th[data-col]',
+        '.wf-table [data-col]',
+        '[role=columnheader]',
+        '.runtimes [role="columnheader"].is-num',
+        '.ctl-table tr > th',
+        'th + th',
+        '.ctl-table :is(th, td)',
+        '.ctl-table thead .is-num',
+        '.ctl-table thead tr',
+        CORNER,
+      ]
+      const NOT_HEAD = [
+        '.ctl-table thead',
+        'table.pools thead',
+        '.ctl-table thead th .wf-sort',
+        '.ctl-table thead th::after',
+        '.wf-table td[data-col]',
+        '.is-scroll > table > tbody > tr > th:first-child',
+        '.ctl-table tbody th',
+        'th[scope="row"]',
+        '[role=rowheader]',
+        '.ctl-table tr > td',
+      ]
+      for (const b of HEAD) expect(reachesHeadCell(b), `"${b}" reaches a head cell and was not read as one`).toBe(true)
+      for (const b of NOT_HEAD) expect(reachesHeadCell(b), `"${b}" is not a head cell and was read as one`).toBe(false)
+    })
+
+    // THE WHOLE SHEET, not only the rules the fixtures' markup reaches: a fill
+    // added under a class no fixture has, or on a head cell named without
+    // `thead`, is caught here. MUTATION: any rule, at any width, that gives a
+    // head cell a background -- `th[aria-sort]`, `[role=columnheader]`,
+    // `.wf-table th[data-col]`, `.ctl-table tr > th`, `thead th` -- other than
+    // the held corner's one rule below 900px.
+    it('has no rule in the sheet that gives a head cell a fill, under any name, but the held corner', () => {
+      const offenders = headCellFills()
+        .filter((f) => !(f.branch === CORNER && f.where === PHONE_BLOCK))
+        .map((f) => `${f.branch} (line ${f.line}${f.where ? `, ${f.where}` : ''})`)
+      expect(offenders, 'a head cell paints its own fill; the fill is on thead').toEqual([])
+    })
+
+    // THE EXCEPTION IS ONE RULE, so "one exception" stays true: the corner's
+    // fill is declared once, by the rule that matches only the corner, and the
+    // held rule it shares its other declarations with paints only body cells.
+    // MUTATION: give the held rule's head branch a `background-color` again,
+    // or restate the corner's fill in a second rule.
+    it('paints the held corner from one rule, and only that rule', () => {
+      const excused = headCellFills().map((f) => `${f.branch} @ ${f.where || 'top level'}`)
+      expect(excused, 'the head-cell fills in the sheet are not exactly the held corner, once').toEqual([
+        `${CORNER} @ ${PHONE_BLOCK}`,
+      ])
+    })
   })
 
   /**

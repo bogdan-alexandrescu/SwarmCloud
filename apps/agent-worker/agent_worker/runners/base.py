@@ -10,6 +10,8 @@ input. It learns everything it needs from its environment:
     SWARM_INPUT           input.json, the task's `input` dict verbatim
     SWARM_RESULT          where to write result.json
     SWARM_QUOTA_SIGNAL    where to write quota.json on a provider rate limit
+    SWARM_REPO_DIR        the repository checkout, set only when the task has
+                          one; a CLI agent starts there (#226)
 
 and it communicates back through three channels, in descending order of
 authority:
@@ -164,11 +166,18 @@ class RunnerContext:
     #: streams (`procman.ChildResult.capture_report`), which the worker reads
     #: into `result_summary.agent_streams` (#188 review).
     report: dict[str, Any] = field(default_factory=dict)
+    #: The repository checkout, `work/repo`, when the task has one; None when
+    #: it has none. From `SWARM_REPO_DIR`, which the WORKER sets after the
+    #: clone (`lifecycle._build_child_env`) -- never from `input`, which a
+    #: caller writes. A CLI agent starts here so that it loads the
+    #: repository's own CLAUDE.md, as a local lane does (#226).
+    repo_dir: Path | None = None
 
     @classmethod
     def from_env(cls, env: dict[str, str] | None = None) -> "RunnerContext":
         env = dict(env or os.environ)
         work = Path(env.get("SWARM_WORK_DIR") or Path.cwd())
+        repo = (env.get("SWARM_REPO_DIR") or "").strip()
         ctx = cls(
             work_dir=work,
             artifacts_dir=Path(env.get("SWARM_ARTIFACTS_DIR") or (work.parent / "artifacts")),
@@ -178,6 +187,7 @@ class RunnerContext:
             credential_path=Path(
                 env.get("SWARM_CREDENTIAL_SIGNAL") or (work / "credential.json")
             ),
+            repo_dir=Path(repo) if repo else None,
         )
         ctx.artifacts_dir.mkdir(parents=True, exist_ok=True)
         if ctx.input_path.exists():

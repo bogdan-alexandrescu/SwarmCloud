@@ -56,8 +56,10 @@ costs nothing while it waits.
 ## What `input` may carry
 
 A runner reads its task's `input`, and an input means something only to the
-runner that reads it: `input.model` is passed as `--model` by the CLI runners,
-and `input.quota_exhausted` makes the mock simulate a rate limit. So what a
+runner that reads it: `input.model` was passed as `--model` by the CLI runners
+(until #226, when the model became the Job's `MODEL`, set in Terraform; see
+[agent-output.md](agent-output.md)), and `input.quota_exhausted` makes the mock
+simulate a rate limit. So what a
 caller may send is declared per profile in the frozen catalogue,
 `RunnerProfile.inputs` (contract request 25, accepted by the owner on #142 on
 2026-09-25), and the API holds every caller to it: `POST /v1/tasks`, the batch,
@@ -175,7 +177,11 @@ first alone was measured not to be enough.
    `work/artifacts` already exists (a declared input staged as `artifacts/…`,
    or a directory a restored checkpoint brought back), it is left alone and
    one WARNING says so. Files written under it are then not uploaded, exactly
-   as before.
+   as before. A step with a repository starts its agent in the checkout
+   (#226, 2026-09-26), so the worker makes the same link at
+   `work/repo/artifacts` as well, hidden from git with the clone's
+   `.git/info/exclude` so it never reaches the agent's diff; see
+   [agent-output.md](agent-output.md) for when it is not made.
 3. **A missing expected output fails the attempt, retryably** (owner decision
    on #149, 2026-09-25). If an attempt's runner finishes cleanly and one of its
    expected outputs was not uploaded, the attempt FAILS with the missing names
@@ -240,6 +246,14 @@ workspace. The file travels through **GCS**, never inline through Firestore —
 Firestore has a 1 MiB document limit, and an agent's output is routinely larger.
 The tenant's GCS prefix applies, so a workflow cannot stage another tenant's
 artifact even by naming it.
+
+It lands in `work/<filename>`. A step with no repository starts its agent in
+`work/`, so "read scan-01.md" in its prompt finds the file. A step with a
+repository starts its agent in the checkout, `work/repo` (owner decision of
+2026-09-26, #226, so Claude Code loads the repository's own `CLAUDE.md`), where
+that relative name would not resolve, so the prompt line the worker adds names
+every staged file by its absolute path. Staging into the checkout instead would
+put the file in the agent's diff.
 
 The filename is both the artifact's name in the upstream step and the path it
 lands at downstream. So within one step each parent must stage a **distinct**

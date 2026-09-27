@@ -581,22 +581,30 @@ def test_a_cli_rate_limit_becomes_a_park_signal_not_a_burned_attempt(tmp_path, m
     assert exc.value.retry_after_seconds == 1800
 
 
-def test_the_model_is_the_only_other_caller_value_that_reaches_argv(tmp_path, monkeypatch):
+def test_the_prompt_is_the_only_caller_value_that_reaches_argv(tmp_path, monkeypatch):
+    """INVERTED 2026-09-26 (#226). This test was named "the model is the only
+    other caller value that reaches argv" and pinned `input.model` becoming
+    `--model`: a caller choosing the model an agent runs, which invariant 10
+    forbids. The model is the Job's `MODEL` now, set in Terraform, and a
+    caller's `input.model` -- shell metacharacters included -- is not read.
+    The API refuses the key as well (claude-code declares no input, #213).
+    tests/unit/worker/test_step_parity.py holds the rest."""
     from agent_worker.runners.cliagent import CliAgentSpec, run_cli_agent
 
     monkeypatch.setenv("FAKE_KEY", "sk-value-0123456789")
     monkeypatch.setenv("FAKE_BIN", str(_fake_cli(tmp_path, "print('{\"result\":\"ok\"}')\n")))
+    monkeypatch.delenv("MODEL", raising=False)
     spec = CliAgentSpec(
         name="fake", provider="anthropic", binary_env="FAKE_BIN", binary_default="fake-cli",
         args_env="FAKE_ARGS", args_default=(), key_env="FAKE_KEY", model_flag="--model",
     )
 
-    with pytest.raises(RunnerFailure, match="unsupported characters"):
-        run_cli_agent(
-            make_ctx(tmp_path, {"prompt": "hi", "model": "x; rm -rf /"}), spec
-        )
+    out = run_cli_agent(make_ctx(tmp_path, {"prompt": "hi", "model": "x; rm -rf /"}), spec)
+    assert out["model"] is None
+
+    monkeypatch.setenv("MODEL", "claude-opus-5-5")
     out = run_cli_agent(make_ctx(tmp_path, {"prompt": "hi", "model": "claude-opus-4"}), spec)
-    assert out["model"] == "claude-opus-4"
+    assert out["model"] == "claude-opus-5-5"
 
 
 def test_the_argv_prefix_env_must_be_a_json_list_of_strings(monkeypatch):

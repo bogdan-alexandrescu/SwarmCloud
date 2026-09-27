@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 from swarm_common.config import Settings
+from swarm_common.profiles import RUNNER_PROFILES
 
 #: `<registry path>@sha256:<64 hex>`, and nothing before the `@` that could be a
 #: tag. The same shape terraform/infra/variables.tf validates `image_refs`
@@ -64,6 +65,51 @@ def parse_worker_image_refs(raw: str) -> dict[str, str]:
         raise ValueError(f"WORKER_IMAGE_REFS is not valid JSON: {exc}") from exc
     check_worker_image_refs(refs)
     return dict(refs)
+
+
+def check_worker_models(models: object) -> None:
+    """Refuse a model map that is not {known runner profile: model name}.
+
+    Like `check_worker_image_refs`, at START: a scheduler that could not read
+    the map would create Jobs with no MODEL, and their agents would run the
+    CLI's default model with nothing saying so. The model name's characters
+    are the runner's to check (`cliagent`, where it becomes `--model`); what
+    is refused here is a shape that cannot be a model map at all.
+    """
+    if not isinstance(models, dict):
+        raise ValueError(
+            f"WORKER_MODELS must be a JSON object of runner profile -> model name, "
+            f"got {type(models).__name__}"
+        )
+    for profile, model in models.items():
+        if not isinstance(profile, str) or profile not in RUNNER_PROFILES:
+            raise ValueError(
+                f"WORKER_MODELS names {profile!r}, which is not a runner profile in "
+                f"the catalogue ({', '.join(sorted(RUNNER_PROFILES))})"
+            )
+        if not isinstance(model, str) or not model.strip():
+            raise ValueError(
+                f"WORKER_MODELS[{profile!r}] = {model!r} is not a model name"
+            )
+
+
+def parse_worker_models(raw: str) -> dict[str, str]:
+    """WORKER_MODELS -> {runner profile: model}. Empty means no profile pins one.
+
+    Written by terraform/infra/locals.tf from `local.runner_models`, the ONE
+    place a profile's model is stated (#226). The same value is `MODEL` on the
+    Jobs Terraform creates; this is how the Jobs THIS scheduler creates, for
+    tenants Terraform does not list, get it too.
+    """
+    raw = (raw or "").strip()
+    if not raw:
+        return {}
+    try:
+        models = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"WORKER_MODELS is not valid JSON: {exc}") from exc
+    check_worker_models(models)
+    return dict(models)
 
 
 def parse_enforced_since(raw: str | None) -> datetime | None:
@@ -241,6 +287,14 @@ class SchedulerSettings:
     #: used to be whatever the tag pointed at on that node at that moment.
     #: Excluded from the hash: a dict is unhashable and the settings are frozen.
     worker_image_refs: dict[str, str] = field(default_factory=dict, hash=False)
+    #: Runner profile -> the model its agent CLI runs, from WORKER_MODELS
+    #: (terraform/infra/locals.tf writes it from `local.runner_models`, today
+    #: `{"claude-code": "claude-opus-5-5"}`). Set as `MODEL` on every Cloud Run
+    #: Job this scheduler CREATES, so a tenant Terraform does not list runs the
+    #: model a listed one does (#226). Never in the per-execution environment:
+    #: `worker_env` carries identifiers and endpoints, and a task's own `model`
+    #: is attribution. Excluded from the hash, like `worker_image_refs`.
+    worker_models: dict[str, str] = field(default_factory=dict, hash=False)
     dispatch_topic: str = ""
 
     @classmethod
@@ -281,6 +335,7 @@ class SchedulerSettings:
                 or "latest"
             ),
             worker_image_refs=parse_worker_image_refs(os.environ.get("WORKER_IMAGE_REFS", "")),
+            worker_models=parse_worker_models(os.environ.get("WORKER_MODELS", "")),
             dispatch_topic=os.environ.get("DISPATCH_TOPIC", ""),
         )
 
@@ -308,3 +363,4 @@ class SchedulerSettings:
         # Checked here as well as when parsed, so a settings object built
         # directly -- as every test does -- cannot carry a tag either.
         check_worker_image_refs(self.worker_image_refs)
+        check_worker_models(self.worker_models)

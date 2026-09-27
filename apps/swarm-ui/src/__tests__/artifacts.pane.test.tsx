@@ -685,6 +685,57 @@ describe('Outputs says which working-folder files were not uploaded, and why', (
   })
 })
 
+describe('Outputs says how many files in $SWARM_ARTIFACTS_DIR were past the 500-file cap', () => {
+  // #228, OWNER DECISION OF 2026-09-26. The worker uploads at most 500 files
+  // from the artifacts folder per attempt, because each is an entry in the
+  // task's Firestore document and a document holds 1 MiB. The rest are not
+  // uploaded: `result_summary.artifacts_over_cap` counts them and the worker's
+  // log names every one, 100 to a line. Without this the file list would read
+  // as the whole of what the agent wrote.
+  function capped(extra: Record<string, unknown>): Record<string, Route> {
+    return finishedRoutes({
+      [`/v1/tasks/${REF}`]: {
+        task: task({
+          result_summary: {
+            artifacts: [],
+            logs: {},
+            agent_streams: { stdout: 'claude-code.stdout.log', stderr: 'claude-code.stderr.log', transcript: 'claude-transcript.json', transcript_skipped: null },
+            ...extra,
+          },
+        }),
+      },
+    })
+  }
+
+  it('counts them, names the cap from the summary, and says the worker log names every one', async () => {
+    await openPane(capped({ artifacts_over_cap: 104, artifacts_cap_files: 500 }))
+    const out = await sectionReady('Outputs', /not uploaded from \$SWARM_ARTIFACTS_DIR/)
+    const block = out.querySelector<HTMLElement>('.arts-overcap')
+    expect(block, 'the files past the cap are not drawn').not.toBeNull()
+    expect(block!.querySelector('.count-chip')?.textContent).toBe('104')
+    expect(block!.textContent).toMatch(/104 over the 500-file cap, named in the worker log/)
+    // The same count line #225 drew for the working folder: a mark that says
+    // the list is partial, and where the rest are named.
+    expect(block!.querySelector('.att-none .ctl-mark')).not.toBeNull()
+    // Not rows of the file list: nothing here was uploaded, so nothing can be read.
+    expect(block!.querySelector('a[download]')).toBeNull()
+    expect(out.querySelector('.arts-files')?.contains(block!)).toBe(false)
+  })
+
+  it('reads the cap from the summary rather than restating it', async () => {
+    await openPane(capped({ artifacts_over_cap: 3, artifacts_cap_files: 10 }))
+    const out = await sectionReady('Outputs', /not uploaded from \$SWARM_ARTIFACTS_DIR/)
+    expect(out.querySelector('.arts-overcap')?.textContent).toMatch(/3 over the 10-file cap/)
+  })
+
+  it('draws nothing when every file in the folder fit', async () => {
+    await openPane(capped({}))
+    const out = await sectionReady('Outputs', /bundle\.tar/)
+    expect(out.querySelector('.arts-overcap')).toBeNull()
+    expect(out.textContent).not.toMatch(/-file cap/)
+  })
+})
+
 // ---------------------------------------------------------------------------
 // Inputs
 // ---------------------------------------------------------------------------

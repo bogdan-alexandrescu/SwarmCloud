@@ -96,6 +96,10 @@ REQUIRED = {
                          "job the dispatcher creates runs whatever a tag points "
                          "at when it is pulled -- the mutable-tag path the "
                          "digest map closes",
+    "WORKER_MODELS": "without it every Cloud Run Job the dispatcher creates "
+                     "(a tenant terraform does not list) carries no MODEL, so "
+                     "its claude-code agents run the CLI's default model while "
+                     "terraform's Jobs run the pinned one (#226)",
 }
 
 # ---------------------------------------------------------------------------

@@ -1,9 +1,11 @@
 """Runner: Claude Code, non-interactive.
 
 The CLI is started in print mode with STREAMED JSON output (one event per line,
-`--output-format stream-json --verbose`), in the attempt's isolated
-work directory, with the tenant's credential in its environment and nothing else
-from the worker's own environment. That credential is either `ANTHROPIC_API_KEY`
+`--output-format stream-json --verbose`), in the repository checkout when the
+task has one and in the attempt's isolated work directory when it has none,
+with HOME the work directory either way, `--model` the Job's `MODEL`, the
+tenant's credential in its environment and nothing else from the worker's own
+environment. That credential is either `ANTHROPIC_API_KEY`
 (metered API access) or `CLAUDE_CODE_OAUTH_TOKEN` (a Claude subscription token
 from `claude setup-token`) -- whichever the tenant's secret supplies. Only the
 one that is present is passed to the child.
@@ -29,6 +31,17 @@ event last -- and the CLI requires `--verbose` alongside it in print mode.
 of events and `_spend_of` reads the last one that carries spend). The agent's
 stdout capture, `claude-code.stdout.log`, is therefore NDJSON, and the worker
 publishes its tail every five seconds while the attempt runs.
+
+WHY THE CHECKOUT AND A PINNED MODEL (#226, owner decisions of 2026-09-26). A
+step should behave like the same work run in a local Claude Code lane wherever
+the difference is a choice. Locally the CLI starts in the repository and loads
+its `CLAUDE.md` by itself; here it started in `work/`, with the checkout at
+`./repo`, and read `CLAUDE.md` only when a prompt said to. And no Job set
+`MODEL`, so the CLI's own default ran (`claude-sonnet-5`, on the QA task of
+that day) instead of the model the operator's lanes run. `MODEL` is now set on
+this profile's Job in Terraform (`local.runner_models`), and a caller's
+`input.model` is refused (invariant 10). See
+`cliagent.agent_working_directory` and docs/agent-output.md.
 """
 
 from __future__ import annotations

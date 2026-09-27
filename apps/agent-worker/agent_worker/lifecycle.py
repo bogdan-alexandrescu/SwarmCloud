@@ -7,7 +7,8 @@ load-bearing in a way the rest are not.
     2.  STARTING -> RUNNING
     3.  create the isolated workspace
     4.  restore the latest checkpoint, if any
-    5.  optional shallow git clone
+    5.  optional shallow git clone, with the tenant token only if the
+        entrypoint made this process non-dumpable (hardening.py)
     5b. stage every artifact this step declared in `input_from`
     5c. link `work/artifacts` to `artifacts/`, unless the name is taken (#149)
     6.  resolve the tenant's provider credential
@@ -117,12 +118,13 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Iterator
+from typing import Any, Callable, Iterator, Sequence
 
 from swarm_common.models import EndCause, ProviderState, retries_exhausted, utcnow
 from swarm_common.profiles import RESOURCE_CLASSES
 from swarm_common.states import EventType, ParkReason, TaskState
 
+from . import artifact_manifest as manifest_mod
 from . import expected_outputs as expected_mod
 from . import inputs as inputs_mod
 from . import redact as redact_mod
@@ -162,12 +164,15 @@ from .gitops import (
     MergeOutcome,
     commit_dirty,
     fold_agent_commits,
+    hide_from_git,
     merge_branches,
+    prepare_publish_repo,
     push_branch,
     shallow_clone,
     summarize_work,
     verify_worker_authorship,
 )
+from .hardening import FAILED, MemoryProtection
 from .metrics import (
     ResourceSampler,
     ResourceUsage,
@@ -176,7 +181,7 @@ from .metrics import (
     combine_usage,
 )
 from .objectstore import ObjectStore
-from .procman import ChildProcess, ChildResult
+from .procman import ChildProcess, ChildResult, reap_foreign_processes
 from .quota import QuotaDecision, decide, read_runner_signal, signal_from_control
 from .runners.base import EXIT_QUOTA_EXHAUSTED, EXIT_TERMINATED, SPEND_KEYS
 from .runners.limits import GRACE_ENV, STDERR_ENV, STDOUT_ENV, TIMEOUT_ENV
@@ -266,7 +271,9 @@ MAX_ACCOUNT_TRIES = 3
 #: every interval; the event stream would be unreadable at that rate.
 HEARTBEAT_EVENT_EVERY = 5
 
-REPO_DIR_NAME = "repo"
+#: `work/repo`. Spelled once, in `workspace`, because the checkpoint needs it
+#: too: the `./artifacts` link inside the checkout is never archived (#226).
+REPO_DIR_NAME = workspace_mod.REPO_DIR_NAME
 
 #: Worker-owned scratch INSIDE the checkpointed work directory. It has to be
 #: inside `work/` so a resumed attempt still knows which commit its clone
@@ -275,6 +282,13 @@ REPO_DIR_NAME = "repo"
 WORKER_STATE_DIR = ".swarm"
 CLONE_BASE_FILE = "clone-base"
 PATCH_NAME = "swarm-work.patch"
+
+#: The worker-owned repository the token-bearing git commands run in lives under
+#: `ws.private` -- never checkpointed, never uploaded, never named in the agent's
+#: environment -- so the push and the integrator's fetch authenticate from
+#: configuration the agent could not write. `gitops.prepare_publish_repo` gives
+#: it an unpredictable name (`tempfile.mkdtemp`): `ws.private` shares a uid with
+#: the agent, so a constant name would let the agent pre-plant a symlink there.
 
 
 @dataclass
@@ -292,6 +306,12 @@ class WorkerDeps:
     #: The entrypoint's phase tracker, carried on so the lifecycle's phases
     #: continue the same clock. None builds one on the worker's logger.
     phases: Phases | None = None
+    #: What the entrypoint's `hardening.make_non_dumpable` established before
+    #: any credential was read. The tenant git token is held only when the
+    #: agent cannot read this process's memory (`Worker._git_token_refusal`).
+    #: None means nothing established it, and is treated as FAILED: a worker
+    #: built some other way holds no token rather than an unprotected one.
+    memory: MemoryProtection | None = None
 
 
 @dataclass
@@ -312,6 +332,7 @@ class Worker:
         self.db = deps.db
         self.metrics = deps.metrics_exporter
         self.secret_client = deps.secret_client
+        self.memory = deps.memory
         self.ws: workspace_mod.Workspace | None = None
         self.checkpoints = CheckpointManager(
             store=deps.store,
@@ -338,6 +359,13 @@ class Worker:
         # exception that reaches it, decides the exit.
         self._startup_interrupt: StartupInterrupted | None = None
         self._child: ChildProcess | None = None
+        # How the publish path makes sure no process the agent started is alive
+        # before the tenant credential is used (`_publish_git`). A callable, not
+        # a direct call, so a unit test can substitute a scoped reaper: the real
+        # one runs `os.kill(-1, SIGKILL)`, which in a shared test process would
+        # kill the test runner. Returns the PIDs still alive after the reap --
+        # empty means clean, non-empty means refuse to publish.
+        self.reap_before_publish: Callable[[], tuple[int, ...]] = self._default_reap
         # The LIVE runner's sampler, or None between runners. The runners that
         # have ended are in `_runner_usage`, and `_attempt_usage` combines the
         # two: every figure this worker reports -- the attempt document, the
@@ -352,7 +380,8 @@ class Worker:
         self._clone_base: str | None = None
         # The clone base the PUBLISH trusts, which is not always the one above.
         # `_clone_base` may come from `work/.swarm/clone-base`, a file in the
-        # agent's own working directory; that is good enough to describe the
+        # agent's HOME (its working directory's parent, when it starts in the
+        # checkout -- #226), which it can write; that is good enough to describe the
         # work and not good enough to decide what reaches a forge. This one is
         # only ever the worker's own knowledge: the commit its clone landed on
         # in this process, or the base a previous attempt's worker recorded in
@@ -367,6 +396,12 @@ class Worker:
         # `metadata.expected_outputs` (#149). Kept so `_finalise` can name any
         # the attempt did not upload; see `agent_worker.expected_outputs`.
         self._expected_outputs: tuple[str, ...] = ()
+        # Every file in the artifacts folder the last `_upload_outputs` did not
+        # upload for the file cap or the name bound (#228), by its WHOLE name.
+        # The summary counts them and does not list them, so a declared output
+        # among them is named here as written and not uploaded rather than as
+        # never written (`_written_not_uploaded`).
+        self._artifacts_not_uploaded: tuple[str, ...] = ()
         # A CLI agent's task with no repository has what its agent CREATED in
         # the working folder uploaded, under `workdir/` (#184, owner decision
         # of 2026-09-26; `agent_worker.standalone_outputs`). `_standalone` is
@@ -739,7 +774,10 @@ class Worker:
         # different paths inside `work/`, and a declared name that would collide
         # with the clone directory is refused rather than resolved. Order
         # relative to the RUNNER INPUT is: `input.json` has to be able to tell
-        # the agent what it was given, so staging happens first.
+        # the agent what it was given, so staging happens first. A staged file
+        # lands in `work/`, never in the checkout, even though the agent of a
+        # repository task starts in the checkout (#226): the prompt names each
+        # one by absolute path instead (`expected_outputs.staged_paths`).
         self.phases.enter("stage_inputs")
         staged_inputs = self._stage_declared_inputs(task)
         if staged_inputs:
@@ -752,6 +790,8 @@ class Worker:
         # restore refuses a non-empty `work/`, and a staged input or a
         # restored directory that already owns the name keeps it.
         self._link_artifacts()
+        # And in the checkout, where a repository task's agent starts (#226).
+        self._link_checkout_artifacts()
 
         # ---- runner input -----------------------------------------------
         payload = dict(task.get("input") or {})
@@ -762,6 +802,31 @@ class Worker:
             # disk right now, so a caller's own `staged_inputs` in the step input
             # must not shadow it and leave the agent reading a stale claim.
             payload["staged_inputs"] = [item.as_dict() for item in staged_inputs]
+        elif "staged_inputs" in payload:
+            # AND REMOVED WHEN NOTHING WAS STAGED (#226). A CLI runner now turns
+            # this key into a line of the prompt, in the platform's voice, naming
+            # files "earlier steps of this workflow gave you". Only the worker's
+            # own record may fill it, exactly as for `expected_outputs` below.
+            dropped = payload.pop("staged_inputs")
+            self.log.warning(
+                "dropped the caller's own input.staged_inputs: only the files the "
+                "worker staged for this task are named to the agent",
+                dropped_entries=len(dropped) if isinstance(dropped, (list, tuple)) else 1,
+            )
+        if "model" in payload:
+            # A CALLER NEVER CHOOSES THE MODEL (#226, invariant 10). The API
+            # refuses `input.model` on every profile that declares its inputs
+            # (#213); this is the same rule for a task written before that
+            # refusal shipped, a profile whose inputs are not declared yet
+            # (`browser`, `generic`: #218), or a path that does not go through
+            # the API. The model is the Job's `MODEL`, which reaches the runner
+            # in its environment (`_build_child_env`), never through input.json.
+            payload.pop("model")
+            self.log.warning(
+                "dropped the caller's own input.model: the model an agent runs is "
+                "the runner profile's, set on its Job as MODEL",
+                job_model=cfg.model,
+            )
         expected = self._declared_outputs(task)
         if expected_mod.METADATA_KEY in payload:
             # A CALLER'S OWN `input.expected_outputs` NEVER REACHES THE AGENT,
@@ -790,8 +855,8 @@ class Worker:
             # the end-of-attempt check reads, because a dependant that stages
             # it still needs it uploaded.
             payload[expected_mod.METADATA_KEY] = list(told)
-        if cfg.model:
-            payload.setdefault("model", cfg.model)
+        # `cfg.model` is NOT written here any more (#226). It was, with
+        # `setdefault`, so a caller's `input.model` won over the Job's MODEL.
         payload.setdefault("task_id", cfg.task_id)
         payload.setdefault("attempt_id", cfg.attempt_id)
         # This attempt's number: the task's `attempt_count`, which admission
@@ -1152,6 +1217,10 @@ class Worker:
         self._stop_runner(reason="generation fenced")
         self._record_fenced_end(str(exc))
         return ExitCode.GENERATION_FENCED
+
+    def _default_reap(self) -> tuple[int, ...]:
+        """The production pre-publish reap. See `reap_foreign_processes`."""
+        return reap_foreign_processes(logger=self.log)
 
     def _stop_runner(self, *, reason: str) -> None:
         """Stop the live runner, if any, and take its usage and spend. Never raises.
@@ -1635,8 +1704,8 @@ class Worker:
             # no longer answers "what did this repository look like on arrival".
             self.log.info("repository already present from checkpoint; skipping clone")
             # THE BASE THE PUSH TRUSTS COMES FROM THE MANIFEST, NOT THE TREE.
-            # The marker file sits in `work/`, the agent's working directory,
-            # and travels in the archive the agent's own files travel in. An
+            # The marker file sits in `work/`, the agent's HOME and writable by
+            # it, and travels in the archive the agent's own files travel in. An
             # agent that wrote a later commit of its own into it lifted the
             # fold's floor above its earlier commits, and those were pushed as
             # the agent wrote them. The manifest is written by the worker,
@@ -1655,6 +1724,10 @@ class Worker:
                 "commit": self._clone_base,
             }
         ref = self.cfg.repository_ref or task.get("repository_ref")
+        # A worker whose memory the agent may read clones WITHOUT the token, so
+        # the token is never in this process at all. A public repository still
+        # clones; a private one fails, and the error below says why.
+        refusal = self._git_token_refusal()
         try:
             clone = shallow_clone(
                 url=url,
@@ -1668,9 +1741,14 @@ class Worker:
                 logs_dir=ws.logs,
                 timeout_seconds=self.cfg.git_clone_timeout_seconds,
                 logger=self.log,
-                token=self._git_token(),
+                token=None if refusal else self._git_token(),
             )
         except GitError as exc:
+            if refusal:
+                raise WorkerError(
+                    f"repository clone failed: {exc}; cloned without the tenant git "
+                    f"token because {refusal}"
+                ) from exc
             raise WorkerError(f"repository clone failed: {exc}") from exc
         self._repo_url = clone.url
         self._clone_base = clone.commit
@@ -1679,12 +1757,15 @@ class Worker:
         self._publish_base = clone.commit or (EMPTY_CLONE_BASE if clone.empty else None)
         self.checkpoints.clone_base = self._publish_base
         self._write_clone_base(clone.commit)
-        return {
+        info: dict[str, Any] = {
             "path": REPO_DIR_NAME,
             "url": clone.url,
             "ref": clone.ref,
             "commit": clone.commit,
         }
+        if refusal:
+            info["git_token_refused"] = refusal
+        return info
 
     def _stage_declared_inputs(self, task: dict[str, Any]) -> list[inputs_mod.StagedInput]:
         """Honour `metadata.input_from`: {upstream_task_id: artifact_filename}.
@@ -1733,8 +1814,10 @@ class Worker:
         return staged
 
     def _link_artifacts(self) -> None:
-        """Step 5c: make `./artifacts` in the agent's working directory the
-        directory that is uploaded (#149).
+        """Step 5c: make `work/artifacts` the directory that is uploaded (#149).
+        `work/` is the agent's working directory when the task has no
+        repository; with one, `_link_checkout_artifacts` links the checkout's
+        `./artifacts` too (#226), and this one is `../artifacts` from there.
 
         On every attempt, not only one a later step stages from: the guess it
         catches is as natural for a caller's own prompt that says "write it to
@@ -1776,6 +1859,79 @@ class Worker:
                 item.path for item in self._staged_inputs
                 if item.path.split("/", 1)[0] == link.name
             ],
+        )
+
+    def _link_checkout_artifacts(self) -> None:
+        """Step 5c, for a repository task: `./artifacts` in the CHECKOUT is the
+        directory that is uploaded, and git never sees it (#226).
+
+        With a repository attached the agent starts in `work/repo` (owner
+        decision of 2026-09-26), so the guess `work/artifacts` catches (#149:
+        an agent that echoed `$SWARM_ARTIFACTS_DIR` and then wrote
+        `./artifacts/scan-02.md`) is made in the checkout instead. The link is
+        made there as well, and hidden with the clone's `.git/info/exclude`,
+        so it is in no patch, no auto-commit and no pushed branch. A link git
+        can still see -- the repository's own `.gitignore` un-ignores the name
+        -- is taken away again, because a symlink to this attempt's directory
+        in the tenant's repository is worse than a missed guess.
+
+        Never fails the attempt, like `_link_artifacts`: every outcome other
+        than a hidden link is one WARNING, since each is the reason a file
+        written under the checkout's `./artifacts` was not uploaded.
+        """
+        ws = self.ws
+        assert ws is not None
+        checkout = ws.checkout()
+        if not self._repo_url or not checkout.is_dir() or checkout.is_symlink():
+            return
+        link = ws.artifacts_link(checkout)
+        try:
+            made = workspace_mod.link_artifacts(ws, within=checkout)
+        except OSError as exc:
+            self.log.warning(
+                "could not link the checkout's ./artifacts to $SWARM_ARTIFACTS_DIR; "
+                "files the agent writes under it stay in the repository",
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            return
+        if not made:
+            self.log.warning(
+                "the checkout already has an artifacts entry, so it was left in place "
+                "and not linked to $SWARM_ARTIFACTS_DIR; files the agent writes under "
+                "it are the repository's, not uploaded artifacts",
+                kind="link" if link.is_symlink() else ("directory" if link.is_dir() else "file"),
+            )
+            return
+        hidden = hide_from_git(
+            repo=checkout,
+            name=link.name,
+            private_dir=ws.private,
+            logs_dir=ws.logs,
+            timeout_seconds=self.cfg.git_clone_timeout_seconds,
+            logger=self.log,
+        )
+        if hidden:
+            self.log.info(
+                "the checkout's ./artifacts links to $SWARM_ARTIFACTS_DIR and is "
+                "hidden from git, so a file the agent writes under it is uploaded "
+                "and is not part of its diff",
+                target=str(ws.artifacts),
+            )
+            return
+        try:
+            link.unlink()
+        except OSError as exc:
+            self.log.warning(
+                "the checkout's ./artifacts link could not be hidden from git or "
+                "removed; it may appear in the agent's diff",
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            return
+        self.log.warning(
+            "the checkout's ./artifacts link was removed because git would still "
+            "see it (the repository's own .gitignore un-ignores the name, or git "
+            "could not be asked); files the agent writes under ./artifacts stay "
+            "in the repository"
         )
 
     # -- the working folder of a task with no repository (#184) --------------
@@ -1895,13 +2051,26 @@ class Worker:
             # or the summary before it is known to be one they can all carry.
             if not standalone_mod.storable(name):
                 not_uploaded.append(
-                    {"name": standalone_mod.shown(name), "bytes": size, "reason": standalone_mod.NOT_UTF8}
+                    {
+                        "name": standalone_mod.shown(self._scrub(name)),
+                        "bytes": size,
+                        "reason": standalone_mod.NOT_UTF8,
+                    }
                 )
                 continue
             key = f"{cfg.artifact_prefix}/{name}"
             if len(key.encode("utf-8")) > standalone_mod.MAX_OBJECT_NAME_BYTES:
+                # SCRUB FIRST, THEN CUT (#232 review): `shown` cuts a long name
+                # to 256 characters for the log and the summary. Cutting a raw
+                # name let a registered secret crossing that character survive
+                # in part -- cutting the string is fine, cutting a key in half
+                # is not.
                 not_uploaded.append(
-                    {"name": standalone_mod.shown(name), "bytes": size, "reason": standalone_mod.NAME_TOO_LONG}
+                    {
+                        "name": standalone_mod.shown(self._scrub(name)),
+                        "bytes": size,
+                        "reason": standalone_mod.NAME_TOO_LONG,
+                    }
                 )
                 continue
             if standalone_mod.is_core_dump(relative):
@@ -1993,23 +2162,13 @@ class Worker:
                 "a link is never followed out of the workspace"
             )
         # EVERY NAME, IN THE LOG. The summary below lists the first 50 and
-        # counts the rest (a Firestore document has a 1 MiB limit); these lines
-        # name all of them, `LOG_BATCH` to a line, so a line stays well under
-        # Cloud Logging's 256 KiB entry however many files the agent left.
-        batch = standalone_mod.LOG_BATCH
-        batches = (len(not_uploaded) + batch - 1) // batch
-        for index in range(batches):
-            self.log.warning(
-                "files the agent created in its working folder were not uploaded",
-                count=len(not_uploaded),
-                batch=f"{index + 1} of {batches}",
-                files=[
-                    f"{e['name']}: not uploaded: {e['reason']}"
-                    for e in not_uploaded[index * batch : (index + 1) * batch]
-                ],
-                cap_files=cfg.max_workdir_output_files,
-                cap_bytes=cfg.max_workdir_output_bytes,
-            )
+        # counts the rest (a Firestore document has a 1 MiB limit).
+        self._log_not_uploaded(
+            "files the agent created in its working folder were not uploaded",
+            not_uploaded,
+            cap_files=cfg.max_workdir_output_files,
+            cap_bytes=cfg.max_workdir_output_bytes,
+        )
         self.log.info(
             "uploaded what the agent created in its working folder",
             uploaded=len(uploaded),
@@ -2034,6 +2193,36 @@ class Worker:
                 "cap_bytes": cfg.max_workdir_output_bytes,
             },
         }
+
+    def _log_not_uploaded(
+        self, message: str, entries: Sequence[dict[str, Any]], **fields: Any
+    ) -> None:
+        """Name every file in `entries` in the worker's log, `LOG_BATCH` to a WARNING line.
+
+        `entries` are `{"name", "reason", ...}`, and each is written as
+        "<name>: not uploaded: <reason>". The ONE place both uploads name the
+        files they did not upload: the working folder's (#225 review: past 50
+        a name was nowhere) and the artifacts folder's, past its 500-file cap
+        (#228). A result summary lists at most the first 50 and counts the
+        rest, because it is a Firestore document with a 1 MiB limit; these
+        lines name all of them, and `LOG_BATCH` names to a line keep each well
+        under Cloud Logging's 256 KiB entry however many files the agent left.
+        Every line carries `count`, the whole number, and `batch`, "i of n".
+        Nothing is written for no entries.
+        """
+        batch = standalone_mod.LOG_BATCH
+        batches = (len(entries) + batch - 1) // batch
+        for index in range(batches):
+            self.log.warning(
+                message,
+                count=len(entries),
+                batch=f"{index + 1} of {batches}",
+                files=[
+                    f"{e['name']}: not uploaded: {e['reason']}"
+                    for e in entries[index * batch : (index + 1) * batch]
+                ],
+                **fields,
+            )
 
     def _declared_outputs(self, task: dict[str, Any]) -> tuple[str, ...]:
         """Honour `metadata.expected_outputs`: what later steps will stage from this one.
@@ -2089,7 +2278,7 @@ class Worker:
         missing = expected_mod.missing_outputs(self._expected_outputs, produced)
         if not missing:
             return []
-        skipped = summary.get("artifacts_skipped") or []
+        skipped = self._written_not_uploaded(summary)
         summary[expected_mod.MISSING_SUMMARY_KEY] = self._scrub(list(missing))
         self.log.warning(
             expected_mod.missing_line(
@@ -2106,6 +2295,17 @@ class Worker:
             missing=list(missing),
         )
         return list(missing)
+
+    def _written_not_uploaded(self, summary: dict[str, Any]) -> list[str]:
+        """Names written to the artifacts folder and not uploaded, for the missing-output lines.
+
+        `artifacts_skipped` (the byte cap, an upload error, a name that is not
+        UTF-8), and the files the last upload left out for the 500-file cap or
+        the name bound (#228), which the summary counts but does not list. A
+        declared output among them is "written but not uploaded", whose remedy
+        is the cap, not the agent's prompt (`expected_mod.missing_cause`).
+        """
+        return [*(summary.get("artifacts_skipped") or []), *self._artifacts_not_uploaded]
 
     def _publish_withheld(self, ran_clean: bool) -> str | None:
         """Why this attempt must not publish, or None when it may (#149).
@@ -2172,7 +2372,7 @@ class Worker:
         The retry starts with an empty artifacts directory, because only
         `work/` is checkpointed, so it must write every expected output again.
         """
-        skipped = summary.get("artifacts_skipped") or []
+        skipped = self._written_not_uploaded(summary)
         error = self._scrub(expected_mod.missing_error(missing, skipped=skipped))
         state = self.control.fail_retryably(
             exit_code=exit_code,
@@ -2231,7 +2431,15 @@ class Worker:
         None is not an error. A public repository clones without a credential
         and a private one fails with git's own message, which is the correct
         diagnosis to surface.
+
+        Nor is it read at all when `_git_token_refusal` names a reason: once
+        read, the token stays in this process's heap for the rest of the
+        attempt, next to an agent that may be able to read it there.
         """
+        refusal = self._git_token_refusal()
+        if refusal:
+            self.log.error("not reading the tenant git credential", reason=refusal)
+            return None
         if self.secret_client is None:
             return None
         try:
@@ -2247,6 +2455,20 @@ class Worker:
                 error=str(exc),
             )
             return None
+
+    def _git_token_refusal(self) -> str | None:
+        """Why this worker must not hold the tenant git token, or None.
+
+        The token sits in the worker's heap from the moment it is read, and the
+        agent runs beside it as the same uid. The entrypoint made this process
+        non-dumpable so the agent cannot read that heap (hardening.py). When
+        that did not happen, the token is not read, the clone runs without it,
+        and the publish is refused.
+        """
+        memory = self.memory or MemoryProtection(
+            FAILED, "the entrypoint established no memory protection for this worker"
+        )
+        return memory.git_token_refusal
 
     def _build_child_env(self) -> dict[str, str]:
         ws = self.ws
@@ -2276,6 +2498,13 @@ class Worker:
             STDOUT_ENV: str(self.cfg.max_stdout_bytes),
             STDERR_ENV: str(self.cfg.max_stderr_bytes),
         }
+        # THE CHECKOUT, WHEN THERE IS ONE (#226). A CLI runner starts its agent
+        # there (`cliagent.agent_working_directory`), so Claude Code loads the
+        # repository's own CLAUDE.md as a local lane does. Set by the worker,
+        # after the clone, and never read from `input`, which a caller writes:
+        # `input.repository` is `setdefault`, so a caller's own would shadow it.
+        if self._repo_url and ws.checkout().is_dir():
+            base["SWARM_REPO_DIR"] = str(ws.checkout())
         # WHAT THE IMAGE SETS THAT THE RUNNER NEEDS, carried by EXACT NAME.
         # Everything else in the worker's environment stays behind; see
         # `workspace.child_env` for why this environment is built rather than
@@ -2985,8 +3214,22 @@ class Worker:
         """Redact every registered secret from a value bound for Firestore."""
         return self.log.scrub_value(value)
 
-    def _redact_before_upload(self) -> list[dict[str, Any]]:
-        """Scrub the captured streams and artifacts before they leave the pod.
+    def _redact_before_upload(self, artifacts: Sequence[Path]) -> list[dict[str, Any]]:
+        """Scrub the captured streams and `artifacts` before they leave the pod.
+
+        `artifacts` is the files of the artifacts folder that are going to be
+        uploaded (`artifact_manifest.plan`), not the whole folder (#228). A
+        file past the 500-file cap never leaves the pod, so rewriting it would
+        be work for nothing, and an entry for it in `redaction_skipped` -- "it
+        is uploaded as-is" -- would be false. A name that is not UTF-8 is not
+        in it either: no object can be named with it, so it never leaves the
+        pod and has no `redaction_skipped` entry to earn (#225 review).
+
+        The agent CLI's two captures are scrubbed WHATEVER the cap decided:
+        they live in the artifacts folder, and a copy of each goes to `logs/`
+        on every exit (`_stream_files`), in or out of the manifest. A link
+        planted at a capture's name is neither scrubbed nor copied: rewriting
+        it would rewrite whatever it points at.
 
         A log line is only one of four ways a provider key gets out. The other
         three are `stdout.log` and `stderr.log`, the runner's artifacts, and the
@@ -3015,14 +3258,15 @@ class Worker:
         if ws is None or not self.log.has_secrets:
             return []
         targets = [ws.stdout_path, ws.stderr_path]
-        # Not a file whose name is not UTF-8: `_upload_outputs` does not upload
-        # one (no object can be named with it), so it never leaves the pod and
-        # has no `redaction_skipped` entry to earn (#225 review).
-        targets += [
+        captures = [
             path
-            for path in sorted(ws.artifacts.rglob("*"))
-            if path.is_file() and not path.is_symlink() and standalone_mod.storable(str(path))
+            for _label, path in self._stream_files(ws)
+            if path not in targets and path.is_file() and not path.is_symlink()
         ]
+        targets += captures
+        # Each file once: a capture the cap took is in `artifacts` too.
+        seen = set(captures)
+        targets += [path for path in artifacts if path not in seen]
         targets.append(ws.result_path)
         unredacted: list[dict[str, Any]] = []
         for path in targets:
@@ -3463,6 +3707,14 @@ class Worker:
         if not url:
             return {"published": False, "publish_reason": "the repository URL is unknown"}
 
+        # Before the token is read, not after: see `_git_token_refusal`. Asked
+        # here as well as inside `_git_token`, so the publish says WHY it did
+        # not happen instead of reporting a forge that refused an anonymous probe.
+        refusal = self._git_token_refusal()
+        if refusal:
+            self.log.error("not publishing: the tenant git token is refused", reason=refusal)
+            return {"published": False, "publish_reason": f"refusing to publish: {refusal}"}
+
         token = self._git_token()
         try:
             access = probe_repository(url=url, token=token)
@@ -3501,6 +3753,31 @@ class Worker:
 
         role = self._dispatch_role() if strategy == "integrate" else ""
         out["role"] = role or None
+
+        # NO AGENT PROCESS IS ALIVE ONCE THE TOKEN IS IN HAND. This is the one
+        # place the credential-bearing publish begins -- everything below carries
+        # or leads directly to the tenant token (`commit_dirty`/`fold` run in the
+        # clone, then `prepare_publish_repo` mkdtemps the publish repo and the
+        # fetch/merge/push authenticate). A process the agent double-forked into
+        # its own session survives the runner's group kill (procman.py), shares
+        # the worker's uid, and could watch `ws.private` to poison the publish
+        # repo before the push or read the short-lived credential file while it
+        # runs. So every such process is killed and its death verified BEFORE the
+        # publish repo is created; if any survives the bounded retry, the whole
+        # publish is refused rather than run with agent code still able to act.
+        survivors = self.reap_before_publish()
+        if survivors:
+            out["published"] = False
+            out["publish_reason"] = (
+                f"refusing to publish: {len(survivors)} process(es) the agent started "
+                f"are still alive after the pre-publish reap ({', '.join(str(p) for p in survivors[:10])}); "
+                "the tenant credential is not put in hand while agent code can run"
+            )
+            self.log.error(
+                "refusing to publish: agent processes survived the pre-publish reap",
+                surviving_pids=list(survivors),
+            )
+            return out
 
         auto_committed = False
         folded = 0
@@ -3567,10 +3844,30 @@ class Worker:
             folded = max(replaced - (1 if new_sha else 0), 0)
             out["agent_commits_folded"] = folded
 
+            # EVERYTHING THAT CARRIES THE TOKEN RUNS IN A REPOSITORY THE WORKER
+            # OWNS, NOT IN THE CLONE. The push and the integrator's contributor
+            # fetch authenticate with the tenant token; run in the clone, a
+            # `credential.helper` or `url.*.insteadOf` the agent wrote into
+            # `.git/config` would receive or redirect it. So the worker's folded
+            # commit is transferred into a fresh, worker-owned repository -- by
+            # borrowing the clone's objects, with no token and no git run against
+            # the clone -- and the merge, the authorship check and the push all
+            # happen there. See `gitops.prepare_publish_repo` and
+            # docs/merge-strategy-live-proof.md §6. The verify runs here too, so
+            # it sees the integrator's merge commits, which exist only here.
+            publish_repo = prepare_publish_repo(
+                source_repo=repo,
+                work_head=None,
+                private_dir=ws.private,
+                logs_dir=ws.logs,
+                timeout_seconds=cfg.git_clone_timeout_seconds,
+                logger=self.log,
+            )
+
             # THE INTEGRATOR MERGES BEFORE IT PUSHES.
             #
-            # Its own commit has to be in the tree first (above), and every
-            # contributor's branch has to be in it before the push, or the
+            # Its own commit has to be in the tree first (transferred above), and
+            # every contributor's branch has to be in it before the push, or the
             # single pull request this strategy promises would contain only
             # the integrator's own step.
             #
@@ -3584,7 +3881,7 @@ class Worker:
                 ]
                 if upstream:
                     merge = merge_branches(
-                        repo=repo,
+                        repo=publish_repo,
                         url=url,
                         branches=upstream,
                         token=token,
@@ -3606,9 +3903,11 @@ class Worker:
             # THE PROPERTY, CHECKED WHERE THE WORK LEAVES. The fold and the
             # identity arguments are how every pushed commit is made the
             # worker's; this reads the commits the push is about to add and
-            # refuses the push if any is not, whatever route got it there.
+            # refuses the push if any is not, whatever route got it there. It
+            # runs in the publish repo, so an integrator's merge commits are in
+            # its first-parent span.
             verify_worker_authorship(
-                repo=repo,
+                repo=publish_repo,
                 base=self._publish_base,
                 author_name=cfg.git_author_name,
                 author_email=cfg.git_author_email,
@@ -3619,7 +3918,7 @@ class Worker:
             )
 
             pushed = push_branch(
-                repo=repo,
+                repo=publish_repo,
                 url=url,
                 branch=branch,
                 token=token,
@@ -3781,6 +4080,21 @@ class Worker:
 
         return "\n".join(lines)
 
+    def _artifacts_first(self) -> list[str]:
+        """The names the artifacts folder's cap takes before any other (#228).
+
+        The expected outputs a later step declares, then the files the platform
+        writes into the folder itself: the agent CLI's stream captures and
+        transcript, and the harvest's patch. `artifact_manifest.upload_order`
+        says why each comes first.
+        """
+        first = list(self._expected_outputs)
+        files = agent_stream_files(self.cfg.runner_profile)
+        if files is not None:
+            first += files.names()
+        first.append(PATCH_NAME)
+        return first
+
     def _upload_outputs(self, *, publish: bool = False, withheld: str = "") -> dict[str, Any]:
         ws = self.ws
         if ws is None:
@@ -3801,35 +4115,83 @@ class Worker:
         # reaped its runner writes nothing twice.
         self._record_cpu()
         # BEFORE the redaction pass, not after: the harvest writes a patch into
-        # `artifacts/`, and `_redact_before_upload` is what scrubs everything
-        # in there. A patch produced afterwards would be the one file in the
+        # `artifacts/`, and `_redact_before_upload` is what scrubs what goes up
+        # from there. A patch produced afterwards would be the one file in the
         # upload that never had a provider key taken out of it.
         try:
             git_summary = self._harvest_git(publish=publish, withheld=withheld)
         except Exception as exc:  # pragma: no cover - defensive
             self.log.exception("the git harvest raised; continuing without it", exc)
             git_summary = {"error": "the git harvest failed unexpectedly"}
-        unredacted = self._redact_before_upload()
-        artifacts: list[dict[str, Any]] = []
-        skipped: list[str] = []
-        total = 0
-        for path in sorted(ws.artifacts.rglob("*")):
+        # WHICH FILES OF THE ARTIFACTS FOLDER, IN WHICH ORDER (#228, owner
+        # decision of 2026-09-26): at most `max_artifact_files`, a declared
+        # output first, no name past the manifest's bound; see
+        # `agent_worker.artifact_manifest`. Decided BEFORE the redaction pass,
+        # so the pass scrubs what is going to leave the pod and nothing else.
+        found: dict[str, int] = {}
+        for path in ws.artifacts.rglob("*"):
             if not path.is_file() or path.is_symlink():
                 continue
-            size = path.stat().st_size
-            rel = path.relative_to(ws.artifacts).as_posix()
-            if not standalone_mod.storable(rel):
-                # A name whose bytes are not UTF-8 (#225 review): no object can
-                # be named with it, and as a lone surrogate in the summary it
-                # made `finish` raise, and the next attempt fail the same way.
-                # Named as the bytes it was, in the log and the skipped list.
-                shown = standalone_mod.shown(rel)
-                self.log.warning(
-                    "an artifact's name is not valid UTF-8, so no object can be "
-                    "named with it; not uploaded",
-                    artifact=shown,
-                )
-                skipped.append(shown)
+            try:
+                found[path.relative_to(ws.artifacts).as_posix()] = path.stat().st_size
+            except OSError:
+                continue
+        plan = manifest_mod.plan(
+            found,
+            first=self._artifacts_first(),
+            cap=self.cfg.max_artifact_files,
+            declared=self._expected_outputs,
+        )
+        skipped: list[str] = []
+        for name in plan.unstorable:
+            # A name whose bytes are not UTF-8 (#225 review): no object can be
+            # named with it, and as a lone surrogate in the summary it made
+            # `finish` raise, and the next attempt fail the same way. Named as
+            # the bytes it was, in the log and the skipped list.
+            # SCRUBBED FIRST (#232 review): cutting a raw name let a
+            # registered secret crossing character 256 survive in part.
+            shown = standalone_mod.shown(self._scrub(name))
+            self.log.warning(
+                "an artifact's name is not valid UTF-8, so no object can be "
+                "named with it; not uploaded",
+                artifact=shown,
+            )
+            skipped.append(shown)
+        for entry in plan.not_uploaded:
+            if entry["reason"] == manifest_mod.NAME_TOO_LONG:
+                # Listed as #225 lists a name it could not upload: cut short,
+                # so 50 of them cannot take the summary near 1 MiB either.
+                # SCRUBBED FIRST (#232 review): cutting a raw name let a
+                # registered secret crossing character 256 survive in part.
+                skipped.append(standalone_mod.shown(self._scrub(entry["name"])))
+        # Past the cap: COUNTED in the summary (`artifacts_over_cap`, below),
+        # and every name in the log -- the owner's shape for #228, through the
+        # helper #225's working-folder cap uses. Not in `artifacts_skipped`,
+        # whose readers call a name there dropped at the SIZE cap. A name over
+        # the bound is logged cut short, as #225 logs one: a path runs to
+        # 4,096 bytes, and 100 of those would pass Cloud Logging's 256 KiB
+        # entry. A name under it is logged whole (`shown` leaves it alone).
+        self._artifacts_not_uploaded = tuple(entry["name"] for entry in plan.not_uploaded)
+        self._log_not_uploaded(
+            "files in $SWARM_ARTIFACTS_DIR were not uploaded",
+            [
+                {**entry, "name": standalone_mod.shown(self._scrub(entry["name"]))}
+                for entry in plan.not_uploaded
+            ],
+            cap_files=self.cfg.max_artifact_files,
+            cap_name_bytes=manifest_mod.MAX_NAME_BYTES,
+        )
+        unredacted = self._redact_before_upload([ws.artifacts / rel for rel in plan.take])
+        artifacts: list[dict[str, Any]] = []
+        total = 0
+        for rel in plan.take:
+            path = ws.artifacts / rel
+            try:
+                # After the redaction pass, which can change a file's length.
+                size = path.stat().st_size
+            except OSError as exc:
+                self.log.warning("artifact upload failed", artifact=rel, error=str(exc))
+                skipped.append(rel)
                 continue
             if total + size > self.cfg.max_artifact_bytes:
                 skipped.append(rel)
@@ -3843,6 +4205,10 @@ class Worker:
                 continue
             total += size
             artifacts.append({"name": rel, "bytes": size, "uri": self.store.uri(key)})
+        # LISTED IN PATH ORDER, as the manifest always has been: the order
+        # above decides which files are taken, not the order a reader sees
+        # them in, nor which of them the listing route's first page holds.
+        artifacts.sort(key=lambda entry: entry["name"].split("/"))
 
         # WHAT A CLI AGENT WITH NO REPOSITORY CREATED IN ITS WORKING FOLDER
         # (#184, owner decision of 2026-09-26), after the artifacts folder so a
@@ -3870,7 +4236,8 @@ class Worker:
         # `logs/agent_stdout.log` / `logs/agent_stderr.log`, so every reader of
         # an agent's own output reads one layout whatever the runner, and the
         # copy is not subject to `max_artifact_bytes`. Same scrubbed file:
-        # `_redact_before_upload` above ran over `artifacts/` already.
+        # `_redact_before_upload` above scrubbed the captures whether or not
+        # the file cap took them into the manifest.
         agent_files = agent_stream_files(self.cfg.runner_profile)
         logs: dict[str, str] = {}
         for label, path in self._stream_files(ws):
@@ -3899,6 +4266,13 @@ class Worker:
             summary["workdir_outputs"] = workdir["summary"]
         if skipped:
             summary["artifacts_skipped"] = skipped[:50]
+        if plan.over_cap:
+            # How many files the folder held past the cap, and the cap, so a
+            # reader can say "N over the 500-file cap" without restating the
+            # number (#228). Absent when every file fitted: a zero would read
+            # as something dropped.
+            summary["artifacts_over_cap"] = plan.over_cap
+            summary["artifacts_cap_files"] = self.cfg.max_artifact_files
         if unredacted:
             # Files that left the pod without being rewritten AND without a
             # clean scan. Capped like the list above; the log carries them all.

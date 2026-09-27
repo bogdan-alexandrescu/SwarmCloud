@@ -70,6 +70,16 @@ output "worker_image_refs" {
   value       = jsondecode(local.service_env["swarm-scheduler"].WORKER_IMAGE_REFS)
 }
 
+output "job_models" {
+  description = "Worker job -> the MODEL its agent CLI runs (null when none), as its module entry carries it. From local.runner_models (#226)."
+  value       = module.cloud_run_jobs.models
+}
+
+output "worker_models" {
+  description = "Runner profile -> model, as handed to the scheduler in WORKER_MODELS for every Job it creates itself (#226)."
+  value       = jsondecode(local.service_env["swarm-scheduler"].WORKER_MODELS)
+}
+
 # --- identity --------------------------------------------------------------
 
 output "service_accounts" {

@@ -69,9 +69,10 @@ out by a generated tree. A file that does not fit is listed in the attempt's
 result as "not uploaded: over cap" (`result_summary.workdir_outputs`), never
 dropped silently.
 
-NOT IN `artifacts_skipped` (#225 review). Every reader of that list calls its
-names dropped at the artifacts folder's size cap: the Artifacts tab's "dropped
-at the size cap", a dependant's "exceeded its artifact size cap"
+NOT IN `artifacts_skipped` (#225 review). Every reader of that list reads its
+names as files of the ARTIFACTS folder: the Artifacts tab's "skipped" note on
+that folder's file list (which said "dropped at the size cap" until #228 added
+a reason that is no cap), a dependant's "exceeded its artifact size cap"
 (`inputs.py`). A working-folder file is dropped by a different cap, or for a
 reason that is no cap at all, so it is listed only in
 `workdir_outputs.not_uploaded`, with its reason, and the tab draws that list.

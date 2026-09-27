@@ -523,17 +523,62 @@ def test_a_reaped_runner_writes_its_attempt_and_emits_no_event(
     assert doc["peak_rss_bytes"] == 100, "the memory peak is written beside it, as before"
 
 
+#: The runner the test below starts: the catalogue's own, held alive at its end.
+_HELD_RUNNER = Path(__file__).with_name("held_runner_helper.py")
+
+#: How long that runner waits to be let go. The first reading lands about two
+#: seconds into the run; this is the bound on a worker that never writes one,
+#: well inside the task's 60s timeout (`conftest.build_worker`).
+_HOLD_BOUND_SECONDS = 30
+
+
+@pytest.mark.skipif(
+    not Path("/proc").is_dir(),
+    reason="a live CPU reading needs cgroup v2 or procfs; without either (macOS) the only "
+    "figure is the reaped-children total at the end, by design (SystemCpuMeter). CI is Linux.",
+)
 def test_a_run_writes_the_attempts_own_figures_while_it_runs_and_at_the_end(
-    db, worker_factory, monkeypatch
+    db, worker_factory, monkeypatch, tmp_path: Path
 ):
     """The live reading Details draws for a RUNNING attempt is the attempt
     document itself, rewritten with each periodic reading. The last write is
-    the attempt's combined figures -- the same ones the export reports."""
+    the attempt's combined figures -- the same ones the export reports.
+
+    THE RUNNER IS HELD ALIVE UNTIL A LIVE WRITE HAS BEEN SEEN. This test used
+    to race two clocks and lost on CI (release run 36215996709, PR #73's run
+    36217230325: one call, `live=False`). The heartbeat counter is the
+    ATTEMPT's, and the worker spends three heartbeats before the runner starts
+    (after RUNNING, after the restore, after the clone). So with a reading
+    every second heartbeat, the first reading while the runner is alive is the
+    runner's second heartbeat, about 2s in. This runner's own work, a 0.5s burn
+    and a 1.5s sleep plus interpreter start, also ends about 2s in, and
+    whichever finished first decided the test. A longer run would only move
+    the odds. So the runner does its real work and then waits
+    (`held_runner_helper.py`) until this test has seen a write made while it
+    was alive. The wait is bounded: a worker that never writes one fails
+    below, after `_HOLD_BOUND_SECONDS`, and does not hang.
+
+    That is not a production race. A runner that ends before the first
+    periodic reading gets its figures from the write at its reap, which is
+    exact. The docs promise a reading with every fifth heartbeat while a runner
+    runs, not a reading for every run however short.
+    """
     from agent_worker import lifecycle
 
-    # Every other heartbeat is a reading, so a short run is sure to take one
-    # while its runner is alive.
+    # The first reading comes on the runner's second heartbeat rather than its
+    # third (the default of 5, after three startup heartbeats). That keeps the
+    # hold at about 2s.
     monkeypatch.setattr(lifecycle, "HEARTBEAT_EVENT_EVERY", 2)
+    gate, gave_up = tmp_path / "runner-may-exit", tmp_path / "runner-gave-up"
+    catalogue_argv = lifecycle._runner_argv
+
+    def held_open(cfg):
+        # The catalogue's interpreter and module, unchanged, behind the hold.
+        argv = catalogue_argv(cfg)
+        return [argv[0], str(_HELD_RUNNER), str(gate), str(gave_up),
+                str(_HOLD_BOUND_SECONDS), *argv[1:]]
+
+    monkeypatch.setattr(lifecycle, "_runner_argv", held_open)
     seed_attempt(db, task_input={"prompt": "burn", "steps": 3, "sleep_seconds": 1.5,
                                  "cpu_burn_seconds": 0.5})
     worker, _, exporter = worker_factory(heartbeat_interval_seconds=1)
@@ -542,13 +587,21 @@ def test_a_run_writes_the_attempts_own_figures_while_it_runs_and_at_the_end(
     real = worker.control.record_cpu_usage
 
     def spy(fields):
-        calls.append((dict(fields), worker._sampler is not None))
+        # LIVE means the runner PROCESS is still running, not only that its
+        # sampler is still attached: `poll()` is None only before it exits.
+        child = worker._child
+        live = worker._sampler is not None and child is not None and child.poll() is None
+        calls.append((dict(fields), live))
+        if live:
+            gate.touch()  # seen: the runner may exit now
         return real(fields)
 
     monkeypatch.setattr(worker.control, "record_cpu_usage", spy)
     assert worker.run() == ExitCode.OK
 
-    assert any(live for _, live in calls), f"nothing was written while the runner ran: {calls}"
+    held = f" (the runner gave up after {_HOLD_BOUND_SECONDS}s)" if gave_up.exists() else ""
+    assert any(live for _, live in calls), f"nothing was written while the runner ran{held}: {calls}"
+    assert not gave_up.exists(), f"the runner was let go only by its bound: {calls}"
     # The figures at the end are the attempt's combined ones, the export's.
     # (Not "the last call was after the reap": a reap whose figures equal the
     # last periodic write is rightly not written twice.)

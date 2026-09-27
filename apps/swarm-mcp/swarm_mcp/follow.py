@@ -63,7 +63,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Callable
 
 from .client import TERMINAL, SwarmClient, SwarmError
 from .invocation import terminal_command
@@ -74,6 +74,16 @@ from .render import clock, parse_time, task_label
 #: because the route takes ONE offset for every stream it returns and the two
 #: streams are at different positions.
 STREAMS = ("stdout", "stderr")
+
+#: The agent CLI's OWN streams (`swarm_api.agent_streams.AGENT_STREAMS`, #184).
+#: `stdout`/`stderr` above are the RUNNER process's -- its JSON log lines --
+#: and a claude-code agent's `stream-json` is `agent_stdout`. The route answers
+#: `not_applicable` for them on a runner that starts no agent CLI (the mock,
+#: the browser runner), which is a fourth answer beside ok, absent and
+#: unreadable, and is reported as itself. `progress.watch` reads these first
+#: and falls back to `STREAMS` for such a task; everything else here reads
+#: `STREAMS`, exactly as before.
+AGENT_STREAMS = ("agent_stdout", "agent_stderr")
 
 #: How many bytes of log text one call may hand back, across every task and
 #: stream in it. Roughly 5k tokens -- enough to narrate real progress, small
@@ -120,7 +130,7 @@ def follow_command(task_ids: list[str]) -> str:
     return terminal_command(f"swarm tail {' '.join(followable)}")
 
 
-def new_cursor() -> dict[str, Any]:
+def new_cursor(streams: tuple[str, ...] = STREAMS) -> dict[str, Any]:
     """The cursor for a task nothing has been read from yet.
 
     Written out in full rather than defaulted field by field, so that a caller
@@ -132,12 +142,12 @@ def new_cursor() -> dict[str, Any]:
         "attempt_id": None,
         "streams": {
             name: {"pos": 0, "source": None, "complete": False, "window_start": 0}
-            for name in STREAMS
+            for name in streams
         },
     }
 
 
-def _normalise(raw: Any) -> dict[str, Any]:
+def _normalise(raw: Any, streams: tuple[str, ...] = STREAMS) -> dict[str, Any]:
     """A cursor that came back from a model, made safe to use.
 
     The cursor crosses a tool boundary, which means it arrives as whatever the
@@ -148,16 +158,16 @@ def _normalise(raw: Any) -> dict[str, Any]:
     coerced, and anything uncoercible falls back to the fresh value, which
     re-reads rather than skips.
     """
-    cur = new_cursor()
+    cur = new_cursor(streams)
     if not isinstance(raw, dict):
         return cur
     cur["events"] = _non_negative_int(raw.get("events"))
     attempt = raw.get("attempt_id")
     cur["attempt_id"] = attempt if isinstance(attempt, str) and attempt else None
-    streams = raw.get("streams")
-    if isinstance(streams, dict):
-        for name in STREAMS:
-            got = streams.get(name)
+    held = raw.get("streams")
+    if isinstance(held, dict):
+        for name in streams:
+            got = held.get(name)
             if not isinstance(got, dict):
                 continue
             cur["streams"][name] = {
@@ -246,6 +256,7 @@ def follow(
     max_log_bytes: int = DEFAULT_LOG_BUDGET,
     max_new_events: int = DEFAULT_EVENT_PAGE,
     include_heartbeats: bool = False,
+    streams: tuple[str, ...] = STREAMS,
 ) -> dict[str, Any]:
     """Everything these tasks have produced since `cursor`, and the next cursor.
 
@@ -265,7 +276,7 @@ def follow(
     running: list[str] = []
 
     for task_id in task_ids:
-        cur = _normalise(incoming.get(task_id))
+        cur = _normalise(incoming.get(task_id), streams)
         report, cur = _follow_one(
             client,
             task_id,
@@ -273,6 +284,7 @@ def follow(
             budget=budget,
             page=page,
             include_heartbeats=include_heartbeats,
+            streams=streams,
         )
         reports.append(report)
         next_cursor[task_id] = cur
@@ -304,6 +316,7 @@ def _follow_one(
     budget: _Budget,
     page: int,
     include_heartbeats: bool,
+    streams: tuple[str, ...] = STREAMS,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """One task. The state read comes first because everything else depends on it.
 
@@ -337,7 +350,7 @@ def _follow_one(
     terminal = state in TERMINAL
 
     events, cur = _events(client, task_id, cur, page=page, include_heartbeats=include_heartbeats)
-    logs, cur = _logs(client, task_id, cur, terminal=terminal, budget=budget)
+    logs, cur = _logs(client, task_id, cur, terminal=terminal, budget=budget, streams=streams)
 
     return (
         {
@@ -351,6 +364,10 @@ def _follow_one(
             "step_id": task.get("step_id"),
             "runner_profile": task.get("runner_profile"),
             "park_reason": task.get("park_reason"),
+            # What a READY task is waiting on, as the scheduler recorded it --
+            # `progress.state_line` names it, so a row waiting for capacity
+            # says which pool refused rather than only that it waits.
+            "blocked_by": task.get("blocked_by") or [],
             "last_error": task.get("last_error"),
             # What a finished task produced, for its closing line -- the same
             # line `tail` prints (#193). None while it runs, and when it
@@ -502,6 +519,7 @@ def _logs(
     *,
     terminal: bool,
     budget: _Budget,
+    streams: tuple[str, ...] = STREAMS,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Both streams, each from where this cursor left off.
 
@@ -520,7 +538,7 @@ def _logs(
     already_reset = False
     no_attempt_yet = False
 
-    for name in STREAMS:
+    for name in streams:
         state = cur["streams"][name]
 
         if state["complete"]:
@@ -598,7 +616,7 @@ def _logs(
                     cur["attempt_id"] = seen
                     cur["streams"] = {
                         key: {"pos": 0, "source": None, "complete": False, "window_start": 0}
-                        for key in STREAMS
+                        for key in streams
                     }
                     notes.append(
                         f"attempt {seen} is now the latest one and is not the attempt this "
@@ -625,6 +643,12 @@ def _logs(
         detail = (
             "this task has no attempt yet, so no log object can exist. It is queued, "
             "parked or waiting on capacity -- this is not a failed read."
+        )
+    elif statuses == {"not_applicable"}:
+        status = "not_applicable"
+        detail = (
+            "this runner starts no agent CLI, so it has no agent streams; its own "
+            "output is `stdout` and `stderr`"
         )
     elif statuses == {"unreadable"}:
         status = "unreadable"
@@ -1019,6 +1043,9 @@ def _fetch(
         return body, _row(
             stream, "absent", source=served.get("source"), detail=served.get("detail")
         )
+    if status == "not_applicable":
+        # Not a failed read: the route KNOWS this runner has no agent child.
+        return body, _row(stream, "not_applicable", detail=served.get("detail"))
     return body, _row(
         stream,
         "unreadable",
@@ -1153,7 +1180,9 @@ def quiet_line(task: dict[str, Any], cursor: dict[str, Any] | None) -> str | Non
     logs = task.get("logs") or {}
     rows = {row.get("stream"): row for row in logs.get("streams") or []}
     positions = ((cursor or {}).get("streams") or {})
-    if any(int((positions.get(name) or {}).get("pos") or 0) > 0 for name in STREAMS):
+    # The streams this report read -- the runner's two, or the agent's.
+    names = list(rows) or list(positions) or list(STREAMS)
+    if any(int((positions.get(name) or {}).get("pos") or 0) > 0 for name in names):
         return None
     if any(row.get("status") == "ok" and row.get("text") for row in rows.values()):
         return None
@@ -1168,10 +1197,10 @@ def quiet_line(task: dict[str, Any], cursor: dict[str, Any] | None) -> str | Non
         return NEVER_STARTED
     if status == "absent":
         return no_log_line(str(task.get("task_id") or ""), logs.get("attempt_id"))
-    complete = [bool((positions.get(name) or {}).get("complete")) for name in STREAMS]
+    complete = [bool((positions.get(name) or {}).get("complete")) for name in names]
     settled_streams = [
-        complete[i] or (rows.get(name) or {}).get("status") == "absent"
-        for i, name in enumerate(STREAMS)
+        complete[i] or (rows.get(name) or {}).get("status") in ("absent", "not_applicable")
+        for i, name in enumerate(names)
     ]
     if any(complete) and all(settled_streams):
         return empty_log_line(logs.get("attempt_id"))
@@ -1200,7 +1229,12 @@ def settled(task: dict[str, Any]) -> bool:
     return True
 
 
-def render(report: dict[str, Any], *, memo: dict[str, set[str]] | None = None) -> list[str]:
+def render(
+    report: dict[str, Any],
+    *,
+    memo: dict[str, set[str]] | None = None,
+    narrate: Callable[[str], list[str]] | None = None,
+) -> list[str]:
     """The same answer as lines, so a human sees exactly what the model sees.
 
     Deliberately not a second implementation of anything: it reads the report
@@ -1225,6 +1259,11 @@ def render(report: dict[str, Any], *, memo: dict[str, set[str]] | None = None) -
     `tail` -- and Firestore -- had them the other way round. A closing line
     carries no time of its own, so it goes after every event of the poll it
     closes rather than among them.
+
+    `narrate`, when given, turns each log line into the lines to print instead
+    -- `progress.narrate`, which reads a claude-code `stream-json` line as what
+    it means. Without it every log line is printed as it came, which is what
+    `swarm follow` in a terminal wants.
     """
     said = memo if memo is not None else {}
     cursors = report.get("cursor") or {}
@@ -1254,7 +1293,8 @@ def render(report: dict[str, Any], *, memo: dict[str, set[str]] | None = None) -
         for row in task["logs"].get("streams") or []:
             if row["status"] == "ok" and row["text"]:
                 for line in row["text"].splitlines():
-                    lines.append(f"[{label}] {line}")
+                    for said_line in (narrate(line) if narrate is not None else [line]):
+                        lines.append(f"[{label}] {said_line}")
             elif row["status"] in ("unreadable", "behind", "skipped_budget"):
                 lines.append(f"[{label}] ! {row['stream']}: {row['detail']}")
         for note in task["logs"].get("notes") or []:

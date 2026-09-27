@@ -67,9 +67,11 @@ from .client import SwarmError
 # WHY PER PROFILE, AND WHY THIS IS NOT INVARIANT 10 LOOSENED. A caller still
 # names a profile and supplies DATA; nothing declared is an image, a command,
 # a resource spec or a backend parameter. But an input means something only to
-# the runner that reads it: `input.model` is read by the CLI runners and would
-# select the model a `claude-code` agent runs, which is the contract change
-# test_model_flag_is_attribution_only.py exists to stop. So a profile that
+# the runner that reads it: `input.model` was read by the CLI runners and
+# selected the model a `claude-code` agent ran, which is the contract change
+# test_model_flag_is_attribution_only.py exists to stop (since #226 the runner
+# reads only the Job's MODEL, and the worker drops a stored `input.model`). So
+# a profile that
 # declares nothing takes nothing, and a key a profile does not declare is
 # refused by name -- never dropped, never passed through.
 #

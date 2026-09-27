@@ -1036,6 +1036,7 @@ export function WorkflowCard({
 
       {expanded && (
         <div className="wf-body" id={bodyId}>
+          <CensusFact roll={roll} />
           <StateDrift drift={workflow.drift} />
           <WorkflowDispatchLine workflow={workflow} taskById={taskById} />
           {/* THE CARD'S OWN VIEW STRIP: which of the three drawings this is,
@@ -1148,13 +1149,25 @@ export function dotClass(header: { tone: Tone | 'unknown'; derived: boolean }): 
  * axis, because there is no scale to start (design-system.md §6.4). That mark
  * survives every breakpoint, survives greyscale, and cannot be mistaken for a
  * 0% bar because a 0% bar has an axis tick and this has none.
+ *
+ * THE SENTENCE CARRIES ITSELF IN ITS `title` (#222). `.wf-progress-text` is
+ * contained in its column and ends in an ellipsis where the column is
+ * narrower than the census. At 1440 the sentence gets 208.2px beside the
+ * meter since `[progress]`'s floor went to 33ch in a row at least 620px wide
+ * (#223): the running forms up to "12/30 done · 18 not started" (195px) are
+ * whole, and a failed or cancelled clause -- "10/30 done · 1 failed · 19
+ * cancelled" is 260px -- is cut, as is every census in a narrower row, where
+ * the floor is 12ch and the sentence has 36px (styles.css, the `[progress]`
+ * note). So the whole sentence is on the element that was cut, for a
+ * pointer, and the open card states it whole for everyone else
+ * (`CensusFact`).
  */
 function Progress({ roll }: { roll: Rollup }) {
   if (!roll.trustworthy) {
     return (
       <span className="wf-progress untrusted">
         <span className="ctl-track wf-meter is-unknown" role="img" aria-label={roll.why} />
-        <span className="wf-progress-text">{roll.text}</span>
+        <span className="wf-progress-text" title={roll.text}>{roll.text}</span>
       </span>
     )
   }
@@ -1179,7 +1192,7 @@ function Progress({ roll }: { roll: Rollup }) {
             />
           ))}
         </span>
-        <span className="wf-progress-text">{roll.text}</span>
+        <span className="wf-progress-text" title={roll.text}>{roll.text}</span>
       </span>
     )
   }
@@ -1189,8 +1202,37 @@ function Progress({ roll }: { roll: Rollup }) {
       <span className="ctl-track wf-meter" role="img" aria-label={roll.why} title={roll.text}>
         <span className="ctl-util-fill wf-meter-fill" style={{ width: `${pct}%` }} />
       </span>
-      <span className="wf-progress-text">{roll.text}</span>
+      <span className="wf-progress-text" title={roll.text}>{roll.text}</span>
     </span>
+  )
+}
+
+/**
+ * THE CENSUS, WHOLE, AS THE OPEN CARD'S FIRST FACT (#223, owner decision
+ * 2026-09-26).
+ *
+ * The row cuts the census where `[progress]` is narrower than the sentence
+ * (at 1440, anything longer than the two-digit running form's 27
+ * characters; in a row under 620px, where it has 36px, every one) and
+ * draws no sentence at all at 560px and below. The cut text keeps the whole
+ * sentence in its `title`, but a `title` is whole on hover only, and a phone
+ * has no hover. design-system.md §7.3's rule for a cut value is cut on
+ * screen, whole somewhere a reader can get to without a pointer: here, the
+ * card the reader opened to see more of this workflow.
+ *
+ * `progress`, because it is the row's `[progress]` cell said whole. The same
+ * `roll.text` the row prints, so the two cannot disagree. A plain value, not a
+ * `.ctl-mark`: an unread census already says so in its own words ("2 of 6
+ * steps unread"), and the hatch on the row is its mark.
+ */
+function CensusFact({ roll }: { roll: Rollup }) {
+  return (
+    <ul className="ctl-facts wf-census">
+      <li className="ctl-fact">
+        <b>progress</b>
+        {roll.text}
+      </li>
+    </ul>
   )
 }
 

@@ -199,8 +199,14 @@ class CheckpointManager:
         # directory (3.11 checks `is_dir(follow_symlinks=False)`), so
         # `_write_archive` meets the link as one entry and never its contents.
         # Those files are the artifacts, which are uploaded on their own.
+        #
+        # The checkout's link too (#226): with a repository attached the agent
+        # starts in `work/repo`, so the lifecycle links `work/repo/artifacts`
+        # as well, and it breaks a resume in exactly the same way.
         skip = frozenset(
-            path for path in (ws.artifacts_link(),) if ws.is_artifacts_link(path)
+            path
+            for path in (ws.artifacts_link(), ws.artifacts_link(ws.checkout()))
+            if ws.is_artifacts_link(path)
         )
         with tempfile.TemporaryDirectory(prefix="swarm-ckpt-") as tmpdir:
             archive_path = Path(tmpdir) / ARCHIVE_NAME

@@ -355,6 +355,12 @@ def _publish(worker_factory, tmp_path, monkeypatch, dispatch, *, opened):
     # runs for real in test_strategy_end_to_end.py. `raising=False` because it
     # is added by the same change as this line.
     monkeypatch.setattr(lifecycle, "verify_worker_authorship", lambda **kw: 0, raising=False)
+    # The publish path now transfers the work into a worker-owned repository
+    # before it merges and pushes; with the git helpers faked, that repository is
+    # not built, so the transfer is faked to hand back a path the stubs ignore.
+    # It runs for real in test_strategy_end_to_end.py. `raising=False` because it
+    # is added by the same change as this line.
+    monkeypatch.setattr(lifecycle, "prepare_publish_repo", lambda **kw: tmp_path, raising=False)
     monkeypatch.setattr(lifecycle, "push_branch", lambda **kw: "deadbeef")
     monkeypatch.setattr(
         lifecycle,

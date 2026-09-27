@@ -245,7 +245,37 @@ def deliverables_line(artifacts_dir: Path | str) -> str:
     )
 
 
-def agent_instructions(names: Sequence[str], artifacts_dir: Path | str) -> str:
+def staged_paths(value: Any, work_dir: Path | str) -> tuple[str, ...]:
+    """The absolute paths of the inputs the worker staged, from `input.json`.
+
+    `value` is `input.json`'s `staged_inputs`: the worker's own record of what
+    `inputs.stage_inputs` put in `work/`, each entry's `path` relative to it.
+    The worker ASSIGNS that key when it staged something and removes a
+    caller's own value when it staged nothing (`lifecycle._prepare`), so what
+    is here is the platform's.
+
+    Each path goes through `_usable` anyway, because it becomes a line of the
+    prompt in the platform's voice: a path that leaves `work/`, is absolute or
+    carries a line break is dropped rather than written. Order kept, each once.
+    """
+    if not isinstance(value, (list, tuple)):
+        return ()
+    root = PurePosixPath(os.path.abspath(os.fspath(work_dir)))
+    seen: list[str] = []
+    for entry in value:
+        raw = entry.get("path") if isinstance(entry, dict) else None
+        usable = _usable(raw)
+        if usable is None:
+            continue
+        full = str(root / usable)
+        if full not in seen:
+            seen.append(full)
+    return tuple(seen)
+
+
+def agent_instructions(
+    names: Sequence[str], artifacts_dir: Path | str, staged: Sequence[str] = ()
+) -> str:
     """The lines a CLI runner appends to the agent's prompt.
 
     Always `deliverables_line`, once. Then, when later steps of a workflow
@@ -256,13 +286,22 @@ def agent_instructions(names: Sequence[str], artifacts_dir: Path | str) -> str:
     repository" is said because the working directory is where an agent
     assumes its output belongs.
 
+    Then, when `staged` is not empty, the files earlier steps gave this one,
+    by absolute path (#226, owner decision of 2026-09-26). The runner passes
+    them only when the agent starts in the repository checkout: a staged
+    input lands in `work/`, which is then the checkout's parent, so "read
+    scan-01.md" in a prompt no longer finds it. A task with no repository
+    starts in `work/`, where it does, and its prompt is unchanged. Last, so
+    that "there" above still means the artifacts directory.
+
     The `./artifacts` link is deliberately not mentioned. It is a net under
     the agent that reads this path and writes somewhere else anyway, and it
     may be absent (`workspace.link_artifacts` skips a name already taken), so
     naming it here would be a promise this text cannot check. For the same
     reason the list's last sentence names the repository and not "the working
     directory": a file written through the link IS written in the working
-    directory's `./artifacts`, and it does reach later steps. Nor does it
+    directory's `./artifacts` (the checkout's, when the agent starts there),
+    and it does reach later steps, because it is written THERE. Nor does it
     mention the working-folder upload of a task with no repository
     (`agent_worker.standalone_outputs`): that is a net as well, and a file it
     catches is named `workdir/<path>`, which no later step stages by the bare
@@ -279,17 +318,28 @@ def agent_instructions(names: Sequence[str], artifacts_dir: Path | str) -> str:
             "repository included, do not reach those steps.",
         ]
         lines += [f"- {PurePosixPath(directory) / name}" for name in names]
+    if staged:
+        lines.append(
+            "Earlier steps of this workflow gave you these files, which are outside "
+            "the repository:"
+        )
+        lines += [f"- {path}" for path in staged]
     return "\n".join(lines)
 
 
-def with_instructions(prompt: str, names: Sequence[str], artifacts_dir: Path | str) -> str:
+def with_instructions(
+    prompt: str,
+    names: Sequence[str],
+    artifacts_dir: Path | str,
+    staged: Sequence[str] = (),
+) -> str:
     """`prompt`, a blank line, then `agent_instructions`.
 
     The caller's own prompt comes first and is kept whole. Until #184's
     owner decision of 2026-09-26 a prompt with no expected names was passed
     unchanged; now every prompt ends with `deliverables_line`.
     """
-    return f"{prompt}\n\n{agent_instructions(names, artifacts_dir)}"
+    return f"{prompt}\n\n{agent_instructions(names, artifacts_dir, staged)}"
 
 
 def missing_outputs(names: Sequence[str], produced: Iterable[str]) -> list[str]:

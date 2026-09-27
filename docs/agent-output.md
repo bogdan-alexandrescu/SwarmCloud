@@ -201,9 +201,10 @@ What decision 2 does, and the reason for each rule:
   upload, 100 to a WARNING line (a line stays well under Cloud Logging's
   256 KiB entry), and the tab says how many only the log names. The first
   build logged the first 50 too, so past 50 a name was nowhere.
-* **Not in `artifacts_skipped`.** Every reader of that list calls a name in it
-  dropped at the artifacts folder's size cap: the tab's "dropped at the size
-  cap", a dependant's "exceeded its artifact size cap". A working-folder file
+* **Not in `artifacts_skipped`.** Every reader of that list reads a name in it
+  as a file of the artifacts folder: the tab's note on that folder's file list
+  ("dropped at the size cap" until #228, "skipped" since), a dependant's
+  "exceeded its artifact size cap". A working-folder file
   is dropped by another cap, or for a reason that is no cap at all, so the
   first build's copy there mislabelled a file the 50-file cap dropped.
 * **Listed and not uploaded, with the reason** (#225 review):
@@ -220,7 +221,10 @@ What decision 2 does, and the reason for each rule:
     `artifacts_skipped` and the log.
   * *A name too long to be an object's* (GCS allows 1,024 bytes of UTF-8 for
     the whole key, the attempt's prefix included). Listed with its name cut to
-    256 characters, so 50 of them cannot take the summary near 1 MiB.
+    256 characters, so 50 of them cannot take the summary near 1 MiB --
+    scrubbed of any registered secret BEFORE the cut, not after, so a key
+    that happens to cross that character cannot survive in the fragment kept
+    (#232 review).
   * *A core dump*: `core` or `core.<pid>`, at any depth. A program the agent
     built and ran crashes with the working folder as its cwd, and its core
     holds its memory, environment block included, which inherited the CLI's
@@ -264,6 +268,190 @@ What this does not do: it does not tell the agent about the net. The line says
 what happens to a file written to `$SWARM_ARTIFACTS_DIR`. A file caught in the
 working folder is a net under the agent that wrote somewhere else, not a
 second place to write.
+
+## At most 500 files from `$SWARM_ARTIFACTS_DIR`
+
+Found by reading on 2026-09-26 (#228), not measured: every file in the
+artifacts folder that fitted `max_artifact_bytes` became one entry in
+`result_summary.artifacts`, with no count cap. `result_summary` is a field of
+the task's Firestore document, which Firestore limits to 1 MiB. An entry is
+about 160 bytes at ordinary name lengths, so an agent that left about 6,000
+small files there would have taken the document past the limit: `finish`
+refused, `_safe_finish` refused again, and the task lost a result that may
+have succeeded. The fake Firestore the unit tests use does not enforce the
+limit, which is why nothing caught it. Since #225 every CLI prompt names the
+folder, so more agents write there.
+
+The owner decided on 2026-09-26, recorded on #228:
+
+* **At most 500 files are uploaded per attempt** (`artifact_manifest.MAX_FILES`,
+  `WorkerConfig.max_artifact_files`). The rest are not uploaded. The summary
+  **counts** them, `artifacts_over_cap`, beside `artifacts_cap_files`, the cap
+  they were over, and lists none of them. Both keys are absent when every file
+  fitted, so a reader never draws a zero as something dropped.
+* **Every name is in the worker log**, 100 to a WARNING line headed "files in
+  $SWARM_ARTIFACTS_DIR were not uploaded", each as `<name>: not uploaded: over
+  cap`. It is the same helper #225's working-folder cap logs through
+  (`Worker._log_not_uploaded`), so the two caps cannot drift apart.
+* **Artifacts > Outputs** shows "not uploaded from $SWARM_ARTIFACTS_DIR" with
+  the count, and #225's count line: "N over the 500-file cap, named in the
+  worker log". The cap is read from the summary, not restated in the UI.
+
+The rules this needed, and why:
+
+* **Which 500.** The names a later step's `expected_outputs` declares come
+  first, so a declared output is never the one dropped. There are at most 49
+  of them for one task: each dependant's `input_from` maps one upstream step
+  to one filename, and a workflow has at most 50 steps including this one.
+  Then the files the platform writes into the folder: the agent CLI's stream
+  captures and transcript, which `agent_streams` and the tab's answer and
+  transcript read, and the harvest's patch. Then everything else, shallowest
+  first and then by path, the rule #225 chose for the working folder, so a
+  top-level report is not pushed out by a generated tree beside it. The byte
+  cap is applied in the same order.
+* **The manifest is still listed by path.** The order decides which files
+  are taken. It does not change the order a reader sees them in, or which of
+  them the listing route's first page holds.
+* **A name longer than 256 bytes is not uploaded**
+  (`artifact_manifest.MAX_NAME_BYTES`) -- UNLESS a later step declared it
+  (#232 review, `artifact_manifest.MAX_DECLARED_NAMES`). A declared name is
+  only put first, not excused from upload: holding it to this bound too made
+  a declared output over 256 bytes fail every attempt as "written but not
+  uploaded" -- worse than before #228, because `_publish_withheld` had by then
+  already published, so the retry's push was refused as a non-fast-forward. A
+  declared name is held only to GCS's own object-name limit, 1,024 bytes,
+  same as the pre-#228 code and same as any other upload that is too long for
+  GCS: it fails at upload time and is counted in `artifacts_skipped` like any
+  other upload error, not turned away here.
+* **The 256-byte bound exists because the count cap alone does not bound the
+  document.** Every entry carries its name twice, as `name` and at the end of
+  its `uri`, and GCS allows 1,024 bytes of object name, so 500 entries at that
+  length are about 1 MB on their own. At 256 bytes, an entry is at most
+  702 bytes; 500 of them would be 343 KiB, but up to 49 are exempt (above) and
+  held only to the GCS length instead, so the manifest's worst case is 49
+  entries at about 2,238 bytes (107 KiB) plus 451 at 702 bytes (309 KiB):
+  about 416 KiB. The worst case of everything else the document can hold is
+  the input (256 KiB -- see the caveat below), #225's working-folder block
+  (about 155 KiB), the two skipped lists (about 67 KiB) and the runner
+  envelope (about 12 KiB). That is about 906 KiB in all, leaving about
+  118 KiB. At 512 bytes the manifest alone would pass that, and the sum would
+  pass 1 MiB. 256 bytes is a nested path: Linux allows 255 bytes for one file
+  name. A name over the bound (not declared) is logged with the reason `name
+  is longer than the manifest's 256 bytes`, and listed in `artifacts_skipped`,
+  both cut to 256 characters as #225 cuts a name it lists -- scrubbed of any
+  registered secret BEFORE the cut, not after, so a key that happens to cross
+  that character cannot survive in the fragment that is kept (#232 review). A
+  path can be 4,096 bytes, and 100 of those would pass Cloud Logging's 256 KiB
+  entry.
+  * **The caveat this budget does not cover (#232 review, tracked on the wave
+    epic, not fixed here):** "the input costs at most 256 KiB" assumes the
+    submitted bytes are roughly what Firestore ends up storing. Firestore
+    counts a number as a flat 8 bytes whatever its digit count, so an input
+    dense with small integers can cost more once decoded than the same count
+    of submitted bytes as text. This is the API's input-size check to
+    tighten, not this cap.
+* **Only what leaves the pod is redacted.** The pass that scrubs registered
+  secrets now runs over the files that will be uploaded, not the whole
+  folder. A file past the cap is not rewritten, and it is not reported in
+  `redaction_skipped` as "uploaded as-is", because it was not uploaded. The
+  agent CLI's captures are scrubbed either way, because a copy of each always
+  goes to `logs/`.
+
+`tests/unit/worker/test_artifacts_manifest_cap.py` holds each rule. The size
+bound is measured with Firestore's own size rules, against a store that
+renders the longest URI a deployment makes.
+
+## A step's environment: where the agent starts, HOME, and the model
+
+The owner compared a dispatched workflow with the same workflow run in a local
+Claude Code lane and decided, on 2026-09-26 (#226), that a step behaves like
+the local lane wherever the difference is a choice rather than a constraint.
+Two differences were choices.
+
+| | no repository | repository attached |
+|---|---|---|
+| the agent CLI's working directory | `work/` | `work/repo`, the checkout |
+| `HOME` | `work/` | `work/`, never the checkout |
+| `$SWARM_ARTIFACTS_DIR` | `/workspace/<attempt>/artifacts`, named in the prompt line | the same |
+| staged `input_from` files | in `work/`, so a relative name finds them | in `work/`, named in the prompt by absolute path |
+| `./artifacts` | `work/artifacts`, a link to `$SWARM_ARTIFACTS_DIR` | `work/repo/artifacts`, the same link, hidden from git; `work/artifacts` stays too |
+| `--model` (claude-code) | the Job's `MODEL`: `claude-opus-5-5` | the same |
+
+**The agent starts in the checkout.** Locally, Claude Code starts in the
+repository and loads its `CLAUDE.md` by itself. Here it started in `work/` with
+the checkout at `./repo`, and read `CLAUDE.md` only when a prompt said "read
+repo/CLAUDE.md first". Now the worker sets `SWARM_REPO_DIR` after the clone and
+`cliagent.agent_working_directory` starts the CLI there, for claude-code and
+codex alike (codex reads `AGENTS.md` the same way). The runner process itself
+still runs in `work/`; only the agent moves. The rules, and why:
+
+* **`SWARM_REPO_DIR` comes from the worker, never from `input`.** `input.repository`
+  is written with `setdefault`, so a caller's own would shadow the worker's.
+* **A checkout the worker named that is missing, or outside `work/`, fails the
+  runner.** Starting the agent in `work/` instead would run it without the code
+  and without its instructions, and it would still report success.
+* **HOME stays `work/`.** The CLI writes its own state under HOME
+  (`.claude.json`, `.claude/`, `.codex/`), some of it describing the account it
+  ran as. In the checkout that would be in the harvest's patch and on the pushed
+  branch. `work/` is still checkpointed whole, the checkout included, so moving
+  the agent changes nothing about what a resume restores.
+* **Staged inputs stay in `work/`, and the prompt names them.** They cannot move
+  into the checkout without becoming part of the agent's diff. The prompt line
+  the worker adds (`expected_outputs.agent_instructions`, the one place #184 put
+  it) gains, only for a repository task with staged inputs, "Earlier steps of
+  this workflow gave you these files, which are outside the repository:" and
+  one absolute path per file. A task with no repository keeps its prompt
+  exactly: it starts in `work/`, where "read scan-01.md" already works. A
+  caller's own `input.staged_inputs` is dropped with a WARNING, like
+  `input.expected_outputs`, because the line speaks for the platform.
+* **`./artifacts` works from the checkout.** #149's net catches the agent that
+  reads `$SWARM_ARTIFACTS_DIR` and writes `./artifacts/<name>` anyway, and from
+  the checkout that path is `work/repo/artifacts`. So the worker makes the same
+  link there, and hides it with the clone's own `.git/info/exclude` (local to
+  the clone, never committed or pushed), so it is in no patch, auto-commit or
+  pushed branch. It then asks git (`check-ignore`); a repository whose own
+  `.gitignore` un-ignores `artifacts` outranks the exclude file, and there the
+  link is taken away again with a WARNING, because a symlink to this attempt's
+  directory in the tenant's repository is worse than a missed guess. A
+  repository that already has an `artifacts` entry keeps it, also with a
+  WARNING. The link is never checkpointed, like `work/artifacts`.
+
+**The code profile runs a pinned model.** No Job set `MODEL`, so the CLI's
+default ran: the QA task of 2026-09-26 ran `claude-sonnet-5`, not the
+`claude-opus-5-5` the operator's local lanes run. Now:
+
+* `MODEL` is stated once, in `local.runner_models` in `terraform/infra/locals.tf`
+  (`claude-code = "claude-opus-5-5"`, with the reason beside it). It becomes
+  `MODEL` on every claude-code Cloud Run Job Terraform creates, and the
+  scheduler's `WORKER_MODELS`, which `CloudRunJobDispatcher._build_job` sets as
+  `MODEL` on the Jobs it creates for tenants Terraform does not list. A Job the
+  scheduler created before that is rebuilt once, before its next execution,
+  by the same check that moves it to a new image digest.
+* The worker reads `MODEL` into `WorkerConfig.model` and hands it to the runner,
+  which passes `--model`. Not codex: it is an OpenAI CLI, and an Anthropic model
+  name there would fail every run.
+* **A caller never chooses the model (invariant 10).** Until 2026-09-26 the
+  runner read `input.model` first, ahead of the Job's value, and the API and
+  the console's Submit form both let a caller send it, so a caller did choose
+  the model. Two changes closed that. #213 (contract request 25) made the API
+  refuse every key a profile's `RunnerProfile.inputs` does not declare, and
+  claude-code declares none, so `input.model` gets 422 `invalid_input` on a
+  task, a batch and a workflow step, and nothing is created
+  (`tests/unit/control_plane/test_input_model_is_refused.py` pins it for this
+  key). #226 made the runner never read `input.model` at all, and the worker
+  drops a stored one with a WARNING: a task queued before the refusal
+  shipped, or a profile whose inputs are not declared yet (`browser`,
+  `generic`, #218), which the API bounds by size alone. The top-level `model`
+  field is still accepted. It is attribution only, and selects nothing.
+* **What records the model that ran.** The runner's result carries the model it
+  asked for (`result_summary.runner.output.model`), and the CLI's own
+  `modelUsage` keys land in `result_summary.runner.usage.models`, the model or
+  models it says it actually used. Neither is on the attempt document:
+  `Attempt` in the frozen contract has no model field, and adding one is a
+  contract request, not an edit. The task's top-level `model` is the caller's
+  attribution, and can disagree with both.
+* Changing the model is an edit to `local.runner_models` and a release; nothing
+  a caller sends changes it.
 
 ## Two kinds of stdout, and the label that was wrong
 

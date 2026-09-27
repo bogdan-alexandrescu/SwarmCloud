@@ -228,6 +228,15 @@ def task_to_api(task: Task) -> dict[str, Any]:
         "last_error": task.last_error,
         "result_summary": task.result_summary,
         "latest_checkpoint": task.latest_checkpoint,
+        # Contract request 23 (#217), ACCEPTED 2026-09-25. Written by every
+        # terminal writer beside `completed_at` and read here first by the
+        # outcome ledger (`swarm_api.outcomes`); this serialiser never sent it,
+        # so nothing outside this process could read the same classification --
+        # `swarm_mcp.progress.outcome` (the bridge's per-task outcome, read by
+        # `swarm_follow`, `swarm_wait` and `swarm_result`) had to fall back to
+        # sorting free-text `last_error` itself. SUCCEEDED, and a task that
+        # ended before this field existed, both carry null.
+        "end_cause": task.end_cause.value if isinstance(task.end_cause, EndCause) else task.end_cause,
     }
 
 

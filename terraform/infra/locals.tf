@@ -97,6 +97,30 @@ locals {
     }
   }
 
+  # --- the model each profile's agent CLI runs (#226) -----------------------
+  #
+  # THE ONE PLACE A PROFILE'S MODEL IS STATED. It becomes `MODEL` on the
+  # profile's Cloud Run Jobs below, and the scheduler's `WORKER_MODELS`, which
+  # it sets as `MODEL` on the Jobs it creates for tenants this root does not
+  # list. The worker reads MODEL into `WorkerConfig.model` and the runner
+  # passes it to the CLI as `--model`; a caller's `input.model` is refused
+  # (invariant 10), so changing a model is an edit here and a release.
+  #
+  # WHY claude-opus-5-5 (owner decision of 2026-09-26): it is the model the
+  # operator's local Claude Code lanes run, and a SwarmCloud step should behave
+  # like a local lane wherever the difference is a choice. With no MODEL on any
+  # Job the CLI ran its own default instead -- the QA task of that day ran
+  # claude-sonnet-5.
+  #
+  # NOT a field of `runner_profiles` above, which mirrors the frozen Python
+  # catalogue field for field (tests/terraform/catalogue.tftest.hcl): the
+  # catalogue has no model, and giving it one is a contract request.
+  # Only claude-code: codex is an OpenAI CLI, where this name would fail every
+  # run, and mock, generic and browser start no model.
+  runner_models = {
+    "claude-code" = "claude-opus-5-5"
+  }
+
   backends = ["CLOUD_RUN_JOB", "GKE_AUTOPILOT"]
 
   providers_in_catalogue = distinct(compact([
@@ -266,6 +290,7 @@ locals {
         resource_class  = profile.resource_class
         image           = local.image[profile.image]
         timeout_seconds = profile.timeout_seconds
+        model           = lookup(local.runner_models, profile_name, null)
         secret_env = {
           for env_name, provider in profile.secret_env :
           env_name => "swarm-tenant-${tenant_id}-${provider}"
@@ -318,7 +343,12 @@ locals {
         # The broker declares a custom audience, so a token minted for the
         # service URL alone is one its own `aud` check rejects.
         QUOTA_BROKER_AUDIENCE = local.push_audiences["swarm-quota-broker"]
-      })
+        },
+        # The model the agent CLI runs, from `local.runner_models` -- see why
+        # there. Absent, not empty, on a profile with none: the worker reads an
+        # empty MODEL as "no model", but a Job with no such variable says so.
+        { for name, value in { MODEL = job.model } : name => value if value != null },
+      )
     }
   }
 }
@@ -532,6 +562,11 @@ locals {
       # failed with `404 Image '...agent-runtime-base:latest' not found`. A
       # digest map removes that failure too: there is no default to fall to.
       WORKER_IMAGE_REFS = jsonencode(local.worker_image_refs)
+
+      # The model each profile's agent runs, for the Jobs this scheduler creates
+      # (tenants this root does not list). The same `local.runner_models` sets
+      # MODEL on this root's own Jobs, so both kinds run one model (#226).
+      WORKER_MODELS = jsonencode(local.runner_models)
 
       # Passed THROUGH to each worker by `scheduler.dispatch.worker_env`, which
       # is the single source of a worker's execution environment for both

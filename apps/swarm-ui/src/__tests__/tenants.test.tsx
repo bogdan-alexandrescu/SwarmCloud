@@ -180,7 +180,8 @@ describe('Tenants scrolls at 390 with the tenant held, under its two-row head (C
     // THE SECOND HEAD ROW'S FIRST CELL IS `Max active`, a figure's head from
     // the middle of the table, and the held-column rule names cells by
     // `:first-child`. Held, it sat over the Tenant head at every offset.
-    // MUTATION: drop the grouped-head reset in the CH-13 block of styles.css.
+    // MUTATION: widen the held rule's head branch in the CH-13 block of
+    // styles.css from `thead > tr:first-child` back to every head row.
     const maxActive = c.querySelector('thead tr:nth-child(2) th:first-child')!
     expect(visible(maxActive)).toBe('Max active')
     expect(won(maxActive, 'position', PHONE), 'a Configured head is held at the left edge').not.toBe('sticky')

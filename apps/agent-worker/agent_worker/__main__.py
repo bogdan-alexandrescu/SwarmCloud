@@ -99,7 +99,7 @@ from typing import Any
 from swarm_common.config import Settings
 from swarm_common.logging_setup import configure_logging
 
-from . import startup
+from . import hardening, startup
 from .config import WorkerConfig
 from .control import ControlPlane
 from .errors import ConfigError, ExitCode
@@ -153,7 +153,11 @@ def firestore_startup_call_options() -> dict[str, Any]:
 
 
 def build_worker(
-    config: WorkerConfig, settings: Settings, *, phases: startup.Phases | None = None
+    config: WorkerConfig,
+    settings: Settings,
+    *,
+    phases: startup.Phases | None = None,
+    memory: hardening.MemoryProtection | None = None,
 ) -> Worker:
     logger = build_logger(
         task_id=config.task_id,
@@ -197,8 +201,41 @@ def build_worker(
         ),
         secret_client=SecretManagerClient(config.project_id),
         phases=phases,
+        # None when a caller built a worker without running the entrypoint's
+        # `protect_memory`. The lifecycle reads None as FAILED: no git token.
+        memory=memory,
     )
     return Worker(config, deps)
+
+
+def protect_memory(phases: startup.Phases) -> hardening.MemoryProtection:
+    """Make this process non-dumpable, and say in the log what that established.
+
+    Looked up through the module (`hardening.make_non_dumpable`), not bound at
+    import, so a unit test can stand in for the call and still see where the
+    entrypoint makes it.
+    """
+    memory = hardening.make_non_dumpable()
+    fields = {"memory_protection": memory.status, "detail": memory.detail}
+    if memory.status == hardening.PROTECTED:
+        phases.log.info(
+            "worker memory closed to other processes (non-dumpable)",
+            phase=phases.current, **fields,
+        )
+    elif memory.status == hardening.UNSUPPORTED:
+        # A developer's machine. Not a refusal: see MemoryProtection.
+        phases.log.warning(
+            "worker memory is NOT protected from other processes of this uid: "
+            "this platform has no prctl",
+            phase=phases.current, **fields,
+        )
+    else:
+        phases.log.error(
+            "worker memory is NOT protected from other processes of this uid; "
+            "this attempt will not read or use the tenant git token",
+            phase=phases.current, refusal=memory.git_token_refusal, **fields,
+        )
+    return memory
 
 
 def main() -> int:
@@ -206,6 +243,12 @@ def main() -> int:
     # this process exists. A pod whose log is empty never ran this line.
     phases = startup.Phases(startup.bootstrap_logger())
     phases.started(execution=_execution_name())
+    # SECOND, and before anything reads a credential: close this process's
+    # memory to the agent it is about to run (hardening.py). Nothing before this
+    # line has read a secret, so none can be in the heap yet. It is not the
+    # first line because the line above is the startup contract's proof of life,
+    # and a hardening step must not be able to take that away.
+    memory = protect_memory(phases)
     # google-auth and grpc attach NullHandlers to their loggers. Without a
     # root handler their warnings go nowhere, including "Compute Engine
     # Metadata server unavailable" and every failed project-id lookup.
@@ -304,7 +347,7 @@ def main() -> int:
 
     phases.enter("build_worker")
     try:
-        worker = build_worker(config, settings, phases=phases)
+        worker = build_worker(config, settings, phases=phases, memory=memory)
     except Exception as exc:
         message = "the worker could not be built; exiting before touching the control plane"
         phases.log.exception(message, exc, phase=phases.current, exit_code=ExitCode.CONFIG)
