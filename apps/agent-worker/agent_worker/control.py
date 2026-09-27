@@ -69,7 +69,15 @@ from datetime import datetime, timedelta
 from typing import Any, Callable, Iterator, Mapping, Protocol, Sequence
 
 from swarm_common.admission import _snapshot, release_lease_in_transaction
-from swarm_common.models import Attempt, ProviderState, TaskEvent, new_id, utcnow
+from swarm_common.models import (
+    Attempt,
+    EndCause,
+    ProviderState,
+    TaskEvent,
+    new_id,
+    retries_exhausted,
+    utcnow,
+)
 from swarm_common.states import (
     CONCURRENCY_STATES,
     TERMINAL_STATES,
@@ -886,6 +894,32 @@ class ControlPlane:
             merge=True,
         )
 
+    def record_cpu_usage(self, fields: dict[str, float]) -> None:
+        """The attempt's CPU, onto the attempt, as typed fields (request #15).
+
+        `fields` is `metrics.attempt_cpu_fields`: the attempt's own figures,
+        every runner combined, with anything not measured already left out.
+        Only the four keys the frozen `Attempt` declares are written, and only
+        as numbers -- `bool` excluded, for the reason `record_spend` gives. A
+        key that is absent is left as it is on the document: the write is a
+        merge, so a null would erase a figure an earlier write recorded.
+
+        The attempt document is this attempt's own. A superseded attempt still
+        writes it, as it writes its memory peak -- the fence guards the task,
+        its lease and its event stream, which this does not touch.
+        """
+        from .metrics import ATTEMPT_CPU_FIELDS
+
+        doc: dict[str, Any] = {
+            key: float(fields[key])
+            for key in ATTEMPT_CPU_FIELDS
+            if isinstance(fields.get(key), (int, float)) and not isinstance(fields.get(key), bool)
+        }
+        if not doc:
+            return
+        doc["tenant_id"] = self.tenant_id
+        self._attempt_ref().set(doc, merge=True)
+
     def record_spend(self, usage: dict[str, Any]) -> None:
         """Token counts and cost, onto the attempt, as typed fields.
 
@@ -963,8 +997,32 @@ class ControlPlane:
         The quota broker owns the adaptive limits; the worker only reports the
         ground truth it just observed (a 429, a retry-after header) so the next
         admission decision is made with it.
+
+        `rate_limit_count` IS THE COUNT OF THE CURRENT RATE-LIMIT RUN (CP-10,
+        #85; owner decision 2026-09-25). A run starts at a 429 and ends when a
+        clean run reports the provider AVAILABLE -- here, rule (c) -- or when
+        the broker's `aimd.refresh` retires the cooldown and the reset window,
+        which writes 0 ("The rate-limit run is over"). Provider quota labels the
+        column `429s (this run)`, and three rules make the label true:
+
+          (a) a NEW document counts 1 only when its first report is itself a
+              429; it used to be seeded with 1 whatever the report was, so a
+              document created by a clean run claimed a 429 nobody saw;
+          (b) a stored count with no `last_429_at` behind it is read as 0
+              before anything is added, so a document seeded that way corrects
+              itself on its next report -- no one-off Firestore write;
+          (c) a report of AVAILABLE writes 0, because `refresh` never resets a
+              document that is already AVAILABLE, so without this the count
+              would carry 429s from runs that are over.
+
+        The broker's exhaustion threshold (`AimdConfig.exhaustion_threshold`)
+        therefore counts 429s since the last clean run or retired cooldown. A
+        document no worker reports on again keeps its old count until one does.
+        `last_429_at` is never cleared: `Last 429` keeps its time when the count
+        returns to 0.
         """
         now = utcnow()
+        rate_limited = state in (ProviderState.EXHAUSTED, ProviderState.THROTTLED)
         payload: dict[str, Any] = {
             "provider": provider,
             "tenant_id": self.tenant_id,
@@ -975,7 +1033,7 @@ class ControlPlane:
             payload["retry_after_seconds"] = int(retry_after_seconds)
         if reset_at is not None:
             payload["reset_at"] = reset_at
-        if state in (ProviderState.EXHAUSTED, ProviderState.THROTTLED):
+        if rate_limited:
             payload["last_429_at"] = now
         ref = self._quota_ref(provider)
         snap = ref.get()
@@ -985,13 +1043,22 @@ class ControlPlane:
                 kind="quota",
                 document_id=f"{provider}:{self.tenant_id}",
             )
-            payload["rate_limit_count"] = int(existing.get("rate_limit_count", 0)) + (
-                1 if state in (ProviderState.EXHAUSTED, ProviderState.THROTTLED) else 0
-            )
+            if state == ProviderState.AVAILABLE:
+                # (c) A clean run ends the run.
+                payload["rate_limit_count"] = 0
+            else:
+                # (b) A count with no 429 behind it is no count at all.
+                stored = (
+                    int(existing.get("rate_limit_count", 0))
+                    if existing.get("last_429_at") is not None
+                    else 0
+                )
+                payload["rate_limit_count"] = stored + (1 if rate_limited else 0)
             ref.update(payload)
         else:
             payload.setdefault("configured_hard_max", 50)
-            payload.setdefault("rate_limit_count", 1)
+            # (a) One only when the first report is itself a 429.
+            payload["rate_limit_count"] = 1 if rate_limited else 0
             payload.setdefault("success_count", 0)
             ref.set(payload)
 
@@ -1060,12 +1127,18 @@ class ControlPlane:
         exit_code: int | None,
         error: str | None = None,
         result_summary: dict[str, Any] | None = None,
+        end_cause: EndCause | None = None,
     ) -> None:
         """Persist a terminal state, record the attempt's end, release the lease.
 
         The transition is fenced (see `transition`), and it comes first. A
         superseded attempt gets `FencedWriteRefused` before anything else is
         written: no attempt end, no event, no release.
+
+        `end_cause` is WRITTEN ON EVERY TERMINAL STATE, None included (contract
+        request 23): a success carries None, and so does an end no cause names.
+        Written rather than omitted so the document says what this write
+        decided, whatever an earlier write left there.
         """
         if state not in TERMINAL_STATES:
             raise ControlPlaneError(f"{state.value} is not terminal")
@@ -1073,6 +1146,7 @@ class ControlPlane:
             "completed_at": utcnow(),
             "current_lease_id": None,
             "last_error": error,
+            "end_cause": end_cause.value if end_cause is not None else None,
         }
         if result_summary is not None:
             fields["result_summary"] = result_summary
@@ -1086,3 +1160,113 @@ class ControlPlane:
         }[state]
         self.emit(event, {"exit_code": exit_code, "error": error})
         self.release_lease(f"terminal:{state.value}")
+
+    def fail_retryably(
+        self,
+        *,
+        exit_code: int | None,
+        error: str,
+        cause: str,
+        result_summary: dict[str, Any] | None = None,
+        retry_delay_seconds: int = 0,
+        detail: dict[str, Any] | None = None,
+        end_cause: EndCause | None = None,
+    ) -> TaskState:
+        """End this ATTEMPT as failed, and send the task back to READY if it has
+        attempts left. Returns the state the task was left in.
+
+        `end_cause` is what the task ends as if this attempt was its last and it
+        ends FAILED. A CANCELLED end is always CANCEL_REQUESTED, because only a
+        requested cancel picks it; READY ends nothing and writes no cause.
+
+        `finish(FAILED)` ends the task for good. This ends only the attempt.
+        One fenced transaction reads the task and picks the target:
+
+          * CANCELLED when a cancel was requested. The user's decision survives
+            a retry, as it does in the reconciler's `repair_task_state`.
+          * FAILED once `attempt_count` has reached `max_attempts`, decided by
+            `swarm_common.models.retries_exhausted`. That is the predicate the
+            scheduler and the reconciler apply, not a second copy of it.
+          * READY otherwise, with `next_eligible_at`. The scheduler admits it
+            on a later drain as a new attempt, which acquires a new lease with
+            a new generation. RUNNING -> READY is legal in the frozen state
+            machine.
+
+        The count is read from the DOCUMENT inside the transaction, never from
+        the task this worker fetched when it started. The scheduler's
+        dispatch-failure path decided from its own snapshot and was one attempt
+        behind (`task_b568a623be8645eb87c6`, 2026-09-24).
+
+        Then the attempt's end, one event and the lease release, in the order
+        `finish` uses. The task leaves the concurrency states before the pools
+        are decremented. The event for READY is RETRYING with `cause`, because
+        the task is not terminal and an event type that says it is would be
+        read that way (see `EventType.CANCEL_REQUESTED`).
+
+        Raises `FencedWriteRefused` with nothing written.
+        """
+        write = "retryable failure"
+        now = utcnow()
+
+        def _apply(txn: Any) -> tuple[TaskState, int, int]:
+            task = self._fenced_task(txn, write=write)
+            current = _as_state(task.get("state"))
+            attempt_count = int(task.get("attempt_count", 0))
+            max_attempts = int(task.get("max_attempts", 3))
+            if task.get("cancel_requested"):
+                target = TaskState.CANCELLED
+            elif retries_exhausted(attempt_count, max_attempts):
+                target = TaskState.FAILED
+            else:
+                target = TaskState.READY
+            assert_transition(current, target)
+            payload: dict[str, Any] = {
+                "state": target.value,
+                "updated_at": now,
+                "current_lease_id": None,
+                "last_error": (
+                    f"cancelled on request; {error}" if target is TaskState.CANCELLED else error
+                ),
+            }
+            if result_summary is not None:
+                payload["result_summary"] = result_summary
+            if target is TaskState.READY:
+                payload["next_eligible_at"] = now + timedelta(
+                    seconds=max(0, retry_delay_seconds)
+                )
+            else:
+                # Terminal. CLEARED, not omitted: a retry time on a task that
+                # will never run again is a promise nothing keeps.
+                payload["completed_at"] = now
+                payload["next_eligible_at"] = None
+                ended_as = (
+                    EndCause.CANCEL_REQUESTED if target is TaskState.CANCELLED else end_cause
+                )
+                payload["end_cause"] = ended_as.value if ended_as is not None else None
+            txn.update(self._task_ref(), payload)
+            return target, attempt_count, max_attempts
+
+        target, attempt_count, max_attempts = self._run_transaction(_apply)
+        self.record_attempt_end(exit_code=exit_code, error=error)
+        event = {
+            TaskState.READY: EventType.RETRYING,
+            TaskState.FAILED: EventType.FAILED,
+            TaskState.CANCELLED: EventType.CANCELLED,
+        }[target]
+        self.emit(
+            event,
+            {
+                "exit_code": exit_code,
+                "error": error,
+                "cause": cause,
+                **(detail or {}),
+                "to_state": target.value,
+                "attempt_count": attempt_count,
+                "max_attempts": max_attempts,
+                "retries_exhausted": target is TaskState.FAILED,
+            },
+        )
+        self.release_lease(
+            f"retry:{cause}" if target is TaskState.READY else f"terminal:{target.value}"
+        )
+        return target

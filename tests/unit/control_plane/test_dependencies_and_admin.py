@@ -136,11 +136,14 @@ def test_credential_parked_tasks_are_promoted_once_the_key_is_registered(
         headers=auth_header("alice"),
         json={"runner_profile": "claude-code", "input": {}},
     ).json()["task"]
-    assert task["park_reason"] == "CREDENTIAL_MISSING"
+    # READY at submission: the API no longer judges credentials (#169).
+    # Admission parks it, and the credential sweep is what brings it back.
+    assert task["state"] == "READY"
 
     scheduler = make_scheduler()
     scheduler.drain()
     assert db.docs[f"tasks/{task['id']}"]["state"] == "PARKED"
+    assert db.docs[f"tasks/{task['id']}"]["park_reason"] == "CREDENTIAL_MISSING"
 
     client.post(
         "/v1/tenants/me/credentials",

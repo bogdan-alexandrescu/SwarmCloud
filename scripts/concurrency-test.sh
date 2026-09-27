@@ -64,7 +64,7 @@ trap cleanup EXIT INT TERM
 t_case "Submit ${COUNT} tasks (no infrastructure should appear yet)"
 QUEUED_BEFORE="$(fs_count tasks state EQUAL QUEUED)"
 for i in $(seq 1 "${COUNT}"); do
-  if id="$(submit_task "${PROFILE}" "$(jq -nc --argjson i "${i}" '{message:"concurrency", index:$i}')" \
+  if id="$(submit_task "${PROFILE}" "$(jq -nc --argjson i "${i}" '{prompt: ("concurrency " + ($i|tostring))}')" \
            '{"metadata":{"source":"concurrency-test"}}')"; then
     TASK_IDS+=("${id}")
   fi

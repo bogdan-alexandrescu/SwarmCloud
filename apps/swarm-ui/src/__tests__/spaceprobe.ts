@@ -664,10 +664,13 @@ function boxChildren(el: Element): Element[] {
  *   2px left border reserved for the selection rule -- nothing is painted
  *   until one of them is chosen, and only one ever is.
  *
- *   WITHOUT "carries words", the five cells of `.acct-bar` looked like five
- *   surfaces touching at a 2px gutter. They are the segments of ONE meter, and
- *   segments of a meter are supposed to be a few pixels apart; the gutter rule
- *   is about content blocks standing next to each other.
+ *   WITHOUT "carries words", the segments of a meter look like surfaces
+ *   touching at a gutter of a pixel or two. The first run met this on the
+ *   five cells of Accounts' old window bar (`.acct-bar`, collapsed into the
+ *   shared track by CP-25); a track's fill beside its over-ceiling segment is
+ *   the same shape. They are the parts of ONE meter, and parts of a meter are
+ *   supposed to touch or nearly touch; the gutter rule is about content
+ *   blocks standing next to each other.
  */
 function isPanel(el: Element): boolean {
   if ((el.textContent ?? '').trim() === '') return false
@@ -686,7 +689,7 @@ function isPanel(el: Element): boolean {
  * ONE CONTROL WITH SEGMENTS, NOT A ROW OF CONTENT BLOCKS.
  *
  * The third exemption to the gutter floor, and it is the same argument the
- * `.acct-bar` one above makes: `boxGutter` forbids ZERO between two cards,
+ * meter one above makes: `boxGutter` forbids ZERO between two cards,
  * chips or tracks, "which is what reads as one wider element rather than two".
  * A segmented control is the case where reading as one element is the whole
  * design intent -- `design-system.md` §6.11 settles it as "ONE BORDERED GROUP,

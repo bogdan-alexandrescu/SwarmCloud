@@ -32,6 +32,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from swarm_common.states import CONCURRENCY_STATES, PENDING_STATES
+
 from .client import SwarmClient, SwarmError, task_id_of
 from .profiles import backend_of
 
@@ -57,24 +59,63 @@ def download(client: SwarmClient, uri: str, *, timeout: int = 120) -> bytes:
     of its own, which is why `SwarmClient` exposes one separately from the ID
     token IAP wants.
     """
-    bucket, key = parse_gs_uri(uri)
-    url = f"{_GCS}/{urllib.parse.quote(bucket, safe='')}/o/{urllib.parse.quote(key, safe='')}?alt=media"
-    req = urllib.request.Request(url)
-    req.add_header("Authorization", f"Bearer {client.access_token()}")
+    return _get(client, uri, f"{_object_url(uri)}?alt=media", timeout=timeout)
+
+
+def object_size(client: SwarmClient, uri: str, *, timeout: int = 30) -> int:
+    """How many bytes one object holds, read from its METADATA, not its bytes.
+
+    `swarm tail` asks this of a completed log (`logs/<stream>.log`) to tell an
+    agent that printed nothing from one whose output never reached a live
+    flush. The answer is one number and the object can be 32 MB
+    (`max_stdout_bytes`), so downloading it to count would cost the whole
+    stream. The same credentials, retry and status-carrying errors as
+    `download`, because they are the same request without `alt=media`.
+    """
+    raw = _get(client, uri, _object_url(uri), timeout=timeout)
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as response:
-            return response.read()
-    except urllib.error.HTTPError as exc:
-        body = exc.read().decode("utf-8", errors="replace")[:300]
-        if exc.code == 403:
-            body += (
-                " -- an artifact lives under the TENANT's prefix, so reading it "
-                "needs storage.objects.get on that bucket for your own account, "
-                "not for the worker's service account"
-            )
-        raise SwarmError(f"could not read {uri}: {exc.code} {body}") from exc
-    except urllib.error.URLError as exc:
-        raise SwarmError(f"could not read {uri}: {exc.reason}") from exc
+        return int(json.loads(raw)["size"])
+    except (ValueError, KeyError, TypeError) as exc:
+        raise SwarmError(f"could not read the size of {uri}: {exc}") from exc
+
+
+def _object_url(uri: str) -> str:
+    bucket, key = parse_gs_uri(uri)
+    return f"{_GCS}/{urllib.parse.quote(bucket, safe='')}/o/{urllib.parse.quote(key, safe='')}"
+
+
+def _get(client: SwarmClient, uri: str, url: str, *, timeout: int) -> bytes:
+    """One GCS JSON-API GET with the reader's own access token."""
+    # ONE RETRY, on a 401 with a token the client had cached: the access token
+    # is cached now (`SwarmClient.access_token`), and gcloud can hand back one
+    # with less life left than the cache assumes. A fake client without the
+    # method -- the tests' -- gets no retry, which is the old behaviour.
+    forget = getattr(client, "forget_credentials", None)
+    for attempt in (1, 2):
+        req = urllib.request.Request(url)
+        req.add_header("Authorization", f"Bearer {client.access_token()}")
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as response:
+                return response.read()
+        except urllib.error.HTTPError as exc:
+            if exc.code == 401 and attempt == 1 and callable(forget) and forget():
+                continue
+            body = exc.read().decode("utf-8", errors="replace")[:300]
+            if exc.code == 403:
+                body += (
+                    " -- an artifact lives under the TENANT's prefix, so reading it "
+                    "needs storage.objects.get on that bucket for your own account, "
+                    "not for the worker's service account"
+                )
+            # THE STATUS AS DATA, so a caller can tell "not written yet" (404)
+            # from "you may not read it" (403) without searching this sentence.
+            # `swarm tail` read every failure here as "not published yet", which
+            # hid a missing grant behind an agent that seemed to print nothing
+            # (#88, SC-F12).
+            raise SwarmError(f"could not read {uri}: {exc.code} {body}", status=exc.code) from exc
+        except urllib.error.URLError as exc:
+            raise SwarmError(f"could not read {uri}: {exc.reason}") from exc
+    raise SwarmError(f"could not read {uri}: refused twice")  # pragma: no cover - loop always returns or raises
 
 
 def patch_uri(task: dict[str, Any]) -> str | None:
@@ -96,15 +137,43 @@ def patch_uri(task: dict[str, Any]) -> str | None:
     return None
 
 
+#: States in which a task is still on its way and a summary is simply not due
+#: yet. From the frozen contract, not written out; PARKED has its own sentence.
+_UNFINISHED = frozenset(
+    state.value for state in CONCURRENCY_STATES | PENDING_STATES
+) - {"PARKED"}
+
+
+def _no_summary(task: dict[str, Any]) -> str:
+    """Why a task has no result summary, from its own state and history.
+
+    THE PARKED SENTENCE IS FOR PARKED TASKS. It was printed for every task
+    without a summary -- including, on 2026-09-25 (#88, SC-F10), a workflow
+    step the scheduler cascade-cancelled before it was ever attempted, which
+    has no parked attempt and no event detail to go looking in.
+    """
+    state = str(task.get("state") or "unknown")
+    if state == "PARKED":
+        return (
+            f"{state}: no result summary was written. "
+            "A parked attempt puts its summary in the event detail instead."
+        )
+    if state in _UNFINISHED:
+        return f"{state}: no result summary yet -- one is written when the task finishes"
+    if not task.get("started_at") and not task.get("attempt_count"):
+        return (
+            f"{state}: no result summary was written -- the task never started, "
+            "so no agent produced anything"
+        )
+    return f"{state}: no result summary was written"
+
+
 def explain_absence(task: dict[str, Any]) -> str:
     """Why there is no patch. Six causes, six different responses."""
     summary = task.get("result_summary") or {}
     git = summary.get("git")
     if summary == {} or summary is None:
-        return (
-            f"{task.get('state', 'unknown')}: no result summary was written. "
-            "A parked attempt puts its summary in the event detail instead."
-        )
+        return _no_summary(task)
     if not git:
         return "this task cloned no repository, so there is no code to apply"
     if git.get("error"):
@@ -117,6 +186,14 @@ def explain_absence(task: dict[str, Any]) -> str:
     if not git.get("commits") and not git.get("dirty"):
         return "the agent changed nothing in the repository"
     return git.get("publish_reason") or "no patch was recorded"
+
+
+def _measured(git: dict[str, Any], key: str) -> int | None:
+    """A count the worker's harvest recorded, or None when it recorded none."""
+    value = git.get(key)
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
 
 
 def describe_task(task: dict[str, Any]) -> dict[str, Any]:
@@ -157,10 +234,16 @@ def describe_task(task: dict[str, Any]) -> dict[str, Any]:
         "state": task.get("state"),
         "runner_profile": task.get("runner_profile"),
         "backend": backend_of(task.get("runner_profile")),
-        "commits": git.get("commit_count", 0),
-        "insertions": git.get("insertions", 0),
-        "deletions": git.get("deletions", 0),
-        "uncommitted_files": git.get("dirty_count", 0),
+        # NULL WHEN NOTHING WAS MEASURED, never 0 (#191). These defaulted to 0
+        # for a task with no `git` summary -- one that cloned no repository,
+        # or never started -- and for a summary holding only the harvest's
+        # error, so `swarm workflow-status --result` printed `commits 0` beside
+        # a footnote saying there was no repository, and every result tool
+        # handed the model the same zeros. `no_patch_because` says why.
+        "commits": _measured(git, "commit_count"),
+        "insertions": _measured(git, "insertions"),
+        "deletions": _measured(git, "deletions"),
+        "uncommitted_files": _measured(git, "dirty_count"),
         "patch": patch_uri(task),
     }
     if not out["patch"]:

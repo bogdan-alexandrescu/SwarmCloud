@@ -61,3 +61,9 @@ def _isolated_deployment_config(monkeypatch, tmp_path_factory):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("SWARM_CONFIG_DIR", str(tmp_path_factory.mktemp("swarm-config")))
     monkeypatch.setenv("SWARM_CREDENTIAL_STORE", "file")
+    # `swarm_dispatch` and `swarm_workflow` infer the repository from the git
+    # checkout the bridge runs in when a caller names none (swarm_mcp.checkout).
+    # A test runs in THIS checkout -- in CI a detached merge commit, which the
+    # inference refuses -- so every test starts in an empty directory that is
+    # no checkout at all, and the tests about inference build their own.
+    monkeypatch.setenv("SWARM_CHECKOUT_DIR", str(tmp_path_factory.mktemp("not-a-checkout")))

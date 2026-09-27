@@ -57,6 +57,15 @@ The caveat that can: **reordering `tenant_groups` re-homes a user.** Their new t
 
 ### 1. The one design rule for this section
 
+> **Superseded 2026-09-25 (#185).** The rule below held while the task list
+> could not filter by time, and the Timeline was built on it. `GET /v1/outcomes`
+> removes that premise: the Timeline now reads a real span (24h to 90d, 14d by
+> default, or a range), the server buckets it in the viewer's zone and derives
+> every figure on one `completed_at` basis from a per-tenant, per-day rollup,
+> and the Rows control is retired. What the screen draws, and why each part is
+> drawn the way it is, is [design-system.md §16](design-system.md#16-the-timeline-as-an-outcome-ledger-185-owner-decisions-2026-09-25).
+> This section is kept as the record of the constraint the old design answered.
+
 > **Bound by rows. Label by the span those rows actually covered.**
 
 The platform can serve "the most recent N tasks for this tenant" cheaply and exactly (`tasks-tenant-created` index, `tenant_id ASC, created_at DESC`, `terraform/modules/firestore/indexes.tf:103-110`). It cannot serve "everything in August" at all.
@@ -75,6 +84,15 @@ Hour/day/week/month bucketing then happens **client-side over rows already fetch
 
 ### 2. Screen A1 — Activity
 
+> **Superseded 2026-09-25 (#185).** Screen A1 is now the Timeline's outcome
+> ledger: a success-rate headline, four aligned lanes (rate with its Wilson
+> interval, decided work, cancels on their own scale, and throughput as the one
+> submission-time series), a Table twin and eight cards. The stat strip, the
+> Token spend tile, the runner-profile split and the People table below are
+> replaced by the ledger's readout, "Retries and attempts", "Reported cost · not
+> a bill" and "Reliability by runner profile, tenant or person"
+> ([design-system.md §16](design-system.md#16-the-timeline-as-an-outcome-ledger-185-owner-decisions-2026-09-25)).
+
 The tenant's timeline. One screen, dense.
 
 #### What the user sees
@@ -92,6 +110,8 @@ Bucketed on **`completed_at`** for the four terminal series and on **`created_at
 - `Completed` — count of rows with `completed_at != null`, and the success rate as `SUCCEEDED / completed`.
 - `Attempts consumed` — `sum(attempt_count)` over rows. Sub-label: *"admissions, not runs — a lease reclaimed before dispatch counts here"* (see below).
 - `Tokens & spend` — **permanently in the blocked state until P4a.** It renders the words *"not recorded"*, never a number, never `~$0.00`, and taps through to the explainer below. It stays on the screen rather than being removed, because the owner asked for tokens and an absent tile answers nothing.
+
+> **Superseded 2026-09-25 (epic #84, TS-11 and TS-12).** The strip is the shared boxless `.ctl-metrics` strip with **three** figures: `Submitted` is gone, because the window bar above prints the same count beside the same span. `Tokens & spend` is now `Token spend`: the sum of `total_cost_usd` over the rows whose result carries one, with the foot `{k} of {n} tasks · from result` and the `partial` mark whenever `k < n` or a summed task ran more than once (a result is its last attempt). With no cost in any result it still says *"not recorded"* beside the absent mark, never `$0.00`. The coverage bar the explainer below was replaced by is gone too: it drew a row count where the figure goes, and the foot now states the coverage in words.
 
 **The "not recorded" explainer (mandatory, not optional chrome).** Plain language, naming the cause: *"Token and cost numbers are produced by the agent CLI on every run, but the platform does not currently store them — the capture added on 19 Sep reads the wrong level of the result object, so every task records an empty usage block. The full numbers still exist in each attempt's transcript in GCS for `artifact_retention_days` (14 days in dev, 180 in prod), one file per attempt."* Once P4a lands, this tile becomes a real number and this explainer is replaced by the coverage bar specified in §3's *what it cannot show yet*.
 

@@ -71,7 +71,10 @@ def _events(condition: Any, universe: frozenset[str]) -> frozenset[str]:
 def test_the_workflows_were_found():
     """The test below is parametrised over this glob; an empty glob checks nothing."""
     names = {path.name for path in WORKFLOWS}
-    assert {"application.yml", "terraform.yml", "security.yml", "release.yml"} <= names, names
+    # iam-refusal-probe.yml is dispatch-only and main-only; that shape is held
+    # in test_iam_refusal_probe.py, and this glob covers its steps too.
+    expected = {"application.yml", "terraform.yml", "security.yml", "release.yml", "iam-refusal-probe.yml"}
+    assert expected <= names, names
 
 
 def test_the_model_sees_the_exact_shape_that_was_dead():

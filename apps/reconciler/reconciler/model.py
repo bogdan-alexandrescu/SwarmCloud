@@ -223,6 +223,12 @@ class ExecutionView:
     #: in the attacker's tenant with a refused claim on the victim's work.
     #: Caught by test_a_forged_execution_does_not_fence_the_victims_live_attempt.
     claim_refused: bool = False
+    #: When the backend recorded this execution as over: a Cloud Run
+    #: execution's `completion_time`, a Job's completion time or the time its
+    #: Failed condition became true. None while it runs, and whenever the
+    #: backend recorded no such time. The ended-at-startup rule measures its
+    #: grace from here and does nothing without it (`detect.detect_ended_at_startup`).
+    completed_at: datetime | None = None
 
     @property
     def is_active(self) -> bool:

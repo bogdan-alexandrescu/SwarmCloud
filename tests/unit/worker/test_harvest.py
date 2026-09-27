@@ -307,6 +307,115 @@ def test_a_repository_hook_is_never_run_by_the_harvest_or_the_commit(repo, dirs)
     assert not marker.exists(), "a repository-supplied hook executed in the worker"
 
 
+# -- the check before the push ---------------------------------------------
+#
+# The fold makes every pushed commit the worker's; `verify_worker_authorship`
+# checks it, from the raw commit objects, immediately before the push. These
+# pin what it refuses, one reason at a time, so a check that quietly stopped
+# looking at one field would fail here rather than in production.
+
+WORKER = ("swarmcloud agent", "a@example.com")
+
+
+def _verify(path, base, dirs):
+    # Imported here, not at the top, because the function arrives with the
+    # change these tests are written ahead of.
+    from agent_worker.gitops import verify_worker_authorship
+
+    private, logs, _ = dirs
+    return verify_worker_authorship(
+        repo=path,
+        base=base,
+        author_name=WORKER[0],
+        author_email=WORKER[1],
+        private_dir=private,
+        logs_dir=logs,
+        timeout_seconds=60,
+        logger=_logger(),
+    )
+
+
+def _commit(path, message, *, author=WORKER, committer=WORKER):
+    subprocess.run(
+        [
+            "git",
+            "-c", f"author.name={author[0]}", "-c", f"author.email={author[1]}",
+            "-c", f"committer.name={committer[0]}", "-c", f"committer.email={committer[1]}",
+            "-C", str(path), "commit", "--quiet", "--allow-empty", "-m", message,
+        ],
+        check=True,
+        capture_output=True,
+    )
+
+
+def test_the_push_check_passes_a_history_the_worker_wrote(repo, dirs):
+    path, base = repo
+    _commit(path, "swarm: work from t-1")
+    _commit(path, "swarm: integrate swarm/t-0")
+    assert _verify(path, base, dirs) == 2
+
+
+@pytest.mark.parametrize(
+    ("author", "committer", "message", "reason"),
+    [
+        (("Claude", "noreply@anthropic.com"), WORKER, "swarm: work", "authored by Claude"),
+        (WORKER, ("Claude", "noreply@anthropic.com"), "swarm: work", "committed by Claude"),
+        (
+            WORKER, WORKER,
+            "swarm: work\n\nCo-Authored-By: Claude <noreply@anthropic.com>",
+            "attribution",
+        ),
+        (
+            WORKER, WORKER,
+            "swarm: work\n\nGenerated with [Claude Code](https://claude.com/claude-code)",
+            "attribution",
+        ),
+    ],
+    ids=["author", "committer", "trailer", "footer"],
+)
+def test_the_push_check_refuses_a_commit_the_worker_did_not_write(
+    repo, dirs, author, committer, message, reason
+):
+    path, base = repo
+    _commit(path, message, author=author, committer=committer)
+    with pytest.raises(GitError, match=reason):
+        _verify(path, base, dirs)
+
+
+def test_the_push_check_refuses_a_signature_the_worker_never_makes(repo, dirs):
+    """The worker never signs (`commit.gpgSign=false` on every call), so a
+    `gpgsig` header on a commit it is about to push was written by a program
+    somebody else chose -- with text in it the worker did not write."""
+    path, base = repo
+    _commit(path, "swarm: work")
+    raw = subprocess.run(
+        ["git", "-C", str(path), "cat-file", "commit", "HEAD"],
+        check=True, capture_output=True, text=True,
+    ).stdout
+    header, _, body = raw.partition("\n\n")
+    signed = (
+        header
+        + "\ngpgsig -----BEGIN PGP SIGNATURE-----\n Generated with Claude Code\n"
+        + " -----END PGP SIGNATURE-----\n\n"
+        + body
+    )
+    sha = subprocess.run(
+        ["git", "-C", str(path), "hash-object", "-t", "commit", "-w", "--stdin"],
+        input=signed, check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    subprocess.run(["git", "-C", str(path), "update-ref", "HEAD", sha], check=True)
+
+    with pytest.raises(GitError, match="signed"):
+        _verify(path, base, dirs)
+
+
+def test_the_push_check_refuses_without_a_base(repo, dirs):
+    path, _ = repo
+    _commit(path, "swarm: work")
+    with pytest.raises(GitError, match="clone base"):
+        _verify(path, None, dirs)
+
+
 # -- push refusals ---------------------------------------------------------
 
 

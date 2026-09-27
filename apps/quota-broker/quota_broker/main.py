@@ -51,6 +51,7 @@ from .accounts import (
     AccountState,
     Hold,
     Unavailable,
+    accounts_serving,
     choose,
     due_for_refresh,
     eligibility,
@@ -1872,9 +1873,11 @@ def create_app(
         store = _accounts(request)
         now = datetime.now(timezone.utc)
 
-        # `for_tenant` is owned AND lent-to, which is exactly the set invariant
-        # 9 permits; the provider filter is this request's.
-        candidates = [a for a in store.for_tenant(tenant_id) if a.provider == provider]
+        # Owned AND lent-to, of this request's provider: exactly the set
+        # invariant 9 permits. `accounts_serving` is the one statement of it,
+        # and the scheduler's admission asks the same function whether it is
+        # empty, so the two cannot disagree about who the pool serves (#169).
+        candidates = accounts_serving(store.list(), tenant_id, provider)
 
         chosen = choose(candidates, tenant_id, now, exclude=exclude)
         if chosen is None:

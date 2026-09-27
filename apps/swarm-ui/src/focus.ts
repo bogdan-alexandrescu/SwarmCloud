@@ -79,7 +79,7 @@ export function declaredTabIndex(el: Element): number | null {
  * zero opacity is still focusable in every engine, and if this app ever draws
  * one it is a real finding rather than something to filter away.
  */
-function hiddenByStyle(el: Element): boolean {
+export function hiddenByStyle(el: Element): boolean {
   const view = el.ownerDocument?.defaultView
   if (!view) return false
   for (let node: Element | null = el; node !== null; node = node.parentElement) {

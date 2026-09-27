@@ -77,16 +77,25 @@ def _src(name: str) -> str:
 
 
 def _send_body() -> str:
-    """The body of `SubmitWorkflow.tsx`'s `send`, where the request is built.
+    """Where `SubmitWorkflow.tsx` builds the request, and where it sends it.
+
+    TWO SLICES, JOINED IN THIS ORDER: `planOf`, which builds each step's body
+    and every reason not to send it, then `send`, which refuses on those
+    reasons and posts the rest. The build moved out of `send` into `planOf`
+    when the form started checking the plan on every render -- so the button
+    can be disabled and the problems counted beside it -- and `send` now calls
+    the same function rather than keeping a second copy of the rules.
 
     Sliced out rather than searched whole-file so a mention of `input` in a
     comment elsewhere in the screen cannot satisfy an assertion about what the
     request carries.
     """
     source = _src("SubmitWorkflow.tsx")
+    plan_start = source.index("function planOf(")
+    plan_end = source.index("\n}\n", plan_start)
     start = source.index("const send = () => {")
     end = source.index("\n  return (", start)
-    return source[start:end]
+    return source[plan_start:plan_end] + "\n" + source[start:end]
 
 
 # --------------------------------------------------------------------------

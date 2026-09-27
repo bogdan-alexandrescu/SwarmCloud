@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useState, type KeyboardEvent, type Mou
 import { Mark } from './AgentDetail'
 import { USE_FIXTURES } from './api'
 import { ArtifactViewer } from './ArtifactViewer'
-import { errorHeading, noteFixtureProbe, read, type ApiError, type Result } from './fetch'
+import { encoded, errorHeading, noteFixtureProbe, read, route, type ApiError, type Result } from './fetch'
 import { bytesLabel, type ArtifactContent } from './types'
 
 /**
@@ -147,9 +147,12 @@ export async function loadCheckpointFiles(
   if (options.fixtures ?? USE_FIXTURES) return fixtureFiles(taskId, attemptId, checkpointId)
   const query = new URLSearchParams({ attempt_id: attemptId })
   // Path literal and query kept apart, as api.ts keeps them: the seam test
-  // reads the literal's SHAPE against the router's declarations.
-  const path = `/v1/tasks/${encodeURIComponent(taskId)}/checkpoints/${encodeURIComponent(checkpointId)}/files`
-  return read<CheckpointFiles>(path + `?${query}`, () => false)
+  // reads the literal's SHAPE against the router's declarations, and the
+  // registry keys the read by it (CH-18).
+  return read<CheckpointFiles>(
+    route('/v1/tasks/{id}/checkpoints/{n}/files', { id: taskId, n: checkpointId }, query),
+    () => false,
+  )
 }
 
 /** `GET /v1/tasks/{id}/checkpoints/{n}/files/{path}` -- one member, as text. */
@@ -176,8 +179,12 @@ export async function loadCheckpointFile(
     return fixtureFile(taskId, attemptId, checkpointId, filePath)
   }
   const query = new URLSearchParams({ attempt_id: attemptId })
-  const path = `/v1/tasks/${encodeURIComponent(taskId)}/checkpoints/${encodeURIComponent(checkpointId)}/files/${member}`
-  return read<CheckpointFileContent>(path + `?${query}`, () => false)
+  // `{path}` arrives ALREADY ENCODED, segment by segment (`memberHref`), so
+  // its `/` separators reach the route's `{path:path}` as separators.
+  return read<CheckpointFileContent>(
+    route('/v1/tasks/{id}/checkpoints/{n}/files/{path}', { id: taskId, n: checkpointId, path: encoded(member) }, query),
+    () => false,
+  )
 }
 
 /**
@@ -322,7 +329,15 @@ export function CheckpointBrowser({
     void load()
   }, [load])
 
-  const absent = state.status === 'ok' && state.data.status === 'absent'
+  // THE TWO WAYS THE SERVER SAYS "NO ARCHIVE" (AG-10). A listing whose
+  // `status` is `absent` is one; a 404 is the other -- the checkpoint, or its
+  // attempt, is not there to list -- and it was drawn as a FAILED read, with
+  // `try again` beside it and `download archive` above it. Nothing failed, a
+  // retry gets the same 404, and the download link points at an object that
+  // does not exist. Both are the absent treatment, with neither control.
+  const absent =
+    (state.status === 'ok' && state.data.status === 'absent') ||
+    (state.status === 'error' && state.error.kind === 'not_found')
 
   return (
     <div className="ckb" role="region" aria-label={`Checkpoint ${checkpointId} files`}>
@@ -389,6 +404,9 @@ function Body({
         </p>
       )
     case 'error':
+      if (state.error.kind === 'not_found') {
+        return <ArchiveAbsent detail={state.error.message} />
+      }
       return <Failed error={state.error} onRetry={onRetry} />
     case 'empty':
       // Unreachable -- the loader passes `() => false` -- and handled anyway:
@@ -432,6 +450,28 @@ function Failed({ error, onRetry }: { error: ApiError; onRetry: () => void }) {
       <button type="button" className="retry" onClick={onRetry}>
         try again
       </button>
+    </div>
+  )
+}
+
+/**
+ * THE ABSENT ARCHIVE, drawn once for both of the server's ways of saying it:
+ * a listing with `status: absent`, and a 404 on the listing route. No retry
+ * and no download -- asking again gets the same answer, and there is no object
+ * to download. `detail` is the server's own sentence about THIS checkpoint,
+ * the one sentence §6.9 leaves an empty state.
+ */
+function ArchiveAbsent({ detail }: { detail: string | null }) {
+  return (
+    <div className="ctl-empty is-partial" role="status">
+      <h3>
+        <Mark
+          kind="absent"
+          say="This checkpoint has no archive object in the bucket, so there are no files to list. It was reclaimed, or its upload never completed. This is not an empty checkpoint, and not a failed read."
+        />{' '}
+        archive not in the bucket
+      </h3>
+      {detail !== null && <p>{detail}</p>}
     </div>
   )
 }
@@ -501,18 +541,7 @@ function Listing({
   if (data.status === 'absent' || members === null) {
     // `files: null`. NOT a checkpoint with nothing in it: there is no
     // archive object to have anything in.
-    return (
-      <div className="ctl-empty is-partial" role="status">
-        <h3>
-          <Mark
-            kind="absent"
-            say="This checkpoint has no archive object in the bucket, so there are no files to list. It was reclaimed, or its upload never completed. This is not an empty checkpoint."
-          />{' '}
-          archive not in the bucket
-        </h3>
-        {data.detail !== null && <p>{data.detail}</p>}
-      </div>
-    )
+    return <ArchiveAbsent detail={data.detail} />
   }
 
   return (
@@ -867,7 +896,7 @@ async function fixtureFiles(
   checkpointId: string,
 ): Promise<Result<CheckpointFiles>> {
   await new Promise((r) => setTimeout(r, 60))
-  noteFixtureProbe(`/v1/tasks/{id}/checkpoints/{n}/files`, 60, true)
+  noteFixtureProbe(route('/v1/tasks/{id}/checkpoints/{n}/files', { id: taskId, n: checkpointId }), 60, true)
   const prefix = `tenants/u-bogdan/tasks/${taskId}/attempts/${attemptId}/checkpoints/${checkpointId}`
   const absent = checkpointId === 'ckpt_0001'
   const files: CheckpointMember[] = [
@@ -928,7 +957,11 @@ async function fixtureFile(
   filePath: string,
 ): Promise<Result<CheckpointFileContent>> {
   await new Promise((r) => setTimeout(r, 30))
-  noteFixtureProbe(`/v1/tasks/{id}/checkpoints/{n}/files/{path}`, 30, true)
+  noteFixtureProbe(
+    route('/v1/tasks/{id}/checkpoints/{n}/files/{path}', { id: taskId, n: checkpointId, path: encoded(filePath) }),
+    30,
+    true,
+  )
   const prefix = `tenants/u-bogdan/tasks/${taskId}/attempts/${attemptId}/checkpoints/${checkpointId}`
   const bodies: Record<string, string> = {
     'progress/step-0001.md': '# Step one\n\nRead the repository and listed the modules.\n',

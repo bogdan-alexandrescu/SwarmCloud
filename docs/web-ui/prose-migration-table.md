@@ -680,7 +680,7 @@ every screen at once. It is the highest leverage-per-row file in the list.
 | 322 | "{n}% of rows carry usage — the rest predate the capture, so any total would understate." | FACT-STAYS | keep |
 | 407 | "Grouped client-side over the {n} rows in the window. There is no server-side filter or index on…" | FACT-STAYS | keep clause 1 |
 | 407 | "…an engineer whose work fell outside the window is absent rather than shown as zero" | EXPLANATION-MOVES | `client-side-grouping` |
-| 489 | "monthly_budget_usd is deliberately not shown… Rendering it would be rendering a permanent blank…" | EXPLANATION-MOVES | `no-cost-attribution` |
+| 489 | "monthly_budget_usd is deliberately not shown… Rendering it would be rendering a permanent blank…" | EXPLANATION-MOVES | `tenant-fields` (AH-21: one paragraph of the Tenants fields topic, not a topic of its own) |
 
 ---
 

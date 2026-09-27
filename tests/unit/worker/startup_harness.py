@@ -36,6 +36,11 @@ Everything else is production code: the configuration, the preflight,
                               after the first one, then every lookup answers: a
                               kube-dns or NodeLocal DNSCache pod restarting, or
                               an upstream resolver answering SERVFAIL for a while
+    firestore-down-40s        DNS answers, but every read of the task fails AT
+                              ONCE with the 2026-09-25 incident's error until
+                              40 s after the first, then Firestore answers: a
+                              Direct VPC egress interface that is not yet
+                              passing traffic when the instance starts (#198)
 
 In the dns-drops and dns-nxdomain scenarios, Firestore is ALSO the stuck kind.
 So a worker that skips the preflight hangs exactly where the incident's worker
@@ -81,6 +86,7 @@ SCENARIOS = (
     "dns-nxdomain",
     "dns-flaky-once",
     "dns-down-15s",
+    "firestore-down-40s",
 )
 
 #: How long the resolver is down in the dns-down-15s scenario, counted on this
@@ -89,6 +95,13 @@ SCENARIOS = (
 #: than a first retry a few seconds in, shorter than the 30 s the owner asked
 #: the retries to span.
 DNS_OUTAGE_SECONDS = 15.0
+
+#: How long Firestore is unreachable in the firestore-down-40s scenario, on this
+#: process's own clock from its first read of the task. Longer than the 30 s
+#: that the generation check's single budget used to allow, which is what the
+#: incident's worker spent before it exited 69 (#198), and shorter than the
+#: minute the scheduled attempts span.
+FIRESTORE_OUTAGE_SECONDS = 40.0
 
 #: What the mock runner is asked to do: one step, at once.
 QUICK_RUN = {"prompt": "startup harness", "steps": 1, "sleep_seconds": 0.05}
@@ -199,6 +212,44 @@ def _lookups_fail_for_a_while(host: Any, *args: Any, **kwargs: Any) -> Any:
     return list(_ANSWER)
 
 
+class _UnreachableForAWhile(FakeDocumentRef):
+    """A task read that fails at once until `FIRESTORE_OUTAGE_SECONDS` after the first."""
+
+    def get(self, *args: Any, **kwargs: Any) -> Any:
+        from google.api_core import exceptions as core
+
+        now = time.monotonic()
+        with _asked_lock:
+            if not _outage_began:
+                _outage_began.append(now)
+            began = _outage_began[0]
+        if now - began < FIRESTORE_OUTAGE_SECONDS:
+            raise core.RetryError(
+                "Timeout of 30.0s exceeded, last exception: 503 failed to connect to all "
+                "addresses",
+                cause=core.ServiceUnavailable(
+                    "failed to connect to all addresses; last error: FAILED_PRECONDITION: "
+                    "ipv6:%5B2607:f8b0:4001:c00::5f%5D:443: connect failed: Network is "
+                    "unreachable"
+                ),
+            )
+        return super().get(*args, **kwargs)
+
+
+class _TasksUnreachableForAWhile(FakeCollectionRef):
+    def document(self, doc_id: str | None = None) -> FakeDocumentRef:
+        return _UnreachableForAWhile(self._db, super().document(doc_id).path)
+
+
+class BrieflyUnreachableFirestore(FakeFirestore):
+    """Reads of `tasks/...` fail until the outage is over. The first is the generation check."""
+
+    def collection(self, name: str) -> FakeCollectionRef:
+        if name == "tasks":
+            return _TasksUnreachableForAWhile(self, name)
+        return super().collection(name)
+
+
 def _client_for(db: FakeFirestore):
     def _client(_settings: Any) -> FakeFirestore:
         # What google-auth does inside `firestore.Client()` when the metadata
@@ -221,7 +272,11 @@ def main(scenario: str) -> int:
         print(f"unknown scenario {scenario!r}; one of {', '.join(SCENARIOS)}", file=sys.stderr)
         return 2
     healthy = scenario in ("runs", "runs-long", "dns-flaky-once", "dns-down-15s")
-    db: FakeFirestore = FakeFirestore() if healthy else StuckFirestore()
+    db: FakeFirestore
+    if scenario == "firestore-down-40s":
+        db = BrieflyUnreachableFirestore()
+    else:
+        db = FakeFirestore() if healthy else StuckFirestore()
     seed_attempt(db, task_input=dict(LONG_RUN if scenario == "runs-long" else QUICK_RUN))
     control_mod.FirestoreTransactionRunner = FakeTransactionRunner  # type: ignore[misc]
     entrypoint._firestore_client = _client_for(db)  # type: ignore[assignment]

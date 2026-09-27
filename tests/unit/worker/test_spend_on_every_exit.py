@@ -56,13 +56,15 @@ COST = 0.4213
 FAKE_AGENT = r"""#!/usr/bin/env python3
 import json, os, pathlib, sys, time
 
+# Only the leading JSON value: every CLI prompt now ends with the platform's
+# line naming $SWARM_ARTIFACTS_DIR (#184).
 try:
-    plan = json.loads(sys.argv[-1])
+    plan, _end = json.JSONDecoder().raw_decode(sys.argv[-1])
 except (ValueError, IndexError):
     plan = {}
 
 work = pathlib.Path(os.environ.get("SWARM_WORK_DIR") or os.getcwd())
-key = os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("CLAUDE_CODE_OAUTH_TOKEN") or ""
+key =os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("CLAUDE_CODE_OAUTH_TOKEN") or ""
 
 binary = plan.get("binary_artifact")
 if binary:

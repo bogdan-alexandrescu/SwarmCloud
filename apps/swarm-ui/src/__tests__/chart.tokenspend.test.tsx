@@ -63,6 +63,18 @@ function thirteen(): AttemptRow[] {
   })
 }
 
+/**
+ * ONE DRAWING'S MARKS. The chart is drawn once per width (AG-20: a 640-unit
+ * and a 300-unit SVG, and the sheet shows one), so a count over the whole
+ * figure counts every band twice. The first root is the wide drawing; the
+ * pair itself is `chart.narrow.test.tsx`'s to assert.
+ */
+function drawing(container: Element): Element {
+  const svg = container.querySelector('svg.ctl-chart-svg')
+  expect(svg, 'the chart drew no plot').not.toBeNull()
+  return svg!
+}
+
 describe('token spend, attempt by attempt', () => {
   it('reports seven of thirteen attempts and never totals over all thirteen', () => {
     const { container } = render(
@@ -76,7 +88,7 @@ describe('token spend, attempt by attempt', () => {
     expect(caption).not.toContain('13 attempts.')
 
     // Six absences drawn, six absences named.
-    expect(container.querySelectorAll('[data-testid="absent-band"]')).toHaveLength(6)
+    expect(drawing(container).querySelectorAll('[data-testid="absent-band"]')).toHaveLength(6)
     expect(container.querySelector('.ctl-chart-note')?.textContent).toContain(
       '6 of 13 attempts reported no value',
     )
@@ -91,7 +103,7 @@ describe('token spend, attempt by attempt', () => {
     expect(zero?.getAttribute('data-value')).toBe('0')
     expect(zero?.querySelector('title')?.textContent).toContain('$0.00, measured')
 
-    const reasons = [...container.querySelectorAll('[data-testid="absent-band"] title')].map(
+    const reasons = [...drawing(container).querySelectorAll('[data-testid="absent-band"] title')].map(
       (t) => t.textContent ?? '',
     )
     expect(reasons).toHaveLength(6)

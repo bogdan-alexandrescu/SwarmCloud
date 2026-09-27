@@ -126,7 +126,13 @@ def test_the_live_tail_is_served_while_the_agent_is_still_running(client, db, ob
     assert out["status"] == "ok"
     assert out["source"] == "live"
     assert out["content"] == "still working\n", "the tail header is metadata, not a log line"
-    assert out["tail_window"] == {"object_offset": 4096, "stream_size": 9000}
+    # `published_at` since #184: the header's `at=`, null for a header written
+    # before the worker stamped one -- as this one is.
+    assert out["tail_window"] == {
+        "object_offset": 4096,
+        "stream_size": 9000,
+        "published_at": None,
+    }
 
 
 def test_the_completed_log_wins_over_a_stale_live_tail(client, db, objects):

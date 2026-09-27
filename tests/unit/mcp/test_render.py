@@ -276,6 +276,15 @@ class TestAccounts:
         for heading in ("ACCOUNT", "5H", "7D", "CLEARS", "STATE"):
             assert heading in out
 
+    def test_every_window_percentage_says_which_way_it_points(self):
+        # OV-1 (epic #81): one polarity on every surface -- % used -- and every
+        # % carries its word. The console's Overview printed "% left" over rows
+        # of % used; this table always printed used, under heads that said only
+        # 5H and 7D. The word goes on the head, as it does on the Accounts screen.
+        out = text(render_accounts([account()], WIDE, NOW))
+        assert "5H USED" in out
+        assert "7D USED" in out
+
     def test_a_stale_account_is_marked_and_the_legend_explains_the_mark(self):
         out = text(render_accounts([account(five=0.12, stale=True)], WIDE, NOW))
         assert "~12%" in out
@@ -537,7 +546,11 @@ class TestCapacityView:
         assert "tenant:acme" in out
 
     def test_the_subtitle_quotes_the_real_ceiling_not_the_global_one(self):
-        assert render.capacity_subtitle(self.CAPACITY, WIDE) == "tightest: provider:anthropic 6/8"
+        # Ranked by the agents of a profile that still fit, and says so; the
+        # pool's figure is units and is labelled as units (#192).
+        assert render.capacity_subtitle(self.CAPACITY, WIDE) == (
+            "tightest: claude-code, 2 more agents fit on provider:anthropic (6/8 units)"
+        )
 
     def test_the_subtitle_names_no_ceiling_when_a_required_pool_is_ungradeable(self):
         # The subtitle is the line people quote, so it must not quote a
@@ -599,8 +612,9 @@ class TestAgents:
         out = text(render_agents(
             [task(state="RUNNING"), task("t_q", state="QUEUED")], WIDE, NOW
         ))
-        assert "running" in out
-        assert "queued" in out
+        # Upper case, as the API spells a state (#88, SC-F19).
+        assert "RUNNING" in out
+        assert "QUEUED" in out
 
     def test_a_parked_task_says_why(self):
         out = text(render_agents(
@@ -639,7 +653,9 @@ class TestAgents:
             [task(state="RUNNING"), task("a", state="LEASED"), task("b", state="QUEUED")],
             WIDE,
         )
-        assert "2 running" in subtitle and "1 queued" in subtitle
+        # Both hold capacity, so both are ACTIVE; only one of them is running,
+        # and the headline says so (#88, SC-F14).
+        assert "2 active (1 leased, 1 running)" in subtitle and "1 queued" in subtitle
 
     @pytest.mark.parametrize("width", [80, 66, 52, 40, 34])
     def test_it_fits_however_narrow_the_terminal_is(self, width):
@@ -796,6 +812,15 @@ class TestTrouble:
         exhausted = [f for f in findings if "7D at" in f.what]
         assert exhausted and "clears in 5h 00m" in exhausted[0].what
 
+    def test_an_exhausted_window_says_its_percentage_is_used(self):
+        # OV-1 (epic #81): every % carries its word, in a sentence as in a table.
+        acct = account(windows={"seven_day": {
+            "utilization": 1.0, "resets_at": iso(hours=5), "reset": False,
+        }})
+        findings = find_trouble(snapshot(accounts=[acct]), WIDE)
+        exhausted = [f for f in findings if "7D at" in f.what]
+        assert exhausted and "7D at 100% used" in exhausted[0].what
+
     def test_no_accounts_at_all_is_a_finding_not_a_blank(self):
         findings = find_trouble(snapshot(accounts=[]), WIDE)
         assert any("none registered" in f.what for f in findings)
@@ -818,8 +843,9 @@ class TestTrouble:
         ]
         findings = find_trouble(snapshot(tasks=tasks), WIDE)
         parked = [f.what for f in findings if f.where == "parked"]
-        assert "2 task(s): provider quota exhausted" in parked
-        assert "1 task(s): credential missing" in parked
+        # Whose tasks they are is part of the finding (#88, SC-F5).
+        assert "2 task(s) of tenant acme: provider quota exhausted" in parked
+        assert "1 task(s) of tenant acme: credential missing" in parked
 
     def test_findings_are_ordered_worst_first(self):
         findings = find_trouble(
@@ -975,7 +1001,7 @@ class TestTheFrozenContract:
 
     def test_counting_running_agents_uses_those_states(self):
         tasks = [task(f"t{i}", state=state) for i, state in enumerate(sorted(render.RUNNING_STATES))]
-        assert render.agents_subtitle(tasks, WIDE).startswith(f"{len(tasks)} running")
+        assert render.agents_subtitle(tasks, WIDE).startswith(f"{len(tasks)} active")
 
 
 class TestTimeFormatting:

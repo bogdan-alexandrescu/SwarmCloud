@@ -154,6 +154,20 @@ describe('the Checkpoints section tells a reclaimed checkpoint from a real zero'
     expect(section.textContent).not.toMatch(/reclaimed/i)
   })
 
+  /**
+   * AG-26. The prefix is one unbroken path, and in the 480px inspector it ran
+   * out of the drawer. It carries its own class so the sheet can break it
+   * anywhere without breaking every `code` in the drawer.
+   *
+   * BREAK IT: drop `ckpt-prefix` from the prefix's `<code>`.
+   */
+  it('gives the checkpoint prefix the hook the stylesheet wraps', async () => {
+    const section = await checkpointsSection(agentRun(), emptyPage())
+    const code = section.querySelector('code.ckpt-prefix')
+    expect(code, 'the prefix carries no class the sheet can wrap').not.toBeNull()
+    expect(code!.textContent).toBe(PREFIX)
+  })
+
   /** An empty but CUT listing measured nothing past the cut. */
   it('never calls an empty page of a cut listing a zero', async () => {
     const section = await checkpointsSection(

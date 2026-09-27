@@ -27,8 +27,12 @@
 #
 # A PARKED TASK PROVES NOTHING, and says so. The 30-node redispatch in the
 # incident parked six browser steps before any reached a backend. Parked on
-# CREDENTIAL_MISSING -- the caller's tenant holds no anthropic credential --
-# this fails at once rather than waiting out its timeout, naming the fix.
+# CREDENTIAL_MISSING -- the caller's tenant has no anthropic key, and no pool
+# account can run the profile -- this fails at once rather than waiting out its
+# timeout, naming the fix from what the account pool answered. For `browser`
+# the pool's answer is always `profile_takes_no_subscription`: an account is a
+# Claude subscription and this profile takes an API key only, so the identity
+# this runs as needs a tenant with a key of its own (#169).
 #
 # WHAT IT SUBMITS. The browser runner refuses an input with neither `url` nor
 # `actions`, so a generic `{message: ...}` input fails at the runner with
@@ -128,9 +132,40 @@ done
 if [[ -n "${FINAL}" ]]; then
   t_pass "reached ${FINAL}"
 elif [[ "${PARKED_ON}" == "CREDENTIAL_MISSING" ]]; then
-  t_fail "PARKED on CREDENTIAL_MISSING: the calling identity's tenant holds no anthropic credential, which the ${PROFILE} profile requires"
+  # WHAT THE ACCOUNT POOL ANSWERED, read from the park's own event rather than
+  # guessed here (#169). Admission records it as `account_pool`
+  # (apps/scheduler/scheduler/credentials.py); a worker that parks on the pool
+  # records `account_pool_reason`. This hint used to offer "or a pool account"
+  # to every profile, and no pool account can run `browser` at all.
+  PARK_TENANT="$(printf '%s' "${DOC}" | jq -r '.tenant_id // "<tenant>"')"
+  PARK_PROVIDER="anthropic"
+  POOL_ANSWER=""
+  PARK_EVENTS="${TMPDIR:-/tmp}/swarm-gke-proof-park.$$"
+  if task_events "${TASK_ID}" >"${PARK_EVENTS}" 2>/dev/null; then
+    POOL_ANSWER="$(jq -r 'select(.type == "parked") | .detail.account_pool // .detail.account_pool_reason // empty' "${PARK_EVENTS}" | tail -n 1)"
+    PARK_PROVIDER="$(jq -r 'select(.type == "parked") | .detail.provider // empty' "${PARK_EVENTS}" | tail -n 1)"
+    PARK_PROVIDER="${PARK_PROVIDER:-anthropic}"
+  fi
+  rm -f "${PARK_EVENTS}"
+  KEY_FIX="scripts/create-secrets.sh --tenant ${PARK_TENANT} --provider ${PARK_PROVIDER} --stdin"
+  t_fail "PARKED on CREDENTIAL_MISSING: tenant ${PARK_TENANT} has no ${PARK_PROVIDER} key and no pool account that can run the ${PROFILE} profile (the account pool answered: ${POOL_ANSWER:-nothing recorded})"
   t_info "a parked task never reaches a backend, so this proves NOTHING about GKE dispatch either way"
-  t_info "run this as an identity whose tenant has a key (scripts/create-secrets.sh --provider anthropic) or a pool account"
+  case "${POOL_ANSWER}" in
+    profile_takes_no_subscription)
+      t_info "no pool account can run the ${PROFILE} profile: an account is a Claude subscription, and this profile takes no subscription token"
+      t_info "the fix is a key of the tenant's own: ${KEY_FIX}, or run this as an identity whose tenant already has one"
+      ;;
+    no_accounts_registered)
+      t_info "no ${PARK_PROVIDER} account in the pool is owned by or lent to tenant ${PARK_TENANT}"
+      t_info "the fix is a key of the tenant's own (${KEY_FIX}), or lending it an account: scripts/api.sh PUT /v1/accounts/<account_id>/lending '{\"lend_to\": [\"${PARK_TENANT}\"]}'"
+      ;;
+    no_broker_configured)
+      t_info "this deployment has no account pool, so a key is the only credential: ${KEY_FIX}"
+      ;;
+    *)
+      t_info "the park names no account-pool answer${POOL_ANSWER:+ it recognises (${POOL_ANSWER})}: run this as an identity whose tenant has a key (${KEY_FIX})"
+      ;;
+  esac
 else
   t_fail "no terminal state within ${TIMEOUT}s (stuck at ${STATE}${PARKED_ON:+, parked on ${PARKED_ON}})"
 fi

@@ -75,7 +75,10 @@ document can only be fetched by an id already known, and ids are
     --providers anthropic,openai --max-active 40 --capacity-units 80
 ```
 
-Re-running updates limits and wiring and fills in whatever is missing. It will
+Re-running updates limits and wiring and fills in whatever is missing — by
+writing the whole record, so `--providers` **replaces** the tenant's
+credentials and any limit not typed again goes back to its default. To add one
+provider, use `--add-provider` (section 5), which changes nothing else. It will
 **refuse** if `tenants/<id>` already names a different principal or kind: that
 is not idempotency, it is re-pointing a tenant, and one
 `--group contractors@saga.xyz --tenant eng` would otherwise hand every member of
@@ -291,11 +294,20 @@ described above. See [security.md](security.md#authentication) and
 ## 5. Tenant lifecycle
 
 ```bash
-# Register (or update)
+# Register. A re-run rewrites the whole record, --providers included, so it is
+# not how a provider is added: see --add-provider below.
 ./scripts/register-tenant.sh --group eng@saga.xyz --providers anthropic,openai
 
 # Add a provider key. Never passed as an argument: argv is readable via ps.
 ./scripts/create-secrets.sh --tenant eng --provider anthropic --stdin
+# ...then let eng's worker read it and list it for the tenant, keeping every
+# provider eng already has. NOT a re-run with --providers: that REPLACES the
+# tenant's credentials list, and resets max_active, capacity_units and
+# display_name to their defaults unless they are typed again. It grants only a
+# secret whose labels say tenant=eng provider=anthropic and that holds an enabled
+# version: swarm-tenant-<tenant>-<provider> does not split (eng-team's git and
+# eng's team-git are one name), so the name alone cannot say whose key it is.
+./scripts/register-tenant.sh --tenant eng --add-provider anthropic   # or: make add-provider TENANT=eng PROVIDER=anthropic
 
 # Rotate, keeping the previous version enabled until workers pick up the new one
 ./scripts/create-secrets.sh --tenant eng --provider anthropic --stdin
@@ -347,6 +359,18 @@ collect namespaces (owner decision, 2026-09-24).
 New tenants start small — `default_tenant_max_active` 20, `capacity_units` 40 —
 and an admin raises them. The failure mode of starting large is a new tenant
 consuming the platform on their first bad loop.
+
+**The tenant's pool ceiling is the smaller of the two.** `max_active` and
+`capacity_units` bound one count: the units the tenant's running work holds,
+where every task costs at least one. So every path that writes `tenant:<id>`
+writes `min(max_active, capacity_units)` as its hard limit — the admin routes
+(`store.set_tenant_limits`), a first sign-in (`store.ensure_tenant`),
+`scripts/register-tenant.sh`, and Terraform's bootstrap (`pool_tenants` in
+`terraform/infra/locals.tf`) — and the console's Tenants screen prints that
+figure as `Enforced`. A new tenant at the defaults is capped at 20, not 40.
+Until 2026-09-25 the script wrote `capacity_units` and Terraform wrote
+`max_active`, so a pool one of them created before then can hold the larger
+value; setting either limit through the admin route rewrites it.
 
 ---
 

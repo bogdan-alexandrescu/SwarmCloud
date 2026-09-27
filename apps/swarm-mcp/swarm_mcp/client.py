@@ -23,6 +23,7 @@ import json
 import os
 import re
 import subprocess
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -409,10 +410,10 @@ def _explain_json(parsed: Any, stripped: str) -> str:
 
 
 def _login_command() -> str:
-    """`sc login`, spelled so it runs -- through `follow.terminal_command`, the
-    package's one spelling of a command. Imported here, not at the top:
-    `follow` imports this module."""
-    from .follow import terminal_command
+    """`sc login`, spelled so it runs where this bridge runs -- through
+    `invocation.terminal_command`, the package's one spelling of a command
+    (#189). Imported here, not at the top: `invocation` imports this module."""
+    from .invocation import terminal_command
 
     return terminal_command("sc login")
 
@@ -640,6 +641,15 @@ class SwarmClient:
         self.tier = self.detection.tier
         self._proxy: _auth.Proxy | None = None
         self._token: _Token | None = None
+        #: The OAuth access token, cached exactly as `_token` is. See
+        #: `access_token` for why it was not, and what that cost.
+        self._access: _Token | None = None
+        #: ONE MINT AT A TIME. `sc` fetches concurrently, and without this
+        #: every thread that finds the cache empty shells out to gcloud for
+        #: the same token -- nine subprocesses for one screen. Re-entrant,
+        #: because `credential` holds it while calling the two minters that
+        #: take it themselves.
+        self._mint_lock = threading.RLock()
         self._signed_in: Any = None
 
         if self.tier is _auth.Tier.IAP:
@@ -677,7 +687,7 @@ class SwarmClient:
             # value project` and start a proxy to whatever `swarm-api` that
             # project held -- a deployment the user never named. A client that
             # is told nothing says what to tell it.
-            from .follow import terminal_command
+            from .invocation import terminal_command
 
             add = terminal_command(
                 "sc context add <name> --url https://<your deployment> "
@@ -787,16 +797,17 @@ class SwarmClient:
         """
         from . import auth as _auth
 
-        # SIGNED IN comes first: the developer's own ID token, minted for the
-        # Desktop client IAP allowlists. It is the one credential this laptop
-        # has that IAP admits AS the developer (see signin.py).
-        if self.tier is _auth.Tier.SIGNED_IN:
-            return self.signed_in().id_token()
-        if self.front_door:
-            if self.tier is _auth.Tier.IAP:
-                return self._id_token()
-            return self.access_token()
-        return self._id_token()
+        with self._mint_lock:
+            # SIGNED IN comes first: the developer's own ID token, minted for
+            # the Desktop client IAP allowlists. It is the one credential this
+            # laptop has that IAP admits AS the developer (see signin.py).
+            if self.tier is _auth.Tier.SIGNED_IN:
+                return self.signed_in().id_token()
+            if self.front_door:
+                if self.tier is _auth.Tier.IAP:
+                    return self._id_token()
+                return self.access_token()
+            return self._id_token()
 
     def signed_in(self) -> Any:
         """The sign-in token source for this client's deployment (signin.SignedIn)."""
@@ -809,6 +820,10 @@ class SwarmClient:
         return self._signed_in
 
     def _id_token(self) -> str:
+        with self._mint_lock:
+            return self._mint_id_token()
+
+    def _mint_id_token(self) -> str:
         from . import auth as _auth
         from .config import is_run_app
 
@@ -867,17 +882,70 @@ class SwarmClient:
         presented a credential IAP refuses with a different error than the one
         the operator was told to expect. Same three sources as `common.sh`, in
         the same order.
+
+        CACHED FOR `_TOKEN_TTL_SECONDS`, as the ID token has always been. It
+        was not, and at the front door this is the credential EVERY request
+        carries: each one ran `gcloud auth print-access-token
+        --impersonate-service-account`, about a second apiece. Measured on
+        2026-09-25 (#88, SC-F9) that made `tail` and `follow` crawl, and a poll
+        that stacked them ended in "logs unavailable: gcloud timed out after
+        60s". An access token lives an hour; the 45 minutes are the ID token's
+        margin, kept for the same reason. gcloud can hand back a token it
+        already held, with less than that left, and an access token -- unlike
+        an ID token -- carries no `exp` to read; `request` therefore re-mints
+        once and retries when a CACHED credential is refused with a 401.
+
+        `SWARM_ACCESS_TOKEN` is not cached: it is the operator's, it costs
+        nothing to read, and caching it would outlive their changing it.
         """
         override = os.environ.get("SWARM_ACCESS_TOKEN", "").strip()
         if override:
             return override
-        impersonate = os.environ.get("SWARM_IMPERSONATE_SA", "").strip()
-        if impersonate:
-            return _run([
-                "gcloud", "auth", "print-access-token",
-                f"--impersonate-service-account={impersonate}",
-            ])
-        return _run(["gcloud", "auth", "print-access-token"])
+        with self._mint_lock:
+            now = time.monotonic()
+            cached = self._access
+            if cached is not None and now - cached.minted_at < cached.ttl:
+                return cached.value
+            impersonate = os.environ.get("SWARM_IMPERSONATE_SA", "").strip()
+            if impersonate:
+                value = _run([
+                    "gcloud", "auth", "print-access-token",
+                    f"--impersonate-service-account={impersonate}",
+                ])
+            else:
+                value = _run(["gcloud", "auth", "print-access-token"])
+            if value:
+                self._access = _Token(value=value, minted_at=now)
+            return value
+
+    def forget_credentials(self) -> bool:
+        """Drop every cached token this client minted. True if there was one.
+
+        For the one refusal a cache can cause: a token gcloud handed back with
+        less life left than the cache assumed. A caller that was refused with a
+        401 while holding a cached credential asks for a fresh one this way and
+        retries ONCE; the answer is whether a retry could differ at all.
+        """
+        with self._mint_lock:
+            held = self._token is not None or self._access is not None
+            self._token = None
+            self._access = None
+            return held
+
+    def _sends_cached_credential(self) -> bool:
+        """Would the next request carry a token this client minted EARLIER?
+
+        Not on the signed-in tier, whose token source (signin.py) keeps its own
+        cache and refreshes itself; forgetting ours would change nothing there,
+        and a 401 there is the deployment refusing its own Desktop client, which
+        a retry cannot fix.
+        """
+        from . import auth as _auth
+
+        if not self.sends_own_token or self.tier is _auth.Tier.SIGNED_IN:
+            return False
+        with self._mint_lock:
+            return self._token is not None or self._access is not None
 
     # -- transport ---------------------------------------------------------
     def request(
@@ -887,6 +955,31 @@ class SwarmClient:
         *,
         payload: dict[str, Any] | None = None,
         timeout: int = 60,
+    ) -> Any:
+        """One API call; ONE retry when a cached credential is refused with 401.
+
+        The retry exists because tokens are now cached (see `access_token`)
+        and the cache cannot always know how long a token has left. It is
+        taken only when the refused credential came from the cache, so a
+        credential that is simply not accepted -- a gcloud user token at IAP,
+        answered 401 with error code 900 -- costs one round trip, as before,
+        and not two.
+        """
+        cached = self._sends_cached_credential()
+        try:
+            return self._send(method, path, payload=payload, timeout=timeout)
+        except SwarmError as exc:
+            if exc.status == 401 and cached and self.forget_credentials():
+                return self._send(method, path, payload=payload, timeout=timeout)
+            raise
+
+    def _send(
+        self,
+        method: str,
+        path: str,
+        *,
+        payload: dict[str, Any] | None,
+        timeout: int,
     ) -> Any:
         url = f"{self.base_url}{path}"
         body = json.dumps(payload).encode() if payload is not None else None
@@ -947,6 +1040,8 @@ class SwarmClient:
         metadata: dict[str, Any] | None = None,
         timeout_seconds: int | None = None,
         model: str | None = None,
+        inputs: dict[str, Any] | None = None,
+        strategy: str | None = None,
     ) -> dict[str, Any]:
         """Submit one task.
 
@@ -955,19 +1050,32 @@ class SwarmClient:
         supply an image, a command or a resource spec, and this client has no
         parameter that would let it try.
 
+        `inputs` is the rest of `input`: the inputs the profile DECLARES, which
+        every caller here has already put through `profiles.check_inputs`
+        (#142). It is data for the runner, merged under the prompt, and cannot
+        replace it -- `check_inputs` refuses a `prompt` key.
+
         `model` IS ATTRIBUTION, NOT SELECTION. It becomes the task's top-level
         `model` field -- what `TaskCreate` calls "recorded for attribution and
         cost reporting; it selects nothing about the container" -- and nothing
         carries it into the execution environment: `worker_env` carries
-        identifiers and endpoints only, and the runner reads `input.model` or
-        the Job's own MODEL, neither of which this sets. Sending it changes what
+        identifiers and endpoints only, and the runner reads only the Job's own
+        MODEL, set per profile in Terraform (#226), which this does not set
+        either. Sending it changes what
         the task record says and never what runs. That is deliberate rather than
         unfinished; choosing a model per task is an execution parameter from a
         caller, which invariant 10 forbids without a contract change.
+
+        `strategy` is how the work comes back -- `collect` (the API's default:
+        the patch is harvested, nothing is pushed) or `direct-pr` (the agent's
+        branch is pushed and a pull request opened). It is a delivery choice,
+        not an execution parameter: it selects no image, command, resource or
+        model. Sent only when given, so a caller that names none gets exactly
+        the payload it got before the field existed.
         """
         payload: dict[str, Any] = {
             "runner_profile": runner_profile,
-            "input": {"prompt": prompt},
+            "input": {**(inputs or {}), "prompt": prompt},
             "metadata": {"origin": "swarm-mcp", **(metadata or {})},
         }
         if repository_url:
@@ -978,6 +1086,8 @@ class SwarmClient:
             payload["timeout_seconds"] = timeout_seconds
         if model:
             payload["model"] = model
+        if strategy:
+            payload["strategy"] = strategy
         # UNWRAPPED HERE, not by each caller. `cmd_dispatch` printed
         # `task.get("task_id", "")` off the envelope and printed an empty line,
         # which a shell then piped into `swarm tail`.
@@ -1066,6 +1176,26 @@ class SwarmClient:
             raise SwarmError(
                 f"GET /v1/tasks/{task_id}/logs answered without a `streams` list; "
                 "this deployment's logs route is not the one this client speaks to"
+            )
+        return data
+
+    def answer(self, task_id: str, *, attempt_id: str | None = None) -> dict[str, Any]:
+        """`GET /v1/tasks/{id}/answer`: the agent's final answer, as the route serves it.
+
+        NOT FLATTENED TO THE TEXT. The route says which of four things is true
+        -- `ok`, `not_yet`, `absent`, `unreadable` -- and where the answer came
+        from: the last `result` event of the agent's own stdout, whole, or the
+        runner's summary, which is cut at 2,000 characters and marked
+        `complete: false` when it may have been. A caller that kept only
+        `content` could not tell a cut answer from a whole one, or a failed
+        read from an agent that said nothing.
+        """
+        query = urllib.parse.urlencode({"attempt_id": attempt_id} if attempt_id else {})
+        data = self.request("GET", f"/v1/tasks/{task_id}/answer?{query}")
+        if not isinstance(data, dict) or "status" not in data:
+            raise SwarmError(
+                f"GET /v1/tasks/{task_id}/answer answered without a `status`; this "
+                "deployment's answer route is not the one this client speaks to"
             )
         return data
 

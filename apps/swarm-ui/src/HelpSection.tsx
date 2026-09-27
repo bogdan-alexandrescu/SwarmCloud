@@ -1,5 +1,7 @@
 import { useEffect, useRef, type Ref } from 'react'
-import { HELP, HELP_GROUPS, TOPIC_IDS, topicFor, type TopicId } from './help'
+import { HELP, HELP_GROUPS, HELP_ROUTE, TOPIC_IDS, topicFor, type TopicId } from './help'
+import { Absent } from './primitives'
+import { PageHead } from './Shell'
 
 /**
  * THE HELP SECTION (docs/web-ui/ui-audit-and-build-prompt.md §B7.3).
@@ -35,29 +37,81 @@ export function HelpScreen({ topic }: { topic: string }) {
   const target = useRef<HTMLDivElement | null>(null)
 
   // Deep links are the point of the anchors, so one has to actually land.
+  //
+  // BUT ONLY WHEN IT IS NOT ALREADY IN VIEW (AH-16). A topic already on screen
+  // was jumped to the top edge anyway, taking the group heading above it out
+  // of sight for no gain -- the reader was already looking at it. The rect is
+  // read once, before any scroll: fully inside the viewport means stay put.
+  // jsdom implements no `scrollIntoView`, hence the guard.
+  //
+  // THE VIEWPORT IS `.ctl-scroll`, NOT THE WINDOW. The frame is two grid rows,
+  // the scroller and the dock under it, and the dock's height can be dragged
+  // (App.tsx, styles.css `.ctl-frame`). A topic whose top sits in the dock's
+  // band is below the scroller's bottom edge and out of sight, yet still above
+  // `window.innerHeight` -- measured against the window it counted as in view
+  // and the deep link left it under the dock. So the visible band is the
+  // scroller's box clipped to the window; outside the frame (a test, a future
+  // page with no scroller) it is the window alone.
+  //
+  // AND THE BAND STARTS UNDER THE STUCK GROUP HEADING (AH-16, as settled
+  // against AH-18 on #86). The group heading sticks to the top of the
+  // scroller while its group is in view (styles.css `.help-group > h2`), so a
+  // topic whose top sits in the scroller's first few dozen pixels is under
+  // it, title and all. The band a deep link keeps clear for that heading is
+  // the topic's own `scroll-margin-top`, so "in view" starts there. It is read
+  // from the element, not restated: the sheet owns the number. jsdom answers
+  // nothing for it, which is 0 -- the old behaviour.
   useEffect(() => {
-    target.current?.scrollIntoView({ block: 'start' })
+    const el = target.current
+    if (el === null || typeof el.scrollIntoView !== 'function') return
+    const box = el.getBoundingClientRect()
+    const port = el.closest('.ctl-scroll')?.getBoundingClientRect() ?? null
+    const clear = Number.parseFloat(window.getComputedStyle(el).scrollMarginTop ?? '')
+    const top = Math.max(0, port?.top ?? 0) + (Number.isFinite(clear) && clear > 0 ? clear : 0)
+    const bottom = Math.min(window.innerHeight, port?.bottom ?? window.innerHeight)
+    const inView = box.top >= top && box.bottom <= bottom
+    if (!inView) el.scrollIntoView({ block: 'start' })
   }, [topic])
+
+  // THE HEAD LINE (AH-25): what the page is, and which topic is showing. Help
+  // reads nothing, so it has no provenance to print, and §6.12 names it as
+  // the one head whose line says those two things instead. Both are READ from
+  // the registry, so the line cannot describe a page other than this one.
+  //
+  // IT IS NOT AH-15'S LINE BACK. That was a description sentence -- "why a
+  // figure on these screens looks the way it does" -- true of about one topic
+  // in eight, which is why AH-15 deleted it. This line is the head-line shape
+  // every screen uses, facts joined by `·`, and each fact is true of the
+  // whole page. A group with no topic is not drawn below, so it is not
+  // counted here.
+  const groups = HELP_GROUPS.filter((g) => TOPIC_IDS.some((id) => HELP[id].group === g.id)).length
+  const line =
+    `${TOPIC_IDS.length} topics in ${groups} groups` + (wanted === null ? '' : ` · showing ${wanted.title}`)
 
   return (
     <>
-      <div className="head">
-        <h1>Help</h1>
-      </div>
-      <p className="sub">
-        Why a figure on these screens looks the way it does.
-        {wanted !== null && <> Showing {wanted.title}.</>}
-      </p>
+      {/* THE ONE PAGE HEAD (AH-25). It was `.ctl-page-head`, a second shape of
+          head beside the `.head` fourteen routes draw through `Screen`. It is
+          `PageHead` now, the same markup, with the line above under the title. */}
+      <PageHead title="Help">{line}</PageHead>
 
+      {/* AN UNKNOWN TOPIC IS A REAL ANSWER, SO IT IS THE DEFAULT EMPTY STATE
+          (AH-17). It was a warn-coloured `.is-partial` panel with two
+          sentences, no mark, no link and no gap to the first group under it.
+          Nothing about a stale link is PARTIAL -- this build carries no such
+          topic, which is a complete and correct answer -- so it is §6.9's
+          fixed shape: the `real zero` mark, the heading, one sentence, a way
+          back to the top of Help, and the one large break before the page. */}
       {topic !== '' && wanted === null && (
-        <div className="ctl-empty is-partial" role="status">
-          <h3>
-            No help topic is called <code>{topic}</code>
-          </h3>
-          <p>
-            The link that brought you here names a topic this build does not
-            carry. Everything this build does carry is below.
-          </p>
+        <div style={{ marginBottom: 'var(--ctl-s5)' }}>
+          <Absent
+            kind="zero"
+            heading={`No help topic is called ${topic}`}
+            say={`This build carries no help topic called ${topic}.`}
+            link={{ href: `#${HELP_ROUTE}`, label: 'All topics' }}
+          >
+            Everything this build does carry is below.
+          </Absent>
         </div>
       )}
 
@@ -65,7 +119,10 @@ export function HelpScreen({ topic }: { topic: string }) {
         const ids = TOPIC_IDS.filter((id) => HELP[id].group === g.id)
         if (ids.length === 0) return null
         return (
-          <section className="section" key={g.id}>
+          // `help-group`: the hook for the heading that sticks while its group
+          // is in view (AH-16; styles.css `.help-group > h2`), so a deep link
+          // to any topic in the group lands under it. Only Help's groups stick.
+          <section className="section help-group" key={g.id}>
             <h2>{g.title}</h2>
             {ids.map((id) => (
               <Topic
@@ -93,6 +150,20 @@ export function HelpScreen({ topic }: { topic: string }) {
  * `innerRef`, not `ref` -- React 18 reserves `ref` on a function component and
  * would drop it silently, leaving a deep link that routes correctly and lands
  * at the top of the page.
+ *
+ * A ROW OF ITS GROUP, NOT A BOX (AH-18, design-system §13.3). Every topic was
+ * an inline-styled bordered panel -- a border, a surface, a radius, the panel
+ * padding -- because styles.css belonged to another track at the time. Under
+ * §13.3 the group is the region and a topic is a row inside it, and a row
+ * draws nothing: topics are separated by `--ctl-s5` of space and nothing else.
+ * Everything that was inline here -- the h3, the paragraphs, the terms and the
+ * anchor line -- is `.help-topic` in styles.css now, where the cascade tests in
+ * `src/__tests__/shell.test.tsx` can ask what a browser would draw.
+ *
+ * THE DEEP-LINKED TOPIC IS `.is-current`, set from `highlighted`, and takes
+ * §1.3's selection treatment: a `--surface-2` fill and a 2px `--text` rule on
+ * the inline-start edge. Every topic declares that rule transparent, so
+ * marking one current changes a colour and a fill and moves nothing.
  */
 function Topic({
   id,
@@ -105,104 +176,51 @@ function Topic({
 }) {
   const t = HELP[id]
   const values = t.values?.() ?? []
+  const see = t.see ?? []
 
   return (
-    <div
-      ref={innerRef}
-      id={t.anchor}
-      style={{
-        // styles.css belongs to another track this pass, so the box is inline
-        // from existing tokens -- the call AgentDetail.tsx already made. An
-        // inline style adds no selector and cannot reach another screen.
-        border: '1px solid var(--line)',
-        borderLeft: highlighted ? '3px solid var(--text-dim)' : '1px solid var(--line)',
-        borderRadius: 'var(--radius)',
-        background: 'var(--surface)',
-        padding: 'var(--ctl-pad-chrome)',
-        marginBottom: 'var(--ctl-s3)',
-        scrollMarginTop: 'var(--ctl-s5)',
-      }}
-    >
-      <h3
-        style={{
-          margin: '0 0 var(--ctl-s2)',
-          // A help section's heading is the panel title of that section.
-          fontSize: 'var(--t-title)',
-          lineHeight: 'var(--lh-title)',
-          fontWeight: 600,
-        }}
-      >
-        {t.title}
-      </h3>
+    <div ref={innerRef} id={t.anchor} className={highlighted ? 'help-topic is-current' : 'help-topic'}>
+      <h3>{t.title}</h3>
 
       {t.long.map((para, i) => (
-        <p
-          key={i}
-          style={{
-            margin: '0 0 var(--ctl-s2)',
-            // --t-body, not --t-lead: Help is a reference document and draws
-            // many paragraphs; --t-lead is the ONE paragraph a screen leads
-            // with, and a document has no such thing.
-            fontSize: 'var(--t-body)',
-            lineHeight: 'var(--lh-body)',
-            color: 'var(--text-dim)',
-            maxWidth: '68ch',
-          }}
-        >
-          {para}
-        </p>
+        <p key={i}>{para}</p>
       ))}
 
       {values.length > 0 && (
-        <dl
-          style={{
-            display: 'grid',
-            gridTemplateColumns: 'max-content 1fr',
-            gap: '4px var(--ctl-s3)',
-            margin: 'var(--ctl-s3) 0 0',
-            alignItems: 'baseline',
-          }}
-        >
+        <dl>
           {values.map((v) => (
-            <div key={v.term} style={{ display: 'contents' }}>
-              <dt
-                style={{
-                  fontWeight: 600,
-                  fontSize: 'var(--t-meta)',
-                  lineHeight: 'var(--lh-meta)',
-                  fontFamily: 'var(--mono)',
-                  color: 'var(--text)',
-                }}
-              >
-                {v.term}
-              </dt>
-              <dd
-                style={{
-                  margin: 0,
-                  fontSize: 'var(--t-body)',
-                  lineHeight: 'var(--lh-body)',
-                  color: 'var(--text-dim)',
-                }}
-              >
-                {v.note}
-              </dd>
+            // `display: contents` in the sheet, so each pair's `dt` and `dd`
+            // are the grid's own cells and the terms share one column.
+            <div key={v.term}>
+              {/* The terms are the API's enums as their owner spells them --
+                  `LEASED` -- and `.help-topic dt` lowercases them by style
+                  (CH-3), so the string is still the owner's spelling for a
+                  copy, a search, and the anti-drift test in tests/help.test.ts. */}
+              <dt>{v.term}</dt>
+              <dd>{v.note}</dd>
             </div>
           ))}
         </dl>
       )}
 
-      <p
-        style={{
-          margin: 'var(--ctl-s3) 0 0',
-          // A raw anchor id: --t-micro, and it went UP from 10.5px.
-          fontSize: 'var(--t-micro)',
-          lineHeight: 'var(--lh-micro)',
-          fontFamily: 'var(--mono)',
-          color: 'var(--text-faint)',
-        }}
-      >
-        #{t.anchor}
-      </p>
+      {/* THE TOPICS THIS ONE SENDS A READER ON TO, as links (AH-21: the
+          budget paragraph in `tenant-fields` cross-links `token-cost`). A
+          title quoted in prose is a link nobody can follow. */}
+      {see.length > 0 && (
+        <p className="help-topic-see">
+          See also{' '}
+          {see.map((other, i) => (
+            <span key={other}>
+              {i > 0 && ' · '}
+              <a className="ctl-link" href={`#${HELP[other].anchor}`}>
+                {HELP[other].title}
+              </a>
+            </span>
+          ))}
+        </p>
+      )}
+
+      <p className="help-topic-anchor">#{t.anchor}</p>
     </div>
   )
 }

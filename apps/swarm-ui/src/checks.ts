@@ -420,9 +420,11 @@ function poolCheck(capacity: Result<Capacity>): Check {
  * Failures among the tasks this page can see.
  *
  * SCOPED, and the scope is stated: `/v1/tasks?limit=200` is the 200 most
- * recently CREATED tasks, so this is "recent failures" in the only sense the
- * API can serve cheaply. It is not the tenant's total and does not claim to
- * be; the exact per-state count lives on Platform counts.
+ * recently CREATED tasks (50 at phone width, where the Overview reads the
+ * agent list's phone page -- OV-10), so this is "recent failures" in the only
+ * sense the API can serve cheaply, and the headline's N says which page. It is
+ * not the tenant's total and does not claim to be; the exact per-state count
+ * lives on Platform counts.
  */
 function failureCheck(tasks: Result<TaskPage>): Check {
   const label = 'Failures'
@@ -457,12 +459,21 @@ function failureCheck(tasks: Result<TaskPage>): Check {
             ? `${exhausted.length} of them have used every attempt, so nothing will retry them. Newest: ${failed[0]?.last_error ?? 'no error was recorded'}`
             : `All still have attempts left and may retry. Newest: ${failed[0]?.last_error ?? 'no error was recorded'}`,
         // A failed agent is a row in the agent list, not an entry on a board
-        // of its own. The list's Recent tab holds the terminal states; its tab
-        // is component state rather than part of the hash, so this lands on
-        // the list and the label says where to go from there rather than
-        // promising a filter the address bar cannot carry.
-        href: '#work/running',
-        linkLabel: 'agents · Recent tab',
+        // of its own. THE ADDRESS OPENS EXACTLY THAT LIST (OV-10): the Recent
+        // tab filtered to FAILED. The tab used to be component state the hash
+        // could not carry, so this said "agents · Recent tab" -- a how-to --
+        // and landed on Live whenever anything ran. The word names the
+        // destination, as OV-11 set for the card heads.
+        //
+        // THE SAME POPULATION AS THE COUNT. The list filters client-side over
+        // the same task page this check counts -- `/v1/tasks?limit=200`, or
+        // the 50-row phone page at phone width, where the Overview reads the
+        // list's page too -- deliberately not `loadTasksInState`: a
+        // server-side FAILED list is a different, larger population under the
+        // same number. The two can differ only by what changed between the
+        // reads, and the headline says "among the N most recent".
+        href: '#work/running/recent/failed',
+        linkLabel: 'failed agents',
       },
     ],
   }
@@ -732,6 +743,9 @@ function parkedCheck(tasks: Result<TaskPage>, now: number): Check {
       !PARK_WAITS_ON_A_STEP.has(reasonOf(t)),
   )
 
+  // EVERY PARKED ITEM OPENS THE WAITING TAB, BY ADDRESS (OV-10): the list's
+  // tab is part of the hash now, so the link lands where it says rather than
+  // on whichever tab has rows, and its word names the destination.
   const problems: Problem[] = []
   if (person.length > 0) {
     problems.push({
@@ -739,8 +753,8 @@ function parkedCheck(tasks: Result<TaskPage>, now: number): Check {
       n: person.length,
       headline: `${person.length} parked ${unitFor(person)} will not resume without a person`,
       detail: `${whyEach(person)}. No timer ends any of these. They hold no capacity while they wait, so nothing is being spent -- the work is simply not happening.`,
-      href: '#work/running',
-      linkLabel: 'agents · Waiting tab',
+      href: '#work/running/waiting',
+      linkLabel: 'waiting agents',
     })
   }
   if (clock.length > 0) {
@@ -749,8 +763,8 @@ function parkedCheck(tasks: Result<TaskPage>, now: number): Check {
       n: clock.length,
       headline: `${clock.length} parked ${unitFor(clock)} waiting on a clock`,
       detail: `${whyEach(clock)}. ${soonest(clock, now)} Parked work holds no capacity, so this costs nothing while it waits.`,
-      href: '#work/running',
-      linkLabel: 'agents · Waiting tab',
+      href: '#work/running/waiting',
+      linkLabel: 'waiting agents',
     })
   }
   if (unclassified.length > 0) {
@@ -759,8 +773,8 @@ function parkedCheck(tasks: Result<TaskPage>, now: number): Check {
       n: unclassified.length,
       headline: `${unclassified.length} parked ${unitFor(unclassified)} with no reason this build understands`,
       detail: `${whyEach(unclassified)}. Either the platform grew a park reason newer than this bundle, or the task was parked without one recorded. Whether it will resume by itself is unknown.`,
-      href: '#work/running',
-      linkLabel: 'agents · Waiting tab',
+      href: '#work/running/waiting',
+      linkLabel: 'waiting agents',
     })
   }
 

@@ -247,9 +247,17 @@ make build push deploy
 make smoke
 
 # Tenants and keys are not in Terraform:
-make register-tenant GROUP=eng@saga.xyz PROVIDERS=anthropic
+make register-tenant GROUP=eng@saga.xyz
 ./scripts/create-secrets.sh --tenant eng --provider anthropic --stdin
+make add-provider TENANT=eng PROVIDER=anthropic   # one per provider the tenant had
 ```
+
+Each provider goes back with `make add-provider`, one at a time, never with a
+second `make register-tenant ... PROVIDERS=`: a re-run of the registration
+**replaces** the tenant's credentials list with the one it is given and resets
+its limits and display name to the defaults, which on a rebuild quietly drops
+every provider the command did not name. See
+[operations.md §1](operations.md#1-first-deployment).
 
 Roughly an hour, most of it Cloud Build and GKE provisioning. Then, if you have a
 Firestore export, import it (paused, per §4).

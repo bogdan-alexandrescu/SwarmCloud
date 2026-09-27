@@ -7,15 +7,20 @@ load-bearing in a way the rest are not.
     2.  STARTING -> RUNNING
     3.  create the isolated workspace
     4.  restore the latest checkpoint, if any
-    5.  optional shallow git clone
+    5.  optional shallow git clone, with the tenant token only if the
+        entrypoint made this process non-dumpable (hardening.py)
     5b. stage every artifact this step declared in `input_from`
+    5c. link `work/artifacts` to `artifacts/`, unless the name is taken (#149)
     6.  resolve the tenant's provider credential
     7.  start the runner child
     8.  while it runs: heartbeat, MANDATORY periodic checkpoint, watch for
         cancellation / quota exhaustion / a generation change
     9.  capture stdout and stderr
-    10. upload artifacts and a final checkpoint
-    11. persist the terminal state
+    10. upload artifacts and a final checkpoint; for a CLI agent with no
+        repository, also what it created in its working folder, under
+        `workdir/` (#184)
+    11. persist the terminal state, or READY for a retry when a clean run left
+        out an expected output and the task has attempts left (#149)
     12. release the lease
     13. exit
 
@@ -79,6 +84,15 @@ windows, and the handler (`_on_signal`) knows which one it is in:
 Every startup phase is also announced (`startup.Phases`), so a worker that
 stalls says where.
 
+**Step 1's read is asked again before it gives up (#198).** A Cloud Run
+instance can take a minute or more to pass traffic after it starts (Direct
+VPC egress), so the generation check runs on a schedule of attempts that
+spans more than a minute (`startup.CONTROL_PLANE_READ_SCHEDULE_SECONDS`), one
+warning per failed attempt, before its 69. Only what would exit 69 is asked
+again: a refusal, a fence and a tenant mismatch end the attempt at once. The
+wait between attempts is inside step 1's window, so a SIGTERM there exits
+143 at once, having written nothing.
+
 **A dependency that is unavailable in the same window exits 69, as at step
 1, and leaves the task to the reconciler.** Every Firestore call from step 1 to
 the runner carries the startup budget (`ControlPlane.startup_budget`), so an
@@ -104,13 +118,17 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Iterator
+from typing import Any, Callable, Iterator, Sequence
 
-from swarm_common.models import ProviderState, utcnow
+from swarm_common.models import EndCause, ProviderState, retries_exhausted, utcnow
+from swarm_common.profiles import RESOURCE_CLASSES
 from swarm_common.states import EventType, ParkReason, TaskState
 
+from . import artifact_manifest as manifest_mod
+from . import expected_outputs as expected_mod
 from . import inputs as inputs_mod
 from . import redact as redact_mod
+from . import standalone_outputs as standalone_mod
 from . import workspace as workspace_mod
 from .accountlease import (
     ACCOUNT_TOKEN_ENV,
@@ -135,25 +153,39 @@ from .errors import (
     ExitCode,
     FencedError,
     FencedWriteRefused,
+    InputUnavailable,
     TenantMismatchError,
     WorkerError,
 )
 from .forge import ForgeError, probe_repository, open_pull_request
 from .gitops import (
+    EMPTY_CLONE_BASE,
     GitError,
     MergeOutcome,
     commit_dirty,
+    fold_agent_commits,
+    hide_from_git,
     merge_branches,
+    prepare_publish_repo,
     push_branch,
     shallow_clone,
     summarize_work,
+    verify_worker_authorship,
 )
-from .metrics import ResourceSampler, ResourceUsage, combine_usage
+from .hardening import FAILED, MemoryProtection
+from .metrics import (
+    ResourceSampler,
+    ResourceUsage,
+    attempt_cpu_fields,
+    cgroup_cpu_limit_cores,
+    combine_usage,
+)
 from .objectstore import ObjectStore
-from .procman import ChildProcess, ChildResult
+from .procman import ChildProcess, ChildResult, reap_foreign_processes
 from .quota import QuotaDecision, decide, read_runner_signal, signal_from_control
 from .runners.base import EXIT_QUOTA_EXHAUSTED, EXIT_TERMINATED, SPEND_KEYS
 from .runners.limits import GRACE_ENV, STDERR_ENV, STDOUT_ENV, TIMEOUT_ENV
+from .runners.streams import agent_stream_files, cli_agent_spec
 from .secrets import (
     CredentialMissing,
     SecretError,
@@ -163,9 +195,11 @@ from .secrets import (
     resolve_git_token,
 )
 from .startup import (
+    CONTROL_PLANE_READ_SCHEDULE_SECONDS,
     EXIT_INTERRUPTED,
     Phases,
     StartupInterrupted,
+    call_on_schedule,
     disarm_stack_dump,
     route_signals,
     say_from_signal_handler,
@@ -214,6 +248,13 @@ NO_ACCOUNT_RETRY_SECONDS = 900
 #: after it had already refreshed its readings.
 STALE_READING_RETRY_SECONDS = 300
 
+#: How long a task failed for a missing expected output waits before it is
+#: eligible again (#149). Zero: the agent left a file out, and nothing about
+#: that clears with time, so a delay would only hold the dependants back
+#: longer. The retry is bounded by `max_attempts`, not by this, and the
+#: scheduler admits it on its next drain like any other READY task.
+EXPECTED_OUTPUT_RETRY_DELAY_SECONDS = 0
+
 #: How many different accounts one attempt will try before it gives up and
 #: parks. Three, not one: a freshly onboarded account whose secret has no
 #: version yet, and a borrowed account this worker was never granted access
@@ -230,7 +271,9 @@ MAX_ACCOUNT_TRIES = 3
 #: every interval; the event stream would be unreadable at that rate.
 HEARTBEAT_EVENT_EVERY = 5
 
-REPO_DIR_NAME = "repo"
+#: `work/repo`. Spelled once, in `workspace`, because the checkpoint needs it
+#: too: the `./artifacts` link inside the checkout is never archived (#226).
+REPO_DIR_NAME = workspace_mod.REPO_DIR_NAME
 
 #: Worker-owned scratch INSIDE the checkpointed work directory. It has to be
 #: inside `work/` so a resumed attempt still knows which commit its clone
@@ -239,6 +282,13 @@ REPO_DIR_NAME = "repo"
 WORKER_STATE_DIR = ".swarm"
 CLONE_BASE_FILE = "clone-base"
 PATCH_NAME = "swarm-work.patch"
+
+#: The worker-owned repository the token-bearing git commands run in lives under
+#: `ws.private` -- never checkpointed, never uploaded, never named in the agent's
+#: environment -- so the push and the integrator's fetch authenticate from
+#: configuration the agent could not write. `gitops.prepare_publish_repo` gives
+#: it an unpredictable name (`tempfile.mkdtemp`): `ws.private` shares a uid with
+#: the agent, so a constant name would let the agent pre-plant a symlink there.
 
 
 @dataclass
@@ -256,6 +306,12 @@ class WorkerDeps:
     #: The entrypoint's phase tracker, carried on so the lifecycle's phases
     #: continue the same clock. None builds one on the worker's logger.
     phases: Phases | None = None
+    #: What the entrypoint's `hardening.make_non_dumpable` established before
+    #: any credential was read. The tenant git token is held only when the
+    #: agent cannot read this process's memory (`Worker._git_token_refusal`).
+    #: None means nothing established it, and is treated as FAILED: a worker
+    #: built some other way holds no token rather than an unprotected one.
+    memory: MemoryProtection | None = None
 
 
 @dataclass
@@ -276,6 +332,7 @@ class Worker:
         self.db = deps.db
         self.metrics = deps.metrics_exporter
         self.secret_client = deps.secret_client
+        self.memory = deps.memory
         self.ws: workspace_mod.Workspace | None = None
         self.checkpoints = CheckpointManager(
             store=deps.store,
@@ -288,6 +345,11 @@ class Worker:
         )
         self._interrupted = False
         self.phases = deps.phases if deps.phases is not None else Phases(deps.logger)
+        # What the generation check's scheduled attempts wait with, and time
+        # themselves by (`startup.call_on_schedule`). Replaceable so a test can
+        # run the schedule without waiting it out.
+        self.startup_sleep: Callable[[float], Any] = time.sleep
+        self.startup_clock: Callable[[], float] = time.monotonic
         # Which window a SIGTERM lands in. `_on_signal` reads it; `run` and
         # `_execute` set it, always through `_signal_policy` so that it is
         # restored however the window is left.
@@ -297,6 +359,13 @@ class Worker:
         # exception that reaches it, decides the exit.
         self._startup_interrupt: StartupInterrupted | None = None
         self._child: ChildProcess | None = None
+        # How the publish path makes sure no process the agent started is alive
+        # before the tenant credential is used (`_publish_git`). A callable, not
+        # a direct call, so a unit test can substitute a scoped reaper: the real
+        # one runs `os.kill(-1, SIGKILL)`, which in a shared test process would
+        # kill the test runner. Returns the PIDs still alive after the reap --
+        # empty means clean, non-empty means refuse to publish.
+        self.reap_before_publish: Callable[[], tuple[int, ...]] = self._default_reap
         # The LIVE runner's sampler, or None between runners. The runners that
         # have ended are in `_runner_usage`, and `_attempt_usage` combines the
         # two: every figure this worker reports -- the attempt document, the
@@ -309,11 +378,41 @@ class Worker:
         self._repo_url: str | None = None
         self._task: dict[str, Any] | None = None
         self._clone_base: str | None = None
+        # The clone base the PUBLISH trusts, which is not always the one above.
+        # `_clone_base` may come from `work/.swarm/clone-base`, a file in the
+        # agent's HOME (its working directory's parent, when it starts in the
+        # checkout -- #226), which it can write; that is good enough to describe the
+        # work and not good enough to decide what reaches a forge. This one is
+        # only ever the worker's own knowledge: the commit its clone landed on
+        # in this process, or the base a previous attempt's worker recorded in
+        # the checkpoint manifest. `EMPTY_CLONE_BASE` for an empty repository.
+        self._publish_base: str | None = None
         # What `metadata.input_from` put in the workspace. Kept so the result
         # summary can report which upstream artifact this attempt actually ran
         # on -- the question every debugging of a wrong workflow output starts
         # with, and one the workspace cannot answer because it is destroyed.
         self._staged_inputs: list[inputs_mod.StagedInput] = []
+        # What this task's dependants will stage from it, per
+        # `metadata.expected_outputs` (#149). Kept so `_finalise` can name any
+        # the attempt did not upload; see `agent_worker.expected_outputs`.
+        self._expected_outputs: tuple[str, ...] = ()
+        # Every file in the artifacts folder the last `_upload_outputs` did not
+        # upload for the file cap or the name bound (#228), by its WHOLE name.
+        # The summary counts them and does not list them, so a declared output
+        # among them is named here as written and not uploaded rather than as
+        # never written (`_written_not_uploaded`).
+        self._artifacts_not_uploaded: tuple[str, ...] = ()
+        # A CLI agent's task with no repository has what its agent CREATED in
+        # the working folder uploaded, under `workdir/` (#184, owner decision
+        # of 2026-09-26; `agent_worker.standalone_outputs`). `_standalone` is
+        # decided in `_prepare`, once the task is known. `_restored_workdir` is
+        # what a checkpoint brought back into `work/`. `_workdir_baseline` is
+        # what was there just before the attempt's FIRST runner started,
+        # less what an earlier attempt's agent created; None until then, and
+        # None means nothing is uploaded from the working folder.
+        self._standalone = False
+        self._restored_workdir: frozenset[str] = frozenset()
+        self._workdir_baseline: frozenset[str] | None = None
         self._heartbeats = 0
         self._deadline = time.monotonic() + config.timeout_seconds
         # The account this attempt holds, if the pool gave it one. Set once and
@@ -346,6 +445,10 @@ class Worker:
         # Set on the tenant-mismatch exit, the one path that must write NOTHING
         # -- not even spend onto what may be another tenant's attempt.
         self._writes_forbidden = False
+        # What `record_cpu_usage` last wrote onto the attempt (contract request
+        # #15), so the periodic readings and each runner's end write once per
+        # change rather than once per heartbeat.
+        self._cpu_recorded: dict[str, float] | None = None
         self._account_broker = deps.account_broker
         if self._account_broker is None and config.quota_broker_url:
             self._account_broker = AccountBroker(
@@ -363,17 +466,33 @@ class Worker:
         # ---- STEP 1: fencing, before anything else exists ---------------
         self.phases.enter("validate_generation")
         try:
-            # Reads only. A SIGTERM here has nothing to undo, so it exits now.
+            # Reads only. A SIGTERM here, in a read or in the wait between two
+            # attempts, has nothing to undo, so it exits now.
             with self._signal_policy(_SIGNAL_EXIT_NOW), self.control.startup_budget():
-                signals = self.control.validate_generation()
+                read = call_on_schedule(
+                    # Looked up at each attempt, not bound once: a test may
+                    # stand in for the control plane's method.
+                    lambda: self.control.validate_generation(),
+                    retryable=_generation_check_retryable,
+                    schedule=CONTROL_PLANE_READ_SCHEDULE_SECONDS,
+                    sleep=self.startup_sleep,
+                    clock=self.startup_clock,
+                    on_failed_attempt=self._control_plane_read_failed,
+                )
         except FencedError as exc:
             return self._exit_fenced(exc)
         except TenantMismatchError as exc:
             return self._exit_tenant_mismatch(exc)
         except Exception as exc:
+            # Not retried: a refusal, or something that is not Firestore's.
             if not _control_plane_unreachable(exc):
                 raise
             return self._exit_control_plane_unreachable(exc)
+        if read.error is not None:
+            return self._exit_control_plane_unreachable(
+                read.error, attempts=read.attempts, seconds=read.seconds
+            )
+        signals = read.value
 
         if signals.cancel_requested:
             # Cancelled between admission and start: nothing ran, so there is
@@ -384,6 +503,7 @@ class Worker:
                     state=TaskState.CANCELLED,
                     exit_code=None,
                     error="cancelled before execution started",
+                    end_cause=EndCause.CANCEL_REQUESTED,
                 )
             except FencedWriteRefused as exc:
                 # Fenced between the gate above and this write.
@@ -414,11 +534,21 @@ class Worker:
             return self._exit_tenant_mismatch(exc)
         except WorkerError as exc:
             self.log.exception("worker failed", exc)
-            fenced = self._safe_finish(TaskState.FAILED, exit_code=exc.exit_code, error=str(exc))
+            fenced = self._safe_finish(
+                TaskState.FAILED,
+                exit_code=exc.exit_code,
+                error=str(exc),
+                end_cause=_end_cause_of(exc),
+            )
             return exc.exit_code if fenced is None else fenced
         except Exception as exc:  # never exit without a durable terminal state
             self.log.exception("worker crashed", exc)
-            fenced = self._safe_finish(TaskState.FAILED, exit_code=ExitCode.FAILED, error=str(exc))
+            fenced = self._safe_finish(
+                TaskState.FAILED,
+                exit_code=ExitCode.FAILED,
+                error=str(exc),
+                end_cause=EndCause.RUNNER_ERROR,
+            )
             return ExitCode.FAILED if fenced is None else fenced
         finally:
             self._cleanup()
@@ -473,6 +603,11 @@ class Worker:
         cfg = self.cfg
         ws = self.ws
         assert ws is not None
+
+        # What is in the working folder before the FIRST runner starts: once
+        # per attempt, so an in-place restart below does not make the first
+        # run's files "existing" ones (#184, standalone tasks only).
+        self._take_workdir_baseline()
 
         # ---- STEPS 7-9: run the child, supervised -----------------------
         attempt_number = 0
@@ -614,7 +749,16 @@ class Worker:
         # caller's dispatch strategy and re-fetching it there would be a
         # second read of a document that cannot have changed.
         self._task = task
+        self._standalone = self._uploads_working_folder(task)
         self._restore_checkpoint(task.get("latest_checkpoint"))
+        if self._standalone and self._restored_from is not None:
+            # What the checkpoint brought back, BEFORE the worker stages
+            # anything: whatever in here is not a staged input was written by
+            # an earlier attempt's agent, and counts as created (see
+            # `agent_worker.standalone_outputs`, "A resumed attempt").
+            self._restored_workdir = frozenset(
+                standalone_mod.scan(ws.work, reserved=self._workdir_reserved()).files
+            )
         # Restoring a large checkpoint is unbounded; prove liveness after it.
         self._heartbeat()
 
@@ -630,13 +774,24 @@ class Worker:
         # different paths inside `work/`, and a declared name that would collide
         # with the clone directory is refused rather than resolved. Order
         # relative to the RUNNER INPUT is: `input.json` has to be able to tell
-        # the agent what it was given, so staging happens first.
+        # the agent what it was given, so staging happens first. A staged file
+        # lands in `work/`, never in the checkout, even though the agent of a
+        # repository task starts in the checkout (#226): the prompt names each
+        # one by absolute path instead (`expected_outputs.staged_paths`).
         self.phases.enter("stage_inputs")
         staged_inputs = self._stage_declared_inputs(task)
         if staged_inputs:
             # Downloading an upstream artifact is unbounded in the same way a
             # clone is; prove liveness after it for the same reason.
             self._heartbeat()
+
+        # ---- STEP 5c: ./artifacts is the artifacts directory ----------------
+        # After the restore, the clone and the staging, never before: a
+        # restore refuses a non-empty `work/`, and a staged input or a
+        # restored directory that already owns the name keeps it.
+        self._link_artifacts()
+        # And in the checkout, where a repository task's agent starts (#226).
+        self._link_checkout_artifacts()
 
         # ---- runner input -----------------------------------------------
         payload = dict(task.get("input") or {})
@@ -647,10 +802,72 @@ class Worker:
             # disk right now, so a caller's own `staged_inputs` in the step input
             # must not shadow it and leave the agent reading a stale claim.
             payload["staged_inputs"] = [item.as_dict() for item in staged_inputs]
-        if cfg.model:
-            payload.setdefault("model", cfg.model)
+        elif "staged_inputs" in payload:
+            # AND REMOVED WHEN NOTHING WAS STAGED (#226). A CLI runner now turns
+            # this key into a line of the prompt, in the platform's voice, naming
+            # files "earlier steps of this workflow gave you". Only the worker's
+            # own record may fill it, exactly as for `expected_outputs` below.
+            dropped = payload.pop("staged_inputs")
+            self.log.warning(
+                "dropped the caller's own input.staged_inputs: only the files the "
+                "worker staged for this task are named to the agent",
+                dropped_entries=len(dropped) if isinstance(dropped, (list, tuple)) else 1,
+            )
+        if "model" in payload:
+            # A CALLER NEVER CHOOSES THE MODEL (#226, invariant 10). The API
+            # refuses `input.model` on every profile that declares its inputs
+            # (#213); this is the same rule for a task written before that
+            # refusal shipped, a profile whose inputs are not declared yet
+            # (`browser`, `generic`: #218), or a path that does not go through
+            # the API. The model is the Job's `MODEL`, which reaches the runner
+            # in its environment (`_build_child_env`), never through input.json.
+            payload.pop("model")
+            self.log.warning(
+                "dropped the caller's own input.model: the model an agent runs is "
+                "the runner profile's, set on its Job as MODEL",
+                job_model=cfg.model,
+            )
+        expected = self._declared_outputs(task)
+        if expected_mod.METADATA_KEY in payload:
+            # A CALLER'S OWN `input.expected_outputs` NEVER REACHES THE AGENT,
+            # whether or not the API recorded names of its own. A CLI runner
+            # turns this key into instructions in the platform's voice ("later
+            # steps of this workflow need these files"), so only the names the
+            # API wrote into `task.metadata` may fill it -- and the API refuses
+            # that key from callers. Dropped with a line, not silently.
+            dropped = payload.pop(expected_mod.METADATA_KEY)
+            self.log.warning(
+                "dropped the caller's own input.expected_outputs: only the names "
+                "the API recorded for this task's dependants reach the agent",
+                dropped_entries=len(dropped) if isinstance(dropped, (list, tuple)) else 1,
+            )
+        told = expected_mod.without_platform_names(expected, (PATCH_NAME,))
+        if told:
+            # The platform's statement of what later steps need. A CLI runner
+            # turns it into the agent's instructions; the other runners ignore
+            # it. `swarm-work.patch` is left out: it is the platform's record
+            # of the agent's repository changes, which the harvest writes after
+            # the agent exits, over whatever is there, whenever the diff is
+            # non-empty and under the cap (`gitops.summarize_work`). An agent
+            # told to write it would have its file replaced, or -- with an empty
+            # or oversized diff -- uploaded under a name every reader takes for
+            # the platform's diff. It stays in `self._expected_outputs`, which
+            # the end-of-attempt check reads, because a dependant that stages
+            # it still needs it uploaded.
+            payload[expected_mod.METADATA_KEY] = list(told)
+        # `cfg.model` is NOT written here any more (#226). It was, with
+        # `setdefault`, so a caller's `input.model` won over the Job's MODEL.
         payload.setdefault("task_id", cfg.task_id)
         payload.setdefault("attempt_id", cfg.attempt_id)
+        # This attempt's number: the task's `attempt_count`, which admission
+        # increments in the lease's own transaction, so 1 on the first lease
+        # and one more on every lease after, a park's next attempt included.
+        # A platform record, not the workspace's: it reaches the runner
+        # whether or not a checkpoint did, which is what bounds the mock's
+        # simulated park (runners/mock.py, the review of #213). ASSIGNED, not
+        # `setdefault`: a count a caller could set would be a bound a caller
+        # could lift.
+        payload["attempt_count"] = int(task.get("attempt_count") or 0)
         payload.setdefault("resumed_from_checkpoint", bool(self._restored_from))
         ws.input_path.write_text(json.dumps(payload, indent=2, default=str))
 
@@ -839,6 +1056,7 @@ class Worker:
                 exit_code=None,
                 error="cancelled by request",
                 result_summary=summary,
+                end_cause=EndCause.CANCEL_REQUESTED,
             )
             return Outcome(exit_code=ExitCode.CANCELLED, state=TaskState.CANCELLED)
 
@@ -1000,6 +1218,10 @@ class Worker:
         self._record_fenced_end(str(exc))
         return ExitCode.GENERATION_FENCED
 
+    def _default_reap(self) -> tuple[int, ...]:
+        """The production pre-publish reap. See `reap_foreign_processes`."""
+        return reap_foreign_processes(logger=self.log)
+
     def _stop_runner(self, *, reason: str) -> None:
         """Stop the live runner, if any, and take its usage and spend. Never raises.
 
@@ -1048,9 +1270,25 @@ class Worker:
         assert ws is not None
 
         self._checkpoint("final")
-        # The ONLY call that passes publish=True. The agent exited on its own
-        # here; the other five call sites are parks and crashes.
-        summary = self._upload_outputs(publish=True)
+        # A runner that finished cleanly, by the same three tests the SUCCEEDED
+        # branch below applies: the one outcome a missing expected output turns
+        # into a retryable failure (#149). Anything else fails, or ends, on its
+        # own terms. result.json lives in `work/`, which neither the harvest
+        # nor the upload writes, so reading it here reads what is read below.
+        ran_clean = (
+            not result.timed_out
+            and result.exit_code == 0
+            and _read_json(ws.result_path) is not None
+        )
+        withheld = self._publish_withheld(ran_clean)
+        # The ONLY call that may pass publish=True. The agent exited on its own
+        # here; the other five call sites are parks and crashes. It is False
+        # only for an attempt that is going to run again (`_publish_withheld`).
+        summary = self._upload_outputs(publish=withheld is None, withheld=withheld or "")
+        # Here, where the runner ended on its own, and not on the park, cancel
+        # and crash paths: a parked attempt resumes later and may still write
+        # the file.
+        missing = self._report_missing_outputs(summary, fails_the_attempt=ran_clean)
         summary["exit_code"] = result.exit_code
         summary["duration_seconds"] = round(result.duration_seconds, 3)
         self._export_metrics()
@@ -1082,6 +1320,7 @@ class Worker:
                 exit_code=result.exit_code,
                 error=error,
                 result_summary=summary,
+                end_cause=EndCause.TIMEOUT,
             )
             return Outcome(exit_code=ExitCode.TIMEOUT, state=TaskState.FAILED)
 
@@ -1089,7 +1328,11 @@ class Worker:
             if runner_result is None:
                 error = "runner exited 0 without writing result.json"
                 self.control.finish(
-                    state=TaskState.FAILED, exit_code=0, error=error, result_summary=summary
+                    state=TaskState.FAILED,
+                    exit_code=0,
+                    error=error,
+                    result_summary=summary,
+                    end_cause=EndCause.RUNNER_ERROR,
                 )
                 return Outcome(exit_code=ExitCode.FAILED, state=TaskState.FAILED)
             if self.cfg.provider:
@@ -1097,6 +1340,8 @@ class Worker:
                 self.control.update_quota_state(
                     provider=self.cfg.provider, state=ProviderState.AVAILABLE
                 )
+            if missing:
+                return self._fail_for_missing_outputs(missing, summary, exit_code=0)
             self.control.finish(
                 state=TaskState.SUCCEEDED, exit_code=0, result_summary=summary
             )
@@ -1114,6 +1359,7 @@ class Worker:
         error = (runner_result or {}).get("error") or _tail_text(ws.stderr_path)
         self.control.finish(
             state=TaskState.FAILED,
+            end_cause=EndCause.RUNNER_ERROR,
             exit_code=result.exit_code,
             # `last_error` is a Firestore field and a failing CLI is exactly the
             # thing that echoes its own configuration, so the tail is scrubbed.
@@ -1173,7 +1419,34 @@ class Worker:
         )
         return ExitCode.TENANT_MISMATCH
 
-    def _exit_control_plane_unreachable(self, exc: BaseException) -> int:
+    def _control_plane_read_failed(
+        self, attempt: int, exc: BaseException, retry_in: float
+    ) -> None:
+        """One WARNING for a generation check that failed and will be asked again (#198).
+
+        The incident's worker was silent for the 28 s between its phase line
+        and its verdict. Each failed attempt now says what it met and when
+        the next one starts. The last attempt's failure is the verdict, logged
+        by `_exit_control_plane_unreachable`, not here.
+        """
+        cause = getattr(exc, "cause", None)
+        self.log.warning(
+            f"could not read the control plane at startup (attempt {attempt} of "
+            f"{len(CONTROL_PLANE_READ_SCHEDULE_SECONDS)}): {type(exc).__name__}; "
+            f"retrying in {retry_in:g}s",
+            phase=self.phases.current,
+            attempt=attempt,
+            attempts=len(CONTROL_PLANE_READ_SCHEDULE_SECONDS),
+            retry_in_seconds=retry_in,
+            schedule_seconds=list(CONTROL_PLANE_READ_SCHEDULE_SECONDS),
+            error_type=type(exc).__name__,
+            error=_one_line(exc),
+            cause=f"{type(cause).__name__}: {_one_line(cause)}" if cause is not None else None,
+        )
+
+    def _exit_control_plane_unreachable(
+        self, exc: BaseException, *, attempts: int = 1, seconds: float | None = None
+    ) -> int:
         """The generation check could not read Firestore. Say so and leave.
 
         Nothing is written to Firestore. Firestore is the thing that could not
@@ -1210,6 +1483,10 @@ class Worker:
 
         The error is logged whole, with its type and its cause. Before PR #57,
         every one of these looked like 300 s of nothing.
+
+        A 69 comes after every attempt of `CONTROL_PLANE_READ_SCHEDULE_SECONDS`
+        failed (#198); `attempts` and `seconds` say how many, and over how
+        long. A refusal is not asked again, and comes from the first.
         """
         options = self.control.startup_call_options
         retry = options.get("retry")
@@ -1226,9 +1503,19 @@ class Worker:
             cause=f"{type(cause).__name__}: {cause}" if cause is not None else None,
             retry_budget_seconds=getattr(retry, "timeout", None),
             call_timeout_seconds=options.get("timeout"),
+            attempts=attempts,
+            seconds=seconds,
+            schedule_seconds=list(CONTROL_PLANE_READ_SCHEDULE_SECONDS),
             exit_code=exit_code,
             retryable=exit_code == ExitCode.UNAVAILABLE,
             refused_by=type(refusal).__name__ if refusal is not None else None,
+            hint=_unreachable_hint(exc) if refusal is None else None,
+            then=(
+                "the reconciler reads this execution's exit code once it has ended "
+                "and requeues the task, or fails it when its attempts are spent"
+                if refusal is None
+                else "the reconciler reads this execution's exit code and fails the task"
+            ),
         )
         if refusal is not None:
             write_termination_message(
@@ -1293,8 +1580,9 @@ class Worker:
                 f"{type(replaced_by).__name__}: {replaced_by}" if replaced_by is not None else None
             ),
             then=(
-                "the reconciler reclaims the lease once it is silent and requeues "
-                "the task, or fails it when its attempts are spent"
+                "a task still DISPATCHED or STARTING is requeued by the reconciler "
+                "once it sees this execution has ended, and a RUNNING one once its "
+                "lease is silent; either is failed when its attempts are spent"
             ),
         )
         self._record_startup_end(
@@ -1351,8 +1639,9 @@ class Worker:
             call_timeout_seconds=options.get("timeout"),
             exit_code=ExitCode.UNAVAILABLE,
             then=(
-                "the reconciler reclaims the lease once it is silent and requeues "
-                "the task, or fails it when its attempts are spent"
+                "a task still DISPATCHED or STARTING is requeued by the reconciler "
+                "once it sees this execution has ended, and a RUNNING one once its "
+                "lease is silent; either is failed when its attempts are spent"
             ),
         )
         self._record_startup_end(
@@ -1414,13 +1703,31 @@ class Worker:
             # because by now the agent's own commits sit on top of it and HEAD
             # no longer answers "what did this repository look like on arrival".
             self.log.info("repository already present from checkpoint; skipping clone")
-            self._clone_base = self._read_clone_base()
+            # THE BASE THE PUSH TRUSTS COMES FROM THE MANIFEST, NOT THE TREE.
+            # The marker file sits in `work/`, the agent's HOME and writable by
+            # it, and travels in the archive the agent's own files travel in. An
+            # agent that wrote a later commit of its own into it lifted the
+            # fold's floor above its earlier commits, and those were pushed as
+            # the agent wrote them. The manifest is written by the worker,
+            # outside that tree. A manifest from before the worker recorded a
+            # base holds none, and then nothing is published -- the marker
+            # still gives the harvest its diff base, so the work is described.
+            recorded = self._restored_from.clone_base if self._restored_from else None
+            self._publish_base = recorded
+            self.checkpoints.clone_base = recorded
+            self._clone_base = (
+                recorded if recorded and recorded != EMPTY_CLONE_BASE else None
+            ) or self._read_clone_base()
             return {
                 "path": REPO_DIR_NAME,
                 "from_checkpoint": True,
                 "commit": self._clone_base,
             }
         ref = self.cfg.repository_ref or task.get("repository_ref")
+        # A worker whose memory the agent may read clones WITHOUT the token, so
+        # the token is never in this process at all. A public repository still
+        # clones; a private one fails, and the error below says why.
+        refusal = self._git_token_refusal()
         try:
             clone = shallow_clone(
                 url=url,
@@ -1434,19 +1741,31 @@ class Worker:
                 logs_dir=ws.logs,
                 timeout_seconds=self.cfg.git_clone_timeout_seconds,
                 logger=self.log,
-                token=self._git_token(),
+                token=None if refusal else self._git_token(),
             )
         except GitError as exc:
+            if refusal:
+                raise WorkerError(
+                    f"repository clone failed: {exc}; cloned without the tenant git "
+                    f"token because {refusal}"
+                ) from exc
             raise WorkerError(f"repository clone failed: {exc}") from exc
         self._repo_url = clone.url
         self._clone_base = clone.commit
+        # Known in this process, so trusted; and recorded in every checkpoint
+        # manifest from here on, so a resumed attempt can trust it too.
+        self._publish_base = clone.commit or (EMPTY_CLONE_BASE if clone.empty else None)
+        self.checkpoints.clone_base = self._publish_base
         self._write_clone_base(clone.commit)
-        return {
+        info: dict[str, Any] = {
             "path": REPO_DIR_NAME,
             "url": clone.url,
             "ref": clone.ref,
             "commit": clone.commit,
         }
+        if refusal:
+            info["git_token_refused"] = refusal
+        return info
 
     def _stage_declared_inputs(self, task: dict[str, Any]) -> list[inputs_mod.StagedInput]:
         """Honour `metadata.input_from`: {upstream_task_id: artifact_filename}.
@@ -1494,6 +1813,583 @@ class Worker:
         )
         return staged
 
+    def _link_artifacts(self) -> None:
+        """Step 5c: make `work/artifacts` the directory that is uploaded (#149).
+        `work/` is the agent's working directory when the task has no
+        repository; with one, `_link_checkout_artifacts` links the checkout's
+        `./artifacts` too (#226), and this one is `../artifacts` from there.
+
+        On every attempt, not only one a later step stages from: the guess it
+        catches is as natural for a caller's own prompt that says "write it to
+        $SWARM_ARTIFACTS_DIR" as for the platform's instructions. Measured on
+        2026-09-25, `wf_06a3a949d2c242c3b0e9`: scan-02 echoed the right path
+        and then wrote `<work>/artifacts/scan-02.md`.
+
+        Never fails the attempt. A name that is already taken is the agent's
+        or the caller's (see `workspace.link_artifacts`), and a link that
+        cannot be made leaves the agent where it was before this existed. Both
+        are one WARNING, because either one is why a file written under
+        `./artifacts` was not uploaded.
+        """
+        ws = self.ws
+        assert ws is not None
+        link = ws.artifacts_link()
+        try:
+            made = workspace_mod.link_artifacts(ws)
+        except OSError as exc:
+            self.log.warning(
+                "could not link work/artifacts to $SWARM_ARTIFACTS_DIR; files the "
+                "agent writes under ./artifacts will not be uploaded",
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            return
+        if made:
+            self.log.info(
+                "work/artifacts links to $SWARM_ARTIFACTS_DIR, so a file the agent "
+                "writes under ./artifacts is uploaded",
+                target=str(ws.artifacts),
+            )
+            return
+        self.log.warning(
+            "work/artifacts already exists, so it was left in place and not linked "
+            "to $SWARM_ARTIFACTS_DIR; files the agent writes under it are not uploaded",
+            kind="link" if link.is_symlink() else ("directory" if link.is_dir() else "file"),
+            restored_from_checkpoint=self._restored_from is not None,
+            staged_inputs_under_it=[
+                item.path for item in self._staged_inputs
+                if item.path.split("/", 1)[0] == link.name
+            ],
+        )
+
+    def _link_checkout_artifacts(self) -> None:
+        """Step 5c, for a repository task: `./artifacts` in the CHECKOUT is the
+        directory that is uploaded, and git never sees it (#226).
+
+        With a repository attached the agent starts in `work/repo` (owner
+        decision of 2026-09-26), so the guess `work/artifacts` catches (#149:
+        an agent that echoed `$SWARM_ARTIFACTS_DIR` and then wrote
+        `./artifacts/scan-02.md`) is made in the checkout instead. The link is
+        made there as well, and hidden with the clone's `.git/info/exclude`,
+        so it is in no patch, no auto-commit and no pushed branch. A link git
+        can still see -- the repository's own `.gitignore` un-ignores the name
+        -- is taken away again, because a symlink to this attempt's directory
+        in the tenant's repository is worse than a missed guess.
+
+        Never fails the attempt, like `_link_artifacts`: every outcome other
+        than a hidden link is one WARNING, since each is the reason a file
+        written under the checkout's `./artifacts` was not uploaded.
+        """
+        ws = self.ws
+        assert ws is not None
+        checkout = ws.checkout()
+        if not self._repo_url or not checkout.is_dir() or checkout.is_symlink():
+            return
+        link = ws.artifacts_link(checkout)
+        try:
+            made = workspace_mod.link_artifacts(ws, within=checkout)
+        except OSError as exc:
+            self.log.warning(
+                "could not link the checkout's ./artifacts to $SWARM_ARTIFACTS_DIR; "
+                "files the agent writes under it stay in the repository",
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            return
+        if not made:
+            self.log.warning(
+                "the checkout already has an artifacts entry, so it was left in place "
+                "and not linked to $SWARM_ARTIFACTS_DIR; files the agent writes under "
+                "it are the repository's, not uploaded artifacts",
+                kind="link" if link.is_symlink() else ("directory" if link.is_dir() else "file"),
+            )
+            return
+        hidden = hide_from_git(
+            repo=checkout,
+            name=link.name,
+            private_dir=ws.private,
+            logs_dir=ws.logs,
+            timeout_seconds=self.cfg.git_clone_timeout_seconds,
+            logger=self.log,
+        )
+        if hidden:
+            self.log.info(
+                "the checkout's ./artifacts links to $SWARM_ARTIFACTS_DIR and is "
+                "hidden from git, so a file the agent writes under it is uploaded "
+                "and is not part of its diff",
+                target=str(ws.artifacts),
+            )
+            return
+        try:
+            link.unlink()
+        except OSError as exc:
+            self.log.warning(
+                "the checkout's ./artifacts link could not be hidden from git or "
+                "removed; it may appear in the agent's diff",
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            return
+        self.log.warning(
+            "the checkout's ./artifacts link was removed because git would still "
+            "see it (the repository's own .gitignore un-ignores the name, or git "
+            "could not be asked); files the agent writes under ./artifacts stay "
+            "in the repository"
+        )
+
+    # -- the working folder of a task with no repository (#184) --------------
+    def _uploads_working_folder(self, task: dict[str, Any]) -> bool:
+        """True when this attempt uploads what its agent creates in `work/`.
+
+        A task with NO repository, on a runner whose child is a provider's
+        coding-agent CLI (`cli_agent_spec`: claude-code, codex). The URL is
+        read from the same two places `_maybe_clone` reads it, so "no
+        repository" here and "nothing to clone" there are the same answer. A
+        repository task is unchanged: its diff or pull request is the
+        deliverable (owner decision of 2026-09-26). See
+        `agent_worker.standalone_outputs` for why mock, generic and browser
+        are not included.
+        """
+        if cli_agent_spec(self.cfg.runner_profile) is None:
+            return False
+        return not (self.cfg.repository_url or task.get("repository_url"))
+
+    def _workdir_reserved(self) -> frozenset[str]:
+        """Top-level names in `work/` that are the worker's, never the agent's.
+
+        The control files, found by inspection (`control_file_names`), and the
+        `./artifacts` link when it is the worker's own link: its target is
+        uploaded already, and a second copy under `workdir/` would be the
+        artifacts twice. A real `work/artifacts` folder (the link was not made
+        because the name was taken) is the agent's, and is scanned.
+        """
+        ws = self.ws
+        assert ws is not None
+        names = set(ws.control_file_names())
+        link = ws.artifacts_link()
+        if ws.is_artifacts_link(link):
+            names.add(link.name)
+        return frozenset(names)
+
+    def _take_workdir_baseline(self) -> None:
+        """Record what `work/` holds before the attempt's first runner starts.
+
+        Once per attempt. Files a checkpoint restored count as created unless
+        they are a staged input: the platform puts nothing else in a standalone
+        task's `work/` but its control files, which are skipped by name.
+        """
+        ws = self.ws
+        if not self._standalone or self._workdir_baseline is not None or ws is None:
+            return
+        try:
+            present = frozenset(
+                standalone_mod.scan(ws.work, reserved=self._workdir_reserved()).files
+            )
+        except Exception as exc:  # pragma: no cover - defensive; never fails the attempt
+            # No baseline means nothing is uploaded from the working folder:
+            # the behaviour before #184, said once, rather than a failed run.
+            self.log.warning(
+                "could not list the working folder before the runner started; nothing "
+                "will be uploaded from it for this attempt",
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            return
+        staged = {item.path for item in self._staged_inputs}
+        carried = (self._restored_workdir - staged) & present
+        self._workdir_baseline = present - carried
+        self.log.info(
+            "no repository: what the agent creates in its working folder is uploaded "
+            f"when the attempt ends, under {standalone_mod.PREFIX}/",
+            present_before=len(self._workdir_baseline),
+            created_by_an_earlier_attempt=len(carried),
+            cap_files=self.cfg.max_workdir_output_files,
+            cap_bytes=self.cfg.max_workdir_output_bytes,
+        )
+
+    def _upload_workdir_outputs(self, *, taken: set[str], budget: int) -> dict[str, Any] | None:
+        """Upload what the agent created in `work/`, within the caps. Never raises.
+
+        None when this attempt does not upload its working folder: a
+        repository task, a runner that is not a CLI agent, or an attempt whose
+        runner never started (no baseline, so nothing can have been created).
+
+        `taken` is the manifest names already uploaded from the artifacts
+        folder: a file there named `workdir/<path>` keeps its place. `budget`
+        is what `max_artifact_bytes` leaves, so this upload never takes the
+        attempt past the cap every artifact is under.
+
+        Each file is copied, without following any symlink, into the worker's
+        own scratch folder (`ws.private`, which is in no child's environment),
+        redacted there exactly as an artifact is (`_redact_file`), uploaded as
+        `workdir/<path>`, and the copy deleted. The agent's own file is left as
+        it was, because a resumed attempt restores `work/` from the checkpoint
+        taken before this runs.
+
+        Listed and NOT uploaded, each with its reason (see
+        `agent_worker.standalone_outputs`): a name that is not UTF-8 or is too
+        long to be an object's, a core dump, a name the artifacts folder took,
+        a file over a cap, and -- unlike an artifact -- a file holding a
+        registered secret the worker could not redact, or could not scan.
+
+        Returns `uploaded` (manifest entries), `bytes` and `summary`, which is
+        `result_summary.workdir_outputs`. Nothing goes into
+        `artifacts_skipped` (every reader of it calls its names dropped at the
+        artifacts folder's size cap) or into `redaction_skipped` (no file this
+        uploads left the pod unredacted).
+        """
+        ws = self.ws
+        cfg = self.cfg
+        if ws is None or self._workdir_baseline is None:
+            return None
+        found = standalone_mod.scan(ws.work, reserved=self._workdir_reserved())
+        new = standalone_mod.created(found, self._workdir_baseline)
+        byte_cap = max(0, min(cfg.max_workdir_output_bytes, budget))
+        uploaded: list[dict[str, Any]] = []
+        not_uploaded: list[dict[str, Any]] = []
+        total = 0
+        staging = ws.private / "workdir-output"
+        for relative, size in standalone_mod.upload_order(new):
+            name = standalone_mod.manifest_name(relative)
+            # NAMES FIRST: nothing below may put a name into a key, a log line
+            # or the summary before it is known to be one they can all carry.
+            if not standalone_mod.storable(name):
+                not_uploaded.append(
+                    {
+                        "name": standalone_mod.shown(self._scrub(name)),
+                        "bytes": size,
+                        "reason": standalone_mod.NOT_UTF8,
+                    }
+                )
+                continue
+            key = f"{cfg.artifact_prefix}/{name}"
+            if len(key.encode("utf-8")) > standalone_mod.MAX_OBJECT_NAME_BYTES:
+                # SCRUB FIRST, THEN CUT (#232 review): `shown` cuts a long name
+                # to 256 characters for the log and the summary. Cutting a raw
+                # name let a registered secret crossing that character survive
+                # in part -- cutting the string is fine, cutting a key in half
+                # is not.
+                not_uploaded.append(
+                    {
+                        "name": standalone_mod.shown(self._scrub(name)),
+                        "bytes": size,
+                        "reason": standalone_mod.NAME_TOO_LONG,
+                    }
+                )
+                continue
+            if standalone_mod.is_core_dump(relative):
+                not_uploaded.append({"name": name, "bytes": size, "reason": standalone_mod.CORE_DUMP})
+                continue
+            if name in taken:
+                not_uploaded.append({"name": name, "bytes": size, "reason": standalone_mod.NAME_TAKEN})
+                continue
+            if len(uploaded) >= cfg.max_workdir_output_files or total + size > byte_cap:
+                not_uploaded.append({"name": name, "bytes": size, "reason": standalone_mod.OVER_CAP})
+                continue
+            try:
+                ws.private.mkdir(parents=True, exist_ok=True)
+                standalone_mod.copy_without_following(
+                    ws.work, relative, staging, limit=byte_cap - total
+                )
+            except standalone_mod.OverCap:
+                not_uploaded.append({"name": name, "bytes": size, "reason": standalone_mod.OVER_CAP})
+                continue
+            except standalone_mod.Refused as exc:
+                self.log.warning(
+                    "refused a working-folder file: a symlink, or not a regular file, "
+                    "when it was read; nothing was followed",
+                    file=self._scrub(name),
+                    error=str(exc),
+                )
+                not_uploaded.append(
+                    {"name": name, "bytes": size, "reason": standalone_mod.SYMLINK_REFUSED}
+                )
+                continue
+            except OSError as exc:
+                self.log.warning(
+                    "could not read a working-folder file", file=self._scrub(name), error=str(exc)
+                )
+                not_uploaded.append({"name": name, "bytes": size, "reason": standalone_mod.UNREADABLE})
+                continue
+            try:
+                if self.log.has_secrets:
+                    entry = self._redact_file(staging, label=name, withheld=True)
+                    if entry is not None:
+                        # Measured to hold a registered value it could not
+                        # rewrite, or not examinable at all: kept in the pod.
+                        # The agent never chose to deliver this file, so the
+                        # artifacts folder's "upload it as-is and say so"
+                        # does not apply (#225 review).
+                        not_uploaded.append(
+                            {
+                                "name": name,
+                                "bytes": size,
+                                "reason": (
+                                    standalone_mod.HOLDS_SECRET
+                                    if entry["secret_found"]
+                                    else standalone_mod.UNEXAMINED
+                                ),
+                            }
+                        )
+                        continue
+                final = staging.stat().st_size
+                if total + final > byte_cap:
+                    # Redaction can lengthen a file; the cap is on what is uploaded.
+                    not_uploaded.append({"name": name, "bytes": final, "reason": standalone_mod.OVER_CAP})
+                    continue
+                try:
+                    self.store.upload_file(key, staging)
+                except Exception as exc:
+                    self.log.warning(
+                        "working-folder upload failed", artifact=self._scrub(name), error=str(exc)
+                    )
+                    not_uploaded.append(
+                        {"name": name, "bytes": final, "reason": standalone_mod.UPLOAD_FAILED}
+                    )
+                    continue
+            except OSError as exc:
+                self.log.warning(
+                    "could not prepare a working-folder file for upload",
+                    file=self._scrub(name),
+                    error=str(exc),
+                )
+                not_uploaded.append({"name": name, "bytes": size, "reason": standalone_mod.UNREADABLE})
+                continue
+            finally:
+                staging.unlink(missing_ok=True)
+            total += final
+            uploaded.append({"name": name, "bytes": final, "uri": self.store.uri(key)})
+
+        if ws.work.is_symlink():
+            self.log.warning(
+                "the working folder is a symlink, so nothing was uploaded from it; "
+                "a link is never followed out of the workspace"
+            )
+        # EVERY NAME, IN THE LOG. The summary below lists the first 50 and
+        # counts the rest (a Firestore document has a 1 MiB limit).
+        self._log_not_uploaded(
+            "files the agent created in its working folder were not uploaded",
+            not_uploaded,
+            cap_files=cfg.max_workdir_output_files,
+            cap_bytes=cfg.max_workdir_output_bytes,
+        )
+        self.log.info(
+            "uploaded what the agent created in its working folder",
+            uploaded=len(uploaded),
+            bytes=total,
+            symlinks_skipped=len(found.symlinks),
+        )
+        return {
+            "uploaded": uploaded,
+            "bytes": total,
+            "summary": {
+                "prefix": f"{standalone_mod.PREFIX}/",
+                "uploaded": len(uploaded),
+                "uploaded_bytes": total,
+                # The first 50; `not_uploaded_count` is the whole number and
+                # the WARNING lines above name every one. "over cap" is the
+                # owner's wording.
+                "not_uploaded": not_uploaded[:50],
+                "not_uploaded_count": len(not_uploaded),
+                "symlinks_skipped": len(found.symlinks),
+                "working_folder_is_symlink": ws.work.is_symlink(),
+                "cap_files": cfg.max_workdir_output_files,
+                "cap_bytes": cfg.max_workdir_output_bytes,
+            },
+        }
+
+    def _log_not_uploaded(
+        self, message: str, entries: Sequence[dict[str, Any]], **fields: Any
+    ) -> None:
+        """Name every file in `entries` in the worker's log, `LOG_BATCH` to a WARNING line.
+
+        `entries` are `{"name", "reason", ...}`, and each is written as
+        "<name>: not uploaded: <reason>". The ONE place both uploads name the
+        files they did not upload: the working folder's (#225 review: past 50
+        a name was nowhere) and the artifacts folder's, past its 500-file cap
+        (#228). A result summary lists at most the first 50 and counts the
+        rest, because it is a Firestore document with a 1 MiB limit; these
+        lines name all of them, and `LOG_BATCH` names to a line keep each well
+        under Cloud Logging's 256 KiB entry however many files the agent left.
+        Every line carries `count`, the whole number, and `batch`, "i of n".
+        Nothing is written for no entries.
+        """
+        batch = standalone_mod.LOG_BATCH
+        batches = (len(entries) + batch - 1) // batch
+        for index in range(batches):
+            self.log.warning(
+                message,
+                count=len(entries),
+                batch=f"{index + 1} of {batches}",
+                files=[
+                    f"{e['name']}: not uploaded: {e['reason']}"
+                    for e in entries[index * batch : (index + 1) * batch]
+                ],
+                **fields,
+            )
+
+    def _declared_outputs(self, task: dict[str, Any]) -> tuple[str, ...]:
+        """Honour `metadata.expected_outputs`: what later steps will stage from this one.
+
+        Written by the API at workflow submission, on the UPSTREAM task (#149).
+        An entry that cannot name a file in the artifacts directory is dropped
+        and named in a warning rather than failing the attempt: no dependant
+        could stage it either. A usable name that is missing when the runner
+        finishes cleanly fails the attempt, retryably
+        (`_fail_for_missing_outputs`). See `agent_worker.expected_outputs` for
+        the measurements behind both.
+        """
+        declared = expected_mod.declared_outputs(task.get("metadata"))
+        if declared.rejected:
+            self.log.warning(
+                "dropped unusable expected_outputs entries: "
+                + ", ".join(repr(entry) for entry in declared.rejected),
+                kept=list(declared.names),
+            )
+        if declared.names:
+            self.log.info(
+                "later steps will stage these artifacts from this task",
+                expected_outputs=list(declared.names),
+            )
+        self._expected_outputs = declared.names
+        return declared.names
+
+    def _report_missing_outputs(
+        self, summary: dict[str, Any], *, fails_the_attempt: bool
+    ) -> list[str]:
+        """Name the expected outputs this attempt did not upload, and return them (#149).
+
+        One WARNING line naming them, and `result_summary[MISSING_SUMMARY_KEY]`,
+        which the API serves with the task (`codec.task_to_api`). Written on
+        every way `_finalise` ends, so a runner that failed on its own still
+        says what it left out. `fails_the_attempt` is whether the runner
+        finished cleanly, which decides what the line says it costs: then the
+        attempt fails for it (`_fail_for_missing_outputs`), and otherwise it
+        fails, or ends, for a cause of its own.
+
+        Measured against what was UPLOADED, the `artifacts` manifest, not the
+        directory listing. A dependant stages from that manifest, so a file
+        that was written but not uploaded is missing as far as the dependant
+        is concerned, and the line says which case it is.
+        """
+        if not self._expected_outputs:
+            return []
+        produced = [
+            entry.get("name")
+            for entry in summary.get("artifacts") or []
+            if isinstance(entry, dict) and isinstance(entry.get("name"), str)
+        ]
+        missing = expected_mod.missing_outputs(self._expected_outputs, produced)
+        if not missing:
+            return []
+        skipped = self._written_not_uploaded(summary)
+        summary[expected_mod.MISSING_SUMMARY_KEY] = self._scrub(list(missing))
+        self.log.warning(
+            expected_mod.missing_line(
+                missing,
+                skipped=skipped,
+                consequence=(
+                    "The attempt fails for it, and is retried while the task has "
+                    "attempts left."
+                    if fails_the_attempt
+                    else "The runner did not finish cleanly, so the attempt ends "
+                    "on its own cause."
+                ),
+            ),
+            missing=list(missing),
+        )
+        return list(missing)
+
+    def _written_not_uploaded(self, summary: dict[str, Any]) -> list[str]:
+        """Names written to the artifacts folder and not uploaded, for the missing-output lines.
+
+        `artifacts_skipped` (the byte cap, an upload error, a name that is not
+        UTF-8), and the files the last upload left out for the 500-file cap or
+        the name bound (#228), which the summary counts but does not list. A
+        declared output among them is "written but not uploaded", whose remedy
+        is the cap, not the agent's prompt (`expected_mod.missing_cause`).
+        """
+        return [*(summary.get("artifacts_skipped") or []), *self._artifacts_not_uploaded]
+
+    def _publish_withheld(self, ran_clean: bool) -> str | None:
+        """Why this attempt must not publish, or None when it may (#149).
+
+        Withheld only from an attempt that is going to RUN AGAIN: its runner
+        finished cleanly, an expected output is not in the artifacts directory,
+        and the task has attempts left. Like a park, its work is not finished,
+        and the retry publishes it. Published now, the retry would push again
+        from the final checkpoint, which `_checkpoint("final")` takes BEFORE
+        `_publish_git` auto-commits the agent's uncommitted changes. So when
+        this attempt auto-committed, the retry's commit does not descend from
+        the pushed one, and `push_branch`, which never forces, is refused as a
+        non-fast-forward. The last attempt publishes like any other failed
+        attempt.
+
+        Decided BEFORE the upload, from the directory, because publishing is
+        part of the harvest that runs first. `swarm-work.patch` is left out: the
+        harvest writes it. A file that is here and then not uploaded (the cap,
+        an upload error) is found missing only afterwards, so that attempt has
+        published and is still retried. The count comes from the task this
+        worker fetched when it started; the transaction that fails the attempt
+        reads it again and decides (`control.fail_retryably`).
+        """
+        if not ran_clean or not self._expected_outputs:
+            return None
+        ws = self.ws
+        assert ws is not None
+        owed = expected_mod.without_platform_names(self._expected_outputs, (PATCH_NAME,))
+        present = [
+            path.relative_to(ws.artifacts).as_posix()
+            for path in ws.artifacts.rglob("*")
+            if path.is_file() and not path.is_symlink()
+        ]
+        absent = expected_mod.missing_outputs(owed, present)
+        if not absent:
+            return None
+        task = self._task or {}
+        if retries_exhausted(
+            int(task.get("attempt_count", 0)), int(task.get("max_attempts", 3))
+        ):
+            return None
+        return (
+            "this attempt is retried because expected outputs are missing ("
+            + ", ".join(absent)
+            + "); publishing waits for the attempt that writes them"
+        )
+
+    def _fail_for_missing_outputs(
+        self, missing: list[str], summary: dict[str, Any], *, exit_code: int
+    ) -> Outcome:
+        """Fail this attempt, retryably, with the missing names as its cause (#149).
+
+        The owner's decision on #149 (2026-09-25T10:30Z), which replaces the
+        report-only behaviour this change first shipped: the dependant never
+        starts on a parent that did not write what it promised. The task goes
+        back to READY while it has attempts left, and ends FAILED once
+        `max_attempts` is spent, whereupon the scheduler cancels its dependants
+        as for any failed parent. A requested cancel ends it CANCELLED.
+
+        `exit_code` is the RUNNER's, 0, kept on the attempt as it is for a
+        runner that exited 0 without writing result.json. The worker exits 1:
+        the attempt failed, whatever state the task was left in.
+
+        The retry starts with an empty artifacts directory, because only
+        `work/` is checkpointed, so it must write every expected output again.
+        """
+        skipped = self._written_not_uploaded(summary)
+        error = self._scrub(expected_mod.missing_error(missing, skipped=skipped))
+        state = self.control.fail_retryably(
+            exit_code=exit_code,
+            error=error,
+            cause="expected_outputs_missing",
+            result_summary=summary,
+            retry_delay_seconds=EXPECTED_OUTPUT_RETRY_DELAY_SECONDS,
+            detail={"missing": self._scrub(list(missing))},
+            end_cause=EndCause.OUTPUTS_MISSING,
+        )
+        self.log.info(
+            "the attempt failed for missing expected outputs",
+            task_state=state.value,
+            missing_count=len(missing),
+        )
+        return Outcome(exit_code=ExitCode.FAILED, state=state)
+
     def _clone_base_path(self) -> Path | None:
         ws = self.ws
         if ws is None:
@@ -1535,7 +2431,15 @@ class Worker:
         None is not an error. A public repository clones without a credential
         and a private one fails with git's own message, which is the correct
         diagnosis to surface.
+
+        Nor is it read at all when `_git_token_refusal` names a reason: once
+        read, the token stays in this process's heap for the rest of the
+        attempt, next to an agent that may be able to read it there.
         """
+        refusal = self._git_token_refusal()
+        if refusal:
+            self.log.error("not reading the tenant git credential", reason=refusal)
+            return None
         if self.secret_client is None:
             return None
         try:
@@ -1551,6 +2455,20 @@ class Worker:
                 error=str(exc),
             )
             return None
+
+    def _git_token_refusal(self) -> str | None:
+        """Why this worker must not hold the tenant git token, or None.
+
+        The token sits in the worker's heap from the moment it is read, and the
+        agent runs beside it as the same uid. The entrypoint made this process
+        non-dumpable so the agent cannot read that heap (hardening.py). When
+        that did not happen, the token is not read, the clone runs without it,
+        and the publish is refused.
+        """
+        memory = self.memory or MemoryProtection(
+            FAILED, "the entrypoint established no memory protection for this worker"
+        )
+        return memory.git_token_refusal
 
     def _build_child_env(self) -> dict[str, str]:
         ws = self.ws
@@ -1580,6 +2498,13 @@ class Worker:
             STDOUT_ENV: str(self.cfg.max_stdout_bytes),
             STDERR_ENV: str(self.cfg.max_stderr_bytes),
         }
+        # THE CHECKOUT, WHEN THERE IS ONE (#226). A CLI runner starts its agent
+        # there (`cliagent.agent_working_directory`), so Claude Code loads the
+        # repository's own CLAUDE.md as a local lane does. Set by the worker,
+        # after the clone, and never read from `input`, which a caller writes:
+        # `input.repository` is `setdefault`, so a caller's own would shadow it.
+        if self._repo_url and ws.checkout().is_dir():
+            base["SWARM_REPO_DIR"] = str(ws.checkout())
         # WHAT THE IMAGE SETS THAT THE RUNNER NEEDS, carried by EXACT NAME.
         # Everything else in the worker's environment stays behind; see
         # `workspace.child_env` for why this environment is built rather than
@@ -2113,28 +3038,120 @@ class Worker:
         self.control.heartbeat()
         self._heartbeats += 1
         if self._heartbeats % HEARTBEAT_EVENT_EVERY == 1:
-            # The ATTEMPT's usage, every runner so far plus the live one. A
-            # runner restarted in place gets a fresh sampler that starts from
-            # zero, and a cumulative series built on it went backwards there.
-            usage = self._attempt_usage()
-            cpu_seconds = usage.cpu_seconds if usage else None
-            self.control.emit(
-                EventType.HEARTBEAT,
-                {
-                    "elapsed_seconds": round(self._child.elapsed_seconds, 1) if self._child else 0,
-                    "peak_rss_bytes": usage.peak_rss_bytes if usage else None,
-                    "checkpoints": self.checkpoints.seq,
-                    # CUMULATIVE, not a rate: this event series is the only
-                    # time series the platform keeps, and two consecutive
-                    # totals give utilisation over exactly the span between
-                    # them, where a point-in-time rate would describe two
-                    # seconds out of every heartbeat period. None while not
-                    # measured, never 0. `cpu_source` says whether it is the
-                    # container (cgroup) or the runner's process tree (proc).
-                    "cpu_seconds": round(cpu_seconds, 3) if cpu_seconds is not None else None,
-                    "cpu_source": usage.cpu_source if usage else None,
-                },
-            )
+            self.control.emit(EventType.HEARTBEAT, self._usage_reading())
+            # THE LIVE READING DETAILS DRAWS, on the attempt itself (contract
+            # request #15): the same cadence as the event, so a running
+            # attempt's figures are never more than one reading behind it.
+            self._record_cpu()
+
+    def _usage_reading(self) -> dict[str, Any]:
+        """One HEARTBEAT event's detail: the attempt's usage so far.
+
+        The ATTEMPT's usage, every runner so far plus the live one. A runner
+        restarted in place gets a fresh sampler that starts from zero, and a
+        cumulative series built on it went backwards there.
+
+        `cpu_seconds` is CUMULATIVE, not a rate: this event series is the only
+        time series the platform keeps, and two consecutive totals give
+        utilisation over exactly the span between them, where a point-in-time
+        rate would describe two seconds out of every heartbeat period. None
+        while not measured, never 0. `cpu_source` says whether it is the
+        container (cgroup) or the runner's process tree (proc).
+
+        EXACTLY WHAT IT CARRIED BEFORE #188. That change put the peak, the
+        mean, the limit and a `final` flag here too, because the frozen
+        `Attempt` had nowhere else for them. Contract request #15 gave them
+        typed fields on the attempt (`_record_cpu`), which replaced this
+        interim home; the reconciler's stuck-browser judgement
+        (`reconciler.progress`) is what still reads `cpu_seconds` here.
+        """
+        usage = self._attempt_usage()
+        cpu_seconds = usage.cpu_seconds if usage else None
+        return {
+            "elapsed_seconds": round(self._child.elapsed_seconds, 1) if self._child else 0,
+            "peak_rss_bytes": usage.peak_rss_bytes if usage else None,
+            "checkpoints": self.checkpoints.seq,
+            "cpu_seconds": round(cpu_seconds, 3) if cpu_seconds is not None else None,
+            "cpu_source": usage.cpu_source if usage else None,
+        }
+
+    def _record_cpu(self) -> None:
+        """The attempt's CPU, as typed fields on its own document. Never raises.
+
+        CONTRACT REQUEST #15, accepted on #184 (2026-09-25): `cpu_seconds`,
+        `peak_cpu_cores`, `mean_cpu_cores` and `cpu_limit_cores` on `Attempt`,
+        REPLACING #188's interim path -- the same figures as flat keys on
+        HEARTBEAT events, plus a `final` HEARTBEAT when each runner was reaped,
+        which the API read back with an events query per request.
+
+        Called with each periodic reading (`_heartbeat`), when each runner is
+        reaped (`_stop_sampler`), and on every exit beside the spend
+        (`_upload_outputs`, `_cleanup`), which covers a runner still alive at a
+        crash or killed at cleanup without being reaped. The figures are the
+        ATTEMPT's, every runner so far plus the live one, so an in-place
+        restart continues them rather than starting again. Written only when
+        they changed.
+
+        NOT FENCED, like the memory peaks beside them: the attempt document is
+        this attempt's own, and the fence guards the task, its lease and its
+        event stream, none of which this touches. NOT WRITTEN on the
+        tenant-mismatch exit, which must write nothing at all.
+
+        Not fatal. A telemetry write that failed is logged; the attempt goes on.
+        """
+        if self._writes_forbidden:
+            return
+        fields = attempt_cpu_fields(self._attempt_usage(), limit_cores=self._cpu_limit_cores())
+        if not fields or fields == self._cpu_recorded:
+            return
+        try:
+            self.control.record_cpu_usage(fields)
+        except Exception as exc:
+            self.log.warning("could not record CPU usage", error=f"{type(exc).__name__}: {exc}")
+            return
+        self._cpu_recorded = dict(fields)
+
+    def _cpu_limit_cores(self) -> float | None:
+        """The CPU limit the attempt's figures are a fraction of, in cores.
+
+        cgroup v2 `cpu.max` first: what the kernel enforces. Otherwise the
+        catalogue cpu of the class the container was SIZED with, which is
+        `scheduler.dispatch.resource_class_for(task, profile)` -- the task's
+        own class when the catalogue still has it, else the profile's -- and
+        NOT `WorkerConfig.resource_class`, which is always the profile's. A
+        task submitted with a larger class than its profile's would otherwise
+        have its CPU drawn against a limit its container never had. Restated
+        rather than imported (the worker image does not install the
+        scheduler); `tests/unit/worker/test_cpu_sampler.py` compares the two.
+
+        WHERE IT CAME FROM IS NOT RECORDED. The interim HEARTBEAT carried a
+        `cpu_limit_source`; the four fields request #15 added do not, so the
+        attempt says what the limit was and not whether the kernel or the
+        catalogue said so. With `requests == limits` the two agree.
+
+        None before the task document has been read: nothing yet says which
+        class this attempt was sized with, and a guess would be drawn as a
+        fact.
+        """
+        try:
+            cores = cgroup_cpu_limit_cores()
+        except Exception:  # pragma: no cover - a telemetry read never fails an attempt
+            cores = None
+        if cores is not None:
+            return cores
+        sized = self._sized_resource_class()
+        if sized is None:
+            return None
+        return float(RESOURCE_CLASSES[sized].cpu)
+
+    def _sized_resource_class(self) -> str | None:
+        task = self._task
+        if not task:
+            return None
+        named = task.get("resource_class")
+        if isinstance(named, str) and named in RESOURCE_CLASSES:
+            return named
+        return self.cfg.profile.resource_class
 
     def _checkpoint(self, label: str) -> CheckpointRecord | None:
         """Mandatory checkpoint. A failure here is logged, never swallowed.
@@ -2197,8 +3214,22 @@ class Worker:
         """Redact every registered secret from a value bound for Firestore."""
         return self.log.scrub_value(value)
 
-    def _redact_before_upload(self) -> list[dict[str, Any]]:
-        """Scrub the captured streams and artifacts before they leave the pod.
+    def _redact_before_upload(self, artifacts: Sequence[Path]) -> list[dict[str, Any]]:
+        """Scrub the captured streams and `artifacts` before they leave the pod.
+
+        `artifacts` is the files of the artifacts folder that are going to be
+        uploaded (`artifact_manifest.plan`), not the whole folder (#228). A
+        file past the 500-file cap never leaves the pod, so rewriting it would
+        be work for nothing, and an entry for it in `redaction_skipped` -- "it
+        is uploaded as-is" -- would be false. A name that is not UTF-8 is not
+        in it either: no object can be named with it, so it never leaves the
+        pod and has no `redaction_skipped` entry to earn (#225 review).
+
+        The agent CLI's two captures are scrubbed WHATEVER the cap decided:
+        they live in the artifacts folder, and a copy of each goes to `logs/`
+        on every exit (`_stream_files`), in or out of the manifest. A link
+        planted at a capture's name is neither scrubbed nor copied: rewriting
+        it would rewrite whatever it points at.
 
         A log line is only one of four ways a provider key gets out. The other
         three are `stdout.log` and `stderr.log`, the runner's artifacts, and the
@@ -2227,51 +3258,88 @@ class Worker:
         if ws is None or not self.log.has_secrets:
             return []
         targets = [ws.stdout_path, ws.stderr_path]
-        targets += [
+        captures = [
             path
-            for path in sorted(ws.artifacts.rglob("*"))
-            if path.is_file() and not path.is_symlink()
+            for _label, path in self._stream_files(ws)
+            if path not in targets and path.is_file() and not path.is_symlink()
         ]
+        targets += captures
+        # Each file once: a capture the cap took is in `artifacts` too.
+        seen = set(captures)
+        targets += [path for path in artifacts if path not in seen]
         targets.append(ws.result_path)
         unredacted: list[dict[str, Any]] = []
         for path in targets:
-            try:
-                outcome = self.log.scrub_file_outcome(path, max_bytes=redact_mod.MAX_SCRUB_BYTES)
-            except OSError as exc:  # a read-only or vanished file must not fail the attempt
-                self.log.warning(
-                    "could not redact a file before upload", path=str(path), error=str(exc)
-                )
-                continue
-            if not outcome.skipped:
-                continue
-            found = self.log.file_contains_secret(path)
-            try:
-                size: int | None = path.stat().st_size
-            except OSError:
-                size = None
-            label = _workspace_label(ws, path)
-            if found is False:
-                self.log.info(
-                    "file not rewritten, and its raw bytes hold no registered secret",
-                    file=label,
-                    reason=outcome.value,
-                    bytes=size,
-                )
-                continue
-            entry = {"file": label, "reason": outcome.value, "bytes": size, "secret_found": found}
-            unredacted.append(entry)
-            if found:
-                self.log.error(
-                    "A FILE THAT COULD NOT BE REDACTED CONTAINS A REGISTERED SECRET; "
-                    "it is uploaded as-is",
-                    **entry,
-                )
-            else:
-                self.log.warning(
-                    "a file could be neither redacted nor scanned; it is uploaded unexamined",
-                    **entry,
-                )
+            entry = self._redact_file(path, label=_workspace_label(ws, path))
+            if entry is not None:
+                unredacted.append(entry)
         return unredacted
+
+    def _redact_file(
+        self, path: Path, *, label: str, withheld: bool = False
+    ) -> dict[str, Any] | None:
+        """Scrub one file bound for GCS in place; the `redaction_skipped` entry, or None.
+
+        None when the file was rewritten, or was left alone and its raw bytes
+        hold no registered value. `label` is what a reader can place: a path
+        under the workspace, or the manifest name of a working-folder copy
+        (`_upload_workdir_outputs`), whose scratch path means nothing to anyone.
+        See `_redact_before_upload` for the trade this reports on.
+
+        `withheld` is the working-folder upload's answer to that trade: a file
+        this returns an entry for is NOT uploaded, and the lines say so. An
+        artifact the agent chose to deliver goes up as-is and is reported; a
+        file caught by the net under the working folder does not (#225
+        review). A file the rewrite raised on is unexamined, so with
+        `withheld` it gets an entry rather than a pass.
+        """
+        label = standalone_mod.displayable(label)
+        try:
+            outcome = self.log.scrub_file_outcome(path, max_bytes=redact_mod.MAX_SCRUB_BYTES)
+        except OSError as exc:  # a read-only or vanished file must not fail the attempt
+            self.log.warning("could not redact a file before upload", file=label, error=str(exc))
+            if withheld:
+                return {"file": label, "reason": "unreadable", "bytes": None, "secret_found": None}
+            return None
+        if not outcome.skipped:
+            return None
+        found = self.log.file_contains_secret(path)
+        try:
+            size: int | None = path.stat().st_size
+        except OSError:
+            size = None
+        if found is False:
+            self.log.info(
+                "file not rewritten, and its raw bytes hold no registered secret",
+                file=label,
+                reason=outcome.value,
+                bytes=size,
+            )
+            return None
+        entry = {"file": label, "reason": outcome.value, "bytes": size, "secret_found": found}
+        if withheld:
+            self.log.warning(
+                "a working-folder file could not be redacted and "
+                + (
+                    "holds a registered secret"
+                    if found
+                    else "could not be scanned for one"
+                )
+                + "; it is NOT uploaded",
+                **entry,
+            )
+        elif found:
+            self.log.error(
+                "A FILE THAT COULD NOT BE REDACTED CONTAINS A REGISTERED SECRET; "
+                "it is uploaded as-is",
+                **entry,
+            )
+        else:
+            self.log.warning(
+                "a file could be neither redacted nor scanned; it is uploaded unexamined",
+                **entry,
+            )
+        return entry
 
     # -- live logs ----------------------------------------------------------
     def _publish_live_logs(self) -> None:
@@ -2292,39 +3360,76 @@ class Worker:
         It NEVER raises. A failed flush costs the watcher five seconds of
         staleness; failing the attempt over it would trade a running agent for
         a cosmetic feature.
+
+        FOUR STREAMS, NOT TWO (#184). `stdout` and `stderr` are the RUNNER
+        process's -- its own JSON log lines. `agent_stdout` and `agent_stderr`
+        are the agent CLI's, which the runner captures into `artifacts/` under
+        the names `runners.streams.agent_stream_files` gives; for claude-code
+        `agent_stdout` is the stream-json transcript. A runner with no agent
+        child (mock, browser) publishes the first two only.
+
+        THE HEADER is `#swarm-tail offset=<raw byte of the first served byte>
+        size=<raw stream size> at=<RFC 3339 UTC publish time>`. `at` is when
+        THIS window was cut, which a reader shows as the read's age; the
+        object's own GCS `updated` time says the same thing about the upload,
+        and each tail is republished every interval even when unchanged, so
+        "no new output" is an unchanged `size` across two polls, never a stale
+        object. Readers must accept a header without `at` (every object
+        published before this change).
         """
         ws = self.ws
         cfg = self.cfg
         if ws is None or not cfg.live_logs_enabled:
             return
-        for label, path in (("stdout", ws.stdout_path), ("stderr", ws.stderr_path)):
-            try:
-                if not path.exists():
-                    continue
-                size = path.stat().st_size
-                if size == 0:
-                    continue
-                with path.open("rb") as handle:
-                    if size > cfg.live_log_tail_bytes:
-                        handle.seek(size - cfg.live_log_tail_bytes)
-                    chunk = handle.read()
-                text = chunk.decode("utf-8", errors="replace")
-                if self.log.has_secrets:
-                    text = self.log.scrub_text(text)
-                # The byte offset the window starts at, so a reader can tell a
-                # gap (it polled too slowly and the window moved past what it
-                # had) from a continuation. Without it a tailer silently
-                # stitches two non-adjacent pieces of output together.
-                header = f"#swarm-tail offset={max(0, size - len(chunk))} size={size}\n"
-                self.store.upload_bytes(
-                    f"{cfg.log_prefix}/live/{label}.tail.log",
-                    (header + text).encode("utf-8"),
-                    content_type="text/plain; charset=utf-8",
-                )
-            except Exception as exc:  # pragma: no cover - never fail a run for this
-                self.log.debug(
-                    "could not publish a live log tail", stream=label, error=str(exc)
-                )
+        for label, path in self._stream_files(ws):
+            self._publish_tail(label, path)
+
+    def _stream_files(self, ws: Any) -> list[tuple[str, Path]]:
+        """Every captured stream of this attempt, as `(label, local file)`.
+
+        The ONE list both the live publisher and the final upload walk, so a
+        stream's live object (`logs/live/<label>.tail.log`) and its final one
+        (`logs/<label>.log`) cannot name it differently. The labels are the
+        API's stream names (`swarm_api.inspect.LOG_STREAMS`), compared by
+        `tests/unit/control_plane/test_agent_stream_parity.py`.
+        """
+        streams = [("stdout", ws.stdout_path), ("stderr", ws.stderr_path)]
+        files = agent_stream_files(self.cfg.runner_profile)
+        if files is not None:
+            streams.append(("agent_stdout", ws.artifacts / files.stdout))
+            streams.append(("agent_stderr", ws.artifacts / files.stderr))
+        return streams
+
+    def _publish_tail(self, label: str, path: Path) -> None:
+        """Cut, scrub and upload one stream's tail. Never raises."""
+        cfg = self.cfg
+        try:
+            # A symlink is refused, not followed. The agent can write inside
+            # `artifacts/`, and a link planted at a capture file's name would
+            # otherwise publish whatever it points at; the final upload skips
+            # links for the same reason.
+            if path.is_symlink() or not path.is_file():
+                return
+            size = path.stat().st_size
+            if size == 0:
+                return
+            with path.open("rb") as handle:
+                start, chunk = _read_tail(handle, size=size, window=cfg.live_log_tail_bytes)
+            text = chunk.decode("utf-8", errors="replace")
+            if self.log.has_secrets:
+                text = self.log.scrub_text(text)
+            # The byte offset the window starts at, so a reader can tell a
+            # gap (it polled too slowly and the window moved past what it
+            # had) from a continuation. Without it a tailer silently
+            # stitches two non-adjacent pieces of output together.
+            header = f"#swarm-tail offset={start} size={size} at={_rfc3339_now()}\n"
+            self.store.upload_bytes(
+                f"{cfg.log_prefix}/live/{label}.tail.log",
+                (header + text).encode("utf-8"),
+                content_type="text/plain; charset=utf-8",
+            )
+        except Exception as exc:  # pragma: no cover - never fail a run for this
+            self.log.debug("could not publish a live log tail", stream=label, error=str(exc))
 
     def _dispatch_block(self) -> dict[str, Any]:
         """The `task.metadata["dispatch"]` block, or an empty one.
@@ -2424,7 +3529,7 @@ class Worker:
         return data if isinstance(data, dict) else {}
 
     # -- git: harvest, and publish when the forge allows it -----------------
-    def _harvest_git(self, *, publish: bool) -> dict[str, Any] | None:
+    def _harvest_git(self, *, publish: bool, withheld: str = "") -> dict[str, Any] | None:
         """Describe the agent's changes, and publish them when permitted.
 
         Returns the dict that becomes `result_summary["git"]`, or None when
@@ -2438,7 +3543,9 @@ class Worker:
         from its checkpoint and will reach the terminal path later, so pushing
         a branch and opening a pull request for work that is still in progress
         would put a half-finished change in front of a reviewer -- and do it
-        again on every quota bounce.
+        again on every quota bounce. It is False, for the same reason, on an
+        attempt `_finalise` is about to fail retryably (#149), which passes
+        `withheld` to say so; a park passes nothing and is described as one.
         """
         ws = self.ws
         cfg = self.cfg
@@ -2450,7 +3557,12 @@ class Worker:
 
         base = self._clone_base or self._read_clone_base()
         out: dict[str, Any] = {"base": base}
-        if base is None:
+        if base is None and self._publish_base == EMPTY_CLONE_BASE:
+            out["note"] = (
+                "the repository was empty when it was cloned, so there is no "
+                "base to diff against; uncommitted files are still listed"
+            )
+        elif base is None:
             out["note"] = (
                 "the clone base is unknown, so no diff could be computed; "
                 "uncommitted files are still listed"
@@ -2527,7 +3639,11 @@ class Worker:
             out["publish_reason"] = "the agent changed nothing in the repository"
             return out
 
-        out.update(self._publish_git(repo=repo, work_head=work.head, publish=publish))
+        out.update(
+            self._publish_git(
+                repo=repo, work_head=work.head, publish=publish, withheld=withheld
+            )
+        )
         return out
 
     def _integration_is_pending(self) -> bool:
@@ -2545,7 +3661,7 @@ class Worker:
         )
 
     def _publish_git(
-        self, *, repo: Path, work_head: str | None, publish: bool
+        self, *, repo: Path, work_head: str | None, publish: bool, withheld: str = ""
     ) -> dict[str, Any]:
         """The push-and-pull-request half. Gated on the forge, not on hope."""
         cfg = self.cfg
@@ -2555,7 +3671,8 @@ class Worker:
         if not publish:
             return {
                 "published": False,
-                "publish_reason": "this attempt parked; publishing waits for the run to finish",
+                "publish_reason": withheld
+                or "this attempt parked; publishing waits for the run to finish",
             }
         if not cfg.git_publish_enabled:
             return {"published": False, "publish_reason": "publishing is disabled for this worker"}
@@ -2589,6 +3706,14 @@ class Worker:
         url = self._repo_url or cfg.repository_url
         if not url:
             return {"published": False, "publish_reason": "the repository URL is unknown"}
+
+        # Before the token is read, not after: see `_git_token_refusal`. Asked
+        # here as well as inside `_git_token`, so the publish says WHY it did
+        # not happen instead of reporting a forge that refused an anonymous probe.
+        refusal = self._git_token_refusal()
+        if refusal:
+            self.log.error("not publishing: the tenant git token is refused", reason=refusal)
+            return {"published": False, "publish_reason": f"refusing to publish: {refusal}"}
 
         token = self._git_token()
         try:
@@ -2629,7 +3754,33 @@ class Worker:
         role = self._dispatch_role() if strategy == "integrate" else ""
         out["role"] = role or None
 
+        # NO AGENT PROCESS IS ALIVE ONCE THE TOKEN IS IN HAND. This is the one
+        # place the credential-bearing publish begins -- everything below carries
+        # or leads directly to the tenant token (`commit_dirty`/`fold` run in the
+        # clone, then `prepare_publish_repo` mkdtemps the publish repo and the
+        # fetch/merge/push authenticate). A process the agent double-forked into
+        # its own session survives the runner's group kill (procman.py), shares
+        # the worker's uid, and could watch `ws.private` to poison the publish
+        # repo before the push or read the short-lived credential file while it
+        # runs. So every such process is killed and its death verified BEFORE the
+        # publish repo is created; if any survives the bounded retry, the whole
+        # publish is refused rather than run with agent code still able to act.
+        survivors = self.reap_before_publish()
+        if survivors:
+            out["published"] = False
+            out["publish_reason"] = (
+                f"refusing to publish: {len(survivors)} process(es) the agent started "
+                f"are still alive after the pre-publish reap ({', '.join(str(p) for p in survivors[:10])}); "
+                "the tenant credential is not put in hand while agent code can run"
+            )
+            self.log.error(
+                "refusing to publish: agent processes survived the pre-publish reap",
+                surviving_pids=list(survivors),
+            )
+            return out
+
         auto_committed = False
+        folded = 0
         merge: MergeOutcome | None = None
         try:
             new_sha = commit_dirty(
@@ -2651,10 +3802,72 @@ class Worker:
                 auto_committed = True
                 work_head = new_sha
 
+            # EVERY COMMIT THIS PUSHES IS THE WORKER'S. Whatever the agent
+            # committed itself -- possibly as Claude, possibly with a
+            # Co-Authored-By trailer and a "Generated with" line, which is what
+            # Claude Code adds by default -- is folded into one commit the
+            # worker writes. See `gitops.fold_agent_commits` for why this is
+            # done here and not with a setting in the image.
+            # `_publish_base`, never the workspace marker: see `_maybe_clone`.
+            if self._publish_base is None and self._clone_base:
+                # Said precisely, because "unknown" would be false: the harvest
+                # above HAD a base, and a reader comparing the two would think
+                # one of them was a bug.
+                raise GitError(
+                    "the clone base is known only from the marker in the "
+                    "workspace, which the agent can write: this attempt resumed "
+                    "from a checkpoint that does not record the base, so the "
+                    "worker cannot tell which commits are the agent's. Nothing "
+                    "was pushed; the harvest still describes the work against "
+                    "that marker"
+                )
+            replaced = fold_agent_commits(
+                repo=repo,
+                base=self._publish_base,
+                keep=new_sha,
+                message=(
+                    f"swarm: work from {cfg.task_id}\n\n"
+                    "Everything the agent changed in this attempt, committed or "
+                    "not, as one commit made by the worker. The worker writes "
+                    "every commit it pushes, so no author, trailer or footer "
+                    "added inside the agent's container reaches this branch."
+                ),
+                author_name=cfg.git_author_name,
+                author_email=cfg.git_author_email,
+                private_dir=ws.private,
+                logs_dir=ws.logs,
+                timeout_seconds=cfg.git_harvest_timeout_seconds,
+                logger=self.log,
+            )
+            # The worker's own auto-commit is among what was replaced when
+            # there was one; the rest were the agent's.
+            folded = max(replaced - (1 if new_sha else 0), 0)
+            out["agent_commits_folded"] = folded
+
+            # EVERYTHING THAT CARRIES THE TOKEN RUNS IN A REPOSITORY THE WORKER
+            # OWNS, NOT IN THE CLONE. The push and the integrator's contributor
+            # fetch authenticate with the tenant token; run in the clone, a
+            # `credential.helper` or `url.*.insteadOf` the agent wrote into
+            # `.git/config` would receive or redirect it. So the worker's folded
+            # commit is transferred into a fresh, worker-owned repository -- by
+            # borrowing the clone's objects, with no token and no git run against
+            # the clone -- and the merge, the authorship check and the push all
+            # happen there. See `gitops.prepare_publish_repo` and
+            # docs/merge-strategy-live-proof.md §6. The verify runs here too, so
+            # it sees the integrator's merge commits, which exist only here.
+            publish_repo = prepare_publish_repo(
+                source_repo=repo,
+                work_head=None,
+                private_dir=ws.private,
+                logs_dir=ws.logs,
+                timeout_seconds=cfg.git_clone_timeout_seconds,
+                logger=self.log,
+            )
+
             # THE INTEGRATOR MERGES BEFORE IT PUSHES.
             #
-            # Its own commit has to be in the tree first (above), and every
-            # contributor's branch has to be in it before the push, or the
+            # Its own commit has to be in the tree first (transferred above), and
+            # every contributor's branch has to be in it before the push, or the
             # single pull request this strategy promises would contain only
             # the integrator's own step.
             #
@@ -2668,7 +3881,7 @@ class Worker:
                 ]
                 if upstream:
                     merge = merge_branches(
-                        repo=repo,
+                        repo=publish_repo,
                         url=url,
                         branches=upstream,
                         token=token,
@@ -2687,8 +3900,25 @@ class Worker:
                         "complete": merge.complete,
                     }
 
+            # THE PROPERTY, CHECKED WHERE THE WORK LEAVES. The fold and the
+            # identity arguments are how every pushed commit is made the
+            # worker's; this reads the commits the push is about to add and
+            # refuses the push if any is not, whatever route got it there. It
+            # runs in the publish repo, so an integrator's merge commits are in
+            # its first-parent span.
+            verify_worker_authorship(
+                repo=publish_repo,
+                base=self._publish_base,
+                author_name=cfg.git_author_name,
+                author_email=cfg.git_author_email,
+                private_dir=ws.private,
+                logs_dir=ws.logs,
+                timeout_seconds=cfg.git_harvest_timeout_seconds,
+                logger=self.log,
+            )
+
             pushed = push_branch(
-                repo=repo,
+                repo=publish_repo,
                 url=url,
                 branch=branch,
                 token=token,
@@ -2740,7 +3970,7 @@ class Worker:
 
         title = f"[swarm] {cfg.task_id}"
         body = self._pull_request_body(
-            branch=branch, auto_committed=auto_committed, merge=merge
+            branch=branch, auto_committed=auto_committed, merge=merge, folded=folded
         )
         try:
             pr = open_pull_request(
@@ -2782,6 +4012,7 @@ class Worker:
         branch: str,
         auto_committed: bool,
         merge: "MergeOutcome | None" = None,
+        folded: int = 0,
     ) -> str:
         """The body a reviewer reads. Provenance first, prompt second.
 
@@ -2804,7 +4035,17 @@ class Worker:
             lines.append(f"- base commit: `{self._clone_base}`")
         if self._last_checkpoint is not None:
             lines.append(f"- checkpoint: `{self._last_checkpoint.uri}`")
-        if auto_committed:
+        if folded:
+            # Said on the page, because a reviewer who knows the agent made
+            # several commits would otherwise look for them. They are in the
+            # run result; here they are one commit the worker wrote.
+            lines += [
+                "",
+                f"The agent's {folded} commit(s) and any changes it left "
+                "uncommitted are one commit on this branch, made by the worker. "
+                "The worker writes every commit it pushes.",
+            ]
+        elif auto_committed:
             lines += [
                 "",
                 "One commit on this branch was made by the worker, not the agent: "
@@ -2839,7 +4080,22 @@ class Worker:
 
         return "\n".join(lines)
 
-    def _upload_outputs(self, *, publish: bool = False) -> dict[str, Any]:
+    def _artifacts_first(self) -> list[str]:
+        """The names the artifacts folder's cap takes before any other (#228).
+
+        The expected outputs a later step declares, then the files the platform
+        writes into the folder itself: the agent CLI's stream captures and
+        transcript, and the harvest's patch. `artifact_manifest.upload_order`
+        says why each comes first.
+        """
+        first = list(self._expected_outputs)
+        files = agent_stream_files(self.cfg.runner_profile)
+        if files is not None:
+            first += files.names()
+        first.append(PATCH_NAME)
+        return first
+
+    def _upload_outputs(self, *, publish: bool = False, withheld: str = "") -> dict[str, Any]:
         ws = self.ws
         if ws is None:
             return {}
@@ -2851,24 +4107,92 @@ class Worker:
         # here yet: a runner still alive when the worker crashed, and a
         # mid-run fence, which uploads nothing.
         self._record_spend()
+        # THE CPU BESIDE IT (PR #210 review), for the exit whose runner is
+        # still alive -- the crash handler -- or was never reaped through
+        # `_stop_sampler`: without this the attempt kept its last periodic
+        # reading, up to one reading behind, drawn as the figures at exit.
+        # Written only when the figures changed, so an orderly exit that just
+        # reaped its runner writes nothing twice.
+        self._record_cpu()
         # BEFORE the redaction pass, not after: the harvest writes a patch into
-        # `artifacts/`, and `_redact_before_upload` is what scrubs everything
-        # in there. A patch produced afterwards would be the one file in the
+        # `artifacts/`, and `_redact_before_upload` is what scrubs what goes up
+        # from there. A patch produced afterwards would be the one file in the
         # upload that never had a provider key taken out of it.
         try:
-            git_summary = self._harvest_git(publish=publish)
+            git_summary = self._harvest_git(publish=publish, withheld=withheld)
         except Exception as exc:  # pragma: no cover - defensive
             self.log.exception("the git harvest raised; continuing without it", exc)
             git_summary = {"error": "the git harvest failed unexpectedly"}
-        unredacted = self._redact_before_upload()
-        artifacts: list[dict[str, Any]] = []
-        skipped: list[str] = []
-        total = 0
-        for path in sorted(ws.artifacts.rglob("*")):
+        # WHICH FILES OF THE ARTIFACTS FOLDER, IN WHICH ORDER (#228, owner
+        # decision of 2026-09-26): at most `max_artifact_files`, a declared
+        # output first, no name past the manifest's bound; see
+        # `agent_worker.artifact_manifest`. Decided BEFORE the redaction pass,
+        # so the pass scrubs what is going to leave the pod and nothing else.
+        found: dict[str, int] = {}
+        for path in ws.artifacts.rglob("*"):
             if not path.is_file() or path.is_symlink():
                 continue
-            size = path.stat().st_size
-            rel = path.relative_to(ws.artifacts).as_posix()
+            try:
+                found[path.relative_to(ws.artifacts).as_posix()] = path.stat().st_size
+            except OSError:
+                continue
+        plan = manifest_mod.plan(
+            found,
+            first=self._artifacts_first(),
+            cap=self.cfg.max_artifact_files,
+            declared=self._expected_outputs,
+        )
+        skipped: list[str] = []
+        for name in plan.unstorable:
+            # A name whose bytes are not UTF-8 (#225 review): no object can be
+            # named with it, and as a lone surrogate in the summary it made
+            # `finish` raise, and the next attempt fail the same way. Named as
+            # the bytes it was, in the log and the skipped list.
+            # SCRUBBED FIRST (#232 review): cutting a raw name let a
+            # registered secret crossing character 256 survive in part.
+            shown = standalone_mod.shown(self._scrub(name))
+            self.log.warning(
+                "an artifact's name is not valid UTF-8, so no object can be "
+                "named with it; not uploaded",
+                artifact=shown,
+            )
+            skipped.append(shown)
+        for entry in plan.not_uploaded:
+            if entry["reason"] == manifest_mod.NAME_TOO_LONG:
+                # Listed as #225 lists a name it could not upload: cut short,
+                # so 50 of them cannot take the summary near 1 MiB either.
+                # SCRUBBED FIRST (#232 review): cutting a raw name let a
+                # registered secret crossing character 256 survive in part.
+                skipped.append(standalone_mod.shown(self._scrub(entry["name"])))
+        # Past the cap: COUNTED in the summary (`artifacts_over_cap`, below),
+        # and every name in the log -- the owner's shape for #228, through the
+        # helper #225's working-folder cap uses. Not in `artifacts_skipped`,
+        # whose readers call a name there dropped at the SIZE cap. A name over
+        # the bound is logged cut short, as #225 logs one: a path runs to
+        # 4,096 bytes, and 100 of those would pass Cloud Logging's 256 KiB
+        # entry. A name under it is logged whole (`shown` leaves it alone).
+        self._artifacts_not_uploaded = tuple(entry["name"] for entry in plan.not_uploaded)
+        self._log_not_uploaded(
+            "files in $SWARM_ARTIFACTS_DIR were not uploaded",
+            [
+                {**entry, "name": standalone_mod.shown(self._scrub(entry["name"]))}
+                for entry in plan.not_uploaded
+            ],
+            cap_files=self.cfg.max_artifact_files,
+            cap_name_bytes=manifest_mod.MAX_NAME_BYTES,
+        )
+        unredacted = self._redact_before_upload([ws.artifacts / rel for rel in plan.take])
+        artifacts: list[dict[str, Any]] = []
+        total = 0
+        for rel in plan.take:
+            path = ws.artifacts / rel
+            try:
+                # After the redaction pass, which can change a file's length.
+                size = path.stat().st_size
+            except OSError as exc:
+                self.log.warning("artifact upload failed", artifact=rel, error=str(exc))
+                skipped.append(rel)
+                continue
             if total + size > self.cfg.max_artifact_bytes:
                 skipped.append(rel)
                 continue
@@ -2881,16 +4205,50 @@ class Worker:
                 continue
             total += size
             artifacts.append({"name": rel, "bytes": size, "uri": self.store.uri(key)})
+        # LISTED IN PATH ORDER, as the manifest always has been: the order
+        # above decides which files are taken, not the order a reader sees
+        # them in, nor which of them the listing route's first page holds.
+        artifacts.sort(key=lambda entry: entry["name"].split("/"))
 
+        # WHAT A CLI AGENT WITH NO REPOSITORY CREATED IN ITS WORKING FOLDER
+        # (#184, owner decision of 2026-09-26), after the artifacts folder so a
+        # file there keeps its name, and into the same manifest under
+        # `workdir/`, so the Artifacts tab lists and serves it like any other.
+        # A repository task returns None here and is unchanged.
+        try:
+            workdir = self._upload_workdir_outputs(
+                taken={entry["name"] for entry in artifacts},
+                budget=self.cfg.max_artifact_bytes - total,
+            )
+        except Exception as exc:  # pragma: no cover - defensive; teardown path
+            self.log.exception("the working-folder upload raised; continuing without it", exc)
+            workdir = None
+        if workdir is not None:
+            # Its files it did not upload stay in `workdir_outputs`, with their
+            # reasons, and out of `artifacts_skipped`, whose every reader calls
+            # a name there dropped at THIS folder's size cap (#225 review).
+            artifacts.extend(workdir["uploaded"])
+            total += workdir["bytes"]
+
+        # THE RUNNER'S TWO STREAMS, AND THE AGENT'S TWO (#184). The agent
+        # CLI's captures stay in `artifacts/` too -- a dependant's `input_from`
+        # stages them from there -- and a copy goes beside the runner's logs as
+        # `logs/agent_stdout.log` / `logs/agent_stderr.log`, so every reader of
+        # an agent's own output reads one layout whatever the runner, and the
+        # copy is not subject to `max_artifact_bytes`. Same scrubbed file:
+        # `_redact_before_upload` above scrubbed the captures whether or not
+        # the file cap took them into the manifest.
+        agent_files = agent_stream_files(self.cfg.runner_profile)
         logs: dict[str, str] = {}
-        for label, path in (("stdout", ws.stdout_path), ("stderr", ws.stderr_path)):
-            if path.exists():
-                key = f"{self.cfg.log_prefix}/{path.name}"
-                try:
-                    self.store.upload_file(key, path, content_type="text/plain")
-                    logs[label] = self.store.uri(key)
-                except Exception as exc:
-                    self.log.warning("log upload failed", stream=label, error=str(exc))
+        for label, path in self._stream_files(ws):
+            if path.is_symlink() or not path.is_file():
+                continue
+            key = f"{self.cfg.log_prefix}/{label}.log"
+            try:
+                self.store.upload_file(key, path, content_type="text/plain")
+                logs[label] = self.store.uri(key)
+            except Exception as exc:
+                self.log.warning("log upload failed", stream=label, error=str(exc))
 
         if skipped:
             self.log.warning(
@@ -2900,11 +4258,21 @@ class Worker:
             "artifacts": artifacts,
             "artifact_bytes": total,
             "logs": logs,
+            "agent_streams": self._agent_streams(agent_files, artifacts),
         }
         if git_summary is not None:
             summary["git"] = git_summary
+        if workdir is not None:
+            summary["workdir_outputs"] = workdir["summary"]
         if skipped:
             summary["artifacts_skipped"] = skipped[:50]
+        if plan.over_cap:
+            # How many files the folder held past the cap, and the cap, so a
+            # reader can say "N over the 500-file cap" without restating the
+            # number (#228). Absent when every file fitted: a zero would read
+            # as something dropped.
+            summary["artifacts_over_cap"] = plan.over_cap
+            summary["artifacts_cap_files"] = self.cfg.max_artifact_files
         if unredacted:
             # Files that left the pod without being rewritten AND without a
             # clean scan. Capped like the list above; the log carries them all.
@@ -2926,6 +4294,54 @@ class Worker:
         # every reader of the task can see. It is scrubbed on the way out for
         # the same reason the files above are.
         return self._scrub(summary)
+
+    def _agent_streams(
+        self, files: Any, artifacts: list[dict[str, Any]]
+    ) -> dict[str, Any] | None:
+        """`result_summary.agent_streams`: which uploaded artifact is which agent stream.
+
+        None -- explicitly, not a missing key -- when the runner has no agent
+        child (mock, browser), which is what lets a reader say "not
+        applicable" instead of "absent". Otherwise each name is the manifest
+        entry that holds that stream, or None when it was not uploaded (the
+        runner never wrote it, or `max_artifact_bytes` dropped it: the copy in
+        `logs/` is still there). `transcript_skipped` is the runner's own
+        report: `"too_large"` when it omitted a transcript over the cap
+        (`cliagent.TRANSCRIPT_MAX_CHARS`), `"capture_truncated"` when the
+        stdout it would be built from had its middle dropped at the output cap,
+        and None otherwise -- including when no result.json was written, which
+        says nothing either way.
+
+        `stdout_truncated` / `stderr_truncated` (#188 review) say whether the
+        output cap cut that agent stream: the capture then kept its start and
+        its end, and wrote a notice where it dropped the middle. The runner
+        reports them on every outcome (`RunnerContext.report`); None when it
+        reported nothing, which is "not known", never "not cut".
+        """
+        if files is None:
+            return None
+        uploaded = {entry.get("name") for entry in artifacts}
+        result = _read_json(self.ws.result_path) if self.ws is not None else None
+        output = (result or {}).get("output")
+        output = output if isinstance(output, dict) else {}
+        skipped = output.get("transcript_skipped")
+        if skipped not in ("too_large", "capture_truncated"):
+            skipped = None
+
+        def cut(stream: str) -> bool | None:
+            value = output.get(f"{stream}_truncated")
+            return value if isinstance(value, bool) else None
+
+        return {
+            "stdout": files.stdout if files.stdout in uploaded else None,
+            "stderr": files.stderr if files.stderr in uploaded else None,
+            "transcript": (
+                files.transcript if files.transcript and files.transcript in uploaded else None
+            ),
+            "transcript_skipped": skipped,
+            "stdout_truncated": cut("stdout"),
+            "stderr_truncated": cut("stderr"),
+        }
 
     # -- spend -------------------------------------------------------------
     def _child_ended(self) -> None:
@@ -3010,11 +4426,19 @@ class Worker:
         # and a near miss in the first -- on the one document a sizing report
         # reads.
         attempt = self._attempt_usage() or usage
-        self.control.record_resource_usage(
-            peak_rss_bytes=attempt.peak_rss_bytes,
-            peak_disk_bytes=attempt.peak_disk_bytes,
-            oom_near_miss=attempt.oom_near_miss,
-        )
+        # NOT FATAL, AND IT MUST NOT SKIP THE CPU WRITE BELOW (PR #210 review).
+        # Unguarded, a Firestore error here raised out of every site that
+        # reaps a runner, and the attempt's CPU figures for this runner were
+        # never written: Details then drew the previous periodic reading as
+        # the figures at exit. The memory peak is telemetry like the CPU.
+        try:
+            self.control.record_resource_usage(
+                peak_rss_bytes=attempt.peak_rss_bytes,
+                peak_disk_bytes=attempt.peak_disk_bytes,
+                oom_near_miss=attempt.oom_near_miss,
+            )
+        except Exception as exc:
+            self.log.warning("could not record resource usage", error=f"{type(exc).__name__}: {exc}")
         if usage.oom_near_miss:
             self.log.error(
                 "OOM NEAR MISS: this attempt came within a hair of its memory limit",
@@ -3022,6 +4446,9 @@ class Worker:
                 limit_bytes=self.cfg.memory_limit_bytes,
                 resource_class=self.cfg.resource_class,
             )
+        # The attempt's CPU at this runner's end, on the attempt (request #15)
+        # -- where #188 emitted a `final` HEARTBEAT into the task's events.
+        self._record_cpu()
 
     def _attempt_usage(self) -> ResourceUsage | None:
         """Every runner this attempt has started, combined; None if none has.
@@ -3111,7 +4538,14 @@ class Worker:
         finally:
             self._signal_mode = previous
 
-    def _safe_finish(self, state: TaskState, *, exit_code: int, error: str) -> int | None:
+    def _safe_finish(
+        self,
+        state: TaskState,
+        *,
+        exit_code: int,
+        error: str,
+        end_cause: EndCause | None = None,
+    ) -> int | None:
         """The crash path's terminal write. Never raises.
 
         Returns None, or `ExitCode.GENERATION_FENCED` when the write was
@@ -3127,6 +4561,7 @@ class Worker:
                 exit_code=exit_code,
                 error=self._scrub(error[:4000]),
                 result_summary=summary,
+                end_cause=end_cause,
             )
         except FencedError as exc:
             return self._stand_down(exc, where="crash")
@@ -3155,6 +4590,12 @@ class Worker:
         # usage write on that same path already does.
         self._collect_spend()
         self._record_spend()
+        # And the CPU, for the same two exits: a runner killed just above was
+        # never reaped through `_stop_sampler`, so its last stretch is on no
+        # attempt document yet. The live sampler is still attached, so
+        # `_attempt_usage` includes it. Never raises; nothing on the fenced
+        # path touches the lease by writing its own attempt document.
+        self._record_cpu()
         # AFTER the child is gone and BEFORE the workspace is destroyed. Giving
         # the account back while an agent could still be making calls on it
         # would let the broker hand the same subscription to another agent and
@@ -3168,6 +4609,24 @@ class Worker:
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
+
+
+def _end_cause_of(exc: BaseException) -> EndCause:
+    """Why a deliberate worker failure ended its task, as the typed end cause.
+
+    INPUTS_UNAVAILABLE for a declared input the worker refused to stage: the
+    agent never started, so it is not the runner's error (#185, decision 4).
+    CANNOT_START for an error that exits 78, the worker's own CANNOT-START.
+    RUNNER_ERROR for every other one, which is how the outcome ledger's text
+    classifier has always read a worker-written end with an exit code, so a
+    task written with a cause and one written before the field existed land
+    in the same class.
+    """
+    if isinstance(exc, InputUnavailable):
+        return EndCause.INPUTS_UNAVAILABLE
+    if getattr(exc, "exit_code", None) == ExitCode.CONFIG:
+        return EndCause.CANNOT_START
+    return EndCause.RUNNER_ERROR
 
 
 def _runner_argv(cfg: WorkerConfig) -> list[str]:
@@ -3207,6 +4666,47 @@ def _control_plane_unreachable(exc: BaseException) -> bool:
     except ImportError:
         return False
     return isinstance(exc, auth_exceptions.GoogleAuthError)
+
+
+def _generation_check_retryable(exc: BaseException) -> bool:
+    """Whether the generation check is asked again after `exc` (#198).
+
+    Exactly the errors `Worker._exit_control_plane_unreachable` would turn
+    into 69: a Firestore or google-auth error that is either an outage
+    (`_unavailable_cause`) or not a named refusal (`_refusal_cause`). A
+    refusal is 78 and would be refused again. A fence or a tenant mismatch
+    is not a Firestore error at all, and ends the attempt as it did.
+    """
+    if not _control_plane_unreachable(exc):
+        return False
+    return _unavailable_cause(exc) is not None or _refusal_cause(exc) is None
+
+
+def _one_line(value: Any, limit: int = 600) -> str:
+    """An error's text on one bounded line, for a log field."""
+    return " ".join(str(value).split())[:limit]
+
+
+def _unreachable_hint(exc: BaseException) -> str:
+    """What an operator reading a 69 at the generation check should know (#198)."""
+    text = " ".join(str(current) for current in _error_chain(exc))
+    hint = (
+        "On Cloud Run, Direct VPC egress can take a minute or more to pass traffic "
+        "after an instance starts (Google documents it), which is what these "
+        "attempts are there to outlast. If every attempt failed, the network "
+        "stayed down for all of them."
+    )
+    if "ipv6:" in text and "all addresses" in text:
+        hint += (
+            " 'failed to connect to all addresses' means every address gRPC resolved "
+            "failed: if the DNS preflight line lists an IPv4 address, that one failed "
+            "too (on 2026-09-25 the VPC flow logs showed its SYNs unanswered, "
+            "docs/incidents/2026-09-25-worker-startup-network.md). The ipv6 address "
+            "in it is only the last error gRPC kept: the swarm subnet is IPv4-only, "
+            "so that address fails at once without leaving the instance, and a "
+            "worker does not need it."
+        )
+    return hint
 
 
 def _error_chain(exc: BaseException) -> list[BaseException]:
@@ -3534,3 +5034,43 @@ def _tail_text(path: Path, limit: int = 2000) -> str:
     if not path.exists():
         return ""
     return path.read_text(errors="replace")[-limit:]
+
+
+def _rfc3339_now() -> str:
+    """Now, UTC, to the second, as RFC 3339 (`2026-09-25T10:00:00Z`)."""
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _read_tail(handle: Any, *, size: int, window: int) -> tuple[int, bytes]:
+    """The last `window` bytes of a stream `size` bytes long, starting on a whole line.
+
+    Returns `(start, chunk)`, where `start` is the RAW byte offset of the first
+    byte of `chunk` in the stream -- what the tail header calls `offset`.
+
+    READ TO `size`, NOT TO EOF. The stream is still growing while it is read,
+    and the header states `size` from the `stat` taken first. Reading to EOF
+    made the window longer than `size - start`, so an offset derived from its
+    length pointed before the bytes it described.
+
+    WHOLE LINES. When the stream is longer than the window, the window would
+    start mid-line, and for an NDJSON stream (claude-code's stdout) that first
+    fragment is a line that parses as nothing. So the start moves past the
+    first newline -- unless the byte just before the window already ends a
+    line, or nothing would be left after it: a window that lies entirely
+    inside one long final line keeps that partial line, because the newest
+    output is the point of a tail and an empty one would hide it.
+    """
+    start = max(0, size - window)
+    previous = b""
+    if start > 0:
+        handle.seek(start - 1)
+        previous = handle.read(1)
+    else:
+        handle.seek(0)
+    chunk = handle.read(size - start)
+    if start > 0 and previous != b"\n":
+        cut = chunk.find(b"\n")
+        if 0 <= cut < len(chunk) - 1:
+            start += cut + 1
+            chunk = chunk[cut + 1 :]
+    return start, chunk

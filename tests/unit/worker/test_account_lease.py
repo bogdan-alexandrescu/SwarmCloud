@@ -1112,7 +1112,14 @@ def test_a_tenant_whose_only_credential_is_a_pool_account_can_be_dispatched():
     naming `swarm-tenant-<tenant>-anthropic` for a tenant that has no such
     secret fails the create and the tenant never starts at all -- the pool
     could not replace the per-tenant secret for anybody.
+
+    "Pool-only" means an account the tenant OWNS or is LENT serves it
+    (scheduler/credentials.py, #169). The deployment merely having a broker
+    is not enough, and the dispatcher no longer decides that on its own: it
+    asks the question admission asked, of the same AccountPool.
     """
+    from quota_broker.accounts import Account
+    from scheduler.credentials import AccountPool
     from scheduler.dispatch import CloudRunJobDispatcher
 
     pool_only = Tenant(
@@ -1123,7 +1130,13 @@ def test_a_tenant_whose_only_credential_is_a_pool_account_can_be_dispatched():
     settings = _scheduler_settings(
         quota_broker_url="https://swarm-quota-broker.example.run.app"
     )
-    job = CloudRunJobDispatcher(settings, client=object())._build_job(
+    pool = AccountPool(
+        broker_url=settings.quota_broker_url,
+        read_accounts=lambda: [
+            Account(account_id=ACCOUNT_ID, owner_tenant=TENANT, label="personal")
+        ],
+    )
+    job = CloudRunJobDispatcher(settings, client=object(), pool=pool)._build_job(
         RUNNER_PROFILES["claude-code"], pool_only
     )
 

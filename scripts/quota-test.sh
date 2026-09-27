@@ -110,7 +110,7 @@ fi
 # ---------------------------------------------------------------------------
 t_case "A task for an exhausted provider parks instead of running"
 BASE_HOLDING="$(holding_capacity)"
-if ! id="$(submit_task "${PROFILE}" '{"message":"quota probe"}' \
+if ! id="$(submit_task "${PROFILE}" '{"prompt":"quota probe"}' \
       '{"metadata":{"source":"quota-test"}}')"; then
   t_fail "could not submit a ${PROFILE} task"
 else

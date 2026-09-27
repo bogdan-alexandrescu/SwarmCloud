@@ -101,5 +101,14 @@ def test_the_runner_writes_its_own_logs_to_the_same_place_it_advertises():
     """Why the bug was invisible: the runner used ctx.artifacts_dir for its own
     stdout/stderr, so artifacts were never EMPTY -- they just never contained
     anything the agent made. An empty list would have been noticed."""
+    from agent_worker.runners.claude_code import SPEC
+    from agent_worker.runners.cliagent import cli_stream_files
+
     src = (RUNNERS_DIR / "cliagent.py").read_text()
-    assert "ctx.artifacts_dir / f\"{spec.name}.stdout.log\"" in src
+    # Since #184 the names come from `cli_stream_files`, the one function the
+    # worker's live publisher and final upload also read, and the runner joins
+    # them onto ctx.artifacts_dir -- the directory it advertises.
+    assert "ctx.artifacts_dir / files.stdout" in src
+    assert "ctx.artifacts_dir / files.stderr" in src
+    assert cli_stream_files(SPEC).stdout == f"{SPEC.name}.stdout.log"
+    assert cli_stream_files(SPEC).stderr == f"{SPEC.name}.stderr.log"

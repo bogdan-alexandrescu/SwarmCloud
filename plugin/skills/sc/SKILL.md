@@ -92,8 +92,15 @@ unknown", not silence.
 `BINDS ON` is the pool that will actually refuse the next task of that profile.
 Admission is all-or-nothing across every pool a profile requires, so the ceiling
 a profile feels is the **tightest** of them — not the global one, which is the
-one people quote. `ROOM` is how many more tasks of that profile fit before the
-binding pool says no.
+one people quote. `ROOM` is how many more **agents** of that profile fit before
+the binding pool says no.
+
+`UNITS` is that pool's capacity **units** in use out of its limit — not agents.
+An agent takes its resource class's units, and the note under the table says
+how many each class takes, read from the catalogue: a `browser` agent is more
+than one unit, so `4/10` beside a `ROOM` of 3 is two browser agents, not four.
+On a shared pool `UNITS` counts every tenant's work. The header's `tightest:`
+names the profile with the fewest agents still to fit, and its pool's units.
 
 A pool absent from the list is unlimited by construction and shows `∞`. A pool
 whose `enabled` flag did not arrive shows `? not reported` rather than "open" —
@@ -107,8 +114,10 @@ pools that did not object.
 
 ## Reading accounts
 
-Columns are `cs status`'s: `ACCOUNT | 5H | 7D | CLEARS | STATE`. `CLEARS` is
-when the **binding** window — the fullest one — rolls over.
+Columns are `cs status`'s: `ACCOUNT | 5H USED | 7D USED | CLEARS | STATE`. Every
+window percentage is **% used**, on every surface — the console and `sc` share
+one polarity. `CLEARS` is when the **binding** window — the fullest one — rolls
+over.
 
 States: `available`, `paused`, `draining` (takes no new agents), `reauth needed`
 (the credential is dead; only the quota-broker can fix it).

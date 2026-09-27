@@ -58,9 +58,28 @@ AVAILABLE = sorted(n for n, p in RUNNER_PROFILES.items() if getattr(p, "availabl
 
 @pytest.mark.parametrize("profile", AVAILABLE)
 def test_every_profile_gets_an_object_carrying_the_run_id(profile):
+    """In the PROMPT. It used to be a key of its own, `run_id`, beside a
+    `message` no runner read; since contract request 25 the API refuses a key
+    the profile does not declare, and `prompt` is the one every profile takes."""
     body = profile_input(profile, "run-123")
     assert isinstance(body, dict)
-    assert body.get("run_id") == "run-123", "the run id is how test traffic is found again"
+    assert "run-123" in str(body.get("prompt", "")), (
+        "the run id is how test traffic is found again, and the prompt is the "
+        f"one place every profile accepts it: {body!r}"
+    )
+
+
+@pytest.mark.parametrize("profile", AVAILABLE)
+def test_every_profile_input_is_one_its_profile_declares(profile):
+    """The suites submit through this against a live platform, where a key the
+    catalogue does not declare is a 422 `invalid_input` and the run proves
+    nothing. Checked with the rule the API applies, not a copy of it, and for
+    every profile: what a profile whose inputs are not declared yet takes is
+    that rule's to say too, not a special case here."""
+    from swarm_common.profiles import check_inputs
+
+    body = profile_input(profile, "run-123")
+    check_inputs(RUNNER_PROFILES[profile], {k: v for k, v in body.items() if k != "prompt"})
 
 
 def test_the_browser_input_is_one_the_browser_runner_accepts():

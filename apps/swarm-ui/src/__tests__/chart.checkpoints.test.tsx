@@ -80,8 +80,10 @@ describe('checkpoint cadence', () => {
 
   it('puts every checkpoint in the tray when the event read failed', () => {
     const { container } = render(<CheckpointStrip attempt={a} events={null} />)
+    // Read off one drawing: each width is drawn separately (AG-20).
     expect(container.querySelectorAll('[data-testid="ckpt-dot"]')).toHaveLength(0)
-    expect(container.querySelectorAll('[data-testid="ckpt-offpage"]')).toHaveLength(3)
+    expect(container.querySelectorAll('svg.is-wide [data-testid="ckpt-offpage"]')).toHaveLength(3)
+    expect(container.querySelectorAll('svg.is-narrow [data-testid="ckpt-offpage"]')).toHaveLength(3)
   })
 
   it('draws nothing for an attempt that wrote no checkpoint', () => {

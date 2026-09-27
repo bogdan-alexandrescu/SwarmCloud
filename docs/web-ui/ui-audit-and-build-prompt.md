@@ -299,6 +299,13 @@ It is a layout change, not a rewrite.
 That is the honest answer to "what will this produce", stated once, at the top.
 Keep it.
 
+> *Note, 2026-09-25 (WF-13, epic #83):* since WF-13 the card reads
+> `dispatch collect · opens no pull request and pushes nothing` — the same
+> answer as a phrase that reads after its key, from the same switch in
+> `consequenceOf` (its `opens` field). The full sentence, "No pull request.
+> Nothing is pushed.", stays on the Submit and Dispatch forms, where the choice
+> is being made.
+
 ### A1.4 The agent drawer: present, absent, and present-but-unreadable
 
 `22-detail-research.png`, `23-attempts-research.png`,
@@ -470,6 +477,9 @@ library's defaults.
    cannot see.
 
 6. **`collect · No pull request. Nothing is pushed.`** on the workflow card.
+   *(Note, 2026-09-25, WF-13: since WF-13 the card reads `dispatch collect ·
+   opens no pull request and pushes nothing`; the full sentence stays on the
+   Submit and Dispatch forms.)*
 
 7. **The `THEN` level divider**, and the decision at `Workflows.tsx:169-176` to
    delete the vertical stalk because it rendered a fork as a chain.
@@ -1084,6 +1094,9 @@ while being real as rendering inconsistency across DPI.
 **Fix the inversion.** `.section > h2` becomes `--t-title` / 600 in `--text`.
 The uppercase small-caps treatment drops one level, to panel labels only.
 
+> *Superseded by design-system §2 (TS-18, 2026-09-25): section, panel and step
+> headings are `--t-lead` / 600; `--t-title` is the screen h1's step.*
+
 **Hierarchy channels, in priority order**, because size is already spent:
 
 1. **Weight + case + tracking on the label, full size on the value.** Already
@@ -1622,6 +1635,9 @@ produced, and which step is blocking the rest.
    `justify-content: center` (`styles.css:239-259`) — that is 430px of empty
    page at 1024px (§A1.3).
 5. **`collect · No pull request. Nothing is pushed.`** unchanged.
+   *(Note, 2026-09-25, WF-13: since WF-13 the card reads `dispatch collect ·
+   opens no pull request and pushes nothing`; the full sentence stays on the
+   Submit and Dispatch forms.)*
 6. **View modes**, once B6.5 exists: Graph / Timeline / Table. The mode is a
    property of the pane, not a route — the same nodes on a UTC Gantt answer
    "where did the four hours go" instead of "what depended on what".

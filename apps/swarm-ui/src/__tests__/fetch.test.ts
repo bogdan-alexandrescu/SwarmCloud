@@ -18,6 +18,7 @@ import {
   num,
   probeSnapshot,
   read,
+  route,
   write,
   type ApiErrorKind,
   type Result,
@@ -165,7 +166,7 @@ const FAILURES: ReadonlyArray<{
 describe('a failed read is never representable as empty data', () => {
   it.each(FAILURES)('$name -> error, never ok and never empty', async ({ arrange, kind, httpStatus }) => {
     arrange()
-    const r = await read('/v1/capacity', never)
+    const r = await read(route('/v1/capacity'), never)
 
     // THE PROPERTY. Not "it is an error" -- that a reader could satisfy by
     // accident. That it is NEITHER of the two statuses which carry, or imply,
@@ -184,7 +185,7 @@ describe('a failed read is never representable as empty data', () => {
 
   it.each(FAILURES)('$name with data in hand -> stale, keeping the old rows', async ({ arrange, kind }) => {
     arrange()
-    const r = await read<{ pools: string[] }>('/v1/capacity', never, { previous: PREVIOUS })
+    const r = await read<{ pools: string[] }>(route('/v1/capacity'), never, { previous: PREVIOUS })
 
     // The stale rule: a refresh that fails while data is on screen must not
     // blank the screen, and must not silently succeed either.
@@ -199,14 +200,14 @@ describe('a failed read is never representable as empty data', () => {
 describe('the unrecognised cases are not guessed at', () => {
   it('an unrecognised 403 is not forced into wrong_domain or tenant_disabled', async () => {
     respond('{"code":"forbidden","message":"Something else entirely."}', { status: 403 })
-    const r = await read('/v1/capacity', never)
+    const r = await read(route('/v1/capacity'), never)
     if (r.status !== 'error') throw new Error('expected an error')
     expect(r.error.kind).toBe('admin_required')
   })
 
   it('a bare FastAPI 500 gets a message and a NULL code, never an invented one', async () => {
     respond('{"detail":"Internal Server Error"}', { status: 500 })
-    const r = await read('/v1/capacity', never)
+    const r = await read(route('/v1/capacity'), never)
     if (r.status !== 'error') throw new Error('expected an error')
     // `code` null is meaningful: it says the server produced no envelope.
     expect(r.error.code).toBeNull()
@@ -215,7 +216,7 @@ describe('the unrecognised cases are not guessed at', () => {
 
   it('an error body that is not JSON does not change the diagnosis', async () => {
     respond('<html>502 Bad Gateway</html>', { status: 502, contentType: 'text/html' })
-    const r = await read('/v1/capacity', never)
+    const r = await read(route('/v1/capacity'), never)
     if (r.status !== 'error') throw new Error('expected an error')
     expect(r.error.kind).toBe('server_error')
     expect(r.error.httpStatus).toBe(502)
@@ -223,14 +224,14 @@ describe('the unrecognised cases are not guessed at', () => {
 
   it('Retry-After is carried through so the UI can say how long', async () => {
     respond('{"message":"slow down"}', { status: 429, headers: { 'retry-after': '11' } })
-    const r = await read('/v1/capacity', never)
+    const r = await read(route('/v1/capacity'), never)
     if (r.status !== 'error') throw new Error('expected an error')
     expect(r.error.retryAfterSeconds).toBe(11)
   })
 
   it('a nonsense Retry-After is dropped rather than rendered', async () => {
     respond('{"message":"slow down"}', { status: 429, headers: { 'retry-after': 'tomorrow' } })
-    const r = await read('/v1/capacity', never)
+    const r = await read(route('/v1/capacity'), never)
     if (r.status !== 'error') throw new Error('expected an error')
     expect(r.error.retryAfterSeconds).toBeUndefined()
   })
@@ -243,7 +244,7 @@ describe('the unrecognised cases are not guessed at', () => {
 describe('a successful read', () => {
   it('with rows is ok and carries the data', async () => {
     respond('{"pools":[{"name":"global"}],"generated_at":"2026-09-22T10:00:00Z"}')
-    const r = await read<{ pools: unknown[] }>('/v1/capacity', (d) => d.pools.length === 0)
+    const r = await read<{ pools: unknown[] }>(route('/v1/capacity'), (d) => d.pools.length === 0)
     expect(r.status).toBe('ok')
     if (r.status !== 'ok') throw new Error('unreachable')
     expect(r.data.pools).toHaveLength(1)
@@ -253,7 +254,7 @@ describe('a successful read', () => {
 
   it('with no rows is empty, and empty carries no data to render', async () => {
     respond('{"pools":[],"generated_at":"2026-09-22T10:00:00Z"}')
-    const r = await read<{ pools: unknown[] }>('/v1/capacity', (d) => d.pools.length === 0)
+    const r = await read<{ pools: unknown[] }>(route('/v1/capacity'), (d) => d.pools.length === 0)
     expect(r.status).toBe('empty')
     // The one structural guarantee: a component that renders rows cannot be
     // reached with zero rows, because there is nowhere to read them from.
@@ -262,7 +263,7 @@ describe('a successful read', () => {
 
   it('a body with no generated_at leaves serverAt undefined rather than inventing now', async () => {
     respond('{"pools":[{"name":"global"}]}')
-    const r = await read<{ pools: unknown[] }>('/v1/capacity', (d) => d.pools.length === 0)
+    const r = await read<{ pools: unknown[] }>(route('/v1/capacity'), (d) => d.pools.length === 0)
     if (r.status !== 'ok') throw new Error('expected ok')
     expect(r.serverAt).toBeUndefined()
   })
@@ -275,7 +276,7 @@ describe('a successful read', () => {
 describe('a write', () => {
   it('that got the sign-in page back says the change was NOT saved', async () => {
     respond('<!doctype html>', { contentType: 'text/html' })
-    const r = await write('/v1/admin/pools/global', 'PUT', { hard_limit: 4 })
+    const r = await write(route('/v1/admin/pools/global'), 'PUT', { hard_limit: 4 })
     if (r.status !== 'error') throw new Error('expected an error')
     expect(r.error.kind).toBe('session_expired')
     expect(r.error.message).toContain('NOT saved')
@@ -283,7 +284,7 @@ describe('a write', () => {
 
   it('never reports stale: there is no previous value for a mutation', async () => {
     respond('{"message":"nope"}', { status: 503 })
-    const r = await write('/v1/admin/pools/global', 'PUT', {})
+    const r = await write(route('/v1/admin/pools/global'), 'PUT', {})
     expect(r.status).toBe('error')
   })
 
@@ -291,7 +292,7 @@ describe('a write', () => {
     // Reporting an error here would tell somebody their change failed when it
     // did not -- the mirror image of this platform's defining bug.
     respond('{"truncated', { status: 200 })
-    const r = await write('/v1/admin/pools/global', 'PUT', {})
+    const r = await write(route('/v1/admin/pools/global'), 'PUT', {})
     expect(r.status).toBe('ok')
   })
 
@@ -308,10 +309,10 @@ describe('a write', () => {
       return init.headers as Record<string, string>
     }
 
-    await write('/v1/tasks/t1/cancel', 'POST')
+    await write(route('/v1/tasks/t1/cancel'), 'POST')
     expect(headersOf(0)['content-type']).toBeUndefined()
 
-    await write('/v1/tasks', 'POST', { prompt: 'x' })
+    await write(route('/v1/tasks'), 'POST', { prompt: 'x' })
     expect(headersOf(1)['content-type']).toBe('application/json')
     expect(spy.mock.calls[1]?.[1]?.body).toBe('{"prompt":"x"}')
   })
@@ -325,13 +326,13 @@ describe('the probe registry', () => {
   it('does not let a later failure erase the age of the last good payload', async () => {
     const path = '/v1/probe-age'
     respond('{"pools":[{"name":"global"}]}')
-    await read<{ pools: unknown[] }>(path, (d) => d.pools.length === 0)
+    await read<{ pools: unknown[] }>(route(path), (d) => d.pools.length === 0)
 
     const afterSuccess = probeSnapshot().find((p) => p.path === path)
     expect(afterSuccess?.lastSuccessAt).not.toBeNull()
 
     respond('{"message":"gone"}', { status: 503 })
-    await read(path, never)
+    await read(route(path), never)
 
     const afterFailure = probeSnapshot().find((p) => p.path === path)
     // THE POINT OF THE STRIP. A panel showing a four-minute-old number while
@@ -350,8 +351,83 @@ describe('the probe registry', () => {
     expect(probeSnapshot()).toBe(first)
 
     respond('{"pools":[{"name":"x"}]}')
-    await read<{ pools: unknown[] }>('/v1/probe-identity', (d) => d.pools.length === 0)
+    await read<{ pools: unknown[] }>(route('/v1/probe-identity'), (d) => d.pools.length === 0)
     expect(probeSnapshot()).not.toBe(first)
+  })
+})
+
+/**
+ * CH-18: A ROUTE IS A PATH TEMPLATE, NOT A URL.
+ *
+ * The registry was keyed by the concrete URL, so every task anyone opened
+ * added its own `/v1/tasks/<id>/attempts?limit=50` "route" -- 13 of 29 on the
+ * screenshot the QA pass took -- which inflated the dock's route count, shaped
+ * its p95, and made the help text's "one record per route" untrue. It is keyed
+ * by the template now, with ids and the query removed, and each record carries
+ * the concrete URL of its last attempt so a failure can still be traced to the
+ * task it was for.
+ *
+ * ON THE LIVE READ, through the real loader with a stubbed `fetch`: the
+ * fixture path registers templates by hand, so it could not show the defect.
+ * `VITE_LIVE` turns the fixtures off and `resetModules` makes api.ts read it.
+ */
+describe('the probe registry is keyed by route, not by URL (CH-18)', () => {
+  async function live(): Promise<{
+    api: typeof import('../api')
+    registry: typeof import('../fetch')
+  }> {
+    vi.stubEnv('VITE_LIVE', '1')
+    vi.resetModules()
+    const api = await import('../api')
+    const registry = await import('../fetch')
+    return { api, registry }
+  }
+
+  /** The concrete URL of a record's last attempt. */
+  const lastUrl = (r: object | undefined): unknown => (r as { lastUrl?: unknown } | undefined)?.lastUrl
+
+  it("merges two tasks' attempts reads into one route whose last URL is the later one", async () => {
+    // MUTATION: key the record by the URL again.
+    const { api, registry } = await live()
+    respond('{"attempts":[{"attempt_id":"att_1"}]}')
+    await api.loadAttempts('tsk_aaaa')
+    await api.loadAttempts('tsk_bbbb')
+
+    const snap = registry.probeSnapshot()
+    const attempts = snap.filter((p) => p.path.includes('/attempts'))
+    expect(attempts.map((p) => p.path)).toEqual(['/v1/tasks/{id}/attempts'])
+    expect(String(lastUrl(attempts[0]))).toContain('tsk_bbbb')
+    for (const p of snap) {
+      expect(p.path, 'a route key carries a query').not.toContain('?')
+      expect(p.path, 'a route key carries an id').not.toMatch(/tsk_aaaa|tsk_bbbb/)
+    }
+  })
+
+  it('reads a 503 for one task then a 200 for another as the 200, with the second URL -- the merge, documented', async () => {
+    // The status is the last attempt of ANY call to the route; each panel
+    // still carries its own failure. MUTATION: a record per URL.
+    const { api, registry } = await live()
+    respond('{"message":"A service the API depends on did not answer."}', { status: 503 })
+    await api.loadAttempts('tsk_aaaa')
+    respond('{"attempts":[{"attempt_id":"att_1"}]}')
+    await api.loadAttempts('tsk_bbbb')
+
+    const attempts = registry.probeSnapshot().filter((p) => p.path.includes('/attempts'))
+    expect(attempts).toHaveLength(1)
+    expect(attempts[0]?.lastStatus).toBe(200)
+    expect(String(lastUrl(attempts[0]))).toContain('tsk_bbbb')
+  })
+
+  it('merges the three task-list reads, whatever their query, into one /v1/tasks', async () => {
+    // `?limit=200`, `?state=…` and the paged `?limit=200&page_token=…` were
+    // three routes. MUTATION: key by the URL with its query.
+    const { api, registry } = await live()
+    respond('{"tasks":[],"tenant_id":"acme"}')
+    await api.loadTasks()
+    await api.loadTasksInState('PARKED')
+    const tasks = registry.probeSnapshot().filter((p) => p.path.startsWith('/v1/tasks'))
+    expect(tasks.map((p) => p.path)).toEqual(['/v1/tasks'])
+    expect(String(lastUrl(tasks[0]))).toContain('state=PARKED')
   })
 })
 

@@ -6,7 +6,9 @@ import { errorHeading, num, type ApiError, type Result } from './fetch'
 import { HelpCard } from './HelpCard'
 import {
   artifactKind,
+  bytesLabel,
   type ArtifactContent,
+  type ArtifactKindName,
   type ArtifactRef,
 } from './types'
 
@@ -44,6 +46,8 @@ export function ArtifactViewer({
   artifact,
   onClose,
   load: loadContent,
+  kind,
+  absent,
 }: {
   taskId: string
   artifact: ArtifactRef
@@ -53,16 +57,41 @@ export function ArtifactViewer({
    *  the same shape, so one viewer renders both. Must be stable (useCallback):
    *  a new function is a new read. */
   load?: () => Promise<Result<ArtifactContent>>
+  /**
+   * The SERVER's kind for this file, from the listing (#184). When it is
+   * given, the viewer is chosen by it -- one name table, on the server -- and
+   * when it is not (an older API, the Details pane's list), by the old name
+   * rule in `artifactKind`.
+   */
+  kind?: ArtifactKindName | null
+  /**
+   * What an `absent` answer means where this viewer is opened, when it is not
+   * the default. A staged input read from its upstream run is absent because
+   * the upstream object was removed -- by bucket retention, usually -- which is
+   * a different sentence from "the manifest names a file that is not there".
+   */
+  absent?: { heading: string; say: string }
 }) {
   const [state, setState] = useState<
     | { kind: 'loading' }
     | { kind: 'error'; error: ApiError }
     | { kind: 'ok'; data: ArtifactContent }
   >({ kind: 'loading' })
+  /**
+   * Which window is shown: null for the first (from byte 0), else the RAW
+   * byte offset the server's `next_offset` named. Paging is by the server's
+   * offsets only -- redaction makes the text shorter than the bytes, so no
+   * offset is ever computed from the text here.
+   */
+  const [offset, setOffset] = useState<number | null>(null)
 
   const load = useCallback(async () => {
     setState({ kind: 'loading' })
-    const res = await (loadContent ? loadContent() : loadArtifactContent(taskId, artifact.name))
+    const res = await (loadContent
+      ? loadContent()
+      : offset === null
+        ? loadArtifactContent(taskId, artifact.name)
+        : loadArtifactContent(taskId, artifact.name, { offset }))
     if (res.status === 'ok' || res.status === 'stale') {
       setState({ kind: 'ok', data: res.data })
     } else if (res.status === 'error') {
@@ -81,7 +110,7 @@ export function ArtifactViewer({
         },
       })
     }
-  }, [taskId, artifact.name, loadContent])
+  }, [taskId, artifact.name, loadContent, offset])
 
   useEffect(() => {
     void load()
@@ -128,12 +157,40 @@ export function ArtifactViewer({
           </button>
         </div>
       )}
-      {state.kind === 'ok' && <Body data={state.data} />}
+      {state.kind === 'ok' && (
+        <Body
+          data={state.data}
+          kind={kind ?? null}
+          // THE ALLOWLIST'S VERDICT IS READ ONLY WHERE THERE IS ONE: the
+          // checkpoint per-file route, which is the only caller passing its
+          // own loader. The artifact route serves `content_type` from the name
+          // table since #184, and `null` there is a name the table does not
+          // know -- not a refusal -- so reading it as one would draw a binary
+          // artifact as "refused".
+          verdictByName={loadContent !== undefined}
+          absent={absent}
+          // Paging needs the artifact route's offsets; a caller's own loader
+          // reads one window and says so through `truncated`.
+          onPage={loadContent === undefined ? setOffset : null}
+        />
+      )}
     </div>
   )
 }
 
-function Body({ data }: { data: ArtifactContent }) {
+function Body({
+  data,
+  kind,
+  verdictByName,
+  absent,
+  onPage,
+}: {
+  data: ArtifactContent
+  kind: ArtifactKindName | null
+  verdictByName: boolean
+  absent?: { heading: string; say: string } | undefined
+  onPage: ((offset: number | null) => void) | null
+}) {
   const name = data.artifact.name ?? ''
 
   // FOUR STATUSES, FOUR MARKS. They were four paragraphs, and the paragraphs
@@ -147,8 +204,11 @@ function Body({ data }: { data: ArtifactContent }) {
     return (
       <Note
         kind="absent"
-        heading="object not in the bucket"
-        say="This task's manifest records this artifact and the object is not there. The manifest is the record of what the worker uploaded, so this is a missing object rather than an artifact the agent never wrote."
+        heading={absent?.heading ?? 'object not in the bucket'}
+        say={
+          absent?.say ??
+          "This task's manifest records this artifact and the object is not there. The manifest is the record of what the worker uploaded, so this is a missing object rather than an artifact the agent never wrote."
+        }
       >
         {data.detail}
       </Note>
@@ -174,7 +234,7 @@ function Body({ data }: { data: ArtifactContent }) {
   // text": an absence, and a claim about bytes nobody read. The run-output
   // route serves no `content_type` at all, so `undefined` is not `null` and
   // an artifact never lands here.
-  if (data.status === 'binary' && (data as WithVerdict).content_type === null) {
+  if (data.status === 'binary' && verdictByName && data.content_type === null) {
     return (
       <Refused what={`type not on the text allowlist · ${num(data.total_bytes)} bytes`}>
         {data.detail}
@@ -183,17 +243,26 @@ function Body({ data }: { data: ArtifactContent }) {
   }
 
   if (data.status === 'binary') {
+    // A FACT, NOT AN ABSENCE (AG-29). This was a `.ctl-empty` carrying the
+    // `not measured` mark beside `not text · 5,120 bytes` -- the hatched mark
+    // for "nobody recorded this" next to a size somebody did record. Nothing
+    // is missing: the bytes are in the bucket, they were measured, and they
+    // are not text. So it is the size, in `bytesLabel`'s words as every other
+    // size in the drawer, and the way to the object; no mark, no panel tone.
+    const size = bytesLabel(data.total_bytes)
     return (
-      <Note
-        kind="absent"
-        heading={`not text · ${num(data.total_bytes)} bytes`}
-        say="This artifact is not text, so there is no window to render. Its location is below; read it with your own credentials."
-      >
+      <div className="art-binary">
+        <p
+          className="art-binary-head"
+          aria-label={`Binary, ${size}. This artifact is not text, so there is no window to render. Its location is below; read it with your own credentials.`}
+        >
+          binary · {size}
+        </p>
         <span className="art-binary-meta">
           <span className="mono uri">{data.uri}</span>
           <CopyGsutil uri={data.uri} />
         </span>
-      </Note>
+      </div>
     )
   }
 
@@ -201,7 +270,7 @@ function Body({ data }: { data: ArtifactContent }) {
 
   return (
     <>
-      <Provenance data={data} />
+      <Provenance data={data} onPage={onPage} />
       {content === '' ? (
         // A MEASURED ZERO. `''` is a file the agent created and left blank,
         // and it is the one thing here that is a real reading rather than an
@@ -214,7 +283,12 @@ function Body({ data }: { data: ArtifactContent }) {
           0 bytes
         </p>
       ) : (
-        <Rendered name={name} content={content} />
+        <Rendered
+          name={name}
+          content={content}
+          kind={kind ?? data.kind ?? null}
+          whole={data.offset === 0 && data.next_offset === null && !data.truncated}
+        />
       )}
     </>
   )
@@ -228,7 +302,20 @@ function Body({ data }: { data: ArtifactContent }) {
  * output is clean" and "this output had four credentials in it and you should
  * rotate them" -- a screen that cannot say the second is hiding an incident.
  */
-function Provenance({ data }: { data: ArtifactContent }) {
+function Provenance({
+  data,
+  onPage,
+}: {
+  data: ArtifactContent
+  /** Move to another window, by the server's raw offset; null when this read cannot page. */
+  onPage: ((offset: number | null) => void) | null
+}) {
+  // A WINDOW THAT STARTS PAST BYTE 0 IS NOT THE WHOLE ARTIFACT EITHER, even
+  // when it runs to the end and `truncated` is false: the last window of a
+  // paged file is a tail. Before paging existed every window started at 0, so
+  // `truncated` alone said it; now the start has to be said too.
+  const partial = data.truncated || data.offset > 0
+  const next = data.next_offset
   return (
     <div className="art-prov">
       <ul className="ctl-facts">
@@ -238,44 +325,87 @@ function Provenance({ data }: { data: ArtifactContent }) {
             and a `partial` mark. The fraction is the fact; that the rest was
             not read is what `partial` means; the two ways to get the whole
             object are the two buttons on this same strip. */}
-        <li className={`ctl-fact${data.truncated ? ' is-absent' : ''}`}>
+        <li className={`ctl-fact${partial ? ' is-absent' : ''}`}>
           <b>bytes</b>
-          {data.truncated ? (
+          {partial ? (
             <>
               {num(data.returned_bytes)} of {num(data.total_bytes)}{' '}
               <Mark
                 kind="partial"
-                say="This is a window, not the whole artifact. The rest was not read — download what is shown, or read the object from its uri."
+                say={`This is a window, not the whole artifact: from byte ${data.offset}${next !== null ? `, with more from byte ${next}` : ', to the end'}. The rest was not read — download what is shown, read the next window, or read the object from its uri.`}
               />
+              {data.offset > 0 && <span className="ctl-sub">from byte {num(data.offset)}</span>}
             </>
           ) : (
             <>{num(data.total_bytes)} · complete</>
           )}
+          {onPage !== null && next !== null && (
+            <button type="button" className="copy" onClick={() => onPage(next)}>
+              next window
+            </button>
+          )}
+          {onPage !== null && data.offset > 0 && (
+            <button type="button" className="copy" onClick={() => onPage(null)}>
+              from the start
+            </button>
+          )}
         </li>
+        {/* BYTES THAT ARE NOT UTF-8 (#188 review). JSON cannot carry them, so
+            the server shows each as U+FFFD and COUNTS them; without the count
+            a Latin-1 file reads as the agent's own text with odd glyphs in
+            it. The download on this strip saves what is shown, U+FFFD and all;
+            the Artifacts pane's `download` is the raw route, which serves the
+            stored bytes exactly. Absent on an older API; zero draws nothing. */}
+        {typeof data.invalid_utf8_bytes === 'number' && data.invalid_utf8_bytes > 0 && (
+          <li className="ctl-fact is-absent">
+            <b>not utf-8</b>
+            {num(data.invalid_utf8_bytes)}{' '}
+            <Mark
+              kind="partial"
+              say={`${num(data.invalid_utf8_bytes)} bytes of this window are not UTF-8 and are shown as U+FFFD. The stored object holds them exactly; the raw download serves them as stored.`}
+            />
+          </li>
+        )}
         {/* THE COUNT IS THE DIFFERENCE between "this output is clean" and
             "this output had four credentials in it and you should rotate
             them", so the count stays on the glass. That masking here does not
             remove them from the bucket is a standing fact about the read path
-            and is `#help/credential-names-not-values`. */}
-        <li className={`ctl-fact art-redacted${data.redacted ? ' is-absent' : ''}`}>
-          <b>masked</b>
-          {data.redacted ? (
-            <>
-              {data.redaction_count}{' '}
-              <Mark
-                kind="unread"
-                say={`${data.redaction_count} credential-shaped value${data.redaction_count === 1 ? ' was' : 's were'} masked in this artifact when it was served. They are still in the object in the bucket; masking here does not remove them from there, and anything recognisable should be rotated.`}
-              />
-            </>
-          ) : (
-            <>0 of {data.redaction.rules} families</>
-          )}
+            and is `#help/masking-is-serve-time`.
+
+            A MEASURED FACT, DRAWN AS ONE (AG-5, owner decision 2026-09-25).
+            This wore the `not read` mark -- the dashed silhouette whose one
+            meaning is "the read failed" -- and the fact was dimmed
+            `.is-absent`, the treatment for a figure nothing measured. The
+            count WAS read: it is what the serve path's `redact()` returned
+            over these bytes. The kit's six marks are six kinds of nothing and
+            this is not one of them, and the decision was not to add a
+            seventh. So: no mark, no dimming, and the attention it asks for is
+            its INK -- `--warn` above zero, plain at zero (`.art-masked` in
+            styles.css). The sentence the mark carried is the topic behind
+            the `?` on the key. */}
+        <li className="ctl-fact art-redacted">
+          {/* THE `?` IS ON THE KEY (AH-24): after the label it explains, as
+              Overview's `reads ?` is, and never after the count -- where it
+              trailed `masked 4 …` and read as a footnote on the figure. Why it
+              is here at all is the note at the end of this fact. */}
+          <b>
+            masked
+            <HelpCard topic="masking-is-serve-time" />
+          </b>
+          <span className={`art-masked${data.redacted && data.redaction_count > 0 ? ' is-warn' : ''}`}>
+            {data.redacted ? data.redaction_count : `0 of ${data.redaction.rules} families`}
+          </span>
           {/* THIS SCREEN'S ONE `?` (B7.4), and it is the only one it had. What
               it holds is a property of the SERVING path rather than of this
               artifact: masking happens on the way out, the object in the bucket
               is unchanged, and no label on a count can say that. `0 of N
-              families` is the count; this is what the count does not mean. */}
-          <HelpCard topic="credential-names-not-values" />
+              families` is the count; the glyph on the key is what the count
+              does not mean.
+
+              IT OPENS `masking-is-serve-time` (AG-19). It opened "Credential
+              names, never values" -- the rule for how a tenant's secrets are
+              NAMED, not what happens to a value found in an artifact. The new
+              topic is built from the masked mark's own `say` string. */}
         </li>
       </ul>
       <span className="art-prov-actions">
@@ -325,9 +455,6 @@ function CopyGsutil({ uri }: { uri: string | null }) {
     </button>
   )
 }
-
-/** A content read that may also carry the text allowlist's verdict. */
-type WithVerdict = ArtifactContent & { content_type?: string | null }
 
 /**
  * THE SERVER DECLINED -- which is neither an absence nor a failure, and is
@@ -380,7 +507,48 @@ function Note({
   )
 }
 
-function Rendered({ name, content }: { name: string; content: string }) {
+/**
+ * THE VIEWER FOR A KIND. The server's kind when there is one (#184) -- one
+ * name table, on the server -- and the old name rule when there is not.
+ *
+ *   markdown     rendered as React elements, never as HTML
+ *   json         pretty-printed, but ONLY when the window is the whole file: a
+ *                window of a JSON document does not parse, and a viewer that
+ *                reformatted what it could would present a fragment as a
+ *                document. A part is shown as served and says so.
+ *   ndjson, log  monospace, lines kept as the writer wrote them
+ *   text         preformatted
+ *
+ * An image or a binary file never reaches here from the Artifacts pane --
+ * those are drawn from the raw route, or described -- but a name hint is not
+ * a verdict, so anything else that arrives as text is shown as text.
+ */
+function Rendered({
+  name,
+  content,
+  kind,
+  whole,
+}: {
+  name: string
+  content: string
+  kind: ArtifactKindName | null
+  whole: boolean
+}) {
+  if (kind !== null) {
+    switch (kind) {
+      case 'markdown':
+        return <Markdown source={content} />
+      case 'json':
+        return <JsonText source={content} whole={whole} />
+      case 'ndjson':
+      case 'log':
+        return <pre className="logwin-body">{content}</pre>
+      case 'text':
+      case 'image':
+      case 'binary':
+        return <pre className="art-text">{content}</pre>
+    }
+  }
   switch (artifactKind(name)) {
     case 'markdown':
       return <Markdown source={content} />
@@ -389,6 +557,45 @@ function Rendered({ name, content }: { name: string; content: string }) {
     case 'text':
       return <pre className="art-text">{content}</pre>
   }
+}
+
+/** JSON, pretty-printed only when this window is the whole file and parses. */
+function JsonText({ source, whole }: { source: string; whole: boolean }) {
+  if (!whole) {
+    return (
+      <>
+        <p className="art-fallback">
+          <Mark
+            kind="partial"
+            say="This is a window of a JSON file, not the whole of it. A part of a JSON document does not parse, so it is shown exactly as served rather than reformatted."
+          />{' '}
+          partial, not pretty-printed
+        </p>
+        <pre className="art-text">{source}</pre>
+      </>
+    )
+  }
+  let pretty: string | null
+  try {
+    pretty = JSON.stringify(JSON.parse(source), null, 2)
+  } catch {
+    pretty = null
+  }
+  if (pretty === null) {
+    return (
+      <>
+        <p className="art-fallback">
+          <Mark
+            kind="absent"
+            say="This file is named as JSON and is not valid JSON, so it is shown exactly as it was written."
+          />{' '}
+          not valid JSON
+        </p>
+        <pre className="art-text">{source}</pre>
+      </>
+    )
+  }
+  return <pre className="art-text">{pretty}</pre>
 }
 
 // ---------------------------------------------------------------------------
@@ -415,6 +622,9 @@ function Rendered({ name, content }: { name: string; content: string }) {
 export function Markdown({ source }: { source: string }) {
   return <div className="art-md">{markdownBlocks(source)}</div>
 }
+
+/** A GFM table's delimiter row: `---|:---:|---`, with or without edge pipes. */
+const TABLE_DELIMITER = /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)+\|?\s*$/
 
 function markdownBlocks(source: string): ReactNode[] {
   const lines = source.split('\n')
@@ -521,6 +731,49 @@ function markdownBlocks(source: string): ReactNode[] {
             <li key={n}>{inline(text)}</li>
           ))}
         </List>,
+      )
+      continue
+    }
+
+    // A TABLE, AS ITS SOURCE (AG-22). This renderer does not lay out tables,
+    // and the paragraph branch below joined a table's rows with spaces -- a
+    // five-row comparison became one run-on line of pipes. A run of `|` rows,
+    // or a row followed by its `---|---` delimiter, is kept line for line in
+    // a `pre`, which is readable where a half-parsed table would be wrong.
+    if (/^\s*\|/.test(line) || (line.includes('|') && TABLE_DELIMITER.test(at(i + 1)))) {
+      flushParagraph()
+      const body: string[] = []
+      while (i < lines.length && at(i).trim() !== '' && at(i).includes('|')) {
+        body.push(at(i))
+        i += 1
+      }
+      out.push(
+        <pre className="art-code" key={key++} data-block="table">
+          {body.join('\n')}
+        </pre>,
+      )
+      continue
+    }
+
+    // ANY OTHER BLOCK THIS RENDERER DOES NOT RECOGNISE, AS ITS SOURCE TOO: an
+    // indented code block (four spaces or a tab, not continuing a paragraph)
+    // and a raw HTML block. Joined as a paragraph, the first loses its line
+    // breaks and the second reads as prose made of tags. No HTML is ever
+    // built from either -- the `pre` holds the text.
+    if (
+      (paragraph.length === 0 && /^( {4}|\t)/.test(line)) ||
+      /^\s*<(?:[A-Za-z][\w-]*|!--)[\s/>]/.test(line)
+    ) {
+      flushParagraph()
+      const body: string[] = []
+      while (i < lines.length && at(i).trim() !== '') {
+        body.push(at(i))
+        i += 1
+      }
+      out.push(
+        <pre className="art-code" key={key++} data-block="source">
+          {body.join('\n')}
+        </pre>,
       )
       continue
     }

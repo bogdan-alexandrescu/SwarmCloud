@@ -10,18 +10,41 @@
 // "no total over a partial response" trivially, so the complete case must show
 // the total or the rule is being kept by accident.
 
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
 
 import type { Result } from '../fetch'
-import type { Stats } from '../types'
+import type { Me, Stats } from '../types'
 import { NEVER_WRITTEN, REAL_STATES } from '../types'
 import { expectNoFigures } from './setup'
 
 const loadStats = vi.hoisted(() => vi.fn<() => Promise<Result<Stats>>>())
-vi.mock('../api', () => ({ loadStats }))
+// THE SESSION READ, the one the header's admin badge is drawn from. Platform
+// counts reads it too, so the cost it shows before the first run is the cost
+// THIS caller's first run will have (AH-9).
+const loadMe = vi.hoisted(() => vi.fn<() => Promise<Result<Me>>>())
+vi.mock('../api', () => ({ loadStats, loadMe }))
 
 const { PlatformCountsScreen } = await import('../PlatformCounts')
+
+function session(isAdmin: boolean): Result<Me> {
+  return {
+    status: 'ok',
+    fetchedAt: Date.now(),
+    data: {
+      tenant: { tenant_id: 'eng' },
+      principal: { email: 'a@saga.xyz', domain: 'saga.xyz', groups: [], is_admin: isAdmin },
+      environment: 'dev',
+      environment_declared: false,
+    } as unknown as Me,
+  }
+}
+
+// Every test below that does not care who is asking is asked by a non-admin,
+// which is the cost the screen drew for everyone before AH-9.
+beforeEach(() => {
+  loadMe.mockResolvedValue(session(false))
+})
 
 const COMPLETE: Record<string, number> = {
   READY: 2, PARKED: 1, LEASED: 0, DISPATCHED: 0, STARTING: 1,
@@ -322,6 +345,132 @@ describe('the states that can never be written', () => {
       expect(foot.textContent, `${state} is excluded and unnamed`).toContain(state)
     }
     // And the `?` that holds the reason is present and shut.
-    expect(foot.querySelector('button[aria-label^="What "]')).not.toBeNull()
+    const glyph = foot.querySelector('button[aria-label^="Help: "]')
+    expect(glyph).not.toBeNull()
+    // AFTER THE LABEL, NEVER AFTER A VALUE (AH-24). It trailed the list of
+    // state names -- `never written: A · B · C ?` -- where it read as a
+    // footnote on the last name. It sits after `never written:` now, and every
+    // name it explains comes after it. MUTATION: move it back to the end.
+    const html = foot.innerHTML
+    const at = html.indexOf('aria-label="Help: ')
+    expect(at).toBeGreaterThan(html.indexOf('never written'))
+    for (const state of NEVER_WRITTEN) {
+      expect(html.indexOf(`${state}`), `${state} is drawn before the \`?\` that explains it`).toBeGreaterThan(at)
+    }
+  })
+})
+
+/**
+ * AH-25 (#86). THE THREE ADMIN TABS DREW TWO PAGE HEADS. Pool limits and
+ * Tenants drew Screen's -- a title over one provenance line -- and Platform
+ * counts drew its own `.ctl-page-head` with the control pinned right, then a
+ * separate toolbar row holding the cost: the cost sat a row away from "Run the
+ * count" although the code said "beside the control".
+ *
+ * It is Screen's head now, through the one `PageHead`, and its line reads like
+ * every other screen's: what was read, how long ago, and the read-now control
+ * -- with the cost printed immediately before the control that spends it.
+ */
+describe('the page head (AH-25)', () => {
+  const PER_SCOPE = REAL_STATES.length + NEVER_WRITTEN.size
+
+  function line(): HTMLElement {
+    const sub = document.querySelector<HTMLElement>('.head + p.sub')
+    if (!sub) throw new Error('no provenance line under the title')
+    return sub
+  }
+
+  it('is the head Screen renders: a title over one line, no second head and no toolbar', async () => {
+    render(<PlatformCountsScreen />)
+    await waitFor(() => expect(loadMe).toHaveBeenCalled())
+    expect(document.querySelector('.head > h1')?.textContent).toBe('Platform counts')
+    expect(document.querySelector('.ctl-page-head'), 'a head of its own shape').toBeNull()
+    expect(document.querySelector('.ctl-toolbar'), 'the cost is still a row away from the control').toBeNull()
+    await waitFor(() => expect(line().textContent).toBe(`not counted yet · ${PER_SCOPE} count() per run · Run the count`))
+  })
+
+  it('prints the cost immediately before the control, in one element the line cannot split', async () => {
+    render(<PlatformCountsScreen />)
+    const button = screen.getByRole('button', { name: 'Run the count' })
+    const cost = document.querySelector('p.sub .counts-cost')
+    expect(cost, 'the cost is not in the head line').not.toBeNull()
+    expect(button.closest('p.sub'), 'the control is not in the head line').not.toBeNull()
+    expect(button.parentElement, 'the cost and the control can wrap apart').toBe(cost!.parentElement)
+    expect(button.previousElementSibling, 'something sits between the cost and the control').toBe(cost)
+    // The read-now control is `.sub button`, as Screen's `refresh` is.
+    expect(button.className).not.toContain('retry')
+  })
+
+  it('after a run: how many, how old, the cost, and the control again', async () => {
+    await run({ status: 'ok', data: stats(), fetchedAt: Date.now() })
+    await screen.findByRole('button', { name: 'Run it again' })
+    expect(line().textContent).toMatch(new RegExp(`^1 run · read .+ · ${PER_SCOPE} count\\(\\) per run · Run it again$`))
+  })
+
+  it('after a failed run: says so, and still prices the next press', async () => {
+    await run({ status: 'error', error: { kind: 'server_error', httpStatus: 500, code: null, message: 'boom' } })
+    await screen.findByRole('button', { name: 'Run it again' })
+    expect(line().textContent).toBe(`last run failed · ${PER_SCOPE} count() per run · Run it again`)
+  })
+
+  it('while counting: the control says so and cannot be pressed twice', async () => {
+    loadStats.mockReturnValue(new Promise<Result<Stats>>(() => {}))
+    render(<PlatformCountsScreen />)
+    screen.getByRole('button', { name: 'Run the count' }).click()
+    const busy = await screen.findByRole('button', { name: 'Counting…' })
+    expect((busy as HTMLButtonElement).disabled).toBe(true)
+    expect(busy.closest('p.sub')).not.toBeNull()
+  })
+})
+
+/**
+ * AH-9 (#86). `per run · 12 count()` was shown to an admin whose first press
+ * costs 24, because the screen learned who was asking only from the RESULT of
+ * a run: `admin` stayed null, and null priced the run as a tenant's. The
+ * figure that exists to say what the button costs was wrong on exactly the
+ * press it was there for.
+ *
+ * The expected figures are DERIVED from the contract sets, as the screen's
+ * are, so a new state moves both sides together.
+ */
+describe('the cost shown before the first run', () => {
+  const PER_SCOPE = REAL_STATES.length + NEVER_WRITTEN.size
+
+  /**
+   * The cost, where AH-25 put it: the element in the head line immediately
+   * before the control that spends it. It was a `per run` fact in a toolbar a
+   * row below the control.
+   */
+  function perRun(): string {
+    const cost = document.querySelector('.head + p.sub .counts-cost')
+    if (!cost) throw new Error('no cost in the head line')
+    return cost.textContent ?? ''
+  }
+
+  it('is an admin’s cost for an admin, known from the session before any run', async () => {
+    loadMe.mockResolvedValue(session(true))
+    render(<PlatformCountsScreen />)
+    await waitFor(() => expect(perRun()).toContain(`${PER_SCOPE * 2} count()`))
+    expect(loadStats, 'the figure came from a run, not from the session').not.toHaveBeenCalled()
+  })
+
+  it('is a tenant’s cost for a non-admin', async () => {
+    render(<PlatformCountsScreen />)
+    await waitFor(() => expect(loadMe).toHaveBeenCalled())
+    await waitFor(() => expect(perRun()).toContain(`${PER_SCOPE} count()`))
+    expect(perRun()).not.toContain(String(PER_SCOPE * 2))
+  })
+
+  it('does not price the run as a tenant’s when nobody could say who is asking', async () => {
+    loadMe.mockResolvedValue({
+      status: 'error',
+      error: { kind: 'upstream_degraded', httpStatus: 503, code: null, message: 'no session' },
+    })
+    render(<PlatformCountsScreen />)
+    await waitFor(() => expect(loadMe).toHaveBeenCalled())
+    // Both answers are possible, so both are on screen -- a single figure here
+    // would be a guess about the caller wearing the clothes of a price.
+    await waitFor(() => expect(perRun()).toContain(String(PER_SCOPE * 2)))
+    expect(perRun()).toContain(String(PER_SCOPE))
   })
 })

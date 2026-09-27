@@ -29,9 +29,11 @@ import {
   helpRole,
   helpTransition,
   helpTriggerProps,
+  pressedInside,
   type HelpEvent,
   type HelpState,
 } from '../src/HelpCard'
+import { HELP } from '../src/help'
 
 const TOPIC = 'absent-vs-zero' as const
 
@@ -141,6 +143,24 @@ test('the trigger sends focus, click and escape to the state machine', () => {
   )
 })
 
+/**
+ * AH-6, the rule on its own. A press is outside only if it landed in neither
+ * the card nor its trigger; `src/__tests__/helpcard.placement.test.tsx` drives
+ * the same rule through real pointer events.
+ *
+ * MUTATION: return false unconditionally (every press is outside, the defect).
+ */
+test('a press on the card or its trigger is not an outside press', () => {
+  const node = {} as Node
+  const holding = { contains: (n: Node | null) => n === node }
+  const empty = { contains: () => false }
+  assert.equal(pressedInside(node, [holding, null]), true, 'a press inside the card counted as outside')
+  assert.equal(pressedInside(node, [null, holding]), true, 'a press on the trigger counted as outside')
+  assert.equal(pressedInside(node, [empty, empty]), false, 'a press elsewhere did not count as outside')
+  assert.equal(pressedInside(null, [holding]), false, 'a press with no target counted as inside')
+  assert.equal(pressedInside(node, [null, null]), false, 'an unmounted card swallowed an outside press')
+})
+
 test('hover is on the wrapper, so the card itself counts as hovered', () => {
   const { events, dispatch } = collect()
   const h = helpHoverProps(dispatch)
@@ -201,6 +221,112 @@ test('a card whose topic carries values renders them, read from types.ts', () =>
     />,
   )
   assert.ok(markup.includes('LEASED'), 'the capacity card lists no states')
+})
+
+// ---------------------------------------------------------------------------
+// What the glyph and the card look like (AH-4, CH-3, CH-7, CH-9)
+// ---------------------------------------------------------------------------
+
+/** The inline style of the first element whose opening tag matches `tag`. */
+function styleOf(markup: string, tag: RegExp): string {
+  const m = tag.exec(markup)
+  assert.ok(m, `no element matched ${tag}`)
+  const s = /style="([^"]*)"/.exec(m[0])
+  assert.ok(s, `the element matched by ${tag} carries no inline style`)
+  return s[1]!
+}
+
+/**
+ * AH-4. The accessible name was built as "What <title> means", which read
+ * "What what reserves capacity means" for a title that is itself a question
+ * and "What absent is not zero means" for one that is a sentence. A name that
+ * works for every title is the title, said to be help.
+ *
+ * MUTATION: restore the "What ... means" template.
+ */
+test('the glyph is named "Help: <title>" whatever shape the title has', () => {
+  for (const topic of ['absent-vs-zero', 'capacity'] as const) {
+    const markup = renderToStaticMarkup(
+      <HelpCardView
+        topic={topic}
+        state={HELP_CLOSED}
+        descriptionId="d"
+        cardId="c"
+        trigger={helpTriggerProps(() => {})}
+        hover={helpHoverProps(() => {})}
+      />,
+    )
+    const title = HELP[topic].title
+    assert.ok(markup.includes(`aria-label="Help: ${title}"`), `the ${topic} glyph is not named "Help: ${title}"`)
+    assert.ok(!/aria-label="What /.test(markup), 'the old "What ... means" name is back')
+  }
+})
+
+/**
+ * CH-3. The card title was forced to capitals and tracked through an inline
+ * style -- the one place the stylesheet's "nothing shouts" rule could not see.
+ * The values chips showed raw uppercase enums. Both now sit in the console's
+ * register: the title as written, the chips lowercased by CSS so the strings
+ * themselves stay the owner's spelling.
+ *
+ * MUTATION: put `textTransform: 'uppercase'` or the `.04em` tracking back on
+ * CARD_TITLE; or drop the lowercase transform from CARD_VALUE.
+ */
+test('the card title does not shout, and its enum chips are lowercased by style', () => {
+  const markup = renderToStaticMarkup(
+    <HelpCardView
+      topic="capacity"
+      state={helpTransition(HELP_CLOSED, { kind: 'click' })}
+      descriptionId="d"
+      cardId="c"
+      trigger={helpTriggerProps(() => {})}
+      hover={helpHoverProps(() => {})}
+    />,
+  )
+  const title = styleOf(markup, /<strong[^>]*>/)
+  assert.ok(!/text-transform:uppercase/.test(title), 'the card title is still uppercased')
+  assert.ok(!/letter-spacing:\.?[0-9]/.test(title), 'the card title is still tracked')
+  const chip = styleOf(markup, /<li[^>]*>/)
+  assert.match(chip, /text-transform:lowercase/, 'the value chips are not lowercased')
+  // The TEXT is untouched -- the state names still arrive in their own case.
+  assert.ok(markup.includes('>LEASED<'), 'the chip text was rewritten rather than styled')
+})
+
+/**
+ * CH-7. `:where(.app button) { min-height: 28px }` outranked the glyph's 14px
+ * height, so the disc rendered as a 14x28 pill. An inline min-height equal to
+ * the size wins over any sheet rule that does not use !important.
+ *
+ * MUTATION: drop the min-height. The sheet's 28px floor stretches it again.
+ */
+test('the glyph holds its own height against the button floor', () => {
+  const style = styleOf(renderToStaticMarkup(<HelpCard topic={TOPIC} />), /<button[^>]*>/)
+  assert.match(style, /(^|;)height:14px/)
+  assert.match(style, /min-height:14px/, 'the glyph has no min-height, so the 28px button floor stretches it')
+})
+
+/**
+ * CH-9. The card drew `rgba(0,0,0,.28)` in both themes -- the dark theme's
+ * drop -- which reads as grime on the light background, while the token made
+ * for exactly this surface (`--ctl-shadow-pop`, corrected per theme) was used
+ * nowhere.
+ *
+ * MUTATION: put the literal shadow back.
+ */
+test('the card lifts with the popover token, which follows the theme', () => {
+  const markup = renderToStaticMarkup(
+    <HelpCardView
+      topic={TOPIC}
+      state={helpTransition(HELP_CLOSED, { kind: 'click' })}
+      descriptionId="d"
+      cardId="c"
+      trigger={helpTriggerProps(() => {})}
+      hover={helpHoverProps(() => {})}
+    />,
+  )
+  const card = styleOf(markup, /<span[^>]*role="dialog"[^>]*>/)
+  assert.match(card, /box-shadow:var\(--ctl-shadow-pop\)/)
+  assert.ok(!/rgba?\(/.test(card), 'the card still hard-codes a shadow colour')
 })
 
 test('<HelpCard> renders closed by default', () => {

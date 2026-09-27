@@ -285,9 +285,28 @@ else
   TENANT_SA="$(printf '%s' "${POLICY}" | tr ';' '\n' | grep -c 'serviceAccount:' || true)"
   if [[ "${TENANT_SA}" -gt 0 ]]; then
     ok "${TENANT_SA} service account binding(s) already present"
+  elif [[ "${SUBSCRIPTION}" -eq 1 ]]; then
+    # The -refresh half is read by the quota broker and NEVER by the tenant's
+    # worker: terraform/modules/secret_manager `refresh_accessor` binds the
+    # broker alone, because a job holding the refresh token could mint itself
+    # access for as long as it liked. So this must not send anyone to grant
+    # the worker this secret. The worker reads the short-lived half the broker
+    # publishes into swarm-tenant-<t>-<p>, and that is what --add-provider binds.
+    warn "no service account can read ${SECRET_NAME} yet"
+    dim "its one reader is the quota broker, never the tenant's worker: terraform/modules/secret_manager"
+    dim "grants it (refresh_accessor) for each tenant/provider pair terraform declares, and to nothing else."
+    dim "the worker reads swarm-tenant-${TENANT}-${PROVIDER}, which the broker publishes. To list ${PROVIDER}"
+    dim "for the tenant and let its worker read that secret, keeping the tenant's other providers:"
+    dim "run: scripts/register-tenant.sh --tenant ${TENANT} --add-provider ${PROVIDER}"
   else
     warn "no service account can read ${SECRET_NAME} yet"
-    dim "run: scripts/register-tenant.sh --tenant ${TENANT} --providers ${PROVIDER}"
+    # --add-provider, NOT --providers. This printed
+    # `register-tenant.sh --tenant <t> --providers <p>`, which died on its
+    # first line -- the full registration needs --group or --user -- and,
+    # given one, would have REPLACED the tenant's credentials with this one
+    # provider and reset its limits. --add-provider grants the worker this one
+    # secret and adds the provider to the list, and changes nothing else.
+    dim "run: scripts/register-tenant.sh --tenant ${TENANT} --add-provider ${PROVIDER}"
   fi
 fi
 

@@ -67,7 +67,15 @@ ROUTER_MODULES = (
     # The checkpoint CONTENT routes (listing, one file, the whole archive).
     # A router missing from this tuple is outside every sweep in this file.
     "checkpoints",
+    # GET /v1/outcomes (#185): counts and task ids across a span, never task
+    # content. Swept WITH a tz (QUERY_FOR below), so the sweep reads a real
+    # 200 rather than the 422 a missing tz earns.
+    "outcomes",
 )
+
+#: A query string for a route that refuses to answer without one. Stripped
+#: again before a swept path is compared with its template.
+QUERY_FOR = {"/v1/outcomes": "?tz=UTC&span=7d"}
 
 
 @pytest.fixture
@@ -154,7 +162,7 @@ def _get_routes() -> list[str]:
                 # exist, which proves nothing. Anything left here is a route
                 # this sweep does not reach, and the test below says so.
                 continue
-            paths.append(filled)
+            paths.append(filled + QUERY_FOR.get(filled, ""))
     return sorted(set(paths))
 
 
@@ -188,7 +196,7 @@ def test_every_get_route_is_either_swept_or_named(leaky):
                 declared.add(path)
 
     swept_templates = {
-        p.replace("task_theirs", "{task_id}")
+        p.split("?")[0].replace("task_theirs", "{task_id}")
          .replace("wf_theirs", "{workflow_id}")
          .replace("acct_1", "{account_id}")
          .replace("ckpt-00001", "{checkpoint_id}")

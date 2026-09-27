@@ -10,7 +10,11 @@ where the agent will find it.
 
     metadata.input_from: {"task_abc": "summary.md"}
       -> tenants/<tenant>/tasks/task_abc/attempts/<the one that SUCCEEDED>/artifacts/summary.md
-      -> <workspace>/work/summary.md          (the agent's current directory)
+      -> <workspace>/work/summary.md          (the work directory; the agent's
+                                               current directory unless the task
+                                               has a repository, when it starts
+                                               in work/repo and the prompt names
+                                               this path in full -- #226)
 
 Three properties are worth stating out loud, because each of them is a decision
 that could reasonably have gone the other way.
@@ -83,7 +87,9 @@ class StagedInput:
 
     upstream_task_id: str
     filename: str
-    #: Relative to the work directory, which is the agent's current directory.
+    #: Relative to the work directory: the agent's current directory for a task
+    #: with no repository, the checkout's parent for one with a repository
+    #: (#226), when `expected_outputs.staged_paths` names it in the prompt.
     path: str
     size_bytes: int
     uri: str | None = None
@@ -183,8 +189,14 @@ def _assert_distinct_destinations(declared: list[DeclaredInput]) -> None:
 def destination_for(work: Path, filename: str, *, reserved: frozenset[str]) -> Path:
     """The path a declared input is staged to, or a refusal.
 
-    `filename` reaches here from a caller's workflow submission and is NOT
-    pattern-checked by the API, so every unsafe shape is rejected here:
+    `filename` reaches here from a caller's workflow step. A caller cannot send
+    `metadata.input_from` itself: the API refuses the key on a plain task, a
+    batch and a workflow's own `metadata` (reserved, #151), so the declaration
+    read here was written by workflow expansion from a step's `input_from`,
+    whose filenames the API has refused when absolute or traversing
+    (`swarm_api.validation.validate_staged_filenames`, #64). The API does not
+    know the reserved names, and this reads a free-form dict that nothing types.
+    So every unsafe shape is still rejected here:
     an absolute path, a traversal, and any name whose first segment is one the
     worker itself owns inside `work/` (the clone directory, the worker's own
     state directory, and the four control files the runner protocol uses). A

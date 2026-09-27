@@ -26,7 +26,8 @@ from swarm_mcp import cli, sc, server
 from swarm_mcp.client import SwarmError
 
 HEALTHY = {
-    "/v1/tenants/me": {"tenant_id": "acme"},
+    # The route's real shape: the tenant is NESTED (#88, SC-F3/F4).
+    "/v1/tenants/me": {"tenant": {"tenant_id": "acme"}, "principal": {"email": "a@acme.test"}},
     "/v1/stats": {"dispatch_paused": False, "tasks_by_state": {}},
     "/v1/capacity": {"pools": [], "runner_profiles": {}},
     "/v1/tasks": {"tasks": []},

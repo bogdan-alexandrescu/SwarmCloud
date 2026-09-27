@@ -185,7 +185,12 @@ TEXT_EXTENSIONS: dict[str, str] = {
     **dict.fromkeys(
         (".txt", ".log", ".text", ".rst", ".adoc", ".org", ".tex", ".bib",
          ".ini", ".cfg", ".conf", ".properties", ".env", ".lock", ".mod", ".sum",
-         ".diff", ".patch", ".mk", ".cmake", ".gradle", ".dockerfile"),
+         ".diff", ".patch", ".mk", ".cmake", ".gradle", ".dockerfile",
+         # SVG IS TEXT HERE, NEVER AN IMAGE (#184). It is XML that can carry
+         # script and external references, so it is shown as its source and
+         # served as text/plain; `IMAGE_EXTENSIONS` below deliberately leaves
+         # it out.
+         ".svg"),
         "text/plain",
     ),
     ".csv": "text/csv",
@@ -225,6 +230,53 @@ def content_type_for(path: str) -> str | None:
     if suffix == "":
         return _PLAIN
     return TEXT_EXTENSIONS.get(suffix)
+
+
+#: The images an ARTIFACT may be served as, by extension (#184). Used by the
+#: artifact listing's `kind` and by the raw route, which serves an image only
+#: when BOTH this name and the object's own magic bytes say so. Not consulted
+#: for checkpoint members, which stay text-or-refused. SVG is not here: see
+#: `TEXT_EXTENSIONS`.
+IMAGE_EXTENSIONS: dict[str, str] = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+}
+
+#: Every value `artifact_kind` returns, in the order a viewer is chosen by.
+ARTIFACT_KINDS = ("markdown", "json", "ndjson", "log", "text", "image", "binary")
+
+
+def artifact_kind(name: str) -> tuple[str, str | None]:
+    """`(kind, content_type)` for an artifact, decided from its NAME by the one table.
+
+    The table is `content_type_for` -- the same allowlist the checkpoint routes
+    apply -- plus `IMAGE_EXTENSIONS`. The kind picks the UI's viewer: markdown
+    rendered, json pretty-printed when whole, ndjson and log monospaced and
+    windowed, text as-is, image inline through the raw route, binary as
+    metadata only. `content_type` is the table's answer, None for binary.
+
+    A NAME HINT, NOT A VERDICT. The content route's NUL sniff and the raw
+    route's magic-byte sniff decide what the bytes are; a `.png` that holds
+    text is served as text, and a `.txt` full of NULs is reported binary.
+    """
+    suffix = PurePosixPath(name).suffix.lower()
+    if suffix in IMAGE_EXTENSIONS:
+        return "image", IMAGE_EXTENSIONS[suffix]
+    content_type = content_type_for(name)
+    if content_type is None:
+        return "binary", None
+    if content_type == "text/markdown":
+        return "markdown", content_type
+    if content_type == "application/json":
+        return "json", content_type
+    if content_type == "application/x-ndjson":
+        return "ndjson", content_type
+    if suffix == ".log":
+        return "log", content_type
+    return "text", content_type
 
 
 # --------------------------------------------------------------------------

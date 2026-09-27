@@ -53,6 +53,22 @@ class Conflict(ApiError):
     code = "conflict"
 
 
+class Gone(ApiError):
+    """The record says it existed, and the object behind it no longer does.
+
+    Distinct from `NotFound` on purpose (#184). A 404 from an artifact route
+    means "this task lists no artifact of that name" -- the caller named
+    something that never was, or has not been uploaded yet. A 410 means the
+    manifest DOES list it and the bucket does not hold it: bucket retention
+    (`artifact_retention_days`: dev 14, default 90, prod 180) reclaimed it, or
+    the upload the manifest records never completed. A UI draws those two as
+    different sentences, and it can only do that if the status differs.
+    """
+
+    status_code = 410
+    code = "artifact_gone"
+
+
 class RateLimited(ApiError):
     status_code = 429
     code = "rate_limited"

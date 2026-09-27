@@ -50,20 +50,30 @@ import binascii
 import json
 import re
 from dataclasses import dataclass
-from typing import Any
+from datetime import datetime, timezone
+from typing import Any, Callable, Sequence
 
-from swarm_common.models import Attempt, Task
+from swarm_common.models import Attempt, Task, utcnow
 
+from . import agent_streams as agent_streams_mod
 from .errors import NotFound, UpstreamUnavailable, ValidationFailed
 from .objects import (
     ObjectAbsent,
     ObjectInfo,
     ObjectReader,
+    ObjectReplaced,
+    ObjectSlice,
     ObjectUnreadable,
     UnsafeKeySegment,
     safe_segment,
 )
-from .redaction import RULES as REDACTION_RULES, redact, redact_detail
+from .redaction import (
+    PEM_BLOCK_MAX_CHARS,
+    RULES as REDACTION_RULES,
+    open_key_start,
+    redact,
+    redact_detail,
+)
 from .store import Store
 
 # --------------------------------------------------------------------------
@@ -89,12 +99,22 @@ LIVE_SEGMENT = "live"
 MANIFEST_NAME = "manifest.json"
 ARCHIVE_NAME = "archive.tar.gz"
 
+#: What `GET /v1/tasks/{id}/logs` serves when no `stream` is named: the RUNNER
+#: process's two streams, exactly as before #184 (RunFiles and `swarm tail`
+#: pass no stream and must keep getting these two).
 STREAMS = ("stdout", "stderr")
+#: Every stream the route can name. `agent_stdout` / `agent_stderr` are the
+#: agent CLI's own (see `swarm_api.agent_streams`).
+LOG_STREAMS = STREAMS + agent_streams_mod.AGENT_STREAMS
 
 #: `_publish_live_logs` prefixes each tail with this so a reader can tell a gap
 #: from a continuation. It is metadata, not output, so it is parsed out of the
 #: content and served as a structured field instead of being shown as a log line.
-_TAIL_HEADER = re.compile(r"^#swarm-tail offset=(\d+) size=(\d+)\n")
+#: ` at=<RFC 3339>` -- when the worker cut the window -- was added in #184 and is
+#: OPTIONAL: every tail published before it has no `at`, and still parses.
+#: Matched on BYTES, so the header's length in the match is its length in the
+#: object and the byte accounting after it stays exact.
+_TAIL_HEADER = re.compile(rb"^#swarm-tail offset=(\d+) size=(\d+)(?: at=(\S+))?\n")
 
 #: A manifest is a small JSON document. This cap is what stops a hand-written or
 #: corrupted object at that key turning a list request into a large download.
@@ -106,6 +126,18 @@ MANIFEST_MAX_BYTES = 64 * 1024
 #: window being served, so the answer for one artifact does not depend on
 #: which page of it was asked for.
 ARTIFACT_SNIFF_BYTES = 4096
+
+#: How far before its own start a page that does not begin at 0 reads (#188
+#: review). A private key printed as text spans lines, and a page in the
+#: middle of one holds neither of its markers -- only a look-back that finds
+#: the BEGIN, and no END after it, says the page begins inside a key
+#: (`redaction.open_key_start`). A key's END is looked for this far after its
+#: BEGIN, so a BEGIN further back than this does not open a key here either.
+#: The byte before the page -- all `_align` needs -- is the look-back's last.
+KEY_LOOKBACK_BYTES = PEM_BLOCK_MAX_CHARS
+
+#: One byte that is not part of any UTF-8 sequence, as `surrogateescape` decodes it.
+_UNDECODABLE = re.compile("[\udc80-\udcff]")
 
 
 def attempts_prefix(*, tenant_id: str, task_id: str) -> str:
@@ -273,9 +305,14 @@ class InspectionService:
         max_artifact_bytes: int = 4 * 1024 * 1024,
         default_artifact_bytes: int = 512 * 1024,
         min_artifact_bytes: int = 4 * 1024,
+        # The server clock every `read_at` and `age_seconds` is measured on.
+        # Injected so a test can pin it; `deps.build_context` passes the
+        # context's own.
+        now: Callable[[], datetime] = utcnow,
     ) -> None:
         self._store = store
         self._objects = objects
+        self._now = now
         self._scan_limit = scan_limit
         self._max_log_bytes = max_log_bytes
         self._default_log_bytes = default_log_bytes
@@ -608,12 +645,28 @@ class InspectionService:
         task_id: str,
         *,
         attempt_id: str | None = None,
-        stream: str | None = None,
+        stream: str | Sequence[str] | None = None,
         source: str = "auto",
         offset: int = 0,
         limit_bytes: int | None = None,
     ) -> dict[str, Any]:
         """A window of an attempt's captured output, REDACTED at read time.
+
+        WHICH STREAMS (#184). `stream` may be named more than once. `stdout`
+        and `stderr` are the RUNNER process's streams; `agent_stdout` and
+        `agent_stderr` are the agent CLI's own (claude-code's stream-json
+        transcript is `agent_stdout`). Naming none serves `stdout` and
+        `stderr`, exactly as before. An agent stream of a runner with no agent
+        child is `not_applicable`, a fourth answer beside ok, absent and
+        unreadable. An agent stream of an attempt that ran before #184 has no
+        `logs/` object of its own; when both are absent the manifest entry the
+        runner wrote it to is served instead, as `source: "artifact"` (see
+        `_open_stream`).
+
+        AGE. `read_at` is this server's clock when the read began; each stream
+        carries its object's `object_updated_at` (GCS `updated`) and
+        `age_seconds` between the two, so a live tail says how old it is on
+        the server's clock rather than the viewer's.
 
         WHICH OBJECT. The worker writes each stream twice and they are not the
         same thing:
@@ -653,8 +706,7 @@ class InspectionService:
             raise ValidationFailed("offset must not be negative")
         if source not in ("auto", "final", "live"):
             raise ValidationFailed("source must be one of: auto, final, live")
-        if stream is not None and stream not in STREAMS:
-            raise ValidationFailed(f"stream must be one of: {', '.join(STREAMS)}")
+        wanted = _wanted_streams(stream)
         window = self._default_log_bytes if limit_bytes is None else limit_bytes
         if window < 1:
             raise ValidationFailed("limit_bytes must be at least 1")
@@ -663,7 +715,7 @@ class InspectionService:
         attempts = self._attempt_order(tenant_id, task_id)
         chosen, attempt_status = self._choose_attempt(attempts, attempt_id)
 
-        wanted = STREAMS if stream is None else (stream,)
+        read_at = self._now()
         reader = self._reader()
         entries: list[dict[str, Any]] = []
         if chosen is None:
@@ -673,31 +725,38 @@ class InspectionService:
             base = attempt_prefix(
                 tenant_id=task.tenant_id, task_id=task.id, attempt_id=chosen
             )
+            # OVERLAP when the caller is not starting at the beginning. Its last
+            # byte tells `_align` whether `offset` lands on a token boundary
+            # (the previous byte is whitespace) or inside a token; without it
+            # the head rule has to assume the worst on every page and would
+            # eat the first token of every window after the first, losing
+            # data. The rest of it -- up to `KEY_LOOKBACK_BYTES` -- is what
+            # tells the page whether it begins inside a private key (#188
+            # review), which nothing inside the page can.
+            probe = min(offset, KEY_LOOKBACK_BYTES)
             for name in wanted:
+                opened = self._open_stream(
+                    task=task,
+                    base=base,
+                    attempt_id=chosen,
+                    stream=name,
+                    source=source,
+                    offset=offset - probe,
+                    length=window + probe,
+                    reader=reader,
+                )
                 entries.append(
-                    self._stream_entry(
-                        base=base,
-                        stream=name,
-                        source=source,
-                        offset=offset,
-                        window=window,
-                        reader=reader,
-                    )
+                    self._served(opened, offset=offset, probe=probe, read_at=read_at)
+                    if opened.status == "ok"
+                    else opened.entry()
                 )
 
-        record = attempts.get(chosen) if chosen else None
         return {
             "task_id": task.id,
             "tenant_id": task.tenant_id,
             "attempt_id": chosen,
-            "attempt": {
-                "status": attempt_status,
-                "known": record is not None,
-                "generation": record.generation if record is not None else None,
-                "created_at": record.created_at if record is not None else None,
-                "completed_at": record.completed_at if record is not None else None,
-                "exit_code": record.exit_code if record is not None else None,
-            },
+            "attempt": self._attempt_block(attempts, chosen, attempt_status),
+            "read_at": _iso(read_at),
             "streams": entries,
             "prefix": reader.uri(prefix),
             "redaction": {
@@ -706,6 +765,21 @@ class InspectionService:
                 "applied_at_read_time": True,
                 "rules": len(REDACTION_RULES),
             },
+        }
+
+    @staticmethod
+    def _attempt_block(
+        attempts: dict[str, Attempt], chosen: str | None, attempt_status: str
+    ) -> dict[str, Any]:
+        """The `attempt` block every per-attempt read carries, in one shape."""
+        record = attempts.get(chosen) if chosen else None
+        return {
+            "status": attempt_status,
+            "known": record is not None,
+            "generation": record.generation if record is not None else None,
+            "created_at": record.created_at if record is not None else None,
+            "completed_at": record.completed_at if record is not None else None,
+            "exit_code": record.exit_code if record is not None else None,
         }
 
     def _choose_attempt(
@@ -729,104 +803,202 @@ class InspectionService:
         newest = max(attempts.values(), key=lambda a: (a.created_at, a.attempt_id))
         return newest.attempt_id, "latest"
 
-    def _stream_entry(
+    def _open_stream(
         self,
         *,
+        task: Task,
         base: str,
+        attempt_id: str,
         stream: str,
         source: str,
         offset: int,
-        window: int,
+        length: int,
         reader: ObjectReader,
-    ) -> dict[str, Any]:
-        final_key = f"{base}/{LOGS_SEGMENT}/{stream}.log"
-        live_key = f"{base}/{LOGS_SEGMENT}/{LIVE_SEGMENT}/{stream}.tail.log"
+        order: Sequence[str] | None = None,
+    ) -> "OpenedStream":
+        """Choose the object one stream of one attempt is read from, and read a window.
 
-        order: list[tuple[str, str]]
-        if source == "final":
-            order = [("final", final_key)]
-        elif source == "live":
-            order = [("live", live_key)]
-        else:
-            order = [("final", final_key), ("live", live_key)]
+        `offset` and `length` are the RAW read, probe byte included; the
+        caller decides how to align what comes back (`_served` cuts on
+        whitespace for a log, the transcript parser cuts on newlines). One
+        chooser for every reader, so `/logs?stream=agent_stdout`,
+        `/transcript` and `/answer` never disagree about which object is the
+        agent's output.
 
-        # ONE BYTE OF OVERLAP when the caller is not starting at the beginning.
-        # It is what tells `_align` whether `offset` lands on a token boundary
-        # (the previous byte is whitespace) or inside a token. Without it the
-        # head rule has to assume the worst on every page and would eat the
-        # first token of every window after the first, losing data.
-        probe = 1 if offset > 0 else 0
+        THE ORDER. `source=final`: the complete record. `live`: the tail.
+        `auto`: the record, then the tail -- and the tail only when the record
+        is ABSENT, never when it is unreadable, because serving a different
+        object in place of a failed read reports success over the wrong
+        window. For an AGENT stream one more candidate follows when every
+        other is absent: the manifest entry the runner wrote it to
+        (`source: "artifact"`), for an attempt that ran before #184 and so has
+        no `logs/agent_*` object of its own. Only for the attempt the manifest
+        describes -- the manifest is the FINAL attempt's -- and never for
+        `source=live`.
 
-        last_absent: dict[str, Any] | None = None
-        for label, key in order:
+        `order` overrides the sequence for a caller with its own rule
+        (`/answer` tries final, then the artifact, then live).
+        """
+        if stream in agent_streams_mod.AGENT_STREAMS:
+            declared = agent_streams_mod.declared_streams(task.result_summary)
+            if agent_streams_mod.has_no_agent(task.runner_profile, declared):
+                return OpenedStream(
+                    stream=stream,
+                    source=None,
+                    status="not_applicable",
+                    detail=(
+                        f"the {task.runner_profile!r} runner starts no agent CLI, so there "
+                        "is no agent stream to read; its own output is `stdout` and `stderr`"
+                    ),
+                )
+        if order is None:
+            order = {"final": ("final",), "live": ("live",)}.get(source, ("final", "live"))
+            if stream in agent_streams_mod.AGENT_STREAMS and source != "live":
+                order = (*order, "artifact")
+
+        last_absent: OpenedStream | None = None
+        for label in order:
+            if label == "artifact":
+                located = self._stream_artifact(task, stream=stream, attempt_id=attempt_id)
+                if located is None:
+                    continue
+                if isinstance(located, OpenedStream):
+                    return located  # the manifest and the layout disagree: unreadable
+                key = located
+            elif label == "live":
+                key = f"{base}/{LOGS_SEGMENT}/{LIVE_SEGMENT}/{stream}.tail.log"
+            else:
+                key = f"{base}/{LOGS_SEGMENT}/{stream}.log"
+            uri = reader.uri(key)
             try:
-                chunk = reader.read_range(key, offset=offset - probe, length=window + probe)
+                if label == "live":
+                    chunk = _read_live(reader, key, offset=offset, length=length)
+                else:
+                    chunk = reader.read_range(key, offset=offset, length=length)
             except ObjectAbsent:
-                last_absent = _absent_entry(stream, label, key, reader.uri(key))
-                continue  # try the next source, if `auto` left one
+                last_absent = OpenedStream(
+                    stream=stream, source=label, status="absent", key=key, uri=uri,
+                    detail="this object does not exist",
+                )
+                continue  # try the next source, if the order left one
+            except ObjectReplaced as exc:
+                return OpenedStream(
+                    stream=stream, source=label, status="unreadable", key=key, uri=uri,
+                    detail=(
+                        "the live object was replaced while it was read, twice; poll again"
+                        if label == "live"
+                        else redact_detail(exc.reason)
+                    ),
+                )
             except ObjectUnreadable as exc:
-                # Deliberately NOT falling through to the live tail. A failure
-                # is an answer, and substituting a different object for it
-                # would report success over a window that is not the one asked
-                # for.
-                return _unreadable_entry(stream, label, key, reader.uri(key), exc.reason)
-            return self._served(
-                stream, label, key, reader.uri(key), chunk, offset=offset, probe=probe
+                # Deliberately NOT falling through to the next source. A
+                # failure is an answer, and substituting a different object
+                # for it would report success over a window that is not the
+                # one asked for.
+                return OpenedStream(
+                    stream=stream, source=label, status="unreadable", key=key, uri=uri,
+                    detail=redact_detail(exc.reason),
+                )
+            return OpenedStream(
+                stream=stream, source=label, status="ok", key=key, uri=uri, chunk=chunk
             )
 
-        assert last_absent is not None
-        if source == "auto":
-            last_absent["detail"] = (
+        if last_absent is None:
+            # Only the artifact candidate was left and it was not eligible.
+            return OpenedStream(
+                stream=stream, source=None, status="absent",
+                detail="no object for this stream exists for this attempt",
+            )
+        if source == "auto" and len(order) > 1:
+            last_absent.detail = (
                 "neither the completed log nor a live tail exists for this attempt; "
                 "nothing has been written yet, or the objects have been removed"
             )
         return last_absent
 
+    def _stream_artifact(
+        self, task: Task, *, stream: str, attempt_id: str
+    ) -> "str | OpenedStream | None":
+        """The artifact key holding an agent stream of a pre-#184 attempt, or None.
+
+        None -- not eligible -- when the attempt is not the one the manifest
+        describes, when nothing names the stream's artifact, or when the
+        manifest does not list it. The key is REBUILT from the task document's
+        own tenant and id, exactly as `read_artifact` rebuilds one, and the
+        stored `uri` is only compared: a disagreement is reported unreadable
+        rather than followed.
+        """
+        if attempt_id != manifest_attempt(task):
+            return None
+        declared = agent_streams_mod.declared_streams(task.result_summary)
+        name = agent_streams_mod.stream_artifacts(task.runner_profile, declared).get(stream)
+        if not name:
+            return None
+        entry = self._store.artifact_manifest(task).find(name)
+        if entry is None:
+            return None
+        try:
+            key = self._artifact_key(task=task, attempt_id=attempt_id, name=name)
+        except ValidationFailed:
+            return None
+        if self._reader().uri(key) != entry.get("uri"):
+            return OpenedStream(
+                stream=stream, source="artifact", status="unreadable", key=key,
+                uri=self._reader().uri(key),
+                detail=(
+                    f"the recorded location of {name!r} does not match where this "
+                    "platform writes it, so nothing was read"
+                ),
+            )
+        return key
+
     def _served(
         self,
-        stream: str,
-        label: str,
-        key: str,
-        uri: str,
-        chunk: Any,
+        opened: "OpenedStream",
         *,
         offset: int,
         probe: int,
+        read_at: datetime,
     ) -> dict[str, Any]:
+        stream, label, key, uri = opened.stream, opened.source, opened.key, opened.uri
+        chunk = opened.chunk
+        assert chunk is not None
+        ages = _ages(chunk, read_at)
         raw_full = chunk.data
-        if not raw_full:
+        if len(raw_full) <= probe:
             # Paged past the end, or a zero-byte object. Both are an object
             # that EXISTS, which is a different answer from absent.
             row = _entry(stream, label, "ok")
             row.update(
                 key=key, uri=uri, content="", total_bytes=chunk.total_bytes,
-                offset=min(offset, chunk.total_bytes),
+                offset=min(offset, chunk.total_bytes), invalid_utf8_bytes=0, **ages,
             )
             return row
 
-        previous = raw_full[:probe]
+        previous = raw_full[probe - 1 : probe] if probe else b""
         raw = raw_full[probe:]
         start = chunk.offset + probe
 
         tail_window = None
         if label == "live" and start == 0:
-            match = _TAIL_HEADER.match(raw.decode("utf-8", errors="replace"))
-            if match is not None:
-                tail_window = {
-                    "object_offset": int(match.group(1)),
-                    "stream_size": int(match.group(2)),
-                }
-                raw = raw[match.end() :]
-                start += match.end()
+            tail_window, header_end = parse_tail_header(raw)
+            raw = raw[header_end:]
+            start += header_end
 
         at_eof = chunk.end >= chunk.total_bytes
         raw, start, end, withheld = _align(
             raw, start=start, previous=previous, at_eof=at_eof, read_end=chunk.end
         )
+        raw, start, inside_key, key_withheld = _enter_key(
+            raw_full, raw=raw, start=start, end=end, base=chunk.offset
+        )
+        withheld = withheld or key_withheld
 
-        scrubbed = redact(raw.decode("utf-8", errors="replace"))
+        text, undecodable = _decode_window(raw)
+        scrubbed = redact(text, inside_key=inside_key)
         complete = end >= chunk.total_bytes
         row = _entry(stream, label, "ok")
+        row.update(ages)
         row.update(
             key=key,
             uri=uri,
@@ -841,9 +1013,16 @@ class InspectionService:
             redacted=scrubbed.any,
             redaction_count=scrubbed.count,
             tail_window=tail_window,
+            invalid_utf8_bytes=undecodable,
         )
         if withheld is not None:
             row["detail"] = withheld
+        if undecodable:
+            row["detail"] = _with_sentence(
+                row["detail"],
+                f"{undecodable} bytes of this window are not UTF-8 and are shown as "
+                "U+FFFD; the object at uri holds them exactly",
+            )
         return row
 
     # -- artifacts ---------------------------------------------------------
@@ -906,6 +1085,129 @@ class InspectionService:
         with their own credentials -- is the honest one for those.
         """
         task, _prefix = self._scoped(tenant_id, task_id)
+        entry, attempt_id, key, reader = self._resolve_artifact(task, name)
+
+        window = self._default_artifact_bytes if limit_bytes is None else limit_bytes
+        if offset < 0:
+            raise ValidationFailed("offset must not be negative")
+        if window < 1:
+            raise ValidationFailed("limit_bytes must be at least 1")
+        window = min(max(window, self._min_artifact_bytes), self._max_artifact_bytes)
+
+        row = _artifact_row(task=task, entry=entry, attempt_id=attempt_id)
+        row.update(key=key, uri=reader.uri(key))
+
+        # The look-back `read_logs` takes, for the same two reasons: the byte
+        # before `offset` for `_align`, and whether the window begins inside
+        # a private key.
+        probe = min(offset, KEY_LOOKBACK_BYTES)
+        try:
+            chunk = reader.read_range(key, offset=offset - probe, length=window + probe)
+        except ObjectAbsent:
+            row.update(
+                status="absent",
+                detail=(
+                    "the manifest records this artifact but the object is not in the "
+                    "bucket; it was removed, or the upload the manifest records did "
+                    "not complete"
+                ),
+            )
+            return row
+        except ObjectUnreadable as exc:
+            row.update(
+                status="unreadable",
+                detail=(
+                    "the artifact store could not be read, so nothing may be concluded "
+                    "about this artifact's content: " + redact_detail(exc.reason)
+                ),
+            )
+            return row
+
+        row["total_bytes"] = chunk.total_bytes
+        if self._looks_binary(reader, key, chunk, offset=offset, probe=probe):
+            row.update(
+                status="binary",
+                offset=0,
+                detail=(
+                    "this artifact is not text, so its bytes are not served here: "
+                    "nothing can scan them for a credential before they leave, and a "
+                    "redaction that cannot run is not a redaction. Read it from the "
+                    "uri above with your own credentials."
+                ),
+            )
+            return row
+
+        if len(chunk.data) <= probe:
+            # Paged past the end, or a zero-byte artifact. Both are an object
+            # that EXISTS and is empty, which is not absent and not a failure.
+            row.update(
+                status="ok",
+                content="",
+                offset=min(offset, chunk.total_bytes),
+                truncated=False,
+                invalid_utf8_bytes=0,
+            )
+            return row
+
+        previous = chunk.data[probe - 1 : probe] if probe else b""
+        raw = chunk.data[probe:]
+        start = chunk.offset + probe
+        raw, start, end, withheld = _align(
+            raw,
+            start=start,
+            previous=previous,
+            at_eof=chunk.end >= chunk.total_bytes,
+            read_end=chunk.end,
+        )
+        raw, start, inside_key, key_withheld = _enter_key(
+            chunk.data, raw=raw, start=start, end=end, base=chunk.offset
+        )
+        withheld = withheld or key_withheld
+        text, undecodable = _decode_window(raw)
+        scrubbed = redact(text, inside_key=inside_key)
+        complete = end >= chunk.total_bytes
+        row.update(
+            status="ok",
+            content=scrubbed.text,
+            # Byte accounting is over the RAW object, never over the redacted
+            # string: the redacted text is shorter and paging on its length
+            # would drift away from the object.
+            offset=start,
+            returned_bytes=len(raw),
+            next_offset=None if complete else end,
+            truncated=not complete,
+            redacted=scrubbed.any,
+            redaction_count=scrubbed.count,
+            invalid_utf8_bytes=undecodable,
+        )
+        if withheld is not None:
+            row["detail"] = withheld
+        elif not complete:
+            row["detail"] = (
+                f"{end} of {chunk.total_bytes} bytes are shown. This is a window, not "
+                "the whole artifact -- continue from next_offset, or read the object "
+                "from its uri."
+            )
+        if undecodable:
+            row["detail"] = _with_sentence(
+                row["detail"],
+                f"{undecodable} bytes of this window are not UTF-8 and are shown as "
+                "U+FFFD; the raw route (/artifacts/raw) serves them exactly",
+            )
+        return row
+
+    def _resolve_artifact(
+        self, task: Task, name: str
+    ) -> tuple[dict[str, Any], str, str, ObjectReader]:
+        """A manifest NAME to `(entry, attempt_id, key, reader)`, or the refusal.
+
+        The resolution every artifact route shares -- the content window, the
+        raw download (#184) and the legacy agent-stream fallback -- so they
+        cannot disagree about which object a name means. The rules are
+        `read_artifact`'s docstring's: exact-name match against this task's
+        own manifest, the key REBUILT from the task document and the entry's
+        attempt segment, the stored `uri` compared and a disagreement refused.
+        """
         manifest = self._store.artifact_manifest(task)
 
         if not isinstance(name, str) or not name:
@@ -949,99 +1251,7 @@ class InspectionService:
                 "platform writes it, so nothing was read; the manifest and the "
                 "object layout disagree"
             )
-
-        window = self._default_artifact_bytes if limit_bytes is None else limit_bytes
-        if offset < 0:
-            raise ValidationFailed("offset must not be negative")
-        if window < 1:
-            raise ValidationFailed("limit_bytes must be at least 1")
-        window = min(max(window, self._min_artifact_bytes), self._max_artifact_bytes)
-
-        row = _artifact_row(task=task, entry=entry, attempt_id=attempt_id)
-        row.update(key=key, uri=reader.uri(key))
-
-        probe = 1 if offset > 0 else 0
-        try:
-            chunk = reader.read_range(key, offset=offset - probe, length=window + probe)
-        except ObjectAbsent:
-            row.update(
-                status="absent",
-                detail=(
-                    "the manifest records this artifact but the object is not in the "
-                    "bucket; it was removed, or the upload the manifest records did "
-                    "not complete"
-                ),
-            )
-            return row
-        except ObjectUnreadable as exc:
-            row.update(
-                status="unreadable",
-                detail=(
-                    "the artifact store could not be read, so nothing may be concluded "
-                    "about this artifact's content: " + redact_detail(exc.reason)
-                ),
-            )
-            return row
-
-        row["total_bytes"] = chunk.total_bytes
-        if self._looks_binary(reader, key, chunk, offset=offset, probe=probe):
-            row.update(
-                status="binary",
-                offset=0,
-                detail=(
-                    "this artifact is not text, so its bytes are not served here: "
-                    "nothing can scan them for a credential before they leave, and a "
-                    "redaction that cannot run is not a redaction. Read it from the "
-                    "uri above with your own credentials."
-                ),
-            )
-            return row
-
-        if not chunk.data:
-            # Paged past the end, or a zero-byte artifact. Both are an object
-            # that EXISTS and is empty, which is not absent and not a failure.
-            row.update(
-                status="ok",
-                content="",
-                offset=min(offset, chunk.total_bytes),
-                truncated=False,
-            )
-            return row
-
-        previous = chunk.data[:probe]
-        raw = chunk.data[probe:]
-        start = chunk.offset + probe
-        raw, start, end, withheld = _align(
-            raw,
-            start=start,
-            previous=previous,
-            at_eof=chunk.end >= chunk.total_bytes,
-            read_end=chunk.end,
-        )
-        scrubbed = redact(raw.decode("utf-8", errors="replace"))
-        complete = end >= chunk.total_bytes
-        row.update(
-            status="ok",
-            content=scrubbed.text,
-            # Byte accounting is over the RAW object, never over the redacted
-            # string: the redacted text is shorter and paging on its length
-            # would drift away from the object.
-            offset=start,
-            returned_bytes=len(raw),
-            next_offset=None if complete else end,
-            truncated=not complete,
-            redacted=scrubbed.any,
-            redaction_count=scrubbed.count,
-        )
-        if withheld is not None:
-            row["detail"] = withheld
-        elif not complete:
-            row["detail"] = (
-                f"{end} of {chunk.total_bytes} bytes are shown. This is a window, not "
-                "the whole artifact -- continue from next_offset, or read the object "
-                "from its uri."
-            )
-        return row
+        return entry, attempt_id, key, reader
 
     def _artifact_key(self, *, task: Task, attempt_id: str, name: str) -> str:
         """`tenants/<t>/tasks/<id>/attempts/<a>/artifacts/<name>`, rebuilt.
@@ -1108,6 +1318,11 @@ def _attempt_of_artifact_uri(uri: Any, *, tenant_id: str, task_id: str) -> str |
     `LOCAL_ARTIFACT_ROOT` run writes, which is the same reading
     `pointer_to_prefix` takes of the checkpoint pointer.
     """
+    return _attempt_of_uri(uri, tenant_id=tenant_id, task_id=task_id, segment=ARTIFACTS_SEGMENT)
+
+
+def _attempt_of_uri(uri: Any, *, tenant_id: str, task_id: str, segment: str) -> str | None:
+    """The attempt segment of a stored uri under `.../attempts/<a>/<segment>/`, or None."""
     if not isinstance(uri, str) or not uri:
         return None
     marker = uri.find(TENANTS_ROOT)
@@ -1119,9 +1334,159 @@ def _attempt_of_artifact_uri(uri: Any, *, tenant_id: str, task_id: str) -> str |
         return None
     rest = key[len(root) :]
     attempt, _, remainder = rest.partition("/")
-    if not attempt or not remainder.startswith(f"{ARTIFACTS_SEGMENT}/"):
+    if not attempt or not remainder.startswith(f"{segment}/"):
         return None
     return attempt
+
+
+def manifest_attempt(task: Task) -> str | None:
+    """The attempt `result_summary` describes, or None when nothing says.
+
+    `result_summary` is written once, by `control.finish()`, and describes the
+    FINAL attempt only; it names no attempt id, so the id is read off the
+    locations it records -- the artifacts first, then the log objects -- each
+    through `_attempt_of_uri`, which accepts only a location under THIS task's
+    own prefix. Every per-attempt reader that falls back on the manifest (the
+    legacy agent streams, the runner summary behind `/answer`) checks it is
+    reading the manifest's attempt before it does, so an earlier attempt is
+    never shown the final attempt's output.
+    """
+    summary = task.result_summary
+    if not isinstance(summary, dict):
+        return None
+    entries = summary.get("artifacts")
+    for entry in entries if isinstance(entries, list) else []:
+        if isinstance(entry, dict):
+            found = _attempt_of_artifact_uri(
+                entry.get("uri"), tenant_id=task.tenant_id, task_id=task.id
+            )
+            if found:
+                return found
+    logs = summary.get("logs")
+    if isinstance(logs, dict):
+        for uri in logs.values():
+            found = _attempt_of_uri(
+                uri, tenant_id=task.tenant_id, task_id=task.id, segment=LOGS_SEGMENT
+            )
+            if found:
+                return found
+    return None
+
+
+@dataclass
+class OpenedStream:
+    """Which object one stream was read from, and what the read gave.
+
+    `chunk` is the raw window when `status` is `ok`, and None otherwise.
+    """
+
+    stream: str
+    source: str | None
+    status: str
+    key: str | None = None
+    uri: str | None = None
+    detail: str | None = None
+    chunk: ObjectSlice | None = None
+
+    def entry(self) -> dict[str, Any]:
+        """The log route's row for a stream that was NOT read (absent, unreadable, n/a)."""
+        row = _entry(self.stream, self.source, self.status)
+        row["key"] = self.key
+        row["uri"] = self.uri
+        row["detail"] = self.detail
+        return row
+
+
+def _read_live(reader: ObjectReader, key: str, *, offset: int, length: int) -> ObjectSlice:
+    """Read a live tail, once more if it was republished mid-read.
+
+    The worker rewrites every tail each `live_log_interval_seconds`, so a read
+    that straddles a republish is ordinary, not a fault; a second read is
+    normally a clean read of the new object. A second replacement propagates
+    as `ObjectReplaced` and the stream is reported unreadable -- never a window
+    spliced from two objects.
+    """
+    try:
+        return reader.read_range(key, offset=offset, length=length)
+    except ObjectReplaced:
+        return reader.read_range(key, offset=offset, length=length)
+
+
+def parse_tail_header(raw: bytes) -> tuple[dict[str, Any] | None, int]:
+    """`(tail_window, header_length)` for a live tail's first bytes; `(None, 0)` if absent.
+
+    `published_at` is the header's `at=` when present and parseable, else
+    null -- a tail published before #184 has none, and a value that does not
+    parse is not passed on as though it were a time.
+    """
+    match = _TAIL_HEADER.match(raw[:512])
+    if match is None:
+        return None, 0
+    published = None
+    if match.group(3) is not None:
+        text = match.group(3).decode("ascii", errors="replace")
+        if _parse_instant(text) is not None:
+            published = text
+    return (
+        {
+            "object_offset": int(match.group(1)),
+            "stream_size": int(match.group(2)),
+            "published_at": published,
+        },
+        match.end(),
+    )
+
+
+def _parse_instant(text: str) -> datetime | None:
+    try:
+        moment = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
+
+
+def _utc(moment: datetime) -> datetime:
+    return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
+
+
+def _iso(moment: datetime | None) -> str | None:
+    return None if moment is None else _utc(moment).astimezone(timezone.utc).isoformat()
+
+
+def _ages(chunk: ObjectSlice, read_at: datetime) -> dict[str, Any]:
+    """`object_updated_at` and `age_seconds` for one read, both on the server's clock.
+
+    Null when the store reported no time -- never an age of zero, which would
+    draw a tail of unknown age as a fresh one.
+    """
+    if chunk.updated is None:
+        return {"object_updated_at": None, "age_seconds": None}
+    updated = _utc(chunk.updated)
+    return {
+        "object_updated_at": _iso(updated),
+        "age_seconds": round((_utc(read_at) - updated).total_seconds(), 3),
+    }
+
+
+def _wanted_streams(stream: str | Sequence[str] | None) -> tuple[str, ...]:
+    """The streams one log read serves, in the order asked, each once.
+
+    None, or an empty list, is the runner's two streams -- the route's answer
+    since before `stream` was repeatable, which RunFiles and `swarm tail` rely
+    on. A name outside `LOG_STREAMS` is a 422 rather than an empty row.
+    """
+    if stream is None:
+        return STREAMS
+    names = [stream] if isinstance(stream, str) else list(stream)
+    if not names:
+        return STREAMS
+    out: list[str] = []
+    for name in names:
+        if name not in LOG_STREAMS:
+            raise ValidationFailed(f"stream must be one of: {', '.join(LOG_STREAMS)}")
+        if name not in out:
+            out.append(name)
+    return tuple(out)
 
 
 def _artifact_row(*, task: Task, entry: dict[str, Any], attempt_id: str) -> dict[str, Any]:
@@ -1153,6 +1518,9 @@ def _artifact_row(*, task: Task, entry: dict[str, Any], attempt_id: str) -> dict
         "truncated": False,
         "redacted": False,
         "redaction_count": 0,
+        # Bytes of the served window that are not UTF-8, shown as U+FFFD. Null,
+        # never 0, when no window was read.
+        "invalid_utf8_bytes": None,
         "redaction": {
             # Stated in the payload so a reader never has to assume it, and so
             # a deployment where it somehow stopped is visible from outside.
@@ -1245,6 +1613,53 @@ def _align(
     return raw, start, start + len(raw), detail
 
 
+def _enter_key(
+    data: bytes, *, raw: bytes, start: int, end: int, base: int
+) -> tuple[bytes, int, bool, str | None]:
+    """Whether an aligned window begins inside a private key; if so, on a whole line.
+
+    `data` is everything the read returned -- the look-back, then the window
+    -- starting at object offset `base`; `raw` is the window as `_align` left
+    it, starting at `start`. Returns `(raw, start, inside_key, detail)`.
+
+    A key's lines hold no whitespace, so `_align` can only leave a window
+    starting mid-line inside a key on its BEGIN line (the marker holds
+    spaces) or on a JSON line holding a whole key written with `\\n`
+    escapes. The rest of that line is key material either way, so it is
+    skipped too and the window starts on the next line, where
+    `redact(inside_key=True)` masks the body. Bytes skipped are not served;
+    `offset` says where the window starts.
+    """
+    at = start - base
+    if not raw or open_key_start(data, at) is None:
+        return raw, start, False, None
+    if at <= 0 or data[at - 1 : at] == b"\n":
+        return raw, start, True, None
+    newline = raw.find(b"\n")
+    if newline < 0:
+        return b"", end, True, (
+            "this window lies inside a private key and holds no line break, so "
+            "nothing of it was served; continue from next_offset"
+        )
+    return raw[newline + 1 :], start + newline + 1, True, None
+
+
+def _decode_window(raw: bytes) -> tuple[str, int]:
+    """`raw` as text for a JSON body, and how many of its bytes are not UTF-8.
+
+    Each such byte is shown as U+FFFD -- a JSON string cannot carry it -- and
+    COUNTED (#188 review), so a window of a Latin-1 file is never taken for
+    the agent's own text. It used to be `errors="replace"`, silently. The raw
+    download serves the exact bytes.
+    """
+    text = raw.decode("utf-8", errors="surrogateescape")
+    return _UNDECODABLE.subn("\N{REPLACEMENT CHARACTER}", text)
+
+
+def _with_sentence(detail: str | None, sentence: str) -> str:
+    return sentence if not detail else f"{detail.rstrip('.')}. {sentence}"
+
+
 # --------------------------------------------------------------------------
 # Row helpers
 # --------------------------------------------------------------------------
@@ -1272,6 +1687,14 @@ def _entry(stream: str, source: str | None, status: str) -> dict[str, Any]:
         "redacted": False,
         "redaction_count": 0,
         "tail_window": None,
+        # The object's GCS `updated`, and the server-clock seconds between it
+        # and the read's `read_at`. Null, never 0, when there was no object or
+        # the store reported no time.
+        "object_updated_at": None,
+        "age_seconds": None,
+        # Bytes of the served window that are not UTF-8, shown as U+FFFD. Null,
+        # never 0, when nothing was read.
+        "invalid_utf8_bytes": None,
     }
 
 
@@ -1282,26 +1705,6 @@ def _no_attempt_entry(stream: str, attempt_status: str) -> dict[str, Any]:
         if attempt_status == "no_attempt_yet"
         else "no attempt could be identified for this task"
     )
-    return row
-
-
-def _absent_entry(stream: str, source: str, key: str, uri: str) -> dict[str, Any]:
-    row = _entry(stream, source, "absent")
-    row["key"] = key
-    row["uri"] = uri
-    row["detail"] = "this object does not exist"
-    return row
-
-
-def _unreadable_entry(
-    stream: str, source: str, key: str, uri: str, reason: str
-) -> dict[str, Any]:
-    row = _entry(stream, source, "unreadable")
-    row["key"] = key
-    row["uri"] = uri
-    # Redacted like log content itself: a storage client's error string can
-    # quote the request it failed on, and a signed URL is a credential.
-    row["detail"] = redact_detail(reason)
     return row
 
 

@@ -128,7 +128,7 @@ info "submitting ${COUNT} task(s)"
 SUBMIT_FAILURES=0
 for i in $(seq 1 "${COUNT}"); do
   if id="$(submit_task "${PROFILE}" \
-        "$(jq -nc --argjson i "${i}" '{message:"bench-dispatch", index:$i}')" \
+        "$(jq -nc --argjson i "${i}" '{prompt: ("bench-dispatch " + ($i|tostring))}')" \
         '{"metadata":{"source":"bench-dispatch"}}' 2>/dev/null)"; then
     TASK_IDS+=("${id}")
   else

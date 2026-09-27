@@ -205,7 +205,7 @@ run "the_alerts_page_on_what_a_human_would_act_on" {
   # backend; and the same lease held back for thirty minutes, grouped by lease.
   assert {
     condition = (
-      google_monitoring_alert_policy.reconciler_blind[0].conditions[0].condition_threshold[0].threshold_value == 2 &&
+      google_monitoring_alert_policy.reconciler_blind[0].conditions[0].condition_threshold[0].threshold_value == 10 &&
       google_monitoring_alert_policy.reconciler_blind[0].conditions[0].condition_threshold[0].aggregations[0].alignment_period == "900s" &&
       contains(google_monitoring_alert_policy.reconciler_blind[0].conditions[0].condition_threshold[0].aggregations[0].group_by_fields, "metric.labels.backend") &&
       google_monitoring_alert_policy.reconciler_blind[0].conditions[1].condition_threshold[0].duration == "1800s" &&

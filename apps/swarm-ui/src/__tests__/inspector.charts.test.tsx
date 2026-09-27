@@ -58,14 +58,18 @@ function run(): AgentRun {
   // PRODUCTION SHAPE. A started attempt's `created_at` equals its
   // `started_at` -- the worker's `record_attempt_start` rewrites the document
   // (control.py) -- and admission survives only as its `lease_acquired`.
+  // Both attempts reported a cost, so the token-spend line has a plot to
+  // draw: with nothing measured it is an empty state with no SVG at all, and
+  // the count of chart roots below would not include it.
   const attempts = [
-    attempt(1, { created_at: at(1), started_at: at(1), completed_at: at(6), exit_code: 1 }),
+    attempt(1, { created_at: at(1), started_at: at(1), completed_at: at(6), exit_code: 1, cost_usd: 0.12 }),
     attempt(2, {
       created_at: at(13),
       started_at: at(13),
       completed_at: at(20),
       checkpoints: ['ck_1', 'ck_2'],
       peak_rss_bytes: 2_000_000_000,
+      cost_usd: 0.31,
     }),
   ]
   return {
@@ -102,8 +106,11 @@ describe('the inspector draws its charts and keeps its tables', () => {
     const el = await mount()
     const fig = el.querySelector('figure.ctl-phases')
     expect(fig, 'the phase chart is not mounted').not.toBeNull()
-    expect(fig!.querySelectorAll('[data-testid="phase-row"]')).toHaveLength(2)
-    expect(fig!.querySelectorAll('[data-testid="lolly"]')).toHaveLength(2)
+    // Read off one drawing: each width is drawn separately (AG-20), and the
+    // narrow one holds the same rows.
+    expect(fig!.querySelectorAll('svg.is-wide [data-testid="phase-row"]')).toHaveLength(2)
+    expect(fig!.querySelectorAll('svg.is-wide [data-testid="lolly"]')).toHaveLength(2)
+    expect(fig!.querySelectorAll('svg.is-narrow [data-testid="phase-row"]')).toHaveLength(2)
     // 5 minutes of attempt 1 plus 7 of attempt 2.
     expect(fig!.querySelector('[data-testid="work-sum"]')?.textContent).toContain('ran 12m 0s over 2 of 2')
     // The cards still state each attempt's own start and end as facts.
@@ -134,7 +141,7 @@ describe('the inspector draws its charts and keeps its tables', () => {
     const el = await mount()
     const chart = el.querySelector('figure.ctl-diffstat')
     expect(chart, 'the diffstat is not mounted').not.toBeNull()
-    expect(chart!.querySelectorAll('[data-testid="diff-row"]')).toHaveLength(2)
+    expect(chart!.querySelectorAll('svg.is-wide [data-testid="diff-row"]')).toHaveLength(2)
     const table = chart!.nextElementSibling
     expect(table?.textContent).toContain('Harden the guard')
     expect(table?.textContent).toContain('+61 −12')
@@ -192,18 +199,23 @@ describe('the sentences on the marks are reachable', () => {
     // <svg> (its Text component), so `figure svg` matched 35 elements on this
     // run and the first version of this test failed on its own count before
     // it ever read a role -- run 35976830767, a red that proved nothing.
-    const svgs = [
-      ...el.querySelectorAll(
-        [
-          'figure.ctl-phases svg.ctl-chart-svg',
-          'figure.ctl-peak svg.ctl-chart-svg',
-          'figure.ctl-ckpt-strip svg.ctl-chart-svg',
-          'figure.ctl-diffstat svg.ctl-chart-svg',
-        ].join(', '),
-      ),
-    ]
-    // phases + lollipop, one peak, one strip, one diffstat.
-    expect(svgs.length, 'the charts this checks were not all mounted').toBe(5)
+    //
+    // EVERY CHART ROOT IN THE INSPECTOR, not a list of the ones known to be
+    // fixed. This was four named figure classes, which left the token-spend
+    // line -- mounted in the same Attempts panel -- out of both counts, so a
+    // single scaled 640-unit drawing passed "every chart has a narrow one"
+    // (AG-20). A chart added next month is counted by the same selector.
+    const svgs = [...el.querySelectorAll('figure.ctl-chart svg.ctl-chart-svg')]
+    // phases + lollipop, one peak, one strip, one diffstat, the token-spend
+    // line -- each drawn at two widths (AG-20), and both drawings are the
+    // accessible chart.
+    expect(
+      el.querySelector('figure.ctl-chart[aria-label="Token spend, attempt by attempt"] svg.ctl-chart-svg'),
+      'the token-spend line is not mounted with a plot, so this count cannot see it',
+    ).not.toBeNull()
+    expect(svgs.length, 'the charts this checks were not all mounted').toBe(12)
+    expect(svgs.filter((s) => s.classList.contains('is-narrow')), 'a chart has no narrow drawing').toHaveLength(6)
+    expect(svgs.filter((s) => s.classList.contains('is-wide')), 'a chart root is neither drawing').toHaveLength(6)
     for (const svg of svgs) {
       expect(svg.getAttribute('role'), svg.getAttribute('aria-label') ?? '').toBe('group')
     }

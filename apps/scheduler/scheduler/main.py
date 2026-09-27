@@ -25,6 +25,7 @@ from fastapi.concurrency import run_in_threadpool
 
 from swarm_common.models import utcnow
 
+from .credentials import AccountPool
 from .dispatch import build_router
 from .loop import DrainReport, Scheduler
 from .metrics import SchedulerMetrics
@@ -124,11 +125,17 @@ def build_scheduler(
         db = firestore.Client(
             project=settings.project_id, database=settings.core.firestore_database
         )
+    # ONE account pool for admission and for the Cloud Run Job's secret mount,
+    # so both judge a task on the same list, read once per drain
+    # (credentials.py, #169). Building no client: it reads through `db`, and
+    # only when a keyless tenant's task needs it.
+    pool = AccountPool.for_deployment(settings, db)
     return Scheduler(
         settings=settings,
         store=SchedulerStore(db),
-        router=router or build_router(settings),
+        router=router or build_router(settings, pool=pool),
         metrics=metrics or SchedulerMetrics(),
+        pool=pool,
     )
 
 

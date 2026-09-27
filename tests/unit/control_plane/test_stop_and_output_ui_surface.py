@@ -86,7 +86,10 @@ def test_only_the_stop_control_calls_the_cancel_route() -> None:
     the only file that calls `cancelTask`. A second call site would be a stop
     with no confirmation behind it.
     """
-    writes = re.findall(r"write\(\s*`[^`]*?/cancel`", code("api.ts"))
+    # `write()` takes the value `route()` builds, never a bare string (CH-18,
+    # swarm-ui fetch.ts), so the target is `route('/v1/tasks/{id}/cancel', …)`;
+    # a bare template literal is still accepted in case one comes back.
+    writes = re.findall(r"write\(\s*(?:route\(\s*)?['\"`][^'\"`]*?/cancel['\"`]", code("api.ts"))
     assert len(writes) == 1, (
         f"{len(writes)} write() calls in api.ts target a /cancel path; the "
         "cancel route should have exactly one client function."
@@ -209,7 +212,9 @@ def test_the_viewer_never_constructs_a_gcs_location_for_a_request() -> None:
 # --------------------------------------------------------------------------
 
 @pytest.mark.parametrize(
-    "name", ["ArtifactViewer.tsx", "AgentDetail.tsx", "Workflows.tsx", "StopRun.tsx"]
+    # Artifacts.tsx (#184) renders the agent's answer and every transcript
+    # step -- the most agent-written text on any screen.
+    "name", ["ArtifactViewer.tsx", "AgentDetail.tsx", "Workflows.tsx", "StopRun.tsx", "Artifacts.tsx"]
 )
 def test_no_artifact_bytes_are_turned_into_html(name) -> None:
     """An artifact is the least trustworthy string in this application."""

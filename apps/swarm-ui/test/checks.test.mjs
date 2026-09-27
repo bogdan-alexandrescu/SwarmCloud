@@ -517,3 +517,48 @@ test('a truncated workflow page says its clear is not a census', () => {
 test('agoIso and NOW agree, so every age in this file means what it says', () => {
   assert.equal(Date.parse(agoIso(600)), NOW - 600_000)
 })
+
+// --------------------------------------------------------------------------
+// OV-10: THE LINK OPENS THE LIST IT NAMES
+// --------------------------------------------------------------------------
+//
+// The failed-tasks item linked to `#work/running` and said "agents · Recent
+// tab" -- a how-to, because the tab could not be carried in the hash -- and the
+// list then opened on Live whenever anything ran. The three parked items had
+// the same pattern with "Waiting tab". The tab and the Recent state are
+// addresses now (App.tsx, `agentlist.ts`), so each link opens exactly the list
+// it names and its word names the destination, as OV-11 set for card heads.
+//
+// MUTATION: point either back at `#work/running`, or label it by the tab.
+
+test('OV-10: the failures item opens the failed agents, and says so', () => {
+  const checks = deriveChecks(
+    inputs({ tasks: ok(taskPage([task({ id: 't1', state: 'FAILED', lastError: 'exit 1' })])) }),
+    NOW,
+  )
+  const [p] = checkNamed(checks, 'Failures').problems
+  assert.equal(p.href, '#work/running/recent/failed')
+  assert.equal(p.linkLabel, 'failed agents')
+})
+
+test('OV-10: every parked item opens the waiting agents, and says so', () => {
+  const checks = deriveChecks(
+    inputs({
+      tasks: ok(
+        taskPage([
+          task({ id: 't1', state: 'PARKED', parkReason: 'CREDENTIAL_MISSING' }),
+          task({ id: 't2', state: 'PARKED', parkReason: 'PROVIDER_OUTAGE' }),
+          task({ id: 't3', state: 'PARKED', parkReason: 'SOME_NEW_REASON' }),
+        ]),
+      ),
+    }),
+    NOW,
+  )
+  const parked = checkNamed(checks, 'Parked work').problems
+  // All three kinds: a person, a clock, and a reason this build does not know.
+  assert.equal(parked.length, 3)
+  for (const p of parked) {
+    assert.equal(p.href, '#work/running/waiting', p.headline)
+    assert.equal(p.linkLabel, 'waiting agents', p.headline)
+  }
+})

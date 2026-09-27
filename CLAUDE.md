@@ -178,6 +178,12 @@ Environment specifics that will bite you:
 * Never put secret material in Terraform. A managed secret **version** puts the
   plaintext in a state file several people can read. `scripts/create-secrets.sh`
   owns secret values.
+* **A forge token (a GitHub PAT or App key) is never written to this
+  repository**, a tfvars file, a Job environment or a log. It lives only in
+  Secret Manager as `swarm-tenant-<tenant>-git`, stored with
+  `scripts/create-secrets.sh --stdin`, and the worker reads it at runtime.
+  The repository is public: a token committed once is a token published, and
+  rewriting history does not unpublish it. Owner rule, 2026-09-25.
 
 ---
 
@@ -279,6 +285,29 @@ Then check your own work against this list:
 * If I changed a default, did I say **why** in the file, next to the value?
 
 ---
+
+## Lanes: how an agent works here
+
+Measured 2026-09-26 across 773 agents: 8.9 billion cached tokens re-read and ~166
+agent-hours, almost none of it output. Cost is turns × context. Whole-file reads
+and waiting inside agents made lanes carry 300-500k tokens on every turn.
+
+* **Read by window.** Never read a whole file over 1,000 lines (a hook refuses it).
+  `grep -n` or `rg` first, then read 100-300 lines around the hit.
+* **Never wait or poll.** No `sleep` loops, `gh run watch`, `--watch`, or waiting
+  for a PR to merge. The orchestrator waits for CI at zero token cost, and it
+  dispatches a dependent lane only after its dependency has merged.
+* **Red first, in this shape.** Push the tests alone to the PR branch, push the fix
+  to `<branch>-fix`, and stop. CI cancels an in-progress run when a newer commit is
+  pushed, so the red run must finish before the fix lands.
+* **At most ~150 tool calls per agent.** Then commit, push (WIP to `<branch>-wip`),
+  and hand off to a fresh agent.
+* **Territory.** Stop and ask before editing a file your brief did not name. Keep
+  scratch files under `scratchpad/<branch>/`.
+* **One review, and only where it matters.** Credentials, tenant isolation,
+  redaction and IAM get a review. It reports blockers and majors; minors go to the
+  wave epic.
+* **A PR labelled `ready` is merged by the merge watcher** once CI is green at head.
 
 ## Reporting
 

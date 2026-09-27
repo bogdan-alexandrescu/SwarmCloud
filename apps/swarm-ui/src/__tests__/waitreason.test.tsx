@@ -148,6 +148,23 @@ function renderBlockers(b: ProfileBlocker): HTMLElement {
   return render(<BlockerList h={h} groups={undefined} />).container as HTMLElement
 }
 
+/**
+ * The words the list's marks say, under `scope`.
+ *
+ * #159 RE-POINT. These tests read the list's `.tag.full` / `.tag.paused`. The
+ * list is back on the Profile headroom card, and CP-12 (#85) left no `.tag` in
+ * that card: each refusal is drawn in the card's own marks, Pools' vocabulary
+ * -- `.ctl-chip.is-paused` paused, `limit 0` in the paused tone when a person
+ * set it and the bad tone when quota zeroed it, `.ctl-chip.is-warn` full. The
+ * claims below did not move; only the element they are read off did.
+ */
+function marksIn(el: HTMLElement, scope = ''): string[] {
+  return [...el.querySelectorAll(`${scope} .ctl-chip`)].map((c) => {
+    const tone = [...c.classList].find((k) => k.startsWith('is-')) ?? '(none)'
+    return `${(c.textContent ?? '').trim()}|${tone}`
+  })
+}
+
 describe('the profile-headroom list draws the same pool the same way', () => {
   /**
    * The server files every `*_LIMIT` reason under `no_room` ("waiting is a
@@ -161,13 +178,13 @@ describe('the profile-headroom list draws the same pool the same way', () => {
     expect(acting, 'a zero-limit pool was filed where waiting is the answer').not.toBeNull()
     expect(acting!.textContent).toMatch(/limit 0/)
     expect(el.querySelector('.blocker-group.no-room')).toBeNull()
-    expect(el.querySelector('.tag.full'), 'a pool capped at zero is not full').toBeNull()
+    expect(marksIn(el), 'a pool capped at zero is not full').toEqual(['limit 0|is-paused'])
     expect(el.textContent).not.toMatch(/busy platform-wide/)
   })
 
   it('keeps a genuinely full pool under "eligible, no room", tagged full', () => {
     const el = renderBlockers(blocker({}))
-    expect(el.querySelector('.blocker-group.no-room .tag.full')).not.toBeNull()
+    expect(marksIn(el, '.blocker-group.no-room')).toEqual(['full|is-warn'])
     expect(el.querySelector('.blocker-group.needs-action')).toBeNull()
   })
 
@@ -180,7 +197,7 @@ describe('the profile-headroom list draws the same pool the same way', () => {
     const el = renderBlockers(
       blocker({ reason: 'MANUAL_PAUSE', limit: 1_000_000, active: 0, group: 'needs_action' }),
     )
-    expect(el.querySelector('.blocker-group.needs-action .tag.paused')).not.toBeNull()
+    expect(marksIn(el, '.blocker-group.needs-action')).toEqual(['paused|is-paused'])
     expect(el.textContent).not.toMatch(/1000000|1,000,000/)
   })
 
@@ -197,7 +214,7 @@ describe('the profile-headroom list draws the same pool the same way', () => {
     const room = el.querySelector('.blocker-group.no-room')
     expect(room, 'a provider pool at zero was refiled').not.toBeNull()
     expect(room!.textContent).toMatch(/limit 0/)
-    expect(el.querySelector('.tag.full')).toBeNull()
+    expect(marksIn(el), 'a provider pool at zero is drawn full, or in a person’s tone').toEqual(['limit 0|is-bad'])
     expect(el.textContent).not.toMatch(/operator/i)
   })
 })

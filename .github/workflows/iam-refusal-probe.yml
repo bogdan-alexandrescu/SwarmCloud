@@ -1,0 +1,132 @@
+# The deployer asks for a role it must be refused, once, on purpose (#68).
+#
+# After PR #73's targeted bootstrap apply, the CI deployer's
+# roles/resourcemanager.projectIamAdmin carries a condition that admits a
+# project policy change only if every role it modifies is one terraform/infra
+# grants (`modifiedGrantsByRole` ... `hasOnly`, in
+# terraform/bootstrap/deployer_conditions.tf). Releases prove the admitted
+# side: they read the policy, and one that adds a tenant writes it. Nothing in
+# the pipeline asks for a role OFF the list, so nothing proves the refusal.
+# This job asks for one -- roles/browser, granted by the deployer to itself --
+# and passes only if IAM says PERMISSION_DENIED.
+#
+# OWNER DECISION, 2026-09-25 (issue #68): "a one-off workflow_dispatch job on
+# main, running as the deployer ... If the grant succeeds instead, it revokes it
+# at once and fails loudly. The job is prepared in a PR and run once, by the
+# owner, after step 3 of the order recorded on #80." The owner's page is
+# docs/runbooks/iam-refusal-probe.md; docs/ci.md says what the verdict proves
+# and what it cannot.
+#
+# DISPATCH ONLY. No push, pull_request or schedule trigger, and no inputs: it
+# writes to the project policy of a SHARED project if the condition is wrong,
+# so it runs when the owner runs it and asks for exactly the role written in
+# scripts/iam-refusal-probe.sh, never one a dispatcher picks.
+#
+# MAIN ONLY, TWICE. The workload identity provider mints the deployer's token
+# for `refs/heads/main` and nothing else (terraform/bootstrap/wif.tf,
+# attribute_condition, and the per-ref principalSet on the service account), so
+# a dispatch on any other ref could not authenticate. The first step refuses
+# such a run by name, before the auth step is reached, so the failure says why
+# instead of arriving as WIF's `unauthorized_client`.
+#
+# THE REVERT RUNS ON EVERY PATH AFTER PREFLIGHT. It is gated on `always()` and
+# on preflight's `ready` output, which is written before anything is: a
+# failure, a timeout or a cancel of the grant step still reaches it. (A second,
+# forced cancel can stop it; the runbook says how to check by hand.) It reads
+# the policy first and removes the binding only if it is there, so on a refusal
+# it is the read-back that shows nothing was granted.
+#
+# tests/unit/scripts/test_iam_refusal_probe.py holds the triggers, the ref
+# guard, the auth step, the permissions and the revert's gate.
+
+name: iam refusal probe
+
+on:
+  workflow_dispatch:
+
+# Nothing at the workflow level. The one job asks for what it needs.
+permissions: {}
+
+concurrency:
+  # Two probes at once would each see the other's grant. Never cancel one
+  # mid-run from here: the revert must get to run.
+  group: iam-refusal-probe
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    name: deployer is refused an unlisted role
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    # NO `environment:`. The deployer's token depends on the ref, not on an
+    # environment, and GitHub creates any environment a workflow names, with
+    # no protection, the first time it runs.
+    permissions:
+      contents: read   # checkout of the script and scripts/lib/common.sh
+      id-token: write  # the OIDC token WIF exchanges for the deployer's
+    env:
+      PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      DEPLOYER_SA: ${{ vars.GCP_DEPLOY_SA }}
+    steps:
+      - name: refuse any ref but main
+        # Before checkout and before auth: nothing on another ref is trusted
+        # to decide this. GITHUB_REF is the runner's own, not an input.
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_REF}" != "refs/heads/main" ]; then
+            echo "::error title=main only::This probe runs only on refs/heads/main, and was dispatched on ${GITHUB_REF}. The workload identity provider mints the deployer's token for main alone, so no other ref could authenticate. Run: gh workflow run iam-refusal-probe.yml --ref main"
+            exit 1
+          fi
+          echo "ref ${GITHUB_REF}: the one ref the deployer's token is minted for"
+
+      - id: checkout
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      # The same auth step, with the same variables, as release.yml and
+      # terraform.yml. No token_format: no access token is emitted as an output,
+      # so there is none for any step to print.
+      - id: auth
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v3
+
+      - name: preflight (read-only)
+        id: preflight
+        # Refuses to go on unless the verdict can only be the condition's.
+        # Writes `ready=true` on success and nothing else is written until then.
+        run: ./scripts/iam-refusal-probe.sh preflight
+
+      - name: ask for roles/browser as the deployer
+        id: grant
+        if: steps.preflight.outputs.ready == 'true'
+        # Passes ONLY on PERMISSION_DENIED for this project's setIamPolicy. A
+        # grant, an auth failure, a network error or anything else fails here.
+        timeout-minutes: 5
+        env:
+          PREFLIGHT_UNREAD: ${{ steps.preflight.outputs.unread }}
+        run: ./scripts/iam-refusal-probe.sh grant
+
+      - name: revert and read back
+        id: revert
+        if: always() && steps.preflight.outputs.ready == 'true'
+        timeout-minutes: 5
+        env:
+          PREFLIGHT_UNREAD: ${{ steps.preflight.outputs.unread }}
+          GRANT_VERDICT: ${{ steps.grant.outputs.verdict }}
+          GRANT_CONFLICT: ${{ steps.grant.outputs.conflict }}
+        run: ./scripts/iam-refusal-probe.sh revert
+
+      - name: what this run means
+        if: always() && steps.checkout.outcome == 'success'
+        env:
+          PREFLIGHT_OUTCOME: ${{ steps.preflight.outcome }}
+          PREFLIGHT_UNREAD: ${{ steps.preflight.outputs.unread }}
+          GRANT_VERDICT: ${{ steps.grant.outputs.verdict }}
+          REVERT_OUTCOME: ${{ steps.revert.outcome }}
+          REVERT_FOUND: ${{ steps.revert.outputs.found }}
+        run: ./scripts/iam-refusal-probe.sh summary

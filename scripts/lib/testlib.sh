@@ -276,7 +276,7 @@ require_platform() {
 # profile_input PROFILE RUN_ID -> the smallest input PROFILE's runner accepts
 # AND can complete, as compact JSON.
 #
-# Most runners take anything. `browser` refuses an input with neither `url` nor
+# Most runners start on a prompt alone. `browser` refuses an input with neither `url` nor
 # `actions` ("browser runner needs input.url or at least one action",
 # apps/agent-worker/agent_worker/runners/browser.py), so the `{message, run_id}`
 # every suite used to send fails at the runner with dispatch working perfectly.
@@ -286,18 +286,26 @@ require_platform() {
 #
 # One screenshot of about:blank: Chromium starts, /dev/shm is large enough, the
 # workspace is writable and an artifact uploads, with no dependency on any site
-# outside the platform. Pinned by tests/unit/scripts/test_profile_input.py.
+# outside the platform.
+#
+# THE RUN ID RIDES IN THE PROMPT. It was a key of its own, `run_id`, beside a
+# `message` no runner read. Since contract request 25 the API refuses any key
+# of `input` the named profile does not declare (RunnerProfile.inputs, 422
+# `invalid_input`), and `prompt` is the one key every profile takes. The
+# default branch goes to whichever profile a run names, so it carries nothing
+# else. Pinned by tests/unit/scripts/test_profile_input.py and by section 13
+# of scripts/lib/check-contract-parity.sh.
 profile_input() {
   local profile="$1" run_id="$2"
   case "${profile}" in
     browser)
       jq -nc --arg r "${run_id}" '{
-        message: "smoke", run_id: $r,
+        prompt: ("smoke " + $r),
         actions: [{type: "screenshot", name: "proof.png", full_page: false}],
         extract_text: false}'
       ;;
     *)
-      jq -nc --arg r "${run_id}" '{message: "smoke", run_id: $r}'
+      jq -nc --arg r "${run_id}" '{prompt: ("smoke " + $r)}'
       ;;
   esac
 }

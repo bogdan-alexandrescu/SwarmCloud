@@ -20,8 +20,8 @@
 // `aria-label` -- plus the accessible route to the words. Where a sentence
 // moved, the test says where it went.
 
-import { describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 
 import type { Result } from '../fetch'
 import type { AgentRun, ResourceClasses } from '../api'
@@ -56,7 +56,8 @@ vi.mock('../api', async (importOriginal) => {
 import { AgentsScreen } from '../Agents'
 import { Run } from '../AgentDetail'
 import { AttemptTimelineScreen } from '../AttemptTimeline'
-import { ArtifactViewer } from '../ArtifactViewer'
+import { ArtifactViewer, Markdown } from '../ArtifactViewer'
+import { HELP } from '../help'
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -533,7 +534,15 @@ describe('AgentDetail, with every help card closed', () => {
   })
 
   it('writes an unreported cost as a phrase on a dashed tile, never as $0.00', async () => {
-    const el = await renderDetail()
+    // ON AN ENDED RUN (AG-4). The default fixture's third attempt is still
+    // running, and a running attempt's cost is DUE rather than absent -- the
+    // tile takes the pending tone and `written at exit` there, which
+    // `tests/agentdetail.test.tsx` asserts. The absence this test is about is
+    // the one an ended attempt leaves, so the run is ended.
+    const el = await renderDetail({
+      task: task({ state: 'FAILED', completed_at: NOW, current_lease_id: null }),
+      attempts: [attempt(1), attempt(2), attempt(3, { checkpoints: ['ck_9'] })],
+    })
     expectAllCardsClosed()
     const strip = el.querySelector('.ctl-metrics')!
     const absent = strip.querySelector('.ctl-metric.is-absent')
@@ -607,6 +616,46 @@ describe('AgentDetail, with every help card closed', () => {
   })
 })
 
+// AG-2. THE DRAWER'S CLOCK MOVES ON ITS OWN.
+//
+// `Run` took `Date.now()` once, at render, and nothing re-rendered it: `run`,
+// `Elapsed` and the badge's `live 12s ago` sat still while the reader
+// watched. It reads the shared 1s clock now (useNow.ts).
+//
+// BREAK IT: go back to `const now = Date.now()` in `Run`. The age stays at 12s.
+describe('the drawer ticks on the shared clock (AG-2)', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('moves the liveness age without a new read', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'setInterval', 'clearTimeout', 'clearInterval', 'Date'] })
+    api.loadCheckpoints.mockResolvedValue({ status: 'empty', fetchedAt: Date.now() })
+    api.loadTaskLogs.mockResolvedValue({ status: 'empty', fetchedAt: Date.now() })
+    const beat: TaskEvent = {
+      event_id: 'ev_hb',
+      task_id: 'tsk_0123456789abcdef',
+      type: 'heartbeat',
+      at: new Date(Date.now() - 12_000).toISOString(),
+      attempt_id: 'att_3',
+      lease_id: 'lse_3',
+      generation: 3,
+      detail: {},
+    }
+    const { container } = render(<Run run={run({ events: [beat] })} />)
+    const advance = async (ms: number) => {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(ms)
+      })
+    }
+    const age = () => container.querySelector('.liveness .lv-copy')?.textContent ?? ''
+    await advance(0)
+    expect(age()).toBe('12s ago')
+    await advance(5_000)
+    expect(age(), 'the drawer did not re-render as time passed').toBe('17s ago')
+  })
+})
+
 describe('AttemptTimeline, with every help card closed', () => {
   it('states an attempt with no events as a mark rather than a paragraph', async () => {
     const el = await renderTimeline()
@@ -614,14 +663,37 @@ describe('AttemptTimeline, with every help card closed', () => {
     // server-side and returns no page token -- so past one page the newest
     // events ... cannot be fetched at all" moved to help topic `event-paging`.
     // The screen carries the count and a `.ctl-mark.is-partial`.
-    const mark = el.querySelector('.ctl-mark.is-pending, .ctl-mark.is-partial')
-    expect(mark, 'the page-coverage caveat has no encoding at all').not.toBeNull()
-    expect(mark!.getAttribute('aria-label') ?? '').toMatch(/page token|no events/i)
-    // `#help/partial-read` is the destination the paragraph went to, reached
-    // through the toolbar's `?`.
+    //
+    // RE-POINTED (AG-9). This accepted `.is-pending` OR `.is-partial`, and the
+    // first match was the toolbar's permanent `reading` mark -- the in-flight
+    // mark, on a read that had landed. The attempts with no events on this
+    // page are what the page can PROVE is missing, so they are the `partial`
+    // mark; the route's paging caveat is the qualifier's accessible name.
+    const mark = el.querySelector('.ctl-mark.is-partial')
+    expect(mark, 'the attempts with no events on this page are not marked partial').not.toBeNull()
+    expect(mark!.getAttribute('aria-label') ?? '').toMatch(/no events/i)
     expect(
-      el.querySelector('.ctl-toolbar button[aria-expanded]'),
-      'the paging topic is unreachable',
+      el.querySelector('.ctl-mark.is-pending'),
+      'a landed read still draws the `reading` mark',
+    ).toBeNull()
+    const cap = el.querySelector('.att-ev-cap')
+    expect(cap, 'the page-coverage caveat has no encoding at all').not.toBeNull()
+    expect(cap!.getAttribute('aria-label') ?? '').toMatch(/page token/i)
+    // The toolbar's `?` is the route to the words, and it opens the topic
+    // ABOUT paging (AG-19). It opened `partial-read` -- "One message belongs
+    // to one failure" -- which is about something else. Read from HELP, so a
+    // retitled topic moves this test with it.
+    // BREAK IT: point the toolbar's `?` back at `partial-read`.
+    const glyph = el.querySelector('.ctl-toolbar button[aria-expanded]')
+    expect(glyph, 'the paging topic is unreachable').not.toBeNull()
+    expect(glyph!.getAttribute('aria-label') ?? '').toContain(HELP['event-paging'].title)
+    // AFTER THE LABEL, NEVER AFTER A VALUE (AH-24). It trailed the toolbar's
+    // counts -- `12 ev · first page · 1 blind ?` -- where it read as a footnote
+    // on the last figure. The toolbar's label is its `attempts` eyebrow, and
+    // the glyph follows that. MUTATION: move it back to the end of the strip.
+    expect(
+      el.querySelector('.ctl-toolbar .ctl-eyebrow button[aria-label^="Help: "]'),
+      'the toolbar `?` is not on its label',
     ).not.toBeNull()
   })
 
@@ -653,23 +725,54 @@ describe('ArtifactViewer', () => {
     expect(mark!.getAttribute('aria-label') ?? '').toMatch(/not the whole artifact/i)
   })
 
-  it('draws masked credentials as a warning mark with the count', async () => {
+  it('draws masked credentials as a measured count in warn ink, with no mark', async () => {
     const el = await renderViewer()
     // WHAT MOVED: "N credential-shaped values were masked in this artifact when
     // it was served. They are in the object in the bucket; masking here does
     // not remove them from there, and anything recognisable should be rotated."
     // The COUNT is the fact and stays on the glass; the rotation advice is help
-    // topic `artifact-redaction`.
+    // topic `masking-is-serve-time`.
+    //
+    // RE-POINTED (AG-5, owner decision 2026-09-25). This pinned the defect: it
+    // asked for `.ctl-mark.is-unread` -- the `not read` mark, the one that
+    // means a read FAILED -- on a count that was read, and the fact it sat in
+    // was dimmed `.is-absent` as if nothing had been measured. The kit's six
+    // marks are six kinds of nothing and this is not one of them, so the
+    // count carries no mark and no dimming; that it needs attention is its
+    // ink, `--warn` above zero (the cascade half is `artifact.masked.test.tsx`).
+    // BREAK IT: put the `unread` mark or `is-absent` back.
     const fact = el.querySelector('.ctl-fact.art-redacted')
     expect(fact, 'read-time redaction is no longer surfaced').not.toBeNull()
-    expect(fact!.querySelector('.ctl-mark.is-unread')).not.toBeNull()
-    expect(fact!.textContent).toContain('4')
+    expect(fact!.querySelector('.ctl-mark'), 'a count that was read wears an absence mark').toBeNull()
+    expect(fact!.classList.contains('is-absent'), 'a count that was read is dimmed as absent').toBe(false)
+    const count = fact!.querySelector('.art-masked')
+    expect(count, 'the count has no element of its own to carry its ink').not.toBeNull()
+    expect(count!.textContent).toBe('4')
+    expect(count!.classList.contains('is-warn'), 'four masked values are not drawn as needing attention').toBe(true)
     // The `?` is the route to the words. It is a button rather than an anchor
     // while the card is shut, which is what keeps this assertion honest: the
     // topic's text is reachable and is NOT on the glass.
+    //
+    // RE-POINTED (AG-19). This matched any `aria-label` containing
+    // "credential" -- which the masked MARK's own sentence satisfies, so it
+    // passed whatever the `?` opened, including "Credential names, never
+    // values", a topic about naming secrets. It now finds the `?` and holds it
+    // to the topic about serve-time masking.
+    // BREAK IT: point the `?` back at `credential-names-not-values`.
+    const topic = HELP['masking-is-serve-time'].title
     expect(
-      el.querySelector('[aria-label*="Credential"], [aria-label*="credential"]'),
+      [...el.querySelectorAll('button[aria-expanded]')].find((b) =>
+        (b.getAttribute('aria-label') ?? '').includes(topic),
+      ),
       'the redaction topic is unreachable',
+    ).toBeDefined()
+    // AFTER THE LABEL, NEVER AFTER A VALUE (AH-24). It trailed the count and
+    // its mark -- `masked 4 … ?` -- the QA pass's own example of a glyph read
+    // as a footnote on a figure. It sits on the fact's key now, as Overview's
+    // `reads ?` does. MUTATION: move it back after the count.
+    expect(
+      fact!.querySelector('b button[aria-label^="Help: "]'),
+      'the masked count’s `?` is not on its label',
     ).not.toBeNull()
   })
 
@@ -680,6 +783,85 @@ describe('ArtifactViewer', () => {
     // "the read succeeded and the answer is nothing".
     expect(empty.querySelector('.art-empty .ctl-mark.is-zero')).not.toBeNull()
     expect(empty.querySelector('.ctl-em')).toBeNull()
+  })
+
+  // AG-29. A BINARY ARTIFACT IS A MEASURED SIZE, NOT AN ABSENCE.
+  //
+  // BREAK IT: draw the `binary` status through `Note kind="absent"` again. The
+  // viewer then shows `not measured` beside the size it measured.
+  it('draws a binary artifact as its size, with no absence mark', async () => {
+    api.loadArtifactContent.mockResolvedValue({
+      status: 'ok',
+      data: artifact({
+        artifact: { name: 'final.png', bytes: 5120, uri: 'gs://acme/art/final.png' },
+        uri: 'gs://acme/art/final.png',
+        status: 'binary',
+        content: null,
+        total_bytes: 5120,
+        returned_bytes: 0,
+        truncated: false,
+        redacted: false,
+        redaction_count: 0,
+      }),
+      fetchedAt: Date.now(),
+    })
+    const { container } = render(
+      <ArtifactViewer
+        taskId="tsk_0123456789abcdef"
+        artifact={{ name: 'final.png', bytes: 5120, uri: 'gs://acme/art/final.png' }}
+        onClose={() => {}}
+      />,
+    )
+    await waitFor(() => expect(container.textContent).toContain('binary · 5 KiB'))
+    expect(container.querySelector('.ctl-mark'), 'a measured binary carries an absence mark').toBeNull()
+    expect(container.textContent).not.toContain('not measured')
+    // The way to the bytes stays.
+    expect(container.textContent).toContain('gs://acme/art/final.png')
+  })
+
+  // AG-22. A TABLE, OR ANY BLOCK THE RENDERER DOES NOT PARSE, KEEPS ITS LINES.
+  //
+  // BREAK IT: delete the table branch in `markdownBlocks`. The rows are then
+  // joined with spaces into one paragraph of pipes.
+  it('renders a markdown table and a raw HTML block as their source, line for line', () => {
+    const source = [
+      '# Findings',
+      '',
+      'Three services compared:',
+      '',
+      '| service | p50 | p99 |',
+      '|---|---|---|',
+      '| api | 12ms | 80ms |',
+      '| worker | 40ms | 900ms |',
+      '',
+      'name | owner',
+      '--- | ---',
+      'scheduler | track-a',
+      '',
+      '<details><summary>raw</summary>',
+      'kept as text',
+      '</details>',
+      '',
+      'A closing paragraph.',
+    ].join('\n')
+    const { container } = render(<Markdown source={source} />)
+    const pres = [...container.querySelectorAll('.art-md pre')]
+    const table = pres.find((p) => (p.textContent ?? '').includes('| service | p50 | p99 |'))
+    expect(table, 'the pipe table was not kept as a block').toBeDefined()
+    // LINE FOR LINE: every row is its own line, not a run-on paragraph.
+    expect(table!.textContent!.split('\n')).toHaveLength(4)
+    const edgeless = pres.find((p) => (p.textContent ?? '').includes('name | owner'))
+    expect(edgeless, 'a table without edge pipes was joined into a paragraph').toBeDefined()
+    expect(edgeless!.textContent!.split('\n')).toHaveLength(3)
+    const html = pres.find((p) => (p.textContent ?? '').includes('<details>'))
+    expect(html, 'a raw HTML block was joined into a paragraph').toBeDefined()
+    // Never HTML: the tags are text.
+    expect(container.querySelector('details')).toBeNull()
+    // And no paragraph swallowed a row.
+    for (const p of container.querySelectorAll('.art-md p')) {
+      expect(p.textContent ?? '', 'a paragraph carries table pipes').not.toContain('|')
+    }
+    expect(container.textContent).toContain('A closing paragraph.')
   })
 
   it('draws an absent object as a hatched mark and never as an empty document', async () => {

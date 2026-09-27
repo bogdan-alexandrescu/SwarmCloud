@@ -43,7 +43,7 @@
 // and carries its word.
 
 import { describe, expect, it, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 
 import type { Result } from '../fetch'
 import type { AccountsBoard } from '../api'
@@ -224,5 +224,58 @@ describe('an account state is a mark and a word', () => {
       cell!.querySelector('.ctl-mark.is-unread'),
       'the skipped-here mark went missing, which is the fact the state does NOT carry',
     ).toBeTruthy()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Visual QA 2026-09-25, Accounts (#85). Pushed before the fixes they demand.
+// ---------------------------------------------------------------------------
+
+describe('the state buttons speak the case the state chip does (CP-23)', () => {
+  it('labels every "move to" button in lowercase, beside a lowercase chip', async () => {
+    api.loadAccountsBoard.mockResolvedValue(
+      ok(board([account({ account_id: 'eng:held', label: 'held', state: 'PAUSED' })])),
+    )
+    render(<AccountsScreen />)
+    expect(await screen.findByText('eng:held', undefined, WAIT)).toBeTruthy()
+    // Open the row: the controls live in its detail.
+    const open = document.querySelector<HTMLButtonElement>('.acct-open')!
+    if (open.getAttribute('aria-expanded') !== 'true') fireEvent.click(open)
+    const moves = await screen.findAllByRole('button', { name: /^move to /i }, WAIT)
+    expect(moves.length, 'no state buttons were drawn, so this checked nothing').toBeGreaterThan(0)
+    for (const b of moves) {
+      const label = b.textContent ?? ''
+      expect(label, `"${label}" shouts`).toBe(label.toLowerCase())
+    }
+  })
+})
+
+describe('the pool’s count sits in the card-note slot (CP-22)', () => {
+  it('is a .ctl-card-note, not the retired .count-chip', async () => {
+    api.loadAccountsBoard.mockResolvedValue(ok(board([account({})])))
+    render(<AccountsScreen />)
+    expect(await screen.findByText('eng:laptop', undefined, WAIT)).toBeTruthy()
+    expect(document.querySelector('.count-chip')).toBeNull()
+    const note = [...document.querySelectorAll('.ctl-card-note')].find((n) =>
+      /\baccounts?\b/.test(n.textContent ?? ''),
+    )
+    expect(note, 'the account count is not a card note').toBeTruthy()
+    expect(note!.textContent).toBe('1 account')
+  })
+})
+
+describe('the add form states its isolation rule where it stays visible (CP-20)', () => {
+  it('describes the lending field with a line of text, not only a placeholder', async () => {
+    api.loadAccountsBoard.mockResolvedValue(ok(board([account({})])))
+    render(<AccountsScreen />)
+    expect(await screen.findByText('eng:laptop', undefined, WAIT)).toBeTruthy()
+    const lend = document.getElementById('acct-lend')
+    expect(lend, 'no lending field on the add form').not.toBeNull()
+    const ids = (lend!.getAttribute('aria-describedby') ?? '').split(/\s+/).filter(Boolean)
+    const hint = ids.map((id) => document.getElementById(id)).find((el) => el !== null)
+    expect(hint, 'the lending rule is only a placeholder, which vanishes on typing').toBeTruthy()
+    // WHOSE account it is when the field is left empty -- the rule itself.
+    expect(hint!.textContent).toContain('eng')
+    expect(hint!.textContent).toMatch(/only/)
   })
 })

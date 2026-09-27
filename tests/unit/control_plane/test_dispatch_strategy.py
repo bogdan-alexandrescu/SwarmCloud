@@ -570,7 +570,10 @@ def test_resolve_integrator_step_refuses_an_ambiguous_graph():
 
 
 def test_reject_reserved_metadata_allows_everything_else():
-    reject_reserved_metadata({"unit": "payments", "input_from": {"x": "y"}})
+    # `input_from` used to be in this call, pinning it as allowed. It is
+    # reserved now, by owner decision on #151; test_input_from_is_reserved.py
+    # holds that side.
+    reject_reserved_metadata({"unit": "payments", "origin": "cli"})
     with pytest.raises(ValidationFailed) as exc:
         reject_reserved_metadata({"dispatch": {}})
     assert exc.value.code == "invalid_dispatch"

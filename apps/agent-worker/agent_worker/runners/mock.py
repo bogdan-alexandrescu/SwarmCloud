@@ -20,6 +20,17 @@ It is a real workload, not a stub:
   covered;
 * fails deterministically, or reports a provider rate limit with a chosen
   retry-after, so the failure and park paths are testable without a provider.
+  The rate limit parks the task's FIRST attempt only, counted by the task's
+  own `attempt_count`, and the attempt after the park runs (see
+  `QUOTA_EXHAUSTED_PARKS`).
+
+What a caller may send is declared in the frozen catalogue
+(`RUNNER_PROFILES["mock"].inputs`, contract request 25), and swarm-api refuses
+anything else. The keys below that it does not declare -- `spend`, `provider`,
+`credential_revoked_times`, `credential_detail`, `quota_detail`, `reset_at` --
+reach this runner only from a test that writes the input itself. `attempt_id`
+and `attempt_count` are not a caller's at all: the worker writes them into
+every runner's input.
 
 Input (all optional):
 
@@ -56,6 +67,24 @@ from .base import (
 PROGRESS_DIR = "progress"
 STATE_FILE = "mock_state.json"
 
+#: How many ATTEMPTS `quota_exhausted` parks before the run goes ahead. One,
+#: by the owner's decision on #142 (2026-09-25): one park is the whole park
+#: path -- checkpoint, park, release, promote, restore, finish -- and the
+#: unbounded version parked every attempt, and since a park does not spend an
+#: attempt, a task sent it never ended.
+#:
+#: COUNTED BY THE TASK, NOT BY `work/`. The attempt's number is the task's
+#: `attempt_count`, which admission increments in the lease's own Firestore
+#: transaction and the lifecycle writes into this runner's input beside
+#: `attempt_id`. The mock parks while that is at most this. The first version
+#: kept a `quota_exhausted_times` in STATE_FILE and relied on the park's
+#: checkpoint to carry it forward; the worker parks even when that checkpoint
+#: fails to upload (for a real provider it must), so the next attempt found no
+#: count and parked again, for as long as uploads failed (the review of #213).
+#: A retry in place is the same attempt, with the same number, and is refused
+#: again, because a provider that keeps saying no must still end in a park.
+QUOTA_EXHAUSTED_PARKS = 1
+
 
 def _load_state(work: Path) -> dict[str, Any]:
     """Resume state left behind by a previous, checkpointed attempt."""
@@ -72,6 +101,25 @@ def _load_state(work: Path) -> dict[str, Any]:
 
 def _save_state(work: Path, state: dict[str, Any]) -> None:
     (work / STATE_FILE).write_text(json.dumps(state, indent=2))
+
+
+def _parks_this_attempt(payload: dict[str, Any]) -> bool:
+    """Whether `quota_exhausted` parks THIS attempt: the task's first only.
+
+    A mock started without the count -- by hand, or by a lifecycle that
+    stopped writing it -- cannot tell its first attempt from any other, and a
+    park it cannot bound is the defect `QUOTA_EXHAUSTED_PARKS` exists for. So
+    it fails instead, loudly: a failure spends an attempt, and `max_attempts`
+    bounds those.
+    """
+    number = payload.get("attempt_count")
+    if isinstance(number, bool) or not isinstance(number, int) or number < 1:
+        raise RunnerFailure(
+            "quota_exhausted needs the attempt_count the worker writes into the "
+            f"runner's input, and this input carries {number!r}; without it the "
+            "simulated park could not be bounded to one attempt"
+        )
+    return number <= QUOTA_EXHAUSTED_PARKS
 
 
 def _burn_cpu(seconds: float, stop: Any) -> int:
@@ -133,7 +181,12 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
                 spend=spend,
             )
 
-    if payload.get("quota_exhausted"):
+    if payload.get("quota_exhausted") and _parks_this_attempt(payload):
+        # Saved before the signal, as a real runner's work is on disk when its
+        # provider says no: the park checkpoints `work/` next, and the attempt
+        # that restores it resumes from it. The bound does not depend on this
+        # file arriving -- `attempt_count` is the task's -- only the resume does.
+        _save_state(work, state)
         raise QuotaExhaustedSignal(
             provider=str(payload.get("provider", "mock-provider")),
             retry_after_seconds=(

@@ -40,7 +40,7 @@ trap cleanup EXIT INT TERM
 
 # ---------------------------------------------------------------------------
 t_case "A failing task is retried and then dead-lettered, not retried forever"
-FAIL_ID="$(submit_task mock '{"fail":true,"message":"deliberate failure"}' \
+FAIL_ID="$(submit_task mock '{"fail":true,"fail_message":"deliberate failure"}' \
   '{"max_attempts":2,"metadata":{"source":"failure-test"}}')" || t_fail "submission failed"
 if [[ -n "${FAIL_ID:-}" ]]; then
   TASK_IDS+=("${FAIL_ID}")
@@ -77,7 +77,7 @@ fi
 
 # ---------------------------------------------------------------------------
 t_case "Cancelling a task in flight releases its capacity"
-CANCEL_ID="$(submit_task mock '{"sleep_seconds":120,"message":"cancel me"}' \
+CANCEL_ID="$(submit_task mock '{"sleep_seconds":120,"prompt":"cancel me"}' \
   '{"metadata":{"source":"failure-test"}}')" || t_fail "submission failed"
 if [[ -n "${CANCEL_ID:-}" ]]; then
   TASK_IDS+=("${CANCEL_ID}")

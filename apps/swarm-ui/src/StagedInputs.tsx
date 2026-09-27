@@ -80,7 +80,10 @@ function From({ row }: { row: TaskInputRow }) {
   if (row.from.kind === 'submission') return <>submission</>
   return (
     <>
-      <a href={`#work/task/${encodeURIComponent(row.from.taskId)}`}>
+      {/* `ctl-link` (CH-5): an unclassed anchor fell back to the browser's own
+          blue, and visited purple once followed, in a product whose links are
+          ink with an underline. */}
+      <a className="ctl-link" href={`#work/task/${encodeURIComponent(row.from.taskId)}`}>
         <Id title={row.from.taskId}>{row.from.taskId}</Id>
       </a>
       {/* A file that arrived from a run this one did not declare an input

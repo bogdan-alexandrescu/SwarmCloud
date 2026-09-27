@@ -31,6 +31,14 @@ import { timeAgo } from './Shell'
  * route that has never returned a payload gets `.ctl-em` in the age slot
  * rather than the words "never loaded", because an em dash in the same column
  * as every other age is read as "no age" without anyone having to parse it.
+ *
+ * AND A HEALTHY CELL IS QUIET (CH-17). Twenty-nine bordered cards, each green,
+ * was the dock on a healthy platform. A cell is a row of the dock's panel now
+ * and draws no box; the ok disc and the admin-only flat bar are grey with a
+ * `--text-dim` status, and only a warn or bad cell carries tone -- the table
+ * row's own left-edge rule, its triangle or diamond, and its status in full
+ * ink (design-system.md §6.6, §6.7). The class names below are unchanged; the
+ * sheet decides what each one paints.
  */
 export function DataSourceCells({ probes }: { probes: readonly ProbeRecord[] }) {
   if (probes.length === 0) return null
@@ -94,10 +102,16 @@ function describe(p: ProbeRecord): { tone: 'ok' | 'warn' | 'bad' | 'info'; label
   }
 }
 
+/**
+ * The cell's title: the route, then the CONCRETE call its status belongs to
+ * (CH-18). A route is a template -- `/v1/tasks/{id}/attempts` -- so the cell
+ * says which task's read it last saw, which is what someone chasing a failure
+ * needs and what the template alone cannot tell them.
+ */
 function detailFor(p: ProbeRecord): string {
   const last =
     p.lastSuccessAt === null
       ? 'This route has never returned a payload in this session.'
       : `Newest successful payload: ${new Date(p.lastSuccessAt).toLocaleTimeString()}.`
-  return `${p.path}\nLast attempt ${new Date(p.lastAttemptAt).toLocaleTimeString()}, ${p.lastLatencyMs}ms.\n${last}`
+  return `${p.path}\nLast call ${p.lastUrl}\nLast attempt ${new Date(p.lastAttemptAt).toLocaleTimeString()}, ${p.lastLatencyMs}ms.\n${last}`
 }

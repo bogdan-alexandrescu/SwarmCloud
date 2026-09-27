@@ -103,11 +103,29 @@ at the ref the dispatch names. Everything follows from that:
   dispatch against one that is already on the remote.
 * **There is no history.** One commit deep. `git log`, `git blame` and
   `git bisect` have nothing to work with.
-* **Dispatching with no `repo` at all clones nothing.** The task still runs and
-  still succeeds; `swarm_result` then reports *"this task cloned no repository,
-  so there is no code to apply"*, and the work exists only as transcript. The
-  `repo` argument is optional in the tool and has no default — the terminal
-  `uv run swarm dispatch --repo` falls back to `$SWARM_REPO`, the tool does not.
+* **With no `repo`, `infer: true` clones this checkout's pushed branch.**
+  Repository inference is opt-in (owner decision, 2026-09-26): pass `infer:
+  true` to have `swarm_dispatch` or `swarm_workflow` infer the repository and
+  branch from the git checkout the bridge runs in, pinned at its current
+  commit — and REFUSE, before anything is dispatched, a detached HEAD, a
+  branch that is not on its remote under its own name, or a branch with
+  commits that are not there, naming `git push -u <remote> <branch>`. The
+  branch is checked by its OWN name, never its upstream: a lane made with
+  `git checkout -b <lane> origin/main` tracks main, and main is never sent in
+  its place; what is actually sent is the commit that branch is pinned at, not
+  the branch name, which can move after the dispatch is sent. Never suggest
+  pushing a branch to a differently named one — a `git push origin
+  <lane>:main` lands unreviewed commits on the default branch. Uncommitted
+  changes are not refused; the reply's `repository.notes` says how many the
+  agent will not see. Read that block back to the developer: it is the answer
+  to "which ref will the agents see".
+* **With no `repo` and no `infer`, nothing is cloned.** Same with `infer:
+  false`, or outside a checkout. The task still runs and still succeeds;
+  `swarm_result` then reports *"this task cloned no repository, so there is no
+  code to apply"*, and the work exists only as its answer. The reply's
+  `repository` block says which of the two happened. The terminal's `swarm
+  dispatch` does not infer: it falls back to `$SWARM_REPO` when `--repo` is
+  not given.
 
 So: before dispatching anything that touches code, say out loud which ref the
 agents will see, and check that the work they depend on is on it.
@@ -119,7 +137,22 @@ not through a hand-rolled join. Dispatching the units separately and stitching
 them together in a later prompt is exactly the hand bookkeeping the platform
 exists to remove, and it loses artifact staging entirely --- `input_from` is how
 one step's output reaches the next, by GCS reference rather than through a
-prompt.
+prompt. The filename is also where the file lands, so a join with several
+parents needs each parent to write a **distinct** filename (`scan-A-notes.md`,
+`scan-B-notes.md`, not `notes.md` twice). The API refuses a shared name, or an
+absolute or `..` path, at submission.
+
+A step's file reaches its dependant only if the upstream agent wrote it to
+`$SWARM_ARTIFACTS_DIR`. `./artifacts` in its working directory is a link to that
+directory, unless a staged input or a restored checkpoint already has that
+name. A `claude-code` or `codex` upstream agent is told which filenames
+its dependants stage and that directory's absolute path; other runners are told
+nothing, so their prompt has to say it. A file written anywhere else, the
+repository included, is never staged. An upstream attempt whose agent finishes
+without writing one of those files FAILS, retryably, naming the missing files:
+the step runs again, starting with an empty artifacts directory, until it has
+used `max_attempts`, and then it FAILS for good and its dependants are
+cancelled. A dependant never starts on a step that left its file out.
 
 Per-step state comes from `swarm_workflow_status`, which reports the **derived**
 rollup and never a stored `state` field. That distinction is not theoretical: on
@@ -142,10 +175,34 @@ succeeded.
 | what is the shared pool at | `swarm_accounts` |
 | why did four of them die at once | `swarm_trouble` |
 
-`swarm_dispatch` takes `prompt`, `profile`, `repo`, `ref` and `label`. The
-profile is a **name** from the frozen catalogue, and the image, command and
-resource class come from the name. There is no parameter for an image and
-asking for one is not a thing a caller may do.
+`swarm_dispatch` takes `prompt`, `profile`, `repo`, `ref`, `infer`,
+`strategy`, `label` and `inputs`. The profile is a **name** from the frozen
+catalogue, and the image, command and resource class come from the name. There
+is no parameter for an image, a command or a model, and asking for one is not
+a thing a caller may do.
+
+`strategy` is how the work comes back: `collect` (the default) harvests a patch
+and pushes nothing — bring it in with `swarm_apply`; `direct-pr` pushes the
+agent's branch as `swarm/<task>` and opens a pull request, which needs a
+repository and a forge token that can push, and is refused before dispatch
+when there is no repository. `integrate` is a workflow strategy and is refused
+for a single task.
+
+`inputs` — on `swarm_dispatch` and on each `swarm_workflow` step — carries only
+what the named profile **declares**, which `swarm_profiles` lists under
+`inputs`. Today that is `mock`'s test knobs: `{"sleep_seconds": 120}` keeps a
+mock step RUNNING long enough to cancel, `{"fail": true}` fails it on purpose,
+and `{"quota_exhausted": true, "retry_after_seconds": 60}` parks it ONCE on a
+simulated rate limit; the attempt after the park runs to the end. Report that
+step as parked while it waits, not as failed. `exit_code` takes a failure's
+code, but not one the worker reads as a rate limit, a refused credential or a
+cancellation; `swarm_profiles` names those, with every key's bounds, so do
+not quote a bound from memory. `claude-code` and `codex` declare none and take
+only the prompt. For a profile that declares, a key it does not declare is
+refused before anything is dispatched, by the bridge and by the API alike.
+`browser` and `generic` have **not declared their inputs yet** (#218): the
+bridge sends them none, but the API bounds what any other caller sends them by
+size alone, so do not tell anyone their inputs are checked.
 
 **Do not guess the name — call `swarm_profiles`.** It is the catalogue itself,
 so it cannot go stale the way a list written into this paragraph can: every
@@ -192,6 +249,16 @@ It caps what it returns and SAYS when it capped. A silent truncation reads as
 "that was all the output", so pass the cap on to the developer rather than
 summarising past it.
 
+Two options make it easier to hold: `since` is the same cursor as one opaque
+string — pass back exactly what the last call returned — and
+`format: "lines"` answers with short narrated lines (what the remote agent
+said, which tools it called, where a waiting task waits and why) instead of the
+full report. A finished task then carries an `outcome`: its answer, the JSON
+object that answer ends with, `cost_usd`, `duration_s`, `pr_url`, `artifacts`
+and `last_error`. `wait_seconds` makes a `lines` call gather for up to that long
+and return early when a task finishes or starts, which is what the plugin's
+workflow agents use.
+
 
 An MCP tool returns exactly **once**, so nothing here streams and no tool
 pretends to.
@@ -201,19 +268,25 @@ pretends to.
 * `swarm_wait` with `timeout_seconds: 0` does one pass and returns: "tell me
   what has finished, do not wait". It is the cheap poll, and it names anything
   still running rather than implying it finished.
-* `uv run swarm tail <id> [<id> ...]` in a **background shell** is the thing
-  that streams. It takes several ids, so one shell follows a whole batch, and
-  it prints a gap header when the published window moved past what it had
-  shown — a tailer that stitched two non-adjacent pieces together would print a
+* `swarm tail <id> [<id> ...]` in a **background shell** is the thing that
+  streams. It takes several ids, so one shell follows a whole batch, and it
+  prints a gap header when the published window moved past what it had shown —
+  a tailer that stitched two non-adjacent pieces together would print a
   transcript that never happened.
 
-  **The `uv run` prefix is not optional.** `swarm` is a console script of
-  `swarm-mcp`, installed into the uv environment and never onto the shell's
-  PATH, so the bare spelling answers `command not found`. A dispatch reply hands
-  back the runnable spelling in `follow_live_with`; run what it gives you rather
-  than retyping it. It names the tool first, in `follow_with`, because that is
-  the one this session can actually call — the background shell is for the
-  developer.
+  **Run it exactly as `follow_live_with` spells it; never retype it.** The
+  bridge spells every command it hands back for the install it is running
+  from: `uv run swarm tail ...` in a checkout of this repository, plain
+  `swarm tail ...` where swarm-mcp is `uv tool install`ed, and
+  `uv tool run --from 'swarm-mcp @ git+...@sc-v<version>#subdirectory=apps/swarm-mcp' swarm tail ...`
+  on a plugin-only install, where there is nothing installed to find. Retyped
+  with the wrong prefix it fails — `uv run` outside a checkout answers
+  `Failed to spawn: swarm`, a bare `swarm` with nothing installed answers
+  `command not found` — and neither is the platform being broken. The reply
+  names the tool first, in `follow_with`, because that is the one this session
+  can actually call; the background shell is for the developer. This skill's
+  permission rules grant only the checkout's and an installed tool's spelling,
+  so the long form asks first.
 
 The un-seamless shape to avoid is: dispatch, go silent for eleven minutes,
 produce a result. Narrate. A local subagent shows progress and a remote one has
@@ -228,21 +301,27 @@ their prompt, their repository and the shared pool — none of which is involved
 
 The tell is in the error, and it is unambiguous: `IAP refused this before the
 API saw it`, `an HTML 404 from Google's edge`, `Error code 900`, or a 403 that
-names a principal. All four mean the request never reached swarm-api. Run
-`uv run swarm doctor`, which prints the address it used and the kind of
-credential that address takes, and report **that** — the `sc` skill's table
-says what each refusal means and which one is an IAM grant away.
+names a principal. All four mean the request never reached swarm-api, and the
+bridge ends a tool error that Google's edge answered, rather than the API, with
+the `swarm doctor` command to run, spelled for this install the way
+`follow_live_with` is. Run it **exactly as the error
+spells it** — never retyped, for the reasons above — and it prints the address
+it used and the kind of credential that address takes; report **that**. The
+`sc` skill's table says what each refusal means and which one is an IAM grant
+away.
 
 Nothing was dispatched, so nothing was spent, so say that too: a developer who
 thinks a batch went out and died will not re-run it.
 
 The fifth tell is the most common and the easiest: **`sign-in required for
-<context>: run sc login`**. The deployment the developer configured takes them
-signed in as themselves, and they are not yet. Tell them to run
-`uv run sc login` (a browser window opens), then retry the same call. It is
-theirs to run, not this session's — it waits on a browser — and there is no
-other credential to go looking for: every dispatch is meant to run as the
-developer, on their deployment, and `uv run sc whoami` shows which one that is.
+<context>: run … sc login`**. The deployment the developer configured takes
+them signed in as themselves, and they are not yet. Tell them to run the
+`sc login` command **exactly as the message spells it** (a browser window
+opens) — it is spelled for their install, as `follow_live_with` is — then
+retry the same call. It is theirs to run, not this session's — it waits on a
+browser — and there is no other credential to go looking for: every dispatch is
+meant to run as the developer, on their deployment, and `sc whoami`, spelled
+the same way, shows which one that is.
 
 ## When a remote agent dies — a bare task id is not a report
 
@@ -340,6 +419,59 @@ Afterwards, say what landed: the files, the conflicted ones, and the fact that
 nothing was committed. A developer must never discover a three-way merge they
 did not ask for.
 
+## A Claude Code workflow whose steps run in SwarmCloud
+
+When the developer wants a Claude Code workflow — the `/workflows` view, a row
+per agent — but the work done remotely, there are two modes, and the plugin
+ships both.
+
+* **One step at a time: `agentType: 'sc:remote'`** on an `agent()` call in a
+  workflow script. The prompt is what the remote agent is told. The row
+  dispatches it as one `claude-code` task on this checkout's pushed branch
+  (strategy `collect`, or `direct-pr` when the prompt's first line is
+  `strategy: direct-pr`), follows it with `swarm_follow`, and returns the
+  remote agent's answer — or, when the call passes a `schema`, the JSON object
+  it asked the remote agent to end with. A failed task comes back as its
+  state, last error and task id, never an invented answer — and in SCHEMA mode
+  that means the `agent()` call THROWS unless the schema has a state and an
+  error field and every other required field is nullable. When writing such a
+  script, give the schema those fields and catch the call (the plugin README
+  shows the shape); an uncaught schema-mode failure aborts the whole script.
+* **A whole SwarmCloud workflow: `/sc:run <spec>`**, where the spec is the
+  object `swarm workflow` reads. One `sc:workflow` row submits it through
+  `swarm_workflow`, checked by digest so a relay that changed the spec
+  submits nothing; SwarmCloud owns the DAG from then on. Each step gets an
+  `sc:step` row, labelled with its step id and grouped as `Level N` or under
+  the step's `stage`, that follows its own task and may show `waiting` for a
+  long time — that task holds no capacity. The run ends with the state the
+  server derived, never one computed from the rows. Before any row starts it
+  can end `NOT_SUBMITTED` (refused; nothing sent), `SUBMISSION_UNKNOWN` (the
+  Submit row stopped or failed, possibly after the workflow was created — look
+  for it before running again, or it is submitted twice) or
+  `SUBMITTED_UNVERIFIED` (created, but the relayed reply does not match the
+  spec — it runs regardless; read or cancel it by its `workflow_id`).
+
+Say these differences BEFORE swapping a local step for a remote one, because
+each is a way the same prompt does different work:
+
+* **each step knows only its prompt** — no conversation, no other step's
+  output (under `/sc:run`, only the `input_from` files SwarmCloud stages);
+* **its prompt is retyped by a relay** — the `sc:remote` row copies it into
+  `swarm_dispatch`, and a long prompt can arrive changed; the task's input in
+  the console is what the remote agent actually got;
+* **its tools are the runner's**, inside its container, not this session's
+  tools, MCP servers or permission rules;
+* **its model is pinned on the job**, by the profile; a `model` option on the
+  `agent()` call changes only the local row's model (invariant 10);
+* **it sees a depth-1 clone of the pushed branch**: no history, no
+  uncommitted work — the clean-checkout rule above, unchanged;
+* **the tokens `/workflows` shows are the row's**, a haiku relay, not the
+  remote agent's; the remote spend is the outcome's `cost_usd`, from the
+  shared pool;
+* **stopping a row does not cancel its task** — `swarm_cancel` or
+  `swarm workflow-cancel` does — and relaunching a run re-dispatches an
+  `sc:remote` row that had not finished, which is a second task.
+
 ## The honesty constraint
 
 **Seamless must not mean hidden.** Three things a developer must always be able
@@ -354,19 +486,24 @@ own session budget. A remote one spends a **shared subscription pool** that
 other people and other tenants are also drawing on, and a surprise on a shared
 pool is far worse than a surprise locally.
 
-* Before a batch, read `swarm_capacity`. `ROOM` is how many more tasks of that
-  profile fit before the **binding** pool refuses — and if `ROOM` is an em
+* Before a batch, read `swarm_capacity`. `ROOM` is how many more **agents** of
+  that profile fit before the **binding** pool refuses — and if `ROOM` is an em
   dash, the real room is unknown and could be zero. Do not dispatch a large
-  batch against a dash.
+  batch against a dash. `UNITS` beside it is the pool's capacity **units**, not
+  agents: a `browser` or `large` agent takes more than one — the note under the
+  table says how many, from the catalogue — so `4/10` can be two agents.
 * `swarm_accounts` is how the pool's 5-hour and 7-day windows moved. The marks
   mean exactly what the `sc` skill says they mean, and the one that matters
   here is that **an em dash is "not measured", never zero** — a dead poller
   must not read as a healthy pool.
-* **Dollars are not on this surface.** Per-attempt spend is recorded as
-  `cost_usd` on the attempt and is reachable from the API and the console; no
-  tool in this plugin returns it and no view of `sc` prints it. When asked what
-  something cost: give the pool movement, say the per-attempt figure is not
-  available from this session and where it is, and **do not estimate one**.
+* **Dollars are on this surface in exactly one place.** Per-attempt spend is
+  recorded as `cost_usd` on the attempt. A FINISHED task's `outcome` from
+  `swarm_follow` with `format: "lines"` carries `cost_usd` summed over its
+  attempts, and it is `null` — NOT MEASURED, never $0 — when no attempt
+  recorded one; `cost_note` says when only some did, which makes the sum a
+  floor. No other tool returns it and no view of `sc` prints it. When asked
+  what something cost: quote that figure for a finished task, give the pool
+  movement for everything else, and **do not estimate one**.
 * For scale only, from a measured run on 2026-09-22: one join step of a
   six-step workflow cost **$0.0937**. That is an order of magnitude for one
   step of one workflow. It is not a quote for anything else and must never be

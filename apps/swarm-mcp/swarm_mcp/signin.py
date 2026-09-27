@@ -70,7 +70,7 @@ from typing import Any, Callable
 from . import credentials
 from .client import SwarmError
 from .config import Deployment
-from .follow import terminal_command
+from .invocation import terminal_command
 
 AUTH_URI = "https://accounts.google.com/o/oauth2/v2/auth"
 TOKEN_URI = "https://oauth2.googleapis.com/token"

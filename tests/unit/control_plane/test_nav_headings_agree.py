@@ -46,11 +46,13 @@ REPO = Path(__file__).resolve().parents[3]
 SRC = REPO / "apps/swarm-ui/src"
 APP_TSX = SRC / "App.tsx"
 
-#: `Screen` (Shell.tsx) renders its `title` prop as the page's `<h1>`, so a
-#: screen's heading is either that prop or, for the three screens that draw
-#: their own header, a literal `<h1>`. Named here so that a screen which starts
-#: rendering its heading some third way fails loudly instead of being skipped.
-HEADING_SOURCES = ("<Screen title=", "<h1>")
+#: `Screen` (Shell.tsx) renders its `title` prop as the page's `<h1>`, through
+#: `PageHead`, which a screen that reads on a button rather than on mount
+#: (Platform counts, AH-25) renders directly -- so a screen's heading is one of
+#: those two `title` props or, for a screen that draws its own header, a
+#: literal `<h1>`. Named here so that a screen which starts rendering its
+#: heading some fourth way fails loudly instead of being skipped.
+HEADING_SOURCES = ("<Screen title=", "<PageHead title=", "<h1>")
 
 
 def _read(path: Path) -> str:
@@ -181,15 +183,16 @@ def _heading_of(component: str, imports: dict[str, Path], app: str) -> str:
     # and it is how thirteen of the sixteen screens set their heading. Other
     # `title=` props on this screen are tooltips, so the prop is only read
     # after a `<Screen` tag has been seen.
-    screen = body.find("<Screen")
-    if screen != -1:
-        m = re.search(r'title=(?:"([^"]*)"|(\{[^}]*\}))', body[screen:])
-        assert m is not None, f"{component} renders <Screen> with no title prop"
-        return _resolve(app, m.group(1) if m.group(1) is not None else m.group(2))
+    for tag in ("<Screen", "<PageHead"):
+        at = body.find(tag)
+        if at != -1:
+            m = re.search(r'title=(?:"([^"]*)"|(\{[^}]*\}))', body[at:])
+            assert m is not None, f"{component} renders {tag}> with no title prop"
+            return _resolve(app, m.group(1) if m.group(1) is not None else m.group(2))
 
     m = re.search(r"<h1>(.*?)</h1>", body, re.S)
     assert m is not None, (
-        f"{component} renders neither {HEADING_SOURCES[0]!r} nor {HEADING_SOURCES[1]!r}, "
+        f"{component} renders none of {', '.join(repr(s) for s in HEADING_SOURCES)}, "
         "so this test cannot see the heading it puts on the page"
     )
     return _resolve(app, m.group(1).strip())

@@ -12,6 +12,7 @@ import { nudgePane } from './focus'
 import { helpAnchor, type TopicId } from './help'
 import { timeAgo } from './Shell'
 import { DOCK, DOCK_COLLAPSED, clampPane, readPane, summariseProbes, writePane } from './panes'
+import { AGE_TICK_MS, useNow } from './useNow'
 
 /**
  * THE DOCK (§B3), AND THE TELEMETRY STRIP IT SWALLOWS (§B18).
@@ -62,20 +63,17 @@ const HELP_TOPIC: TopicId = 'api-reads'
 
 export function Dock() {
   const probes = useSyncExternalStore(subscribeProbes, probeSnapshot, probeSnapshot)
-  const [, tick] = useState(0)
+  // The ages on this strip are the whole point of it, so they move on their
+  // own rather than only when a fetch happens to land -- on the SHARED clock
+  // (useNow.ts) the head and every screen's sub-line read, so the dock's
+  // `newest 22s ago` and a sub-line's `read just now` are one instant (CH-1).
+  const now = useNow(AGE_TICK_MS)
   const [open, setOpen] = useState(false)
   const [height, setHeight] = useState(() => readPane(DOCK))
   const dragging = useRef(false)
   const shell = useRef<HTMLDivElement | null>(null)
   const s = summariseProbes(probes)
   const drawn = probes.length > 0
-
-  // The ages on this strip are the whole point of it, so they move on their
-  // own rather than only when a fetch happens to land.
-  useEffect(() => {
-    const id = setInterval(() => tick((n) => n + 1), 5000)
-    return () => clearInterval(id)
-  }, [])
 
   // `--dock-h`: WHAT IT IS STILL FOR, NOW THAT NOTHING RESERVES SPACE.
   //
@@ -226,7 +224,8 @@ export function Dock() {
       {/* OUTSIDE THE DISCLOSURE, deliberately. An expired session is the one
           thing in here that carries an ACTION, and a control that appears only
           after a click is a control that is not there. The collapsed line's
-          dot turns `is-bad` for the same state, but a dot is not a button. */}
+          dot turns `is-bad` (the diamond) for the same state, but a dot is not
+          a button. */}
       {s.expired && (
         <button className="reauth" onClick={() => window.location.reload()}>
           Session expired — reload to sign in
@@ -239,7 +238,13 @@ export function Dock() {
         aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
       >
-        <span className={`ctl-dock-dot ${tone}`} aria-hidden />
+        {/* THE SHARED DOT, NOT A PRIVATE ONE (CH-17). `.ctl-dock-dot` drew
+            its own three marks, and drew an expired session as a RING -- the
+            unknown silhouette -- in a product where the failure mark is the
+            diamond. The tone computed above is the dot's modifier as it
+            stands: a clean strip is the neutral disc, failures the triangle,
+            an expired session the diamond. */}
+        <i className={`ctl-dot ${tone}`} aria-hidden />
         <span className="ctl-dock-label">Reads</span>
         {/* EVERY FACT IS ONE UNWRAPPABLE UNIT, and the strip breaks BETWEEN
             them — F10 of `docs/audits/2026-09-23/overflow-inventory.md`.
@@ -287,7 +292,7 @@ export function Dock() {
             {s.newestSuccessAt === null ? (
               <span className="ctl-em">nothing has loaded</span>
             ) : (
-              `newest ${timeAgo(s.newestSuccessAt)}`
+              `newest ${timeAgo(s.newestSuccessAt, now)}`
             )}
           </span>
         </span>
@@ -312,6 +317,9 @@ export function Dock() {
             </a>
             <a href="#reference">Every read, in a table &rarr;</a>
           </div>
+          {/* The cells read the wall clock as they render, and they render on
+              this component's shared tick, so their ages move with the line
+              above them. */}
           <DataSourceCells probes={probes} />
           {/* THE PROVENANCE STRIP: when, over what, from how many. One line,
               and it stays because a p95 whose basis is unstated is a p95 that

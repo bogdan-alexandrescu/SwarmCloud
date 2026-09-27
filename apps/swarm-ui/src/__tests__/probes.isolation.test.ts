@@ -21,13 +21,13 @@
 
 import { describe, expect, it } from 'vitest'
 
-import { noteFixtureProbe, probeSnapshot } from '../fetch'
+import { noteFixtureProbe, probeSnapshot, route } from '../fetch'
 
 describe('the probe registry', () => {
   it('records what a read did, so the next test has something to inherit', () => {
     expect(probeSnapshot()).toEqual([])
-    noteFixtureProbe('/v1/capacity', 30, true)
-    noteFixtureProbe('/v1/admin/dispatch', 120, false)
+    noteFixtureProbe(route('/v1/capacity'), 30, true)
+    noteFixtureProbe(route('/v1/admin/dispatch'), 120, false)
     const seen = probeSnapshot()
     expect(seen.length).toBe(2)
     // A SUCCESS, which is the half that matters: the head's age is the age of

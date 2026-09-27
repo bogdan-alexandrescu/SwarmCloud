@@ -56,6 +56,14 @@ class ApiMetrics:
             ["direction"],
             registry=self.registry,
         )
+        self.outcome_day_drift = Counter(
+            "swarm_api_outcome_day_drift_total",
+            "Stored sealed outcome days that a fresh derive disagreed with, "
+            "found by POST /v1/admin/outcomes/rollup. Taken BEFORE any repair, "
+            "so a repaired disagreement still counts.",
+            ["direction"],
+            registry=self.registry,
+        )
         self.auth_failures = Counter(
             "swarm_api_auth_failures_total",
             "Authentication and authorisation failures, by kind.",
