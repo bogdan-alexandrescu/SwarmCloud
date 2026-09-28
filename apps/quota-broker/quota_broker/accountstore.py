@@ -62,7 +62,7 @@ COLLECTION = "accounts"
 #: being unreadable, and skipping it would turn "the store is down" into an
 #: empty pool that reports every document as malformed. That failure must
 #: stay loud and reach the caller.
-_MALFORMED = (KeyError, ValueError, TypeError, AttributeError)
+_MALFORMED = (KeyError, ValueError)  # MUTATION: main's skip, for the red-first proof
 
 
 class MalformedAccountError(AccountError):
