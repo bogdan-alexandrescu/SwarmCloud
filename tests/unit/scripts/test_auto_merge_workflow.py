@@ -116,10 +116,13 @@ def test_it_never_checks_out_or_runs_the_pull_requests_code(workflow: dict, job:
     for step in steps:
         uses = str(step.get("uses") or "")
         assert "checkout" not in uses, f"a pull_request_target job checks out code: {uses}"
-    # No head ref, head sha or head repository is read anywhere: nothing here
-    # needs to know where the pull request's code lives.
-    assert "pull_request.head" not in text
+    # The head SHA is read (HEAD_SHA) to PIN both merge calls to the reviewed
+    # commit -- fencing against a push after the label, not a way to find or
+    # run the fork's code. Reading it is safe only because there is no
+    # checkout step (asserted above) and nothing here reads where the fork's
+    # code actually lives.
     assert "github.head_ref" not in text
+    assert "pull_request.head.repo" not in text
 
 
 def test_attacker_controlled_text_reaches_a_shell_only_through_env(job: dict):
