@@ -62,8 +62,20 @@ def workflow() -> dict:
 @pytest.fixture(scope="module")
 def job(workflow: dict) -> dict:
     jobs = workflow.get("jobs") or {}
-    assert len(jobs) == 1, f"auto-merge is one job, found {sorted(jobs)}"
-    return next(iter(jobs.values()))
+    assert "enable" in jobs, f"expected a job keyed 'enable', found {sorted(jobs)}"
+    return jobs["enable"]
+
+
+@pytest.fixture(scope="module")
+def disable_job(workflow: dict) -> dict:
+    jobs = workflow.get("jobs") or {}
+    assert "disable" in jobs, f"expected a job keyed 'disable', found {sorted(jobs)}"
+    return jobs["disable"]
+
+
+def test_the_workflow_has_exactly_the_enable_and_disable_jobs(workflow: dict):
+    jobs = workflow.get("jobs") or {}
+    assert set(jobs) == {"enable", "disable"}, sorted(jobs)
 
 
 def _step(job: dict, step_id: str) -> dict:
@@ -77,11 +89,18 @@ def _step(job: dict, step_id: str) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def test_it_runs_only_when_a_label_is_added_to_a_pull_request(workflow: dict):
-    """MUTATION: add `pull_request` or `push`, or widen types to [labeled, synchronize]."""
+def test_it_runs_on_labeling_and_on_events_that_can_invalidate_the_label(workflow: dict):
+    """MUTATION: add `pull_request` or `push`, or drop one of the four types --
+    each of `synchronize`/`reopened`/`edited` is what lets the `disable` job
+    catch a new head, and dropping one leaves that path unguarded."""
     on = workflow["on"]
     assert set(on) == {"pull_request_target"}, on
-    assert on["pull_request_target"] == {"types": ["labeled"]}, on["pull_request_target"]
+    assert set(on["pull_request_target"]["types"]) == {
+        "labeled",
+        "synchronize",
+        "reopened",
+        "edited",
+    }, on["pull_request_target"]
 
 
 def test_the_job_is_gated_on_the_ready_label(job: dict):
@@ -165,6 +184,27 @@ def test_the_merge_is_native_auto_merge_squashed_under_the_pr_title(job: dict):
         assert "--admin" not in args, "--admin bypasses the required checks the auto-merge waits for"
 
 
+def test_both_merge_calls_pin_to_the_reviewed_head_commit(job: dict):
+    """A push after the `ready` label -- including the SwarmCloud worker's own
+    push, or a fork push in the seconds before this job starts -- must not let
+    either merge call squash a commit nobody reviewed.
+    MUTATION: drop `--match-head-commit` from either `gh pr merge` call, or
+    interpolate the sha through `${{ }}` instead of the `HEAD_SHA` env var."""
+    run = _step(job, "merge")["run"]
+    joined = re.sub(r"\\\n\s*", " ", run)
+    merges = [line.strip() for line in joined.splitlines() if "gh pr merge" in line]
+    assert len(merges) == 2, merges
+    for command in merges:
+        assert '--match-head-commit "${HEAD_SHA}"' in command, command
+
+
+def test_the_head_sha_reaches_the_merge_step_only_through_env(job: dict):
+    env = job.get("env") or {}
+    assert env.get("HEAD_SHA") == "${{ github.event.pull_request.head.sha }}", env
+    run = _step(job, "merge")["run"]
+    assert "github.event" not in run
+
+
 def test_a_direct_merge_happens_only_when_github_says_the_pr_is_already_clean(job: dict):
     """GitHub will not enable auto-merge on a CLEAN pull request; anything else
     that stops `--auto` must fail the job, not fall through to a merge.
@@ -240,7 +280,14 @@ def run_gate(job: dict, tmp_path: Path):
     fake.write_text(FAKE_GH)
     fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
 
-    def run(title: str, branch: dict, *, app_id: str = "123456", has_key: str = "true"):
+    def run(
+        title: str,
+        branch: dict,
+        *,
+        app_id: str = "123456",
+        has_key: str = "true",
+        base_ref: str = "main",
+    ):
         branch_file = tmp_path / "branch.json"
         branch_file.write_text(json.dumps(branch))
         log = tmp_path / "gh.log"
@@ -254,7 +301,7 @@ def run_gate(job: dict, tmp_path: Path):
             "GH_REPO": "bogdan-alexandrescu/SwarmCloud",
             "PR_NUMBER": "4242",
             "PR_TITLE": title,
-            "BASE_REF": "main",
+            "BASE_REF": base_ref,
             "MERGE_APP_ID": app_id,
             "HAS_MERGE_APP_KEY": has_key,
             "GITHUB_STEP_SUMMARY": str(summary),
@@ -314,6 +361,36 @@ def test_only_the_prefix_is_refused(run_gate, title: str):
     assert comments == "", comments
 
 
+@pytest.mark.parametrize(
+    "title",
+    [
+        "[Swarm] task_01J9ZK3Q8R",
+        "[SWARM] TASK_x",
+        "   [swarm] task_x",
+        "\t[swarm] task_abc and a description after it",
+    ],
+)
+def test_the_swarm_task_title_check_ignores_case_and_leading_whitespace(run_gate, title: str):
+    """MUTATION: compare `${PR_TITLE}` directly instead of a trimmed, lower-cased copy."""
+    proc, calls, comments = run_gate(title, PROTECTED)
+    assert proc.returncode != 0, (title, proc.stderr, comments)
+    assert "pr comment 4242" in calls, calls
+    assert REFUSED_PREFIX in comments.lower(), comments
+
+
+def test_a_base_branch_other_than_main_is_refused(run_gate):
+    """Only `main` is protected and only `main`'s push starts the release, so a
+    pull request based on anything else has nothing for auto-merge to gate on.
+    MUTATION: drop this check, or compare against a variable instead of the
+    literal `main`."""
+    proc, calls, comments = run_gate("A fact-style headline", PROTECTED, base_ref="release/1.0")
+    assert proc.returncode != 0, "a non-main base branch passed the gate"
+    assert "pr comment 4242" in calls, calls
+    assert "main" in comments.lower(), comments
+    # Refused before the branch protection is even read.
+    assert "api " not in calls, calls
+
+
 def test_a_base_branch_without_required_checks_is_refused(run_gate):
     """With no required check, `--auto` has nothing to wait for and the pull
     request merges at once, red or not. MUTATION: remove the protection read."""
@@ -349,6 +426,97 @@ def test_a_title_with_shell_metacharacters_is_inert(run_gate, tmp_path: Path):
     proc, _calls, _comments = run_gate(title, PROTECTED)
     assert proc.returncode == 0, proc.stderr
     assert not marker.exists(), "the title was executed"
+
+
+# ---------------------------------------------------------------------------
+# The disable job: a push after `ready` must not leave a stale auto-merge armed
+# ---------------------------------------------------------------------------
+
+
+def test_the_disable_job_runs_on_a_push_or_reopen_but_never_on_the_labeling_itself(disable_job: dict):
+    """MUTATION: drop the `action != 'labeled'` guard -- the label-add event
+    would then immediately disable the auto-merge the other job just enabled."""
+    condition = str(disable_job.get("if") or "")
+    assert re.search(r"github\.event\.action\s*!=\s*'labeled'", condition), condition
+    assert re.search(
+        r"contains\(\s*github\.event\.pull_request\.labels\.\*\.name\s*,\s*'ready'\s*\)", condition
+    ), condition
+    assert "edited" in condition and "changes.base" in condition, condition
+
+
+def test_the_disable_job_never_checks_out_pr_code_and_uses_least_privilege(disable_job: dict):
+    """MUTATION: add a checkout step, or widen permissions past pull-requests: write."""
+    assert disable_job.get("permissions") == {"pull-requests": "write"}, disable_job.get("permissions")
+    steps = disable_job.get("steps") or []
+    assert steps, "the disable job has no steps, so this checked nothing"
+    for step in steps:
+        assert "checkout" not in str(step.get("uses") or "")
+
+
+FAKE_GH_DISABLE = r"""#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> "${FAKE_GH_LOG}"
+if [[ "${1:-} ${2:-}" == "pr merge" ]]; then
+  exit 0
+fi
+if [[ "${1:-} ${2:-}" == "pr edit" ]]; then
+  exit 0
+fi
+if [[ "${1:-} ${2:-}" == "pr comment" ]]; then
+  shift 2
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --body-file) cat "$2" >> "${FAKE_GH_COMMENTS}"; shift 2 ;;
+      --body) printf '%s\n' "$2" >> "${FAKE_GH_COMMENTS}"; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+  exit 0
+fi
+echo "fake gh: unexpected call: $*" >&2
+exit 3
+"""
+
+
+@pytest.fixture
+def run_disable(disable_job: dict, tmp_path: Path):
+    if shutil.which("bash") is None:
+        pytest.skip("bash is required")
+    steps = disable_job.get("steps") or []
+    assert len(steps) == 1, f"expected one step in the disable job, found {len(steps)}"
+    script = steps[0]["run"]
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    fake = bindir / "gh"
+    fake.write_text(FAKE_GH_DISABLE)
+    fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
+    log = tmp_path / "gh.log"
+    comments = tmp_path / "comments.md"
+    log.write_text("")
+    comments.write_text("")
+    env = {
+        "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}",
+        "HOME": str(tmp_path),
+        "GH_REPO": "bogdan-alexandrescu/SwarmCloud",
+        "PR_NUMBER": "4242",
+        "FAKE_GH_LOG": str(log),
+        "FAKE_GH_COMMENTS": str(comments),
+    }
+    proc = subprocess.run(
+        ["bash", "-c", script], env=env, capture_output=True, text=True, timeout=30, check=False
+    )
+    return proc, log.read_text(), comments.read_text()
+
+
+def test_a_push_after_ready_disables_auto_merge_and_removes_the_label(run_disable):
+    """RUN, against a fake `gh`: the disable job's own shell, not just its YAML.
+    MUTATION: drop the `--disable-auto` call, or the `--remove-label ready` call."""
+    proc, calls, comments = run_disable
+    assert proc.returncode == 0, proc.stderr + proc.stdout
+    assert "pr merge 4242 --disable-auto" in calls, calls
+    assert "pr edit 4242 --remove-label ready" in calls, calls
+    assert "pr comment 4242" in calls, calls
+    assert "ready" in comments.lower(), comments
 
 
 # ---------------------------------------------------------------------------
