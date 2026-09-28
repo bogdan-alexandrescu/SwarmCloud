@@ -34,14 +34,15 @@ Three reasons, in the order they cost the most:
    `make test` is the whole offline suite; running it serialises against every
    other lane working in the same checkout.
 
-## The five workflows, and what each one is responsible for
+## The six workflows, and what each one is responsible for
 
 | workflow | runs on | jobs |
 |---|---|---|
-| `application.yml` | push to `main`; pull requests touching `apps/`, `images/`, `kubernetes/`, `scripts/`, `tests/`, `docs/`, `Makefile`, `pyproject.toml`, `uv.lock`, `README.md`, `CLAUDE.md`, `CONTRACT.md`, `release.yml`, `iam-refusal-probe.yml` or the workflow itself | `shellcheck` · `release workflow wiring (actionlint)` (also lints `iam-refusal-probe.yml`) · `format / unit tests` · `swarm-ui typecheck / component tests` · `integration tests (emulator)` · `kubernetes manifests` · `build images` (**push to `main` only** — the one build of each commit) |
+| `application.yml` | push to `main`; pull requests touching `apps/`, `images/`, `kubernetes/`, `scripts/`, `tests/`, `docs/`, `Makefile`, `pyproject.toml`, `uv.lock`, `README.md`, `CLAUDE.md`, `CONTRACT.md`, `release.yml`, `iam-refusal-probe.yml`, `ci-fix.yml` or the workflow itself | `shellcheck` · `release workflow wiring (actionlint)` (also lints `iam-refusal-probe.yml` and `ci-fix.yml`) · `format / unit tests` · `swarm-ui typecheck / component tests` · `integration tests (emulator)` · `kubernetes manifests` · `build images` (**push to `main` only** — the one build of each commit) |
 | `terraform.yml` | push to `main`; pull requests touching `terraform/`, `tests/terraform/`, the plan guard, the destroy guard, the unlabelable-type list or the workflow itself | `fmt / validate / tflint` · `terraform test` · `checkov` · `plan` (**not** on a pull request) · `plan (not run on a pull request)` |
 | `security.yml` | every pull request; push to `main`; Mondays 06:00 UTC | `trivy (repo)` · `secret scan` · `checkov (terraform + kubernetes)` · `platform policy assertions` · `trivy (published images)` (schedule / dispatch only) |
 | `release.yml` | push to `main` touching `apps/`, `images/`, `terraform/`, `kubernetes/`, `scripts/` or the workflow; or manual dispatch with an environment | `verify` · `images and scan` (reuses `application.yml`'s build of the commit; moves nothing) · `approval` (the one job naming a GitHub environment — prod waits here) · `promote` · `terraform apply` · `deploy and smoke` — the last three only after `approval` succeeded, and on prod only in the attempt it succeeded in · `prod approval is from an earlier attempt` (runs only on a partial re-run of prod, and fails it) |
+| `ci-fix.yml` | `application` **completing red on a `swarm/<task-id>` branch** of this repository (`workflow_run`, so only as the file is on `main`) ([below](#the-ci-fixer)) | `fix a red SwarmCloud pull request` |
 | `iam-refusal-probe.yml` | **manual dispatch on `main` only**, by the owner, once ([below](#the-deployers-refusal-is-proven-once-by-a-probe-the-owner-dispatches)) — never on a push, a pull request or a schedule | `deployer is refused an unlisted role` |
 
 Three details in that table are easy to misread and each has bitten someone:
@@ -690,6 +691,77 @@ been seen on the runner. A wording change therefore costs a re-run, never a
 false pass. [`classify`](../scripts/iam-refusal-probe.sh) has the full rule.
 [`test_iam_refusal_probe.py`](../tests/unit/scripts/test_iam_refusal_probe.py)
 runs the script against a fake `gcloud`, and holds each case.
+
+## The CI fixer
+
+A SwarmCloud pull request that goes red gets a fix attempt with no operator
+(#263). Before this, #248 and #249 each waited for the operator to start a
+fixer by hand and push the fix-up from a laptop.
+
+`ci-fix.yml` runs when `application` completes with `failure` on a
+`swarm/<task-id>` branch of this repository, and runs
+[`scripts/ci-fix.sh`](../scripts/ci-fix.sh) `run`:
+
+1. **Only the pull request's current head.** A red run for a commit the branch
+   has already moved past is ignored.
+2. **The log is redacted, then capped.** `gh run view --log-failed` goes
+   through `redact` (`scripts/lib/common.sh`) before anything else reads it,
+   then each failed job keeps an equal share of its tail, 16 KiB in all
+   (`LOG_EXCERPT_MAX_BYTES`). `redact` is a pattern list and not a boundary
+   (its own header says so); what makes a leak survivable is that the excerpt
+   is stored as a task's input, which the API serves masked.
+3. **One step, through the API, by name.** It submits a one-step workflow:
+   runner profile `claude-code`, the excerpt in `input.prompt`, strategy
+   `direct-pr`, and `continues_task` naming the red branch's task. No image,
+   command, backend or resource field exists to send (invariant 10).
+4. **The fix lands on the red branch.** The worker clones `swarm/<task-id>`
+   rather than main, and pushes the fix onto it rather than onto a branch of
+   its own ([`agent_worker/continuation.py`](../apps/agent-worker/agent_worker/continuation.py)).
+   The push is never forced, so a branch someone moved in the meantime is
+   reported, not overwritten. The push re-runs CI.
+5. **Every attempt is a comment on the pull request**, and after
+   `MAX_FIX_ATTEMPTS` (two; the script says why) one more comment says it
+   stopped. A submission the API refuses is a comment and a red fixer run, and
+   does not count as an attempt.
+
+### Why a step may push to another task's branch
+
+`continues_task` is a TASK ID, never a branch name: the worker derives the
+branch from it with the prefix it pushed under, as the integrator derives its
+contributors'. The API refuses it unless the task is in the caller's own tenant
+(another tenant's reads exactly like a missing one), was itself `direct-pr` in
+the same repository, and the workflow is `direct-pr` with one step and no
+`repository_ref`. A continuation of a continuation continues the original
+branch. The rules are in
+[`swarm_api/continuation.py`](../apps/swarm-api/swarm_api/continuation.py); the
+block it writes is recorded under request #6 in
+[`contract-change-requests.md`](contract-change-requests.md).
+
+### What the owner configures, once
+
+Until this is done the fixer comments once on each red swarm pull request that
+it is not configured, and submits nothing.
+
+* **`SWARM_CI_FIX_SA`**, a repository variable: the service account the
+  fixer submits as. The swarm API is reachable from a GitHub runner only
+  through the IAP front door, with an access token for a principal granted
+  `roles/iap.httpsResourceAccessor` (`frontend_iap_members` in
+  `terraform/bootstrap/terraform.tfvars`, applied by the owner) -- the same
+  path `SWARM_IMPERSONATE_SA` gives an operator's laptop.
+* **The deployer (`GCP_DEPLOY_SA`) needs `roles/iam.serviceAccountTokenCreator`
+  on it**, because the workflow impersonates it from the deployer's Workload
+  Identity token.
+* **Its tenant must be the tenant that owns the swarm pull requests.** The API
+  refuses to continue another tenant's task, by design. So the account has to
+  be admitted (`allowed_users`) and a member of that tenant's Google group, or
+  its personal tenant `u-<name>` will own nothing it can fix. The fix step runs
+  on that tenant's `claude-code` credential and pushes with its
+  `swarm-tenant-<tenant>-git` token, like every other `direct-pr` step.
+* **`SWARM_API_HOST`**, optional: empty resolves the front door from
+  `terraform/environments/<env>/<env>.tfvars`.
+
+`workflow_run` only fires for a workflow file on the default branch, so the
+fixer does nothing before it has merged.
 
 ## The finishing sequence
 

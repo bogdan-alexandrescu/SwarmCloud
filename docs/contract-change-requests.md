@@ -710,6 +710,37 @@ whoever wires it up. Everything else keeps working by convention, re-parsed in
 three places, with the frozen contract silent about a four-field block that
 decides whether a workflow opens one pull request or five.
 
+### A fifth field, 2026-09-28 (#263): `continues`
+
+The CI fixer needed a step to push to an EXISTING swarm branch rather than its
+own, and it was added the way this entry's "if it is declined" path allows:
+inside the block, with no change to `apps/common/swarm_common/`. So the block
+now has five fields, and this request covers all five.
+
+* **What it is.** A task id. swarm-api writes it only on the one step of a
+  `direct-pr` workflow submitted with `continues_task`, after checking the task
+  is the caller's own, was itself `direct-pr`, and is in the same repository,
+  and after resolving a chain of continuations to its root
+  (`swarm_api/continuation.py`). The worker derives `<prefix><id>` from it,
+  clones that branch and pushes onto it (`agent_worker/continuation.py`).
+* **Why not a typed field.** The same reason as the other four, and the same
+  rollout trap in its mildest form: a worker older than the API ignores the
+  key, pushes `swarm/<its own id>` and opens a second pull request. That is
+  wrong but not unsafe -- no branch is overwritten, and `push_branch` never
+  forces either way.
+* **The parity it relies on** is a test, as for the others:
+  `tests/unit/worker/test_continue_swarm_branch.py` builds the block with
+  swarm-api's own `DispatchOptions(continues=new_id("task")).to_metadata()`
+  and asserts the worker derives the branch from it, and that the worker's
+  task-id pattern accepts every id `new_id("task")` mints. The pattern is
+  restated in both components because neither can import the other;
+  `swarm_common.models` exporting it beside `new_id` is the frozen-contract
+  change that would remove the copy. **Requested, not made.**
+
+`codec.dispatch_of` does not serve `continues`: the workflow create response
+echoes it as `dispatch.continues_task`, and adding it to every task's
+`dispatch` would change a response shape several clients hold exactly.
+
 ---
 
 ## 7. The workflow rollup has no shared home, so only one service can own it

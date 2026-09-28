@@ -125,6 +125,7 @@ from swarm_common.profiles import RESOURCE_CLASSES
 from swarm_common.states import EventType, ParkReason, TaskState
 
 from . import artifact_manifest as manifest_mod
+from . import continuation as continuation_mod
 from . import expected_outputs as expected_mod
 from . import inputs as inputs_mod
 from . import redact as redact_mod
@@ -1723,7 +1724,10 @@ class Worker:
                 "from_checkpoint": True,
                 "commit": self._clone_base,
             }
-        ref = self.cfg.repository_ref or task.get("repository_ref")
+        # A fix step clones the branch it continues (#263, continuation.py).
+        ref = continuation_mod.clone_ref(
+            task.get("metadata"), self.cfg.git_branch_prefix
+        ) or (self.cfg.repository_ref or task.get("repository_ref"))
         # A worker whose memory the agent may read clones WITHOUT the token, so
         # the token is never in this process at all. A public repository still
         # clones; a private one fails, and the error below says why.
@@ -3759,7 +3763,15 @@ class Worker:
             out["publish_reason"] = "no credential"
             return out
 
-        branch = f"{cfg.git_branch_prefix}{cfg.task_id}"
+        # Its own `<prefix><task id>`, or the branch a fix step continues (#263).
+        try:
+            branch = continuation_mod.publish_branch(
+                (self._task or {}).get("metadata"), cfg.git_branch_prefix, cfg.task_id
+            )
+        except WorkerError as exc:
+            out["published"] = False
+            out["publish_reason"] = f"refusing to publish: {exc}"
+            return out
         protected = (access.default_branch,) if access.default_branch else ()
 
         role = self._dispatch_role() if strategy == "integrate" else ""

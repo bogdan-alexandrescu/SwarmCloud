@@ -463,6 +463,13 @@ class DispatchOptions:
     #: integrator c never names a -- and walking the DAG in the worker would be
     #: a second implementation of the ordering this module already computed.
     integrates: tuple[str, ...] = ()
+    #: The task whose `swarm/<task-id>` branch this dispatch clones and pushes
+    #: to, instead of a branch of its own (#263). Set only on a one-step
+    #: `direct-pr` workflow, by `continuation.resolve_continuation`, which has
+    #: checked it is the caller's own task and resolved it to the ROOT of any
+    #: chain of continuations. A task id, never a branch name: the worker
+    #: derives the branch with the prefix it pushed under.
+    continues: str | None = None
 
     @property
     def needs_repository(self) -> bool:
@@ -482,6 +489,7 @@ class DispatchOptions:
             carrier=self.carrier,
             role=role,
             integrates=tuple(integrates),
+            continues=self.continues,
         )
 
     def to_metadata(self) -> dict[str, Any]:
@@ -491,6 +499,8 @@ class DispatchOptions:
             block["role"] = self.role
         if self.integrates:
             block["integrates"] = list(self.integrates)
+        if self.continues:
+            block["continues"] = self.continues
         return block
 
 

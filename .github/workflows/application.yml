@@ -52,6 +52,9 @@ on:
       # request is the only place it is linted (actionlint below) and held to
       # its shape (tests/unit/scripts/test_iam_refusal_probe.py).
       - ".github/workflows/iam-refusal-probe.yml"
+      # The CI fixer runs only after a red CI on a swarm branch, so a PR is the
+      # only place it is linted and held to its shape (test_ci_fix.py).
+      - ".github/workflows/ci-fix.yml"
   workflow_dispatch:
 
 permissions:
@@ -228,7 +231,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: actionlint release.yml, application.yml and iam-refusal-probe.yml
+      - name: actionlint release.yml, application.yml, iam-refusal-probe.yml and ci-fix.yml
         run: |
           set -euo pipefail
           curl -sSfL "https://raw.githubusercontent.com/rhysd/actionlint/v${ACTIONLINT_VERSION}/scripts/download-actionlint.bash" \
@@ -237,7 +240,7 @@ jobs:
           "${RUNNER_TEMP}/actionlint" -version
           "${RUNNER_TEMP}/actionlint" -shellcheck= -pyflakes= \
             .github/workflows/release.yml .github/workflows/application.yml \
-            .github/workflows/iam-refusal-probe.yml
+            .github/workflows/iam-refusal-probe.yml .github/workflows/ci-fix.yml
 
   python:
     name: format / unit tests

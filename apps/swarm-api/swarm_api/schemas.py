@@ -100,6 +100,12 @@ class WorkflowCreate(StrictModel):
     #: branch; a step that needed a different repository is a different dispatch.
     repository_url: str | None = Field(default=None, max_length=1024)
     repository_ref: str | None = Field(default=None, max_length=256)
+    #: A TASK ID, never a branch: the task whose `swarm/<task-id>` branch this
+    #: workflow's one step clones and pushes to instead of a branch of its own,
+    #: so a fix lands on the pull request that needs it (#263). The rules --
+    #: same tenant, `direct-pr`, one step, no ref -- are in
+    #: `continuation.resolve_continuation`.
+    continues_task: str | None = Field(default=None, max_length=64)
 
     @field_validator("repository_url")
     @classmethod

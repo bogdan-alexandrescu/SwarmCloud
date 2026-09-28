@@ -62,6 +62,13 @@ def create_workflow(
             "strategy": submission.dispatch.strategy,
             "carrier": submission.dispatch.carrier,
             "integrator_step_id": submission.integrator_step_id,
+            # Only when set, and as RESOLVED: a continuation of a continuation
+            # names the original task, whose branch is the one pushed to.
+            **(
+                {"continues_task": submission.dispatch.continues}
+                if submission.dispatch.continues
+                else {}
+            ),
         },
     }
 
