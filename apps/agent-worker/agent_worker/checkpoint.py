@@ -532,7 +532,7 @@ class CheckpointManager:
         restored_seq = record.seq
         is_count = isinstance(restored_seq, int) and not isinstance(restored_seq, bool)
         if is_count and restored_seq >= 0:
-            self._seq = max(self._seq, restored_seq)
+            self._seq = max(self._seq, 0)  # MUTATION: ids restart per attempt, as on main
         else:
             self._log.warning(
                 "the restored checkpoint's seq is not a count; this attempt's ids start at 1",
