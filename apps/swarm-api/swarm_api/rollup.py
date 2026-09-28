@@ -434,6 +434,9 @@ class RollupResult:
     rollup: WorkflowRollup
     drift: dict[str, Any]
     written: bool = False
+    #: The step tasks the read returned, by task id: the workflow list masks
+    #: each step's input with its own task's masker (`codec.workflow_to_api`).
+    step_tasks: dict[str, Any] = field(default_factory=dict)
 
     def to_api(self) -> dict[str, Any]:
         """The fields `codec.workflow_to_api` merges into a workflow's JSON.
@@ -551,6 +554,11 @@ class WorkflowRollups:
             result = self.for_workflow(
                 workflow, read.states, absent=read.absent, persist=persist
             )
+            result.step_tasks = {
+                step.task_id: read.tasks[step.task_id]
+                for step in workflow.steps
+                if step.task_id and step.task_id in read.tasks
+            }
             results.append(result)
             report.examined += 1
             if result.written:

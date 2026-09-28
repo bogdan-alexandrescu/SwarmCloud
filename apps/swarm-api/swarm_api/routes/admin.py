@@ -35,6 +35,7 @@ from ..schemas import (
     ProviderEnableRequest,
     TenantLimitsRequest,
 )
+from ..task_input import masking_for
 from ..validation import known_providers
 
 router = APIRouter(prefix="/v1/admin", tags=["admin"])
@@ -471,7 +472,11 @@ def list_leases(
         if lease.task_id in errors:
             continue
         try:
-            errors[lease.task_id] = ctx.store.get_task(lease.tenant_id, lease.task_id).last_error
+            task = ctx.store.get_task(lease.tenant_id, lease.task_id)
+            # Masked by the task's own masker, as every task route serves it
+            # (the PR #229 review): this row crosses tenants, and `last_error`
+            # can be the agent's stderr tail.
+            errors[lease.task_id] = masking_for(task).text(task.last_error)[0]
         except Exception:
             # A lease whose task is gone is itself a finding -- the reconciler
             # calls it task_missing. Do not let it fail the whole listing.

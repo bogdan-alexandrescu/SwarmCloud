@@ -52,3 +52,8 @@ output "tick_service_account" {
 output "tick_member" {
   value = "serviceAccount:${google_service_account.tick.email}"
 }
+
+output "quota_broker_account_id" {
+  description = "The quota broker's account id, known at plan. terraform/bootstrap grants the broker swarmSecretLister by this id (#69); tests/terraform/platform_roles.tftest.hcl holds the two to each other."
+  value       = google_service_account.platform["swarm-quota-broker"].account_id
+}

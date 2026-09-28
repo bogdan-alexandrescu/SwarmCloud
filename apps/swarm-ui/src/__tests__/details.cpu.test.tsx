@@ -15,9 +15,11 @@
 //   at exit          the attempt's finish is recorded, so its runner was
 //                    reaped and wrote its figures first;
 //   live reading     the attempt is running; the worker rewrites the figures
-//                    with each periodic reading. The document records no time
-//                    for them, so no age is claimed -- never a browser-clock
-//                    guess;
+//                    with each periodic reading. Since request #26 the API
+//                    serves the reading's age, and the strip says it; an
+//                    attempt from before #26 records no time, so no age is
+//                    claimed -- never a browser-clock guess (the section at
+//                    the end);
 //   last written     the attempt ended without a recorded finish (a kill, a
 //                    reclaim), so these are the figures it last wrote;
 //   heartbeat event  the attempt's typed fields are empty and a HEARTBEAT of
@@ -389,5 +391,67 @@ describe('the CPU reading reaches a phone, where the by column is hidden', () =>
     const root = await mount(withCpu({}, RUNNING_ATTEMPT), RUNNING_TASK)
     const strip = root.querySelector<HTMLElement>('.att-cpu-note')
     expect(strip?.querySelector('b')?.textContent, 'a strip of words under three bars does not say it is the CPU’s').toBe('cpu')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Contract request #26: the reading's age and the limit's source
+// ---------------------------------------------------------------------------
+//
+// The owner ACCEPTED request #26 on #184 (2026-09-26): the attempt carries
+// `cpu_measured_at` and `cpu_limit_source`, and the API serves the reading's
+// age against its own clock (`cpu_reading_age_seconds`). Details said `live
+// reading · age not recorded` and `reported limit`; it now says how old a live
+// reading is, and `cgroup limit` when the kernel gave the limit. An attempt
+// from before #26 keeps the legacy words (the owner kept the legacy reader).
+//
+// MUTATIONS: age the reading off this browser's clock (`cpu_measured_at`
+// against `Date.now()`) instead of the served age; drop the age from the
+// strip, which is the only place a phone sees it; name the class for a
+// `cgroup` source; call a pre-#26 attempt's limit anything but what it was.
+
+describe('Details dates a live CPU reading and names where its limit came from (request #26)', () => {
+  it('says how old a live reading is, by the API’s measure, in the strip a phone sees', async () => {
+    // A measured time far from the served age: the words must follow the
+    // server's age, not this browser's clock.
+    const root = await mount(
+      withCpu(
+        { cpu_reading_age_seconds: 20, cpu_measured_at: new Date(Date.now() - 3_600_000).toISOString(), cpu_limit_source: 'cgroup' },
+        RUNNING_ATTEMPT,
+      ),
+      RUNNING_TASK,
+    )
+    const strip = root.querySelector<HTMLElement>('.att-cpu-note')!
+    expect(strip.textContent).toMatch(/live reading · 20\s?s ago/)
+    expect(strip.textContent, 'the age was taken off this browser’s clock').not.toMatch(/1\s?h ago|60\s?m ago/)
+    expect(strip.textContent, 'a dated reading still says its age was not recorded').not.toMatch(/age not recorded/)
+    for (const w of [/20\s?s ago/]) {
+      const at = carriers(strip, w)
+      expect(at.length).toBeGreaterThan(0)
+      expect(at.every((el) => shownAt(el, PHONE, root)), 'the age is hidden at 390').toBe(true)
+    }
+  })
+
+  it('names a limit the kernel gave as the cgroup’s, even where the class has another cpu', async () => {
+    const root = await mount(withCpu({ cpu_limit_source: 'cgroup', cpu_reading_age_seconds: 5 }))
+    expect(by(cpuRow(root, 'peak'))).toBe('at exit · cgroup limit')
+    expect(root.querySelector('.att-cpu-note')!.textContent, 'a sourced limit is still called reported').not.toMatch(/reported limit/)
+  })
+
+  it('names a limit the catalogue gave by its class when the class has that cpu', async () => {
+    // The catalogue here has standard at 4 vCPU; the worker took 4 from it.
+    const root = await mount(withCpu({ cpu_limit_cores: 4, cpu_limit_source: 'resource_class', cpu_reading_age_seconds: 5 }))
+    expect(by(cpuRow(root, 'peak'))).toBe('at exit · standard limit')
+  })
+
+  it('says how long ago an ended attempt that recorded no finish last wrote its figures', async () => {
+    const root = await mount(withCpu({ cpu_reading_age_seconds: 180, cpu_limit_source: 'cgroup' }, UNRECORDED), { state: 'FAILED' })
+    expect(root.querySelector<HTMLElement>('.att-cpu-note')!.textContent).toMatch(/last written · 3\s?m ago/)
+  })
+
+  it('keeps the legacy words for an attempt from before request #26', async () => {
+    const root = await mount(withCpu({}, RUNNING_ATTEMPT), RUNNING_TASK)
+    expect(root.querySelector<HTMLElement>('.att-cpu-note')!.textContent).toMatch(/live reading · age not recorded/)
+    expect(by(cpuRow(root, 'peak'))).toMatch(/reported limit$/)
   })
 })

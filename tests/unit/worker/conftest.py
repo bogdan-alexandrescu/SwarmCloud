@@ -58,6 +58,32 @@ def log_stream() -> io.StringIO:
     return io.StringIO()
 
 
+@pytest.fixture
+def runner_inputs(monkeypatch) -> list[dict[str, Any]]:
+    """`work/input.json` as the runner saw it, read at every checkpoint.
+
+    Tests used to read it back out of the final checkpoint's archive. The
+    worker leaves it out of the archive since the PR #229 review (the task's
+    whole input was served back out of every checkpoint), so this reads the
+    file on disk at the moment each checkpoint is taken -- the same moment,
+    and the same bytes, the archive held. Newest last.
+    """
+    import json
+
+    from agent_worker.checkpoint import CheckpointManager
+
+    seen: list[dict[str, Any]] = []
+    original = CheckpointManager.create
+
+    def create(self, ws, *args, **kwargs):
+        if ws.input_path.exists():
+            seen.append(json.loads(ws.input_path.read_text()))
+        return original(self, ws, *args, **kwargs)
+
+    monkeypatch.setattr(CheckpointManager, "create", create)
+    return seen
+
+
 def seed_tenant(db: FakeFirestore, *, credentials: list[str] | None = None) -> None:
     db.seed(
         f"tenants/{TENANT}",

@@ -485,6 +485,19 @@ What `mock` declares, as `swarm_profiles` lists it:
 | `retry_after_seconds` | integer 1..3600 | the retry-after that simulated rate limit reports |
 <!-- /runner-inputs:mock -->
 
+## A task's input comes back masked
+
+The API serves a task's `input` and `metadata` masked at read time, to every
+caller, the submitter included (owner decision, 2026-09-26, on #184), with a
+count of what it masked. The bridge passes the count on and prints nothing of
+the input itself: `swarm status` ends each line with `masked N`, `swarm result`
+prints `masked 3  (input 2 · metadata 1)`, `swarm workflow-status` puts it on
+each step, and `swarm_status`, `swarm_result`, `swarm_wait` and
+`swarm_workflow_status` carry `masked: {input, metadata}`. A count the API did
+not send is `—` in the terminal and `null` in JSON, never 0: that deployment is
+older than the change and serves the input unmasked. The masking is at read
+time only; the runner still reads what was submitted.
+
 ## Running a Claude Code workflow's steps in SwarmCloud
 
 Owner decision, 2026-09-26: a Claude Code workflow shows as running in Claude

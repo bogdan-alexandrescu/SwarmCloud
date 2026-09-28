@@ -21,8 +21,6 @@ locals {
 
   gcs_prefix = { for t, _ in var.tenants : t => "tenants/${t}/" }
 
-  role_suffix = var.custom_role_suffix == "" ? "" : "_${var.custom_role_suffix}"
-
   # (tenant, dispatcher) pairs for the actAs grant.
   #
   # Keyed by the dispatcher's LABEL, never by its member string: the member is a
@@ -97,22 +95,11 @@ resource "google_service_account" "worker" {
 # condition can -- which is why the SHAPE of the grant below carries the weight.
 #
 # What IS available at this layer is the shape of the access, so the role is
-# built rather than borrowed. roles/datastore.user grants entities.delete and
-# entities.list on top of what a worker needs. Removing them removes the two
-# capabilities that turn "can touch the shared database" into the worst version
-# of itself:
-#
-#   entities.delete -- a hostile worker could delete another tenant's tasks,
-#   leases and attempts, and the pool documents the whole platform admits
-#   against. Nothing in the worker path deletes a document: agent_worker.control
-#   and swarm_common.admission are get/set/update only.
-#
-#   entities.list -- queries. Without it, a document can only be fetched by an
-#   id already known, and task, attempt and lease ids are `<prefix>_<20 hex>`.
-#   So a hostile worker cannot ENUMERATE other tenants' work: no dumping every
-#   prompt, repo URL and artifact path in the database. The worker path runs no
-#   queries at all; every read is a document ref built from an id the dispatcher
-#   handed this attempt (agent_worker.control, agent_worker.secrets.load_tenant).
+# built rather than borrowed: swarmTenantWorkerFirestore, which drops
+# entities.delete and entities.list from what roles/datastore.user grants.
+# terraform/bootstrap/platform_roles.tf defines it, with the reasoning for each
+# of its five permissions, since #79 (owner decision 2026-09-25): CI no longer
+# holds roles/iam.roleAdmin, so no role can be defined in a module CI applies.
 #
 # The residual is real and is written down here rather than implied: a worker
 # still holds create/get/update across the database, so it can read a document
@@ -120,30 +107,22 @@ resource "google_service_account" "worker" {
 # that needs the worker off direct Firestore access entirely -- reaching state
 # through a control-plane service that scopes by caller identity -- or one
 # database per tenant, and neither is expressible in IAM.
-resource "google_project_iam_custom_role" "worker_firestore" {
-  project = var.project_id
-  role_id = "swarmTenantWorkerFirestore${local.role_suffix}"
-  title   = "Swarm Tenant Worker Firestore"
+#
+# The role names below are plain strings from ../custom_role_ids, the one
+# spelling this module and terraform/bootstrap share. A string, not a resource
+# reference, so it is known at plan and nothing here reads a role: CI holds no
+# iam.roles.* permission.
+module "custom_role_ids" {
+  source = "../custom_role_ids"
 
-  description = "Read and write control-plane documents by id. No deletes, no queries."
-  stage       = "GA"
-
-  permissions = [
-    # The client library resolves the named database before its first call.
-    "datastore.databases.get",
-    "resourcemanager.projects.get",
-    # Document get / set / update, which is the entire worker data path.
-    "datastore.entities.get",
-    "datastore.entities.create",
-    "datastore.entities.update",
-  ]
+  project_id = var.project_id
 }
 
 resource "google_project_iam_member" "worker_firestore" {
   for_each = var.tenants
 
   project = var.project_id
-  role    = google_project_iam_custom_role.worker_firestore.id
+  role    = module.custom_role_ids.names.worker_firestore
   member  = "serviceAccount:${google_service_account.worker[each.key].email}"
 
   dynamic "condition" {
@@ -171,23 +150,14 @@ resource "google_project_iam_member" "worker_telemetry" {
 # Cloud Storage FUSE and the client libraries both need the bucket's own
 # metadata, and a prefix condition can never match the bucket resource name.
 # Granting legacyBucketReader instead would hand over objects.list across the
-# WHOLE bucket, which is exactly the isolation this module exists to keep.
-resource "google_project_iam_custom_role" "bucket_metadata_reader" {
-  project = var.project_id
-  role_id = "swarmBucketMetadataReader${local.role_suffix}"
-  title   = "Swarm Bucket Metadata Reader"
-
-  description = "storage.buckets.get only. Enough to mount, not enough to enumerate."
-  stage       = "GA"
-
-  permissions = ["storage.buckets.get"]
-}
-
+# WHOLE bucket, which is exactly the isolation this module exists to keep. So
+# the grant is swarmBucketMetadataReader, storage.buckets.get alone, defined in
+# terraform/bootstrap/platform_roles.tf (#79).
 resource "google_storage_bucket_iam_member" "worker_bucket_metadata" {
   for_each = var.tenants
 
   bucket = var.artifact_bucket
-  role   = google_project_iam_custom_role.bucket_metadata_reader.id
+  role   = module.custom_role_ids.names.bucket_metadata_reader
   member = "serviceAccount:${google_service_account.worker[each.key].email}"
 }
 

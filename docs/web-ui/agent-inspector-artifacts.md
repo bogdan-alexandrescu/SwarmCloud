@@ -119,6 +119,27 @@ window is described before the first row:
 `show records` re-reads with `include_raw=true` for each step's redacted source
 record.
 
+**Fixed after the post-deploy QA** (epic #222, 2026-09-26):
+
+* The facts row (source, format, masked, the object's location, `show
+  records`) is drawn only over a **published** stream. It was drawn whatever
+  the stream's status, so a task that had published nothing read `source live
+  [not measured] · masked 0` above `nothing published yet`, and a browser task
+  `source — · masked 0`.
+* A thinking step whose text is `""` is drawn as `thinking` and a real-zero
+  mark, like a redacted one, not as an expandable that opens onto nothing.
+* A rate-limit reading is worded (`allowed · 5-hour window · resets Sep 26,
+  06:20 local`), with its reset in this browser's local time, never the
+  server's flattened keys and an epoch. A key the screen does not know is its
+  name in words, and a value it cannot word is printed as sent.
+* A Markdown numbered list keeps its source numbers. A loose list (items
+  parted by blank lines) comes out as several `<ol>`s, and each began at 1, so
+  `1. 2. 3.` read `1. 1. 1.`; each list now starts at its first item's number.
+* At 390 the Logs toolbar's note (`masking at read time`) ran 74 px past the
+  drawer: the kit's `.ctl-card-note { flex: none }` kept its one-line width
+  after the phone override let it wrap. The override now lets it shrink
+  (`flex-shrink: 1; min-width: 0`).
+
 **A null id joins nothing.** The server sends `tool.id` and
 `tool_result.tool_use_id` as null when the event carried no string there. Two
 nulls are two unknowns, not a call and its result, so each is drawn on its own
@@ -194,9 +215,16 @@ never goes back to `task.input`:
   `not served by this API`). The raw input is not drawn in its place.
 * `empty prompt` means the empty string, in both panes. A prompt of
   whitespace is drawn as sent.
-* Details' metadata table draws `task.metadata` as submitted. It is not
-  masked: the owner's decision named the input, and whether metadata is
-  masked too is his to make (recorded on PR #210).
+* **Details' metadata table is masked too** (the owner's "mask it
+  everywhere", 2026-09-26). It drew `task.metadata` as submitted, between two
+  masked blocks. It now draws only the copy's `metadata` block, which the same
+  masker as the input made, with its own `masked N`. The platform's own keys
+  (`dispatch`, `input_from`, `expected_outputs`, refused at submission from
+  every caller) are served as stored, and their rows say `platform · as
+  stored`. A copy that failed, or an API that serves no `metadata` block, is
+  drawn as that; `task.metadata` is never drawn in its place.
+  `GET /v1/tasks/{id}` serves the same masked input and metadata, so no screen
+  and no client reads a raw one (see `docs/agent-output.md`).
 
 The input never changes after submission, so a copy that was read is kept
 per task (`loadTaskInputOnce`) and shared between the two panes. Each pane
@@ -225,19 +253,20 @@ the limit the worker wrote.
 
 | limit | ceiling label |
 |---|---|
-| the class read here has that cpu | the class's name (`standard limit`) |
-| any other figure | `reported limit`: the typed field does not say whether the cgroup's `cpu.max` or the catalogue supplied it, so neither is named |
+| source `cgroup` (request #26) | `cgroup limit`: the kernel's `cpu.max`, whatever the class says |
+| source `resource_class` | the class's name (`standard limit`) when the class read here has that cpu, else `class limit` |
+| no source recorded, the class read here has that cpu | the class's name (`standard limit`) |
+| no source recorded, any other figure | `reported limit`: an attempt from before request #26, which does not say whether the cgroup or the catalogue supplied it |
 | none written | the task's class read here, by name (`requests == limits`) |
 
-The `by` column says what the figures are. The attempt document records no
-time for them, so the answer comes from what is known about the attempt's end
-(`attemptEnd`, the same evidence the memory row reads):
+The `by` column says what the figures are, from what is known about the
+attempt's end (`attemptEnd`, the same evidence the memory row reads):
 
 | attempt | by |
 |---|---|
 | finish recorded | `at exit` |
-| running | `live reading` (strip: `live reading · age not recorded`) |
-| ended with no recorded finish (kill, reclaim) | `last written` |
+| running | `live reading` (strip: `live reading · 20s ago`, the API's age; `live reading · age not recorded` for an attempt from before request #26) |
+| ended with no recorded finish (kill, reclaim) | `last written` (strip: `last written · 3m ago` when the reading is dated) |
 | ran before the typed fields, with a reading on this page | `heartbeat event` (strip: `heartbeat event · cpu-seconds only` when the event has no cores, and `· page full; newer readings may exist` on a full page when the reading is not the one at exit) |
 | ran before the typed fields, and the event read failed | `events not read` |
 | never started | `never ran` |
@@ -249,11 +278,13 @@ With nothing measured there is one `cpu` row, not two identical hatched ones.
 An absent figure is never drawn as zero, and a figure over the limit takes the
 track's over-ceiling hatch.
 
-**A live reading has no age, on purpose.** #187 aged the reading on the
-server's clock (`usage.age_seconds`). The typed fields carry no time, so there
-is nothing server-side to age. Taking `timeAgo` off the browser's clock would
-reintroduce what the #187 review removed. The strip says
-`age not recorded`, and contract request #26 asks for a typed time.
+**A live reading's age is the API's** (contract request #26, accepted on
+#184, 2026-09-26). The worker stamps `cpu_measured_at` on every write, and the
+attempt routes serve `cpu_reading_age_seconds` against their own `read_at`, as
+#187 aged the interim reading on the server's clock. Details draws that age
+and never computes one from `cpu_measured_at` on the browser's clock, which
+would reintroduce what the #187 review removed. An attempt from before #26
+records no time, and its strip still says `age not recorded`.
 
 **The legacy reader.** Two kinds of attempt carry their CPU only on HEARTBEAT
 events. Attempts from #188's window have peak, mean and cpu-seconds there.
@@ -282,7 +313,7 @@ absence therefore also sit in a strip outside the rows (`.att-cpu-note`),
 beside the memory row's (`.att-rss-note`). The words come from the same
 function as the `by` column:
 
-* the mark and its words (`live reading · age not recorded`, `last written`,
+* the mark and its words (`live reading · 20s ago`, `last written`,
   `heartbeat event`, `never ran`, `events not read`, `not yet written`, `never measured`,
   `not served`) show at every width, as the memory strip's do;
 * the cpu-seconds and the ceiling's source show in the strip only at 560px and
@@ -307,8 +338,20 @@ Two things Details drew are gone, by the owner's decisions of 2026-09-25:
   `runner (platform)`, drawn with the same `Stream` rows.
 * **Details' own artifact list.** A table with a viewer and a `copy gsutil`
   per file duplicated Artifacts › Outputs. Details' Output keeps the git
-  outcome, which still names the patch file, and the log object locations
-  from the result summary.
+  outcome, which still names the patch file.
+
+And by the owner's decisions of 2026-09-26:
+
+* **The log object locations.** Output listed `result_summary.logs` (the
+  runner's and the agent's stdout and stderr URIs, each with `copy gsutil`).
+  "The runner log's object locations move to Artifacts › Logs, beside the logs
+  they point to. Details holds no log rows." Each stream row in Logs carries
+  its object's location and `copy gsutil`, and the transcript view carries the
+  location of the agent stdout object it is parsed from (`object`, whole in its
+  title and in the copy).
+* **The card foot's index** listed `CPU is never sampled` directly under the
+  two CPU rows (#222). The entry is `CPU is peak and mean cores of the limit`
+  now, and says what the rows are.
 
 ## What this pane does not show, said plainly
 
