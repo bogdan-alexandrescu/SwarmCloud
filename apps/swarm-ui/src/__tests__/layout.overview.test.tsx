@@ -49,7 +49,9 @@ const api = vi.hoisted(() => ({
   loadStats: vi.fn(),
   loadSpend: vi.fn(),
 }))
-vi.mock('../api', () => api)
+// `TASK_PAGE_LIMIT` BESIDE THE READS: Overview names the full page it asks
+// for (#168), and a factory mock throws on any export it does not declare.
+vi.mock('../api', () => ({ ...api, TASK_PAGE_LIMIT: 200 }))
 
 const { OverviewScreen } = await import('../Overview')
 
@@ -622,7 +624,8 @@ describe('OV-1, OV-2, OV-12: the headroom headline is % used, names its account,
       loadSpend: ok(spend({ tasksWithAttempts: 3, tasksSampled: 3, attempts: 3, attemptsWithCost: 3, costUsd: 1.25 })),
     })
     const figures = [...el.querySelectorAll('.ctl-figure, .ctl-metric-value, .ctl-dial-figure')].map(text)
-    expect(figures.filter((f) => f.includes('$1.2500')), 'the spend figure is drawn twice').toHaveLength(1)
+    // `$1.25`, not `$1.2500`: the headline keeps two decimals at every size (#97).
+    expect(figures.filter((f) => f.includes('$1.25')), 'the spend figure is drawn twice').toHaveLength(1)
     expect(figures.filter((f) => /(^|\D)28%/.test(f)), 'the headroom figure is not drawn exactly once').toHaveLength(1)
   })
 })
@@ -673,7 +676,9 @@ describe('OV-4, OV-14: the spend figure is a partial sum, and its foot is a run 
       '2 unmeasured',
       '1 of 12 reads failed',
       expect.stringMatching(/^summed (just now|\d+[smhd] ago)$/),
-      'no re-poll',
+      // Plain words, not `no re-poll` (#97): the sum moves on a press of
+      // refresh and on nothing else.
+      'updates only on refresh',
     ])
 
     const feet = [...el.querySelectorAll('.ctl-card-foot')]
@@ -925,13 +930,19 @@ describe('OV-10: the failures figure and the failed-agents list count one popula
     expect(limits.filter((l) => l !== 50), 'a phone Overview counted over a page the list does not read').toEqual([])
   })
 
-  /** The control: a wide screen reads the full page, as the list does. */
-  it('reads the full page on a wide screen', async () => {
+  /**
+   * The control: a wide screen reads the full page, as the list does -- and
+   * NAMES it (#168). A bare `loadTasks()` took the api's default, so the page
+   * this screen counts over was decided in another file.
+   *
+   * MUTATION: call `loadTasks()` with no argument on a wide screen.
+   */
+  it('reads the full page on a wide screen, and asks for it by number', async () => {
     media(false)
     api.loadTasks.mockClear()
     await mountWith()
     const limits = api.loadTasks.mock.calls.map((c) => c[0] as unknown)
     expect(limits.length).toBeGreaterThan(0)
-    expect(limits.includes(50), 'a wide Overview read the phone page').toBe(false)
+    expect(limits.filter((l) => l !== 200), 'a wide Overview did not ask for the 200-row page').toEqual([])
   })
 })

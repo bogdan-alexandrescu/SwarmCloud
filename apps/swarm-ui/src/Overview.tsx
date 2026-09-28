@@ -8,6 +8,7 @@ import {
   loadStats,
   loadTasks,
   loadWorkflows,
+  TASK_PAGE_LIMIT,
   type SpendRollup,
 } from './api'
 import { PHONE_PAGE_LIMIT } from './agentlist'
@@ -137,14 +138,12 @@ export function OverviewScreen() {
     setHeavy((n) => n + 1)
   }, [])
 
-  useEffect(() => {
-    const id = setInterval(() => setLive((n) => n + 1), POLL_MS)
-    return () => clearInterval(id)
-  }, [])
-  useEffect(() => {
-    const id = setInterval(() => setCounted((n) => n + 1), STATS_POLL_MS)
-    return () => clearInterval(id)
-  }, [])
+  // NEITHER TIMER RUNS WHILE THE TAB IS HIDDEN (#168, docs/web-ui §2.5). A
+  // background tab re-read the task page every twenty seconds and the counts
+  // every sixty for as long as it stayed open, which on a phone is 2-4 MB a
+  // minute for a screen nobody is looking at.
+  usePoll(POLL_MS, () => setLive((n) => n + 1))
+  usePoll(STATS_POLL_MS, () => setCounted((n) => n + 1))
 
   const capacity = useRead(loadCapacity, live)
   const tasks = useRead(loadListPage, live)
@@ -534,12 +533,72 @@ const STATS_POLL_MS = 60_000
  * read, as the list decides it, so a rotated phone takes the right page on
  * its next poll.
  *
- * `loadTasks()` WITH NO ARGUMENT on a wide screen, not `TASK_PAGE_LIMIT`: the
- * full page is the api's default, and naming it here would be a second
- * statement of it.
+ * THE LIMIT IS PASSED AT BOTH WIDTHS (#168), the way `Agents.tsx` passes it.
+ * A bare `loadTasks()` left the size of the page this screen polls to a
+ * default in another file, where a change made for some other caller would
+ * change what Overview re-reads every twenty seconds without touching it.
+ * `TASK_PAGE_LIMIT` is still the api's constant, so this is a reference to
+ * the one statement of it rather than a second one.
+ *
+ * 50 on a phone is §2.5's interim rule, and it holds until `GET /v1/tasks`
+ * gains `view=summary`: every row carries `input`, `metadata` and
+ * `result_summary`, 10-20 KiB each, and nothing on this screen reads them.
  */
 function loadListPage(): Promise<Result<TaskPage>> {
-  return phoneWidth() ? loadTasks(PHONE_PAGE_LIMIT) : loadTasks()
+  return loadTasks(phoneWidth() ? PHONE_PAGE_LIMIT : TASK_PAGE_LIMIT)
+}
+
+/** `document.hidden`, false where there is no document (tests/run.mjs). */
+function tabHidden(): boolean {
+  return typeof document !== 'undefined' && document.hidden === true
+}
+
+/**
+ * Call `tick` every `ms` while the tab can be seen, and never while it cannot.
+ *
+ * §2.5: polling "stop[s] entirely when `document.hidden`". A hidden tab reads
+ * nothing; a tab coming back reads at once if a tick fell due while it was
+ * away, and otherwise finishes the wait it was part-way through -- so flipping
+ * away and back inside twenty seconds costs nothing, and coming back after an
+ * hour shows the platform now rather than twenty seconds from now. The same
+ * rule `Screen` (Shell.tsx) applies to every other polled screen.
+ *
+ * A timeout re-armed per tick rather than an interval, because the due time
+ * has to survive a pause: an interval restarted on return would either fire
+ * late or need the same bookkeeping.
+ */
+function usePoll(ms: number, tick: () => void): void {
+  const latest = useRef(tick)
+  latest.current = tick
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | null = null
+    let dueAt = Date.now() + ms
+    const disarm = () => {
+      if (timer !== null) clearTimeout(timer)
+      timer = null
+    }
+    const arm = () => {
+      disarm()
+      timer = setTimeout(fire, Math.max(0, dueAt - Date.now()))
+    }
+    const fire = () => {
+      timer = null
+      dueAt = Date.now() + ms
+      latest.current()
+      arm()
+    }
+    const onVisibility = () => {
+      if (tabHidden()) disarm()
+      else if (dueAt <= Date.now()) fire()
+      else arm()
+    }
+    if (!tabHidden()) arm()
+    if (typeof document !== 'undefined') document.addEventListener('visibilitychange', onVisibility)
+    return () => {
+      disarm()
+      if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', onVisibility)
+    }
+  }, [ms])
 }
 
 // ---------------------------------------------------------------------------
@@ -1345,17 +1404,23 @@ function ProfileRow({
   // for one name, so when several refuse it says SO rather than picking one.
   // "refusing", not "full": one of them may be PAUSED, which is a different
   // fact with the opposite remedy.
+  //
+  // THE COLUMN SAYS WHAT IT IS (#95). It printed a bare pool label --
+  // `browser`, `your tenant` -- with no head over it, so beside two figures it
+  // read as a third. `bound by` is the label's own word for it (help-density
+  // §3, rule 1: the label before a column head), and the counts name their
+  // noun for the same reason.
   const by =
     h.blockers.length > 1
-      ? `${h.blockers.length} refusing`
+      ? `${countOf(h.blockers.length, 'pool')} refusing`
       : paused
         ? 'paused'
         : !h.complete
-          ? `${h.unread.length} unread`
+          ? `${countOf(h.unread.length, 'pool')} unread`
           : h.binding
-            ? bindingLabel(h.binding, tenant)
+            ? `bound by ${bindingLabel(h.binding, tenant)}`
             : h.missing.length > 0
-              ? `${h.missing.length} uncapped`
+              ? `${countOf(h.missing.length, 'pool')} uncapped`
               : '—'
 
   return (
@@ -1381,14 +1446,17 @@ function ProfileRow({
             </span>
           ) : h.agents === 0 ? (
             <span className="ov-stop">
-              · 0 can start
+              · 0 agents can start
               {/* The count, because more than one pool can refuse at the same
                   moment and a card that implies one sends an operator to raise
                   a ceiling that changes nothing. */}
               {h.blockers.length > 1 && ` (${h.blockers.length})`}
             </span>
           ) : (
-            <>· {h.agents} can start</>
+            /* AGENTS, AND THE FIGURE BESIDE IT IS IN UNITS (#95). "5 can
+               start" next to "0 / 10" read as a contradiction until one knew
+               a browser agent weighs 2; the unit was only in a hover title. */
+            <>· {countOf(h.agents, 'agent')} can start</>
           )}
         </>
       }
@@ -1403,7 +1471,12 @@ function ProfileRow({
         binding ? (
           <>
             {binding.active}
-            <span className="ctl-util-of"> / {binding.effective_limit}</span>
+            {/* UNITS, NAMED (#95): a pool counts units, and a profile's agent
+                may weigh more than one of them. */}
+            <span className="ctl-util-of">
+              {' '}
+              / {binding.effective_limit} {binding.effective_limit === 1 ? 'unit' : 'units'}
+            </span>
           </>
         ) : (
           <span className="ctl-em">&mdash;</span>
@@ -1746,6 +1819,8 @@ function SpendBody({ state, tasks }: { state: Result<SpendRollup>; tasks: Result
         <b
           className={`ctl-figure ov-figure${s.costUsd === null ? ' is-absent' : ''}`}
           data-measured={s.costUsd === null ? 'false' : 'true'}
+          // THE PRECISE FIGURE IS THE NAME, the rounded one the picture (#97).
+          aria-label={s.costUsd === null ? undefined : `${preciseMoney(s.costUsd)} of token cost`}
         >
           {s.costUsd === null ? <span className="ctl-em">&mdash;</span> : money(s.costUsd)}
         </b>
@@ -1770,13 +1845,8 @@ function SpendBody({ state, tasks }: { state: Result<SpendRollup>; tasks: Result
           )}
         </div>
 
-        {/* THE TOKEN MIX, AS A PROPORTION RATHER THAN FOUR NUMBERS IN A LIST.
-            Hand-rolled: four `<i>` widths off one total, in four tones of ONE
-            series hue (see `.ov-s1`, in the Overview block at the end of
-            styles.css). A segment whose count is ABSENT is not drawn at all
-            and its fact keeps its slot below with an em dash -- a missing
-            segment and a zero-width segment are the same picture, so the em
-            dash is what tells them apart. */}
+        {/* THE FOUR TOKEN COUNTS, IN WORDS (#97). The proportion bar that
+            stood here is gone; `TokenMix` says why. */}
         <TokenMix s={s} />
       </div>
 
@@ -1818,9 +1888,10 @@ function SpendBody({ state, tasks }: { state: Result<SpendRollup>; tasks: Result
           )}
           {/* 4. HOW OLD IT IS, and 5. HOW IT MOVES: the sum is on no timer --
               only a press of refresh re-sums it (OV-16 set the cadence of
-              `/v1/stats`, not of this). */}
+              `/v1/stats`, not of this). IN PLAIN WORDS (#97): it read `no
+              re-poll`, which is the poll's jargon for the same fact. */}
           <span>{footFor(state, 'summed') ?? 'not summed'}</span>
-          <span>no re-poll</span>
+          <span>updates only on refresh</span>
         </FootRun>
       </p>
     </>
@@ -1828,87 +1899,40 @@ function SpendBody({ state, tasks }: { state: Result<SpendRollup>; tasks: Result
 }
 
 /**
- * The four token counts as one proportion, plus their figures.
+ * The four token counts, each with its word and its figure.
  *
- * A BAR AND A FACTS STRIP, NOT A DEFINITION LIST. The `<dl>` this replaced
- * spent a 13px uppercase key and a line of its own on each of four numbers
- * that only mean anything against each other; the bar puts them against each
- * other and the strip keeps the digits.
+ * THE PROPORTION BAR IS GONE (#97). On a real sample it was 90-95% cache
+ * read, with `in` under a pixel wide, so the one thing it drew was that
+ * caching works. The issue allowed replacing it with spend by runner profile;
+ * the rollup (`SpendRollup`, api.ts) carries totals only, with no split by
+ * profile, so there was nothing on hand to draw and the bar was dropped
+ * rather than rebuilt from a second read. Its swatches keyed nothing once it
+ * went, so they went too.
  *
- * AN ABSENT COUNT DRAWS NO SEGMENT. A zero-width segment and a segment that
- * was never measured are the same picture, so an absent count is left out of
- * the bar entirely and its fact carries `.ctl-em` -- and when EVERY count is
- * absent the bar is not drawn at all, because an empty track reads as "0
- * tokens", which is a claim.
+ * WORDS, NOT ABBREVIATIONS. `c-rd` and `c-wr` were explained nowhere on the
+ * screen; `cache read` and `cache write` need no help card, and `input` and
+ * `output` are written out beside them so the four read as one list.
+ *
+ * AN ABSENT COUNT IS AN EM DASH, never a digit: a count no attempt reported is
+ * not zero tokens, and a measured zero is.
  */
 function TokenMix({ s }: { s: SpendRollup }) {
   const parts = [
-    { key: 'in', v: s.inputTokens, series: 1 },
-    { key: 'out', v: s.outputTokens, series: 2 },
-    { key: 'c-rd', v: s.cacheReadTokens, series: 3 },
-    { key: 'c-wr', v: s.cacheCreationTokens, series: 4 },
+    { key: 'input', v: s.inputTokens },
+    { key: 'output', v: s.outputTokens },
+    { key: 'cache read', v: s.cacheReadTokens },
+    { key: 'cache write', v: s.cacheCreationTokens },
   ] as const
-  const total = parts.reduce((n, p) => n + (p.v ?? 0), 0)
-  const anyMeasured = parts.some((p) => p.v !== null)
 
   return (
-    <>
-      {anyMeasured && total > 0 ? (
-        <div
-          className="ov-mix"
-          role="img"
-          aria-label={parts
-            .map((p) => `${p.key} ${p.v === null ? 'not measured' : p.v}`)
-            .join(', ')}
-        >
-          {parts.map((p) =>
-            p.v === null || p.v === 0 ? null : (
-              <i
-                key={p.key}
-                className={`ov-mix-seg ov-s${p.series}`}
-                style={{ width: `${(p.v / total) * 100}%` }}
-              />
-            ),
-          )}
-        </div>
-      ) : (
-        // Every count absent, or a measured total of zero with no proportion
-        // to draw. Either way there is no scale, so no track is drawn: an
-        // empty track is a claim that the scale starts somewhere.
-        <div className="ov-mix is-unknown" role="img" aria-label="No attempt in this sample reported a token count, so there is no proportion to draw." />
-      )}
-      {/* THE SWATCH IS ON THE WORD. The bar above was four hues and the legend
-          under it named them in plain grey, so the only way to learn which
-          segment was `c-rd` was to guess from the order -- the owner's "the
-          spend bar is a rainbow ... with no legend near it".
-          design-system.md sec 1.6 is explicit that the five series sit in a band
-          1.36:1 from end to end and are therefore NOT separable in greyscale,
-          so a multi-series chart carries a legend naming every series and never
-          relies on the segment's colour to say which segment it is. This is
-          that legend. The bar is now one hue at four tones rather than four
-          hues, so the swatch keys a segment by LIGHTNESS as well -- which a
-          greyscale screenshot keeps -- and the proportion stays.
-
-          A SERIES THAT REPORTED NOTHING GETS A HOLLOW SWATCH, not a solid one.
-          It has no segment on the bar, and a solid swatch beside an em dash
-          would be a key to a colour that is not there -- an absence drawn as a
-          measurement, which is the one thing this console may not do. The
-          swatch still occupies its space, so the column does not reflow when a
-          count arrives. It is aria-hidden throughout: the bar's own aria-label
-          already names every series and its value. */}
-      <ul className="ctl-facts ov-mix-facts">
-        {parts.map((p) => (
-          <li className={`ctl-fact${p.v === null ? ' is-absent' : ''}`} key={p.key}>
-            <i
-              className={p.v === null ? 'ov-swatch is-absent' : `ov-swatch ov-s${p.series}`}
-              aria-hidden
-            />
-            <b>{p.key}</b>
-            {p.v === null ? <i className="ctl-em">&mdash;</i> : <span className="ov-num">{tokens(p.v)}</span>}
-          </li>
-        ))}
-      </ul>
-    </>
+    <ul className="ctl-facts ov-mix-facts">
+      {parts.map((p) => (
+        <li className={`ctl-fact${p.v === null ? ' is-absent' : ''}`} key={p.key}>
+          <b>{p.key}</b>
+          {p.v === null ? <i className="ctl-em">&mdash;</i> : <span className="ov-num">{tokens(p.v)}</span>}
+        </li>
+      ))}
+    </ul>
   )
 }
 
@@ -1920,12 +1944,27 @@ function tokens(v: number): string {
 }
 
 /**
- * Dollars of TOKEN cost. Four decimals under ten dollars because a single
- * attempt is routinely worth $0.0312, and rounding that to $0.03 loses a third
- * of the figures on this screen to "$0.00".
+ * Dollars of TOKEN cost, as the headline prints it: TWO DECIMALS AT EVERY SIZE
+ * (#97). It was four under ten dollars and two above, so the figure changed
+ * shape as it grew and `$9.9981` sat where `$10.00` would be a moment later.
+ * The precise sum is `preciseMoney`, on the headline's accessible name.
+ *
+ * UNDER HALF A CENT IS `<$0.01`, NEVER `$0.00`. A measured cost that rounds to
+ * zero would claim the sample was free, which is the absent-vs-zero lie by a
+ * different door; an EXACT zero is a measurement and prints as one.
  */
 function money(v: number): string {
-  return v < 10 ? `$${v.toFixed(4)}` : `$${v.toFixed(2)}`
+  if (v > 0 && v < 0.005) return '<$0.01'
+  return `$${v.toFixed(2)}`
+}
+
+/**
+ * The same sum to the micro-dollar, trailing zeros dropped down to two
+ * decimals: `$0.0312`, `$12.345678`, `$1.25`. For the accessible name, where
+ * a reader who wants the figure behind `$0.03` gets it without a hover.
+ */
+function preciseMoney(v: number): string {
+  return `$${v.toFixed(6).replace(/0{1,4}$/, '')}`
 }
 
 // ---------------------------------------------------------------------------
@@ -2343,7 +2382,10 @@ function AccountsBody({ state }: { state: Result<AccountsPage> }) {
                   nameTitle={a.account_id}
                   name={
                     <>
-                      <b>{a.label}</b> <span className="ov-num">· {a.assigned}</span>
+                      {/* AGENTS, NAMED (#95). `· 0` was a digit with no
+                          word beside a figure in % used; it counts the
+                          agents this account is serving now. */}
+                      <b>{a.label}</b> <span className="ov-num">· {countOf(a.assigned, 'agent')}</span>
                     </>
                   }
                   // Never observed, or no reading for the binding window:
