@@ -456,21 +456,39 @@ def repository_userinfo(url: str) -> tuple[int, int] | None:
     `end` is the index of the `@` that closes it. None for a URL with no
     userinfo, and for an ssh or scp-form URL whose user is exactly `SSH_LOGIN`.
 
+    SCP VERSUS URL IS DECIDED BY PREFIX, NOT BY WHETHER `://` APPEARS
+    ANYWHERE. An scp-form path can itself contain `://`
+    (`git@tok@host:o/r://x`), and a repository path never does otherwise, so
+    scanning the whole string for `://` sent that URL to the URL branch below
+    and skipped its userinfo entirely. Only a literal `git@` prefix (an scp
+    URL always starts with `{SSH_LOGIN}@`, the one prefix `check_repository_url`
+    allows besides `https://` and `ssh://`) or a total absence of `://` is
+    scp form; everything else is `scheme://...`.
+
     THE SCP FORM HAS NO AUTHORITY DELIMITER a token cannot also contain: its
     host ends at the first `:`, and `git@tok:pw@host:path` puts a `:` inside
     the userinfo. So its userinfo runs to the LAST `@` in the whole URL. That
     refuses an scp-form path containing `@`, which no forge's repository path
     does, and masks every credential that shape can hold.
+
+    For `ssh://`, the authority ends at the first `/` ONLY -- git's own
+    `parse_connect_url` cuts an ssh host the same way, so a `?` or `#` inside
+    the userinfo (`ssh://tok#@host/o/r`, `ssh://tok?@host/o/r`) does not end
+    it early the way it does for https.
     """
-    scheme, sep, rest = url.partition("://")
-    if not sep:
+    if url.startswith(f"{SSH_LOGIN}@") or "://" not in url:
         at = url.rfind("@")
         if at < 0 or url[:at] == SSH_LOGIN:
             return None
         return 0, at
+    scheme, sep, rest = url.partition("://")
     start = len(scheme) + len(sep)
-    ends = [at for at in (rest.find("/"), rest.find("?"), rest.find("#")) if at >= 0]
-    authority = rest[: min(ends)] if ends else rest
+    if scheme.lower() == "ssh":
+        slash = rest.find("/")
+        authority = rest[:slash] if slash >= 0 else rest
+    else:
+        ends = [at for at in (rest.find("/"), rest.find("?"), rest.find("#")) if at >= 0]
+        authority = rest[: min(ends)] if ends else rest
     at = authority.rfind("@")
     if at < 0:
         return None
@@ -940,6 +958,24 @@ def _filename_problem(filename: str) -> str | None:
     return None
 
 
+#: How much of an over-bound or otherwise malformed `input_from` filename to
+#: echo back verbatim. `raw` is caller-controlled and unbounded -- that is
+#: exactly the shape `_filename_problem` refuses -- so the refusal shows a
+#: short prefix plus the true byte length rather than the whole string.
+_ECHO_PREFIX_BYTES = 80
+
+
+def _short_echo(raw: object) -> str:
+    """A safe-to-echo stand-in for a filename too big (or wrong-shaped) to quote whole."""
+    quoted = repr(raw)
+    text = raw if isinstance(raw, str) else quoted
+    encoded = text.encode("utf-8", errors="replace")
+    if len(encoded) <= _ECHO_PREFIX_BYTES:
+        return quoted
+    prefix = encoded[:_ECHO_PREFIX_BYTES].decode("utf-8", errors="ignore")
+    return f"{prefix!r}... ({len(encoded)} bytes)"
+
+
 def _distinct_name(source: str, filename: str) -> str:
     """The filename the refusal suggests: the same name, prefixed with the parent's step id."""
     path = PurePosixPath(filename)
@@ -973,8 +1009,9 @@ def validate_staged_filenames(step: StepSpec) -> None:
         filename = raw.strip() if isinstance(raw, str) else ""
         problem = _filename_problem(filename)
         if problem is not None:
+            echoed = _short_echo(raw)
             raise DagError(
-                f"step {step.step_id!r} stages input from {source!r} as {raw!r}, which "
+                f"step {step.step_id!r} stages input from {source!r} as {echoed}, which "
                 f"{problem}. An input_from filename is where the artifact lands in "
                 "this step's workspace, so it must be a relative path inside it, "
                 "such as 'notes.md' or 'reports/notes.md', with no empty, '.' or "
@@ -983,7 +1020,7 @@ def validate_staged_filenames(step: StepSpec) -> None:
                 detail={
                     "step_id": step.step_id,
                     "input_from": source,
-                    "filename": raw,
+                    "filename": echoed,
                     "problem": problem,
                 },
             )
