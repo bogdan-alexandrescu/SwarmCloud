@@ -3536,6 +3536,18 @@ table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--tex
     white-space: normal;
     text-align: left;
   }
+  /* AND IT MAY SHRINK (#222, post-deploy QA of 2026-09-26). `white-space:
+     normal` let the note wrap, but the base rule's `flex: none` still sized it
+     at its full one-line width, so beside the Logs view switch at 390px the
+     note ran 74px past the drawer ("masking at read time" cut at right=464).
+     A flex item that may shrink and has no min-content floor wraps inside the
+     room its row leaves; `overflow-wrap` lets a long attempt label break. */
+  .att-sub-head > .ctl-card-note,
+  .ctl-toolbar > .ctl-card-note {
+    flex-shrink: 1;
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
   /* `.ctl-seg > button { min-height: 44px }` LIVED HERE AND NEVER APPLIED
      (CH-8). This block sits ~2,000 lines ABOVE the primitive's own
      `.ctl-seg > button { min-height: 26px }`; a media query adds nothing to

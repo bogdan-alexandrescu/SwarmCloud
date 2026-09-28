@@ -23,6 +23,7 @@ import {
   GIB,
   REASON_COPY,
   TERMINAL_STATES,
+  ageSpan,
   attemptOutcome,
   attemptRan,
   bytesLabel,
@@ -1383,7 +1384,7 @@ function AttemptLegend() {
     'requests-are-ceilings',
     'workspace-memory',
     'oom-near-miss',
-    'cpu-not-sampled',
+    'cpu-figures',
     'token-cost',
     'checkpoints',
     'attempt-documents',
@@ -1840,7 +1841,9 @@ function CpuRows({
     )
   }
 
-  const source = limitSource(figures.cpu_limit_cores, cls)
+  // The typed source (contract request #26) for the attempt's own figures; a
+  // heartbeat reading carries none, and older attempts recorded none.
+  const source = limitSource(figures.cpu_limit_cores, cls, from.kind === 'attempt' ? (a.cpu_limit_source ?? null) : null)
   const seconds = figures.cpu_seconds === null ? null : `${Number(figures.cpu_seconds.toFixed(1))} cpu-s`
   return (
     <>
@@ -1996,16 +1999,24 @@ function interimReading(a: AttemptRow, events: TaskEvent[]): CpuFrom | null {
 /**
  * WHERE THE CPU CEILING CAME FROM, in words for the `by` column and the strip.
  *
- *   no limit written   the task's class read here, by name;
- *   the class's cpu    the class's name (`standard limit`): the worker sized
- *                      the container by that class or its cgroup says the
- *                      same, and with `requests == limits` those agree;
- *   anything else      `reported limit`: the worker wrote a figure, and the
- *                      typed field does not say whether the kernel or the
- *                      catalogue gave it, so neither is named.
+ *   no limit written     the task's class read here, by name;
+ *   source `cgroup`      `cgroup limit`: the worker read the kernel's
+ *                        `cpu.max` (contract request #26, accepted on #184,
+ *                        2026-09-26), whatever the class says;
+ *   source `resource_class`
+ *                        the class's name (`standard limit`) when the class
+ *                        read here has that cpu, else `class limit`: the worker
+ *                        took it from the catalogue of the class it was sized
+ *                        with, which may not be the one read here;
+ *   no source recorded   an attempt from before #26: the class's name when
+ *                        the class has the same cpu (with `requests ==
+ *                        limits` the two agree), else `reported limit` --
+ *                        the legacy words, kept for older attempts.
  */
-function limitSource(cores: number | null, cls: ResourceClassSpec | null): string | null {
+function limitSource(cores: number | null, cls: ResourceClassSpec | null, recorded: string | null = null): string | null {
   if (cores === null) return cls !== null ? `${cls.name} limit` : null
+  if (recorded === 'cgroup') return 'cgroup limit'
+  if (recorded === 'resource_class') return cls !== null && cls.cpu === cores ? `${cls.name} limit` : 'class limit'
   if (cls !== null && cls.cpu === cores) return `${cls.name} limit`
   return 'reported limit'
 }
@@ -2106,22 +2117,37 @@ function cpuReading(from: CpuFrom, a: AttemptRow, end: AttemptEnd): CpuReading {
           say: 'The worker writes the attempt’s CPU figures with its first periodic reading after the runner starts, and none has landed yet. This is not a zero.',
         }
   }
+  // THE READING'S AGE (contract request #26, accepted on #184, 2026-09-26),
+  // as the API measured it against its own clock at the read: never off this
+  // browser's clock, which would be a guess drawn as a measurement. An attempt
+  // from before #26 records no time, and says so.
+  const age = typeof a.cpu_reading_age_seconds === 'number' && Number.isFinite(a.cpu_reading_age_seconds)
+    ? `${ageSpan(a.cpu_reading_age_seconds * 1000)} ago`
+    : null
   if (!end.over) {
-    return {
-      measured: true,
-      by: 'live reading',
-      strip: 'live reading · age not recorded',
-      mark: 'pending',
-      say: 'A live reading: the running worker rewrites these figures on the attempt with each periodic reading. The attempt records no time for them, so no age is shown. They are not the figures at exit.',
-    }
+    return age !== null
+      ? {
+          measured: true,
+          by: 'live reading',
+          strip: `live reading · ${age}`,
+          mark: 'pending',
+          say: `A live reading: the running worker rewrites these figures on the attempt with each periodic reading, and wrote this one ${age} by the API's clock when it was read. They are not the figures at exit.`,
+        }
+      : {
+          measured: true,
+          by: 'live reading',
+          strip: 'live reading · age not recorded',
+          mark: 'pending',
+          say: 'A live reading: the running worker rewrites these figures on the attempt with each periodic reading. This attempt records no time for them, so no age is shown. They are not the figures at exit.',
+        }
   }
   if (end.by === 'recorded') return { measured: true, by: 'at exit', strip: 'at exit', mark: null, say: '' }
   return {
     measured: true,
     by: 'last written',
-    strip: 'last written',
+    strip: age !== null ? `last written · ${age}` : 'last written',
     mark: 'partial',
-    say: 'This attempt ended without a recorded finish, so these are the figures its worker last wrote while it ran. They are not the figures at exit, and none are coming.',
+    say: `This attempt ended without a recorded finish, so these are the figures its worker last wrote while it ran${age !== null ? `, ${age} by the API's clock` : ''}. They are not the figures at exit, and none are coming.`,
   }
 }
 
@@ -2471,15 +2497,11 @@ function Output({ run }: { run: AgentRun }) {
   // the git outcome names.
   const artifactsRaw = summary?.artifacts
   const artifacts: ArtifactRef[] = Array.isArray(artifactsRaw) ? (artifactsRaw as ArtifactRef[]) : []
-  // THE SAME CAUTION, for the same reason: an older
-  // worker or a fixture can put a list -- or a string -- in `logs`. Silently
-  // substituting `{}` made `Logs` print "no log stream was uploaded for this
-  // attempt", a claim about the RUN, for a record that is merely malformed,
-  // and dropped the stdout/stderr URIs the reader came for without a word.
-  const logsRaw: unknown = summary?.logs
-  const logsOk = typeof logsRaw === 'object' && logsRaw !== null && !Array.isArray(logsRaw)
-  const logs: Record<string, unknown> = logsOk ? (logsRaw as Record<string, unknown>) : {}
-  const logsMalformed = logsRaw !== undefined && !logsOk
+  // NO LOG ROWS (owner decision, 2026-09-26, on #184). Output listed
+  // `result_summary.logs` -- the stdout and stderr object locations, each
+  // with `copy gsutil`. "The runner log's object locations move to
+  // Artifacts › Logs, beside the logs they point to. Details holds no log
+  // rows." Each log's location and its copy now sit on its own row there.
   const terminal = TERMINAL_STATES.has(task.state)
 
   const retried = attempts !== null ? attempts.length > 1 : task.attempt_count > 1
@@ -2543,115 +2565,10 @@ function Output({ run }: { run: AgentRun }) {
       ) : (
         <>
           <GitOutcome git={summary.git} artifacts={artifacts} task={task} />
-          <Logs logs={logs} malformed={logsMalformed} raw={logsRaw} />
           <SummaryUsage task={task} attempts={attempts} />
         </>
       )}
     </section>
-  )
-}
-
-function Logs({
-  logs,
-  malformed,
-  raw,
-}: {
-  logs: Record<string, unknown>
-  /** `logs` was present and was not a map. Not the same as no stream. */
-  malformed: boolean
-  /** The value as recorded, shown when it is malformed so a uri inside it is
-   *  not thrown away silently. */
-  raw: unknown
-}) {
-  const entries = Object.entries(logs)
-
-  if (malformed) {
-    return (
-      <div className="section" style={SUB}>
-        <span className="ctl-eyebrow">logs</span>
-        <Absent
-          kind="partial"
-          heading="logs is not a map of streams"
-          say="This result summary records a logs field that is not an object of stream name to uri, so no stream can be listed from it. The attempt may well have uploaded stdout and stderr — this is a malformed record, not a run without logs. The value is reproduced below so a uri inside it is not lost."
-        />
-        <pre className="json" style={{ maxHeight: 200, overflowY: 'auto' }}>
-          {JSON.stringify(raw, null, 2)}
-        </pre>
-        <LogsFoot />
-      </div>
-    )
-  }
-
-  return (
-    <div className="section" style={SUB}>
-      <span className="ctl-eyebrow">logs</span>
-      {entries.length === 0 ? (
-        <p className="att-none">
-          <Mark
-            kind="absent"
-            say="No log stream was uploaded for this attempt. A stream that failed to upload is absent from this list rather than recorded as empty."
-          />{' '}
-          none uploaded
-        </p>
-      ) : (
-        <ul className="ctl-facts">
-          {entries.map(([label, value]) => (
-            <li className="ctl-fact" key={label}>
-              <b>{label}</b>
-              {typeof value === 'string' ? (
-                <>
-                  <span className="mono uri">{value}</span>
-                  <button
-                    className="copy"
-                    onClick={() => navigator.clipboard?.writeText(`gsutil cat ${value}`)}
-                  >
-                    copy gsutil
-                  </button>
-                </>
-              ) : (
-                /* An entry whose value is not a string is not a uri. React
-                   would throw on an object child, and printing it as a
-                   location would send someone to gsutil with a number. */
-                <>
-                  <span className="mono">{JSON.stringify(value)}</span>{' '}
-                  <Mark
-                    kind="absent"
-                    say="This log entry's value is not a string, so it is not a uri and there is nothing to fetch from it."
-                  />
-                </>
-              )}
-            </li>
-          ))}
-        </ul>
-      )}
-      <LogsFoot />
-    </div>
-  )
-}
-
-/**
- * The standing fact about logs on this platform, in both branches above.
- *
- * THIS USED TO SAY "there is no log-tail read path on the API, so a running
- * agent's output is not readable here at all". That was true when it was
- * written and had stopped being true: `GET /v1/tasks/{id}/logs` serves a byte
- * window of either the final object or the live tail, redacted at read time.
- * Nothing had called it, so the screen went on stating the old constraint --
- * which is worse than a missing feature, because it tells a reader not to look.
- * The Artifacts pane reads it, for the agent's streams and for the runner's
- * (#184).
- */
-function LogsFoot() {
-  // WHAT IT SAYS NOW, and it is a pointer rather than an explanation. These
-  // are object LOCATIONS from the result summary. Their text -- the agent's
-  // streams, its transcript and its answer, live while it runs, and the
-  // runner process's own log -- is the Artifacts pane's alone: the runner log
-  // panel that stood below this in Details was removed by the owner's decision
-  // of 2026-09-25 (#184).
-  return (
-    <p className="ctl-card-foot">
-      <span>locations only · text under Artifacts</span>
-    </p>
   )
 }
 
@@ -3216,10 +3133,15 @@ function PublishOutcome({ git, task }: { git: GitSummary; task: Task }) {
  * When the copy was not read, the block says so -- it is never replaced by
  * the raw input.
  *
- * THE METADATA TABLE IS NOT MASKED. It draws `task.metadata` as submitted: the
- * owner's decision named the input, and whether the caller's metadata is
- * masked too is still his to make (recorded on PR #210). So this section does
- * NOT mask every byte it shows, and nothing here says it does.
+ * THE METADATA TABLE IS MASKED TOO (the owner's "mask it everywhere",
+ * 2026-09-26). It drew `task.metadata` as submitted, between two masked
+ * blocks: `TaskCreate.metadata` is caller-supplied, and a token in it was
+ * drawn in clear. It now draws the copy's `metadata` block -- the caller's
+ * keys through the same masker as the input, the platform's own keys
+ * (`dispatch`, `input_from`, `expected_outputs`) as stored, each such row
+ * saying so -- with its own `masked N`. A copy that was not read, or an API
+ * that does not serve the block, is said as that; `task.metadata` is never
+ * drawn in its place.
  *
  * ITS OWN READ, NOT THE DRAWER'S (PR #210 re-review). The copy rode in
  * `loadAgentRun`'s `Promise.all`, so the whole drawer waited on it. It is read
@@ -3248,7 +3170,6 @@ function Input({ run, readAt }: { run: AgentRun; readAt: number | null }) {
   )
   // A stale copy is still a copy the API masked; only its refresh failed.
   const served = copy.status === 'ok' || copy.status === 'stale' ? copy.data : null
-  const metadata = task.metadata
 
   return (
     <section className="section">
@@ -3351,48 +3272,7 @@ function Input({ run, readAt }: { run: AgentRun; readAt: number | null }) {
         )}
       </div>
 
-      <div className="section" style={SUB}>
-        <span className="ctl-eyebrow">metadata</span>
-        {metadata === null ? (
-          <p className="att-none">
-            <Mark
-              kind="absent"
-              say="The task document carried no metadata field at all, which is different from being submitted with none."
-            />{' '}
-            no field
-          </p>
-        ) : Object.keys(metadata).length === 0 ? (
-          <p className="att-none">
-            <Mark
-              kind="zero"
-              say="Submitted with no metadata. The read succeeded and the object is empty, so this is a real zero."
-            />{' '}
-            submitted with none
-          </p>
-        ) : (
-          <div className="ctl-table">
-            <table>
-              <thead>
-                <tr>
-                  <th scope="col">Key</th>
-                  <th scope="col">Value</th>
-                </tr>
-              </thead>
-              <tbody>
-                {Object.entries(metadata).map(([k, v]) => (
-                  <tr key={k}>
-                    <th scope="row" className="mono">{k}</th>
-                    {/* Metadata is arbitrary, so a nested object is stringified
-                        rather than rendered -- React would throw on an object
-                        child, and "[object Object]" is worse than the JSON. */}
-                    <td>{typeof v === 'string' ? v : JSON.stringify(v)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
+      <MaskedMetadataBlock served={served} copy={copy} />
 
       {/* redesign-v2 Panel 3: the files staged into the workspace, each linked
           back to the run that produced it. Renders nothing for a run that
@@ -3401,6 +3281,80 @@ function Input({ run, readAt }: { run: AgentRun; readAt: number | null }) {
 
       {served !== null && <RestOfInput served={served} />}
     </section>
+  )
+}
+
+/**
+ * THE TASK'S METADATA, AS THE API MASKED IT (the owner's "mask it everywhere",
+ * 2026-09-26). Drawn from the `/input` copy's `metadata` block, which the same
+ * masker as the input made, so a literal masked in the prompt is masked here
+ * too. A row whose key only the platform writes is served as stored, and the
+ * row says so: those keys are not masked, and a reader should not take them
+ * for masked ones.
+ *
+ * NEVER `task.metadata` IN ITS PLACE. A copy still reading, a copy that failed
+ * and an API that does not serve the block are each said as that.
+ */
+function MaskedMetadataBlock({ served, copy }: { served: TaskInputCopy | null; copy: Result<TaskInputCopy> }) {
+  const block = served?.metadata ?? null
+  const entries = block === null ? [] : Object.entries(block.value)
+  const platform = new Set(block?.platform_keys ?? [])
+  return (
+    <div className="section" style={SUB}>
+      <div className="ctl-toolbar att-sub-head">
+        <span className="ctl-eyebrow">metadata</span>
+        {block !== null && <MaskedNote count={block.redaction_count} />}
+      </div>
+      {served === null ? (
+        <InputNotRead copy={copy} />
+      ) : block === null ? (
+        <p className="att-none">
+          <Mark
+            kind="absent"
+            say="The deployment answering this UI does not serve the masked copy of a task's metadata yet. The metadata is not drawn unmasked in its place."
+          />{' '}
+          masked metadata not served by this API
+        </p>
+      ) : entries.length === 0 ? (
+        <p className="att-none">
+          <Mark
+            kind="zero"
+            say="Submitted with no metadata. The read succeeded and the object is empty, so this is a real zero."
+          />{' '}
+          submitted with none
+        </p>
+      ) : (
+        <div className="ctl-table">
+          <table>
+            <thead>
+              <tr>
+                <th scope="col">Key</th>
+                <th scope="col">Value</th>
+              </tr>
+            </thead>
+            <tbody>
+              {entries.map(([k, v]) => (
+                <tr key={k}>
+                  <th scope="row" className="mono">
+                    {k}
+                    {platform.has(k) && (
+                      <>
+                        {' '}
+                        <span className="ctl-sub">platform · as stored</span>
+                      </>
+                    )}
+                  </th>
+                  {/* Metadata is arbitrary, so a nested object is stringified
+                      rather than rendered -- React would throw on an object
+                      child, and "[object Object]" is worse than the JSON. */}
+                  <td>{typeof v === 'string' ? v : JSON.stringify(v)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
   )
 }
 

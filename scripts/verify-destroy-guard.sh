@@ -670,6 +670,11 @@ fi
 hr
 info "${CHECKS} assertion(s) run against a real terraform plan"
 if [[ "${FAILED}" -gt 0 ]]; then
-  die "${FAILED} of ${CHECKS} FAILED -- the destroy guard does not behave as required on a real plan"
+  # Exit 2, not `die` (which is exit 1): the header and
+  # docs/runbooks/destroy-guard-real-plan-proof.md promise 1 for "could not
+  # check" and 2 for "the guard misbehaved", and a caller triaging by exit code
+  # must not be sent to the wrong one (#173). Every `die` above stays exit 1.
+  err "${FAILED} of ${CHECKS} FAILED -- the destroy guard does not behave as required on a real plan"
+  exit 2
 fi
 ok "all ${CHECKS} assertions held"

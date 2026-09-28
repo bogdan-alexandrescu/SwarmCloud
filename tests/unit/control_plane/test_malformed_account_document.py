@@ -306,10 +306,12 @@ SINGLE_ACCOUNT_ROUTES = {
     "state": lambda c, i: c.put(f"/v1/accounts/{i}/state", json={"state": "PAUSED"}),
     "refresh": lambda c, i: c.post(f"/v1/accounts/{i}/refresh"),
     "remove": lambda c, i: c.delete(f"/v1/accounts/{i}"),
-    "release": lambda c, i: c.post(
-        f"/v1/accounts/{i}/release", json={"assignment_id": "a-1"}
-    ),
 }
+
+#: Release is NOT in the list above, deliberately (#243). It needs only the
+#: raw `holds`, and a worker holding a live assignment on a document that went
+#: bad must still be able to give it back -- a 500 here froze the hold until
+#: someone repaired the document by hand. See test_malformed_account_holds.py.
 
 
 @pytest.mark.parametrize("bad_id", BAD)
@@ -327,6 +329,17 @@ def test_a_route_on_a_bad_document_fails_with_a_named_error(client, bad_id, rout
     assert bad_id in body["message"]
     assert SENTINEL not in r.text
     assert "Traceback" not in r.text
+
+
+@pytest.mark.parametrize("bad_id", BAD)
+def test_a_release_on_a_bad_document_answers_rather_than_failing(client, bad_id):
+    """An id that was never held is `not_held`, on a bad document as on a
+    good one -- never the 500 the other routes answer."""
+    r = client.post(f"/v1/accounts/{bad_id}/release", json={"assignment_id": "a-1"})
+
+    assert r.status_code == 200, r.text
+    assert r.json()["reason"] == "not_held"
+    assert SENTINEL not in r.text
 
 
 def test_a_route_on_a_bad_document_leaves_the_readable_one_working(client):

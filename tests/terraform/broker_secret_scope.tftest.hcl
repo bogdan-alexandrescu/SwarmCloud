@@ -6,9 +6,12 @@
 # could append a version to any of them, and a version is what a reader gets
 # as `latest`.
 #
-# The change is two releases on purpose (terraform/modules/iam/custom_roles.tf
+# The change is two steps on purpose (terraform/modules/iam/custom_roles.tf
 # has the measurement): the scoped grant first, the removal after it has
-# propagated. These runs hold both halves.
+# propagated. The scoped grant is this module's and these runs hold it. The
+# removal is a change to swarmSecretLister, which terraform/bootstrap defines
+# since #79, so both halves of the role's side -- versions.add kept, and
+# dropped with nothing else -- are held in platform_roles.tftest.hcl.
 
 mock_provider "google" {}
 
@@ -146,49 +149,12 @@ run "the_broker_may_add_versions_only_to_the_platforms_secrets" {
     error_message = "the broker's adder grant reaches one of the other team's 63 secrets"
   }
 
-  # RELEASE 1: the project-wide permission stays until the scoped grant has
-  # propagated, because removing it first can strand an account whose refresh
-  # token has just rotated.
+  # The scoped grant is unconditional on this module's inputs: it has to exist
+  # whenever the owner's bootstrap apply has dropped versions.add from
+  # swarmSecretLister (broker_secret_lister_project_wide_versions_add = false),
+  # and this module cannot see that setting.
   assert {
-    condition     = contains(google_project_iam_custom_role.secret_lister.permissions, "secretmanager.versions.add")
-    error_message = "versions.add must stay in swarmSecretLister for the release that creates the scoped grant"
-  }
-}
-
-run "release_two_removes_the_project_wide_permission" {
-  command = plan
-
-  module {
-    source = "../../terraform/modules/iam"
-  }
-
-  variables {
-    secret_lister_project_wide_versions_add = false
-  }
-
-  assert {
-    condition     = !contains(google_project_iam_custom_role.secret_lister.permissions, "secretmanager.versions.add")
-    error_message = "with the switch off, swarmSecretLister must no longer carry versions.add project-wide"
-  }
-
-  # Everything else the role was argued for stays, including the owner's
-  # 2026-09-22 retention decision (versions.list and versions.destroy).
-  assert {
-    condition = google_project_iam_custom_role.secret_lister.permissions == toset([
-      "secretmanager.secrets.list",
-      "secretmanager.secrets.create",
-      "secretmanager.secrets.get",
-      "secretmanager.secrets.getIamPolicy",
-      "secretmanager.secrets.setIamPolicy",
-      "secretmanager.versions.list",
-      "secretmanager.versions.destroy",
-    ])
-    error_message = "removing versions.add must remove nothing else from swarmSecretLister"
-  }
-
-  # And the replacement is still there to write through.
-  assert {
-    condition     = google_project_iam_member.broker_version_adder.role == "roles/secretmanager.secretVersionAdder"
-    error_message = "the scoped grant must exist whenever the project-wide permission does not"
+    condition     = length(google_project_iam_member.broker_version_adder.condition) == 1
+    error_message = "the scoped grant must exist, conditioned, whatever terraform/bootstrap has done to the project-wide role"
   }
 }

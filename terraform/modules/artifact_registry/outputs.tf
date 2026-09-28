@@ -17,5 +17,5 @@ output "image_base" {
 
 output "image_puller_role_id" {
   description = "The pull-without-enumerate role granted to tenant workers. Empty when no puller was declared."
-  value       = length(google_project_iam_custom_role.image_puller) > 0 ? google_project_iam_custom_role.image_puller[0].role_id : ""
+  value       = length(var.pullers) > 0 ? module.custom_role_ids.ids.image_puller : ""
 }

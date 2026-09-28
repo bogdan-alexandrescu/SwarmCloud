@@ -45,7 +45,7 @@ import base64
 import binascii
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable, Iterable, Sequence
 
@@ -331,12 +331,18 @@ class StepStateRead:
 
     Both `absent` and `unread` make a workflow's rollup incomplete, and the
     rollup reports which kind it hit.
+
+    `tasks` -- the tasks the reads returned, decoded, so the workflow list can
+    mask each step's input with its own task's masker (the PR #229 review)
+    without a second read of the same documents. A document that does not
+    decode is left out of it and still counts in `states`.
     """
 
     states: dict[str, TaskState]
     absent: list[str]
     unread: list[str]
     reads: int
+    tasks: dict[str, Task] = field(default_factory=dict)
 
 
 class Store:
@@ -721,6 +727,31 @@ class Store:
             raise NotFound(f"task {task_id!r} not found")
         return task_from_dict(data)
 
+    def tasks_by_id(self, tenant_id: str, task_ids: Iterable[str]) -> dict[str, Task]:
+        """This tenant's tasks among `task_ids`, by id, in batched reads.
+
+        For a route that serves rows of many tasks and needs each row's task:
+        `GET /v1/attempts` masks every attempt's `error` with its task's masker
+        (the PR #229 review). `get_all` in chunks of 100, as the outcome ledger
+        reads (`outcomes.py`), so a page costs one round trip per hundred
+        tasks, not one per row. Tenant-checked like `get_task`: a task that is
+        missing or another tenant's is simply not in the answer.
+        """
+        wanted = list(dict.fromkeys(task_id for task_id in task_ids if task_id))
+        collection = self._db.collection(TASKS)
+        found: dict[str, Task] = {}
+        for start in range(0, len(wanted), 100):
+            chunk = wanted[start : start + 100]
+            for snap in self._db.get_all([collection.document(task_id) for task_id in chunk]):
+                if not snap.exists:
+                    continue
+                data = snap.to_dict()
+                if data.get("tenant_id") != tenant_id:
+                    continue
+                task = task_from_dict(data)
+                found[task.id] = task
+        return found
+
     def list_tasks(
         self,
         tenant_id: str,
@@ -1096,6 +1127,7 @@ class Store:
         wanted = list(dict.fromkeys(wanted))
 
         states: dict[str, TaskState] = {}
+        tasks: dict[str, Task] = {}
         absent: list[str] = []
         reads = 0
         for task_id in wanted[:limit]:
@@ -1109,7 +1141,15 @@ class Store:
                 absent.append(task_id)
                 continue
             states[task_id] = TaskState(data["state"])
-        return StepStateRead(states=states, absent=absent, unread=wanted[limit:], reads=reads)
+            try:
+                tasks[task_id] = task_from_dict(data)
+            except (KeyError, TypeError, ValueError):
+                # Its state was read; only the step input's masking goes
+                # without it, and the codec then uses a sibling's masker.
+                pass
+        return StepStateRead(
+            states=states, absent=absent, unread=wanted[limit:], reads=reads, tasks=tasks
+        )
 
     def set_workflow_state(self, workflow_id: str, state: TaskState) -> None:
         """Write the derived state onto the workflow document.

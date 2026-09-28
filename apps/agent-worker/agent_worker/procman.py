@@ -260,8 +260,17 @@ class ChildProcess:
         max_stderr_bytes: int,
         logger: Any,
         keep_tail: bool = False,
+        log_argv: Sequence[str] | None = None,
     ) -> None:
         self.argv = validate_argv(argv)
+        # WHAT THE `child started` LINE SAYS THE ARGV WAS (the PR #229 review).
+        # A CLI runner passes the task's prompt as its last argument, and this
+        # line logged it whole into the runner's stderr, which `/logs` serves:
+        # the prompt the task routes mask was printed in the clear, and a
+        # value the task's metadata named as a secret with it. The runner
+        # passes the argv with the prompt replaced by its length; everyone
+        # else logs the argv itself, which holds nothing a caller wrote.
+        self._log_argv = list(log_argv) if log_argv is not None else self.argv
         self._cwd = Path(cwd)
         self._env = dict(env)
         self._log = logger
@@ -293,7 +302,7 @@ class ChildProcess:
             thread = threading.Thread(target=capture.pump, args=(stream,), daemon=True)
             thread.start()
             self._threads.append(thread)
-        self._log.info("child started", pid=self._proc.pid, argv=self.argv, cwd=str(self._cwd))
+        self._log.info("child started", pid=self._proc.pid, argv=self._log_argv, cwd=str(self._cwd))
 
     @property
     def pid(self) -> int | None:
@@ -390,6 +399,7 @@ def run_child(
     max_stderr_bytes: int,
     logger: Any,
     keep_tail: bool = False,
+    log_argv: Sequence[str] | None = None,
 ) -> ChildResult:
     """Start, wait with a hard deadline, escalate, reap. One call, no leaks.
 
@@ -409,6 +419,7 @@ def run_child(
         max_stderr_bytes=max_stderr_bytes,
         logger=logger,
         keep_tail=keep_tail,
+        log_argv=log_argv,
     )
     child.start()
     if child.wait(timeout_seconds) is None:

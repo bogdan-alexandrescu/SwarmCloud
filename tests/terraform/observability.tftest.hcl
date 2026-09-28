@@ -314,25 +314,13 @@ run "the_registry_is_regional_and_pullable_only_by_swarm_identities" {
     error_message = "tenant workers must hold the pull-only custom role, not roles/artifactregistry.reader"
   }
 
+  # What swarmImagePuller CONTAINS -- no enumeration, still able to pull, no
+  # push or delete -- and the validations refusing a list or an upload
+  # permission, are asserted in platform_roles.tftest.hcl: terraform/bootstrap
+  # defines the role since #79 (image_puller_permissions there).
   assert {
-    condition = alltrue([
-      for p in google_project_iam_custom_role.image_puller[0].permissions :
-      !strcontains(lower(p), "list")
-    ])
-    error_message = "the pull role grants no enumeration: one tenant's worker must not be able to list every image name in the shared repository"
-  }
-
-  assert {
-    condition     = contains(google_project_iam_custom_role.image_puller[0].permissions, "artifactregistry.repositories.downloadArtifacts") && contains(google_project_iam_custom_role.image_puller[0].permissions, "artifactregistry.repositories.get")
-    error_message = "the pull role must still be able to pull, or every worker fails at image pull instead of running"
-  }
-
-  assert {
-    condition = alltrue([
-      for p in google_project_iam_custom_role.image_puller[0].permissions :
-      !can(regex("(create|update|delete|upload|export)", p))
-    ])
-    error_message = "a worker identity that can push or delete an image can replace the runtime every other tenant runs"
+    condition     = output.image_puller_role_id == "swarmImagePuller"
+    error_message = "with pullers declared, the module must report the pull-only role it binds"
   }
 
   # The control plane and the tenants are deliberately on different grants.
@@ -343,48 +331,4 @@ run "the_registry_is_regional_and_pullable_only_by_swarm_identities" {
     ])
     error_message = "a tenant worker in `readers` would take roles/artifactregistry.reader and with it the whole enumeration surface"
   }
-}
-
-run "a_puller_role_that_can_enumerate_is_refused" {
-  command = plan
-
-  module {
-    source = "../../terraform/modules/artifact_registry"
-  }
-
-  variables {
-    pullers = {
-      "tenant-eng" = "serviceAccount:swarm-agent-worker-eng@saga-agents-staging.iam.gserviceaccount.com"
-    }
-
-    puller_permissions = [
-      "artifactregistry.repositories.get",
-      "artifactregistry.repositories.downloadArtifacts",
-      "artifactregistry.packages.list",
-    ]
-  }
-
-  expect_failures = [var.puller_permissions]
-}
-
-run "a_puller_role_that_can_push_is_refused" {
-  command = plan
-
-  module {
-    source = "../../terraform/modules/artifact_registry"
-  }
-
-  variables {
-    pullers = {
-      "tenant-eng" = "serviceAccount:swarm-agent-worker-eng@saga-agents-staging.iam.gserviceaccount.com"
-    }
-
-    puller_permissions = [
-      "artifactregistry.repositories.get",
-      "artifactregistry.repositories.downloadArtifacts",
-      "artifactregistry.repositories.uploadArtifacts",
-    ]
-  }
-
-  expect_failures = [var.puller_permissions]
 }
