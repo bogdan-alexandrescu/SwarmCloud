@@ -22,7 +22,7 @@
 // wait rather than one that needs a person.
 
 import { describe, expect, it, vi } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, waitFor } from '@testing-library/react'
 
 import type { AgentRun, ResourceClasses } from '../api'
 import type { Task } from '../types'
