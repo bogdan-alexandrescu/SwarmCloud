@@ -41,8 +41,12 @@ AUTO_MERGE = WORKFLOWS / "auto-merge.yml"
 CI_DOC = REPO / "docs" / "ci.md"
 
 REFUSED_PREFIX = "[swarm] task_"
-# The three workflows the owner named as required, 2026-09-28.
-REQUIRED_WORKFLOWS = ("application.yml", "security.yml", "terraform.yml")
+# Owner decision, 2026-09-28: branch protection requires only the checks that
+# run on EVERY pull request. security.yml has no `pull_request` path filter;
+# application.yml and terraform.yml both do, so none of their jobs -- shellcheck
+# and the actionlint job included -- are guaranteed to report.
+ALWAYS_RUN_WORKFLOW = "security.yml"
+PATH_FILTERED_WORKFLOWS = ("application.yml", "terraform.yml")
 
 
 def _workflow(path: Path) -> dict:
@@ -116,11 +120,11 @@ def test_it_never_checks_out_or_runs_the_pull_requests_code(workflow: dict, job:
     for step in steps:
         uses = str(step.get("uses") or "")
         assert "checkout" not in uses, f"a pull_request_target job checks out code: {uses}"
-    # The head SHA is read (HEAD_SHA) to PIN both merge calls to the reviewed
-    # commit -- fencing against a push after the label, not a way to find or
-    # run the fork's code. Reading it is safe only because there is no
-    # checkout step (asserted above) and nothing here reads where the fork's
-    # code actually lives.
+    # The head SHA is read (HEAD_SHA) to PIN the check-runs read and both merge
+    # calls to the reviewed commit -- fencing against a push after the label,
+    # not a way to find or run the fork's code. Reading it is safe only
+    # because there is no checkout step (asserted above) and nothing here
+    # reads where the fork's code actually lives.
     assert "github.head_ref" not in text
     assert "pull_request.head.repo" not in text
 
@@ -139,10 +143,15 @@ def test_attacker_controlled_text_reaches_a_shell_only_through_env(job: dict):
 
 
 def test_the_github_token_asks_for_the_least_it_needs(workflow: dict, job: dict):
-    """Read the base branch's protection; comment on a refusal. Nothing else.
+    """Read the base branch's protection and the head commit's check runs;
+    comment on a refusal. Nothing else.
     MUTATION: set `contents: write`, add `id-token: write`, or `permissions: write-all`."""
     assert workflow.get("permissions") == {}, workflow.get("permissions")
-    assert job.get("permissions") == {"contents": "read", "pull-requests": "write"}, job.get("permissions")
+    assert job.get("permissions") == {
+        "contents": "read",
+        "checks": "read",
+        "pull-requests": "write",
+    }, job.get("permissions")
 
 
 # ---------------------------------------------------------------------------
@@ -157,8 +166,12 @@ def test_the_merge_is_enabled_with_the_app_token_so_releases_still_fire(job: dic
     assert str(token_step.get("uses", "")).startswith("actions/create-github-app-token@"), token_step
     inputs = token_step.get("with") or {}
     # Scoped to what enabling auto-merge needs, not the App's whole grant.
+    # workflows: write, so a pull request touching .github/workflows also
+    # auto-merges (owner decision, 2026-09-28) -- requesting it here grants
+    # nothing until the owner creates the App with that permission.
     assert inputs.get("permission-contents") == "write", inputs
     assert inputs.get("permission-pull-requests") == "write", inputs
+    assert inputs.get("permission-workflows") == "write", inputs
     assert "secrets." in str(inputs.get("private-key")), inputs
 
     merge = _step(job, "merge")
@@ -253,7 +266,10 @@ FAKE_GH = r"""#!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >> "${FAKE_GH_LOG}"
 if [[ "${1:-}" == "api" ]]; then
-  cat "${FAKE_GH_BRANCH}"
+  case "${2:-}" in
+    */check-runs) cat "${FAKE_GH_CHECK_RUNS}" ;;
+    *) cat "${FAKE_GH_BRANCH}" ;;
+  esac
   exit 0
 fi
 if [[ "${1:-} ${2:-}" == "pr comment" ]]; then
@@ -290,9 +306,14 @@ def run_gate(job: dict, tmp_path: Path):
         app_id: str = "123456",
         has_key: str = "true",
         base_ref: str = "main",
+        head_sha: str = "0000000000000000000000000000000000abcd",
+        check_runs: list[dict] | None = None,
     ):
         branch_file = tmp_path / "branch.json"
         branch_file.write_text(json.dumps(branch))
+        check_runs_file = tmp_path / "check-runs.json"
+        # Default: nothing else has reported on this head, so item 5 passes.
+        check_runs_file.write_text(json.dumps({"check_runs": check_runs if check_runs is not None else []}))
         log = tmp_path / "gh.log"
         comments = tmp_path / "comments.md"
         summary = tmp_path / "summary.md"
@@ -305,11 +326,13 @@ def run_gate(job: dict, tmp_path: Path):
             "PR_NUMBER": "4242",
             "PR_TITLE": title,
             "BASE_REF": base_ref,
+            "HEAD_SHA": head_sha,
             "MERGE_APP_ID": app_id,
             "HAS_MERGE_APP_KEY": has_key,
             "GITHUB_STEP_SUMMARY": str(summary),
             "FAKE_GH_LOG": str(log),
             "FAKE_GH_BRANCH": str(branch_file),
+            "FAKE_GH_CHECK_RUNS": str(check_runs_file),
             "FAKE_GH_COMMENTS": str(comments),
         }
         proc = subprocess.run(
@@ -429,6 +452,89 @@ def test_a_title_with_shell_metacharacters_is_inert(run_gate, tmp_path: Path):
     proc, _calls, _comments = run_gate(title, PROTECTED)
     assert proc.returncode == 0, proc.stderr
     assert not marker.exists(), "the title was executed"
+
+
+# ---------------------------------------------------------------------------
+# Gate item 5: a check that already ran on the head and is failing or still
+# running holds the merge too, even when it is not one of the required four.
+# ---------------------------------------------------------------------------
+
+
+def test_a_failing_check_on_the_head_is_refused(run_gate):
+    """MUTATION: drop item 5, or only look at required checks."""
+    proc, calls, comments = run_gate(
+        "A fact-style headline",
+        PROTECTED,
+        check_runs=[{"name": "swarm-ui typecheck / component tests", "status": "completed", "conclusion": "failure"}],
+    )
+    assert proc.returncode != 0, "a failing, non-required check on the head passed the gate"
+    assert "pr comment 4242" in calls, calls
+    assert "swarm-ui typecheck / component tests" in comments, comments
+    assert "check-runs" in calls, calls
+
+
+def test_a_still_running_check_on_the_head_is_refused(run_gate):
+    """MUTATION: only refuse on `conclusion == "failure"`, ignoring an
+    incomplete `status`."""
+    proc, _calls, comments = run_gate(
+        "A fact-style headline",
+        PROTECTED,
+        check_runs=[{"name": "kubernetes manifests", "status": "in_progress", "conclusion": None}],
+    )
+    assert proc.returncode != 0, "a still-running check on the head passed the gate"
+    assert "kubernetes manifests" in comments, comments
+
+
+@pytest.mark.parametrize("conclusion", ["timed_out", "action_required", "cancelled"])
+def test_other_failing_conclusions_are_also_refused(run_gate, conclusion: str):
+    proc, _calls, comments = run_gate(
+        "A fact-style headline",
+        PROTECTED,
+        check_runs=[{"name": "shellcheck", "status": "completed", "conclusion": conclusion}],
+    )
+    assert proc.returncode != 0, conclusion
+    assert "shellcheck" in comments, comments
+
+
+def test_a_successful_or_skipped_check_does_not_block(run_gate):
+    """The control for item 5: green or skipped checks are not signal to hold on."""
+    proc, _calls, comments = run_gate(
+        "A fact-style headline",
+        PROTECTED,
+        check_runs=[
+            {"name": "shellcheck", "status": "completed", "conclusion": "success"},
+            {"name": "release workflow wiring (actionlint)", "status": "completed", "conclusion": "skipped"},
+            {"name": "format / unit tests", "status": "completed", "conclusion": "neutral"},
+        ],
+    )
+    assert proc.returncode == 0, comments
+    assert comments == "", comments
+
+
+def test_the_gate_excludes_its_own_still_running_check_run(run_gate, job: dict):
+    """MUTATION: drop the self-exclusion -- this job's own check run is always
+    still `in_progress` while the gate script that reports it is running, so
+    without it the gate would refuse every single run."""
+    proc, _calls, comments = run_gate(
+        "A fact-style headline",
+        PROTECTED,
+        check_runs=[{"name": job["name"], "status": "in_progress", "conclusion": None}],
+    )
+    assert proc.returncode == 0, comments
+    assert comments == "", comments
+
+
+def test_the_self_exclusion_name_matches_the_jobs_actual_name(job: dict):
+    """The literal the gate script excludes by must be this job's real `name:`,
+    not a copy that can drift when the job is renamed."""
+    script = _step(job, "gate")["run"]
+    assert f'!= "{job["name"]}"' in script, script
+
+
+def test_the_check_runs_are_read_for_the_exact_head_commit(run_gate):
+    proc, calls, _comments = run_gate("A fact-style headline", PROTECTED, head_sha="cafef00d")
+    assert proc.returncode == 0, _comments
+    assert "api repos/bogdan-alexandrescu/SwarmCloud/commits/cafef00d/check-runs" in calls, calls
 
 
 # ---------------------------------------------------------------------------
@@ -553,10 +659,13 @@ def _job_check_names(path: Path) -> set[str]:
     return names
 
 
-def test_docs_carry_the_branch_protection_command_for_the_three_required_workflows():
-    """The owner applies it; the doc must name checks that exist, from all three
-    workflows, pinned to GitHub Actions so another App cannot satisfy them.
-    MUTATION: rename a job in security.yml without updating the command."""
+def test_docs_carry_the_branch_protection_command_for_the_checks_that_always_run():
+    """The owner applies it; the doc must name exactly the checks that run on
+    every pull request -- security.yml's jobs -- pinned to GitHub Actions so
+    another App cannot satisfy them, and nothing from a path-filtered
+    workflow, which would hold every pull request that skipped it forever.
+    MUTATION: rename a job in security.yml without updating the command, or
+    add a job from application.yml/terraform.yml to the required list."""
     text = CI_DOC.read_text()
     match = re.search(
         r"```bash\n(gh api --method PUT \\\n\s+repos/bogdan-alexandrescu/SwarmCloud/branches/main/protection.*?)```",
@@ -575,13 +684,20 @@ def test_docs_carry_the_branch_protection_command_for_the_three_required_workflo
     checks = required["checks"]
     assert checks and all(check.get("app_id") == 15368 for check in checks), checks
     contexts = {check["context"] for check in checks}
-    for name in REQUIRED_WORKFLOWS:
+
+    always_run = _job_check_names(WORKFLOWS / ALWAYS_RUN_WORKFLOW)
+    assert always_run, ALWAYS_RUN_WORKFLOW
+    missing = always_run - contexts
+    assert not missing, f"a check that always runs is not required: {sorted(missing)}"
+    extra = contexts - always_run
+    assert not extra, f"a required check is not one of {ALWAYS_RUN_WORKFLOW}'s always-run jobs: {sorted(extra)}"
+
+    for name in PATH_FILTERED_WORKFLOWS:
         reported = _job_check_names(WORKFLOWS / name)
-        assert reported, name
-        assert contexts & reported, f"no check from {name} is required: {sorted(reported)}"
-    every_name = set().union(*(_job_check_names(WORKFLOWS / n) for n in REQUIRED_WORKFLOWS))
-    unknown = contexts - every_name
-    assert not unknown, f"required checks no job reports on a pull request: {sorted(unknown)}"
+        assert reported, name  # the control: these workflows do have jobs
+        leaked = contexts & reported
+        assert not leaked, f"a required check comes from path-filtered {name}: {sorted(leaked)}"
+
     for key in ("enforce_admins", "required_pull_request_reviews", "restrictions"):
         assert key in payload, f"the protection PUT rejects a body without {key!r}"
 

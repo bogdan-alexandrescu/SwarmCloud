@@ -710,7 +710,12 @@ It refuses, with a comment on the pull request saying which and why:
   fact-style headline, then remove and re-add `ready`;
 * **a base branch with no required status checks** — auto-merge would have
   nothing to wait for and would merge at once, red or not;
-* **no merge App configured** — see the next paragraph.
+* **no merge App configured** — see the next paragraph;
+* **a check that already ran on the head commit and is failing or still
+  running** — even one that is not required. Branch protection below requires
+  only the checks that run on every pull request; a path-filtered workflow
+  (`application.yml`, `terraform.yml`) is not required, but when a pull
+  request's changes do trigger it, this still holds the merge on its result.
 
 If the pull request is already green when the label lands, GitHub will not
 *enable* auto-merge on it (its merge state is already `CLEAN`), so the
@@ -738,10 +743,22 @@ merge made by hand. The workflow never falls back to the GITHUB_TOKEN; without
 the App it refuses.
 
 The workflow's own GITHUB_TOKEN holds `contents: read` (to read the base
-branch's protection) and `pull-requests: write` (to comment on a refusal). The
-App token is minted after the gate passes, scoped to this repository and to
-`contents: write` + `pull-requests: write`. The job never checks out or runs
-the pull request's code, and the title reaches bash only through `env:`.
+branch's protection), `checks: read` (to read the head commit's check runs)
+and `pull-requests: write` (to comment on a refusal). The App token is minted
+after the gate passes, scoped to this repository and to `contents: write` +
+`pull-requests: write` + `workflows: write` — the last one so that a pull
+request touching `.github/workflows` auto-merges too (owner decision,
+2026-09-28). Requesting it on the token mint grants nothing by itself; nothing
+is granted until the owner creates the App with that permission (below). The
+job never checks out or runs the pull request's code, and the title reaches
+bash only through `env:`.
+
+**A leaked App private key could rewrite CI and release workflows** — the
+`workflows` permission is exactly the permission to change what
+`.github/workflows/*.yml` do on this repository's next push. That is why the
+key lives only in `secrets.MERGE_APP_PRIVATE_KEY` (never in a file, a log or a
+tfvars) and the App is installed on this repository only, not on the
+organization or another repository.
 [`test_auto_merge_workflow.py`](../tests/unit/scripts/test_auto_merge_workflow.py)
 holds all of that and runs the gate against a fake `gh`.
 
@@ -751,9 +768,19 @@ These are repository settings. A workflow cannot apply them and no lane
 should; they are here so that applying them is copying three commands.
 
 **1. The merge App.** Create a GitHub App (Settings → Developer settings →
-GitHub Apps) with no webhook and exactly two repository permissions,
-**Contents: Read and write** and **Pull requests: Read and write**; install it
-on this repository only. Then:
+GitHub Apps) with no webhook and exactly three repository permissions,
+**Contents: Read and write**, **Pull requests: Read and write** and
+**Workflows: Read and write**; install it on this repository only.
+
+**A leaked App private key could rewrite CI and release workflows.** The
+`workflows` permission is the permission to change what
+`.github/workflows/*.yml` do on the next push, so this key is more sensitive
+than the other two: it lives only in the `secrets.MERGE_APP_PRIVATE_KEY`
+Actions secret, never in this repository, a tfvars file, a Job environment or
+a log, and the App is installed on this repository only — never the
+organization, never another repository.
+
+Then:
 
 ```bash
 gh variable set MERGE_APP_ID --repo bogdan-alexandrescu/SwarmCloud --body '<the App ID>'
@@ -772,8 +799,15 @@ pull requests and is read only by `auto-merge.yml`.)
 gh api --method PATCH repos/bogdan-alexandrescu/SwarmCloud -F allow_auto_merge=true
 ```
 
-**3. Branch protection on `main`**, requiring the checks of `application.yml`,
-`security.yml` and `terraform.yml` that run on a pull request:
+**3. Branch protection on `main`**, requiring only the checks that run on
+**every** pull request — `security.yml`'s four jobs. `application.yml` and
+`terraform.yml` both have a `pull_request` path filter
+([table above](#the-six-workflows-and-what-each-one-is-responsible-for)), so
+none of their jobs — including `shellcheck` and
+`release workflow wiring (actionlint)` — report on a pull request that does
+not touch their paths. GitHub treats a required check whose workflow was
+skipped by a path filter as **pending, forever**, not as passed, so a required
+check list may hold only checks that report on every pull request:
 
 ```bash
 gh api --method PUT \
@@ -784,19 +818,10 @@ gh api --method PUT \
   "required_status_checks": {
     "strict": false,
     "checks": [
-      {"context": "shellcheck", "app_id": 15368},
-      {"context": "release workflow wiring (actionlint)", "app_id": 15368},
-      {"context": "format / unit tests", "app_id": 15368},
-      {"context": "swarm-ui typecheck / component tests", "app_id": 15368},
-      {"context": "integration tests (emulator)", "app_id": 15368},
-      {"context": "kubernetes manifests", "app_id": 15368},
       {"context": "trivy (repo)", "app_id": 15368},
       {"context": "secret scan", "app_id": 15368},
       {"context": "checkov (terraform + kubernetes)", "app_id": 15368},
-      {"context": "platform policy assertions", "app_id": 15368},
-      {"context": "fmt / validate / tflint", "app_id": 15368},
-      {"context": "terraform test", "app_id": 15368},
-      {"context": "checkov", "app_id": 15368}
+      {"context": "platform policy assertions", "app_id": 15368}
     ]
   },
   "enforce_admins": false,
@@ -808,6 +833,19 @@ JSON
 
 Why each value:
 
+* **The four checks are exactly `security.yml`'s jobs that run on every pull
+  request.** Its fifth job, `trivy (published images)`, runs only on a
+  schedule or `workflow_dispatch`, never on a pull request, so it is not
+  listed for the same reason `build images` and `plan` are not: a required
+  check that is never reported holds the pull request forever.
+* **`shellcheck` and `release workflow wiring (actionlint)` are deliberately
+  left out**, even though they are useful signal. `application.yml`'s
+  `pull_request` path filter means they do not report on a pull request
+  outside its paths, and GitHub has no way to require a check "when its
+  workflow ran." `terraform.yml`'s jobs are excluded for the same reason.
+  `auto-merge.yml`'s gate (above) is what still holds the merge on these when
+  they DO run: it reads the head commit's check runs directly and refuses to
+  queue while any of them is failing or still in progress, required or not.
 * **`app_id: 15368`** is GitHub Actions. Pinning it means a check of the same
   name posted by any other App or token cannot satisfy the rule.
 * **`strict: false`**: auto-merge never updates a branch, so "must be up to
@@ -817,24 +855,11 @@ Why each value:
   path. The App is not an admin and cannot bypass.
 * **`required_pull_request_reviews: null`, `restrictions: null`**: the PUT
   rejects a body without them; `ready` is the review decision here.
-* Jobs that never run on a pull request (`build images`, `plan`,
-  `trivy (published images)`) are not listed: a required check that is never
-  reported holds the pull request forever.
-
-**Read this before applying 3: the path filters.** `application.yml` and
-`terraform.yml` run on a pull request only when it touches their paths
-([table above](#the-six-workflows-and-what-each-one-is-responsible-for)).
-GitHub treats a required check whose workflow was skipped by a path filter as
-**pending, forever** — not as passed. As written, the rule therefore holds
-every pull request that does not touch `terraform/` (its terraform checks never
-report), and every one outside `application.yml`'s paths. Before applying it,
-the owner chooses one of: drop the `pull_request` path filters of those two
-workflows so they report on every pull request; or require only the checks
-that always run (`security.yml`'s four). This change does neither — it is a CI
-cost decision, raised for the owner in #262's pull request.
 
 `test_auto_merge_workflow.py` holds this command's check names to the jobs
-that exist, so renaming a job without updating it fails CI.
+that exist and to the ones `security.yml` runs on every pull request, so
+renaming a job, adding a path filter to `security.yml`, or widening the
+required list past what always runs fails CI.
 
 ## The finishing sequence
 

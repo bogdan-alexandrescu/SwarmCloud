@@ -29,9 +29,13 @@
 #     three event fields and calls `gh`; that is all;
 #   * the title reaches the shell through `env:` only. A `${{ }}` expansion of
 #     the title inside `run:` would be the title executed as bash;
-#   * its GITHUB_TOKEN reads the base branch and comments, nothing more. The
-#     App token is minted after the gate, scoped to this repository and to
-#     contents + pull-requests.
+#   * its GITHUB_TOKEN reads the base branch, the head commit's check runs and
+#     comments, nothing more. The App token is minted after the gate, scoped
+#     to this repository and to contents + pull-requests + workflows -- the
+#     last one so that a pull request touching .github/workflows also
+#     auto-merges (owner decision, 2026-09-28). Requesting it here grants
+#     nothing until the owner creates the App with that permission;
+#     docs/ci.md says so.
 #
 # `READY` IS BOUND TO THE COMMIT IT WAS PUT ON, NOT TO THE NUMBER. Both `gh pr
 # merge` calls below carry `--match-head-commit`, so a push after the label --
@@ -65,8 +69,12 @@ jobs:
     if: github.event.label.name == 'ready' && github.event.pull_request.state == 'open'
     permissions:
       # contents: read -- the base branch's protection summary (the gate).
+      # checks: read -- the head commit's check runs (the gate, item 5): a
+      #   path-filtered workflow's checks are not required, but one that DID
+      #   run and is failing or still running must still hold the merge.
       # pull-requests: write -- the comment that explains a refusal.
       contents: read
+      checks: read
       pull-requests: write
     env:
       GH_REPO: ${{ github.repository }}
@@ -142,6 +150,32 @@ jobs:
             refuse "The merge App is not configured (vars.MERGE_APP_ID and secrets.MERGE_APP_PRIVATE_KEY). A merge made with the workflow's own GITHUB_TOKEN would start no build and no release on main, so this does not fall back to it. See docs/ci.md."
           fi
 
+          # 5. A check that already ran on this head and is failing or still
+          #    running must hold the merge too, even when it is not one of
+          #    the required checks above. Branch protection requires only the
+          #    checks that run on EVERY pull request (docs/ci.md); a
+          #    path-filtered workflow such as application.yml or terraform.yml
+          #    is not required, but when a pull request's changes DO trigger
+          #    it, its result is still real signal auto-merge must not ignore.
+          #    Excludes this very job's own check run ("queue for
+          #    auto-merge"), which is always still `in_progress` here.
+          runs="$(mktemp)"
+          gh api "repos/${GH_REPO}/commits/${HEAD_SHA}/check-runs" >"${runs}"
+          unfinished_or_failing="$(jq -r '
+              [ .check_runs[]
+                | select(.name != "queue for auto-merge")
+                | select(
+                    .status != "completed"
+                    or ((.conclusion // "") as $c |
+                        $c == "failure" or $c == "timed_out" or
+                        $c == "action_required" or $c == "cancelled")
+                  )
+                | .name
+              ] | unique | join(", ")' "${runs}")"
+          if [[ -n "${unfinished_or_failing}" ]]; then
+            refuse "This check already ran on the head commit and is failing or still running: ${unfinished_or_failing}. Auto-merge waits for every check that ran, required or not."
+          fi
+
           echo "gate passed: ${required} required check(s) on ${BASE_REF}"
 
       - name: mint the merge App's token for this repository
@@ -154,6 +188,7 @@ jobs:
           repositories: ${{ github.event.repository.name }}
           permission-contents: write
           permission-pull-requests: write
+          permission-workflows: write
 
       - name: enable auto-merge, squashed under the pull request's title
         id: merge
