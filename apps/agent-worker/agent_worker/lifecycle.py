@@ -111,6 +111,7 @@ from __future__ import annotations
 import functools
 import json
 import os
+import re
 import shutil
 import sys
 import time
@@ -159,6 +160,7 @@ from .errors import (
 )
 from .forge import ForgeError, probe_repository, open_pull_request
 from .gitops import (
+    ATTRIBUTION_MARKERS,
     EMPTY_CLONE_BASE,
     GitError,
     MergeOutcome,
@@ -172,6 +174,10 @@ from .gitops import (
     summarize_work,
     verify_worker_authorship,
 )
+# The helpers every function in `gitops` builds its git commands from. Borrowed
+# rather than restated for `replay_agent_commits` below, so its commands carry
+# exactly the hook, fsmonitor, signing and identity overrides the fold's do.
+from .gitops import _NO_HOOKS, _SHA_RE, _git_text, _worker_identity
 from .hardening import FAILED, MemoryProtection
 from .metrics import (
     ResourceSampler,
@@ -283,6 +289,29 @@ WORKER_STATE_DIR = ".swarm"
 CLONE_BASE_FILE = "clone-base"
 PATCH_NAME = "swarm-work.patch"
 
+#: The files an agent leaves in `$SWARM_ARTIFACTS_DIR` to write its own pull
+#: request's title and body (#214), so a platform pull request can say what it
+#: closes. Read without following a link, scrubbed, bounded, and refused -- in
+#: favour of the generated text -- on attribution; see
+#: `Worker._agent_pull_request_text`.
+PR_TITLE_FILE = "pr-title.txt"
+PR_BODY_FILE = "pr-body.md"
+#: One line, at most this many characters: GitHub's own title field is 256.
+PR_TITLE_MAX_CHARS = 256
+#: At most this many bytes of the agent's body, before the platform's block. A
+#: GitHub body holds 65,536 characters; the platform's block has to fit too, so
+#: the agent's part is cut here rather than letting the forge refuse the lot.
+PR_BODY_MAX_BYTES = 60 * 1024
+#: How much of either file is read at all. Past this the text is cut anyway.
+PR_READ_LIMIT_BYTES = 256 * 1024
+
+#: The most agent commits the publish keeps one by one (#242). Each costs two
+#: git processes; past this many the agent's history is folded into one worker
+#: commit as it was before, and the run result says which happened.
+MAX_KEPT_COMMITS = 200
+#: The most bytes of one agent commit message kept, after it is cleaned.
+COMMIT_MESSAGE_MAX_BYTES = 16 * 1024
+
 #: The worker-owned repository the token-bearing git commands run in lives under
 #: `ws.private` -- never checkpointed, never uploaded, never named in the agent's
 #: environment -- so the push and the integrator's fetch authenticate from
@@ -312,6 +341,21 @@ class WorkerDeps:
     #: None means nothing established it, and is treated as FAILED: a worker
     #: built some other way holds no token rather than an unprotected one.
     memory: MemoryProtection | None = None
+
+
+@dataclass(frozen=True)
+class _Upload:
+    """What `Worker._upload_copy` did with one file.
+
+    `bytes` is what was uploaded, or None when nothing was, with `skipped` the
+    reason (`standalone_outputs`' wording). `unredacted` is the file's
+    `redaction_skipped` entry when it left without being rewritten and its
+    bytes were not found clean.
+    """
+
+    bytes: int | None = None
+    skipped: str = ""
+    unredacted: dict[str, Any] | None = None
 
 
 @dataclass
@@ -945,6 +989,14 @@ class Worker:
             stderr_path=ws.stderr_path,
             max_stdout_bytes=cfg.max_stdout_bytes,
             max_stderr_bytes=cfg.max_stderr_bytes,
+            # THE END OF EACH STREAM IS KEPT (#208). A runner's stderr ends
+            # with the line it failed on, and `last_error` is the last 2,000
+            # characters of it when the runner wrote no `error` of its own
+            # (`_finalise`). Head-only, a stderr past its cap ended with the
+            # truncation notice, and `last_error` quoted output from before
+            # it. Head-only is git's rule -- a patch with its middle removed
+            # must never read as one that fitted -- and a log is not a patch.
+            keep_tail=True,
             logger=self.log,
         )
         self._child = child
@@ -2334,11 +2386,10 @@ class Worker:
         ws = self.ws
         assert ws is not None
         owed = expected_mod.without_platform_names(self._expected_outputs, (PATCH_NAME,))
-        present = [
-            path.relative_to(ws.artifacts).as_posix()
-            for path in ws.artifacts.rglob("*")
-            if path.is_file() and not path.is_symlink()
-        ]
+        # The same walk as the upload's (#227): `rglob` recursed per folder,
+        # and a deep enough tree raised RecursionError out of `_finalise`
+        # before anything was uploaded.
+        present = list(self._walk_artifacts(ws.artifacts)[0])
         absent = expected_mod.missing_outputs(owed, present)
         if not absent:
             return None
@@ -3126,7 +3177,7 @@ class Worker:
         catalogue cpu of the class the container was SIZED with, which is
         `scheduler.dispatch.resource_class_for(task, profile)` -- the task's
         own class when the catalogue still has it, else the profile's -- and
-        NOT `WorkerConfig.resource_class`, which is always the profile's. A
+        NOT `WorkerConfig.profile_resource_class`, which is always the profile's. A
         task submitted with a larger class than its profile's would otherwise
         have its CPU drawn against a limit its container never had. Restated
         rather than imported (the worker image does not install the
@@ -3156,13 +3207,25 @@ class Worker:
         return float(RESOURCE_CLASSES[sized].cpu), "resource_class"
 
     def _sized_resource_class(self) -> str | None:
+        """The class the container was sized with; None before the task is read.
+
+        What the CPU limit (`_cpu_limit`), the OOM near-miss limit
+        (`_start_sampler`) and the exported metric's `resource_class`
+        (`_export_metrics`) are all read against (#205).
+        """
         task = self._task
         if not task:
             return None
-        named = task.get("resource_class")
-        if isinstance(named, str) and named in RESOURCE_CLASSES:
-            return named
-        return self.cfg.profile.resource_class
+        return self.cfg.sized_resource_class(task.get("resource_class"))
+
+    def _memory_class(self) -> str:
+        """`_sized_resource_class`, or the profile's before the task is read.
+
+        The sampler starts with the runner, which starts after the task was
+        read, so the fallback is for a path that has no task yet and still
+        needs a label -- never a guess drawn as the container's size.
+        """
+        return self._sized_resource_class() or self.cfg.profile_resource_class
 
     def _checkpoint(self, label: str) -> CheckpointRecord | None:
         """Mandatory checkpoint. A failure here is logged, never swallowed.
@@ -3225,22 +3288,27 @@ class Worker:
         """Redact every registered secret from a value bound for Firestore."""
         return self.log.scrub_value(value)
 
-    def _redact_before_upload(self, artifacts: Sequence[Path]) -> list[dict[str, Any]]:
-        """Scrub the captured streams and `artifacts` before they leave the pod.
+    def _redact_before_upload(self) -> list[dict[str, Any]]:
+        """Scrub the worker's own files in place before anything leaves the pod.
 
-        `artifacts` is the files of the artifacts folder that are going to be
-        uploaded (`artifact_manifest.plan`), not the whole folder (#228). A
-        file past the 500-file cap never leaves the pod, so rewriting it would
-        be work for nothing, and an entry for it in `redaction_skipped` -- "it
-        is uploaded as-is" -- would be false. A name that is not UTF-8 is not
-        in it either: no object can be named with it, so it never leaves the
-        pod and has no `redaction_skipped` entry to earn (#225 review).
+        THE THREE FILES OUTSIDE THE ARTIFACTS FOLDER: the runner's
+        `stdout.log` and `stderr.log`, and `result.json`. Each is rewritten
+        where it lies, because it is read again -- the streams are uploaded to
+        `logs/`, and `result.json` lives in `work/`, which a later checkpoint
+        archives. Each is read without following a link and put back without
+        following one either (`_redact_in_place`).
 
-        The agent CLI's two captures are scrubbed WHATEVER the cap decided:
-        they live in the artifacts folder, and a copy of each goes to `logs/`
-        on every exit (`_stream_files`), in or out of the manifest. A link
-        planted at a capture's name is neither scrubbed nor copied: rewriting
-        it would rewrite whatever it points at.
+        NOTHING IN THE ARTIFACTS FOLDER IS REWRITTEN IN PLACE ANY MORE (#227).
+        The pass used to rewrite each file bound for upload by path, after a
+        leaf check for a link -- so a link put in the path between the check
+        and the open, or a FOLDER link the leaf check never saw, had the
+        worker rewrite whatever it pointed at, and upload it after. Every file
+        taken from there is now copied once, with no link followed, into the
+        worker's own scratch, and the copy is what is redacted and what is
+        uploaded (`_upload_copy`). The agent CLI's captures, which go to
+        `logs/` on every exit whatever the cap decided, are copied the same
+        way there. The folder is never checkpointed, so nothing reads its
+        files again after the upload.
 
         A log line is only one of four ways a provider key gets out. The other
         three are `stdout.log` and `stderr.log`, the runner's artifacts, and the
@@ -3268,23 +3336,199 @@ class Worker:
         ws = self.ws
         if ws is None or not self.log.has_secrets:
             return []
-        targets = [ws.stdout_path, ws.stderr_path]
-        captures = [
-            path
-            for _label, path in self._stream_files(ws)
-            if path not in targets and path.is_file() and not path.is_symlink()
-        ]
-        targets += captures
-        # Each file once: a capture the cap took is in `artifacts` too.
-        seen = set(captures)
-        targets += [path for path in artifacts if path not in seen]
-        targets.append(ws.result_path)
         unredacted: list[dict[str, Any]] = []
-        for path in targets:
-            entry = self._redact_file(path, label=_workspace_label(ws, path))
+        for path in (ws.stdout_path, ws.stderr_path, ws.result_path):
+            entry = self._redact_in_place(path, label=_workspace_label(ws, path))
             if entry is not None:
                 unredacted.append(entry)
         return unredacted
+
+    def _redact_in_place(self, path: Path, *, label: str) -> dict[str, Any] | None:
+        """Rewrite one of the worker's own files with no link followed. Never raises.
+
+        Copied out with `copy_without_following` (its folder opened with
+        `O_NOFOLLOW`, the file too), redacted as the copy, and -- only when
+        the redaction rewrote it -- renamed back over the file through a
+        descriptor for its folder, again opened with `O_NOFOLLOW`. A rename
+        replaces a link put at the name meanwhile; it never writes through
+        one. A file that is a link, or whose folder is, is left alone and
+        said so. Returns the file's `redaction_skipped` entry, or None.
+        """
+        ws = self.ws
+        assert ws is not None
+        staging = ws.private / "redact-in-place"
+        try:
+            ws.private.mkdir(parents=True, exist_ok=True)
+            standalone_mod.copy_without_following(
+                path.parent, path.name, staging, limit=sys.maxsize
+            )
+        except FileNotFoundError:
+            return None
+        except standalone_mod.Refused as exc:
+            self.log.warning(
+                "not redacted in place: a symlink, or not a regular file, when it "
+                "was read; nothing was followed",
+                file=label,
+                error=str(exc),
+            )
+            return None
+        except (OSError, standalone_mod.OverCap) as exc:
+            self.log.warning("could not redact a file before upload", file=label, error=str(exc))
+            return None
+        try:
+            rewritten, entry = self._redact_outcome(staging, label=label)
+            if rewritten:
+                folder = os.open(
+                    os.fspath(path.parent),
+                    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0),
+                )
+                try:
+                    os.replace(staging, path.name, dst_dir_fd=folder)
+                finally:
+                    os.close(folder)
+            return entry
+        except OSError as exc:
+            self.log.warning("could not redact a file before upload", file=label, error=str(exc))
+            return None
+        finally:
+            staging.unlink(missing_ok=True)
+
+    def _upload_copy(
+        self,
+        root: Path,
+        relative: str,
+        *,
+        key: str,
+        label: str,
+        limit: int,
+        content_type: str | None = None,
+        absent_ok: bool = False,
+        report: bool = True,
+    ) -> _Upload:
+        """Upload `root/<relative>` as it is AT THIS MOMENT, with no link followed.
+
+        THE ONE WAY A FILE FROM THE ARTIFACTS FOLDER LEAVES THE POD (#227).
+        Copied with `standalone_outputs.copy_without_following` into the
+        worker's own scratch (`ws.private`, in no child's environment): every
+        folder on the way, `root` included, is opened with `O_NOFOLLOW`
+        relative to the one above it, and the file too, so a link anywhere in
+        the path is refused instead of followed, whenever it was put there.
+        The copy is redacted (`_redact_outcome`), uploaded and deleted. The
+        store is never handed a path the agent can write.
+
+        `limit` is the bytes the caller's cap leaves; a file past it, before or
+        after redaction, is not uploaded. `absent_ok` makes a missing file
+        silent (a stream that never wrote anything). With `report`, a file
+        that left unredacted is logged as such -- AFTER its upload, so a file
+        the cap or the store kept in the pod is never logged as "uploaded
+        as-is" (#227); without it, the caller reports.
+        """
+        ws = self.ws
+        assert ws is not None
+        staging = ws.private / "upload-copy"
+        shown = standalone_mod.shown(self._scrub(label))
+        try:
+            ws.private.mkdir(parents=True, exist_ok=True)
+            standalone_mod.copy_without_following(root, relative, staging, limit=max(0, limit))
+        except standalone_mod.OverCap:
+            return _Upload(skipped=standalone_mod.OVER_CAP)
+        except standalone_mod.Refused as exc:
+            self.log.warning(
+                "refused a file bound for upload: a symlink, or not a regular file, "
+                "when it was read; nothing was followed",
+                file=shown,
+                error=str(exc),
+            )
+            return _Upload(skipped=standalone_mod.SYMLINK_REFUSED)
+        except FileNotFoundError as exc:
+            if not absent_ok:
+                self.log.warning("artifact upload failed", artifact=shown, error=str(exc))
+            return _Upload(skipped=standalone_mod.UNREADABLE)
+        except OSError as exc:
+            self.log.warning("artifact upload failed", artifact=shown, error=str(exc))
+            return _Upload(skipped=standalone_mod.UNREADABLE)
+        try:
+            entry = None
+            if self.log.has_secrets:
+                _rewritten, entry = self._redact_outcome(staging, label=label, report=False)
+            size = staging.stat().st_size
+            if size > limit:
+                # Redaction can lengthen a file; the cap is on what is uploaded.
+                return _Upload(skipped=standalone_mod.OVER_CAP)
+            if content_type is None:
+                self.store.upload_file(key, staging)
+            else:
+                self.store.upload_file(key, staging, content_type=content_type)
+        except Exception as exc:
+            self.log.warning("artifact upload failed", artifact=shown, error=str(exc))
+            return _Upload(skipped=standalone_mod.UPLOAD_FAILED)
+        finally:
+            staging.unlink(missing_ok=True)
+        if entry is not None and report:
+            self._report_unredacted(entry)
+        return _Upload(bytes=size, unredacted=entry)
+
+    def _walk_artifacts(self, root: Path) -> tuple[dict[str, int], list[str]]:
+        """Every regular file under the artifacts folder, and the folders not walked.
+
+        `{relative POSIX name: size as lstat saw it}`, and the relative names
+        of the folders passed over: too deep for any name under them to be an
+        object's, or unreadable. Never raises, never follows a link, and never
+        recurses: the walk keeps its own stack, so no depth of tree can raise
+        RecursionError (#227), and a folder whose name alone leaves no room
+        under `MAX_OBJECT_NAME_BYTES` is listed instead of walked, which also
+        bounds the work a deep tree costs.
+
+        A folder the agent replaced with a link is not walked at all.
+        """
+        found: dict[str, int] = {}
+        not_walked: list[str] = []
+        if root.is_symlink() or not root.is_dir():
+            if root.is_symlink():
+                self.log.warning(
+                    "the artifacts folder is a symlink, so nothing was uploaded "
+                    "from it; a link is never followed out of the workspace"
+                )
+            return found, not_walked
+        stack = [""]
+        while stack:
+            folder = stack.pop()
+            try:
+                with os.scandir(root / folder if folder else root) as listing:
+                    entries = list(listing)
+            except OSError as exc:
+                if folder:
+                    self.log.warning(
+                        "could not list a folder in $SWARM_ARTIFACTS_DIR; its files "
+                        "were not uploaded",
+                        folder=standalone_mod.shown(self._scrub(folder)),
+                        error=str(exc),
+                    )
+                    not_walked.append(folder)
+                continue
+            for entry in entries:
+                relative = f"{folder}/{entry.name}" if folder else entry.name
+                try:
+                    if entry.is_dir(follow_symlinks=False):
+                        # The shortest name under it is `<folder>/x`.
+                        width = len(relative.encode("utf-8", "surrogateescape")) + 2
+                        if width > standalone_mod.MAX_OBJECT_NAME_BYTES:
+                            not_walked.append(relative)
+                        else:
+                            stack.append(relative)
+                    elif entry.is_file(follow_symlinks=False):
+                        found[relative] = entry.stat(follow_symlinks=False).st_size
+                except OSError:
+                    continue
+        if not_walked:
+            self.log.warning(
+                "folders in $SWARM_ARTIFACTS_DIR were not walked: too deep for any "
+                "name under them to be stored, or unreadable",
+                count=len(not_walked),
+                folders=[standalone_mod.shown(self._scrub(name)) for name in not_walked[:50]],
+                cap_name_bytes=standalone_mod.MAX_OBJECT_NAME_BYTES,
+            )
+        return found, not_walked
 
     def _redact_file(
         self, path: Path, *, label: str, withheld: bool = False
@@ -3295,7 +3539,9 @@ class Worker:
         hold no registered value. `label` is what a reader can place: a path
         under the workspace, or the manifest name of a working-folder copy
         (`_upload_workdir_outputs`), whose scratch path means nothing to anyone.
-        See `_redact_before_upload` for the trade this reports on.
+        See `_redact_before_upload` for the trade this reports on. `path` is
+        always the WORKER's copy in `ws.private`, never a path the agent can
+        write (#227).
 
         `withheld` is the working-folder upload's answer to that trade: a file
         this returns an entry for is NOT uploaded, and the lines say so. An
@@ -3304,16 +3550,28 @@ class Worker:
         review). A file the rewrite raised on is unexamined, so with
         `withheld` it gets an entry rather than a pass.
         """
+        return self._redact_outcome(path, label=label, withheld=withheld)[1]
+
+    def _redact_outcome(
+        self, path: Path, *, label: str, withheld: bool = False, report: bool = True
+    ) -> tuple[bool, dict[str, Any] | None]:
+        """`_redact_file`, also saying whether the file was rewritten.
+
+        Without `report`, the entry is returned and not logged: the caller
+        logs it with `_report_unredacted` once the file has actually left.
+        """
         label = standalone_mod.displayable(label)
         try:
             outcome = self.log.scrub_file_outcome(path, max_bytes=redact_mod.MAX_SCRUB_BYTES)
         except OSError as exc:  # a read-only or vanished file must not fail the attempt
             self.log.warning("could not redact a file before upload", file=label, error=str(exc))
             if withheld:
-                return {"file": label, "reason": "unreadable", "bytes": None, "secret_found": None}
-            return None
+                return False, {
+                    "file": label, "reason": "unreadable", "bytes": None, "secret_found": None,
+                }
+            return False, None
         if not outcome.skipped:
-            return None
+            return outcome is redact_mod.ScrubOutcome.REWRITTEN, None
         found = self.log.file_contains_secret(path)
         try:
             size: int | None = path.stat().st_size
@@ -3326,8 +3584,15 @@ class Worker:
                 reason=outcome.value,
                 bytes=size,
             )
-            return None
+            return False, None
         entry = {"file": label, "reason": outcome.value, "bytes": size, "secret_found": found}
+        if report:
+            self._report_unredacted(entry, withheld=withheld)
+        return False, entry
+
+    def _report_unredacted(self, entry: dict[str, Any], *, withheld: bool = False) -> None:
+        """Log a file that could not be redacted, as what happens to it next."""
+        found = entry.get("secret_found")
         if withheld:
             self.log.warning(
                 "a working-folder file could not be redacted and "
@@ -3350,7 +3615,6 @@ class Worker:
                 "a file could be neither redacted nor scanned; it is uploaded unexamined",
                 **entry,
             )
-        return entry
 
     # -- live logs ----------------------------------------------------------
     def _publish_live_logs(self) -> None:
@@ -3417,14 +3681,26 @@ class Worker:
         try:
             # A symlink is refused, not followed. The agent can write inside
             # `artifacts/`, and a link planted at a capture file's name would
-            # otherwise publish whatever it points at; the final upload skips
+            # otherwise publish whatever it points at; the final upload refuses
             # links for the same reason.
-            if path.is_symlink() or not path.is_file():
+            #
+            # REFUSED AT THE OPEN, NOT BEFORE IT (#227). A leaf check and then
+            # an open by path were two moments, and a link swapped in between
+            # was followed -- as was a link at the stream's FOLDER, which the
+            # leaf check never saw. The descriptor is opened with `O_NOFOLLOW`
+            # for the folder and the file, and everything below reads it.
+            try:
+                fd = standalone_mod.open_without_following(path.parent, path.name)
+            except FileNotFoundError:
                 return
-            size = path.stat().st_size
-            if size == 0:
+            except standalone_mod.Refused as exc:
+                self.log.debug("a live log stream is not a regular file; not published",
+                               stream=label, error=str(exc))
                 return
-            with path.open("rb") as handle:
+            with os.fdopen(fd, "rb") as handle:
+                size = os.fstat(handle.fileno()).st_size
+                if size == 0:
+                    return
                 start, chunk = _read_tail(handle, size=size, window=cfg.live_log_tail_bytes)
             text = chunk.decode("utf-8", errors="replace")
             if self.log.has_secrets:
@@ -3792,6 +4068,7 @@ class Worker:
 
         auto_committed = False
         folded = 0
+        kept = 0
         merge: MergeOutcome | None = None
         try:
             new_sha = commit_dirty(
@@ -3816,9 +4093,18 @@ class Worker:
             # EVERY COMMIT THIS PUSHES IS THE WORKER'S. Whatever the agent
             # committed itself -- possibly as Claude, possibly with a
             # Co-Authored-By trailer and a "Generated with" line, which is what
-            # Claude Code adds by default -- is folded into one commit the
+            # Claude Code adds by default -- is rewritten as a commit the
             # worker writes. See `gitops.fold_agent_commits` for why this is
             # done here and not with a setting in the image.
+            #
+            # EACH OF THE AGENT'S COMMITS IS KEPT (#242), in order, with its
+            # own tree and its own message cleaned of trailers and footers
+            # (`replay_agent_commits`); the worker's commit above, if there is
+            # one, stays last. Folding them into one made a red-first pull
+            # request -- tests, then the fix -- impossible: CI never saw the
+            # tests alone. The fold is kept for the history that cannot be
+            # replayed: one that does not descend from the clone base, or one
+            # past `MAX_KEPT_COMMITS`.
             # `_publish_base`, never the workspace marker: see `_maybe_clone`.
             if self._publish_base is None and self._clone_base:
                 # Said precisely, because "unknown" would be false: the harvest
@@ -3832,17 +4118,12 @@ class Worker:
                     "was pushed; the harvest still describes the work against "
                     "that marker"
                 )
-            replaced = fold_agent_commits(
+            replayed = replay_agent_commits(
                 repo=repo,
                 base=self._publish_base,
                 keep=new_sha,
-                message=(
-                    f"swarm: work from {cfg.task_id}\n\n"
-                    "Everything the agent changed in this attempt, committed or "
-                    "not, as one commit made by the worker. The worker writes "
-                    "every commit it pushes, so no author, trailer or footer "
-                    "added inside the agent's container reaches this branch."
-                ),
+                task_id=cfg.task_id,
+                scrub=lambda text: str(self._scrub(text)),
                 author_name=cfg.git_author_name,
                 author_email=cfg.git_author_email,
                 private_dir=ws.private,
@@ -3850,10 +4131,32 @@ class Worker:
                 timeout_seconds=cfg.git_harvest_timeout_seconds,
                 logger=self.log,
             )
-            # The worker's own auto-commit is among what was replaced when
-            # there was one; the rest were the agent's.
-            folded = max(replaced - (1 if new_sha else 0), 0)
-            out["agent_commits_folded"] = folded
+            if replayed is not None:
+                kept = replayed
+                out["agent_commits_kept"] = kept
+            else:
+                replaced = fold_agent_commits(
+                    repo=repo,
+                    base=self._publish_base,
+                    keep=new_sha,
+                    message=(
+                        f"swarm: work from {cfg.task_id}\n\n"
+                        "Everything the agent changed in this attempt, committed or "
+                        "not, as one commit made by the worker. The worker writes "
+                        "every commit it pushes, so no author, trailer or footer "
+                        "added inside the agent's container reaches this branch."
+                    ),
+                    author_name=cfg.git_author_name,
+                    author_email=cfg.git_author_email,
+                    private_dir=ws.private,
+                    logs_dir=ws.logs,
+                    timeout_seconds=cfg.git_harvest_timeout_seconds,
+                    logger=self.log,
+                )
+                # The worker's own auto-commit is among what was replaced when
+                # there was one; the rest were the agent's.
+                folded = max(replaced - (1 if new_sha else 0), 0)
+                out["agent_commits_folded"] = folded
 
             # EVERYTHING THAT CARRIES THE TOKEN RUNS IN A REPOSITORY THE WORKER
             # OWNS, NOT IN THE CLONE. The push and the integrator's contributor
@@ -3979,10 +4282,24 @@ class Worker:
             )
             return out
 
-        title = f"[swarm] {cfg.task_id}"
-        body = self._pull_request_body(
-            branch=branch, auto_committed=auto_committed, merge=merge, folded=folded
+        # THE AGENT'S OWN TITLE AND BODY WHEN IT WROTE THEM (#214), so a
+        # platform pull request can say `Closes #N`. The platform's block --
+        # provenance, the commit note, an integration's missing branches --
+        # follows the agent's text, whole: a reviewer still learns what ran
+        # and what this pull request does NOT contain. Read here, after the
+        # pre-publish reap, so no agent process is left to change the files.
+        generated = self._pull_request_body(
+            branch=branch, auto_committed=auto_committed, merge=merge, folded=folded, kept=kept
         )
+        agent_title, agent_body, refused = self._agent_pull_request_text()
+        title = agent_title or f"[swarm] {cfg.task_id}"
+        body = f"{agent_body}\n\n---\n\n{generated}" if agent_body else generated
+        out["pull_request_text"] = {
+            "title": "agent" if agent_title else "platform",
+            "body": "agent" if agent_body else "platform",
+        }
+        if refused:
+            out["pull_request_text_refused"] = refused
         try:
             pr = open_pull_request(
                 access=access,
@@ -3991,6 +4308,9 @@ class Worker:
                 base=access.default_branch,
                 title=title,
                 body=body,
+                # A reused pull request takes the agent's text too; generated
+                # text never overwrites one a human may have edited.
+                update_existing=bool(agent_title or agent_body),
             )
         except ForgeError as exc:
             out["published"] = True
@@ -4000,6 +4320,7 @@ class Worker:
             )
             return out
 
+        updated = bool(getattr(pr, "updated", False))
         out.update(
             {
                 "published": True,
@@ -4008,9 +4329,13 @@ class Worker:
                     "url": pr.url,
                     "state": pr.state,
                     "created": pr.created,
+                    "updated": updated,
                 },
                 "publish_reason": (
-                    "opened" if pr.created else "an open pull request already existed and was reused"
+                    "opened"
+                    if pr.created
+                    else "an open pull request already existed and was reused"
+                    + (", with the agent's title and body" if updated else "")
                 ),
             }
         )
@@ -4024,6 +4349,7 @@ class Worker:
         auto_committed: bool,
         merge: "MergeOutcome | None" = None,
         folded: int = 0,
+        kept: int = 0,
     ) -> str:
         """The body a reviewer reads. Provenance first, prompt second.
 
@@ -4056,6 +4382,22 @@ class Worker:
                 "uncommitted are one commit on this branch, made by the worker. "
                 "The worker writes every commit it pushes.",
             ]
+        elif kept:
+            # Said on the page, because the commits a reviewer sees are the
+            # agent's in content and order and the worker's in authorship.
+            lines += [
+                "",
+                f"The agent's {kept} commit(s) are on this branch in order, each "
+                "rewritten by the worker: the same tree, the agent's message with "
+                "its trailers and footers taken out. The worker writes every "
+                "commit it pushes.",
+            ]
+            if auto_committed:
+                lines.append(
+                    "The last commit is the worker's own: the agent left changes "
+                    "uncommitted and they would otherwise not have reached this "
+                    "branch at all."
+                )
         elif auto_committed:
             lines += [
                 "",
@@ -4091,6 +4433,107 @@ class Worker:
 
         return "\n".join(lines)
 
+    def _agent_pull_request_text(self) -> tuple[str | None, str | None, list[str]]:
+        """The agent's pull request title and body, each usable or None (#214).
+
+        Returns `(title, body, refused)`. `refused` names each file that was
+        there and could not be used, and why, in words that quote none of it.
+
+        THE SAME RULES AS ANY OTHER AGENT TEXT THE WORKER PUBLISHES:
+
+        * read with `open_without_following`, like every file taken out of the
+          artifacts folder (#227): a link is refused, never followed;
+        * UTF-8 or refused, and blank is refused;
+        * the title is ONE line -- a second line is refused, not joined -- and
+          neither may carry attribution (`gitops.ATTRIBUTION_MARKERS`, the
+          list the push check reads): the owner's rule is none on GitHub, and
+          the forge would carry it where the push check cannot see;
+        * scrubbed of every registered secret, THEN cut (the #232 rule): the
+          title to `PR_TITLE_MAX_CHARS`, the body to `PR_BODY_MAX_BYTES`.
+
+        The body is Markdown rendered on a public page, like the prompt the
+        generated body used to quote; it gets no more trust than that.
+        """
+        ws = self.ws
+        assert ws is not None
+        refused: list[str] = []
+        title: str | None = None
+        body: str | None = None
+
+        raw = self._read_agent_text(PR_TITLE_FILE, refused)
+        if raw is not None:
+            text = raw.strip()
+            if not text:
+                refused.append(f"{PR_TITLE_FILE}: blank")
+            elif "\n" in text or "\r" in text:
+                refused.append(f"{PR_TITLE_FILE}: more than one line")
+            elif any(ord(char) < 32 and char != "\t" for char in text):
+                refused.append(f"{PR_TITLE_FILE}: holds control characters")
+            elif _carries_attribution(text):
+                refused.append(f"{PR_TITLE_FILE}: carries attribution")
+            else:
+                text = str(self._scrub(text))
+                if len(text) > PR_TITLE_MAX_CHARS:
+                    text = text[: PR_TITLE_MAX_CHARS - 3].rstrip() + "..."
+                title = text
+
+        raw = self._read_agent_text(PR_BODY_FILE, refused)
+        if raw is not None:
+            text = raw.strip()
+            if not text:
+                refused.append(f"{PR_BODY_FILE}: blank")
+            elif _carries_attribution(text):
+                refused.append(f"{PR_BODY_FILE}: carries attribution")
+            else:
+                text = str(self._scrub(text))
+                encoded = text.encode("utf-8")
+                if len(encoded) > PR_BODY_MAX_BYTES:
+                    text = (
+                        encoded[:PR_BODY_MAX_BYTES].decode("utf-8", errors="ignore").rstrip()
+                        + f"\n\n_[cut at {PR_BODY_MAX_BYTES} bytes by the worker]_"
+                    )
+                body = text
+
+        if refused:
+            self.log.warning(
+                "the agent's pull request text was not used; the generated text was",
+                refused=refused,
+            )
+        return title, body, refused
+
+    def _read_agent_text(self, name: str, refused: list[str]) -> str | None:
+        """`artifacts/<name>` as text, read with no link followed; None if absent or refused."""
+        ws = self.ws
+        assert ws is not None
+        try:
+            fd = standalone_mod.open_without_following(ws.artifacts, name)
+        except FileNotFoundError:
+            return None
+        except standalone_mod.Refused:
+            refused.append(f"{name}: a symlink, or not a regular file; nothing was followed")
+            return None
+        except OSError as exc:
+            refused.append(f"{name}: unreadable ({type(exc).__name__})")
+            return None
+        try:
+            with os.fdopen(fd, "rb") as handle:
+                data = handle.read(PR_READ_LIMIT_BYTES + 1)
+        except OSError as exc:
+            refused.append(f"{name}: unreadable ({type(exc).__name__})")
+            return None
+        cut = len(data) > PR_READ_LIMIT_BYTES
+        if cut:
+            data = data[:PR_READ_LIMIT_BYTES]
+        try:
+            return data.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            # A read cut through the middle of a character is not a file that
+            # is not UTF-8: at most three bytes of it are the cut's.
+            if cut and exc.start >= len(data) - 3:
+                return data[: exc.start].decode("utf-8")
+            refused.append(f"{name}: not UTF-8")
+            return None
+
     def _artifacts_first(self) -> list[str]:
         """The names the artifacts folder's cap takes before any other (#228).
 
@@ -4125,10 +4568,11 @@ class Worker:
         # Written only when the figures changed, so an orderly exit that just
         # reaped its runner writes nothing twice.
         self._record_cpu()
-        # BEFORE the redaction pass, not after: the harvest writes a patch into
-        # `artifacts/`, and `_redact_before_upload` is what scrubs what goes up
-        # from there. A patch produced afterwards would be the one file in the
-        # upload that never had a provider key taken out of it.
+        # BEFORE the upload, not after: the harvest writes a patch into
+        # `artifacts/`, and the upload's redacted copy (`_upload_copy`) is what
+        # scrubs what goes up from there. A patch produced afterwards would be
+        # the one file in the upload that never had a provider key taken out
+        # of it.
         try:
             git_summary = self._harvest_git(publish=publish, withheld=withheld)
         except Exception as exc:  # pragma: no cover - defensive
@@ -4137,16 +4581,16 @@ class Worker:
         # WHICH FILES OF THE ARTIFACTS FOLDER, IN WHICH ORDER (#228, owner
         # decision of 2026-09-26): at most `max_artifact_files`, a declared
         # output first, no name past the manifest's bound; see
-        # `agent_worker.artifact_manifest`. Decided BEFORE the redaction pass,
-        # so the pass scrubs what is going to leave the pod and nothing else.
-        found: dict[str, int] = {}
-        for path in ws.artifacts.rglob("*"):
-            if not path.is_file() or path.is_symlink():
-                continue
-            try:
-                found[path.relative_to(ws.artifacts).as_posix()] = path.stat().st_size
-            except OSError:
-                continue
+        # `agent_worker.artifact_manifest`. Decided BEFORE anything is copied,
+        # so only what is going to leave the pod is read and redacted.
+        #
+        # WALKED WITHOUT RECURSION (#227). `Path.rglob` recursed once per
+        # folder on Python 3.11, so a tree about 1,000 folders deep raised
+        # RecursionError out of this method and none of the attempt's
+        # artifacts, logs or summary went up. `_walk_artifacts` keeps its own
+        # stack, and lists a folder too deep to hold any storable name as
+        # skipped instead of walking it.
+        found, too_deep = self._walk_artifacts(ws.artifacts)
         plan = manifest_mod.plan(
             found,
             first=self._artifacts_first(),
@@ -4154,6 +4598,9 @@ class Worker:
             declared=self._expected_outputs,
         )
         skipped: list[str] = []
+        for folder in too_deep:
+            # Scrubbed, then cut, like every name below (#232 review).
+            skipped.append(standalone_mod.shown(self._scrub(folder)))
         for name in plan.unstorable:
             # A name whose bytes are not UTF-8 (#225 review): no object can be
             # named with it, and as a lone surrogate in the summary it made
@@ -4192,30 +4639,34 @@ class Worker:
             cap_files=self.cfg.max_artifact_files,
             cap_name_bytes=manifest_mod.MAX_NAME_BYTES,
         )
-        unredacted = self._redact_before_upload([ws.artifacts / rel for rel in plan.take])
+        # The worker's own files, rewritten where they lie. Everything taken
+        # from the artifacts folder is redacted as the COPY that is uploaded
+        # (`_upload_copy`), never in place: see `_redact_before_upload`.
+        unredacted = self._redact_before_upload()
         artifacts: list[dict[str, Any]] = []
         total = 0
         for rel in plan.take:
-            path = ws.artifacts / rel
-            try:
-                # After the redaction pass, which can change a file's length.
-                size = path.stat().st_size
-            except OSError as exc:
-                self.log.warning("artifact upload failed", artifact=rel, error=str(exc))
-                skipped.append(rel)
-                continue
-            if total + size > self.cfg.max_artifact_bytes:
-                skipped.append(rel)
-                continue
             key = f"{self.cfg.artifact_prefix}/{rel}"
-            try:
-                self.store.upload_file(key, path)
-            except Exception as exc:
-                self.log.warning("artifact upload failed", artifact=rel, error=str(exc))
-                skipped.append(rel)
+            sent = self._upload_copy(
+                ws.artifacts,
+                rel,
+                key=key,
+                label=f"artifacts/{rel}",
+                limit=self.cfg.max_artifact_bytes - total,
+            )
+            if sent.bytes is None:
+                # SCRUBBED, THEN CUT (#227), as every other name this list
+                # holds: a raw name ran to 1,024 bytes for a declared output,
+                # and was scrubbed only later, with the summary, after
+                # nothing had cut it.
+                skipped.append(standalone_mod.shown(self._scrub(rel)))
                 continue
-            total += size
-            artifacts.append({"name": rel, "bytes": size, "uri": self.store.uri(key)})
+            # Listed only for a file that LEFT (#227): one the byte cap or an
+            # upload failure kept in the pod was never uploaded "as-is".
+            if sent.unredacted is not None:
+                unredacted.append(sent.unredacted)
+            total += sent.bytes
+            artifacts.append({"name": rel, "bytes": sent.bytes, "uri": self.store.uri(key)})
         # LISTED IN PATH ORDER, as the manifest always has been: the order
         # above decides which files are taken, not the order a reader sees
         # them in, nor which of them the listing route's first page holds.
@@ -4246,20 +4697,38 @@ class Worker:
         # stages them from there -- and a copy goes beside the runner's logs as
         # `logs/agent_stdout.log` / `logs/agent_stderr.log`, so every reader of
         # an agent's own output reads one layout whatever the runner, and the
-        # copy is not subject to `max_artifact_bytes`. Same scrubbed file:
-        # `_redact_before_upload` above scrubbed the captures whether or not
-        # the file cap took them into the manifest.
+        # copy is not subject to `max_artifact_bytes`. Scrubbed whether or not
+        # the file cap took them into the manifest: each copy is redacted as
+        # it is uploaded.
+        #
+        # Through the same no-follow copy as an artifact (#227): the check for
+        # a link and the upload by path were two moments, and a capture
+        # swapped for a link between them was followed.
         agent_files = agent_stream_files(self.cfg.runner_profile)
         logs: dict[str, str] = {}
+        reported = {entry.get("file") for entry in unredacted}
         for label, path in self._stream_files(ws):
-            if path.is_symlink() or not path.is_file():
-                continue
             key = f"{self.cfg.log_prefix}/{label}.log"
-            try:
-                self.store.upload_file(key, path, content_type="text/plain")
-                logs[label] = self.store.uri(key)
-            except Exception as exc:
-                self.log.warning("log upload failed", stream=label, error=str(exc))
+            sent = self._upload_copy(
+                path.parent,
+                path.name,
+                key=key,
+                label=_workspace_label(ws, path),
+                limit=sys.maxsize,
+                content_type="text/plain",
+                absent_ok=True,
+                report=False,
+            )
+            if sent.bytes is None:
+                continue
+            logs[label] = self.store.uri(key)
+            # Each file once: the runner's two streams were examined in place
+            # above, and a capture the cap took was examined as an artifact.
+            entry = sent.unredacted
+            if entry is not None and entry.get("file") not in reported:
+                self._report_unredacted(entry)
+                unredacted.append(entry)
+                reported.add(entry.get("file"))
 
         if skipped:
             self.log.warning(
@@ -4416,10 +4885,14 @@ class Worker:
     def _start_sampler(self, child: ChildProcess) -> None:
         ws = self.ws
         assert ws is not None
+        # THE CONTAINER'S MEMORY, NOT THE PROFILE'S (#205). The dispatcher
+        # sizes the container from the task's class, and a workflow step may
+        # narrow `browser` (16 GiB) to `standard` (8 GiB): judged against the
+        # profile's 16, a run at 7.9 of its 8 GiB raised no near miss.
         self._sampler = ResourceSampler(
             pid_provider=lambda: child.pid,
             disk_provider=ws.disk_bytes,
-            memory_limit_bytes=self.cfg.memory_limit_bytes,
+            memory_limit_bytes=self.cfg.memory_limit_bytes_of(self._memory_class()),
         )
         self._sampler.start()
 
@@ -4454,8 +4927,8 @@ class Worker:
             self.log.error(
                 "OOM NEAR MISS: this attempt came within a hair of its memory limit",
                 peak_rss_bytes=usage.peak_rss_bytes,
-                limit_bytes=self.cfg.memory_limit_bytes,
-                resource_class=self.cfg.resource_class,
+                limit_bytes=self.cfg.memory_limit_bytes_of(self._memory_class()),
+                resource_class=self._memory_class(),
             )
         # The attempt's CPU at this runner's end, on the attempt (request #15)
         # -- where #188 emitted a `final` HEARTBEAT into the task's events.
@@ -4487,7 +4960,10 @@ class Worker:
             {
                 "tenant_id": self.cfg.tenant_id,
                 "runner_profile": self.cfg.runner_profile,
-                "resource_class": self.cfg.resource_class,
+                # The sized class (#205): the sizing decisions read this label,
+                # and the profile's would file a narrowed step under a class
+                # its container was not.
+                "resource_class": self._memory_class(),
                 "backend": self.cfg.backend,
                 "attempt_id": self.cfg.attempt_id,
                 "task_id": self.cfg.task_id,
@@ -4620,6 +5096,198 @@ class Worker:
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
+
+
+
+def _carries_attribution(text: str) -> bool:
+    lowered = text.lower()
+    return any(marker in lowered for marker in ATTRIBUTION_MARKERS)
+
+
+#: A trailer line as git reads one: `Token: value`, the token letters, digits
+#: and hyphens. `Co-Authored-By:`, `Signed-off-by:`, `Change-Id:`.
+_TRAILER_LINE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]*[ \t]*:[ \t]")
+
+
+def clean_commit_message(message: str, *, scrub: Callable[[str], str], fallback: str) -> str:
+    """An agent's commit message as the worker pushes it (#242).
+
+    * every line carrying attribution (`gitops.ATTRIBUTION_MARKERS`) is
+      removed, wherever it is -- the "Generated with" footer is a paragraph of
+      its own, not a trailer;
+    * then the trailer block -- a closing paragraph of `Token: value` lines,
+      as git reads one -- is removed, more than once if there are several;
+      the subject is never taken for one;
+    * registered secrets are scrubbed, then the message is cut to
+      `COMMIT_MESSAGE_MAX_BYTES`;
+    * a message with nothing left is `fallback`, the worker's own.
+
+    NULs are dropped: an argv cannot carry one, and a commit message can.
+    """
+    text = message.replace("\x00", "").replace("\r\n", "\n")
+    lines = [line.rstrip() for line in text.split("\n")]
+    lines = [line for line in lines if not _carries_attribution(line)]
+    paragraphs: list[list[str]] = [[]]
+    for line in lines:
+        if line.strip():
+            paragraphs[-1].append(line)
+        elif paragraphs[-1]:
+            paragraphs.append([])
+    paragraphs = [p for p in paragraphs if p]
+    while len(paragraphs) > 1 and _is_trailer_block(paragraphs[-1]):
+        paragraphs.pop()
+    cleaned = scrub("\n\n".join("\n".join(p) for p in paragraphs)).strip()
+    if not cleaned:
+        return fallback
+    encoded = cleaned.encode("utf-8")
+    if len(encoded) > COMMIT_MESSAGE_MAX_BYTES:
+        cleaned = (
+            encoded[:COMMIT_MESSAGE_MAX_BYTES].decode("utf-8", errors="ignore").rstrip()
+            + f"\n\n[cut at {COMMIT_MESSAGE_MAX_BYTES} bytes by the worker]"
+        )
+    return cleaned
+
+
+def _is_trailer_block(paragraph: list[str]) -> bool:
+    """True when every line is a trailer, or continues the one above it."""
+    if not _TRAILER_LINE.match(paragraph[0]):
+        return False
+    return all(_TRAILER_LINE.match(line) or line[:1] in (" ", "\t") for line in paragraph)
+
+
+def replay_agent_commits(
+    *,
+    repo: Path,
+    base: str | None,
+    keep: str | None,
+    task_id: str,
+    scrub: Callable[[str], str],
+    author_name: str,
+    author_email: str,
+    private_dir: Path,
+    logs_dir: Path,
+    timeout_seconds: int,
+    logger: Any,
+    git_binary: str = "git",
+) -> int | None:
+    """Rewrite each commit on HEAD's first-parent line since `base` as the worker's (#242).
+
+    Returns how many of the AGENT's commits were kept -- `keep`, the worker's
+    own commit from `commit_dirty`, is rewritten too and not counted -- or
+    None when this history cannot be kept commit by commit, and the caller
+    folds it as before (`gitops.fold_agent_commits`):
+
+    * HEAD does not descend from `base` (the agent reset or checked out
+      another line): nothing tells its commits from the repository's;
+    * more than `MAX_KEPT_COMMITS` of them.
+
+    WHAT IS KEPT, AND WHAT IS NOT. Each commit keeps its TREE, exactly -- so
+    the tests-only commit of a red-first change is still tests only, and CI
+    can run it -- and its message, cleaned (`clean_commit_message`). Its
+    author, committer, dates and signature are the worker's: the commit is
+    made with `git commit-tree` under `_worker_identity`, and #219's rule that
+    the worker writes every commit it pushes holds, checked again at the push
+    by `verify_worker_authorship`. A merge the agent made keeps its merged
+    tree and loses its second parent: every commit on that side would
+    otherwise be pushed as it was written.
+
+    The index and working tree are not touched; `reset --soft` moves the
+    branch onto the rewritten line, which ends in the same tree HEAD had.
+    An unknown `base` refuses, exactly as the fold does.
+    """
+    empty = base == EMPTY_CLONE_BASE
+    if not empty and (not base or not _SHA_RE.match(base.strip())):
+        raise GitError(
+            "the clone base is unknown, so the worker cannot tell the agent's "
+            "commits from the repository's; nothing was pushed rather than "
+            "commits whose author and message the worker did not write"
+        )
+    floor = "" if empty else (base or "").strip()
+    g = [git_binary, *_NO_HOOKS, *_worker_identity(author_name, author_email)]
+
+    def run(argv: list[str], slug: str) -> tuple[int, str]:
+        return _git_text(
+            argv,
+            repo=Path(repo),
+            private_dir=private_dir,
+            logs_dir=logs_dir,
+            slug=slug,
+            timeout_seconds=timeout_seconds,
+            logger=logger,
+        )
+
+    if empty:
+        code, _ = run([*g, "rev-parse", "--verify", "--quiet", "HEAD"], "publish-keep-born")
+        if code != 0:
+            return 0
+        span = "HEAD"
+    else:
+        code, _ = run([*g, "merge-base", "--is-ancestor", floor, "HEAD"], "publish-keep-descends")
+        if code == 1:
+            logger.warning(
+                "the agent's branch does not descend from the clone base; its "
+                "commits are folded into one worker commit"
+            )
+            return None
+        if code != 0:
+            raise GitError("could not tell whether the agent's work descends from the clone base")
+        span = f"{floor}..HEAD"
+
+    code, text = run([*g, "rev-list", "--first-parent", "--reverse", span], "publish-keep-list")
+    if code != 0:
+        raise GitError("could not list the commits made since the clone base")
+    shas = text.split()
+    if not shas:
+        return 0
+    if len(shas) > MAX_KEPT_COMMITS:
+        logger.warning(
+            "the agent made more commits than are kept one by one; they are "
+            "folded into one worker commit",
+            commits=len(shas),
+            cap=MAX_KEPT_COMMITS,
+        )
+        return None
+
+    parent = floor or None
+    kept = 0
+    for index, sha in enumerate(shas, 1):
+        code, raw = run([*g, "cat-file", "commit", sha], "publish-keep-read")
+        if code != 0:
+            raise GitError(f"could not read commit {sha[:12]}")
+        header, _, message = raw.partition("\n\n")
+        trees = [line[len("tree "):] for line in header.split("\n") if line.startswith("tree ")]
+        tree = trees[0].strip() if trees else ""
+        if not _SHA_RE.match(tree):
+            raise GitError(f"could not read the tree of commit {sha[:12]}")
+        if sha == keep:
+            # The worker's own message, from `commit_dirty`.
+            text = message.replace("\x00", "").strip()
+            text = text or f"swarm: uncommitted changes from {task_id}"
+        else:
+            kept += 1
+            text = clean_commit_message(
+                message,
+                scrub=scrub,
+                fallback=f"swarm: commit {index} of {len(shas)} from {task_id}",
+            )
+        argv = [*g, "commit-tree", tree]
+        if parent:
+            argv += ["-p", parent]
+        argv += ["-m", text]
+        code, made = run(argv, "publish-keep-write")
+        made = made.strip()
+        if code != 0 or not _SHA_RE.match(made):
+            raise GitError(f"could not rewrite commit {sha[:12]} as the worker's")
+        parent = made
+    code, _ = run([*g, "reset", "--soft", parent or ""], "publish-keep-reset")
+    if code != 0:
+        raise GitError("could not move the branch onto the worker's rewritten commits")
+    logger.info(
+        "kept the agent's commits, each rewritten as the worker's",
+        kept=kept,
+        rewritten=len(shas),
+    )
+    return kept
 
 
 def _end_cause_of(exc: BaseException) -> EndCause:

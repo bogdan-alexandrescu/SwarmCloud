@@ -13,6 +13,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from swarm_common.config import Settings
 from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES, RunnerProfile, resolve_backend
@@ -194,20 +195,42 @@ class WorkerConfig:
             raise ConfigError(f"unknown runner profile {self.runner_profile!r}") from exc
 
     @property
-    def resource_class(self) -> str:
+    def profile_resource_class(self) -> str:
+        """The PROFILE's class. Not necessarily the one the container was sized with.
+
+        The dispatcher sizes the container from the TASK's class when the
+        catalogue still has it (`scheduler.dispatch.resource_class_for`), and a
+        workflow step may name a smaller class than its profile's. Named for
+        what it is, because as `resource_class` it was read as the container's
+        size, and the OOM near-miss was judged against memory the container
+        never had (#205). `sized_resource_class` is the container's.
+        """
         return self.profile.resource_class
+
+    def sized_resource_class(self, task_class: Any) -> str:
+        """The class the container was sized with, given the task's `resource_class`.
+
+        `resource_class_for(task, profile)` restated (the worker image does not
+        install the scheduler; `tests/unit/worker/test_cpu_sampler.py` compares
+        the two): the task's own class when the catalogue still has it, else
+        the profile's.
+        """
+        if isinstance(task_class, str) and task_class in RESOURCE_CLASSES:
+            return task_class
+        return self.profile_resource_class
 
     @property
     def backend(self) -> str:
         return resolve_backend(self.profile).value
 
-    @property
-    def memory_limit_bytes(self) -> int:
-        return RESOURCE_CLASSES[self.resource_class].memory_gib * 1024 * 1024 * 1024
+    def memory_limit_bytes_of(self, resource_class: str) -> int:
+        """`resource_class`'s memory, which is request AND limit (invariant 7).
 
-    @property
-    def disk_limit_bytes(self) -> int:
-        return RESOURCE_CLASSES[self.resource_class].disk_gib * 1024 * 1024 * 1024
+        A method taking the class, not a property of this config: the config
+        knows only the profile's class, and the limit that matters is the
+        container's (#205). There is no disk counterpart; nothing read one.
+        """
+        return RESOURCE_CLASSES[resource_class].memory_gib * 1024 * 1024 * 1024
 
     @property
     def gcs_prefix(self) -> str:

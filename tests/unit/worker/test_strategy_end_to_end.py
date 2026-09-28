@@ -1215,6 +1215,10 @@ def test_a_commit_the_worker_did_not_write_is_refused_at_the_push_even_without_t
     step -- and the push must refuse it rather than trust that nothing
     upstream of it ever regresses."""
     monkeypatch.setattr(lifecycle, "fold_agent_commits", lambda **kw: 0)
+    # And the rewrite that keeps each agent commit (#242), which is the other
+    # way the property is made. `raising=False` because it is added by the
+    # same change as this line.
+    monkeypatch.setattr(lifecycle, "replay_agent_commits", lambda **kw: 0, raising=False)
     before = refs(origin)
 
     _, _, out = run_attempt(
@@ -1249,13 +1253,14 @@ def empty_origin(tmp_path: Path) -> Path:
     [agent_edits_without_committing, agent_commits_with_claude_attribution],
     ids=["uncommitted-only", "committed-too"],
 )
-def test_work_in_an_empty_repository_is_one_parentless_worker_commit(
+def test_work_in_an_empty_repository_starts_from_one_parentless_worker_commit(
     worker_factory, monkeypatch, empty_origin, local_urls, forge, edit
 ):
     """`git clone` of an empty repository succeeds and lands on no commit, so
     there is no clone base -- but that is KNOWN, unlike a base a resumed
-    attempt lost. Everything the agent did is the agent's, and the worker
-    replaces it with one commit of its own that has no parent."""
+    attempt lost. Everything the agent did is the agent's: each of its commits
+    is rewritten as the worker's, the first with no parent, and one more
+    worker commit carries what it left uncommitted (#242)."""
     worker, config, task = _attempt(
         worker_factory, monkeypatch, empty_origin,
         task_id=f"t-empty-{edit.__name__.split('_')[1]}", attempt=1,
@@ -1271,9 +1276,13 @@ def test_work_in_an_empty_repository_is_one_parentless_worker_commit(
 
     branch = f"{config.git_branch_prefix}{config.task_id}"
     assert out["published"] is True, out.get("publish_reason")
-    commits = pushed_commits(empty_origin, branch, since=None)
-    assert len(commits) == 1 and commits[0]["parents"] == [], (
-        f"expected one parentless commit, got {[c['parents'] for c in commits]}"
+    commits = list(reversed(pushed_commits(empty_origin, branch, since=None)))
+    # Uncommitted only: the worker's one commit. Committed too: the agent's
+    # commit, kept, then the worker's for `uncommitted.txt`.
+    expected_commits = 1 if edit is agent_edits_without_committing else 2
+    assert len(commits) == expected_commits and commits[0]["parents"] == [], (
+        f"expected {expected_commits} commit(s) from a parentless first, "
+        f"got {[c['parents'] for c in commits]}"
     )
     assert_only_the_worker_wrote(commits, config)
     assert expected <= tree_at(empty_origin, branch)
