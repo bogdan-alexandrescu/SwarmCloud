@@ -110,13 +110,18 @@ def test_the_agents_title_and_body_are_used_and_the_metadata_block_is_kept(
     assert out["pull_request_text"] == {"title": "agent", "body": "agent"}, out
 
 
-def test_with_neither_file_the_generated_title_and_body_are_unchanged(
+def test_with_neither_file_the_generated_title_never_carries_the_task_id(
     worker_factory, monkeypatch, origin, local_urls, forge
 ):
+    """The old fallback was `f"[swarm] {task_id}"` (#214). The owner's
+    2026-09-28 rule retired it: no generated title may carry the task id, and
+    with no issue input and no prompt to draw from, the last resort names the
+    runner profile instead."""
     _, config, out = _publish(worker_factory, monkeypatch, origin, task_id="t-pr-none", files={})
 
     pull = _only_pull(forge)
-    assert pull["title"] == f"[swarm] {config.task_id}"
+    assert config.task_id not in pull["title"], pull["title"]
+    assert pull["title"] == "SwarmCloud: work from workflow mock", pull["title"]
     assert pull["body"].startswith("Opened by SwarmCloud"), pull["body"]
     assert out["pull_request_text"] == {"title": "platform", "body": "platform"}, out
 
@@ -129,7 +134,8 @@ def test_either_file_alone_is_used_with_the_other_generated(
         files={"pr-body.md": b"Closes #7\n"},
     )
     pull = _only_pull(forge)
-    assert pull["title"] == f"[swarm] {config.task_id}"
+    assert config.task_id not in pull["title"], pull["title"]
+    assert pull["title"] == "SwarmCloud: work from workflow mock", pull["title"]
     assert pull["body"].startswith("Closes #7"), pull["body"]
 
 
@@ -190,7 +196,8 @@ def test_a_title_that_cannot_be_used_falls_back_to_the_generated_one(
         files={"pr-title.txt": title},
     )
     pull = _only_pull(forge)
-    assert pull["title"] == f"[swarm] {config.task_id}", pull["title"]
+    assert config.task_id not in pull["title"], pull["title"]
+    assert pull["title"] == "SwarmCloud: work from workflow mock", pull["title"]
     assert out["pull_request_text"]["title"] == "platform", out
     assert out.get("pull_request_text_refused"), out
 

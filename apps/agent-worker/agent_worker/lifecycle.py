@@ -448,6 +448,12 @@ class Worker:
         self._restored_from: CheckpointRecord | None = None
         self._repo_url: str | None = None
         self._task: dict[str, Any] | None = None
+        #: An `input.issue` number's title, when something upstream of the pull
+        #: request title (#265's own fetch, once it lands) already read it.
+        #: Nothing sets this yet -- #265 is landing separately and had not, as
+        #: of this change, shipped the fetch -- so it stays None and
+        #: `_title_from_issue_input` falls back to "Fixes #N".
+        self._issue_title: str | None = None
         self._clone_base: str | None = None
         # The clone base the PUBLISH trusts, which is not always the one above.
         # `_clone_base` may come from `work/.swarm/clone-base`, a file in the
@@ -4506,7 +4512,18 @@ class Worker:
             elif _carries_attribution(text):
                 refused.append(f"{PR_TITLE_FILE}: carries attribution")
             else:
-                title = self._scrub_and_cap_title(text)
+                candidate = self._scrub_and_cap_title(text)
+                if self._title_carries_task_id(candidate):
+                    # OWNER RULE, 2026-09-28: a pull request title never
+                    # carries the task id. An agent's own `pr-title.txt` is
+                    # not an exception -- one that echoed the id (by habit,
+                    # or by copying the platform's old `[swarm] <task>`
+                    # fallback) is treated exactly as though it wrote
+                    # nothing, and the generated fallback names something a
+                    # reader can act on instead.
+                    refused.append(f"{PR_TITLE_FILE}: carries the task id")
+                else:
+                    title = candidate
 
         raw = self._read_agent_text(PR_BODY_FILE, refused)
         if raw is not None:
@@ -4541,6 +4558,18 @@ class Worker:
             text = text[: PR_TITLE_MAX_CHARS - 3].rstrip() + "..."
         return text
 
+    def _title_carries_task_id(self, title: str) -> bool:
+        """True when `title` names this attempt's task id, or looks like the
+        platform's own old `[swarm] task_...` fallback (owner rule,
+        2026-09-28). Checked against the agent's own `pr-title.txt` too: an
+        agent that echoed the id, or copied the retired fallback's shape, gets
+        no exception to a rule stated for the platform's generated text.
+        """
+        task_id = self.cfg.task_id
+        if task_id and task_id in title:
+            return True
+        return re.search(r"\[swarm\]\s*task_", title) is not None
+
     def _generated_pull_request_title(self) -> str:
         """The platform's own pull request title, when the agent wrote none.
 
@@ -4568,23 +4597,28 @@ class Worker:
     def _title_from_issue_input(self, task: dict[str, Any]) -> str | None:
         """"<issue title> (#N)", or "Fixes #N" with no title to hand.
 
-        `input.issue` is `#265`'s field, added to this task's runner input by
-        a caller or the platform, separately from this change. Read
-        defensively -- a bare number, a numeric string, or a mapping carrying
-        `number`/`issue_number` and, when the worker (or whatever populated
-        the input) already fetched one, `title` -- and None, not a guess,
-        when no number is there at all.
+        `input.issue` is `#265`'s field (contract request 28, accepted
+        2026-09-28): "a positive integer naming an issue in the step's own
+        `repo`", which the worker fetches read-only and writes to
+        `issue.md`. That fetch is landing separately and had not, as of this
+        change, shipped, so this reads the number defensively -- a bare
+        integer or a numeric string, also tolerating a mapping with a
+        `number`/`issue_number` key in case the shape changes before it
+        lands -- and returns None, not a guess, when there is no number at
+        all. `self._issue_title` is the hook the fetch fills in once it
+        exists; until then it is always None and this always says "Fixes #N".
         """
         payload = task.get("input")
         issue = payload.get("issue") if isinstance(payload, dict) else None
-        title: str | None = None
+        title = self._issue_title if isinstance(self._issue_title, str) and self._issue_title.strip() else None
         if isinstance(issue, dict):
             number = _as_issue_number(issue.get("number"))
             if number is None:
                 number = _as_issue_number(issue.get("issue_number"))
-            raw_title = issue.get("title")
-            if isinstance(raw_title, str) and raw_title.strip():
-                title = raw_title.strip()
+            if title is None:
+                raw_title = issue.get("title")
+                if isinstance(raw_title, str) and raw_title.strip():
+                    title = raw_title.strip()
         else:
             number = _as_issue_number(issue)
         if number is None:
