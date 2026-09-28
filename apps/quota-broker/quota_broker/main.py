@@ -82,7 +82,7 @@ log = logging.getLogger(__name__)
 #: `iam.serviceAccounts.create` here act as any tenant (#176). This is an
 #: authentication allow-list: an entry for an identity nothing provisions is a
 #: way in, not a compatibility allowance.
-WORKER_SA_PREFIXES = ("swarm-agent-worker",)
+WORKER_SA_PREFIXES = ("swarm-agent-worker", "swarm-t")  # MUTATION: main's allow-list, for the red-first proof
 
 
 def worker_sa_pattern(project_id: str) -> re.Pattern[str]:
