@@ -2796,9 +2796,9 @@ figures are not dated, and a limit is never attributed to the kernel.
 
 ## 27. `identity.py`: `_slug`'s docstring still sizes tenant ids for the `swarm-t-` prefix that no longer exists
 
-**Status:** open, recorded 2026-09-28 by the #176 lane. A request, not a
-change. If another branch has taken 27 by the time this merges, renumber this
-one.
+**Status: ACCEPTED, accepted by the owner 2026-09-28 on #245 and applied in
+PR #245.** Recorded 2026-09-28 by the #176 lane. If another branch has taken
+27 by the time this merges, renumber this one.
 
 ### What is true today
 
