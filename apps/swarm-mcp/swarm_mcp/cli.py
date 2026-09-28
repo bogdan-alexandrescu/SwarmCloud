@@ -376,8 +376,7 @@ def _unseen_events(
                 reached = True
             else:
                 unseen.append(event)
-        if reached or not token or not paged:
-            return unseen, paged
+        return unseen, paged  # MUTATION: one page only, as main's single read of 50
 
 
 def cmd_tail(client: SwarmClient, args) -> int:
