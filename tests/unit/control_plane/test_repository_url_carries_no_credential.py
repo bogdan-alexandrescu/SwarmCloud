@@ -56,6 +56,19 @@ REFUSED = [
     f"ssh://git@{TOKEN}@github.com/o/r.git",
     f"git@{TOKEN}@github.com:o/r.git",
     f"git@x-access-token:{TOKEN}@github.com:o/r.git",
+    # THE M1 FIX (PR #256 security review). For `ssh://`, the authority used to
+    # end at the first `/`, `?` OR `#`, so a token followed by `#` or `?` (never
+    # `/`, which forge hosts refuse in a user name) closed the authority before
+    # its own `@` and the token was accepted and stored whole. git's own
+    # `parse_connect_url` ends an ssh host at `/` only.
+    f"ssh://{TOKEN}#@github.com/o/r",
+    f"ssh://{TOKEN}?@github.com/o/r",
+    # The scp branch used to run only when the whole URL held no `://`
+    # anywhere, so a `://` later in the path (never in a real repository path)
+    # sent an scp-form URL — decided by its `git@` prefix, not by that scan —
+    # to the URL branch instead, which never looked at its userinfo at all.
+    f"git@{TOKEN}@github.com:o/r://x",
+    f"git@{TOKEN}:pw@github.com:o/r?a://b",
 ]
 ACCEPTED = [
     "https://github.com/o/r",
@@ -178,6 +191,10 @@ def test_an_ssh_login_is_accepted_and_served_as_written(client, db):
         (f"ssh://git:{PASSWORD}@github.com/o/r.git", f"ssh://{MASK}@github.com/o/r.git"),
         (f"ssh://{TOKEN}@github.com/o/r.git", f"ssh://{MASK}@github.com/o/r.git"),
         (f"git@{TOKEN}@github.com:o/r.git", f"{MASK}@github.com:o/r.git"),
+        (f"ssh://{TOKEN}#@github.com/o/r", f"ssh://{MASK}@github.com/o/r"),
+        (f"ssh://{TOKEN}?@github.com/o/r", f"ssh://{MASK}@github.com/o/r"),
+        (f"git@{TOKEN}@github.com:o/r://x", f"{MASK}@github.com:o/r://x"),
+        (f"git@{TOKEN}:pw@github.com:o/r?a://b", f"{MASK}@github.com:o/r?a://b"),
     ],
 )
 def test_a_url_stored_before_the_refusal_is_served_with_its_userinfo_masked(
