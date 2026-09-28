@@ -3,10 +3,6 @@
 # Regional, in the same region as the workloads: pulling a multi-gigabyte agent
 # image across regions is paid for on every single cold start.
 
-locals {
-  role_suffix = var.custom_role_suffix == "" ? "" : "_${var.custom_role_suffix}"
-}
-
 resource "google_artifact_registry_repository" "this" {
   project       = var.project_id
   location      = var.region
@@ -71,21 +67,23 @@ resource "google_artifact_registry_repository_iam_member" "readers" {
   member     = each.value
 }
 
-# Pull without enumerate.
+# Pull without enumerate: swarmImagePuller, a custom role with every *.list
+# permission removed.
 #
-# Created only when something actually needs it: a project-level custom role is
-# a project-wide name, and a swarm with no tenants should not plant one.
-resource "google_project_iam_custom_role" "image_puller" {
-  count = length(var.pullers) > 0 ? 1 : 0
+# The role is DEFINED in terraform/bootstrap/platform_roles.tf since #79 (owner
+# decision 2026-09-25), with the validations that keep enumeration, push and
+# delete out of it: CI no longer holds roles/iam.roleAdmin, so no module CI
+# applies can define a role. It used to be created here only when `pullers` was
+# non-empty, so a swarm with no tenants planted no project-wide name; bootstrap
+# cannot see this root's tenants, so it defines the role unconditionally, and a
+# role nobody is bound to grants nothing.
+#
+# The name is a plain string from ../custom_role_ids, the spelling this module
+# and terraform/bootstrap share -- known at plan, and read from no role.
+module "custom_role_ids" {
+  source = "../custom_role_ids"
 
-  project = var.project_id
-  role_id = "swarmImagePuller${local.role_suffix}"
-  title   = "Swarm Image Puller"
-
-  description = "Pull an image by a name already held. Cannot enumerate the repository, cannot push."
-  stage       = "GA"
-
-  permissions = var.puller_permissions
+  project_id = var.project_id
 }
 
 resource "google_artifact_registry_repository_iam_member" "pullers" {
@@ -95,12 +93,7 @@ resource "google_artifact_registry_repository_iam_member" "pullers" {
   location   = google_artifact_registry_repository.this.location
   repository = google_artifact_registry_repository.this.name
 
-  # Referenced through the resource rather than rebuilt as a string, so the role
-  # is created before the binding that names it. `role_id` is configuration, not
-  # a computed attribute, so the value is still known at plan time; the index is
-  # safe because instances of this resource exist only when `pullers` is
-  # non-empty, which is exactly when the role's count is 1.
-  role   = "projects/${var.project_id}/roles/${google_project_iam_custom_role.image_puller[0].role_id}"
+  role   = module.custom_role_ids.names.image_puller
   member = each.value
 }
 

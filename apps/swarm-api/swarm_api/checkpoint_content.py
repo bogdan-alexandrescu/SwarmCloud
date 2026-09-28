@@ -112,7 +112,8 @@ from .inspect import (
     parse_checkpoint_key,
 )
 from .objects import ObjectAbsent, ObjectInfo, ObjectReader, ObjectSlice, ObjectUnreadable
-from .redaction import redact, redact_detail
+from .redaction import redact, redact_detail, redact_lines
+from .task_input import TaskMasking, masking_for
 
 log = logging.getLogger(__name__)
 
@@ -1073,7 +1074,13 @@ class CheckpointContent:
                 if shown != wanted or unsafe or undecodable(member.name):
                     continue
                 return self._serve_member(
-                    scan, member, row, allowed=allowed, offset=offset, window=window
+                    scan,
+                    member,
+                    row,
+                    allowed=allowed,
+                    offset=offset,
+                    window=window,
+                    masking=masking_for(task),
                 )
             scan.gunzip.finish()
         except _BudgetExceeded as exc:
@@ -1131,6 +1138,7 @@ class CheckpointContent:
         allowed: str | None,
         offset: int,
         window: int,
+        masking: TaskMasking,
     ) -> dict[str, Any]:
         kind = member_type(member)
         size = int(member.size or 0)
@@ -1178,6 +1186,11 @@ class CheckpointContent:
             )
             return row
 
+        if row["path"] == INPUT_MEMBER and size <= INPUT_MEMBER_MAX_BYTES:
+            return _serve_input_member(
+                handle, head, row, size=size, offset=offset, masking=masking, chunk=self._chunk
+            )
+
         # ONE BYTE OF OVERLAP, exactly as `read_artifact` takes it: the byte
         # before `offset` tells `_align` whether the window starts on a token
         # boundary or inside one.
@@ -1201,7 +1214,12 @@ class CheckpointContent:
             at_eof=chunk.end >= chunk.total_bytes,
             read_end=chunk.end,
         )
-        scrubbed = redact(raw.decode("utf-8", errors="replace"))
+        # As `/logs` masks a window (the PR #229 review): a JSON line by its
+        # structure -- an agent's session transcript in the workspace is
+        # NDJSON -- the rest by the rules, and the task's literals in both.
+        scrubbed = redact_lines(
+            raw.decode("utf-8", errors="replace"), literals=masking.literals
+        )
         complete = stop >= size
         row.update(
             status="ok",
@@ -1350,6 +1368,73 @@ class CheckpointContent:
         return ArchiveDownload(
             chunks=chunks(), total_bytes=total, filename=filename, headers=headers
         )
+
+
+# --------------------------------------------------------------------------
+# `input.json`: the task's input, served through the task's masker
+# --------------------------------------------------------------------------
+#
+# WHY (the PR #229 review). The worker writes the whole task input to
+# `work/input.json` (`AgentLifecycle._prepare`), and until that review every
+# checkpoint archived `work/` with it in. This view then served it through the
+# rules over its TEXT only: `GET /v1/tasks/{id}` masked a prompt's credential,
+# a list of tokens and a password named in the metadata, and this served all of
+# them in clear from the same task's checkpoint, under `masked 1`.
+#
+# The worker no longer archives it (`agent_worker.checkpoint`; the lifecycle
+# rewrites it from the task document at every attempt's prepare, which runs
+# after the restore). An archive written before that still holds one, and this
+# serves it as `GET /v1/tasks/{id}` serves the input: decoded, masked by the
+# task's own masker -- its structure, the rules, and every literal the input
+# and the metadata named -- and written back the way the worker wrote it
+# (`indent=2`). WHOLE, as one document: a masker needs the whole structure,
+# so there are no windows, and a request for a later offset gets the end.
+
+#: The archive member that holds the task's input: `work/input.json`, archived
+#: relative to `work/`.
+INPUT_MEMBER = "input.json"
+#: Larger than any input the API accepts, with the worker's own additions;
+#: a member past it is served by the ordinary windowed path.
+INPUT_MEMBER_MAX_BYTES = 8 * 1024 * 1024
+
+
+def _serve_input_member(
+    handle: Any,
+    head: bytes,
+    row: dict[str, Any],
+    *,
+    size: int,
+    offset: int,
+    masking: TaskMasking,
+    chunk: int,
+) -> dict[str, Any]:
+    """An archived `input.json`, whole, masked by the task's masker."""
+    text = _span(handle, head, start=0, end=size, chunk=chunk).decode("utf-8", errors="replace")
+    try:
+        document: Any = json.loads(text)
+    except ValueError:
+        document = None
+    if isinstance(document, (dict, list)):
+        masked = masking.masker.json(document)
+    else:
+        masked = masking.masker.text(text, remember=False)
+    first = offset == 0
+    row.update(
+        status="ok",
+        content=masked.text if first else "",
+        offset=0 if first else size,
+        returned_bytes=size if first else 0,
+        next_offset=None,
+        truncated=False,
+        redacted=masked.count > 0,
+        redaction_count=masked.count,
+        detail=(
+            "this is the task's input as the worker wrote it for this attempt, masked "
+            "by the task's own masker and served whole, as GET /v1/tasks/{id} serves "
+            "the input"
+        ),
+    )
+    return row
 
 
 def _span(handle: Any, head: bytes, *, start: int, end: int, chunk: int) -> bytes:

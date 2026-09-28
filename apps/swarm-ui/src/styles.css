@@ -3536,6 +3536,18 @@ table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--tex
     white-space: normal;
     text-align: left;
   }
+  /* AND IT MAY SHRINK (#222, post-deploy QA of 2026-09-26). `white-space:
+     normal` let the note wrap, but the base rule's `flex: none` still sized it
+     at its full one-line width, so beside the Logs view switch at 390px the
+     note ran 74px past the drawer ("masking at read time" cut at right=464).
+     A flex item that may shrink and has no min-content floor wraps inside the
+     room its row leaves; `overflow-wrap` lets a long attempt label break. */
+  .att-sub-head > .ctl-card-note,
+  .ctl-toolbar > .ctl-card-note {
+    flex-shrink: 1;
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
   /* `.ctl-seg > button { min-height: 44px }` LIVED HERE AND NEVER APPLIED
      (CH-8). This block sits ~2,000 lines ABOVE the primitive's own
      `.ctl-seg > button { min-height: 26px }`; a media query adds nothing to
@@ -11502,6 +11514,19 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 .ov-group .ctl-card-foot {
   margin: var(--ctl-s3) 0 0;
   padding: 0;
+  background: none;
+  border-radius: 0;
+}
+/* ONE FOOT SHAPE FOR THE OVERVIEW, AND IT IS THE CAPTION (#97). Headroom's
+   feet are captions for the reason above, and they stay two; Running and
+   Spend drew full-bleed --surface-2 bars, so the three panels' feet were two
+   families side by side in one grid. The panels take the caption rather than
+   Headroom taking the bar, because the bar is what cannot be drawn twice in
+   one box. The caption keeps the card's inset, so its text lines up with the
+   head and the body above it. */
+.ov-running .ctl-card-foot,
+.ov-spend .ctl-card-foot {
+  padding: 0 var(--ctl-pad-chrome) var(--ctl-pad-chrome);
   background: none;
   border-radius: 0;
 }

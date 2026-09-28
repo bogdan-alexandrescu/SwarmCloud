@@ -709,28 +709,39 @@ function markdownBlocks(source: string): ReactNode[] {
       continue
     }
 
+    // THE SOURCE'S NUMBER IS KEPT (#222, post-deploy QA of 2026-09-26). A
+    // numbered list whose items are parted by blank lines or by a line that
+    // is not an item -- the loose list an agent's answer usually is -- comes
+    // out as several lists, and each `<ol>` began at 1, so `1. 2. 3.` read
+    // `1. 1. 1.`. Each list now starts at its first item's own number, as
+    // CommonMark does; the numbers after it follow from there.
     const bulletRe = /^\s*[-*+]\s+(.*)$/
-    const numberRe = /^\s*\d+[.)]\s+(.*)$/
+    const numberRe = /^\s*(\d{1,9})[.)]\s+(.*)$/
     const bullet = bulletRe.exec(line)
     const numbered = numberRe.exec(line)
     if (bullet !== null || numbered !== null) {
       flushParagraph()
       const ordered = bullet === null
       const itemRe = ordered ? numberRe : bulletRe
+      const start = numbered !== null && ordered ? Number(group(numbered, 1)) : 1
       const items: string[] = []
       while (i < lines.length) {
         const item = itemRe.exec(at(i))
         if (item === null) break
-        items.push(group(item, 1))
+        items.push(group(item, ordered ? 2 : 1))
         i += 1
       }
-      const List = ordered ? 'ol' : 'ul'
+      const body = items.map((text, n) => <li key={n}>{inline(text)}</li>)
       out.push(
-        <List className="art-list" key={key++}>
-          {items.map((text, n) => (
-            <li key={n}>{inline(text)}</li>
-          ))}
-        </List>,
+        ordered ? (
+          <ol className="art-list" key={key++} start={start !== 1 ? start : undefined}>
+            {body}
+          </ol>
+        ) : (
+          <ul className="art-list" key={key++}>
+            {body}
+          </ul>
+        ),
       )
       continue
     }

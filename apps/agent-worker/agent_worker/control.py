@@ -894,29 +894,43 @@ class ControlPlane:
             merge=True,
         )
 
-    def record_cpu_usage(self, fields: dict[str, float]) -> None:
-        """The attempt's CPU, onto the attempt, as typed fields (request #15).
+    def record_cpu_usage(self, fields: Mapping[str, Any]) -> None:
+        """The attempt's CPU, onto the attempt, as typed fields (requests #15 and #26).
 
         `fields` is `metrics.attempt_cpu_fields`: the attempt's own figures,
         every runner combined, with anything not measured already left out.
-        Only the four keys the frozen `Attempt` declares are written, and only
-        as numbers -- `bool` excluded, for the reason `record_spend` gives. A
-        key that is absent is left as it is on the document: the write is a
-        merge, so a null would erase a figure an earlier write recorded.
+        Only the keys the frozen `Attempt` declares are written: the four
+        figures, and only as numbers -- `bool` excluded, for the reason
+        `record_spend` gives -- and `cpu_limit_source`, only as one of
+        `metrics.CPU_LIMIT_SOURCES`. A key that is absent is left as it is on
+        the document: the write is a merge, so a null would erase a figure an
+        earlier write recorded.
+
+        `cpu_measured_at` (request #26, accepted on #184, 2026-09-26) is
+        stamped HERE, on every write that carries a figure, with this worker's
+        clock: it is when the reading was written, which is what a reader
+        ages. It is never written without a figure beside it.
 
         The attempt document is this attempt's own. A superseded attempt still
         writes it, as it writes its memory peak -- the fence guards the task,
         its lease and its event stream, which this does not touch.
         """
-        from .metrics import ATTEMPT_CPU_FIELDS
+        from .metrics import ATTEMPT_CPU_FIELDS, CPU_LIMIT_SOURCES
 
         doc: dict[str, Any] = {
             key: float(fields[key])
             for key in ATTEMPT_CPU_FIELDS
             if isinstance(fields.get(key), (int, float)) and not isinstance(fields.get(key), bool)
         }
-        if not doc:
+        # A FIGURE, not a limit alone: a limit with nothing measured would be
+        # dated as a reading the attempt never took (`attempt_cpu_fields`
+        # never builds one, and this does not write one either).
+        if not any(key != "cpu_limit_cores" for key in doc):
             return
+        source = fields.get("cpu_limit_source")
+        if source in CPU_LIMIT_SOURCES and "cpu_limit_cores" in doc:
+            doc["cpu_limit_source"] = source
+        doc["cpu_measured_at"] = utcnow()
         doc["tenant_id"] = self.tenant_id
         self._attempt_ref().set(doc, merge=True)
 

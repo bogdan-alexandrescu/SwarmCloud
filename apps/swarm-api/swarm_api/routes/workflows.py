@@ -48,7 +48,13 @@ def create_workflow(
         # spend a read per step to be told what this request just decided. The
         # response says `state_source: "stored"`, which is true and is the point
         # of that field.
-        "workflow": workflow_to_api(workflow),
+        #
+        # Each step's input is masked by its own task's masker (the PR #229
+        # review): the tasks this request just built carry the workflow's
+        # metadata, and the step copy must mask what the task copy masks.
+        "workflow": workflow_to_api(
+            workflow, step_tasks={task.id: task for task in submission.tasks}
+        ),
         # Echoed so the caller sees what was ACCEPTED rather than what they
         # sent: a submission that named neither field gets the defaults back,
         # and an `integrate` workflow is told which step will open the one PR.
@@ -72,8 +78,12 @@ def list_workflows(
     )
     results, report = ctx.rollups.for_workflows(tenant_id, page.items)
     return {
+        # Each step's input is masked by its own task's masker, from the step
+        # tasks the rollup already read (the PR #229 review); a step whose task
+        # the read budget left unread borrows a sibling's, and a workflow none
+        # of whose tasks were read serves its step inputs as null.
         "workflows": [
-            workflow_to_api(r.workflow, r.to_api()) for r in results
+            workflow_to_api(r.workflow, r.to_api(), step_tasks=r.step_tasks) for r in results
         ],
         "next_page_token": page.next_page_token,
         "tenant_id": tenant_id,
@@ -104,7 +114,12 @@ def get_workflow(
     )
 
     return {
-        "workflow": workflow_to_api(workflow, result.to_api()),
+        # The step copies of each input are masked by the tasks' own maskers,
+        # so `workflow.steps[i].input` and `tasks[i].input` agree (the PR #229
+        # review), from the tasks this route already loaded.
+        "workflow": workflow_to_api(
+            workflow, result.to_api(), step_tasks={t.id: t for t in tasks.items}
+        ),
         # Read back off the tasks, which is where the options are stored; the
         # frozen `Workflow` dataclass has no metadata field to hold them. The
         # list route has no equivalent because it loads no tasks.

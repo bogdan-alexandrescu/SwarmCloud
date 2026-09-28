@@ -584,7 +584,7 @@ def _run_lane(worker_factory: Any, monkeypatch: pytest.MonkeyPatch, **config: An
 
 @needs_git
 def test_a_repository_step_runs_in_its_checkout_like_a_local_lane(
-    db, store, worker_factory, lane_agent, origin, local_urls, monkeypatch
+    db, store, worker_factory, lane_agent, origin, local_urls, monkeypatch, runner_inputs
 ):
     _seed_lane(
         db,
@@ -625,21 +625,26 @@ def test_a_repository_step_runs_in_its_checkout_like_a_local_lane(
     assert "artifacts" not in patch, patch
 
     # 4. The checkpoint holds the checkout, the exclude entry that hides the
-    #    link, and not the link.
+    #    link, and not the link -- and no input.json (owner decision
+    #    2026-09-27, #229): no checkpoint archive holds the task's input,
+    #    under any label.
     with _final_archive(store) as archive:
         members = archive.getnames()
         assert "repo/CLAUDE.md" in members
         assert "repo/artifacts" not in members
+        assert "input.json" not in members
         exclude = archive.extractfile("repo/.git/info/exclude")
         assert exclude is not None
         assert "/artifacts" in exclude.read().decode("utf-8").splitlines()
-        runner_input = archive.extractfile("input.json")
-        assert runner_input is not None
-        assert "model" not in json.loads(runner_input.read())
+    # The runner's own input, as the worker wrote it for this attempt,
+    # captured at the moment of each checkpoint (`runner_inputs`,
+    # `tests/unit/worker/conftest.py`) -- there is no archived input.json to
+    # read it back from any more.
+    assert "model" not in runner_inputs[-1]
 
 
 def test_a_callers_input_model_never_reaches_input_json(
-    db, store, worker_factory, log_stream
+    db, store, worker_factory, log_stream, runner_inputs
 ):
     """The worker's half of the refusal, for a task written before the API
     refused the key or by any path that does not go through the API. The
@@ -653,17 +658,17 @@ def test_a_callers_input_model_never_reaches_input_json(
 
     assert worker.run() == ExitCode.OK
     with _final_archive(store) as archive:
-        member = archive.extractfile("input.json")
-        assert member is not None
-        runner_input = json.loads(member.read())
-    assert "model" not in runner_input
+        # No checkpoint archive holds the task's input, under any label
+        # (owner decision 2026-09-27, #229).
+        assert "input.json" not in archive.getnames()
+    assert "model" not in runner_inputs[-1]
     assert len(_warnings_naming(log_stream, "input.model")) == 1, (
         "the caller's input.model was dropped without a word"
     )
 
 
 def test_a_callers_own_staged_inputs_never_reaches_input_json(
-    db, store, worker_factory, log_stream
+    db, store, worker_factory, log_stream, runner_inputs
 ):
     """`staged_inputs` becomes a line in the prompt, in the platform's voice,
     naming files earlier steps gave this one. Only what the worker staged may
@@ -679,8 +684,8 @@ def test_a_callers_own_staged_inputs_never_reaches_input_json(
 
     assert worker.run() == ExitCode.OK
     with _final_archive(store) as archive:
-        member = archive.extractfile("input.json")
-        assert member is not None
-        runner_input = json.loads(member.read())
-    assert "staged_inputs" not in runner_input
+        # No checkpoint archive holds the task's input, under any label
+        # (owner decision 2026-09-27, #229).
+        assert "input.json" not in archive.getnames()
+    assert "staged_inputs" not in runner_inputs[-1]
     assert len(_warnings_naming(log_stream, "input.staged_inputs")) == 1

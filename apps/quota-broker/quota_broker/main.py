@@ -18,6 +18,7 @@ import logging
 import os
 import re
 import uuid
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -61,7 +62,7 @@ from .accounts import (
     validate_label,
 )
 from .accountstore import COLLECTION as ACCOUNTS_COLLECTION
-from .accountstore import AccountStore
+from .accountstore import _MALFORMED, AccountStore, MalformedAccountError
 from .credentials import REFRESH_SUFFIX, CredentialRefresher
 from .oauth import HttpTokenEndpoint
 from .publishledger import FirestorePublishLedger, InMemoryPublishLedger
@@ -518,6 +519,53 @@ def _hold_payload(holds: list[Hold]) -> dict[str, Any]:
     return {"holds": holds_to_firestore(holds), "assigned": len(holds)}
 
 
+def _unreadable_reports(data: dict[str, Any]) -> dict[str, Any]:
+    """`unreadable_by` as a map, or empty when the document holds anything else.
+
+    The hold paths read the RAW document and never decode an `Account` (#243),
+    so they meet whatever shape is stored. This field is advisory -- it only
+    steers `choose()` away for a while -- and a string or a list where the map
+    should be must not stop a hold being given back or pruned.
+    """
+    raw = data.get("unreadable_by")
+    return dict(raw) if isinstance(raw, dict) else {}
+
+
+def _raw_account(db: Any, account_id: str) -> dict[str, Any] | None:
+    """One account document's raw fields, or None when it does not exist.
+
+    NOT `AccountStore.get`, deliberately. That decodes the whole `Account` and
+    raises `MalformedAccountError` on a document the decoder cannot read,
+    which is right for a route that renders or edits the account -- and wrong
+    for giving a hold back, which needs only `holds`, the owner and the
+    lending list (#243). Decoding first is what froze a bad document's holds:
+    the worker's release answered 500 and the hold could only age out, and the
+    sweep that ages them out could not see the document either.
+    """
+    snap = db.collection(ACCOUNTS_COLLECTION).document(account_id).get()
+    if not getattr(snap, "exists", False):
+        return None
+    return snap.to_dict() or {}
+
+
+def _raw_may_serve(data: dict[str, Any], tenant_id: str) -> bool:
+    """`Account.may_serve`, over the raw fields of a document.
+
+    STRICTER on shape than the decoder, never looser: an owner that is not a
+    string, or a `lend_to` that is not a list, serves nobody but the platform.
+    A string `lend_to` is the case that matters -- `tenant in "research"` is a
+    substring test, and a malformed document must not lend itself to every
+    tenant whose id happens to be inside another's.
+    """
+    owner = data.get("owner_tenant")
+    if isinstance(owner, str) and owner and tenant_id == owner:
+        return True
+    lend_to = data.get("lend_to")
+    return isinstance(lend_to, (list, tuple)) and tenant_id in [
+        t for t in lend_to if isinstance(t, str)
+    ]
+
+
 def acquire_hold(
     db: Any,
     account_id: str,
@@ -617,7 +665,7 @@ def release_hold(
         remaining = [h for h in holds if h not in held]
         payload = _hold_payload(remaining)
         if unusable and held:
-            reports = dict(data.get("unreadable_by") or {})
+            reports = _unreadable_reports(data)
             reports[held[0].tenant_id or (tenant_id or "")] = now
             payload["unreadable_by"] = reports
         txn.update(ref, payload)
@@ -656,16 +704,27 @@ def prune_holds(
         data = snap.to_dict() or {}
         holds = holds_from_firestore(data.get("holds"))
         live = [h for h in holds if not h.is_expired(now)]
+        recorded = _unreadable_reports(data)
         reports = {
             tenant: when
-            for tenant, when in (data.get("unreadable_by") or {}).items()
+            for tenant, when in recorded.items()
             if isinstance(when, datetime)
             and now - (when if when.tzinfo else when.replace(tzinfo=timezone.utc))
             <= forget_unreadable_after
         }
         dropped = len(holds) - len(live)
-        stale_reports = len(data.get("unreadable_by") or {}) - len(reports)
-        if not dropped and not stale_reports and data.get("assigned") == len(live):
+        stale_reports = len(recorded) - len(reports)
+        # A non-map `unreadable_by` is rewritten as the empty map it reads as,
+        # the same self-correction `assigned` gets below.
+        reshaped = data.get("unreadable_by") is not None and not isinstance(
+            data.get("unreadable_by"), dict
+        )
+        if (
+            not dropped
+            and not stale_reports
+            and not reshaped
+            and data.get("assigned") == len(live)
+        ):
             return 0
         payload = _hold_payload(live)
         payload["unreadable_by"] = reports
@@ -690,18 +749,46 @@ def _prune_all_holds(db: Any, store: Any, now: datetime) -> dict[str, Any]:
     read-modify-write against a document a live assign or release may be
     touching at the same moment, and a batch would have to lose one of them.
     The pool is tens of accounts, not thousands.
+
+    EVERY DOCUMENT, NOT `store.list()` (#243). The listing leaves a malformed
+    document out by design (#180), and walking it meant the one backstop for a
+    killed worker's hold never visited that document: its holds stayed counted
+    until someone repaired it by hand. `prune_holds` needs only the raw
+    `holds`, so the sweep enumerates document ids straight from the
+    collection and prunes the readable and the unreadable alike. The readable
+    list is still read, for the alarm below, and it is also what names each
+    unreadable document by id and exception class (`accountstore._decode`).
     """
     reclaimed = 0
     touched = 0
     accounts = store.list()
-    for account in accounts:
-        dropped = prune_holds(db, account.account_id, now=now)
+    readable = [account.account_id for account in accounts]
+    streamed = [str(doc.id) for doc in db.collection(ACCOUNTS_COLLECTION).stream()]
+    unreadable = sorted(set(streamed) - set(readable))
+    for account_id in [*readable, *unreadable]:
+        try:
+            dropped = prune_holds(db, account_id, now=now)
+        except _MALFORMED as exc:
+            # One document whose hold fields themselves cannot be read must not
+            # stop the rest of the pool being swept. The id and the CLASS only:
+            # `str(exc)` can quote a field value (see `MalformedAccountError`).
+            log.warning(
+                "could not prune the holds on an account document",
+                extra={"account_id": account_id, "error": type(exc).__name__},
+            )
+            continue
         if dropped:
             reclaimed += dropped
             touched += 1
             log.warning(
                 "reclaimed assignments whose worker never released them",
-                extra={"account_id": account.account_id, "reclaimed": dropped},
+                extra={
+                    "account_id": account_id,
+                    "reclaimed": dropped,
+                    # Says the reclaim happened on a document nothing else can
+                    # read, so the operator fixing it knows its count is right.
+                    "unreadable": account_id in unreadable,
+                },
             )
 
     # THE ONE ALARM FOR A POOL NOTHING CAN REACH.
@@ -1188,6 +1275,33 @@ def create_app(
         return JSONResponse(
             status_code=422,
             content={"code": "validation_failed", "message": str(exc)},
+        )
+
+    @app.exception_handler(MalformedAccountError)
+    async def malformed_account_handler(
+        request: Request, exc: MalformedAccountError
+    ) -> Response:
+        """One unreadable document fails the one request that touched it.
+
+        500, because the fault is the broker's own stored data and not the
+        request: a 4xx would send the caller looking for something it did
+        wrong, and a retry will not help either way. NAMED, because a bare
+        500 says nothing an operator can act on, and this one can say which
+        document to go and fix. The body is the error's own message -- the
+        id and the exception class, never a field value (see
+        `MalformedAccountError`). Every other account keeps answering: the
+        listing skips this document and the single-account routes only ever
+        read the one they were asked about.
+        """
+        from fastapi.responses import JSONResponse
+
+        return JSONResponse(
+            status_code=500,
+            content={
+                "code": "account_malformed",
+                "account_id": exc.account_id,
+                "message": str(exc),
+            },
         )
 
     @app.get("/healthz")
@@ -1915,7 +2029,13 @@ def create_app(
             }
         assignment_id, assigned = held
 
-        current = store.get(chosen.account_id) or chosen
+        # NOTHING BELOW MAY FAIL, because the hold above is committed (#243).
+        # This used to re-read the account with `store.get`, which raises on a
+        # document that went malformed since the listing -- answering 500 over
+        # a hold whose id the caller never learned, so nothing could release
+        # it. Everything the response needs is already here: the account as
+        # `choose()` saw it, and the count the hold's own transaction wrote.
+        current = replace(chosen, assigned=assigned, last_assigned_at=now)
         log.info(
             "assigned an account",
             extra={
@@ -1954,7 +2074,8 @@ def create_app(
     ) -> dict[str, Any]:
         """Give one named assignment back. Idempotent.
 
-        TWO CHECKS, NOT ONE. `may_serve` still gates the route -- an account
+        TWO CHECKS, NOT ONE. `may_serve` (as `_raw_may_serve`, over the raw
+        document -- see `_raw_account`) still gates the route -- an account
         lent from tenant A to tenant B is assigned to B's agents, so B is who
         releases it, and requiring the OWNER would leave every borrowed
         assignment counted forever and the account sorting last in `choose()`
@@ -1973,8 +2094,12 @@ def create_app(
         expiry, pruned by the quota sweep. It is NOT covered by the reconciler,
         which has no account code; this docstring used to say otherwise.
         """
-        store = _accounts(request)
-        account = store.get(account_id)
+        _accounts(request)  # refuse early if the pool is not configured
+        db = request.app.state.broker.db
+        # The RAW document, never the decoded `Account` (#243): a hold on a
+        # document that has since gone malformed must still be given back, and
+        # this route needs only the holds, the owner and the lending list.
+        account = _raw_account(db, account_id)
         if account is None:
             # Removed while an agent was still on it. There is no hold left to
             # give back, and refusing would make the worker's exit path look
@@ -1982,7 +2107,6 @@ def create_app(
             return {
                 "account_id": account_id,
                 "assigned": None,
-                "account": None,
                 "reason": "account_removed",
             }
 
@@ -1991,7 +2115,9 @@ def create_app(
         except BrokerAuthError:
             request.app.state.metrics.auth_failures.labels(kind="token").inc()
             raise
-        if not is_platform and not (caller_tenant and account.may_serve(caller_tenant)):
+        if not is_platform and not (
+            caller_tenant and _raw_may_serve(account, caller_tenant)
+        ):
             request.app.state.metrics.auth_failures.labels(kind="tenant_mismatch").inc()
             raise BrokerAuthError(
                 "caller may not release an account it could not have been assigned"
@@ -1999,7 +2125,7 @@ def create_app(
 
         now = datetime.now(timezone.utc)
         assigned, was_held = release_hold(
-            request.app.state.broker.db,
+            db,
             account_id,
             assignment_id=body.assignment_id,
             tenant_id=None if is_platform else caller_tenant,
@@ -2007,21 +2133,32 @@ def create_app(
             unusable=body.unusable,
         )
         if body.unusable and was_held:
+            owner = account.get("owner_tenant")
+            owner = owner if isinstance(owner, str) else ""
             log.error(
                 "a worker could not read the account it was assigned",
                 extra={
                     "account_id": account_id,
                     "tenant_id": caller_tenant,
-                    "owner_tenant": account.owner_tenant,
-                    "borrowed": bool(caller_tenant)
-                    and caller_tenant != account.owner_tenant,
+                    "owner_tenant": owner,
+                    "borrowed": bool(caller_tenant) and caller_tenant != owner,
                     "detail": body.unusable,
                 },
             )
+        # NO RENDERED ACCOUNT HERE, deliberately. This used to answer with
+        # `account_to_api(store.get(account_id))` as a courtesy -- but
+        # `release_hold`'s own transaction just rewrote `holds` and `assigned`
+        # on this document (`_hold_payload`, always, whether or not anything
+        # was held), and that rewrite can be exactly what turns a malformed
+        # document decodable: a document bad only in its `assigned` field
+        # decodes clean the moment `assigned` is freshly written, while every
+        # OTHER field the document was planted or hand-edited with -- `reason`
+        # not least -- decodes right along with it and reaches this response.
+        # The caller (`agent_worker.accountlease`) only ever reads `assigned`;
+        # nothing here needs a rendered account, so nothing here reads one.
         return {
             "account_id": account_id,
             "assigned": assigned,
-            "account": account_to_api(store.get(account_id) or account),
             # "" when the hold was found and released; `not_held` when it was
             # not, which is what a duplicate release and a forged id both look
             # like. Not an error either way -- but not silence either.
