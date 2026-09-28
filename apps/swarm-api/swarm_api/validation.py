@@ -221,8 +221,17 @@ class InvalidInput(ValidationFailed):
 PROMPT_INPUT_KEY = "prompt"
 
 
+#: The input that names an issue in the task's own repository (contract
+#: request 28, #265). Its one rule beyond its declared bounds is here.
+ISSUE_INPUT_KEY = "issue"
+
+
 def validate_runner_input(
-    profile: RunnerProfile, payload: Mapping[str, Any], *, step_id: str | None = None
+    profile: RunnerProfile,
+    payload: Mapping[str, Any],
+    *,
+    step_id: str | None = None,
+    repository_url: str | None,
 ) -> None:
     """Refuse an `input` key the profile does not declare, or a value out of its bounds.
 
@@ -247,10 +256,26 @@ def validate_runner_input(
     of #213 found this function returning before it asked, while the shared
     rule refused every key for the same profiles: two answers to one question.
     The size is `validate_input_size`'s, which every caller runs first.
+
+    `issue` NEEDS A REPOSITORY (#265). It names an issue in the task's own
+    `repository_url` -- a workflow's, for a step -- and the worker fetches it
+    from there, so without one it names nothing and would fail the attempt
+    after admission. Required as a keyword, so no caller can forget to pass it.
     """
     rest = {key: value for key, value in payload.items() if key != PROMPT_INPUT_KEY}
     try:
         check_inputs(profile, rest)
+        if (
+            ISSUE_INPUT_KEY in rest
+            and ISSUE_INPUT_KEY in (profile.inputs or {})
+            and not (repository_url or "").strip()
+        ):
+            raise InputRefused(
+                f"input {ISSUE_INPUT_KEY!r} names an issue in the task's repository, "
+                "and this submission has no repository_url",
+                key=ISSUE_INPUT_KEY,
+                expected="an issue in the task's repository_url",
+            )
     except InputRefused as refused:
         # Only a profile that declares can refuse, so `inputs` is a mapping here.
         declared = profile.inputs or {}

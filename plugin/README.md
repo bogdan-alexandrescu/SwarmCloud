@@ -453,7 +453,12 @@ spend one, and the step parked until cancelled, which is why 0.5.2 withheld
 both keys. `exit_code` refuses the codes the worker reads as a success, a rate
 limit, a refused credential and a cancellation. Every key's kind and bounds
 are in the table below, which is generated from the catalogue rather than
-restated here. `claude-code` and `codex` declare none and take only the prompt.
+restated here. `claude-code` and `codex` declare one input, `issue`: the
+number of a GitHub issue in the repository the step clones (contract request
+28). The worker fetches its title, body and comments read-only into
+`issue.md` in the workspace, beside the checkout and never among the
+artifacts, and names that file in the prompt, so a prompt need not restate
+the issue. A step that sends it with no repository is refused by the API.
 A key the profile does not declare is refused by name, never dropped, and
 never an image, a command, a resource spec, a backend or a model: the model a
 `claude-code` agent runs is its Job's own `MODEL`, set in Terraform, and the
@@ -484,6 +489,29 @@ What `mock` declares, as `swarm_profiles` lists it:
 | `quota_exhausted` | boolean | park the first attempt on a simulated provider rate limit; the next one runs |
 | `retry_after_seconds` | integer 1..3600 | the retry-after that simulated rate limit reports |
 <!-- /runner-inputs:mock -->
+
+What `claude-code` and `codex` declare, as `swarm_profiles` lists it:
+
+<!-- runner-inputs:claude-code generated from RUNNER_PROFILES["claude-code"].inputs; tests/unit/mcp/test_runner_input_prose.py fails when it differs -->
+| input | kind and bounds | what the claude-code runner does with it |
+|---|---|---|
+| `issue` | integer 1..999999 | an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt |
+<!-- /runner-inputs:claude-code -->
+
+<!-- runner-inputs:codex generated from RUNNER_PROFILES["codex"].inputs; tests/unit/mcp/test_runner_input_prose.py fails when it differs -->
+| input | kind and bounds | what the codex runner does with it |
+|---|---|---|
+| `issue` | integer 1..999999 | an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt |
+<!-- /runner-inputs:codex -->
+
+`--input issue=<number>` on `swarm dispatch`, or `"inputs": {"issue": <number>}`
+on a step, points a `claude-code` step at an issue of its repository. The
+issue's text is data for the agent: the worker scrubs it of every secret the
+attempt holds and reads nothing in it as an instruction to the platform. The
+tenant's forge token is used for the fetch in the worker's memory only, as for
+the clone, and never reaches the workspace. A fetch that fails -- no such
+issue, a pull request's number, a repository the token cannot read -- fails
+the attempt before the agent starts, with `INPUTS_UNAVAILABLE`.
 
 ## A task's input comes back masked
 
