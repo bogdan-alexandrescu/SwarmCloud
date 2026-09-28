@@ -61,7 +61,7 @@ from .accounts import (
     validate_label,
 )
 from .accountstore import COLLECTION as ACCOUNTS_COLLECTION
-from .accountstore import AccountStore, MalformedAccountError
+from .accountstore import AccountStore
 from .credentials import REFRESH_SUFFIX, CredentialRefresher
 from .oauth import HttpTokenEndpoint
 from .publishledger import FirestorePublishLedger, InMemoryPublishLedger
@@ -1188,33 +1188,6 @@ def create_app(
         return JSONResponse(
             status_code=422,
             content={"code": "validation_failed", "message": str(exc)},
-        )
-
-    @app.exception_handler(MalformedAccountError)
-    async def malformed_account_handler(
-        request: Request, exc: MalformedAccountError
-    ) -> Response:
-        """One unreadable document fails the one request that touched it.
-
-        500, because the fault is the broker's own stored data and not the
-        request: a 4xx would send the caller looking for something it did
-        wrong, and a retry will not help either way. NAMED, because a bare
-        500 says nothing an operator can act on, and this one can say which
-        document to go and fix. The body is the error's own message -- the
-        id and the exception class, never a field value (see
-        `MalformedAccountError`). Every other account keeps answering: the
-        listing skips this document and the single-account routes only ever
-        read the one they were asked about.
-        """
-        from fastapi.responses import JSONResponse
-
-        return JSONResponse(
-            status_code=500,
-            content={
-                "code": "account_malformed",
-                "account_id": exc.account_id,
-                "message": str(exc),
-            },
         )
 
     @app.get("/healthz")

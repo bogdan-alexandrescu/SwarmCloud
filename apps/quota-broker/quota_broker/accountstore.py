@@ -46,70 +46,6 @@ log = logging.getLogger(__name__)
 COLLECTION = "accounts"
 
 
-#: What `Account.from_firestore` raises on a document Firestore stored and the
-#: decoder cannot read, and NOTHING ELSE. Named once so the listing and every
-#: single-account read catch the same set.
-#:
-#:   KeyError        a required field is missing (`label`, `owner_tenant`)
-#:   ValueError      a field holds a value its type refuses (`state: "bogus"`)
-#:   TypeError       a field holds the wrong type (`assigned: null` reaches
-#:                   `int(None)`)
-#:   AttributeError  a map is not a map (`windows: "x"` has no `.items()`)
-#:
-#: NOT a bare `except Exception`, deliberately. Those four are what a bad
-#: DOCUMENT produces; anything else -- a Firestore outage, a permission error,
-#: a bug in the decoder that raises for every document -- is not one account
-#: being unreadable, and skipping it would turn "the store is down" into an
-#: empty pool that reports every document as malformed. That failure must
-#: stay loud and reach the caller.
-_MALFORMED = (KeyError, ValueError, TypeError, AttributeError)
-
-
-class MalformedAccountError(AccountError):
-    """An account document exists and cannot be decoded into an `Account`.
-
-    One typed error for the four exceptions in `_MALFORMED`, so that a caller
-    handling one account can say "that document is broken" without knowing
-    how the decoder happens to fail on it -- and so that the listing and the
-    single-account reads cannot drift into catching different sets, which is
-    how #180 happened.
-
-    Carries the DOCUMENT ID and the exception CLASS, and never the exception's
-    message: `str(exc)` on a ValueError quotes the value it refused, and an
-    account document holds credential metadata (the secret's name, lending,
-    the operator's reason). The id is enough to find the document; the class
-    is enough to know what shape to look for.
-    """
-
-    def __init__(self, account_id: str, error: str) -> None:
-        self.account_id = account_id
-        self.error = error
-        super().__init__(
-            f"account document {account_id!r} is malformed ({error}); "
-            "fix or remove it in Firestore"
-        )
-
-
-def _decode(account_id: str, data: dict[str, Any]) -> Account:
-    """`Account.from_firestore`, with a malformed document made one typed error.
-
-    Logs here rather than at each caller, so every path that meets a bad
-    document says so once, loudly, in the same words.
-    """
-    try:
-        return Account.from_firestore(data)
-    except _MALFORMED as exc:
-        # See `_MALFORMED` for why these four and not `Exception`.
-        error = type(exc).__name__
-        log.warning(
-            "an account document is malformed and cannot be read",
-            extra={"account_id": account_id, "error": error},
-        )
-        # `from None`: the chained original would put `str(exc)` -- which can
-        # quote a field value -- back into any traceback that logs this.
-        raise MalformedAccountError(account_id, error) from None
-
-
 @dataclass(frozen=True)
 class AccountListing:
     """Every account that could be read, AND the documents that could not.
@@ -157,14 +93,17 @@ class AccountStore:
         out: list[Account] = []
         unreadable: list[str] = []
         for doc in self._db.collection(COLLECTION).stream():
+            data = doc.to_dict() or {}
             try:
-                out.append(_decode(str(doc.id), doc.to_dict() or {}))
-            except MalformedAccountError:
+                out.append(Account.from_firestore(data))
+            except (KeyError, ValueError) as exc:
                 # One malformed document must not hide the rest of the fleet --
                 # and must not hide itself either. See `AccountListing`.
-                # `_decode` has logged it; only the four exceptions a bad
-                # document produces arrive here (see `_MALFORMED`).
                 unreadable.append(str(doc.id))
+                log.warning(
+                    "skipping an unreadable account document",
+                    extra={"account_id": doc.id, "error": str(exc)},
+                )
         return AccountListing(accounts=out, unreadable=sorted(unreadable))
 
     def list(self) -> list[Account]:
@@ -181,7 +120,7 @@ class AccountStore:
         snap = self._db.collection(COLLECTION).document(account_id).get()
         if not getattr(snap, "exists", False):
             return None
-        return _decode(account_id, snap.to_dict() or {})
+        return Account.from_firestore(snap.to_dict() or {})
 
     def for_tenant(self, tenant_id: str) -> list[Account]:
         """Accounts this tenant may use: its own, plus anything lent to it."""
@@ -216,10 +155,7 @@ class AccountStore:
             # Re-registering is the normal path for changing who an account is
             # lent to. The readings and state are preserved: re-registering must
             # not silently un-pause an account an operator paused.
-            # Raises MalformedAccountError BEFORE the `set` below, which is the
-            # point: a `set` built from a document nobody could read would
-            # replace its holds and state with defaults.
-            current = _decode(account_id, existing.to_dict() or {})
+            current = Account.from_firestore(existing.to_dict() or {})
             updated = Account(
                 account_id=account_id,
                 owner_tenant=owner_tenant,
@@ -307,7 +243,7 @@ class AccountStore:
                 extra={"account_id": account_id},
             )
             return None
-        current = _decode(account_id, snap.to_dict() or {})
+        current = Account.from_firestore(snap.to_dict() or {})
         if current.state is AccountState.REAUTH_REQUIRED:
             return current
         ref.update(
@@ -340,7 +276,7 @@ class AccountStore:
         snap = ref.get()
         if not getattr(snap, "exists", False):
             return None
-        current = _decode(account_id, snap.to_dict() or {})
+        current = Account.from_firestore(snap.to_dict() or {})
         if current.state is not AccountState.REAUTH_REQUIRED:
             return current
         restored = current.state_before_reauth or AccountState.AVAILABLE
@@ -383,7 +319,7 @@ class AccountStore:
                 extra={"account_id": account_id},
             )
             return None
-        current = _decode(account_id, snap.to_dict() or {})
+        current = Account.from_firestore(snap.to_dict() or {})
         updated = current.with_reading(windows, observed_at)
         if updated is current:
             return current
@@ -410,4 +346,4 @@ class AccountStore:
         return account.secret or secret_name(account.owner_tenant, account.label)
 
 
-__all__ = ["AccountListing", "AccountStore", "COLLECTION", "MalformedAccountError"]
+__all__ = ["AccountStore", "COLLECTION"]
