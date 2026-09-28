@@ -412,6 +412,52 @@
         "K0004K0004"
       ],
       "count": 2
+    },
+    {
+      "name": "control-wide-prose-reauth",
+      "text": "There was a problem refreshing your current auth tokens: Reauthentication required.",
+      "expected": "There was a problem refreshing your current auth tokens: Reauthentication required.",
+      "never": [],
+      "count": 0
+    },
+    {
+      "name": "control-wide-status-word-secrets",
+      "text": "Found 3 secrets: none leaked",
+      "expected": "Found 3 secrets: none leaked",
+      "never": [],
+      "count": 0
+    },
+    {
+      "name": "control-wide-prose-no-value",
+      "text": "Found 3 secrets",
+      "expected": "Found 3 secrets",
+      "never": [],
+      "count": 0
+    },
+    {
+      "name": "control-wide-count-colon-unmasked",
+      "text": "secrets: 3",
+      "expected": "secrets: 3",
+      "never": [],
+      "count": 0
+    },
+    {
+      "name": "control-wide-key-suffix-digit-masked",
+      "text": "SECRET_KEY=1234567",
+      "expected": "SECRET_KEY=********",
+      "never": [
+        "1234567"
+      ],
+      "count": 1
+    },
+    {
+      "name": "authorization-bearer-google-oauth-prefix",
+      "text": "Authorization: Bearer ya29.a0AfB_1234567890abcdefghijklmnop",
+      "expected": "Authorization: ******** ya29.********",
+      "never": [
+        "1234567890abcdefghijklmnop"
+      ],
+      "count": 2
     }
   ]
 }
