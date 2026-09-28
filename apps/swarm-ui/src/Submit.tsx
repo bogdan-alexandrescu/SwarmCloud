@@ -1,6 +1,14 @@
 import { useMemo, useState, type FormEvent, type ReactNode } from 'react'
 import { loadCapacity } from './api'
-import { CeilingTag, ceilingFigure } from './Blockers'
+import {
+  CeilingTag,
+  blockerVerdict,
+  ceilingFigure,
+  classUnits,
+  useResourceClasses,
+  verdictCopy,
+  verdictNeedsAPerson,
+} from './Blockers'
 import { DispatchChoice, DispatchFacts, type DispatchDraft } from './Dispatch'
 import { isPaused, type ApiError } from './fetch'
 import { HELP } from './help'
@@ -10,10 +18,7 @@ import { FailedPanel, Screen } from './Shell'
 import {
   DEFAULT_CARRIER,
   DEFAULT_STRATEGY,
-  blockerCeiling,
-  ceilingCopy,
   headroomFor,
-  needsAPerson,
   requiredInputKeys,
   type Capacity,
   type Pool,
@@ -996,10 +1001,17 @@ export function ProfileFacts({ name, profile, pools }: { name: string; profile: 
   // "held down by X, 0 of 0 weighted units in use": that fraction is the live
   // "busy platform-wide. (0/0)" in this box's words. `blockerCeiling` decides
   // it from the blocker the server sent, not from the pool row.
+  //
+  // AND A LEAD WHOSE LIMIT IS BELOW ONE TASK (#66): a browser task under a
+  // limit of 1 read "held down by resource:browser, 0 of 1 weighted units in
+  // use" -- wait -- about a task no wait will admit. The weight is the class
+  // catalogue's (`/v1/resource-classes`); null until it answers, and then the
+  // box reads exactly as it did before.
+  const units = classUnits(useResourceClasses(), profile.resource_class)
   const lead =
-    room.blockers.find((b) => needsAPerson(blockerCeiling(b))) ??
+    room.blockers.find((b) => verdictNeedsAPerson(blockerVerdict(b, units))) ??
     room.blockers.find((b) => b.pool === room.binding)
-  const leadCopy = lead ? ceilingCopy(lead, lead.pool) : null
+  const leadCopy = lead ? verdictCopy(lead, units, lead.pool) : null
   const bindingName = lead?.pool ?? room.binding
   const binding = bindingName ? byName.get(bindingName) ?? null : null
   // headroomFor's contract: a profile's pool list is the CALLING TENANT'S, so
@@ -1069,9 +1081,9 @@ export function ProfileFacts({ name, profile, pools }: { name: string; profile: 
           {room.blockers.map((b) => (
             <li key={b.pool} className="blocker-row">
               <span className="tags">
-                <CeilingTag blocker={b} />
+                <CeilingTag blocker={b} units={units} />
               </span>
-              <code>{b.pool}</code> — {ceilingFigure(b)}
+              <code>{b.pool}</code> — {ceilingFigure(b, units)}
             </li>
           ))}
         </ul>
