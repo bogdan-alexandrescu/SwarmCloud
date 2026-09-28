@@ -89,11 +89,6 @@ variable "namespace_prefix" {
   default     = "swarm-tenant-"
 }
 
-variable "custom_role_suffix" {
-  type    = string
-  default = ""
-}
-
 variable "labels" {
   type = map(string)
 }
