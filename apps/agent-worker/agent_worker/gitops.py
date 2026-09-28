@@ -603,6 +603,7 @@ def summarize_work(
     logger: Any,
     git_binary: str = "git",
     max_dirty_listed: int = 200,
+    empty_base: bool = False,
 ) -> WorkSummary:
     """Describe what the agent did, and write one applicable patch.
 
@@ -613,6 +614,13 @@ def summarize_work(
     `base` is the commit the clone landed on. Without it there is nothing to
     diff against and only the dirty list can be reported -- which is still
     worth having, so this degrades rather than raising.
+
+    `empty_base` says the missing base is KNOWN to be nothing: the repository
+    was empty when it was cloned, so every commit reachable from HEAD is the
+    agent's. Without it, an empty clone whose agent committed everything and
+    left nothing dirty summarised as "changed nothing", and the publish
+    returned before its commits were replayed (#259) -- the one case where a
+    missing base must not mean "no commits to list".
     """
     repo = Path(repo)
     if not (repo / ".git").exists():
@@ -653,12 +661,13 @@ def summarize_work(
 
     commits: list[CommitSummary] = []
     adds = dels = 0
-    if base and head and base != head:
+    span = f"{base}..HEAD" if base else ("HEAD" if empty_base else None)
+    if span and head and base != head:
         log_code, log_text = run(
             [
                 *g, "log", "--numstat", "--no-color", "--no-merges",
                 f"--format={_RS}%H{_FS}%s{_FS}%an{_FS}%aI",
-                f"{base}..HEAD",
+                span,
             ],
             "harvest-log",
         )

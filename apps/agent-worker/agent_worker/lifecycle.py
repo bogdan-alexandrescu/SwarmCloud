@@ -312,6 +312,11 @@ PR_READ_LIMIT_BYTES = 256 * 1024
 #: rather than the one in the title.
 _PROMPT_SENTENCE_RE = re.compile(r"[.!?](?:\s|$)")
 
+#: The retired generated title's shape, `[swarm] task_...`, in any case. A
+#: title that matches is treated as carrying the task id even when the id in
+#: it is not this task's (an agent that copied another task's old title).
+_RETIRED_TITLE_RE = re.compile(r"\[swarm\]\s*task_", re.IGNORECASE)
+
 
 def _as_issue_number(value: Any) -> int | None:
     """A GitHub issue number from whatever `input.issue` turns out to hold.
@@ -3898,6 +3903,10 @@ class Worker:
                 max_patch_bytes=cfg.max_patch_bytes,
                 timeout_seconds=cfg.git_harvest_timeout_seconds,
                 logger=self.log,
+                # `_publish_base`, the worker's own record, not the workspace
+                # marker the agent can write: only a clone the worker itself
+                # saw land on nothing counts every commit as the agent's.
+                empty_base=base is None and self._publish_base == EMPTY_CLONE_BASE,
             )
         except GitError as exc:
             self.log.warning("could not harvest the agent's git changes", error=str(exc))
@@ -4163,6 +4172,11 @@ class Worker:
                 logs_dir=ws.logs,
                 timeout_seconds=cfg.git_harvest_timeout_seconds,
                 logger=self.log,
+                # A registered secret in any kept commit's diff folds the
+                # history instead (#259 review): the scrub replaces exactly
+                # the registered values, so "the scrub changed it" is "a
+                # registered value is in it".
+                leaks=lambda text: str(self._scrub(text)) != text,
             )
             if replayed is not None:
                 kept = replayed
@@ -4344,13 +4358,13 @@ class Worker:
                 # A reused pull request takes the agent's text too; generated
                 # text never overwrites one a human may have edited.
                 update_existing=bool(agent_title or agent_body),
-                # An adopted pull request still carrying the OLD generated
-                # title -- `[swarm] <task id>`, from before this rule -- is
-                # retitled even when nothing here asked for an update: the
-                # owner's rule is that a title never carries the task id, and
-                # that has to reach a pull request this attempt only adopts,
-                # not just one it opens.
-                retitle_stale=f"[swarm] {cfg.task_id}",
+                # An adopted pull request whose title carries the task id --
+                # the OLD generated `[swarm] <task id>`, from before this
+                # rule -- is retitled (title only) even when nothing here
+                # asked for an update: the owner's rule is that a title never
+                # carries the task id, and that has to reach a pull request
+                # this attempt only adopts, not just one it opens.
+                retitle_if=self._title_carries_task_id,
             )
         except ForgeError as exc:
             out["published"] = True
@@ -4375,7 +4389,15 @@ class Worker:
                     "opened"
                     if pr.created
                     else "an open pull request already existed and was reused"
-                    + (", with the agent's title and body" if updated else "")
+                    + (
+                        (
+                            ", with the agent's title and body"
+                            if agent_title or agent_body
+                            else ", retitled because its title carried the task id"
+                        )
+                        if updated
+                        else ""
+                    )
                 ),
             }
         )
@@ -4511,9 +4533,12 @@ class Worker:
                 refused.append(f"{PR_TITLE_FILE}: holds control characters")
             elif _carries_attribution(text):
                 refused.append(f"{PR_TITLE_FILE}: carries attribution")
+            elif _carries_mention(text):
+                refused.append(f"{PR_TITLE_FILE}: mentions")
+                self.log.warning("agent title refused: mentions")
             else:
                 candidate = self._scrub_and_cap_title(text)
-                if self._title_carries_task_id(candidate):
+                if self._title_carries_task_id(text) or self._title_carries_task_id(candidate):
                     # OWNER RULE, 2026-09-28: a pull request title never
                     # carries the task id. An agent's own `pr-title.txt` is
                     # not an exception -- one that echoed the id (by habit,
@@ -4532,6 +4557,9 @@ class Worker:
                 refused.append(f"{PR_BODY_FILE}: blank")
             elif _carries_attribution(text):
                 refused.append(f"{PR_BODY_FILE}: carries attribution")
+            elif _carries_mention(text):
+                refused.append(f"{PR_BODY_FILE}: mentions")
+                self.log.warning("agent body refused: mentions")
             else:
                 text = str(self._scrub(text))
                 encoded = text.encode("utf-8")
@@ -4568,7 +4596,7 @@ class Worker:
         task_id = self.cfg.task_id
         if task_id and task_id in title:
             return True
-        return re.search(r"\[swarm\]\s*task_", title) is not None
+        return _RETIRED_TITLE_RE.search(title) is not None
 
     def _generated_pull_request_title(self) -> str:
         """The platform's own pull request title, when the agent wrote none.
@@ -5269,6 +5297,21 @@ def _carries_attribution(text: str) -> bool:
     return any(marker in lowered for marker in ATTRIBUTION_MARKERS)
 
 
+#: A GitHub @mention as the forge reads one: `@user` or `@org/team`, the `@`
+#: not preceded by a word character, dot, slash or backtick (so `a@b.com` and
+#: `x@y` are not mentions), the name starting with a letter or digit. An agent
+#: pull request text that mentions anyone is refused (owner rule, 2026-09-28):
+#: a pull request the platform opens must not page a person or a team on the
+#: agent's say-so, and GitHub notifies on the title as well as the body. It is
+#: deliberately wider than GitHub's own rules (which skip code spans): a false
+#: refusal costs the agent's wording; a false pass pings someone.
+_MENTION_RE = re.compile(r"(?<![\w.`/@-])@[A-Za-z0-9][A-Za-z0-9-]*(?:/[A-Za-z0-9][\w.-]*)?")
+
+
+def _carries_mention(text: str) -> bool:
+    return _MENTION_RE.search(text) is not None
+
+
 #: A trailer line as git reads one: `Token: value`, the token letters, digits
 #: and hyphens. `Co-Authored-By:`, `Signed-off-by:`, `Change-Id:`.
 _TRAILER_LINE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]*[ \t]*:[ \t]")
@@ -5320,6 +5363,87 @@ def _is_trailer_block(paragraph: list[str]) -> bool:
     return all(_TRAILER_LINE.match(line) or line[:1] in (" ", "\t") for line in paragraph)
 
 
+#: How much of one commit's diff the secret scan reads. A diff at or over this
+#: is not scanned whole, and counts as a hit (`_first_leaking_commit`).
+REPLAY_SCAN_MAX_BYTES = 32 * 1024 * 1024
+
+
+def _first_leaking_commit(
+    *,
+    shas: list[str],
+    keep: str | None,
+    leaks: Callable[[str], bool],
+    git: list[str],
+    repo: Path,
+    private_dir: Path,
+    logs_dir: Path,
+    timeout_seconds: int,
+    logger: Any,
+) -> int | None:
+    """The 1-based index of the first agent commit whose diff `leaks`, or None.
+
+    Each commit is diffed against its ORIGINAL first parent (the empty tree
+    for a parentless first commit), with `--text` so a file git would call
+    binary is still shown byte for byte, and `--no-renames` so a moved file's
+    content is shown rather than only its new name. The worker's own `keep`
+    commit is skipped: its tree is the final tree, which the fold pushes
+    either way. The diff's output file is deleted as soon as it is read --
+    it may hold the very value it was scanned for, and `logs/` is uploaded.
+    """
+
+    def run(argv: list[str], slug: str, cap: int = 4 * 1024 * 1024) -> tuple[int, str]:
+        return _git_text(
+            argv,
+            repo=repo,
+            private_dir=private_dir,
+            logs_dir=logs_dir,
+            slug=slug,
+            timeout_seconds=timeout_seconds,
+            logger=logger,
+            max_bytes=cap,
+        )
+
+    empty_tree: str | None = None
+    for index, sha in enumerate(shas, 1):
+        if sha == keep:
+            continue
+        code, raw = run([*git, "cat-file", "commit", sha], "publish-scan-read")
+        if code != 0:
+            raise GitError(f"could not read commit {sha[:12]}")
+        header = raw.partition("\n\n")[0]
+        parents = [line[len("parent "):].strip() for line in header.split("\n") if line.startswith("parent ")]
+        if parents:
+            before = parents[0]
+        else:
+            if empty_tree is None:
+                code, made = run([*git, "hash-object", "-t", "tree", "/dev/null"], "publish-scan-empty")
+                empty_tree = made.strip()
+                if code != 0 or not _SHA_RE.match(empty_tree):
+                    raise GitError("could not name the empty tree")
+            before = empty_tree
+        slug = "publish-scan-diff"
+        try:
+            code, diff = run(
+                [
+                    *git, "diff", "--no-color", "--no-ext-diff", "--no-textconv",
+                    "--text", "--no-renames", "-U0", before, sha, "--",
+                ],
+                slug,
+                cap=REPLAY_SCAN_MAX_BYTES,
+            )
+        finally:
+            for suffix in ("out", "err"):
+                try:
+                    (logs_dir / f"git-{slug}.{suffix}.log").unlink()
+                except OSError:
+                    pass
+        if code != 0:
+            raise GitError(f"could not diff commit {sha[:12]} against its parent")
+        if len(diff.encode("utf-8", errors="replace")) >= REPLAY_SCAN_MAX_BYTES or leaks(diff):
+            return index
+    return None
+
+
 def replay_agent_commits(
     *,
     repo: Path,
@@ -5334,6 +5458,7 @@ def replay_agent_commits(
     timeout_seconds: int,
     logger: Any,
     git_binary: str = "git",
+    leaks: Callable[[str], bool] | None = None,
 ) -> int | None:
     """Rewrite each commit on HEAD's first-parent line since `base` as the worker's (#242).
 
@@ -5344,7 +5469,15 @@ def replay_agent_commits(
 
     * HEAD does not descend from `base` (the agent reset or checked out
       another line): nothing tells its commits from the repository's;
-    * more than `MAX_KEPT_COMMITS` of them.
+    * more than `MAX_KEPT_COMMITS` of them;
+    * `leaks` answers True for any agent commit's diff against its parent
+      (#259 review). A kept commit keeps its TREE, so a key the agent added
+      in one commit and deleted in the next would be pushed in the first
+      one's tree even though the final tree is clean -- and a pushed object
+      on a public forge is published for good. The fold pushes only the
+      final tree. Only the offending commit's index is logged, never any of
+      its content; a diff too large to read whole counts as a hit, because
+      "not scanned" is not "clean".
 
     WHAT IS KEPT, AND WHAT IS NOT. Each commit keeps its TREE, exactly -- so
     the tests-only commit of a red-first change is still tests only, and CI
@@ -5412,6 +5545,27 @@ def replay_agent_commits(
             cap=MAX_KEPT_COMMITS,
         )
         return None
+
+    if leaks is not None:
+        index = _first_leaking_commit(
+            shas=shas,
+            keep=keep,
+            leaks=leaks,
+            git=g,
+            repo=Path(repo),
+            private_dir=private_dir,
+            logs_dir=logs_dir,
+            timeout_seconds=timeout_seconds,
+            logger=logger,
+        )
+        if index is not None:
+            logger.warning(
+                "an agent commit's diff carries a registered secret; the agent's "
+                "commits are folded into one worker commit of the final tree",
+                commit_index=index,
+                commits=len(shas),
+            )
+            return None
 
     parent = floor or None
     kept = 0

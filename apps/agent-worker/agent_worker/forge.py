@@ -42,7 +42,7 @@ import json
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urlparse
 
 _UA = "swarmcloud-agent-worker"
@@ -95,7 +95,7 @@ class PullRequest:
     updated: bool = False
     #: The title GitHub reports for an ADOPTED pull request (empty on one this
     #: call created). Read only so `open_pull_request` can tell a title a
-    #: human may have written from the platform's own stale one (`retitle_stale`,
+    #: human may have written from the platform's own stale one (`retitle_if`,
     #: #259 follow-up); nothing else in this module or its caller uses it.
     title: str = ""
 
@@ -230,7 +230,7 @@ def open_pull_request(
     title: str,
     body: str,
     update_existing: bool = False,
-    retitle_stale: str | None = None,
+    retitle_if: Callable[[str], bool] | None = None,
 ) -> PullRequest:
     """Open one pull request, or adopt the open one this branch already has.
 
@@ -247,12 +247,13 @@ def open_pull_request(
     edited by hand. A refused update is not a failure -- the pull request is
     still adopted, with `updated` False.
 
-    `retitle_stale`, separately, forces the SAME update when the adopted pull
-    request's current title matches it exactly -- the worker passes the old
-    `f"[swarm] {task_id}"` fallback this task would have gotten before the
-    owner's 2026-09-28 rule that a title never carries the task id. An old
-    pull request left with that title is retitled the next time this task's
-    branch is pushed, whether or not the agent wrote anything of its own.
+    `retitle_if`, separately, retitles an adopted pull request whose CURRENT
+    title it answers True for -- the worker passes the owner's 2026-09-28 rule
+    that a title never carries the task id, so a pull request left with the
+    old `[swarm] task_...` fallback is retitled the next time this task's
+    branch is pushed, whether or not the agent wrote anything of its own. Only
+    the title is replaced on that path: the body may be a human's, and
+    nothing about it broke the rule.
     """
     ref = access.ref
     status, data = _request(
@@ -272,12 +273,13 @@ def open_pull_request(
     if status == 422:
         existing = _find_open_pull_request(access=access, token=token, head=head)
         if existing is not None:
-            should_update = update_existing or (
-                retitle_stale is not None and existing.title == retitle_stale
-            )
-            if should_update and existing.number:
+            if update_existing and existing.number:
                 return _update_pull_request(
                     access=access, token=token, existing=existing, title=title, body=body
+                )
+            if retitle_if is not None and existing.number and retitle_if(existing.title):
+                return _update_pull_request(
+                    access=access, token=token, existing=existing, title=title, body=None
                 )
             return existing
         message = ""
@@ -320,16 +322,20 @@ def _find_open_pull_request(
 
 
 def _update_pull_request(
-    *, access: RepoAccess, token: str, existing: PullRequest, title: str, body: str
+    *, access: RepoAccess, token: str, existing: PullRequest, title: str, body: str | None
 ) -> PullRequest:
-    """PATCH an adopted pull request's title and body; `updated` says whether it took."""
+    """PATCH an adopted pull request's title and body (title only when `body`
+    is None); `updated` says whether it took."""
     ref = access.ref
+    payload: dict[str, Any] = {"title": title}
+    if body is not None:
+        payload["body"] = body
     try:
         status, _ = _request(
             f"{ref.api_base}/repos/{ref.owner}/{ref.name}/pulls/{existing.number}",
             token=token,
             method="PATCH",
-            payload={"title": title, "body": body},
+            payload=payload,
         )
     except ForgeError:
         # The pull request exists either way; an unreachable forge on the

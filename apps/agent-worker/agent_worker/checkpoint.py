@@ -47,7 +47,17 @@ from typing import Any
 
 from .errors import CheckpointError
 from .objectstore import ObjectStore
-from .workspace import Workspace
+from .workspace import Workspace, walk_tree
+
+#: How many folders deep a checkpoint archives. The archive walk holds one
+#: open descriptor per level (it opens each child relative to its parent so
+#: that no link is followed, #227), so an unbounded depth is an unbounded
+#: number of descriptors: a tree 1,000 levels deep met a 1,024-descriptor
+#: limit before it met anything else. Deeper than this, the checkpoint is
+#: REFUSED rather than archived without the deep part -- a resume that
+#: silently restored a tree missing files would be worse than resuming from
+#: the last checkpoint that was whole, which a refusal leaves the newest.
+CHECKPOINT_MAX_DEPTH = 512
 
 ARCHIVE_NAME = "archive.tar.gz"
 MANIFEST_NAME = "manifest.json"
@@ -313,7 +323,9 @@ class CheckpointManager:
         atomically, and the next checkpoint takes it.
 
         An explicit stack, not recursion: open descriptors are bounded by the
-        tree's depth, and a deep tree cannot raise `RecursionError` here.
+        tree's depth, and a deep tree cannot raise `RecursionError` here. The
+        depth itself is bounded by `CHECKPOINT_MAX_DEPTH`, past which the
+        checkpoint is refused rather than run out of descriptors.
         """
         try:
             root_fd = os.open(source, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
@@ -374,6 +386,14 @@ class CheckpointManager:
             tar.addfile(info)
             return 1
         if stat.S_ISDIR(st.st_mode):
+            # `stack` holds the root and every open ancestor: its length is
+            # this directory's depth. See `CHECKPOINT_MAX_DEPTH`.
+            if len(stack) >= CHECKPOINT_MAX_DEPTH:
+                raise CheckpointError(
+                    f"refusing to checkpoint: the working tree is more than "
+                    f"{CHECKPOINT_MAX_DEPTH} folders deep, and a checkpoint "
+                    f"without its deepest part would restore a tree missing files"
+                )
             child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=dir_fd)
             try:
                 info = _tarinfo(rel, os.fstat(child), tarfile.DIRTYPE)
@@ -539,7 +559,19 @@ class CheckpointManager:
                 checkpoint_id=record.checkpoint_id,
                 seq_type=type(restored_seq).__name__,
             )
-        restored = sum(1 for _ in ws.work.rglob("*") if _.is_file())
+        # `walk_tree`, not `Path.rglob`, which recurses on Python 3.11: a
+        # restored tree 1,000 levels deep raised `RecursionError` here, after
+        # the restore had succeeded (#259). Regular files only, no link
+        # followed -- the archive may carry links, and a link is not a file
+        # this checkpoint restored.
+        restored = 0
+        for dirpath, _dirs, filenames in walk_tree(ws.work):
+            for name in filenames:
+                try:
+                    if stat.S_ISREG(os.lstat(dirpath / name).st_mode):
+                        restored += 1
+                except OSError:
+                    continue
         self._log.info(
             "checkpoint restored",
             checkpoint_id=record.checkpoint_id,
