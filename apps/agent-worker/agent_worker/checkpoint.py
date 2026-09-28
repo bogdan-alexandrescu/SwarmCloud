@@ -204,19 +204,31 @@ class CheckpointManager:
         # starts in `work/repo`, so the lifecycle links `work/repo/artifacts`
         # as well, and it breaks a resume in exactly the same way.
         #
-        # AND SO IS `input.json` (the PR #229 review). It is the task's whole
-        # input, written by `AgentLifecycle._prepare`, and archived it was
-        # served back out of every checkpoint -- as bytes by the archive
-        # download, and by the file view through the text rules only -- while
-        # every task route serves the input masked. Nothing needs it restored:
-        # `_prepare` writes it from the task document at every attempt, AFTER
-        # the restore (STEP 4) and before the runner starts, so a resumed
-        # attempt reads the one it wrote, never an archived one.
+        # `input.json` (the PR #229 review, and its follow-up here). It is the
+        # task's whole input, written by `AgentLifecycle._prepare` with the
+        # caller's own `model`, `staged_inputs` and `expected_outputs` already
+        # dropped (#213, #226). Archived from EVERY checkpoint, the review
+        # found it served back out of the single-file view through the text
+        # rules only, weaker than the masking every other task route applies
+        # -- and a `periodic`/`cancellation`/`interrupted`/park checkpoint
+        # archives it for no reason: `_prepare` rewrites it from the task
+        # document at every attempt, AFTER a restore, so a resumed attempt
+        # never reads an archived one. Those labels leave it out.
+        #
+        # The `final` checkpoint -- the one made once, in `_finalise`, when
+        # the attempt is already over -- keeps it: it is this attempt's only
+        # durable record of what the runner actually saw, which
+        # `test_step_parity` checks for every declared-input rule, and by
+        # then `swarm_api.checkpoint_content` (`_serve_input_member`) is what
+        # serves it: that route recognises `input.json` by name and masks it
+        # whole, by structure and by this task's own literals, exactly as
+        # `GET /v1/tasks/{id}` masks the same input -- so a `final` archive
+        # holding it leaks nothing the read path does not already mask.
         skip = frozenset(
             path
             for path in (ws.artifacts_link(), ws.artifacts_link(ws.checkout()))
             if ws.is_artifacts_link(path)
-        ) | {ws.input_path}
+        ) | (set() if label == "final" else {ws.input_path})
         with tempfile.TemporaryDirectory(prefix="swarm-ckpt-") as tmpdir:
             archive_path = Path(tmpdir) / ARCHIVE_NAME
             file_count = self._write_archive(ws.work, archive_path, skip=skip)

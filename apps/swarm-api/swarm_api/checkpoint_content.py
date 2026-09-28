@@ -1375,20 +1375,24 @@ class CheckpointContent:
 # --------------------------------------------------------------------------
 #
 # WHY (the PR #229 review). The worker writes the whole task input to
-# `work/input.json` (`AgentLifecycle._prepare`), and until that review every
-# checkpoint archived `work/` with it in. This view then served it through the
-# rules over its TEXT only: `GET /v1/tasks/{id}` masked a prompt's credential,
-# a list of tokens and a password named in the metadata, and this served all of
-# them in clear from the same task's checkpoint, under `masked 1`.
+# `work/input.json` (`AgentLifecycle._prepare`). `agent_worker.checkpoint`
+# leaves it out of a `periodic`/`cancellation`/`interrupted`/park checkpoint --
+# nothing needs it restored, since `_prepare` rewrites it after every restore
+# -- but keeps it in the one `final` checkpoint, on purpose: it is this
+# attempt's only durable record of what the runner actually saw, which
+# `test_step_parity`'s declared-input checks depend on. Archived, it used to
+# be served through the generic per-member window: the rules over its TEXT
+# only. `GET /v1/tasks/{id}` masked a prompt's credential, a list of tokens
+# and a password named in the metadata, and the generic path served all of
+# them in clear from the same task's `final` checkpoint, under `masked 1`.
 #
-# The worker no longer archives it (`agent_worker.checkpoint`; the lifecycle
-# rewrites it from the task document at every attempt's prepare, which runs
-# after the restore). An archive written before that still holds one, and this
-# serves it as `GET /v1/tasks/{id}` serves the input: decoded, masked by the
-# task's own masker -- its structure, the rules, and every literal the input
-# and the metadata named -- and written back the way the worker wrote it
-# (`indent=2`). WHOLE, as one document: a masker needs the whole structure,
-# so there are no windows, and a request for a later offset gets the end.
+# So `input.json` is recognised by name (below) and never takes that generic
+# path: it serves as `GET /v1/tasks/{id}` serves the input -- decoded, masked
+# by the task's own masker -- its structure, the rules, and every literal the
+# input and the metadata named -- and written back the way the worker wrote
+# it (`indent=2`). WHOLE, as one document: a masker needs the whole structure,
+# so there are no windows, and a request for a later offset gets the end. This
+# also covers an archive written before this fix, which still holds one.
 
 #: The archive member that holds the task's input: `work/input.json`, archived
 #: relative to `work/`.
