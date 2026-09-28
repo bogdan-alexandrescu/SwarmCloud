@@ -1202,10 +1202,10 @@ verdict("worker GSA prefix", GSA,
                "python default"))),
         5, GSA_COST, normalise=lambda value: value.rstrip("-"))
 
-# The broker accepts a SET of prefixes, so the check is containment again. It is
-# reported rather than asserted equal because the second entry is a deliberate
-# migration allowance, and narrowing an accepted identity is a separate change
-# from keeping the copies in step.
+# The broker's allow-list must be EXACTLY the frozen module's prefix. It is an
+# authentication list, so an extra entry is not harmless slack: it is a
+# service-account name that authenticates as a tenant although no provisioning
+# path creates it. `swarm-t` sat here for that reason until #176.
 BROKER = TEXT["apps/quota-broker/quota_broker/main.py"]
 accepted = re.search(r"^WORKER_SA_PREFIXES\s*=\s*\(([^)]*)\)", BROKER, re.M)
 if not accepted:
@@ -1213,10 +1213,14 @@ if not accepted:
          "no `WORKER_SA_PREFIXES = (...)` in the quota broker; the restatement moved")
 else:
     values = set(re.findall(r"\"([^\"]+)\"", accepted.group(1)))
-    if GSA in values:
+    if values == {GSA}:
         emit("OK", "WORKER_SA_PREFIXES",
-             "accepts %s, which is what the frozen module derives (also accepts %s)"
-             % (GSA, " ".join(sorted(values - {GSA})) or "nothing else"))
+             "accepts only %s, which is what the frozen module derives" % GSA)
+    elif GSA in values:
+        emit("DRIFT", "WORKER_SA_PREFIXES",
+             "accepts %s as well as %s; no provisioning path creates those, so "
+             "an account made by hand under that name authenticates as a tenant"
+             % (" ".join(sorted(values - {GSA})), GSA))
     else:
         emit("DRIFT", "WORKER_SA_PREFIXES",
              "accepts %s and NOT %s, so every worker token is refused and no "

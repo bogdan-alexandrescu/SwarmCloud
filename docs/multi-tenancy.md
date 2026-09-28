@@ -387,7 +387,7 @@ A caller in no registered group gets `u-<local-part>` (so `alice@saga.xyz` ->
   exact cross-tenant merge this design exists to prevent. So whenever the slug is
   not a faithful rendering of the local part, `swarm_common.identity` appends a
   6-character digest of the full principal. `eng.team@saga.xyz` becomes
-  `eng-team-9aef5b`, not `eng-team`;
+  `eng-9aef5b`, not `eng-team`;
 * the tenant is real — own GSA, own prefix, own pools — so a personal task is
   isolated exactly like a group's.
 
@@ -395,7 +395,7 @@ This exists so that onboarding never requires a group change first. It is also
 why `tenant:<id>` pools are created on demand rather than only by Terraform: a
 personal tenant appears the first time its owner submits.
 
-### Tenant ids are capped at 11 characters, and that cap is currently too small
+### Tenant ids are capped at 11 characters
 
 A GCP service account id is capped at 30 characters. The identity is
 `swarm-agent-worker-<id>`, and that prefix is 19 characters, so a tenant id may
@@ -407,25 +407,24 @@ collapses onto one service account, and both tenants' `secretAccessor` bindings
 and both tenants' GCS prefix conditions then accumulate on it, each able to read
 the other's provider keys.
 
-**This is an unresolved conflict between two tracks, recorded here rather than
-smoothed over.** `swarm_common.identity` caps a tenant id at 22, sized for the
-prefix `swarm-t-` (8 characters). Terraform uses a 19-character prefix. Ids
-between 12 and 22 characters are therefore resolvable by the API and
-provisionable by nobody:
+`swarm_common.identity` derives ids to the same cap, from the same prefix
+(`_GSA_PREFIX`), so every id the API resolves to is one both paths can
+provision. It shortens rather than truncates: a slug that would overrun keeps
+its first few characters and gains the 6-character digest, so two principals
+that share a long prefix still get different ids.
 
-| Principal | Resolves to | Length | Provisionable |
-|---|---|---|---|
-| `eng@saga.xyz` | `eng` | 3 | yes |
-| `research@saga.xyz` | `research` | 8 | yes |
-| `platform-eng@saga.xyz` | `platform-eng` | 12 | **no** |
-| `eng.team@saga.xyz` | `eng-team-9aef5b` | 15 | **no** |
-| `alice@saga.xyz` | `u-alice` | 7 | yes |
-| `alice.smith@saga.xyz` | `u-alice-smi-4c1f2a` | 18 | **no** |
+| Principal | Resolves to |
+|---|---|
+| `eng@saga.xyz` | `eng` |
+| `research@saga.xyz` | `research` |
+| `platform-eng@saga.xyz` | `plat-af1226` |
+| `eng.team@saga.xyz` | `eng-9aef5b` |
+| `alice@saga.xyz` | `u-alice` |
+| `alice.smith@saga.xyz` | `u-al-36b536` |
 
-The last row is the one that bites: any dot in a local part makes the slug lossy,
-the digest is appended, and the result is over 11 — so the personal fallback
-tenant this section describes does not work for most real names today.
-`register-tenant.sh` refuses with this conflict spelled out rather than creating
-a tenant the API will never resolve to. Closing it means shortening the service
-account prefix in `terraform/modules/tenancy` to the `swarm-t-` the frozen module
-already assumes; the frozen module cannot be the side that moves.
+The cost is readability: past 11 characters an id is mostly digest. This
+section used to record an unresolved conflict here — the frozen module capped
+ids at 22, sized for register-tenant.sh's old `swarm-t-` prefix, so ids of 12 to
+22 characters resolved and could not be provisioned. The frozen module has
+since moved to the one prefix that exists, and `swarm-t-` is gone from every
+provisioning path and from the quota broker's allow-list (#176).

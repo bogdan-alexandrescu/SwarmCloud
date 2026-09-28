@@ -39,6 +39,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 24 | `profiles.py`: whether a profile's cost is declared rather than measured is named outside the catalogue | ACCEPTED 2026-09-25 (#185, decision 9), applied in PR #217 |
 | 25 | `profiles.py`: a runner profile cannot declare the inputs a caller may send it, so the bridge names the mock's by profile | ACCEPTED 2026-09-25 (owner, on #142), applied in PR #213; both amendments confirmed by the owner 2026-09-26: `inputs=None` for `browser` and `generic` (#218), and the bounded park counted by the task's `attempt_count` rather than the state file |
 | 26 | `models.py`: the attempt's CPU figures carry no time and their limit no source | open |
+| 27 | `identity.py`: `_slug`'s docstring still sizes tenant ids for the `swarm-t-` prefix that no longer exists | open |
 
 ---
 
@@ -2793,3 +2794,39 @@ that would want a home (compare request #20).
 Details keeps `age not recorded` and `reported limit`. A stalled worker's CPU
 figures are not dated, and a limit is never attributed to the kernel.
 
+## 27. `identity.py`: `_slug`'s docstring still sizes tenant ids for the `swarm-t-` prefix that no longer exists
+
+**Status:** open, recorded 2026-09-28 by the #176 lane. A request, not a
+change. If another branch has taken 27 by the time this merges, renumber this
+one.
+
+### What is true today
+
+`apps/common/swarm_common/identity.py`, `_slug`'s docstring, LENGTH bullet:
+"A long group name yields an id no GCP service account can be named for,
+because `swarm-t-<id>` must fit in 30 characters." The code under it is right:
+`_MAX_TENANT_ID` is computed from `_GSA_PREFIX = "swarm-agent-worker-"`, and the
+comment on `_GSA_PREFIX` itself says the `swarm-t-` prefix "no longer exists".
+So the frozen module contradicts itself about which identity the cap is for.
+
+That contradiction is how #176 survived: the quota broker's comment said
+register-tenant.sh writes `swarm-t-<tenant>`, and accepted it as a worker
+identity, long after nothing created one. The broker no longer accepts it; this
+docstring is the one live statement left in the repository that `swarm-t-<id>`
+is the name a tenant's worker must fit.
+
+### The requested change
+
+Docstring only: `swarm-t-<id>` becomes `swarm-agent-worker-<id>` in that
+sentence. No code, no value, no type.
+
+### What it would break if accepted
+
+Nothing. No code reads a docstring, and `check-contract-parity.sh` compares
+`_GSA_PREFIX`, not prose.
+
+### If it is declined
+
+The frozen module keeps telling its reader that tenant ids are sized for an
+identity nothing creates, and the next restatement copied from that sentence
+reintroduces #176.

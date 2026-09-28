@@ -73,11 +73,16 @@ from .sweeplease import LeaseFence, build_sweep_lease, new_holder, txn_snapshot
 
 log = logging.getLogger(__name__)
 
-#: Prefixes the two provisioning paths use for a tenant's worker service
-#: account: terraform's `tenancy` module writes `swarm-agent-worker-<tenant>`,
-#: scripts/register-tenant.sh writes `swarm-t-<tenant>`. Both are accepted
-#: because both really exist; nothing else is.
-WORKER_SA_PREFIXES = ("swarm-agent-worker", "swarm-t")
+#: The prefix of a tenant's worker service account. ONE family is accepted
+#: because only one exists: terraform/modules/tenancy and
+#: scripts/register-tenant.sh both create `swarm-agent-worker-<tenant>`, the
+#: name swarm_common.identity sizes tenant ids for. register-tenant.sh used to
+#: create `swarm-t-<tenant>`; nothing does now, so an account by that name is
+#: one somebody made by hand, and accepting it would let whoever holds
+#: `iam.serviceAccounts.create` here act as any tenant (#176). This is an
+#: authentication allow-list: an entry for an identity nothing provisions is a
+#: way in, not a compatibility allowance.
+WORKER_SA_PREFIXES = ("swarm-agent-worker",)
 
 
 def worker_sa_pattern(project_id: str) -> re.Pattern[str]:
