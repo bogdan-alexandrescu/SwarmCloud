@@ -21,7 +21,7 @@ import {
   blockerCeiling,
   blockerGroup,
   ceilingCopy,
-  poolKind,
+  needsAPerson,
   poolLabelAmong,
   reasonCopy,
   type Ceiling,
@@ -144,38 +144,31 @@ export function classUnits(classes: ResourceClasses | null, resourceClass: strin
 }
 
 /**
- * A blocker's ceiling, with the one case `blockerCeiling` cannot see because
- * it does not know the task's weight (#66):
+ * `blockerCeiling`/`ceilingCopy` (types.ts) ARE THE ONE VERDICT (#66).
  *
- *  - `below-units`: a limit above 0 and below one task's `units`, on a pool
- *    only a person writes. Admission refuses when `active + units > limit`,
- *    so a browser task (2 units) under a limit of 1 is refused at 0 of 1 in
- *    use, on every drain, forever. It is the fact `set-to-zero` is -- the
- *    task can never be admitted at this limit, somebody has to raise it --
- *    and it arrives with the full pool's reason and a positive limit, which
- *    is how every screen came to call the pool busy.
- *  - `below-units-quota`: the same on a `provider:` pool, whose limit the
- *    quota broker also moves. The task still cannot be admitted at this
- *    limit, but nobody is named, for the reason `zero` names nobody.
- *
- * With `units` null (the catalogue unread) this is `blockerCeiling` exactly.
- * A limit of 0 keeps its own ceiling: `set-to-zero` or `zero`, as before.
+ * This file used to carry its own copy of the below-units arithmetic --
+ * `blockerVerdict`/`verdictCopy`, threaded only into Capacity, Profiles and
+ * Submit -- so the Agents list and the agent inspector, which read
+ * `whyAgent`/`whyNeedsAction` in types.ts instead, never saw it: #66's own
+ * repro (`resource:browser` at `hard_limit 1`, a 2-unit browser task) still
+ * read "This resource class is busy platform-wide. (0/1)" there. `Verdict`,
+ * `blockerVerdict` and `verdictCopy` stay exported -- Capacity.tsx,
+ * Profiles.tsx and Submit.tsx call them by these names -- but they are now
+ * thin wrappers over `blockerCeiling`/`ceilingCopy`, which carry the below-
+ * units logic themselves, so every screen renders one verdict.
  */
-export type Verdict = Ceiling | 'below-units' | 'below-units-quota'
+export type Verdict = Ceiling
 
 export function blockerVerdict(
   b: { reason: string; pool?: string; limit?: unknown },
   units: number | null,
 ): Verdict {
-  const ceiling = blockerCeiling(b)
-  if (ceiling !== 'full' || units === null) return ceiling
-  if (typeof b.limit !== 'number' || b.limit <= 0 || b.limit >= units) return ceiling
-  return b.pool === undefined || poolKind(b.pool) === 'provider' ? 'below-units-quota' : 'below-units'
+  return blockerCeiling(b, units)
 }
 
 /** The verdicts no amount of waiting clears: a person has to act. */
 export function verdictNeedsAPerson(v: Verdict): boolean {
-  return v === 'paused' || v === 'set-to-zero' || v === 'below-units'
+  return needsAPerson(v)
 }
 
 /**
@@ -192,25 +185,16 @@ export function verdictGroup(
 }
 
 /**
- * `ceilingCopy`, with the sentence for a pool too small for one task. Null
- * when `reasonCopy` is true of the blocker (a genuinely full pool).
+ * `ceilingCopy`, with `subject` in this file's own argument order (pools call
+ * this with `units` before `subject`; types.ts's callers have no subject to
+ * give and default it from the blocker instead).
  */
 export function verdictCopy(
   b: { reason: string; pool?: string; limit?: unknown; active?: unknown },
   units: number | null,
   subject: string = b.pool ?? 'This pool',
 ): string | null {
-  const v = blockerVerdict(b, units)
-  if (v !== 'below-units' && v !== 'below-units-quota') return ceilingCopy(b, subject)
-  const limit = b.limit as number
-  const n = typeof b.active === 'number' && b.active > 0 ? b.active : 0
-  const held = n > 0 ? ` ${n} unit${n === 1 ? '' : 's'} held by work already admitted.` : ''
-  const fact =
-    `${subject} has a limit of ${limit} unit${limit === 1 ? '' : 's'}, below the ${units} units one task ` +
-    'of this profile weighs, so the task can never be admitted at this limit.'
-  return v === 'below-units'
-    ? `${fact} Waiting cannot clear it: somebody has to raise the limit to at least ${units}.${held}`
-    : `${fact} A provider pool's limit also falls with its quota state, so this does not say who set it; it admits this profile once the limit reaches ${units}.${held}`
+  return ceilingCopy(b, subject, units)
 }
 
 /** The tag each ceiling is drawn with, and what hovering it says. */
