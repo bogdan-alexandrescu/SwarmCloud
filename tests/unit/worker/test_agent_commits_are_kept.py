@@ -89,7 +89,7 @@ FIX_MESSAGE = (
 )
 
 
-def tests_then_fix_then_uncommitted(repo: Path) -> None:
+def _edit_tests_then_fix_then_uncommitted(repo: Path) -> None:
     (repo / "test_widget.py").write_text("def test_negative(): assert False\n")
     _commit(repo, TESTS_MESSAGE)
     (repo / "widget.py").write_text("def size(n): raise ValueError if n < 0 else n\n")
@@ -114,7 +114,7 @@ def test_each_agent_commit_is_kept_in_order_then_one_worker_commit(
 ):
     _, config, out = _attempt(
         worker_factory, monkeypatch, origin,
-        task_id="t-kept", edit=tests_then_fix_then_uncommitted,
+        task_id="t-kept", edit=_edit_tests_then_fix_then_uncommitted,
     )
 
     branch = f"{config.git_branch_prefix}{config.task_id}"
