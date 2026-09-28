@@ -564,8 +564,13 @@ def holds_from_firestore(raw: Any) -> tuple[Hold, ...]:
     hold under-counts by one, which `choose()` survives; an unreadable account
     is one nothing can be assigned from at all.
     """
+    # A `holds` that is not a list at all reads as no holds, for the same
+    # reason: the release and prune paths read this raw (#243), and `for item
+    # in 5` would raise inside the one transaction that could repair it.
+    if not isinstance(raw, (list, tuple)):
+        return ()
     holds: list[Hold] = []
-    for item in raw or ():
+    for item in raw:
         if not isinstance(item, dict):
             continue
         expires = item.get("expires_at")

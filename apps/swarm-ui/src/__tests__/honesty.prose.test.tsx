@@ -66,7 +66,9 @@ const api = vi.hoisted(() => ({
   setAccountLending: vi.fn(),
   setAccountState: vi.fn(),
 }))
-vi.mock('../api', () => api)
+// `TASK_PAGE_LIMIT` BESIDE THE READS: Overview names the full page it asks
+// for (#168), and a factory mock throws on any export it does not declare.
+vi.mock('../api', () => ({ ...api, TASK_PAGE_LIMIT: 200 }))
 
 const { OverviewScreen } = await import('../Overview')
 const { AccountsScreen } = await import('../Accounts')
@@ -417,10 +419,11 @@ describe('Overview, with every help card closed', () => {
   it('writes a MEASURED zero cost as a digit, which is the other half of the rule', async () => {
     renderOverview({ spend: { costUsd: 0, attempts: 3, attemptsWithCost: 3 } })
     // The tile and the metric strip both carry it, so this waits on the set.
-    expect((await screen.findAllByText('$0.0000', undefined, WAIT)).length).toBeGreaterThan(0)
+    // `$0.00`: two decimals at every size (#97), and an exact zero is a digit.
+    expect((await screen.findAllByText('$0.00', undefined, WAIT)).length).toBeGreaterThan(0)
     expectAllCardsClosed()
     const figure = document.querySelector('.ov-figure')
-    expect(textOf(figure)).toBe('$0.0000')
+    expect(textOf(figure)).toBe('$0.00')
     // THE OTHER HALF OF THE RULE, at the same attribute. A measured zero says
     // so on the figure rather than in a sentence under it, and the sentence
     // that used to be there -- "every attempt in the sample carried a cost
@@ -441,78 +444,50 @@ describe('Overview, with every help card closed', () => {
   })
 
   /**
-   * THE LEGEND IS NEW AND IT CARRIES AN ABSENCE, so it gets pinned like one.
+   * THE TOKEN COUNTS ARE FOUR FACTS WITH WORDS, AND AN ABSENT ONE IS A DASH.
    *
-   * design-system.md sec 1.6: the five series sit in a band 1.36:1 from end to
-   * end and are NOT separable in greyscale, so a multi-series chart names every
-   * series beside its value and never relies on the segment's colour to say
-   * which segment it is. sec 11.3 listed Overview's spend bar -- "four
-   * saturated hues in one 8px rule with the legend on the line below carrying
-   * no swatch" -- as unfixed, with two allowed answers; this is the one that
-   * keeps the proportion.
+   * The proportion bar is gone (#97): on a real sample it was 90-95% cache
+   * read, `in` drew under a pixel, and the only per-profile split that could
+   * replace it is not in the rollup. Without the bar there is nothing for a
+   * swatch to key, so the swatches went with it. What is left has to carry
+   * the honesty rule alone: every count is labelled in words -- `cache read`
+   * and `cache write`, never `c-rd` and `c-wr`, which nothing on the screen
+   * explained -- and a count nobody reported is an em dash, not a digit.
    *
-   * What makes it an HONESTY assertion rather than a decoration one: a series
-   * that reported nothing draws no segment on the bar, so a solid key beside it
-   * would index a colour that is not there -- an absence drawn as a
-   * measurement. The hollow swatch is the encoding for that, and this test
-   * pins BOTH halves, because a rule only one half of which is checked is the
-   * mutation that survives.
+   * MUTATION: bring back `c-rd`, print `0` for the unreported count, or
+   * restore the bar.
    */
-  it('keys each token series to its own swatch, and draws no solid key for a series nobody reported', async () => {
+  it('labels each token count in words, and draws an unreported one as a dash', async () => {
     renderOverview({
       spend: {
         attempts: 4,
         attemptsWithTokens: 3,
         inputTokens: 900,
         outputTokens: 100,
-        // Never reported by any attempt in the sample. No segment on the bar.
+        // Never reported by any attempt in the sample.
         cacheReadTokens: null,
-        // A MEASURED zero. It is a reading, so it keeps its identity key.
+        // A MEASURED zero. It is a reading, so it is a digit.
         cacheCreationTokens: 0,
       },
     })
-    await waitFor(() => expect(document.querySelector('.ov-mix')).not.toBeNull(), WAIT)
+    await waitFor(() => expect(document.querySelector('.ov-mix-facts')).not.toBeNull(), WAIT)
     expectAllCardsClosed()
 
     const facts = [...document.querySelectorAll('.ov-mix-facts .ctl-fact')]
-    expect(facts.length, 'the legend lost a series').toBe(4)
+    const keyOf = (f: Element) => textOf(f.querySelector('b'))
+    expect(facts.map(keyOf)).toEqual(['input', 'output', 'cache read', 'cache write'])
 
-    // EVERY series is keyed, so the strip cannot reflow when a count arrives
-    // and no row is left indexing the bar by position alone.
-    for (const f of facts) {
-      expect(f.querySelector('.ov-swatch'), `no swatch beside ${textOf(f)}`).not.toBeNull()
-    }
-
-    const swatchFor = (key: string) =>
-      facts.find((f) => textOf(f.querySelector('b')) === key)!.querySelector('.ov-swatch')!
-
-    // A drawn segment gets the SAME .ov-sN class its segment carries, so the
-    // key and the bar cannot drift apart.
-    expect(swatchFor('in').className).toBe('ov-swatch ov-s1')
-    expect(swatchFor('out').className).toBe('ov-swatch ov-s2')
-    // A measured zero is a reading: solid key, and a digit beside it.
-    expect(swatchFor('c-wr').className).toBe('ov-swatch ov-s4')
-
-    // THE ABSENCE. No hue, and the em dash rather than a digit -- the same
-    // pairing this file pins on the cost figure, at the legend's scale.
-    const absent = swatchFor('c-rd')
-    expect(absent.className, 'an unreported series was keyed to a colour').toBe(
-      'ov-swatch is-absent',
-    )
-    const crd = facts.find((f) => textOf(f.querySelector('b')) === 'c-rd')!
+    const crd = facts.find((f) => keyOf(f) === 'cache read')!
     expect(crd.className).toContain('is-absent')
-    expect(crd.querySelector('.ctl-em'), 'an unreported series drew no em dash').not.toBeNull()
-    expect(textOf(crd), 'an unreported series rendered a digit').not.toMatch(/\d/)
+    expect(crd.querySelector('.ctl-em'), 'an unreported count drew no em dash').not.toBeNull()
+    expect(textOf(crd), 'an unreported count rendered a digit').not.toMatch(/\d/)
+    const cwr = facts.find((f) => keyOf(f) === 'cache write')!
+    expect(textOf(cwr.querySelector('.ov-num')), 'a measured zero is not a digit').toBe('0')
 
-    // THE SWATCHES SAY NOTHING A SCREEN READER NEEDS. The bar's own label
-    // already names every series and its value, so a second reading of the
-    // same four facts is noise, and an <i> with no text has nothing to say.
-    for (const f of facts) {
-      expect(f.querySelector('.ov-swatch')!.getAttribute('aria-hidden')).toBe('true')
-    }
-    expect(
-      document.querySelector('.ov-mix')!.getAttribute('aria-label'),
-    ).toContain('c-rd not measured')
+    const card = document.querySelector('.ov-spend')!
+    expect(card.querySelector('.ov-mix'), 'the token-mix bar is back').toBeNull()
+    expect(card.querySelector('.ov-swatch'), 'a swatch keys a bar that is not drawn').toBeNull()
+    expect(textOf(card)).not.toMatch(/c-rd|c-wr/)
   })
 
   it('keeps the count of failed attempt reads on the surface, not behind the ?', async () => {
