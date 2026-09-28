@@ -82,12 +82,20 @@ describe('the Agents list, a browser task under resource:browser at limit 1', ()
 
     render(<AgentsScreen onOpen={() => {}} />)
 
+    // THE ROW RENDERS BEFORE THE CATALOGUE DOES (#66 follow-up). The row's
+    // `.why` exists from the FIRST render, reading "busy platform-wide.
+    // (0/1)" -- `useResourceClasses` (Blockers.tsx) reads `/v1/resource-classes`
+    // in a `useEffect`, so `classes` is still null on that first pass and
+    // `whyAgent` gives its pre-#66 answer. Waiting for the element to exist
+    // resolves on THAT render and reads the row before its catalogue-aware
+    // re-render -- so the wait is for the text this test is actually about,
+    // not merely for the element.
     const why = await waitFor(() => {
       const el = document.querySelector<HTMLElement>('.row .why')
       expect(el, 'no row drew a why line').not.toBeNull()
+      expect(el!.textContent ?? '', 'still the pre-catalogue reading').toMatch(NEVER)
       return el!
     })
-    expect(why.textContent ?? '').toMatch(NEVER)
     expect(why.textContent ?? '').toMatch(RAISE)
     expect(why.textContent ?? '', 'not read as busy: nothing is running').not.toMatch(/busy platform-wide/i)
     expect(why.textContent ?? '').not.toMatch(/\(0\/1\)/)
