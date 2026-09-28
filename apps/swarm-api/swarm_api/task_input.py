@@ -36,10 +36,22 @@ found the claim "nothing serves the raw input" false as first written):
     it logs the prompt's length now (`runners/cliagent.py`), and `/logs`
     masks this task's literals in every window (`redaction.redact_lines`).
 
-ONE PATH STILL SERVES IT AS STORED, and it is the owner's to rule on: the whole
-checkpoint archive (`/checkpoints/{id}/content`), which the owner decided on
-2026-09-24 to serve byte for byte, unredacted, and which holds `input.json` in
-every archive written before this change. It is named in docs/agent-output.md.
+ONE PATH STILL SERVES IT AS STORED (issue #244, owner decision 2026-09-27:
+keep it, and fix this claim -- it named only `input.json`, which is not what
+carries the prompt any more). The whole checkpoint archive
+(`/checkpoints/{id}/content`) is served byte for byte, unredacted, to the
+tenant that owns the task (the owner's decision of 2026-09-24). Excluding
+`input.json` does not close that: `HOME` is `work/` (`agent_worker.
+workspace`), so the CLI writes its OWN session transcript there too --
+`work/.claude/projects/<cwd>/<session>.jsonl` for Claude Code,
+`work/.codex/sessions/.../*.jsonl` for Codex -- and it holds the prompt word
+for word, as the transcript's first user message, in EVERY archive, not only
+ones written before some change. The owner's choice was to keep it there and
+keep the archive download byte for byte, because the tenant downloading it is
+the same tenant whose prompt it is. The per-file view
+(`checkpoint_content._serve_member`) masks it, one window at a time, the same
+as any other text member; only the WHOLE-ARCHIVE download does not. It is
+named in docs/agent-output.md.
 
 AND THE METADATA (the owner's "mask it everywhere", 2026-09-26). Details drew
 `task.metadata` raw between two masked blocks. `TaskCreate.metadata` is

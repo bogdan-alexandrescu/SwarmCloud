@@ -768,14 +768,21 @@ which found "nothing serves the raw input" false as first written):
 | `last_error`, each attempt's `error`, each event's `detail` | the agent's stderr tail, which echoes whatever the prompt made it run | every string masked by the task's masker -- the rules and every literal the input and metadata named -- with `last_error_redaction_count`, `error_redaction_count`, `detail_redaction_count`. String by string, never by key: the keys are the platform's (`credential` in a park's detail is which kind of credential, not one). |
 | `result_summary` | the agent's own summary text (up to 4,000 characters), its output tails | the same, with `result_summary_redaction_count`. An artifact's `name` and `uri`, a staged input's `filename` and `path`, and ids are served as stored (`task_input.LOOKUP_KEYS`): a client matches them exactly, and the rules would take `eye-tracking-summary.md` for a JWT. |
 | `repository_url` | a caller-supplied URL, often with the forge token in it | refused at submission when it carries userinfo that can hold a credential (`validation.check_repository_url`, a 422 naming the tenant's git secret as the way to clone a private repository); one stored before is served with the userinfo masked, `repository_url_redaction_count` beside it |
-| `input.json` in a checkpoint | the whole input, as the worker wrote it | no longer archived (the worker rewrites it at every attempt's prepare, after the restore); one in an older archive is served by the checkpoint file view whole, through the task's masker |
+| `input.json` in a checkpoint | the whole input, as the worker wrote it | excluded from every archive, under any label (owner decision 2026-09-27): the worker rewrites it at every attempt's prepare, after the restore, so nothing needs it restored; one in an older archive is served by the checkpoint file view whole, through the task's masker |
 | the runner's `child started` line | the prompt, inside argv | the prompt's length; `/logs` also masks the task's literals in every window |
 
-**One path still serves it as stored, and it is the owner's to rule on:** the
-whole checkpoint archive (`GET /v1/tasks/{id}/checkpoints/{n}/content`), which
-the owner decided on 2026-09-24 to serve byte for byte and unredacted. Every
-archive written before this change holds `input.json`. Whether that download
-stands under "masked everywhere" is an open question on the PR.
+**One path still serves it as stored, and the owner has ruled** (issue #244,
+2026-09-27): the whole checkpoint archive (`GET /v1/tasks/{id}/checkpoints/
+{n}/content`) is served byte for byte and unredacted, to the tenant that owns
+the task (owner decision 2026-09-24). Excluding `input.json` does not close
+that. `HOME` is `work/`, so a CLI runner writes its OWN session transcript
+there too -- `work/.claude/projects/<cwd>/<session>.jsonl` for Claude Code,
+`work/.codex/sessions/.../*.jsonl` for Codex -- and it holds the prompt word
+for word, as the transcript's first user message, in every archive. The
+owner's choice: keep the transcript in the archive and keep the download byte
+for byte, because the tenant downloading it is the same tenant whose prompt
+it is. The per-file checkpoint view masks it, one window at a time, the same
+as any other text member; only the whole-archive download does not.
 
 A task's masker is kept per task (`task_input.masking_for`): the list route
 masks every row, the UI reads 200 rows, and `JsonMasker` over a 256 KiB input
