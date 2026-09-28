@@ -102,6 +102,7 @@ from .errors import ApiError, NotFound, UpstreamUnavailable, ValidationFailed
 from .inspect import (
     ARTIFACT_SNIFF_BYTES,
     CHECKPOINTS_SEGMENT,
+    KEY_LOOKBACK_BYTES,
     MANIFEST_MAX_BYTES,
     CheckpointRef,
     InspectionService,
@@ -109,6 +110,9 @@ from .inspect import (
     _artifact_row,
     _as_int,
     _as_text,
+    _decode_window,
+    _enter_key,
+    _with_sentence,
     parse_checkpoint_key,
 )
 from .objects import ObjectAbsent, ObjectInfo, ObjectReader, ObjectSlice, ObjectUnreadable
@@ -412,7 +416,9 @@ def member_type(member: tarfile.TarInfo) -> str:
     return "other"
 
 
-def member_row(member: tarfile.TarInfo) -> dict[str, Any] | None:
+def member_row(
+    member: tarfile.TarInfo, *, literals: tuple[str, ...] = ()
+) -> dict[str, Any] | None:
     """One listing row -- `{path, size, mode, type}` plus `link`, `unsafe` and
     `undecodable`.
 
@@ -422,7 +428,10 @@ def member_row(member: tarfile.TarInfo) -> dict[str, Any] | None:
 
     `link` is run through the redaction filter. A symlink target is a string
     an agent wrote, which is the same class of text as log content; paths are
-    not, and are served as the archive spells them.
+    not, and are served as the archive spells them. `literals` are the task's
+    own (`TaskMasking.literals`): a target naming a value the task's input or
+    metadata calls secret was served in clear by the rules alone (epic #227),
+    while every other route masked it.
 
     `undecodable` says the `path` or the `link` shown here is an ESCAPED
     rendering of bytes that are not UTF-8 (`displayable`). Such a row is listed
@@ -437,7 +446,7 @@ def member_row(member: tarfile.TarInfo) -> dict[str, Any] | None:
     if kind in ("symlink", "hardlink"):
         target = member.linkname or ""
         escaped = escaped or undecodable(target)
-        link = redact(displayable(target)).text
+        link = redact(displayable(target), extra=literals).text
     return {
         "path": path,
         "size": int(member.size or 0),
@@ -934,8 +943,9 @@ class CheckpointContent:
         try:
             scan = self._open(reader, ref.archive_key)
             finished = True
+            literals = masking_for(task).literals
             for member in scan.tar:
-                row = member_row(member)
+                row = member_row(member, literals=literals)
                 if row is None:
                     continue
                 if len(files) >= cap:
@@ -1145,7 +1155,7 @@ class CheckpointContent:
         row["member"] = {"type": kind, "mode": int(member.mode or 0) & 0o7777, "size": size}
         if kind != "file":
             link = (
-                redact(displayable(member.linkname or "")).text
+                redact(displayable(member.linkname or ""), extra=masking.literals).text
                 if kind in ("symlink", "hardlink")
                 else None
             )
@@ -1191,20 +1201,31 @@ class CheckpointContent:
                 handle, head, row, size=size, offset=offset, masking=masking, chunk=self._chunk
             )
 
-        # ONE BYTE OF OVERLAP, exactly as `read_artifact` takes it: the byte
-        # before `offset` tells `_align` whether the window starts on a token
-        # boundary or inside one.
-        probe = 1 if offset > 0 else 0
+        # THE LOOK-BACK, exactly as `read_artifact` takes it (#207): up to
+        # `KEY_LOOKBACK_BYTES` before `offset`, whose last byte tells `_align`
+        # whether the window starts on a token boundary or inside one, and
+        # whose whole tells `_enter_key` whether it starts inside a private
+        # key. With one byte of overlap and no look-back, a page in the middle
+        # of a key longer than a page held neither marker and was served in
+        # clear.
+        probe = min(offset, KEY_LOOKBACK_BYTES)
         start = min(offset - probe, size)
         end = min(size, offset + window)
         data = _span(handle, head, start=start, end=end, chunk=self._chunk)
         chunk = ObjectSlice(key=row["key"], offset=start, data=data, total_bytes=size)
 
-        if not chunk.data:
-            row.update(status="ok", content="", offset=min(offset, size), truncated=False)
+        if len(chunk.data) <= probe:
+            # Paged past the end, or an empty file: a file that EXISTS.
+            row.update(
+                status="ok",
+                content="",
+                offset=min(offset, size),
+                truncated=False,
+                invalid_utf8_bytes=0,
+            )
             return row
 
-        previous = chunk.data[:probe]
+        previous = chunk.data[probe - 1 : probe] if probe else b""
         raw = chunk.data[probe:]
         begin = chunk.offset + probe
         raw, begin, stop, withheld = _align(
@@ -1214,12 +1235,18 @@ class CheckpointContent:
             at_eof=chunk.end >= chunk.total_bytes,
             read_end=chunk.end,
         )
+        raw, begin, inside_key, key_withheld = _enter_key(
+            chunk.data, raw=raw, start=begin, end=stop, base=chunk.offset
+        )
+        withheld = withheld or key_withheld
+        # Each byte that is not UTF-8 is shown as U+FFFD and COUNTED, as the
+        # artifact route counts it (#207); this used `errors="replace"`, which
+        # replaced them and said nothing.
+        text, undecodable = _decode_window(raw)
         # As `/logs` masks a window (the PR #229 review): a JSON line by its
         # structure -- an agent's session transcript in the workspace is
         # NDJSON -- the rest by the rules, and the task's literals in both.
-        scrubbed = redact_lines(
-            raw.decode("utf-8", errors="replace"), literals=masking.literals
-        )
+        scrubbed = redact_lines(text, inside_key=inside_key, literals=masking.literals)
         complete = stop >= size
         row.update(
             status="ok",
@@ -1230,6 +1257,7 @@ class CheckpointContent:
             truncated=not complete,
             redacted=scrubbed.any,
             redaction_count=scrubbed.count,
+            invalid_utf8_bytes=undecodable,
         )
         if withheld is not None:
             row["detail"] = withheld
@@ -1237,6 +1265,12 @@ class CheckpointContent:
             row["detail"] = (
                 f"{stop} of {size} bytes are shown. This is a window, not the whole "
                 "file -- continue from next_offset, or download the whole checkpoint."
+            )
+        if undecodable:
+            row["detail"] = _with_sentence(
+                row["detail"],
+                f"{undecodable} bytes of this window are not UTF-8 and are shown as "
+                "U+FFFD; the checkpoint download holds them exactly",
             )
         return row
 
@@ -1409,7 +1443,9 @@ def _serve_input_member(
     chunk: int,
 ) -> dict[str, Any]:
     """An archived `input.json`, whole, masked by the task's masker."""
-    text = _span(handle, head, start=0, end=size, chunk=chunk).decode("utf-8", errors="replace")
+    # Counted, as every other window is (#207): a byte that is not UTF-8 is
+    # shown as U+FFFD and the count says so.
+    text, undecodable = _decode_window(_span(handle, head, start=0, end=size, chunk=chunk))
     try:
         document: Any = json.loads(text)
     except ValueError:
@@ -1428,12 +1464,19 @@ def _serve_input_member(
         truncated=False,
         redacted=masked.count > 0,
         redaction_count=masked.count,
+        invalid_utf8_bytes=undecodable,
         detail=(
             "this is the task's input as the worker wrote it for this attempt, masked "
             "by the task's own masker and served whole, as GET /v1/tasks/{id} serves "
             "the input"
         ),
     )
+    if undecodable:
+        row["detail"] = _with_sentence(
+            row["detail"],
+            f"{undecodable} bytes of it are not UTF-8 and are shown as U+FFFD; the "
+            "checkpoint download holds them exactly",
+        )
     return row
 
 

@@ -1677,12 +1677,193 @@ iso_now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 # rule), so a password holding one prints from there. `/logs` decodes a line
 # that is a JSON document and masks it by its structure instead
 # (`swarm_api.redaction.redact_lines`).
+#
+# A PRIVATE KEY IS A BLOCK, NOT A LINE (#206). The rule here was
+# `s/(BEGIN marker).*/\1********/`, and sed is line-at-a-time, so a key
+# printed as text -- `cat id_rsa`, a generated fixture -- had its BEGIN line
+# masked and its base64 body printed underneath. The API's filter has masked a
+# key as a block since #188 (`swarm_api.redaction.mask_private_keys`); this
+# filter now does the same, in the awk stage below, and gives the same output
+# (tests/fixtures/redaction-parity.json, run through both). In short: a BEGIN
+# whose END comes within 64 KiB is masked through the END's line, whatever is
+# between; one with no END in reach is masked through the base64, header and
+# blank lines under it; an END with no BEGIN masks the key material before it
+# on its line and the base64 lines above it, up to 64 KiB. sed cannot look
+# ahead or back, so awk HOLDS lines: at most 64 KiB after a BEGIN until its
+# END is found or out of reach, and a run of base64-shaped lines (a bare word
+# is one) until the line after it. That is a delay on a live `make logs`
+# stream only while one of those is open, and the only way a streaming filter
+# can mask what comes BEFORE an END. Lengths are counted in bytes here and in
+# characters by the API; the two differ only on non-ASCII text within 64 KiB
+# of a marker.
+#
+# NAMES THE KEYWORD DOES NOT END (#224), `api-key` (#227). The assignment rule
+# took the keyword only as the END of the name, so `AWS_SECRET_ACCESS_KEY=`,
+# `private_key:`, `password_hash:`, `SECRET_KEY=` and plurals (`secrets:`,
+# `api_keys=`) printed their values; and it spelled the first keyword
+# `api_?key`, so `X-API-KEY: <v>` and `api-key=<v>` printed theirs while the
+# API masked them. `private[-_]?key` is a keyword now, `api[-_]?key` takes a
+# hyphen, and after any keyword may come a plural `s` and one of the suffixes
+# `key`, `access_key`, `hash` -- one expression per case, beside each of the
+# two above, because sed has no conditional group. Under such a WIDER name a
+# value made only of digits, dots and closing brackets is a count, not a
+# credential (`max_tokens=4096`, `"output_tokens":5}`), and is left alone.
+#
+# `Authorization: token <x>` (#227). The `Bearer` rule knows `Bearer` and
+# `Basic`; the assignment rule masks the first word after `Authorization:`,
+# which is the scheme; so GitHub's `token <x>` printed <x>. After a header
+# NAMED authorization, the value after a known scheme word is masked.
 redact() {
   # SOH: a byte no credential and no log line carries, and one no locale counts
   # as [[:space:]] -- which the assignment rule would otherwise match across.
   local keep=$'\001'
-  local key='"?(api_?key|apikey|password|passwd|secret|token|credential|authorization)"?'
-  sed -E \
+  local key='"?(api[-_]?key|apikey|private[-_]?key|password|passwd|secret|token|credential|authorization)(s|s?[-_](access[-_]?key|key|hash))?"?'
+  # The private-key stage, `swarm_api.redaction.mask_private_keys` restated for
+  # a stream. Q is the queue of lines not yet written; H the base64-shaped lines
+  # an END below may still claim; BL the blank lines inside a key's body, kept
+  # only if the body ends before more of it.
+  # shellcheck disable=SC2016  # an awk program: its $ are awk's
+  local pem='
+    BEGIN {
+      MAX = 65536; SCAN = 4096; MASK = "********"; ARROW = "\342\206\222"
+      BEGRE = "-----BEGIN [A-Z ]*PRIVATE KEY-----"
+      ENDRE = "-----END [A-Z ]*PRIVATE KEY-----"
+      B64 = "^[A-Za-z0-9+/=*]+$"
+      HDR = "^[A-Za-z][A-Za-z0-9-]*:"
+      KEYCH = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=*\\"
+      qh = qt = hh = ht = 1
+    }
+    function numpre(s,    n) {
+      if (!match(s, /^[0-9]+/) || RLENGTH > 9) return 0
+      n = RLENGTH
+      if (substr(s, n + 1, 1) == "\t") n++
+      else if (substr(s, n + 1, 3) == ARROW) n += 3
+      else return 0
+      match(substr(s, n + 1), /^[ \t]*/)
+      return n + RLENGTH
+    }
+    function b64(s,    n) {
+      if (s ~ B64) return 1
+      n = numpre(s)
+      return n > 0 && substr(s, n + 1) ~ B64
+    }
+    function header(s,    n) {
+      if (s ~ HDR) return 1
+      n = numpre(s)
+      return n > 0 && substr(s, n + 1) ~ HDR
+    }
+    function shape(line, headers,    s) {
+      s = line
+      sub(/^[ \t\r]+/, "", s)
+      sub(/[ \t\r]+$/, "", s)
+      if (s == "") return "blank"
+      if (b64(s)) return "base64"
+      if (headers && header(s)) return "header"
+      return ""
+    }
+    function prefixok(p,    n) {
+      sub(/^[ \t\r]+/, "", p)
+      if (p == "") return 1
+      n = numpre(p)
+      return n > 0 && n == length(p)
+    }
+    function hold(line, nr) {
+      H[ht] = line; HN[ht] = nr; ht++
+      hsum += length(line) + 1
+      while (hsum > MAX && hh < ht) {
+        print H[hh]
+        hsum -= length(H[hh]) + 1
+        delete H[hh]; delete HN[hh]; hh++
+      }
+    }
+    function drop(    i) {
+      for (i = hh; i < ht; i++) { delete H[i]; delete HN[i] }
+      hh = ht = 1; hsum = 0
+    }
+    function flush(    i) {
+      for (i = hh; i < ht; i++) print H[i]
+      drop()
+    }
+    function orphan(s, nr,    out, pos, scan, m, ml, at, i, top, cum) {
+      out = ""; pos = 1; scan = 1
+      while (match(substr(s, scan), ENDRE)) {
+        m = scan + RSTART - 1; ml = RLENGTH
+        at = m
+        while (at > pos && index(KEYCH, substr(s, at - 1, 1)) > 0) at--
+        top = 0
+        if (hh < ht && pos == 1 && at - 1 <= (nr == 1 ? SCAN : SCAN - 1) && prefixok(substr(s, 1, at - 1))) {
+          cum = 0
+          for (i = ht - 1; i >= hh; i--) {
+            if (length(H[i]) > (HN[i] == 1 ? SCAN : SCAN - 1)) break
+            cum += length(H[i]) + 1
+            if (cum + m - 1 > MAX) break
+            top = i
+          }
+        }
+        if (top) {
+          for (i = hh; i < top; i++) print H[i]
+          drop()
+          out = MASK; pos = m
+        } else {
+          flush()
+          if (at < m) { out = out substr(s, pos, at - pos) MASK; pos = m }
+        }
+        scan = m + ml
+      }
+      flush()
+      return out substr(s, pos)
+    }
+    function plain(line, nr) {
+      if (shape(line, 0) == "base64") { hold(line, nr); return }
+      if (match(line, ENDRE)) { print orphan(line, nr); return }
+      flush()
+      print line
+    }
+    function decide(rest, eof) {
+      if (!waiting) {
+        if (match(rest, ENDRE)) return (RSTART - 1 <= MAX) ? qh : -1
+        wk = qh + 1; wd = length(rest) + 1; waiting = 1
+      }
+      for (; wk < qt; wk++) {
+        if (wd > MAX) { waiting = 0; return -1 }
+        if (match(Q[wk], ENDRE)) { waiting = 0; return (wd + RSTART - 1 <= MAX) ? wk : -1 }
+        wd += length(Q[wk]) + 1
+      }
+      if (wd > MAX || eof) { waiting = 0; return -1 }
+      return 0
+    }
+    function take() { delete Q[qh]; delete QN[qh]; qh++ }
+    function drain(eof,    line, nr, s, b, bl, k, i) {
+      while (qh < qt) {
+        line = Q[qh]; nr = QN[qh]
+        if (body) {
+          s = shape(line, !seen)
+          if (s == "blank") { bn++; BL[bn] = line; BLN[bn] = nr; take(); continue }
+          if (s != "") { if (s == "base64") seen = 1; bn = 0; take(); continue }
+          body = 0
+          for (i = bn; i >= 1; i--) { qh--; Q[qh] = BL[i]; QN[qh] = BLN[i] }
+          bn = 0
+          continue
+        }
+        if (!match(line, BEGRE)) { plain(line, nr); take(); continue }
+        b = RSTART; bl = RLENGTH
+        k = decide(substr(line, b + bl), eof)
+        if (k == 0) return
+        print orphan(substr(line, 1, b - 1), nr) substr(line, b, bl) MASK
+        if (k > 0) { while (qh <= k) take() }
+        else { take(); body = 1; seen = 0; bn = 0 }
+      }
+    }
+    { Q[qt] = $0; QN[qt] = NR; qt++; drain(0); fflush() }
+    END { drain(1); flush(); for (i = 1; i <= bn; i++) print BL[i] }
+  '
+  # mawk reads a pipe a buffer at a time unless told otherwise, which would hold
+  # a `make logs` tail back by kilobytes; gawk and the BSD awk read what is there.
+  local awk_opts=()
+  case "$(awk -W version 2>&1 </dev/null)" in
+    *mawk*) awk_opts=(-W interactive) ;;
+  esac
+  LC_ALL=C awk ${awk_opts[@]+"${awk_opts[@]}"} "${pem}" | sed -E \
     -e "s/${keep}//g" \
     -e 's/(sk-[A-Za-z0-9_-]{6})[A-Za-z0-9_-]+/\1********/g' \
     -e 's/(ya29\.)[A-Za-z0-9._-]+/\1********/g' \
@@ -1692,11 +1873,13 @@ redact() {
     -e 's/(github_pat_)[A-Za-z0-9_]{8,}/\1********/g' \
     -e 's/(xox[abprs]-)[A-Za-z0-9-]{8,}/\1********/g' \
     -e 's/((AKIA|ASIA)[A-Z0-9]{4})[A-Z0-9]+/\1********/g' \
-    -e 's/(-----BEGIN [A-Z ]*PRIVATE KEY-----).*/\1********/g' \
     -e 's/(([Bb]earer|[Bb]asic)[[:space:]]+)[A-Za-z0-9._~+\/-]{12,}=*/\1********/g' \
-    -e "s/(${key})([[:space:]]*[:=][[:space:]]*\"?)((not set|unset|set|none|\\(none\\)|missing)([\",[:space:]]|\$))/\\1${keep}\\3\\4/Ig" \
-    -e 's/((\\*")?(api_?key|apikey|password|passwd|secret|token|credential|authorization)(\\*")?[[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?\\+")[^"\\,[:space:]]+/\1********/Ig' \
-    -e 's/("?(api_?key|apikey|password|passwd|secret|token|credential|authorization)(\\*")?[[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?"?)(\\+[^",[:space:]\\[]|[^",[:space:]\\[])[^",[:space:]]*/\1********/Ig' \
+    -e 's/(authorization(\\*")?[[:space:]]*[:=][[:space:]]*(\\*")?(token|bearer|basic|digest|negotiate|oauth|api[-_]?key|key|ssws)[[:space:]]+)[^*"\\,[:space:]][^"\\,[:space:]]*/\1********/Ig' \
+    -e "s/(${key})([[:space:]]*[:=][[:space:]]*\"?)((not set|unset|set|none|\\(none\\)|missing)([\",[:space:]]|\$))/\\1${keep}\\5\\6/Ig" \
+    -e 's/((\\*")?(api[-_]?key|apikey|private[-_]?key|password|passwd|secret|token|credential|authorization)(\\*")?[[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?\\+")[^"\\,[:space:]]+/\1********/Ig' \
+    -e 's/((\\*")?(api[-_]?key|apikey|private[-_]?key|password|passwd|secret|token|credential|authorization)(s|s?[-_](access[-_]?key|key|hash))(\\*")?[[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?\\+")[]0-9.)}]*[^]0-9.)}"\\,[:space:]][^"\\,[:space:]]*/\1********/Ig' \
+    -e 's/("?(api[-_]?key|apikey|private[-_]?key|password|passwd|secret|token|credential|authorization)(\\*")?[[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?"?)(\\+[^",[:space:]\\[]|[^",[:space:]\\[])[^",[:space:]]*/\1********/Ig' \
+    -e 's/("?(api[-_]?key|apikey|private[-_]?key|password|passwd|secret|token|credential|authorization)(s|s?[-_](access[-_]?key|key|hash))(\\*")?[[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?"?)(\\+[^",[:space:]\\[]|[]0-9.)}]*[^]0-9.)}",[:space:]\\[])[^",[:space:]]*/\1********/Ig' \
     -e "s/${keep}//g"
 }
 

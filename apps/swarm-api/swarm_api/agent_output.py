@@ -802,6 +802,17 @@ class AgentOutputService:
         result = event.get("result")
         text = result if isinstance(result, str) else None
         scrubbed = redact(text, decoded=True, extra=literals) if text is not None else None
+        # The reason fields beside it, masked with the SAME literals (epic
+        # #227: they had the rules alone, so a value the task named as secret
+        # and the agent echoed into one was served under `content`'s mask) and
+        # counted with it, so `redacted` never says false over a mask.
+        reasons = {
+            field: _text_or_none(event.get(field), literals=literals)
+            for field in ("subtype", "stop_reason", "terminal_reason")
+        }
+        count = (scrubbed.count if scrubbed is not None else 0) + sum(
+            found for _, found in reasons.values()
+        )
         is_error = event.get("is_error")
         num_turns = event.get("num_turns")
         body.update(
@@ -812,23 +823,25 @@ class AgentOutputService:
             content=scrubbed.text if scrubbed is not None else None,
             complete=True if text is not None else None,
             is_error=is_error if isinstance(is_error, bool) else None,
-            subtype=_text_or_none(event.get("subtype")),
-            stop_reason=_text_or_none(event.get("stop_reason")),
-            terminal_reason=_text_or_none(event.get("terminal_reason")),
+            subtype=reasons["subtype"][0],
+            stop_reason=reasons["stop_reason"][0],
+            terminal_reason=reasons["terminal_reason"][0],
             num_turns=num_turns
             if isinstance(num_turns, int) and not isinstance(num_turns, bool)
             else None,
             bytes=len(text.encode("utf-8")) if text is not None else None,
-            redacted=bool(scrubbed and scrubbed.any),
-            redaction_count=scrubbed.count if scrubbed is not None else 0,
+            redacted=count > 0,
+            redaction_count=count,
             detail=None if text is not None else "the result event carries no result text",
         )
 
 
-def _text_or_none(value: Any) -> str | None:
+def _text_or_none(value: Any, *, literals: tuple[str, ...] = ()) -> tuple[str | None, int]:
+    """A result event's string field, masked with the task's literals, and its count."""
     if not isinstance(value, str) or not value:
-        return None
-    return redact(value, decoded=True).text
+        return None, 0
+    masked = redact(value, decoded=True, extra=literals)
+    return masked.text, masked.count
 
 
 def _capture_cut(*, seen: bool, declared: bool | None, whole: bool) -> bool | None:
