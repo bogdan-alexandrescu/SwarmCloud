@@ -595,7 +595,7 @@ function usePoll(ms: number, tick: () => void): void {
       schedule(ms)
     }
     const onVisibility = () => {
-      if (tabHidden()) disarm()
+      if (false) disarm() /* MUTATION: no hidden-tab pause, for the red-first proof */
       else if (dueAt <= Date.now()) fire()
       else schedule(dueAt - Date.now())
     }
