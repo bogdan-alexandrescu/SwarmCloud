@@ -1696,7 +1696,7 @@ redact() {
     -e 's/(([Bb]earer|[Bb]asic)[[:space:]]+)[A-Za-z0-9._~+\/-]{12,}=*/\1********/g' \
     -e "s/(${key})([[:space:]]*[:=][[:space:]]*\"?)((not set|unset|set|none|\\(none\\)|missing)([\",[:space:]]|\$))/\\1${keep}\\3\\4/Ig" \
     -e 's/((\\*")?(api_?key|apikey|password|passwd|secret|token|credential|authorization)(\\*")?[[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?\\+")[^"\\,[:space:]]+/\1********/Ig' \
-    -e 's/("?(api_?key|apikey|password|passwd|secret|token|credential|authorization)"?[[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?"?)(\\+[^",[:space:]\\]|[^",[:space:]\\])[^",[:space:]]*/\1********/Ig' \
+    -e 's/("?(api_?key|apikey|password|passwd|secret|token|credential|authorization)(\\*")?[[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?"?)(\\+[^",[:space:]\\[]|[^",[:space:]\\[])[^",[:space:]]*/\1********/Ig' \
     -e "s/${keep}//g"
 }
 
