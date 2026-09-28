@@ -1732,7 +1732,7 @@ def build_parser() -> argparse.ArgumentParser:
         "artifact", help="print one artifact a task produced, redacted by the API at read time"
     )
     art.add_argument("task_id")
-    art.add_argument("name", help="the artifact's name, as `swarm result` lists it")
+    art.add_argument("name", help=f"the artifact's name, as `{help_command('swarm result')}` lists it")
     art.add_argument("-o", "--output", help="write it to this file instead of stdout")
     art.set_defaults(func=cmd_artifact)
 
