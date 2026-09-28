@@ -1713,11 +1713,52 @@ iso_now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 # `Basic`; the assignment rule masks the first word after `Authorization:`,
 # which is the scheme; so GitHub's `token <x>` printed <x>. After a header
 # NAMED authorization, the value after a known scheme word is masked.
+#
+# A PLURAL NAME IS A COUNT, A KEY-SUFFIXED NAME IS A CREDENTIAL (#260). The
+# wide suffix used to be one alternative -- `s` or `s?[-_](access-key|key|hash)`
+# -- and both took the SAME lenient value class, so `SECRET_KEY=1234567` was
+# left alone exactly like `max_tokens=4096` is meant to be: a run of digits is
+# a count for a bare plural (`tokens`, `secrets`, `keys` counted), never for a
+# name that ENDS in `_key`, `_access_key` or `_hash`, which names a credential
+# as plainly as a singular one does. The plural `s` alternative is now its own
+# suffix on the two "wide" rules below (still lenient on digits); the
+# key/hash suffix moved onto the two SINGULAR rules instead, as an optional
+# group, so `SECRET_KEY=`, `API_ACCESS_KEY=` and `PASSWORD_HASH=` mask a
+# digit-only value exactly as `password=` already does.
+#
+# A PLURAL OR WIDE NAME FOLLOWED BY `: ` DOES NOT TAKE A CAPITALISED ENGLISH
+# WORD OR A STATUS WORD AS ITS VALUE (#260). gcloud's `...your current auth
+# tokens: Reauthentication required.` masked `Reauthentication`, and `Found 3
+# secrets: none leaked` masked `none` (in the Python filter; `none` was
+# already a status word this filter passed through). Neither is a credential:
+# a wide name happened to sit before an ordinary sentence. `$wide_key` is
+# `$key` with its suffix made MANDATORY (a plural or a key/hash name, never a
+# bare singular), and a new exception rule marks a capitalised word
+# (`[A-Z][a-z]+`) safe after `: ` the same way the rule above marks a status
+# word safe -- never after `=`, where a capitalised run is at least as likely
+# to be a real credential.
+#
+# THE PROVIDER PREFIX SURVIVES `Authorization: Bearer ya29...` (#260). The
+# scheme-word rule's value class does not exclude `*`, so once
+# `google_oauth_access_token` (above) had already reduced the token to
+# `ya29.********`, this rule took the WHOLE masked value and served a second,
+# provider-blind `********` -- the line read `Authorization: ******** ********`,
+# not the house style's `Authorization: ******** ya29.********`. sed has no
+# lookahead, so a value that already holds `********` is protected the same
+# way a status word is: a rule ahead of the scheme-word rule matches the same
+# prefix plus a value containing the mask marker and inserts $keep between the
+# delimiter and the scheme word, which breaks the scheme-word rule's own
+# adjacency requirement and leaves the value untouched; the bare key/value
+# rule below still masks the scheme word on its own.
 redact() {
   # SOH: a byte no credential and no log line carries, and one no locale counts
   # as [[:space:]] -- which the assignment rule would otherwise match across.
   local keep=$'\001'
   local key='"?(api[-_]?key|apikey|private[-_]?key|password|passwd|secret|token|credential|authorization)(s|s?[-_](access[-_]?key|key|hash))?"?'
+  # A PLURAL OR WIDE NAME FOLLOWED BY ": " is a mandatory-suffix variant of the
+  # above, used only to spot a capitalised English word standing in for a
+  # value (#260, below).
+  local wide_key='"?(api[-_]?key|apikey|private[-_]?key|password|passwd|secret|token|credential|authorization)(s|s?[-_](access[-_]?key|key|hash))"?'
   # The private-key stage, `swarm_api.redaction.mask_private_keys` restated for
   # a stream. Q is the queue of lines not yet written; H the base64-shaped lines
   # an END below may still claim; BL the blank lines inside a key's body, kept
@@ -1874,12 +1915,14 @@ redact() {
     -e 's/(xox[abprs]-)[A-Za-z0-9-]{8,}/\1********/g' \
     -e 's/((AKIA|ASIA)[A-Z0-9]{4})[A-Z0-9]+/\1********/g' \
     -e 's/(([Bb]earer|[Bb]asic)[[:space:]]+)[A-Za-z0-9._~+\/-]{12,}=*/\1********/g' \
+    -e 's/(authorization(\\*")?[[:space:]]*[:=][[:space:]]*)((\\*")?(token|bearer|basic|digest|negotiate|oauth|api[-_]?key|key|ssws)[[:space:]]+[^"\\,[:space:]]*\*\*\*\*\*\*\*\*[^"\\,[:space:]]*)/\1'"${keep}"'\3/Ig' \
     -e 's/(authorization(\\*")?[[:space:]]*[:=][[:space:]]*(\\*")?(token|bearer|basic|digest|negotiate|oauth|api[-_]?key|key|ssws)[[:space:]]+)[^*"\\,[:space:]][^"\\,[:space:]]*/\1********/Ig' \
     -e "s/(${key})([[:space:]]*[:=][[:space:]]*\"?)((not set|unset|set|none|\\(none\\)|missing)([\",[:space:]]|\$))/\\1${keep}\\5\\6/Ig" \
-    -e 's/((\\*")?(api[-_]?key|apikey|private[-_]?key|password|passwd|secret|token|credential|authorization)(\\*")?[[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?\\+")[^"\\,[:space:]]+/\1********/Ig' \
-    -e 's/((\\*")?(api[-_]?key|apikey|private[-_]?key|password|passwd|secret|token|credential|authorization)(s|s?[-_](access[-_]?key|key|hash))(\\*")?[[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?\\+")[]0-9.)}]*[^]0-9.)}"\\,[:space:]][^"\\,[:space:]]*/\1********/Ig' \
-    -e 's/("?(api[-_]?key|apikey|private[-_]?key|password|passwd|secret|token|credential|authorization)(\\*")?[[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?"?)(\\+[^",[:space:]\\[]|[^",[:space:]\\[])[^",[:space:]]*/\1********/Ig' \
-    -e 's/("?(api[-_]?key|apikey|private[-_]?key|password|passwd|secret|token|credential|authorization)(s|s?[-_](access[-_]?key|key|hash))(\\*")?[[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?"?)(\\+[^",[:space:]\\[]|[]0-9.)}]*[^]0-9.)}",[:space:]\\[])[^",[:space:]]*/\1********/Ig' \
+    -e 's/('"${wide_key}"')([[:space:]]*:[[:space:]]*"?)(([A-Z][a-z]+)(["\,[:space:]]|$))/\1'"${keep}"'\5\6/Ig' \
+    -e 's/((\\*")?(api[-_]?key|apikey|private[-_]?key|password|passwd|secret|token|credential|authorization)(s?[-_](access[-_]?key|key|hash))?(\\*")?[[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?\\+")[^"\\,[:space:]]+/\1********/Ig' \
+    -e 's/((\\*")?(api[-_]?key|apikey|private[-_]?key|password|passwd|secret|token|credential|authorization)s(\\*")?[[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?\\+")[]0-9.)}]*[^]0-9.)}"\\,[:space:]][^"\\,[:space:]]*/\1********/Ig' \
+    -e 's/("?(api[-_]?key|apikey|private[-_]?key|password|passwd|secret|token|credential|authorization)(s?[-_](access[-_]?key|key|hash))?(\\*")?[[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?"?)(\\+[^",[:space:]\\[]|[^",[:space:]\\[])[^",[:space:]]*/\1********/Ig' \
+    -e 's/("?(api[-_]?key|apikey|private[-_]?key|password|passwd|secret|token|credential|authorization)s(\\*")?[[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?"?)(\\+[^",[:space:]\\[]|[]0-9.)}]*[^]0-9.)}",[:space:]\\[])[^",[:space:]]*/\1********/Ig' \
     -e "s/${keep}//g"
 }
 

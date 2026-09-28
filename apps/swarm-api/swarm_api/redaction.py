@@ -484,18 +484,49 @@ def _private_key_rule() -> Rule:
 #: expressions -- the escaped form, then the plain one -- because sed has no
 #: conditional group. `tests/unit/control_plane/test_log_redaction.py` runs both
 #: over the same lines and holds their output equal.
+#:
+#: A PLURAL NAME IS A COUNT, A KEY-SUFFIXED NAME IS A CREDENTIAL (#260). The
+#: wide group used to be one alternative, `s` or `s?[-_](access-key|key|hash)`,
+#: and both took the same lenient value class -- a run of digits alone is a
+#: count, not a credential (`max_tokens=4096`, `"output_tokens":5}`), so it was
+#: left alone. That is right for a bare plural (`tokens`, `secrets`, `keys`
+#: counted): `secrets: 3` and `max_tokens=4096` must stay counts. It is wrong
+#: for a name that ends in `_key`, `_access_key` or `_hash` -- `SECRET_KEY`,
+#: `API_ACCESS_KEY`, `PASSWORD_HASH` -- which name a credential exactly as a
+#: singular one does, digits and all: `SECRET_KEY=1234567` is a leak. `plural`
+#: and `keysuffix` are now two named groups, not one; a key-suffixed name falls
+#: through to the same (always-mask) branch a singular name already used.
+#:
+#: A PLURAL OR WIDE NAME FOLLOWED BY `: ` DOES NOT TAKE A CAPITALISED ENGLISH
+#: WORD OR A STATUS WORD AS ITS VALUE (#260). gcloud's `...your current auth
+#: tokens: Reauthentication required.` masked `Reauthentication` -- a wide name
+#: happened to precede an ordinary sentence, not a credential -- and `Found 3
+#: secrets: none leaked` masked `none`. Before a value is taken under a wide
+#: name reached by `: ` (never `=`, where a capitalised word is at least as
+#: likely to be a real credential), a negative lookahead refuses a status word
+#: (`not set`, `unset`, `set`, `none`, `(none)`, `missing`) or a capitalised
+#: word (`[A-Z][a-z]+`) that runs to a boundary. Singular names are untouched:
+#: the shell filter alone passes a status word through for those (see above),
+#: and that gap is unaffected here.
+_STATUS_OR_CAPITALISED_WORD = (
+    r"(?:not set|unset|missing|\(none\)|none|set|[A-Z][a-z]+)(?=[\"\\,\s]|$)"
+)
 KEY_VALUE = _rule(
     "key_value_assignment",
     "api[-_]?key",
     r"(?<![A-Za-z0-9_.-])"
     r"((?:\\{0,15}\")?[A-Za-z0-9_.-]*"
     r"(?:api[-_]?key|apikey|private[-_]?key|password|passwd|secret|token|credential|authorization)"
-    r"(?P<wide>s|s?[-_](?:access[-_]?key|key|hash))?"
-    r"(?:\\*\")?[ \t]*[:=][ \t]*(?:\[[ \t]*)?(?:(?P<esc>\\+\")|\"?))"
+    r"(?:(?P<plural>s)|(?P<keysuffix>s?[-_](?:access[-_]?key|key|hash)))?"
+    r"(?:\\*\")?[ \t]*(?:(?P<colon>:)|=)[ \t]*(?:\[[ \t]*)?(?:(?P<esc>\\+\")|\"?))"
     r"(?(esc)"
-    r"(?(wide)[0-9.)\]}]*[^0-9.)\]}\"\\,\s][^\"\\,\s]*|[^\"\\,\s]+)"
+    r"(?(colon)(?(plural)(?!" + _STATUS_OR_CAPITALISED_WORD + r")"
+    r"|(?(keysuffix)(?!" + _STATUS_OR_CAPITALISED_WORD + r")|))|)"
+    r"(?(plural)[0-9.)\]}]*[^0-9.)\]}\"\\,\s][^\"\\,\s]*|[^\"\\,\s]+)"
     r"|"
-    r"(?(wide)(?:\\+[^\",\s\\]|[0-9.)\]}]*[^0-9.)\]}\",\s\\])|(?:\\+[^\",\s\\]|[^\",\s\\]))"
+    r"(?(colon)(?(plural)(?!" + _STATUS_OR_CAPITALISED_WORD + r")"
+    r"|(?(keysuffix)(?!" + _STATUS_OR_CAPITALISED_WORD + r")|))|)"
+    r"(?(plural)(?:\\+[^\",\s\\]|[0-9.)\]}]*[^0-9.)\]}\",\s\\])|(?:\\+[^\",\s\\]|[^\",\s\\]))"
     r"[^\",\s]*)",
     re.IGNORECASE,
 )
@@ -540,11 +571,24 @@ RULES: tuple[Rule, ...] = (
     # that name: `token` followed by a word is ordinary prose anywhere else.
     # A value that starts with `*` is one the rule above already masked. The
     # key/value rule then masks the scheme word, as it always has `Bearer`.
+    #
+    # THE PROVIDER PREFIX SURVIVES, IN BOTH FILTERS (#260). `Authorization:
+    # Bearer ya29.a0...` already has its value masked to `ya29.********` by
+    # `google_oauth_access_token` above -- this rule ran anyway, took the
+    # WHOLE masked value (its class does not exclude `*`) and served a second,
+    # provider-blind `********`; the key/value rule then masked the scheme
+    # word too, and the line read `Authorization: ******** ********`, not the
+    # house style's `Authorization: ******** ya29.********`. A value already
+    # holding `********` is left alone: a negative lookahead refuses to take
+    # this rule's value at all when the mask marker is somewhere in the run
+    # ahead, so the scheme word is still masked by the key/value rule and the
+    # provider-tagged value it left behind is not touched a second time.
     _rule(
         "http_authorization_scheme",
         "(token|bearer|basic|digest",
         r"(authorization(?:\\*\")?[ \t]*[:=][ \t]*(?:\\*\")?"
         r"(?:token|bearer|basic|digest|negotiate|oauth|api[-_]?key|key|ssws)[ \t]+)"
+        r"(?![^\"\\,\s]*\*\*\*\*\*\*\*\*)"
         r"[^*\"\\,\s][^\"\\,\s]*",
         re.IGNORECASE,
     ),
