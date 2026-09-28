@@ -1,9 +1,9 @@
 export const meta = {
   name: 'run',
   description: 'Run a SwarmCloud workflow spec with every step executing in SwarmCloud and shown here as a running agent with its live progress',
-  whenToUse: 'You have a SwarmCloud workflow spec, the JSON that swarm workflow reads, and want each step visible in /workflows while it runs remotely. Pass the spec object as args.',
+  whenToUse: 'You have a SwarmCloud workflow spec, the JSON that swarm workflow reads, and want each step visible in /workflows while it runs remotely. Pass the spec object, its JSON text, or the path of the spec file as args.',
   phases: [
-    { title: 'Submit', detail: 'one sc:workflow agent submits the spec with swarm_workflow, checked against the digest this script computed' },
+    { title: 'Submit', detail: 'given a path, one sc:workflow agent reads the file with swarm_workflow_spec; one sc:workflow agent submits the spec with swarm_workflow, checked against the digest this script computed' },
     { title: 'Result', detail: 'one sc:workflow agent reads the workflow state SwarmCloud derived' },
   ],
 }
@@ -47,6 +47,14 @@ export const meta = {
 // would invite a second copy. Only an explicit refusal from swarm_workflow is
 // NOT_SUBMITTED.
 //
+// A SPEC FILE IS READ BY THE BRIDGE. A script has no filesystem, so given a
+// path (anything that is not a spec object or JSON text) one sc:workflow row
+// calls swarm_workflow_spec, which reads and checks the file in the session's
+// checkout and returns the spec with its digest. The row relays both back;
+// the spec is submitted only when this script's digest of what arrived is
+// the bridge's digest of what it read. From there it is the same submission
+// as a spec passed directly, digest check and all.
+//
 // This script derives nothing SwarmCloud decides. The workflow's final state
 // is read back from swarm_workflow_status, which serves the state the server
 // derived from its steps; it is never computed here from the rows.
@@ -77,6 +85,17 @@ const SUBMITTED = {
     error: { type: ['string', 'null'] },
   },
   required: ['workflow_id', 'steps', 'repository', 'repository_notes', 'spec_digest', 'error'],
+}
+
+const READ = {
+  type: 'object',
+  properties: {
+    path: { type: ['string', 'null'] },
+    spec: { type: ['object', 'null'] },
+    spec_digest: { type: ['string', 'null'] },
+    error: { type: ['string', 'null'] },
+  },
+  required: ['path', 'spec', 'spec_digest', 'error'],
 }
 
 const STEP_RESULT = {
@@ -113,15 +132,28 @@ const WORKFLOW_STATE = {
   required: ['state', 'state_note', 'steps'],
 }
 
+// What /sc:run was given: { spec } for a spec object or its JSON text, or
+// { path } for anything else -- the path of a spec file, which the bridge
+// reads (the READ SPEC row below). Text that begins like JSON is JSON with a mistake
+// in it, and is reported as that rather than looked for as a file.
 function readSpec(given) {
   let spec = given
   if (typeof spec === 'string') {
+    const text = spec.trim()
+    const first = text.charAt(0)
+    if (text && first !== '{' && first !== '[' && first !== '"') return { path: text }
     try {
-      spec = JSON.parse(spec)
+      spec = JSON.parse(text)
     } catch (error) {
-      throw new Error('/sc:run takes a SwarmCloud workflow spec object; its argument is a string that is not JSON: ' + error.message)
+      throw new Error('/sc:run takes a SwarmCloud workflow spec object, its JSON text, or the path of a spec file; its argument begins like JSON and is not JSON: ' + error.message)
     }
+    if (typeof spec === 'string' && spec.trim()) return { path: spec.trim() }
   }
+  return { spec: checkSpec(spec) }
+}
+
+function checkSpec(given) {
+  let spec = given
   if (spec && typeof spec === 'object' && !Array.isArray(spec) && spec.spec && typeof spec.spec === 'object') {
     spec = spec.spec
   }
@@ -228,6 +260,12 @@ function narrate(stepId, result) {
   const parts = [stepId + ' ' + (result.state || 'UNKNOWN'), duration(result.duration_s), money(result.cost_usd)]
   const pr = pullRequest(result.pr_url)
   if (pr) parts.push(pr)
+  // What it produced, by name: a row that ends without saying so sends the
+  // reader to the console to find out. Said for a success that made nothing,
+  // too, rather than left to be read off a missing clause.
+  const made = Array.isArray(result.artifacts) ? result.artifacts.filter((name) => typeof name === 'string' && name) : []
+  if (made.length > 0) parts.push('produced ' + clip(made.join(', '), 120))
+  else if (result.state === 'SUCCEEDED') parts.push('produced no artifacts')
   if (result.state !== 'SUCCEEDED' && result.last_error) parts.push(clip(result.last_error, 100))
   return parts.join(' · ')
 }
@@ -296,7 +334,48 @@ function stepPrompt(workflowId, step) {
   ].join('\n')
 }
 
-const spec = readSpec(args)
+function notSubmitted(error) {
+  log('not submitted · ' + clip(error, 200))
+  return { workflow_id: null, state: 'NOT_SUBMITTED', error: error, steps: [] }
+}
+
+const given = readSpec(args)
+phase('Submit')
+
+let spec = given.spec
+if (given.path) {
+  // Nothing is submitted until the relayed spec digests to what the bridge read.
+  let read = null
+  let readFailure = null
+  try {
+    read = await agent('READ SPEC\npath: ' + given.path, {
+      label: 'read spec',
+      phase: 'Submit',
+      agentType: 'sc:workflow',
+      schema: READ,
+    })
+  } catch (error) {
+    readFailure = failureText(error)
+  }
+  if (!read || read.error || !read.spec) {
+    if (read && read.error) return notSubmitted(read.error)
+    const why = readFailure ? 'the row reading ' + given.path + ' failed: ' + readFailure : 'the row reading ' + given.path + ' stopped before it answered'
+    return notSubmitted(why + '. Nothing was submitted.')
+  }
+  try {
+    spec = checkSpec(read.spec)
+  } catch (error) {
+    return notSubmitted(given.path + ': ' + failureText(error) + '. Nothing was submitted.')
+  }
+  const relayed = specDigest(spec)
+  if (relayed !== read.spec_digest) {
+    return notSubmitted(
+      'the bridge read ' + (read.path || given.path) + ' with digest ' + (read.spec_digest || 'none') + ', and the spec relayed from it has digest ' + relayed + ': it was changed on the way, so nothing was submitted. Run /sc:run again, or pass the spec object itself.',
+    )
+  }
+  log('read the spec from ' + (read.path || given.path) + ' · ' + relayed)
+}
+
 const digest = specDigest(spec)
 const specLabel = typeof spec.label === 'string' && spec.label.trim() ? spec.label.trim() : null
 const stages = {}
@@ -304,7 +383,6 @@ for (const step of spec.steps) {
   if (step && typeof step.stage === 'string' && step.stage.trim()) stages[step.step_id] = step.stage.trim()
 }
 
-phase('Submit')
 let submitted = null
 let submitFailure = null
 try {
@@ -331,8 +409,7 @@ if (!submitted || (!submitted.workflow_id && !submitted.error)) {
 
 if (!submitted.workflow_id) {
   // An explicit refusal: swarm_workflow answered with an error, so nothing was sent.
-  log('not submitted · ' + clip(submitted.error, 200))
-  return { workflow_id: null, state: 'NOT_SUBMITTED', error: submitted.error, steps: [] }
+  return notSubmitted(submitted.error)
 }
 
 const problems = mismatches(spec, submitted, digest)

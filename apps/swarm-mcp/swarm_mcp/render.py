@@ -1496,6 +1496,73 @@ def agents_subtitle(
 # --------------------------------------------------------------------------
 
 
+def _size(value: Any, style: Style) -> str:
+    """`47 bytes`, or the not-measured mark for a size nobody recorded."""
+    if isinstance(value, int) and not isinstance(value, bool):
+        return f"{value} bytes"
+    return style.dash
+
+
+def produced_lines(
+    produced: dict[str, Any],
+    style: Style,
+    *,
+    fetch_with: str | None = None,
+) -> list[str]:
+    """What a task produced beyond its code, as `swarm result` and `sc task` show it (#143).
+
+    `produced` is `client.outputs_of`'s dict. `fetch_with` is the command that
+    fetches one artifact, spelled by the caller where it runs, with `<name>`
+    in place of the artifact's name -- this module stays pure, and a list
+    that names files without saying how to read one sends the reader to the
+    console anyway.
+
+    THREE ANSWERS ABOUT ARTIFACTS, never collapsed into "none": the listing
+    failed, the task has not finished (artifacts are uploaded when the attempt
+    ends), or it finished and produced none.
+    """
+
+    def label(name: str) -> str:
+        return f"  {style.paint(name.ljust(9), 'dim')} "
+
+    lines: list[str] = []
+    artifacts = produced.get("artifacts")
+    if artifacts is None:
+        why = produced.get("artifacts_unavailable_because") or "no reason reported"
+        lines.append(label("produced") + style.paint(f"{style.dash} artifacts could not be listed: {why}", "warn"))
+    elif not produced.get("artifacts_complete"):
+        lines.append(label("produced") + f"{style.dash} artifacts are uploaded when the attempt ends")
+    elif not artifacts:
+        lines.append(label("produced") + "no artifacts")
+    else:
+        for artifact in artifacts:
+            lines.append(label("produced") + f"{artifact['name']}  {_size(artifact.get('bytes'), style)}")
+        if fetch_with:
+            first = artifacts[0]["name"]
+            lines.append(label("fetch") + style.paint(fetch_with.replace("<name>", first), "dim"))
+    for name in produced.get("artifacts_skipped") or []:
+        lines.append(label("skipped") + style.paint(f"{name} (over the artifact size cap)", "warn"))
+    runner = [str(v) for v in (produced.get("runner_status"), produced.get("runner_summary")) if v]
+    if runner:
+        lines.append(label("runner") + _fit(style.sep.join(runner), max(20, style.usable - 12), style))
+    exit_code = produced.get("exit_code")
+    seconds = produced.get("duration_s")
+    if exit_code is not None or seconds is not None:
+        lines.append(
+            label("exit")
+            + f"exit code {style.dash if exit_code is None else exit_code}"
+            + style.sep
+            + (style.dash if seconds is None else f"{seconds}s")
+        )
+    for item in produced.get("staged_inputs") or []:
+        lines.append(
+            label("input")
+            + f"{item.get('filename') or style.dash}  {_size(item.get('bytes'), style)}"
+            + f"  from {item.get('from_task') or style.dash}"
+        )
+    return lines
+
+
 def render_task(
     task: dict[str, Any] | None,
     style: Style,
@@ -1504,6 +1571,8 @@ def render_task(
     error: str | None = None,
     patch: str | None = None,
     no_patch_because: str | None = None,
+    produced: dict[str, Any] | None = None,
+    fetch_with: str | None = None,
 ) -> list[str]:
     if task is None:
         return [
@@ -1545,6 +1614,10 @@ def render_task(
     note = task_note(task, style)
     if note.text:
         lines.append(f"  {style.paint('why', 'dim')}       {style.paint(note.text, note.tone)}")
+    # WHAT IT PRODUCED, before the code (#143): a step that cloned no
+    # repository printed only that, over an output.txt it had written.
+    if produced is not None:
+        lines += produced_lines(produced, style, fetch_with=fetch_with)
 
     git = ((task.get("result_summary") or {}).get("git")) or {}
     if not git:

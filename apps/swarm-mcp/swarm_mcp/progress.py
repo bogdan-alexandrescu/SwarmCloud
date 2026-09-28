@@ -63,6 +63,7 @@ import base64
 import binascii
 import json
 import time
+import zlib
 from typing import Any, Callable
 
 from swarm_common.states import PENDING_STATES
@@ -179,6 +180,15 @@ def encode_since(
     base64url of compact JSON: opaque to the caller, readable by anyone
     debugging a row, and carrying nothing the follow report did not already
     show -- byte positions, event counts, attempt ids, state names and counts.
+
+    THEN A DOT AND A CHECKSUM (epic #227): eight hex digits of the CRC-32 of
+    the base64 text. A haiku relay copies this token by hand on every call,
+    and base64 JSON with nothing to check it against can decode, after a
+    one-character slip, to a DIFFERENT position -- one that moved forward
+    loses output with nothing said. CRC-32 detects every single-character
+    change, and every burst of up to 32 bits; `decode_since` refuses a token
+    whose checksum does not match. `.` is outside the base64url alphabet, so
+    the split is unambiguous.
     """
     payload = {
         "v": SINCE_VERSION,
@@ -189,15 +199,37 @@ def encode_since(
         "f": {k: int(v) for k, v in (failures or {}).items() if v},
     }
     raw = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
-    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+    body = base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+    return f"{body}.{_checksum(body)}"
+
+
+def _checksum(body: str) -> str:
+    return f"{zlib.crc32(body.encode('ascii')):08x}"
 
 
 def _payload(token: Any) -> dict[str, Any] | None:
-    """A token's JSON, or None when it is absent, unreadable or of another version."""
+    """A token's JSON, or None when it is absent, unreadable or of another version.
+
+    A token that HAS a checksum and fails it raises: that is a token which was
+    issued and then changed on the way back, and reading it would resume from
+    a position nobody issued. A token with no checksum at all -- garbage, or
+    one minted by a bridge older than the checksum -- is unreadable, and
+    `decode_since` starts over from it and says so.
+    """
     if not isinstance(token, str) or not token:
         return None
+    body, dot, checksum = token.strip().rpartition(".")
+    if not dot:
+        return None
+    if checksum != _checksum(body):
+        raise SwarmError(
+            "the `since` token fails its checksum: it is not the token a previous "
+            "call returned, and was changed on its way back here -- a single "
+            "character is enough. Nothing was read. Pass `since` back unchanged, "
+            "exactly as it was returned, or omit it to start again from the beginning"
+        )
     try:
-        padded = token + "=" * (-len(token) % 4)
+        padded = body + "=" * (-len(body) % 4)
         payload = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")))
     except (ValueError, binascii.Error, UnicodeError):
         return None
@@ -233,6 +265,10 @@ def decode_since(
     rule `follow._normalise` states: a position that quietly became zero costs
     a repeat, a position that quietly became large loses output, and only one
     of those is recoverable. The failed-read streak is `read_failures`.
+
+    A token whose checksum does not match is NOT unreadable: it is a changed
+    token, and it raises `SwarmError` rather than starting over (see
+    `_payload`), so the relay that changed it is told to pass it back as given.
     """
     if token is None or token == "":
         return {}, {}, {}, {}, None
@@ -414,9 +450,9 @@ def watch(
 ) -> dict[str, Any]:
     """Everything these tasks produced in one window, as short lines.
 
-    Returns `{since, tasks, lines, all_finished, stop, truncated, truncation,
-    ...}`. `since` is what to pass next time. A task that has finished carries
-    its `outcome` (see `outcome`). `stop` is true when calling again cannot
+    Returns `{lines, since, tasks, all_finished, stop, truncated, truncation,
+    ...}`, `lines` first. `since` is what to pass next time. A task that has
+    finished carries its `outcome` (see `outcome`). `stop` is true when calling again cannot
     change anything: every task has finished, or has been given up on -- it
     could not be read (see `READ_FAILURE_LIMIT`), or it is not the `step_id`
     this row expects -- and a task given up on carries `abandoned_because`.
@@ -636,9 +672,12 @@ def watch(
         t.get("abandoned") or (t["terminal"] and t.get("outcome") is not None) for t in tasks
     )
     reply: dict[str, Any] = {
+        # LINES FIRST (epic #227). The /workflows row detail shows the START of
+        # each result, and with `since` first it showed a cursor instead of
+        # what the task was doing. JSON keeps this order through the tool.
+        "lines": shown,
         "since": encode_since(cursor, states, said, groups, failures),
         "tasks": tasks,
-        "lines": shown,
         "all_finished": all_finished,
         "stop": stop,
         "still_running": [t["task_id"] for t in tasks if not t["terminal"] and not t.get("abandoned")],
