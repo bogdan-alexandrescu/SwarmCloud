@@ -848,11 +848,19 @@ describe('OV-16: the running count re-reads every 60 seconds and says how old it
    * from a count of unknown age. The owner set its cadence at 60 seconds; the
    * age is beside the figure and in the sentence that reasons from it.
    *
+   * `usePoll` (#168) schedules with `setTimeout`, re-armed per tick, rather
+   * than `setInterval` -- it has to pause while `document.hidden` and finish
+   * the wait it was part-way through on return, which a restarted interval
+   * cannot do without the same due-time bookkeeping. It always schedules its
+   * REGULAR tick as `setTimeout(fire, ms)` with the literal `ms`, so spying
+   * on `setTimeout` and keying on that value still tells the 60 s stats timer
+   * apart from the 20 s poll.
+   *
    * MUTATION: put stats back on the manual cadence, or on the 20s poll, or
    * drop either age.
    */
   it('re-reads /v1/stats on a 60-second timer and not on the 20-second one', async () => {
-    const spy = vi.spyOn(globalThis, 'setInterval')
+    const spy = vi.spyOn(globalThis, 'setTimeout')
     try {
       await mountWith()
       const timers = spy.mock.calls.map((c) => ({ fn: c[0] as unknown as () => void, ms: c[1] }))

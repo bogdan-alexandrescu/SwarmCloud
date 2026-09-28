@@ -565,7 +565,14 @@ function tabHidden(): boolean {
  *
  * A timeout re-armed per tick rather than an interval, because the due time
  * has to survive a pause: an interval restarted on return would either fire
- * late or need the same bookkeeping.
+ * late or need the same bookkeeping. Every REGULAR tick schedules with `ms`
+ * itself (not a delta against `Date.now()`), so the timer this hook creates
+ * on mount and on every tick after that is `setTimeout(fire, ms)` exactly --
+ * OV-16 (layout.overview.test.tsx) spies on `setTimeout` and keys its
+ * assertion on that literal `ms`, for the 20 s poll and the 60 s stats read
+ * each having their own hook instance. Only the resume-from-hidden path
+ * schedules a shorter, computed delay, to finish the wait a tick was
+ * part-way through rather than restart it.
  */
 function usePoll(ms: number, tick: () => void): void {
   const latest = useRef(tick)
@@ -577,22 +584,22 @@ function usePoll(ms: number, tick: () => void): void {
       if (timer !== null) clearTimeout(timer)
       timer = null
     }
-    const arm = () => {
+    const schedule = (delay: number) => {
       disarm()
-      timer = setTimeout(fire, Math.max(0, dueAt - Date.now()))
+      dueAt = Date.now() + delay
+      timer = setTimeout(fire, delay)
     }
     const fire = () => {
       timer = null
-      dueAt = Date.now() + ms
       latest.current()
-      arm()
+      schedule(ms)
     }
     const onVisibility = () => {
       if (tabHidden()) disarm()
       else if (dueAt <= Date.now()) fire()
-      else arm()
+      else schedule(dueAt - Date.now())
     }
-    if (!tabHidden()) arm()
+    if (!tabHidden()) schedule(ms)
     if (typeof document !== 'undefined') document.addEventListener('visibilitychange', onVisibility)
     return () => {
       disarm()
