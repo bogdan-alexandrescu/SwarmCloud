@@ -765,7 +765,7 @@ def _prune_all_holds(db: Any, store: Any, now: datetime) -> dict[str, Any]:
     readable = [account.account_id for account in accounts]
     streamed = [str(doc.id) for doc in db.collection(ACCOUNTS_COLLECTION).stream()]
     unreadable = sorted(set(streamed) - set(readable))
-    for account_id in [*readable, *unreadable]:
+    for account_id in readable:  # MUTATION: main's sweep over readable documents only, for the red-first proof
         try:
             dropped = prune_holds(db, account_id, now=now)
         except _MALFORMED as exc:
