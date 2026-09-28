@@ -2094,7 +2094,7 @@ def create_app(
         expiry, pruned by the quota sweep. It is NOT covered by the reconciler,
         which has no account code; this docstring used to say otherwise.
         """
-        store = _accounts(request)
+        _accounts(request)  # refuse early if the pool is not configured
         db = request.app.state.broker.db
         # The RAW document, never the decoded `Account` (#243): a hold on a
         # document that has since gone malformed must still be given back, and
@@ -2107,7 +2107,6 @@ def create_app(
             return {
                 "account_id": account_id,
                 "assigned": None,
-                "account": None,
                 "reason": "account_removed",
             }
 
@@ -2146,18 +2145,20 @@ def create_app(
                     "detail": body.unusable,
                 },
             )
-        # The hold is already given back; rendering the account is a courtesy
-        # and must not turn that into a 500. Null on a document the decoder
-        # cannot read (`_decode` has logged it by id and class) or one removed
-        # since -- the worker reads `assigned` alone.
-        try:
-            current = store.get(account_id)
-        except MalformedAccountError:
-            current = None
+        # NO RENDERED ACCOUNT HERE, deliberately. This used to answer with
+        # `account_to_api(store.get(account_id))` as a courtesy -- but
+        # `release_hold`'s own transaction just rewrote `holds` and `assigned`
+        # on this document (`_hold_payload`, always, whether or not anything
+        # was held), and that rewrite can be exactly what turns a malformed
+        # document decodable: a document bad only in its `assigned` field
+        # decodes clean the moment `assigned` is freshly written, while every
+        # OTHER field the document was planted or hand-edited with -- `reason`
+        # not least -- decodes right along with it and reaches this response.
+        # The caller (`agent_worker.accountlease`) only ever reads `assigned`;
+        # nothing here needs a rendered account, so nothing here reads one.
         return {
             "account_id": account_id,
             "assigned": assigned,
-            "account": account_to_api(current) if current is not None else None,
             # "" when the hold was found and released; `not_held` when it was
             # not, which is what a duplicate release and a forged id both look
             # like. Not an error either way -- but not silence either.
