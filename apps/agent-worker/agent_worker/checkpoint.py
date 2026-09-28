@@ -33,9 +33,11 @@ tenant from delivering the wrong working tree.
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
+import stat
 import tarfile
 import tempfile
 from dataclasses import dataclass, asdict
@@ -142,6 +144,17 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _tarinfo(arcname: str, st: os.stat_result, kind: bytes) -> tarfile.TarInfo:
+    """A directory or symlink member from a stat already taken without following."""
+    info = tarfile.TarInfo(arcname)
+    info.type = kind
+    info.mode = stat.S_IMODE(st.st_mode)
+    info.uid = st.st_uid
+    info.gid = st.st_gid
+    info.mtime = int(st.st_mtime)
+    return info
+
+
 class CheckpointManager:
     """Creates, uploads, discovers and restores workspace checkpoints."""
 
@@ -163,7 +176,12 @@ class CheckpointManager:
         self._generation = generation
         self._log = logger
         self._max_bytes = max_bytes
+        #: The id sequence: the last `ckpt-NNNNN` this attempt used, continued
+        #: from the checkpoint a resumed attempt restored (#174).
         self._seq = 0
+        #: How many checkpoints THIS attempt committed. Not the same number
+        #: once a restore has continued the ids; see `seq`.
+        self._written = 0
         #: Written into every manifest `create` uploads. The lifecycle sets it
         #: once the clone has landed, or once it has been read back from the
         #: checkpoint a resumed attempt restored, so it carries forward.
@@ -171,7 +189,14 @@ class CheckpointManager:
 
     @property
     def seq(self) -> int:
-        return self._seq
+        """Checkpoints THIS attempt committed -- not the id sequence.
+
+        The heartbeat sends this as "checkpoints" (`lifecycle._progress`), and
+        #174 asked that it keep meaning what it meant before ids continued
+        across attempts: an attempt that restored ckpt-00007 and has written
+        one reports 1, not 8. The id is on the record (`CheckpointRecord.seq`).
+        """
+        return self._written
 
     # -- create ------------------------------------------------------------
     def create(self, ws: Workspace, *, label: str = "periodic") -> CheckpointRecord:
@@ -194,11 +219,9 @@ class CheckpointManager:
         # restore would fail and the attempt with it. It names this attempt's
         # directory besides, and a resumed attempt makes its own.
         #
-        # What is BEHIND the link is not archived either, and nothing has to
-        # be done for that: `Path.rglob` does not descend into a symlinked
-        # directory (3.11 checks `is_dir(follow_symlinks=False)`), so
-        # `_write_archive` meets the link as one entry and never its contents.
-        # Those files are the artifacts, which are uploaded on their own.
+        # What is BEHIND the link is not archived either: `_write_archive`
+        # follows no link, so it meets the link as one entry and never its
+        # contents. Those files are the artifacts, uploaded on their own.
         #
         # The checkout's link too (#226): with a repository attached the agent
         # starts in `work/repo`, so the lifecycle links `work/repo/artifacts`
@@ -213,10 +236,10 @@ class CheckpointManager:
         # the restore (STEP 4) and before the runner starts, so a resumed
         # attempt reads the one it wrote, never an archived one.
         skip = frozenset(
-            path
+            path.relative_to(ws.work).as_posix()
             for path in (ws.artifacts_link(), ws.artifacts_link(ws.checkout()))
             if ws.is_artifacts_link(path)
-        ) | {ws.input_path}
+        ) | {ws.input_path.relative_to(ws.work).as_posix()}
         with tempfile.TemporaryDirectory(prefix="swarm-ckpt-") as tmpdir:
             archive_path = Path(tmpdir) / ARCHIVE_NAME
             file_count = self._write_archive(ws.work, archive_path, skip=skip)
@@ -251,6 +274,7 @@ class CheckpointManager:
                 json.dumps({**asdict(record), "label": label}, indent=2).encode("utf-8"),
                 content_type="application/json",
             )
+            self._written += 1
 
         self._log.info(
             "checkpoint written",
@@ -262,25 +286,117 @@ class CheckpointManager:
         return record
 
     def _write_archive(
-        self, source: Path, archive_path: Path, *, skip: frozenset[Path] = frozenset()
+        self, source: Path, archive_path: Path, *, skip: frozenset[str] = frozenset()
     ) -> int:
+        """Archive the tree under `source`, following NO link, the root included.
+
+        Returns the members that are not directories, which is how the API's
+        listing counts them (`checkpoint_content`). `skip` holds names relative
+        to `source`; a skipped directory is not descended into.
+
+        A LINKED ROOT IS REFUSED (#227). `work/` is in the agent's reach, and
+        `Path.rglob` -- what this walked before -- lists the TARGET of a linked
+        root while declining links below it, so an agent that swapped `work/`
+        for a link had whatever it pointed at uploaded as the newest checkpoint.
+        Refused rather than archived empty: an empty checkpoint would commit as
+        the newest and a resume would restore nothing, where a refusal leaves
+        the last real checkpoint the newest. The lifecycle logs the refusal as
+        CHECKPOINT FAILED with this error's text.
+
+        BY DIRECTORY DESCRIPTOR, NOT BY PATH. A check that `work/` is not a link
+        followed by a walk of the path is the same race #227's other boxes
+        describe: the link swapped in between is followed. So the root is
+        opened with `O_NOFOLLOW`, and every entry below it is looked up, opened
+        or read relative to its parent's descriptor, the last component again
+        `O_NOFOLLOW`. An entry that vanishes or changes type mid-walk is left
+        out rather than failing the checkpoint; a live tree is never archived
+        atomically, and the next checkpoint takes it.
+
+        An explicit stack, not recursion: open descriptors are bounded by the
+        tree's depth, and a deep tree cannot raise `RecursionError` here.
+        """
+        try:
+            root_fd = os.open(source, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        except OSError as exc:
+            raise CheckpointError(
+                f"refusing to checkpoint {source}: it is a link or not a directory "
+                f"({exc.strerror}), and archiving it would archive whatever it "
+                f"points at"
+            ) from exc
         count = 0
-        with tarfile.open(archive_path, "w:gz") as tar:
-            for entry in sorted(Path(source).rglob("*")):
-                if entry in skip:
-                    continue
-                if entry.is_symlink():
-                    tar.add(entry, arcname=str(entry.relative_to(source)), recursive=False)
-                    count += 1
-                    continue
-                if entry.is_dir():
-                    tar.add(entry, arcname=str(entry.relative_to(source)), recursive=False)
-                    continue
-                if not entry.is_file():
-                    continue  # sockets and FIFOs are not state worth carrying
-                tar.add(entry, arcname=str(entry.relative_to(source)), recursive=False)
-                count += 1
+        stack: list[tuple[int, str, list[str]]] = []
+        try:
+            stack.append((root_fd, "", sorted(os.listdir(root_fd), reverse=True)))
+        except BaseException:
+            os.close(root_fd)
+            raise
+        try:
+            with tarfile.open(archive_path, "w:gz") as tar:
+                while stack:
+                    dir_fd, prefix, names = stack[-1]
+                    if not names:
+                        stack.pop()
+                        os.close(dir_fd)
+                        continue
+                    name = names.pop()  # reverse-sorted, so this is the smallest
+                    rel = prefix + name
+                    if rel in skip:
+                        continue
+                    try:
+                        count += self._add_entry(tar, stack, dir_fd, name, rel)
+                    except (FileNotFoundError, NotADirectoryError):
+                        continue  # gone, or no longer a directory
+                    except OSError as exc:
+                        if exc.errno == errno.ELOOP:
+                            continue  # became a link after it was looked at
+                        raise
+        finally:
+            for dir_fd, _, _ in stack:
+                os.close(dir_fd)
         return count
+
+    @staticmethod
+    def _add_entry(
+        tar: tarfile.TarFile,
+        stack: list[tuple[int, str, list[str]]],
+        dir_fd: int,
+        name: str,
+        rel: str,
+    ) -> int:
+        """Add one entry of the directory open as `dir_fd`; 1 when it counts.
+
+        A directory is pushed onto `stack` open, for the walk to descend into.
+        """
+        st = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+        if stat.S_ISLNK(st.st_mode):
+            info = _tarinfo(rel, st, tarfile.SYMTYPE)
+            info.linkname = os.readlink(name, dir_fd=dir_fd)
+            tar.addfile(info)
+            return 1
+        if stat.S_ISDIR(st.st_mode):
+            child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=dir_fd)
+            try:
+                info = _tarinfo(rel, os.fstat(child), tarfile.DIRTYPE)
+                names = sorted(os.listdir(child), reverse=True)
+            except BaseException:
+                os.close(child)
+                raise
+            stack.append((child, rel + "/", names))
+            tar.addfile(info)
+            return 0
+        if not stat.S_ISREG(st.st_mode):
+            return 0  # sockets and FIFOs are not state worth carrying
+        # O_NONBLOCK so a FIFO swapped in after the stat cannot hang the open;
+        # the type is checked again on what was actually opened.
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dir_fd)
+        with os.fdopen(fd, "rb") as handle:
+            # `gettarinfo` over the open file: its fstat, and tarfile's own
+            # hard-link bookkeeping, as `tar.add` had.
+            info = tar.gettarinfo(arcname=rel, fileobj=handle)
+            if info is None or not (info.isreg() or info.islnk()):
+                return 0
+            tar.addfile(info, handle if info.isreg() else None)
+        return 1
 
     # -- ownership ---------------------------------------------------------
     @property
@@ -402,9 +518,27 @@ class CheckpointManager:
             tar.extractall(path=ws.work, members=members)
         archive_path.unlink(missing_ok=True)
 
-        # The sequence continues from the restored checkpoint so checkpoint ids
-        # stay monotonic for a human reading the bucket.
-        self._seq = max(self._seq, 0)
+        # The ids continue from the restored checkpoint (#174), so they stay
+        # monotonic along the chain of attempts a person reads in the bucket
+        # and on the attempt documents. Each attempt's ids still sit under its
+        # own prefix, so continuing from an OLDER checkpoint than the newest
+        # (a pointer can name one) collides with nothing. `seq`, the
+        # heartbeat's count, is not moved: it stays this attempt's.
+        #
+        # The manifest is data read from a bucket, so its `seq` is used only
+        # when it is a non-negative integer. Anything else would make every
+        # later `create` raise formatting the id, and invariant 8 says this
+        # attempt must keep checkpointing; its ids start again at 1 instead.
+        restored_seq = record.seq
+        is_count = isinstance(restored_seq, int) and not isinstance(restored_seq, bool)
+        if is_count and restored_seq >= 0:
+            self._seq = max(self._seq, restored_seq)
+        else:
+            self._log.warning(
+                "the restored checkpoint's seq is not a count; this attempt's ids start at 1",
+                checkpoint_id=record.checkpoint_id,
+                seq_type=type(restored_seq).__name__,
+            )
         restored = sum(1 for _ in ws.work.rglob("*") if _.is_file())
         self._log.info(
             "checkpoint restored",

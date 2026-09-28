@@ -14,13 +14,21 @@ into `last_error`.
 The platform's own path for a private repository is the tenant's git secret,
 `swarm-tenant-<tenant>-git`, which the worker hands to git in a 0600 file at
 clone time. So: userinfo that can carry a credential is a 422 that names that
-path, on a task and on a workflow; an ssh login name and the scp form are
-not credentials and are accepted; and a URL stored before the refusal is
-served with its userinfo masked and counted.
+path, on a task and on a workflow; the conventional `git` ssh login, in the
+`ssh://` form and the scp form, is not a credential and is accepted; and a URL
+stored before the refusal is served with its userinfo masked and counted.
+
+THE SSH USER POSITION (wave 2026-09-27, epic #227). The first version of the
+rule treated ANY bare ssh user name as a login, so `ssh://<token>@host/o/r`
+and `git@<token>@host:o/r` were accepted and stored whole. A token is as easily
+put where the user goes as where the password goes, and no forge's ssh
+endpoint logs in as anything but `git`, so on ssh only `git` is a login: any
+other user, in either form, is refused, and the refusal names no part of it.
 
 MUTATIONS: drop the userinfo check from `validation.check_repository_url`;
-restate it in one schema only; refuse an ssh login name; serve
-`task.repository_url` as stored from `task_to_api`.
+restate it in one schema only; refuse the `git` ssh login; accept any bare
+ssh user name again; return None for every scp-form URL again; echo the URL
+in the refusal; serve `task.repository_url` as stored from `task_to_api`.
 """
 
 from __future__ import annotations
@@ -42,12 +50,34 @@ REFUSED = [
     f"https://{TOKEN}@github.com/o/r.git",
     f"https://bob:{PASSWORD}@git.example.com/team/r",
     f"ssh://git:{PASSWORD}@github.com/o/r.git",
+    # A token in the ssh USER position, not only the password's.
+    f"ssh://{TOKEN}@github.com/o/r.git",
+    f"ssh://{PASSWORD}@git.example.com/team/r",
+    f"ssh://git@{TOKEN}@github.com/o/r.git",
+    f"git@{TOKEN}@github.com:o/r.git",
+    f"git@x-access-token:{TOKEN}@github.com:o/r.git",
+    # THE M1 FIX (PR #256 security review). For `ssh://`, the authority used to
+    # end at the first `/`, `?` OR `#`, so a token followed by `#` or `?` (never
+    # `/`, which forge hosts refuse in a user name) closed the authority before
+    # its own `@` and the token was accepted and stored whole. git's own
+    # `parse_connect_url` ends an ssh host at `/` only.
+    f"ssh://{TOKEN}#@github.com/o/r",
+    f"ssh://{TOKEN}?@github.com/o/r",
+    # The scp branch used to run only when the whole URL held no `://`
+    # anywhere, so a `://` later in the path (never in a real repository path)
+    # sent an scp-form URL — decided by its `git@` prefix, not by that scan —
+    # to the URL branch instead, which never looked at its userinfo at all.
+    f"git@{TOKEN}@github.com:o/r://x",
+    f"git@{TOKEN}:pw@github.com:o/r?a://b",
 ]
 ACCEPTED = [
     "https://github.com/o/r",
     "https://github.com/o/r.git?ref=main#readme",
     "ssh://git@github.com/o/r.git",
     "git@github.com:o/r.git",
+    "git@git.example.com:team/r",
+    # No user at all: ssh then logs in as the local user, which carries nothing.
+    "ssh://github.com/o/r.git",
     # An `@` after the authority is a path, not userinfo.
     "https://github.com/o/r/tree/main@v1",
 ]
@@ -100,6 +130,44 @@ def test_a_workflow_submitted_with_one_is_refused_by_the_same_rule(client, db):
     assert TOKEN not in response.text
 
 
+@pytest.mark.parametrize("url", [u for u in REFUSED if u.startswith(("ssh://", "git@"))])
+def test_an_ssh_refusal_names_no_part_of_the_value(url):
+    """The message is built from constants only. The whole userinfo would be the
+    obvious leak; a message that quoted the user name alone, or the host after
+    it, would echo a token that sits in the user position all the same."""
+    with pytest.raises(ValueError) as refused:
+        validation.check_repository_url(url)
+    message = str(refused.value)
+    assert TOKEN not in message and PASSWORD not in message, message
+    for fragment in (TOKEN[:12], PASSWORD[:12], "github.com", "example.com", "o/r"):
+        assert fragment not in message, (fragment, message)
+    assert "'git'" in message, (
+        "the refusal does not say which ssh user IS accepted: " + message
+    )
+
+
+def test_every_ssh_user_but_git_is_refused_and_git_is_not():
+    """The rule, as a property over user names rather than a list of shapes:
+    the one conventional login passes in both ssh forms, and every other user
+    name -- including near-misses of `git` -- is refused in both."""
+    users = ["git", "GIT", "git1", "gi", "deploy", "root", "x-access-token", TOKEN]
+    verdicts = {}
+    for user in users:
+        for url in (f"ssh://{user}@github.com/o/r.git", f"{user}@github.com:o/r.git"):
+            try:
+                validation.check_repository_url(url)
+            except ValueError:
+                verdicts[url] = "refused"
+            else:
+                verdicts[url] = "accepted"
+    # Every user was tried in both forms: a loop that visited nothing proves nothing.
+    assert len(verdicts) == 2 * len(users)
+    assert sorted(url for url, v in verdicts.items() if v == "accepted") == [
+        "git@github.com:o/r.git",
+        "ssh://git@github.com/o/r.git",
+    ], verdicts
+
+
 def test_an_ssh_login_is_accepted_and_served_as_written(client, db):
     """The control: the refusal is about credentials, not about `@`."""
     seed_tenant(db, "eng")
@@ -121,6 +189,12 @@ def test_an_ssh_login_is_accepted_and_served_as_written(client, db):
         (f"https://x-access-token:{TOKEN}@github.com/o/r", f"https://{MASK}@github.com/o/r"),
         (f"https://bob:{PASSWORD}@git.example.com/team/r", f"https://{MASK}@git.example.com/team/r"),
         (f"ssh://git:{PASSWORD}@github.com/o/r.git", f"ssh://{MASK}@github.com/o/r.git"),
+        (f"ssh://{TOKEN}@github.com/o/r.git", f"ssh://{MASK}@github.com/o/r.git"),
+        (f"git@{TOKEN}@github.com:o/r.git", f"{MASK}@github.com:o/r.git"),
+        (f"ssh://{TOKEN}#@github.com/o/r", f"ssh://{MASK}@github.com/o/r"),
+        (f"ssh://{TOKEN}?@github.com/o/r", f"ssh://{MASK}@github.com/o/r"),
+        (f"git@{TOKEN}@github.com:o/r://x", f"{MASK}@github.com:o/r://x"),
+        (f"git@{TOKEN}:pw@github.com:o/r?a://b", f"{MASK}@github.com:o/r?a://b"),
     ],
 )
 def test_a_url_stored_before_the_refusal_is_served_with_its_userinfo_masked(
