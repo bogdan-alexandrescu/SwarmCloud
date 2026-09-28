@@ -2831,8 +2831,9 @@ figures are not dated, and a limit is never attributed to the kernel.
 
 ## 28. `profiles.py`: claude-code and codex declare an `issue` runner input
 
-**Status:** open, recorded 2026-09-28 from #265. A request, not a change. If
-another branch has taken 28 by the time this merges, renumber this one.
+**Status: ACCEPTED, accepted by the owner 2026-09-28** (recorded on #265), to
+be applied by the #265 change. Recorded 2026-09-28 from #265. If another
+branch has taken 28 by the time this merges, renumber this one.
 
 ### What is true today
 
