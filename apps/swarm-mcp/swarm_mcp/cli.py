@@ -36,6 +36,7 @@ from .client import (
     TERMINAL,
     SwarmClient,
     SwarmError,
+    outputs_of,
     project_id,
     region,
     service_name,
@@ -72,9 +73,11 @@ from .patches import (
     patch_uri,
 )
 from .render import (
+    PLAIN,
     clock,
     describe_blockers,
     principal_of,
+    produced_lines,
     task_label,
     tenant_of,
 )
@@ -336,6 +339,47 @@ def _masked_line(task: dict) -> str:
     return f"  {masked_words(task)}  ({parts})"
 
 
+#: Events per page `tail` asks for. A poll that keeps up reads one page.
+TAIL_EVENT_PAGE = 50
+
+
+def _event_key(event: dict[str, Any]) -> str:
+    return str(event.get("event_id") or f"{event.get('at')}{event.get('type')}")
+
+
+def _unseen_events(
+    client: SwarmClient, task_id: str, seen: set[str]
+) -> tuple[list[dict[str, Any]], bool]:
+    """Every event of this task not in `seen`, and whether the API paged them.
+
+    NEWEST FIRST, BACK TO WHAT WAS PRINTED (#164, option 1). `tail` read
+    `?limit=50`, which the route answers with the task's OLDEST 50 events, on
+    every poll -- so from the 51st event on it printed none, and said nothing.
+    This reads `order=desc` and follows `next_page_token` until a page holds
+    an event already printed, or the history ends. A poll that keeps up costs
+    one request; the first poll of a long task costs one per 50 events. The
+    whole page holding the first seen event is still read, so an event stored
+    with an `at` a little older than one already printed is not skipped.
+
+    `paged` is False when the API sent no `next_page_token` key: one older
+    than the paged route, which serves only its oldest page whatever is asked.
+    """
+    unseen: list[dict[str, Any]] = []
+    token: str | None = None
+    while True:
+        events, token, paged = client.events_page(
+            task_id, limit=TAIL_EVENT_PAGE, newest_first=True, page_token=token
+        )
+        reached = False
+        for event in events:
+            if _event_key(event) in seen:
+                reached = True
+            else:
+                unseen.append(event)
+        if reached or not token or not paged:
+            return unseen, paged
+
+
 def cmd_tail(client: SwarmClient, args) -> int:
     """Follow several tasks at once until each reaches a terminal state.
 
@@ -406,8 +450,22 @@ def cmd_tail(client: SwarmClient, args) -> int:
             labels[task_id] = task_label(task_id, task.get("step_id"))
             polled[task_id] = task
 
-            for event in client.events(task_id, limit=50):
-                key = str(event.get("event_id") or f"{event.get('at')}{event.get('type')}")
+            try:
+                unseen, paged = _unseen_events(client, task_id, seen_events[task_id])
+            except SwarmError as exc:
+                # The state was read, so the tail goes on; an events read that
+                # failed is said once rather than read as a quiet task.
+                warn_once(task_id, "events", f"! events unreadable: {exc}")
+                unseen, paged = [], True
+            if not paged:
+                warn_once(
+                    task_id,
+                    "unpaged",
+                    f"! this API serves only a task's oldest {TAIL_EVENT_PAGE} events, so "
+                    "events after those are not shown here",
+                )
+            for event in unseen:
+                key = _event_key(event)
                 if key in seen_events[task_id]:
                     continue
                 seen_events[task_id].add(key)
@@ -735,6 +793,20 @@ def cmd_result(client: SwarmClient, args) -> int:
         for line in _upstream_steps(client, task):
             print(f"  upstream {line}")
     _print_failure(client, task)
+    # WHAT IT PRODUCED, before the code (#143). A step whose summary listed
+    # output.txt, a runner summary and 60.6s printed only "this task cloned no
+    # repository". From the artifacts route, whose `complete` tells "not
+    # uploaded yet" from "none"; a failed listing is said, not fatal.
+    try:
+        listing, listing_error = client.artifacts(args.task_id), None
+    except SwarmError as exc:
+        listing, listing_error = None, str(exc)
+    for line in produced_lines(
+        outputs_of(task, listing, listing_error=listing_error),
+        PLAIN,
+        fetch_with=terminal_command(f"swarm artifact {args.task_id} <name>"),
+    ):
+        print(line)
     if not git:
         print(f"  code: {explain_absence(task)}")
         return EXIT_OK
@@ -755,6 +827,62 @@ def cmd_result(client: SwarmClient, args) -> int:
     print(f"  patch   {uri or explain_absence(task)}")
     pr = git.get("pull_request")
     print(f"  PR      {pr['url'] if pr else 'none — ' + str(git.get('publish_reason', 'no reason recorded'))}")
+    return EXIT_OK
+
+
+#: The window `swarm artifact` asks the content route for. The route clamps it
+#: into its own range and says so, and every window after the first starts at
+#: the `next_offset` the previous one returned, so the size only decides how
+#: many requests a large file takes -- never what is printed.
+ARTIFACT_WINDOW_BYTES = 512 * 1024
+
+
+def cmd_artifact(client: SwarmClient, args) -> int:
+    """One artifact's content, through `/v1/tasks/{id}/artifacts/content` (#143).
+
+    THROUGH THE API, NOT GCS. The route resolves a NAME against the task's own
+    manifest, applies the tenant check, and redacts at read time -- which a
+    read of the `gs://` uri with this machine's credentials would skip.
+
+    EVERY WINDOW, IN ORDER. The route serves a bounded window and says where
+    the next one starts; the file is those windows end to end, and printing
+    only the first would hand over a truncated file as if it were whole.
+
+    Not text is an answer, not bytes: the route will not serve what no
+    redaction rule can scan, and neither does this. It says so, on stderr, and
+    exits 1.
+    """
+    chunks: list[str] = []
+    offset = 0
+    redactions = 0
+    while True:
+        window = client.artifact_content(
+            args.task_id, args.name, offset=offset, limit_bytes=ARTIFACT_WINDOW_BYTES
+        )
+        status = window.get("status")
+        if status != "ok":
+            detail = window.get("detail") or "no reason reported"
+            what = "is not text" if status == "binary" else f"could not be read ({status})"
+            print(f"swarm: {args.name} of {args.task_id} {what}: {detail}", file=sys.stderr)
+            return EXIT_FAIL
+        chunks.append(window.get("content") or "")
+        redactions += int(window.get("redaction_count") or 0)
+        following = window.get("next_offset")
+        if not window.get("truncated") or not isinstance(following, int) or following <= offset:
+            break
+        offset = following
+    text = "".join(chunks)
+    if redactions:
+        print(
+            f"swarm: {redactions} credential-shaped string(s) in {args.name} were redacted "
+            "by the API at read time",
+            file=sys.stderr,
+        )
+    if args.output:
+        Path(args.output).write_text(text)
+        print(f"swarm: wrote {args.name} of {args.task_id} to {args.output}", file=sys.stderr)
+    else:
+        sys.stdout.write(text)
     return EXIT_OK
 
 
@@ -1599,6 +1727,14 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("task_id")
     r.add_argument("--json", action="store_true")
     r.set_defaults(func=cmd_result)
+
+    art = sub.add_parser(
+        "artifact", help="print one artifact a task produced, redacted by the API at read time"
+    )
+    art.add_argument("task_id")
+    art.add_argument("name", help="the artifact's name, as `swarm result` lists it")
+    art.add_argument("-o", "--output", help="write it to this file instead of stdout")
+    art.set_defaults(func=cmd_artifact)
 
     a = sub.add_parser("apply", help="apply one task's patch to a working tree")
     a.add_argument("task_id")
