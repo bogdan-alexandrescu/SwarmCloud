@@ -93,6 +93,11 @@ class PullRequest:
     #: True when that existing pull request's title and body were replaced
     #: (`open_pull_request(update_existing=True)`, #214).
     updated: bool = False
+    #: The title GitHub reports for an ADOPTED pull request (empty on one this
+    #: call created). Read only so `open_pull_request` can tell a title a
+    #: human may have written from the platform's own stale one (`retitle_stale`,
+    #: #259 follow-up); nothing else in this module or its caller uses it.
+    title: str = ""
 
 
 def parse_repo(url: str) -> RepoRef | None:
@@ -225,6 +230,7 @@ def open_pull_request(
     title: str,
     body: str,
     update_existing: bool = False,
+    retitle_stale: str | None = None,
 ) -> PullRequest:
     """Open one pull request, or adopt the open one this branch already has.
 
@@ -240,6 +246,13 @@ def open_pull_request(
     nothing of the agent's to say must not overwrite a title or body a human
     edited by hand. A refused update is not a failure -- the pull request is
     still adopted, with `updated` False.
+
+    `retitle_stale`, separately, forces the SAME update when the adopted pull
+    request's current title matches it exactly -- the worker passes the old
+    `f"[swarm] {task_id}"` fallback this task would have gotten before the
+    owner's 2026-09-28 rule that a title never carries the task id. An old
+    pull request left with that title is retitled the next time this task's
+    branch is pushed, whether or not the agent wrote anything of its own.
     """
     ref = access.ref
     status, data = _request(
@@ -259,7 +272,10 @@ def open_pull_request(
     if status == 422:
         existing = _find_open_pull_request(access=access, token=token, head=head)
         if existing is not None:
-            if update_existing and existing.number:
+            should_update = update_existing or (
+                retitle_stale is not None and existing.title == retitle_stale
+            )
+            if should_update and existing.number:
                 return _update_pull_request(
                     access=access, token=token, existing=existing, title=title, body=body
                 )
@@ -299,6 +315,7 @@ def _find_open_pull_request(
         url=str(first.get("html_url") or ""),
         state=str(first.get("state") or "open"),
         created=False,
+        title=str(first.get("title") or ""),
     )
 
 

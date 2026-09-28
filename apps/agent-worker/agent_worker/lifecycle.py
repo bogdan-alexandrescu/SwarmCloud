@@ -305,6 +305,33 @@ PR_BODY_MAX_BYTES = 60 * 1024
 #: How much of either file is read at all. Past this the text is cut anyway.
 PR_READ_LIMIT_BYTES = 256 * 1024
 
+#: The first sentence of a step's prompt, for the platform's generated pull
+#: request title (owner rule, 2026-09-28, below): split on the first
+#: `.`, `!` or `?` followed by whitespace or the end of the string, so
+#: "Mr. Fox jumps." still splits after the period that ends the sentence
+#: rather than the one in the title.
+_PROMPT_SENTENCE_RE = re.compile(r"[.!?](?:\s|$)")
+
+
+def _as_issue_number(value: Any) -> int | None:
+    """A GitHub issue number from whatever `input.issue` turns out to hold.
+
+    `#265` is landing separately and had not, as of this change, fixed that
+    input's shape -- so this reads defensively: a bare number, a numeric
+    string, or a leading `#N`. Anything else, including a non-positive
+    number, is "no number here" rather than a guess.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value > 0 else None
+    if isinstance(value, str):
+        stripped = value.strip().lstrip("#")
+        if stripped.isdigit():
+            n = int(stripped)
+            return n if n > 0 else None
+    return None
+
 #: The most agent commits the publish keeps one by one (#242). Each costs two
 #: git processes; past this many the agent's history is folded into one worker
 #: commit as it was before, and the run result says which happened.
@@ -4292,7 +4319,7 @@ class Worker:
             branch=branch, auto_committed=auto_committed, merge=merge, folded=folded, kept=kept
         )
         agent_title, agent_body, refused = self._agent_pull_request_text()
-        title = agent_title or f"[swarm] {cfg.task_id}"
+        title = agent_title or self._generated_pull_request_title()
         body = f"{agent_body}\n\n---\n\n{generated}" if agent_body else generated
         out["pull_request_text"] = {
             "title": "agent" if agent_title else "platform",
@@ -4311,6 +4338,13 @@ class Worker:
                 # A reused pull request takes the agent's text too; generated
                 # text never overwrites one a human may have edited.
                 update_existing=bool(agent_title or agent_body),
+                # An adopted pull request still carrying the OLD generated
+                # title -- `[swarm] <task id>`, from before this rule -- is
+                # retitled even when nothing here asked for an update: the
+                # owner's rule is that a title never carries the task id, and
+                # that has to reach a pull request this attempt only adopts,
+                # not just one it opens.
+                retitle_stale=f"[swarm] {cfg.task_id}",
             )
         except ForgeError as exc:
             out["published"] = True
@@ -4472,10 +4506,7 @@ class Worker:
             elif _carries_attribution(text):
                 refused.append(f"{PR_TITLE_FILE}: carries attribution")
             else:
-                text = str(self._scrub(text))
-                if len(text) > PR_TITLE_MAX_CHARS:
-                    text = text[: PR_TITLE_MAX_CHARS - 3].rstrip() + "..."
-                title = text
+                title = self._scrub_and_cap_title(text)
 
         raw = self._read_agent_text(PR_BODY_FILE, refused)
         if raw is not None:
@@ -4500,6 +4531,106 @@ class Worker:
                 refused=refused,
             )
         return title, body, refused
+
+    def _scrub_and_cap_title(self, text: str) -> str:
+        """Redact every registered secret, THEN cut to `PR_TITLE_MAX_CHARS` (#232's
+        rule): scrubbed first, or a cut prefix of a secret would survive the cut
+        that was supposed to remove it."""
+        text = str(self._scrub(text))
+        if len(text) > PR_TITLE_MAX_CHARS:
+            text = text[: PR_TITLE_MAX_CHARS - 3].rstrip() + "..."
+        return text
+
+    def _generated_pull_request_title(self) -> str:
+        """The platform's own pull request title, when the agent wrote none.
+
+        NEVER THE TASK ID (owner rule, 2026-09-28). A caller reads this title
+        in a list of pull requests spanning many tasks, where a task id says
+        nothing about what changed -- `f"[swarm] {cfg.task_id}"` was the
+        fallback this replaces. In order, the first of these that produces
+        something is used:
+
+        1. the step's `issue` runner input (#265, landing separately --
+           `_title_from_issue_input` reads it defensively because its shape
+           was not fixed yet when this was written);
+        2. the first sentence of the step's prompt, caller text scrubbed and
+           capped exactly as the agent's own title is;
+        3. failing both, a fixed sentence naming the workflow step rather
+           than the task.
+        """
+        task = self._task or {}
+        return (
+            self._title_from_issue_input(task)
+            or self._title_from_prompt(task)
+            or self._title_last_resort(task)
+        )
+
+    def _title_from_issue_input(self, task: dict[str, Any]) -> str | None:
+        """"<issue title> (#N)", or "Fixes #N" with no title to hand.
+
+        `input.issue` is `#265`'s field, added to this task's runner input by
+        a caller or the platform, separately from this change. Read
+        defensively -- a bare number, a numeric string, or a mapping carrying
+        `number`/`issue_number` and, when the worker (or whatever populated
+        the input) already fetched one, `title` -- and None, not a guess,
+        when no number is there at all.
+        """
+        payload = task.get("input")
+        issue = payload.get("issue") if isinstance(payload, dict) else None
+        title: str | None = None
+        if isinstance(issue, dict):
+            number = _as_issue_number(issue.get("number"))
+            if number is None:
+                number = _as_issue_number(issue.get("issue_number"))
+            raw_title = issue.get("title")
+            if isinstance(raw_title, str) and raw_title.strip():
+                title = raw_title.strip()
+        else:
+            number = _as_issue_number(issue)
+        if number is None:
+            return None
+        text = f"{title} (#{number})" if title else f"Fixes #{number}"
+        return self._scrub_and_cap_title(text)
+
+    def _title_from_prompt(self, task: dict[str, Any]) -> str | None:
+        """The first sentence of the step's prompt.
+
+        THIS IS CALLER TEXT, exactly as untrusted as the prompt quoted in the
+        generated body used to be (`_pull_request_body`'s docstring): scrubbed
+        of every registered secret before it is capped, never after -- a title
+        cut to length first could still carry a secret's undamaged prefix.
+        """
+        payload = task.get("input")
+        prompt = payload.get("prompt") if isinstance(payload, dict) else None
+        if not isinstance(prompt, str):
+            return None
+        collapsed = " ".join(prompt.split())
+        if not collapsed:
+            return None
+        match = _PROMPT_SENTENCE_RE.search(collapsed)
+        sentence = collapsed[: match.start() + 1] if match else collapsed
+        return self._scrub_and_cap_title(sentence)
+
+    def _title_last_resort(self, task: dict[str, Any]) -> str:
+        """"SwarmCloud: work from workflow <label or step_id>" -- the last
+        resort, when nothing else named anything: still not the task id. A
+        step's `metadata.label` wins when a caller set one; the workflow
+        step id is next; the runner profile is what is left when this task is
+        not even part of a workflow.
+        """
+        label: str | None = None
+        metadata = task.get("metadata")
+        if isinstance(metadata, dict):
+            candidate = metadata.get("label")
+            if isinstance(candidate, str) and candidate.strip():
+                label = candidate.strip()
+        if label is None:
+            step_id = task.get("step_id")
+            if isinstance(step_id, str) and step_id.strip():
+                label = step_id.strip()
+        if label is None:
+            label = self.cfg.runner_profile
+        return f"SwarmCloud: work from workflow {label}"
 
     def _read_agent_text(self, name: str, refused: list[str]) -> str | None:
         """`artifacts/<name>` as text, read with no link followed; None if absent or refused."""

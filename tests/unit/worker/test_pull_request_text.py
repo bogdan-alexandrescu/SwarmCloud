@@ -45,7 +45,10 @@ pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="git is not 
 KEY = "sk-ant-supersecret-value-0123456789"
 
 
-def _publish(worker_factory, monkeypatch, origin: Path, *, task_id: str, files: dict, register=()):
+def _publish(
+    worker_factory, monkeypatch, origin: Path, *, task_id: str, files: dict, register=(),
+    task_input: dict | None = None, step_id: str | None = None, label: str | None = None,
+):
     """One direct-pr attempt whose agent edits a file and leaves `files` in
     the artifacts folder (bytes, or a callable that makes the entry)."""
     worker, config, _ = worker_factory(
@@ -55,7 +58,14 @@ def _publish(worker_factory, monkeypatch, origin: Path, *, task_id: str, files: 
         repository_url=f"file://{origin}",
     )
     worker.ws = workspace_mod.create(config.workspace_root, config.attempt_id)
-    task = {"task_id": task_id, "metadata": {"dispatch": {"strategy": "direct-pr"}}}
+    metadata: dict = {"dispatch": {"strategy": "direct-pr"}}
+    if label is not None:
+        metadata["label"] = label
+    task = {"task_id": task_id, "metadata": metadata}
+    if task_input is not None:
+        task["input"] = task_input
+    if step_id is not None:
+        task["step_id"] = step_id
     worker._task = task
     monkeypatch.setattr(worker, "_git_token", lambda: "not-a-real-token")
     for value in register:
