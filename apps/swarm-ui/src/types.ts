@@ -2097,18 +2097,43 @@ export function reasonCopy(reason: string): string {
  *    pool. The broker lowers provider pools on quota state, and a cooldown
  *    ends by itself, so nobody is named and the server's grouping stands.
  *  - `full`: a positive ceiling reached -- the only case "busy" is true of.
+ *
+ * TWO MORE, ADDED FOR #66, AND ONLY WHEN `units` (the caller's task's weight,
+ * read from `GET /v1/resource-classes` -- never the bundled `RESOURCE_UNITS`
+ * table) IS KNOWN:
+ *
+ *  - `below-units`: a limit above 0 and below one task's `units`, on a pool
+ *    only a person writes. Admission refuses when `active + units > limit`,
+ *    so a browser task (2 units) under a limit of 1 is refused at 0 of 1 in
+ *    use, on every drain, forever -- the fact `set-to-zero` is, arriving with
+ *    the full pool's reason and a positive limit.
+ *  - `below-units-quota`: the same on a `provider:` pool, whose limit the
+ *    quota broker also moves. The task still cannot be admitted at this
+ *    limit, but nobody is named, for the reason `zero` names nobody.
+ *
+ * With `units` null or absent (the catalogue unread, or the caller has none
+ * to give) this is exactly what it was before #66: a positive limit is
+ * always `full`.
  */
-export type Ceiling = 'paused' | 'set-to-zero' | 'zero' | 'full'
+export type Ceiling = 'paused' | 'set-to-zero' | 'zero' | 'full' | 'below-units' | 'below-units-quota'
 
-export function blockerCeiling(b: { reason: string; pool?: string; limit?: unknown }): Ceiling {
+export function blockerCeiling(
+  b: { reason: string; pool?: string; limit?: unknown },
+  units: number | null = null,
+): Ceiling {
   if (b.reason === 'MANUAL_PAUSE') return 'paused'
-  if (b.limit !== 0) return 'full'
+  if (b.limit !== 0) {
+    if (units !== null && typeof b.limit === 'number' && b.limit > 0 && b.limit < units) {
+      return b.pool === undefined || poolKind(b.pool) === 'provider' ? 'below-units-quota' : 'below-units'
+    }
+    return 'full'
+  }
   return b.pool === undefined || poolKind(b.pool) === 'provider' ? 'zero' : 'set-to-zero'
 }
 
-/** The two ceilings no amount of waiting clears: a person has to act. */
+/** The three ceilings no amount of waiting clears: a person has to act. */
 export function needsAPerson(c: Ceiling): boolean {
-  return c === 'paused' || c === 'set-to-zero'
+  return c === 'paused' || c === 'set-to-zero' || c === 'below-units'
 }
 
 /**
@@ -2117,13 +2142,16 @@ export function needsAPerson(c: Ceiling): boolean {
  *
  * `subject` is what the sentence is about: the pool's name where the line has
  * nothing else naming it (the agents list), or "This pool" beside a row that
- * already prints the name.
+ * already prints the name. `units` is the task's weight (#66); null keeps the
+ * pre-#66 sentences exactly, including for a `full` pool that is actually too
+ * small (the catalogue was not read, so nothing is claimed about the weight).
  */
 export function ceilingCopy(
   b: { reason: string; pool?: string; limit?: unknown; active?: unknown },
   subject: string = b.pool ?? 'This pool',
+  units: number | null = null,
 ): string | null {
-  const c = blockerCeiling(b)
+  const c = blockerCeiling(b, units)
   if (c === 'full') return null
   // WHAT IS STILL HELD. A pool lowered to zero under running work keeps the
   // units it already leased until they are released; admission never admits
@@ -2142,6 +2170,16 @@ export function ceilingCopy(
           : ' The blocker names no pool, so this does not say who set it.'
       return `${subject} is at limit 0 and admits nothing until that limit rises.${who}${held}`
     }
+    case 'below-units':
+    case 'below-units-quota': {
+      const limit = b.limit as number
+      const fact =
+        `${subject} has a limit of ${limit} unit${limit === 1 ? '' : 's'}, below the ${units} units one task ` +
+        'of this profile weighs, so the task can never be admitted at this limit.'
+      return c === 'below-units'
+        ? `${fact} Waiting cannot clear it: somebody has to raise the limit to at least ${units}.${held}`
+        : `${fact} A provider pool's limit also falls with its quota state, so this does not say who set it; it admits this profile once the limit reaches ${units}.${held}`
+    }
   }
 }
 
@@ -2151,10 +2189,16 @@ export function ceilingCopy(
  * -- so `global` at its ceiling can come before a pool capped at zero, and the
  * first entry would say "waiting is the answer" about a task no wait will
  * start. The first pool a person must act on wins; otherwise the first.
+ *
+ * `units` (#66) is the task's weight, so a pool too small to ever admit it
+ * counts as one a person must act on same as a pool paused or set to zero.
  */
-function leadBlocker(list: readonly BlockedEntry[] | null | undefined): BlockedEntry | undefined {
+function leadBlocker(
+  list: readonly BlockedEntry[] | null | undefined,
+  units: number | null = null,
+): BlockedEntry | undefined {
   if (!list || list.length === 0) return undefined
-  return list.find((b) => needsAPerson(blockerCeiling(b))) ?? list[0]
+  return list.find((b) => needsAPerson(blockerCeiling(b, units))) ?? list[0]
 }
 
 /** The one-line "why is this not running" for a task, or null if it is. */
@@ -2213,19 +2257,26 @@ export const RESOURCE_UNITS: Readonly<Record<string, number>> = {
  * NEVER sets cancel_requested (scheduler/store.py:303-323), while every human
  * cancel does, including a whole-workflow cancel which fans out through
  * request_cancel per step. That survives an upstream copy change.
+ *
+ * `units` (#66) is the task's weight -- its resource class's `units`, read by
+ * the caller from `GET /v1/resource-classes` (`classUnits`/`useResourceClasses`
+ * in Blockers.tsx) and never from the bundled `RESOURCE_UNITS` table -- so a
+ * pool whose limit is positive but below it is told apart from a genuinely
+ * full one. Null (the default, and what an unread catalogue gives) keeps the
+ * pre-#66 reading exactly.
  */
-export function whyAgent(task: Task): string {
+export function whyAgent(task: Task, units: number | null = null): string {
   if (task.state === 'PARKED') {
     const base = task.park_reason ? reasonCopy(task.park_reason) : 'Parked.'
     return task.next_eligible_at ? `${base} Eligible again ${task.next_eligible_at}.` : base
   }
   if (task.state === 'READY' && task.blocked_by?.length) {
-    const b = leadBlocker(task.blocked_by)
+    const b = leadBlocker(task.blocked_by, units)
     if (!b) return ''
-    // A pool paused or capped at zero is not "busy", and "(0/0)" or
-    // "(0/1000000)" beside it is a fraction that describes nothing. See
-    // `blockerCeiling`.
-    const ceiling = ceilingCopy(b)
+    // A pool paused, capped at zero, or too small for this task's weight is
+    // not "busy", and "(0/0)" or "(0/1000000)" beside it is a fraction that
+    // describes nothing. See `blockerCeiling`.
+    const ceiling = ceilingCopy(b, undefined, units)
     if (ceiling !== null) return ceiling
     // Only show the fraction when BOTH keys are present. An admission blocker
     // always carries them; a worker park's arbitrary detail may not.
@@ -2274,18 +2325,20 @@ export function whyAgent(task: Task): string {
  *
  * WHAT "CAN NEVER BE ADMITTED" COVERS, stated because it is wider than one
  * reason: a pool paused (MANUAL_PAUSE, as a blocker or as a park) or set to
- * zero by a person, and a spent budget (BUDGET_EXHAUSTED) -- none admits the
- * task again until somebody acts. "Sign-in needed" is CREDENTIAL_MISSING.
+ * zero by a person, a pool whose limit is positive but below what this task's
+ * resource class weighs (#66, `units`), and a spent budget (BUDGET_EXHAUSTED)
+ * -- none admits the task again until somebody acts. "Sign-in needed" is
+ * CREDENTIAL_MISSING.
  */
-export function whyNeedsAction(task: Task): boolean {
+export function whyNeedsAction(task: Task, units: number | null = null): boolean {
   if (task.state === 'FAILED') return true
   if (task.state === 'PARKED') {
     return task.park_reason !== null && PARK_NEEDS_A_PERSON.has(String(task.park_reason))
   }
   if (task.state === 'READY' && task.blocked_by?.length) {
-    const b = leadBlocker(task.blocked_by)
+    const b = leadBlocker(task.blocked_by, units)
     if (!b) return false
-    return needsAPerson(blockerCeiling(b)) || PARK_NEEDS_A_PERSON.has(b.reason)
+    return needsAPerson(blockerCeiling(b, units)) || PARK_NEEDS_A_PERSON.has(b.reason)
   }
   return false
 }
