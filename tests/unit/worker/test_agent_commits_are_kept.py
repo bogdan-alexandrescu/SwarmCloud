@@ -260,6 +260,48 @@ def test_an_empty_repository_keeps_the_agents_commits_from_a_parentless_first(
     assert_only_the_worker_wrote(commits, config)
 
 
+def _all_object_bytes(bare: Path) -> bytes:
+    """Every object in the bare repository, loose or packed, contents included."""
+    return subprocess.run(
+        ["git", "cat-file", "--batch-all-objects", "--batch"],
+        cwd=str(bare), check=True, capture_output=True,
+    ).stdout
+
+
+def test_a_secret_added_then_deleted_is_folded_and_reaches_no_pushed_object(
+    worker_factory, monkeypatch, origin, local_urls, forge, log_stream
+):
+    """Kept one by one, the first commit's TREE would carry the key to the
+    forge although the final tree is clean: a pushed object on a public
+    repository is published for good. So a registered secret in any kept
+    commit's diff folds the history into ONE worker commit of the final tree,
+    and only the offending commit's index is logged (#259 review)."""
+    def edit(repo: Path) -> None:
+        (repo / ".env").write_text(f"ANTHROPIC_API_KEY={KEY}\n")
+        (repo / "client.py").write_text("import os\nKEY = os.environ['ANTHROPIC_API_KEY']\n")
+        _commit(repo, "Configure the client")
+        (repo / ".env").unlink()
+        _commit(repo, "Stop committing the env file")
+
+    _, config, out = _attempt(
+        worker_factory, monkeypatch, origin, task_id="t-leak", edit=edit, register=(KEY,)
+    )
+
+    branch = f"{config.git_branch_prefix}{config.task_id}"
+    assert out["published"] is True, out.get("publish_reason")
+    commits = pushed_commits(origin, branch)
+    assert len(commits) == 1, [c["message"] for c in commits]
+    assert_only_the_worker_wrote(commits, config)
+    assert out.get("agent_commits_folded") == 2, out
+    assert "agent_commits_kept" not in out, out
+    files = tree_at(origin, branch)
+    assert "client.py" in files and ".env" not in files, files
+    assert KEY.encode() not in _all_object_bytes(origin), "the key reached a pushed object"
+    logged = log_stream.getvalue()
+    assert '"commit_index": 1' in logged, "the dropped commit's index was not logged"
+    assert KEY not in logged
+
+
 def test_a_history_that_does_not_descend_from_the_base_is_folded_as_before(
     worker_factory, monkeypatch, origin, local_urls, forge
 ):

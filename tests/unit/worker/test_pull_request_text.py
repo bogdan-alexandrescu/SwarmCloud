@@ -19,7 +19,12 @@ WHAT IS PINNED. When the agent leaves `pr-title.txt` and/or `pr-body.md` in
   of the artifacts folder;
 * with the platform's metadata block still in the body, after the agent's.
 
-With neither file, today's title and body are unchanged.
+With neither file the generated body is unchanged, and the generated title
+NEVER carries the task id (owner rule, 2026-09-28): the issue input's title
+or number, else the prompt's first sentence, else the workflow step. An agent
+title carrying a task id is treated as absent, an adopted pull request still
+titled `[swarm] task_...` is retitled, and an agent title or body that
+@mentions anyone is refused.
 """
 
 from __future__ import annotations
@@ -311,3 +316,184 @@ def test_the_worker_asks_for_the_update_only_when_the_agent_wrote_text(
         files={"pr-body.md": b"Closes #5\n"},
     )
     assert [bool(p.get("update_existing")) for p in forge.pulls] == [False, True], forge.pulls
+
+
+# -- the generated title never carries the task id (owner rule, 2026-09-28) ---
+
+
+@pytest.mark.parametrize(
+    ("issue", "expected"),
+    [
+        (42, "Fixes #42"),
+        ("42", "Fixes #42"),
+        ({"number": 42, "title": "The widget accepts a negative size"},
+         "The widget accepts a negative size (#42)"),
+    ],
+    ids=["number", "numeric-string", "with-title"],
+)
+def test_an_issue_input_names_the_issue_in_the_title(
+    worker_factory, monkeypatch, origin, local_urls, forge, issue, expected
+):
+    _, config, _ = _publish(
+        worker_factory, monkeypatch, origin, task_id="t-pr-issue", files={},
+        task_input={"prompt": "Do the thing. Then more.", "issue": issue},
+    )
+    pull = _only_pull(forge)
+    assert pull["title"] == expected, pull["title"]
+    assert f"- task: `{config.task_id}`" in pull["body"], "the task id left the metadata block"
+
+
+def test_the_prompts_first_sentence_is_the_title_collapsed_scrubbed_and_capped(
+    worker_factory, monkeypatch, origin, local_urls, forge
+):
+    _publish(
+        worker_factory, monkeypatch, origin, task_id="t-pr-prompt-a", files={},
+        task_input={"prompt": "  Make the\n   widget refuse\tnegatives.  Then more words."},
+    )
+    _publish(
+        worker_factory, monkeypatch, origin, task_id="t-pr-prompt-b", files={},
+        task_input={"prompt": f"Rotate {KEY} before the release! It leaked."},
+        register=(KEY,),
+    )
+    _publish(
+        worker_factory, monkeypatch, origin, task_id="t-pr-prompt-c", files={},
+        task_input={"prompt": "w" * 400 + ". Tail."},
+    )
+    short, secret, long = (p["title"] for p in forge.pulls)
+    assert short == "Make the widget refuse negatives.", short
+    assert KEY not in secret and "sk-ant" not in secret, secret
+    assert secret.startswith("Rotate ") and secret.endswith("before the release!"), secret
+    assert len(long) <= lifecycle.PR_TITLE_MAX_CHARS and long.endswith("..."), (len(long), long[-5:])
+    assert long.startswith("wwww"), long[:5]
+
+
+def test_with_nothing_else_the_title_names_the_workflow_step(
+    worker_factory, monkeypatch, origin, local_urls, forge
+):
+    _, config, _ = _publish(
+        worker_factory, monkeypatch, origin, task_id="t-pr-step", files={}, step_id="build",
+    )
+    pull = _only_pull(forge)
+    assert pull["title"] == "SwarmCloud: work from workflow build", pull["title"]
+    assert config.task_id not in pull["title"]
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        None,  # this task's own id, filled in below
+        b"[SWARM] Task_0123abcd",
+        b"[swarm] task_9be4128488d342208947",
+    ],
+    ids=["own-task-id", "retired-shape-any-case", "another-tasks-old-title"],
+)
+def test_an_agent_title_carrying_a_task_id_is_treated_as_absent(
+    worker_factory, monkeypatch, origin, local_urls, forge, title
+):
+    task_id = "t-pr-own-id-77"
+    _, config, out = _publish(
+        worker_factory, monkeypatch, origin, task_id=task_id,
+        files={"pr-title.txt": title if title is not None else f"Fix {task_id} now".encode()},
+        task_input={"prompt": "Make the widget refuse negatives. More."},
+    )
+    pull = _only_pull(forge)
+    assert pull["title"] == "Make the widget refuse negatives.", pull["title"]
+    assert config.task_id not in pull["title"]
+    assert out["pull_request_text"]["title"] == "platform", out
+
+
+def _adopting_forge(existing_title: str, seen: list):
+    def fake(url, *, token, method="GET", payload=None):
+        seen.append((method, url, payload))
+        if method == "POST":
+            return 422, {"errors": [{"message": "A pull request already exists"}]}
+        if method == "PATCH":
+            return 200, {"number": 47, "html_url": "https://github.com/acme/widgets/pull/47",
+                         "state": "open"}
+        return 200, [{"number": 47, "html_url": "https://github.com/acme/widgets/pull/47",
+                      "state": "open", "title": existing_title}]
+    return fake
+
+
+def test_an_adopted_pull_request_with_the_retired_title_is_retitled_only(monkeypatch):
+    """Nothing of the agent's asked for an update, but the adopted pull
+    request still carries `[swarm] task_...`: its TITLE is replaced by the
+    same rule, and its body -- which may be a human's -- is left alone."""
+    seen: list = []
+    monkeypatch.setattr(forge_mod, "_request", _adopting_forge("[Swarm] TASK_1", seen))
+    pr = forge_mod.open_pull_request(
+        access=_access(), token="t", head="swarm/task_1", base="main",
+        title="Make the widget refuse negatives.", body="generated",
+        update_existing=False,
+        retitle_if=lambda t: "task_" in t.lower(),
+    )
+    assert pr.updated is True, pr
+    assert [m for m, _, _ in seen] == ["POST", "GET", "PATCH"], seen
+    assert seen[-1][2] == {"title": "Make the widget refuse negatives."}, seen[-1]
+
+
+def test_an_adopted_pull_request_with_a_human_title_is_left_alone(monkeypatch):
+    seen: list = []
+    monkeypatch.setattr(forge_mod, "_request", _adopting_forge("Refuse negative sizes", seen))
+    pr = forge_mod.open_pull_request(
+        access=_access(), token="t", head="swarm/task_1", base="main",
+        title="Make the widget refuse negatives.", body="generated",
+        update_existing=False,
+        retitle_if=lambda t: "task_" in t.lower(),
+    )
+    assert pr.updated is False, pr
+    assert [m for m, _, _ in seen] == ["POST", "GET"], seen
+
+
+def test_the_worker_retitles_by_the_task_id_rule(
+    worker_factory, monkeypatch, origin, local_urls, forge
+):
+    """What the worker hands the forge is the same rule the agent's title is
+    held to: the retired shape in any case, or this task's id."""
+    _, config, _ = _publish(worker_factory, monkeypatch, origin, task_id="t-pr-retitle", files={})
+    retitle_if = _only_pull(forge)["retitle_if"]
+    assert retitle_if(f"[swarm] {config.task_id}") is True
+    assert retitle_if("[SWARM] task_other") is True
+    assert retitle_if(f"Fixes {config.task_id}") is True
+    assert retitle_if("Refuse negative sizes") is False
+    assert retitle_if("") is False
+
+
+# -- an agent's text that @mentions anyone is refused (owner rule, 2026-09-28) --
+
+
+@pytest.mark.parametrize(
+    ("files", "refused"),
+    [
+        ({"pr-body.md": b"Closes #4\n\n@octocat please review.\n"}, "pr-body.md: mentions"),
+        ({"pr-body.md": b"Closes #4\n\ncc @acme/reviewers\n"}, "pr-body.md: mentions"),
+        ({"pr-title.txt": b"Refuse negatives (@octocat)\n"}, "pr-title.txt: mentions"),
+    ],
+    ids=["user-in-body", "team-in-body", "user-in-title"],
+)
+def test_an_agent_text_with_a_mention_is_refused(
+    worker_factory, monkeypatch, origin, local_urls, forge, log_stream, files, refused
+):
+    _, _, out = _publish(
+        worker_factory, monkeypatch, origin, task_id="t-pr-mention", files=files,
+    )
+    pull = _only_pull(forge)
+    assert "@octocat" not in pull["title"] and "@octocat" not in pull["body"], pull
+    assert "@acme/reviewers" not in pull["body"], pull["body"]
+    assert refused in out.get("pull_request_text_refused", []), out
+    which = "body" if refused.startswith("pr-body") else "title"
+    assert out["pull_request_text"][which] == "platform", out
+    assert f"agent {which} refused: mentions" in log_stream.getvalue()
+
+
+def test_an_email_address_is_not_a_mention(
+    worker_factory, monkeypatch, origin, local_urls, forge
+):
+    """The control: `@` inside an address pages nobody, and is kept."""
+    _, _, out = _publish(
+        worker_factory, monkeypatch, origin, task_id="t-pr-email",
+        files={"pr-body.md": b"Closes #4\n\nReported by ops@example.com.\n"},
+    )
+    pull = _only_pull(forge)
+    assert pull["body"].startswith("Closes #4"), pull["body"]
+    assert out["pull_request_text"]["body"] == "agent", out
