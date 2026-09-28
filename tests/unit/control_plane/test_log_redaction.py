@@ -517,6 +517,14 @@ ESCAPED_KEY_VALUE = [
     # credential key had its `[` masked and its value served.
     ('{"password": ["hunter2-list-value"]}', "hunter2-list", '{"password": ["********"]}'),
     ('{\\"password\\": [\\"hunter2-list-value\\"]}', "hunter2-list", '{\\"password\\": [\\"********\\"]}'),
+    # AN ESCAPED KEY WITH A BARE VALUE (owner decision 2026-09-27): the shell
+    # filter's plain (non-quoted-value) expression only took a bare `"?`
+    # after the key, so a number, a boolean or a bareword value -- which
+    # never opens with a quote either way -- stopped the whole expression
+    # from matching when the KEY was escaped, and passed through unmasked.
+    ('\\"password\\": 12345678', "12345678", '\\"password\\": ********'),
+    ('\\"secret\\":true', "true", '\\"secret\\":********'),
+    ('\\"token\\": abcdefgh', "abcdefgh", '\\"token\\": ********'),
     # ONE LEVEL DEEPER (the PR #229 review): a command that quotes its own
     # quotes, as a stream-json line holds it -- three backslashes, then the
     # quote. Both filters masked the backslashes and served the value.
