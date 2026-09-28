@@ -614,6 +614,54 @@ run "the_iam_admin_condition_refuses_every_role_ci_does_not_hand_out" {
   }
 }
 
+run "the_iam_admin_conditions_hasonly_lists_never_exceed_gcps_ten_element_limit" {
+  command = plan
+
+  module {
+    source = "../../terraform/bootstrap"
+  }
+
+  variables {
+    enable_github_wif     = true
+    github_repository     = "saga/agent-swarm-infra"
+    deployer_scoped_roles = ["roles/resourcemanager.projectIamAdmin"]
+  }
+
+  # #275: applying this condition against the real project failed with
+  # `LintValidationUnits/ListLengthCheck Error: The list argument to hasOnly()
+  # cannot have more than 10 elements`. The mock provider never lints, so
+  # these read the rendered expression itself, off the plan -- not a helper
+  # local -- so however the roles get chunked, this is what GCP would see.
+  #
+  # Every hasOnly([...]) in every instance of the projectIamAdmin resource's
+  # condition, split into its role list.
+  assert {
+    condition = alltrue([
+      for chunk in [
+        for w in flatten([
+          for k, m in google_project_iam_member.deployer_project_iam_admin :
+          regexall("hasOnly\\(\\[[^\\]]*\\]\\)", m.condition[0].expression)
+        ]) : [for q in regexall("\"[^\"]+\"", w) : trim(q, "\"")]
+      ] : length(chunk) <= 10
+    ])
+    error_message = "a hasOnly() list in the projectIamAdmin condition holds more than 10 roles; GCP's linter (LintValidationUnits/ListLengthCheck) refuses that apply (#275)"
+  }
+
+  # The chunks, combined, must grant exactly deployer_grantable_project_roles:
+  # nothing left out (every grantable role is in some chunk) and nothing added
+  # (#73's parity rule -- no chunk holds a role terraform/infra does not
+  # grant).
+  assert {
+    condition = toset(flatten([
+      for w in flatten([
+        for k, m in google_project_iam_member.deployer_project_iam_admin :
+        regexall("hasOnly\\(\\[[^\\]]*\\]\\)", m.condition[0].expression)
+      ]) : [for q in regexall("\"[^\"]+\"", w) : trim(q, "\"")]
+    ])) == toset(local.deployer_grantable_project_roles)
+    error_message = "the projectIamAdmin condition's hasOnly() lists, combined, no longer grant exactly deployer_grantable_project_roles"
+  }
+}
+
 # ---------------------------------------------------------------------------
 # THE PLAN terraform/bootstrap/terraform.tfvars PRODUCES, from the file.
 #
