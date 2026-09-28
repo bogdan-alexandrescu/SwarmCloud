@@ -380,6 +380,11 @@ def run_cli_agent(
     # The prompt is the only caller-controlled value that reaches argv, and it
     # is passed as a single trailing argument with no shell in the picture.
     argv.append(expected_mod.with_instructions(prompt, told, ctx.artifacts_dir, staged))
+    # ...and it is the one argument `run_child`'s `child started` line must not
+    # print (the PR #229 review): this process's stderr is served by `/logs`,
+    # and the task routes serve the prompt masked. Its length says what the
+    # line needs to say -- that a prompt was passed, and how big.
+    log_argv = [*argv[:-1], f"<prompt: {len(argv[-1])} characters>"]
 
     limits = resolve_limits(payload, platform_ceilings())
     log = StructuredLogger(stream=sys.stderr, component=f"{spec.name}-runner")
@@ -483,6 +488,7 @@ def run_cli_agent(
         max_stdout_bytes=limits.max_stdout_bytes,
         max_stderr_bytes=limits.max_stderr_bytes,
         logger=log,
+        log_argv=log_argv,
         # THE END OF A CAPPED STREAM IS KEPT (#188 review). Under stream-json
         # the stdout is the whole conversation, and its LAST line is the
         # `result` event: the answer, the spend, the evidence the rate-limit

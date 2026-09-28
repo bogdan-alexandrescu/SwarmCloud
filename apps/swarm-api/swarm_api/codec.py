@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Mapping
 
 from swarm_common.models import (
     Attempt,
@@ -31,7 +31,13 @@ from swarm_common.models import (
 from swarm_common.states import BlockedReason, EventType, ParkReason, TaskState
 from swarm_common.models import ProviderState
 
+from .task_input import TaskMasking, masking_for
 from .validation import DEFAULT_CARRIER, DEFAULT_STRATEGY, DISPATCH_METADATA_KEY
+
+#: A masker over no document: the rules, and no literals. What an attempt is
+#: masked with when its caller had no task to hand (`attempt_to_api`). It only
+#: masks with `remember=False`, so sharing it across requests keeps nothing.
+_RULES_ONLY = TaskMasking(None, None)
 
 
 def as_datetime(value: Any) -> datetime | None:
@@ -158,7 +164,32 @@ def workflow_dispatch(tasks: Any) -> dict[str, Any]:
 
 
 def task_to_api(task: Task) -> dict[str, Any]:
-    """Public JSON shape. Contains no credential material and no backend spec."""
+    """Public JSON shape. Contains no credential material and no backend spec.
+
+    THE INPUT AND THE METADATA ARE SERVED MASKED (owner decision, 2026-09-26,
+    on #184: "the API never serves a credential-shaped string back, even to
+    the submitter"). Both come from `task_input.TaskMasking` -- one masker over
+    the input and the caller's metadata, the one `/input` uses -- with
+    `input_redaction_count` and `metadata_redaction_count` beside them. The
+    platform's own metadata keys (`dispatch`, `input_from`, `expected_outputs`,
+    which submission refuses from every caller) are served as stored. Every
+    route that serves a task goes through this function, so no route serves
+    the raw input.
+
+    AND WHAT THE TASK COLLECTED ABOUT ITSELF (the PR #229 review). The same
+    masker masks `last_error` (the agent's stderr tail), every string in
+    `result_summary` (the agent's own summary among them) and the userinfo of
+    `repository_url`, each with a count beside it -- see `TaskMasking.text`
+    and `.leaves` for why string by string. The masker comes from
+    `task_input.masking_for`, which keeps it per task: a list page of large
+    inputs is masked once, not on every refresh.
+    """
+    masking = masking_for(task)
+    masked_input, input_count = masking.input_value()
+    masked_metadata, metadata_count = masking.metadata_value()
+    last_error, last_error_count = masking.text(task.last_error)
+    result_summary, result_summary_count = masking.leaves(task.result_summary)
+    repository_url, repository_url_count = masking.repository_url(task.repository_url)
     return {
         "id": task.id,
         "tenant_id": task.tenant_id,
@@ -216,17 +247,22 @@ def task_to_api(task: Task) -> dict[str, Any]:
         "step_id": task.step_id,
         "depends_on": task.depends_on,
         "cancel_requested": task.cancel_requested,
-        "metadata": task.metadata,
+        "metadata": masked_metadata,
+        "metadata_redaction_count": metadata_count,
         # Also inside `metadata`, which is where it is STORED. It is lifted out
         # here so a caller reads the effective values -- including on a task
         # that predates the feature and has no block -- without knowing the
         # encoding.
         "dispatch": dispatch_of(task),
-        "repository_url": task.repository_url,
+        "repository_url": repository_url,
+        "repository_url_redaction_count": repository_url_count,
         "repository_ref": task.repository_ref,
-        "input": task.input,
-        "last_error": task.last_error,
-        "result_summary": task.result_summary,
+        "input": masked_input,
+        "input_redaction_count": input_count,
+        "last_error": last_error,
+        "last_error_redaction_count": last_error_count,
+        "result_summary": result_summary,
+        "result_summary_redaction_count": result_summary_count,
         "latest_checkpoint": task.latest_checkpoint,
         # Contract request 23 (#217), ACCEPTED 2026-09-25. Written by every
         # terminal writer beside `completed_at` and read here first by the
@@ -340,6 +376,11 @@ def attempt_from_dict(data: dict[str, Any]) -> Attempt:
         peak_cpu_cores=data.get("peak_cpu_cores"),
         mean_cpu_cores=data.get("mean_cpu_cores"),
         cpu_limit_cores=data.get("cpu_limit_cores"),
+        # CONTRACT REQUEST #26 (accepted on #184, 2026-09-26): when the four
+        # were written and where the limit came from. None on every attempt
+        # from before it, which is read as `not recorded`, never as a guess.
+        cpu_measured_at=as_datetime(data.get("cpu_measured_at")),
+        cpu_limit_source=data.get("cpu_limit_source"),
     )
 
 
@@ -424,14 +465,32 @@ def lease_to_api(lease: Lease) -> dict[str, Any]:
     }
 
 
-def attempt_to_api(attempt: Attempt) -> dict[str, Any]:
+def attempt_to_api(
+    attempt: Attempt,
+    *,
+    masking: TaskMasking | None = None,
+    read_at: datetime | None = None,
+) -> dict[str, Any]:
     """Public JSON shape for one attempt.
 
     This is the per-attempt record that `result_summary` cannot give you:
     result_summary is written once, at terminal state, so a task that failed
     twice and succeeded on the third try carries only the third attempt's
     numbers. The first two live here.
+
+    `read_at` is the route's own clock, and `cpu_reading_age_seconds` is the
+    CPU reading's age against it (contract request #26): aged on the server,
+    as #188's heartbeat reading was, because an age off a browser's clock is a
+    guess drawn as a measurement (the #187 review). None when the attempt
+    records no time for its figures, or the caller gave no clock.
+
+    `masking` is the attempt's TASK's masker (`task_input.masking_for`):
+    `error` is the stderr tail the task's `last_error` is, and is masked by the
+    same rules and literals, with `error_redaction_count` (the PR #229 review).
+    Every route passes one. Without one the rules still apply -- a masker over
+    nothing, which has no literals -- so no caller gets the error unmasked.
     """
+    error, error_count = (masking or _RULES_ONLY).text(attempt.error)
     return {
         "attempt_id": attempt.attempt_id,
         "task_id": attempt.task_id,
@@ -444,7 +503,8 @@ def attempt_to_api(attempt: Attempt) -> dict[str, Any]:
         "started_at": attempt.started_at,
         "completed_at": attempt.completed_at,
         "exit_code": attempt.exit_code,
-        "error": attempt.error,
+        "error": error,
+        "error_redaction_count": error_count,
         "peak_rss_bytes": attempt.peak_rss_bytes,
         "peak_disk_bytes": attempt.peak_disk_bytes,
         "oom_near_miss": attempt.oom_near_miss,
@@ -472,7 +532,27 @@ def attempt_to_api(attempt: Attempt) -> dict[str, Any]:
         "peak_cpu_cores": attempt.peak_cpu_cores,
         "mean_cpu_cores": attempt.mean_cpu_cores,
         "cpu_limit_cores": attempt.cpu_limit_cores,
+        # Request #26: when the four were written, where the limit came from,
+        # and how old the reading is by this API's clock. Null is not recorded.
+        "cpu_measured_at": attempt.cpu_measured_at,
+        "cpu_limit_source": attempt.cpu_limit_source,
+        "cpu_reading_age_seconds": _age_seconds(attempt.cpu_measured_at, read_at),
     }
+
+
+def _age_seconds(at: datetime | None, now: datetime | None) -> float | None:
+    """Seconds from `at` to `now`, never negative; None when either is unknown.
+
+    Clamped at zero: a worker's clock a little ahead of the API's is skew, not
+    a reading from the future.
+    """
+    if at is None or now is None:
+        return None
+    if at.tzinfo is None:
+        at = at.replace(tzinfo=timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    return round(max(0.0, (now - at).total_seconds()), 1)
 
 
 def pool_to_api(pool: SlotPool) -> dict[str, Any]:
@@ -604,9 +684,22 @@ def workflow_from_dict(data: dict[str, Any]) -> Workflow:
 
 
 def workflow_to_api(
-    workflow: Workflow, rollup: dict[str, Any] | None = None
+    workflow: Workflow,
+    rollup: dict[str, Any] | None = None,
+    *,
+    step_tasks: Mapping[str, Task] | None = None,
 ) -> dict[str, Any]:
     """Public JSON shape for a workflow.
+
+    `step_tasks` maps a step's `task_id` to its task, as far as the route read
+    them, and each step's `input` is masked by ITS TASK's masker (the PR #229
+    review): the frozen `Workflow` has no metadata, but every step task carries
+    the workflow's (`{**spec.metadata, "workflow_step": id}`), so a literal the
+    metadata names is masked in `steps[i].input` exactly as in the task's own
+    `input`. A route that did not read a step's task passes a sibling's --
+    every step task carries the same workflow metadata -- and one that read
+    none serves the step's input as null, with `input_masked_by:
+    "not_read"`, rather than masked by a masker that never saw the metadata.
 
     `state` SERVES THE DERIVED VALUE when a rollup is supplied, and the value
     read out of Firestore is served beside it as `stored_state`. That is a
@@ -637,18 +730,54 @@ def workflow_to_api(
         "on_step_failure": workflow.on_step_failure,
         "cancel_requested": workflow.cancel_requested,
         "steps": [
-            {
-                "step_id": s.step_id,
-                "runner_profile": s.runner_profile,
-                "resource_class": s.resource_class,
-                "depends_on": s.depends_on,
-                "input_from": s.input_from,
-                "timeout_seconds": s.timeout_seconds,
-                "task_id": s.task_id,
-                "input": s.input,
-            }
-            for s in workflow.steps
+            _step_to_api(s, _step_masking(workflow, s, step_tasks or {})) for s in workflow.steps
         ],
+    }
+
+
+def _step_masking(
+    workflow: Workflow, step: WorkflowStep, step_tasks: Mapping[str, Task]
+) -> tuple[TaskMasking, str] | None:
+    """The masker for one step's input, and whose it is; None when no step task was read."""
+    own = step_tasks.get(step.task_id) if step.task_id else None
+    if own is not None:
+        return masking_for(own), "task"
+    for sibling in workflow.steps:
+        task = step_tasks.get(sibling.task_id) if sibling.task_id else None
+        if task is not None:
+            # The workflow's metadata, off a sibling: the one key that differs
+            # by step, `workflow_step`, is a label and names no credential.
+            return TaskMasking(step.input, task.metadata), "workflow"
+    return None
+
+
+def _step_to_api(step: WorkflowStep, masking: tuple[TaskMasking, str] | None) -> dict[str, Any]:
+    """One workflow step. Its `input` is served MASKED, with its count.
+
+    A step's input is the input its task was created with, so it is masked by
+    the task's own masker (see `workflow_to_api`). `input_masked_by` says whose:
+    `task` (the step's task), `workflow` (a sibling step task's copy of the
+    workflow metadata), or `not_read` (no step task was read, so the input is
+    not served at all -- read it on the task).
+    """
+    base = {
+        "step_id": step.step_id,
+        "runner_profile": step.runner_profile,
+        "resource_class": step.resource_class,
+        "depends_on": step.depends_on,
+        "input_from": step.input_from,
+        "timeout_seconds": step.timeout_seconds,
+        "task_id": step.task_id,
+    }
+    if masking is None:
+        return {**base, "input": None, "input_redaction_count": None, "input_masked_by": "not_read"}
+    masker, whose = masking
+    masked_input, input_count = masker.step_input_value(step.input)
+    return {
+        **base,
+        "input": masked_input,
+        "input_redaction_count": input_count,
+        "input_masked_by": whose,
     }
 
 

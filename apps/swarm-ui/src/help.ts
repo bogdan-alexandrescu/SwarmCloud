@@ -82,7 +82,7 @@ export type TopicId =
   | 'catalogue-from-route'
   | 'checkpoints'
   | 'clipboard-secure-context'
-  | 'cpu-not-sampled'
+  | 'cpu-figures'
   | 'credential-names-not-values'
   | 'credential-refresh-sweep'
   | 'credential-split'
@@ -357,14 +357,19 @@ const SPECS: Record<TopicId, TopicSpec> = {
     ],
   },
 
-  'cpu-not-sampled': {
+  // WAS `cpu-not-sampled`, "CPU is never sampled", and it stayed in the card
+  // foot's index directly under the two CPU rows it contradicted after #187
+  // started drawing them (#222, post-deploy QA of 2026-09-26). The worker
+  // measures CPU; this says what the two rows are.
+  'cpu-figures': {
     group: 'an-attempt',
-    title: 'CPU is never sampled',
+    title: 'CPU is peak and mean cores of the limit',
     short:
-      'The sampler measures memory and disk. The cpu bar is drawn with its request and a hatched track rather than left out, because a requested-against-used panel that silently drops part of the envelope reads as if cpu were known to be fine.',
+      'The worker samples the container’s CPU while the agent runs and writes the attempt’s figures on its own record: the busiest sampling interval (peak) and the CPU-seconds over the runner’s wall time (mean), both in cores, against the limit it read from the kernel or took from the class.',
     long: [
-      'The worker’s sampler records memory and disk. It does not record cpu.',
-      'The cpu bar is still drawn, with its requested figure and a hatched track. Omitting it would be worse: a panel headed “requested vs utilised” that quietly shows two of three dimensions invites the reader to conclude the third was fine, which is a conclusion nobody measured.',
+      'The figures are the attempt’s, every runner it started combined. Peak is the busiest sampling interval; mean is the CPU-seconds divided by the time the runners ran, so the setup, the clone and retry waits are not counted as idle.',
+      'The limit is the container’s cgroup `cpu.max` when the kernel says one (`cgroup limit`), else the catalogue cpu of the class the container was sized with. An attempt from before the limit’s source was recorded says `reported limit` when the figure is not its class’s.',
+      'While the attempt runs the figures are a live reading, rewritten with each periodic reading, and its age is the API’s own measure of when the worker last wrote it. An attempt from before that time was recorded says `age not recorded`. An em dash is a figure nobody measured, never a zero.',
     ],
   },
 

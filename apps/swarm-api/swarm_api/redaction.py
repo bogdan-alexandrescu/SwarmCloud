@@ -41,6 +41,32 @@ redacts, this redacts, and possibly more. `tests/unit/control_plane/
 test_log_redaction.py` pins both halves, including a drift check that fails
 when a rule is added to the shell filter and not here.
 
+THE KEY/VALUE RULE IS ONE RULE IN BOTH PLACES FOR JSON TEXT (#221, owner
+decision 2026-09-26). A quote inside a JSON string is written `\\"`, so a
+stream-json log line holds an agent's `export DB_PASSWORD="<v>"` as
+`DB_PASSWORD=\\"<v>\\"`, and `"api_key": "<v>"` inside a tool's input as
+`\\"api_key\\": \\"<v>\\"`. Both rules now take an escaped quote around the
+key and before the value, and stop a value opened by one at the next
+backslash, which in JSON text always begins an escape. The shell filter does
+it in two expressions, because sed has no conditional group; the test file
+runs both filters over the same lines and holds their output EQUAL on every
+key/value case, not merely both masked.
+
+AT ANY DEPTH OF ESCAPING (the PR #229 review). A command that itself quotes
+its quotes -- `bash -c "export DB_PASSWORD=\\"<v>\\""`, `curl -d
+"{\\"api_key\\": ...}"` -- sits in a stream-json line one level deeper, as
+`\\\\\\"`: three backslashes, then the quote. The first version took exactly
+one backslash, so it masked the three and served `<v>` under a count of 1,
+and both filters agreed, so the parity check was green over the leak. Both
+now take a RUN of backslashes wherever they took one.
+
+`/logs` DOES NOT RELY ON THIS RULE FOR A JSON LINE. A log line that parses as
+a JSON document is masked by its structure (`redact_lines`, `JsonMasker`), so
+its strings are masked decoded, a list or an object under a credential's name
+is masked whole, and a value holding a backslash or a space is masked to its
+end. The rule over the text is what the terminal has (sed cannot decode JSON),
+and what `/logs` falls back to for a line that is not a document.
+
 The PRIVATE KEY family is the other place it is wider: a key is masked as a
 BLOCK, not as the rest of one line -- see `mask_private_keys`.
 """
@@ -380,13 +406,59 @@ def _private_key_rule() -> Rule:
 #: inside a run can also start at the run's first character, because the
 #: prefix takes any name characters.
 #: `tests/unit/control_plane/test_task_input_route.py` bounds it on 256 KiB.
+#:
+#: ESCAPED QUOTES (#221, owner decision 2026-09-26). In JSON TEXT a quote
+#: inside a string is `\"`, and the rule read a quote as a quote: over a raw
+#: stream-json line, `DB_PASSWORD=\"<v>\"` had its backslash masked and `<v>`
+#: served under a count of 1, and `\"api_key\": \"<v>\"` did not match at all.
+#: `/logs` serves exactly those lines, and there is no decoded document to walk
+#: there, so the rule itself now takes `\"` where it took `"` -- around the key
+#: and before the value -- and a value OPENED by `\"` stops at the next
+#: backslash (group 2 records that it was), because in JSON text a backslash
+#: always begins an escape: `\"` closing the value, or a `\n` after it. A value
+#: NOT opened by one keeps its old class, backslashes included, so a plain
+#: `password=ab\cd` is still masked whole; it may not START with `\"`, so an
+#: escaped empty value is left alone rather than having its backslash masked.
+#:
+#: A LIST'S FIRST ELEMENT (the reach limit in PR #210's comment 5841681051).
+#: `{"password": ["<v>"]}` masked the `[` and served `<v>`. An optional `[`
+#: after the separator now lets the value start at the first element. Only the
+#: first: `["a", "b"]` still serves `b` in free text, and an object under a
+#: credential's name still serves its strings. A JSON document the API can
+#: DECODE goes through `JsonMasker`, which masks either whole.
+#:
+#: ANY NUMBER OF BACKSLASHES (the PR #229 review). One level of JSON escaping
+#: is `\"`; a command that quotes its own quotes, logged as JSON, is `\\\"`,
+#: and each level more doubles the run and adds one. So wherever the rule took
+#: one backslash before a quote it takes a run:
+#:
+#:   * before the key, `\\{0,15}` -- BOUNDED, because that group is tried at
+#:     every position of the text, and an unbounded run there would rescan a
+#:     long run of backslashes from each of its positions (quadratic, on a
+#:     shared instance, over text an agent chose). The bound loses nothing: a
+#:     longer run still matches, from a later start, and the backslashes
+#:     before that start are left exactly where the match would have kept
+#:     them. `test_log_redaction.py` times 256 KiB of backslashes;
+#:   * after the key and before the value, `\\*` and `\\+` -- unbounded, since
+#:     both are only reached after a credential's name has matched;
+#:   * a value NOT opened by an escaped quote may not start with a run of
+#:     backslashes and a quote either: it starts with a character that is not
+#:     a backslash, or a run of backslashes and one that is not a quote. That
+#:     is the shell expression's own wording, so the two cannot differ on a
+#:     value made only of backslashes.
+#:
+#: THE SHELL FILTER HAS THE SAME RULE (`scripts/lib/common.sh` `redact`), in two
+#: expressions -- the escaped form, then the plain one -- because sed has no
+#: conditional group. `tests/unit/control_plane/test_log_redaction.py` runs both
+#: over the same lines and holds their output equal.
 KEY_VALUE = _rule(
     "key_value_assignment",
     "api_?key",
     r"(?<![A-Za-z0-9_.-])"
-    r"(\"?[A-Za-z0-9_.-]*"
+    r"((?:\\{0,15}\")?[A-Za-z0-9_.-]*"
     r"(?:api[-_]?key|apikey|password|passwd|secret|token|credential|authorization)"
-    r"\"?[ \t]*[:=][ \t]*\"?)[^\",\s]+",
+    r"(?:\\*\")?[ \t]*[:=][ \t]*(?:\[[ \t]*)?(?:(\\+\")|\"?))"
+    r"(?(2)[^\"\\,\s]+|(?:\\+[^\",\s\\]|[^\",\s\\])[^\",\s]*)",
     re.IGNORECASE,
 )
 
@@ -721,15 +793,36 @@ class JsonMasker:
     string drawn in several blocks is masked and counted the same in each, and
     a block's count is the sum of what its strings, keys and whole values
     contributed: `json(whole)` counts what `text(prompt)` and `json(rest)` do.
+
+    `value()` is the same masking as a JSON VALUE rather than its text (the
+    owner's "masked everywhere", 2026-09-26): `GET /v1/tasks/{id}` serves a
+    task's `input` and `metadata` as objects a client reads keys out of, so the
+    masked copy has to stay an object. It counts exactly what `json()` counts
+    for the same value, and `json.dumps` of it is `json()`'s text, except where
+    two keys of one object mask to the same text: an object cannot hold one key
+    twice, so the second is served as `<masked key> (2)`, and so on.
     """
 
-    def __init__(self, document: Any) -> None:
-        self._literals = _learned_literals(document)
+    def __init__(self, document: Any, *, literals: Iterable[str] = ()) -> None:
+        """`literals`: values another document already named as secret.
+
+        A task's masker (`task_input.TaskMasking`) hands what it learned from
+        the task's input and metadata to a log line's masker, so a value the
+        caller named as a credential is masked in the agent's output too.
+        """
+        learned = _learned_literals(document)
+        extra = tuple(v for v in literals if v not in learned)
+        self._literals = tuple(sorted(learned + extra, key=len, reverse=True))
         self._memo: dict[str, Redacted] = {}
         # A nonce, so no key in the document can spell a stand-in.
         self._tag = secrets.token_hex(8)
 
-    def text(self, value: str) -> Redacted:
+    @property
+    def literals(self) -> tuple[str, ...]:
+        """What this document named as secret, longest first (`_learned_literals`)."""
+        return self._literals
+
+    def text(self, value: str, *, remember: bool = True) -> Redacted:
         """One string, masked as a decoded string, then for the document's literals.
 
         The literals go AFTER the rules, not first as `redact(extra=...)` puts
@@ -737,21 +830,29 @@ class JsonMasker:
         otherwise take the marker away from the rule. Each is looked for in what
         the rules left, so a literal the rules already masked is not counted
         again.
+
+        `remember=False` masks without keeping the result: for a string that is
+        not part of the document (a task's `last_error`, an event's detail),
+        masked with this document's literals by a masker that outlives the
+        request (`task_input.masking_for`), whose memory must stay the
+        document's size.
         """
         found = self._memo.get(value)
         if found is None:
             first = redact(value, decoded=True)
-            text, count = first.text, first.count
-            for literal in self._literals:
-                if literal in text:
-                    count += text.count(literal)
-                    text = text.replace(literal, MASK)
-            found = self._memo[value] = Redacted(text=text, count=count)
+            text, count = _mask_literals(first.text, self._literals)
+            found = Redacted(text=text, count=first.count + count)
+            if remember:
+                self._memo[value] = found
         return found
 
-    def json(self, value: Any) -> Redacted:
-        """`value` as `json.dumps(value, indent=2, ensure_ascii=False)`, masked."""
-        keys: list[str] = []
+    def _walk(self, value: Any, *, label_for: Callable[[dict[str, Any], str, str], str]) -> tuple[Any, int]:
+        """`value` with every string, key and credential masked, and the count.
+
+        `label_for(out, raw_key, masked_key)` names the entry a key becomes in
+        the object being built: `json()` stands a changed or colliding key in
+        and restores it in the text, `value()` numbers a collision.
+        """
         total = 0
 
         def walk(node: Any) -> Any:
@@ -766,13 +867,7 @@ class JsonMasker:
                     raw = _key_text(key)
                     name = self.text(raw)
                     total += name.count
-                    # A key is stood in when masking changed it, or when it
-                    # now spells another key: two keys that mask to the same
-                    # text are two entries, not one.
-                    label = name.text
-                    if name.text != raw or label in out:
-                        keys.append(name.text)
-                        label = f"{_STAND_IN_OPEN}{self._tag}.{len(keys) - 1}{_STAND_IN_CLOSE}"
+                    label = label_for(out, raw, name.text)
                     if _masks_whole(raw, item):
                         total += 1
                         out[label] = MASK
@@ -798,7 +893,34 @@ class JsonMasker:
             # Not JSON: a Firestore timestamp in a hand-written document.
             return walk(str(node))
 
-        text = json.dumps(walk(value), indent=2, ensure_ascii=False)
+        return walk(value), total
+
+    def json(
+        self,
+        value: Any,
+        *,
+        indent: int | None = 2,
+        separators: tuple[str, str] | None = None,
+    ) -> Redacted:
+        """`value` as `json.dumps(value, indent=indent, ensure_ascii=False)`, masked.
+
+        `indent=None` is the one-line text `json.dumps` writes by default, which
+        is what a transcript step's `raw` record has always been. `separators`
+        is `json.dumps`'s: a log line re-written compactly passes `(",", ":")`.
+        """
+        keys: list[str] = []
+
+        def stand_in(out: dict[str, Any], raw: str, masked: str) -> str:
+            # A key is stood in when masking changed it, or when it now spells
+            # another key: two keys that mask to the same text are two
+            # entries, not one.
+            if masked != raw or masked in out:
+                keys.append(masked)
+                return f"{_STAND_IN_OPEN}{self._tag}.{len(keys) - 1}{_STAND_IN_CLOSE}"
+            return masked
+
+        shaped, total = self._walk(value, label_for=stand_in)
+        text = json.dumps(shaped, indent=indent, ensure_ascii=False, separators=separators)
         if keys:
             placed = re.compile(
                 '"' + re.escape(f"{_STAND_IN_OPEN}{self._tag}.") + r"(\d+)" + re.escape(_STAND_IN_CLOSE) + '"'
@@ -806,10 +928,176 @@ class JsonMasker:
             text = placed.sub(lambda m: json.dumps(keys[int(m.group(1))], ensure_ascii=False), text)
         return Redacted(text=text, count=total)
 
+    def value(self, value: Any) -> tuple[Any, int]:
+        """`value` as a JSON value, masked exactly as `json()` masks it, and the count."""
 
-def redact_json(value: Any) -> Redacted:
+        def numbered(out: dict[str, Any], _raw: str, masked: str) -> str:
+            if masked not in out:
+                return masked
+            n = 2
+            while f"{masked} ({n})" in out:
+                n += 1
+            return f"{masked} ({n})"
+
+        return self._walk(value, label_for=numbered)
+
+
+def redact_json(value: Any, *, indent: int | None = 2) -> Redacted:
     """One JSON value, masked by its structure as `JsonMasker` does, with the count."""
-    return JsonMasker(value).json(value)
+    return JsonMasker(value).json(value, indent=indent)
+
+
+def _mask_literals(text: str, literals: Iterable[str]) -> tuple[str, int]:
+    """Every occurrence of each literal, longest first, masked; and how many."""
+    count = 0
+    for literal in literals:
+        if literal and literal in text:
+            count += text.count(literal)
+            text = text.replace(literal, MASK)
+    return text, count
+
+
+#: A log line longer than this is masked as text, never decoded: `json.loads`
+#: and a walk of its strings are not worth a shared instance's time on a line
+#: no agent CLI writes. Every window `/logs` serves is at most a few MiB.
+JSON_LINE_MAX_CHARS = 1024 * 1024
+
+
+class _DuplicateKey(ValueError):
+    """Raised out of `_reject_duplicate_keys` and caught where `json.loads` is."""
+
+
+def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """`dict(pairs)`, but first check no key repeats at this object level.
+
+    Plain `json.loads` keeps only the LAST value of a repeated key -- so
+    `{"note":"export PASSWORD=hunter2","note":"ok"}` decodes to `{"note":
+    "ok"}` and `JsonMasker` never sees the secret half at all: the document
+    parses cleanly, the walk finds nothing to mask, and the line was about to
+    be served byte for byte (PR #229 review). A key that repeats at ANY level
+    of the document makes the whole line untrustworthy to decode, so the line
+    falls back to the text rule instead of being trusted as JSON.
+    """
+    seen: set[str] = set()
+    for key, _ in pairs:
+        if key in seen:
+            raise _DuplicateKey(key)
+        seen.add(key)
+    return dict(pairs)
+
+
+def _json_document(line: str) -> Any | None:
+    """The object or list `line` holds, when the whole line is one; else None.
+
+    `object_pairs_hook=_reject_duplicate_keys`: a line whose JSON has a
+    repeated key anywhere is treated as not-a-document, so it is masked by
+    the text rule instead of being decoded down to the surviving key and
+    served as if that were the whole truth.
+    """
+    body = line.strip()
+    if len(body) < 2 or len(body) > JSON_LINE_MAX_CHARS:
+        return None
+    if not ((body[0] == "{" and body[-1] == "}") or (body[0] == "[" and body[-1] == "]")):
+        return None
+    try:
+        document = json.loads(body, object_pairs_hook=_reject_duplicate_keys)
+    except (ValueError, _DuplicateKey):
+        return None
+    return document if isinstance(document, (dict, list)) else None
+
+
+def redact_lines(
+    text: str, *, inside_key: bool = False, literals: Iterable[str] = ()
+) -> Redacted:
+    """A log window, masked line by line: a JSON document by its structure, text by the rules.
+
+    WHY (the PR #229 review of #221). `/logs` served every line through the
+    rules over its TEXT. On a stream-json line that is JSON text, and the
+    key/value rule can only guess where a value ends inside it: a list or an
+    object under a credential's name served every element after the first, a
+    value holding a space or a backslash served the rest, and a command that
+    quoted its own quotes sat one escape deeper than the rule looked. A line
+    that IS a JSON document is now decoded and masked by `JsonMasker`, which
+    answers each of those from the document's structure, and every string in
+    it is masked decoded, as `/transcript` masks the same event.
+
+      * A line whose masking changed nothing is served BYTE FOR BYTE as stored
+        -- but only once the TEXT rule has also had a look at it and found
+        nothing either (the PR #229 review): the structural walk masks
+        string leaves and credential-named keys' whole values, and nothing
+        else, so a non-string scalar the walk cannot touch is still caught by
+        the text rule before the line is trusted as clean.
+      * A line whose JSON has the SAME KEY TWICE, at any level, is not
+        decoded at all: plain `json.loads` keeps only the last value of a
+        repeated key, so `{"note":"export PASSWORD=hunter2","note":"ok"}`
+        would parse to `{"note": "ok"}`, the walk would find nothing to mask
+        in "ok", and the secret half would never have been decoded in the
+        first place (the PR #229 review). Such a line falls back to the text
+        rule below instead, over the ORIGINAL bytes, where the secret still is.
+      * A line that was masked (structurally) is written back as compact JSON
+        (`","`, `":"`, what an agent CLI writes), so it stays one line and one
+        document.
+      * Everything that is not a whole document -- plain text, a line a window
+        cut, a duplicate-keyed line, a document over `JSON_LINE_MAX_CHARS` --
+        is masked by `redact`, in runs, so a private key printed over many
+        lines is still one block. `inside_key` applies to the window's first
+        run only, which is where a paged reader's look-back found the key open.
+      * `literals`: values the task named as secret (`TaskMasking.literals`),
+        masked after the rules wherever they appear, in every case above.
+    """
+    literals = tuple(literals)
+    pieces: list[str] = []
+    count = 0
+    run: list[str] = []
+    first_run = True
+
+    def flush() -> None:
+        nonlocal count, first_run
+        if not run:
+            return
+        body = "".join(run)
+        scrubbed = redact(body, inside_key=inside_key and first_run)
+        masked, found = _mask_literals(scrubbed.text, literals)
+        pieces.append(masked)
+        count += scrubbed.count + found
+        run.clear()
+        first_run = False
+
+    # Split on "\n" only. `str.splitlines` also splits on U+2028 and U+2029,
+    # which JSON allows unescaped INSIDE a string, and a line cut there parses
+    # as nothing and would silently fall back to the text rule.
+    parts = text.split("\n")
+    lines = [part + "\n" for part in parts[:-1]] + ([parts[-1]] if parts[-1] else [])
+    for index, line in enumerate(lines):
+        document = None if (inside_key and index == 0) else _json_document(line)
+        if document is None:
+            run.append(line)
+            continue
+        flush()
+        first_run = False
+        masked = JsonMasker(document, literals=literals).json(
+            document, indent=None, separators=(",", ":")
+        )
+        if masked.count:
+            ending = line[len(line.rstrip("\r\n")) :]
+            pieces.append(masked.text + ending)
+            count += masked.count
+        else:
+            # The structural walk found nothing to mask -- but it only masks
+            # STRING leaves and credential-named keys' whole values; a scalar
+            # that is not a string (`"api_key": null`) is not one, and the
+            # text rule may still find a credential shape the walk cannot see
+            # at all. Run it over the stored line before trusting "nothing
+            # here" enough to serve the line byte for byte (the PR #229 review).
+            scrubbed = redact(line)
+            safety, found = _mask_literals(scrubbed.text, literals)
+            if scrubbed.count or found:
+                pieces.append(safety)
+                count += scrubbed.count + found
+            else:
+                pieces.append(line)
+    flush()
+    return Redacted(text="".join(pieces), count=count)
 
 
 def redact_detail(message: str, *, limit: int = 400) -> str:

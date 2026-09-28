@@ -50,6 +50,7 @@ from typing import Any, Callable
 from . import profiles as catalogue
 from .client import SwarmClient, SwarmError
 from .follow import follow_command
+from .patches import masked_counts
 
 #: What `codec.workflow_to_api` sets on a read that actually looked at the step
 #: tasks. Any other value -- including the absence of the field -- means the
@@ -524,6 +525,10 @@ def step_rows(
             continue
 
         row["state"] = task.get("state")
+        # How many credential-shaped strings the API masked in the step task's
+        # input and metadata (owner decision, 2026-09-26: masked everywhere).
+        # None for a count the API did not send, never 0.
+        row["masked"] = masked_counts(task)
         if task.get("cancel_requested"):
             # The step's own flag, which the state does NOT carry: a step
             # holding capacity stays DISPATCHED or RUNNING, flagged, until its
