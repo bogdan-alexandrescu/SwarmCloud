@@ -2322,3 +2322,122 @@ def test_nothing_apply_sends_carries_an_empty_list_the_api_server_drops(argv):
         "client-side apply re-sends them and reports the object `configured` on every "
         "run (and a NetworkPolicy's generation climbs):\n  " + "\n  ".join(offenders)
     )
+
+
+# ---------------------------------------------------------------------------
+# The step-spec verification keys (contract request 34, section 3)
+# ---------------------------------------------------------------------------
+#
+# A GKE worker verifies swarm-api's signature with public keys from the
+# `swarm-spec-verify-keys` ConfigMap in its tenant's namespace, mounted
+# read-only. They never go in the pod's `env:` (a template placeholder away
+# from a tenant-writable copy), and the fact that matters is the ABSENCE of a
+# write grant on that ConfigMap to anything the tenant runs as: the worker
+# Role, any subject bound to it, and the tenant's GSA named either way a
+# Kubernetes subject can name it -- by email AND by numeric uniqueId, because
+# an email-only check reads as passing while a uniqueId binding authorises.
+
+SPEC_KEYS_CONFIG_MAP = "swarm-spec-verify-keys"
+SPEC_KEYS_MOUNT = "/etc/swarm/spec-verify-keys"
+SPEC_SETTINGS = {"SPEC_VERIFY_KEYS", "SPEC_SIGNING_KEY", "SPEC_SIGNATURE_MODE", "SPEC_LEGACY_CUTOVER"}
+_WRITE_VERBS = {"update", "patch", "delete", "create", "*"}
+#: The control plane's GSAs, by the uniqueId their RoleBindings name.
+_CONTROL_PLANE_UIDS = {SCHEDULER_UID, RECONCILER_UID}
+
+
+def _all_rbac_docs() -> list[dict[str, Any]]:
+    docs = list(_tenant_render("--bound-ksa", "swarm-agent-worker", "--bound-ksa", "swarm-worker"))
+    for path in sorted((KUBERNETES / "rbac").glob("*.yaml")):
+        text = path.read_text()
+        docs.extend(documents(text.replace("__", "x")))
+    return docs
+
+
+def _grants_config_map_write(role: dict[str, Any]) -> bool:
+    for rule in role.get("rules") or []:
+        resources = set(rule.get("resources") or [])
+        verbs = set(rule.get("verbs") or [])
+        if resources & {"configmaps", "*"} and verbs & _WRITE_VERBS:
+            return True
+    return False
+
+
+def _is_tenant_gsa(subject: dict[str, Any]) -> bool:
+    name = str(subject.get("name", ""))
+    if re.fullmatch(r"swarm-agent-worker-[a-z0-9-]+@[a-z0-9-]+\.iam\.gserviceaccount\.com", name):
+        return True
+    # A numeric subject is a GSA's uniqueId; only the control plane's may appear.
+    return name.isdigit() and name not in _CONTROL_PLANE_UIDS
+
+
+def test_the_browser_job_mounts_the_spec_keys_read_only_and_sets_no_env():
+    for source, job in (
+        ("render.py", _rendered_job("browser")),
+        ("GkeJobDispatcher._manifest", _dispatcher_job("browser")),
+    ):
+        pod = job["spec"]["template"]["spec"]
+        worker = next(c for c in pod["containers"] if c["name"] == "worker")
+        names = {e["name"] for e in worker.get("env") or []}
+        assert not SPEC_SETTINGS & names, (source, sorted(SPEC_SETTINGS & names))
+        mounts = [m for m in worker.get("volumeMounts") or [] if m.get("mountPath") == SPEC_KEYS_MOUNT]
+        assert len(mounts) == 1, (source, worker.get("volumeMounts"))
+        assert mounts[0].get("readOnly") is True, (source, mounts[0])
+        volume = next(v for v in pod["volumes"] if v["name"] == mounts[0]["name"])
+        assert volume["configMap"]["name"] == SPEC_KEYS_CONFIG_MAP, (source, volume)
+
+
+def test_the_browser_job_names_itself_for_the_workers_self_consistency_check():
+    for source, job in (
+        ("render.py", _rendered_job("browser")),
+        ("GkeJobDispatcher._manifest", _dispatcher_job("browser")),
+    ):
+        worker = job["spec"]["template"]["spec"]["containers"][0]
+        env = {e["name"]: e.get("value") for e in worker.get("env") or []}
+        assert env.get("RUNNER_JOB_NAME") == job["metadata"]["name"], source
+
+
+def test_the_worker_role_stays_empty_with_the_config_map_mounted(tenant_docs):
+    """A volume mount is fetched by the kubelet, never the pod's token, and
+    that token is not mounted. Nothing is added to the worker Role."""
+    assert not one(tenant_docs, "Role", "swarm-worker").get("rules")
+
+
+def test_no_role_binding_grants_the_tenant_write_on_the_spec_keys():
+    docs = _all_rbac_docs()
+    writers = {
+        (d["kind"], d["metadata"]["name"])
+        for d in docs
+        if d["kind"] in ("Role", "ClusterRole") and _grants_config_map_write(d)
+    }
+    worker_subjects = {
+        (s.get("kind"), s.get("name"))
+        for b in by_kind(docs, "RoleBinding")
+        if b["roleRef"]["kind"] == "Role" and b["roleRef"]["name"] == "swarm-worker"
+        for s in b.get("subjects") or []
+    }
+    assert worker_subjects, "no subject is bound to swarm-worker: the check below would see nothing"
+    assert ("Role", "swarm-worker") not in writers
+    for binding in by_kind(docs, "RoleBinding") + by_kind(docs, "ClusterRoleBinding"):
+        ref = (binding["roleRef"]["kind"], binding["roleRef"]["name"])
+        if ref not in writers:
+            continue
+        for subject in binding.get("subjects") or []:
+            key = (subject.get("kind"), subject.get("name"))
+            assert key not in worker_subjects, (binding["metadata"]["name"], subject)
+            assert not _is_tenant_gsa(subject), (binding["metadata"]["name"], subject)
+
+
+def test_the_gsa_check_recognises_both_spellings():
+    """The check above must not be email-only (or uniqueId-only)."""
+    assert _is_tenant_gsa({"name": f"swarm-agent-worker-{TENANT}@{PROJECT}.iam.gserviceaccount.com"})
+    assert _is_tenant_gsa({"name": "112233445566778899001"})
+    assert not _is_tenant_gsa({"name": SCHEDULER_UID})
+
+
+def test_no_cluster_role_binding_exists_anywhere_in_kubernetes():
+    """The ConfigMap must not become the first exception to this invariant."""
+    kinds = set()
+    for path in sorted(KUBERNETES.rglob("*.yaml")):
+        for doc in documents(path.read_text().replace("__", "x")):
+            kinds.add(doc.get("kind"))
+    assert "ClusterRoleBinding" not in kinds and "ClusterRole" not in kinds

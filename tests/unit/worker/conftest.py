@@ -27,6 +27,7 @@ from swarm_common.models import pool_names_for, utcnow
 from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES, resolve_backend
 from swarm_common.states import TaskState
 
+import spec_keys
 from fakes import FakeFirestore, FakeSecretClient, FakeTransactionRunner, RecordingExporter
 
 TENANT = "eng"
@@ -243,9 +244,14 @@ def build_worker(
     secret_client: Any | None = None,
     txn_runner: Any | None = None,
     reap_before_publish: Any | None = None,
+    sign_spec: bool = True,
     **overrides: Any,
 ) -> tuple[Worker, WorkerConfig, RecordingExporter]:
     profile = RUNNER_PROFILES[runner_profile]
+    # The key the worker trusts, as terraform renders it onto every Job
+    # (contract request 34). A test that is about the keys sets its own.
+    overrides.setdefault("spec_signing_key", spec_keys.SIGNING_KEY)
+    overrides.setdefault("spec_verify_keys", dict(spec_keys.VERIFY_KEYS))
     config = WorkerConfig(
         task_id=task_id,
         attempt_id=attempt_id,
@@ -305,7 +311,39 @@ def build_worker(
     # alive", which is the clean case the publish tests assume. The tests that
     # exercise the reap itself (test_forge_token_isolation.py) set their own.
     worker.reap_before_publish = reap_before_publish or (lambda: ())
+    if sign_spec:
+        _sign_before_run(worker, db, config)
     return worker, config, exporter
+
+
+def _sign_before_run(worker: Worker, db: FakeFirestore, config: WorkerConfig) -> None:
+    """Sign the task document the way swarm-api would have, just before the run.
+
+    Every task a worker runs was signed at submission (contract request 34),
+    and the worker refuses one that was not. Most tests here seed a task and
+    then shape it -- its metadata, its input, its class -- before they run it,
+    so signing at seed time would sign a spec the test then rewrites. Signing
+    at `run()` signs the spec the test actually built. A document that already
+    carries a signature is left alone: that is how the spec-signature tests
+    sign first and rewrite afterwards. `sign_spec=False` leaves it unsigned.
+
+    A config that names a repository gets the same on the document, as
+    submission would have written it: the worker refuses an environment whose
+    REPOSITORY_URL disagrees with the signed spec.
+    """
+    original_run = worker.run
+
+    def run() -> int:
+        doc = db.documents.get(f"tasks/{config.task_id}")
+        if doc is not None and not doc.get("spec_signature"):
+            if config.repository_url and not doc.get("repository_url"):
+                doc["repository_url"] = config.repository_url
+            if config.repository_ref and not doc.get("repository_ref"):
+                doc["repository_ref"] = config.repository_ref
+            spec_keys.sign_document(doc, config.task_id)
+        return original_run()
+
+    worker.run = run  # type: ignore[method-assign]
 
 
 @pytest.fixture
