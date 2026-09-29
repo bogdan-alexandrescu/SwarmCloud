@@ -949,15 +949,7 @@ export function TenantsScreen() {
     <Screen
       title="Tenants"
       load={loadTenants}
-      // WHAT THE ROSTER IS SCANNED FOR, COUNTED (#134). `no tenant key` is a
-      // tenant with no credential of its own registered; it is NOT "cannot
-      // run" -- an account lent to it on Capacity › Accounts still runs its
-      // work -- so the count names the missing key and claims nothing more.
-      summary={(d) =>
-        `${d.tenants.length} tenants · ${d.tenants.filter((t) => t.credentials.length === 0).length} with no tenant key · ${
-          d.tenants.filter((t) => t.enabled === false).length
-        } disabled`
-      }
+      summary={(d) => `${d.tenants.length} tenants`}
       // One sentence, and it is the one that separates a real zero from a
       // failed read. The provisioning argument is `docs/`.
       empty={{
@@ -1035,14 +1027,12 @@ export function TenantsScreen() {
                     </td>
                     <td role="cell" data-label="Kind">{t.kind}</td>
                     <td role="cell" data-label="Principal" className="mono">
-                      <Ident value={t.principal} noun="principal" />
+                      <span className="ten-ident" title={t.principal}>
+                        {t.principal}
+                      </span>
                     </td>
                     <td role="cell" data-label="Enforced" className="n">
-                      {/* To the tenant pool's own row on Pool limits, which
-                          is where this ceiling is changed (#134). */}
-                      <a className="ctl-link" href={`#admin/limits?pool=${encodeURIComponent(`tenant:${t.tenant_id}`)}`}>
-                        <Enforced tenant={t} />
-                      </a>
+                      <Enforced tenant={t} />
                     </td>
                     <td role="cell" data-label="Max active" className="n">{t.max_active}</td>
                     <td role="cell" data-label="Units" className="n">{t.capacity_units}</td>
@@ -1072,7 +1062,9 @@ export function TenantsScreen() {
                       {/* null means NO IDENTITY, not an empty string. A blank
                           cell here reads as fine and it is the opposite. */}
                       {typeof t.service_account === 'string' ? (
-                        <Ident value={t.service_account} noun="service account" />
+                        <span className="ten-ident" title={t.service_account}>
+                          {t.service_account}
+                        </span>
                       ) : (
                         <span className="tag full">no service account</span>
                       )}
@@ -1113,61 +1105,6 @@ export function TenantsScreen() {
         </section>
       )}
     </Screen>
-  )
-}
-
-/**
- * AN IDENTITY, SHORTENED ON THE WIDE TABLE, AND ITS COPY (#134).
- *
- * Above 900px `.ten-ident` cuts the value to 20ch with an ellipsis (AH-11).
- * The text under the ellipsis is whole, but selecting a cut 60-character
- * address out of a table cell is not a copy anyone can rely on -- so a button
- * beside it copies all of it, as the header's tenant id does (Brand.tsx
- * `TenantId`). Beside the value and not the value itself: here the value is
- * not the only thing in its cell a reader might want to select, and a whole
- * cell that copies on a click would fight the selection.
- *
- * SAID, NOT SILENT. The status says whether the copy landed; `navigator.
- * clipboard` is undefined outside a secure context and a write can be denied,
- * and a control that claimed success either way would be lying.
- */
-/** How long a copy's outcome stays beside the button that asked for it. */
-const COPY_SAID_MS = 4000
-
-function Ident({ value, noun }: { value: string; noun: string }) {
-  const [said, setSaid] = useState('')
-  const refused = `copy refused; select the ${noun} instead`
-  // SAID, THEN GONE. The outcome answers the click that asked; left in the
-  // cell for the life of the screen, a roster copied from three times carried
-  // three stale `copied` notes in its status regions.
-  useEffect(() => {
-    if (said === '') return
-    const t = setTimeout(() => setSaid(''), COPY_SAID_MS)
-    return () => clearTimeout(t)
-  }, [said])
-  const copy = () => {
-    const clipboard = typeof navigator === 'undefined' ? undefined : navigator.clipboard
-    if (clipboard === undefined) {
-      setSaid(refused)
-      return
-    }
-    clipboard.writeText(value).then(
-      () => setSaid(`${noun} copied`),
-      () => setSaid(refused),
-    )
-  }
-  return (
-    <span className="ten-ident-row">
-      <span className="ten-ident" title={value}>
-        {value}
-      </span>
-      <button type="button" className="ten-copy" aria-label={`Copy ${noun} ${value}`} title={`Copy the whole ${noun}`} onClick={copy}>
-        copy
-      </button>
-      <span className="ten-copy-said" role="status">
-        {said}
-      </span>
-    </span>
   )
 }
 

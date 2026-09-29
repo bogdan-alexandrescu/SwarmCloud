@@ -7,7 +7,6 @@ import { UtilTrack } from './primitives'
 import { Screen } from './Shell'
 import { blockerVerdict, classUnits, headroomFigure, useResourceClasses, verdictCopy, verdictNeedsAPerson } from './Blockers'
 import {
-  FAMILY_TITLE,
   POOL_FAMILY_ORDER,
   blockerCeiling,
   ceilingCopy,
@@ -24,6 +23,22 @@ import {
   type Pool,
   type PoolKind,
 } from './types'
+
+// THESE ARE POOL FAMILIES, NOT NAV LABELS, and `runner` keeps the contract's
+// noun on purpose: it groups the pools whose scope is a runner profile. The
+// TAB one along used to be called "Runner profiles" too and is now "Profile
+// headroom" -- that rename was about telling a per-tenant measurement from the
+// platform-wide catalogue beside it in the rail, and it does not reach in
+// here. A pool family named after the thing it is scoped by is unambiguous on
+// this screen, where every other row is `Tenants`, `Backends` or `Providers`.
+const FAMILY_TITLE: Record<PoolKind, string> = {
+  global: 'Global',
+  tenant: 'Tenants',
+  resource: 'Resource classes',
+  runner: 'Runner profiles',
+  backend: 'Backends',
+  provider: 'Providers',
+}
 
 /**
  * Screen B -- the capacity board.

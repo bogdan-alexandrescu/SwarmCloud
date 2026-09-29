@@ -625,9 +625,8 @@ export interface Route {
   /**
    * The Timeline's view -- every filter it has -- as the hash's query
    * (`#work/timeline?span=30d&table=1`, #185). OPTIONAL like `list`: absent
-   * and null both mean "the address names no view". The Timeline carries
-   * one, and so does Pool limits, as the row a link named
-   * (`#admin/limits?pool=tenant%3Aeng`, #134).
+   * and null both mean "the address names no view", and only the Timeline
+   * route carries one.
    */
   view?: string | null
 }
@@ -735,15 +734,6 @@ export function fromHash(): Route {
     if (tab && section.id === WORK && tab.id === 'timeline' && query !== '') {
       return { sectionId: section.id, tab: tab.id, ...blank, view: query }
     }
-    // THE ROW A LINK NAMED rides on Pool limits' address (#134): the Tenants
-    // roster links each Enforced figure to `#admin/limits?pool=tenant:<id>`.
-    // Dropped here, the normalise effect rewrote the address to
-    // `#admin/limits` before the screen's async read had drawn a row, and the
-    // link opened the page at no row at all. Only `pool` is kept.
-    if (tab && section.id === ADMIN_SECTION && tab.id === LIMITS_TAB) {
-      const pool = new URLSearchParams(query).get('pool')
-      if (pool) return { sectionId: section.id, tab: tab.id, ...blank, view: poolQuery(pool) }
-    }
     if (tab) return { sectionId: section.id, tab: tab.id, ...blank }
     // A Work tail that matches no tab is a task id from the old nav.
     if (section.id === WORK && wanted) {
@@ -759,14 +749,6 @@ export function fromHash(): Route {
 
   const home = SECTIONS[0]!
   return { sectionId: home.id, tab: firstTab(home), ...blank }
-}
-
-const ADMIN_SECTION = 'admin'
-const LIMITS_TAB = 'limits'
-
-/** Pool limits' query for one pool: `pool=tenant%3Aeng`. */
-function poolQuery(pool: string): string {
-  return new URLSearchParams({ pool }).toString()
 }
 
 /** The one spelling of a route. What the address bar is rewritten to. */
@@ -786,10 +768,6 @@ export function canonical(r: Route): string {
   // page (#185). Written only for that route: no other screen reads a query.
   if (r.sectionId === WORK && r.tab === 'timeline' && r.view) {
     return `${WORK}/timeline?${r.view}`
-  }
-  // And Pool limits' linked row, for the same reason (#134).
-  if (r.sectionId === ADMIN_SECTION && r.tab === LIMITS_TAB && r.view) {
-    return `${ADMIN_SECTION}/${LIMITS_TAB}?${r.view}`
   }
   return `${r.sectionId}/${r.tab}`
 }
@@ -1821,9 +1799,6 @@ function ReferenceScreen() {
   // The ages are the point, so they move on their own rather than only when a
   // fetch happens to land -- on the shared clock the head and the dock read.
   const now = useNow(AGE_TICK_MS)
-  const [failuresOnly, setFailuresOnly] = useState(false)
-  const ordered = referenceOrder(probes)
-  const shown = failuresOnly ? ordered.filter(failing) : ordered
 
   return (
     <>
@@ -1858,22 +1833,7 @@ function ReferenceScreen() {
         </div>
       ) : (
         <section className="section">
-          {/* THE SCOPE IS SAID ONCE (#140), in the head's `this tab only`. An
-              h2 ("Routes called in this tab") and a caption ("N routes since
-              this tab loaded") said it twice more; the count the caption
-              carried is the `N of M` beside the toggle. */}
-          <div className="ctl-toolbar">
-            {/* `ctl-seg`, the product's pressed-state control: it draws the
-                on state and takes the 44px phone target already. */}
-            <div className="ctl-seg" role="group" aria-label="Rows">
-              <button type="button" aria-pressed={failuresOnly} onClick={() => setFailuresOnly(!failuresOnly)}>
-                failures only
-              </button>
-            </div>
-            <span className="ctl-card-note ref-count">
-              {shown.length} of {probes.length}
-            </span>
-          </div>
+          <h2>Routes called in this tab</h2>
           {/* `is-scroll` (CH-13, design-system.md §7.3). This was `is-stacked`,
               for F6 of `docs/audits/2026-09-23/overflow-inventory.md`: five
               columns behind an `overflow-x: auto` that paints no scrollbar.
@@ -1882,34 +1842,34 @@ function ReferenceScreen() {
               first column held in view, and only a record of four columns or
               fewer stacks. This is a data table: the route stays pinned at the
               left edge while the outcome, latency and age scroll beside it. */}
-          {shown.length === 0 ? (
-            <p className="ctl-panel-note">no route is failing</p>
-          ) : (
-            <div className="ctl-table is-scroll">
-              <table role="table">
-                <thead role="rowgroup">
-                  <tr role="row">
-                    <th role="columnheader" scope="col">Route</th>
-                    <th role="columnheader" scope="col">Last attempt</th>
-                    {/* THE PARENTHETICAL CARRIES THE CAVEAT (§8.4.3). The
-                        caption used to spend 24 words saying a 403 on an admin
-                        route is the expected answer for a non-admin; the column
-                        it is about says so instead, and `describeProbe` already
-                        draws that row with the neutral flat bar (`is-info`,
-                        grey since CH-17) rather than in `--bad`. */}
-                    <th role="columnheader" scope="col">Outcome (403 on /v1/admin is expected)</th>
-                    <th role="columnheader" scope="col" className="is-num">Took</th>
-                    <th role="columnheader" scope="col">Newest payload</th>
-                  </tr>
-                </thead>
-                <tbody role="rowgroup">
-                  {shown.map((p) => (
-                    <RouteRow key={p.path} probe={p} now={now} />
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
+          <div className="ctl-table is-scroll">
+            <table role="table">
+              <thead role="rowgroup">
+                <tr role="row">
+                  <th role="columnheader" scope="col">Route</th>
+                  <th role="columnheader" scope="col">Last attempt</th>
+                  {/* THE PARENTHETICAL CARRIES THE CAVEAT (§8.4.3). The
+                      caption used to spend 24 words saying a 403 on an admin
+                      route is the expected answer for a non-admin; the column
+                      it is about says so instead, and `describeProbe` already
+                      draws that row with the neutral flat bar (`is-info`,
+                      grey since CH-17) rather than in `--bad`. */}
+                  <th role="columnheader" scope="col">Outcome (403 on /v1/admin is expected)</th>
+                  <th role="columnheader" scope="col" className="is-num">Took</th>
+                  <th role="columnheader" scope="col">Newest payload</th>
+                </tr>
+              </thead>
+              <tbody role="rowgroup">
+                {probes.map((p) => (
+                  <RouteRow key={p.path} probe={p} now={now} />
+                ))}
+              </tbody>
+              <caption>
+                {probes.length} route{probes.length === 1 ? '' : 's'} since this
+                tab loaded
+              </caption>
+            </table>
+          </div>
         </section>
       )}
     </>
@@ -1986,34 +1946,4 @@ function describeProbe(p: ProbeRecord): { tone: string; label: string; row?: str
     default:
       return { tone: 'is-bad', label: `${p.lastStatus ?? '—'} ${p.lastKind}`, row: 'is-bad' }
   }
-}
-
-/**
- * How bad each tone is, worst first: the order API reads draws its rows in
- * (#140). The admin 403 ranks with `is-info` -- the expected answer for a
- * non-admin, below anything paused and above a clean read.
- */
-const RANK: Readonly<Record<string, number>> = { 'is-bad': 0, 'is-warn': 1, 'is-info': 2, 'is-ok': 3 }
-
-/** A read that failed. The admin 403 is not one: it is the answer expected. */
-function failing(p: ProbeRecord): boolean {
-  return describeProbe(p).row !== undefined
-}
-
-/**
- * THE SCREEN'S ORDER, NOT THE REGISTRY'S (#140). `probeSnapshot` is sorted by
- * route, which is right for a registry and wrong for a reader who opened this
- * page because something did not load: with twenty routes read, the failing
- * one sat wherever its name sorted. So the worst outcome is first, and within
- * one outcome the oldest payload is -- `never` before any age, because a
- * panel that has never had a payload is the one most likely to be showing
- * nothing. The route name breaks what is left, so the order is stable.
- */
-function referenceOrder(probes: readonly ProbeRecord[]): ProbeRecord[] {
-  const rank = (p: ProbeRecord) => RANK[describeProbe(p).tone] ?? 0
-  // `never` as zero: every real success is an epoch millisecond after it.
-  const success = (p: ProbeRecord) => p.lastSuccessAt ?? 0
-  return [...probes].sort(
-    (a, b) => rank(a) - rank(b) || success(a) - success(b) || a.path.localeCompare(b.path),
-  )
 }
