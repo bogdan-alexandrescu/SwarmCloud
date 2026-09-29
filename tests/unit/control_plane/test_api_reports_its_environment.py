@@ -49,6 +49,10 @@ def _client(db, tokens, group_map, objects, settings: ApiSettings) -> TestClient
         waker=NullWaker(),
         metrics=ApiMetrics(),
         objects=objects,
+        # No step-spec signer: these tests are about the badge, and a declared
+        # deployed environment otherwise refuses to start without
+        # SPEC_SIGNING_KEY_VERSION (contract request 34).
+        signer=None,
     )
     return TestClient(create_app(ctx), raise_server_exceptions=False)
 

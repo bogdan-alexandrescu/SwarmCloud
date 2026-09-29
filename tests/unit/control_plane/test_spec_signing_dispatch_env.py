@@ -121,3 +121,74 @@ def test_the_scheduler_refuses_malformed_verification_settings():
         scheduler_settings(spec_verify_keys="{not json")
     with pytest.raises(ValueError):
         scheduler_settings(spec_signature_mode="off")
+
+
+# ---------------------------------------------------------------------------
+# A Job this scheduler created follows a settings change (#353 security
+# review, M1). `_build_job` bakes the four settings in; `_refresh_image` used
+# to rebuild only on an image or MODEL change, so a tfvars-only cutover, move
+# to enforce, rotation or revocation never reached a self-service tenant's Job.
+# ---------------------------------------------------------------------------
+
+VERSION_2 = VERSION.replace("cryptoKeyVersions/1", "cryptoKeyVersions/2")
+PEM = "-----BEGIN PUBLIC KEY-----\nMFkw\n-----END PUBLIC KEY-----\n"
+
+
+def _existing_scheduler_job(settings, tenant):  # noqa: F811
+    from scheduler.dispatch import job_id_for
+
+    builder = CloudRunJobDispatcher(settings, client=object())
+    job = builder._build_job(RUNNER_PROFILES["claude-code"], tenant)
+    job.name = builder.job_name(job_id_for(tenant.tenant_id, "claude-code"))
+    assert job.labels["managed-by"] == "swarm-scheduler"
+    return job
+
+
+def _job_env(job) -> dict[str, str]:
+    return {e.name: e.value for e in job.template.template.containers[0].env}
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"spec_signature_mode": "enforce"},
+        {"spec_legacy_cutover": "2026-10-01T00:00:00Z"},
+        {"spec_verify_keys": json.dumps({VERSION: PEM, VERSION_2: PEM})},  # rotation
+        {"spec_verify_keys": json.dumps({VERSION_2: PEM})},  # revocation of version 1
+        {"spec_signing_key": VERSION.rsplit("/cryptoKeyVersions/", 1)[0] + "-next"},
+        {"spec_signature_mode": "enforce", "spec_legacy_cutover": ""},
+    ],
+    ids=["enforce", "cutover", "rotation", "revocation", "signing-key", "cutover-removed"],
+)
+def test_a_changed_verification_setting_rebuilds_the_job(settings, tenant, change):  # noqa: F811
+    import dataclasses
+
+    seeded = _existing_scheduler_job(settings, tenant)
+    client = FakeJobsClient(jobs={seeded.name: seeded})
+    changed = dataclasses.replace(settings, **change)
+    task = make_task("claude-code")
+
+    CloudRunJobDispatcher(changed, client=client).dispatch(
+        task=task, lease=make_lease(task), profile=RUNNER_PROFILES["claude-code"], tenant=tenant
+    )
+
+    assert client.calls.count("update_job") == 1, client.calls
+    env = _job_env(client.jobs[seeded.name])
+    for field, value in change.items():
+        name = field.upper()
+        if value:
+            assert env.get(name) == value, name
+        else:
+            assert not env.get(name), f"{name} is still on the rebuilt Job"
+
+
+def test_an_unchanged_job_is_not_rewritten_for_the_verification_settings(settings, tenant):  # noqa: F811
+    seeded = _existing_scheduler_job(settings, tenant)
+    client = FakeJobsClient(jobs={seeded.name: seeded})
+    task = make_task("claude-code")
+
+    CloudRunJobDispatcher(settings, client=client).dispatch(
+        task=task, lease=make_lease(task), profile=RUNNER_PROFILES["claude-code"], tenant=tenant
+    )
+
+    assert "update_job" not in client.calls, client.calls

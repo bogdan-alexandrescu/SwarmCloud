@@ -807,7 +807,18 @@ class CloudRunJobDispatcher:
         # next image change. Same rebuild, same single write.
         wanted_model = self._model_for(profile)
         current_model = _plain_env_value(container, "MODEL")
-        if current == wanted and current_model == wanted_model:
+        # AND ITS STEP-SPEC SETTINGS (contract request 34; #353 security
+        # review, M1). `_build_job` bakes SPEC_* from this scheduler's own
+        # settings, so a tfvars-only change -- the cutover, the move to
+        # enforce, a rotated or revoked key -- must rebuild the Jobs this
+        # dispatcher created (every self-service `u-*` tenant, every
+        # non-default class), or they keep verifying against the old values.
+        wanted_spec = spec_job_env(self._settings)
+        spec_drift = sorted(
+            name for name in SPEC_SETTING_NAMES
+            if _plain_env_value(container, name) != wanted_spec.get(name)
+        )
+        if current == wanted and current_model == wanted_model and not spec_drift:
             return False
         job = self._build_job(profile, tenant, resource_class)
         job.name = name
@@ -820,9 +831,12 @@ class CloudRunJobDispatcher:
                 f"to {wanted}: {exc}",
                 code="cloud_run_update_job_failed",
             ) from exc
+        # Names only: the values are public keys and a mode, but the log line
+        # needs no more than which settings moved.
         log.info(
-            "cloud run job %s moved from %s (MODEL %s) to %s (MODEL %s)",
+            "cloud run job %s moved from %s (MODEL %s) to %s (MODEL %s); SPEC_* changed: %s",
             name, current or "?", current_model or "unset", wanted, wanted_model or "unset",
+            ", ".join(spec_drift) or "none",
         )
         return True
 

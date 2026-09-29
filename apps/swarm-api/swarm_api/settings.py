@@ -331,8 +331,9 @@ class ApiSettings:
     #: The Cloud KMS key VERSION that signs every step spec, named in full
     #: (projects/.../cryptoKeys/step-spec/cryptoKeyVersions/<n>), contract
     #: request 34. A version, not a key: an asymmetric key has no primary.
-    #: Empty only in local development; `build_context` refuses a hardened
-    #: environment without it.
+    #: Empty only in local development; `build_context` refuses every
+    #: deployed environment without it, dev included
+    #: (`specsigning.signer_from_settings`).
     spec_signing_key_version: str = ""
 
     #: Whether the deployment actually SAID which environment this is.

@@ -116,19 +116,37 @@ class KmsSpecSigner:
         return SpecSignature(signature=signature, key_version=self._key_version)
 
 
+#: Environments that are never deployed: a swarm-api here may run unsigned.
+UNDEPLOYED_ENVIRONMENTS = frozenset({"test", "local"})
+
+
+def _is_deployed(settings: Any) -> bool:
+    if getattr(settings, "hardened", False):
+        return True
+    if not getattr(settings, "environment_declared", False):
+        return False
+    core = getattr(settings, "core", None)
+    environment = str(getattr(core, "environment", "") or "").strip().lower()
+    return environment not in UNDEPLOYED_ENVIRONMENTS
+
+
 def signer_from_settings(settings: Any) -> SpecSigner | None:
     """The KMS signer, or None where no key is configured.
 
-    None only outside a hardened environment (local development, tests):
-    `build_context` refuses to start a hardened one without the key, the same
-    way it refuses an unpinned token audience. A task written unsigned is
-    refused by every worker in `enforce` mode, so a misconfiguration fails
-    loudly at the worker rather than running anything unverified.
+    None only in local development and tests. Every DEPLOYED environment
+    refuses to start without the key, dev included: `hardened` is False for
+    dev (settings.py), and dev is the environment that is actually deployed,
+    so keying this on `hardened` alone let a dev swarm-api with no key start
+    and write unsigned tasks that every worker in `enforce` mode refuses
+    (#353 security review, M2). "Deployed" is: hardened, or an ENVIRONMENT
+    that was DECLARED as anything but test or local. An undeclared
+    environment reads as the frozen default "dev" and is local development
+    (docker-compose declares `local` for swarm-api for the same reason).
     """
     version = str(getattr(settings, "spec_signing_key_version", "") or "").strip()
     if version:
         return KmsSpecSigner(version)
-    if getattr(settings, "hardened", False):
+    if _is_deployed(settings):
         raise ValueError(
             "SPEC_SIGNING_KEY_VERSION is required outside local development: without it "
             "swarm-api would write step specs no worker will run (contract request 34). "

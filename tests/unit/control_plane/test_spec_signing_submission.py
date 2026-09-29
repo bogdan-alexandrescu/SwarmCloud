@@ -232,6 +232,62 @@ def test_an_unconfigured_signer_leaves_tasks_unsigned_only_outside_hardened():
     assert task.spec_signature is None and task.spec_key_version is None
 
 
+@pytest.mark.parametrize("environment", ["dev", "staging", "prod"])
+def test_a_declared_deployed_environment_without_a_signing_key_refuses_to_start(environment):
+    """#353 security review, M2: `hardened` is False for dev, and dev is the
+    environment that is deployed. A declared dev swarm-api with no key must
+    refuse to start, not write unsigned tasks every enforcing worker refuses."""
+    import dataclasses
+
+    from swarm_api.specsigning import signer_from_settings
+
+    from .conftest import core_settings
+
+    settings = dataclasses.replace(
+        api_settings(core=core_settings(environment=environment), spec_signing_key_version=""),
+        environment_declared=True,
+    )
+    with pytest.raises(ValueError, match="SPEC_SIGNING_KEY_VERSION"):
+        signer_from_settings(settings)
+
+
+@pytest.mark.parametrize(
+    "environment,declared",
+    [("test", True), ("local", True), ("dev", False), ("test", False)],
+)
+def test_local_development_and_tests_may_run_without_a_signing_key(environment, declared):
+    """Undeclared reads as the frozen default "dev": that is local development."""
+    import dataclasses
+
+    from swarm_api.specsigning import signer_from_settings
+
+    from .conftest import core_settings
+
+    settings = dataclasses.replace(
+        api_settings(core=core_settings(environment=environment), spec_signing_key_version=""),
+        environment_declared=declared,
+    )
+    assert signer_from_settings(settings) is None
+
+
+def test_a_declared_dev_with_a_signing_key_gets_the_kms_signer():
+    import dataclasses
+
+    from swarm_api.specsigning import KmsSpecSigner, signer_from_settings
+
+    from .conftest import core_settings
+
+    version = (
+        "projects/p/locations/us-central1/keyRings/swarm-dev-specs/cryptoKeys/step-spec/"
+        "cryptoKeyVersions/1"
+    )
+    settings = dataclasses.replace(
+        api_settings(core=core_settings(environment="dev"), spec_signing_key_version=version),
+        environment_declared=True,
+    )
+    assert isinstance(signer_from_settings(settings), KmsSpecSigner)
+
+
 def test_a_hardened_environment_without_a_signing_key_refuses_to_start(db, tokens, group_map):
     from .conftest import core_settings
 
