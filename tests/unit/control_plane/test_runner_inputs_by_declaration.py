@@ -131,9 +131,11 @@ def test_the_mock_refuses_a_key_it_does_not_declare_at_every_door(client, db, do
 
 @pytest.mark.parametrize("door", DOORS)
 @pytest.mark.parametrize("key", ["model", "max_turns", "sleep_seconds", "timeout_seconds"])
-def test_claude_code_takes_its_prompt_and_nothing_else(client, db, door, key):
+def test_claude_code_refuses_every_key_but_its_declared_issue(client, db, door, key):
     """`model` is the one that matters: the CLI runners read `input.model` and
-    pass it as `--model`. The top-level `model` field is attribution only."""
+    pass it as `--model`. The top-level `model` field is attribution only.
+    `issue` is claude-code's one declared input (contract request 28, #265),
+    held in test_issue_input.py."""
     response = DOORS[door](client, "claude-code", {"prompt": "x", key: 3})
     _refused(response, key)
     assert not _tasks(db)

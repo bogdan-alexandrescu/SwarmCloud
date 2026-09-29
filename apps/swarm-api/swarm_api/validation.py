@@ -266,8 +266,17 @@ class InvalidInput(ValidationFailed):
 PROMPT_INPUT_KEY = "prompt"
 
 
+#: The input that names an issue in the task's own repository (contract
+#: request 28, #265). Its one rule beyond its declared bounds is here.
+ISSUE_INPUT_KEY = "issue"
+
+
 def validate_runner_input(
-    profile: RunnerProfile, payload: Mapping[str, Any], *, step_id: str | None = None
+    profile: RunnerProfile,
+    payload: Mapping[str, Any],
+    *,
+    step_id: str | None = None,
+    repository_url: str | None,
 ) -> None:
     """Refuse an `input` key the profile does not declare, or a value out of its bounds.
 
@@ -285,19 +294,36 @@ def validate_runner_input(
     built. Values are checked, never rewritten: the input is stored as sent.
 
     EVERY PROFILE IS ASKED, and the answer is the shared rule's. Every profile
-    DECLARES since contract request 32 (#218, accepted by the owner on
-    2026-09-29): `browser` and `generic`, which were `inputs=None` and bounded
-    by size alone until then, declare every key their runners read, and
-    `generic`'s `command` is required -- a task without it is refused here,
-    naming it, rather than admitted and failed in the pod. There is no branch
-    here for any profile; the review of #213 found this function once deciding
-    a case for itself ahead of the shared rule, which gave two answers to one
-    question. The size is `validate_input_size`'s, which every caller runs
-    first.
+    DECLARES now. The mock declared first (#142); `claude-code` and `codex`
+    declare `issue` (contract request 28, #265); `browser` and `generic`, which
+    were `inputs=None` and bounded by size alone until contract request 32
+    (#218, accepted by the owner on 2026-09-29), declare every key their
+    runners read, and `generic`'s `command` is required -- a task without it is
+    refused here, naming it, rather than admitted and failed in the pod. There
+    is no branch here for any profile; the review of #213 found this function
+    once deciding a case for itself ahead of the shared rule, which gave two
+    answers to one question. The size is `validate_input_size`'s, which every
+    caller runs first.
+
+    `issue` NEEDS A REPOSITORY (#265). It names an issue in the task's own
+    `repository_url` -- a workflow's, for a step -- and the worker fetches it
+    from there, so without one it names nothing and would fail the attempt
+    after admission. Required as a keyword, so no caller can forget to pass it.
     """
     rest = {key: value for key, value in payload.items() if key != PROMPT_INPUT_KEY}
     try:
         check_inputs(profile, rest)
+        if (
+            ISSUE_INPUT_KEY in rest
+            and ISSUE_INPUT_KEY in (profile.inputs or {})
+            and not (repository_url or "").strip()
+        ):
+            raise InputRefused(
+                f"input {ISSUE_INPUT_KEY!r} names an issue in the task's repository, "
+                "and this submission has no repository_url",
+                key=ISSUE_INPUT_KEY,
+                expected="an issue in the task's repository_url",
+            )
     except InputRefused as refused:
         declared = profile.inputs
         detail: dict[str, Any] = {
@@ -391,6 +417,22 @@ INPUT_FROM_METADATA_KEY = "input_from"
 #: the worker's `agent_worker.expected_outputs.METADATA_KEY`.
 EXPECTED_OUTPUTS_METADATA_KEY = "expected_outputs"
 
+#: The key inside `task.metadata` recording attempts the reconciler took back
+#: because they ended before their runner started (#67). Written only by the
+#: reconciler, after it repairs a task (`reconciler.model.STARTUP_REFUNDS_KEY`,
+#: `reconciler.store.ControlStore.repair_task_state`), never by this service. Before
+#: this reservation, a caller could set it directly: `TaskView.from_doc` read
+#: it with no bound, and `int(float("inf"))` raised `OverflowError` out of the
+#: unguarded per-task loop in `ControlStore.snapshot`, crashing a reconciler
+#: pass for every task of every tenant (security review, PR #290 -- the read
+#: path itself was also made total, see `reconciler.model._startup_refunds_int`,
+#: so a document written before this reservation existed cannot do it either).
+#: Defined here rather than imported from `reconciler.model`, which `swarm-api`
+#: does not depend on; tests/unit/control_plane/test_startup_refunds_reserved.py
+#: holds the two strings equal, the same seam `test_input_from_is_reserved.py`
+#: holds for `INPUT_FROM_METADATA_KEY`.
+STARTUP_REFUNDS_METADATA_KEY = "startup_refunds"
+
 #: Every key inside `task.metadata` this service writes and a caller may not,
 #: in the order a refusal names them. One tuple, checked by one function, so a
 #: caller who sent several is told about all of them in one 422 rather than one
@@ -400,6 +442,7 @@ RESERVED_METADATA_KEYS = (
     DISPATCH_METADATA_KEY,
     INPUT_FROM_METADATA_KEY,
     EXPECTED_OUTPUTS_METADATA_KEY,
+    STARTUP_REFUNDS_METADATA_KEY,
 )
 
 #: Strategies and carriers that cannot work without somewhere to push to.
@@ -610,6 +653,12 @@ _RESERVED_BECAUSE = {
         "dependants' `input_from` stage from it. To have an agent told which "
         "files a later step needs, submit a workflow (POST /v1/workflows) and "
         "declare `input_from` on the step that needs them."
+    ),
+    STARTUP_REFUNDS_METADATA_KEY: (
+        f"metadata.{STARTUP_REFUNDS_METADATA_KEY} is reserved: it is set only by "
+        "the reconciler, to count attempts refunded because they ended before "
+        "their runner started (#67). There is no caller-facing equivalent to "
+        "set; drop the key from metadata."
     ),
 }
 

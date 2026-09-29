@@ -33,9 +33,10 @@
 // each turned this file red with a named message.
 
 import { describe, expect, it } from 'vitest'
-import { fireEvent, render, screen, within } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 
 import SUBMIT_SRC from '../Submit.tsx?raw'
+import { HELP } from '../help'
 import WORKFLOW_SRC from '../SubmitWorkflow.tsx?raw'
 import {
   InputFields,
@@ -361,9 +362,7 @@ describe('the send panel', () => {
     // A runner that requires `input.prompt`, left blank. The step card already
     // said `Not sent`; the button stayed live and the only statement of the
     // refusal appeared ~2,100px above it after the click.
-    fireEvent.change(container.querySelector<HTMLSelectElement>('select.wfb-profile')!, {
-      target: { value: 'claude-code' },
-    })
+    fireEvent.click(container.querySelector<HTMLInputElement>('.wfb-step input[type="radio"][value="claude-code"]')!)
     expect(go.hasAttribute('disabled'), 'a plan that would fail can still be sent').toBe(true)
     expect(sendHeading(container), '"Ready to send" over a plan that cannot be sent').toBe('Not ready to send')
     const count = container.querySelector<HTMLElement>('.sbf-send .warn-text')
@@ -398,9 +397,11 @@ describe('the send panel', () => {
         .querySelector(`input[name="runner-profile"][value="${name}"]`)!
         .closest('label')!
         .querySelector('.sbf-runner-facts')!.textContent ?? ''
-    expect(facts('claude-code')).toContain('anthropic key needed')
-    expect(facts('codex')).toContain('openai key needed')
-    expect(facts('mock')).toContain('no provider key needed')
+    // #114: the row says whether the tenant HOLDS the key, from /v1/providers,
+    // rather than only that one is needed.
+    await waitFor(() => expect(facts('claude-code')).toContain('anthropic key present'), { timeout: 4000 })
+    expect(facts('codex')).toContain('openai key missing')
+    expect(facts('mock')).toContain('no key needed')
     for (const n of ['claude-code', 'codex', 'mock']) expect(facts(n), n).not.toMatch(/needs a /)
   })
 })
@@ -488,9 +489,7 @@ describe('TS-15: a required key is named at its field, in the words the API used
   it('reserves "Not sent" for the result of a click, on the workflow form too', async () => {
     const { container } = render(<SubmitWorkflowScreen />)
     await screen.findByRole('button', { name: 'Submit this workflow' }, { timeout: 4000 })
-    fireEvent.change(container.querySelector<HTMLSelectElement>('select.wfb-profile')!, {
-      target: { value: 'claude-code' },
-    })
+    fireEvent.click(container.querySelector<HTMLInputElement>('.wfb-step input[type="radio"][value="claude-code"]')!)
     // Nothing has been clicked, so nothing has been "not sent".
     expect(visible(container), 'a live problem is worded as the outcome of a send').not.toContain('Not sent')
     expect(visible(container)).not.toMatch(/input\.prompt|non-empty string/)
@@ -546,5 +545,18 @@ describe('TS-23: the forms carry names, facts and the runner notes, and no instr
       <InputFields profile="claude-code" required={null} idPrefix="t" onChange={() => {}} fields={[]} />,
     )
     expect(visible(container.querySelector('.sbf-none')!)).toBe('no settings')
+  })
+})
+
+// #120: the plan step's `?` opens how a plan runs, not runner naming.
+describe('the `?` on "Lay out the plan" opens workflow-stages', () => {
+  it('is the glyph after the plan heading, and it names the stages topic', async () => {
+    const { container } = render(<SubmitWorkflowScreen />)
+    await screen.findByRole('button', { name: 'Submit this workflow' }, { timeout: 4000 })
+    const heading = [...container.querySelectorAll('.sbf-move-h')].find((h) => h.textContent?.includes('Lay out the plan'))
+    expect(heading, 'no "Lay out the plan" heading').toBeDefined()
+    const glyph = heading!.querySelector('button[aria-label^="Help: "]')
+    expect(glyph, 'the plan step has no `?`').not.toBeNull()
+    expect(glyph!.getAttribute('aria-label')).toBe(`Help: ${HELP['workflow-stages'].title}`)
   })
 })

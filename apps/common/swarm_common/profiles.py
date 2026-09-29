@@ -1046,6 +1046,30 @@ _GENERIC_INPUTS: dict[str, RunnerInput] = {
 }
 
 
+#: What claude-code and codex take beside the prompt: contract request 28,
+#: accepted by the owner on 2026-09-28 for #265. `issue` names an issue in the
+#: task's OWN repository; the worker fetches its title, body and comments
+#: read-only with the tenant's forge credential, writes them to the workspace
+#: as `issue.md` and names that file in the prompt (`agent_worker.issue`). The
+#: number is data, and so is the text it fetches (invariant 10).
+#:
+#: THE CEILING IS 999999 BECAUSE `describe()` PRINTS SIX SIGNIFICANT DIGITS. A
+#: bound past that is shown rounded -- 2**31 - 1 reads "2.14748e+09" -- which
+#: tells a caller a limit the check does not apply. An issue number past it is
+#: out of reach of any repository this platform works on.
+_CLI_AGENT_INPUTS: dict[str, RunnerInput] = {
+    "issue": RunnerInput(
+        "integer",
+        minimum=1,
+        maximum=999_999,
+        means=(
+            "an issue in the task's repository: its title, body and comments are "
+            "written to issue.md in the workspace and named in the prompt"
+        ),
+    ),
+}
+
+
 RUNNER_PROFILES: dict[str, RunnerProfile] = {
     "mock": RunnerProfile(
         name="mock",
@@ -1078,6 +1102,7 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         secrets=("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"),
         secrets_any_of=True,
         timeout_seconds=7200,
+        inputs=_CLI_AGENT_INPUTS,
     ),
     "codex": RunnerProfile(
         name="codex",
@@ -1088,6 +1113,7 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         provider="openai",
         secrets=("OPENAI_API_KEY",),
         timeout_seconds=7200,
+        inputs=_CLI_AGENT_INPUTS,
         # DISABLED 2026-09-23 by the owner's decision: the platform is focusing
         # on Claude, and codex does not currently work here anyway. A twenty-step
         # load test that day dispatched four codex steps and all four failed

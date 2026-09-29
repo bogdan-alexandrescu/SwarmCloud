@@ -213,10 +213,14 @@ code, but not one the worker reads as a rate limit, a refused credential or a
 cancellation; `swarm_profiles` names those, with every key's bounds, so do
 not quote a bound from memory. `browser` takes a `url` and `actions`, and
 `generic` a required `command` from its runner's catalogue; `swarm_profiles`
-lists every key and each action shape. `claude-code` and `codex` declare none
-and take only the prompt. A key a profile does not declare, or a value out of
-its bounds, is refused before anything is dispatched, by the bridge and by the
-API alike.
+lists every key and each action shape. `claude-code` and `codex` declare one
+input, `issue`: the number of a GitHub issue in the repository the step
+clones. The worker fetches that issue's title, body and comments read-only
+into `issue.md` in the workspace and names it in the prompt, so point a step
+at the issue rather than restating it in the prompt. It needs a repository
+(`repo` or `infer`); without one the API refuses it. Every profile declares,
+so a key a profile does not declare, or a value out of its bounds, is refused
+before anything is dispatched, by the bridge and by the API alike.
 
 **Do not guess the name — call `swarm_profiles`.** It is the catalogue itself,
 so it cannot go stale the way a list written into this paragraph can: every

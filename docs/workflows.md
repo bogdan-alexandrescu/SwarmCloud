@@ -70,7 +70,7 @@ and each step here.
 | `mock` | `prompt`, and its declared test knobs, in the table below |
 | `browser` | `prompt`, and what the browser runner reads: a `url`, `actions` in eight fixed shapes, timeouts, the viewport, in the table below |
 | `generic` | `prompt`, and a **required** `command` from the runner's own catalogue, plus the paths, target, directory and limits in the table below |
-| `claude-code`, `codex` | `prompt` and nothing else |
+| `claude-code`, `codex` | `prompt`, and `issue`, in the tables below |
 
 What each declaring profile takes, with each key's kind and bounds. These
 tables are generated from the catalogue, not written: a bound stated anywhere
@@ -125,6 +125,38 @@ else in this file would be a copy nothing compares, so none is.
 | `max_stdout_bytes` | integer 1..33554432 | lowers the stdout kept |
 | `max_stderr_bytes` | integer 1..8388608 | lowers the stderr kept |
 <!-- /runner-inputs:generic -->
+
+What `claude-code` and `codex` declare (contract request 28, #265):
+
+<!-- runner-inputs:claude-code generated from RUNNER_PROFILES["claude-code"].inputs; tests/unit/mcp/test_runner_input_prose.py fails when it differs -->
+| input | kind and bounds | what the claude-code runner does with it |
+|---|---|---|
+| `issue` | integer 1..999999 | an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt |
+<!-- /runner-inputs:claude-code -->
+
+<!-- runner-inputs:codex generated from RUNNER_PROFILES["codex"].inputs; tests/unit/mcp/test_runner_input_prose.py fails when it differs -->
+| input | kind and bounds | what the codex runner does with it |
+|---|---|---|
+| `issue` | integer 1..999999 | an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt |
+<!-- /runner-inputs:codex -->
+
+`issue` points a step at a GitHub issue, so its prompt need not restate one.
+It names an issue in the task's own `repository_url` (a workflow's, for a
+step), and a submission that sends it without a repository is refused with
+422 `invalid_input`: there would be nothing to fetch it from. The worker
+fetches the issue's title, body and comments read-only, with the tenant's
+forge credential, after the clone and the credentials and before the agent
+starts. It writes them to `issue.md` in the work directory, beside the
+checkout, where no diff and no upload reaches it, and names that file in the
+prompt by absolute path. The credential stays in the worker's memory, as it
+does for the clone (#219), and is never sent to a host other than the
+repository's own. The issue's text is scrubbed of every secret the attempt
+holds, and it is data for the agent: nothing in it chooses anything the
+platform does (invariant 10). A fetch that fails -- no such issue, a pull
+request's number, a repository the credential cannot read, a forge that
+cannot be reached -- fails the attempt with `INPUTS_UNAVAILABLE` and the
+agent never starts. A step that asks for an issue cannot also stage an
+`input_from` file named `issue.md`.
 
 Every declared number has a floor and a ceiling, and an integer's bounds lie
 inside the signed 64-bit range; the catalogue refuses a declaration without

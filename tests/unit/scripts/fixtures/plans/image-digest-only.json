@@ -1,0 +1,91 @@
+{
+  "format_version": "1.2",
+  "terraform_version": "1.16.2",
+  "resource_changes": [
+    {
+      "address": "module.cloud_run[\"swarm-api\"].google_cloud_run_v2_service.this",
+      "module_address": "module.cloud_run[\"swarm-api\"]",
+      "mode": "managed",
+      "type": "google_cloud_run_v2_service",
+      "name": "this",
+      "provider_name": "registry.terraform.io/hashicorp/google",
+      "change": {
+        "actions": ["update"],
+        "before": {
+          "name": "swarm-api",
+          "project": "saga-agents-staging",
+          "labels": {"managed-by": "swarm-terraform"},
+          "template": [{"containers": [{"image": "us-central1-docker.pkg.dev/saga-agents-staging/swarm/swarm-api@sha256:1111111111111111111111111111111111111111111111111111111111111111"}]}]
+        },
+        "after": {
+          "name": "swarm-api",
+          "project": "saga-agents-staging",
+          "labels": {"managed-by": "swarm-terraform"},
+          "template": [{"containers": [{"image": "us-central1-docker.pkg.dev/saga-agents-staging/swarm/swarm-api@sha256:2222222222222222222222222222222222222222222222222222222222222222"}]}]
+        },
+        "after_unknown": {},
+        "before_sensitive": {},
+        "after_sensitive": {}
+      }
+    },
+    {
+      "address": "module.cloud_run_jobs.google_cloud_run_v2_job.worker[\"swarm-worker\"]",
+      "module_address": "module.cloud_run_jobs",
+      "mode": "managed",
+      "type": "google_cloud_run_v2_job",
+      "name": "worker",
+      "index": "swarm-worker",
+      "provider_name": "registry.terraform.io/hashicorp/google",
+      "change": {
+        "actions": ["update"],
+        "before": {
+          "name": "swarm-worker",
+          "project": "saga-agents-staging",
+          "labels": {"managed-by": "swarm-terraform"},
+          "template": [{"template": [{"containers": [{"image": "us-central1-docker.pkg.dev/saga-agents-staging/swarm/swarm-worker@sha256:3333333333333333333333333333333333333333333333333333333333333333"}]}]}]
+        },
+        "after": {
+          "name": "swarm-worker",
+          "project": "saga-agents-staging",
+          "labels": {"managed-by": "swarm-terraform"},
+          "template": [{"template": [{"containers": [{"image": "us-central1-docker.pkg.dev/saga-agents-staging/swarm/swarm-worker@sha256:4444444444444444444444444444444444444444444444444444444444444444"}]}]}]
+        },
+        "after_unknown": {},
+        "before_sensitive": {},
+        "after_sensitive": {}
+      }
+    },
+    {
+      "address": "module.iam.google_project_iam_member.plain[\"swarm-scheduler:roles/datastore.user\"]",
+      "module_address": "module.iam",
+      "mode": "managed",
+      "type": "google_project_iam_member",
+      "name": "plain",
+      "index": "swarm-scheduler:roles/datastore.user",
+      "provider_name": "registry.terraform.io/hashicorp/google",
+      "change": {
+        "actions": ["no-op"],
+        "before": {"project": "saga-agents-staging", "role": "roles/datastore.user", "member": "serviceAccount:swarm-scheduler@saga-agents-staging.iam.gserviceaccount.com"},
+        "after": {"project": "saga-agents-staging", "role": "roles/datastore.user", "member": "serviceAccount:swarm-scheduler@saga-agents-staging.iam.gserviceaccount.com"},
+        "after_unknown": {},
+        "before_sensitive": {},
+        "after_sensitive": {}
+      }
+    },
+    {
+      "address": "data.google_iam_policy.worker",
+      "mode": "data",
+      "type": "google_iam_policy",
+      "name": "worker",
+      "provider_name": "registry.terraform.io/hashicorp/google",
+      "change": {
+        "actions": ["read"],
+        "before": null,
+        "after": {},
+        "after_unknown": {"policy_data": true},
+        "before_sensitive": false,
+        "after_sensitive": {}
+      }
+    }
+  ]
+}
