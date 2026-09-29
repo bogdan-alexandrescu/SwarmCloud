@@ -777,7 +777,7 @@ class Reconciler:
         FindingKind.MISSING_EXECUTION,
         # "No execution runs for it" is part of what makes a leaseless task
         # safe to requeue, and an unreadable backend cannot say that.
-        FindingKind.LEASELESS_TASK,
+        # MUTATION: FindingKind.LEASELESS_TASK removed
     )
 
     def _never_dispatched(self, finding: Finding, snapshot: ControlSnapshot) -> bool:
@@ -1125,7 +1125,7 @@ class Reconciler:
         guard: dict[str, Any] = (
             {"only_from": ENDED_AT_STARTUP_STATES}
             if ended_at_startup
-            else {"only_from": _LEASELESS_STATES}
+            else {}  # MUTATION: only_from removed
             if leaseless
             else {}
         )

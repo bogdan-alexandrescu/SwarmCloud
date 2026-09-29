@@ -697,8 +697,6 @@ def detect_leaseless_tasks(
             continue
         if task.task_id in leased:
             continue
-        if task.task_id in busy:
-            continue
         reason = (
             f"task is {task.state.value} but its lease {task.lease_id} is released or missing"
             if task.lease_id
