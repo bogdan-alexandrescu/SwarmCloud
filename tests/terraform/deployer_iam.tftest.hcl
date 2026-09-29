@@ -781,7 +781,11 @@ run "the_scoping_terraform_tfvars_names_moves_its_own_grants_and_nothing_else" {
   # comment describes. PR #73's original plan was 1 to add (one unchunked
   # condition); after #275's chunking fix a fresh apply against a live policy
   # with nothing scoped is deployer_grantable_project_roles chunked at 10 --
-  # today 2 to add, 0 to change, 1 to destroy. The chunk count changes only if
+  # today 2 to add, 0 to change, 0 to destroy. The live project's unconditioned
+  # projectIamAdmin grant is restored by hand and not in bootstrap state, so
+  # this targeted apply neither imports nor destroys it -- it is removed by
+  # hand afterwards (docs/ci.md, "The deployer's refusal is proven once"),
+  # which is why this plan never destroys anything. The chunk count changes only if
   # deployer_grantable_project_roles crosses a multiple of 10 (deployer_conditions.tf).
   assert {
     condition     = var.deployer_scoped_roles == toset(["roles/resourcemanager.projectIamAdmin"])

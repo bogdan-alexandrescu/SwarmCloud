@@ -508,7 +508,7 @@ resource "google_project_iam_member" "deployer_project_iam_admin" {
 
   condition {
     title       = "only the roles terraform infra grants (chunk ${tonumber(each.key) + 1} of ${length(local.deployer_project_iam_admin_conditions)})"
-    description = "A project policy change may add or remove members of the roles in THIS chunk and no others; the chunks together are every role terraform/infra grants, so CI cannot grant itself or anyone else owner, editor or another team's roles. Split across ${length(local.deployer_project_iam_admin_conditions)} bindings because IAM's hasOnly() refuses a list over 10 elements (#275), and GCP's docs say not to OR several hasOnly() calls into one condition instead."
+    description = "Adds or removes members of only the roles in this chunk; all chunks together are every role terraform/infra grants, so CI cannot self-grant owner, editor or another team's roles. Chunked because hasOnly() refuses a list over 10 roles (#275)."
     expression  = each.value
   }
 }
