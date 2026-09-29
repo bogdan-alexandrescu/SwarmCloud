@@ -40,7 +40,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 25 | `profiles.py`: a runner profile cannot declare the inputs a caller may send it, so the bridge names the mock's by profile | ACCEPTED 2026-09-25 (owner, on #142), applied in PR #213; both amendments confirmed by the owner 2026-09-26: `inputs=None` for `browser` and `generic` (#218), and the bounded park counted by the task's `attempt_count` rather than the state file |
 | 26 | `models.py`: the attempt's CPU figures carry no time and their limit no source | ACCEPTED 2026-09-26 (owner, on #184), applied in PR #229 |
 | 30 | `identity.py`: a tenant may list service accounts that resolve to it by exact email (#273) | ACCEPTED 2026-09-29 by the owner after three security reviews |
-| 32 | `profiles.py`: `browser` and `generic` declare no inputs, so the API bounds them by size alone and the plugin can send them none (#218) | ACCEPTED 2026-09-29 by the owner after three security reviews |
+| 32 | `profiles.py`: `browser` and `generic` declare no inputs, so the API bounds them by size alone and the plugin can send them none (#218) | ACCEPTED 2026-09-29 by the owner after three security reviews, applied by #345 |
 
 ---
 
@@ -4333,8 +4333,9 @@ the implementing branch and must fail there before the change lands on
 ## 32. `profiles.py`: `browser` and `generic` declare no inputs, so the API bounds them by size alone and the plugin can send them none
 
 **Status: ACCEPTED 2026-09-29 by the owner after three security reviews.**
-**Applied** to `apps/common/swarm_common/profiles.py` by the implementation
-PR from branch `impl/cr32-runner-inputs` (`part of #218`), exactly as the diff
+**Applied by #345** to `apps/common/swarm_common/profiles.py` (the
+implementation PR, branch `impl/cr32-runner-inputs`, `part of #218`; the owner
+kept this wording on #345 on 2026-09-29), exactly as the diff
 under *The requested change* reads -- accepted by the owner on 2026-09-29, and
 applied with `git apply` from this entry's own text, not re-typed. That PR
 also carries the runner-side preconditions it could carry; the live-cluster
