@@ -468,6 +468,21 @@ def test_a_generation_bumped_after_the_shut_gate_fences_the_publish(
     for the agent path. The worker must exit FENCED without pushing the
     branch, without opening the pull request, and without touching the lease
     it no longer owns -- not silently publish another generation's work.
+
+    The task's STATE is RUNNING, not LEASED, when that happens, and that is
+    correct rather than a second fencing gap: `_prepare` walks LEASED ->
+    DISPATCHED -> STARTING -> RUNNING at STEP 2 (`lifecycle.py`
+    `advance_to_running`, called at line 728), long before STEP 5d's verdict
+    gate (line 813) is even reached -- while this attempt's generation was
+    still current. Each of those transitions is its own fenced write
+    (`control.py` `transition`, line 772, shares `_fenced_task` with
+    `validate_generation`), so a transition made under a stale generation
+    would itself be refused; this one was not stale when it ran. The
+    generation is only bumped afterwards, from inside the verdict-gate
+    wrapper below, which is why RUNNING -- the state that legitimate
+    transition left behind -- is exactly what invariant 5 predicts here: the
+    lease and the task's terminal state are what a stale worker must leave
+    untouched, and both are.
     """
 
     def implement(repo: Path) -> None:
@@ -518,7 +533,10 @@ def test_a_generation_bumped_after_the_shut_gate_fences_the_publish(
     assert forge.pulls == [], "a superseded worker opened a pull request"
     assert "swarm/task_2" not in refs(origin), "a superseded worker pushed its branch"
     assert db.doc("leases/lease_2")["released_at"] is None
-    assert db.doc("tasks/task_2")["state"] == TaskState.LEASED.value
+    # RUNNING, not LEASED: `advance_to_running` (lifecycle.py:728) already
+    # walked the task there, legitimately, before the verdict gate at
+    # lifecycle.py:813 was reached -- see the docstring above.
+    assert db.doc("tasks/task_2")["state"] == TaskState.RUNNING.value
     assert EventType.GENERATION_FENCED.value in db.event_types("task_2")
 
 
