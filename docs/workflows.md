@@ -490,15 +490,18 @@ bookkeeping you are not using.
 
 ## PROPOSED: a chain that merges its own pull request
 
-**Proposed on 2026-09-29 for #295 and not built. Revised three times,
+**Proposed on 2026-09-29 for #295 and not built. Revised four times,
 2026-09-29,** against a security review's two blockers and five majors, then
 a re-review that found the first B1 revision insufficient, then a third
 round that found B1 still open against a different attack and decided three
-more owner questions; [merge-step.md](merge-step.md)'s own revision note
-lists what changed each time. The API refuses this spec today. `single-pr`,
-`pr_role`, the `merge` profile, and the `post-verdict` and
-`claude-code-review` profiles below, do not exist yet. The `merge` profile
-needs contract request 33 in
+more owner questions, then a fourth, joint review with CR 34 (#344, signed
+step specs) that found `post-verdict`'s own read of `review.json` was still
+routed through a tenant-writable pointer, corrected the real GCS bucket
+layout, and found the cross-workflow forgery claim was not actually closed;
+[merge-step.md](merge-step.md)'s own revision note lists what changed each
+time. The API refuses this spec today. `single-pr`, `pr_role`, the `merge`
+profile, and the `post-verdict` and `claude-code-review` profiles below, do
+not exist yet. The `merge` profile needs contract request 33 in
 [contract-change-requests.md](contract-change-requests.md); `post-verdict`
 and `claude-code-review` each need their own, not-yet-filed request
 ([merge-step.md](merge-step.md) §1.3, §4.3, §10). `post-verdict` is a
@@ -546,7 +549,6 @@ step earlier, for the review credential.
     {"step_id": "post-verdict",
      "runner_profile": "post-verdict",
      "depends_on": ["review"],
-     "input_from": {"review": "review.json"},
      "input": {}},
 
     {"step_id": "fix",
@@ -582,6 +584,20 @@ it and posted an immutable GitHub review ([merge-step.md](merge-step.md)
 more, since `post-verdict` is now the thing that stands between them.
 `validate_dag` allows a `depends_on` entry with no matching `input_from`
 source for exactly this reason.
+
+**`post-verdict` declares no `input_from` at all — corrected, joint review
+with CR 34, 2026-09-29.** An earlier draft of this spec gave it
+`"input_from": {"review": "review.json"}`, the ordinary staging mechanism.
+That mechanism resolves an artifact's location through the upstream task's
+`result_summary`, a Firestore field the tenant identity writes — exactly the
+kind of attacker-writable pointer this whole design exists to route around
+for the one read the verdict anchor depends on. `post-verdict` instead
+computes the object's path itself — `gs://<bucket>/tenants/<tenant>/verdicts/<workflow_id>/<review task id>/review.json`
+— from `workflow_id` and the review task id named in its **own signed spec**
+(#342), and reads that exact path directly, never through the generic
+resolver ([merge-step.md](merge-step.md) §4.1, §4.3, §6a). The
+`"depends_on": ["review"]` edge above still orders it correctly; it is just
+not also the channel `post-verdict` uses to find the file.
 
 What each step does:
 
@@ -659,6 +675,16 @@ precondition independent of, and in addition to, `main-protection` (M1). By
 contrast, moving `release.yml`'s `id-token: write` to job level is
 recommended but, per the owner's round-3 decision, is **not** a
 precondition ([merge-step.md](merge-step.md) §7 R4, §11 open question (b)).
+**Separately, and NOT closed by anything above (named residual R8, joint
+review with CR 34, 2026-09-29):** the review-only-writable prefix stops the
+ordinary tenant account from writing there, but `swarm-<tenant>-review` is
+one identity shared by every `single-pr` workflow of the tenant, and its
+write grant covers every workflow's verdict path at once. A review agent of
+one workflow, compromised by prompt injection, can still write a fabricated
+verdict at a *different* workflow's path if it is told (or can derive) that
+workflow's identifiers. Write-once (`ifGenerationMatch=0`) makes the losing
+side of that race fail loudly instead of being silently overwritten; it does
+not decide who wins ([merge-step.md](merge-step.md) §4.3, §7 T3/R8).
 
 ---
 

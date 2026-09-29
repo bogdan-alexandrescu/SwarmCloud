@@ -2891,14 +2891,20 @@ separate, not-yet-filed frozen-contract requests, tracked in
 This request stays scoped to what its heading says — the `merge` profile —
 because `post-verdict` and `claude-code-review` each need their own
 `### What it would break if accepted` analysis once filed, the same way this
-one has its own. This design also now depends on a fourth, unrelated
-frozen-contract-adjacent change that is **not** a `profiles.py`/`models.py`
-request at all: S0 issue #342, signed step specs, which every step's worker
-(not only `merge`'s or `post-verdict`'s) must verify before running. #342 is
-tracked as its own S0 issue, not as an entry in this file, because it is not
-a change to a frozen *type* — see [merge-step.md](merge-step.md) §0
-consequence 4 and §7 T14/R7 for why this design cannot be enabled without it
-regardless.
+one has its own. This design also now depends on S0 issue #342, signed step
+specs, which every step's worker (not only `merge`'s or `post-verdict`'s)
+must verify before running. **Corrected, joint review with CR 34 (#344),
+2026-09-29: an earlier draft of this paragraph said #342 "is not a change to
+a frozen type" and so did not belong in this file. That was wrong.** Signing
+and verifying a step's canonical spec needs somewhere on the frozen `Task`
+or `WorkflowStep` shape to carry the signature (or an equivalent frozen
+type), which is exactly the kind of change this file exists to record; #342
+is tracked as its own S0 issue for the security decision and the build plan,
+but its frozen-contract surface — whatever field or type CR 34 ends up
+needing — belongs here too, as its own numbered request once CR 34 states
+precisely what it is. This entry does not attempt to state it first; see
+[merge-step.md](merge-step.md) §0 consequence 4 and §7 T14/R7 for why this
+design cannot be enabled without it regardless.
 
 ### What is true today
 
