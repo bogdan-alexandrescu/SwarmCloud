@@ -352,7 +352,20 @@ class Authenticator:
         would be two tenant boundaries, and CONTRACT.md invariant 9 depends on
         there being one.
         """
-        email = str(claims.get("email", "")).lower()
+        raw_email = str(claims.get("email", ""))
+        # Refused BEFORE anything reads it -- including the listing lookup
+        # just below, which is why this is here rather than folded into
+        # `tenant_member_for` (`identity.py` is frozen and already normalises
+        # its own input with `.strip().lower()`; restoring this property
+        # there would mean editing the frozen module). Owner decision
+        # 2026-09-29, contract request 30 entry: the entry's prose says a
+        # trailing newline does not match, and this is where that is now
+        # true, for every caller, not only a listed one -- a verified token
+        # is never expected to carry incidental whitespace on its email claim,
+        # so refusing it here costs no real caller anything.
+        if raw_email != raw_email.strip():
+            raise AuthError("id token email carries leading or trailing whitespace")
+        email = raw_email.lower()
         subject = str(claims.get("sub", ""))
         # IAP prefixes a stable "accounts.google.com:" (see
         # IapAssertionVerifier's docstring above); a bearer ID token's `sub`
