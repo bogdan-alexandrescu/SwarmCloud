@@ -4326,3 +4326,5 @@ the implementing branch and must fail there before the change lands on
 - **CONTRACT.md "Tenant = Google group".** Refined, not reversed: a tenant is
   still a group (or a user), and its listed accounts are members by
   declaration rather than by directory.
+
+Applied by #343 (accepted by the owner 2026-09-29).
