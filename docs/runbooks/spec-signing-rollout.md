@@ -27,7 +27,7 @@ after **2026-10-20T00:00:00Z** whatever the configuration says
 |---|---|---|
 | `cloudkms.googleapis.com`, the key ring `swarm-<env>-specs`, the key `step-spec` (EC P-256, software), swarm-api's `signer` grant, the deployer's `publicKeyViewer` + `viewer` | [`terraform/bootstrap/spec_signing.tf`](../../terraform/bootstrap/spec_signing.tf) | **the owner**, never CI: CI must not hold `setIamPolicy` on the key, or the release could grant itself a signature |
 | the names of both, spelled once | [`terraform/modules/spec_signing_key`](../../terraform/modules/spec_signing_key/main.tf) | both roots |
-| `SPEC_VERIFY_KEYS`, `SPEC_SIGNING_KEY`, `SPEC_SIGNATURE_MODE`, `SPEC_LEGACY_CUTOVER` on every Cloud Run worker Job and on the scheduler; `SPEC_SIGNING_KEY_VERSION` on swarm-api | [`terraform/infra/spec_signing.tf`](../../terraform/infra/spec_signing.tf), values in [`dev.tfvars`](../../terraform/environments/dev/dev.tfvars) | the release |
+| `SPEC_VERIFY_KEYS`, `SPEC_SIGNING_KEY`, `SPEC_SIGNATURE_MODE`, `SPEC_LEGACY_CUTOVER` on every Cloud Run worker Job and on the scheduler; the signing version (`output.spec_signing_key_version`), which #353 puts on swarm-api as `SPEC_SIGNING_KEY_VERSION` | [`terraform/infra/spec_signing.tf`](../../terraform/infra/spec_signing.tf), values in [`dev.tfvars`](../../terraform/environments/dev/dev.tfvars) | the release |
 | the `swarm-spec-verify-keys` ConfigMap in each tenant namespace, for GKE pods | [`kubernetes/render.py`](../../kubernetes/render.py) from `terraform output -json spec_verify_keys_configmap`, applied by [`kubernetes/apply.sh`](../../kubernetes/apply.sh) `--spec-verify-keys` | the release's `deploy` job, when `vars.APPLY_TENANT_NAMESPACES` is `true` |
 | the alert on a refusal | [`terraform/modules/monitoring`](../../terraform/modules/monitoring/alerts.tf), `spec-signature-invalid` | the release |
 
@@ -76,9 +76,12 @@ else; `roles/cloudkms.publicKeyViewer` and `roles/cloudkms.viewer` for
 `swarm-tf-deployer` on each key. Nothing on the project.
 
 Then the Terraform-half pull request merges and releases. It is inert for
-today's code: the worker and swarm-api read none of these variables yet. It
-exists first because the hardened swarm-api (#353) **refuses to start without
-`SPEC_SIGNING_KEY_VERSION`**.
+today's code: the worker reads none of these variables yet. It exists first so
+the verifying worker ships onto Jobs that already carry the keys.
+`SPEC_SIGNING_KEY_VERSION` is **not** in it: #353 adds it to swarm-api's
+environment in the same change as the code that reads it, because
+`scripts/lib/check-env-parity.sh` refuses a variable no code reads, and the
+hardened swarm-api **refuses to start without it**.
 
 dev ships `spec_signature_mode = "legacy"` with the cutover at
 `2026-10-20T00:00:00Z` -- the end of the window -- so that when the verifying

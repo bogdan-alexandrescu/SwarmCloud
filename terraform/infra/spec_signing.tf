@@ -13,9 +13,11 @@
 #       SPEC_LEGACY_CUTOVER  RFC 3339; only with legacy
 #     The Job's environment IS the cache: fixed for an execution, refreshed by
 #     every release, no network call, no quota and no IAM at attempt start.
-#   * swarm-api the one version it signs with, SPEC_SIGNING_KEY_VERSION. An
-#     asymmetric key has no primary version, so it is named in full. A
-#     hardened swarm-api without it refuses to start (#353).
+#   * the one version swarm-api signs with, named in full (an asymmetric key
+#     has no primary version), as local.spec_signing_key_version. #353 puts it
+#     in swarm-api's environment as SPEC_SIGNING_KEY_VERSION in the same change
+#     as the code that reads it: check-env-parity.sh refuses a variable no
+#     code reads, and the hardened swarm-api refuses to start without it.
 #   * GKE, through output.spec_verify_keys_configmap: kubernetes/render.py
 #     turns it into each tenant namespace's `swarm-spec-verify-keys` ConfigMap
 #     and kubernetes/apply.sh applies it in the release (owner decision

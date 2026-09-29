@@ -9,8 +9,9 @@
 #     every Cloud Run worker Job it creates and onto the scheduler, which hands
 #     the same four to the Jobs it creates itself (#353,
 #     scheduler.dispatch.spec_job_env);
-#   * SPEC_SIGNING_KEY_VERSION onto swarm-api, whose hardened build refuses to
-#     start without it;
+#   * the full name of the version swarm-api signs with, as an output; #353
+#     puts it in swarm-api's environment as SPEC_SIGNING_KEY_VERSION beside
+#     the code that reads it;
 #   * the same map as an output, which kubernetes/render.py turns into each
 #     tenant namespace's swarm-spec-verify-keys ConfigMap for GKE pods.
 #
@@ -147,9 +148,11 @@ run "workers_trust_every_enabled_version_and_no_other" {
   }
 
   # swarm-api signs with one named version -- an asymmetric key has no primary.
+  # The value is derived here; #353 puts it in swarm-api's environment next to
+  # the code that reads it (check-env-parity.sh refuses it any earlier).
   assert {
-    condition     = output.spec_service_env["swarm-api"].SPEC_SIGNING_KEY_VERSION == "projects/saga-agents-staging/locations/us-central1/keyRings/swarm-dev-specs/cryptoKeys/step-spec/cryptoKeyVersions/1"
-    error_message = "swarm-api must carry SPEC_SIGNING_KEY_VERSION as a full version name; a hardened swarm-api without it refuses to start"
+    condition     = output.spec_signing_key_version == "projects/saga-agents-staging/locations/us-central1/keyRings/swarm-dev-specs/cryptoKeys/step-spec/cryptoKeyVersions/1"
+    error_message = "the signing version must be a full version name of this environment's step-spec key"
   }
 
   # swarm-api signs; it has no business holding the verification map.
