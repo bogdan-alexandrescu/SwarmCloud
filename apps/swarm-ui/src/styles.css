@@ -2937,6 +2937,41 @@ table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--tex
     white-space: nowrap;
   }
 }
+/* AN IDENTITY AND ITS COPY CONTROL, ON ONE LINE (#134, Activity.tsx
+   `Ident`). The value is the item that gives way; the control keeps its
+   width. The status beside it says whether the copy landed, in the faint
+   tone of a note, and is empty until a copy is asked for. At 560px and under
+   the control is §7.2's 44px target. */
+.ten-ident-row {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ctl-s2);
+  min-width: 0;
+}
+.ten-copy {
+  flex: none;
+  padding: 1px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--ctl-radius-sm);
+  background: var(--surface);
+  color: var(--text-dim);
+  font: var(--t-micro)/var(--lh-micro) var(--mono);
+  cursor: copy;
+}
+.ten-copy:hover { color: var(--text); border-color: var(--info); }
+.ten-copy:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+.ten-copy-said {
+  color: var(--text-faint);
+  font: var(--t-micro)/var(--lh-micro) var(--mono);
+  white-space: nowrap;
+}
+.ten-copy-said:empty { display: none; }
+@media (max-width: 560px) {
+  .ten-copy {
+    min-width: 44px;
+    min-height: 44px;
+  }
+}
 /* THE BUDGET NOTE IS A PLAIN FACT, IN PLAIN INK (AH-21). AG-5 defines a plain
    fact as no mark and no dimming. `.ctl-panel-note` is `--text-faint`, the
    tone of a qualifier under a figure; this line qualifies no figure -- it
@@ -4226,6 +4261,33 @@ table.pools tbody tr.presumed-dead { background: color-mix(in srgb, var(--bad) 9
 .q-row .client-side { flex-basis: 100%; }
 
 /* ---- admin limit editor ---- */
+/* POOL LIMITS (#132). The profile card's figure is a ceiling, `max 5
+   agents`: the word before it is set as the unit after it is, with its gap on
+   the side that faces the figure. */
+.ctl-figure-unit.adm-figure-max { margin-left: 0; margin-right: 4px; }
+/* The row a link from Tenants named, outlined in the link accent so it is
+   found without moving anything. An outline and not a fill: the sheet gives
+   no head cell a fill of its own (WF-21), and the row's name is a `th`. */
+tr.is-target { outline: 2px solid var(--info); outline-offset: -2px; }
+/* What lowering does, under the open editor and on a line of its own, so the
+   row that grows is the one being edited. */
+.limit-note {
+  margin-top: 4px;
+  font: var(--t-micro)/var(--lh-micro) var(--font);
+  color: var(--text-faint);
+}
+/* The phone's filter over the pool names: the full width of the column. */
+.adm-filter > input {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 44px;
+  padding: 3px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font: var(--t-body)/var(--lh-body) var(--mono);
+}
 .limit-edit { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .limit-edit input {
   width: 74px; padding: 3px 7px;

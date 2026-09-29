@@ -87,6 +87,17 @@ class WorkerConfig:
     #: How often the worker re-reads control-plane state for cancellation,
     #: backpressure and a generation change that happened mid-run.
     control_poll_seconds: int = 10
+    #: How long the worker heartbeats the lease from a thread while a
+    #: checkpoint is written (`lifecycle._heartbeat_meanwhile`, #286): three
+    #: lease timeouts, 360 s at the default 120 (`from_env` derives it from
+    #: `LEASE_TIMEOUT_SECONDS`). Meant to be long enough for an honest
+    #: checkpoint of a large tree now that the tool caches are left out (not
+    #: measured against the 2 GiB cap), and bounded so that a checkpoint
+    #: running past it is treated as wedged. An unbounded thread would keep a wedged attempt's lease, and the
+    #: capacity reserved behind it, alive for ever while the supervision loop
+    #: is not running to notice; bounded, the lease lapses one lease timeout
+    #: later and the reconciler reclaims it as it would a silent worker.
+    heartbeat_meanwhile_max_seconds: int = 360
 
     # --- safety caps ---------------------------------------------------------
     max_stdout_bytes: int = 32 * 1024 * 1024
@@ -237,6 +248,8 @@ class WorkerConfig:
         _ = self.profile
         if self.heartbeat_interval_seconds <= 0:
             raise ConfigError("heartbeat interval must be positive")
+        if self.heartbeat_meanwhile_max_seconds <= 0:
+            raise ConfigError("the checkpoint heartbeat's bound must be positive")
         if self.checkpoint_interval_seconds <= 0:
             raise ConfigError(
                 "checkpointing is mandatory; a non-positive interval would disable it"
@@ -277,6 +290,7 @@ class WorkerConfig:
             timeout_seconds=_int_env("TASK_TIMEOUT_SECONDS", profile.timeout_seconds),
             termination_grace_seconds=_int_env("TERMINATION_GRACE_SECONDS", 20),
             control_poll_seconds=_int_env("CONTROL_POLL_SECONDS", 10),
+            heartbeat_meanwhile_max_seconds=3 * settings.lease_timeout_seconds,
             repository_url=repo,
             repository_ref=ref,
             git_harvest_enabled=_bool_env("GIT_HARVEST_ENABLED", True),

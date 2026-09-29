@@ -260,7 +260,9 @@ def list_artifacts(
     is false until the task reaches a terminal state and the worker writes its
     result summary, so "no artifacts yet" and "this task produced none" are
     distinguishable. `artifacts_skipped` names the files the worker dropped at
-    the size cap, for the same reason.
+    the size cap, for the same reason, and `artifacts_over_cap` counts the files
+    past the 500-file cap (#227): null until `complete`, 0 when none were.
+    `complete` alone does not mean nothing was left out.
 
     No download URL is minted here. The `uri` is a `gs://` reference, and the
     bytes are read through `/artifacts/content` and `/artifacts/raw`, which

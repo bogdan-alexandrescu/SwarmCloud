@@ -73,7 +73,15 @@ def test_the_workflows_were_found():
     names = {path.name for path in WORKFLOWS}
     # iam-refusal-probe.yml is dispatch-only and main-only; that shape is held
     # in test_iam_refusal_probe.py, and this glob covers its steps too.
-    expected = {"application.yml", "terraform.yml", "security.yml", "release.yml", "iam-refusal-probe.yml"}
+    expected = {
+        "application.yml",
+        "terraform.yml",
+        "security.yml",
+        "release.yml",
+        "iam-refusal-probe.yml",
+        # pull_request_target only; its shape is held in test_auto_merge_workflow.py.
+        "auto-merge.yml",
+    }
     assert expected <= names, names
 
 

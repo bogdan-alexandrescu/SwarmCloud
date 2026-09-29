@@ -2831,9 +2831,8 @@ figures are not dated, and a limit is never attributed to the kernel.
 
 ## 28. `profiles.py`: claude-code and codex declare an `issue` runner input
 
-**Status: ACCEPTED, accepted by the owner 2026-09-28** (recorded on #265), and
-applied by the #265 change the same day (see "Applied" below). Recorded
-2026-09-28 from #265. If another
+**Status: ACCEPTED, accepted by the owner 2026-09-28** (recorded on #265), to
+be applied by the #265 change. Recorded 2026-09-28 from #265. If another
 branch has taken 28 by the time this merges, renumber this one.
 
 ### What is true today
@@ -2855,7 +2854,8 @@ declared input is only the number.
 
 ### What it would break if accepted
 
-Nothing that exists: no profile declares an input today, so every current
+Nothing that exists: `mock` is the only profile that declares inputs today
+(#213), and neither `claude-code` nor `codex` does, so every current
 submission stays valid. The API's declared-inputs check (#213) starts
 accepting `issue` for these two profiles and still refuses everything else.
 

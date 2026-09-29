@@ -93,8 +93,17 @@ MAX_FILES = 500
 MAX_NAME_BYTES = 256
 
 #: At most this many declared names are exempt from `MAX_NAME_BYTES` above.
-#: Not enforced here -- a workflow's step count already bounds it -- documented
-#: so the arithmetic below has a number to use.
+#: ENFORCED by `plan()` (#227): the first this many distinct declared names are
+#: exempt, and any past them are held to `MAX_NAME_BYTES` like every other
+#: file and returned in `Plan.declared_past_bound`, which the worker names in
+#: a WARNING (`Worker._upload_outputs`, scrubbed before it is cut). A
+#: workflow's step count should already bound them --
+#: `swarm_common.config.Settings.max_workflow_steps` (50) minus this
+#: step -- but the 1 MiB budget above is arithmetic on THIS number, so it is
+#: held here rather than trusted to hold upstream.
+#: tests/unit/worker/test_artifact_manifest_declared_bound.py fails when the
+#: frozen `max_workflow_steps` default passes `MAX_DECLARED_NAMES + 1`: raise
+#: this and redo the budget then, not before.
 MAX_DECLARED_NAMES = 49
 
 #: The reasons a file in the folder is named in the log as not uploaded.
@@ -166,6 +175,9 @@ class Plan:
     take: tuple[str, ...] = ()
     unstorable: tuple[str, ...] = ()
     not_uploaded: tuple[dict[str, Any], ...] = ()
+    #: Declared names past `MAX_DECLARED_NAMES`, in the order given: NOT exempt
+    #: from `MAX_NAME_BYTES` (#227). Each is still uploaded when it fits.
+    declared_past_bound: tuple[str, ...] = ()
 
     @property
     def over_cap(self) -> int:
@@ -179,9 +191,15 @@ def plan(
     """Decide which of `files` (name -> size) are uploaded. See `upload_order`.
 
     `declared` (a later step's `expected_outputs`) is exempt from
-    `MAX_NAME_BYTES`: see the constant's docstring for why that is safe.
+    `MAX_NAME_BYTES`: see the constant's docstring for why that is safe. At
+    most `MAX_DECLARED_NAMES` of them, the first in `declared`'s own order: the
+    rest are held to the bound and returned in `Plan.declared_past_bound`.
+    Pure, and it logs nothing: the names come from task metadata, and only the
+    worker's logger scrubs registered secrets out of what it writes.
     """
-    declared_names = frozenset(declared)
+    distinct = list(dict.fromkeys(declared))
+    declared_names = frozenset(distinct[:MAX_DECLARED_NAMES])
+    past_bound = tuple(distinct[MAX_DECLARED_NAMES:])
     take: list[str] = []
     unstorable: list[str] = []
     not_uploaded: list[dict[str, Any]] = []
@@ -196,4 +214,9 @@ def plan(
             not_uploaded.append({"name": name, "bytes": size, "reason": OVER_CAP})
         else:
             take.append(name)
-    return Plan(take=tuple(take), unstorable=tuple(unstorable), not_uploaded=tuple(not_uploaded))
+    return Plan(
+        take=tuple(take),
+        unstorable=tuple(unstorable),
+        not_uploaded=tuple(not_uploaded),
+        declared_past_bound=past_bound,
+    )

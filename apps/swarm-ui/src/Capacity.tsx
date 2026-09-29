@@ -5,8 +5,9 @@ import type { TopicId } from './help'
 import { HelpCard, HelpLinks } from './HelpCard'
 import { UtilTrack } from './primitives'
 import { Screen } from './Shell'
-import { headroomFigure } from './Blockers'
+import { blockerVerdict, classUnits, headroomFigure, useResourceClasses, verdictCopy, verdictNeedsAPerson } from './Blockers'
 import {
+  FAMILY_TITLE,
   POOL_FAMILY_ORDER,
   blockerCeiling,
   ceilingCopy,
@@ -23,22 +24,6 @@ import {
   type Pool,
   type PoolKind,
 } from './types'
-
-// THESE ARE POOL FAMILIES, NOT NAV LABELS, and `runner` keeps the contract's
-// noun on purpose: it groups the pools whose scope is a runner profile. The
-// TAB one along used to be called "Runner profiles" too and is now "Profile
-// headroom" -- that rename was about telling a per-tenant measurement from the
-// platform-wide catalogue beside it in the rail, and it does not reach in
-// here. A pool family named after the thing it is scoped by is unambiguous on
-// this screen, where every other row is `Tenants`, `Backends` or `Providers`.
-const FAMILY_TITLE: Record<PoolKind, string> = {
-  global: 'Global',
-  tenant: 'Tenants',
-  resource: 'Resource classes',
-  runner: 'Runner profiles',
-  backend: 'Backends',
-  provider: 'Providers',
-}
 
 /**
  * Screen B -- the capacity board.
@@ -211,6 +196,10 @@ function scopeWord(name: string, viewer: string | undefined): string {
 }
 
 function Headroom({ capacity }: { capacity: Capacity }) {
+  // One task's weight per class, from `/v1/resource-classes` (#66), so a pool
+  // too small for one task is not drawn as a full one. Null until it answers.
+  // Above the early return: a hook is called on every render or on none.
+  const classes = useResourceClasses()
   const profiles = Object.entries(capacity.runner_profiles)
   if (profiles.length === 0) return null
 
@@ -339,7 +328,7 @@ function Headroom({ capacity }: { capacity: Capacity }) {
                       {/* The reason is what holds a disabled profile back, and
                           the only part of it a reader can act on -- so it is
                           text on the row, not a tooltip. */}
-                      {off ? <span>{reason}</span> : <HeldBackBy h={h} />}
+                      {off ? <span>{reason}</span> : <HeldBackBy h={h} units={classUnits(classes, profile.resource_class)} />}
                     </td>
                     <td role="cell" data-label="Backend">{profile.backend}</td>
                   </tr>
@@ -380,7 +369,7 @@ function Headroom({ capacity }: { capacity: Capacity }) {
  * is drawn as a fact, in `--info`, never as a verdict. One sentence used to
  * carry both and could not tell them apart.
  */
-function HeldBackBy({ h }: { h: Headroom }) {
+function HeldBackBy({ h, units }: { h: Headroom; units: number | null }) {
   const marks = (
     <>
       {!h.complete && (
@@ -422,17 +411,25 @@ function HeldBackBy({ h }: { h: Headroom }) {
         // A pool at ZERO refuses with the full pool's reason, and `0/0` in
         // the full pool's red reads as "all of nothing is in use" -- the
         // chip form of the live "busy platform-wide. (0/0)". The ceiling,
-        // not the reason, tells them apart; see `blockerCeiling`.
-        const ceiling = blockerCeiling(b)
+        // not the reason, tells them apart; see `blockerCeiling`. So does a
+        // pool whose limit is below one task's weight (#66): `0/1` in red
+        // for a browser task no wait will admit is the same misreading.
+        const ceiling = blockerVerdict(b, units)
         return (
           <span
             key={b.pool}
-            className={`ctl-chip ${needsAPerson(ceiling) ? 'is-paused' : 'is-bad'}`}
-            title={`${b.pool} — ${b.reason}, ${ceilingCopy(b) ?? `${b.active} of ${b.limit} units in use`}`}
+            className={`ctl-chip ${verdictNeedsAPerson(ceiling) ? 'is-paused' : 'is-bad'}`}
+            title={`${b.pool} — ${b.reason}, ${verdictCopy(b, units) ?? `${b.active} of ${b.limit} units in use`}`}
           >
             <i aria-hidden="true" />
             {label(b.pool)}
-            {ceiling === 'paused' ? ' paused' : ceiling === 'full' ? ` ${b.active}/${b.limit}` : ' limit 0'}
+            {ceiling === 'paused'
+              ? ' paused'
+              : ceiling === 'full'
+                ? ` ${b.active}/${b.limit}`
+                : ceiling === 'below-units' || ceiling === 'below-units-quota'
+                  ? ` limit ${b.limit} < ${units}u`
+                  : ' limit 0'}
           </span>
         )
       })}

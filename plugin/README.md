@@ -526,6 +526,32 @@ not send is `—` in the terminal and `null` in JSON, never 0: that deployment i
 older than the change and serves the input unmasked. The masking is at read
 time only; the runner still reads what was submitted.
 
+## What a task produced
+
+A step that clones no repository still produces something: the files it wrote
+into `$SWARM_ARTIFACTS_DIR`, and the runner's own summary. `swarm result`,
+`sc task` and `swarm_result` (its `outputs` block) list each artifact by name
+and size, the runner's summary, the exit code, the duration, and the inputs
+staged into the step from upstream ones — before the code, which is "this task cloned
+no repository" for such a step. They read the API's `/v1/tasks/{id}/artifacts`
+route, whose `complete` tells "uploaded when the attempt ends" (the task has not
+finished) from "no artifacts"; an unreadable listing is said, never shown as
+none.
+
+`swarm artifact <task> <name>` prints one of them, or writes it to a file
+with `-o <file>`; `swarm_artifact` is the same read for a session. Both go through
+`/v1/tasks/{id}/artifacts/content`: the name is matched against the task's own
+manifest (a path is never accepted), the content is redacted at read time, and
+a file larger than one window is read window by window from `next_offset` —
+the terminal command prints all of it; the tool returns one window and says
+where the next starts. An artifact that is not text is refused with a reason,
+not served: nothing can scan its bytes for a credential.
+
+`swarm tail` prints every event of every task it follows, each once. It read
+the task's oldest 50 events on every poll, so it printed no event after the
+50th (#164); it now reads newest first and pages back to the last event it
+printed, one request per poll while it keeps up.
+
 ## Running a Claude Code workflow's steps in SwarmCloud
 
 Owner decision, 2026-09-26: a Claude Code workflow shows as running in Claude
@@ -598,15 +624,24 @@ with the requested object, the task could not be read (a 404 or 403, or three
 calls in a row that read nothing), or the sc plugin's server is not connected.
 
 **A whole SwarmCloud workflow: `/sc:run`.** Its argument is a SwarmCloud
-workflow spec — the same object `swarm workflow` reads. One `sc:workflow` agent
-submits it (phase `Submit`), and SwarmCloud owns the DAG from then on:
+workflow spec — the same object `swarm workflow` reads — as an object, as JSON
+text, or as the path of the spec file, relative to the session's checkout. A
+workflow script has no filesystem, so given a path one `sc:workflow` agent
+(label `read spec`) has the bridge read the file with `swarm_workflow_spec`,
+which checks it as `swarm_workflow` would, submits nothing and returns the spec
+with its digest; the script submits the relayed spec only when it digests to
+what the bridge read. Text that begins like JSON and does not parse is reported
+as broken JSON, not looked for as a file. One `sc:workflow` agent then
+submits the spec (phase `Submit`), and SwarmCloud owns the DAG from then on:
 dependencies, `input_from` staging, `on_step_failure`, retries. The script
 starts one `sc:step` row per step, labelled with its `step_id`, under phase
 `Level N` — its depth in the DAG — or under the step's `stage` when the spec
 gives one (`stage` is display-only and never sent). A row follows its own task
 only, so it may start before its parents finish; it then says it is waiting,
 and why, in its first lines, and a waiting task holds no capacity. Each
-finished step is one narrator line, `scan-03 SUCCEEDED · 4m12s · $0.21 · PR #231`.
+finished step is one narrator line, `scan-03 SUCCEEDED · 4m12s · $0.21 · PR #231 · produced findings.md`,
+which names the artifacts the step produced, or says `produced no artifacts`
+for a success that made none.
 The run returns every step's result and the workflow's state as
 `swarm_workflow_status` reads it — derived by the server, never by the script.
 
@@ -627,7 +662,7 @@ is a different step.
 
 | `state` | What happened | What to do |
 |---|---|---|
-| `NOT_SUBMITTED` | `swarm_workflow` refused the spec, with `error`; nothing was sent | fix what `error` names and run again |
+| `NOT_SUBMITTED` | `swarm_workflow` refused the spec, with `error`; or, given a path, the file could not be read as a spec, or the spec relayed from it does not digest to what the bridge read; nothing was sent | fix what `error` names and run again |
 | `SUBMISSION_UNKNOWN` | the Submit row stopped, failed, or answered with neither an id nor an error — possibly AFTER the workflow was created | look for it in the console's workflow list before running again: the API has no idempotency key, so a second run submits a second copy |
 | `SUBMITTED_UNVERIFIED` | SwarmCloud accepted workflow `workflow_id`, but the reply relayed back does not match the spec | it runs regardless: read it with `swarm_workflow_status`, or cancel it with `swarm_workflow_cancel` |
 
@@ -636,8 +671,8 @@ A Result row that fails does not lose the steps: the run returns every row with
 
 All three agents run on **haiku at low effort** (`model` and `effort` in their
 frontmatter), load no `CLAUDE.md`, and can call only the SwarmCloud tools they
-need — `sc:remote` dispatch and follow, `sc:step` follow, `sc:workflow` submit
-and read — and only through the sc plugin's own server (above).
+need — `sc:remote` dispatch and follow, `sc:step` follow, `sc:workflow` read a
+spec file, submit and read — and only through the sc plugin's own server (above).
 
 ### What differs from a local step — read before swapping one in
 
@@ -690,7 +725,10 @@ are the same value.
   at (never the branch name, which can move after the call returns), the URL
   is made https and stripped of any credential, and the reply carries a
   `repository` block saying what will be cloned and how that was decided.
-* `swarm_follow` takes `since` — the cursor as one opaque token — and
+* `swarm_follow` takes `since` — the cursor as one opaque token, ending in a
+  dot and a CRC-32 checksum: a relay copies it by hand on every call, and a
+  token changed on the way back is refused with an error saying so, instead
+  of being read as a different position — and
   `format: "lines"`: claude-code's `stream-json` narrated as short lines,
   capped per call with the count left out stated, a `wait_seconds` window that
   returns early when a task finishes or starts, and, for a finished task, an
@@ -711,6 +749,10 @@ are the same value.
   same function the terminal uses, and infers the repository the same way.
   With `spec_digest` it refuses, before sending, a spec that arrived
   different; its reply carries the digest of what it received.
+* `swarm_workflow_spec` reads a spec file from the checkout, checks it, and
+  returns it with its digest, submitting nothing — the half of `/sc:run` that
+  takes a path. A file that is not a spec is refused without its content being
+  repeated.
 * Every tool refuses an argument it does not declare, instead of ignoring it.
 * The stdio loop answers tool calls concurrently. It answered one at a time,
   so a single `swarm_wait` held every other call, and a dozen rows each
@@ -774,7 +816,10 @@ narrates each step in one line and returns the state SwarmCloud derived; that
 its spec digest is byte-for-byte the bridge's; that a reply missing a step,
 changing a dependency, reusing a task or carrying the wrong digest starts no
 row; that a stopped or failing Submit is reported as UNKNOWN, not as not
-submitted; and that a failing Result row keeps every step's result. CI fails
+submitted; that given a spec file's path it has the bridge read the file and
+submits nothing unless the relayed spec digests to what the bridge read; that
+each step's line names what it produced; and that a failing Result row keeps
+every step's result. CI fails
 rather than skips when node is missing. Claude Code's own frontmatter parser
 and workflow runtime are not run by any of this.
 
