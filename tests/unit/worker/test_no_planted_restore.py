@@ -202,6 +202,34 @@ def test_a_retry_restores_the_checkpoint_its_earlier_attempt_recorded(
         assert PLANTED_MARKER not in archive.getnames()
 
 
+def test_a_retry_refuses_the_recorded_checkpoint_rewritten_in_the_bucket(
+    db, store, tmp_path, worker_factory
+):
+    """The planter holds only the bucket, which it can also list: it rewrites
+    the recorded checkpoint's archive in place and its manifest to match.
+    Pointer and attempt record still name that checkpoint, so only a digest
+    recorded OUTSIDE the bucket, when the attempt wrote it, tells the bytes
+    apart. The retry starts clean."""
+    pointer = _failed_first_attempt(db, worker_factory)
+    planted = _plant(store, tmp_path)
+    recorded = CheckpointManager(
+        store=store, tenant_id=TENANT, task_id="task_1", attempt_id="att_2",
+        generation=2, logger=_Quiet(),
+    ).find_by_uri(pointer)
+    assert recorded is not None and recorded.attempt_id == "att_1"
+    store.upload_bytes(recorded.archive_key, store.download_bytes(planted.archive_key))
+    manifest = json.loads(store.download_bytes(recorded.manifest_key).decode("utf-8"))
+    manifest.update(
+        archive_sha256=planted.archive_sha256,
+        archive_bytes=planted.archive_bytes,
+        file_count=planted.file_count,
+    )
+    store.upload_bytes(recorded.manifest_key, json.dumps(manifest).encode("utf-8"))
+
+    assert _retry(db, worker_factory, latest_checkpoint=pointer) == ExitCode.OK
+    _assert_nothing_restored(db, store, tmp_path, "att_2")
+
+
 def test_a_retry_with_only_an_unrecorded_planted_checkpoint_restores_nothing(
     db, store, tmp_path, worker_factory
 ):
