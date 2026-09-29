@@ -33,7 +33,7 @@ from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
 
 from ..checkpoint_content import CheckpointContent
-from ..deps import AppContext, get_context, tenant_scope
+from ..deps import AppContext, get_context, submission_scope, tenant_scope
 
 router = APIRouter(prefix="/v1/tasks", tags=["checkpoints"])
 
@@ -57,6 +57,7 @@ def list_checkpoint_files(
     attempt_id: str | None = Query(default=None),
     limit: int | None = Query(default=None, ge=1),
     tenant_id: str = Depends(tenant_scope),
+    submitted_by: str | None = Depends(submission_scope),
     service: CheckpointContent = Depends(checkpoint_content),
 ) -> dict:
     """Every member of one checkpoint's archive, in archive order.
@@ -74,6 +75,7 @@ def list_checkpoint_files(
     return service.list_files(
         tenant_id,
         task_id,
+        submitted_by=submitted_by,
         checkpoint_id=checkpoint_id,
         attempt_id=attempt_id,
         limit=limit,
@@ -89,6 +91,7 @@ def read_checkpoint_file(
     offset: int = Query(default=0, ge=0),
     limit_bytes: int | None = Query(default=None, ge=1),
     tenant_id: str = Depends(tenant_scope),
+    submitted_by: str | None = Depends(submission_scope),
     service: CheckpointContent = Depends(checkpoint_content),
 ) -> dict:
     """One member's content, as the artifact-content route serves an artifact.
@@ -103,6 +106,7 @@ def read_checkpoint_file(
     return service.read_file(
         tenant_id,
         task_id,
+        submitted_by=submitted_by,
         checkpoint_id=checkpoint_id,
         path=path,
         attempt_id=attempt_id,
@@ -120,6 +124,7 @@ def download_checkpoint(
     checkpoint_id: str,
     attempt_id: str | None = Query(default=None),
     tenant_id: str = Depends(tenant_scope),
+    submitted_by: str | None = Depends(submission_scope),
     service: CheckpointContent = Depends(checkpoint_content),
 ) -> StreamingResponse:
     """The whole archive as a download, streamed in bounded windows.
@@ -136,7 +141,11 @@ def download_checkpoint(
     the same way -- see `CheckpointContent.download` for the arithmetic.
     """
     archive = service.download(
-        tenant_id, task_id, checkpoint_id=checkpoint_id, attempt_id=attempt_id
+        tenant_id,
+        task_id,
+        checkpoint_id=checkpoint_id,
+        attempt_id=attempt_id,
+        submitted_by=submitted_by,
     )
     return StreamingResponse(
         archive.chunks, media_type="application/gzip", headers=archive.headers

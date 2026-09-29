@@ -26,7 +26,14 @@ from fastapi import APIRouter, Depends, Query, Response, status
 
 from ..auth import AuthContext
 from ..codec import task_to_api, workflow_dispatch, workflow_to_api
-from ..deps import AppContext, current_auth, get_context, paged_limit, tenant_scope
+from ..deps import (
+    AppContext,
+    current_auth,
+    get_context,
+    paged_limit,
+    submission_scope,
+    tenant_scope,
+)
 from ..schemas import WorkflowCreate
 
 router = APIRouter(prefix="/v1/workflows", tags=["workflows"])
@@ -71,10 +78,14 @@ def list_workflows(
     limit: int | None = Query(default=None, ge=1),
     page_token: str | None = Query(default=None),
     tenant_id: str = Depends(tenant_scope),
+    submitted_by: str | None = Depends(submission_scope),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     page = ctx.store.list_workflows(
-        tenant_id, limit=paged_limit(ctx, limit), page_token=page_token
+        tenant_id,
+        limit=paged_limit(ctx, limit),
+        page_token=page_token,
+        submitted_by=submitted_by,
     )
     results, report = ctx.rollups.for_workflows(tenant_id, page.items)
     return {
@@ -99,10 +110,16 @@ def list_workflows(
 def get_workflow(
     workflow_id: str,
     tenant_id: str = Depends(tenant_scope),
+    submitted_by: str | None = Depends(submission_scope),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
-    workflow = ctx.store.get_workflow(tenant_id, workflow_id)
-    tasks = ctx.store.list_tasks(tenant_id, workflow_id=workflow_id, limit=200)
+    workflow = ctx.store.get_workflow(tenant_id, workflow_id, submitted_by=submitted_by)
+    # The same filter on the step tasks: a workflow the caller submitted has
+    # step tasks the caller submitted, and a row that is not theirs is not
+    # served whatever workflow it claims to belong to.
+    tasks = ctx.store.list_tasks(
+        tenant_id, workflow_id=workflow_id, limit=200, submitted_by=submitted_by
+    )
     # Derived from the tasks this route already loaded rather than from a second
     # read of the same documents. `complete` is false when that page truncated,
     # which turns a step missing from it into "not read" instead of "not there"
@@ -136,4 +153,6 @@ def cancel_workflow(
     auth: AuthContext = Depends(current_auth),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
-    return ctx.store.cancel_workflow(tenant_id, workflow_id, by=auth.email)
+    return ctx.store.cancel_workflow(
+        tenant_id, workflow_id, by=auth.email, tenant_member=auth.tenant_member
+    )
