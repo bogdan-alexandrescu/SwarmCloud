@@ -660,7 +660,7 @@ def detect_orphan_executions(
 
 def detect_leaseless_tasks(
     snapshot: ControlSnapshot,
-    executions_by_attempt: dict[str, ExecutionView] | None = None,
+    executions: Iterable[ExecutionView] = (),
 ) -> list[Finding]:
     """Tasks in a concurrency state with no unreleased lease behind them (#332).
 
@@ -680,8 +680,14 @@ def detect_leaseless_tasks(
     (the lease rules own that task), and while any active execution does (the
     execution rules kill before anything else happens to it).
     """
-    running = executions_by_attempt or {}
-    busy = {execution.task_id for execution in running.values() if execution.task_id}
+    # Every active execution naming the task, with or without an attempt id:
+    # one the dispatcher labelled with its task alone is still compute that
+    # may be running this task's agent.
+    busy = {
+        execution.task_id
+        for execution in executions
+        if execution.is_active and execution.task_id
+    }
     # Every unreleased lease, by task -- not `snapshot.lease_for_task`, which
     # answers only with the lease the task NAMES and so would miss a newer one.
     leased = {lease.task_id for lease in snapshot.leases.values() if not lease.is_released}
@@ -738,13 +744,15 @@ def detect_orphan_leases(
     tasks and leases in two queries, and an admission that commits between
     them leaves a brand-new lease whose task the tasks query saw as READY. So
     the pass reads every such task by id first (`Reconciler._read_lease_tasks`,
-    into `settled`), and a task found there still holding this lease falls
-    through to the `continue` below like any other healthy one. "No longer
+    into `lease_tasks`, which only this rule reads), and a task found there
+    still holding this lease falls through to the `continue` below like any
+    other healthy one. "No longer
     exists" is said only of a task that by-id read did not find.
     """
     findings: list[Finding] = []
     running = executions_by_attempt or {}
-    unreadable = _unreadable_tasks(snapshot)
+    unreadable = _unreadable_tasks(snapshot) | (getattr(snapshot, "lease_unreadable", None) or set())
+    lease_tasks: dict[str, TaskView] = getattr(snapshot, "lease_tasks", None) or {}
     for lease in snapshot.leases.values():
         if lease.is_released:
             continue
@@ -757,7 +765,7 @@ def detect_orphan_leases(
         # reads -- outside the concurrency states and never read by id, or
         # read and not found -- keeps the wording this rule always used. Same
         # action either way: the lease is released.
-        task = snapshot.task_named(lease.task_id)
+        task = snapshot.task_named(lease.task_id) or lease_tasks.get(lease.task_id)
         if task is None:
             reason = "lease references a task that no longer exists"
         elif task.is_terminal:
@@ -1451,7 +1459,7 @@ def detect_all(
         *detect_stale_leases(snapshot, by_attempt, config, now),
         *detect_missing_executions(snapshot, by_attempt, config, now),
         *detect_orphan_leases(snapshot, now, by_attempt),
-        *detect_leaseless_tasks(snapshot, by_attempt),
+        *detect_leaseless_tasks(snapshot, executions),
         *detect_left_running(snapshot, executions, config, now),
     ]
     # A lease whose attempt exited 78 is repaired by the cannot-start rule

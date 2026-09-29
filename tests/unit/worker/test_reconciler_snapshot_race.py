@@ -30,7 +30,7 @@ from fakes import FakeBackend, FakeFirestore, FakeTransactionRunner
 from reconciler.config import ReconcilerConfig
 from reconciler.detect import Finding, FindingKind
 from reconciler.logs import build_logger
-from reconciler.model import ControlSnapshot
+from reconciler.model import ControlSnapshot, ExecutionPhase, ExecutionView
 from reconciler.repair import Reconciler
 from reconciler.store import ControlStore
 from swarm_common.models import pool_names_for, utcnow
@@ -186,7 +186,7 @@ def test_an_absent_task_that_cannot_be_read_is_not_called_gone(db, config):
     seed_lease(db)
 
     class _Unreadable(_TasksQueryRanBeforeAdmission):
-        def task_by_id(self, task_id: str):  # noqa: ANN201
+        def task_for_lease(self, task_id: str):  # noqa: ANN201
             raise RuntimeError("deadline exceeded")
 
     logger = build_logger(stream=__import__("io").StringIO())
@@ -351,3 +351,141 @@ def test_a_lease_whose_task_is_terminal_is_released(db, config, terminal):
     assert db.doc(f"leases/{LEASE}")["released_at"] is not None
     assert set(_active(db).values()) == {0}
     assert db.doc(f"tasks/{TASK}")["state"] == terminal.value
+
+
+@pytest.mark.parametrize("state", [TaskState.QUEUED, TaskState.READY, TaskState.PARKED])
+def test_a_lease_whose_task_holds_no_capacity_is_released(db, config, state):
+    """The guards look for a CONCURRENCY state, not merely a non-terminal one.
+
+    A QUEUED, READY or PARKED task holds no capacity (invariant 1), so a lease
+    still naming one -- even as its `current_lease_id` -- is an orphan, and
+    holding it would leak its slots.
+    """
+    seed_task(db, state=state)
+    seed_lease(db, age_seconds=30)
+
+    report = _reconciler(_store(db), config, db).run_once()
+
+    orphan = [o for o in report.outcomes if o.kind == FindingKind.ORPHAN_LEASE.value]
+    assert orphan and orphan[0].released is True, _outcomes(report)
+    assert db.doc(f"leases/{LEASE}")["released_at"] is not None
+    assert set(_active(db).values()) == {0}
+    assert db.doc(f"tasks/{TASK}")["state"] == state.value
+
+
+# ---------------------------------------------------------------------------
+# (c, continued) what holds the backstop back. Each guard has a test that
+# fails when that guard is deleted.
+# ---------------------------------------------------------------------------
+
+
+def _outcomes(report) -> list:  # noqa: ANN001
+    return [o.as_dict() for o in report.outcomes]
+
+
+def _backend_reconciler(
+    store: ControlStore, config: ReconcilerConfig, backend: FakeBackend
+) -> Reconciler:
+    logger = build_logger(stream=__import__("io").StringIO())
+    return Reconciler(store=store, backends=[backend], config=config, logger=logger)
+
+
+def _seed_leaseless(db: FakeFirestore, state: TaskState) -> None:
+    seed_task(db, state=state, generation=2)
+    seed_lease(db, generation=1, age_seconds=9000, released=True, pool_active=0)
+
+
+@pytest.mark.parametrize("state", [TaskState.LEASED, TaskState.RUNNING])
+def test_a_leaseless_task_behind_an_unreadable_backend_is_held(db, config, state):
+    """Guard: LEASELESS_TASK is an absence kind, and LEASED gets no shortcut.
+
+    "Nothing runs for it" is half of what makes the requeue safe, and a
+    backend that could not be listed cannot say it. LEASED is not waved
+    through as "never dispatched": that shortcut's evidence is the lease's
+    attempt, and this task's lease is gone -- #332's task was LEASED with a
+    Job created for it.
+    """
+    _seed_leaseless(db, state)
+    backend = FakeBackend(executions=[], journal=db.writes, list_raises=RuntimeError("503"))
+
+    report = _backend_reconciler(_store(db), config, backend).run_once()
+
+    assert [o for o in report.outcomes if o.task_id == TASK] == [], _outcomes(report)
+    task = db.doc(f"tasks/{TASK}")
+    assert task["state"] == state.value
+    assert task["current_generation"] == 2, "a task behind an unreadable backend was fenced"
+
+
+def _young_execution(attempt_id: str | None) -> ExecutionView:
+    """Active, and inside the orphan-execution grace, so no other rule acts on it."""
+    return ExecutionView(
+        name="projects/p/locations/us-central1/jobs/swarm-eng-mock/executions/x9",
+        backend="CLOUD_RUN_JOB",
+        phase=ExecutionPhase.RUNNING,
+        created_at=utcnow() - timedelta(seconds=10),
+        task_id=TASK,
+        attempt_id=attempt_id,
+        tenant_id=TENANT,
+        generation=2,
+        parent="projects/p/locations/us-central1/jobs/swarm-eng-mock",
+    )
+
+
+@pytest.mark.parametrize("attempt_id", ["att_somewhere", None], ids=["with-attempt", "task-only"])
+def test_a_leaseless_task_with_an_active_execution_is_held(db, config, attempt_id):
+    """Guard: `busy`. Compute that names the task belongs to the execution rules,
+    which kill before anything else happens to it -- including one labelled
+    with its task and no attempt id."""
+    _seed_leaseless(db, TaskState.RUNNING)
+    backend = FakeBackend(executions=[_young_execution(attempt_id)], journal=db.writes)
+
+    report = _backend_reconciler(_store(db), config, backend).run_once()
+
+    leaseless = [o for o in report.outcomes if o.kind == FindingKind.LEASELESS_TASK.value]
+    assert leaseless == [], _outcomes(report)
+    task = db.doc(f"tasks/{TASK}")
+    assert task["state"] == TaskState.RUNNING.value
+    assert task["current_generation"] == 2
+
+
+class _MovesOnAfterTheSnapshot(ControlStore):
+    """The worker writes between this pass's snapshot and its repair."""
+
+    def __init__(self, *args, then: dict, **kwargs) -> None:  # noqa: ANN002, ANN003
+        super().__init__(*args, **kwargs)
+        self._then = then
+
+    def snapshot(self, **kwargs) -> ControlSnapshot:  # noqa: ANN003
+        snap = super().snapshot(**kwargs)
+        self._db.documents[f"tasks/{TASK}"].update(self._then)
+        return snap
+
+
+@pytest.mark.parametrize(
+    "then",
+    [
+        {"state": TaskState.PARKED.value, "current_lease_id": None, "park_reason": "quota"},
+        {"state": TaskState.SUCCEEDED.value, "current_lease_id": None},
+    ],
+    ids=["parked", "succeeded"],
+)
+def test_a_task_that_moved_on_after_the_snapshot_is_not_touched(db, config, then):
+    """Guard: `only_from` on the fence and the requeue.
+
+    PARKED is the witness: it is neither terminal nor on another lease, so only
+    `only_from` stops the fence and the PARKED -> READY that would overrule the
+    worker's own decision about how it resumes. SUCCEEDED is refused by the
+    store's terminal checks as well, and is here because a finished task is the
+    commonest thing a snapshot is stale about.
+    """
+    _seed_leaseless(db, TaskState.RUNNING)
+    logger = build_logger(stream=__import__("io").StringIO())
+    store = _MovesOnAfterTheSnapshot(
+        db, logger=logger, txn_runner=FakeTransactionRunner(db), then=then
+    )
+
+    _reconciler(store, config, db).run_once()
+
+    task = db.doc(f"tasks/{TASK}")
+    assert task["state"] == then["state"], f"a {then['state']} task was moved to {task['state']}"
+    assert task["current_generation"] == 2, f"a {then['state']} task was fenced"

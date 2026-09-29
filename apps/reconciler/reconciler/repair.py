@@ -542,6 +542,11 @@ class Reconciler:
         judges these executions exactly as it did before the rules existed: as
         orphans, killed first and only then released. A kill switch that left
         the read running would leave its failure modes running with it.
+
+        The by-id read of a task an UNRELEASED LEASE names is not this one and
+        is not behind the switch: `_read_lease_tasks` (#332) writes to fields
+        of its own, which only the orphan-lease rule reads, so it brings none
+        of the three stand-asides back with eviction off.
         """
         if not self._config.enable_gke_eviction:
             return
@@ -585,9 +590,9 @@ class Reconciler:
         exist (an orphan), a finished or requeued one (an orphan, with the
         reason that says so), and one admitted after the snapshot that still
         holds this lease (not an orphan at all). The answer goes into
-        `settled`, which `ControlSnapshot.task_named` already reads, and a read
-        that FAILS goes into `unreadable_tasks`, which the orphan rule already
-        stands aside for.
+        `lease_tasks`, and a read that FAILS into `lease_unreadable`; the
+        orphan-lease rule is the only reader of either, and concludes nothing
+        about a lease whose task could not be read.
 
         Chosen over reading both queries at one `read_time`: a consistent
         snapshot would close the gap between the two queries, but the repair
@@ -599,10 +604,11 @@ class Reconciler:
         client or the in-memory fakes that they do not already support.
 
         NOT gated on `enable_gke_eviction`, unlike `_read_settled`: the orphan
-        rule it feeds runs whatever that switch says. A task found here in a
-        concurrency state also makes `orphan_rule_defers` hold back an active
-        execution naming it (DEFER_TASK_READMITTED) rather than kill it as
-        taskless -- the same race, seen from the execution's side.
+        rule it feeds runs whatever that switch says. And NOT written to
+        `settled` or `unreadable_tasks`, and not made through `task_by_id`:
+        those are the eviction rules' input, `orphan_rule_defers` reads them,
+        and with eviction off the pass must judge executions exactly as it did
+        before those rules existed.
 
         Bounded by the unreleased leases whose task is outside the concurrency
         states: ordinarily none, or the handful whose worker ended without
@@ -621,9 +627,9 @@ class Reconciler:
         )
         for task_id in wanted:
             try:
-                task = self._store.task_by_id(task_id)
+                task = self._store.task_for_lease(task_id)
             except Exception as exc:
-                snapshot.unreadable_tasks.add(task_id)
+                snapshot.lease_unreadable.add(task_id)
                 self._log.warning(
                     "could not read the task an unreleased lease names; "
                     "that lease is not judged this pass",
@@ -633,7 +639,7 @@ class Reconciler:
                 report.errors.append(f"task {task_id}: {exc}")
                 continue
             if task is not None:
-                snapshot.settled[task_id] = task
+                snapshot.lease_tasks[task_id] = task
 
     def _read_progress(
         self,
@@ -825,7 +831,14 @@ class Reconciler:
         backend_name = attempt.backend if attempt else None
         if attempt is not None and backend_name is not None:
             return self._attempt_visible(attempt, sight)
-        if self._never_dispatched(finding, snapshot):
+        # A leaseless task is never waved through as "never dispatched". That
+        # shortcut reads LEASED plus no attempt naming an execution as proof
+        # nothing runs, but its evidence is the lease's attempt, and a
+        # leaseless task's lease is gone: task_7ead19eefca1439ea9df sat LEASED
+        # with a Job created for it (#332). So LEASED is gated like the rest.
+        if finding.kind is not FindingKind.LEASELESS_TASK and self._never_dispatched(
+            finding, snapshot
+        ):
             # No attempt names a backend AND the task never left LEASED, so
             # no execution was ever created and no backend can be running
             # it. Refusing to repair here cannot prevent a duplicate -- there
@@ -1127,6 +1140,8 @@ class Reconciler:
                 if cannot_start
                 else f"would invalidate, release and requeue the task: {finding.reason}"
                 if ended_at_startup
+                else f"would invalidate and requeue the task, releasing nothing: {finding.reason}"
+                if leaseless
                 else "would invalidate, terminate, release and repair"
             )
             return outcome

@@ -148,6 +148,20 @@ class ControlStore:
         snap = self._db.collection("tasks").document(task_id).get()
         return TaskView.from_doc(snap.to_dict() or {}, task_id) if snap.exists else None
 
+    def task_for_lease(self, task_id: str) -> TaskView | None:
+        """The task an unreleased lease names, whatever its state (#332).
+
+        The same document read as `task_by_id`, kept a separate method because
+        it is a separate input. `task_by_id` feeds the eviction rules and is
+        switched off with them (`RECONCILER_ENABLE_GKE_EVICTION=false`); this
+        feeds the orphan-lease rule, which runs whatever that switch says, and
+        without it a lease admitted between the snapshot's two queries is
+        released as naming "a task that no longer exists". A READ THAT FAILS
+        raises, as `task_by_id` does.
+        """
+        snap = self._db.collection("tasks").document(task_id).get()
+        return TaskView.from_doc(snap.to_dict() or {}, task_id) if snap.exists else None
+
     def attempt_events(self, task_id: str, attempt_id: str) -> list[dict[str, Any]]:
         """Every event one attempt has written to its task's stream.
 
