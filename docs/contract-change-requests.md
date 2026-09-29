@@ -7257,3 +7257,42 @@ cost.
 10. **`SOFTWARE` or `HSM` protection.** Recommended: `SOFTWARE`. The private
     key never leaves Cloud KMS either way, and the threat here is who may call
     `AsymmetricSign`, which IAM decides, not extraction of the key.
+
+### Addendum 2026-09-29: corrections after acceptance
+
+The accepted text above is left as the owner accepted it. Three statements in
+it were found wrong while building it (#353, #354), and one decision was added:
+
+1. **The GKE Job name is derived from the task, not the tenant and profile.**
+   Requested change item 5 says the worker compares its identity against "the
+   Job name the scheduler derived from `tenant_id` and `runner_profile` (one
+   Job per tenant per profile)". That is Cloud Run's rule
+   (`swarm-job-<tenant>-<profile>`). `GkeJobDispatcher` creates one Job per
+   attempt, named `sanitize_name("swarm", <task id without "task_">,
+   <generation>)`, that is `swarm-<hex>-<gen>`
+   (`apps/scheduler/scheduler/dispatch.py`), and the worker checks
+   `RUNNER_JOB_NAME` against `specverify.gke_job_name(task_id, generation)`.
+   The weaker-claim paragraph about GKE still holds: the name and the
+   environment come from one render.
+2. **`cloudkms.googleapis.com` is enabled in bootstrap, not in
+   `terraform/infra/main.tf`.** The key ring and key live in
+   `terraform/bootstrap/spec_signing.tf` (#354), which enables the API and adds
+   it to `prerequisite_services`; `terraform/infra` only reads the key's
+   versions. Section 3's first bullet names the wrong root.
+3. **A GKE worker reads the signature mode and the legacy cutover from the
+   ConfigMap mount too** (owner decision, 2026-09-29). The text above has the
+   GKE mount carrying only `SPEC_VERIFY_KEYS` and `SPEC_SIGNING_KEY`, which
+   left a GKE worker in `enforce` from its first day while Cloud Run ran
+   `legacy`. The `swarm-spec-verify-keys` ConfigMap rendered by
+   `kubernetes/render.py` (#354) carries `SPEC_SIGNATURE_MODE` and
+   `SPEC_LEGACY_CUTOVER` as files beside the keys, and the worker reads each
+   of the four from its environment first and from
+   `/etc/swarm/spec-verify-keys` where the environment has none. GKE therefore
+   follows the legacy window exactly as Cloud Run does, including
+   `SPEC_LEGACY_UNTIL`.
+4. **A worker with no keys at all is CANNOT_START for every task, signed or
+   not.** The key check now runs before the legacy rule, so a GKE pod whose
+   namespace has no ConfigMap (the volume is `optional`) can neither admit an
+   unsigned task through a mode it could not read nor refuse a tenant's task
+   as a signature failure: it exits `ExitCode.CONFIG`, the operator's fault,
+   loudly.
