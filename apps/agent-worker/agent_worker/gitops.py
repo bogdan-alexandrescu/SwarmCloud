@@ -139,8 +139,28 @@ def _write_credentials(url: str, token: str, private_dir: Path) -> Path:
             "",
         )
     )
-    cred_file.write_text(entry + "\n")
-    cred_file.chmod(stat.S_IRUSR | stat.S_IWUSR)
+    # O_CREAT|O_EXCL|O_NOFOLLOW, mode 0600 from the first byte (#259 review).
+    # `private_dir` shares a uid with the agent, so a link planted at this
+    # name would have had `write_text` write the token wherever it pointed,
+    # and a file created with the default mode is readable until the chmod.
+    # Whatever is at the name is unlinked first -- unlink never follows a
+    # link -- and O_EXCL then refuses anything that appears in between.
+    try:
+        cred_file.unlink()
+    except FileNotFoundError:
+        pass
+    fd = os.open(
+        cred_file,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+        stat.S_IRUSR | stat.S_IWUSR,
+    )
+    try:
+        data = (entry + "\n").encode()
+        view = memoryview(data)
+        while view:
+            view = view[os.write(fd, view):]
+    finally:
+        os.close(fd)
     return cred_file
 
 
@@ -457,8 +477,11 @@ def _git_env(private_dir: Path) -> dict[str, str]:
 #: class is closed by WHERE the worker's git runs at publish: every command
 #: from the reap onwards -- the commit of uncommitted work included
 #: (`mirror_worktree`, #259 M1) -- runs in the repository `prepare_publish_repo`
-#: builds, whose configuration the worker wrote. Only the harvest
-#: (`summarize_work`) still reads the clone, before the reap.
+#: builds, whose configuration the worker wrote. The harvest (`summarize_work`)
+#: runs there too, after the reap (#259 item 3), and HEAD is read from the
+#: clone's files as data (`read_head_as_data`, #259 B1). The one git process
+#: left in the clone is the fetch's `upload-pack`, hardened by
+#: `_UPLOAD_PACK_ENV` and `_UPLOAD_PACK_CONFIG`.
 _NO_HOOKS = [
     "-c", "core.hooksPath=/dev/null",
     "-c", "core.fsmonitor=false",
@@ -1411,17 +1434,22 @@ _FULL_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 #: git process that still reads the clone after the reap (#259, owner item 4).
 #: It reads the clone's `.git/config`, so every key that names a program and
 #: that upload-pack or its `pack-objects` child could reach is neutralised
-#: here or in `_UPLOAD_PACK_CONFIG`. Checked against git-config(1) for git
-#: 2.40.1, key by key:
+#: here or in `_UPLOAD_PACK_CONFIG`. Checked key by key against the git
+#: documentation and source for git 2.55.0 -- the version CI runs (the Actions
+#: runner's `git version`, 2026-09-29) -- and against 2.40.1, the oldest this
+#: worker has been measured with:
 #:
 #: * no system file and no global file, so the only configuration read is the
 #:   clone's and the command line's;
 #: * grafts, replace refs and (below) the commit-graph off: see `_git_env`;
 #: * `GIT_NO_LAZY_FETCH`: a clone the agent marked a partial clone
-#:   (`extensions.partialClone`, `remote.<name>.promisor`) makes pack-objects
-#:   FETCH a missing object from the remote the clone's config names, with
+#:   (`extensions.partialClone`, `remote.<name>.promisor`) makes a git that
+#:   misses an object FETCH it from the remote the clone's config names, with
 #:   that config's `core.sshCommand`, `remote.<name>.uploadpack` or credential
-#:   helper. Newer git honours this variable; 2.40.1 does not know it, so
+#:   helper -- a program of the agent's, run as the worker (the #259 B1
+#:   reproduction, on 2.40.1 and 2.50.1). git 2.55 documents the variable
+#:   (git(1): "tells Git not to lazily fetch missing objects from the promisor
+#:   remote on demand"); older gits do not know it, so
 #:   `GIT_ALLOW_PROTOCOL=none` is the belt that holds there: it allows only a
 #:   protocol named "none", overriding every `protocol.<name>.allow` in the
 #:   clone's config, so no transport opens at all;
@@ -1537,8 +1565,8 @@ def prepare_publish_repo(
       grafts or replace refs of the agent's in it anyway.
 
     `work_head`, when given, is the commit to publish; when None it is the
-    clone's HEAD, read by `rev-parse` (the agent's processes are reaped
-    before this runs, so it cannot move). `base` is the clone base the
+    clone's HEAD, read from its files as data (`read_head_as_data`; the
+    agent's processes are reaped before this runs, so it cannot move). `base` is the clone base the
     worker recorded (`EMPTY_CLONE_BASE` for an empty repository); it is
     fetched too, so the fold and the final-tree scan have its tree, and
     anything else refuses: without it there is no telling the agent's
@@ -1565,16 +1593,10 @@ def prepare_publish_repo(
 
     target = (work_head or "").strip()
     if not target:
-        code, text = _git_text(
-            [git_binary, *_NO_HOOKS, "rev-parse", "--verify", "--quiet", "HEAD^{commit}"],
-            repo=source_repo,
-            private_dir=private_dir,
-            logs_dir=logs_dir,
-            slug="publish-source-head",
-            timeout_seconds=timeout_seconds,
-            logger=logger,
-        )
-        target = text.strip() if code == 0 else ""
+        # READ AS DATA, never `git rev-parse` in the clone (#259 B1): see
+        # `read_head_as_data`. Raises, with the reason, on a HEAD it will
+        # not follow.
+        target = read_head_as_data(source_repo) or ""
     # AN EMPTY CLONE THE AGENT NEVER COMMITTED IN has no commit to fetch: its
     # HEAD is unborn. That is not an error now that the worker's commit of the
     # uncommitted work is made HERE (`mirror_worktree`, #259 M1) rather than in
@@ -1582,7 +1604,7 @@ def prepare_publish_repo(
     # and that commit becomes its root. Anywhere else an unresolvable HEAD
     # still refuses.
     unborn = empty and not target and not (work_head or "").strip()
-    if not unborn and not _FULL_SHA_RE.match(target):
+    if not unborn and not _OBJECT_ID.match(target):
         raise GitError("could not resolve the commit to publish from the clone")
     if unknown:
         floor = target
@@ -1774,8 +1796,8 @@ _NONBLOCK = getattr(os, "O_NONBLOCK", 0)
 _DIRECTORY = getattr(os, "O_DIRECTORY", 0)
 
 
-def _read_capped_fd(fd: int) -> bytes | None:
-    """The contents of a REGULAR file open as `fd`, up to the cap; None past it."""
+def _read_capped_fd(fd: int, cap: int = AGENT_EXCLUDE_MAX_BYTES) -> bytes | None:
+    """The contents of a REGULAR file open as `fd`, up to `cap`; None past it."""
     if not stat.S_ISREG(os.fstat(fd).st_mode):
         return None
     chunks: list[bytes] = []
@@ -1785,29 +1807,118 @@ def _read_capped_fd(fd: int) -> bytes | None:
         if not chunk:
             break
         total += len(chunk)
-        if total > AGENT_EXCLUDE_MAX_BYTES:
+        if total > cap:
             return None
         chunks.append(chunk)
     return b"".join(chunks)
 
 
-def _read_in_git_dir(clone: Path, *names: str) -> bytes | None:
+def _read_in_git_dir(
+    clone: Path, *names: str, cap: int = AGENT_EXCLUDE_MAX_BYTES
+) -> bytes | None:
     """`<clone>/.git/<names...>`, opened one component at a time with
     O_NOFOLLOW, so a link at `.git`, at a folder below it or at the file
     itself is refused rather than read through. O_NONBLOCK so a FIFO the
-    agent put there cannot hang the worker; only a regular file is read."""
+    agent put there cannot hang the worker; only a regular file is read,
+    and at most `cap` bytes of it."""
     fds: list[int] = []
     try:
         fds.append(os.open(clone / ".git", os.O_RDONLY | _DIRECTORY | _NOFOLLOW))
         for folder in names[:-1]:
             fds.append(os.open(folder, os.O_RDONLY | _DIRECTORY | _NOFOLLOW, dir_fd=fds[-1]))
         fds.append(os.open(names[-1], os.O_RDONLY | _NOFOLLOW | _NONBLOCK, dir_fd=fds[-1]))
-        return _read_capped_fd(fds[-1])
+        return _read_capped_fd(fds[-1], cap)
     except OSError:
         return None
     finally:
         for fd in reversed(fds):
             os.close(fd)
+
+
+#: A ref or HEAD file holds one line. 4 KiB is far past any real one.
+_REF_FILE_MAX_BYTES = 4096
+#: `packed-refs` of a depth-1, single-branch, tag-free clone holds a handful of
+#: lines; an agent can add more. 64 MiB is past any repository's real refs and
+#: bounds what the worker will hold.
+_PACKED_REFS_MAX_BYTES = 64 * 1024 * 1024
+_OBJECT_ID = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
+
+
+def _branch_ref_name_ok(name: str) -> bool:
+    """A `refs/heads/...` name the worker will open, component by component:
+    nothing that climbs (`..`), is empty, starts with a dot, or carries a
+    control character -- git's own rules, in the part that matters for
+    reading a path safely."""
+    if not name.startswith("refs/heads/") or name.endswith("/") or name.endswith(".lock"):
+        return False
+    for part in name.split("/"):
+        if not part or part.startswith(".") or ".." in part:
+            return False
+        if any(ord(ch) < 0x20 or ch == "\x7f" for ch in part):
+            return False
+    return True
+
+
+def read_head_as_data(clone: Path) -> str | None:
+    """The object id the clone's HEAD names, read from its FILES, never by git.
+
+    WHY (#259 final review, B1; owner decision 2026-09-29). The worker used
+    to ask `git rev-parse HEAD^{commit}` in the clone, after the reap. The
+    agent can make its clone a partial clone (`extensions.partialClone`, a
+    promisor remote) and point its branch at an object the clone lacks; git
+    then LAZY-FETCHES that object through a transport the agent chose --
+    `remote.<name>.uploadpack`, `core.sshCommand`, an `ext::` URL -- running
+    its program as the worker, after the reap, and a process it starts lives
+    on into the push. No git process runs in the clone after the reap now,
+    except the hardened `upload-pack` of the fetch (`_UPLOAD_PACK_ENV`).
+
+    HOW. `.git/HEAD`, then the ref it names, each opened component by
+    component with O_NOFOLLOW, regular files only, capped:
+
+    * a 40- or 64-hex object id (a detached HEAD) is the answer;
+    * `ref: refs/heads/<name>` is followed ONCE: to the loose ref file, else
+      to its line in `packed-refs`. A symbolic ref anywhere else -- or a ref
+      file that is itself symbolic -- raises `GitError`: the worker follows
+      no ref it would have to take the agent's word about;
+    * a branch that exists nowhere is an unborn HEAD, and None is returned
+      (the caller decides whether that is an empty clone or a refusal).
+
+    Whether the object exists is not asked here -- asking is exactly what
+    ran the agent's program. The object-checked fetch decides, and a missing
+    object fails it: nothing is published.
+    """
+    raw = _read_in_git_dir(clone, "HEAD", cap=_REF_FILE_MAX_BYTES)
+    if raw is None:
+        raise GitError("the clone's .git/HEAD could not be read as a regular file")
+    head = raw.decode("ascii", "replace").strip()
+    if _OBJECT_ID.match(head):
+        return head
+    if not head.startswith("ref:"):
+        raise GitError("the clone's HEAD is neither an object id nor a symbolic ref")
+    name = head[4:].strip()
+    if not _branch_ref_name_ok(name):
+        raise GitError(
+            "the clone's HEAD is a symbolic ref outside refs/heads/; the worker "
+            "follows no other ref, and nothing was pushed"
+        )
+    loose = _read_in_git_dir(clone, *name.split("/"), cap=_REF_FILE_MAX_BYTES)
+    if loose is not None:
+        value = loose.decode("ascii", "replace").strip()
+        if _OBJECT_ID.match(value):
+            return value
+        raise GitError(
+            "the branch the clone's HEAD names is not an object id (a symbolic "
+            "ref, or damaged); the worker follows no further ref, and nothing was pushed"
+        )
+    packed = _read_in_git_dir(clone, "packed-refs", cap=_PACKED_REFS_MAX_BYTES)
+    if packed is not None:
+        for line in packed.decode("utf-8", "surrogateescape").splitlines():
+            if not line or line[0] in "#^":
+                continue
+            oid, _, ref = line.partition(" ")
+            if ref.strip() == name and _OBJECT_ID.match(oid):
+                return oid
+    return None
 
 
 _CONFIG_SECTION = re.compile(r'^\[\s*([A-Za-z0-9.-]+)\s*(?:"((?:[^"\\]|\\.)*)")?\s*\](.*)$')

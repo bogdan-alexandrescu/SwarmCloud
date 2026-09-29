@@ -324,6 +324,17 @@ the commit list and the dirty list there; then commit and push from the same
 repository. A reap that leaves agent processes alive stops all of it, harvest
 included.
 
+**HEAD is read as data** (#259 final review, B1; owner decision 2026-09-29).
+The commit to fetch was resolved with `git rev-parse HEAD^{commit}` in the
+clone, after the reap. A clone the agent turned into a partial clone, with its
+branch pointing at a missing object, made that rev-parse lazy-fetch through the
+agent's promisor remote -- its `uploadpack` program, run as the worker, and a
+process that outlived the reap into the push. `read_head_as_data` now reads
+`.git/HEAD`, the loose ref or `packed-refs` line it names, component by
+component with `O_NOFOLLOW`, regular files only, capped; it accepts only a 40-
+or 64-hex object id and refuses a symbolic ref outside `refs/heads/`. Whether
+the object exists is left to the object-checked fetch, which fails closed.
+
 **The one git process left in the clone is `upload-pack`**, serving the fetch.
 It runs with no system or global configuration, grafts, replace refs and the
 commit-graph off, and every key that names a program pinned: hooks and

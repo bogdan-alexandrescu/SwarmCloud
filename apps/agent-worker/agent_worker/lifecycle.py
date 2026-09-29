@@ -4192,6 +4192,10 @@ class Worker:
         except GitError as exc:
             self.log.warning("could not harvest the agent's git changes", error=str(exc))
             out["error"] = self._scrub(str(exc)[:500])
+            if publish:
+                # Fails closed, and says so where a reader of the publish looks.
+                out["published"] = False
+                out["publish_reason"] = f"nothing was published: {out['error']}"
             return out
 
         out.update(
@@ -4428,8 +4432,13 @@ class Worker:
         # runs. So every such process is killed and its death verified BEFORE the
         # publish repo is created; if any survives the bounded retry, the whole
         # publish is refused rather than run with agent code still able to act.
-        # When the harvest built the repository, it reaped first (`_harvest_git`).
-        survivors = self.reap_before_publish() if publish_repo is None else ()
+        # Reaped AGAIN here even when the harvest already reaped and built the
+        # repository (`_harvest_git`), before any step that writes the
+        # credential file or pushes: the #259 final review (B1) found a git in
+        # the clone that could start a process after the first reap. That path
+        # is closed (HEAD is read as data), and this second reap keeps the
+        # guarantee above from depending on it.
+        survivors = self.reap_before_publish()
         if survivors:
             out["published"] = False
             out["publish_reason"] = (
