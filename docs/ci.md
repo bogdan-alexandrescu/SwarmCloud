@@ -637,7 +637,36 @@ do, none is made here, and which to make is the owner's decision.
 
 Once PR #73's targeted apply lands, the deployer's `projectIamAdmin` carries the
 `modifiedGrantsByRole` condition in
-[`deployer_conditions.tf`](../terraform/bootstrap/deployer_conditions.tf).
+[`deployer_conditions.tf`](../terraform/bootstrap/deployer_conditions.tf) --
+as of #275, chunked into two bindings rather than one: `hasOnly()` refuses a
+list over 10 elements, and the fifteen grantable roles no longer fit in a
+single call. Every chunk still authorises only a `setIamPolicy` whose modified
+roles stay inside it, which is what each Terraform-issued call already does.
+
+**The live project also still holds the deployer's UNCONDITIONED
+`projectIamAdmin`, restored by hand and never re-entered into bootstrap
+state.** Owner decision, 2026-09-28: remove it by hand, and only after the
+chunks above are live, in this exact order:
+
+1. `DEPLOYER=$(terraform -chdir=terraform/bootstrap output -raw github_deployer_service_account)`
+2. `scripts/bootstrap.sh --target 'google_project_iam_member.deployer_project_iam_admin'`,
+   with the plan reading exactly "2 to add, 0 to change, 0 to destroy" --
+   abort on anything else.
+3. `gcloud projects get-iam-policy saga-agents-staging --flatten=bindings --filter="bindings.role=roles/resourcemanager.projectIamAdmin AND bindings.members:serviceAccount:${DEPLOYER}" --format='value(bindings.condition.title)'`,
+   expecting the two chunk titles plus one empty line (the unconditioned
+   grant, which carries no condition title).
+4. `gcloud projects remove-iam-policy-binding saga-agents-staging --member="serviceAccount:${DEPLOYER}" --role=roles/resourcemanager.projectIamAdmin --condition=None --format=none`.
+5. Re-run step 3, expecting exactly the two chunk titles.
+6. Prove the admitted side with a `terraform/infra` plan or a release apply.
+
+**Why this order and not one apply that imports and destroys the old
+grant.** CI never lacks `projectIamAdmin` for any interval this way, unlike
+#275's own one-minute gap between destroying the old single condition and
+creating the chunked ones. Importing the unconditioned grant into bootstrap
+state and targeting both it and the chunks in one apply would reintroduce
+that same race -- a parallel destroy and create of the same role, on the same
+principal, with no ordering between them.
+
 Releases then prove the **admitted** side. Every plan reads the project policy,
 and a release that adds a tenant writes it. Nothing in the pipeline asks for a
 role **off** the list. **Owner decision, 2026-09-25 (#68):** a deliberate
@@ -656,11 +685,20 @@ reopened. The owner's steps, and what each outcome means, are in
 **What a pass proves.** One role the list does not name was refused under the
 condition, for a direct grant by the deployer to itself, at the time of the run.
 Preflight makes that the condition's refusal and nobody else's. The scoped
-binding is the only `projectIamAdmin` the deployer holds, and none of its other
-roles carries `resourcemanager.projects.setIamPolicy`. That check is limited to
-the roles preflight could read, which is all of them before step 4 (#150).
-`hasOnly` treats every unlisted role alike, so one refusal speaks for the
-expression. It is still one role, measured once.
+bindings are the only `projectIamAdmin` grants the deployer holds, and none of
+its other roles carries `resourcemanager.projects.setIamPolicy`. That check is
+limited to the roles preflight could read, which is all of them before step 4
+(#150). `hasOnly` treats every unlisted role alike, and a role absent from
+`deployer_grantable_project_roles` is absent from every chunk, so one refusal
+still speaks for all of them. It is still one role, measured once.
+
+**#275's chunking is not yet reflected in the probe script (#276).**
+[`iam-refusal-probe.sh`](../scripts/iam-refusal-probe.sh)'s preflight step
+still asserts *exactly one* conditioned `projectIamAdmin` binding
+(`bindings_for` on `SCOPED_ROLE`) and `die`s otherwise; after #275's apply it
+will find two and stop before asking IAM anything. Filed as #276 rather than
+fixed alongside #275, because the probe is `scripts/` (Track D) and #275's
+brief was terraform/tests/docs only.
 
 **What it cannot prove:**
 

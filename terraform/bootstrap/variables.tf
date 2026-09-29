@@ -323,8 +323,11 @@ variable "deployer_scoped_roles" {
   # silently revoked. The allowed names are the keys of the conditions
   # themselves, not a second list of them.
   validation {
-    condition     = alltrue([for r in var.deployer_scoped_roles : contains(keys(local.deployer_conditions), r)])
-    error_message = "only a role with a conditioned grant in deployer_conditions.tf can be scoped; the others are unscopable, and deployer_conditions.tf records why for each."
+    condition = alltrue([
+      for r in var.deployer_scoped_roles :
+      contains(concat(keys(local.deployer_conditions), ["roles/resourcemanager.projectIamAdmin"]), r)
+    ])
+    error_message = "only a role with a conditioned grant in deployer_conditions.tf can be scoped; the others are unscopable, and deployer_conditions.tf records why for each. roles/resourcemanager.projectIamAdmin is scoped by its own chunked deployer_project_iam_admin_conditions, not by deployer_conditions."
   }
 
   # And only a role the deployer actually holds. Scoping a role that is not in
