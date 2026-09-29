@@ -239,9 +239,30 @@ def test_the_sweep_is_not_empty_and_covers_the_named_routes():
 def test_every_allow_listed_template_is_a_published_url(listed_context):
     """`current_auth` compares the DECLARING router's template (see the comment
     on `auth.POOL_ADMIN_ROUTES`); main.py includes every router bare, which is
-    the only reason these read like URLs. A prefix added later fails here."""
-    spec = create_app(listed_context).openapi()["paths"]
-    published = {(m.upper(), p) for p, ops in spec.items() for m in ops}
+    the only reason these read like URLs. A prefix added later fails here.
+
+    Compared against `route.path` -- the exact string `current_auth` reads off
+    `request.scope["route"].path` at request time -- NOT `openapi()["paths"]`.
+    FastAPI's OpenAPI document renders a path-converter route
+    (`{path:path}`, the checkpoint-files route) as `{path}`: it strips the
+    convertor for the spec. `route.path` keeps it. Comparing against the
+    OpenAPI form here would fail this test on the one convertor route in the
+    app even though `current_auth`'s own check (`deps.py`) and
+    CONTINUATION_ROUTES already agree with each other -- and, worse, "fixing"
+    CONTINUATION_ROUTES to match the stripped OpenAPI form would make
+    `current_auth` refuse that route to a continuation-scoped caller, since
+    its `request.scope["route"].path` still carries the convertor. Verified
+    directly: `starlette.routing.Route("...{path:path}").path ==
+    "...{path:path}"` while `.path_format` (what FastAPI's OpenAPI generator
+    uses) strips it to `"...{path}"`.
+    """
+    published = {
+        (method, route.path)
+        for route in create_app(listed_context).routes
+        if isinstance(route, APIRoute)
+        for method in route.methods
+    }
+    assert ("GET", "/v1/tasks/{task_id}") in published, "the published set was not built"
     assert not sorted(set(CONTINUATION_ROUTES) - published)
 
 

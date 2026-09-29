@@ -355,10 +355,28 @@ def test_an_email_match_with_another_uid_does_not_resolve():
     )
 
 
-def test_a_trailing_newline_is_not_a_match():
-    """`fullmatch`, not `match`: `$` in a `.match()` accepts a trailing newline."""
-    assert identity.tenant_member_for(FIXER + "\n", FIXER_UID, (_member(email=FIXER),)) is None
-    assert identity.SERVICE_ACCOUNT_EMAIL.fullmatch(FIXER + "\n") is None
+# `test_a_trailing_newline_is_not_a_match` removed 2026-09-29 (part of #343's
+# format/unit-tests fix): it asserted
+# `tenant_member_for(FIXER + "\n", FIXER_UID, (_member(email=FIXER),)) is
+# None`, but the ACCEPTED diff for contract request 30
+# (docs/contract-change-requests.md, entry 30) normalises the looked-up email
+# in `tenant_member_for` with `wanted = email.strip().lower()` BEFORE the
+# `re.fullmatch` the entry's prose credits with refusing a trailing newline --
+# so the strip removes the newline first, `fullmatch` then sees a clean
+# string, and the account DOES match. That is exactly what
+# `apps/common/swarm_common/identity.py` (frozen, applied by this PR's own
+# #314 merge) does, and CI's failure showed it: the call returned a
+# `TenantMember`, not `None`. `auth.py` does not strip `claims["email"]`
+# before calling `tenant_member_for` either
+# (`email = str(claims.get("email", "")).lower()`, no `.strip()`), so there is
+# no refusal point upstream that would make the entry's "does not match"
+# prose true in practice for a real caller. Per the fix brief: since
+# identity.py is frozen and already matches the accepted diff, and no upstream
+# refusal exists to assert instead, the test is deleted rather than rewritten
+# to expect a match -- asserting "trailing whitespace on a listed service
+# account's email is accepted" would read as endorsing it as intentional
+# design here, which is a separate, undecided question the brief did not ask
+# this PR to answer.
 
 
 def test_the_listing_wins_over_group_membership():
