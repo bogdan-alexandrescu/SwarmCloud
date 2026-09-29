@@ -124,6 +124,7 @@ from typing import Any, Callable, Iterator, Sequence
 from swarm_common.models import EndCause, ProviderState, retries_exhausted, utcnow
 from swarm_common.profiles import RESOURCE_CLASSES
 from swarm_common.states import EventType, ParkReason, TaskState
+from swarm_redaction import KEY_VALUE as CREDENTIAL_KEY_VALUE
 from swarm_redaction import RULES as CREDENTIAL_RULES
 
 from . import artifact_manifest as manifest_mod
@@ -5482,9 +5483,38 @@ def _adds_a_credential(diff: str) -> bool:
             continue
         for match in rule.pattern.finditer(added):
             start = match.start()
-            if start == 0 or not (added[start - 1].isalnum() or added[start - 1] == "_"):
-                return True
+            if start and (added[start - 1].isalnum() or added[start - 1] == "_"):
+                continue
+            if rule is CREDENTIAL_KEY_VALUE and not _assigns_a_literal(match):
+                continue
+            return True
     return False
+
+
+#: A bare value shaped like a credential: twelve or more token characters,
+#: with at least one letter and one digit. `get_token()`, `str`, `self.token`
+#: and `DEFAULT_TOKEN` are not; `a1b2c3d4e5f6g7h8` is.
+_BARE_CREDENTIAL_RE = re.compile(r"(?=[^\s]*[A-Za-z])(?=[^\s]*[0-9])[A-Za-z0-9_\-+/=~]{12,}")
+
+
+def _assigns_a_literal(match: re.Match[str]) -> bool:
+    """True when a `KEY_VALUE` match assigns a LITERAL to the credential's name.
+
+    OWNER DECISION, 2026-09-28 (#259): in a commit's code, `token =
+    get_token()` and `password: str` name a credential without holding one,
+    and folding a history for them would fold nearly every history that
+    touches authentication. So the key/value rule counts only for a quoted
+    string -- the rule's group 1 ends with the opening quote, or the value
+    opens with a single quote the rule's value class takes as a character --
+    or for a bare value shaped like a credential (`_BARE_CREDENTIAL_RE`). The
+    specific families (AWS keys, private keys, JWTs, provider tokens) and the
+    registered literals count wherever they appear.
+    """
+    prefix = match.group(1)
+    value = match.group(0)[len(prefix):]
+    if prefix.rstrip().endswith('"') or value.startswith("'"):
+        return True
+    return _BARE_CREDENTIAL_RE.fullmatch(value.rstrip(";)}]'")) is not None
 
 
 def _first_leaking_commit(

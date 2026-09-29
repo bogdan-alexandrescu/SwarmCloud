@@ -351,13 +351,64 @@ def test_an_unregistered_credential_in_an_intermediate_commit_folds_the_history(
         # Assembled, so no secret scanner reads this file as holding a key.
         ("+++ b/key.pem\n@@ -0,0 +2 @@\n+" + "-----" + "BEGIN RSA " + "PRIVATE KEY" + "-----"
          + "\n+MIIEowIBAAKCAQEA\n", True),
+        # The key/value rule counts only for a LITERAL (owner decision,
+        # 2026-09-28): a quoted string, or a bare credential-shaped token.
+        ("+++ b/auth.py\n@@ -0,0 +1 @@\n+token = get_token()\n", False),
+        ("+++ b/auth.py\n@@ -0,0 +1 @@\n+    password: str\n", False),
+        ("+++ b/auth.py\n@@ -0,0 +1 @@\n+secret = self.secret_name\n", False),
+        ("+++ b/auth.py\n@@ -0,0 +1 @@\n+password = \"hunter-correct-horse\"\n", True),
+        ("+++ b/auth.py\n@@ -0,0 +1 @@\n+password = 'hunter-correct-horse'\n", True),
+        ("+++ b/.env\n@@ -0,0 +1 @@\n+DB_SECRET=a1b2c3d4e5f6g7h8\n", True),
     ],
-    ids=["added", "only-removed", "no-credential", "prefix-inside-an-identifier", "private-key"],
+    ids=[
+        "added", "only-removed", "no-credential", "prefix-inside-an-identifier", "private-key",
+        "kv-call", "kv-annotation", "kv-attribute", "kv-double-quoted", "kv-single-quoted",
+        "kv-bare-token",
+    ],
 )
 def test_the_pattern_scan_reads_only_the_lines_a_commit_adds(diff, found):
     """The control for the fold above: a line shaped like a key that a commit
     REMOVES was in its parent's tree already, and the commit is kept."""
     assert lifecycle._adds_a_credential(diff) is found
+
+
+def test_code_that_names_a_credential_without_holding_one_keeps_the_history(
+    worker_factory, monkeypatch, origin, local_urls, forge
+):
+    """Owner decision, 2026-09-28: `token = get_token()` and `password: str`
+    in an intermediate commit are code, not credentials, and do not fold."""
+    def edit(repo: Path) -> None:
+        (repo / "auth.py").write_text(
+            "class Login:\n    password: str\n\n\ndef load():\n    token = get_token()\n    return token\n"
+        )
+        _commit(repo, "Add the login")
+        (repo / "notes.txt").write_text("done\n")
+        _commit(repo, "Add notes")
+
+    _, _, out = _attempt(worker_factory, monkeypatch, origin, task_id="t-kv-code", edit=edit)
+
+    assert out["published"] is True, out.get("publish_reason")
+    assert out.get("agent_commits_kept") == 2, out
+    assert "agent_commits_folded" not in out, out
+
+
+def test_a_quoted_credential_assigned_in_an_intermediate_commit_folds_the_history(
+    worker_factory, monkeypatch, origin, local_urls, forge
+):
+    """The counterpart: a literal assigned to a credential's name folds."""
+    literal = "sk-" + "live-" + "0123456789abcdefABCDEF"  # assembled for secret scanners
+
+    def edit(repo: Path) -> None:
+        (repo / "settings.py").write_text(f'API_KEY = "{literal}"\n')
+        _commit(repo, "Configure the key")
+        (repo / "settings.py").write_text("import os\nAPI_KEY = os.environ['API_KEY']\n")
+        _commit(repo, "Read the key from the environment")
+
+    _, _, out = _attempt(worker_factory, monkeypatch, origin, task_id="t-kv-literal", edit=edit)
+
+    assert out["published"] is True, out.get("publish_reason")
+    assert out.get("agent_commits_folded") == 2, out
+    assert literal.encode() not in _all_object_bytes(origin), "the key reached a pushed object"
 
 
 def test_a_history_that_does_not_descend_from_the_base_is_folded_as_before(
