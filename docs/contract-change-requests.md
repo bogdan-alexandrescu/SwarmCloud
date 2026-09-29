@@ -39,7 +39,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 24 | `profiles.py`: whether a profile's cost is declared rather than measured is named outside the catalogue | ACCEPTED 2026-09-25 (#185, decision 9), applied in PR #217 |
 | 25 | `profiles.py`: a runner profile cannot declare the inputs a caller may send it, so the bridge names the mock's by profile | ACCEPTED 2026-09-25 (owner, on #142), applied in PR #213; both amendments confirmed by the owner 2026-09-26: `inputs=None` for `browser` and `generic` (#218), and the bounded park counted by the task's `attempt_count` rather than the state file |
 | 26 | `models.py`: the attempt's CPU figures carry no time and their limit no source | ACCEPTED 2026-09-26 (owner, on #184), applied in PR #229 |
-| 30 | `identity.py`: a tenant may list service accounts that resolve to it by exact email (#273) | PROPOSED 2026-09-29; accept-with-changes decided 2026-09-29 after security review, re-review pending |
+| 30 | `identity.py`: a tenant may list service accounts that resolve to it by exact email (#273) | ACCEPTED 2026-09-29 by the owner after three security reviews |
 
 ---
 
@@ -2872,13 +2872,18 @@ accepting `issue` for these two profiles and still refuses everything else.
 
 ## 30. `identity.py`: a tenant may list service accounts that resolve to it by exact email
 
-**Status: PROPOSED.** Decided in principle by the owner on 2026-09-28 for #273
-(the red-CI fixer); this entry is the exact change, for the owner to accept or
-amend before anything is applied. Nothing here is applied: `identity.py`,
-`auth.py`, `settings.py`, `variables.tf` and `locals.tf` are unchanged by the
-pull request that adds it. Recorded 2026-09-29. Numbered 30 because 27 and 29
-are taken on open branches (29 twice); if another branch has taken 30 by the
-time this merges, renumber this one.
+**Status: ACCEPTED 2026-09-29 by the owner after three security reviews.**
+Decided in principle by the owner on 2026-09-28 for #273 (the red-CI fixer);
+this entry went through three rounds of security re-review on 2026-09-29 --
+the WIF/deployer-IAM correction, the default-deny scope and IAP-subject
+correction, and the required-keyword `submitted_by` correction, each recorded
+in its own addendum below -- before the owner accepted it as it now reads.
+Nothing here is applied YET: `identity.py`, `auth.py`, `settings.py`,
+`variables.tf` and `locals.tf` are unchanged by the pull request that adds
+this entry; implementation is tracked separately (`part of #273`). Recorded
+2026-09-29. Numbered 30 because 27 and 29 are taken on open branches (29
+twice); if another branch has taken 30 by the time this merges, renumber this
+one.
 
 **2026-09-29, after a security review: accept with changes.** The owner made
 four decisions, folded into this entry below and marked where they land:
