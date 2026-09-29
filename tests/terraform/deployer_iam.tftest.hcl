@@ -210,6 +210,29 @@ run "every_switched_role_trades_its_project_wide_grant_for_a_conditioned_one" {
     ])
     error_message = "a rendered condition differs from the type and prefix lists it is built from"
   }
+
+  # IAM conditions have an undocumented 256-character description limit --
+  # found only at apply, exactly like #275's hasOnly() list limit (see the
+  # PR description; this catches its class of failure ahead of an apply).
+  assert {
+    condition = alltrue(concat(
+      [
+        for d in [
+          google_project_iam_member.deployer_network_admin[0].condition[0].description,
+          google_project_iam_member.deployer_security_admin[0].condition[0].description,
+          google_project_iam_member.deployer_container_admin[0].condition[0].description,
+          google_project_iam_member.deployer_datastore_owner[0].condition[0].description,
+          google_project_iam_member.deployer_logging_config_writer[0].condition[0].description,
+          google_project_iam_member.deployer_secrets_scoped[0].condition[0].description,
+        ] : length(d) <= 256
+      ],
+      [
+        for k, m in google_project_iam_member.deployer_project_iam_admin :
+        length(m.condition[0].description) <= 256
+      ],
+    ))
+    error_message = "an IAM condition description exceeds GCP's undocumented 256-character limit; apply refuses it the way #275's hasOnly() list was refused"
+  }
 }
 
 run "the_network_condition_refuses_their_keycloak_and_argocd_load_balancer" {
