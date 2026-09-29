@@ -37,7 +37,7 @@ import pytest
 
 from agent_worker import verdict as verdict_mod
 from agent_worker.errors import ExitCode, InputUnavailable, WorkerError
-from swarm_common.states import TaskState
+from swarm_common.states import EventType, TaskState
 
 from conftest import TENANT, seed_attempt
 from test_input_from import run_upstream
@@ -446,6 +446,80 @@ def test_a_merge_verdict_still_opens_the_one_pull_request_carrying_it(
     assert "Review verdict: **MERGE**" in body
     assert "no blockers" in body
     assert "feature.py" in tree_at(origin, "swarm/task_fix")
+
+
+@pytestmark_git
+def test_a_generation_bumped_after_the_shut_gate_fences_the_publish(
+    db, worker_factory, monkeypatch, origin, local_urls, forge
+):
+    """Invariant 5, on the no-agent path (#264).
+
+    The gate is re-evaluated in the worker (`lifecycle.py`,
+    `_evaluate_verdict_gate`), and a shut gate still ends in the step's own
+    publish -- the merge of `builds_on` and the one pull request -- because it
+    is the step that opens it. `self.control.validate_generation()` runs
+    again right before that publish (immediately after the gate closes),
+    exactly as it does before an agent starts, because the publish pushes.
+
+    Here the attempt is superseded in the gap between reading the verdict and
+    that re-check -- a reconciler bumping `current_generation` while this
+    worker is mid-`_prepare`, exactly as `test_fencing.py`'s
+    `test_generation_bumped_mid_run_stops_the_agent_and_keeps_the_lease` does
+    for the agent path. The worker must exit FENCED without pushing the
+    branch, without opening the pull request, and without touching the lease
+    it no longer owns -- not silently publish another generation's work.
+    """
+
+    def implement(repo: Path) -> None:
+        (repo / "feature.py").write_text("def feature():\n    return 1\n")
+
+    run_attempt(
+        worker_factory, monkeypatch, origin,
+        task_id="task_impl",
+        dispatch={"strategy": "integrate", "role": "contributor"},
+        edit=implement,
+    )
+
+    upstream_verdict(db, worker_factory, _verdict_text("MERGE", ["nothing blocks"]))
+    seed_gated(db, verdict_in=["NOT_YET"])
+    db.doc("tasks/task_2")["metadata"]["dispatch"] = {
+        "strategy": "integrate",
+        "role": "integrator",
+        "integrates": ["task_impl"],
+        "builds_on": "task_impl",
+        "verdict_gate": {"task_id": "task_up", "verdict_in": ["NOT_YET"]},
+    }
+
+    url = f"file://{origin}"
+    worker, _config, _exporter = worker_factory(
+        task_id="task_2", attempt_id="att_2", lease_id="lease_2", repository_url=url,
+    )
+    monkeypatch.setattr(worker, "_git_token", lambda: "not-a-real-token")
+
+    def refuse(*_args: Any, **_kwargs: Any) -> None:
+        raise AssertionError("the runner was started behind a shut verdict gate")
+
+    monkeypatch.setattr(worker, "_run_child_supervised", refuse)
+
+    original_gate = worker._evaluate_verdict_gate
+
+    def gate_then_supersede(staged: Any) -> bool | None:
+        # The gate closes here -- MERGE is not in verdict_in, so the agent
+        # will not run. Superseding the attempt in this exact gap, before the
+        # worker's own re-check, is what this test exists to prove closes.
+        result = original_gate(staged)
+        db.doc("tasks/task_2")["current_generation"] = 99
+        return result
+
+    monkeypatch.setattr(worker, "_evaluate_verdict_gate", gate_then_supersede)
+
+    assert worker.run() == ExitCode.GENERATION_FENCED
+
+    assert forge.pulls == [], "a superseded worker opened a pull request"
+    assert "swarm/task_2" not in refs(origin), "a superseded worker pushed its branch"
+    assert db.doc("leases/lease_2")["released_at"] is None
+    assert db.doc("tasks/task_2")["state"] == TaskState.LEASED.value
+    assert EventType.GENERATION_FENCED.value in db.event_types("task_2")
 
 
 @pytestmark_git
