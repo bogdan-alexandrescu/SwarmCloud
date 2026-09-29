@@ -134,6 +134,29 @@ variable "github_allowed_refs" {
   }
 }
 
+variable "ci_fix_service_account" {
+  description = <<-EOT
+    Email of the existing service account .github/workflows/ci-fix.yml
+    federates as -- the same value as the repository variable SWARM_CI_FIX_SA.
+    ci_fix.tf binds it to that one workflow file on refs/heads/main and to
+    nothing else. Empty (the default) binds nothing, and the fixer reports on
+    each red swarm pull request that it is unconfigured.
+
+    It must also be listed in frontend_iap_members, and be a member of the
+    tenant that owns the swarm pull requests (docs/ci.md, "The CI fixer").
+  EOT
+  type        = string
+  default     = ""
+
+  # The bare email, because the binding builds the resource path from it. An
+  # IAM member form (`serviceAccount:...`) here would name a service account
+  # that does not exist.
+  validation {
+    condition     = var.ci_fix_service_account == "" || can(regex("^[a-z][a-z0-9-]{4,28}[a-z0-9]@[a-z][a-z0-9-]{4,28}[a-z0-9]\\.iam\\.gserviceaccount\\.com$", var.ci_fix_service_account))
+    error_message = "ci_fix_service_account must be a service account email, <name>@<project>.iam.gserviceaccount.com, with no serviceAccount: prefix."
+  }
+}
+
 variable "deployer_roles" {
   description = <<-EOT
     Predefined roles granted to the GitHub deployer service account. Wide by

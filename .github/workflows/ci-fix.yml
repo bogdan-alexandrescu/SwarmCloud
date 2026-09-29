@@ -11,8 +11,9 @@
 # docs/ci.md, "The CI fixer".
 #
 # WHY workflow_run AND NOT A JOB IN application.yml. A pull_request run cannot
-# write to its pull request or mint the deployer's token, and it runs the
-# pull request's own workflow file. workflow_run runs THIS file as it is on
+# write to its pull request, its ref (refs/pull/<n>/merge) is refused by the
+# Workload Identity pool's trust policy, and it runs the pull request's own
+# workflow file. workflow_run runs THIS file as it is on
 # main, with this repository's permissions -- which is why nothing below
 # checks out, builds or runs the branch it is fixing, and why every field of
 # the event reaches the shell through env, never pasted into a run: block.
@@ -36,7 +37,7 @@ permissions:
   pull-requests: write
   # To read the failed run's log.
   actions: read
-  # Workload Identity Federation, to impersonate SWARM_CI_FIX_SA.
+  # Workload Identity Federation, directly as SWARM_CI_FIX_SA.
   id-token: write
 
 concurrency:
@@ -60,12 +61,18 @@ jobs:
       # Only when the fixer is configured. Unconfigured, the script says so on
       # the pull request once and submits nothing, rather than failing here on
       # every red swarm branch.
+      #
+      # AS THE FIXER'S OWN ACCOUNT, NEVER THE DEPLOYER'S. terraform/bootstrap
+      # (ci_fix.tf) binds SWARM_CI_FIX_SA to this workflow file on main and to
+      # nothing else, through `attribute.job_workflow_ref`. This job never holds
+      # the deployer's token, and no other workflow can become the fixer.
+      # Owner decision, 2026-09-28.
       - id: auth
         if: ${{ vars.SWARM_CI_FIX_SA != '' }}
         uses: google-github-actions/auth@v3
         with:
           workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
-          service_account: ${{ vars.GCP_DEPLOY_SA }}
+          service_account: ${{ vars.SWARM_CI_FIX_SA }}
 
       - if: ${{ vars.SWARM_CI_FIX_SA != '' }}
         uses: google-github-actions/setup-gcloud@v3

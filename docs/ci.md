@@ -788,9 +788,22 @@ it is not configured, and submits nothing.
   `roles/iap.httpsResourceAccessor` (`frontend_iap_members` in
   `terraform/bootstrap/terraform.tfvars`, applied by the owner) -- the same
   path `SWARM_IMPERSONATE_SA` gives an operator's laptop.
-* **The deployer (`GCP_DEPLOY_SA`) needs `roles/iam.serviceAccountTokenCreator`
-  on it**, because the workflow impersonates it from the deployer's Workload
-  Identity token.
+* **`ci_fix_service_account` in `terraform/bootstrap/terraform.tfvars`**, the
+  same email, applied by the owner. It binds that account
+  (`roles/iam.workloadIdentityUser`) to exactly one principal,
+  `principalSet://.../attribute.job_workflow_ref/<owner>/<repo>/.github/workflows/ci-fix.yml@refs/heads/main`
+  ([`ci_fix.tf`](../terraform/bootstrap/ci_fix.tf)), and the workflow
+  authenticates as it directly. The deployer (`GCP_DEPLOY_SA`) plays no part
+  and holds no role on the fixer's account: an earlier version hopped from the
+  deployer's token, which let every workflow that can become the deployer
+  become the fixer too, and gave a job that only comments on pull requests a
+  token holding `projectIamAdmin` on a shared project (owner decision,
+  2026-09-28). The principal is the workflow FILE, not the repository:
+  `attribute.job_workflow_ref` is set by GitHub from the file the job runs,
+  so `release.yml` on main presents a different value and is refused.
+  `tests/terraform/bootstrap.tftest.hcl` compares the member whole and
+  refuses the repository-wide forms. The plan also refuses an account that is
+  the deployer, or that is not in `frontend_iap_members`.
 * **Its tenant must be the tenant that owns the swarm pull requests.** The API
   refuses to continue another tenant's task, by design. So the account has to
   be admitted (`allowed_users`) and a member of that tenant's Google group, or

@@ -103,6 +103,13 @@ resource "google_iam_workload_identity_pool_provider" "github" {
     # Composite: a principalSet can name one attribute, and the SA binding needs
     # to pin the repository AND the ref, so the two are mapped as one value.
     "attribute.repo_ref" = "assertion.repository + \"@\" + assertion.ref"
+    # `<owner>/<repo>/.github/workflows/<file>@<ref>` of the workflow FILE the
+    # job runs, which GitHub sets and a caller cannot choose. It lets a binding
+    # name one workflow rather than the whole repository: the CI fixer's
+    # account is bound to ci-fix.yml on main alone (ci_fix.tf). A mapping adds
+    # nothing to what the pool admits -- that is attribute_condition below,
+    # unchanged -- it only gives a binding something narrower to name.
+    "attribute.job_workflow_ref" = "assertion.job_workflow_ref"
   }
 
   # BOTH CLAUSES MATTER, and each stops something the other does not.
