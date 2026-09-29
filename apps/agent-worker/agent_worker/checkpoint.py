@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import errno
 import hashlib
+import io
 import json
 import os
 import stat
@@ -47,7 +48,7 @@ from typing import Any, Callable
 
 from .errors import CheckpointError
 from .objectstore import ObjectStore
-from .workspace import REPO_DIR_NAME, Workspace
+from .workspace import Workspace
 
 ARCHIVE_NAME = "archive.tar.gz"
 MANIFEST_NAME = "manifest.json"
@@ -62,12 +63,12 @@ MANIFEST_NAME = "manifest.json"
 #: a restore can never make.
 #:
 #: Each entry is a path relative to HOME, except `**/node_modules`: a
-#: `node_modules` directory ANYWHERE in `work/` except inside the repository
-#: checkout (`work/repo`, `workspace.REPO_DIR_NAME`). The checkout is the
-#: repository's own tree and the agent's real work lives there; its
-#: `node_modules` is kept, as everything under it is -- a `.cache` inside the
-#: checkout included, since the rule is HOME's. What stays in regardless: the
-#: CLIs' session transcripts (`.claude/`, `.codex/`), which are not caches.
+#: `node_modules` directory ANYWHERE in `work/`, the repository checkout
+#: (`work/repo`) included. The owner's decision of 2026-09-28 (PR #288): it is
+#: rebuildable by `npm ci` and never the agent's work, wherever it sits. The
+#: other entries are HOME's, so a `.cache` inside the checkout is kept. What
+#: stays in regardless: the CLIs' session transcripts (`.claude/`, `.codex/`),
+#: which are not caches.
 TOOL_CACHES: tuple[str, ...] = (
     ".cache",
     ".npm",
@@ -82,7 +83,7 @@ def _is_tool_cache(rel: str) -> bool:
     """True when `rel`, relative to `work/`, is one of `TOOL_CACHES`."""
     for entry in TOOL_CACHES:
         if entry.startswith("**/"):
-            if rel.rsplit("/", 1)[-1] == entry[3:] and not rel.startswith(REPO_DIR_NAME + "/"):
+            if rel.rsplit("/", 1)[-1] == entry[3:]:
                 return True
         elif rel == entry:
             return True
@@ -133,57 +134,166 @@ def attempts_prefix(*, tenant_id: str, task_id: str) -> str:
     return f"tenants/{tenant_id}/tasks/{task_id}/attempts/"
 
 
+#: How many skipped links a restore names in its log line; the rest are
+#: counted. A tree can hold thousands of such links (a virtualenv per tool),
+#: and one log line naming them all would be the largest line the worker
+#: writes, for no more information than the first twenty and a count give.
+SKIPPED_LINKS_NAMED = 20
+
+
+def _archive_parts(name: str) -> tuple[str, ...] | None:
+    """`name`, a path relative to the archive root, as its components.
+
+    None when it cannot be one: absolute, empty, or holding `..`. This
+    platform's archiver writes plain relative names and never a `..`, so a name
+    with one is evidence of a tampered archive -- and a `..` after a symlink
+    component resolves on the filesystem to somewhere a lexical reading of the
+    name does not predict.
+    """
+    if name.startswith("/") or os.path.isabs(name):
+        return None
+    parts = tuple(part for part in name.split("/") if part not in ("", "."))
+    if not parts or ".." in parts:
+        return None
+    return parts
+
+
+def _link_leaves(parts: tuple[str, ...], linkname: str) -> bool:
+    """True when a symlink at `parts` to `linkname` leaves the root, read lexically.
+
+    Only the first of two checks: `tarfile.data_filter` repeats it at
+    extraction against the real filesystem, where a link through an earlier
+    link (`d -> .`, then `c -> d/..`) is resolved as the kernel would.
+    """
+    if not linkname or os.path.isabs(linkname):
+        return True
+    stack = list(parts[:-1])
+    for part in linkname.split("/"):
+        if part in ("", "."):
+            continue
+        if part == "..":
+            if not stack:
+                return True
+            stack.pop()
+        else:
+            stack.append(part)
+    return False
+
+
 def _safe_members(
     tar: tarfile.TarFile,
     destination: Path,
     *,
     on_skip: Callable[[str, str], None] | None = None,
 ) -> list[tarfile.TarInfo]:
-    """Reject anything that would write outside the destination.
+    """The members a restore extracts, or `CheckpointError` refusing the archive.
 
     A checkpoint archive is written by this platform, but it contains a tenant's
     working tree, and a tenant's agent can create any file it likes inside it --
     including a symlink to /etc. Path traversal is checked on the way out, not
-    trusted on the way in.
+    trusted on the way in. This is the first pass, over the whole member list
+    before a byte is written; `restore` then extracts through
+    `tarfile.data_filter` (`_restore_filter`), which checks each member again
+    against the filesystem as it is at that moment.
 
-    A LINK THAT ESCAPES IS SKIPPED, NOT A REASON TO REFUSE THE ARCHIVE (#286).
+    A SYMLINK THAT ESCAPES IS SKIPPED, NOT A REASON TO REFUSE THE ARCHIVE (#286).
     It is never created -- that is the check -- but one such link used to fail
     the whole restore, and with it every later resume of the task: uv's build
     environment leaves `bin/python -> /usr/local/bin/python3.11` behind as a
     matter of course. `on_skip(name, linkname)` is called for each one so the
-    caller can name it. A member whose own PATH is absolute or escapes still
-    refuses the archive: this platform's archiver never writes one, so it is
-    evidence of a tampered archive, not of an agent's ordinary tree.
+    caller can name it.
+
+    AN ARCHIVE INCONSISTENT WITH ITSELF IS REFUSED WHOLE (the PR #288 review).
+    This platform's archiver follows no link and writes each name once, so
+    none of these comes from an agent's ordinary tree:
+
+    * a member whose own path is absolute, holds `..`, or appears twice;
+    * a member whose path passes through a SYMLINK member, skipped or not --
+      `d -> .`, `c -> d/..`, then `c/x` writes `x` beside `work/`;
+    * a HARD link whose target is not an earlier regular-file member this
+      pass accepted. The target is named relative to the archive root, so
+      `../private/secret.txt` names a file outside, and a regular member of
+      the link's name then writes into that file. And a hard link to a member
+      that was skipped or is not a file is exactly what tarfile's fallback
+      turns into a copy of the TARGET member (the CVE-2025-4330 class):
+      refused here, whatever the Python version, so nothing rests on it.
+
+    Sockets, FIFOs and devices are left out, as before: an agent that left
+    one behind gets a workspace without it rather than a failed resume.
+    `destination` is not read; the checks are over the archive's own names.
     """
-    resolved_dest = destination.resolve()
-    members: list[tarfile.TarInfo] = []
-    for member in tar.getmembers():
-        name = member.name
-        if name.startswith("/") or os.path.isabs(name):
-            raise CheckpointError(f"checkpoint archive contains an absolute path: {name}")
-        target = (resolved_dest / name).resolve()
-        if not str(target).startswith(str(resolved_dest) + os.sep) and target != resolved_dest:
-            raise CheckpointError(f"checkpoint archive escapes the workspace: {name}")
-        if member.issym() or member.islnk():
-            link = member.linkname
-            link_target = (target.parent / link).resolve() if not os.path.isabs(link) else Path(link)
-            # The separator is required here for the same reason it is required
-            # on the path check above: without it, `/w/workspace/att/work` would
-            # accept a link resolving to `/w/workspace/att/work-secrets`, a
-            # sibling that merely shares the string prefix.
-            if not (
-                str(link_target).startswith(str(resolved_dest) + os.sep)
-                or link_target == resolved_dest
-            ):
+    del destination  # every check here is relative to the archive root
+    members = tar.getmembers()
+    all_parts: list[tuple[str, ...]] = []
+    symlinks: set[tuple[str, ...]] = set()
+    for member in members:
+        parts = _archive_parts(member.name)
+        if parts is None:
+            raise CheckpointError(
+                f"checkpoint archive holds a path outside the workspace: {member.name}"
+            )
+        all_parts.append(parts)
+        if member.issym():
+            symlinks.add(parts)
+
+    seen: set[tuple[str, ...]] = set()
+    files: set[tuple[str, ...]] = set()
+    accepted: list[tarfile.TarInfo] = []
+    for member, parts in zip(members, all_parts):
+        name = "/".join(parts)
+        if parts in seen:
+            raise CheckpointError(f"checkpoint archive holds {name} more than once")
+        seen.add(parts)
+        for depth in range(1, len(parts)):
+            if parts[:depth] in symlinks:
+                raise CheckpointError(
+                    f"checkpoint archive writes {name} through its own link "
+                    f"{'/'.join(parts[:depth])}"
+                )
+        if member.islnk():
+            target = _archive_parts(member.linkname)
+            if target is None or target not in files:
+                raise CheckpointError(
+                    f"checkpoint archive holds a hard link, {name}, that is not to "
+                    f"an earlier file of its own"
+                )
+            accepted.append(member)
+        elif member.issym():
+            if _link_leaves(parts, member.linkname):
                 if on_skip is not None:
-                    on_skip(name, link)
+                    on_skip(name, member.linkname)
                 continue
-        elif not (member.isfile() or member.isdir()):
-            # Sockets, FIFOs and devices are never restored; an agent that left
-            # one behind gets a workspace without it rather than a failed resume.
-            continue
-        members.append(member)
-    return members
+            accepted.append(member)
+        elif member.isfile():
+            files.add(parts)
+            accepted.append(member)
+        elif member.isdir():
+            accepted.append(member)
+    return accepted
+
+
+def _restore_filter(
+    on_skip: Callable[[str, str], None],
+) -> Callable[[tarfile.TarInfo, str], tarfile.TarInfo | None]:
+    """`tarfile.data_filter`, with an escaping SYMLINK skipped rather than fatal.
+
+    The filter runs as each member is extracted, so it resolves a link against
+    the links already made: `c -> d/..` after `d -> .` is caught here where the
+    lexical check in `_safe_members` passes it. Any other refusal -- a path
+    outside, a hard link outside, a special file -- raises, and `restore`
+    refuses the archive.
+    """
+
+    def restore_filter(member: tarfile.TarInfo, path: str) -> tarfile.TarInfo | None:
+        try:
+            return tarfile.data_filter(member, path)
+        except (tarfile.AbsoluteLinkError, tarfile.LinkOutsideDestinationError):
+            if not member.issym():
+                raise
+            on_skip(member.name, member.linkname)
+            return None
+
+    return restore_filter
 
 
 def _sha256(path: Path) -> str:
@@ -203,6 +313,38 @@ def _tarinfo(arcname: str, st: os.stat_result, kind: bytes) -> tarfile.TarInfo:
     info.gid = st.st_gid
     info.mtime = int(st.st_mtime)
     return info
+
+
+class _CappedFile(io.FileIO):
+    """The archive file, refusing to grow past `cap` bytes WHILE it is written.
+
+    The cap was checked on the finished archive, so a tree far over it was
+    compressed whole before being refused -- minutes of gzip on a large tree,
+    for a checkpoint that was never going to be uploaded (PR #288 review).
+    The first write past the cap raises `CheckpointError` out of the walk;
+    what the archive's close writes after that is discarded, so the close does
+    not raise over the refusal.
+    """
+
+    def __init__(self, path: Path, cap: int) -> None:
+        super().__init__(path, "wb")
+        self._cap = cap
+        self._size = 0
+        self._tripped = False
+
+    def write(self, data: Any) -> int:
+        length = memoryview(data).nbytes
+        if self._tripped:
+            return length
+        if self._size + length > self._cap:
+            self._tripped = True
+            raise CheckpointError(
+                f"the checkpoint passed its {self._cap} byte cap while being written; "
+                f"refusing it"
+            )
+        written = super().write(data)
+        self._size += written or 0
+        return written or 0
 
 
 class CheckpointManager:
@@ -386,7 +528,9 @@ class CheckpointManager:
             os.close(root_fd)
             raise
         try:
-            with tarfile.open(archive_path, "w:gz") as tar:
+            with _CappedFile(archive_path, self._max_bytes) as raw, tarfile.open(
+                fileobj=raw, mode="w:gz"
+            ) as tar:
                 while stack:
                     dir_fd, prefix, names = stack[-1]
                     if not names:
@@ -568,18 +712,27 @@ class CheckpointManager:
                 f"expected {record.archive_sha256}, got {digest}"
             )
 
-        def skipped(name: str, link: str) -> None:
-            self._log.warning(
-                "checkpoint restore skipped a link escaping the workspace",
-                checkpoint_id=record.checkpoint_id,
-                member=name,
-                link=link,
-            )
+        # Every refusal of an inconsistent archive is raised by `_safe_members`
+        # BEFORE the first member is extracted, so a refused archive leaves
+        # `work/` empty and the resume falls back as it always has on a
+        # `CheckpointError` here.
+        skipped: list[tuple[str, str]] = []
+
+        def skip(name: str, link: str) -> None:
+            skipped.append((name, link))
 
         with tarfile.open(archive_path, "r:gz") as tar:
-            members = _safe_members(tar, ws.work, on_skip=skipped)
-            tar.extractall(path=ws.work, members=members)
+            members = _safe_members(tar, ws.work, on_skip=skip)
+            try:
+                tar.extractall(path=ws.work, members=members, filter=_restore_filter(skip))
+            except tarfile.FilterError as exc:
+                raise CheckpointError(
+                    f"checkpoint {record.checkpoint_id} holds a member the restore "
+                    f"refuses: {type(exc).__name__}"
+                ) from exc
         archive_path.unlink(missing_ok=True)
+        _unmake_escaped_links(ws.work, members, skip)
+        self._log_skipped_links(record, skipped)
 
         # The ids continue from the restored checkpoint (#174), so they stay
         # monotonic along the chain of attempts a person reads in the bucket
@@ -610,3 +763,52 @@ class CheckpointManager:
             files=restored,
         )
         return restored
+
+    def _log_skipped_links(self, record: CheckpointRecord, skipped: list[tuple[str, str]]) -> None:
+        """One warning naming the first `SKIPPED_LINKS_NAMED` skipped links, and the count.
+
+        A link's name and target are the agent's text, so they go through the
+        worker's scrub before they are logged, as every field of a log line
+        does: an agent that names a link after a key it was given does not get
+        that key into Cloud Logging by it.
+        """
+        if not skipped:
+            return
+        scrub: Callable[[str], str] = getattr(self._log, "scrub_text", None) or (lambda text: text)
+        named = [
+            {"member": scrub(name), "link": scrub(link)}
+            for name, link in skipped[:SKIPPED_LINKS_NAMED]
+        ]
+        self._log.warning(
+            "checkpoint restore skipped links escaping the workspace; the rest is restored",
+            checkpoint_id=record.checkpoint_id,
+            skipped=len(skipped),
+            named=named,
+            not_named=max(0, len(skipped) - SKIPPED_LINKS_NAMED),
+        )
+
+
+def _unmake_escaped_links(
+    destination: Path, members: list[tarfile.TarInfo], on_skip: Callable[[str, str], None]
+) -> None:
+    """Remove a restored symlink that resolves outside `destination` once all are made.
+
+    The filter judged each link against the links made BEFORE it. A link made
+    earlier can come to leave only through one made later -- `y -> z/..`
+    judged while `z` did not exist, then `z -> .` -- and nothing was written
+    through it (`_safe_members` refuses that), but it would be left in the
+    workspace pointing out. Each is checked once more against the finished
+    tree, and one that now leaves is unlinked and named as skipped.
+    """
+    root = os.path.realpath(destination)
+    for member in members:
+        if not member.issym():
+            continue
+        path = os.path.join(root, member.name)
+        if not os.path.islink(path):
+            continue  # the filter skipped it
+        resolved = os.path.realpath(path)
+        if resolved == root or resolved.startswith(root + os.sep):
+            continue
+        os.unlink(path)
+        on_skip(member.name, member.linkname)

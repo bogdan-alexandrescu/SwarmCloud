@@ -3230,15 +3230,57 @@ class Worker:
         Beats every `heartbeat_interval_seconds`, the loop's own cadence, and
         through `_heartbeat`, the loop's own call. A heartbeat that raises is
         logged and ends this thread only: the loop's next heartbeat meets the
-        same condition and handles it as it always has. Joined before the
-        block's caller goes on, so it never outlives the checkpoint -- every
-        checkpoint comes before its park's or its end's lease release.
+        same condition and handles it as it always has.
+
+        BOUNDED, AND IT ASKS BEFORE EVERY BEAT (the PR #288 review). A thread
+        that beats for as long as the block runs keeps the lease -- and the
+        capacity reserved behind it -- alive for a checkpoint that never ends,
+        a wedged upload, which the supervision loop is not running to notice.
+        So it beats for at most `heartbeat_meanwhile_max_seconds` (three lease
+        timeouts; `config.WorkerConfig` says why), and before each beat it
+        reads the control plane: once the attempt is fenced or cancelled it
+        stops at once, rather than prolonging a lease that is no longer this
+        attempt's or a task nobody wants. The loop sees the same signal on its
+        next poll and acts on it as it always has.
+
+        Joined before the block's caller goes on, with a timeout: a beat stuck
+        in a Firestore call does not hold the checkpoint's caller up with it.
+        What such a beat can still write is `heartbeat_at` and `expires_at` on
+        the lease (`ControlPlane.heartbeat` is an unfenced update of those two
+        fields). It cannot clear `released_at`, and a lease with `released_at`
+        set reads as released (`ControlSignals.is_fenced`) whatever its expiry.
         """
         stop = threading.Event()
+        interval = self.cfg.heartbeat_interval_seconds
+        bound = self.cfg.heartbeat_meanwhile_max_seconds
+        deadline = time.monotonic() + bound
 
         def beat() -> None:
-            while not stop.wait(self.cfg.heartbeat_interval_seconds):
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    self.log.warning(
+                        "stopped heartbeating the lease during a long operation: it "
+                        "outlasted its bound, and the lease is left to expire",
+                        during=what,
+                        bound_seconds=bound,
+                    )
+                    return
+                if stop.wait(min(interval, remaining)):
+                    return
+                if time.monotonic() >= deadline:
+                    continue  # the top of the loop logs the bound and ends
                 try:
+                    signals = self.control.poll()
+                    if signals.wants_stop(self.cfg.generation):
+                        self.log.warning(
+                            "stopped heartbeating the lease during a long operation: "
+                            "the attempt is fenced or cancelled",
+                            during=what,
+                            fenced=signals.is_fenced(self.cfg.generation),
+                            cancel_requested=signals.cancel_requested,
+                        )
+                        return
                     self._heartbeat()
                 except Exception as exc:
                     self.log.warning(
@@ -3254,7 +3296,12 @@ class Worker:
             yield
         finally:
             stop.set()
-            thread.join()
+            thread.join(timeout=interval)
+            if thread.is_alive():
+                self.log.warning(
+                    "a heartbeat during a long operation is still in flight; going on without it",
+                    during=what,
+                )
 
     def _sleep_with_heartbeat(self, seconds: float) -> None:
         """Short waits only -- long ones park. Keeps the lease alive meanwhile."""
