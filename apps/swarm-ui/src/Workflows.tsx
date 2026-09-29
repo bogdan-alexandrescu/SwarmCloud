@@ -3,12 +3,10 @@ import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, use
 import {
   loadWorkflowBoard,
   loadWorkflowUsage,
-  type ResourceClasses,
   type StepUsage,
   type WorkflowBoard,
   type WorkflowUsage,
 } from './api'
-import { classUnits, useResourceClasses } from './Blockers'
 import {
   autoTier,
   depUnits,
@@ -64,21 +62,14 @@ import { Id, Screen, timeAgo } from './Shell'
 import {
   axisOf,
   boardResultNote,
-  failureGroups,
-  failureCause,
-  nodeNote,
-  parentsDoneOf,
   sameStepAcross,
-  shapeSignature,
   stateRankOf,
   stepOrder,
   stepTimes,
-  stepWhy,
   tokenPairCell,
   VIEW_LABEL,
   WORKFLOW_VIEWS,
   type BoardTelemetryGap,
-  type StepWhy,
   type WorkflowView,
 } from './stepviews'
 import { StopRun } from './StopRun'
@@ -367,22 +358,13 @@ function Board({
   openCard: (id: string) => void
   reload: () => void
 }) {
-  // THE RESOURCE-CLASS CATALOGUE, read once for the board (#106): a step's why
-  // line weighs its blockers against its class's `units`, as the Agents list
-  // does, and forty cards each reading it would be forty reads of one table.
-  const classes = useResourceClasses()
   // THE SAME STEP ACROSS THE BOARD, newest workflow first, for the picked
   // step's id -- the second scrubber's whole order, decided once here because
   // only the board holds every workflow. Each occurrence carries its own
   // state's mark, joined through the same `stepState` the nodes use.
-  //
-  // AND ONLY ACROSS WORKFLOWS OF THE PICKED ONE'S SHAPE (#112): the same id in
-  // a differently shaped workflow is a different job, not a comparison.
   const siblings = useMemo(() => {
     if (pick === null) return { refs: [] as SiblingRef[], ids: [] as string[] }
-    const anchor = board.workflows.find((w) => w.workflow_id === pick.workflowId)
-    if (anchor === undefined) return { refs: [] as SiblingRef[], ids: [] as string[] }
-    const found = sameStepAcross(board.workflows, pick.stepId, shapeSignature(anchor.steps))
+    const found = sameStepAcross(board.workflows, pick.stepId)
     return {
       ids: found.map((f) => f.workflowId),
       refs: found.map((f) => {
@@ -550,7 +532,6 @@ function Board({
               onScrubFocused={onFocused}
               reload={reload}
               usage={usage}
-              classes={classes}
             />
           )
         })}
@@ -699,7 +680,7 @@ const OUTCOME_SEGMENTS: readonly { key: keyof Outcomes; cls: string; word: strin
   { key: 'deadLettered', cls: 'dead-lettered', word: 'dead_lettered' },
 ]
 
-function rollupLine(workflow: Workflow, taskById: ReadonlyMap<string, Task> | null = null): Rollup {
+function rollupLine(workflow: Workflow): Rollup {
   const roll = workflow.rollup
   const total = workflow.steps.length
   if (!roll) {
@@ -751,7 +732,7 @@ function rollupLine(workflow: Workflow, taskById: ReadonlyMap<string, Task> | nu
   const cancelled = roll.counts.CANCELLED ?? 0
   const unstarted = roll.counts.unstarted ?? 0
   const rest: string[] = []
-  if (failed > 0) rest.push(...failedClauses(failed, workflow, taskById))
+  if (failed > 0) rest.push(`${failed} failed`)
   if (deadLettered > 0) rest.push(`${deadLettered} dead_lettered`)
   if (cancelled > 0) rest.push(`${cancelled} cancelled`)
   if (unstarted > 0) rest.push(`${unstarted} not started`)
@@ -784,27 +765,6 @@ function rollupLine(workflow: Workflow, taskById: ReadonlyMap<string, Task> | nu
     why: `${done} of ${total} steps done${rest.length > 0 ? `, ${rest.join(', ')}` : ''}.`,
     outcomes: null,
   }
-}
-
-/**
- * THE ROW'S FAILURES, GROUPED BY CAUSE (#105): `4 failed: input collision`
- * rather than `4 failed`, so a board of ten workflows says which ones broke the
- * same way without opening any of them.
- *
- * The count is the census's; the causes are the task read's (`failureGroups`,
- * normalised by `failureCause`). A failure the read did not return, or whose
- * task wrote no error, is still counted -- in a clause of its own with no
- * cause -- and a read that found MORE failures than the census counted is not
- * trusted over it: the row falls back to the bare count rather than print two
- * numbers that disagree.
- */
-function failedClauses(failed: number, workflow: Workflow, taskById: ReadonlyMap<string, Task> | null): string[] {
-  const groups = failureGroups(workflow.steps, taskById).filter((g) => g.cause !== null)
-  const named = groups.reduce((n, g) => n + g.n, 0)
-  if (groups.length === 0 || named > failed) return [`${failed} failed`]
-  const out = groups.map((g) => `${g.n} failed: ${g.cause}`)
-  if (failed > named) out.push(`${failed - named} failed`)
-  return out
 }
 
 /**
@@ -916,7 +876,6 @@ export function WorkflowCard({
   onScrubFocused,
   loadAttempts,
   reload,
-  classes = null,
 }: {
   workflow: Workflow
   taskById: ReadonlyMap<string, Task> | null
@@ -961,15 +920,8 @@ export function WorkflowCard({
   /** The attempt read the inspector uses. Injectable for the tests; the API's otherwise. */
   loadAttempts?: AttemptLoader
   reload: () => void
-  /**
-   * `GET /v1/resource-classes`, read once by the board (#106), so a why line
-   * can tell a pool too small for a step's weight from a full one. OPTIONAL,
-   * null by default: an unread catalogue keeps the pre-#66 reading, exactly as
-   * it does on the Agents list.
-   */
-  classes?: ResourceClasses | null
 }) {
-  const roll = rollupLine(workflow, taskById)
+  const roll = rollupLine(workflow)
   const shape = shapeOf(workflow.steps)
   // THE SAME PER-STEP FIGURES THE NODES AND THE TABLE DRAW (WF-5): the attempt
   // telemetry where the board read it, the result's where it did not. The row
@@ -1099,7 +1051,6 @@ export function WorkflowCard({
             <WorkflowGraph
               workflow={workflow}
               taskById={taskById}
-              classes={classes}
               usage={usage}
               openStages={openStages}
               onToggleStage={onToggleStage}
@@ -1113,7 +1064,6 @@ export function WorkflowCard({
             <WorkflowSteps
               workflow={workflow}
               taskById={taskById}
-              classes={classes}
               usage={usage}
               view={view}
               picked={picked}
@@ -1126,7 +1076,6 @@ export function WorkflowCard({
               workflow={workflow}
               stepId={picked}
               taskById={taskById}
-              classes={classes}
               usage={usage}
               siblings={siblings}
               onSibling={onSibling}
@@ -1638,7 +1587,6 @@ function stepRows(
   taskById: ReadonlyMap<string, Task> | null,
   usage: UsageRead,
   now: number,
-  classes: ResourceClasses | null = null,
 ): StepRowModel[] {
   const order = stepOrder(workflow.steps)
   const inputs = inputsByStep(workflow.steps, taskById)
@@ -1647,9 +1595,7 @@ function stepRows(
       const state = stepState(step, taskById)
       const p = present(state)
       const f = figuresFor(state, usage, now)
-      // THE WAIT SPLITS WHERE THE LAST PARENT FINISHED (#107), read from the
-      // same task read as the step's own state.
-      const times = stepTimes(state, now, parentsDoneOf(step, workflow.steps, taskById))
+      const times = stepTimes(state, now)
       const taskId = state.kind === 'state' ? state.task.id : state.kind === 'unknown' ? state.taskId : null
       // The SORT value of the cost, read off the same usage the cell was built
       // from. Null wherever the cell is an absence, so an unmeasured cost can
@@ -1680,9 +1626,6 @@ function stepRows(
         result: state.kind === 'state' ? finishedResultOf(state.task) : null,
         pending: usage.kind === 'reading' && state.kind === 'state',
         inputs: inputs.get(step.step_id) ?? NO_INPUTS,
-        // The table's `why` (#106): the same reader the graph's node line uses,
-        // plus the cascade's named parent on a cancelled step.
-        why: stepWhy(step, state, workflow.steps, taskById, classUnits(classes, step.resource_class)),
         sort: {
           order: order.get(step.step_id)?.order ?? Number.MAX_SAFE_INTEGER,
           stateRank: stateRankOf(state),
@@ -1707,7 +1650,6 @@ function stepRows(
 function WorkflowSteps({
   workflow,
   taskById,
-  classes,
   usage,
   view,
   picked,
@@ -1715,14 +1657,13 @@ function WorkflowSteps({
 }: {
   workflow: Workflow
   taskById: ReadonlyMap<string, Task> | null
-  classes: ResourceClasses | null
   usage: UsageRead
   view: Exclude<WorkflowView, 'graph'>
   picked: string | null
   onPick: (stepId: string) => void
 }) {
   const now = useNow()
-  const rows = stepRows(workflow, taskById, usage, now, classes)
+  const rows = stepRows(workflow, taskById, usage, now)
   if (rows.length === 0) return <span className="ctl-mark">no steps</span>
   if (view === 'table') return <WorkflowTable rows={rows} picked={picked} onPick={onPick} />
   const created = new Date(workflow.created_at).getTime()
@@ -1751,7 +1692,6 @@ function InspectorSlot({
   workflow,
   stepId,
   taskById,
-  classes,
   usage,
   siblings,
   onSibling,
@@ -1763,7 +1703,6 @@ function InspectorSlot({
   workflow: Workflow
   stepId: string
   taskById: ReadonlyMap<string, Task> | null
-  classes: ResourceClasses | null
   usage: UsageRead
   siblings: readonly SiblingRef[] | undefined
   onSibling: ((delta: -1 | 1) => void) | undefined
@@ -1773,7 +1712,7 @@ function InspectorSlot({
   loadAttempts: AttemptLoader | undefined
 }) {
   const now = useNow()
-  const row = stepRows(workflow, taskById, usage, now, classes).find((r) => r.step.step_id === stepId)
+  const row = stepRows(workflow, taskById, usage, now).find((r) => r.step.step_id === stepId)
   // A picked step that has left the workflow -- the board re-read and it is
   // gone -- has nothing to inspect. Drawing nothing is right: the selection is
   // stale, and there is no step whose facts could be shown.
@@ -1797,7 +1736,6 @@ function InspectorSlot({
       taskState={state.kind === 'state' ? state.state : null}
       siblings={refs}
       siblingIndex={index}
-      shape={shapeOf(workflow.steps)}
       onSibling={onSibling ?? (() => {})}
       focus={focus}
       onFocused={onFocused ?? (() => {})}
@@ -2157,7 +2095,6 @@ function Minimap({
 function WorkflowGraph({
   workflow,
   taskById,
-  classes,
   usage,
   openStages,
   onToggleStage,
@@ -2169,7 +2106,6 @@ function WorkflowGraph({
 }: {
   workflow: Workflow
   taskById: ReadonlyMap<string, Task> | null
-  classes: ResourceClasses | null
   usage: UsageRead
   openStages: Record<string, boolean>
   onToggleStage: (key: string, expanded: boolean) => void
@@ -2200,16 +2136,7 @@ function WorkflowGraph({
   // two steps needed.
   const auto = autoTier(workflow.steps)
   const tier: ZoomTier = zoom === 'auto' ? auto : zoom
-  // WHAT EACH NODE SAYS UNDER ITS STATE (#105, #106): a failure's first error
-  // line, or why a waiting step is not running. Decided BEFORE the layout,
-  // because the layout has to measure the line into the node's height --
-  // a card that drew a row its box was not given overlaps the one beneath it.
-  const notes = new Map<string, StepWhy>()
-  for (const s of workflow.steps) {
-    const n = nodeNote(s, stepState(s, taskById), workflow.steps, taskById, classUnits(classes, s.resource_class))
-    if (n !== null) notes.set(s.step_id, n)
-  }
-  const layout = layoutOf(workflow.steps, expandedStages, tier, new Set(notes.keys()))
+  const layout = layoutOf(workflow.steps, expandedStages, tier)
   // HOW EACH EDGE IS PAINTED. Not always the pair's own kind: every edge into
   // or out of a COLLAPSED stage shares one path, so those are painted as one
   // edge with the weakest claim any of them can support -- see `edgeKinds`.
@@ -2527,8 +2454,6 @@ function WorkflowGraph({
                     step={n.step}
                     state={stepState(n.step, taskById)}
                     inputs={inputs.get(n.step.step_id) ?? NO_INPUTS}
-                    note={notes.get(n.step.step_id) ?? null}
-                    noteId={`wf-note-${workflow.workflow_id}-${n.step.step_id}`}
                     picked={picked === n.step.step_id}
                     onPick={onPick}
                     workflow={workflow}
@@ -2559,7 +2484,6 @@ function WorkflowGraph({
                 key={b.level}
                 band={b}
                 census={stageCensus(b.steps, taskById)}
-                cause={stageCause(b.steps, notes)}
                 controls={stageDomId(workflow.workflow_id, b.level)}
                 picked={picked !== null && b.steps.some((s) => s.step_id === picked) ? picked : null}
                 onToggle={() => onToggleStage(stageKey(workflow.workflow_id, b.level), b.expanded)}
@@ -2609,15 +2533,12 @@ function WorkflowGraph({
 function StageBand({
   band,
   census,
-  cause,
   controls,
   picked,
   onToggle,
 }: {
   band: DagBand
   census: StageCensus
-  /** What broke in this stage, when something did (#105). `stageCause`. */
-  cause: StageCause | null
   controls: string
   /**
    * The picked step's id when it is one of this stage's steps (WF-10). The
@@ -2661,7 +2582,7 @@ function StageBand({
       // `aria-controls` pointing at an id that is not in the document is worse
       // than omitting it: it tells a screen reader there is somewhere to go.
       aria-controls={band.expanded ? controls : undefined}
-      aria-label={`${census.sentence}${cause === null ? '' : ` ${cause.said}`}${picked === null ? '' : ` It holds the picked step, ${picked}.`} ${
+      aria-label={`${census.sentence}${picked === null ? '' : ` It holds the picked step, ${picked}.`} ${
         band.expanded
           ? 'Activate to collapse this stage back to one band.'
           : `Activate to draw all ${census.steps} steps.`
@@ -2679,16 +2600,6 @@ function StageBand({
           </span>
         ))}
       </span>
-      {/* WHY IT BROKE, ON ONE LINE (#105). The commonest cause, as the first
-          step that failed of it wrote it, and how many other causes there
-          are; every failed step's whole error is the title, and the band's
-          name says the cause for a reader who focuses it. After the counts,
-          because the counts are what says a failure is here at all. */}
-      {cause !== null && (
-        <span className="wf-band-cause" title={cause.full}>
-          {cause.text}
-        </span>
-      )}
       {/* WHICH STEP IS PICKED IN HERE, by name, on the band itself (WF-10). It
           never gives way to the counts: the counts clip and the failures are
           first, so what the clip costs is the end of the census, which the
@@ -2701,48 +2612,6 @@ function StageBand({
       </span>
     </button>
   )
-}
-
-/** A band's failure line (#105): `text` on the band, `full` its title, `said`
- *  the sentence its accessible name gains. */
-interface StageCause {
-  readonly text: string
-  readonly full: string
-  readonly said: string
-}
-
-/**
- * What broke in a stage, from the same notes its nodes would draw: the causes
- * of its failed steps, grouped by `failureCause`, the commonest first (ties to
- * the first failed step in stage order). The band prints that group's first
- * error line and counts the other causes; null for a stage with no failure.
- */
-function stageCause(steps: readonly WorkflowStep[], notes: ReadonlyMap<string, StepWhy>): StageCause | null {
-  const failed = steps.flatMap((s) => {
-    const n = notes.get(s.step_id)
-    return n !== undefined && n.kind === 'cause' ? [{ stepId: s.step_id, note: n }] : []
-  })
-  if (failed.length === 0) return null
-  const groups = new Map<string, { first: StepWhy; n: number }>()
-  for (const f of failed) {
-    // `text` is the error's first line, or `no error recorded` for a failure
-    // that wrote none -- which then groups as its own cause.
-    const key = failureCause(f.note.text) ?? f.note.text
-    const g = groups.get(key)
-    if (g === undefined) groups.set(key, { first: f.note, n: 1 })
-    else g.n += 1
-  }
-  // `Map` keeps insertion order, so a stable sort on the count leaves ties in
-  // stage order.
-  const ordered = [...groups.values()].sort((a, b) => b.n - a.n)
-  const lead = ordered[0]!
-  const others = ordered.length - 1
-  const text = `${lead.first.text}${others > 0 ? ` (+${others} other cause${others === 1 ? '' : 's'})` : ''}`
-  return {
-    text,
-    full: failed.map((f) => `${f.stepId}: ${f.note.full}`).join('\n\n'),
-    said: `It failed with: ${lead.first.text}${others > 0 ? `, and ${others} other cause${others === 1 ? '' : 's'}` : ''}.`,
-  }
 }
 
 /** How each of the three step-state kinds presents. Kept together so the
@@ -2797,8 +2666,6 @@ function StepNode({
   step,
   state,
   inputs,
-  note,
-  noteId,
   picked,
   onPick,
   workflow,
@@ -2815,14 +2682,6 @@ function StepNode({
   state: StepState
   /** What this step declared from each parent and whether it arrived. */
   inputs: StepInputs
-  /**
-   * The line under the state (#105, #106): a failure's first error line, or
-   * why the step is not running. `layoutOf` was told about it (`noted`), so
-   * the card's height already counts it. Null draws nothing.
-   */
-  note: StepWhy | null
-  /** The id of the whole note, which the card names as its description. */
-  noteId: string
   /** The inspector is on this step. */
   picked: boolean
   /** Put this step in the inspector, or take it out again (WF-7). */
@@ -2945,23 +2804,6 @@ function StepNode({
         <span className="node-state">{p.word}</span>
         {showFigures && (dur.kind === 'queued' || dur.kind === 'parked') && <StepTime dur={dur} />}
       </div>
-      {/* WHY, ON ONE LINE, AT EVERY TIER (#105, #106). A failed node's cause
-          was only in the inspector, and a waiting node said `queued` with
-          nothing on what it waited for. The line is the first line of the
-          error or the reason, ellipsed -- an error is as unbounded as a step
-          id and no width holds it -- and the WHOLE text is its title and the
-          card's description, shown in full under the card on focus
-          (`.node-note-full`). The inspector's error stays untruncated. Its ink
-          is `whyNeedsAction`'s, the Agents list's rule: warn only for what
-          asks a person to act.
-
-          IN EVERY TIER, because a failure is never invisible and neither is
-          what it failed on; `heightOf` counts the line wherever it is drawn. */}
-      {note !== null && (
-        <div className={`node-note is-${note.kind}${note.warn ? ' is-warn' : ''}`} title={note.full}>
-          {note.text}
-        </div>
-      )}
       {/* The duration on a row of its own. Dropped entirely at `names`, where
           the canvas mark beside the zoom control says so -- never drawn blank,
           because an empty slot where `not started` belongs is the exact
@@ -3070,24 +2912,10 @@ function StepNode({
         className={`node ${p.tone} zoom-${tier}${picked ? ' is-picked' : ''}`}
         title={p.title}
         aria-pressed={picked}
-        aria-describedby={note === null ? undefined : noteId}
         onClick={() => onPick(step.step_id)}
       >
         {body}
       </button>
-      {/* THE WHOLE NOTE, for focus: hidden until the card is focused, then
-          laid over the canvas under the card rather than inside it, so it
-          grows nothing `layoutOf` measured. It is the card's description
-          either way, so a screen reader hears all of it on focus.
-
-          A SIBLING OF THE CARD, NOT A CHILD OF IT: inside the `<button>` it
-          was part of the button's name from content once shown, and the
-          error was read twice, once as the name and once as the description. */}
-      {note !== null && (
-        <span className="node-note-full" id={noteId}>
-          {note.full}
-        </span>
-      )}
       {/* B28, on the node. Only when the step's TASK was actually joined: a
           step whose state is `unknown` was not in the task read, and offering
           to stop something this screen could not read would be acting on a
