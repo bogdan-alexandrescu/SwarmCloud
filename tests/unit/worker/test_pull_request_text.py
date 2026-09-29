@@ -616,6 +616,45 @@ def test_a_real_code_span_and_fence_still_hide_a_decorator():
     assert lifecycle._carries_mention("~~~\ncc @acme/reviewers\n~~~\n") is False
 
 
+# -- three more ways past the code skip (#259 re-review): each is prose --
+
+
+def test_an_escaped_backtick_opens_no_code_span():
+    """CommonMark: `\\`` is a literal backtick, so `\\`@octocat\\`` is a real
+    mention between two backticks, and GitHub notifies."""
+    assert lifecycle._carries_mention("Closes #4\n\nThanks \\`@octocat\\` for this.\n") is True
+
+
+def test_an_invalid_backtick_fence_with_no_trailing_newline_is_not_a_span():
+    """A body stripped of its last newline: the first line is no fence (its
+    info string holds a backtick), and the last line is a fence of its own
+    that ends the paragraph, so no code span runs from the first to it."""
+    text = "Closes #4\n\n``` `python\n@octocat please review\n```"
+    assert lifecycle._carries_mention(text) is True
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "<details>\n<summary>Log</summary>\n```\n@octocat\n```\n</details>\n",
+        "<div>\n`@octocat`\n</div>\n",
+        "<pre>\n\n```\ncc @octocat\n```\n\n</pre>\n",
+    ],
+    ids=["details-fence", "div-span", "pre-across-blank-lines"],
+)
+def test_code_inside_an_html_block_is_prose(text):
+    """An HTML block's content is not parsed as Markdown: a fence or a span
+    inside `<details>` or `<div>` is literal text, and GitHub notifies."""
+    assert lifecycle._carries_mention(text) is True
+
+
+def test_a_fence_after_an_html_block_has_ended_is_still_code():
+    """The control: a blank line ends a `<details>` block, and a valid fence
+    after it is code again."""
+    text = "<details>\n<summary>Log</summary>\n\n```python\n@pytest.fixture\n```\n\n</details>\n"
+    assert lifecycle._carries_mention(text) is False
+
+
 # -- the mention lookbehind is ASCII-only (#259 review, M3) --
 
 

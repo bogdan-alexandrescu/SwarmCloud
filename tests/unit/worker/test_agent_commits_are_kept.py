@@ -435,6 +435,78 @@ def test_a_history_that_does_not_descend_from_the_base_is_folded_as_before(
     assert out.get("agent_commits_folded") == 1, out
 
 
+# -- a graft cannot make the replay skip a commit (#259 re-review) --
+
+
+def _rev(repo: Path, ref: str) -> str:
+    return subprocess.run(
+        ["git", "rev-parse", ref], cwd=str(repo), check=True, capture_output=True, text=True,
+    ).stdout.strip()
+
+
+def test_a_graft_that_skips_the_secret_commit_still_folds(
+    worker_factory, monkeypatch, origin, local_urls, forge
+):
+    """C1 adds a registered key, C2 an unrelated file, C3 deletes the key; the
+    agent grafts C2 straight onto the base. `rev-list` and `merge-base` follow
+    `.git/info/grafts`, so the list read [C2, C3]: C2 scanned against its
+    real parent C1 added nothing, C3 only removed, and C2's rewrite -- whose
+    TREE still holds `.env` -- was pushed with the key in it."""
+    def edit(repo: Path) -> None:
+        base = _rev(repo, "HEAD")
+        (repo / ".env").write_text(f"ANTHROPIC_API_KEY={KEY}\n")
+        _commit(repo, "Configure the client")
+        (repo / "a.txt").write_text("a\n")
+        _commit(repo, "Add a")
+        second = _rev(repo, "HEAD")
+        (repo / ".env").unlink()
+        _commit(repo, "Stop committing the env file")
+        (repo / ".git" / "info").mkdir(parents=True, exist_ok=True)
+        (repo / ".git" / "info" / "grafts").write_text(f"{second} {base}\n")
+
+    _, config, out = _attempt(
+        worker_factory, monkeypatch, origin, task_id="t-graft", edit=edit, register=(KEY,)
+    )
+
+    branch = f"{config.git_branch_prefix}{config.task_id}"
+    assert out["published"] is True, out.get("publish_reason")
+    assert out.get("agent_commits_folded") == 3, out
+    assert "agent_commits_kept" not in out, out
+    assert ".env" not in tree_at(origin, branch)
+    assert KEY.encode() not in _all_object_bytes(origin), "the key reached a pushed object"
+
+
+class _QuietLog:
+    def __getattr__(self, _name):
+        return lambda *args, **kwargs: None
+
+
+def test_a_list_that_skips_a_commit_counts_as_a_hit(tmp_path, origin):
+    """The chain check on its own, with nothing leaking: a list whose first
+    entry does not sit on the base, or whose next does not sit on the entry
+    before it, is not the chain the replay writes, and folds."""
+    repo = tmp_path / "clone"
+    subprocess.run(["git", "clone", "--quiet", str(origin), str(repo)], check=True, capture_output=True)
+    base = _rev(repo, "HEAD")
+    shas = []
+    for name in ("one", "two", "three"):
+        (repo / f"{name}.txt").write_text(f"{name}\n")
+        _commit(repo, f"Add {name}")
+        shas.append(_rev(repo, "HEAD"))
+    (tmp_path / "logs").mkdir()
+
+    def first(listed: list[str]) -> int | None:
+        return lifecycle._first_leaking_commit(
+            shas=listed, keep=None, leaks=lambda text: False, git=["git"], repo=repo,
+            private_dir=tmp_path, logs_dir=tmp_path / "logs", timeout_seconds=60,
+            logger=_QuietLog(), floor=base,
+        )
+
+    assert first(shas) is None
+    assert first(shas[1:]) == 1
+    assert first([shas[0], shas[2]]) == 2
+
+
 # -- the per-commit scan cannot be shown a replacement object (#259 review, M1) --
 
 
