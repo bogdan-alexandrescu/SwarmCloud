@@ -1698,6 +1698,59 @@ else:
             emit("OK", "Submit.tsx SUGGESTED",
                  "every key the form offers a declared profile is one it declares")
 
+# -- 14. the listed service-account shape (contract request 30) ------------
+# A tenant may list service accounts that resolve to it by exact email and
+# unique id. Two copies decide which addresses may be listed at all: the frozen
+# `identity.SERVICE_ACCOUNT_EMAIL`, which `tenant_member_for` refuses to match
+# outside of, and the `tenants.*.service_accounts` validation in
+# terraform/infra/variables.tf, which refuses them at plan. If they drift,
+# terraform plans a listing the API then silently never matches (a fixer that
+# 403s with nothing wrong in its config), or the API would match a shape
+# terraform was supposed to have refused.
+#
+# The project-id pin is NOT compared here and cannot be: identity.py has no
+# project id. settings.py and variables.tf each pin it; the settings tests hold
+# the Python half.
+#
+# ANCHORED ON THE FIELD NAME in the error_message, as section 12 is on its
+# claim, so a validation that stops being about service_accounts stops being
+# compared, loudly.
+FROZEN_SA = getattr(frozen_identity, "SERVICE_ACCOUNT_EMAIL", None)
+if FROZEN_SA is None:
+    emit("MISSING", "identity.SERVICE_ACCOUNT_EMAIL",
+         "the frozen module has no SERVICE_ACCOUNT_EMAIL, so there is nothing "
+         "for the tenants.*.service_accounts validation to be compared against")
+else:
+    sa_claims = [
+        condition
+        for condition, message in re.findall(
+            r"condition\s*=\s*(alltrue\(flatten\(\[.*?\]\)\))\s*\n\s*error_message\s*=\s*\"([^\"]*)\"",
+            TEXT["terraform/infra/variables.tf"], re.S)
+        if "service_accounts" in message
+    ]
+    sa_patterns = []
+    for condition in sa_claims:
+        # HCL spells a backslash as two; the regex terraform evaluates has one.
+        sa_patterns += [p.replace("\\\\", "\\")
+                        for p in re.findall(r"regex\(\"((?:[^\"\\]|\\.)*)\"", condition)]
+    if not sa_patterns:
+        emit("MISSING", "tenants.*.service_accounts shape",
+             "no validation in terraform/infra/variables.tf both names "
+             "service_accounts in its error_message and carries a regex(); the "
+             "plan-time copy of the listed-account shape moved")
+    else:
+        wrong = [p for p in sa_patterns if p != FROZEN_SA.pattern]
+        if wrong:
+            emit("DRIFT", "tenants.*.service_accounts shape",
+                 "terraform validates %s while swarm_common.identity matches %s; "
+                 "a listing one accepts and the other refuses either fails the "
+                 "plan for a valid account or never resolves at runtime"
+                 % (" ".join(wrong), FROZEN_SA.pattern))
+        else:
+            emit("OK", "tenants.*.service_accounts shape",
+                 "%d terraform validation(s) accept exactly the shape "
+                 "identity.SERVICE_ACCOUNT_EMAIL matches" % len(sa_patterns))
+
 print("\n".join(REPORT))
 PY
 )"; then
