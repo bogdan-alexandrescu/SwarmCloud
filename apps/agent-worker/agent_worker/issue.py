@@ -57,7 +57,7 @@ from urllib.parse import quote, urlparse
 from swarm_common.profiles import InputRefused, RunnerProfile
 
 from .errors import InputUnavailable
-from .forge import RepoRef, parse_repo
+from .forge import GITHUB_HOSTS, RepoRef, parse_repo
 
 #: The key of `input`, as `RunnerProfile.inputs` declares it (contract request 28).
 INPUT_KEY = "issue"
@@ -82,6 +82,13 @@ MAX_COMMENT_PAGES = 5
 #: The ceiling on `issue.md`. The workspace is memory-backed, and the issue is
 #: context for the work, not the work. Comments past it are counted, not written.
 MAX_FILE_BYTES = 1024 * 1024
+
+#: The ceiling on one HTTP response body this module will hold in memory. A
+#: forge answering an issue or a comments page has no reason to send more than
+#: this; a response past it is refused rather than read to the end, because
+#: `_open` decodes and `json.loads`s the whole thing before anything else
+#: looks at it.
+MAX_RESPONSE_BYTES = 10 * 1024 * 1024
 
 
 class IssueUnavailable(InputUnavailable):
@@ -179,14 +186,33 @@ class _SameHostRedirects(urllib.request.HTTPRedirectHandler):
 _OPENER = urllib.request.build_opener(_SameHostRedirects)
 
 
+def _read_capped(source: Any, *, req: urllib.request.Request) -> bytes:
+    """Read at most `MAX_RESPONSE_BYTES` from `source`; refuse anything longer.
+
+    `response.read()` with no size argument buffers the entire body before
+    this module looks at a single byte of it. A forge (or anything on the
+    path to it) that answers with an unbounded stream would be read to the
+    end, and only then rejected as not-JSON -- after the memory was spent.
+    Reading one byte past the cap is enough to tell "too long" from "exactly
+    at the limit" without holding more than the cap plus one byte.
+    """
+    raw = source.read(MAX_RESPONSE_BYTES + 1)
+    if len(raw) > MAX_RESPONSE_BYTES:
+        raise IssueUnavailable(
+            f"{urlparse(req.full_url).hostname} answered with more than "
+            f"{MAX_RESPONSE_BYTES} bytes; refused"
+        )
+    return raw
+
+
 def _open(req: urllib.request.Request) -> tuple[int, Any]:
     """One request: (status, parsed JSON body or None). Replaced in tests."""
     try:
         with _OPENER.open(req, timeout=_TIMEOUT) as response:
-            raw = response.read().decode("utf-8", errors="replace")
+            raw = _read_capped(response, req=req).decode("utf-8", errors="replace")
             return response.status, (json.loads(raw) if raw.strip() else None)
     except urllib.error.HTTPError as exc:
-        raw = exc.read().decode("utf-8", errors="replace")
+        raw = _read_capped(exc, req=req).decode("utf-8", errors="replace")
         try:
             parsed = json.loads(raw) if raw.strip() else None
         except json.JSONDecodeError:
@@ -263,7 +289,18 @@ def fetch_issue(
     what = f"issue #{number} of {ref.full_name}"
     base = f"{ref.api_base}/repos/{quote(ref.owner, safe='')}/{quote(ref.name, safe='')}"
 
-    status, data = _get(f"{base}/issues/{number}", token=token)
+    # The token is the tenant's git credential for github.com. `ref.host` is
+    # never anything else for a GitHub Enterprise Server repository (its host
+    # is its own domain, not "github.com"), and a repository given as an ssh
+    # URL parses to the same `ref.host` as its https form -- so this is one
+    # check for both. `ref.host in GITHUB_HOSTS` is exact string equality on a
+    # value `parse_repo` already lower-cased from `urlparse().hostname`, which
+    # itself strips userinfo and a port: "github.com.evil.example",
+    # "evil.example/github.com" and "user:pw@evil.example" all parse to a host
+    # that is not "github.com", and none of them match.
+    fetch_token = token if ref.host in GITHUB_HOSTS else None
+
+    status, data = _get(f"{base}/issues/{number}", token=fetch_token)
     if on_request is not None:
         on_request()
     if status != 200 or not isinstance(data, dict):
@@ -285,7 +322,7 @@ def fetch_issue(
     while total and page <= MAX_COMMENT_PAGES:
         status, rows = _get(
             f"{base}/issues/{number}/comments?per_page={COMMENTS_PER_PAGE}&page={page}",
-            token=token,
+            token=fetch_token,
         )
         if on_request is not None:
             on_request()
