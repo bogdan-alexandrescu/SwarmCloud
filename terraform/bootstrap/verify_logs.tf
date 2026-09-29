@@ -171,7 +171,13 @@
 #      roles/iam.serviceAccountTokenCreator on any account that reads logs --
 #      the compute account above, or 209012342332@cloudbuild, which holds
 #      roles/cloudbuild.builds.builder (logging.logEntries.list and
-#      logging.views.access) -- and act as it.
+#      logging.views.access) -- and act as it. CLOSED IN CODE 2026-09-29
+#      (#334): the role is granted only on the accounts terraform/infra
+#      manages (deployer_service_accounts.tf), neither of those two is one of
+#      them, and none of them holds a log-reading role (terraform/infra and
+#      terraform/modules grant no logging.viewer, privateLogViewer or
+#      viewAccessor, read 2026-09-28). Open until the owner's bootstrap apply
+#      destroys the project-wide binding.
 #   4. roles/logging.configWriter's sinks and exclusions stay project-wide when
 #      the role is scoped (deployer_conditions.tf says so). A sink can route
 #      every log in the project to a destination CI administers: a swarm-
@@ -262,8 +268,14 @@ locals {
     "roles/compute.securityAdmin",
     "roles/container.admin",
     "roles/datastore.owner",
-    "roles/iam.serviceAccountAdmin",
-    "roles/iam.workloadIdentityPoolAdmin",
+    # roles/iam.serviceAccountAdmin was here until 2026-09-29 (#334): it is
+    # granted per account now (deployer_service_accounts.tf), never through
+    # deployer_roles. Its replacement on the project, reviewed 2026-09-28
+    # against docs.cloud.google.com/iam/docs/roles-permissions/iam: create,
+    # get and list service accounts, get and list projects -- no log read.
+    "roles/iam.serviceAccountCreator",
+    # roles/iam.workloadIdentityPoolAdmin was here until 2026-09-29 (#314):
+    # off deployer_roles, and off this list so it is refused twice.
     "roles/logging.configWriter",
     "roles/monitoring.editor",
     "roles/pubsub.admin",

@@ -171,7 +171,9 @@ describe('Details draws the task’s metadata as the API masked it', () => {
 describe('Details holds no log rows', () => {
   it('lists no log object location and copies no gsutil line for one in Output', async () => {
     const root = await mount(agentRun())
-    const output = section(root, 'Output')
+    // The Output panel is headed `Code` when the summary carries a git
+    // outcome (#102: one heading, never Output stacked on Code).
+    const output = root.querySelector<HTMLElement>('.run-output')
     expect(output, 'no Output section').not.toBeNull()
     expect(output!.textContent, 'Output still lists a log location').not.toContain(LOG_URI)
     const eyebrows = [...output!.querySelectorAll('.ctl-eyebrow')].map((e) => e.textContent?.trim())
