@@ -181,6 +181,20 @@ class ControlStore:
         snap = self._db.collection("tasks").document(task_id).get()
         return TaskView.from_doc(snap.to_dict() or {}, task_id) if snap.exists else None
 
+    def task_for_lease(self, task_id: str) -> TaskView | None:
+        """The task an unreleased lease names, whatever its state (#332).
+
+        The same document read as `task_by_id`, kept a separate method because
+        it is a separate input. `task_by_id` feeds the eviction rules and is
+        switched off with them (`RECONCILER_ENABLE_GKE_EVICTION=false`); this
+        feeds the orphan-lease rule, which runs whatever that switch says, and
+        without it a lease admitted between the snapshot's two queries is
+        released as naming "a task that no longer exists". A READ THAT FAILS
+        raises, as `task_by_id` does.
+        """
+        snap = self._db.collection("tasks").document(task_id).get()
+        return TaskView.from_doc(snap.to_dict() or {}, task_id) if snap.exists else None
+
     def attempt_events(self, task_id: str, attempt_id: str) -> list[dict[str, Any]]:
         """Every event one attempt has written to its task's stream.
 
@@ -277,6 +291,7 @@ class ControlStore:
         expected_generation: int,
         *,
         only_from: tuple[TaskState, ...] | None = None,
+        unless_holding_lease: str | None = None,
     ) -> int | None:
         """Bump `current_generation`, fencing any worker still running.
 
@@ -291,6 +306,13 @@ class ControlStore:
         `only_from`, when given, is the states the finding was about, re-read
         here: a task that has left them since the snapshot is not fenced. The
         ended-at-startup rule passes DISPATCHED and STARTING (#198).
+
+        `unless_holding_lease`, when given, is the lease an ORPHAN-LEASE finding
+        is about, and the fence is refused while the task re-read here still
+        holds it: in a concurrency state, with `current_lease_id` naming it.
+        Such a task is not an orphan's task, it is the lease's rightful owner
+        (#332). The generation needs no second check: `expected_generation` is
+        the lease's, and a task fenced past it is already refused below.
         """
         task_ref = self._db.collection("tasks").document(task_id)
 
@@ -307,6 +329,19 @@ class ControlStore:
                 return None          # nothing left to fence
             if only_from is not None and state not in only_from:
                 return None          # moved on since the snapshot
+            if (
+                unless_holding_lease is not None
+                and state in CONCURRENCY_STATES
+                and (data.get("current_lease_id") or None) == unless_holding_lease
+            ):
+                self._log.warning(
+                    "refusing to fence a task that still holds the lease the finding "
+                    "called orphaned",
+                    task_id=task_id,
+                    lease_id=unless_holding_lease,
+                    state=state.value,
+                )
+                return None
             current = int(data.get("current_generation", 0))
             if current != expected_generation:
                 return None
@@ -322,13 +357,71 @@ class ControlStore:
 
         return self._txn.run(_apply)
 
-    def release_lease(self, lease_id: str, reason: str) -> bool:
+    def release_lease(
+        self,
+        lease_id: str,
+        reason: str,
+        *,
+        refuse_while_task_holds_it: bool = False,
+    ) -> bool:
+        """Return the lease's capacity through the frozen release. Idempotent.
+
+        `refuse_while_task_holds_it` is for an ORPHAN-LEASE finding (#332). The
+        lease and its task are re-read here, before the frozen function's own
+        reads (every read precedes every write, as Firestore requires), and the
+        release is refused while the task is in a concurrency state, names this
+        lease in `current_lease_id` and is at the lease's generation. That is a
+        task holding its lease, however the snapshot came to miss it.
+
+        The generation is part of the test on purpose. A task fenced past the
+        lease's generation by an interrupted earlier repair still names the
+        lease, and holding THAT lease would leak its slots for ever
+        (test_orphan_lease_after_partial_repair.py).
+
+        A concurrency state, not merely a non-terminal one: a QUEUED, READY or
+        PARKED task holds no capacity (invariant 1), so a lease still naming
+        one is the orphan `detect_orphan_leases` reports as "should hold no
+        capacity", and refusing it would leak its slots.
+        """
+
         def _apply(txn: Any) -> bool:
+            if refuse_while_task_holds_it and self._task_holds_lease(txn, lease_id):
+                return False
             return release_lease_in_transaction(
                 txn, db=self._db, lease_id=lease_id, reason=reason
             )
 
         return bool(self._txn.run(_apply))
+
+    def _task_holds_lease(self, txn: Any, lease_id: str) -> bool:
+        lease_snap = _snapshot(txn.get(self._db.collection("leases").document(lease_id)))
+        if not lease_snap.exists:
+            return False
+        lease = lease_snap.to_dict() or {}
+        task_id = lease.get("task_id")
+        if not task_id:
+            return False
+        task_snap = _snapshot(txn.get(self._db.collection("tasks").document(task_id)))
+        if not task_snap.exists:
+            return False
+        task = task_snap.to_dict() or {}
+        try:
+            state = TaskState(task.get("state"))
+        except (ValueError, TypeError):
+            return False
+        holds = (
+            state in CONCURRENCY_STATES
+            and (task.get("current_lease_id") or None) == lease_id
+            and int(task.get("current_generation", 0)) == int(lease.get("generation", 0))
+        )
+        if holds:
+            self._log.warning(
+                "refusing to release a lease its task still holds",
+                lease_id=lease_id,
+                task_id=task_id,
+                state=state.value,
+            )
+        return holds
 
     def repair_task_state(
         self,

@@ -263,13 +263,15 @@ function section(root: HTMLElement, title: string): HTMLElement | undefined {
   )
 }
 
-/** A head fact's value, by its key (`run`, `wait`, `age` ...). */
-function fact(root: HTMLElement, key: string): string | undefined {
-  const li = [...root.querySelectorAll<HTMLElement>('.ctl-fact')].find(
-    (el) => el.querySelector('b')?.textContent === key,
+/**
+ * The Elapsed tile's figure. The run's length has one home since #102 -- the
+ * Headline's `run` fact printed the same `elapsed()` text a row above it.
+ */
+function elapsedFigure(root: HTMLElement): string | undefined {
+  const tile = [...root.querySelectorAll<HTMLElement>('.ctl-metric')].find(
+    (el) => el.querySelector('.ctl-metric-label')?.textContent?.startsWith('Elapsed'),
   )
-  if (li === undefined) return undefined
-  return (li.textContent ?? '').slice(key.length).trim()
+  return tile?.querySelector('.ctl-metric-value')?.textContent ?? undefined
 }
 
 // Every count below starts from zero, whatever an earlier test in this file
@@ -484,7 +486,7 @@ describe('the drawer clock does not age a read that failed to refresh (AG-2)', (
     const root = await openDrawer()
     const badge = () => root.querySelector<HTMLElement>('.liveness')
     expect(badge()?.dataset['liveness']).toBe('live')
-    expect(fact(root, 'run')).toBe('1m 0s')
+    expect(elapsedFigure(root)).toBe('1m 0s')
 
     // IN 10s STEPS, NOT ONE 8-MINUTE JUMP. A poll timer only bumps `Screen`'s
     // nonce; the read it asks for starts in an effect, and `act` holds that
@@ -497,7 +499,7 @@ describe('the drawer clock does not age a read that failed to refresh (AG-2)', (
     expect(reads, 'the drawer did not keep trying to re-read').toBeGreaterThan(2)
     expect(badge()?.dataset['liveness'], 'failed reads were drawn as a silent worker').toBe('live')
     expect(badge()?.textContent).toContain('30s ago')
-    expect(fact(root, 'run'), 'the run figure went on counting over a read nobody refreshed').toBe('1m 10s')
+    expect(elapsedFigure(root), 'the run figure went on counting over a read nobody refreshed').toBe('1m 10s')
   })
 })
 

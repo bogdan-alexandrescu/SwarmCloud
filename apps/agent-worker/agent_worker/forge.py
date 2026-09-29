@@ -53,6 +53,17 @@ class ForgeError(RuntimeError):
     """The forge could not be reached, or refused in a way worth surfacing."""
 
 
+#: The only hosts github.com's own API answers on (case-insensitive; `host` is
+#: always lower-cased by `parse_repo`/`urlparse`, never carries a port or
+#: userinfo). Anything else -- a GitHub Enterprise Server install, or a host
+#: merely named "github.com" in its path or as a subdomain suffix -- is not
+#: this set, by exact string equality alone. Callers that decide whether a
+#: tenant's forge token may be attached to a request (`issue.py`) key off
+#: this, not off `api_base`, which answers a different question (where do we
+#: ask) and is populated for both cases.
+GITHUB_HOSTS = frozenset({"github.com", "www.github.com"})
+
+
 @dataclass(frozen=True)
 class RepoRef:
     host: str
@@ -67,7 +78,7 @@ class RepoRef:
     def api_base(self) -> str:
         # github.com is the only host with a separate api. subdomain; every
         # GitHub Enterprise Server install serves the same API under /api/v3.
-        if self.host in ("github.com", "www.github.com"):
+        if self.host in GITHUB_HOSTS:
             return "https://api.github.com"
         return f"https://{self.host}/api/v3"
 
@@ -110,6 +121,20 @@ def parse_repo(url: str) -> RepoRef | None:
     parsed = urlparse(candidate)
     host = (parsed.hostname or "").lower()
     if not host:
+        return None
+    try:
+        port = parsed.port
+    except ValueError:
+        # A non-numeric port component -- not a URL this module understands.
+        return None
+    if port is not None:
+        # `api_base` derives its URL from `host` alone (`api.github.com`, or
+        # `https://<host>/api/v3`); a port here would be silently dropped and
+        # every request would go to the wrong endpoint -- or, for a host that
+        # happens to equal "github.com" on a non-standard port, to the real
+        # api.github.com when the repository is not actually served there.
+        # Refuse rather than guess: same response as a host this module does
+        # not understand.
         return None
     parts = [p for p in parsed.path.split("/") if p]
     if len(parts) < 2:

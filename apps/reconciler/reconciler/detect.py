@@ -14,6 +14,10 @@ Four disagreements matter, and each one costs something different:
                        -> money, and a second agent on someone's repository
     orphan lease       a lease outlives its task
                        -> capacity leaks, same as stale
+    leaseless task     a task in a concurrency state whose lease is released
+                       or missing -> it holds no capacity but is never
+                       admitted again; fence and requeue, or fail on spent
+                       attempts (#332; `detect_leaseless_tasks`)
 
 Note what is NOT a finding: a task in LEASED with a fresh lease and no execution
 yet. Dispatch takes time, image pulls take minutes, and a reconciler that treats
@@ -123,6 +127,9 @@ class FindingKind(str, Enum):
     #: The current attempt's execution finished with any other code while its
     #: task was still DISPATCHED or STARTING: see `detect_ended_at_startup`.
     WORKER_ENDED_AT_STARTUP = "worker_ended_at_startup"
+    #: A task in LEASED/DISPATCHED/STARTING/RUNNING with no unreleased lease
+    #: behind it: see `detect_leaseless_tasks` (#332).
+    LEASELESS_TASK = "leaseless_task"
 
 
 @dataclass(frozen=True)
@@ -652,6 +659,66 @@ def detect_orphan_executions(
     return findings
 
 
+def detect_leaseless_tasks(
+    snapshot: ControlSnapshot,
+    executions: Iterable[ExecutionView] = (),
+) -> list[Finding]:
+    """Tasks in a concurrency state with no unreleased lease behind them (#332).
+
+    Every other rule starts from a lease or an execution. A task left in LEASED
+    after its lease was released -- by a repair that could not reach step 4,
+    whatever the cause -- has neither, and so nothing ever looked at it: the
+    drain scans only READY, and `detect_missing_executions` skips a released
+    lease. task_7ead19eefca1439ea9df sat LEASED like that from 02:57 on
+    2026-09-29 until it was found by hand.
+
+    Its capacity is already back: releasing a lease is what returns it. So the
+    repair (`Reconciler._repair`) fences the task and requeues it, or fails it
+    on spent attempts, and releases NOTHING -- a requeue that returned the
+    units a second time would inflate every pool it held (invariants 2 and 3).
+
+    Stands aside while any unreleased lease in the snapshot names the task
+    (the lease rules own that task), and while any active execution does (the
+    execution rules kill before anything else happens to it).
+    """
+    # Every active execution naming the task, with or without an attempt id:
+    # one the dispatcher labelled with its task alone is still compute that
+    # may be running this task's agent.
+    busy = {
+        execution.task_id
+        for execution in executions
+        if execution.is_active and execution.task_id
+    }
+    # Every unreleased lease, by task -- not `snapshot.lease_for_task`, which
+    # answers only with the lease the task NAMES and so would miss a newer one.
+    leased = {lease.task_id for lease in snapshot.leases.values() if not lease.is_released}
+    findings: list[Finding] = []
+    for task in snapshot.tasks.values():
+        if not task.holds_capacity:
+            continue
+        if task.task_id in leased:
+            continue
+        if task.task_id in busy:
+            continue
+        reason = (
+            f"task is {task.state.value} but its lease {task.lease_id} is released or missing"
+            if task.lease_id
+            else f"task is {task.state.value} but names no lease"
+        )
+        findings.append(
+            Finding(
+                kind=FindingKind.LEASELESS_TASK,
+                reason=reason,
+                task_id=task.task_id,
+                lease_id=task.lease_id,
+                tenant_id=task.tenant_id,
+                generation=task.generation,
+                detail={"task_state": task.state.value},
+            )
+        )
+    return findings
+
+
 def detect_orphan_leases(
     snapshot: ControlSnapshot,
     now: datetime | None = None,
@@ -673,10 +740,20 @@ def detect_orphan_leases(
     A lease whose task could not be read this pass is held too, and is never
     reported as naming a task that "no longer exists": that would be a read
     that FAILED recorded as an absence.
+
+    ABSENCE FROM `snapshot.tasks` IS NOT ABSENCE (#332). The snapshot reads
+    tasks and leases in two queries, and an admission that commits between
+    them leaves a brand-new lease whose task the tasks query saw as READY. So
+    the pass reads every such task by id first (`Reconciler._read_lease_tasks`,
+    into `lease_tasks`, which only this rule reads), and a task found there
+    still holding this lease falls through to the `continue` below like any
+    other healthy one. "No longer
+    exists" is said only of a task that by-id read did not find.
     """
     findings: list[Finding] = []
     running = executions_by_attempt or {}
-    unreadable = _unreadable_tasks(snapshot)
+    unreadable = _unreadable_tasks(snapshot) | (getattr(snapshot, "lease_unreadable", None) or set())
+    lease_tasks: dict[str, TaskView] = getattr(snapshot, "lease_tasks", None) or {}
     for lease in snapshot.leases.values():
         if lease.is_released:
             continue
@@ -689,7 +766,7 @@ def detect_orphan_leases(
         # reads -- outside the concurrency states and never read by id, or
         # read and not found -- keeps the wording this rule always used. Same
         # action either way: the lease is released.
-        task = snapshot.task_named(lease.task_id)
+        task = snapshot.task_named(lease.task_id) or lease_tasks.get(lease.task_id)
         if task is None:
             reason = "lease references a task that no longer exists"
         elif task.is_terminal:
@@ -1402,6 +1479,7 @@ def detect_all(
         *detect_stale_leases(snapshot, by_attempt, config, now),
         *detect_missing_executions(snapshot, by_attempt, config, now),
         *detect_orphan_leases(snapshot, now, by_attempt),
+        *detect_leaseless_tasks(snapshot, executions),
         *detect_left_running(snapshot, executions, config, now),
     ]
     # A lease whose attempt exited 78 is repaired by the cannot-start rule

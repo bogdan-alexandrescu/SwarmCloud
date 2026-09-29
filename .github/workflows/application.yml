@@ -56,6 +56,12 @@ on:
       # a pull request changing it never runs it: this is the one place it is
       # linted and held to its shape (tests/unit/scripts/test_auto_merge_workflow.py).
       - ".github/workflows/auto-merge.yml"
+      # ci-gate is the check the ruleset requires in place of this workflow
+      # and terraform.yml. A pull request changing only its workflow would
+      # otherwise run neither actionlint below nor tests/unit/scripts/test_ci_gate.py
+      # (scripts/ci-gate.sh is already under scripts/**; named for the record).
+      - ".github/workflows/ci-gate.yml"
+      - "scripts/ci-gate.sh"
   workflow_dispatch:
 
 permissions:
@@ -229,13 +235,14 @@ jobs:
     # expression in its revert gate would otherwise first show on that run.
     # auto-merge.yml likewise: a pull request that changes it runs main's
     # copy, not its own, so a broken expression would first show on the first
-    # `ready` label after it merged.
+    # `ready` label after it merged. ci-gate.yml is linted because main's ruleset
+    # is to require its one job: a broken expression there holds every pull request.
     env:
       ACTIONLINT_VERSION: "1.7.7"
     steps:
       - uses: actions/checkout@v5
 
-      - name: actionlint release.yml, application.yml, iam-refusal-probe.yml and auto-merge.yml
+      - name: actionlint release.yml, application.yml, iam-refusal-probe.yml, auto-merge.yml and ci-gate.yml
         run: |
           set -euo pipefail
           curl -sSfL "https://raw.githubusercontent.com/rhysd/actionlint/v${ACTIONLINT_VERSION}/scripts/download-actionlint.bash" \
@@ -244,7 +251,8 @@ jobs:
           "${RUNNER_TEMP}/actionlint" -version
           "${RUNNER_TEMP}/actionlint" -shellcheck= -pyflakes= \
             .github/workflows/release.yml .github/workflows/application.yml \
-            .github/workflows/iam-refusal-probe.yml .github/workflows/auto-merge.yml
+            .github/workflows/iam-refusal-probe.yml .github/workflows/auto-merge.yml \
+            .github/workflows/ci-gate.yml
 
   python:
     name: format / unit tests

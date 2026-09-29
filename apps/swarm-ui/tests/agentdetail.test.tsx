@@ -527,7 +527,10 @@ test('a task that never ran does not print its wait as its run', () => {
   // step then reads `run 27m 57s` beside `never ran`.
   const markup = plain(surface(cascade()))
   assert.ok(!markup.includes('<b>run</b>27m 57s'), 'the wait is printed under the run key')
-  assert.ok(markup.includes('<b>run</b>never ran'), 'the run key does not say it never ran')
+  // #102: THE HEADLINE CARRIES NO `run` AT ALL. It was the Elapsed tile's
+  // figure a second time -- `never ran` here, `never ran` one row down -- so
+  // the tile below is its one home. BREAK IT: put the `run` fact back.
+  assert.ok(!markup.includes('<b>run</b>'), 'the Headline repeats the Elapsed tile under `run`')
   // The Elapsed tile says it too, in its figure or in its note -- whichever
   // `elapsed()` leaves it to. The figure is `elapsed()`'s to choose (the
   // shared-types lane makes it `never ran` outright); what this screen must

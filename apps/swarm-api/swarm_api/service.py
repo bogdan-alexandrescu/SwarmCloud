@@ -207,7 +207,10 @@ class SubmissionService:
         validate_input_size(spec.input, self._settings.core.max_input_bytes)
         # After the size, so an oversized input is refused for its size. What
         # it may carry is the catalogue's declaration (contract request 25).
-        validate_runner_input(profile, spec.input, step_id=step_id)
+        validate_runner_input(
+            profile, spec.input, step_id=step_id,
+            repository_url=repository_url or spec.repository_url,
+        )
         # After the declaration, so a declared key out of range is refused
         # naming its bound; this is the store's own limit, for every profile.
         validate_storable(spec.input, step_id=step_id)
@@ -356,7 +359,10 @@ class SubmissionService:
             for step in spec.steps:
                 profile = validate_runner_profile(step.runner_profile)
                 validate_input_size(step.input, self._settings.core.max_input_bytes)
-                validate_runner_input(profile, step.input, step_id=step.step_id)
+                validate_runner_input(
+                    profile, step.input, step_id=step.step_id,
+                    repository_url=spec.repository_url,
+                )
                 validate_storable(step.input, step_id=step.step_id)
         except ValidationFailed as exc:
             self._metrics.tasks_rejected.labels(reason=exc.code).inc()
