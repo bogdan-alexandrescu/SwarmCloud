@@ -3,7 +3,6 @@ import { loadCapacity, loadStats } from './api'
 import { DispatchChoice, type DispatchDraft } from './Dispatch'
 import { errorHeading, type ApiError, type ApiErrorKind, type Result } from './fetch'
 import { HelpCard } from './HelpCard'
-import { RunnerPicker, useProviderKeys, type ProviderKeys } from './RunnerPicker'
 import { Screen, timeAgo } from './Shell'
 import {
   InputFields,
@@ -361,8 +360,6 @@ function Form({ sources }: { sources: FormSources }) {
     repositoryUrl: '',
   })
   const [sub, setSub] = useState<Submission>({ kind: 'idle' })
-  // One providers read for the form, handed to every step's picker.
-  const keys = useProviderKeys()
   // Read from the payload, never a constant: an unread limit is not a limit of 50,
   // so `maxSteps` stays null and nothing here caps the form.
   const raw = sources.limits === null ? undefined : sources.limits.max_workflow_steps
@@ -402,16 +399,6 @@ function Form({ sources }: { sources: FormSources }) {
   // says and what the click does cannot disagree.
   const plan = planOf(steps, byName)
   const blocked = plan.problems.length > 0
-  // WHAT THE CLICK COMMITS TO (#115), from the steps `send` builds the body
-  // from. Each step's weight is its runner's `units`, taken in every pool that
-  // step needs; the sum is the weight the whole plan asks admission for. A step
-  // whose runner is not in the catalogue has no weight to add, so the total is
-  // unknown rather than short.
-  const totalUnits = steps.reduce<number | null>((sum, s) => {
-    const p = byName.get(s.profile)
-    return sum === null || p === undefined ? null : sum + p.units
-  }, 0)
-  const perStage = stages.map((inStage) => `${inStage.length} step${inStage.length === 1 ? '' : 's'}`)
   // TO WHAT HAS TO CHANGE. A step whose problem is a required key goes to
   // that key's field rather than to the step's name (TS-15); a name problem,
   // or input that will not build, goes to the name as before.
@@ -452,13 +439,13 @@ function Form({ sources }: { sources: FormSources }) {
       <div className="sbf-build">
         <Outcome sub={sub} />
 
-        {/* THIS SCREEN'S ONE `?` (B7.4), AND IT OPENS WHAT THE STEP LAYS OUT
-            (#120). It opened runner naming, a rule about what the form may not
-            ask for; what a reader laying out a plan needs is how the plan
-            runs -- stages, a step waiting for every step it depends on to
-            succeed, and a failure cancelling its dependants. Runner naming is
-            the task form's `?`, and is in the Help section's catalogue group. */}
-        <Move n={1} title="Lay out the plan" aside={<HelpCard topic="workflow-stages" />}>
+        {/* THIS SCREEN'S ONE `?` (B7.4). Invariant 10 is the rule that shapes
+            every control below it -- a caller names a runtime and supplies no
+            image, no command, no resource spec and no backend -- and it is a
+            rule about what this form is NOT ALLOWED to ask for, which a form
+            cannot state by labelling what it does ask for. It sits on the first
+            step because that is where the reader meets the constraint. */}
+        <Move n={1} title="Lay out the plan" aside={<HelpCard topic="runner-profile-by-name" />}>
           {/* STAGES, NOT A LIST. Everything in one band runs at the same time;
               the next band waits for it. That is the whole dependency model a
               reader needs for the common shape, and it is expressed by WHERE a
@@ -483,7 +470,7 @@ function Form({ sources }: { sources: FormSources }) {
               </div>
               <div className="wfb-steps">
                 {inStage.map((s) => (
-                  <StepCard key={s.key} step={s} steps={steps} profiles={sources.profiles} keys={keys}
+                  <StepCard key={s.key} step={s} steps={steps} profiles={offered}
                     required={requiredInputKeys(byName.get(s.profile))}
                     nameProblem={plan.problems.find((p) => p.key === s.key && p.kind === 'name')?.message ?? null}
                     removable={steps.length > 1}
@@ -542,12 +529,7 @@ function Form({ sources }: { sources: FormSources }) {
             </li>
             <li className="ctl-fact">
               <b>stages</b>
-              {stageCount} · {perStage.join(', then ')}
-            </li>
-            <li className={totalUnits === null ? 'ctl-fact is-absent' : 'ctl-fact'}>
-              <b>units</b>
-              {totalUnits === null ? <i className="ctl-em">&mdash;</i>
-                : `${totalUnits} unit${totalUnits === 1 ? '' : 's'} in total`}
+              {stageCount}
             </li>
             <li className="ctl-fact">
               <b>result</b>
@@ -582,12 +564,10 @@ function Form({ sources }: { sources: FormSources }) {
   )
 }
 
-function StepCard({ step, steps, profiles, keys, required, nameProblem, removable, onChange, onRemove }: {
+function StepCard({ step, steps, profiles, required, nameProblem, removable, onChange, onRemove }: {
   step: StepDraft
   steps: StepDraft[]
-  /** The whole catalogue: a disabled runner is drawn, refused, with its reason. */
   profiles: Array<[string, RunnerProfile]>
-  keys: ProviderKeys
   /** What this step's runner refuses to start without, or null when this API
    *  did not say. Computed by the form so the live warning here and the
    *  refusal in `send` read the same answer. */
@@ -628,16 +608,16 @@ function StepCard({ step, steps, profiles, keys, required, nameProblem, removabl
         <input id={stepNameId(step.key)} className="mono wfb-id" value={step.id} spellCheck={false} aria-label="step name"
           aria-invalid={nameProblem !== null || undefined}
           onChange={(e) => onChange({ ...step, id: e.target.value })} />
+        <select className="wfb-profile" aria-label={`${step.id} runner profile`} value={step.profile}
+          onChange={(e) => retitle(e.target.value)}>
+          {/* Only what the API would accept. Offering a disabled profile and
+              then refusing it on submit makes the form the liar. */}
+          {profiles.map(([name]) => <option key={name} value={name}>{name}</option>)}
+        </select>
         {removable && (
           <button type="button" className="sbf-mini wfb-drop" onClick={onRemove}>remove</button>
         )}
       </div>
-      {/* THE TASK FORM'S PICKER, NOT A BARE `<select>` (#114): each runner's
-          room and key, and a disabled runner drawn refused with its reason
-          rather than left out -- it cannot be picked, so nothing the API would
-          refuse is on offer. The step's key makes the radio group its own. */}
-      <RunnerPicker group={`runner-profile-${step.key}`} label={`${step.id} runner profile`} compact
-        profiles={profiles} chosen={step.profile} keys={keys} onPick={retitle} />
       {/* UNITS, never "agents": admission increments every pool this step needs
           by its resource class's weight, so one large step costs four. */}
       {/* AND NO `?` (B7.4). The line below prints the class, then the weight
