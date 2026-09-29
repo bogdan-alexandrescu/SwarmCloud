@@ -70,7 +70,7 @@ def _mode(bare: Path, ref: str, path: str) -> str:
 
 def _attempt(
     worker_factory, monkeypatch, remote: Path, *, task_id: str, edit, marker: Path | None = None,
-    link_artifacts: bool = False,
+    link_artifacts: bool = False, publish: bool = True,
 ):
     """Clone, let the "agent" edit, then harvest and publish as teardown does.
 
@@ -104,8 +104,9 @@ def _attempt(
 
     worker.reap_before_publish = reap_then_forget_the_harvest
     edit(worker.ws.work / lifecycle.REPO_DIR_NAME)
-    out = worker._harvest_git(publish=True)
-    assert reaped["at"], "the publish never reached the reap"
+    out = worker._harvest_git(publish=publish)
+    if publish:
+        assert reaped["at"], "the publish never reached the reap"
     return worker, config, out
 
 
@@ -297,3 +298,156 @@ def test_the_workers_artifacts_link_is_not_published(
     files = tree_at(origin, branch)
     assert "work.txt" in files
     assert not [f for f in files if f == "artifacts" or f.startswith("artifacts/")], files
+
+
+# -- the harvest reads no agent configuration either (#259, owner item 3) ----
+
+
+@pytest.mark.parametrize("publish", [False, True], ids=["park", "publish"])
+def test_the_harvest_runs_no_filter_the_agent_configured(
+    worker_factory, monkeypatch, origin, local_urls, forge, tmp_path, publish
+):
+    """`summarize_work` took the patch with `git diff <base>` IN THE CLONE,
+    before the reap. A diff of the working tree reads each file through the
+    clean filter `.gitattributes` names, so the agent's `filter.x.clean` ran
+    as the worker there, and the patch carried what the filter printed.
+
+    The marker is cleared at the end of the agent's turn, so ANY run from the
+    harvest onwards -- on a park, which never publishes, as much as on a
+    publish -- is caught, and the patch must hold the working tree's bytes."""
+    marker = tmp_path / "agent-filter.ran"
+    program = tmp_path / "agent-filter.sh"
+    program.write_text(f"#!/bin/sh\necho \"filter $*\" >> '{marker}'\ntr a-z A-Z\n")
+    program.chmod(0o755)
+    line = "left uncommitted, in lower case"
+
+    def edit(repo: Path) -> None:
+        _git(repo, "config", "filter.x.clean", str(program))
+        _git(repo, "config", "filter.x.smudge", str(program))
+        (repo / ".gitattributes").write_text("* filter=x\n")
+        (repo / "README.md").write_text(f"{line} (edited)\n")
+        (repo / "notes.txt").write_text(f"{line}\n")
+        # The control: the filter is live in the clone.
+        filtered = _git(repo, "hash-object", "--path", "notes.txt", "notes.txt")
+        raw = _git(repo, "hash-object", "--no-filters", "notes.txt")
+        assert filtered != raw and marker.exists(), "the agent's filter is not active"
+        marker.unlink()
+
+    worker, config, out = _attempt(
+        worker_factory, monkeypatch, origin, task_id=f"t-harvest-filter-{publish}", edit=edit,
+        publish=publish,
+    )
+
+    assert not marker.exists(), (
+        "the agent's clean filter ran during the harvest or publish: " + marker.read_text()
+    )
+    assert out.get("patch"), out
+    patch = (worker.ws.artifacts / lifecycle.PATCH_NAME).read_text()
+    assert f"+{line}" in patch, "the patch is not the working tree's bytes"
+    assert line.upper() not in patch, "the patch holds what the agent's filter printed"
+    assert "notes.txt" in out["dirty"], out
+    if publish:
+        assert out["published"] is True, out.get("publish_reason")
+        branch = f"{config.git_branch_prefix}{config.task_id}"
+        assert _show(origin, branch, "notes.txt") == f"{line}\n".encode()
+
+
+# -- what the agent excluded stays unpublished (#259, owner item 2) ----------
+
+
+@pytest.mark.parametrize(
+    "how, published",
+    [
+        ("info-exclude", False),
+        ("excludes-file-in-workspace", False),
+        ("excludes-file-in-home", False),
+        ("excludes-file-outside-workspace", True),
+        ("excludes-file-through-a-link", True),
+    ],
+)
+def test_a_file_the_agent_excluded_is_not_published(
+    worker_factory, monkeypatch, origin, local_urls, forge, tmp_path, how, published
+):
+    """The agent's `.git/info/exclude` and its `core.excludesFile` are read
+    as DATA -- never by running git in the clone -- and their patterns hide
+    files from the worker's commit, as they did when that commit was made in
+    the clone. `core.excludesFile` counts only when it names a file inside the
+    workspace and no link is on the way (`~/` is the agent's HOME, `work/`);
+    one outside, or reached through a link, is not read, and the file it
+    would have hidden is published."""
+    hidden = "hidden.txt"
+
+    def edit(repo: Path) -> None:
+        work = repo.parent
+        if how == "info-exclude":
+            with (repo / ".git" / "info" / "exclude").open("a") as handle:
+                handle.write(f"\n{hidden}\n")
+        elif how == "excludes-file-in-workspace":
+            (work / "agent-ignore").write_text(f"{hidden}\n")
+            _git(repo, "config", "core.excludesFile", str(work / "agent-ignore"))
+        elif how == "excludes-file-in-home":
+            (work / "agent-ignore").write_text(f"{hidden}\n")
+            _git(repo, "config", "core.excludesFile", "~/agent-ignore")
+        elif how == "excludes-file-outside-workspace":
+            outside = tmp_path / "outside-ignore"
+            outside.write_text(f"{hidden}\n")
+            _git(repo, "config", "core.excludesFile", str(outside))
+        else:
+            (work / "real-ignore").write_text(f"{hidden}\n")
+            os.symlink(str(work / "real-ignore"), work / "link-ignore")
+            _git(repo, "config", "core.excludesFile", str(work / "link-ignore"))
+        (repo / hidden).write_text("the agent kept this out of git\n")
+        (repo / "visible.txt").write_text("the work\n")
+
+    _, config, out = _attempt(
+        worker_factory, monkeypatch, origin, task_id=f"t-exclude-{how}", edit=edit,
+    )
+
+    assert out["published"] is True, out.get("publish_reason")
+    branch = f"{config.git_branch_prefix}{config.task_id}"
+    files = tree_at(origin, branch)
+    assert "visible.txt" in files
+    assert (hidden in files) is published, (how, files)
+
+
+# -- upload-pack in the clone runs nothing the agent configured (item 4) ----
+
+
+def test_the_fetch_out_of_the_clone_runs_no_program_the_agent_configured(
+    worker_factory, monkeypatch, origin, local_urls, forge, tmp_path
+):
+    """The fetch into the worker's repository runs `git upload-pack` in the
+    clone -- the one git command left there. The agent names a
+    `uploadpack.packObjectsHook`, an alternate-refs command, an ssh command,
+    a proxy and a hooks directory in its `.git/config`; none of them runs,
+    and the work still arrives."""
+    marker = tmp_path / "agent-upload.ran"
+    recorder = tmp_path / "agent-upload.sh"
+    recorder.write_text(f"#!/bin/sh\necho \"$0 $*\" >> '{marker}'\nexit 0\n")
+    recorder.chmod(0o755)
+    hooks = tmp_path / "agent-upload-hooks"
+    hooks.mkdir()
+    for hook in ("pre-upload-pack", "post-upload-pack", "reference-transaction",
+                 "pre-commit", "post-commit", "post-checkout"):
+        shutil.copy(recorder, hooks / hook)
+
+    def edit(repo: Path) -> None:
+        (repo / "committed.txt").write_text("the agent's commit\n")
+        _commit(repo, "Add committed")
+        _git(repo, "config", "uploadpack.packObjectsHook", str(recorder))
+        _git(repo, "config", "core.alternateRefsCommand", str(recorder))
+        _git(repo, "config", "core.sshCommand", str(recorder))
+        _git(repo, "config", "core.gitProxy", str(recorder))
+        _git(repo, "config", "core.hooksPath", str(hooks))
+        (repo / "uncommitted.txt").write_text("left uncommitted\n")
+        marker.unlink(missing_ok=True)
+
+    _, config, out = _attempt(
+        worker_factory, monkeypatch, origin, task_id="t-upload-pack", edit=edit,
+    )
+
+    assert not marker.exists(), "a program the agent configured ran: " + marker.read_text()
+    assert out["published"] is True, out.get("publish_reason")
+    branch = f"{config.git_branch_prefix}{config.task_id}"
+    files = tree_at(origin, branch)
+    assert {"committed.txt", "uncommitted.txt"} <= files, files
