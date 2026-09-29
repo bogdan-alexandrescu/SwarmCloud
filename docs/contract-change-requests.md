@@ -39,6 +39,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 26 | `models.py`: the attempt's CPU figures carry no time and their limit no source | ACCEPTED 2026-09-26 (owner, on #184), applied in PR #229 |
 | 30 | `identity.py`: a tenant may list service accounts that resolve to it by exact email (#273) | ACCEPTED 2026-09-29 by the owner after three security reviews |
 | 32 | `profiles.py`: `browser` and `generic` declare no inputs, so the API bounds them by size alone and the plugin can send them none (#218) | ACCEPTED 2026-09-29 by the owner after three security reviews |
+| 33 | `profiles.py` / `models.py`: a merge profile that runs no agent, and two end causes for it (#295) | ACCEPTED 2026-09-29 by the owner, as the design; build gated on #342 |
 | 34 | `models.py` / `specsign.py`: a step's spec is signed by swarm-api and verified by every worker (#342) | ACCEPTED 2026-09-29 by the owner after three security reviews |
 
 ---
@@ -4326,6 +4327,7 @@ the implementing branch and must fail there before the change lands on
 - **CONTRACT.md "Tenant = Google group".** Refined, not reversed: a tenant is
   still a group (or a user), and its listed accounts are members by
   declaration rather than by directory.
+Applied by #343 (accepted by the owner 2026-09-29).
 ---
 
 ## 32. `profiles.py`: `browser` and `generic` declare no inputs, so the API bounds them by size alone and the plugin can send them none
@@ -5943,6 +5945,181 @@ relies on for correctness.
    policy (recommended). #218's own text, read directly on 2026-09-29,
    confirms this is its third question; no further check is needed.
 
+---
+
+## 33. `profiles.py` / `models.py`: a merge profile that runs no agent, and two end causes for it
+
+**Status: ACCEPTED 2026-09-29 by the owner, as the design; build gated on
+#342.** Recorded from #295's design step. Revised 2026-09-29, several times,
+against a security review's rounds (B1, B2, M1–M5 and their minors, then B1
+corrected repeatedly against a joint review with CR 34, ending with R8
+recorded open rather than closed); see [merge-step.md](merge-step.md)'s own
+revision note for the changes, which are almost entirely outside this
+request's own frozen-contract surface — `worker_action`, the `merge` profile
+and the two end causes are unchanged by the review. The design is
+[merge-step.md](merge-step.md). Nothing under `apps/common/swarm_common/`
+has been edited. **The owner accepted this request's `profiles.py`/
+`models.py` shape as the design to build against — acceptance of the design
+is not yet the build:** `merge` (and the `post-verdict`/`claude-code-review`
+requests below) must not be enabled for any tenant until #342 (signed step
+specs) ships, per merge-step.md §0 consequence 4 and §10. Renumbered from 29
+to 33 on 2026-09-29: #259 is 29, #314 is 30, #304 is 31, #315 is 32. Since
+then, `main`'s own numbering moved independently — its own request 29
+(`EndCause` gains `PUBLISH_REFUSED`) is unrelated content, and request 31 is
+not present on `main` at all — but 33 was never taken by anything else, so
+no further renumbering was needed on merge.
+
+**Pointer, not a request of its own (round-3 re-review, 2026-09-29): the
+design's `post-verdict` and `claude-code-review` catalogue entries are
+separate, not-yet-filed frozen-contract requests, tracked in
+[merge-step.md](merge-step.md) §10 (build items 2–3) and §6a (the pinned
+`VERDICT_REFUSED`/`VERDICT_FAILED` end causes), not folded into this one.**
+This request stays scoped to what its heading says — the `merge` profile —
+because `post-verdict` and `claude-code-review` each need their own
+`### What it would break if accepted` analysis once filed, the same way this
+one has its own. This design also now depends on S0 issue #342, signed step
+specs, which every step's worker (not only `merge`'s or `post-verdict`'s)
+must verify before running. **Corrected, joint review with CR 34 (#344),
+2026-09-29: an earlier draft of this paragraph said #342 "is not a change to
+a frozen type" and so did not belong in this file. That was wrong.** Signing
+and verifying a step's canonical spec needs somewhere on the frozen `Task`
+or `WorkflowStep` shape to carry the signature (or an equivalent frozen
+type), which is exactly the kind of change this file exists to record; #342
+is tracked as its own S0 issue for the security decision and the build plan,
+but its frozen-contract surface — whatever field or type CR 34 ends up
+needing — belongs here too, as its own numbered request once CR 34 states
+precisely what it is. This entry does not attempt to state it first; see
+[merge-step.md](merge-step.md) §0 consequence 4 and §7 T14/R7 for why this
+design cannot be enabled without it regardless.
+
+### What is true today
+
+A workflow cannot merge its own pull request. Every `RunnerProfile` names a
+runner that the lifecycle starts as a supervised child
+(`runner_argv`, contract request 18), and every runner runs an agent or a
+command. The only credential-bearing thing a worker does after its runner exits
+is `_publish_git`, which runs under the tenant's service account in the same
+container the agent just ran in.
+
+An agent can mint that service account's token from the metadata server
+([security.md](security.md#cloud-metadata-abuse)). So a merge credential
+readable by the worker that publishes is readable by every agent of the tenant
+([merge-step.md](merge-step.md) §0). The contract's own platform decision says
+where a step's identity can differ: Cloud Run sets the service account on the
+Job, and there is one Job per tenant per **profile**. A merge that no agent can
+reach therefore needs a profile of its own.
+
+`EndCause` (contract request 23) has no value that says a merge was refused or
+failed. Recording one as `RUNNER_ERROR` would be false, since no runner ran.
+Recording it as None would send the outcome ledger back to classifying text.
+
+### The requested change
+
+In `profiles.py`:
+
+```python
+class WorkerAction(str, Enum):
+    """A platform action the WORKER performs instead of starting a runner."""
+    MERGE = "merge"
+
+
+@dataclass(frozen=True)
+class RunnerProfile:
+    ...
+    #: When set, the lifecycle performs this action itself and starts no
+    #: runner child, so no agent ever runs under this profile's Job identity.
+    #: `runner_argv` must then be empty, and it must be non-empty otherwise.
+    worker_action: WorkerAction | None = None
+```
+
+`__post_init__` refuses `worker_action` with a non-empty `runner_argv`, and
+refuses `runner_argv=()` without a `worker_action`.
+
+A catalogue entry:
+
+```python
+"merge": RunnerProfile(
+    name="merge",
+    image="agent-runtime-base",
+    resource_class="standard",
+    backend=Backend.CLOUD_RUN_JOB,
+    runner_argv=(),
+    worker_action=WorkerAction.MERGE,
+    # The credential is never mounted: its secret is read by the worker at
+    # merge time, as `swarm-<tenant>-merge`, the Job's own service account.
+    # `provider` is what parks the step CREDENTIAL_MISSING, at no cost, for a
+    # tenant that has not registered one, and keeps Terraform from creating a
+    # merge Job for that tenant.
+    provider="git-merge",
+    secrets=(),
+    timeout_seconds=600,
+    inputs={},
+),
+```
+
+In `models.py`, two `EndCause` values, written only by the worker:
+
+```python
+MERGE_REFUSED = "merge_refused"   # a condition for merging was not met; nothing changed on the forge
+MERGE_FAILED = "merge_failed"     # the merge was allowed, and the forge did not do it
+```
+
+The specific reason (`verdict_not_merge`, `checks_pending`, `head_moved`, ...)
+goes in `result_summary.merge.refusal`, a worker vocabulary and not a frozen
+one, just as `publish_reason` is today. [merge-step.md](merge-step.md) §6 lists
+every code and its cause.
+
+### What it would break if accepted
+
+* **Nothing stored.** `worker_action` defaults to None, so every existing
+  profile is unchanged. Old task documents never carry the new causes.
+* **Every consumer of `runner_argv` must learn that it can be empty.** Today
+  that is `lifecycle._runner_argv` and the dispatchers, which set no command
+  (request 18). The lifecycle must branch on `worker_action` before it builds
+  an argv.
+* **Terraform's `job_matrix`** creates a `merge` Job for each tenant whose
+  providers include `git-merge`. That Job has to run as the tenant's merge
+  service account, not `worker_service_accounts[tenant]`, and that is a
+  Track C change. Until it lands, the Job must not exist: a merge Job running
+  as the tenant's worker account is the hole this request exists to close.
+* **Every restatement of the catalogue** has to follow: the plugin's bridge,
+  `swarm_profiles`, the UI's profile list, and the parity checks that hold the
+  shell and jq copies to the Python (`check-contract-parity.sh`). A profile
+  with no agent should appear as such, not as a runner.
+* **The outcome ledger** (`swarm_api.outcomes`) gains two classes, and its
+  `DERIVE_VERSION` is bumped so stored days are re-derived.
+
+### If it is declined
+
+A merge can be done only by something that is not a workflow step:
+`auto-merge.yml` with a human's `ready`, or an operator. The owner's chain
+then stops at proof. The two alternatives [merge-step.md](merge-step.md) §1
+compares both put the merge credential where an agent, or another tenant, can
+reach it. They are listed there as rejected, not as fallbacks.
+
+### Invariants
+
+- **Invariants 1–3.** The merge step is an ordinary task: admitted in the same
+  transaction, parked and costing nothing until its parents succeed, and
+  counted from `LEASED`.
+- **Invariant 4.** A pending check is a refusal, not a wait. A long forge
+  rate-limit fails the attempt retryably with `next_eligible_at`, and the
+  worker does not sleep through it.
+- **Invariant 5.** The worker checks its generation at start and again
+  immediately before the merge call. A stale merge worker never touches the
+  forge.
+- **Invariant 6, 7.** On-demand `standard`; `requests == limits`.
+- **Invariant 8.** Checkpointing stays on. The workspace is empty, and the
+  merge is idempotent on its pinned sha, so a lost attempt costs one re-read.
+- **Invariant 9.** The merge credential's only accessor is the tenant's own
+  merge service account. No agent runs as that account, and no other tenant's
+  Job can.
+- **Invariant 10.** A caller names `merge` and sends `input: {}`. The
+  repository, the pull request and the sha all come from the workflow's own
+  steps, never from the caller.
+- **#219.** The credential is read only by the merge worker, only at merge
+  time. It is never in the workspace, a file, an environment variable, argv or
+  a log, and it is revoked in a `finally`.
 ---
 
 ## 34. `models.py` / a new `specsign.py`: a step's spec is signed by swarm-api and verified by every worker
