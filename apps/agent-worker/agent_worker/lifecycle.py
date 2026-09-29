@@ -4477,7 +4477,11 @@ class Worker:
                     "was pushed; the harvest still describes the work against "
                     "that marker"
                 )
-            if self._publish_base is None:
+            # A repository the harvest built may stand on no base at all
+            # (`allow_unknown_base`, so the dirty list survives); it is never
+            # published from. One built below refuses the unknown base itself,
+            # in `prepare_publish_repo`.
+            if publish_repo is not None and self._publish_base is None:
                 raise GitError(
                     "the clone base is unknown, so the worker cannot tell the agent's "
                     "commits from the repository's; nothing was pushed"

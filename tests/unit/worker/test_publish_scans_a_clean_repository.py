@@ -101,10 +101,25 @@ def _forge_commit_graph(repo: Path, trees: dict[str, str]) -> None:
     data[-20:] = hashlib.sha1(bytes(data[:-20])).digest()
     graph.chmod(stat.S_IRUSR | stat.S_IWUSR)
     graph.write_bytes(bytes(data))
-    # The control that the forgery took: in the clone, git now reports the
-    # forged tree for each commit.
+    # The control that the forgery took: in the clone, a history walk from
+    # HEAD now reports the forged tree for each forged commit.
+    #
+    # Read through a WALK, not `rev-parse <commit>^{tree}`. A commit named on
+    # the command line is parsed from its object (`parse_object`), which since
+    # git 2.4x takes the graph only with PARSE_OBJECT_SKIP_HASH_CHECK -- so on
+    # CI's git 2.55 rev-parse printed the real tree and this control failed
+    # before the worker ever ran, while the attack was still live: a commit
+    # REACHED by a walk (`repo_parse_commit_internal` -> `parse_commit_in_graph`)
+    # still gets its tree from the graph (`repo_get_commit_tree` ->
+    # `get_commit_tree_in_graph`), in 2.40 and in 2.55. Every forged commit
+    # here is an ancestor of HEAD, so the walk reaches each one.
+    walked = dict(
+        line.split(" ", 1)
+        for line in _git(repo, "log", "--format=%H %T", "HEAD").splitlines()
+        if line
+    )
     for commit, tree in trees.items():
-        assert _git(repo, "rev-parse", f"{commit}^{{tree}}") == tree, "the forgery did not take"
+        assert walked.get(commit) == tree, "the forgery did not take"
 
 
 # -- the forged commit-graph (#259, third security review) ------------------

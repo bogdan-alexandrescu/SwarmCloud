@@ -912,33 +912,41 @@ def _protected_memory():
 def test_publish_is_refused_when_the_worker_memory_is_not_protected(
     worker_factory, monkeypatch, origin, local_urls, forge
 ):
-    """The publish says why, and nothing that would carry the token runs: not
-    the forge probe, not the publish repository, not the push. The control is
-    `test_a_clean_publish_reaps_first_and_still_succeeds`, with the same
-    fixtures and a protected worker."""
-    ran = {"probe": 0, "prepare": False, "push": False}
+    """The publish says why, and nothing that would carry the token runs: the
+    token is never read, the forge is never probed, nothing is pushed. The
+    control is `test_a_clean_publish_reaps_first_and_still_succeeds`, with the
+    same fixtures and a protected worker.
+
+    The worker's clean repository IS built here, and that is not a token
+    step: since #259 the harvest itself reads the agent's work from that
+    repository (so no git runs in the clone), for every attempt, parked or
+    published, protected or not. It holds no credential until the push. So
+    the property this test pins -- no token in an unprotected worker's hands
+    -- is asserted where the token enters: `_git_token`."""
+    ran = {"probe": 0, "token": 0, "push": False}
     real_probe = lifecycle.probe_repository
-    real_prepare = lifecycle.prepare_publish_repo
     real_push = lifecycle.push_branch
 
     def counting_probe(**kwargs):
         ran["probe"] += 1
         return real_probe(**kwargs)
 
-    def guard_prepare(**kwargs):
-        ran["prepare"] = True
-        return real_prepare(**kwargs)
-
     def guard_push(**kwargs):
         ran["push"] = True
         return real_push(**kwargs)
 
     monkeypatch.setattr(lifecycle, "probe_repository", counting_probe)
-    monkeypatch.setattr(lifecycle, "prepare_publish_repo", guard_prepare)
     monkeypatch.setattr(lifecycle, "push_branch", guard_push)
 
     def unprotect(worker) -> None:
         worker.memory = _failed_memory()
+        real_token = worker._git_token
+
+        def counting_token():
+            ran["token"] += 1
+            return real_token()
+
+        worker._git_token = counting_token
 
     _, config, out = run_attempt(
         worker_factory, monkeypatch, origin,
@@ -951,7 +959,7 @@ def test_publish_is_refused_when_the_worker_memory_is_not_protected(
     assert out["published"] is False, out
     assert "could not make its memory unreadable" in out.get("publish_reason", ""), out
     assert ran["probe"] == 0, "the forge was probed with the token of an unprotected worker"
-    assert ran["prepare"] is False, "the publish repository was built for an unprotected worker"
+    assert ran["token"] == 0, "the tenant token was read by an unprotected worker"
     assert ran["push"] is False, "the token-bearing push ran from an unprotected worker"
     branch = f"{config.git_branch_prefix}{config.task_id}"
     assert branch not in refs(origin), "a branch was pushed by an unprotected worker"
