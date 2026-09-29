@@ -8,6 +8,31 @@ variable "region" {
   default = "us-central1"
 }
 
+variable "infra_tenants_tfvars" {
+  description = <<-EOT
+    The tfvars file whose top-level `tenants` block names the tenants
+    terraform/infra creates worker accounts for: relative to terraform/bootstrap,
+    or absolute. For a pull request that adds a tenant, the owner applies this
+    root from MAIN with this pointed at a copy of the branch's dev.tfvars taken
+    with `git show`, so the branch contributes data and never code (docs/ci.md).
+    deployer_service_accounts.tf reads the tenant keys from it, so the accounts
+    the release deployer holds roles/iam.serviceAccountAdmin on have one source
+    -- the file the release applies -- and not a second hand-written copy (#334).
+
+    dev, because dev is what the release deploys into saga-agents-staging.
+    prod.tfvars names the same project and the same account ids; pointing this
+    at it grants on prod's tenants instead, and a tenant whose account does not
+    exist yet fails this root's apply with a 404.
+  EOT
+  type        = string
+  default     = "../environments/dev/dev.tfvars"
+
+  validation {
+    condition     = endswith(var.infra_tenants_tfvars, ".tfvars")
+    error_message = "infra_tenants_tfvars must name a .tfvars file."
+  }
+}
+
 variable "location" {
   description = "State bucket location. Regional, matching the workloads."
   type        = string
@@ -151,8 +176,18 @@ variable "deployer_roles" {
 
     Every role here is granted project-wide until it is also named in
     deployer_scoped_roles. The six marked SCOPABLE below have a conditioned
-    grant waiting in deployer_conditions.tf; the nine marked UNSCOPABLE belong to
+    grant waiting in deployer_conditions.tf; the seven marked UNSCOPABLE belong to
     services IAM cannot name resources in, and that file records why for each.
+    roles/iam.serviceAccountCreator is project-wide because creating an account
+    is checked on the project.
+
+    roles/iam.serviceAccountAdmin is NOT here, and a validation below refuses
+    it (#334, owner decision 2026-09-29): it is granted on each account
+    terraform/infra manages instead (deployer_service_accounts.tf).
+
+    roles/iam.workloadIdentityPoolAdmin is NOT here, and a validation below
+    refuses it (#314, owner decision 2026-09-29): terraform/infra manages no
+    pool, and a provider CI adds to swarm-github escapes the WIF ref pin.
 
     roles/iam.roleAdmin is NOT here, and a validation below refuses it (#79,
     owner decision 2026-09-25): its iam.roles.update, which no condition can
@@ -191,10 +226,33 @@ variable "deployer_roles" {
     # terraform/infra defines no custom role any more (platform_roles.tf), so CI
     # needs no iam.roles.* permission at all.
     #
-    # UNSCOPABLE: IAM resources provide no resource name.
-    "roles/iam.serviceAccountAdmin",
-    # UNSCOPABLE: IAM resources provide no resource name.
-    "roles/iam.workloadIdentityPoolAdmin",
+    # roles/iam.serviceAccountAdmin WAS HERE until 2026-09-29 (owner decision
+    # on #334, from the security review of contract request 30, #314).
+    # Project-wide it let CI set the IAM policy of every service account in the
+    # project -- the other team's, swarm-ci-fix's, its own -- and so act as any
+    # of them. No condition can narrow it: "the condition resource.name.endsWith
+    # == devResource never grants access to any IAM resource because IAM
+    # resources don't provide the resource name"
+    # (docs.cloud.google.com/iam/docs/conditions-attribute-reference, read
+    # 2026-09-28). It is granted instead ON EACH ACCOUNT terraform/infra
+    # manages, in deployer_service_accounts.tf, and a validation below refuses
+    # it here by name.
+    #
+    # PROJECT-WIDE BECAUSE CREATING HAS NO RESOURCE YET: iam.serviceAccounts.create
+    # is checked on the project, so a release adding an account needs this.
+    # It carries create, get and list and nothing else (roles/iam.serviceAccountCreator
+    # in docs.cloud.google.com/iam/docs/roles-permissions/iam, read 2026-09-28):
+    # no setIamPolicy, no update, no delete, and no log read.
+    "roles/iam.serviceAccountCreator",
+    # roles/iam.workloadIdentityPoolAdmin WAS HERE until 2026-09-29 (owner
+    # decision, security review of contract request 30, #314). terraform/infra
+    # manages no workload identity pool or provider -- the one pool it names is
+    # GKE's "<project>.svc.id.goog", a string inside a service-account binding's
+    # member -- so CI never used it, and holding it let CI add a provider to any
+    # pool in the project: swarm-github, minting tokens for swarm-ci-fix or for
+    # itself outside the WIF ref pin, or the other team's github-actions pool.
+    # A validation below refuses it by name.
+    #
     # SCOPABLE (partly): log buckets and views; sinks and exclusions stay wide.
     "roles/logging.configWriter",
     # UNSCOPABLE: Cloud Monitoring is not in IAM's resource-attribute list.
@@ -224,6 +282,18 @@ variable "deployer_roles" {
   validation {
     condition     = !contains(var.deployer_roles, "roles/iam.roleAdmin")
     error_message = "roles/iam.roleAdmin is never granted to CI (#79): iam.roles.update cannot be conditioned, and with it CI can add resourcemanager.projects.setIamPolicy to a custom role it already holds and grant itself anything, so no condition on its other grants is ever evaluated. Custom roles are defined in terraform/bootstrap/platform_roles.tf, which the owner applies."
+  }
+
+  # OWNER DECISION 2026-09-29 (#334). Said by name for the same reason.
+  validation {
+    condition     = !contains(var.deployer_roles, "roles/iam.serviceAccountAdmin")
+    error_message = "roles/iam.serviceAccountAdmin is never granted to CI on the project (#334): it would let CI set the IAM policy of every service account in saga-agents-staging, the other team's and its own included, and no IAM condition can narrow it. It is granted per account in terraform/bootstrap/deployer_service_accounts.tf."
+  }
+
+  # OWNER DECISION 2026-09-29 (#314). Said by name for the same reason.
+  validation {
+    condition     = !contains(var.deployer_roles, "roles/iam.workloadIdentityPoolAdmin")
+    error_message = "roles/iam.workloadIdentityPoolAdmin is never granted to CI (#314): terraform/infra manages no workload identity pool or provider, and with it CI can add a provider to swarm-github and mint tokens for swarm-ci-fix or swarm-tf-deployer outside the WIF ref pin. Pools and providers are made in terraform/bootstrap/wif.tf, which the owner applies."
   }
 
   # Every role here confers secretmanager.versions.access, directly or by

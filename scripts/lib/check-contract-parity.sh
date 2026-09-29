@@ -1188,7 +1188,9 @@ GSA_COST = ("the quota broker maps a worker OIDC token to a tenant by this "
             "prefix and the API derives the same name to grant secret access, "
             "so a drift is a 403 for every tenant at once")
 verdict("worker GSA prefix", GSA,
-        scan(((r"sa_account_id\s*=\s*\{[^}]*?=>\s*\"([a-z0-9-]*)\$\{",
+        # Terraform spells the prefix once, in modules/service_account_ids,
+        # which modules/tenancy and terraform/bootstrap both read (#334).
+        scan(((r"^\s*tenant_worker_prefix\s*=\s*\"([a-z0-9-]*)\"",
                "terraform tenant GSA id"),
               (r"WORKER_SERVICE_ACCOUNT_TEMPLATE\s*=\s*\"([a-z0-9-]*)\{tenant\}",
                "broker env template"),

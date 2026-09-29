@@ -89,16 +89,36 @@ def _string_value(path: Path, name: str) -> str:
 
 
 def _verify_identity() -> str:
-    """swarm-verify's email, derived exactly as terraform derives it."""
+    """swarm-verify's email, derived exactly as terraform derives it.
+
+    Since #334 the account id is spelled once, as `verify_id` in
+    terraform/modules/service_account_ids -- which terraform/bootstrap reads too,
+    to grant the release deployer serviceAccountAdmin on this account -- and
+    verify.tf takes it from there. So the derivation follows the same two hops:
+    verify.tf must name the module's output, and the module holds the literal.
+    """
     verify = _strip_comments(VERIFY_TF.read_text())
     m = re.search(
-        r'resource\s+"google_service_account"\s+"verify"\s*\{[^}]*?account_id\s*=\s*"([^"]+)"',
+        r'resource\s+"google_service_account"\s+"verify"\s*\{[^}]*?account_id\s*=\s*'
+        r"module\.(\w+)\.verify_id\b",
         verify,
         re.S,
     )
-    assert m, "google_service_account.verify has no literal account_id in verify.tf"
+    assert m, (
+        "google_service_account.verify's account_id is not "
+        "module.<service_account_ids>.verify_id in verify.tf"
+    )
+    call = re.search(
+        rf'module\s+"{re.escape(m.group(1))}"\s*\{{[^}}]*?source\s*=\s*"([^"]+)"', verify, re.S
+    )
+    assert call, f"verify.tf has no module {m.group(1)!r} with a source"
+    module_main = (VERIFY_TF.parent / call.group(1) / "main.tf").resolve()
+    account = re.search(
+        r'^\s*verify_id\s*=\s*"([^"]+)"', _strip_comments(module_main.read_text()), re.M
+    )
+    assert account, f"no literal verify_id in {module_main.relative_to(ROOT)}"
     project = _string_value(DEV_TFVARS, "project_id")
-    return f"{m.group(1)}@{project}.iam.gserviceaccount.com"
+    return f"{account.group(1)}@{project}.iam.gserviceaccount.com"
 
 
 def test_the_derived_identity_is_the_one_swarm_api_admits() -> None:
