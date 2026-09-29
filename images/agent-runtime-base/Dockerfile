@@ -206,6 +206,16 @@ RUN /usr/sbin/groupadd --gid 10001 swarm \
 USER swarm:swarm
 WORKDIR /workspace
 
+# The checkpoint restore extracts through `tarfile.data_filter` (PR #288), which
+# CPython has from 3.11.4. PYTHON_IMAGE is pinned by digest, and a digest says
+# nothing about the patch level, so the build asserts it rather than a resume
+# discovering it. `agent_worker.checkpoint` refuses to import without the
+# filter too; this line names the cause in the build log.
+RUN python -c "import sys, tarfile; \
+assert sys.version_info >= (3, 11, 4), 'Python %s: the checkpoint restore needs 3.11.4 or later' % sys.version.split()[0]; \
+assert hasattr(tarfile, 'data_filter'), 'tarfile.data_filter is missing'; \
+print('python', sys.version.split()[0])"
+
 # A worker that cannot import its own runners is broken in a way that must not
 # reach production, so the build proves it can.
 RUN python -c "import agent_worker, agent_worker.runners.mock, agent_worker.lifecycle; print('agent-worker', agent_worker.__version__)"

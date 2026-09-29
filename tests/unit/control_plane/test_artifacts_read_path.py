@@ -175,3 +175,64 @@ def test_nothing_reads_a_task_artifacts_subcollection_any_more() -> None:
         "nothing writes tasks/<id>/artifacts; the manifest is "
         "task.result_summary['artifacts']:\n  " + "\n  ".join(offenders)
     )
+
+
+def test_files_past_the_file_cap_are_counted_not_hidden(client, db) -> None:
+    """#227: a listing of 500 files out of 700 must not read as the whole run.
+
+    The worker uploads at most 500 files from `$SWARM_ARTIFACTS_DIR` (#228) and
+    COUNTS the rest as `result_summary.artifacts_over_cap` -- deliberately not
+    in `artifacts_skipped`, whose readers call a name there dropped at the
+    size cap. The route read only `artifacts` and `artifacts_skipped`, so it
+    answered `complete: true` with nothing skipped over a run that lost 200
+    files. `complete` keeps its meaning ("the manifest is written"; the UI and
+    the MCP client poll on it), and the count travels beside it.
+    """
+    seed_tenant(db, "eng")
+    seed_task(db, task_id="task_a", tenant_id="eng")
+    _finish(db, "task_a", {**FINISHED_SUMMARY, "artifacts_over_cap": 200})
+
+    body = client.get("/v1/tasks/task_a/artifacts", headers=auth_header("alice")).json()
+    assert body["complete"] is True
+    assert body["artifacts_over_cap"] == 200
+    assert body["artifacts_skipped"] == ["core.dump"], "over-cap files are counted, not named"
+
+
+def test_a_run_under_the_file_cap_reports_zero_over_it(client, db) -> None:
+    """An absent count is zero once the manifest is written, and not a guess before."""
+    seed_tenant(db, "eng")
+    seed_task(db, task_id="task_a", tenant_id="eng")
+    seed_task(db, task_id="task_running", tenant_id="eng", state="RUNNING")
+    _finish(db, "task_a", FINISHED_SUMMARY)
+
+    body = client.get("/v1/tasks/task_a/artifacts", headers=auth_header("alice")).json()
+    assert body["artifacts_over_cap"] == 0
+
+    body = client.get(
+        "/v1/tasks/task_running/artifacts", headers=auth_header("alice")
+    ).json()
+    assert body["complete"] is False
+    assert body["artifacts_over_cap"] is None, "an unwritten manifest has no count yet"
+
+
+def test_a_malformed_over_cap_count_does_not_500(client, db) -> None:
+    """`result_summary` is free-form: a count that is not a count is not trusted."""
+    seed_tenant(db, "eng")
+    seed_task(db, task_id="task_a", tenant_id="eng")
+    for bad in ("200", -3, True, 2.5, [1]):
+        _finish(db, "task_a", {**FINISHED_SUMMARY, "artifacts_over_cap": bad})
+        response = client.get("/v1/tasks/task_a/artifacts", headers=auth_header("alice"))
+        assert response.status_code == 200, response.text
+        assert response.json()["artifacts_over_cap"] == 0, bad
+
+
+def test_the_store_manifest_carries_the_over_cap_count() -> None:
+    """The one place the manifest's location is spelled (`artifact_manifest`)."""
+    from types import SimpleNamespace
+
+    from swarm_api.store import Store
+
+    task = SimpleNamespace(result_summary={**FINISHED_SUMMARY, "artifacts_over_cap": 7})
+    manifest = Store.artifact_manifest(task)
+    assert manifest.over_cap == 7
+    assert manifest.complete is True

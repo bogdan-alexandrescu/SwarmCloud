@@ -25,8 +25,14 @@ output "github_deployer_service_account" {
 }
 
 output "deployer_conditions" {
-  description = "role -> the IAM condition its grant carries once the role is named in deployer_scoped_roles. Read the one you are about to switch before you switch it."
-  value       = local.deployer_conditions
+  description = "role -> the IAM condition its grant carries once the role is named in deployer_scoped_roles. Read the one you are about to switch before you switch it. roles/resourcemanager.projectIamAdmin is chunked (#275): its entries are keyed \"roles/resourcemanager.projectIamAdmin (chunk N of M)\" rather than by role name alone, one per binding."
+  value = merge(
+    local.deployer_conditions,
+    {
+      for k, v in local.deployer_project_iam_admin_conditions :
+      "roles/resourcemanager.projectIamAdmin (chunk ${tonumber(k) + 1} of ${length(local.deployer_project_iam_admin_conditions)})" => v
+    },
+  )
 }
 
 output "deployer_grantable_project_roles" {

@@ -1,9 +1,19 @@
-import { useId, useState } from 'react'
+import { useEffect, useId, useState, useSyncExternalStore } from 'react'
 import { loadCapacity, setPoolLimit } from './api'
 import { errorHeading, isPaused, type ApiError } from './fetch'
 import { HelpCard } from './HelpCard'
 import { Screen } from './Shell'
-import { poolKind, poolLabel, poolLabelAmong, setBy, type Capacity, type Pool } from './types'
+import {
+  FAMILY_TITLE,
+  POOL_FAMILY_ORDER,
+  poolKind,
+  poolLabel,
+  poolLabelAmong,
+  setBy,
+  type Capacity,
+  type Pool,
+  type PoolKind,
+} from './types'
 
 /**
  * Pool limits: the concurrency ceilings, editable.
@@ -268,6 +278,10 @@ function ProfileCard({
               : `No ceiling can be computed for ${name}: none of the pools it takes are in this response, so the figure is not measured rather than zero.`
           }
         >
+          {/* A CEILING, AND SAID TO BE ONE (#132): `max 5 agents`. The bare
+              `5 agents` read as a count of agents running, which is the other
+              figure on this platform with that unit. */}
+          {measured && <span className="ctl-figure-unit adm-figure-max">max</span>}
           {measured ? ceiling : <i className="ctl-em">—</i>}
           {measured && <span className="ctl-figure-unit">agents</span>}
         </b>
@@ -318,6 +332,59 @@ function ProfileCard({
   )
 }
 
+/**
+ * The pool a link asked for: `#admin/limits?pool=tenant:eng`, as the Tenants
+ * roster's Enforced figures write it (#134).
+ *
+ * READ FROM THE ADDRESS, AND FOLLOWED. The router keeps `?pool=` on Pool
+ * limits' address (App.tsx `fromHash` / `canonical`) -- it did not at first,
+ * and the normalise effect stripped it before this screen's async read had
+ * drawn a row, so the link opened the page at no row. It is read through
+ * `hashchange` too, so a second Enforced link followed while this screen is
+ * already mounted moves the mark rather than leaving it on the first row.
+ */
+function subscribeHash(onChange: () => void): () => void {
+  if (typeof window === 'undefined') return () => {}
+  window.addEventListener('hashchange', onChange)
+  return () => window.removeEventListener('hashchange', onChange)
+}
+
+function linkedPool(): string | null {
+  if (typeof window === 'undefined') return null
+  const hash = window.location.hash
+  const at = hash.indexOf('?')
+  if (at === -1) return null
+  return new URLSearchParams(hash.slice(at + 1)).get('pool')
+}
+
+/** §7.2's phone width, where the filter is drawn. The Help card's own query. */
+const PHONE_QUERY = '(max-width: 560px)'
+
+function subscribePhone(onChange: () => void): () => void {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return () => {}
+  const query = window.matchMedia(PHONE_QUERY)
+  query.addEventListener('change', onChange)
+  return () => query.removeEventListener('change', onChange)
+}
+
+/** False where there is no `matchMedia` (jsdom), which is the desktop's answer. */
+function atPhoneWidth(): boolean {
+  return typeof window !== 'undefined' && typeof window.matchMedia === 'function' && window.matchMedia(PHONE_QUERY).matches
+}
+
+/**
+ * The row being edited, and what has been typed into it. `draft` null means
+ * the field shows the pool's own value off the latest read.
+ *
+ * HELD HERE, ABOVE THE ROWS (AH-7). One editor is open at a time (#132), and
+ * what is typed into it must survive anything that rebuilds the rows -- a
+ * re-read after another row's save, a filter that is changed and changed back.
+ */
+interface Editing {
+  pool: string
+  draft: string | null
+}
+
 function PoolEditor({
   pools,
   saved,
@@ -329,14 +396,65 @@ function PoolEditor({
   onSaved: (pool: string) => Promise<boolean>
   onEdit: (pool: string) => void
 }) {
+  const [editing, setEditing] = useState<Editing | null>(null)
+  const [writing, setWriting] = useState<readonly string[]>([])
+  const onWriting = (pool: string, on: boolean) =>
+    setWriting((w) => (on ? [...w.filter((p) => p !== pool), pool] : w.filter((p) => p !== pool)))
+  const [filter, setFilter] = useState('')
+  const target = useSyncExternalStore(subscribeHash, linkedPool, () => null)
+  const phone = useSyncExternalStore(subscribePhone, atPhoneWidth, () => false)
+
+  // THE FILTER IS A PHONE CONTROL (#132). At 390 the families run to several
+  // screens of rows; above 560px they fit, and a box nobody needs is noise.
+  // A filter typed on a phone that is then turned wide stops applying rather
+  // than hiding rows behind a box that is no longer drawn.
+  const needle = phone ? filter.trim().toLowerCase() : ''
+  const matches = (p: Pool) =>
+    needle === '' ||
+    p.name.toLowerCase().includes(needle) ||
+    poolLabel(p.name).toLowerCase().includes(needle) ||
+    // The open editor is never filtered away from under what was typed in it.
+    p.name === editing?.pool
+  const families = POOL_FAMILY_ORDER.flatMap((kind) => {
+    const rows = pools
+      .filter((p) => poolKind(p.name) === kind && matches(p))
+      .sort((a, b) => a.name.localeCompare(b.name))
+    return rows.length === 0 ? [] : [{ kind, rows }]
+  })
+
+  // TO THE ROW A LINK NAMED, once it is on screen. jsdom implements no
+  // `scrollIntoView`, hence the guard.
+  const landed = target !== null && pools.some((p) => p.name === target)
+  useEffect(() => {
+    if (!landed) return
+    const row = document.getElementById(`limit-${target}`)
+    if (row !== null && typeof row.scrollIntoView === 'function') row.scrollIntoView({ block: 'center' })
+  }, [landed, target])
+
+  const close = (pool: string) => setEditing((e) => (e?.pool === pool ? null : e))
+
+  // AN UNSAVED VALUE IS NOT THROWN AWAY BY A CLICK ELSEWHERE. Opening another
+  // row replaces the one editor, so while the open row holds a typed value
+  // that differs from its pool's own, every other row's `edit` is disabled:
+  // the reader saves or cancels first, rather than losing the number without
+  // a word.
+  // A value being WRITTEN is not held: from the click on `save` until the
+  // read-back lands it is on its way to the server, and closing its editor
+  // loses nothing.
+  const heldPool = editing?.draft != null ? pools.find((p) => p.name === editing.pool) : undefined
+  const held =
+    heldPool !== undefined && !writing.includes(heldPool.name) && editing!.draft!.trim() !== String(heldPool.hard_limit)
+      ? heldPool.name
+      : null
+
   return (
     <section className="section">
       <span className="ctl-eyebrow has-q">
         Ceilings
-        {/* "Lowering a ceiling evicts nothing. Running work keeps its slots;
-            the pool admits nothing new until it drains." was eighteen words
-            under the control. The consequence still sits beside the control,
-            as the two-word qualifier below; the sentence is behind the ?.
+        {/* The consequence -- "lowering a ceiling evicts nothing" -- sits
+            beside the open editor (#132), where the control it qualifies is;
+            it used to be the table's caption, under every row whether or not
+            anything was being changed. The argument behind it is behind the ?.
             THIS IS THE ONE GLYPH B7.4 LEFT ON THIS SCREEN, and it is the only
             one on it that survives the test: what a control DOES NOT do when
             you use it cannot be written into the control's own label without
@@ -345,36 +463,124 @@ function PoolEditor({
             expectation. */}
         <HelpCard topic="ceiling-change-evicts-nothing" />
       </span>
-      <div className="ctl-table is-scroll">
-        <table role="table">
-          <thead role="rowgroup">
-            <tr role="row">
-              <th role="columnheader" scope="col">Pool</th>
-              {/* The unit rides on the column name (§8.4.3) rather than in a
-                  footnote under the table -- on BOTH figures (CP-24). This
-                  said `In use` bare beside `Ceiling (units)` while Pools said
-                  the opposite, so each screen labelled the other one's half. */}
-              <th role="columnheader" scope="col" className="is-num">In use (units)</th>
-              <th role="columnheader" scope="col" className="is-num">Ceiling (units)</th>
-              <th role="columnheader" scope="col">Set by</th>
-              <th role="columnheader" scope="col">Change</th>
-            </tr>
-          </thead>
-          <tbody role="rowgroup">
-            {[...pools]
-              .sort((a, b) => a.name.localeCompare(b.name))
-              .map((p) => (
+      {phone && (
+        <div className="ctl-toolbar adm-filter">
+          <input
+            type="search"
+            className="mono"
+            placeholder="filter pools"
+            aria-label="Filter pools by name"
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+          />
+        </div>
+      )}
+      {families.length === 0 && <p className="ctl-panel-note">no pool matches</p>}
+      {/* GROUPED AS CAPACITY › POOLS GROUPS THEM (#132): the same families, in
+          the same order, under the same headings, so a pool is found on the
+          screen that edits it where it was found on the screen that showed it
+          binding. It was one table sorted by name, where `global` sat between
+          `backend:*` and `provider:*`. `.cap-families` is that board's own
+          container, so the headings, the tables' borders and the phone
+          scroll rules are its rules and not a copy of them. */}
+      <div className="cap-families">
+        {families.map(({ kind, rows }) => (
+          <Family
+            key={kind}
+            kind={kind}
+            pools={rows}
+            saved={saved}
+            editing={editing}
+            target={target}
+            held={held}
+            onWriting={onWriting}
+            onOpen={(pool) => setEditing({ pool, draft: null })}
+            onDraft={(pool, draft) => {
+              setEditing({ pool, draft })
+              onEdit(pool)
+            }}
+            onClose={close}
+            onSaved={onSaved}
+          />
+        ))}
+      </div>
+    </section>
+  )
+}
+
+function Family({
+  kind,
+  pools,
+  saved,
+  editing,
+  target,
+  held,
+  onWriting,
+  onOpen,
+  onDraft,
+  onClose,
+  onSaved,
+}: {
+  kind: PoolKind
+  pools: Pool[]
+  saved: Readonly<Record<string, SaveMark>>
+  editing: Editing | null
+  target: string | null
+  /** The pool whose open editor holds an unsaved value, if one does. */
+  held: string | null
+  onWriting: (pool: string, on: boolean) => void
+  onOpen: (pool: string) => void
+  onDraft: (pool: string, draft: string) => void
+  onClose: (pool: string) => void
+  onSaved: (pool: string) => Promise<boolean>
+}) {
+  // `Set by` ONLY WHERE IT SAYS SOMETHING (#132). On a pool whose ceiling is
+  // its configured value the column read `configured` on every row, which is
+  // the column restating the Ceiling beside it. A family where every pool is
+  // as configured draws no column; one where a quota or AIMD holds a pool
+  // down draws it, with the word on that row alone.
+  const showSetBy = pools.some((p) => setBy(p).term !== 'configured')
+  return (
+    <section className="ctl-card adm-family">
+      <div className="ctl-card-head">
+        <h2 className="ctl-card-title">{FAMILY_TITLE[kind]}</h2>
+      </div>
+      <div className="ctl-card-body is-flush">
+        <div className="ctl-table is-scroll">
+          <table role="table">
+            <thead role="rowgroup">
+              <tr role="row">
+                <th role="columnheader" scope="col">Pool</th>
+                {/* The unit rides on the column name (§8.4.3) rather than in a
+                    footnote under the table -- on BOTH figures (CP-24). This
+                    said `In use` bare beside `Ceiling (units)` while Pools said
+                    the opposite, so each screen labelled the other one's half. */}
+                <th role="columnheader" scope="col" className="is-num">In use (units)</th>
+                <th role="columnheader" scope="col" className="is-num">Ceiling (units)</th>
+                {showSetBy && <th role="columnheader" scope="col">Set by</th>}
+                <th role="columnheader" scope="col">Change</th>
+              </tr>
+            </thead>
+            <tbody role="rowgroup">
+              {pools.map((p) => (
                 <PoolRow
                   key={p.name}
                   pool={p}
                   mark={saved[p.name] ?? null}
+                  showSetBy={showSetBy}
+                  editing={editing?.pool === p.name ? editing : null}
+                  target={target === p.name}
+                  locked={held !== null && held !== p.name}
+                  onWriting={(on) => onWriting(p.name, on)}
+                  onOpen={() => onOpen(p.name)}
+                  onDraft={(draft) => onDraft(p.name, draft)}
+                  onClose={() => onClose(p.name)}
                   onSaved={() => onSaved(p.name)}
-                  onEdit={() => onEdit(p.name)}
                 />
               ))}
-          </tbody>
-          <caption>lowering a ceiling evicts nothing</caption>
-        </table>
+            </tbody>
+          </table>
+        </div>
       </div>
     </section>
   )
@@ -383,30 +589,48 @@ function PoolEditor({
 function PoolRow({
   pool,
   mark,
+  showSetBy,
+  editing,
+  target,
+  locked,
+  onWriting,
+  onOpen,
+  onDraft,
+  onClose,
   onSaved,
-  onEdit,
 }: {
   pool: Pool
   /** What the last save of this row said. Held by the screen, not the row (AH-7). */
   mark: SaveMark | null
+  showSetBy: boolean
+  /** This row's editor, when it is the one open. Held above the rows (AH-7). */
+  editing: Editing | null
+  /** The row a link named (#134). */
+  target: boolean
+  /** Another row's editor holds an unsaved value: this row's `edit` waits. */
+  locked: boolean
+  /** From the click on `save` until the read-back settles, or the write fails. */
+  onWriting: (on: boolean) => void
+  onOpen: () => void
+  onDraft: (draft: string) => void
+  onClose: () => void
   /** Resolves true once the pools have been read back after the write. */
   onSaved: () => Promise<boolean>
-  onEdit: () => void
 }) {
-  // WHAT SOMEBODY TYPED, OR NOTHING. `null` means the field shows the pool's
-  // own value off the latest read, so a row nobody touched follows a re-read
-  // -- including one that picked up another operator's change -- instead of
-  // showing the old limit as an unsaved edit a stray `save` would write back.
-  const [draft, setDraft] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<ApiError | null>(null)
   const messageId = useId()
 
-  const value = draft ?? String(pool.hard_limit)
+  const open = editing !== null
+  // WHAT SOMEBODY TYPED, OR THE POOL'S OWN VALUE. A row nobody has typed in
+  // follows a re-read -- including one that picked up another operator's
+  // change -- instead of showing the old limit as an edit a stray `save`
+  // would write back.
+  const value = editing?.draft ?? String(pool.hard_limit)
   const dirty = value.trim() !== String(pool.hard_limit)
   const parsed = Number(value)
   const valid = Number.isInteger(parsed) && parsed >= 0 && parsed <= 100_000
-  const invalid = dirty && !valid
+  const invalid = open && dirty && !valid
   const by = setBy(pool)
   const editable = isEditable(pool)
 
@@ -414,22 +638,30 @@ function PoolRow({
     if (!valid || busy) return
     setBusy(true)
     setError(null)
+    onWriting(true)
     setPoolLimit(pool.name, parsed).then(async (r) => {
       setBusy(false)
       if (r.status === 'ok' || r.status === 'stale') {
-        // The typed value is dropped only once the read-back carries it, so
-        // the field never flicks back to the old limit in between. If the
-        // read-back fails the field keeps showing what was written, beside
+        // The editor closes only once the read-back carries the value, so the
+        // field never flicks back to the old limit in between. If the
+        // read-back fails the editor stays open on what was written, beside
         // `not re-read`.
-        if (await onSaved()) setDraft(null)
-      } else if (r.status === 'error') {
-        setError(r.error)
+        const reread = await onSaved()
+        onWriting(false)
+        if (reread) onClose()
+      } else {
+        onWriting(false)
+        if (r.status === 'error') setError(r.error)
       }
     })
   }
 
+  const classes = [isPaused(pool) ? 'is-paused' : '', target ? 'is-target' : ''].filter(Boolean).join(' ')
+
   return (
-    <tr role="row" className={isPaused(pool) ? 'is-paused' : undefined}>
+    // THE ID A LINK NAMES (#132, #134): `limit-<pool>`, the raw pool name,
+    // so the Tenants roster can point at `limit-tenant:<id>`.
+    <tr role="row" id={`limit-${pool.name}`} className={classes === '' ? undefined : classes}>
       <th role="rowheader" scope="row" className="pool-name">
         {poolLabel(pool.name)}
         {/* The raw name, because it is what you paste into pool-limit.sh and a
@@ -437,38 +669,67 @@ function PoolRow({
         <span className="ctl-sub">{pool.name}</span>
       </th>
       <td role="cell" data-label="In use (units)" className="is-num">{pool.active}</td>
-      <td role="cell" data-label="Ceiling (units)" className="is-num">{pool.effective_limit}</td>
-      <td role="cell" data-label="Set by" title={by.detail}>{by.term}</td>
+      <td role="cell" data-label="Ceiling (units)" className="is-num">
+        <span className="adm-ceiling">{pool.effective_limit}</span>
+      </td>
+      {showSetBy && (
+        <td role="cell" data-label="Set by" title={by.term === 'configured' ? undefined : by.detail}>
+          {by.term === 'configured' ? null : by.term}
+        </td>
+      )}
       <td role="cell" data-label="Change">
         <span className="limit-edit">
-          <input
-            type="number"
-            min={0}
-            max={100000}
-            value={value}
-            disabled={busy || !editable}
-            onChange={(e) => {
-              setDraft(e.target.value)
-              onEdit()
-            }}
-            // The sentence that used to sit beside a disabled input lives here,
-            // where a keyboard reader reaching the control gets it and a
-            // sighted reader gets the two-word marker instead.
-            aria-label={
-              editable
-                ? `Hard limit for ${pool.name}`
-                : `Hard limit for ${pool.name}. This pool kind has no write route, so the control is read-only.`
-            }
-            // THE INPUT SAYS IT IS WRONG, AND WHY (AH-8). The range message used
-            // to appear beside the control with nothing tying the two together,
-            // so a keyboard or screen-reader user typing `-1` was told nothing;
-            // the stylesheet draws the warn border off `aria-invalid`.
-            aria-invalid={invalid ? true : undefined}
-            aria-describedby={invalid ? messageId : undefined}
-          />
-          <button onClick={save} disabled={!dirty || !valid || busy || !editable}>
-            {busy ? 'saving…' : 'save'}
-          </button>
+          {open ? (
+            <>
+              <input
+                type="number"
+                min={0}
+                max={100000}
+                value={value}
+                disabled={busy || !editable}
+                onChange={(e) => onDraft(e.target.value)}
+                aria-label={`Hard limit for ${pool.name}`}
+                // THE INPUT SAYS IT IS WRONG, AND WHY (AH-8). The range message
+                // used to appear beside the control with nothing tying the two
+                // together, so a keyboard or screen-reader user typing `-1` was
+                // told nothing; the stylesheet draws the warn border off
+                // `aria-invalid`.
+                aria-invalid={invalid ? true : undefined}
+                aria-describedby={invalid ? messageId : undefined}
+              />
+              <button onClick={save} disabled={!dirty || !valid || busy || !editable}>
+                {busy ? 'saving…' : 'save'}
+              </button>
+              <button
+                onClick={() => {
+                  setError(null)
+                  onClose()
+                }}
+                disabled={busy}
+              >
+                cancel
+              </button>
+            </>
+          ) : (
+            // A pool nothing can write gets no editor to open: an enabled
+            // control that silently does nothing is worse than none. The
+            // sentence is on the button, where a keyboard reader reaching it
+            // gets it and a sighted reader gets the two-word marker instead.
+            <button
+              onClick={onOpen}
+              disabled={!editable || locked}
+              aria-label={
+                !editable
+                  ? `Edit ceiling for ${pool.name}. This pool kind has no write route, so it is read-only.`
+                  : locked
+                    ? `Edit ceiling for ${pool.name}. Another row has an unsaved value: save or cancel it first.`
+                    : `Edit ceiling for ${pool.name}`
+              }
+              title={locked ? 'another row has an unsaved value' : undefined}
+            >
+              edit
+            </button>
+          )}
           {!editable && <span className="client-side">read-only</span>}
           {mark !== null && <span className="tag ok">saved</span>}
           {mark === 'unread' && (
@@ -490,6 +751,9 @@ function PoolRow({
             0–100000
           </div>
         )}
+        {/* BESIDE THE ONE EDITOR THAT IS OPEN (#132), because it qualifies
+            that control and no other. */}
+        {open && <div className="limit-note">lowering a ceiling evicts nothing</div>}
       </td>
     </tr>
   )
