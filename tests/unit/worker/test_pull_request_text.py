@@ -19,12 +19,16 @@ WHAT IS PINNED. When the agent leaves `pr-title.txt` and/or `pr-body.md` in
   of the artifacts folder;
 * with the platform's metadata block still in the body, after the agent's.
 
-With neither file the generated body is unchanged, and the generated title
-NEVER carries the task id (owner rule, 2026-09-28): the issue input's title
-or number, else the prompt's first sentence, else the workflow step. An agent
-title carrying a task id is treated as absent, an adopted pull request still
-titled `[swarm] task_...` is retitled, and an agent title or body that
-@mentions anyone is refused.
+With no `pr-body.md` the generated body is unchanged. NO TITLE IS INVENTED
+(owner decisions, 2026-09-28): the only title the platform writes is the
+step's `issue` input, as "<issue title> (#N)" or "Fixes #N", with the `@`
+taken off any mention in the issue's title. With no usable `pr-title.txt` and
+no `issue` input the branch is pushed and no pull request is opened, and
+`_title_owed` makes `pr-title.txt` an expected output so the attempt fails
+retryably before it gets that far. An agent title carrying a task id is
+treated as absent, an adopted pull request still titled `[swarm] task_...`
+is retitled, and an agent title or body that @mentions anyone in prose is
+refused -- a mention inside a code span or a fenced block is not a mention.
 """
 
 from __future__ import annotations
@@ -49,13 +53,20 @@ pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="git is not 
 
 KEY = "sk-ant-supersecret-value-0123456789"
 
+DEFAULT_TITLE = b"The widget refuses a negative size\n"
+
 
 def _publish(
     worker_factory, monkeypatch, origin: Path, *, task_id: str, files: dict, register=(),
     task_input: dict | None = None, step_id: str | None = None, label: str | None = None,
+    with_title: bool = True,
 ):
     """One direct-pr attempt whose agent edits a file and leaves `files` in
-    the artifacts folder (bytes, or a callable that makes the entry)."""
+    the artifacts folder (bytes, or a callable that makes the entry).
+
+    `with_title` writes `DEFAULT_TITLE` as `pr-title.txt` unless `files`
+    already names one: the agent's title is required, so a test about
+    something else must still write one to get a pull request at all."""
     worker, config, _ = worker_factory(
         task_id=task_id,
         attempt_id=f"att-{task_id}",
@@ -77,6 +88,9 @@ def _publish(
         worker.log.register_secret(value)
     assert worker._maybe_clone(task) is not None, "the clone did not land"
     (worker.ws.work / lifecycle.REPO_DIR_NAME / "agent.txt").write_text("the agent's work\n")
+    files = dict(files)
+    if with_title and "pr-title.txt" not in files:
+        files["pr-title.txt"] = DEFAULT_TITLE
     for name, content in files.items():
         target = worker.ws.artifacts / name
         if callable(content):
@@ -90,6 +104,15 @@ def _publish(
 def _only_pull(forge) -> dict:
     assert len(forge.pulls) == 1, forge.pulls
     return forge.pulls[0]
+
+
+def _assert_no_pull_and_title_asked_for(forge, out: dict) -> None:
+    """NO TITLE IS INVENTED: the branch is pushed, nothing is opened, and the
+    reason tells the agent which file to write."""
+    assert forge.pulls == [], forge.pulls
+    assert out["published"] is True, out
+    assert "pr-title.txt" in out["publish_reason"], out["publish_reason"]
+    assert "no pull request was opened" in out["publish_reason"], out["publish_reason"]
 
 
 def test_the_agents_title_and_body_are_used_and_the_metadata_block_is_kept(
@@ -115,33 +138,40 @@ def test_the_agents_title_and_body_are_used_and_the_metadata_block_is_kept(
     assert out["pull_request_text"] == {"title": "agent", "body": "agent"}, out
 
 
-def test_with_neither_file_the_generated_title_never_carries_the_task_id(
+def test_with_neither_file_and_no_issue_no_pull_request_is_opened(
     worker_factory, monkeypatch, origin, local_urls, forge
 ):
-    """The old fallback was `f"[swarm] {task_id}"` (#214). The owner's
-    2026-09-28 rule retired it: no generated title may carry the task id, and
-    with no issue input and no prompt to draw from, the last resort names the
-    runner profile instead."""
-    _, config, out = _publish(worker_factory, monkeypatch, origin, task_id="t-pr-none", files={})
-
-    pull = _only_pull(forge)
-    assert config.task_id not in pull["title"], pull["title"]
-    assert pull["title"] == "SwarmCloud: work from workflow mock", pull["title"]
-    assert pull["body"].startswith("Opened by SwarmCloud"), pull["body"]
-    assert out["pull_request_text"] == {"title": "platform", "body": "platform"}, out
+    """The old fallback was `f"[swarm] {task_id}"` (#214), and the one after
+    it made a title up from the prompt. Neither described the change (owner
+    decision 2, 2026-09-28): with no agent title and no issue, no pull
+    request is opened at all."""
+    _, _, out = _publish(
+        worker_factory, monkeypatch, origin, task_id="t-pr-none", files={}, with_title=False,
+    )
+    _assert_no_pull_and_title_asked_for(forge, out)
 
 
-def test_either_file_alone_is_used_with_the_other_generated(
+def test_a_body_alone_opens_no_pull_request(
     worker_factory, monkeypatch, origin, local_urls, forge
 ):
-    _, config, _ = _publish(
+    _, _, out = _publish(
         worker_factory, monkeypatch, origin, task_id="t-pr-body-only",
-        files={"pr-body.md": b"Closes #7\n"},
+        files={"pr-body.md": b"Closes #7\n"}, with_title=False,
+    )
+    _assert_no_pull_and_title_asked_for(forge, out)
+
+
+def test_a_title_alone_is_used_with_the_generated_body(
+    worker_factory, monkeypatch, origin, local_urls, forge
+):
+    _, config, out = _publish(
+        worker_factory, monkeypatch, origin, task_id="t-pr-title-only", files={},
     )
     pull = _only_pull(forge)
+    assert pull["title"] == "The widget refuses a negative size", pull["title"]
     assert config.task_id not in pull["title"], pull["title"]
-    assert pull["title"] == "SwarmCloud: work from workflow mock", pull["title"]
-    assert pull["body"].startswith("Closes #7"), pull["body"]
+    assert pull["body"].startswith("Opened by SwarmCloud"), pull["body"]
+    assert out["pull_request_text"] == {"title": "agent", "body": "platform"}, out
 
 
 def test_a_long_title_and_a_long_body_are_cut_not_refused(
@@ -193,17 +223,14 @@ def test_a_registered_secret_is_scrubbed_before_the_title_is_cut(
     ],
     ids=["two-lines", "blank", "not-utf8", "attribution"],
 )
-def test_a_title_that_cannot_be_used_falls_back_to_the_generated_one(
+def test_a_title_that_cannot_be_used_opens_no_pull_request(
     worker_factory, monkeypatch, origin, local_urls, forge, title
 ):
-    _, config, out = _publish(
+    _, _, out = _publish(
         worker_factory, monkeypatch, origin, task_id="t-pr-bad-title",
         files={"pr-title.txt": title},
     )
-    pull = _only_pull(forge)
-    assert config.task_id not in pull["title"], pull["title"]
-    assert pull["title"] == "SwarmCloud: work from workflow mock", pull["title"]
-    assert out["pull_request_text"]["title"] == "platform", out
+    _assert_no_pull_and_title_asked_for(forge, out)
     assert out.get("pull_request_text_refused"), out
 
 
@@ -310,7 +337,10 @@ def test_the_worker_asks_for_the_update_only_when_the_agent_wrote_text(
 ):
     """A human may have edited a generated title or body by hand; a retry that
     has nothing of the agent's to say must not overwrite that."""
-    _publish(worker_factory, monkeypatch, origin, task_id="t-pr-upd-none", files={})
+    _publish(
+        worker_factory, monkeypatch, origin, task_id="t-pr-upd-none", files={},
+        task_input={"issue": 5}, with_title=False,
+    )
     _publish(
         worker_factory, monkeypatch, origin, task_id="t-pr-upd-agent",
         files={"pr-body.md": b"Closes #5\n"},
@@ -336,46 +366,53 @@ def test_an_issue_input_names_the_issue_in_the_title(
 ):
     _, config, _ = _publish(
         worker_factory, monkeypatch, origin, task_id="t-pr-issue", files={},
-        task_input={"prompt": "Do the thing. Then more.", "issue": issue},
+        task_input={"prompt": "Do the thing. Then more.", "issue": issue}, with_title=False,
     )
     pull = _only_pull(forge)
     assert pull["title"] == expected, pull["title"]
     assert f"- task: `{config.task_id}`" in pull["body"], "the task id left the metadata block"
 
 
-def test_the_prompts_first_sentence_is_the_title_collapsed_scrubbed_and_capped(
-    worker_factory, monkeypatch, origin, local_urls, forge
+@pytest.mark.parametrize(
+    "mentioned",
+    ["Ping @octocat about the widget", "The @acme/team widget accepts -1"],
+    ids=["user", "team"],
+)
+def test_a_mention_in_an_issue_title_loses_its_at_sign(
+    worker_factory, monkeypatch, origin, local_urls, forge, mentioned
 ):
+    """An issue's title is anyone's text; a title the platform writes from it
+    must page no one."""
     _publish(
-        worker_factory, monkeypatch, origin, task_id="t-pr-prompt-a", files={},
-        task_input={"prompt": "  Make the\n   widget refuse\tnegatives.  Then more words."},
-    )
-    _publish(
-        worker_factory, monkeypatch, origin, task_id="t-pr-prompt-b", files={},
-        task_input={"prompt": f"Rotate {KEY} before the release! It leaked."},
-        register=(KEY,),
-    )
-    _publish(
-        worker_factory, monkeypatch, origin, task_id="t-pr-prompt-c", files={},
-        task_input={"prompt": "w" * 400 + ". Tail."},
-    )
-    short, secret, long = (p["title"] for p in forge.pulls)
-    assert short == "Make the widget refuse negatives.", short
-    assert KEY not in secret and "sk-ant" not in secret, secret
-    assert secret.startswith("Rotate ") and secret.endswith("before the release!"), secret
-    assert len(long) <= lifecycle.PR_TITLE_MAX_CHARS and long.endswith("..."), (len(long), long[-5:])
-    assert long.startswith("wwww"), long[:5]
-
-
-def test_with_nothing_else_the_title_names_the_workflow_step(
-    worker_factory, monkeypatch, origin, local_urls, forge
-):
-    _, config, _ = _publish(
-        worker_factory, monkeypatch, origin, task_id="t-pr-step", files={}, step_id="build",
+        worker_factory, monkeypatch, origin, task_id="t-pr-issue-at", files={},
+        task_input={"issue": {"number": 8, "title": mentioned}}, with_title=False,
     )
     pull = _only_pull(forge)
-    assert pull["title"] == "SwarmCloud: work from workflow build", pull["title"]
-    assert config.task_id not in pull["title"]
+    assert "@" not in pull["title"], pull["title"]
+    assert pull["title"] == f"{mentioned.replace('@', '')} (#8)", pull["title"]
+
+
+def test_the_prompt_alone_opens_no_pull_request(
+    worker_factory, monkeypatch, origin, local_urls, forge
+):
+    """The prompt's first sentence used to be the title. It described the
+    request, not the change, and is no longer used."""
+    _, _, out = _publish(
+        worker_factory, monkeypatch, origin, task_id="t-pr-prompt", files={},
+        task_input={"prompt": "Make the widget refuse negatives. Then more words."},
+        with_title=False,
+    )
+    _assert_no_pull_and_title_asked_for(forge, out)
+
+
+def test_the_step_alone_opens_no_pull_request(
+    worker_factory, monkeypatch, origin, local_urls, forge
+):
+    _, _, out = _publish(
+        worker_factory, monkeypatch, origin, task_id="t-pr-step", files={}, step_id="build",
+        label="Build the widget", with_title=False,
+    )
+    _assert_no_pull_and_title_asked_for(forge, out)
 
 
 @pytest.mark.parametrize(
@@ -394,10 +431,10 @@ def test_an_agent_title_carrying_a_task_id_is_treated_as_absent(
     _, config, out = _publish(
         worker_factory, monkeypatch, origin, task_id=task_id,
         files={"pr-title.txt": title if title is not None else f"Fix {task_id} now".encode()},
-        task_input={"prompt": "Make the widget refuse negatives. More."},
+        task_input={"prompt": "Make the widget refuse negatives. More.", "issue": 77},
     )
     pull = _only_pull(forge)
-    assert pull["title"] == "Make the widget refuse negatives.", pull["title"]
+    assert pull["title"] == "Fixes #77", pull["title"]
     assert config.task_id not in pull["title"]
     assert out["pull_request_text"]["title"] == "platform", out
 
@@ -476,6 +513,7 @@ def test_an_agent_text_with_a_mention_is_refused(
 ):
     _, _, out = _publish(
         worker_factory, monkeypatch, origin, task_id="t-pr-mention", files=files,
+        task_input={"issue": 4},
     )
     pull = _only_pull(forge)
     assert "@octocat" not in pull["title"] and "@octocat" not in pull["body"], pull
@@ -497,3 +535,80 @@ def test_an_email_address_is_not_a_mention(
     pull = _only_pull(forge)
     assert pull["body"].startswith("Closes #4"), pull["body"]
     assert out["pull_request_text"]["body"] == "agent", out
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        b"Closes #4\n\nThe fixture is now `@pytest.fixture(scope=\"module\")`.\n",
+        b"Closes #4\n\nUse ``@octocat`` as the example login.\n",
+        b"Closes #4\n\n```python\n@pytest.fixture\ndef widget():\n    return 1\n```\n\nDone.\n",
+        b"Closes #4\n\n~~~\ncc @acme/reviewers\n~~~\n",
+    ],
+    ids=["code-span", "double-backtick-span", "backtick-fence", "tilde-fence"],
+)
+def test_a_mention_inside_code_is_kept(
+    worker_factory, monkeypatch, origin, local_urls, forge, body
+):
+    """GitHub notifies no one for `@name` inside a code span or a fenced
+    block (owner decision 3, 2026-09-28), so a body quoting a decorator is
+    the agent's, not refused."""
+    _, _, out = _publish(
+        worker_factory, monkeypatch, origin, task_id="t-pr-code-at", files={"pr-body.md": body},
+    )
+    pull = _only_pull(forge)
+    assert pull["body"].startswith("Closes #4"), pull["body"]
+    assert out["pull_request_text"]["body"] == "agent", out
+    assert not any(
+        r.startswith("pr-body.md") for r in out.get("pull_request_text_refused", [])
+    ), out
+
+
+def test_a_mention_after_a_closed_fence_still_refuses_the_body(
+    worker_factory, monkeypatch, origin, local_urls, forge
+):
+    """The control: code is skipped only while it lasts."""
+    _, _, out = _publish(
+        worker_factory, monkeypatch, origin, task_id="t-pr-code-then-at",
+        files={"pr-body.md": b"Closes #4\n\n```\n@pytest.fixture\n```\n\n@octocat please review.\n"},
+    )
+    assert "pr-body.md: mentions" in out.get("pull_request_text_refused", []), out
+    assert out["pull_request_text"]["body"] == "platform", out
+
+
+# -- the title is owed as an expected output only when a pull request needs it --
+
+
+def _owing_worker(worker_factory, *, dispatch: dict, task_input: dict | None = None):
+    worker, _, _ = worker_factory(
+        task_id="t-pr-owed", attempt_id="att-t-pr-owed", lease_id="lease-t-pr-owed",
+        repository_url="https://github.com/acme/widgets.git",
+    )
+    task: dict = {"task_id": "t-pr-owed", "metadata": {"dispatch": dispatch}}
+    if task_input is not None:
+        task["input"] = task_input
+    worker._task = task
+    return worker, task
+
+
+@pytest.mark.parametrize(
+    ("dispatch", "task_input", "owed"),
+    [
+        ({"strategy": "direct-pr"}, None, True),
+        ({"strategy": "direct-pr"}, {"prompt": "Do it."}, True),
+        ({"strategy": "integrate", "role": "integrator"}, None, True),
+        ({"strategy": "collect"}, None, False),
+        ({"strategy": "integrate", "role": "contributor"}, None, False),
+        ({"strategy": "direct-pr"}, {"issue": 12}, False),
+        ({"strategy": "integrate", "role": "integrator"}, {"issue": {"number": 12}}, False),
+    ],
+    ids=[
+        "direct-pr", "direct-pr-prompt-only", "integrator", "collect", "contributor",
+        "direct-pr-with-issue", "integrator-with-issue",
+    ],
+)
+def test_the_title_is_owed_only_when_a_pull_request_has_nothing_else_to_title_it(
+    worker_factory, dispatch, task_input, owed
+):
+    worker, task = _owing_worker(worker_factory, dispatch=dispatch, task_input=task_input)
+    assert worker._title_owed(task) is owed
