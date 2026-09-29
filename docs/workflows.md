@@ -488,6 +488,98 @@ If steps do not exchange artifacts and do not depend on each other, submit a
 interleave across tenants under round-robin; a workflow adds dependency
 bookkeeping you are not using.
 
+## PROPOSED: a chain that merges its own pull request
+
+**Proposed on 2026-09-29 for #295 and not built.** The API refuses this spec
+today. `single-pr`, `pr_role` and the `merge` profile do not exist yet, and the
+`merge` profile needs contract request 29 in
+[contract-change-requests.md](contract-change-requests.md). The design, and the
+reason for each rule below, is [merge-step.md](merge-step.md).
+
+The owner's chain is implement → review → fix → proof → merge. It produces
+**one** pull request and ends with the **worker** squash-merging it. The merge
+runs under a service account no agent ever runs as, with a credential no agent
+can read.
+
+```bash
+./scripts/api.sh POST /workflows '{
+  "on_step_failure": "fail_workflow",
+  "repository_url": "https://github.com/bogdan-alexandrescu/SwarmCloud",
+  "repository_ref": "main",
+  "strategy": "single-pr",
+  "steps": [
+    {"step_id": "implement",
+     "runner_profile": "claude-code",
+     "pr_role": "author",
+     "input": {"prompt": "Implement issue #295. Write a fact-style pull request title to pr-title.txt."}},
+
+    {"step_id": "review",
+     "runner_profile": "claude-code",
+     "pr_role": "reader",
+     "depends_on": ["implement"],
+     "input": {"prompt": "Review the checked-out head against issue #295. Write review.json: {\"verdict\": \"MERGE\" or \"CHANGES\", \"sha\": the checked-out HEAD, \"title\": the pull request title you reviewed, \"summary\": your findings}."}},
+
+    {"step_id": "fix",
+     "runner_profile": "claude-code",
+     "pr_role": "amender",
+     "depends_on": ["review"],
+     "input_from": {"review": "review.json"},
+     "input": {"prompt": "If review.json says MERGE, change nothing and exit. Otherwise fix every finding in it."}},
+
+    {"step_id": "proof",
+     "runner_profile": "claude-code",
+     "pr_role": "reader",
+     "depends_on": ["fix"],
+     "input": {"prompt": "Prove the change works at the checked-out head. Write proof.json: {\"outcome\": \"PROVED\" or \"NOT_PROVED\", \"sha\": the checked-out HEAD, \"evidence\": what you ran and saw}."}},
+
+    {"step_id": "merge",
+     "runner_profile": "merge",
+     "depends_on": ["review", "proof"],
+     "input_from": {"review": "review.json", "proof": "proof.json"},
+     "input": {}}
+  ]
+}'
+```
+
+`merge` depends on `review` directly as well as through `proof`, because
+`validate_dag` requires every `input_from` source to be a direct dependency.
+The extra edge changes nothing about ordering, and `merge` is still the only
+sink.
+
+What each step does:
+
+| step | clones | publishes | writes |
+|---|---|---|---|
+| implement (`author`) | `main` | pushes `swarm/<its task id>` and opens the pull request | the code, and `pr-title.txt` |
+| review (`reader`) | the implement branch | nothing | `review.json` |
+| fix (`amender`) | the implement branch | fast-forward pushes to the **same** branch, only if it changed something | the fix |
+| proof (`reader`) | the implement branch | nothing | `proof.json` |
+| merge (profile `merge`) | nothing, and it runs no agent | `PUT .../pulls/{n}/merge`, squash, `sha` pinned | the squash commit, and a comment naming the task that merged it |
+
+The merge happens only if **all** of these hold. Otherwise the step ends
+`MERGE_REFUSED` and `result_summary.merge.refusal` says which one failed:
+
+* the review's verdict is exactly `MERGE`, and the scheduler attested that
+  verdict before the fix step started (open question Q2 in the design);
+* the proof's outcome is exactly `PROVED`;
+* the review and the proof ran on the same head, the fix pushed nothing after
+  the review, and that head is still the pull request's live head. A fix
+  that changed anything therefore ends this workflow's merge with
+  `review_not_at_head`, because nobody reviewed the fix;
+* every required check on `main` is completed `success` or `skipped` at that
+  head, pinned to GitHub Actions, and no other check that ran there is failing
+  or still running. **Pending is not green, and the step does not wait for
+  it**;
+* GitHub reports the pull request cleanly mergeable. The branch is never
+  updated from `main`;
+* the title is the one the review saw, and not the `[swarm] task_` placeholder;
+* the pull request does not touch `.github/workflows/`. Such a pull request
+  lands only through a human's `ready`.
+
+A person's `ready` label on the same pull request still works.
+`auto-merge.yml` stays authoritative for labelled pull requests, and whichever
+merge lands first, the other finds it merged at the same pinned head.
+
 ---
 
 # Part 2 — Development workflows
