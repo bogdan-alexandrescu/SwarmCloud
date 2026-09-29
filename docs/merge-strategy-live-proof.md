@@ -291,10 +291,22 @@ all run in the clean repository, and none of that state reaches them:
 * **every worker git runs with `core.commitGraph=false`, `GIT_GRAFT_FILE=/dev/null`
   and `GIT_NO_REPLACE_OBJECTS=1`** as a second belt.
 
-The agent's clone is still where the worker commits what the agent left
-uncommitted (`commit_dirty`, with hooks, fsmonitor and signing overridden), and
-where the harvest's patch is read (`--no-ext-diff --no-textconv`, so an external
-diff program or textconv filter the agent configured never runs).
+What the agent left uncommitted is committed in the publish repository too
+(#259 M1, owner decision 2026-09-28). `git add` in the clone read the clone's
+`.git/config` and the tree's `.gitattributes`, so a filter driver the agent
+defined (`filter.<name>.clean`) ran as the worker after the reap, and no `-c`
+list can switch that class off. So `mirror_worktree` copies the working tree
+into the publish repository -- never anything under `.git`, every link as a
+link, a folder holding a nested repository as an empty folder -- and
+`commit_dirty` stages and commits there, with only the worker's configuration.
+A `.gitattributes` in the tree is data in that repository: the filter and diff
+driver it names are defined nowhere, so git applies none. Regular files are
+hard-linked rather than byte-copied where the filesystem allows, because the
+workspace is memory-backed and a copy would double it at the end of the attempt.
+
+The one place the worker's git still reads the agent's clone is the harvest's
+patch, taken before the reap (`--no-ext-diff --no-textconv`, so an external diff
+program or textconv filter the agent configured never runs there).
 
 **That private scratch is not itself a permission boundary** — it shares a uid
 with the agent (`workspace.py` says so), so the agent can create paths inside it

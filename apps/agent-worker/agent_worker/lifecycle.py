@@ -171,6 +171,7 @@ from .gitops import (
     fold_agent_commits,
     hide_from_git,
     merge_branches,
+    mirror_worktree,
     prepare_publish_repo,
     push_branch,
     shallow_clone,
@@ -2035,6 +2036,28 @@ class Worker:
             "could not be asked); files the agent writes under ./artifacts stay "
             "in the repository"
         )
+
+    def _hidden_checkout_names(self, checkout: Path) -> tuple[str, ...]:
+        """Top-level names the publish repository hides from git, as the clone did.
+
+        `_link_checkout_artifacts` hides the checkout's `./artifacts` link in
+        the CLONE's `.git/info/exclude`; the worker's commit is now made in the
+        publish repository (`gitops.mirror_worktree`, #259 M1), which does not
+        read that file, so the name is handed over. Only when the entry is
+        still the worker's link -- a symlink to this attempt's artifacts
+        directory. A repository that tracks its own `artifacts/` never got the
+        link, and hiding the name there would drop the agent's new files under
+        it from the branch.
+        """
+        ws = self.ws
+        assert ws is not None
+        link = ws.artifacts_link(checkout)
+        try:
+            if link.is_symlink() and os.path.realpath(link) == os.path.realpath(ws.artifacts):
+                return (link.name,)
+        except OSError:
+            pass
+        return ()
 
     # -- the working folder of a task with no repository (#184) --------------
     def _uploads_working_folder(self, task: dict[str, Any]) -> bool:
@@ -4289,10 +4312,11 @@ class Worker:
 
         # NO AGENT PROCESS IS ALIVE ONCE THE TOKEN IS IN HAND. This is the one
         # place the credential-bearing publish begins -- everything below carries
-        # or leads directly to the tenant token (`commit_dirty` runs in the
-        # clone, then `prepare_publish_repo` mkdtemps the clean publish repo and
-        # fetches the work into it, where the scans, the replay or fold and the
-        # merge/push run). A process the agent double-forked into
+        # or leads directly to the tenant token (`prepare_publish_repo` mkdtemps
+        # the clean publish repo and fetches the agent's commits into it,
+        # `mirror_worktree` copies its uncommitted files there, and the commit,
+        # the scans, the replay or fold and the merge/push all run there). A
+        # process the agent double-forked into
         # its own session survives the runner's group kill (procman.py), shares
         # the worker's uid, and could watch `ws.private` to poison the publish
         # repo before the push or read the short-lived credential file while it
@@ -4318,25 +4342,6 @@ class Worker:
         kept = 0
         merge: MergeOutcome | None = None
         try:
-            new_sha = commit_dirty(
-                repo=repo,
-                message=(
-                    f"swarm: uncommitted changes from {cfg.task_id}\n\n"
-                    "Staged by the worker at the end of the attempt so that work "
-                    "the agent edited but did not commit is not lost between the "
-                    "workspace and this branch."
-                ),
-                author_name=cfg.git_author_name,
-                author_email=cfg.git_author_email,
-                private_dir=ws.private,
-                logs_dir=ws.logs,
-                timeout_seconds=cfg.git_harvest_timeout_seconds,
-                logger=self.log,
-            )
-            if new_sha:
-                auto_committed = True
-                work_head = new_sha
-
             # EVERY COMMIT THIS PUSHES IS THE WORKER'S. Whatever the agent
             # committed itself -- possibly as Claude, possibly with a
             # Co-Authored-By trailer and a "Generated with" line, which is what
@@ -4346,17 +4351,18 @@ class Worker:
             #
             # EACH OF THE AGENT'S COMMITS IS KEPT (#242), in order, with its
             # own tree and its own message cleaned of trailers and footers
-            # (`replay_agent_commits`); the worker's commit above, if there is
-            # one, stays last. Folding them into one made a red-first pull
-            # request -- tests, then the fix -- impossible: CI never saw the
+            # (`replay_agent_commits`); the worker's commit of the uncommitted
+            # work below, if there is one, stays last. Folding them into one
+            # made a red-first pull request -- tests, then the fix --
+            # impossible: CI never saw the
             # tests alone. The fold is kept for the history that cannot be
             # replayed: one that does not descend from the clone base, or one
             # past `MAX_KEPT_COMMITS`.
             # `_publish_base`, never the workspace marker: see `_maybe_clone`.
             if self._publish_base is None and self._clone_base:
                 # Said precisely, because "unknown" would be false: the harvest
-                # above HAD a base, and a reader comparing the two would think
-                # one of them was a bug.
+                # HAD a base, and a reader comparing the two would think one
+                # of them was a bug.
                 raise GitError(
                     "the clone base is known only from the marker in the "
                     "workspace, which the agent can write: this attempt resumed "
@@ -4381,13 +4387,50 @@ class Worker:
             # `gitops.prepare_publish_repo` and docs/merge-strategy-live-proof.md §6.
             publish_repo = prepare_publish_repo(
                 source_repo=repo,
-                work_head=new_sha or None,
+                # The clone's HEAD: the agent's last commit, or none at all in
+                # an empty repository it never committed in.
+                work_head=None,
                 base=self._publish_base,
                 private_dir=ws.private,
                 logs_dir=ws.logs,
                 timeout_seconds=cfg.git_clone_timeout_seconds,
                 logger=self.log,
             )
+
+            # WHAT THE AGENT LEFT UNCOMMITTED IS COMMITTED HERE, NOT IN ITS
+            # CLONE (#259 M1, owner decision 2026-09-28). `git add` in the
+            # clone read the clone's `.git/config` and the tree's
+            # `.gitattributes`, so a filter driver the agent defined ran as the
+            # worker after the reap. The working tree is copied into the
+            # publish repository instead -- no `.git`, links as links -- and
+            # staged and committed with the worker's configuration alone, where
+            # a `.gitattributes` naming a filter is data: no filter of that name
+            # is defined. Nothing under the clone's `.git` runs at publish; the
+            # clone is read only by the object-checked fetch above.
+            mirror_worktree(
+                source=repo,
+                dest=publish_repo,
+                logger=self.log,
+                hidden_names=self._hidden_checkout_names(repo),
+            )
+            new_sha = commit_dirty(
+                repo=publish_repo,
+                message=(
+                    f"swarm: uncommitted changes from {cfg.task_id}\n\n"
+                    "Staged by the worker at the end of the attempt so that work "
+                    "the agent edited but did not commit is not lost between the "
+                    "workspace and this branch."
+                ),
+                author_name=cfg.git_author_name,
+                author_email=cfg.git_author_email,
+                private_dir=ws.private,
+                logs_dir=ws.logs,
+                timeout_seconds=cfg.git_harvest_timeout_seconds,
+                logger=self.log,
+            )
+            if new_sha:
+                auto_committed = True
+                work_head = new_sha
 
             replayed = replay_agent_commits(
                 repo=publish_repo,

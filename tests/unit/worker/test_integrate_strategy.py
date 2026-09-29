@@ -379,6 +379,9 @@ def _publish(worker_factory, tmp_path, monkeypatch, dispatch, *, opened):
     # It runs for real in test_strategy_end_to_end.py. `raising=False` because it
     # is added by the same change as this line.
     monkeypatch.setattr(lifecycle, "prepare_publish_repo", lambda **kw: tmp_path, raising=False)
+    # The copy of the working tree into that repository (#259 M1) is faked for
+    # the same reason; it runs for real in test_publish_commits_in_the_clean_repository.py.
+    monkeypatch.setattr(lifecycle, "mirror_worktree", lambda **kw: 0, raising=False)
     monkeypatch.setattr(lifecycle, "push_branch", lambda **kw: "deadbeef")
     monkeypatch.setattr(
         lifecycle,

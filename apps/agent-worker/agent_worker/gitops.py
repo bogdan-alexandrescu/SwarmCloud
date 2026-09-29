@@ -453,10 +453,12 @@ def _git_env(private_dir: Path) -> dict[str, str]:
 #:
 #: NOT CLOSED HERE, and not closable by listing keys: a filter driver the
 #: agent defines (`filter.<name>.clean`) and names in `.gitattributes` runs on
-#: `git add`; diff drivers and `log.showSignature` are the same class. The fix
-#: for that class is to run the worker's git in a repository whose
-#: configuration the worker wrote, which is what the forge-token lane (#219)
-#: does for the commands that carry a credential.
+#: `git add`; diff drivers and `log.showSignature` are the same class. That
+#: class is closed by WHERE the worker's git runs at publish: every command
+#: from the reap onwards -- the commit of uncommitted work included
+#: (`mirror_worktree`, #259 M1) -- runs in the repository `prepare_publish_repo`
+#: builds, whose configuration the worker wrote. Only the harvest
+#: (`summarize_work`) still reads the clone, before the reap.
 _NO_HOOKS = [
     "-c", "core.hooksPath=/dev/null",
     "-c", "core.fsmonitor=false",
@@ -1031,6 +1033,12 @@ def commit_dirty(
     the task, which only this attempt pushes, created fresh from the clone
     base. It never runs against a branch a human shares.
 
+    WHERE IT RUNS on the publish path: in the worker's clean publish
+    repository, after `mirror_worktree` has copied the agent's working tree
+    into it -- never in the agent's clone, whose `.git/config` can define a
+    filter driver that `git add` would run (#259 M1). `repo` can be any
+    repository; the harvest tests still call it on a clone directly.
+
     `--no-verify` and a null hooks path: the agent can write `.git/hooks/*` in
     its own workspace, and a commit that ran them would be arbitrary code
     executing under the worker after the runner has already exited.
@@ -1446,8 +1454,8 @@ def prepare_publish_repo(
       and parents are present. An object store borrowed through
       `objects/info/alternates` would bring the agent's
       `objects/info/commit-graph` with it;
-    * the commits wanted are named by SHA -- the worker's own `commit_dirty`
-      result or the clone's HEAD, and the clone base the worker recorded
+    * the commits wanted are named by SHA -- `work_head` or the clone's HEAD,
+      and the clone base the worker recorded
       before the agent ran -- never by a ref the agent could repoint;
     * the fetch's upload side runs in the clone (git has no other way to read
       a repository it does not own) with grafts, replacement and the
@@ -1498,7 +1506,14 @@ def prepare_publish_repo(
             logger=logger,
         )
         target = text.strip() if code == 0 else ""
-    if not _FULL_SHA_RE.match(target):
+    # AN EMPTY CLONE THE AGENT NEVER COMMITTED IN has no commit to fetch: its
+    # HEAD is unborn. That is not an error now that the worker's commit of the
+    # uncommitted work is made HERE (`mirror_worktree`, #259 M1) rather than in
+    # the clone first -- the repository is left on an unborn `local_branch`,
+    # and that commit becomes its root. Anywhere else an unresolvable HEAD
+    # still refuses.
+    unborn = empty and not target and not (work_head or "").strip()
+    if not unborn and not _FULL_SHA_RE.match(target):
         raise GitError("could not resolve the commit to publish from the clone")
 
     # WHERE the repository lives is part of the guarantee, not an
@@ -1536,6 +1551,16 @@ def prepare_publish_repo(
     )
     if init_code != 0:
         raise GitError("could not initialise the worker's publish repository")
+
+    if unborn:
+        head_code, _ = run(
+            [git_binary, *_NO_HOOKS, "symbolic-ref", "HEAD", f"refs/heads/{local_branch}"],
+            "publish-unborn",
+        )
+        if head_code != 0:
+            raise GitError("could not set up the publish repository's branch")
+        logger.info("clean publish repository prepared on an unborn branch", branch=local_branch)
+        return publish_dir
 
     # The upload side's shallow boundary is the base the worker recorded, not
     # the agent's `.git/shallow`: a line the agent added there would make git
@@ -1599,6 +1624,202 @@ def prepare_publish_repo(
 
     logger.info("clean publish repository prepared", branch=local_branch)
     return publish_dir
+
+
+def _empty_worktree(root: Path) -> None:
+    """Delete everything in `root` except its top-level `.git`, WITHOUT recursion.
+
+    The tree is the checkout `prepare_publish_repo` just wrote, so it is the
+    worker's -- but it has the agent's commits' shape, and on Python 3.11
+    `shutil.rmtree` recurses one frame per level (see `workspace.walk_tree`).
+    Links are unlinked, never followed.
+    """
+    folders: list[Path] = []
+    stack: list[Path] = [root]
+    while stack:
+        here = stack.pop()
+        with os.scandir(here) as entries:
+            for entry in entries:
+                if here == root and entry.name == ".git":
+                    continue
+                path = Path(entry.path)
+                if entry.is_dir(follow_symlinks=False):
+                    folders.append(path)
+                    stack.append(path)
+                else:
+                    path.unlink()
+    # Deepest first: a folder is listed after the folder that holds it.
+    for folder in reversed(folders):
+        folder.rmdir()
+
+
+def _copy_file(source: Path, dest: Path, mode: int) -> None:
+    """A regular file, by hard link where the filesystem allows it, else by copy.
+
+    The workspace is memory-backed tmpfs (CLAUDE.md, workspace storage), and
+    `private/` and `work/` are on the same one, so a byte copy of a large
+    working tree would double what the attempt holds in memory at the very end
+    of it. A hard link costs nothing and is safe here: the agent's processes
+    are reaped before this runs, so nothing writes through the other name, and
+    git in the publish repository never writes a working-tree file in place --
+    a checkout unlinks the old entry and creates a new one. A filesystem that
+    refuses the link (EXDEV, EPERM, EMLINK) gets a byte copy instead.
+    """
+    try:
+        os.link(source, dest, follow_symlinks=False)
+        return
+    except OSError:
+        pass
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    fd_in = os.open(source, flags)
+    try:
+        # O_EXCL: the destination folder was emptied a moment ago, so a name
+        # that already exists is a bug, never something to write through.
+        fd_out = os.open(
+            dest, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+            stat.S_IMODE(mode) | stat.S_IWUSR | stat.S_IRUSR,
+        )
+        try:
+            while True:
+                chunk = os.read(fd_in, 1024 * 1024)
+                if not chunk:
+                    break
+                view = memoryview(chunk)
+                while view:
+                    written = os.write(fd_out, view)
+                    view = view[written:]
+            # Only the execute bit reaches git, but the file keeps its mode
+            # as the agent left it, as the hard link would.
+            os.fchmod(fd_out, stat.S_IMODE(mode))
+        finally:
+            os.close(fd_out)
+    finally:
+        os.close(fd_in)
+
+
+def mirror_worktree(
+    *,
+    source: Path,
+    dest: Path,
+    logger: Any,
+    hidden_names: Sequence[str] = (),
+) -> int:
+    """Make `dest`'s working tree the agent's working tree, file for file (#259 M1).
+
+    WHY. The worker commits whatever the agent left uncommitted, and it used
+    to do that with `git add --all` / `git commit` in the AGENT's clone. Those
+    commands read the clone's `.git/config` and the tree's `.gitattributes`,
+    both the agent's to write, so a filter driver the agent defined
+    (`filter.<name>.clean`) and named in `.gitattributes` ran as the worker,
+    after the reap, a step away from the tenant token. `_NO_HOOKS` cannot
+    close that class by listing keys. So the files are brought HERE, into the
+    worker's clean publish repository (`prepare_publish_repo`), and staged and
+    committed with the worker's configuration alone (owner decision,
+    2026-09-28). A `.gitattributes` in the tree is data here: it names a
+    filter or diff driver this repository does not define, which git treats
+    as no filter and no driver.
+
+    WHAT IS COPIED. Everything under `source` except:
+
+    * `.git`, at ANY depth. At the top it is the agent's repository; below it,
+      a folder holding a `.git` is a repository the agent made or populated
+      (a submodule checkout, a nested clone), and git would read that
+      repository's refs and config to record it. Such a folder is created
+      EMPTY here -- an unpopulated submodule reads as unchanged, and anything
+      else empty is invisible to git -- and nothing inside it is copied;
+    * anything that is not a regular file, a folder or a link (a FIFO, a
+      socket, a device), which git does not track either.
+
+    A LINK IS COPIED AS A LINK, its target text read with `readlink` and
+    never followed: a link out of the workspace is published as the link
+    git would have recorded, never as what it points at. Folders are walked
+    from an explicit stack, not by recursion (`workspace.walk_tree` says why)
+    and never through a link.
+
+    `hidden_names` are top-level names the worker hides from git in the clone
+    (`hide_from_git`, the `./artifacts` link, #226); they are written to this
+    repository's own `.git/info/exclude`, which the worker owns.
+
+    `dest`'s existing working tree -- the checkout of the agent's last commit
+    -- is emptied first, so a file the agent deleted is deleted here too.
+    Returns how many entries were copied. Raises `GitError` when the tree
+    cannot be copied whole: a partial copy would publish a partial change.
+    """
+    source = Path(source)
+    dest = Path(dest)
+    git_dir = dest / ".git"
+    if not git_dir.is_dir() or git_dir.is_symlink():
+        raise GitError("the publish repository has no .git of its own")
+    if source.is_symlink() or not source.is_dir():
+        # The checkout's own folder, replaced by a link, would have the copy
+        # read wherever the link points.
+        raise GitError("the agent's checkout is not a folder; nothing was pushed")
+    try:
+        _empty_worktree(dest)
+    except OSError as exc:
+        raise GitError(
+            f"could not clear the publish repository's working tree ({type(exc).__name__})"
+        ) from exc
+
+    # The worker's own configuration for this repository. `_git_env` pins the
+    # global config to /dev/null, but git still reads its default attributes
+    # and ignore files from $HOME/.config/git -- and HOME is `private/`,
+    # which shares a uid with the agent. Pointing both at /dev/null leaves
+    # the tree's own `.gitignore` and `.gitattributes` as the only ones read.
+    config = git_dir / "config"
+    try:
+        with config.open("a", encoding="utf-8") as handle:
+            handle.write("[core]\n\tattributesFile = /dev/null\n\texcludesFile = /dev/null\n")
+        if hidden_names:
+            info = git_dir / "info"
+            info.mkdir(exist_ok=True)
+            with (info / "exclude").open("a", encoding="utf-8") as handle:
+                for name in hidden_names:
+                    handle.write(f"/{name}\n")
+    except OSError as exc:
+        raise GitError(
+            f"could not write the publish repository's own settings ({type(exc).__name__})"
+        ) from exc
+
+    copied = 0
+    nested = 0
+    stack: list[tuple[Path, Path]] = [(source, dest)]
+    try:
+        while stack:
+            here, there = stack.pop()
+            with os.scandir(here) as entries:
+                listing = list(entries)
+            for entry in listing:
+                if entry.name == ".git":
+                    continue
+                src = Path(entry.path)
+                dst = there / entry.name
+                if entry.is_symlink():
+                    os.symlink(os.readlink(src), dst)
+                    copied += 1
+                elif entry.is_dir(follow_symlinks=False):
+                    dst.mkdir()
+                    copied += 1
+                    if os.path.lexists(src / ".git"):
+                        # A repository of its own: see the docstring.
+                        nested += 1
+                        continue
+                    stack.append((src, dst))
+                elif entry.is_file(follow_symlinks=False):
+                    _copy_file(src, dst, entry.stat(follow_symlinks=False).st_mode)
+                    copied += 1
+    except OSError as exc:
+        raise GitError(
+            "could not copy the agent's working tree into the publish repository "
+            f"({type(exc).__name__}); nothing was pushed"
+        ) from exc
+    if nested:
+        logger.warning(
+            "folders holding a repository of their own were published empty",
+            count=nested,
+        )
+    logger.info("agent working tree copied into the publish repository", entries=copied)
+    return copied
 
 
 def push_branch(
