@@ -597,7 +597,7 @@ it resolves, into that step's dispatch block:
 |---|---|---|---|
 | `author` | the workflow's `repository_ref` | pushes `swarm/<own task id>` and opens the pull request | implement |
 | `reader` | the author's branch, `swarm/<author task id>` | **no git push**, whatever the strategy. Neither review nor proof talks to GitHub itself any more (§4.3, corrected 2026-09-29): review only writes `review.json`; proof only writes `proof.json` | review, proof |
-| `reader` (round-5 re-review: matches CR 34, which also assigns `post-verdict` `reader`; an earlier draft of this table said "none, no clone" — picked here as the one value both designs use, since `reader` only ever meant "no git push," which stays true even though `post-verdict` clones nothing at all) | nothing — it runs no agent | submits the GitHub PR review with the review App's key (§4.3) | `post-verdict` (worker-action profile, new 2026-09-29) |
+| (none, no clone) — settled, round-6 re-review: `post-verdict` clones nothing, so its `pr_role` is `none`; CR 34 changed its own value to match this, not the other way around | nothing — it runs no agent | submits the GitHub PR review with the review App's key (§4.3) | `post-verdict` (worker-action profile, new 2026-09-29) |
 | `amender` | the author's branch | fast-forward pushes to the **author's** branch and opens nothing | fix |
 | (none) | nothing | the merge (§5) | merge (profile `merge`) |
 
@@ -613,8 +613,14 @@ The API refuses a `single-pr` workflow unless all of the following hold:
 * exactly one `author`, and it is an ancestor of every other step;
 * exactly one step on the `merge` profile, and exactly one on the
   `post-verdict` profile, and `merge` is the workflow's only sink;
-* the `post-verdict` step's `input_from` names the review's `review.json`,
-  and depends on `review` directly and on nothing else;
+* the `post-verdict` step has **no `input_from` at all** — fixed, round-6
+  re-review: an earlier draft of this list said `post-verdict`'s
+  `input_from` names the review's `review.json`, contradicting §4.3, where
+  `post-verdict` reads only the verdicts-prefix path it derives from its own
+  signed `dispatch.verdict_source` (§4.3's `verdict_source: {review: <review
+  task id>}`), never through `input_from`'s ordinary staging. It still
+  depends on `review` directly (`"depends_on": ["review"]`) and on nothing
+  else, for DAG ordering alone;
 * every step downstream of `review` other than `post-verdict` — concretely,
   `fix` — depends on `post-verdict`, not on `review`, even though it needs
   nothing `post-verdict` stages. This is an ordering-only dependency
