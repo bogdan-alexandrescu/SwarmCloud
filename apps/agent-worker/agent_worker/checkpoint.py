@@ -16,9 +16,15 @@ The manifest is uploaded **last, and only after the archive**, so its presence i
 the commit marker: a checkpoint interrupted halfway leaves an orphan archive that
 no restore will ever select, rather than a manifest pointing at a truncated one.
 
-Restore searches across ALL attempts of the task, because a resume is by
-definition a new attempt with a new id, and the checkpoint worth restoring was
-written by the attempt that died.
+A restore reads a checkpoint written by an EARLIER attempt of the task,
+because a resume is by definition a new attempt with a new id. It restores
+only the one that attempt recorded -- `task.latest_checkpoint`, bound to the
+attempt document that lists it and its archive digest -- and never on a
+task's first attempt (#347, `Worker._recorded_checkpoint`). It does not list
+the prefix to pick one: every agent of the tenant can write under
+`tenants/<tenant>/`, so "the newest manifest under this task's prefix" is
+whatever another step of the tenant last put there, `.claude/` hooks
+included.
 
 **A checkpoint is only ever restored into the task it belongs to.** The pointer
 in `task.latest_checkpoint` is a Firestore field, and Firestore has no
@@ -694,7 +700,14 @@ class CheckpointManager:
 
     # -- discover ----------------------------------------------------------
     def find_latest(self) -> CheckpointRecord | None:
-        """Newest committed checkpoint for this TASK, across every attempt."""
+        """Newest committed checkpoint for this TASK, across every attempt.
+
+        NEVER USED TO CHOOSE WHAT TO RESTORE (#347). It lists the prefix, and
+        every agent of the tenant can write there, so what it finds is not
+        evidence of what this task's attempts wrote. The worker restores only
+        what `Worker._recorded_checkpoint` accepts. This stays for the tests
+        and tooling that read back what a run wrote.
+        """
         prefix = self.own_prefix
         manifests = [k for k in self._store.list_keys(prefix) if k.endswith(f"/{MANIFEST_NAME}")]
         best: CheckpointRecord | None = None
@@ -717,8 +730,9 @@ class CheckpointManager:
         The pointer is a Firestore field and therefore untrusted input. It is
         resolved ONLY within this task's own prefix: a pointer that does not name
         a checkpoint of this task -- another tenant's, or another task of the
-        same tenant's -- resolves to nothing and the worker falls back to
-        `find_latest`, which searches that prefix and no other.
+        same tenant's -- resolves to nothing, and the attempt starts from an
+        empty workspace. There is no fallback to `find_latest` (#347): a
+        checkpoint no attempt of this task recorded is not restored.
         """
         if not uri:
             return None
@@ -741,9 +755,12 @@ class CheckpointManager:
             return None
         try:
             data = json.loads(self._store.download_bytes(key).decode("utf-8"))
+            record = CheckpointRecord.from_dict(data)
         except Exception:
+            # A manifest is bucket data: one that is not an object, or lacks
+            # a field, resolves to nothing rather than failing the attempt.
             return None
-        return self._accept(CheckpointRecord.from_dict(data), key)
+        return self._accept(record, key)
 
     # -- restore -----------------------------------------------------------
     def restore(self, record: CheckpointRecord, ws: Workspace) -> int:

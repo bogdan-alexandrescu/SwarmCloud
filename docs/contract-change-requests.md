@@ -11,8 +11,6 @@ somebody to live with if it is declined.
 
 These are requests for a person to decide. Nothing in this file is a plan.
 
-| # | Request | Status |
-|---|---|---|
 | 1 | `identity.py`: the `u-` prefix does not namespace personal tenants | open |
 | 2 | `models.py`: `Attempt` records memory and disk, but not tokens or cost | APPLIED 2026-09-19 |
 | 3 | `models.py`: a typed `input_from` on `Task` | open |
@@ -40,6 +38,8 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 25 | `profiles.py`: a runner profile cannot declare the inputs a caller may send it, so the bridge names the mock's by profile | ACCEPTED 2026-09-25 (owner, on #142), applied in PR #213; both amendments confirmed by the owner 2026-09-26: `inputs=None` for `browser` and `generic` (#218), and the bounded park counted by the task's `attempt_count` rather than the state file |
 | 26 | `models.py`: the attempt's CPU figures carry no time and their limit no source | ACCEPTED 2026-09-26 (owner, on #184), applied in PR #229 |
 | 30 | `identity.py`: a tenant may list service accounts that resolve to it by exact email (#273) | ACCEPTED 2026-09-29 by the owner after three security reviews |
+| 32 | `profiles.py`: `browser` and `generic` declare no inputs, so the API bounds them by size alone and the plugin can send them none (#218) | ACCEPTED 2026-09-29 by the owner after three security reviews |
+| 33 | `profiles.py` / `models.py`: a merge profile that runs no agent, and two end causes for it (#295) | ACCEPTED 2026-09-29 by the owner, as the design; build gated on #342 |
 
 ---
 
@@ -4326,5 +4326,1796 @@ the implementing branch and must fail there before the change lands on
 - **CONTRACT.md "Tenant = Google group".** Refined, not reversed: a tenant is
   still a group (or a user), and its listed accounts are members by
   declaration rather than by directory.
-
 Applied by #343 (accepted by the owner 2026-09-29).
+---
+
+## 32. `profiles.py`: `browser` and `generic` declare no inputs, so the API bounds them by size alone and the plugin can send them none
+
+**Status: ACCEPTED 2026-09-29 by the owner after three security reviews.**
+Nothing here is applied yet; an implementation PR, `part of #218`, carries
+this out (see `docs/DEPLOY_STATE.md` or the linked PR for its state — this
+entry itself does not track a moving target). It answers #218,
+which contract request 25 left open: which inputs `browser` and `generic`
+declare, and with which bounds. Originally numbered 29, because 28 was the
+last entry on `main` when this branch was cut and 27 appears nowhere on
+`main`. **Renumbered to 32 on 2026-09-29**, after a security review found
+four other open PRs had each numbered their own new entry 29 for the same
+reason: #259, #314, #304 and #316. Resolved as #259 keeps 29, #314 becomes
+30, #304 becomes 31, this entry (#218) becomes 32, and #316 becomes 33.
+
+### What is true today
+
+Measured from `main` at `d4a2352` on 2026-09-29.
+
+**Both profiles are `inputs=None`**, and `check_inputs` hands their input
+back unchecked, so swarm-api bounds it by size (`validate_input_size`) and by
+Firestore's integer range (`validate_storable`) and nothing else. The owner
+confirmed that on 2026-09-26 as the interim (request 25's table row). It was
+meant to last until #218 was decided.
+
+**It has already stopped work.** #220 found on 2026-09-28 that every browser
+task dispatched through the `sc` plugin failed after it started, with
+"browser runner needs input.url or at least one action". The bridge sends a
+key only when a declaration names it (`swarm_mcp/profiles.py`, `check_inputs`),
+and `browser` declares nothing. So no caller of the plugin can give a browser
+task the one thing it cannot run without, and the refusal arrives after
+admission, after a lease and a GKE pod start.
+
+**What the size bound lets through, and where it fails instead.** Every item
+below is a value the API accepts today that the runner then fails on, or
+quietly reads differently:
+
+* `timeout_ms: 0` and `launch_timeout_ms: 0`. Playwright reads 0 as "no
+  timeout", so one `wait_for` on a selector that never appears holds the
+  attempt, and its `browser` capacity (2 units), for the profile's full
+  5400 s.
+* `timeout_ms: "abc"`. The runner calls `int()` on it, raises `ValueError` and
+  fails the attempt after admission.
+* An action without the field its type needs: `{"type": "click"}` raises
+  `KeyError` at `action["selector"]`, also after admission.
+* `{"type": "wait", "seconds": 600}`. The runner clamps it to 60 with
+  `min(..., 60.0)` and does not report the clamp.
+* A `goto` to `http://10.0.0.1/`. The runner accepts any http(s) URL with a
+  host. The worker's NetworkPolicy drops the packets, and Dataplane V2 drops
+  without replying, so the action waits out `timeout_ms` and fails as a
+  timeout. Nothing in the failure says the address was refused.
+* `generic` with no `command`. It is admitted, leased and started, and then
+  fails with "input.command is required".
+* `generic` limits. `timeout_seconds: 0` is read as "not asked" and ignored.
+  `timeout_seconds: 99999` is clamped to the platform's ceiling, with a
+  WARNING in the worker's log that the caller never sees.
+* Keys the worker fills with `setdefault` (`task_id`, `attempt_id`,
+  `repository`, `resumed_from_checkpoint`, `lifecycle.py` around line 860).
+  For these two profiles a value the caller sent takes precedence over the
+  worker's. Neither runner reads those keys, so nothing is affected today.
+  A declaration closes the gap anyway, because an undeclared key is refused
+  at the door.
+
+### What each runner reads
+
+Read again from the runners' source on 2026-09-29. These tables list every
+key `body()` reads from `ctx.payload`, and nothing else.
+`generic.py` refuses `argv`, `script`, `env`, `command_line` and `shell` by
+name. Once the profile declares, the API refuses those at 422 like any other
+undeclared key.
+
+**`browser`** (`agent_worker/runners/browser.py`):
+
+| key | kind | bounds | required | runner's default, and why this bound |
+|---|---|---|---|---|
+| `url` | `url` (new) | http or https, public host (see question 2) | no; `url` or `actions` | none. The runner turns it into a leading `goto`. |
+| `actions` | `list` (new) of `object` (new) | 0..200 entries | no; `url` or `actions` | `[]`. 200 is the runner's `MAX_ACTIONS`. |
+| `timeout_ms` | integer | 1..300000 | no | 30000. Must be at least 1 because 0 disables Playwright's timeout. Five minutes is the most one action may wait. |
+| `launch_timeout_ms` | integer | 1..180000 | no | 60000. The same reason for 1. A launch still waiting at three minutes means the pod is short of `/dev/shm`. |
+| `viewport_width` | integer | 320..3840 | no | 1280. The viewport, and a full-page screenshot of it, are held in the pod's memory. |
+| `viewport_height` | integer | 240..2160 | no | 900 |
+| `user_agent` | string | none | no | Chromium's own; `""` also means Chromium's |
+| `extract_text` | boolean | none | no | true: the final page's text is kept as `page.txt` |
+| `screenshot` | boolean | none | no | true: a final full-page `final.png` is kept |
+
+Each element of `actions` is an object whose `type` selects one of eight
+fixed shapes. A key that the selected shape does not name is refused:
+
+| `type` | fields (required in bold) | runner's defaults |
+|---|---|---|
+| `goto` | **`url`** (`url`), `wait_until` (string, one of `load`, `domcontentloaded`, `networkidle`, `commit`) | `wait_until` `load` |
+| `click` | **`selector`** (string) | |
+| `fill` | **`selector`** (string), `text` (string) | `text` `""` |
+| `press` | **`selector`** (string), `key` (string) | `key` `Enter` |
+| `wait_for` | **`selector`** (string), `timeout_ms` (integer 1..300000) | the task's `timeout_ms` |
+| `wait` | `seconds` (number 0..60) | 1. Refusing a value above 60 replaces the runner's silent clamp. |
+| `screenshot` | `name` (`filename`), `full_page` (boolean) | `screenshot-NNN.png`, `true` |
+| `extract` | `selector` (string), `name` (`filename`) | `body`, `extract-NNN.txt` |
+
+The runner writes both `name` fields through `RunnerContext.artifact_path`,
+which keeps only the last path segment. That is the rule the existing
+`filename` kind already states. The runner lower-cases `type`, so `"Goto"`
+runs today. The declaration matches `type` exactly.
+
+**`generic`** (`agent_worker/runners/generic.py`, `runners/limits.py`):
+
+| key | kind | bounds | required | runner's default, and why this bound |
+|---|---|---|---|---|
+| `command` | string | one of `make`, `npm-build`, `npm-ci`, `npm-test`, `pytest`, `uv-sync` | **yes** | none. The runner fails without it. The list is `GENERIC_COMMANDS`. |
+| `paths` | `list` (new) of `argument` (new) | 0..32 entries | no | none, so pytest runs the whole suite. 32 is `GenericCommand.max_arguments`. Only `pytest` reads it. |
+| `target` | `argument` (new) | the runner's argument rule | no | `all`. Only `make` reads it. |
+| `working_directory` | `argument` (new) | the runner's argument rule | no | the workspace root |
+| `timeout_seconds` | number | 1..3600 | no | the profile's `timeout_seconds` (3600), which the worker exports as the ceiling |
+| `grace_seconds` | number | 1..20 | no | `WorkerConfig.termination_grace_seconds` (20) |
+| `max_stdout_bytes` | integer | 1..33554432 | no | `WorkerConfig.max_stdout_bytes` (32 MiB) |
+| `max_stderr_bytes` | integer | 1..8388608 | no | `WorkerConfig.max_stderr_bytes` (8 MiB) |
+
+**The four limits may only lower the platform's own.** Each declared ceiling
+is the value the worker exports by default, so a request above it gets a 422
+at submission. Today the runner accepts it and clamps it. The runner still
+clamps to whatever the attempt's worker exports, because an operator may set
+that lower through the environment. The minimum is 1 because the runner reads
+0 or less as "not asked". `argument` is exactly what the runner's
+`_check_argument` accepts: `^[A-Za-z0-9._][A-Za-z0-9._\-/]{0,255}$` and no
+`..`. Whether the path exists and lies inside the workspace stays the
+runner's check, because only the runner has the workspace.
+
+### Question 1 (#218): `RunnerInput.kind` has no kind for a list
+
+**Recommendation: add one `list` kind, whose bounds are its length and whose
+elements are a declared `RunnerInput` (`items`).** It reuses the fields that
+already exist. `minimum` and `maximum` become the length bounds and are
+required, as they are for a number, for the same reason: without them a list
+is unbounded until the task write fails. Each element is checked by the same
+`check`, under the key `actions[3]`, so a refusal names the element that
+failed.
+
+For `paths` that is the whole addition, plus an `argument` kind for the
+element. `argument` is the generic runner's argument rule, added as a kind for
+the same reason `filename` is one: a regex field would be a second, more
+general feature that one rule does not need. `target` and
+`working_directory` use it as well.
+
+`actions` needs one more addition, because its elements are objects in eight
+shapes. The smallest form that still checks each element is **an `object`
+kind with `variants`**: a mapping from the value of `type` to the fields that
+shape takes. Each field is a `RunnerInput`, which gains `required`. A shape
+refuses keys it does not name. It is not general: the discriminator is always
+`type`, and there is no nesting beyond what `items` and `variants` compose.
+That is enough for every input any runner reads today. Two further fields
+serve keys that are not lists. `choices` (string only) covers `command` and
+`wait_until`. `required` is also read for a profile's top-level keys, so a
+`generic` task with no `command` is refused at the door.
+
+**Alternatives considered, and why they were not chosen:**
+
+* An opaque `json` kind, bounded by size. That is the current behaviour under
+  another name. It checks no element, so a missing `selector` is still found
+  after admission.
+* A `browser_action` kind. It would put one runner's vocabulary into the kind
+  list as code instead of as data, and the next runner with a list of shapes
+  would need another kind.
+* A full JSON Schema. It is far larger than any runner needs, and a caller
+  could no longer read it from `describe()`.
+
+**What `required` cannot say:** the browser runner needs `url` *or*
+`actions`. This request leaves that check with the runner. That is a
+decision for the owner, listed below.
+
+### The `url` rule: does it need an allow-list or a scheme restriction?
+
+**Not one of #218's three questions.** #218 asks three things, quoted
+verbatim below under Question 2 and Question 3; whether `url` needs a scheme
+or host restriction is not among them. It is this entry's own addition,
+because declaring `url` as a kind at all raises it. A revision of this entry
+mislabelled it "Question 2" and cited it as "#218's second question" in the
+diff's own docstring; that was wrong on both counts and is fixed below and in
+the diff.
+
+**Recommendation: a scheme restriction and a public-host rule, checked at
+submission. No host allow-list, and not https-only.** The check sits in one
+place, `url_refusal` in the frozen module. It serves `url` and every `goto`
+action's `url`. swarm-api, the bridge and the runner's `_check_url` all call
+it.
+
+**What the browser can reach today.** The pod's egress is
+`kubernetes/network-policies/allow-egress.yaml`. It allows cluster DNS, the
+metadata server at 169.254.169.254, the Private Google Access VIPs
+(199.36.153.4/30 and 199.36.153.8/30) and the public internet. It excepts
+every private range: RFC 1918, link-local, CGNAT and the cluster's pod and
+service ranges. So the browser can reach:
+
+1. **The GKE metadata server.** The pod needs it for Workload Identity, and
+   the policy's own header says a NetworkPolicy cannot close it for one
+   process in a pod. It mints the tenant GSA's token. What protects that
+   token from a browser is that the server answers `/computeMetadata/v1/`
+   only with a `Metadata-Flavor: Google` header. A navigation does not send
+   that header. A cross-origin `fetch()` from page script that sets it
+   triggers a CORS preflight, and the metadata server does not answer the
+   preflight in a way that permits the request. The preflight behaviour is
+   **not measured here**. The applying change should measure it with a
+   browser task against the live cluster.
+2. **The Google API VIPs.** These are authenticated APIs, so they are useless
+   without a token.
+3. **The public internet.** That is the browser profile's purpose. The
+   policy's header says it "has to fetch whatever page the task names, which
+   cannot be an allow-list".
+
+**Why the submission check cannot be the SSRF control.** It sees only the
+URL the caller typed. It cannot see redirects (a public page can answer
+`302` to `http://169.254.169.254/...`), the page's subresources, requests
+its script makes, or what a name resolves to when the pod asks. That last gap
+includes DNS rebinding, and names such as `svc.namespace` that the pod's
+search path expands into the cluster. Resolving the name at submission does
+not close it, because the pod resolves it again later. **The control is the
+network, plus the header requirement.** A check at the door is defence in
+depth.
+
+**What the door check still buys:**
+
+* A private address becomes a 422 with the reason, instead of a timeout that
+  never says the address was dropped.
+* A URL with `user:password@` is never stored with the task, served by
+  the API or shown in the UI. The runner would also echo it
+  back as `final_url`.
+* An address the rule can actually see, and that is not global, becomes an
+  error at submission instead of a silent pass. **This is narrower than the
+  first draft of this entry claimed** ("addresses that parse as public but
+  are not become errors"): a security review on 2026-09-29 found that claim
+  false, because the first draft's rule let the address it was supposed to
+  catch avoid being parsed as that address at all -- see the four bypasses
+  below, each of which reached `""` (accepted) under the original diff.
+
+**A security review on 2026-09-29 found the rule below, as it stood, refused
+by a different notion of "URL" than the browser that opens it.** Chromium
+parses to the WHATWG URL Standard; `urlsplit` parses to RFC 3986. The two
+disagree on backslash, on percent-encoding inside a host, and on non-ASCII
+characters, and every disagreement is a bypass here: `url_refusal` sees a
+value it does not recognise as the metadata host and returns `""`, while
+Chromium normalises the same value to that host and opens it.
+
+* `169.254.169.254\@example.com` -- `urlsplit` does not treat `\` as a netloc
+  terminator (RFC 3986 does not, either), so the whole string, backslash
+  included, becomes `parsed.hostname`. It fails no check the first draft
+  had, and passes. Chromium treats `\` exactly like `/` in an authority, so
+  it opens `169.254.169.254` with an ignored path.
+* `metadata.google.interna%6cl` (`%6c` is a lower-case `l`) -- `urlsplit`
+  does **not** percent-decode a host; `.hostname` returns the literal string
+  with the `%6c` still in it, so the `.internal` suffix check never matches
+  it and the loop over `_URL_REFUSED_SUFFIXES` passes. A browser host-parses
+  it as the WHATWG standard requires (percent-decode, then IDNA), which
+  yields `metadata.google.internal`, and opens it.
+* `metadata.google.ｉｎｔｅｒｎａｌ` (full-width Unicode letters, U+FF49 etc.)
+  and `169254169254｡` (U+3002 IDEOGRAPHIC FULL STOP, which IDNA/UTS46
+  maps to `.`) -- neither is refused by anything in the first draft, which
+  checked only ASCII punctuation and a handful of named suffixes. A
+  browser's IDNA/UTS46 host processing folds full-width Unicode to its ASCII
+  equivalent before it resolves, so both open the address they spell out
+  once normalised.
+* `kubernetes.default.svc` and `swarm-api.swarm-system.svc` -- refused today
+  only by the "single-label host" rule below, and both have three labels, so
+  they passed it. GKE's pod `resolv.conf` sets `ndots:5`: any name with
+  fewer than five dots is tried against every search domain
+  (`<namespace>.svc.cluster.local`, `svc.cluster.local`, `cluster.local`,
+  ...) before the absolute name, and Kubernetes' own DNS resolves the
+  `<service>.<namespace>.svc` short form through exactly that path. A
+  single-label check does not see either name as a risk; the cluster's
+  resolver does. **Revision history on this one bypass, because it changed
+  twice:** the first draft's single-label rule missed it (three labels). A
+  second draft (2026-09-29) replaced the single-label rule with "fewer than
+  two dots," which caught `kubernetes.default.svc` (only by widening the net
+  far past what the bypass needed) but ALSO refused every bare apex domain a
+  browser task might target (`github.com`, one dot). **The owner declined
+  that trade on 2026-09-29** and asked for the narrow fix instead: keep the
+  single-label rule, and add `.svc` to the refused-suffix list next to
+  `.internal`, `.local` and `.localhost`. That is what ships below. It also
+  does not pretend to close the general `ndots:5` gap for an arbitrary
+  short name -- see the paragraph after the rule for what does.
+
+**The fix is one check before anything else runs, not four patches.** Every
+bypass above turns on `url_refusal` accepting a host character, or a host
+shape, that Chromium's own parser would not read as plain ASCII. So the
+rule now normalises nothing and instead refuses anything that is not
+already plain ASCII host syntax, before the rest of the checks run: a
+backslash anywhere in the URL, and a host that is not `[a-z0-9.-]+` once
+lower-cased -- which is refused whether it got there by a literal
+backslash, a literal percent sign, or a literal non-ASCII character, so
+those three bypasses close with one rule instead of three. The alternative
+this entry considered -- IDNA/UTS46-normalise the host, then require
+`[a-z0-9.-]+` of the *normalised* form, so a legitimately internationalised
+domain still passes -- was not chosen: it accepts more real hosts, but it
+also means the two representations (raw and normalised) must be kept in
+step with whatever `agent_worker/runners/browser.py`'s own Chromium build
+does, forever. Refusing raw non-ASCII outright means a caller whose target
+is a real IDN sends the ASCII (punycode) form, which every such site
+already answers to.
+
+The rule, as written in the diff, now refuses, **in this order**:
+
+* a URL over 2048 characters;
+* a space, a control character, or any character outside 0x20-0x7E anywhere
+  in the URL -- this alone is what closes the full-width and U+3002 bypass,
+  because neither is ASCII;
+* a backslash anywhere in the URL;
+* any scheme but `http` and `https`;
+* userinfo (`user:password@`);
+* a host that, once lower-cased, is not `[a-z0-9.-]+` -- this is what closes
+  the percent-encoded-host bypass, because `%` is not in that class, and it
+  is what would also close a raw non-ASCII host if the character check above
+  had not already caught it;
+* a host whose last label does not start with a letter (`http://2852039166/`
+  and `http://0xa9.254.169.254/`, which a browser reads as 169.254.169.254
+  and `ipaddress` parses as neither; no public suffix starts with a digit);
+* a host with an empty label (`a..b`, or a label produced by a leading or
+  doubled `.`) -- added 2026-09-29 (minor, folded into this revision): the
+  character-class check does not catch it, because `.` is itself allowed,
+  and nothing downstream would otherwise notice a zero-length label;
+* a host with a label made only of hyphens (`http://---.com/`) -- added
+  2026-09-29 (minor): the previous message for this case ("ends in a
+  number") was wrong and confusing, since a hyphen is not a digit; it now
+  says plainly that an all-hyphen label is not a valid domain label;
+* a host whose last label does not start with a letter, with two distinct
+  messages now instead of one: a digit-led last label (`http://2852039166/`,
+  `http://0xa9.254.169.254/`, which a browser reads as 169.254.169.254 and
+  `ipaddress` parses as neither; no public suffix starts with a digit) says
+  so; anything else that is not a letter (a hyphen, after the all-hyphen
+  case above is already out of the way) says which character it found;
+* **a single label** (`kubernetes`, `metadata`) -- restored 2026-09-29. A
+  second draft of this rule (2026-09-29) had widened this to "fewer than two
+  dots," to also catch the `.svc` bypass below; the owner declined that
+  trade the same day, because it refused every bare apex domain
+  (`github.com`, `example.com`) a browser task's own purpose is to reach.
+  The single-label form is restored, unchanged from the first draft, and
+  costs nothing a real page address would ever need;
+* any name under `.internal`, `.local`, `.localhost` or **`.svc`** (new
+  2026-09-29, for `kubernetes.default.svc` / `swarm-api.swarm-system.svc` --
+  see the bypass write-up above), checked after the ASCII and single-label
+  rules, so a suffix check can no longer be the only thing standing between
+  a bypass and a pass;
+* a host that is an IP address and, after unwrapping an IPv4-mapped IPv6
+  address or one of five other IPv6 forms that embed an IPv4 address --
+  NAT64 well-known (`64:ff9b::/96`, RFC 6052), **NAT64 local-use
+  (`64:ff9b:1::/48`, RFC 8215, new 2026-09-29)**, 6to4 (`2002::/16`, RFC
+  3056), **SIIT / "IPv4-translated" (`::ffff:0:0:0/96`, RFC 6052 section
+  2.1, new 2026-09-29)** and **IPv4-compatible, deprecated but still a
+  parseable literal (`::/96`, new 2026-09-29)** -- down to the IPv4 address
+  each embeds, is not global by this module's own explicit list of refused
+  networks (below) -- **not `ipaddress.*.is_global`**, whose own membership
+  changed between Python 3.11 and 3.13 (the CGNAT block and `192.0.0.0/24`
+  both moved category more than once across that span). An explicit, named
+  list is what a reviewer can diff against RFC 1918, 5735, 4291 and 6890
+  directly, and it does not move under this module on a Python upgrade the
+  platform did not choose for this reason;
+* the two Google VIP ranges, which are global addresses by any definition
+  but are refused anyway (see above).
+
+**This is not the general `ndots:5` fix, and does not claim to be.** The
+`.svc` suffix closes the one specific, named bypass above -- a fixed string,
+not an open-ended shape -- but GKE's search path can in principle try any
+name under five dots against every search domain, and nothing in this
+function sees what the pod's resolver eventually does with a name it
+accepted. What actually closes that gap: the worker's NetworkPolicy (which
+does not depend on what a name resolves to at all), the pod's own DNS
+config -- **tracked as #341: set `ndots:1` and drop search domains**, which
+removes the search-path trial rather than trying to enumerate every name
+shape it could produce -- and the planned `context.route` guard (see
+*Preconditions for the applying PR*). This entry's door check is one layer
+among those three, not a substitute for the other two.
+
+**Underscore.** A host carrying one (`a_b.example.com`) is refused by the
+same `[a-z0-9.-]+` character class as any other character outside it, with
+no separate rule needed: RFC 952/1035 never allowed an underscore in a
+hostname label, so refusing it costs nothing a valid page address needs.
+
+**Required for the applying PR: a test table that runs every refusal above,
+and every bypass this review found, through a real WHATWG URL parser, not
+only `urlsplit`.** A test that constructs its expected value with `urlsplit`
+and checks `url_refusal` against that same `urlsplit` output proves nothing
+about Chromium; it is the rule re-checking itself in a mirror. The applying
+PR's test table parses each case with a WHATWG-conformant parser -- for
+example Node's own `URL` (the runtime the plugin already ships with), driven
+from the test as a subprocess, or a maintained Python WHATWG binding if one
+is vendored -- and asserts `url_refusal`'s verdict agrees with what that
+parser resolves the host to, for every case in this section, including the
+four original bypasses, the `.svc` bypass, and all six embedded-IPv4 forms
+(IPv4-mapped, NAT64 well-known, NAT64 local-use, 6to4, SIIT, IPv4-compatible).
+
+**Why not https-only, decided.** The scheme is not the SSRF vector. The
+metadata server and every private address are plain http either way, and
+the rule above refuses them by host. The runner already sets
+`ignore_https_errors=False`, so an https page with a bad certificate still
+fails. Refusing http would refuse legitimate plain-http targets and close no
+path. **The owner confirmed on 2026-09-29: no https-only rule.** It is not
+listed as an open decision below any more.
+
+**IDN, decided.** A caller whose real target is an internationalised domain
+sends its ASCII (punycode) form; this entry does not add a separate IDN
+allowance or normalisation path. **The owner confirmed on 2026-09-29:
+accepted as written**, alongside declining the https-only rule above.
+
+**Why no allow-list.** A platform-wide list contradicts the profile's purpose
+and the NetworkPolicy's stated design. A per-tenant allow-list is tenant
+configuration, not catalogue. If it is ever wanted, it belongs with the
+tenant's registration, not in `RunnerInput`.
+
+**Not in this request, and recommended as its own worker issue:** a
+request-level guard in the runner, `context.route("**/*", ...)`, that aborts
+any request, including redirects and subresources, whose host fails
+`url_refusal`. It still cannot see DNS answers. That makes it the second
+layer behind the network, not a replacement for it. **File it as its own
+worker issue rather than folding it into this request**, because
+`context.route` is the only layer in this entire path that sees a redirect
+or a page's subresources; the door check above never does, whichever way its
+own bugs are fixed. Until that issue lands, a page reachable at a refused URL
+that itself redirects, or loads a subresource from one, is not caught by
+anything this request adds.
+
+### Question 2 (#218): a key named `command`
+
+**#218's own text**, read directly on 2026-09-29 (an earlier draft of this
+entry could not read the issue and reconstructed this question from where
+this repository quotes it; that reconstruction is replaced here): "A
+declared input NAMED `command` reads as invariant 10 relaxed, although it
+names a catalogue entry, not an argv. `FORBIDDEN_CALLER_FIELDS` in
+`swarm_api/validation.py` and `_NEVER` in
+`tests/unit/mcp/test_runner_inputs.py` both list `command`." Request 25
+recorded the same concern in its own words before #218 was filed: "a
+declared input named `command` would read as invariant 10 relaxed although
+it names a catalogue entry, not an argv."
+
+**Recommendation: keep the name, and narrow the guard rather than remove
+it.** `command` is what every existing caller sends, including the example
+in `docs/workflows.md`, the Submit form and the runner's own error text. The
+declaration makes the difference #218 asks about visible instead of hiding
+it: `choices` is the closed list of catalogue names, and `describe()`
+renders it as `string, one of make | npm-build | ...`. A reader sees a menu,
+not an argv. Renaming it to `catalogue_command` would break every caller to
+address something a reviewer can already see.
+
+**What this means for the two guards #218 names, checked directly against
+their source on 2026-09-29:**
+
+* **`_NEVER` in `tests/unit/mcp/test_runner_inputs.py` (line 52) lists
+  `command`, and `test_only_the_mock_declares_inputs_and_no_declaration_
+  names_execution_detail` (line ~314) asserts, for **every** profile in
+  `RUNNER_PROFILES`, that none of its declared keys intersect `_NEVER`. That
+  is invariant 10's own test, and it is written to fail the moment any
+  profile declares `command` -- this request must say so explicitly, because
+  the diff below makes it fail as written. **This entry does not ask for
+  `command` to be removed from `_NEVER`.** It asks for one narrow, named
+  exemption: a declared key named `command` is allowed **only** for the
+  `generic` profile, and **only** when its `RunnerInput` is `kind="string"`
+  with `choices` exactly equal to `GENERIC_COMMANDS`. Any other profile
+  declaring `command`, any other kind, or a `command` whose `choices` is not
+  exactly that closed list stays refused by the same guard it is refused by
+  today. The applying PR narrows the test's assertion to express that
+  exemption in code, rather than deleting `command` from `_NEVER` or
+  weakening the assertion for every profile.
+* **`FORBIDDEN_CALLER_FIELDS` in `swarm_api/validation.py` (line 41) also
+  lists `command`, but is unaffected by this request and needs no change.**
+  It refuses fields on the **top-level task body** (`image`, `command`,
+  `resources`, and the rest of invariant 10's list, checked in
+  `swarm_api/main.py` before a runner profile is even resolved). A
+  `generic` task's declared `command` lives under `input`, a separate
+  namespace `FORBIDDEN_CALLER_FIELDS` does not read and has never read --
+  `mock`'s existing declarations already put keys under `input` today
+  without needing a change there. Declaring `input.command` for `generic`
+  touches neither this list nor its call site.
+
+### Question 3 (#218): should the plugin's bridge send inputs to a profile that has not declared?
+
+**#218's own text**, read directly on 2026-09-29: "Once declared, the
+plugin's bridge reads the same field, so `swarm_dispatch` could send a
+browser task's `actions` for the first time. That is a new plugin
+capability, not only a narrowing." An earlier draft of this entry could not
+read #218 and reconstructed this question instead from the places in this
+repository that quote it -- request 25's amendment ("Letting it send a
+browser task's `actions` is #218's third question"), the header of
+`apps/swarm-mcp/swarm_mcp/profiles.py`, and `check_inputs`'s docstring. Read
+directly, the issue's wording matches all three; no further check against
+the issue's text is needed.
+
+**Recommendation: no. Keep the send policy, and declare instead.** This
+request fixes #220's failure by giving `browser` a declaration. No bridge
+exception is needed. The bridge sends a key only when a declaration names it,
+because the declaration gives `--input` a kind to type the value by, and it
+lets the bridge refuse a bad value before anything travels. Letting it send
+unchecked keys to a `None` profile would forward, from the plugin, exactly the
+unchecked input this request exists to close.
+
+Once `browser` declares, `swarm_dispatch`'s `inputs` object carries `url`
+and `actions` as JSON with no change. `swarm dispatch --input` needs one line:
+`parse_input_flags` keeps `string` and `filename` values as typed text, and
+must keep `url` and `argument` values the same way. Otherwise
+`--input target=123` would be parsed as the number 123 and refused. A list is
+already read as JSON (`--input 'actions=[{"type":"screenshot"}]'`).
+
+With the diff below applied there is no `None` profile left, so the policy
+stops being a live question.
+
+### The requested change
+
+The exact diff against `apps/common/swarm_common/profiles.py` at `d4a2352`.
+**Not applied.** Revised 2026-09-29 after a security review; this version
+re-verified with `git apply --check` against the current file (still
+`d4a2352`; nothing has touched `profiles.py` since) and with a standalone
+run of `url_refusal` and `check_inputs` against every case this entry names,
+including the four bypasses -- both done outside this repository's own test
+suite, since nothing here runs `pytest`. The applying PR still owes the real
+test files listed under *Downstream restatements* and the WHATWG-parser
+table above; this only proves the diff parses, applies and behaves as this
+entry claims.
+
+* **Kinds:** `url`, `argument`, `list`, `object`, and **`header`** (added in
+  this revision, for `user_agent`): printable ASCII only, bounded like a
+  list, by length.
+* **New `RunnerInput` fields:** `choices`, `required`, `items`, `variants`.
+  `required` on a list's `items` is now refused in `__post_init__`: an
+  element of a list is always present, so the flag had nothing to say on one.
+* **`string` may now also give a `maximum`** (a length bound in characters,
+  `minimum` defaulting to 0), for `selector`, `text` and `key`: 4 KiB each,
+  the runner's own content otherwise unconstrained.
+* **A shared rule:** `url_refusal`, rewritten in this revision to refuse
+  before parsing rather than after: a backslash or non-ASCII character
+  anywhere, and a host that is not `[a-z0-9.-]+` once lower-cased, checked
+  before the scheme, the dot count or the suffix list. See the entry's prose
+  above for the four bypasses this closes and the explicit refused-network
+  lists that replace `is_global`.
+* **`browser` and `generic` declare** the tables above. `generic`'s
+  `command` is `RunnerProfile.__post_init__`'s one exemption from `_NEVER`,
+  enforced in code, not only in prose: a string whose `choices` are exactly
+  `_GENERIC_COMMANDS`, for `generic` only.
+* **`generic`'s `timeout_seconds` ceiling is read off the profile itself**
+  (`_GENERIC_PROFILE.timeout_seconds`, built before `_GENERIC_INPUTS` and
+  attached to `RUNNER_PROFILES["generic"]` with `dataclasses.replace`),
+  not restated as a second literal.
+* **`required` is enforced at the top level** by `check_inputs`.
+* **The field returns to the type request 25 was accepted with.**
+  `RunnerProfile.inputs` becomes `Mapping[str, RunnerInput]` with no `None`,
+  and `check_inputs` loses its `None` branch. That retires the amendment.
+* **`describe()` prints whole-number bounds in full** (`1..33554432`, not
+  `:g`'s `1..3.35544e+07`). The mock's bounds render unchanged.
+* **The article** reads "a url".
+
+CR 28 (`issue` for `claude-code` and `codex`), accepted and not yet applied
+on `main`, touches neither these lines nor these kinds.
+
+```diff
+--- a/apps/common/swarm_common/profiles.py
++++ b/apps/common/swarm_common/profiles.py
+@@ -19,12 +19,15 @@
+ 
+ from __future__ import annotations
+ 
++import ipaddress
+ import math
++import re
+ from collections.abc import Mapping
+-from dataclasses import dataclass, field
++from dataclasses import dataclass, field, replace
+ from enum import Enum
+ from types import MappingProxyType
+ from typing import Any
++from urllib.parse import urlsplit
+ 
+ 
+ class Backend(str, Enum):
+@@ -98,13 +101,35 @@
+ # choose the model a `claude-code` agent runs. So what may be sent is declared
+ # per profile, here, once. swarm-api refuses anything else at submission and
+ # the plugin's bridge refuses it sooner; both read this, and neither keeps a
+-# table of its own. Two profiles, `browser` and `generic`, have not declared
+-# yet (#218), and the API bounds what is sent to them by size alone.
++# table of its own. Every profile declares: `browser` and `generic` last, by
++# contract request 32 (#218), which added the kinds their inputs needed.
+ 
+ #: The kinds an input can be. `filename` is a bare file name with no
+ #: directory: the worker keeps only the last path segment of an artifact name
+ #: (`RunnerContext.artifact_path`), so `../x` would quietly become `x`.
+-INPUT_KINDS = ("number", "integer", "boolean", "string", "filename")
++#:
++#: Added by contract request 32 (#218), for the two runners whose work IS
++#: their input:
++#:
++#: * `url`: an http or https URL a browser may open. See `url_refusal`.
++#: * `argument`: a value the generic runner appends to a catalogue argv, or
++#:   runs in -- `_ARGUMENT_SAFE` and the `..` refusal in
++#:   `agent_worker/runners/generic.py`, restated because the catalogue cannot
++#:   import the worker. Existence and "inside the workspace" stay the
++#:   runner's: only it has the workspace.
++#: * `list`: a JSON array. Its BOUNDS ARE ITS LENGTH, both required, as a
++#:   number's are; every element is `items`, and `items` may not itself be
++#:   `required` -- an element of a list is always present, so that flag on an
++#:   element has nothing to say.
++#: * `object`: a JSON object in one of the fixed shapes `variants` names,
++#:   chosen by its `type` key. A key its shape does not name is refused, as a
++#:   key a profile does not declare is.
++#: * `header`: a string that is, or could become, an HTTP header value:
++#:   printable ASCII only (0x20-0x7E), which by construction rules out CR and
++#:   LF and every other control character, so a caller cannot use it to
++#:   inject a second header. `maximum` is required, as it is for a list: the
++#:   bound is the string's length in characters.
++INPUT_KINDS = ("number", "integer", "boolean", "string", "filename", "url", "argument", "list", "object", "header")
+ 
+ #: The signed 64-bit range, which is what Firestore stores an integer in.
+ #: Python reads a JSON integer of any length, so an integer input whose bounds
+@@ -113,16 +138,282 @@
+ INT64_MIN = -(2**63)
+ INT64_MAX = 2**63 - 1
+ 
++#: `argument`: what `generic._ARGUMENT_SAFE` accepts, restated because the
++#: catalogue cannot import the worker. No leading dash, so no value becomes a
++#: flag; no leading slash; 256 characters at most.
++_ARGUMENT = re.compile(r"[A-Za-z0-9._][A-Za-z0-9._\-/]{0,255}")
++
++#: The longest URL a browser task may name. Chromium's own limit is far
++#: larger; a task's URL is stored with the task and shown with it, and past
++#: this it is not a page address but a payload.
++_URL_MAX_CHARS = 2048
++
++#: A host, once `urlsplit` has extracted it and this module has lower-cased
++#: it, must be exactly this: letters, digits, `.` and `-`. Nothing else is
++#: plain ASCII host syntax, so this single check is what closes a
++#: percent-encoded host (`interna%6cl`), a host carrying a literal backslash,
++#: and a raw non-ASCII host at once -- see `url_refusal` and the entry's own
++#: prose for the three bypasses a security review found here on 2026-09-29.
++_HOST_CHARS = re.compile(r"[a-z0-9.-]+")
++
++#: Every network `url_refusal` refuses a *global* IPv4 address in, besides
++#: RFC 1918 and the rest of the ranges `ipaddress` itself would already
++#: refuse as non-global. Chosen as an explicit, named list instead of relying
++#: on `ipaddress.IPv4Address.is_global`, because that property's own
++#: membership is not pinned across the versions this platform runs: the
++#: CGNAT block (100.64.0.0/10) and 192.0.0.0/24 have both changed category
++#: in `ipaddress` between Python 3.11 and 3.13. An explicit list is what a
++#: reviewer can diff against RFC 1918, 5735 and 6890 directly, and it does
++#: not move under this module on a Python upgrade the platform did not make
++#: for this reason.
++_URL_REFUSED_V4_NETWORKS = (
++    ipaddress.ip_network("0.0.0.0/8"),  # "this network" (RFC 791)
++    ipaddress.ip_network("10.0.0.0/8"),  # RFC 1918
++    ipaddress.ip_network("100.64.0.0/10"),  # CGNAT, RFC 6598
++    ipaddress.ip_network("127.0.0.0/8"),  # loopback
++    ipaddress.ip_network("169.254.0.0/16"),  # link-local, and the metadata server
++    ipaddress.ip_network("172.16.0.0/12"),  # RFC 1918
++    ipaddress.ip_network("192.0.0.0/24"),  # IETF protocol assignments
++    ipaddress.ip_network("192.0.2.0/24"),  # documentation (TEST-NET-1)
++    ipaddress.ip_network("192.168.0.0/16"),  # RFC 1918
++    ipaddress.ip_network("198.18.0.0/15"),  # benchmarking
++    ipaddress.ip_network("198.51.100.0/24"),  # documentation (TEST-NET-2)
++    ipaddress.ip_network("203.0.113.0/24"),  # documentation (TEST-NET-3)
++    ipaddress.ip_network("224.0.0.0/4"),  # multicast
++    ipaddress.ip_network("240.0.0.0/4"),  # reserved
++    ipaddress.ip_network("255.255.255.255/32"),  # limited broadcast
++)
++
++#: The IPv6 equivalent of `_URL_REFUSED_V4_NETWORKS`, for a literal IPv6 host
++#: that is neither IPv4-mapped nor a NAT64/6to4 embedding (both unwrapped to
++#: an IPv4 address and checked against the list above instead; see
++#: `_embedded_v4`).
++_URL_REFUSED_V6_NETWORKS = (
++    ipaddress.ip_network("::1/128"),  # loopback
++    ipaddress.ip_network("::/128"),  # unspecified
++    ipaddress.ip_network("100::/64"),  # discard-only, RFC 6666
++    ipaddress.ip_network("2001:db8::/32"),  # documentation
++    ipaddress.ip_network("fc00::/7"),  # unique local
++    ipaddress.ip_network("fe80::/10"),  # link-local
++    ipaddress.ip_network("ff00::/8"),  # multicast
++)
++
++#: Private Google Access, which the worker's NetworkPolicy opens
++#: (kubernetes/network-policies/allow-egress.yaml, rule 3). These are global
++#: addresses by any definition, so they are refused explicitly rather than by
++#: `is_global`: the pod can reach them, but they are authenticated Google
++#: APIs, useless to a browser task without a token, and not what "the public
++#: internet" is meant to include.
++_URL_REFUSED_NETWORKS = (
++    ipaddress.ip_network("199.36.153.4/30"),
++    ipaddress.ip_network("199.36.153.8/30"),
++)
++
++#: Every IPv6 range that EMBEDS an IPv4 address, so a refused v4 address
++#: reachable through any of them would otherwise pass
++#: `_URL_REFUSED_V6_NETWORKS` unseen. IPv4-mapped (`::ffff:a.b.c.d`) is
++#: handled separately by `ipaddress.IPv6Address.ipv4_mapped`; the rest are
++#: unwrapped by `_embedded_v4`:
++#: * `64:ff9b::/96` -- NAT64, RFC 6052 (well-known prefix).
++#: * `64:ff9b:1::/48` -- NAT64, RFC 8215 (local-use prefix; the embedding
++#:   follows RFC 6052 section 2.2's PL48 layout: 48-bit prefix, 16 bits of
++#:   v4, an 8-bit zero field, 16 more bits of v4, 40-bit suffix).
++#: * `2002::/16` -- 6to4, RFC 3056.
++#: * `::ffff:0:0:0/96` -- "IPv4-translated", RFC 6052's SIIT form
++#:   (`::ffff:0:a.b.c.d`; note the extra `:0:` before the address, which is
++#:   what distinguishes it from IPv4-mapped).
++#: * `::/96` -- IPv4-compatible, deprecated (RFC 4291 says so; RFC 6540 says
++#:   not to originate or accept it) but still a parseable literal
++#:   (`::a9fe:a9fe`), so still refused here explicitly rather than assumed
++#:   gone.
++_URL_NAT64_PREFIX = ipaddress.ip_network("64:ff9b::/96")
++_URL_NAT64_LOCAL_PREFIX = ipaddress.ip_network("64:ff9b:1::/48")
++_URL_6TO4_PREFIX = ipaddress.ip_network("2002::/16")
++_URL_SIIT_PREFIX = ipaddress.ip_network("::ffff:0:0:0/96")
++_URL_IPV4_COMPATIBLE_PREFIX = ipaddress.ip_network("::/96")
++
++#: Names that are never a public page: GKE's metadata server is
++#: `metadata.google.internal`; `.local`/`.localhost` never leave the host or
++#: the cluster (`cluster.local`); and `.svc` is the short, no-FQDN-suffix
++#: form Kubernetes' own DNS resolves for a Service
++#: (`<service>.<namespace>.svc`, e.g. `kubernetes.default.svc`), which the
++#: pod's search path completes to `.svc.cluster.local` for any name under
++#: five dots (`ndots:5`) -- added 2026-09-29, after the owner found the
++#: dot-count rule this replaced still admitted it. See `url_refusal`'s
++#: docstring for what actually closes the general search-path gap; this
++#: suffix closes only the specific, well-known `.svc` shorthand.
++_URL_REFUSED_SUFFIXES = (".internal", ".local", ".localhost", ".svc")
++
+ #: How much of a refused value a refusal repeats. A caller who sent three
+ #: hundred digits needs the bound, not the digits back.
+ _SHOWN_VALUE_CHARS = 40
+ 
+ 
++def _bound(value: float) -> str:
++    """`33554432`, not `3.35544e+07`: a caller copies a bound, and `:g` rounds it."""
++    return str(int(value)) if float(value).is_integer() else f"{value:g}"
++
++
++def _embedded_v4(address: ipaddress.IPv6Address) -> ipaddress.IPv4Address | None:
++    """The IPv4 address a NAT64, 6to4, SIIT or IPv4-compatible address
++    embeds, or None. IPv4-mapped is handled by the caller
++    (`address.ipv4_mapped`) and never reaches here."""
++    packed = address.packed
++    if address in _URL_NAT64_PREFIX:
++        return ipaddress.IPv4Address(packed[12:16])
++    if address in _URL_NAT64_LOCAL_PREFIX:
++        # RFC 6052 section 2.2, PL48: prefix(6 bytes) + v4-hi(2) + u(1, zero)
++        # + v4-lo(2) + suffix(5). The `u` byte at packed[8] is skipped.
++        return ipaddress.IPv4Address(bytes([packed[6], packed[7], packed[9], packed[10]]))
++    if address in _URL_6TO4_PREFIX:
++        return ipaddress.IPv4Address(packed[2:6])
++    if address in _URL_SIIT_PREFIX:
++        return ipaddress.IPv4Address(packed[12:16])
++    if address in _URL_IPV4_COMPATIBLE_PREFIX:
++        return ipaddress.IPv4Address(packed[12:16])
++    return None
++
++
++def url_refusal(value: str) -> str:
++    """Why `value` is not a URL a browser task may open, or "" when it is.
++
++    One home for the rule, so swarm-api, the plugin's bridge and the browser
++    runner (`_check_url`, which today checks the scheme and that there is a
++    host) give one answer. Not one of #218's three questions -- declaring
++    `url` as a kind at all raises it; see the entry's prose in
++    docs/contract-change-requests.md for why, and for four bypasses a
++    security review found and closed here on 2026-09-29.
++
++    THIS IS NOT THE SSRF CONTROL, AND CANNOT BE. It sees the URL a caller
++    typed, never the page's redirects, its subresources, its script's
++    requests, or what a name resolves to when the pod asks. The control is the
++    network: the worker's NetworkPolicy drops every private range but the
++    metadata server, and the metadata server answers only a request carrying
++    `Metadata-Flavor: Google`, which a navigation does not send. What this
++    buys is a 422 naming the reason, instead of a task that waits out
++    `timeout_ms` against an address the network silently drops (Dataplane V2
++    drops; the sender sees a timeout), and a URL with a password in it that
++    is never stored with the task, served by the API or shown in the UI.
++
++    Refuses rather than normalises. Every check below runs on the raw string
++    or on `urlsplit`'s own view of it: a host that is not already plain ASCII
++    (`[a-z0-9.-]+` once lower-cased) is refused outright rather than
++    IDNA/UTS46-normalised and re-checked, because a normalising rule has to
++    track whatever WHATWG host-parsing Chromium does, forever, while a
++    refusing rule only has to be a subset of what Chromium accepts. A caller
++    whose real target is an internationalised domain sends its ASCII
++    (punycode) form, which the site already answers to -- the owner accepted
++    this as the rule on 2026-09-29 (no separate IDN allowance).
++
++    An underscore is refused by the same `[a-z0-9.-]+` check as any other
++    character outside that set, with no separate rule: RFC 952/1035 do not
++    allow one in a hostname label at all (some internal DNS -- SRV records,
++    `_service._proto.name` -- uses one anyway, which is one more reason a
++    browser task should not be handed a host carrying one).
++
++    WHAT THIS DOES NOT DO, as of the owner's decision on 2026-09-29: it does
++    not refuse a host by dot count. An earlier revision refused any non-IP
++    host with fewer than two dots, which caught `kubernetes.default` and
++    `swarm-api.swarm-system` but also every bare apex domain a browser task
++    might legitimately target (`github.com`, `example.com` both have exactly
++    one dot) -- for a browser profile, refusing those is refusing the
++    profile's main use. It was also incomplete on its own terms: a three-label
++    name ending in `.svc` (`kubernetes.default.svc`) has two dots and was
++    never caught by it either. The general gap -- GKE's `ndots:5` pod
++    resolver tries every search domain before the absolute name for anything
++    under five dots -- is NOT closed by any check in this function, and
++    cannot be from here: it sees the string the caller sent, never what the
++    pod's resolver does with it. The real controls are the worker's
++    NetworkPolicy (which does not depend on what a name resolves to), the
++    pod's own DNS config (tracked as #341: set `ndots:1` and drop search
++    domains, which removes the search-path trial entirely rather than
++    guessing at every name shape it could produce), and the planned
++    `context.route` guard (see the entry's *Preconditions*). What this
++    function still refuses is the single-label case (`kubernetes`,
++    `metadata`), which resolves only through the cluster's search path and
++    is never a real page address, and the specific `.svc` shorthand below,
++    which is the one case named in the review that is also a fixed, known
++    string rather than an open-ended shape.
++    """
++    if len(value) > _URL_MAX_CHARS:
++        return f"it is longer than {_URL_MAX_CHARS} characters"
++    if any(ch < " " or ch == "\x7f" or ord(ch) > 0x7E for ch in value):
++        return "it contains a space, a control character or a non-ASCII character"
++    if "\\" in value:
++        return "it contains a backslash, which a browser treats as a host or path separator"
++    try:
++        parsed = urlsplit(value)
++        parsed.port  # noqa: B018 -- raises ValueError on a port out of range
++    except ValueError:
++        return "it is not a URL"
++    if parsed.scheme not in ("http", "https"):
++        return "only http and https are opened"
++    if parsed.username is not None or parsed.password is not None:
++        return "it carries credentials, which would be stored with the task and shown with it"
++    host = (parsed.hostname or "").rstrip(".")
++    if not host:
++        return "it has no host"
++    # An IP LITERAL IS CHECKED BEFORE THE HOST-CHARACTER RULE, not after: an
++    # IPv6 literal's `hostname` is unbracketed and colon-bearing
++    # (`64:ff9b::808:808`), which `_HOST_CHARS` never matches, and `ipaddress`
++    # itself already rejects a backslash, a percent sign or a non-ASCII
++    # character in an address -- there is nothing left for a second charset
++    # check to catch there.
++    try:
++        address = ipaddress.ip_address(host)
++    except ValueError:
++        address = None
++    if address is None:
++        if not _HOST_CHARS.fullmatch(host):
++            return (
++                "its host is not letters, digits, '.' and '-' once lower-cased -- a "
++                "browser's own host parsing accepts more than this, including a "
++                "percent-encoded or backslash-bearing host, and this module refuses "
++                "rather than reproduces it"
++            )
++        labels = host.split(".")
++        if any(label == "" for label in labels):
++            return "its host has an empty label ('..' in it, or it starts or ends with '.')"
++        if any(label.strip("-") == "" for label in labels):
++            return "its host has a label made only of hyphens, which is not a valid domain label"
++        # A browser reads a host whose last label is a number (`2852039166`,
++        # `0xa9.254.169.254`) as an IPv4 address in another notation, which
++        # `ip_address` does not parse. No public suffix starts with a digit.
++        if labels[-1][:1].isdigit():
++            return "its host ends in a number, which a browser reads as an address"
++        if not labels[-1][:1].isalpha():
++            return f"its host's last label starts with {labels[-1][:1]!r}, not a letter"
++        # SINGLE LABEL ONLY, not a general dot-count rule: see the docstring
++        # above for why the broader rule this replaced was both too costly
++        # (it refused bare apex domains) and still incomplete.
++        if len(labels) < 2:
++            return "its host is a single label, which only the cluster's search path resolves"
++        if host.endswith(_URL_REFUSED_SUFFIXES):
++            return "its host is a cluster or node-local name"
++        return ""
++    if isinstance(address, ipaddress.IPv6Address):
++        if address.ipv4_mapped is not None:
++            address = address.ipv4_mapped
++        else:
++            embedded = _embedded_v4(address)
++            if embedded is not None:
++                address = embedded
++    if isinstance(address, ipaddress.IPv4Address):
++        if any(address in net for net in _URL_REFUSED_V4_NETWORKS) or any(
++            address in net for net in _URL_REFUSED_NETWORKS
++        ):
++            return "its host is not a public address"
++    elif any(address in net for net in _URL_REFUSED_V6_NETWORKS):
++        return "its host is not a public address"
++    return ""
++
++
+ class InputRefused(ValueError):
+     """An input a profile does not accept, and why.
+ 
+     `key` is the first key refused and `keys` every one; `expected` is the
+-    declared bound a value broke, or None when the key is not declared at all.
++    declared bound a value broke, or None when the key is not declared at all
++    or is required and was not sent.
+     The message names the key and the bound, and never repeats a value longer
+     than it has to.
+     """
+@@ -165,18 +456,73 @@
+     #: the platform would read it as instead -- the mock's exit codes 77, 78
+     #: and 143. Pairs, not a dict, so the declaration stays hashable.
+     refused: tuple[tuple[Any, str], ...] = ()
++    #: A `string` must be one of these, when any are named: a name from a
++    #: catalogue the runner owns, such as the generic runner's commands.
++    choices: tuple[str, ...] = ()
++    #: The caller must send this key. Read for a profile's keys and for an
++    #: object's fields. Refused on a list's `items`: an element of a list is
++    #: always present, so `required` on it has nothing to say.
++    required: bool = False
++    #: What each element of a `list` must be.
++    items: RunnerInput | None = None
++    #: An `object`'s shapes: the value of its `type` key, to the fields that
++    #: shape takes besides `type`. Excluded from the hash, as
++    #: `RunnerProfile.inputs` is; frozen read-only below.
++    variants: Mapping[str, Mapping[str, RunnerInput]] | None = field(default=None, hash=False)
+ 
+     def __post_init__(self) -> None:
+         if self.kind not in INPUT_KINDS:
+             raise ValueError(f"input kind {self.kind!r} is not one of {INPUT_KINDS}")
+         numeric = self.kind in ("number", "integer")
+-        if not numeric and (self.minimum is not None or self.maximum is not None or self.refused):
+-            raise ValueError(f"a {self.kind} input has no bounds; only a number or an integer does")
+-        if numeric and (self.minimum is None or self.maximum is None):
++        #: `list` and `header` MUST give both bounds, like a number: without
++        #: them a list or a header string is unbounded until the task write
++        #: fails. `string` MAY give a `maximum` -- a length bound in
++        #: characters, for keys such as `selector`, `text` and `key`, whose
++        #: content the runner does not otherwise constrain -- and when it
++        #: does, an omitted `minimum` defaults to 0 rather than being
++        #: required, because most bounded strings have no meaningful floor.
++        strictly_bounded = numeric or self.kind in ("list", "header")
++        length_boundable = strictly_bounded or self.kind == "string"
++        if not length_boundable and (self.minimum is not None or self.maximum is not None):
+             raise ValueError(
++                f"a {self.kind} input has no bounds; only a number, a list, a header or a "
++                "string does"
++            )
++        if not numeric and self.refused:
++            raise ValueError(f"a {self.kind} input refuses no values; only a number does")
++        if strictly_bounded and (self.minimum is None or self.maximum is None):
++            raise ValueError(
+                 f"a {self.kind} input declares both a minimum and a maximum; without "
+-                "one, a JSON number of any size passes and fails at the store instead"
++                "one, a JSON number -- or a string, for a header -- of any size passes "
++                "and fails at the store instead"
+             )
++        if self.kind == "string" and self.maximum is not None and self.minimum is None:
++            object.__setattr__(self, "minimum", 0.0)
++        if self.kind in ("list", "header") and not (
++            float(self.minimum).is_integer() and float(self.maximum).is_integer() and self.minimum >= 0
++        ):
++            raise ValueError(f"a {self.kind}'s bounds are its length: whole numbers, from 0")
++        if self.choices and self.kind != "string":
++            raise ValueError(f"a {self.kind} input has no choices; only a string does")
++        if (self.kind == "list") != isinstance(self.items, RunnerInput):
++            raise ValueError("a list input names what its elements are, and nothing else does")
++        if self.kind == "list" and self.items is not None and self.items.required:
++            raise ValueError(
++                "a list's items are always present; `required` on them is refused"
++            )
++        if (self.kind == "object") != bool(self.variants):
++            raise ValueError("an object input names its shapes, and nothing else does")
++        if self.variants:
++            frozen: dict[str, Mapping[str, RunnerInput]] = {}
++            for shape, fields in self.variants.items():
++                for name, declared in fields.items():
++                    if name == "type" or not isinstance(declared, RunnerInput):
++                        raise ValueError(
++                            f"shape {shape!r}: field {name!r} must be a RunnerInput, "
++                            "and `type` is the shape's name, not a field"
++                        )
++                frozen[shape] = MappingProxyType(dict(fields))
++            object.__setattr__(self, "variants", MappingProxyType(frozen))
+         for bound in (self.minimum, self.maximum):
+             if bound is not None and not math.isfinite(bound):
+                 raise ValueError("an input's bounds must be finite numbers")
+@@ -197,10 +543,16 @@
+     def describe(self) -> str:
+         """`integer 1..255 except 77, 78, 143`: the kind and the bound, as a caller reads it."""
+         # `__post_init__` gives a number both bounds and anything else neither.
++        if self.kind == "list" and self.items is not None:
++            return f"list of {_bound(self.minimum)}..{_bound(self.maximum)}, each {self.items.describe()}"
++        if self.variants:
++            return f"object, `type` one of {' | '.join(self.variants)}"
+         if self.minimum is not None and self.maximum is not None:
+-            text = f"{self.kind} {self.minimum:g}..{self.maximum:g}"
++            text = f"{self.kind} {_bound(self.minimum)}..{_bound(self.maximum)}"
+         else:
+             text = self.kind
++        if self.choices:
++            text += f", one of {' | '.join(self.choices)}"
+         if self.refused:
+             text += " except " + ", ".join(str(value) for value, _ in self.refused)
+         return text
+@@ -208,7 +560,7 @@
+     def check(self, key: str, value: Any) -> Any:
+         """`value`, normalised (an integral float becomes an int), or InputRefused."""
+         expected = self.describe()
+-        article = "an" if expected[0] in "aeiou" else "a"
++        article = "an" if expected[0] in "aeio" else "a"  # "a url"
+         wanted = f"input {key!r} must be {article} {expected}"
+ 
+         def refuse(detail: str = "") -> InputRefused:
+@@ -245,18 +597,64 @@
+             if not isinstance(value, bool):
+                 raise refuse(" (true or false)")
+             return value
++        if self.kind == "list":
++            if not isinstance(value, list):
++                raise refuse()
++            if not self.minimum <= len(value) <= self.maximum:
++                raise refuse(f" -- it has {len(value)} entries")
++            # Named by position, so a refusal says WHICH element: `actions[3].url`.
++            return [self.items.check(f"{key}[{index}]", item) for index, item in enumerate(value)]
++        if self.kind == "object":
++            if not isinstance(value, Mapping):
++                raise refuse()
++            shape = value.get("type")
++            if not isinstance(shape, str) or shape not in self.variants:
++                raise refuse()
++            fields = self.variants[shape]
++            unknown = sorted(set(value) - set(fields) - {"type"})
++            if unknown:
++                raise refuse(f" -- a {shape!r} takes {sorted(fields) or 'no field'}, not {unknown}")
++            missing = sorted(name for name, spec in fields.items() if spec.required and name not in value)
++            if missing:
++                raise refuse(f" -- a {shape!r} needs {missing}")
++            checked = {
++                name: fields[name].check(f"{key}.{name}", value[name])
++                for name in sorted(value)
++                if name != "type"
++            }
++            return {"type": shape, **checked}
+         if not isinstance(value, str):
+             raise refuse()
+         if self.kind == "filename" and (
+             not value or value in (".", "..") or "/" in value or "\\" in value or "\x00" in value
+         ):
+             raise refuse(" -- a bare file name, with no directory")
++        if self.kind == "argument" and (not _ARGUMENT.fullmatch(value) or ".." in value):
++            raise refuse(
++                " -- letters, digits, '.', '_', '-' and '/', starting with none of '-' or "
++                "'/', at most 256 characters, and no '..'"
++            )
++        if self.kind == "url":
++            reason = url_refusal(value)
++            if reason:
++                raise refuse(f" -- {reason}")
++        if self.kind == "header":
++            if not (self.minimum <= len(value) <= self.maximum):
++                raise refuse(f" -- it has {len(value)} characters")
++            if any(ch < " " or ch == "\x7f" or ord(ch) > 0x7E for ch in value):
++                raise refuse(" -- printable ASCII only (0x20-0x7E), which rules out CR and LF")
++        if self.kind == "string" and self.maximum is not None and not (
++            self.minimum <= len(value) <= self.maximum
++        ):
++            raise refuse(f" -- it has {len(value)} characters")
++        if self.choices and value not in self.choices:
++            raise refuse()
+         return value
+ 
+ 
+-def _frozen_inputs(declared: Mapping[str, RunnerInput] | None) -> Mapping[str, RunnerInput] | None:
++def _frozen_inputs(declared: Mapping[str, RunnerInput]) -> Mapping[str, RunnerInput]:
+     """A read-only copy, so no caller can widen a profile's declaration in place."""
+-    return None if declared is None else MappingProxyType(dict(declared))
++    return MappingProxyType(dict(declared))
+ 
+ 
+ @dataclass(frozen=True)
+@@ -330,29 +728,39 @@
+     #: That is what closes `input.model` on `claude-code`, which its runner
+     #: would pass as `--model`.
+     #:
+-    #: NONE MEANS NOT DECLARED YET, and then only the input's size is bounded,
+-    #: as it was for every profile before this field existed. It exists for
+-    #: the runners whose work IS their input -- `browser` cannot start without
+-    #: `url` or `actions`, `generic` without `command` -- where an empty
+-    #: declaration would refuse every task they run. What they declare is the
+-    #: owner's open question #218, recorded under contract request 25 in
+-    #: docs/contract-change-requests.md as an amendment awaiting approval:
+-    #: the request as accepted typed this field `Mapping`, with no None.
++    #: THERE IS NO "NOT DECLARED YET". Until contract request 32 (#218) this
++    #: field could be None, for `browser` and `generic`, and then only the
++    #: input's size was bounded -- an amendment to request 25 the owner
++    #: confirmed on 2026-09-26 as the state until #218 was decided. Both
++    #: declare now, so the type is the one request 25 was accepted with.
+     #:
+     #: Excluded from the hash: a mapping is not hashable, and a profile's
+     #: identity is its name.
+-    inputs: Mapping[str, RunnerInput] | None = field(default_factory=dict, hash=False)
++    inputs: Mapping[str, RunnerInput] = field(default_factory=dict, hash=False)
+ 
+     def __post_init__(self) -> None:
+-        if self.inputs is not None:
+-            for key, declared in self.inputs.items():
+-                if not isinstance(declared, RunnerInput):
+-                    raise ValueError(f"runner {self.name}: input {key!r} is not a RunnerInput")
+-                if key == "prompt":
+-                    raise ValueError(
+-                        f"runner {self.name}: `prompt` is every profile's input and is not declared"
+-                    )
+-            object.__setattr__(self, "inputs", _frozen_inputs(self.inputs))
++        for key, declared in self.inputs.items():
++            if not isinstance(declared, RunnerInput):
++                raise ValueError(f"runner {self.name}: input {key!r} is not a RunnerInput")
++            if key == "prompt":
++                raise ValueError(
++                    f"runner {self.name}: `prompt` is every profile's input and is not declared"
++                )
++            if key == "command" and self.name != "generic":
++                raise ValueError(
++                    f"runner {self.name}: `command` is invariant 10's own guard "
++                    "(_NEVER, FORBIDDEN_CALLER_FIELDS); only `generic` is exempted, "
++                    "and only for its closed catalogue -- see contract request 32"
++                )
++            if key == "command" and self.name == "generic" and (
++                declared.kind != "string" or set(declared.choices) != set(_GENERIC_COMMANDS)
++            ):
++                raise ValueError(
++                    f"runner {self.name}: `command` may only be a string whose choices "
++                    "are exactly GENERIC_COMMANDS -- the one exemption contract request "
++                    "32 asks _NEVER to carry, not a general licence to declare it"
++                )
++        object.__setattr__(self, "inputs", _frozen_inputs(self.inputs))
+         if not self.available and not self.disabled_reason:
+             raise ValueError(
+                 f"runner {self.name}: a disabled profile must say why. A caller "
+@@ -450,6 +858,194 @@
+ }
+ 
+ 
++#: A wait the browser runner hands Playwright, in milliseconds. FROM 1, NOT 0:
++#: Playwright reads a timeout of 0 as "no timeout", so a 0 here would let one
++#: action wait out the whole 5400 s attempt. FIVE MINUTES at most: a selector
++#: that has not appeared in five minutes is not coming, and the attempt's own
++#: timeout is the ceiling above that.
++_BROWSER_WAIT_MS = {"minimum": 1, "maximum": 300_000}
++
++#: `selector`, `text` and `key` may carry arbitrary Unicode (a CSS selector, a
++#: page's own text, a key combination), so they are `string` with a length
++#: bound rather than `header`, which is ASCII-only. 4 KiB: far past any real
++#: selector or typed text, and small enough that a caller who sent this much
++#: sent a payload, not a selector.
++_BROWSER_TEXT_MAX = 4096
++
++#: The browser runner's actions (`agent_worker/runners/browser.py`, `body`),
++#: one shape per `type`, each field as the runner reads it. `type` is matched
++#: exactly: the runner lower-cases it, so `"Goto"` runs today and is refused
++#: here. The restatement is held to the runner's source by a test, as the
++#: mock's keys are (tests/unit/mcp/test_runner_inputs.py).
++_BROWSER_ACTION = RunnerInput(
++    "object",
++    means="one step of the run, in the shape its `type` names",
++    variants={
++        "goto": {
++            "url": RunnerInput("url", required=True, means="the page to open"),
++            "wait_until": RunnerInput(
++                "string",
++                choices=("load", "domcontentloaded", "networkidle", "commit"),
++                means="when the load counts as done; default load",
++            ),
++        },
++        "click": {
++            "selector": RunnerInput(
++                "string", minimum=0, maximum=_BROWSER_TEXT_MAX, required=True,
++                means="the element to click",
++            )
++        },
++        "fill": {
++            "selector": RunnerInput(
++                "string", minimum=0, maximum=_BROWSER_TEXT_MAX, required=True,
++                means="the field to fill",
++            ),
++            "text": RunnerInput(
++                "string", minimum=0, maximum=_BROWSER_TEXT_MAX,
++                means="what to type into it; default empty",
++            ),
++        },
++        "press": {
++            "selector": RunnerInput(
++                "string", minimum=0, maximum=_BROWSER_TEXT_MAX, required=True,
++                means="the element to press a key in",
++            ),
++            "key": RunnerInput(
++                "string", minimum=0, maximum=_BROWSER_TEXT_MAX,
++                means="the key; default Enter",
++            ),
++        },
++        "wait_for": {
++            "selector": RunnerInput(
++                "string", minimum=0, maximum=_BROWSER_TEXT_MAX, required=True,
++                means="the element to wait for",
++            ),
++            "timeout_ms": RunnerInput(
++                "integer", **_BROWSER_WAIT_MS, means="how long to wait; default the task's timeout_ms"
++            ),
++        },
++        # 0..60: the runner clamps above 60 with `min(..., 60.0)`, so a larger
++        # value is refused rather than quietly shortened.
++        "wait": {"seconds": RunnerInput("number", minimum=0, maximum=60, means="how long to pause; default 1")},
++        "screenshot": {
++            "name": RunnerInput("filename", means="the artifact's file name; default by position"),
++            "full_page": RunnerInput("boolean", means="the whole page, not the viewport; default true"),
++        },
++        "extract": {
++            "selector": RunnerInput(
++                "string", minimum=0, maximum=_BROWSER_TEXT_MAX,
++                means="the element whose text is kept; default body",
++            ),
++            "name": RunnerInput("filename", means="the artifact's file name; default by position"),
++        },
++    },
++)
++
++#: The browser runner's inputs. NEITHER `url` NOR `actions` IS REQUIRED ALONE:
++#: the runner needs one or the other, which `required` cannot say, so that
++#: refusal stays the runner's (contract request 32, *Owner's decisions*).
++_BROWSER_INPUTS: dict[str, RunnerInput] = {
++    "url": RunnerInput("url", means="opened first, before any action"),
++    # 200: the runner's MAX_ACTIONS.
++    "actions": RunnerInput(
++        "list", minimum=0, maximum=200, items=_BROWSER_ACTION, means="run in order, after `url`"
++    ),
++    "timeout_ms": RunnerInput(
++        "integer", **_BROWSER_WAIT_MS, means="how long any one action may take; default 30000"
++    ),
++    # Three minutes: Chromium starts in seconds, and a launch still waiting at
++    # three minutes is a pod short of /dev/shm, not a slow start.
++    "launch_timeout_ms": RunnerInput(
++        "integer", minimum=1, maximum=180_000, means="how long Chromium may take to start; default 60000"
++    ),
++    # Up to 4K. The viewport is rendered in the pod's memory, and a full-page
++    # screenshot of it is written to the workspace, which is memory too.
++    "viewport_width": RunnerInput("integer", minimum=320, maximum=3840, means="pixels; default 1280"),
++    "viewport_height": RunnerInput("integer", minimum=240, maximum=2160, means="pixels; default 900"),
++    # `header`, not `string`: this value is sent as the User-Agent HTTP
++    # header verbatim, so it must be printable ASCII -- a caller could
++    # otherwise inject a second header through it. 512: real User-Agent
++    # strings run under 300 characters; past 512 it is not a browser
++    # signature.
++    "user_agent": RunnerInput(
++        "header", minimum=0, maximum=512, means="the User-Agent sent; default Chromium's"
++    ),
++    "extract_text": RunnerInput("boolean", means="keep the final page's text as page.txt; default true"),
++    "screenshot": RunnerInput("boolean", means="keep a final full-page screenshot; default true"),
++}
++
++#: The generic runner's catalogue (`agent_worker/runners/generic.py`,
++#: `GENERIC_COMMANDS`), restated because the catalogue cannot import the
++#: worker, and held to it by a test, as `_ARGUMENT` is.
++_GENERIC_COMMANDS = ("make", "npm-build", "npm-ci", "npm-test", "pytest", "uv-sync")
++
++#: Built without `inputs` first, so `_GENERIC_INPUTS` below can read this
++#: profile's OWN `timeout_seconds` for its `timeout_seconds` input's ceiling
++#: instead of restating the number as a second literal. `RunnerProfile` sets
++#: no `timeout_seconds` for `generic`, so this is the class default (3600) --
++#: reading it here, rather than writing `3600` again, is what keeps the two
++#: from drifting if a future change gives `generic` its own value.
++_GENERIC_PROFILE = RunnerProfile(
++    name="generic",
++    image="agent-runtime-base",
++    resource_class="standard",
++    backend=Backend.CLOUD_RUN_JOB,
++    runner_argv=("python", "-m", "agent_worker.runners.generic"),
++    provider=None,
++)
++
++#: The generic runner's inputs (`agent_worker/runners/generic.py`).
++#:
++#: `command` IS A NAME, NOT AN ARGV: `choices` is `_GENERIC_COMMANDS`, the
++#: runner's own `GENERIC_COMMANDS` restated, whose argv are constants in the
++#: runner. Declaring it reads as invariant 10 relaxed and is not -- see
++#: contract request 32, Question 2 (#218) -- and `RunnerProfile.__post_init__`
++#: enforces the one exemption `_NEVER` (tests/unit/mcp/test_runner_inputs.py)
++#: is asked to carry: `command` declared as a string whose `choices` are
++#: exactly `_GENERIC_COMMANDS`, for `generic` only.
++#:
++#: THE FOUR LIMITS MAY ONLY LOWER THE PLATFORM'S (`runners/limits.py`). Each
++#: ceiling here is the value the worker exports by default -- the profile's
++#: `timeout_seconds`, and `WorkerConfig`'s grace and output caps -- so a
++#: request above it is refused at the door instead of accepted and clamped.
++#: The runner still clamps to what the attempt's worker exports, which an
++#: operator may have set lower. From 1: the runner reads 0 or less as "not
++#: asked", so a 0 was accepted and meant nothing.
++_GENERIC_INPUTS: dict[str, RunnerInput] = {
++    "command": RunnerInput(
++        "string",
++        required=True,
++        choices=_GENERIC_COMMANDS,
++        means="the platform catalogue entry to run; the platform owns its argv",
++    ),
++    # 32: `GenericCommand.max_arguments`. Read for `pytest` only.
++    "paths": RunnerInput(
++        "list",
++        minimum=0,
++        maximum=32,
++        items=RunnerInput("argument", means="an existing path inside the workspace"),
++        means="pytest only: what to run; default everything",
++    ),
++    "target": RunnerInput("argument", means="make only: the target; default all"),
++    "working_directory": RunnerInput(
++        "argument", means="a directory inside the workspace to run in; default the workspace"
++    ),
++    "timeout_seconds": RunnerInput(
++        "number", minimum=1, maximum=_GENERIC_PROFILE.timeout_seconds,
++        means="lowers the command's wall clock",
++    ),
++    "grace_seconds": RunnerInput(
++        "number", minimum=1, maximum=20, means="lowers the wait between SIGTERM and SIGKILL"
++    ),
++    "max_stdout_bytes": RunnerInput(
++        "integer", minimum=1, maximum=32 * 1024 * 1024, means="lowers the stdout kept"
++    ),
++    "max_stderr_bytes": RunnerInput(
++        "integer", minimum=1, maximum=8 * 1024 * 1024, means="lowers the stderr kept"
++    ),
++}
++
++
+ RUNNER_PROFILES: dict[str, RunnerProfile] = {
+     "mock": RunnerProfile(
+         name="mock",
+@@ -463,18 +1059,10 @@
+         checkpoint_interval_seconds=30,
+         inputs=_MOCK_INPUTS,
+     ),
+-    "generic": RunnerProfile(
+-        name="generic",
+-        image="agent-runtime-base",
+-        resource_class="standard",
+-        backend=Backend.CLOUD_RUN_JOB,
+-        runner_argv=("python", "-m", "agent_worker.runners.generic"),
+-        provider=None,
+-        # NOT DECLARED YET. The runner cannot start without `input.command`,
+-        # the NAME of an entry in its own catalogue, so an empty declaration
+-        # would refuse every task it runs. See RunnerProfile.inputs.
+-        inputs=None,
+-    ),
++    # Built from `_GENERIC_PROFILE` (declared above, alongside `_GENERIC_INPUTS`,
++    # so the input's own `timeout_seconds` ceiling can read this profile's
++    # `timeout_seconds` instead of restating it).
++    "generic": replace(_GENERIC_PROFILE, inputs=_GENERIC_INPUTS),
+     "claude-code": RunnerProfile(
+         name="claude-code",
+         image="agent-runtime-base",
+@@ -528,10 +1116,7 @@
+         provider="anthropic",
+         secrets=("ANTHROPIC_API_KEY",),
+         timeout_seconds=5400,
+-        # NOT DECLARED YET. The runner cannot start without `input.url` or
+-        # `input.actions`, so an empty declaration would refuse every task it
+-        # runs, the smoke suite's GKE row included. See RunnerProfile.inputs.
+-        inputs=None,
++        inputs=_BROWSER_INPUTS,
+     ),
+ }
+ 
+@@ -556,23 +1141,10 @@
+ 
+     `raw` holds the keys BESIDES the prompt. Returns them normalised (an
+     integral float for an integer input becomes an int), or raises
+-    InputRefused: for every key the profile does not declare, naming them all,
+-    or for the first declared key whose value is out of its bounds, naming the
+-    bound.
+-
+-    NOT DECLARED YET IS DECIDED HERE, AND ONLY HERE. A profile whose inputs are
+-    not declared yet (`inputs is None`: `browser` and `generic`, open with the
+-    owner on #218) has no declaration to check a key against, so `raw` comes
+-    back as it was sent and only its size bounds it, which the caller that
+-    measures the size enforces (`validate_input_size` in swarm-api). The review
+-    of #213 found this decided twice and differently: this function refused
+-    every key while the API returned before asking and accepted every key, so
+-    the one rule and the API gave opposite answers for the same profile. The
+-    plugin's bridge sending such a profile nothing is its own send policy, not
+-    this rule (#218's third question).
++    InputRefused: for every key the profile does not declare, naming them all;
++    for every required key `raw` does not send, naming them all; or for the
++    first declared key whose value is out of its bounds, naming the bound.
+     """
+-    if profile.inputs is None:
+-        return dict(raw)
+     declared = profile.inputs
+     unknown = sorted(set(raw) - set(declared))
+     if unknown:
+@@ -590,4 +1162,11 @@
+                 f"so {unknown} cannot be sent"
+             )
+         raise InputRefused(message, key=unknown[0], keys=tuple(unknown))
++    missing = sorted(key for key, spec in declared.items() if spec.required and key not in raw)
++    if missing:
++        raise InputRefused(
++            f"runner profile {profile.name!r} needs {missing} in its input",
++            key=missing[0],
++            keys=tuple(missing),
++        )
+     return {key: declared[key].check(key, raw[key]) for key in sorted(raw)}
+```
+
+### What it would break if accepted
+
+* **Nothing stored.** Tasks keep their `input`. The check runs at submission
+  only.
+* **Callers that send what the declaration refuses** would get 422
+  `invalid_input` for input the API accepts today. That is the point, and it
+  is a behaviour change to announce. Every case below fails or misbehaves at
+  the runner today. The only exceptions are an upper-case `type`, a number
+  sent as a string, and a limit above the ceiling: today those are coerced or
+  clamped, and they would now be refused.
+  * `generic` with no `command`, or a `command` outside the catalogue.
+  * An action with an upper-case `type`, a missing `selector` or `url`, or a
+    key its shape does not take.
+  * `timeout_ms`, `launch_timeout_ms` or a viewport sent as a string or out
+    of bounds, and `seconds` above 60.
+  * A `goto` to a private, metadata, cluster or credentialled URL.
+  * A `generic` limit of 0 or less, or above its ceiling.
+* **In-repository callers were checked on 2026-09-29.**
+  * `scripts/lib/testlib.sh` `profile_input` sends `browser` a `screenshot`
+    action with `name` and `full_page` and `extract_text: false`. This
+    passes the proposed catalogue.
+  * `scripts/prove-gke-dispatch.sh --url https://example.com` passes.
+  * `docs/workflows.md`'s example step `{"command": "pytest"}` passes.
+  * `profile_input`'s default branch sends `generic` only a prompt. It would
+    now be refused at 422 instead of failing at the runner. No script
+    submits `generic` through that branch today.
+* **Downstream restatements that must follow in the applying PR:**
+  * The bridge: `parse_input_flags`'s string kinds (question 3). Its
+    `not_yet` wording for a `None` profile is deleted.
+  * swarm-api: `validation.validate_runner_input`'s and `runnerinputs.py`'s
+    docstrings, which describe `None`. There is no code branch to remove;
+    the rule decides.
+  * The worker: `browser._check_url` calls `url_refusal`. The runner may keep
+    its own checks, because a task written before this change still reaches
+    it.
+  * The Submit form's `SUGGESTED` for `browser` and `generic`
+    (`apps/swarm-ui/src/Submit.tsx`). Today it is a runner census. Section 13
+    of `scripts/lib/check-contract-parity.sh` would then hold it to the
+    declaration, as it does for the declared profiles.
+  * The generated tables. `docs/workflows.md` and `plugin/README.md` gain
+    `runner-inputs:browser` and `runner-inputs:generic` blocks, and
+    `test_runner_input_prose.py` needs a rendering for `list` and `object`.
+  * The tests that key on `inputs is None`.
+    `test_runner_inputs.py::_UNDECLARED` skips itself ("#218 is settled").
+    `test_runner_inputs_by_declaration.py` and
+    `test_submit_offers_only_what_runners_read.py` assert the `None`
+    behaviour and are rewritten for the declarations.
+  * `apps/swarm-ui/src/types.ts`, if it ever mirrors `inputs`. Today it does
+    not.
+* **Restatements this creates, each needing a parity test** of the kind
+  `test_runner_inputs.py` already runs for the mock:
+  * `choices` for `command`, against `GENERIC_COMMANDS`;
+  * the `argument` pattern, against `_ARGUMENT_SAFE`;
+  * 200, against `MAX_ACTIONS`, and 32, against `max_arguments`;
+  * the eight action shapes and their fields, against the `if kind ==`
+    chain in `browser.py`;
+  * 60, against the `wait` clamp;
+  * the four limit ceilings, against `WorkerConfig`'s defaults and the
+    profile's `timeout_seconds`.
+
+  The catalogue cannot import the worker, so each of these is a copy, the
+  same kind of copy as the mock's exit codes.
+
+### If it is declined
+
+`browser` and `generic` stay `None`. The API goes on bounding them by size,
+and every failure listed under *What is true today* goes on arriving after
+admission, having spent a lease and a pod start. The plugin still cannot
+dispatch a working browser task (#220). The only way around that without a
+declaration is a bridge exception for `None` profiles, and question 3
+recommends against it. A private-address `goto` still times out instead of
+being refused, and a URL with a password is still stored with its task.
+
+### Preconditions for the applying PR
+
+Three things this entry does not itself change, because they are code, not
+the frozen module, and this request is docs-only. The applying PR does not
+merge without them:
+
+* **Measure against the live cluster that page script cannot use the
+  metadata token endpoint, before it merges.** The CORS-preflight claim
+  above ("a cross-origin `fetch()` ... triggers a CORS preflight, and the
+  metadata server does not answer the preflight in a way that permits the
+  request") is reasoned from the metadata server's documented behaviour, not
+  measured from this cluster. Run a `browser` task against the live GKE pod
+  that attempts exactly that `fetch()` and confirm the token never reaches
+  the page before this entry's SSRF posture is relied on for anything.
+* **The worker re-runs `check_inputs` on the payload it reads.** Confirmed
+  on 2026-09-29: nothing under `apps/agent-worker` calls `check_inputs`
+  today; only swarm-api (`validation.py`) and the plugin's bridge
+  (`swarm_mcp/server.py`, `workflows.py`) do, both at submission. A task
+  document written before this declaration existed, or reached by a future
+  bypass of the submission check, is never re-checked at the point that
+  actually runs it. The applying PR adds that second call in the worker's
+  own dispatch path, so a bad `input` is refused twice, not once.
+* **The runner's `_ARGUMENT_SAFE` uses `fullmatch`, not `match`.** Confirmed
+  on 2026-09-29: `agent_worker/runners/generic.py` line 71 defines
+  `_ARGUMENT_SAFE = re.compile(r"^[A-Za-z0-9._][A-Za-z0-9._\-/]{0,255}$")`
+  and line 181 calls `_ARGUMENT_SAFE.match(text)`. Without `re.MULTILINE`,
+  `$` matches at the end of the string **or immediately before a trailing
+  newline**, so `"safe\n"` passes `.match()` today though it should not: a
+  value the runner appends to an argv, or writes as a working directory,
+  carrying a trailing newline. `.fullmatch()` has no such exception. This is
+  the runner's own code, not `apps/common/swarm_common/profiles.py`
+  (`_ARGUMENT.fullmatch(value)` there already uses `fullmatch`, and was
+  correct on this point already); it is listed here because it is the same
+  class of bug this entry's URL work found, in the sibling check.
+
+**Neither of the two remaining layers is a precondition of this request,
+because both are already filed and neither is code this entry touches:**
+
+* **The pod's DNS config is #341** ("Browser worker pods resolve short
+  names through the cluster search path, so `kubernetes.default` reaches
+  cluster services by DNS"). Set `ndots:1` and drop search domains, which
+  removes the search-path trial for every short name at once, rather than
+  this entry's door check trying to enumerate which short names are unsafe.
+  This is the fix the owner pointed to on 2026-09-29 when declining the
+  broader host-dot-count rule: `url_refusal`'s job is a 422 with a clear
+  reason for the names it CAN recognise as unsafe from the string alone
+  (single-label, `.svc`); closing the general case is #341's job, in the
+  pod spec, not this module's.
+* **A runner-side `context.route` guard is not filed as part of this
+  request either.** It is the only layer anywhere in this path that sees a
+  redirect or a subresource; the door check above never does, however its
+  own bugs are fixed. File it as its own worker issue, so this entry is not
+  blocked on worker-side Playwright work.
+
+Together with the worker's NetworkPolicy, these three -- #341, the
+`context.route` guard, and the network policy already deployed -- are what
+actually keep the pod from reaching a cluster-internal service by name. This
+entry's `url_refusal` is a fourth, outermost layer: a fast, clear refusal at
+submission for the shapes it can recognise, not the mechanism any of this
+relies on for correctness.
+
+### Invariants
+
+* **Invariant 10.** Every declared key is data. `command` is a name from a
+  closed list whose argv the platform owns, and the ONE EXEMPTION `_NEVER`
+  (`tests/unit/mcp/test_runner_inputs.py`) is asked to carry for it is
+  narrow and enforced in code (`RunnerProfile.__post_init__`): `generic`
+  only, and only a string whose `choices` are exactly `_GENERIC_COMMANDS`.
+  `FORBIDDEN_CALLER_FIELDS` (`swarm_api/validation.py`) is unaffected -- it
+  guards the top-level task body, a different namespace declared `input`
+  keys never touch. `paths`, `target` and `working_directory` are appended
+  after a fixed argv and can never become a flag. The four limits can only
+  lower the platform's own. Nothing declared is an image, a command line, a
+  resource spec or a backend parameter, and `argv`, `script`, `env`,
+  `command_line` and `shell` become refusals at the door.
+* **Invariant 9.** `url_refusal` refuses the cluster's own names it can
+  parse as such, and a global address it can identify in the ranges this
+  module lists. **It does not refuse every private address by construction**
+  -- a security review on 2026-09-29 found the first draft's version of this
+  claim false, because a host it failed to parse the way a browser does
+  could avoid every check that followed. The revised rule refuses non-ASCII,
+  backslash and any host that is not plain `[a-z0-9.-]+` before any of the
+  address logic runs, which is what makes the address logic trustworthy
+  again; it is still not the SSRF control (see above), and per-tenant
+  isolation stays the network's job regardless.
+* **Invariant 1.** A refusal at submission creates no task. So a task that
+  is bound to fail no longer takes a lease, which is less infrastructure
+  demand, never more.
+* **Invariant 7.** Unchanged. Nothing here sizes a pod.
+
+### Owner's decisions
+
+1. **Accept the three new kinds** (`list` with `items`, `object` with
+   `variants`, and `argument`), the `url` kind, and the `choices` and
+   `required` fields. Or name a smaller shape.
+2. **The either/or on `browser`.** A task with neither `url` nor `actions`
+   passes the declaration and fails at the runner. Options:
+   * leave it with the runner (this request);
+   * add a profile-level `requires_one_of` to the catalogue;
+   * make `actions` required with a minimum of 1 and drop `url`, which
+     breaks every current caller of `url`.
+3. **The `url` rule, revised 2026-09-29, DECIDED the same day.** Accept the
+   scheme restriction and the public-host rule as rewritten above (refuse
+   before parsing, explicit refused-network lists in place of `is_global`,
+   the single-label rule kept, `.svc` added to the refused suffixes, six
+   IPv4-in-IPv6 embedding forms unwrapped), with no allow-list. **The owner
+   answered all three sub-decisions on 2026-09-29:**
+   * **the host-dot-count question, resolved: DROP the "fewer than two
+     dots" rule.** It refused apex domains (`github.com`, `example.com`),
+     the browser profile's main targets, while still admitting
+     `kubernetes.default.svc` and `swarm-api.swarm-system.svc` (GKE's
+     `ndots:5` search path applies to any name under five dots, so a
+     two-label rule was never going to close that on its own terms either).
+     The single-label rule is restored, and `.svc` is added to the refused
+     suffixes; the general search-path gap is #341's job, not this
+     module's (see *Preconditions for the applying PR*);
+   * **https-only: no.** Recorded above ("Why not https-only, decided");
+   * **IDN: accepted as written**, i.e. punycode only, no separate
+     normalisation path. Recorded above ("IDN, decided").
+   A runner-side `context.route` guard is filed as its own worker issue, not
+   part of this request (recommended, see *Preconditions*).
+4. **The bounds.**
+   * `timeout_ms` 1..300000;
+   * `launch_timeout_ms` 1..180000;
+   * viewport up to 3840×2160;
+   * `wait.seconds` 0..60;
+   * `user_agent`: printable ASCII (0x20-0x7E), 0..512 characters (new in
+     this revision, closing a CRLF-header-injection gap the first draft left
+     open, since `user_agent` had no bound at all);
+   * `selector`, `text` and `key`: 0..4096 characters each (new in this
+     revision, for the same reason);
+   * the `generic` limits at the worker's default ceilings: refused above
+     them at the door, still clamped to the attempt's actual ceiling by the
+     runner; `timeout_seconds`'s ceiling is read off `RunnerProfile.
+     timeout_seconds` itself rather than restated as a literal (new in this
+     revision).
+5. **Exact matching of an action's `type`**, which refuses the `"Goto"` the
+   runner accepts today.
+6. **Keep the key name `command`, with the narrow `_NEVER` exemption this
+   revision adds** (`generic` only, only a string whose `choices` are
+   exactly `_GENERIC_COMMANDS`, enforced in `RunnerProfile.__post_init__`,
+   not only asserted in prose) -- or decline the exemption and rename the
+   key, which breaks every existing caller to avoid a guard this revision
+   already narrows to the one case invariant 10 does not mean to forbid.
+7. **Retire the `None` amendment.** This returns `RunnerProfile.inputs` to
+   `Mapping` with no `None`, the type request 25 was accepted with. The
+   alternative is to keep `| None` for a future profile, which leaves the
+   branch in `check_inputs`.
+8. **Question 3 (#218).** Keep the bridge's send-only-what-is-declared
+   policy (recommended). #218's own text, read directly on 2026-09-29,
+   confirms this is its third question; no further check is needed.
+
+---
+
+## 33. `profiles.py` / `models.py`: a merge profile that runs no agent, and two end causes for it
+
+**Status: ACCEPTED 2026-09-29 by the owner, as the design; build gated on
+#342.** Recorded from #295's design step. Revised 2026-09-29, several times,
+against a security review's rounds (B1, B2, M1–M5 and their minors, then B1
+corrected repeatedly against a joint review with CR 34, ending with R8
+recorded open rather than closed); see [merge-step.md](merge-step.md)'s own
+revision note for the changes, which are almost entirely outside this
+request's own frozen-contract surface — `worker_action`, the `merge` profile
+and the two end causes are unchanged by the review. The design is
+[merge-step.md](merge-step.md). Nothing under `apps/common/swarm_common/`
+has been edited. **The owner accepted this request's `profiles.py`/
+`models.py` shape as the design to build against — acceptance of the design
+is not yet the build:** `merge` (and the `post-verdict`/`claude-code-review`
+requests below) must not be enabled for any tenant until #342 (signed step
+specs) ships, per merge-step.md §0 consequence 4 and §10. Renumbered from 29
+to 33 on 2026-09-29: #259 is 29, #314 is 30, #304 is 31, #315 is 32. Since
+then, `main`'s own numbering moved independently — its own request 29
+(`EndCause` gains `PUBLISH_REFUSED`) is unrelated content, and request 31 is
+not present on `main` at all — but 33 was never taken by anything else, so
+no further renumbering was needed on merge.
+
+**Pointer, not a request of its own (round-3 re-review, 2026-09-29): the
+design's `post-verdict` and `claude-code-review` catalogue entries are
+separate, not-yet-filed frozen-contract requests, tracked in
+[merge-step.md](merge-step.md) §10 (build items 2–3) and §6a (the pinned
+`VERDICT_REFUSED`/`VERDICT_FAILED` end causes), not folded into this one.**
+This request stays scoped to what its heading says — the `merge` profile —
+because `post-verdict` and `claude-code-review` each need their own
+`### What it would break if accepted` analysis once filed, the same way this
+one has its own. This design also now depends on S0 issue #342, signed step
+specs, which every step's worker (not only `merge`'s or `post-verdict`'s)
+must verify before running. **Corrected, joint review with CR 34 (#344),
+2026-09-29: an earlier draft of this paragraph said #342 "is not a change to
+a frozen type" and so did not belong in this file. That was wrong.** Signing
+and verifying a step's canonical spec needs somewhere on the frozen `Task`
+or `WorkflowStep` shape to carry the signature (or an equivalent frozen
+type), which is exactly the kind of change this file exists to record; #342
+is tracked as its own S0 issue for the security decision and the build plan,
+but its frozen-contract surface — whatever field or type CR 34 ends up
+needing — belongs here too, as its own numbered request once CR 34 states
+precisely what it is. This entry does not attempt to state it first; see
+[merge-step.md](merge-step.md) §0 consequence 4 and §7 T14/R7 for why this
+design cannot be enabled without it regardless.
+
+### What is true today
+
+A workflow cannot merge its own pull request. Every `RunnerProfile` names a
+runner that the lifecycle starts as a supervised child
+(`runner_argv`, contract request 18), and every runner runs an agent or a
+command. The only credential-bearing thing a worker does after its runner exits
+is `_publish_git`, which runs under the tenant's service account in the same
+container the agent just ran in.
+
+An agent can mint that service account's token from the metadata server
+([security.md](security.md#cloud-metadata-abuse)). So a merge credential
+readable by the worker that publishes is readable by every agent of the tenant
+([merge-step.md](merge-step.md) §0). The contract's own platform decision says
+where a step's identity can differ: Cloud Run sets the service account on the
+Job, and there is one Job per tenant per **profile**. A merge that no agent can
+reach therefore needs a profile of its own.
+
+`EndCause` (contract request 23) has no value that says a merge was refused or
+failed. Recording one as `RUNNER_ERROR` would be false, since no runner ran.
+Recording it as None would send the outcome ledger back to classifying text.
+
+### The requested change
+
+In `profiles.py`:
+
+```python
+class WorkerAction(str, Enum):
+    """A platform action the WORKER performs instead of starting a runner."""
+    MERGE = "merge"
+
+
+@dataclass(frozen=True)
+class RunnerProfile:
+    ...
+    #: When set, the lifecycle performs this action itself and starts no
+    #: runner child, so no agent ever runs under this profile's Job identity.
+    #: `runner_argv` must then be empty, and it must be non-empty otherwise.
+    worker_action: WorkerAction | None = None
+```
+
+`__post_init__` refuses `worker_action` with a non-empty `runner_argv`, and
+refuses `runner_argv=()` without a `worker_action`.
+
+A catalogue entry:
+
+```python
+"merge": RunnerProfile(
+    name="merge",
+    image="agent-runtime-base",
+    resource_class="standard",
+    backend=Backend.CLOUD_RUN_JOB,
+    runner_argv=(),
+    worker_action=WorkerAction.MERGE,
+    # The credential is never mounted: its secret is read by the worker at
+    # merge time, as `swarm-<tenant>-merge`, the Job's own service account.
+    # `provider` is what parks the step CREDENTIAL_MISSING, at no cost, for a
+    # tenant that has not registered one, and keeps Terraform from creating a
+    # merge Job for that tenant.
+    provider="git-merge",
+    secrets=(),
+    timeout_seconds=600,
+    inputs={},
+),
+```
+
+In `models.py`, two `EndCause` values, written only by the worker:
+
+```python
+MERGE_REFUSED = "merge_refused"   # a condition for merging was not met; nothing changed on the forge
+MERGE_FAILED = "merge_failed"     # the merge was allowed, and the forge did not do it
+```
+
+The specific reason (`verdict_not_merge`, `checks_pending`, `head_moved`, ...)
+goes in `result_summary.merge.refusal`, a worker vocabulary and not a frozen
+one, just as `publish_reason` is today. [merge-step.md](merge-step.md) §6 lists
+every code and its cause.
+
+### What it would break if accepted
+
+* **Nothing stored.** `worker_action` defaults to None, so every existing
+  profile is unchanged. Old task documents never carry the new causes.
+* **Every consumer of `runner_argv` must learn that it can be empty.** Today
+  that is `lifecycle._runner_argv` and the dispatchers, which set no command
+  (request 18). The lifecycle must branch on `worker_action` before it builds
+  an argv.
+* **Terraform's `job_matrix`** creates a `merge` Job for each tenant whose
+  providers include `git-merge`. That Job has to run as the tenant's merge
+  service account, not `worker_service_accounts[tenant]`, and that is a
+  Track C change. Until it lands, the Job must not exist: a merge Job running
+  as the tenant's worker account is the hole this request exists to close.
+* **Every restatement of the catalogue** has to follow: the plugin's bridge,
+  `swarm_profiles`, the UI's profile list, and the parity checks that hold the
+  shell and jq copies to the Python (`check-contract-parity.sh`). A profile
+  with no agent should appear as such, not as a runner.
+* **The outcome ledger** (`swarm_api.outcomes`) gains two classes, and its
+  `DERIVE_VERSION` is bumped so stored days are re-derived.
+
+### If it is declined
+
+A merge can be done only by something that is not a workflow step:
+`auto-merge.yml` with a human's `ready`, or an operator. The owner's chain
+then stops at proof. The two alternatives [merge-step.md](merge-step.md) §1
+compares both put the merge credential where an agent, or another tenant, can
+reach it. They are listed there as rejected, not as fallbacks.
+
+### Invariants
+
+- **Invariants 1–3.** The merge step is an ordinary task: admitted in the same
+  transaction, parked and costing nothing until its parents succeed, and
+  counted from `LEASED`.
+- **Invariant 4.** A pending check is a refusal, not a wait. A long forge
+  rate-limit fails the attempt retryably with `next_eligible_at`, and the
+  worker does not sleep through it.
+- **Invariant 5.** The worker checks its generation at start and again
+  immediately before the merge call. A stale merge worker never touches the
+  forge.
+- **Invariant 6, 7.** On-demand `standard`; `requests == limits`.
+- **Invariant 8.** Checkpointing stays on. The workspace is empty, and the
+  merge is idempotent on its pinned sha, so a lost attempt costs one re-read.
+- **Invariant 9.** The merge credential's only accessor is the tenant's own
+  merge service account. No agent runs as that account, and no other tenant's
+  Job can.
+- **Invariant 10.** A caller names `merge` and sends `input: {}`. The
+  repository, the pull request and the sha all come from the workflow's own
+  steps, never from the caller.
+- **#219.** The credential is read only by the merge worker, only at merge
+  time. It is never in the workspace, a file, an environment variable, argv or
+  a log, and it is revoked in a `finally`.

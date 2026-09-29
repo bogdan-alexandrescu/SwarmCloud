@@ -138,6 +138,7 @@ def test_worker_resumes_from_the_previous_attempts_checkpoint(
         attempt_id="att_2",
         lease_id="lease_2",
         generation=2,
+        attempt_count=2,
         latest_checkpoint=checkpoint_uri,
         task_input={"prompt": "resume me", "steps": 4, "sleep_seconds": 0.05},
     )

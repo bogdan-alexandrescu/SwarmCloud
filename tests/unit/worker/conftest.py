@@ -192,6 +192,37 @@ def seed_attempt(
     return {"task_id": task_id, "attempt_id": attempt_id, "lease_id": lease_id}
 
 
+def record_as_earlier_attempt(
+    db: FakeFirestore, record: Any, *, task_id: str | None = None, attempt_count: int = 2
+) -> None:
+    """What a real earlier attempt leaves behind for `record`, a checkpoint it wrote.
+
+    A test that builds a checkpoint with `CheckpointManager.create` directly
+    skips `ControlPlane.record_checkpoint`, and since #347 a worker restores
+    only a checkpoint an earlier attempt of the task RECORDED: its attempt
+    document listing the id and the archive digest, the task's pointer, and an
+    `attempt_count` past the first. Call it after `seed_attempt`, which
+    rewrites the task document.
+    """
+    from agent_worker.control import CHECKPOINT_DIGESTS_FIELD
+
+    db.seed(
+        f"attempts/{record.attempt_id}",
+        {
+            "attempt_id": record.attempt_id,
+            "task_id": record.task_id,
+            "tenant_id": record.tenant_id,
+            "generation": record.generation,
+            "checkpoints": [record.checkpoint_id],
+            CHECKPOINT_DIGESTS_FIELD: {record.checkpoint_id: record.archive_sha256},
+        },
+    )
+    task = db.documents.get(f"tasks/{task_id or record.task_id}")
+    if task is not None:
+        task["latest_checkpoint"] = record.uri
+        task["attempt_count"] = max(int(task.get("attempt_count") or 0), attempt_count)
+
+
 def build_worker(
     db: FakeFirestore,
     store: LocalObjectStore,

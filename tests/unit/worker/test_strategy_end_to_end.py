@@ -35,6 +35,7 @@ import pytest
 
 from agent_worker import gitops, lifecycle, workspace as workspace_mod
 from agent_worker.forge import PullRequest, RepoAccess, RepoRef
+from conftest import record_as_earlier_attempt
 
 pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
 
@@ -951,7 +952,7 @@ def _head(repo: Path) -> str:
 
 
 def test_a_resumed_attempt_publishes_from_the_base_the_worker_recorded_not_the_workspace_marker(
-    worker_factory, monkeypatch, origin, local_urls, forge
+    db, worker_factory, monkeypatch, origin, local_urls, forge
 ):
     """The agent commits three times as Claude, writes its OWN third commit into
     the workspace's clone-base marker, and the attempt checkpoints. The next
@@ -975,7 +976,9 @@ def test_a_resumed_attempt_publishes_from_the_base_the_worker_recorded_not_the_w
     second, config, _ = _attempt(
         worker_factory, monkeypatch, origin, task_id="t-forged-base", attempt=2, dispatch=dispatch
     )
-    second._restore_checkpoint(record.uri)
+    # Attempt 1 recorded it; the restore takes nothing else (#347).
+    record_as_earlier_attempt(db, record)
+    second._restore_checkpoint({"attempt_count": 2, "latest_checkpoint": record.uri})
     assert second._maybe_clone(task)["from_checkpoint"] is True
     repo = second.ws.work / lifecycle.REPO_DIR_NAME
     (repo / "c4.txt").write_text("commit 4, made as Claude after the resume\n")
@@ -990,7 +993,7 @@ def test_a_resumed_attempt_publishes_from_the_base_the_worker_recorded_not_the_w
 
 
 def test_a_checkpoint_that_records_no_clone_base_is_harvested_but_not_published(
-    worker_factory, monkeypatch, origin, local_urls, forge
+    db, worker_factory, monkeypatch, origin, local_urls, forge
 ):
     """A checkpoint written before the worker recorded the base in its manifest
     carries only the workspace marker. The marker is good enough to DESCRIBE
@@ -1010,7 +1013,9 @@ def test_a_checkpoint_that_records_no_clone_base_is_harvested_but_not_published(
     second, _, _ = _attempt(
         worker_factory, monkeypatch, origin, task_id="t-legacy-ckpt", attempt=2, dispatch=dispatch
     )
-    second._restore_checkpoint(record.uri)
+    # Attempt 1 recorded it; the restore takes nothing else (#347).
+    record_as_earlier_attempt(db, record)
+    second._restore_checkpoint({"attempt_count": 2, "latest_checkpoint": record.uri})
     assert second._maybe_clone(task)["from_checkpoint"] is True
 
     before = refs(origin)
