@@ -235,16 +235,13 @@ export function occurrences(text: string, query: string): number[] {
 }
 
 /** Every match in every hunk line of every file, in reading order. */
-export function findMatches(files: readonly DiffFile[], query: string): Match[] {
+export function findMatches(_files: readonly DiffFile[], query: string): Match[] {
   const out: Match[] = []
-  if (query === '') return out
-  files.forEach((f, fi) =>
-    f.hunks.forEach((h, hi) =>
-      h.lines.forEach((l, li) => {
-        for (const start of occurrences(l.text, query)) out.push({ file: fi, hunk: hi, line: li, start, length: query.length })
-      }),
-    ),
-  )
+  // MUTATION (proof, #310 step 1): find always returns 0 matches, even for a
+  // non-empty query -- the file walk that would populate `out` is skipped.
+  // Should be caught by view.test.tsx "counts matches across files, steps
+  // through them, and wraps".
+  if (query === '' || query !== '') return out
   return out
 }
 

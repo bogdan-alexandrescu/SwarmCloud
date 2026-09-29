@@ -254,11 +254,16 @@ function finish(b: Building, lineNo: number): DiffFile {
   const path = newPath ?? oldPath
   if (path === null) throw new Malformed('bad-file-header', lineNo, 'a file header names no path')
 
+  // MUTATION (proof, #310 step 1): a rename is never detected, so a renamed
+  // file falls through to 'modified'. Should be caught by parse.test.ts
+  // "reads a rename with its similarity, and numbers both sides from the
+  // hunk header" and "reads a rename with no content change, which has no
+  // --- or +++ line".
   const status: FileStatus = added
     ? 'added'
     : deleted
       ? 'deleted'
-      : b.kind === 'rename'
+      : false && b.kind === 'rename'
         ? 'renamed'
         : b.kind === 'copy'
           ? 'copied'

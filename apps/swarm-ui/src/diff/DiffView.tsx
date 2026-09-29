@@ -318,9 +318,14 @@ function Viewer({ files, getFile }: { files: DiffFile[]; getFile?: DiffViewProps
       })
   }
 
-  // The window.
-  const start = Math.max(0, rowAt(offsets, scrollTop - OVERSCAN_PX))
-  const end = Math.min(rows.length, rowAt(offsets, scrollTop + viewport + OVERSCAN_PX) + 1)
+  // MUTATION (proof, #310 step 1): render every row in place of the window.
+  // Should be caught by view.test.tsx "renders a 50,000-line patch as a
+  // window of rows, not 50,000 of them".
+  const start = 0
+  const end = rows.length
+  void OVERSCAN_PX
+  void rowAt
+  void viewport
   const drawn: ReactNode[] = []
   for (let i = start; i < end; i++) {
     drawn.push(
