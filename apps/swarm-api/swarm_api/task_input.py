@@ -84,11 +84,25 @@ BUT THE FILENAMES IN TWO OF THEM ARE THE CALLER'S (#227). The platform writes
 out of the caller's workflow spec. A secret written into a filename was served
 as stored, beside a prompt that masked the same value. So every filename under
 those two keys (`NAME_METADATA_KEYS`) is masked by `TaskMasking.name`: the
-task's literals and the rules, with one difference from a caller string. A
-prefix rule's match made only of plain words (`_plain_words`) is a filename,
-not a credential, and is left alone, so a clean name stays byte for byte what
-was declared -- the UI's workflow graph pairs a staged name with a declared one
-by equality. A name that DOES carry a secret is masked, and masked the same
+task's literals, then the credential-shaped rules -- but ANCHORED to a token's
+start (`_mask_anchored`), not run anywhere a short prefix turns up. `expected
+outputs` and `input_from` share `_step_to_api` in `codec.py` (owner decision
+2026-09-28), so a served workflow's step map is masked the same way.
+
+A CLEAN NAME STAYS CLEAN (owner decision 2026-09-28, second review of #227). The
+first cut ran every rule over the whole name and exempted a match made only of
+"plain words" (`_plain_words`, a per-segment regex). That both over- and
+under-masked: the JWT rule's two-letter prefix ("ey") matches inside ordinary
+English words at ANY position -- "hockey", "eyeTracking", "key-results" --
+which is not a plain-word question at all, and a real fake token
+(`sk-abcdefghijklmnop`) is itself a run of lowercase letters, so the same
+segment check let it through unmasked. Anchoring fixes both: a rule may only
+fire where its prefix OPENS a token -- the name's start, or right after a
+separator -- never mid-word, because a genuine credential is never glued onto
+a preceding letter or digit with nothing between them. The JWT family is also
+tightened to the shape a JWT actually has (`eyJ`, three dot-separated
+segments), because "ey" alone opens plenty of real English words too
+(`_NAME_JWT`). A name that DOES carry a secret is masked, and masked the same
 way under both keys (one deterministic function, no memo of the caller's
 strings), so the two still pair with each other. Each mask is counted in
 `metadata_redaction_count`. `input_from`'s keys are upstream task ids the
@@ -164,12 +178,15 @@ PLATFORM_METADATA_KEYS: tuple[str, ...] = RESERVED_METADATA_KEYS
 #: `{upstream task id: filename}`, `expected_outputs` a list of filenames.
 NAME_METADATA_KEYS: frozenset[str] = frozenset({"input_from", "expected_outputs"})
 
-#: One segment of a plain word run: a lowercase word, a capitalised or
-#: all-capital one, or a short number (`scan-01`, `q3`, `2024`). A credential a
-#: prefix rule recognises is a long random run -- mixed case, letters mixed with
-#: digits -- and splits into segments like these with negligible probability.
-_PLAIN_SEGMENT = re.compile(r"[A-Z]?[a-z]+|[A-Z]+|[a-z]*[0-9]{1,8}")
-_SEGMENT_SEPARATORS = re.compile(r"[-_.]")
+#: The JWT family, tightened for a filename (`TaskMasking.name`). `RULES`'
+#: own pattern masks any "ey" followed by eight more characters -- which is
+#: what a JWT's base64url header always starts with, but also what "hockey",
+#: "eyeTracking" and "key-results" contain by accident. A JWT's header is
+#: always the base64url encoding of a JSON object opening `{"`, which always
+#: encodes to "eyJ" -- three characters, never two -- and a JWT is always
+#: three dot-separated segments, header.payload.signature. Requiring both
+#: narrows the match to a shape no ordinary filename produces.
+_NAME_JWT = re.compile(r"(eyJ[A-Za-z0-9_-]{5,})\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+")
 
 #: Inside what the task collected about itself (`result_summary`, an event's
 #: `detail`), the keys whose string values are identifiers a client looks
@@ -271,21 +288,28 @@ class TaskMasking:
         """One filename from the caller's workflow spec, masked only where it carries a secret.
 
         The rules as `redaction.redact` runs them over a decoded string, except
-        that a match of a PREFIX rule (`sk-`, `ey`, `gh?_`, ...) made only of
-        plain words is left as written: those rules guess from a few letters,
-        and `eye-tracking-summary.md` or `task-report-final.md` is a filename,
-        not a token. The private-key and key/value rules, which recognise a
-        credential by what it says it is rather than by a guess, always apply.
-        Then every literal the input and the caller's metadata named. Nothing is
-        remembered, so the same name masks the same way wherever it is served.
+        that a PREFIX rule (`sk-`, `ey`, `gh?_`, ...) may only fire where it
+        OPENS a token -- the name's start, or right after a separator
+        (`_mask_anchored`) -- never mid-word: those rules guess from a few
+        letters, and the same few letters turn up inside an ordinary word by
+        chance ("task-report" contains `sk-`, "hockey" contains `ey`), which is
+        what over-masked a clean filename in the first cut (the #227 review,
+        second round, owner decision 2026-09-28). The JWT family is also
+        tightened to the shape a JWT actually has (`_NAME_JWT`: `eyJ`, three
+        dot-separated segments), because its two-letter prefix opens plenty of
+        real English words too ("eyeTracking"). The private-key and key/value
+        rules, which recognise a credential by what it says it is rather than
+        by a guess, always apply, anchored or not. Then every literal the
+        input and the caller's metadata named. Nothing is remembered, so the
+        same name masks the same way wherever it is served.
 
         FIRST, the values the task named that a rule already recognises in
         part (`name_literals`): `redaction._carried` does not learn those,
         because the rules mask them wherever they appear, but in a name the
-        plain-word exemption would then leave `monkey-business-2024` -- a
+        anchoring above would then leave `monkey-business-2024` -- a
         passphrase the prompt assigns to `DB_PASSWORD`, which the JWT rule
-        touches at `ey` -- in clear (the #227 review). So they are replaced
-        whole before the exemption can see them.
+        touches at `ey` mid-word -- in clear (the #227 review). So they are
+        replaced whole before the rules can see them.
         """
         text, count = value, 0
         for literal in self.name_literals:
@@ -297,8 +321,10 @@ class TaskMasking:
                 text, found = rule.apply(text, True, False)
             elif rule is KEY_VALUE:
                 text, found = rule.pattern.subn(r"\1" + MASK, text)
+            elif rule.name == "jwt":
+                text, found = _mask_anchored(_NAME_JWT, text)
             else:
-                text, found = _mask_unless_plain(rule.pattern, text)
+                text, found = _mask_anchored(rule.pattern, text)
             count += found
         for literal in self.masker.literals:
             if literal and literal in text:
@@ -441,26 +467,29 @@ def _named_values(document: Any, *, exclude: tuple[str, ...]) -> tuple[str, ...]
     return tuple(sorted(chosen, key=len, reverse=True))
 
 
-def _mask_unless_plain(pattern: re.Pattern[str], text: str) -> tuple[str, int]:
-    """`pattern`'s matches masked after group 1, except a run of plain words; and how many."""
+def _mask_anchored(pattern: re.Pattern[str], text: str) -> tuple[str, int]:
+    """`pattern`'s matches masked after group 1, but only where the match OPENS a token; and how many.
+
+    "Opens a token" means the match starts at the beginning of `text` or right
+    after a character that is not itself part of a word or number -- never
+    where a rule's short prefix turns up in the MIDDLE of one, which is how
+    `sk-` matched inside "task-report" (task-[sk-]report) and `ey` matched
+    inside "hockey" (hock-[ey]) (the #227 review, second round). A real
+    credential value is never glued onto a
+    preceding letter or digit with nothing between them, so requiring the
+    boundary loses no genuine match.
+    """
     hits = 0
 
     def mask(match: re.Match[str]) -> str:
         nonlocal hits
-        if _plain_words(match.group(0)):
+        start = match.start()
+        if start > 0 and text[start - 1].isalnum():
             return match.group(0)
         hits += 1
         return match.group(1) + MASK
 
     return pattern.sub(mask, text), hits
-
-
-def _plain_words(run: str) -> bool:
-    """Whether a prefix rule's match is a run of plain words (`_PLAIN_SEGMENT`), not a token."""
-    return all(
-        segment == "" or _PLAIN_SEGMENT.fullmatch(segment)
-        for segment in _SEGMENT_SEPARATORS.split(run)
-    )
 
 
 # --------------------------------------------------------------------------
