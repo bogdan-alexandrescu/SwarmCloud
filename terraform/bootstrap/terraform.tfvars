@@ -101,8 +101,9 @@ github_allowed_refs = ["refs/heads/main"]
 #      the binding with no condition); the two chunk bindings are untouched.
 #   5. Re-run step 3. Expect exactly the two chunk titles, nothing else.
 #   6. Prove the admitted side with a terraform/infra plan or a release apply:
-#      CI must still be able to grant/revoke the 15 roles it needs, now
-#      through the chunked conditions alone.
+#      CI must still be able to grant/revoke the 14 roles it needs (15 before
+#      #150 also took swarmSecretLister off deployer_grantable_project_roles),
+#      now through the chunked conditions alone.
 #
 # REVERT: delete the entry, leaving `[]`, and run
 # `scripts/bootstrap.sh --target 'google_project_iam_member.deployer_project_iam_admin'`.
