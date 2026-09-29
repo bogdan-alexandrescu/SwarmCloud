@@ -389,6 +389,16 @@ def test_every_invalid_dag_refusal_answers_one_status(client):
         # the refusals #64 added
         "two parents staging one filename": (_two_parents_staging_one_filename(), None),
         "a traversing filename": ([_root("analyse"), _join("fix", {"analyse": "../x.md"})], None),
+        # the refusals wave 2026-09-27 added: sections 7 and 8
+        "one parent's filename a directory of another's": (
+            [_root("scan-A"), _root("scan-B"),
+             _join("merge-1", {"scan-A": "out", "scan-B": "out/notes.md"})],
+            None,
+        ),
+        "a filename over the worker's name bound": (
+            [_root("analyse"), _join("fix", {"analyse": "r/" + "x" * 255})],
+            None,
+        ),
     }
     # Reserved since #151: refused before the DAG is looked at, whatever the value.
     # The first two are the workflow-level cases #65 answered `invalid_dag`.
@@ -415,10 +425,147 @@ def test_every_invalid_dag_refusal_answers_one_status(client):
         answers[name] = (response.status_code, response.json().get("code"))
 
     # Every submission was sent and answered, not only the first.
-    assert len(answers) == len(invalid_dag) + len(reserved) == 8
+    assert len(answers) == len(invalid_dag) + len(reserved) == 10
     assert answers == {
         **{name: (422, "invalid_dag") for name in invalid_dag},
         **{name: (422, "invalid_dispatch") for name in reserved},
     }, answers
     # Two codes, one status: the New Workflow screen heads both "not valid".
     assert {status for status, _ in answers.values()} == {422}
+
+
+# --------------------------------------------------------------------------
+# 7. One parent's filename is a directory another parent's lands inside (#71)
+# --------------------------------------------------------------------------
+#
+# Section 1 refuses two parents staging the SAME name. #71 is the other way
+# two staged files cannot both land: `{"scan-A": "out", "scan-B":
+# "out/notes.md"}` needs `out` to be a file for the first and a directory for
+# the second. The API accepted it, every upstream step ran, and the worker
+# failed the step as a crash while staging -- `_assert_distinct_destinations`
+# compares names, not paths, and stays the backstop for the same-name case.
+
+PREFIX_CLASHES = [
+    # (the directory-shaped name, the name inside it), as submitted
+    ("out", "out/notes.md"),
+    ("reports/2026", "reports/2026/q3/notes.md"),
+    # Compared after `.strip()`, as the worker strips.
+    (" out ", "out/notes.md"),
+]
+
+
+@pytest.mark.parametrize(("outer", "inner"), PREFIX_CLASHES)
+@pytest.mark.parametrize("order", ["outer first", "inner first"])
+def test_a_filename_that_is_a_directory_of_another_is_refused_before_anything_is_created(
+    client, db, api_context, outer, inner, order
+):
+    declared = {"scan-A": outer, "scan-B": inner}
+    if order == "inner first":
+        declared = {"scan-A": inner, "scan-B": outer}
+    steps = [_root("scan-A"), _root("scan-B"), _join("merge-1", declared)]
+
+    body = _assert_refused_before_anything_was_created(_post(client, steps), db, api_context)
+
+    message = body["message"]
+    for needed in ("merge-1", "scan-A", "scan-B", outer.strip(), inner.strip()):
+        assert needed in message, f"{needed!r} is not named in: {message}"
+    assert "distinct" in message.lower(), message
+    detail = body["detail"]
+    assert detail["step_id"] == "merge-1"
+    assert detail["filename"] == outer.strip()
+    assert detail["nested_filename"] == inner.strip()
+    assert sorted(detail["colliding_upstream_steps"]) == ["scan-A", "scan-B"]
+
+
+@pytest.mark.parametrize(
+    "declared",
+    [
+        # A shared prefix that is not a whole segment is two siblings.
+        {"scan-A": "out", "scan-B": "outline.md"},
+        {"scan-A": "out.md", "scan-B": "out/notes.md"},
+        {"scan-A": "a/out", "scan-B": "b/out/notes.md"},
+        # Two files in one directory is what a directory is for.
+        {"scan-A": "out/a.md", "scan-B": "out/b.md"},
+    ],
+)
+def test_names_that_share_only_characters_or_a_directory_are_accepted(client, declared):
+    """The control: the refusal is about one name being a directory of another,
+    not about a common string prefix or a common parent directory."""
+    steps = [_root("scan-A"), _root("scan-B"), _join("merge-1", declared)]
+    response = _post(client, steps)
+    assert response.status_code == 201, response.text
+
+
+def test_the_prefix_clash_the_api_refuses_cannot_be_staged_by_the_worker(tmp_path: Path):
+    """Bound to the worker's own placement, not restated: the destinations
+    `destination_for` gives the two names are a path and a path beneath it, so
+    no staging order can write both as files. Each name alone is one the
+    worker stages -- the refusal is the pair, not either name."""
+    for outer, inner in PREFIX_CLASHES:
+        a = worker_inputs.destination_for(tmp_path, outer.strip(), reserved=frozenset())
+        b = worker_inputs.destination_for(tmp_path, inner.strip(), reserved=frozenset())
+        assert a in b.parents, (outer, inner, a, b)
+        assert _api_accepts(outer) and _api_accepts(inner), (outer, inner)
+    assert len(PREFIX_CLASHES) == 3
+
+
+# --------------------------------------------------------------------------
+# 8. A filename longer than the worker's artifact-name bound
+# --------------------------------------------------------------------------
+#
+# An `input_from` filename is also the name the upstream step's artifact must
+# be uploaded under. The worker's manifest bounds a name at
+# `artifact_manifest.MAX_NAME_BYTES` (256) UTF-8 bytes, and Linux bounds one
+# path segment at 255, so a longer name is refused here, measured in bytes the
+# way both measure it, not in characters.
+
+def test_the_api_bound_is_the_worker_manifest_bound():
+    """Restated because swarm-api cannot import `agent_worker`; held equal here."""
+    from agent_worker import artifact_manifest
+    from swarm_api import validation
+
+    assert validation.MAX_INPUT_FROM_NAME_BYTES == artifact_manifest.MAX_NAME_BYTES == 256
+
+
+#: 256 bytes exactly, in three shapes, each accepted.
+AT_THE_BOUND = [
+    "r/" + "x" * 254,
+    "a/" * 127 + "bb",
+    # 2 + 127 * 2 bytes: a two-byte character counts twice.
+    "r/" + "\u00e9" * 127,
+]
+#: One byte over, in the same three shapes, and a single segment over 255.
+OVER_THE_BOUND = [
+    "r/" + "x" * 255,
+    "a/" * 127 + "bbb",
+    "r/" + "\u00e9" * 127 + "x",
+    # 128 characters, 256 bytes: under a character count, over Linux's segment.
+    "\u00e9" * 128,
+]
+
+
+@pytest.mark.parametrize("filename", OVER_THE_BOUND)
+def test_a_filename_over_the_bound_is_refused_before_anything_is_created(
+    client, db, api_context, filename
+):
+    steps = [_root("analyse"), _join("fix", {"analyse": filename})]
+
+    body = _assert_refused_before_anything_was_created(_post(client, steps), db, api_context)
+
+    assert "'fix'" in body["message"], body["message"]
+    assert "'analyse'" in body["message"], body["message"]
+    assert "256" in body["message"] or "255" in body["message"], body["message"]
+    assert body["detail"]["step_id"] == "fix"
+    assert body["detail"]["input_from"] == "analyse"
+
+
+def test_the_bound_is_bytes_and_sits_exactly_at_the_worker_bound():
+    from agent_worker import artifact_manifest
+
+    for filename in AT_THE_BOUND:
+        assert len(filename.encode("utf-8")) == 256, filename
+        assert artifact_manifest.fits(filename), filename
+        assert _api_accepts(filename), f"refused at the bound: {filename!r}"
+    for filename in OVER_THE_BOUND:
+        assert not _api_accepts(filename), f"accepted over the bound: {filename!r}"
+    assert len(AT_THE_BOUND) == 3 and len(OVER_THE_BOUND) == 4

@@ -65,7 +65,9 @@ IGNORED_IN_PLUGIN_AGENTS = frozenset({"permissionMode", "hooks", "mcpServers", "
 EXPECTED_TOOLS = {
     "remote": {"swarm_dispatch", "swarm_follow"},
     "step": {"swarm_follow"},
-    "workflow": {"swarm_workflow", "swarm_workflow_status"},
+    # `swarm_workflow_spec` reads a spec FILE for /sc:run (epic #227): a workflow
+    # script has no filesystem, so the bridge reads it and digests it.
+    "workflow": {"swarm_workflow", "swarm_workflow_spec", "swarm_workflow_status"},
 }
 
 #: The globals a workflow script's body may use: the workflow runtime's own
@@ -759,7 +761,12 @@ def test_run_js_submits_once_then_starts_one_step_row_per_step(tmp_path):
 def test_run_js_narrates_each_step_as_one_line(tmp_path):
     logs = _run(tmp_path, _SPEC, _ANSWERS)["logs"]
     assert "wf_1 submitted · 4 step(s) · clones https://github.com/acme/widgets.git" in logs
-    assert "scan-01 SUCCEEDED · 4m12s · $0.21 · PR #231" in logs
+    # What the step produced, by name (#143): a row that ends without saying so
+    # sends the reader to the console to find out.
+    assert "scan-01 SUCCEEDED · 4m12s · $0.21 · PR #231 · produced a.md" in logs
+    # A step that produced nothing says so, rather than leaving it to be
+    # inferred from a missing clause.
+    assert "report SUCCEEDED · 40s · $0.05 · produced no artifacts" in logs
     # Null spend is not measured, never $0.00.
     assert "scan-02 FAILED · 1m03s · cost not recorded · claude-code exited 1: boom" in logs
     assert any(
@@ -927,3 +934,56 @@ def test_run_js_takes_the_spec_as_json_text_and_refuses_what_is_not_a_spec(tmp_p
     refused = _run(tmp_path, {"steps": []}, _ANSWERS)
     assert "non-empty `steps` list" in refused["error"]
     assert refused["calls"] == []
+
+
+# --------------------------------------------------------------------------
+# run.js: a spec FILE (epic #227). The script has no filesystem, so the bridge
+# reads the file (`swarm_workflow_spec`) and hands back its digest; the script
+# checks the relayed spec against that digest before submitting it.
+# --------------------------------------------------------------------------
+
+
+def _read(spec, digest=None, **extra):
+    return {"path": "/work/widgets/specs/scan.json", "spec": spec,
+            "spec_digest": _bridge_digest(spec) if digest is None else digest, "error": None, **extra}
+
+
+def test_run_js_takes_a_spec_files_path_and_submits_what_the_bridge_read(tmp_path):
+    got = _run(tmp_path, "specs/scan.json", {**_ANSWERS, "READ SPEC": _read(_SPEC)})
+
+    assert "error" not in got, got.get("error")
+    read, submit = got["calls"][0], got["calls"][1]
+    assert (read["agentType"], read["phase"], read["label"]) == ("sc:workflow", "Submit", "read spec")
+    assert read["prompt"] == "READ SPEC\npath: specs/scan.json"
+    lines = submit["prompt"].split("\n")
+    assert lines[0] == "SUBMIT" and lines[1] == "spec_digest: " + workflows.spec_digest(_SPEC)
+    assert json.loads("\n".join(lines[3:-1])) == _SPEC
+    assert got["result"]["workflow_id"] == "wf_1"
+    assert "read the spec from /work/widgets/specs/scan.json" in got["logs"][0], got["logs"]
+
+
+def test_run_js_submits_nothing_when_the_relayed_spec_is_not_the_file_the_bridge_read(tmp_path):
+    changed = json.loads(json.dumps(_SPEC))
+    changed["steps"][0]["prompt"] = "scan a, tidied"
+    got = _run(tmp_path, "specs/scan.json", {**_ANSWERS, "READ SPEC": _read(changed, digest=_bridge_digest(_SPEC))})
+
+    assert [c["prompt"].split("\n")[0] for c in got["calls"]] == ["READ SPEC"], "it submitted a changed spec"
+    assert got["result"]["state"] == "NOT_SUBMITTED"
+    assert "changed on the way" in got["result"]["error"], got["result"]["error"]
+
+
+def test_run_js_submits_nothing_when_the_bridge_could_not_read_the_file(tmp_path):
+    refused = {"path": None, "spec": None, "spec_digest": None,
+               "error": "specs/scan.json does not exist in /work/widgets"}
+    got = _run(tmp_path, "specs/scan.json", {**_ANSWERS, "READ SPEC": refused})
+
+    assert len(got["calls"]) == 1
+    assert got["result"]["state"] == "NOT_SUBMITTED"
+    assert got["result"]["error"] == refused["error"]
+
+
+def test_run_js_still_reports_json_text_that_does_not_parse_as_json(tmp_path):
+    """Text that begins like JSON is JSON with a mistake in it, not a path."""
+    got = _run(tmp_path, '{"steps": [', _ANSWERS)
+    assert "is not JSON" in got["error"], got
+    assert got["calls"] == []

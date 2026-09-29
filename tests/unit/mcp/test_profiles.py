@@ -449,6 +449,10 @@ class _AttemptClient:
             raise SwarmError("403: the attempts route refused this caller")
         return self._attempts
 
+    def artifacts(self, task_id):
+        """`swarm_result` lists what the task produced too (#143); none here."""
+        return {"task_id": task_id, "artifacts": [], "artifacts_skipped": [], "complete": True}
+
 
 def _failed_task(**extra):
     return {"id": "task_x", "state": "FAILED", "runner_profile": "claude-code", **extra}

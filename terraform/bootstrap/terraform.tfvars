@@ -7,6 +7,14 @@ project_id = "saga-agents-staging"
 region     = "us-central1"
 location   = "US-CENTRAL1"
 
+# The platform's eight custom roles and the broker's swarmSecretLister grant
+# were created by terraform/infra's dev state and are ADOPTED by this root
+# (platform_roles.tf; #79, #69, 2026-09-25). Naming the state does two things:
+# the import blocks adopt the live objects, and every plan refuses to manage
+# them until that state's custom_roles_owner output shows the release has
+# already made infra forget them. docs/runbooks/custom-roles-to-bootstrap.md.
+adopt_from_infra_states = ["infra/dev"]
+
 # Keyless CI. Turned on 2026-09-24 so testing, building and deploying run in
 # GitHub Actions rather than on a laptop.
 enable_github_wif = true
@@ -64,13 +72,44 @@ github_allowed_refs = ["refs/heads/main"]
 #   * hasOnly limits which roles, never whose or with what condition, so CI
 #     can still grant ITSELF any of the 15 (#69).
 #
-# APPLY, targeted and between releases, from the checkout holding bootstrap's
-# local state:
-#   scripts/bootstrap.sh \
-#     --target 'google_project_iam_member.deployer_roles["roles/resourcemanager.projectIamAdmin"]' \
-#     --target 'google_project_iam_member.deployer_project_iam_admin[0]'
-# REVERT: delete the entry, leaving `[]`, and run the same command. The plan is
-# the mirror image: the conditioned grant destroyed, the project-wide one back.
+# APPLY, in this exact order (owner decision 2026-09-28, after #275): create
+# the chunks FIRST, prove they are live, and ONLY THEN remove the live
+# project's unconditioned projectIamAdmin grant BY HAND with gcloud -- never by
+# importing it into bootstrap state and letting terraform destroy it. #275's
+# outage was a one-minute gap where the old grant was destroyed before the new
+# one existed; targeting deployer_roles's unconditioned resource in the same
+# apply as the chunks would recreate that exact race (a parallel destroy and
+# create of the same role, on the same principal, with no ordering between
+# them). Doing it by hand instead means CI never lacks projectIamAdmin for any
+# interval: the chunks exist and are provable before the unconditioned grant
+# is ever touched.
+#
+#   1. DEPLOYER=$(terraform -chdir=terraform/bootstrap output -raw github_deployer_service_account)
+#   2. scripts/bootstrap.sh --target 'google_project_iam_member.deployer_project_iam_admin'
+#      The plan must read exactly "2 to add, 0 to change, 0 to destroy" --
+#      0 to destroy because the live unconditioned grant is not in bootstrap
+#      state (it was restored by hand, never imported); abort on anything else.
+#   3. gcloud projects get-iam-policy saga-agents-staging --flatten=bindings \
+#        --filter="bindings.role=roles/resourcemanager.projectIamAdmin AND bindings.members:serviceAccount:${DEPLOYER}" \
+#        --format='value(bindings.condition.title)'
+#      Expect the two chunk titles plus one empty line (the empty line is the
+#      unconditioned grant, which carries no condition title).
+#   4. gcloud projects remove-iam-policy-binding saga-agents-staging \
+#        --member="serviceAccount:${DEPLOYER}" \
+#        --role=roles/resourcemanager.projectIamAdmin --condition=None --format=none
+#      This removes ONLY the unconditioned binding (--condition=None matches
+#      the binding with no condition); the two chunk bindings are untouched.
+#   5. Re-run step 3. Expect exactly the two chunk titles, nothing else.
+#   6. Prove the admitted side with a terraform/infra plan or a release apply:
+#      CI must still be able to grant/revoke the 14 roles it needs (15 before
+#      #150 also took swarmSecretLister off deployer_grantable_project_roles),
+#      now through the chunked conditions alone.
+#
+# REVERT: delete the entry, leaving `[]`, and run
+# `scripts/bootstrap.sh --target 'google_project_iam_member.deployer_project_iam_admin'`.
+# This destroys the chunked bindings; it does NOT restore the unconditioned
+# grant, which must be re-added by hand (the mirror image of step 4) before
+# reverting, or CI is left with no projectIamAdmin grant at all.
 deployer_scoped_roles = ["roles/resourcemanager.projectIamAdmin"]
 
 # Who may pass IAP on the front door (wif.tf, frontend_accessors).
