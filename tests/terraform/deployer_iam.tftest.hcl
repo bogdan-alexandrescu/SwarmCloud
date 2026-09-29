@@ -1106,7 +1106,7 @@ run "the_deployer_holds_no_workload_identity_pool_admin" {
   # The control: the grant loop still runs and still grants the role next to
   # it on the list, so this run is not green because WIF or the list went away.
   assert {
-    condition     = contains(keys(google_project_iam_member.deployer_roles), "roles/iam.serviceAccountAdmin") && length(google_project_iam_member.deployer_roles) > 10
+    condition     = contains(keys(google_project_iam_member.deployer_roles), "roles/run.admin") && length(google_project_iam_member.deployer_roles) > 10
     error_message = "the deployer's other grants went away with workloadIdentityPoolAdmin"
   }
 }
