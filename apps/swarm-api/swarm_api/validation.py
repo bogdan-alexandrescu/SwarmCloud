@@ -414,7 +414,7 @@ RESERVED_METADATA_KEYS = (
     DISPATCH_METADATA_KEY,
     INPUT_FROM_METADATA_KEY,
     EXPECTED_OUTPUTS_METADATA_KEY,
-    STARTUP_REFUNDS_METADATA_KEY,
+    # MUTATION: key not reserved
 )
 
 #: Strategies and carriers that cannot work without somewhere to push to.

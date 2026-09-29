@@ -96,7 +96,7 @@ def startup_refunds_used(metadata: Any) -> int:
     """How many startup refunds a task's `metadata` records. Absent or unreadable is 0."""
     if not isinstance(metadata, dict):
         return 0
-    used = _startup_refunds_int(metadata.get(STARTUP_REFUNDS_KEY))
+    used = int(metadata.get(STARTUP_REFUNDS_KEY) or 0)  # MUTATION: the old raising read
     return used if used is not None else 0
 
 
