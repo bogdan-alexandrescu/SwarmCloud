@@ -1407,6 +1407,69 @@ def verify_worker_authorship(
 _FULL_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 
 
+#: The environment `git upload-pack` runs with IN THE AGENT'S CLONE -- the one
+#: git process that still reads the clone after the reap (#259, owner item 4).
+#: It reads the clone's `.git/config`, so every key that names a program and
+#: that upload-pack or its `pack-objects` child could reach is neutralised
+#: here or in `_UPLOAD_PACK_CONFIG`. Checked against git-config(1) for git
+#: 2.40.1, key by key:
+#:
+#: * no system file and no global file, so the only configuration read is the
+#:   clone's and the command line's;
+#: * grafts, replace refs and (below) the commit-graph off: see `_git_env`;
+#: * `GIT_NO_LAZY_FETCH`: a clone the agent marked a partial clone
+#:   (`extensions.partialClone`, `remote.<name>.promisor`) makes pack-objects
+#:   FETCH a missing object from the remote the clone's config names, with
+#:   that config's `core.sshCommand`, `remote.<name>.uploadpack` or credential
+#:   helper. Newer git honours this variable; 2.40.1 does not know it, so
+#:   `GIT_ALLOW_PROTOCOL=none` is the belt that holds there: it allows only a
+#:   protocol named "none", overriding every `protocol.<name>.allow` in the
+#:   clone's config, so no transport opens at all;
+#: * `GIT_SSH_COMMAND` and `GIT_PROXY_COMMAND` outrank `core.sshCommand` and
+#:   `core.gitProxy`. The environment is needed for the proxy: `core.gitProxy`
+#:   is multi-valued and FIRST match wins, so a repository value would beat a
+#:   command-line one. `false` is the worker's own program and connects to
+#:   nothing.
+_UPLOAD_PACK_ENV = [
+    "GIT_GRAFT_FILE=/dev/null",
+    "GIT_NO_REPLACE_OBJECTS=1",
+    "GIT_CONFIG_NOSYSTEM=1",
+    "GIT_CONFIG_GLOBAL=/dev/null",
+    "GIT_NO_LAZY_FETCH=1",
+    "GIT_ALLOW_PROTOCOL=none",
+    "GIT_SSH_COMMAND=false",
+    "GIT_PROXY_COMMAND=false",
+    "GIT_TERMINAL_PROMPT=0",
+    "GIT_ASKPASS=/bin/true",
+]
+
+#: The command-line configuration for the same process. Command scope outranks
+#: the clone's own file for every single-valued key.
+#:
+#: * `core.hooksPath`, `core.fsmonitor`: upload-pack runs no hook and reads no
+#:   index today; pinned so a future git that does finds nothing;
+#: * `core.alternateRefsCommand` is run through the shell to list an
+#:   alternate's tips; `true` lists none;
+#: * `core.sshCommand`, `protocol.allow`, `credential.helper`: the transport
+#:   half of the lazy-fetch path above, pinned on the command line as well;
+#: * NOT SET: `uploadpack.packObjectsHook`. git-config(1): it "is only
+#:   respected when it is specified in protected configuration" -- system,
+#:   global or command line -- precisely so that fetching from an untrusted
+#:   repository cannot run it. With the system and global files off and no
+#:   command-line value, nothing sets it. There is no value that disables it:
+#:   any value set here IS protected and would be run.
+#: * `pack.*` names no program in git-config(1), so nothing there to pin.
+_UPLOAD_PACK_CONFIG = [
+    "-c", "core.commitGraph=false",
+    "-c", "core.hooksPath=/dev/null",
+    "-c", "core.fsmonitor=false",
+    "-c", "core.alternateRefsCommand=true",
+    "-c", "core.sshCommand=false",
+    "-c", "protocol.allow=never",
+    "-c", "credential.helper=",
+]
+
+
 def prepare_publish_repo(
     *,
     source_repo: Path,
@@ -1418,6 +1481,7 @@ def prepare_publish_repo(
     base: str | None = None,
     git_binary: str = "git",
     local_branch: str = "swarm-publish",
+    allow_unknown_base: bool = False,
 ) -> Path:
     """Build the worker-owned CLEAN repository the publish decides and pushes from.
 
@@ -1488,7 +1552,12 @@ def prepare_publish_repo(
 
     empty = base == EMPTY_CLONE_BASE
     floor = "" if empty else (base or "").strip()
-    if not empty and not _FULL_SHA_RE.match(floor):
+    # A base nobody knows: allowed only for the harvest (`allow_unknown_base`),
+    # which then fetches HEAD alone, as a root, so the dirty list can still be
+    # read here rather than in the clone. There are no commits to list and no
+    # patch without a base, and the publish refuses before it pushes anything.
+    unknown = not empty and not _FULL_SHA_RE.match(floor)
+    if unknown and not allow_unknown_base:
         raise GitError(
             "the clone base is unknown, so the worker cannot tell the agent's "
             "commits from the repository's; nothing was pushed"
@@ -1515,6 +1584,8 @@ def prepare_publish_repo(
     unborn = empty and not target and not (work_head or "").strip()
     if not unborn and not _FULL_SHA_RE.match(target):
         raise GitError("could not resolve the commit to publish from the clone")
+    if unknown:
+        floor = target
 
     # WHERE the repository lives is part of the guarantee, not an
     # implementation detail. `private_dir` shares a uid with the agent
@@ -1577,22 +1648,17 @@ def prepare_publish_repo(
     upload_pack = " ".join(
         [
             "env",
-            "GIT_GRAFT_FILE=/dev/null",
-            "GIT_NO_REPLACE_OBJECTS=1",
+            *_UPLOAD_PACK_ENV,
             f"GIT_SHALLOW_FILE={shlex.quote(shallow_file)}",
-            "GIT_CONFIG_NOSYSTEM=1",
-            "GIT_CONFIG_GLOBAL=/dev/null",
             shlex.quote(git_binary),
-            "-c", "core.commitGraph=false",
-            "-c", "core.hooksPath=/dev/null",
-            "-c", "core.fsmonitor=false",
+            *_UPLOAD_PACK_CONFIG,
             # The wants are shas, not advertised refs.
             "-c", "uploadpack.allowAnySHA1InWant=true",
             "upload-pack",
         ]
     )
     refspecs = [f"+{target}:refs/swarm/head"]
-    if not empty:
+    if not empty and not unknown:
         refspecs.append(f"+{floor}:refs/swarm/base")
     fetch_code, _ = run(
         [
@@ -1697,12 +1763,199 @@ def _copy_file(source: Path, dest: Path, mode: int) -> None:
         os.close(fd_in)
 
 
+#: The most of any one file the agent wrote that `read_agent_excludes` reads.
+#: An exclude file is a list of patterns; a megabyte of them is far past any
+#: real one, and reading more would hand the agent a way to make the worker
+#: hold an arbitrary file in memory.
+AGENT_EXCLUDE_MAX_BYTES = 1024 * 1024
+
+_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+_NONBLOCK = getattr(os, "O_NONBLOCK", 0)
+_DIRECTORY = getattr(os, "O_DIRECTORY", 0)
+
+
+def _read_capped_fd(fd: int) -> bytes | None:
+    """The contents of a REGULAR file open as `fd`, up to the cap; None past it."""
+    if not stat.S_ISREG(os.fstat(fd).st_mode):
+        return None
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = os.read(fd, 64 * 1024)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > AGENT_EXCLUDE_MAX_BYTES:
+            return None
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def _read_in_git_dir(clone: Path, *names: str) -> bytes | None:
+    """`<clone>/.git/<names...>`, opened one component at a time with
+    O_NOFOLLOW, so a link at `.git`, at a folder below it or at the file
+    itself is refused rather than read through. O_NONBLOCK so a FIFO the
+    agent put there cannot hang the worker; only a regular file is read."""
+    fds: list[int] = []
+    try:
+        fds.append(os.open(clone / ".git", os.O_RDONLY | _DIRECTORY | _NOFOLLOW))
+        for folder in names[:-1]:
+            fds.append(os.open(folder, os.O_RDONLY | _DIRECTORY | _NOFOLLOW, dir_fd=fds[-1]))
+        fds.append(os.open(names[-1], os.O_RDONLY | _NOFOLLOW | _NONBLOCK, dir_fd=fds[-1]))
+        return _read_capped_fd(fds[-1])
+    except OSError:
+        return None
+    finally:
+        for fd in reversed(fds):
+            os.close(fd)
+
+
+_CONFIG_SECTION = re.compile(r'^\[\s*([A-Za-z0-9.-]+)\s*(?:"((?:[^"\\]|\\.)*)")?\s*\](.*)$')
+_CONFIG_KEY = re.compile(r"^([A-Za-z][A-Za-z0-9-]*)\s*(?:=(.*))?$")
+
+
+def _config_value(raw: str) -> str:
+    """A git-config value as git reads it: quotes joined, `\\"`, `\\\\`,
+    `\\n` and `\\t` unescaped, a `#` or `;` outside quotes ending it."""
+    out: list[str] = []
+    quoted = False
+    i = 0
+    raw = raw.strip()
+    while i < len(raw):
+        ch = raw[i]
+        if ch == "\\" and i + 1 < len(raw):
+            nxt = raw[i + 1]
+            out.append({"n": "\n", "t": "\t", "b": "\b"}.get(nxt, nxt))
+            i += 2
+            continue
+        if ch == '"':
+            quoted = not quoted
+        elif ch in "#;" and not quoted:
+            break
+        else:
+            out.append(ch)
+        i += 1
+    return "".join(out).strip() if not quoted else "".join(out)
+
+
+def _config_excludes_file(text: str) -> str | None:
+    """`core.excludesFile` from the text of a git config file, parsed WITHOUT git.
+
+    Only the file itself: an `[include]` or `[includeIf]` it names is not
+    followed, because following it is reading another file the agent chose.
+    The last value wins, as in git. A value continued onto the next line
+    with a trailing backslash is not supported and reads as absent.
+    """
+    section: str | None = None
+    value: str | None = None
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped[0] in "#;":
+            continue
+        header = _CONFIG_SECTION.match(stripped)
+        if header:
+            name, sub, rest = header.group(1), header.group(2), header.group(3)
+            section = name.lower() if sub is None and "." not in name else None
+            stripped = rest.strip()
+            if not stripped or stripped[0] in "#;":
+                continue
+        if section != "core":
+            continue
+        key = _CONFIG_KEY.match(stripped)
+        if not key or key.group(1).lower() != "excludesfile":
+            continue
+        if stripped.endswith("\\"):
+            value = None
+            continue
+        value = _config_value(key.group(2) or "")
+    return value or None
+
+
+def read_agent_excludes(*, clone: Path, workspace_root: Path, home: Path, logger: Any) -> bytes:
+    """The patterns the agent hid files with, read as DATA (#259, owner item 2).
+
+    When the worker committed in the clone, git honoured the clone's
+    `.git/info/exclude` and the `core.excludesFile` its config named, so a
+    file the agent kept out of git stayed out of the pull request. The commit
+    is now made in the worker's own repository, which reads neither -- so
+    both are read here, WITHOUT running git in the clone, and handed to
+    `mirror_worktree` for that repository's own exclude file:
+
+    * `.git/info/exclude`, opened component by component with O_NOFOLLOW and
+      read to `AGENT_EXCLUDE_MAX_BYTES` at most;
+    * `core.excludesFile`, parsed out of `.git/config` in Python
+      (`_config_excludes_file`). A leading `~/` is the agent's HOME (`home`,
+      which is `work/`); a relative path is relative to the checkout. The
+      file is honoured only when it lies inside the workspace AND no link is
+      on the way to it -- its real path is its literal path -- and it is read
+      with the same cap. Anything else is ignored and logged.
+
+    The `core.excludesFile` patterns come first and `info/exclude` second,
+    which is git's own order of precedence between the two. Returns b"" when
+    there is nothing to honour.
+    """
+    clone = Path(clone)
+    parts: list[bytes] = []
+
+    config = _read_in_git_dir(clone, "config")
+    named = _config_excludes_file(config.decode("utf-8", "surrogateescape")) if config else None
+    if named:
+        if named.startswith("~/"):
+            path = Path(home) / named[2:]
+        elif named.startswith("~"):
+            path = None
+        else:
+            path = Path(named) if os.path.isabs(named) else clone / named
+        honoured = False
+        if path is not None:
+            literal = os.path.normpath(os.path.abspath(path))
+            real = os.path.realpath(literal)
+            # "No link on the way" is asked BELOW the workspace root: the
+            # root's own path may pass through a link the platform made (a
+            # macOS /var, a mounted volume), which is not the agent's.
+            root_literal = os.path.normpath(os.path.abspath(workspace_root))
+            root_real = os.path.realpath(root_literal)
+            inside = False
+            for root in (root_literal, root_real):
+                if (literal + os.sep).startswith(root + os.sep) and literal != root:
+                    expected = os.path.normpath(
+                        os.path.join(root_real, os.path.relpath(literal, root))
+                    )
+                    inside = real == expected
+                    break
+            if inside:
+                try:
+                    fd = os.open(real, os.O_RDONLY | _NOFOLLOW | _NONBLOCK)
+                except OSError:
+                    fd = -1
+                if fd >= 0:
+                    try:
+                        data = _read_capped_fd(fd)
+                    finally:
+                        os.close(fd)
+                    if data is not None:
+                        parts.append(data)
+                        honoured = True
+        if not honoured:
+            logger.warning(
+                "the agent's core.excludesFile was not honoured: it is outside the "
+                "workspace, reached through a link, missing, not a regular file or "
+                "over the size cap; files it lists may be published"
+            )
+
+    exclude = _read_in_git_dir(clone, "info", "exclude")
+    if exclude:
+        parts.append(exclude)
+    return b"\n".join(part.rstrip(b"\n") for part in parts if part.strip())
+
+
 def mirror_worktree(
     *,
     source: Path,
     dest: Path,
     logger: Any,
     hidden_names: Sequence[str] = (),
+    agent_excludes: bytes = b"",
 ) -> int:
     """Make `dest`'s working tree the agent's working tree, file for file (#259 M1).
 
@@ -1726,9 +1979,16 @@ def mirror_worktree(
       (a submodule checkout, a nested clone), and git would read that
       repository's refs and config to record it. Such a folder is created
       EMPTY here -- an unpopulated submodule reads as unchanged, and anything
-      else empty is invisible to git -- and nothing inside it is copied;
+      else empty is invisible to git -- and nothing inside it is copied.
+      Accepted by the owner on 2026-09-28: before, git in the clone recorded
+      such a folder as an embedded gitlink;
     * anything that is not a regular file, a folder or a link (a FIFO, a
       socket, a device), which git does not track either.
+
+    REGULAR FILES ARE HARD-LINKED, with a byte copy only where the filesystem
+    refuses the link (`_copy_file`; accepted by the owner on 2026-09-28): the
+    workspace is memory-backed, and a copy would double it at the end of the
+    attempt.
 
     A LINK IS COPIED AS A LINK, its target text read with `readlink` and
     never followed: a link out of the workspace is published as the link
@@ -1738,7 +1998,11 @@ def mirror_worktree(
 
     `hidden_names` are top-level names the worker hides from git in the clone
     (`hide_from_git`, the `./artifacts` link, #226); they are written to this
-    repository's own `.git/info/exclude`, which the worker owns.
+    repository's own `.git/info/exclude`, which the worker owns, AFTER
+    `agent_excludes` -- the patterns of the agent's own `.git/info/exclude`
+    and `core.excludesFile`, read as data by `read_agent_excludes` -- so a
+    `!` pattern of the agent's cannot un-hide the worker's names (in one
+    exclude file the last matching pattern wins).
 
     `dest`'s existing working tree -- the checkout of the agent's last commit
     -- is emptied first, so a file the agent deleted is deleted here too.
@@ -1770,12 +2034,14 @@ def mirror_worktree(
     try:
         with config.open("a", encoding="utf-8") as handle:
             handle.write("[core]\n\tattributesFile = /dev/null\n\texcludesFile = /dev/null\n")
-        if hidden_names:
+        if hidden_names or agent_excludes:
             info = git_dir / "info"
             info.mkdir(exist_ok=True)
-            with (info / "exclude").open("a", encoding="utf-8") as handle:
+            with (info / "exclude").open("ab") as handle:
+                if agent_excludes:
+                    handle.write(b"\n" + agent_excludes.rstrip(b"\n") + b"\n")
                 for name in hidden_names:
-                    handle.write(f"/{name}\n")
+                    handle.write(f"/{name}\n".encode("utf-8", "surrogateescape"))
     except OSError as exc:
         raise GitError(
             f"could not write the publish repository's own settings ({type(exc).__name__})"

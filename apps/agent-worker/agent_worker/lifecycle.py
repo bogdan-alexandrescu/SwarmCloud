@@ -174,6 +174,7 @@ from .gitops import (
     mirror_worktree,
     prepare_publish_repo,
     push_branch,
+    read_agent_excludes,
     shallow_clone,
     summarize_work,
     verify_worker_authorship,
@@ -4120,10 +4121,63 @@ class Worker:
                 "uncommitted files are still listed"
             )
 
+        # THE HARVEST RUNS NO GIT IN THE CLONE EITHER (#259, owner item 3).
+        # `summarize_work` used to take its patch with `git diff <base>` in the
+        # clone, and a diff of the working tree reads each file through the
+        # clean filter the clone's `.gitattributes` and `.git/config` name --
+        # the agent's program, run as the worker. So the order is now:
+        #
+        #   1. REAP. No process the agent started is alive from here on
+        #      (`reap_before_publish`); if one survives, nothing below runs.
+        #      This used to happen only inside `_publish_git`; it moves here
+        #      because the clean repository is built here, and a live agent
+        #      process could poison it (see `_publish_git`).
+        #   2. BUILD the worker's clean repository: the agent's commits are
+        #      fetched in (`prepare_publish_repo`) and its working tree copied
+        #      in (`mirror_worktree`), with the patterns it excluded read as
+        #      data.
+        #   3. HARVEST there: the patch, the commit list and the dirty list
+        #      are read from the worker's repository, where a `.gitattributes`
+        #      naming a filter is data.
+        #   4. PUBLISH from the same repository (`_publish_git`), which
+        #      commits the uncommitted work on top and pushes.
+        #
+        # The clone itself is read only by the object-checked fetch, whose
+        # `upload-pack` runs with every program-naming key pinned
+        # (`gitops._UPLOAD_PACK_ENV`).
+        survivors = self.reap_before_publish()
+        if survivors:
+            reason = (
+                f"refusing to publish: {len(survivors)} process(es) the agent started "
+                f"are still alive after the pre-publish reap ({', '.join(str(p) for p in survivors[:10])}); "
+                "the tenant credential is not put in hand while agent code can run"
+            )
+            self.log.error(
+                "not harvesting or publishing: agent processes survived the reap",
+                surviving_pids=list(survivors),
+            )
+            out["published"] = False
+            out["publish_reason"] = reason
+            out["error"] = (
+                "the agent's work was not harvested: processes it started survived "
+                "the reap, and the worker reads no repository while agent code can run"
+            )
+            return out
+
+        # The floor the clean repository is built on: the worker's own record
+        # when it has one, else the harvest's base (the workspace marker, on a
+        # resume from a checkpoint that recorded none -- the publish refuses
+        # that case before it pushes, but the work is still described). A floor
+        # that is not a full sha is unknown, and then only HEAD is fetched.
+        floor = self._publish_base if self._publish_base is not None else base
+        fetched_base = (
+            floor if floor and re.fullmatch(r"[0-9a-f]{40}", floor) else None
+        )
         try:
+            publish_repo = self._build_clean_repo(repo, floor=floor, allow_unknown_base=True)
             work = summarize_work(
-                repo=repo,
-                base=base,
+                repo=publish_repo,
+                base=fetched_base,
                 private_dir=ws.private,
                 logs_dir=ws.logs,
                 patch_path=ws.artifacts / PATCH_NAME,
@@ -4197,7 +4251,8 @@ class Worker:
 
         out.update(
             self._publish_git(
-                repo=repo, work_head=work.head, publish=publish, withheld=withheld
+                repo=repo, work_head=work.head, publish=publish, withheld=withheld,
+                publish_repo=publish_repo,
             )
         )
         return out
@@ -4216,10 +4271,60 @@ class Worker:
             and bool(self._dispatch_integrates())
         )
 
+    def _build_clean_repo(
+        self, repo: Path, *, floor: str | None, allow_unknown_base: bool = False
+    ) -> Path:
+        """The worker's clean repository, holding the agent's commits and a copy
+        of its working tree (#259). Call only after the reap.
+
+        `prepare_publish_repo` fetches the clone's HEAD (and `floor`) in with
+        object checking; `mirror_worktree` copies the working tree in, with the
+        worker's `./artifacts` link and the patterns the agent excluded
+        (`read_agent_excludes`, read as data) hidden from git there. Nothing is
+        committed yet: the harvest reads the uncommitted work from here, and
+        `_publish_git` commits it here.
+        """
+        ws = self.ws
+        assert ws is not None
+        cfg = self.cfg
+        publish_repo = prepare_publish_repo(
+            source_repo=repo,
+            # The clone's HEAD: the agent's last commit, or none at all in an
+            # empty repository it never committed in.
+            work_head=None,
+            base=floor,
+            private_dir=ws.private,
+            logs_dir=ws.logs,
+            timeout_seconds=cfg.git_clone_timeout_seconds,
+            logger=self.log,
+            allow_unknown_base=allow_unknown_base,
+        )
+        mirror_worktree(
+            source=repo,
+            dest=publish_repo,
+            logger=self.log,
+            hidden_names=self._hidden_checkout_names(repo),
+            agent_excludes=read_agent_excludes(
+                clone=repo, workspace_root=ws.root, home=ws.work, logger=self.log
+            ),
+        )
+        return publish_repo
+
     def _publish_git(
-        self, *, repo: Path, work_head: str | None, publish: bool, withheld: str = ""
+        self,
+        *,
+        repo: Path,
+        work_head: str | None,
+        publish: bool,
+        withheld: str = "",
+        publish_repo: Path | None = None,
     ) -> dict[str, Any]:
-        """The push-and-pull-request half. Gated on the forge, not on hope."""
+        """The push-and-pull-request half. Gated on the forge, not on hope.
+
+        `publish_repo` is the clean repository the harvest already built,
+        after its reap (`_harvest_git`). Without one -- a direct call -- this
+        reaps and builds it itself, at the same point it always did.
+        """
         cfg = self.cfg
         ws = self.ws
         assert ws is not None
@@ -4323,7 +4428,8 @@ class Worker:
         # runs. So every such process is killed and its death verified BEFORE the
         # publish repo is created; if any survives the bounded retry, the whole
         # publish is refused rather than run with agent code still able to act.
-        survivors = self.reap_before_publish()
+        # When the harvest built the repository, it reaped first (`_harvest_git`).
+        survivors = self.reap_before_publish() if publish_repo is None else ()
         if survivors:
             out["published"] = False
             out["publish_reason"] = (
@@ -4371,6 +4477,11 @@ class Worker:
                     "was pushed; the harvest still describes the work against "
                     "that marker"
                 )
+            if self._publish_base is None:
+                raise GitError(
+                    "the clone base is unknown, so the worker cannot tell the agent's "
+                    "commits from the repository's; nothing was pushed"
+                )
 
             # EVERYTHING THAT DECIDES WHAT IS PUSHED, AND THE PUSH, RUNS IN A
             # REPOSITORY THE WORKER OWNS (owner decision, 2026-09-29, #259).
@@ -4385,34 +4496,20 @@ class Worker:
             # file at a time; this removes the class. The token is still only
             # ever used in this repository (#219). See
             # `gitops.prepare_publish_repo` and docs/merge-strategy-live-proof.md §6.
-            publish_repo = prepare_publish_repo(
-                source_repo=repo,
-                # The clone's HEAD: the agent's last commit, or none at all in
-                # an empty repository it never committed in.
-                work_head=None,
-                base=self._publish_base,
-                private_dir=ws.private,
-                logs_dir=ws.logs,
-                timeout_seconds=cfg.git_clone_timeout_seconds,
-                logger=self.log,
-            )
-
-            # WHAT THE AGENT LEFT UNCOMMITTED IS COMMITTED HERE, NOT IN ITS
+            #
+            # WHAT THE AGENT LEFT UNCOMMITTED IS COMMITTED THERE, NOT IN ITS
             # CLONE (#259 M1, owner decision 2026-09-28). `git add` in the
             # clone read the clone's `.git/config` and the tree's
             # `.gitattributes`, so a filter driver the agent defined ran as the
             # worker after the reap. The working tree is copied into the
-            # publish repository instead -- no `.git`, links as links -- and
-            # staged and committed with the worker's configuration alone, where
-            # a `.gitattributes` naming a filter is data: no filter of that name
-            # is defined. Nothing under the clone's `.git` runs at publish; the
-            # clone is read only by the object-checked fetch above.
-            mirror_worktree(
-                source=repo,
-                dest=publish_repo,
-                logger=self.log,
-                hidden_names=self._hidden_checkout_names(repo),
-            )
+            # publish repository instead (`_build_clean_repo`) -- no `.git`,
+            # links as links -- and staged and committed with the worker's
+            # configuration alone, where a `.gitattributes` naming a filter is
+            # data: no filter of that name is defined. Nothing under the
+            # clone's `.git` runs at publish; the clone is read only by the
+            # object-checked fetch.
+            if publish_repo is None:
+                publish_repo = self._build_clean_repo(repo, floor=self._publish_base)
             new_sha = commit_dirty(
                 repo=publish_repo,
                 message=(

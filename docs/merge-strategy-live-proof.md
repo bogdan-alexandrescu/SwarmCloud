@@ -300,13 +300,40 @@ into the publish repository -- never anything under `.git`, every link as a
 link, a folder holding a nested repository as an empty folder -- and
 `commit_dirty` stages and commits there, with only the worker's configuration.
 A `.gitattributes` in the tree is data in that repository: the filter and diff
-driver it names are defined nowhere, so git applies none. Regular files are
-hard-linked rather than byte-copied where the filesystem allows, because the
-workspace is memory-backed and a copy would double it at the end of the attempt.
+driver it names are defined nowhere, so git applies none. Two consequences the
+owner accepted on 2026-09-28: regular files are **hard-linked** rather than
+byte-copied where the filesystem allows (a byte copy only where it refuses),
+because the workspace is memory-backed and a copy would double it at the end of
+the attempt; and a folder holding a **nested repository** is published as an
+empty folder, where git in the clone used to record it as an embedded gitlink.
 
-The one place the worker's git still reads the agent's clone is the harvest's
-patch, taken before the reap (`--no-ext-diff --no-textconv`, so an external diff
-program or textconv filter the agent configured never runs there).
+What the agent **excluded stays unpublished**. Its `.git/info/exclude` and the
+file its `core.excludesFile` names are read as data -- never by running git in
+the clone: the exclude file opened component by component with `O_NOFOLLOW`
+and a size cap, the config parsed in Python -- and their patterns are appended
+to the publish repository's own exclude file. `core.excludesFile` is honoured
+only when it names a file inside the workspace with no link on the way (`~/` is
+the agent's HOME, `work/`).
+
+**The harvest reads the publish repository too** (owner item 3). Its patch
+was a `git diff <base>` in the clone, and a diff of the working tree reads each
+file through the clean filter the clone names -- the agent's program, run as
+the worker, before the reap. So the order at the end of an attempt is: reap;
+build the publish repository and copy the working tree into it; take the patch,
+the commit list and the dirty list there; then commit and push from the same
+repository. A reap that leaves agent processes alive stops all of it, harvest
+included.
+
+**The one git process left in the clone is `upload-pack`**, serving the fetch.
+It runs with no system or global configuration, grafts, replace refs and the
+commit-graph off, and every key that names a program pinned: hooks and
+fsmonitor off, `core.alternateRefsCommand=true`, and the lazy-fetch path a
+partial clone would open closed at the transport (`GIT_ALLOW_PROTOCOL=none`,
+`protocol.allow=never`, `GIT_SSH_COMMAND`/`GIT_PROXY_COMMAND=false`, no
+credential helper, `GIT_NO_LAZY_FETCH=1` for gits that know it).
+`uploadpack.packObjectsHook` is left unset on purpose: git-config(1) honours it
+only from protected (system, global or command-line) configuration, and any
+value set on the command line would be run.
 
 **That private scratch is not itself a permission boundary** — it shares a uid
 with the agent (`workspace.py` says so), so the agent can create paths inside it

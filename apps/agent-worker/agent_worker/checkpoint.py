@@ -577,7 +577,11 @@ class CheckpointManager:
                     if rel in skip or _is_tool_cache(rel):
                         continue
                     try:
-                        count += self._add_entry(tar, stack, dir_fd, name, rel, too_deep)
+                        # `too_deep` by keyword, so the entry's own path stays
+                        # the last positional argument (#288's test records it).
+                        count += self._add_entry(
+                            tar, stack, dir_fd, name, rel, too_deep=too_deep
+                        )
                     except (FileNotFoundError, NotADirectoryError):
                         continue  # gone, or no longer a directory
                     except OSError as exc:
