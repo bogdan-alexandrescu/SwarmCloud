@@ -497,13 +497,34 @@ on the WIF binding scoped to the environment — is the owner's to decide.
 
 **What counts as an IAM change.** A resource change whose type is one of
 
-* `google_project_iam_custom_role`
-* `google_*_iam_member`, `google_*_iam_binding`, `google_*_iam_policy`
+* `google_project_iam_custom_role`, `google_organization_iam_custom_role`
+* `google_*_iam_member`, `google_*_iam_binding`, `google_*_iam_policy`,
+  `google_*_iam_member_remove`, `google_*_iam_audit_config` (any resource
+  family the provider names one of these on, not only `project`)
+* `google_iam_workload_identity_pool`, `google_iam_workload_identity_pool_provider`
+* `google_iam_deny_policy`, `google_iam_principal_access_boundary_policy`
+* `google_service_account_key`
+* `google_service_account` -- but only `delete` or `forget`; its own `create`
+  and `update` grant nothing (what it can do comes from the `_iam_member` /
+  `_iam_binding` / `_iam_policy` resources already gated above), so only its
+  removal is an access change
+* `google_storage_bucket_acl`, `google_storage_bucket_access_control`
+* `google_bigquery_dataset_access`
 
-and whose actions include `create`, `update`, `delete` or `forget`. A replace
-is `delete` + `create`, so it counts. `no-op` and `read` do not. The rule is
-[`scripts/lib/iam-plan.jq`](../scripts/lib/iam-plan.jq), stated there once, and
-it is reached only through `scripts/lib/plan-guard.sh --classify-iam`.
+and whose actions include `create`, `update`, `delete` or `forget` (every
+family above except `google_service_account`, which is `delete` or `forget`
+only). A replace is `delete` + `create`, so it counts. `no-op` and `read` do
+not. The rule is [`scripts/lib/iam-plan.jq`](../scripts/lib/iam-plan.jq),
+stated there once, and it is reached only through
+`scripts/lib/plan-guard.sh --classify-iam`.
+
+**The second widening, 2026-09-28 (#274).** The `google_iam_workload_identity_pool`
+family, the deny and principal-access-boundary policies, a service account's key
+or deletion, the pre-IAM-conditions ACL mechanisms on a bucket or a BigQuery
+dataset, an organization-level custom role, an audit config and
+`_iam_member_remove` all decide who can do what, or what they can do it as, in
+`saga-agents-staging` exactly like the families #268 already gated -- so they
+gate the same way, through the same rule.
 
 **`forget` is the case that would be missed.** A `removed` block with
 `destroy = false` plans the action `forget`. Nothing live is deleted; the
