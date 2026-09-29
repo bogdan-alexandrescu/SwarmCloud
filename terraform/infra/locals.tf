@@ -472,6 +472,15 @@ locals {
       ADMIN_POOL_USERS        = join(",", sort(var.admin_pool_users))
       GROUPS_IMPERSONATE_USER = var.groups_impersonate_user
 
+      # The step-spec key version every submission is signed with (contract
+      # request 34). A full version name, because an asymmetric key has no
+      # primary version: local.spec_signing_key_version, derived in
+      # spec_signing.tf (#354) from var.spec_signing_key_version. Set in the
+      # same change as its reader (swarm_api.settings, swarm_api.specsigning),
+      # which refuses to start outside local development without it, so
+      # scripts/lib/check-env-parity.sh never sees one without the other.
+      SPEC_SIGNING_KEY_VERSION = local.spec_signing_key_version
+
       # The verification job's identity, admitted past the domain check.
       #
       # swarm-api admits a caller through ALLOWED_USERS or through the frozen

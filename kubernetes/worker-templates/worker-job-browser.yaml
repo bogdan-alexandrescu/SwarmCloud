@@ -228,8 +228,9 @@ spec:
           emptyDir:
             sizeLimit: 4Gi
         # `optional`: a namespace whose ConfigMap has not been applied yet
-        # still starts its pod, and the worker refuses a signed task as
-        # CANNOT_START (no keys) -- loud, and never an unverified run.
+        # still starts its pod, and the worker exits CANNOT_START for every
+        # task, signed or not (no keys, and no mode or cutover either) --
+        # loud, and never an unverified run.
         - name: spec-verify-keys
           configMap:
             name: swarm-spec-verify-keys

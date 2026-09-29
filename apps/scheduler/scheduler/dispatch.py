@@ -1446,8 +1446,9 @@ class GkeJobDispatcher:
                             {"name": "home", "emptyDir": {"sizeLimit": "4Gi"}},
                             # `optional`: a namespace whose ConfigMap has not
                             # been applied yet still starts its pod, and the
-                            # worker then refuses a signed task as CANNOT_START
-                            # (no keys) -- loud, and never an unverified run.
+                            # worker then exits CANNOT_START for every task,
+                            # signed or not (no keys, and no mode or cutover
+                            # either) -- loud, and never an unverified run.
                             {"name": "spec-verify-keys", "configMap": {
                                 "name": SPEC_VERIFY_KEYS_CONFIG_MAP,
                                 "optional": True}},

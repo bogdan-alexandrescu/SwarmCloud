@@ -327,16 +327,21 @@ class WorkerConfig:
         ref = os.environ.get("REPOSITORY_REF", "").strip() or None
 
         # The step-spec verification settings (contract request 34). The Job's
-        # environment on Cloud Run; the read-only ConfigMap mount on GKE,
-        # read only when the environment carries no keys.
+        # environment on Cloud Run; the read-only ConfigMap mount on GKE, read
+        # only when the environment carries no keys. On GKE the mount supplies
+        # ALL FOUR, the mode and the cutover included (owner decision
+        # 2026-09-29), so a GKE worker follows the legacy window exactly as a
+        # Cloud Run one does; the environment still wins wherever it is set.
         from . import specverify
 
-        raw_keys = os.environ.get("SPEC_VERIFY_KEYS", "")
-        signing_key = os.environ.get("SPEC_SIGNING_KEY", "").strip()
-        if not raw_keys.strip():
-            mounted_keys, mounted_key = specverify.read_mount()
-            raw_keys = mounted_keys
-            signing_key = signing_key or mounted_key.strip()
+        spec = {name: os.environ.get(name, "") for name in specverify.SETTING_NAMES}
+        if not spec["SPEC_VERIFY_KEYS"].strip():
+            mounted = specverify.read_mount()
+            spec = {
+                name: value if value.strip() else mounted[name] for name, value in spec.items()
+            }
+        raw_keys = spec["SPEC_VERIFY_KEYS"]
+        signing_key = spec["SPEC_SIGNING_KEY"].strip()
         timeout_env = os.environ.get("TASK_TIMEOUT_SECONDS", "").strip()
 
         return cls(
@@ -376,10 +381,8 @@ class WorkerConfig:
             ),
             provider=profile.provider,
             model=os.environ.get("MODEL", "").strip() or None,
-            spec_signature_mode=specverify.parse_mode(os.environ.get("SPEC_SIGNATURE_MODE", "")),
-            spec_legacy_cutover=specverify.parse_cutover(
-                os.environ.get("SPEC_LEGACY_CUTOVER", "")
-            ),
+            spec_signature_mode=specverify.parse_mode(spec["SPEC_SIGNATURE_MODE"]),
+            spec_legacy_cutover=specverify.parse_cutover(spec["SPEC_LEGACY_CUTOVER"]),
             spec_signing_key=signing_key,
             spec_verify_keys=specverify.parse_verify_keys(raw_keys),
             task_timeout_env=_int_env("TASK_TIMEOUT_SECONDS", 0) if timeout_env else None,

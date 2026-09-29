@@ -77,6 +77,17 @@ KNOWN_FORMATS = frozenset({specsign.SPEC_FORMAT})
 #: the ConfigMap is a file here. Read only when the environment has no keys.
 VERIFY_KEYS_MOUNT = Path("/etc/swarm/spec-verify-keys")
 
+#: The four settings, by the names both sources use: the Job's environment on
+#: Cloud Run, and the ConfigMap's file keys on GKE (kubernetes/render.py writes
+#: terraform's `spec_verify_keys_configmap` output key for key, the mode and
+#: the cutover beside the keys).
+SETTING_NAMES = (
+    "SPEC_VERIFY_KEYS",
+    "SPEC_SIGNING_KEY",
+    "SPEC_SIGNATURE_MODE",
+    "SPEC_LEGACY_CUTOVER",
+)
+
 MODES = ("enforce", "legacy")
 
 _VERSION_SUFFIX = re.compile(r"/cryptoKeyVersions/[0-9]+")
@@ -143,16 +154,19 @@ def parse_cutover(raw: str) -> datetime | None:
     return value
 
 
-def read_mount(mount: Path | None = None) -> tuple[str, str]:
-    """(SPEC_VERIFY_KEYS, SPEC_SIGNING_KEY) from the GKE mount, or empty strings."""
+def read_mount(mount: Path | None = None) -> dict[str, str]:
+    """Each of `SETTING_NAMES` from the GKE mount; an absent file reads as "".
+
+    A missing ConfigMap (the volume is `optional`) reads as four empty
+    strings: no keys, so `verify_step_spec` is CANNOT_START for every task."""
     mount = mount or VERIFY_KEYS_MOUNT
-    values = []
-    for name in ("SPEC_VERIFY_KEYS", "SPEC_SIGNING_KEY"):
+    values: dict[str, str] = {}
+    for name in SETTING_NAMES:
         try:
-            values.append((mount / name).read_text())
+            values[name] = (mount / name).read_text()
         except OSError:
-            values.append("")
-    return values[0], values[1]
+            values[name] = ""
+    return values
 
 
 # ---------------------------------------------------------------------------
@@ -288,6 +302,19 @@ def verify_step_spec(
     signature = doc.get("spec_signature")
     version = doc.get("spec_key_version")
 
+    # 0. A worker with no key cannot verify anything, and that is ITS
+    # configuration, not the tenant's attack: CANNOT_START for every task,
+    # signed or not, BEFORE the legacy rule. On GKE the mode and the cutover
+    # come from the same mount as the keys, so a pod whose ConfigMap is
+    # missing has read no mode either; it must neither admit an unsigned task
+    # nor refuse one as a signature failure.
+    if not cfg.spec_verify_keys or not cfg.spec_signing_key:
+        raise ConfigError(
+            "SPEC_VERIFY_KEYS or SPEC_SIGNING_KEY is empty: this worker has no key to verify "
+            "a spec with (terraform renders both onto every worker Job, and the "
+            "swarm-spec-verify-keys ConfigMap on GKE)"
+        )
+
     # 1. Presence, or the legacy rule -- BEFORE the format.
     if not signature or not version:
         if _legacy_admits(cfg, create_time, now, log):
@@ -301,13 +328,8 @@ def verify_step_spec(
             detail=f"format {doc.get('spec_format')!r}",
         )
 
-    # 3. The version, as a string, before any key is used.
-    if not cfg.spec_verify_keys or not cfg.spec_signing_key:
-        raise ConfigError(
-            "SPEC_VERIFY_KEYS or SPEC_SIGNING_KEY is empty: this worker has no key to verify "
-            "a signed spec with (terraform renders both onto every worker Job, and the "
-            "swarm-spec-verify-keys ConfigMap on GKE)"
-        )
+    # 3. The version, as a string, before any key is used (step 0 made sure
+    # there are keys).
     if not isinstance(version, str):
         raise SpecSignatureInvalid("foreign_key_version", task_id=task_id)
     suffix = version[len(cfg.spec_signing_key):] if version.startswith(cfg.spec_signing_key) else ""
