@@ -729,5 +729,7 @@ resource "google_monitoring_alert_policy" "spec_signature_invalid" {
     auto_close = "86400s"
   }
 
-  user_labels = var.labels
+  # Merged, not just inherited, like the policy above: this one must carry the
+  # marker `make destroy` keys on even if a caller passes labels without it.
+  user_labels = merge(var.labels, { "managed-by" = "swarm-terraform" })
 }
