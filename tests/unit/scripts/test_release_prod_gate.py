@@ -26,10 +26,23 @@ needs the approval but says `if: always() && ...` runs whatever the approval's
 result was, unless its condition itself requires the approval to have
 succeeded. A test that only checked `needs:` would pass that workflow.
 
-THE MODEL, AND WHICH WAY IT ERRS. GitHub's job-level `success()` is false when
-any job upstream failed, was cancelled or was skipped; the model reads it over
-the DIRECT needs only, which lets more jobs run than GitHub would. So a job
-the model says cannot run cannot run on GitHub either. `cancelled()` is
+THE MODEL. GitHub's job-level `success()` is false when any job upstream --
+transitively, through the whole dependency chain, not only a job listed in
+this job's own `needs:` -- failed, was cancelled or was skipped. An
+intermediate job's own `if:` running past one ancestor's skip (its `needs:`
+entries are still what THAT job declares) does not stop `success()` in a job
+further downstream from seeing that ancestor's result: PR #274 (security
+review MAJOR 1) found `infrastructure-iam`'s `if:` names no status function,
+so GitHub reads it as `success() && ...`, and on a `skip_build` dispatch that
+`success()` looks past `infrastructure` -- its only direct need, whose OWN
+`if:` explicitly runs past a skipped `promote` -- to `build` and `promote`
+themselves, which `skip_build` skips; the run then ends green with the IAM
+plan held but never applied. The model reads `success()` the same
+transitive way, over `_upstream()`, so a job the model says cannot run
+cannot run on GitHub, and one it says can run, can. `needs.<job>.result` and
+`.outputs.*`, by contrast, read only the job directly named in `needs:` --
+GitHub exposes no transitive job's result through `needs`, so the model
+does not either. `cancelled()` is
 whether the RUN was cancelled: false in the schedules above, true in the
 cancellation test below, where `success()` is false too, as GitHub has it.
 `failure()` is not modelled: a job-level `if:` using it fails here with a
@@ -254,16 +267,25 @@ def _outputs(jobs: dict, job_id: str, ctx: dict, attempt: int, *, started: bool)
 
 
 def _runs(
-    job_id: str, job: dict, results: dict, ctx: dict, *, outputs: dict | None = None, cancelled: bool = False
+    jobs: dict, job_id: str, results: dict, ctx: dict, *, outputs: dict | None = None, cancelled: bool = False
 ) -> bool:
     """Whether GitHub would start `job_id`, given how the jobs it needs ended,
     what they output, and whether the run has been cancelled. `ctx` carries
-    `github.run_attempt`, the attempt being decided."""
-    needs = _needs(job)
+    `github.run_attempt`, the attempt being decided.
+
+    `jobs` is the whole workflow, because `success()` is not scoped to this
+    job's own `needs:` -- it is false when ANY job upstream, transitively,
+    failed, was cancelled or was skipped, so it is read over `_upstream()`,
+    not over `needs`. `not cancelled` is checked first so a cancelled-run
+    caller (which need not populate every transitive ancestor) never forces
+    the transitive lookup."""
+    needs = _needs(jobs[job_id])
     # A cancelled run is not a successful one: GitHub's success() is false
-    # once the run is cancelled, whatever the jobs before this one did.
-    succeeded = all(results[n] == "success" for n in needs) and not cancelled
-    text = _condition(f"{job_id} job", job.get("if"))
+    # once the run is cancelled, whatever the jobs before this one did. Checked
+    # first: short-circuits before the transitive lookup below needs every
+    # ancestor's result to be present in `results`.
+    succeeded = (not cancelled) and all(results[n] == "success" for n in _upstream(jobs, job_id))
+    text = _condition(f"{job_id} job", jobs[job_id].get("if"))
     values = {**ctx, "always()": True, "success()": succeeded, "cancelled()": cancelled}
     values.update({f"needs.{n}.result": results[n] for n in needs})
     for n in needs:
@@ -299,7 +321,7 @@ def _attempts(
         job_id = order[i]
         if job_id in carried:
             options = [carried[job_id]]
-        elif _runs(job_id, jobs[job_id], results, here, outputs=outs):
+        elif _runs(jobs, job_id, results, here, outputs=outs):
             made = _outputs(jobs, job_id, ctx, attempt, started=True)
             options = [(e, m) for m in made for e in (_NOT_APPROVED if job_id == gate else endings)]
         else:
@@ -464,7 +486,7 @@ def test_cancelling_a_prod_release_starts_nothing_prod_facing(release, what):
             results = dict(zip(needs, ended))
             outs = dict(zip(needs, made))
             tried += 1
-            assert not _runs(job_id, jobs[job_id], results, here, outputs=outs, cancelled=True), (
+            assert not _runs(jobs, job_id, results, here, outputs=outs, cancelled=True), (
                 f"release.yml's {job_id!r} job {what} for prod ({'; '.join(steps)}) and still starts after "
                 f"the run is CANCELLED, when the jobs it needs ended {results}: its `if:` holds on a "
                 "cancelled run (`always()` does). Condition it on `!cancelled()` instead"

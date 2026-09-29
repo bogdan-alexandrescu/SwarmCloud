@@ -182,6 +182,40 @@ def test_an_approved_iam_plan_is_applied_and_deployed(release):
         assert all(results[j] == "success" for j in deploys), results
 
 
+def test_a_skip_build_dev_release_with_an_iam_plan_still_reaches_dev_iam():
+    """PR #274, security review MAJOR 1 (release.yml:626): `infrastructure-iam`
+    names no status function in its `if:`, so GitHub reads it as `success() &&
+    ...`. `success()` is not scoped to `infrastructure-iam`'s own `needs:`
+    (just `infrastructure`, which handles a skipped `promote` explicitly in
+    ITS `if:`) -- it looks past that to every job upstream, transitively,
+    including `build` and `promote`, both of which a `skip_build` dispatch
+    skips. The run then ends green with the IAM plan held but never applied,
+    and nobody asked.
+
+    `test_an_approved_iam_plan_is_applied_and_deployed` above already covers
+    `dev-skip-build` as one of `DEV_RELEASES`; this names that one schedule on
+    its own so the defect this PR fixes has a test that fails on exactly it.
+
+    MUTATION: revert `_runs()` in test_release_prod_gate.py to check direct
+    `needs` only (the model before this PR), or drop `!cancelled()` from
+    `infrastructure-iam`'s `if:` in release.yml -- either turns this red."""
+    ctx = DEV_RELEASES["dev-skip-build"]
+    jobs = _jobs()
+    gate = _iam_job(jobs)
+    assert INFRA in _upstream(jobs, gate), f"{gate!r} does not need {INFRA!r} at all; this checked nothing"
+    reached = 0
+    for results, outs in _attempts(jobs, ctx, endings=("success",)):
+        if outs[INFRA].get("iam") != "true":
+            continue
+        reached += 1
+        assert results[INFRA] == "success", results
+        assert results[gate] != "skipped", (
+            f"a skip_build dev release with an IAM plan skips {gate!r} entirely, so it is applied nowhere: "
+            f"{results}"
+        )
+    assert reached, "no skip_build schedule classified the plan as IAM, so this checked nothing"
+
+
 @pytest.mark.parametrize("release", sorted(DEV_RELEASES))
 def test_a_routine_dev_release_flows_without_dev_iam(release):
     """A plan free of IAM applies in `terraform apply`, names no dev-iam job,
