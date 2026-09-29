@@ -8,17 +8,10 @@
 //    channels (solid bar, hatched band, dashed tile) survive greyscale; this
 //    is the colour channel, for everyone reading in colour.
 //
-// 2. THE TOKEN MIX IS READABLE IN GREYSCALE, AND STILL VISIBLE ON THE CARD.
-//    Overview's `.ov-mix` drew four token counts in `--series-1..4`, and the
-//    series block says of itself that those five sit in a band 1.36:1 from end
-//    to end and are NOT separable in greyscale. The keyed legend (§12.1) told a
-//    colour reader which swatch was which; nothing told a greyscale one.
-//    Separating the four may not be bought by fading them into the card: the
-//    series block's promise is that every series fill clears 3:1 against
-//    `--bg`, `--surface` and `--surface-2` in both themes (WCAG 1.4.11, a
-//    graphical object), and a tone derived from a series inherits that floor.
-//    The first one-hue ramp stepped toward `--surface` and left c-wr's 8px
-//    swatch at 1.35:1 on white -- this file's old floor of 1.2 held it there.
+// 2. A PLAIN FILL IS GREY. `.sr-bar > i` (Admin > Platform counts) and the
+//    default `.ctl-track > i` filled `--info` with no verdict to report; the
+//    owner's rule (#122) is that state hue is a verdict and a plain fill is
+//    `--text-dim`. `.sr-bar > i.bad` keeps its `--bad`.
 //
 // Everything is resolved from the source the app ships, through the same
 // `tokenTables` / `resolveVars` / `colour` the spacing probe uses, so a token
@@ -156,45 +149,24 @@ describe('metadata and hypotheticals carry no state hue (CP-13)', () => {
   })
 })
 
-describe("the token mix's four segments are separable in greyscale", () => {
-  // `styles.css`, where Overview's rules have lived since U8 folded the
-  // `OVERVIEW_CSS` template literal into the sheet. The `.ov-sN` tones are the
-  // first rules of those exact selectors, so `declared` finds them there.
+describe('the token-mix bar left no rules behind (#227)', () => {
+  // #249 removed the bar and its keyed swatches from Overview; the four tones,
+  // the segment and the swatch stayed in the sheet with nothing to draw. A
+  // rule no element carries is a rule the next reader has to reason about, and
+  // this block's old claims (four tones separable in greyscale) were holding a
+  // bar that no longer exists. `.ov-mix-facts` is the facts list that replaced
+  // it and is still rendered, so it stays.
+  // MUTATION: put back any of `.ov-mix`, `.ov-mix-seg`, `.ov-s1..4`, `.ov-swatch`.
   const CSS = stripComments(STYLES)
 
   it('reads the Overview block of the sheet', () => {
-    expect(CSS).toContain('.ov-mix')
-    expect(CSS).toContain('.ov-s1')
+    expect(CSS).toContain('.ov-mix-facts')
   })
 
-  for (const theme of THEMES) {
-    it(`draws in, out, c-rd and c-wr at four distinct tones in the ${theme} theme`, () => {
-      // The legend keys each swatch to a word; this is the claim that a reader
-      // without the hue can still match a swatch to its segment. Every PAIR,
-      // not just neighbours: an absent count drops its segment, so any two can
-      // end up side by side, and the legend puts all four in one row.
-      const fills = [1, 2, 3, 4].map((n) => resolved(declared(CSS, `.ov-s${n}`, 'background'), theme))
-      for (let i = 0; i < fills.length; i++) {
-        // 3:1 on every ground a series may be drawn on, which is the series
-        // block's own claim (styles.css, THE SERIES PALETTE) and WCAG 1.4.11's
-        // floor for a graphical object. The swatch is an 8px square and the
-        // segment an 8px rule: a key nobody can find keys nothing.
-        for (const ground of ['--bg', '--surface', '--surface-2']) {
-          expect(
-            contrast(fills[i]!, resolved(`var(${ground})`, theme)),
-            `.ov-s${i + 1} on ${ground} in ${theme} is under the 3:1 a series fill promises`,
-          ).toBeGreaterThanOrEqual(3)
-        }
-        // 1.2:1 between tones is the floor test_state_colour_discriminability.py
-        // gives PARKED against the severity triad, for the reason it gives: at
-        // or under about 1.2 a step is not visible.
-        for (let j = i + 1; j < fills.length; j++) {
-          expect(
-            contrast(fills[i]!, fills[j]!),
-            `.ov-s${i + 1} and .ov-s${j + 1} are one grey in ${theme}`,
-          ).toBeGreaterThanOrEqual(1.2)
-        }
-      }
+  for (const sel of ['.ov-mix', '.ov-mix-seg', '.ov-s1', '.ov-s2', '.ov-s3', '.ov-s4', '.ov-swatch']) {
+    it(`declares no ${sel} rule`, () => {
+      const re = new RegExp(`${sel.replace('.', '\\.')}(?![\\w-])`)
+      expect(re.test(CSS), `${sel} is still in the sheet`).toBe(false)
     })
   }
 })
@@ -537,4 +509,43 @@ describe('the outcome stack is four shapes, not four hues (TS-4)', () => {
       expect(painted(key, 'box-shadow', WIDE), `the ${o} key's rule`).toBe(painted(bar, 'box-shadow', WIDE))
     }
   })
+})
+
+describe('a plain proportion fill is grey, a verdict fill keeps its hue (#122)', () => {
+  // THE OWNER'S RULE: state hue is a verdict, and a plain fill is grey.
+  // `.sr-bar > i` is Admin > Platform counts' bar and `.ctl-track > i` the
+  // default fill of the shared track; both drew `--info` with nothing to say.
+  // Read through the cascade, so a later rule re-hueing either fails here too.
+  // MUTATION: `background: var(--info)` back on `.ctl-track > i, .sr-bar > i`,
+  // or `.sr-bar > i.bad` dropped.
+  const hosts: HTMLElement[] = []
+  afterEach(() => {
+    for (const h of hosts.splice(0)) h.remove()
+  })
+  const PROPS = ['background', 'background-color'] as const
+
+  const same = (value: string | null, token: string, theme: Theme, what: string) => {
+    expect(value, `${what} declares nothing`).not.toBeNull()
+    const got = resolveColour(value!, theme)
+    const want = resolveColour(`var(${token})`, theme)
+    expect(
+      Math.max(Math.abs(got.r - want.r), Math.abs(got.g - want.g), Math.abs(got.b - want.b)),
+      `${what} is ${value}, not ${token}`,
+    ).toBeLessThan(1)
+  }
+
+  for (const theme of THEMES) {
+    const env = { width: 1440, theme }
+    for (const selector of ['.sr-bar > i', '.ctl-track > i']) {
+      it(`fills ${selector} in --text-dim, with no state hue, in the ${theme} theme`, () => {
+        const value = painted(build(selector, hosts), PROPS, env)
+        expect(stateHueIn(value, theme), `${selector} is painted ${value}`).toBeNull()
+        same(value, '--text-dim', theme, selector)
+      })
+    }
+
+    it(`keeps --bad on .sr-bar > i.bad in the ${theme} theme`, () => {
+      same(painted(build('.sr-bar > i.bad', hosts), PROPS, env), '--bad', theme, '.sr-bar > i.bad')
+    })
+  }
 })

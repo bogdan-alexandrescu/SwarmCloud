@@ -27,7 +27,7 @@
 // that is both checkable here and load-bearing.
 
 import { describe, expect, it, vi } from 'vitest'
-import { act, render } from '@testing-library/react'
+import { act, cleanup, render } from '@testing-library/react'
 
 import STYLES from '../styles.css?raw'
 // App.tsx as TEXT, not as a module: importing it would evaluate every screen
@@ -899,6 +899,64 @@ describe('OV-16: the running count re-reads every 60 seconds and says how old it
     const mark = el.querySelector('.ov-running .ctl-empty .ctl-mark')
     expect(mark, 'the Running card drew no empty state').not.toBeNull()
     expect(mark!.getAttribute('aria-label') ?? '').toMatch(/state counts, read (just now|\d+[smhd] ago), say 3;/)
+  })
+})
+
+describe('#227: usePoll leaves nothing behind when the Overview unmounts', () => {
+  /**
+   * `usePoll` (#249) arms a `setTimeout` per poll and a `visibilitychange`
+   * listener on `document`. A screen the reader has left that still re-reads
+   * every 20 and 60 seconds is load on the API for nobody, and a listener left
+   * on `document` re-arms that timer every time the tab comes back.
+   *
+   * Fake timers from before the mount, so the timers `usePoll` arms are ones
+   * this test can run to completion after the unmount; `shouldAdvanceTime`
+   * so `settle()` still lets the reads land.
+   *
+   * MUTATION: drop `disarm()` from usePoll's cleanup (a timer is still
+   * pending), or drop the `removeEventListener` (the listener is left behind).
+   */
+  it('fires no timer and keeps no visibilitychange listener after unmount', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true, toFake: ['setTimeout', 'clearTimeout'] })
+    const added = vi.spyOn(document, 'addEventListener')
+    const removed = vi.spyOn(document, 'removeEventListener')
+    try {
+      await mountWith()
+      const listeners = added.mock.calls.filter((c) => c[0] === 'visibilitychange').map((c) => c[1])
+      expect(listeners.length, 'the Overview armed no visibilitychange listener; this check is vacuous').toBeGreaterThanOrEqual(2)
+      // The control: while mounted, the 60-second timer does re-read.
+      const mounted = api.loadStats.mock.calls.length
+      await act(async () => {
+        vi.advanceTimersByTime(60_000)
+      })
+      await settle()
+      expect(api.loadStats.mock.calls.length, 'the poll never fired while mounted; this check is vacuous').toBeGreaterThan(
+        mounted,
+      )
+
+      cleanup()
+      // THE TIMERS THEMSELVES, not only their effect: a tick that fires after
+      // unmount calls `setState` on a dead component and re-reads nothing, so
+      // counting reads alone cannot see an armed timer. Every timer the
+      // Overview armed is cleared by its unmount; `settle()` is between calls.
+      expect(vi.getTimerCount(), 'a timer the Overview armed is still pending after unmount').toBe(0)
+      const reads = () => Object.values(api).reduce((n, fn) => n + fn.mock.calls.length, 0)
+      const before = reads()
+      await act(async () => {
+        vi.advanceTimersByTime(5 * 60_000)
+        document.dispatchEvent(new Event('visibilitychange'))
+        vi.advanceTimersByTime(5 * 60_000)
+      })
+      await settle()
+      expect(reads(), 'a poll fired after the Overview unmounted').toBe(before)
+
+      const gone = removed.mock.calls.filter((c) => c[0] === 'visibilitychange').map((c) => c[1])
+      for (const fn of listeners) {
+        expect(gone, 'a visibilitychange listener outlived the Overview').toContain(fn)
+      }
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
 
