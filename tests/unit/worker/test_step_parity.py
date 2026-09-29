@@ -584,8 +584,13 @@ def _run_lane(worker_factory: Any, monkeypatch: pytest.MonkeyPatch, **config: An
 
 @needs_git
 def test_a_repository_step_runs_in_its_checkout_like_a_local_lane(
-    db, store, worker_factory, lane_agent, origin, local_urls, monkeypatch, runner_inputs
+    db, store, worker_factory, lane_agent, origin, local_urls, monkeypatch, runner_inputs,
+    recheck_bypassed,
 ):
+    # `recheck_bypassed`: this lane is seeded with a caller's `input.model`,
+    # which the worker's re-check now refuses before the runner step
+    # (contract request 32; test_stored_input_is_rechecked.py). Point 2 below
+    # holds the layer behind it, the lifecycle's own drop, on its own.
     _seed_lane(
         db,
         {"write_relative": {"artifacts/scan-02.md": "scan two\n", "answer.md": "an answer\n"}},
@@ -644,12 +649,17 @@ def test_a_repository_step_runs_in_its_checkout_like_a_local_lane(
 
 
 def test_a_callers_input_model_never_reaches_input_json(
-    db, store, worker_factory, log_stream, runner_inputs
+    db, store, worker_factory, log_stream, runner_inputs, recheck_bypassed
 ):
     """The worker's half of the refusal, for a task written before the API
     refused the key or by any path that does not go through the API. The
     platform's own model is not put there either: it is the Job's `MODEL`,
-    passed to the runner in its environment."""
+    passed to the runner in its environment.
+
+    Past the worker's re-check (`recheck_bypassed`, conftest.py), which since
+    contract request 32 refuses a stored input carrying this key before the
+    runner step (test_stored_input_is_rechecked.py). This holds the layer
+    behind it on its own."""
     seed_attempt(
         db,
         task_input={"prompt": "ordinary", "steps": 1, "sleep_seconds": 0.01, "model": CALLER_MODEL},
@@ -668,11 +678,16 @@ def test_a_callers_input_model_never_reaches_input_json(
 
 
 def test_a_callers_own_staged_inputs_never_reaches_input_json(
-    db, store, worker_factory, log_stream, runner_inputs
+    db, store, worker_factory, log_stream, runner_inputs, recheck_bypassed
 ):
     """`staged_inputs` becomes a line in the prompt, in the platform's voice,
     naming files earlier steps gave this one. Only what the worker staged may
-    fill it."""
+    fill it.
+
+    Past the worker's re-check (`recheck_bypassed`, conftest.py), which since
+    contract request 32 refuses a stored input carrying this key before the
+    runner step (test_stored_input_is_rechecked.py). This holds the layer
+    behind it on its own."""
     seed_attempt(
         db,
         task_input={

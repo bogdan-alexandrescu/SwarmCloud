@@ -101,8 +101,9 @@ def test_only_a_profile_that_declares_issue_asks_for_one():
     assert issue_mod.requested({"prompt": "x", "issue": 265}, RUNNER_PROFILES["claude-code"]) == 265
     assert issue_mod.requested({"prompt": "x", "issue": 265}, RUNNER_PROFILES["codex"]) == 265
     assert issue_mod.requested({"prompt": "x"}, RUNNER_PROFILES["claude-code"]) is None
-    # The mock declares no `issue`, and `generic` has not declared yet: to
-    # neither does the key mean anything, so the worker fetches nothing.
+    # Neither the mock nor `generic` declares `issue` (generic declares its
+    # catalogue command and limits, contract request 32): to neither does the
+    # key mean anything, so the worker fetches nothing.
     assert issue_mod.requested({"prompt": "x", "issue": 265}, RUNNER_PROFILES["mock"]) is None
     assert issue_mod.requested({"issue": 265}, RUNNER_PROFILES["generic"]) is None
 
