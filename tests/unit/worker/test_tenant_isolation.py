@@ -201,11 +201,12 @@ def test_the_worker_falls_back_to_its_own_latest_when_the_pointer_is_foreign(
     assert db.doc("tasks/task_1")["state"] == "SUCCEEDED"
 
 
-def test_an_archive_symlink_to_a_sibling_that_shares_a_string_prefix_is_refused(
+def test_an_archive_symlink_to_a_sibling_that_shares_a_string_prefix_is_skipped(
     store, tmp_path
 ):
     """The separator matters: without it `/w/att/work` would accept a link
-    resolving to `/w/att/work-secrets`."""
+    resolving to `/w/att/work-secrets`. Such a link is SKIPPED and named, not
+    a reason to refuse the whole archive (#286): it is never created."""
     import tarfile
 
     from agent_worker.checkpoint import _safe_members
@@ -221,9 +222,11 @@ def test_an_archive_symlink_to_a_sibling_that_shares_a_string_prefix_is_refused(
         info.linkname = "../work-secrets/key.txt"
         tar.addfile(info)
 
+    skipped: list[str] = []
     with tarfile.open(archive, "r:gz") as tar:
-        with pytest.raises(CheckpointError, match="link escaping"):
-            _safe_members(tar, destination)
+        members = _safe_members(tar, destination, on_skip=lambda name, link: skipped.append(name))
+    assert members == []
+    assert skipped == ["link"]
 
 
 # ---------------------------------------------------------------------------

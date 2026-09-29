@@ -8,7 +8,8 @@ import { useEffect, useMemo, useState, type Dispatch, type SetStateAction } from
 // is only a rebuild if the screens stop hand-rolling their own.
 import { Chip, Em, Mark, type ChipTone } from './AgentDetail'
 import { PHONE_PAGE_LIMIT, RECENT_STATES, RECENT_STATE_OF, type AgentList, type RecentState } from './agentlist'
-import { TASK_PAGE_LIMIT, loadTasks } from './api'
+import { TASK_PAGE_LIMIT, loadTasks, type ResourceClasses } from './api'
+import { classUnits, useResourceClasses } from './Blockers'
 import { DispatchChip } from './Dispatch'
 import type { Result } from './fetch'
 import { HelpCard, phoneWidth } from './HelpCard'
@@ -322,6 +323,14 @@ function AgentsBody({
   // beside it cannot disagree by a tick.
   const now = rowClock(useNow(1000), readAt, interval)
 
+  // THE CATALOGUE, READ ONCE FOR THE WHOLE LIST (#66), never per row: forty
+  // rows each mounting `useResourceClasses` would be forty reads of the same
+  // route. `whyAgent`/`whyNeedsAction` (types.ts) use a row's weight to tell
+  // a pool too small for its task apart from a genuinely full one -- #66's
+  // own repro (`resource:browser` at `hard_limit 1`, a browser task) read
+  // "busy platform-wide. (0/1)" here before this was threaded through.
+  const classes = useResourceClasses()
+
   const counts = useMemo(() => {
     const c: Record<Tab, number> = { live: 0, waiting: 0, recent: 0 }
     for (const t of page.tasks) c[tabOf(t)]++
@@ -506,12 +515,12 @@ function AgentsBody({
           </h3>
         </div>
       ) : grouped && shown !== 'live' ? (
-        <GroupedRows rows={rows} now={now} onOpen={onOpen} openTaskId={openTaskId} />
+        <GroupedRows rows={rows} now={now} onOpen={onOpen} openTaskId={openTaskId} classes={classes} />
       ) : (
         <div className="rows">
           <RowHead />
           {rows.map((t) => (
-            <TaskRow key={t.id} task={t} now={now} onOpen={onOpen} open={t.id === openTaskId} />
+            <TaskRow key={t.id} task={t} now={now} onOpen={onOpen} open={t.id === openTaskId} classes={classes} />
           ))}
         </div>
       )}
@@ -531,11 +540,13 @@ function GroupedRows({
   now,
   onOpen,
   openTaskId,
+  classes,
 }: {
   rows: Task[]
   now: number
   onOpen: (taskId: string) => void
   openTaskId: string | null
+  classes: ResourceClasses | null
 }) {
   const groups = useMemo(() => {
     const m = new Map<string, Task[]>()
@@ -586,7 +597,7 @@ function GroupedRows({
             <div className="rows">
               <RowHead />
               {tasks.map((t) => (
-                <TaskRow key={t.id} task={t} now={now} onOpen={onOpen} open={t.id === openTaskId} />
+                <TaskRow key={t.id} task={t} now={now} onOpen={onOpen} open={t.id === openTaskId} classes={classes} />
               ))}
             </div>
           </section>
@@ -654,14 +665,23 @@ function TaskRow({
   now,
   onOpen,
   open = false,
+  classes,
 }: {
   task: Task
   now: number
   onOpen: (taskId: string) => void
   /** This is the agent the inspector has open (AG-17). */
   open?: boolean
+  /** The resource-class catalogue, for #66's below-units verdict. Read once per list, not per row. */
+  classes: ResourceClasses | null
 }) {
-  const why = whyAgent(task)
+  // THE TASK'S WEIGHT, FROM THE CATALOGUE (#66) -- never `RESOURCE_UNITS`,
+  // which is what fed `whyAgent`/`whyNeedsAction` a `full` reading for a pool
+  // too small to ever admit this task. `classUnits` is null exactly when
+  // `units` below also is: the catalogue read is the same one and the display
+  // badge keeps its own bundled fallback.
+  const verdictUnits = classUnits(classes, task.resource_class)
+  const why = whyAgent(task, verdictUnits)
   const el = elapsed(task, now)
   const tries = attemptsUsed(task)
   const units = RESOURCE_UNITS[task.resource_class]
@@ -793,7 +813,7 @@ function TaskRow({
           are plain ink. A silent worker gets no line HERE: a row is a task
           document and the heartbeat is on the lease (#179); the inspector,
           which reads events, draws one. */}
-      {why && <span className={`why${whyNeedsAction(task) ? ' is-warn' : ''}`}>{why}</span>}
+      {why && <span className={`why${whyNeedsAction(task, verdictUnits) ? ' is-warn' : ''}`}>{why}</span>}
     </div>
   )
 }

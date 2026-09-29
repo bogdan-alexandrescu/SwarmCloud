@@ -78,13 +78,21 @@ async function limitCard(name: string): Promise<HTMLElement> {
   return title.closest('.ctl-card') as HTMLElement
 }
 
-/** The editor row for one pool, found by the raw name it prints. */
+/** The editor row for one pool, found by the id a link can name (#132). */
 function editorRow(name: string): HTMLElement {
-  const input = screen.getByLabelText(`Hard limit for ${name}`, { exact: false })
-  return input.closest('tr') as HTMLElement
+  const row = document.getElementById(`limit-${name}`)
+  expect(row, `no row with id limit-${name}`).not.toBeNull()
+  return row as HTMLElement
 }
 
+/**
+ * The ceiling field for one pool. Only the row being edited draws one (#132),
+ * so this opens that row's editor first when it is not already open.
+ */
 function input(name: string): HTMLInputElement {
+  const open = screen.queryByLabelText(`Hard limit for ${name}`, { exact: false })
+  if (open !== null) return open as HTMLInputElement
+  fireEvent.click(within(editorRow(name)).getByRole('button', { name: `Edit ceiling for ${name}` }))
   return screen.getByLabelText(`Hard limit for ${name}`, { exact: false }) as HTMLInputElement
 }
 
@@ -193,7 +201,7 @@ describe('Pool limits keeps one figure per card (AH-22)', () => {
 })
 
 describe('saving a ceiling re-reads without throwing the screen away (AH-7)', () => {
-  it('keeps an unsaved edit in another row, paints saved, and shows the re-read', async () => {
+  it('paints saved, keeps it after the editor closes, and shows the re-read', async () => {
     const after = capacity({
       pools: [
         pool('global', { hard_limit: 25, effective_limit: 25 }),
@@ -206,22 +214,49 @@ describe('saving a ceiling re-reads without throwing the screen away (AH-7)', ()
     render(<AdminSettingsScreen />)
     await limitCard('claude-code')
 
-    // An edit somebody has not saved yet.
-    fireEvent.change(input('tenant:eng'), { target: { value: '12' } })
-    // And a save in another row.
     fireEvent.change(input('global'), { target: { value: '25' } })
     fireEvent.click(within(editorRow('global')).getByRole('button', { name: 'save' }))
 
     await waitFor(() => {
       expect(api.loadCapacity).toHaveBeenCalledTimes(2)
       // The re-read is what the row now shows.
-      expect(editorRow('global').querySelector('td[data-label^="Ceiling"]')!.textContent).toBe('25')
+      expect(editorRow('global').querySelector('td[data-label^="Ceiling"] .adm-ceiling')!.textContent).toBe('25')
+      // The read-back carries the value, so the editor closes on it.
+      expect(screen.queryByLabelText('Hard limit for global', { exact: false })).toBeNull()
     }, WAIT)
-    // The verdict painted, and stayed.
+    // The verdict painted, and stayed, on the closed row.
     expect(within(editorRow('global')).getByText('saved')).toBeTruthy()
-    // The other row's edit survived the re-read.
-    expect(input('tenant:eng').value).toBe('12')
+    // Nothing was remounted: the other rows are the same elements.
     expect(api.setPoolLimit).toHaveBeenCalledWith('global', 25)
+  })
+
+  it('keeps an open editor, and what was typed in it, across a re-read', async () => {
+    const after = capacity({
+      pools: [
+        pool('global', { hard_limit: 25, effective_limit: 25 }),
+        pool('tenant:eng'),
+        pool('resource:standard', { hard_limit: 40, effective_limit: 40 }),
+      ],
+    })
+    let land: (r: Result<Capacity>) => void = () => {}
+    api.loadCapacity
+      .mockResolvedValueOnce(ok(capacity()))
+      .mockReturnValueOnce(new Promise<Result<Capacity>>((resolve) => (land = resolve)))
+    api.setPoolLimit.mockResolvedValue({ status: 'ok', data: {}, fetchedAt: Date.now() })
+    render(<AdminSettingsScreen />)
+    await limitCard('claude-code')
+
+    fireEvent.change(input('global'), { target: { value: '25' } })
+    fireEvent.click(within(editorRow('global')).getByRole('button', { name: 'save' }))
+    await waitFor(() => expect(api.loadCapacity).toHaveBeenCalledTimes(2), WAIT)
+    // While the read-back is in flight, somebody opens another row.
+    fireEvent.change(input('tenant:eng'), { target: { value: '12' } })
+    land(ok(after))
+    await waitFor(() => {
+      expect(editorRow('global').querySelector('td[data-label^="Ceiling"] .adm-ceiling')!.textContent).toBe('25')
+    }, WAIT)
+    expect(input('tenant:eng').value, 'the re-read threw the open edit away').toBe('12')
+    expect(within(editorRow('global')).getByText('saved')).toBeTruthy()
   })
 
   it('a failed re-read after a successful write leaves the screen and the verdict on it', async () => {
@@ -240,6 +275,7 @@ describe('saving a ceiling re-reads without throwing the screen away (AH-7)', ()
       expect(api.loadCapacity).toHaveBeenCalledTimes(2)
       expect(document.querySelector('table'), 'the write blanked the screen').not.toBeNull()
       expect(within(editorRow('global')).getByText('saved')).toBeTruthy()
+      expect(within(editorRow('global')).getByText('not re-read')).toBeTruthy()
     }, WAIT)
   })
 })
@@ -264,6 +300,209 @@ describe('an invalid ceiling is marked on its input (AH-8)', () => {
 
     fireEvent.change(field, { target: { value: '12' } })
     expect(field.getAttribute('aria-invalid')).not.toBe('true')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Pool limits: the owner's decisions on #132. Every block was written before
+// the change it demands.
+// ---------------------------------------------------------------------------
+
+/** One pool of every family, handed over in an order that is none of them. */
+function everyFamily(): Capacity {
+  return capacity({
+    pools: [
+      pool('provider:anthropic', { hard_limit: 30, effective_limit: 30 }),
+      pool('runner:claude-code'),
+      pool('tenant:eng'),
+      pool('backend:cloudrun'),
+      pool('resource:standard', { hard_limit: 40, effective_limit: 40 }),
+      pool('global'),
+      pool('tenant:research'),
+    ],
+  })
+}
+
+/** Stub `matchMedia`, which jsdom does not have, as a phone or a desktop. */
+function media(phone: boolean): void {
+  vi.stubGlobal('matchMedia', (query: string) => ({
+    matches: phone && query.includes('560'),
+    media: query,
+    onchange: null,
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    addListener: () => {},
+    removeListener: () => {},
+    dispatchEvent: () => false,
+  }))
+}
+
+function rowIds(): string[] {
+  return [...document.querySelectorAll('tbody tr[id^="limit-"]')].map((tr) => tr.id)
+}
+
+describe('Pool limits groups its ceilings the way Capacity > Pools does (#132)', () => {
+  it('draws one family per group, in POOL_FAMILY_ORDER, under the Pools eyebrows', async () => {
+    api.loadCapacity.mockResolvedValue(ok(everyFamily()))
+    render(<AdminSettingsScreen />)
+    await limitCard('claude-code')
+    const families = [...document.querySelectorAll('.adm-family')]
+    const titles = families.map((f) => f.querySelector('.ctl-card-title')?.textContent)
+    expect(titles).toEqual(['Global', 'Tenants', 'Resource classes', 'Runner profiles', 'Backends', 'Providers'])
+    // Each family holds its own pools and nothing else, sorted by name.
+    const tenants = families[1]!
+    expect([...tenants.querySelectorAll('tbody tr')].map((tr) => tr.id)).toEqual(['limit-tenant:eng', 'limit-tenant:research'])
+    // MUTATION: sort every row by name again, as one table.
+    expect(rowIds()[0]).toBe('limit-global')
+    expect(rowIds().at(-1)).toBe('limit-provider:anthropic')
+  })
+
+  it('gives every row an id a link can name', async () => {
+    api.loadCapacity.mockResolvedValue(ok(everyFamily()))
+    render(<AdminSettingsScreen />)
+    await limitCard('claude-code')
+    expect(rowIds().sort()).toEqual(everyFamily().pools.map((p) => `limit-${p.name}`).sort())
+  })
+
+  it('lands on the row a link names, and marks it', async () => {
+    window.location.hash = '#admin/limits?pool=tenant%3Aresearch'
+    try {
+      api.loadCapacity.mockResolvedValue(ok(everyFamily()))
+      render(<AdminSettingsScreen />)
+      await limitCard('claude-code')
+      await waitFor(() => expect(editorRow('tenant:research').classList.contains('is-target')).toBe(true), WAIT)
+      expect(document.querySelectorAll('tr.is-target').length).toBe(1)
+    } finally {
+      window.location.hash = ''
+    }
+  })
+})
+
+describe('Pool limits shows a ceiling as a value with one editor open at a time (#132)', () => {
+  it('draws no input, save or cancel until a row is edited, and then only in that row', async () => {
+    api.loadCapacity.mockResolvedValue(ok(capacity()))
+    render(<AdminSettingsScreen />)
+    await limitCard('claude-code')
+    // At rest: every row is its value and an edit control.
+    expect(document.querySelectorAll('tbody input').length, 'a row draws a field nobody opened').toBe(0)
+    expect(screen.queryAllByRole('button', { name: 'save' })).toHaveLength(0)
+    expect(screen.queryAllByRole('button', { name: 'cancel' })).toHaveLength(0)
+    for (const tr of document.querySelectorAll('tbody tr')) {
+      expect(within(tr as HTMLElement).getByRole('button', { name: /^Edit ceiling for / }).textContent).toBe('edit')
+      expect(tr.querySelector('td[data-label^="Ceiling"] .adm-ceiling')!.textContent).toMatch(/^\d+$/)
+    }
+
+    input('global')
+    expect(document.querySelectorAll('tbody input').length).toBe(1)
+    expect(within(editorRow('global')).getByRole('button', { name: 'save' })).toBeTruthy()
+    expect(within(editorRow('global')).getByRole('button', { name: 'cancel' })).toBeTruthy()
+
+    // Opening another row closes the first.
+    input('tenant:eng')
+    expect(document.querySelectorAll('tbody input').length).toBe(1)
+    expect(within(editorRow('global')).queryByRole('button', { name: 'save' })).toBeNull()
+
+    // Cancel closes it and writes nothing.
+    fireEvent.change(input('tenant:eng'), { target: { value: '3' } })
+    fireEvent.click(within(editorRow('tenant:eng')).getByRole('button', { name: 'cancel' }))
+    expect(document.querySelectorAll('tbody input').length).toBe(0)
+    expect(api.setPoolLimit).not.toHaveBeenCalled()
+    // And a re-open starts from the pool's own value, not the abandoned one.
+    expect(input('tenant:eng').value).toBe('10')
+  })
+
+  it('keeps other rows’ edit disabled while the open row holds an unsaved value', async () => {
+    api.loadCapacity.mockResolvedValue(ok(capacity()))
+    render(<AdminSettingsScreen />)
+    await limitCard('claude-code')
+    fireEvent.change(input('global'), { target: { value: '7' } })
+    const other = within(editorRow('tenant:eng')).getByRole('button', { name: /^Edit ceiling for tenant:eng/ })
+    expect((other as HTMLButtonElement).disabled, 'a click elsewhere would drop the typed 7').toBe(true)
+    expect(other.getAttribute('aria-label')).toMatch(/unsaved value/)
+    // Typed back to the pool's own value, nothing is held: the others open again.
+    fireEvent.change(input('global'), { target: { value: '10' } })
+    expect((within(editorRow('tenant:eng')).getByRole('button', { name: 'Edit ceiling for tenant:eng' }) as HTMLButtonElement).disabled).toBe(false)
+  })
+
+  it('says lowering evicts nothing beside the open editor, not in the caption', async () => {
+    api.loadCapacity.mockResolvedValue(ok(capacity()))
+    render(<AdminSettingsScreen />)
+    await limitCard('claude-code')
+    // What a reader sees: the `?` card's copy is in the DOM whether it is
+    // open or shut, and is not on the glass.
+    const seen = () => {
+      const copy = document.body.cloneNode(true) as HTMLElement
+      for (const hidden of copy.querySelectorAll('[data-help-description], button[aria-label^="Help: "]')) hidden.remove()
+      return copy.textContent ?? ''
+    }
+    for (const caption of document.querySelectorAll('caption')) {
+      expect(caption.textContent ?? '').not.toMatch(/evicts nothing/)
+    }
+    expect(seen()).not.toMatch(/evicts nothing/)
+    input('tenant:eng')
+    const said = within(editorRow('tenant:eng')).getByText('lowering a ceiling evicts nothing')
+    expect(said.closest('td')?.getAttribute('data-label')).toBe('Change')
+    expect(seen().match(/evicts nothing/g)).toHaveLength(1)
+  })
+
+  it('names who set a ceiling only when it is not the configured value', async () => {
+    api.loadCapacity.mockResolvedValue(
+      ok(
+        capacity({
+          pools: [
+            pool('global'),
+            pool('tenant:eng'),
+            pool('provider:anthropic', { hard_limit: 30, quota_derived_limit: 6, effective_limit: 6 }),
+          ],
+        }),
+      ),
+    )
+    render(<AdminSettingsScreen />)
+    await limitCard('claude-code')
+    expect(document.body.textContent ?? '').not.toMatch(/configured/)
+    const quotaRow = editorRow('provider:anthropic')
+    expect(quotaRow.querySelector('td[data-label="Set by"]')?.textContent).toBe('provider quota')
+    // A family where everything is as configured draws no Set by column at all.
+    const global = document.querySelector('.adm-family')!
+    expect([...global.querySelectorAll('thead th')].map((th) => th.textContent)).not.toContain('Set by')
+  })
+
+  it('labels each profile card’s figure as a ceiling', async () => {
+    api.loadCapacity.mockResolvedValue(ok(capacity()))
+    render(<AdminSettingsScreen />)
+    const card = await limitCard('claude-code')
+    const figure = card.querySelector('.ctl-figure')!
+    // Read part by part: the gaps between the parts are margins, not text.
+    const parts = [...figure.childNodes].map((n) => (n.textContent ?? '').trim()).filter(Boolean)
+    expect(parts.join(' ')).toBe('max 10 agents')
+    // Still the card's one figure (AH-22): the word is a unit, not a second number.
+    expect(figure.querySelector('.adm-figure-max')!.classList.contains('ctl-figure-unit')).toBe(true)
+  })
+})
+
+describe('Pool limits filters its rows by name at phone width (#132)', () => {
+  it('draws no filter on a desktop', async () => {
+    media(false)
+    api.loadCapacity.mockResolvedValue(ok(everyFamily()))
+    render(<AdminSettingsScreen />)
+    await limitCard('claude-code')
+    expect(screen.queryByRole('searchbox', { name: /filter pools/i })).toBeNull()
+  })
+
+  it('filters the rows, and the families, by pool name at 560px and under', async () => {
+    media(true)
+    api.loadCapacity.mockResolvedValue(ok(everyFamily()))
+    render(<AdminSettingsScreen />)
+    await limitCard('claude-code')
+    const box = screen.getByRole('searchbox', { name: /filter pools/i })
+    fireEvent.change(box, { target: { value: 'ENG' } })
+    expect(rowIds()).toEqual(['limit-tenant:eng'])
+    expect([...document.querySelectorAll('.adm-family .ctl-card-title')].map((t) => t.textContent)).toEqual(['Tenants'])
+    fireEvent.change(box, { target: { value: 'nothing-is-called-this' } })
+    expect(rowIds()).toEqual([])
+    expect(screen.getByText('no pool matches')).toBeTruthy()
+    fireEvent.change(box, { target: { value: '' } })
+    expect(rowIds()).toHaveLength(everyFamily().pools.length)
   })
 })
 
