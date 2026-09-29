@@ -34,7 +34,15 @@ from swarm_common.states import (
     can_transition,
 )
 
-from .model import AttemptView, ControlSnapshot, LeaseView, TaskView
+from .model import (
+    STARTUP_REFUNDS_KEY,
+    AttemptView,
+    ControlSnapshot,
+    LeaseView,
+    TaskView,
+    count_startup_end,
+    startup_refunds_used,
+)
 from .model import as_datetime as _as_datetime
 
 
@@ -60,6 +68,16 @@ def _field_filter(field: str, op: str, value: Any) -> Any:
     return FieldFilter(field, op, value)
 
 
+#: What a malformed TASK document raises out of `TaskView.from_doc` -- a bad
+#: type, a value `int()`/`TaskState()` refuses, or (before #290's fix to
+#: `_startup_refunds_int`) an `OverflowError` from `int(float("inf"))`.
+#: Mirrors `quota_broker.accountstore._MALFORMED`: these four-plus-one are
+#: what a bad DOCUMENT produces, not a bare `except Exception`, which would
+#: also swallow a Firestore outage or a decoder bug and turn "the store is
+#: down" into "every task is malformed".
+_MALFORMED_TASK_DOC = (KeyError, ValueError, TypeError, AttributeError, OverflowError)
+
+
 class ControlStore:
     def __init__(
         self,
@@ -83,7 +101,22 @@ class ControlStore:
             filter=self._filter("state", "in", active_states)
         )
         for doc in tasks_query.stream():
-            snapshot.tasks[doc.id] = TaskView.from_doc(doc.to_dict() or {}, doc.id)
+            try:
+                snapshot.tasks[doc.id] = TaskView.from_doc(doc.to_dict() or {}, doc.id)
+            except _MALFORMED_TASK_DOC as exc:
+                # One malformed task must not abort the pass for every other
+                # task of every other tenant (security review, PR #290) --
+                # the same reasoning as `quota_broker.accountstore.list`
+                # skipping a malformed account (#180). Recorded in
+                # `unreadable_tasks` too: an execution that names this task id
+                # must not be read as an orphan just because the document
+                # could not be decoded this pass (see `detect.py`).
+                self._log.warning(
+                    "a task document is malformed and cannot be read; skipping it",
+                    task_id=doc.id,
+                    error=type(exc).__name__,
+                )
+                snapshot.unreadable_tasks.add(doc.id)
 
         leases_query = self._db.collection("leases").where(
             filter=self._filter("released_at", "==", None)
@@ -400,6 +433,8 @@ class ControlStore:
         next_eligible_at: datetime | None = None,
         only_from: tuple[TaskState, ...] | None = None,
         failed_cause: EndCause = EndCause.LOST_WORKER,
+        startup_refund_limit: int | None = None,
+        fenced_generation: int | None = None,
     ) -> TaskState | None:
         """Move a task out of a concurrency state it can no longer justify.
 
@@ -433,6 +468,17 @@ class ControlStore:
         states, as `invalidate_generation` does. A worker that parked its task
         between the snapshot and now has decided how it resumes, and READY
         would overrule it (#198).
+
+        `startup_refund_limit`, when given, is the ended-at-startup rule's
+        requeue (#67): an attempt that ended before its runner started is
+        counted by `count_startup_end`, IN THIS TRANSACTION and BEFORE the
+        spent-attempts check, so a refunded attempt requeues rather than
+        fails. The refund is written only when the task is still at
+        `fenced_generation`, the generation this pass's own fence wrote: a
+        task fenced again since (or never fenced by this pass) belongs to
+        somebody else's decision, and its attempt is counted as before
+        (invariant 5). `error` then gets the counting's tail appended, so
+        `last_error` says what this transaction decided, not the snapshot.
         """
         task_ref = self._db.collection("tasks").document(task_id)
 
@@ -476,7 +522,31 @@ class ControlStore:
                 # hours on 2026-09-24. FAILED, from a worker that could not
                 # start, would record a task somebody stopped as having failed.
                 target = TaskState.CANCELLED
-            if target is TaskState.READY:
+            counting: dict[str, Any] = {}
+            message = error
+            if target is TaskState.READY and startup_refund_limit is not None:
+                # The ended-at-startup requeue: refund first, then decide
+                # whether the attempts are spent, from the same re-read (#67).
+                metadata = data.get("metadata")
+                fenced_here = fenced_generation is not None and int(
+                    data.get("current_generation", 0)
+                ) == int(fenced_generation)
+                counted = count_startup_end(
+                    int(data.get("attempt_count", 0)),
+                    int(data.get("max_attempts", 3)),
+                    startup_refunds_used(metadata),
+                    max(0, int(startup_refund_limit)) if fenced_here else 0,
+                )
+                if counted.refunded:
+                    counting["attempt_count"] = counted.attempt_count
+                    counting["metadata"] = {
+                        **(metadata if isinstance(metadata, dict) else {}),
+                        STARTUP_REFUNDS_KEY: counted.refunds_used,
+                    }
+                if counted.exhausted:
+                    target = TaskState.FAILED
+                message = f"{error}; {counted.tail}" if error else counted.tail
+            elif target is TaskState.READY:
                 # ONLY a READY target is ever downgraded. A CANCELLED target is
                 # the user's decision and survives exhausted attempts: recording
                 # a task someone stopped as FAILED would misreport why it ended,
@@ -506,9 +576,10 @@ class ControlStore:
                 "state": target.value,
                 "updated_at": utcnow(),
                 "current_lease_id": None,
+                **counting,
             }
-            if error:
-                payload["last_error"] = error[:2000]
+            if message:
+                payload["last_error"] = message[:2000]
             if next_eligible_at is not None and target is not TaskState.CANCELLED:
                 # A retry time means nothing on a task that will never run again.
                 payload["next_eligible_at"] = next_eligible_at

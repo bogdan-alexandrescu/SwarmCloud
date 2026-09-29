@@ -414,6 +414,22 @@ INPUT_FROM_METADATA_KEY = "input_from"
 #: the worker's `agent_worker.expected_outputs.METADATA_KEY`.
 EXPECTED_OUTPUTS_METADATA_KEY = "expected_outputs"
 
+#: The key inside `task.metadata` recording attempts the reconciler took back
+#: because they ended before their runner started (#67). Written only by the
+#: reconciler, after it repairs a task (`reconciler.model.STARTUP_REFUNDS_KEY`,
+#: `reconciler.store.ControlStore.repair_task_state`), never by this service. Before
+#: this reservation, a caller could set it directly: `TaskView.from_doc` read
+#: it with no bound, and `int(float("inf"))` raised `OverflowError` out of the
+#: unguarded per-task loop in `ControlStore.snapshot`, crashing a reconciler
+#: pass for every task of every tenant (security review, PR #290 -- the read
+#: path itself was also made total, see `reconciler.model._startup_refunds_int`,
+#: so a document written before this reservation existed cannot do it either).
+#: Defined here rather than imported from `reconciler.model`, which `swarm-api`
+#: does not depend on; tests/unit/control_plane/test_startup_refunds_reserved.py
+#: holds the two strings equal, the same seam `test_input_from_is_reserved.py`
+#: holds for `INPUT_FROM_METADATA_KEY`.
+STARTUP_REFUNDS_METADATA_KEY = "startup_refunds"
+
 #: Every key inside `task.metadata` this service writes and a caller may not,
 #: in the order a refusal names them. One tuple, checked by one function, so a
 #: caller who sent several is told about all of them in one 422 rather than one
@@ -423,6 +439,7 @@ RESERVED_METADATA_KEYS = (
     DISPATCH_METADATA_KEY,
     INPUT_FROM_METADATA_KEY,
     EXPECTED_OUTPUTS_METADATA_KEY,
+    STARTUP_REFUNDS_METADATA_KEY,
 )
 
 #: Strategies and carriers that cannot work without somewhere to push to.
@@ -633,6 +650,12 @@ _RESERVED_BECAUSE = {
         "dependants' `input_from` stage from it. To have an agent told which "
         "files a later step needs, submit a workflow (POST /v1/workflows) and "
         "declare `input_from` on the step that needs them."
+    ),
+    STARTUP_REFUNDS_METADATA_KEY: (
+        f"metadata.{STARTUP_REFUNDS_METADATA_KEY} is reserved: it is set only by "
+        "the reconciler, to count attempts refunded because they ended before "
+        "their runner started (#67). There is no caller-facing equivalent to "
+        "set; drop the key from metadata."
     ),
 }
 

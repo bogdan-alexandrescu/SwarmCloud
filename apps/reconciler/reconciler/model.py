@@ -15,7 +15,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any
 
-from swarm_common.models import utcnow
+from swarm_common.models import retries_exhausted, utcnow
 from swarm_common.states import CONCURRENCY_STATES, TERMINAL_STATES, TaskState
 
 
@@ -49,6 +49,111 @@ def _int_or_none(value: Any) -> int | None:
         return None
 
 
+#: Where a task records the attempts the reconciler took back because they
+#: ended before their runner started (#67). `Task.metadata` is free-form, so
+#: the frozen `Task` needs no field for it.
+STARTUP_REFUNDS_KEY = "startup_refunds"
+
+#: Firestore stores an integer as a signed 64-bit value; anything past this
+#: cannot round-trip and is not a real refund count. Read alongside
+#: `_startup_refunds_int`'s type check -- this bound is what turns away
+#: `10 ** 30` once the type check alone would let it through.
+_FIRESTORE_INT64_MAX = 2**63 - 1
+
+
+def _startup_refunds_int(value: Any) -> int | None:
+    """`metadata.startup_refunds`, read totally: a real refund count or None.
+
+    This field used to go through the general-purpose `_int_or_none`, which
+    only catches `TypeError`/`ValueError` -- so `int(float("inf"))` raised
+    `OverflowError` straight out of `TaskView.from_doc`, which `snapshot()`
+    calls for every task in an unguarded loop (`store.py`). One task with
+    `metadata.startup_refunds = Infinity` crashed the reconciler pass for
+    every tenant (security review, PR #290).
+
+    Reserved at the API (`swarm_api.validation.RESERVED_METADATA_KEYS`) so a
+    caller cannot submit this key going forward, but a document written
+    before that reservation -- or reached some other way -- can still carry
+    anything JSON allows: `Infinity`, `NaN`, a numeric string, `True` (a
+    `bool` IS an `int` in Python, and is deliberately excluded here), a
+    `float` even when it holds a whole number, or an integer too large for
+    Firestore's int64 column. None of that should raise, and none of it is a
+    real refund count, so all of it reads as "not a valid count" (the caller
+    then treats that as 0 -- see `startup_refunds_used`).
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        # `bool` is excluded first because `isinstance(True, int)` is `True`.
+        # `float` is excluded even when finite and whole (`3.0`): the field
+        # is a count, and only a document written by this reconciler's own
+        # write path (an `int` literal, see `store.py`) should ever count.
+        return None
+    if not (0 <= value <= _FIRESTORE_INT64_MAX):
+        return None
+    return value
+
+
+def startup_refunds_used(metadata: Any) -> int:
+    """How many startup refunds a task's `metadata` records. Absent or unreadable is 0."""
+    if not isinstance(metadata, dict):
+        return 0
+    used = _startup_refunds_int(metadata.get(STARTUP_REFUNDS_KEY))
+    return used if used is not None else 0
+
+
+@dataclass(frozen=True)
+class StartupEnd:
+    """What an attempt that ended before its runner started does to its task's count.
+
+    `attempt_count` and `refunds_used` are the values the task should hold
+    afterwards; `tail` ends its `last_error`.
+    """
+
+    attempt_count: int
+    refunds_used: int
+    refunded: bool
+    exhausted: bool
+    tail: str
+
+
+def count_startup_end(
+    attempt_count: int, max_attempts: int, refunds_used: int, limit: int
+) -> StartupEnd:
+    """Refund the attempt while fewer than `limit` refunds are used; else count it (#67).
+
+    THE REFUND COMES FIRST, then `retries_exhausted`: the attempt that took a
+    task to its `max_attempts` never ran, so it is requeued rather than
+    failed. THE BOUND is what still ends a task killed at every start: once
+    `limit` refunds are used, an early end counts exactly as it did before.
+
+    Pure, so the snapshot's prediction (`detect_ended_at_startup`) and the
+    transaction's decision (`ControlStore.repair_task_state`) are one rule.
+    A refund that would still leave the task exhausted (a count already past
+    its cap) is not spent: the task fails either way.
+    """
+    if refunds_used < limit:
+        refunded_count = max(0, attempt_count - 1)
+        if not retries_exhausted(refunded_count, max_attempts):
+            used = refunds_used + 1
+            return StartupEnd(
+                attempt_count=refunded_count,
+                refunds_used=used,
+                refunded=True,
+                exhausted=False,
+                tail=f"not counted ({used}/{limit}); retrying",
+            )
+    spent = retries_exhausted(attempt_count, max_attempts)
+    tail = "no attempts left" if spent else "retrying"
+    if limit > 0 and refunds_used >= limit:
+        tail += f" (counted: {refunds_used}/{limit} early ends already refunded)"
+    return StartupEnd(
+        attempt_count=attempt_count,
+        refunds_used=refunds_used,
+        refunded=False,
+        exhausted=spent,
+        tail=tail,
+    )
+
+
 @dataclass(frozen=True)
 class TaskView:
     task_id: str
@@ -72,6 +177,9 @@ class TaskView:
     #: its grace from here: a Job still active a moment after the worker wrote
     #: SUCCEEDED is a worker finishing its own cleanup, not one left open.
     completed_at: datetime | None = None
+    #: `metadata.startup_refunds`: attempts already taken back because they
+    #: ended before their runner started (#67, `count_startup_end`).
+    startup_refunds: int = 0
 
     @property
     def holds_capacity(self) -> bool:
@@ -98,6 +206,7 @@ class TaskView:
             started_at=as_datetime(doc.get("started_at")),
             latest_checkpoint=doc.get("latest_checkpoint"),
             completed_at=as_datetime(doc.get("completed_at")),
+            startup_refunds=startup_refunds_used(doc.get("metadata")),
         )
 
 
