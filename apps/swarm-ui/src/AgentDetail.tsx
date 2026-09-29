@@ -2962,7 +2962,7 @@ function GitOutcome({
 function HandedOn({
   task,
   workflowId,
-  stepId,
+  stepId: _stepId,
   files,
   readAt,
 }: {
