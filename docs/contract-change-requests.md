@@ -39,7 +39,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 24 | `profiles.py`: whether a profile's cost is declared rather than measured is named outside the catalogue | ACCEPTED 2026-09-25 (#185, decision 9), applied in PR #217 |
 | 25 | `profiles.py`: a runner profile cannot declare the inputs a caller may send it, so the bridge names the mock's by profile | ACCEPTED 2026-09-25 (owner, on #142), applied in PR #213; both amendments confirmed by the owner 2026-09-26: `inputs=None` for `browser` and `generic` (#218), and the bounded park counted by the task's `attempt_count` rather than the state file |
 | 26 | `models.py`: the attempt's CPU figures carry no time and their limit no source | ACCEPTED 2026-09-26 (owner, on #184), applied in PR #229 |
-| 29 | `models.py`: `WorkflowStep` cannot record a step's verdict gate or its `builds_on` | open |
+| 31 | `models.py`: `WorkflowStep` cannot record a step's verdict gate or its `builds_on` | open |
 
 ---
 
@@ -2870,10 +2870,10 @@ accepting `issue` for these two profiles and still refuses everything else.
 
 ---
 
-## 29. `models.py`: `WorkflowStep` cannot record a step's verdict gate or its `builds_on`
+## 31. `models.py`: `WorkflowStep` cannot record a step's verdict gate or its `builds_on`
 
 **Status:** open, recorded 2026-09-29 from #264. If another branch has taken
-29 by the time this merges, renumber this one.
+31 by the time this merges, renumber this one.
 
 ### What is true today
 
