@@ -113,6 +113,7 @@ import json
 import os
 import shutil
 import sys
+import threading
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -127,7 +128,6 @@ from swarm_common.states import EventType, ParkReason, TaskState
 from . import artifact_manifest as manifest_mod
 from . import expected_outputs as expected_mod
 from . import inputs as inputs_mod
-from . import issue as issue_mod
 from . import redact as redact_mod
 from . import standalone_outputs as standalone_mod
 from . import workspace as workspace_mod
@@ -882,24 +882,6 @@ class Worker:
             # The pool is this tenant's way of running and it is momentarily
             # empty. A wait, not a failure -- see `_park_no_account`.
             return functools.partial(self._park_no_account, exc)
-
-        # ---- STEP 6b: the issue this step was pointed at (#265) -----------
-        # After the credentials, so every secret this attempt holds is
-        # registered before the issue's text is scrubbed. A fetch that fails
-        # fails the attempt here, before the agent starts (`agent_worker.issue`).
-        issue_number = issue_mod.requested(task.get("input"), cfg.profile)
-        if issue_number is not None:
-            self.phases.enter("fetch_issue")
-            issue_mod.stage_issue(
-                number=issue_number,
-                repository_url=self._repo_url,
-                token=self._git_token(),
-                refusal=self._git_token_refusal(),
-                work_dir=ws.work,
-                scrub=self._scrub,
-                logger=self.log,
-                on_request=self._heartbeat,
-            )
 
         # Re-check fencing immediately before the agent starts. Cloning a large
         # repository can take minutes, and the whole point of step 1 is that
@@ -1822,9 +1804,7 @@ class Worker:
             # `work/`. `repo` and `.swarm` are the worker's OWN directories
             # inside `work/`, not the workspace's, so they are named here.
             reserved=frozenset({REPO_DIR_NAME, WORKER_STATE_DIR})
-            | ws.control_file_names()
-            # `issue.md`, when the task asks for an issue (#265).
-            | issue_mod.reserved_names(task.get("input"), self.cfg.profile),
+            | ws.control_file_names(),
         )
         self._staged_inputs = staged
         self.log.info(
@@ -3218,7 +3198,8 @@ class Worker:
             )
         try:
             self.control.emit(EventType.CHECKPOINT_STARTED, {"label": label})
-            record = self.checkpoints.create(self.ws, label=label)
+            with self._heartbeat_meanwhile(f"checkpoint ({label})"):
+                record = self.checkpoints.create(self.ws, label=label)
         except CheckpointError as exc:
             self.log.error("CHECKPOINT FAILED", label=label, error=str(exc))
             return None
@@ -3233,6 +3214,103 @@ class Worker:
             seq=record.seq,
         )
         return record
+
+    @contextmanager
+    def _heartbeat_meanwhile(self, what: str) -> Iterator[None]:
+        """Heartbeat the lease from a thread for as long as the block runs.
+
+        THE CHECKPOINT RAN ON THE LOOP THAT HEARTBEATS THE LEASE (#286), so the
+        lease aged for as long as the archive and the upload took: a large
+        work tree -- tool caches, before `checkpoint.TOOL_CACHES` -- held it
+        for however long gzip and GCS needed, and on 2026-09-29 the attempt was
+        fenced 64 s after `checkpoint_started`. The block's own work touches
+        only the workspace and the object store, so the heartbeat has the
+        control plane to itself meanwhile.
+
+        Beats every `heartbeat_interval_seconds`, the loop's own cadence, and
+        through `_heartbeat`, the loop's own call. A heartbeat that raises is
+        logged and ends this thread only: the loop's next heartbeat meets the
+        same condition and handles it as it always has.
+
+        BOUNDED, AND IT ASKS BEFORE EVERY BEAT (the PR #288 review). A thread
+        that beats for as long as the block runs keeps the lease -- and the
+        capacity reserved behind it -- alive for a checkpoint that never ends,
+        a wedged upload, which the supervision loop is not running to notice.
+        So it beats for at most `heartbeat_meanwhile_max_seconds` (three lease
+        timeouts; `config.WorkerConfig` says why), and before each beat it
+        reads the control plane: once the attempt is FENCED -- another
+        generation owns the task, or its lease is released or it is terminal
+        (`ControlSignals.is_fenced`) -- it stops at once, rather than
+        prolonging a lease that is no longer this attempt's. The loop sees the
+        same signal on its next poll and acts on it as it always has.
+
+        A CANCEL DOES NOT STOP IT (owner decision 2026-09-29, PR #288). A
+        cancelled attempt still writes a checkpoint on its way out
+        (`self._checkpoint("cancellation")`), and that checkpoint needs the lease alive as
+        much as any other; stopping the beat on `cancel_requested` would let
+        the lease lapse under the very checkpoint the cancel asked for. The
+        bound still applies to it.
+
+        Joined before the block's caller goes on, with a timeout: a beat stuck
+        in a Firestore call does not hold the checkpoint's caller up with it.
+        What such a beat can still write is `heartbeat_at` and `expires_at` on
+        the lease (`ControlPlane.heartbeat` is an unfenced update of those two
+        fields). It cannot clear `released_at`, and a lease with `released_at`
+        set reads as released (`ControlSignals.is_fenced`) whatever its expiry.
+        """
+        stop = threading.Event()
+        interval = self.cfg.heartbeat_interval_seconds
+        bound = self.cfg.heartbeat_meanwhile_max_seconds
+        deadline = time.monotonic() + bound
+
+        def beat() -> None:
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    self.log.warning(
+                        "stopped heartbeating the lease during a long operation: it "
+                        "outlasted its bound, and the lease is left to expire",
+                        during=what,
+                        bound_seconds=bound,
+                    )
+                    return
+                if stop.wait(min(interval, remaining)):
+                    return
+                if time.monotonic() >= deadline:
+                    continue  # the top of the loop logs the bound and ends
+                try:
+                    signals = self.control.poll()
+                    if signals.is_fenced(self.cfg.generation):
+                        self.log.warning(
+                            "stopped heartbeating the lease during a long operation: "
+                            "the attempt is fenced",
+                            during=what,
+                            task_generation=signals.generation,
+                            lease_released=signals.lease_released,
+                            state=signals.state,
+                        )
+                        return
+                    self._heartbeat()
+                except Exception as exc:
+                    self.log.warning(
+                        "a heartbeat during a long operation failed; the loop will retry it",
+                        during=what,
+                        error=f"{type(exc).__name__}: {exc}",
+                    )
+                    return
+
+        thread = threading.Thread(target=beat, name="heartbeat-meanwhile", daemon=True)
+        thread.start()
+        try:
+            yield
+        finally:
+            stop.set()
+            thread.join(timeout=interval)
+            if thread.is_alive():
+                self.log.warning(
+                    "a heartbeat during a long operation is still in flight; going on without it",
+                    during=what,
+                )
 
     def _sleep_with_heartbeat(self, seconds: float) -> None:
         """Short waits only -- long ones park. Keeps the lease alive meanwhile."""
@@ -4174,6 +4252,29 @@ class Worker:
             cap=self.cfg.max_artifact_files,
             declared=self._expected_outputs,
         )
+        if plan.declared_past_bound:
+            # MORE DECLARED NAMES THAN THE MANIFEST'S BUDGET ALLOWS (#227): the
+            # ones past `MAX_DECLARED_NAMES` lost their exemption from the name
+            # bound in `plan`, which logs nothing itself. Named here, through
+            # this logger, because the names come from task metadata: SCRUBBED
+            # FIRST, then cut, the order the #232 review set for every name.
+            # `LOG_BATCH` to a line, so metadata holding thousands cannot pass
+            # Cloud Logging's entry limit.
+            past = [
+                standalone_mod.shown(self._scrub(name)) for name in plan.declared_past_bound
+            ]
+            batch = standalone_mod.LOG_BATCH
+            batches = (len(past) + batch - 1) // batch
+            for index in range(batches):
+                self.log.warning(
+                    "declared outputs past the manifest's bound are held to its "
+                    "name length like any other file",
+                    count=len(past),
+                    batch=f"{index + 1} of {batches}",
+                    declared_exempt=manifest_mod.MAX_DECLARED_NAMES,
+                    cap_name_bytes=manifest_mod.MAX_NAME_BYTES,
+                    names=past[index * batch : (index + 1) * batch],
+                )
         skipped: list[str] = []
         for name in plan.unstorable:
             # A name whose bytes are not UTF-8 (#225 review): no object can be

@@ -12,6 +12,7 @@ allowed-tools:
   - mcp__swarmcloud__swarm_status
   - mcp__swarmcloud__swarm_wait
   - mcp__swarmcloud__swarm_result
+  - mcp__swarmcloud__swarm_artifact
   - mcp__swarmcloud__swarm_apply
   - mcp__swarmcloud__swarm_integrate
   - mcp__swarmcloud__swarm_cancel
@@ -30,6 +31,7 @@ allowed-tools:
   - mcp__plugin_sc_swarmcloud__swarm_status
   - mcp__plugin_sc_swarmcloud__swarm_wait
   - mcp__plugin_sc_swarmcloud__swarm_result
+  - mcp__plugin_sc_swarmcloud__swarm_artifact
   - mcp__plugin_sc_swarmcloud__swarm_apply
   - mcp__plugin_sc_swarmcloud__swarm_integrate
   - mcp__plugin_sc_swarmcloud__swarm_cancel
@@ -167,6 +169,7 @@ succeeded.
 | is it done yet? | `swarm_status` |
 | block until it is done, then tell me what it made | `swarm_wait` |
 | what did it produce — and if nothing, why | `swarm_result` |
+| read one file it produced | `swarm_artifact` |
 | put one agent's changes in my tree | `swarm_apply` |
 | put several agents' work on one branch | `swarm_integrate` |
 | stop it | `swarm_cancel` |
@@ -174,6 +177,17 @@ succeeded.
 | is there room for this batch | `swarm_capacity` |
 | what is the shared pool at | `swarm_accounts` |
 | why did four of them die at once | `swarm_trouble` |
+
+`swarm_result` carries `outputs`: each artifact the task wrote by `name` and
+`bytes`, the runner's `runner_summary`, `exit_code`, `duration_s` and the
+`staged_inputs` copied in from upstream steps. Say what a step produced when
+you report it — a step that cloned no repository can still have written the
+file that was asked for, and "no code to apply" is not "it produced nothing".
+`artifacts_complete: false` means the task has not finished (artifacts are
+uploaded when the attempt ends), never that there are none. Read a file with
+`swarm_artifact`, by the name `swarm_result` lists: the API redacts it at read
+time, and one call is one window — when `truncated` is true, call again with
+`offset` set to `next_offset`.
 
 `swarm_dispatch` takes `prompt`, `profile`, `repo`, `ref`, `infer`,
 `strategy`, `label` and `inputs`. The profile is a **name** from the frozen
@@ -190,21 +204,16 @@ for a single task.
 
 `inputs` — on `swarm_dispatch` and on each `swarm_workflow` step — carries only
 what the named profile **declares**, which `swarm_profiles` lists under
-`inputs`. For `mock` that is its test knobs: `{"sleep_seconds": 120}` keeps a
+`inputs`. Today that is `mock`'s test knobs: `{"sleep_seconds": 120}` keeps a
 mock step RUNNING long enough to cancel, `{"fail": true}` fails it on purpose,
 and `{"quota_exhausted": true, "retry_after_seconds": 60}` parks it ONCE on a
 simulated rate limit; the attempt after the park runs to the end. Report that
 step as parked while it waits, not as failed. `exit_code` takes a failure's
 code, but not one the worker reads as a rate limit, a refused credential or a
 cancellation; `swarm_profiles` names those, with every key's bounds, so do
-not quote a bound from memory. `claude-code` and `codex` declare one input,
-`issue`: the number of a GitHub issue in the repository the step clones. The
-worker fetches that issue's title, body and comments read-only into `issue.md`
-in the workspace and names it in the prompt, so point a step at the issue
-rather than restating it in the prompt. It needs a repository (`repo` or
-`infer`); without one the API refuses it. For a profile that declares, a key
-it does not declare is refused before anything is dispatched, by the bridge
-and by the API alike.
+not quote a bound from memory. `claude-code` and `codex` declare none and take
+only the prompt. For a profile that declares, a key it does not declare is
+refused before anything is dispatched, by the bridge and by the API alike.
 `browser` and `generic` have **not declared their inputs yet** (#218): the
 bridge sends them none, but the API bounds what any other caller sends them by
 size alone, so do not tell anyone their inputs are checked.
@@ -255,7 +264,9 @@ It caps what it returns and SAYS when it capped. A silent truncation reads as
 summarising past it.
 
 Two options make it easier to hold: `since` is the same cursor as one opaque
-string — pass back exactly what the last call returned — and
+string — pass back exactly what the last call returned; it carries a checksum,
+and a token changed on the way back is refused rather than read as another
+position — and
 `format: "lines"` answers with short narrated lines (what the remote agent
 said, which tools it called, where a waiting task waits and why) instead of the
 full report. A finished task then carries an `outcome`: its answer, the JSON
