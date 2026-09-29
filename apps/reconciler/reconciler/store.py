@@ -68,6 +68,16 @@ def _field_filter(field: str, op: str, value: Any) -> Any:
     return FieldFilter(field, op, value)
 
 
+#: What a malformed TASK document raises out of `TaskView.from_doc` -- a bad
+#: type, a value `int()`/`TaskState()` refuses, or (before #290's fix to
+#: `_startup_refunds_int`) an `OverflowError` from `int(float("inf"))`.
+#: Mirrors `quota_broker.accountstore._MALFORMED`: these four-plus-one are
+#: what a bad DOCUMENT produces, not a bare `except Exception`, which would
+#: also swallow a Firestore outage or a decoder bug and turn "the store is
+#: down" into "every task is malformed".
+_MALFORMED_TASK_DOC = (KeyError, ValueError, TypeError, AttributeError, OverflowError)
+
+
 class ControlStore:
     def __init__(
         self,
@@ -91,7 +101,22 @@ class ControlStore:
             filter=self._filter("state", "in", active_states)
         )
         for doc in tasks_query.stream():
-            snapshot.tasks[doc.id] = TaskView.from_doc(doc.to_dict() or {}, doc.id)
+            try:
+                snapshot.tasks[doc.id] = TaskView.from_doc(doc.to_dict() or {}, doc.id)
+            except _MALFORMED_TASK_DOC as exc:
+                # One malformed task must not abort the pass for every other
+                # task of every other tenant (security review, PR #290) --
+                # the same reasoning as `quota_broker.accountstore.list`
+                # skipping a malformed account (#180). Recorded in
+                # `unreadable_tasks` too: an execution that names this task id
+                # must not be read as an orphan just because the document
+                # could not be decoded this pass (see `detect.py`).
+                self._log.warning(
+                    "a task document is malformed and cannot be read; skipping it",
+                    task_id=doc.id,
+                    error=type(exc).__name__,
+                )
+                snapshot.unreadable_tasks.add(doc.id)
 
         leases_query = self._db.collection("leases").where(
             filter=self._filter("released_at", "==", None)

@@ -54,13 +54,50 @@ def _int_or_none(value: Any) -> int | None:
 #: the frozen `Task` needs no field for it.
 STARTUP_REFUNDS_KEY = "startup_refunds"
 
+#: Firestore stores an integer as a signed 64-bit value; anything past this
+#: cannot round-trip and is not a real refund count. Read alongside
+#: `_startup_refunds_int`'s type check -- this bound is what turns away
+#: `10 ** 30` once the type check alone would let it through.
+_FIRESTORE_INT64_MAX = 2**63 - 1
+
+
+def _startup_refunds_int(value: Any) -> int | None:
+    """`metadata.startup_refunds`, read totally: a real refund count or None.
+
+    This field used to go through the general-purpose `_int_or_none`, which
+    only catches `TypeError`/`ValueError` -- so `int(float("inf"))` raised
+    `OverflowError` straight out of `TaskView.from_doc`, which `snapshot()`
+    calls for every task in an unguarded loop (`store.py`). One task with
+    `metadata.startup_refunds = Infinity` crashed the reconciler pass for
+    every tenant (security review, PR #290).
+
+    Reserved at the API (`swarm_api.validation.RESERVED_METADATA_KEYS`) so a
+    caller cannot submit this key going forward, but a document written
+    before that reservation -- or reached some other way -- can still carry
+    anything JSON allows: `Infinity`, `NaN`, a numeric string, `True` (a
+    `bool` IS an `int` in Python, and is deliberately excluded here), a
+    `float` even when it holds a whole number, or an integer too large for
+    Firestore's int64 column. None of that should raise, and none of it is a
+    real refund count, so all of it reads as "not a valid count" (the caller
+    then treats that as 0 -- see `startup_refunds_used`).
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        # `bool` is excluded first because `isinstance(True, int)` is `True`.
+        # `float` is excluded even when finite and whole (`3.0`): the field
+        # is a count, and only a document written by this reconciler's own
+        # write path (an `int` literal, see `store.py`) should ever count.
+        return None
+    if not (0 <= value <= _FIRESTORE_INT64_MAX):
+        return None
+    return value
+
 
 def startup_refunds_used(metadata: Any) -> int:
     """How many startup refunds a task's `metadata` records. Absent or unreadable is 0."""
     if not isinstance(metadata, dict):
         return 0
-    used = _int_or_none(metadata.get(STARTUP_REFUNDS_KEY))
-    return max(0, used) if used is not None else 0
+    used = _startup_refunds_int(metadata.get(STARTUP_REFUNDS_KEY))
+    return used if used is not None else 0
 
 
 @dataclass(frozen=True)
