@@ -135,11 +135,83 @@ def test_an_iam_resource_that_does_not_change_is_not_gated(tmp_path, rtype, acti
     assert _answer(proc) == "false"
 
 
+# The owner's second widening, 2026-09-28 (#274, security review MAJOR 1's
+# PR): every one of these also decides who can do what, or what they can do
+# it as, in a project shared with another team. One real type each.
+# `google_service_account` is tested on its own below: unlike every family
+# here, only its DELETION is an access change (see iam-plan.jq).
+NEW_IAM_TYPES = (
+    "google_project_iam_member_remove",
+    "google_project_iam_audit_config",
+    "google_organization_iam_custom_role",
+    "google_iam_workload_identity_pool",
+    "google_iam_workload_identity_pool_provider",
+    "google_iam_deny_policy",
+    "google_iam_principal_access_boundary_policy",
+    "google_service_account_key",
+    "google_storage_bucket_acl",
+    "google_storage_bucket_access_control",
+    "google_bigquery_dataset_access",
+)
+
+
+@pytest.mark.parametrize("actions", GATED_ACTIONS, ids=lambda a: "+".join(a))
+@pytest.mark.parametrize("rtype", NEW_IAM_TYPES)
+def test_the_widened_families_are_gated_on_every_changing_action(tmp_path, rtype, actions):
+    """One plan per newly gated type (owner decision, 2026-09-28, #274).
+    MUTATION: drop one of these types, or the `member_remove`/`audit_config`
+    half of the family pattern, from `iam_type` in iam-plan.jq."""
+    proc = _classify(_plan(tmp_path, _change(rtype, actions)), tmp_path)
+    assert _answer(proc) == "true", f"{rtype} {'+'.join(actions)} was not classified as an IAM change"
+    assert f"{rtype}.edge" in (tmp_path / "summary.md").read_text()
+
+
+@pytest.mark.parametrize("actions", (["no-op"], ["read"]), ids=lambda a: "+".join(a))
+@pytest.mark.parametrize("rtype", NEW_IAM_TYPES)
+def test_a_widened_family_resource_that_does_not_change_is_not_gated(tmp_path, rtype, actions):
+    proc = _classify(_plan(tmp_path, _change(rtype, actions, before={}, after={})), tmp_path)
+    assert _answer(proc) == "false"
+
+
+def test_the_audit_config_family_generalizes_beyond_project(tmp_path):
+    """iam-plan.jq gates `_iam_audit_config` on ANY resource family, the same
+    way it already generalizes member/binding/policy -- not only the
+    `google_project_iam_audit_config` example the owner named. One rule, not
+    one literal per family. MUTATION: match `google_project_iam_audit_config`
+    as a literal instead of generalizing the family pattern."""
+    proc = _classify(_plan(tmp_path, _change("google_organization_iam_audit_config", ["update"])), tmp_path)
+    assert _answer(proc) == "true"
+
+
+@pytest.mark.parametrize("actions", (["delete"], ["forget"], ["delete", "create"]), ids=lambda a: "+".join(a))
+def test_deleting_or_forgetting_a_service_account_is_gated(tmp_path, actions):
+    """A service account's own create or update grants nothing by itself --
+    what it can do comes from the _iam_member/_iam_binding/_iam_policy
+    resources already gated above. Only its removal is an access change: the
+    identity, and everything granted to it, stops being usable."""
+    proc = _classify(_plan(tmp_path, _change("google_service_account", actions)), tmp_path)
+    assert _answer(proc) == "true", f"google_service_account {'+'.join(actions)} was not gated"
+
+
+@pytest.mark.parametrize("actions", (["create"], ["update"]), ids=lambda a: "+".join(a))
+def test_creating_or_updating_a_service_account_is_not_gated(tmp_path, actions):
+    """MUTATION: gate google_service_account with `changes_something` like
+    every other family instead of `changes_by_removal`."""
+    proc = _classify(_plan(tmp_path, _change("google_service_account", actions)), tmp_path)
+    assert _answer(proc) == "false", f"google_service_account {'+'.join(actions)} was gated"
+
+
 @pytest.mark.parametrize(
     "rtype",
     (
         # "iam" in the name is not the rule; the owner's families are.
-        "google_iam_workload_identity_pool",
+        # google_iam_workload_identity_pool moved into NEW_IAM_TYPES above
+        # (owner decision, 2026-09-28, #274): Workforce Identity Federation
+        # is the still-outside example now -- a different identity-federation
+        # mechanism (external human users, not workloads) the owner has not
+        # named.
+        "google_iam_workforce_pool",
+        "google_iam_workforce_pool_provider",
         # What this platform changes on every release.
         "google_cloud_run_v2_service",
         "google_cloud_run_v2_job",
