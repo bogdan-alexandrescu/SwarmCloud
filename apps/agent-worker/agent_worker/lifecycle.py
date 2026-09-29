@@ -131,6 +131,7 @@ from swarm_redaction import RULES as CREDENTIAL_RULES
 from . import artifact_manifest as manifest_mod
 from . import expected_outputs as expected_mod
 from . import inputs as inputs_mod
+from . import issue as issue_mod
 from . import redact as redact_mod
 from . import standalone_outputs as standalone_mod
 from . import workspace as workspace_mod
@@ -968,6 +969,24 @@ class Worker:
             # The pool is this tenant's way of running and it is momentarily
             # empty. A wait, not a failure -- see `_park_no_account`.
             return functools.partial(self._park_no_account, exc)
+
+        # ---- STEP 6b: the issue this step was pointed at (#265) -----------
+        # After the credentials, so every secret this attempt holds is
+        # registered before the issue's text is scrubbed. A fetch that fails
+        # fails the attempt here, before the agent starts (`agent_worker.issue`).
+        issue_number = issue_mod.requested(task.get("input"), cfg.profile)
+        if issue_number is not None:
+            self.phases.enter("fetch_issue")
+            issue_mod.stage_issue(
+                number=issue_number,
+                repository_url=self._repo_url,
+                token=self._git_token(),
+                refusal=self._git_token_refusal(),
+                work_dir=ws.work,
+                scrub=self._scrub,
+                logger=self.log,
+                on_request=self._heartbeat,
+            )
 
         # Re-check fencing immediately before the agent starts. Cloning a large
         # repository can take minutes, and the whole point of step 1 is that
@@ -1907,7 +1926,9 @@ class Worker:
             # `work/`. `repo` and `.swarm` are the worker's OWN directories
             # inside `work/`, not the workspace's, so they are named here.
             reserved=frozenset({REPO_DIR_NAME, WORKER_STATE_DIR})
-            | ws.control_file_names(),
+            | ws.control_file_names()
+            # `issue.md`, when the task asks for an issue (#265).
+            | issue_mod.reserved_names(task.get("input"), self.cfg.profile),
         )
         self._staged_inputs = staged
         self.log.info(

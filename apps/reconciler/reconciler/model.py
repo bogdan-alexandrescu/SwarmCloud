@@ -299,6 +299,17 @@ class ControlSnapshot:
     #: cannot-start rule could act on are read, and a read that failed leaves
     #: no entry: absence means "not known", never "did not exit 78".
     terminations: dict[str, Any] = field(default_factory=dict)
+    #: Tasks an UNRELEASED LEASE names that `tasks` lacks, read by id
+    #: (`Reconciler._read_lease_tasks`, #332). Read by `detect_orphan_leases`
+    #: ALONE. Kept apart from `settled` on purpose: `settled` is the eviction
+    #: rules' input, and `orphan_rule_defers` reads it, so writing these there
+    #: would bring the eviction stand-asides back with
+    #: `RECONCILER_ENABLE_GKE_EVICTION=false` -- the switch that exists to
+    #: restore the reconciler as it was before them.
+    lease_tasks: dict[str, TaskView] = field(default_factory=dict)
+    #: Task ids an unreleased lease names whose by-id read FAILED this pass.
+    #: The orphan-lease rule concludes nothing about their leases.
+    lease_unreadable: set[str] = field(default_factory=set)
 
     def task_named(self, task_id: str | None) -> TaskView | None:
         """The task an execution names, whichever read found it."""
