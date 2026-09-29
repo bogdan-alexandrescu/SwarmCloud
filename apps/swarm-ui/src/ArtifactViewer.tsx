@@ -612,7 +612,9 @@ function diffLines(source: string): DiffLine[] {
       return { kind: 'hunk', glyph: '', text: line }
     }
     if (header) return { kind: 'meta', glyph: '', text: line }
-    if (line.startsWith('+')) return { kind: 'add', glyph: '+', text: line.slice(1) }
+    // MUTATION (proof, #104): drop the '+' glyph column. Should be caught by
+    // artifact.diff.test.tsx "with a +/- glyph gutter and styled hunk headers".
+    if (line.startsWith('+')) return { kind: 'add', glyph: '', text: line.slice(1) }
     if (line.startsWith('-')) return { kind: 'del', glyph: '−', text: line.slice(1) }
     // `\ No newline at end of file` is git's note, not a line of either side.
     if (line.startsWith('\\')) return { kind: 'meta', glyph: '', text: line }

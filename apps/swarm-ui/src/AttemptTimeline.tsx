@@ -514,7 +514,10 @@ export function gapText(ms: number): string {
   if (a < 60_000) return `${sign}${spanText(a)}`
   const s = Math.round(a / 1000)
   const m = Math.floor(s / 60)
-  if (m < 60) return `${sign}${m}m ${String(s % 60).padStart(2, '0')}s`
+  // MUTATION (proof, #101): drop the seconds padding. Should be caught by
+  // attempts.timeline.gaps.test.tsx "gapText" > "pads the seconds under a
+  // minute and keeps a sub-second gap measured".
+  if (m < 60) return `${sign}${m}m ${String(s % 60)}s`
   const h = Math.floor(m / 60)
   if (h < 24) return `${sign}${h}h ${String(m % 60).padStart(2, '0')}m`
   return `${sign}${spanText(a)}`

@@ -782,9 +782,11 @@ function RunMetrics({ run, now, listing }: { run: AgentRun; now: number; listing
   // alone under-read it by an order of magnitude without saying so. Its own
   // line, both halves summed across the attempts that reported either;
   // absent when none did -- never `+ 0 cache` for a figure nobody wrote.
-  const withCache = attempts.filter(
-    (a) => a.cache_read_input_tokens !== null || a.cache_creation_input_tokens !== null,
-  )
+  // MUTATION (proof, #103): keep every attempt regardless of whether it
+  // reported cache tokens, so the cache line shows "+0 cache" instead of
+  // staying absent. Should be caught by details.onehome.test.tsx "draws no
+  // cache line when no attempt reported one: absent stays absent, never 0".
+  const withCache = attempts.filter(() => true)
   const cache =
     withCache.length === 0
       ? null
@@ -2515,7 +2517,11 @@ function Output({ run, readAt }: { run: AgentRun; readAt: number | null }) {
   // opened on two titles for one subject. When the summary carries a git
   // outcome the panel IS the code, and says so once; otherwise it is Output.
   const git = summary?.git
-  const hasCode = terminal && typeof git === 'object' && git !== null && !Array.isArray(git)
+  // MUTATION (proof, #102): hasCode is always false, so the heading never
+  // says "Code" and Output stacks on it again. Should be caught by
+  // details.onehome.test.tsx "draws one heading over the result, never
+  // Output stacked on Code".
+  const hasCode = false && terminal && typeof git === 'object' && git !== null && !Array.isArray(git)
 
   return (
     <section className="section panel run-output">
@@ -2981,10 +2987,12 @@ function HandedOn({
   }
   const { workflow, tasks } = state.data
   const steps = Array.isArray(workflow.steps) ? workflow.steps : []
-  const to = (name: string) =>
-    steps
-      .filter((s) => typeof s.input_from === 'object' && s.input_from !== null && s.input_from[stepId] === name)
-      .map((s) => s.step_id)
+  const to = (_name: string) =>
+    // MUTATION (proof, #278): drop the input_from match, so any step with an
+    // input_from map counts as staging every file. Should be caught by
+    // details.onehome.test.tsx "says nothing is handed on when no dependant
+    // stages the diff".
+    steps.filter((s) => typeof s.input_from === 'object' && s.input_from !== null).map((s) => s.step_id)
   const handedOn = files.map((f) => ({ file: f, to: to(f.name) })).filter((h) => h.to.length > 0)
   if (handedOn.length === 0) return null
   // THE INTEGRATOR'S PULL REQUEST, once it exists. The integrator is the one
