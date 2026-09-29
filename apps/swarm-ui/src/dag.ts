@@ -700,6 +700,21 @@ export const NODE_W = Math.ceil(
  */
 export const NODE_H = nodeHeightAt('figures')
 
+/**
+ * `.node-note`, the ONE line a failed or waiting node adds (#105, #106): a
+ * failed step's first `last_error` line, or why a waiting step is not running.
+ * One --t-micro/--lh-micro row (17.4) and the `--ctl-s1` gap above it, rounded
+ * up as every node height here is: 22.
+ *
+ * HEIGHT ONLY, NEVER WIDTH, and that is `nodeWidthAt`'s rule rather than an
+ * omission from it. The line is as unbounded as an error message, so no width
+ * could hold it; it is `nowrap` with an ellipsis, the whole text is the line's
+ * `title` and the card's description on focus, and the inspector's error stays
+ * untruncated. A node is measured for the line only while it draws one, which
+ * `layoutOf` is told through `noted`.
+ */
+const NOTE_H = Math.ceil(ROW_MICRO_H + GAP)
+
 /** One wrapped line of the `↑ depends on` list, at --t-micro/--lh-micro:
  *  12 x 1.45 = 17.4, rounded up. It was 16, which under-counted every
  *  wrapped line by 1.4px. */
@@ -817,8 +832,13 @@ export function heightOf(
   step: WorkflowStep,
   tier: ZoomTier = 'figures',
   width: number = NODE_W,
+  noted: boolean = false,
 ): number {
-  if (step.depends_on.length === 0) return nodeHeightAt(tier)
+  // THE NOTE LINE (#105, #106): a failed step's first error line, or a waiting
+  // step's reason. One line at every tier, ellipsed, so it costs a fixed
+  // NOTE_H and nothing in width -- see `NOTE_H`.
+  const base = nodeHeightAt(tier) + (noted ? NOTE_H : 0)
+  if (step.depends_on.length === 0) return base
   // `+ GAP`: the dependency list is ONE MORE flex child, so it costs one more
   // `--ctl-s1` between itself and the row above as well as its own lines. The
   // gap was missing, which is 4px of overlap on every node that has parents --
@@ -839,7 +859,7 @@ export function heightOf(
   // And the UNITS rather than the joined text, because they are what the
   // browser keeps whole (WF-19): `StepNode` draws exactly this list.
   return (
-    nodeHeightAt(tier) +
+    base +
     GAP +
     depLines(
       depUnits(step).map((u) => u.text),
@@ -1797,6 +1817,8 @@ function laneRouter(opts: {
 /** No stage opened. Hoisted so the default argument is not a fresh allocation
  *  on every render of every graph. */
 const NO_STAGES_OPEN: ReadonlySet<number> = new Set<number>()
+/** No node draws a note line: what `layoutOf` measured before #105/#106. */
+const NO_NOTES: ReadonlySet<string> = new Set<string>()
 
 /**
  * Where every node, band and edge goes.
@@ -1816,11 +1838,19 @@ const NO_STAGES_OPEN: ReadonlySet<number> = new Set<number>()
  * automatic choice lives above the `key` a stop-and-reload bumps. The default
  * is `figures`, the full node, so a caller that knows nothing about zoom gets
  * exactly the layout this function produced before it existed.
+ *
+ * `noted` holds the ids of the steps whose node draws a note line (#105,
+ * #106): a failed step's first error line, or why a waiting step is not
+ * running. Which steps those are is a fact about their TASKS, which this file
+ * does not read, so the caller decides and the layout measures (`NOTE_H`). A
+ * level holding one noted node is that much taller, like a level holding one
+ * long dependency list.
  */
 export function layoutOf(
   steps: readonly WorkflowStep[],
   expandedStages: ReadonlySet<number> = NO_STAGES_OPEN,
   tier: ZoomTier = 'figures',
+  noted: ReadonlySet<string> = NO_NOTES,
 ): DagLayout {
   const levels = levelsOf(steps)
   // THE WIDTH EVERY NODE IN THIS LAYOUT GETS, computed once. Every coordinate
@@ -1877,7 +1907,7 @@ export function layoutOf(
   const wide = levels.map((l) => stageIsWide(l.length, nodeW))
   const open = (lvl: number) => wide[lvl] === true && expandedStages.has(lvl)
   const nodesH = (l: readonly WorkflowStep[]) =>
-    Math.max(nodeHeightAt(tier), ...l.map((s) => heightOf(s, tier, nodeW)))
+    Math.max(nodeHeightAt(tier), ...l.map((s) => heightOf(s, tier, nodeW, noted.has(s.step_id))))
   const levelH = levels.map((l, i) => {
     if (!wide[i]) return nodesH(l)
     return open(i) ? BAND_H + BAND_GAP + nodesH(l) : BAND_H

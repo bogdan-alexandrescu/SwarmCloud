@@ -1,9 +1,13 @@
 # The `merge` step: a workflow that merges its own pull request
 
-**Status: PROPOSED, 2026-09-29, for #295.** Nothing described here is built.
-This is the design the owner asked for before any code: how a SwarmCloud
-workflow ends in a squash merge made by the **worker**, with a credential no
-agent can reach. The frozen-contract half is contract request 33 in
+**Status: ACCEPTED 2026-09-29 by the owner, as the design; build gated on
+#342, for #295.** Nothing described here is built yet — acceptance of the
+design is not acceptance of a build, and `merge` (with `post-verdict` and
+`claude-code-review`) must not be enabled for any tenant until #342 (signed
+step specs) ships (§0 consequence 4, §10). This is the design the owner
+asked for before any code: how a SwarmCloud workflow ends in a squash merge
+made by the **worker**, with a credential no agent can reach. The
+frozen-contract half is contract request 33 in
 [contract-change-requests.md](contract-change-requests.md); the example spec is
 in [workflows.md](workflows.md#proposed-a-chain-that-merges-its-own-pull-request).
 

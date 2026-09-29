@@ -57,12 +57,15 @@ COPY --from=uvbin /uv /usr/local/bin/uv
 
 WORKDIR /src
 COPY apps/common/ /src/apps/common/
+# The credential patterns swarm_api.redaction re-exports (#259).
+COPY apps/redaction/ /src/apps/redaction/
 COPY apps/swarm-api/ /src/apps/swarm-api/
 
 # Build `swarm-common` into a local wheelhouse first and resolve it from there:
 # no index has ever heard of it, so `--find-links` is what makes this build work
 # without a private registry.
 RUN uv build --wheel --out-dir /wheels /src/apps/common \
+ && uv build --wheel --out-dir /wheels /src/apps/redaction \
  && uv build --wheel --out-dir /wheels /src/apps/swarm-api
 
 # `--without-pip`: the stdlib venv otherwise seeds pip, setuptools and wheel,

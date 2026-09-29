@@ -302,6 +302,18 @@ identity can do.
     here rather than left to `tarfile`, whose fallback for a link it cannot
     make extracts the link's target member in its place (the CVE-2025-4330
     class), so the restore's safety does not depend on the Python patch level.
+* **Which checkpoint is restored is not chosen from the bucket** (#347). Every
+  agent of a tenant can write anywhere under `tenants/<tenant>/`, so another
+  step of the same tenant could put a checkpoint under a task's prefix, and
+  `.claude/` — settings, hooks — travels in every checkpoint because HOME is
+  `work/`. A task's first attempt therefore restores nothing, and a retry
+  restores only `task.latest_checkpoint` when the attempt document that wrote
+  it lists its id and its archive digest (`checkpoint_sha256`), and the
+  pointer lies in the task's own prefix. That stops an agent holding only the
+  bucket, whether it adds a checkpoint or rewrites the recorded one. It does
+  not stop an agent that also writes Firestore, which has no document-level
+  IAM: the complete fix waits for signed step specs (#342).
+  [checkpointing.md](checkpointing.md#3-restore) lists every check.
 
 ---
 

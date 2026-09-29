@@ -201,6 +201,7 @@ def seed(
     attempt_count: int = 1,
     max_attempts: int = 3,
     heartbeat_seconds_ago: float | None = None,
+    metadata: dict[str, Any] | None = None,
 ) -> None:
     """What the incident left: admitted `age_seconds` ago, lease held, deadline ahead."""
     now = utcnow()
@@ -213,6 +214,7 @@ def seed(
             "current_generation": GENERATION, "current_lease_id": LEASE,
             "attempt_count": attempt_count, "max_attempts": max_attempts,
             "updated_at": admitted, "cancel_requested": False, "last_error": None,
+            "metadata": dict(metadata or {}),
         },
     )
     db.seed(
@@ -353,7 +355,8 @@ def test_the_generation_is_fenced_before_the_lease_is_released_and_the_task_requ
 
 
 def test_with_its_attempts_spent_the_task_fails_and_says_why(db):
-    seed(db, attempt_count=3, max_attempts=3)
+    """With its three startup refunds used (#67): before them, the attempt is not counted."""
+    seed(db, attempt_count=3, max_attempts=3, metadata={"startup_refunds": 3})
 
     reconcile(db, execution=cloud_run_execution())
 

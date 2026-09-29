@@ -16,7 +16,7 @@
 import { useEffect, useState } from 'react'
 
 import { loadResourceClasses, type ResourceClasses } from './api'
-import type { Result } from './fetch'
+import { probeSnapshot, subscribeProbes, type Result } from './fetch'
 import {
   blockerCeiling,
   blockerGroup,
@@ -114,19 +114,83 @@ export function IncompleteNote({ h, label = labelsFor(h) }: { h: Headroom; label
  * A SECONDARY READ, AND A FAILED ONE CLAIMS NOTHING. The screens that call
  * this are drawn from the capacity read; this one only sharpens a verdict,
  * so until it answers -- or if it never does -- `units` is null and every
- * blocker is drawn exactly as it was before. Read once per mount: a class is
- * resized by a deploy, not between two refreshes. Called inside `then` so a
- * load that throws rather than rejects is swallowed the same way.
+ * blocker is drawn exactly as it was before. READ ONCE FOR THE TAB, NOT
+ * ONCE PER MOUNT (#227): a class is resized by a deploy, not between two
+ * refreshes, and Profile headroom, Profiles and Submit each mounting their own
+ * read was three GETs of one table. `sharedRead` keeps a success and drops a
+ * failure. Called inside `then` so a load that throws rather than rejects is
+ * swallowed the same way.
  */
+const readResourceClasses = sharedRead(() => loadResourceClasses())
+
+/**
+ * ONE READ, HANDED TO EVERY CALLER THAT ASKS FOR IT (#227).
+ *
+ * The first call starts the request, a call while it is in flight joins it,
+ * and a call after it answered is handed the same answer.
+ *
+ * ONLY A SUCCESS IS KEPT. An error claims nothing, so it is dropped the moment
+ * it lands and the next caller asks again: a tab that once failed the read
+ * must not keep failing it until reload.
+ *
+ * KEPT FOR AS LONG AS THE TAB'S READ REGISTRY. `forgetProbes` (fetch.ts) is
+ * "forget what this tab has read"; nothing in the running app calls it, and
+ * `setup.ts` calls it between tests. An answer that outlived it would carry one
+ * test's catalogue into the next, so an emptied registry drops it.
+ *
+ * HERE AND NOT IN api.ts, on purpose. Eleven test files replace the api module
+ * with a factory that declares only the loaders they stub, so a helper
+ * exported from it would be undefined at import in every screen that reaches
+ * this file. `load` is called through, never captured, so a test that mocks
+ * `loadResourceClasses` still replaces what this calls.
+ */
+function sharedRead<T>(load: () => Promise<Result<T>>): { (): Promise<Result<T>>; peek(): Result<T> | null } {
+  let pending: Promise<Result<T>> | null = null
+  let kept: Result<T> | null = null
+  subscribeProbes(() => {
+    if (probeSnapshot().length === 0) {
+      pending = null
+      kept = null
+    }
+  })
+  const get = (): Promise<Result<T>> => {
+    if (kept !== null) return Promise.resolve(kept)
+    if (pending !== null) return pending
+    const p: Promise<Result<T>> = Promise.resolve()
+      .then(load)
+      .then(
+        (r) => {
+          if (pending === p) {
+            pending = null
+            if (r.status === 'ok' || r.status === 'stale') kept = r
+          }
+          return r
+        },
+        (err: unknown) => {
+          if (pending === p) pending = null
+          throw err
+        },
+      )
+    pending = p
+    return p
+  }
+  return Object.assign(get, { peek: () => kept })
+}
+
+function classesOf(r: Result<{ resource_classes: ResourceClasses }> | null): ResourceClasses | null {
+  return r !== null && (r.status === 'ok' || r.status === 'stale') ? r.data.resource_classes : null
+}
+
 export function useResourceClasses(): ResourceClasses | null {
-  const [classes, setClasses] = useState<ResourceClasses | null>(null)
+  const [classes, setClasses] = useState<ResourceClasses | null>(() => classesOf(readResourceClasses.peek()))
   useEffect(() => {
     let live = true
     Promise.resolve()
-      .then(() => loadResourceClasses())
+      .then(() => readResourceClasses())
       .then(
         (r: Result<{ resource_classes: ResourceClasses }>) => {
-          if (live && (r.status === 'ok' || r.status === 'stale')) setClasses(r.data.resource_classes)
+          const got = classesOf(r)
+          if (live && got !== null) setClasses(got)
         },
         () => undefined,
       )

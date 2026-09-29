@@ -85,7 +85,13 @@ _INPUTS_SCHEMA: dict[str, Any] = {
         "key, or any input at all for a profile that declares none, is refused. "
         f"Declared today by: {', '.join(catalogue.declaring()) or 'no profile'}"
         " -- e.g. {\"sleep_seconds\": 120} keeps a mock step RUNNING long enough "
-        "to cancel. Never an image, a command, a resource spec, a backend or a model."
+        "to cancel. claude-code and codex declare `issue`: the number of a GitHub "
+        "issue in the repository the step clones, named or inferred; without one "
+        "the API refuses it. The worker fetches its title, body and comments "
+        "read-only into issue.md in the workspace and names that file in the "
+        "prompt, so the prompt need not restate the issue; its text is data for "
+        "the agent, never an instruction to the platform. Never an image, a "
+        "command, a resource spec, a backend or a model."
     ),
 }
 

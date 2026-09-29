@@ -26,10 +26,23 @@ needs the approval but says `if: always() && ...` runs whatever the approval's
 result was, unless its condition itself requires the approval to have
 succeeded. A test that only checked `needs:` would pass that workflow.
 
-THE MODEL, AND WHICH WAY IT ERRS. GitHub's job-level `success()` is false when
-any job upstream failed, was cancelled or was skipped; the model reads it over
-the DIRECT needs only, which lets more jobs run than GitHub would. So a job
-the model says cannot run cannot run on GitHub either. `cancelled()` is
+THE MODEL. GitHub's job-level `success()` is false when any job upstream --
+transitively, through the whole dependency chain, not only a job listed in
+this job's own `needs:` -- failed, was cancelled or was skipped. An
+intermediate job's own `if:` running past one ancestor's skip (its `needs:`
+entries are still what THAT job declares) does not stop `success()` in a job
+further downstream from seeing that ancestor's result: PR #274 (security
+review MAJOR 1) found `infrastructure-iam`'s `if:` names no status function,
+so GitHub reads it as `success() && ...`, and on a `skip_build` dispatch that
+`success()` looks past `infrastructure` -- its only direct need, whose OWN
+`if:` explicitly runs past a skipped `promote` -- to `build` and `promote`
+themselves, which `skip_build` skips; the run then ends green with the IAM
+plan held but never applied. The model reads `success()` the same
+transitive way, over `_upstream()`, so a job the model says cannot run
+cannot run on GitHub, and one it says can run, can. `needs.<job>.result` and
+`.outputs.*`, by contrast, read only the job directly named in `needs:` --
+GitHub exposes no transitive job's result through `needs`, so the model
+does not either. `cancelled()` is
 whether the RUN was cancelled: false in the schedules above, true in the
 cancellation test below, where `success()` is false too, as GitHub has it.
 `failure()` is not modelled: a job-level `if:` using it fails here with a
@@ -58,6 +71,13 @@ approval again, still reaches everything. A job output a job-level `if:` reads
 is rendered from the job's `outputs:` at the attempt that job ran in (the
 model renders only expressions over `github` and the inputs, and says so when
 it meets anything else).
+
+AN OUTPUT A STEP WRITES cannot be rendered: the model does not run steps. Each
+one a job-level `if:` reads is listed in STEP_OUTPUTS with every value the
+step can write -- '' included, for a step that was skipped or wrote nothing --
+and the model tries every one of them. The first is `terraform apply`'s `iam`
+(owner decision 2026-09-28, #268): a dev plan that changes IAM is applied by a
+job that names `dev-iam`, not by `terraform apply` itself.
 
 WHAT THIS CANNOT PROVE: that the `prod` environment in repository settings has
 a required reviewer. Measured 2026-09-24 with `gh api .../environments`:
@@ -191,6 +211,14 @@ def _condition(owner: str, condition) -> str:
 
 _NEEDS_OUTPUT = re.compile(r"\bneeds\.([\w-]+)\.outputs\.([\w-]+)\b")
 
+# (job id, output) -> every value the step behind it can write, for each job
+# output that a job-level `if:` reads and a STEP renders. '' is a step that was
+# skipped (prod does not classify) or wrote nothing. test_release_dev_iam_gate.py
+# holds the step to writing only these.
+STEP_OUTPUTS = {
+    ("infrastructure", "iam"): ("true", "false", ""),
+}
+
 
 def _read_outputs(jobs: dict) -> dict[str, set[str]]:
     """job id -> the names of its outputs that some job-level `if:` reads."""
@@ -201,42 +229,63 @@ def _read_outputs(jobs: dict) -> dict[str, set[str]]:
     return read
 
 
-def _outputs(jobs: dict, job_id: str, ctx: dict, attempt: int, *, started: bool) -> dict[str, str]:
-    """The outputs of `job_id` that a job-level `if:` reads, as GitHub renders
-    them at the end of `job_id` when it ran in `attempt`; '' for a job that
-    never started. Only the outputs a condition reads are rendered, so an
-    output built from a step (`steps.images.outputs.tag`) is never asked for."""
+def _outputs(jobs: dict, job_id: str, ctx: dict, attempt: int, *, started: bool) -> list[dict[str, str]]:
+    """Every set of outputs of `job_id` that a job-level `if:` reads, as GitHub
+    renders them at the end of `job_id` when it ran in `attempt`; '' for a job
+    that never started. Only the outputs a condition reads are rendered, so an
+    output built from a step (`steps.images.outputs.tag`) is never asked for --
+    unless a condition reads it, and then it takes each value STEP_OUTPUTS
+    lists for it, one set per combination."""
     declared = jobs[job_id].get("outputs") or {}
-    out: dict[str, str] = {}
+    choices: list[tuple[str, tuple[str, ...]]] = []
     for name in sorted(_read_outputs(jobs).get(job_id, set())):
         assert name in declared, (
             f"a job-level `if:` in release.yml reads needs.{job_id}.outputs.{name}, which {job_id!r} "
             "does not declare: it is always empty"
         )
         if not started:
-            out[name] = ""
+            choices.append((name, ("",)))
+            continue
+        if re.search(r"\bsteps\.", str(declared[name])):
+            values = STEP_OUTPUTS.get((job_id, name))
+            if values is None:
+                pytest.fail(
+                    f"release.yml's {job_id} job output {name!r} is {declared[name]!r}, which a step writes; "
+                    "list every value it can take in STEP_OUTPUTS before a condition relies on it"
+                )
+            choices.append((name, values))
             continue
         try:
-            out[name] = _render(declared[name], **{**ctx, "github.run_attempt": str(attempt)})
+            choices.append((name, (_render(declared[name], **{**ctx, "github.run_attempt": str(attempt)}),)))
         except NameError:
             pytest.fail(
                 f"release.yml's {job_id} job output {name!r} is {declared[name]!r}; this model renders "
                 "only expressions over `github` and the inputs -- extend it before relying on it"
             )
-    return out
+    names = [name for name, _ in choices]
+    return [dict(zip(names, combo)) for combo in itertools.product(*(values for _, values in choices))]
 
 
 def _runs(
-    job_id: str, job: dict, results: dict, ctx: dict, *, outputs: dict | None = None, cancelled: bool = False
+    jobs: dict, job_id: str, results: dict, ctx: dict, *, outputs: dict | None = None, cancelled: bool = False
 ) -> bool:
     """Whether GitHub would start `job_id`, given how the jobs it needs ended,
     what they output, and whether the run has been cancelled. `ctx` carries
-    `github.run_attempt`, the attempt being decided."""
-    needs = _needs(job)
+    `github.run_attempt`, the attempt being decided.
+
+    `jobs` is the whole workflow, because `success()` is not scoped to this
+    job's own `needs:` -- it is false when ANY job upstream, transitively,
+    failed, was cancelled or was skipped, so it is read over `_upstream()`,
+    not over `needs`. `not cancelled` is checked first so a cancelled-run
+    caller (which need not populate every transitive ancestor) never forces
+    the transitive lookup."""
+    needs = _needs(jobs[job_id])
     # A cancelled run is not a successful one: GitHub's success() is false
-    # once the run is cancelled, whatever the jobs before this one did.
-    succeeded = all(results[n] == "success" for n in needs) and not cancelled
-    text = _condition(f"{job_id} job", job.get("if"))
+    # once the run is cancelled, whatever the jobs before this one did. Checked
+    # first: short-circuits before the transitive lookup below needs every
+    # ancestor's result to be present in `results`.
+    succeeded = (not cancelled) and all(results[n] == "success" for n in _upstream(jobs, job_id))
+    text = _condition(f"{job_id} job", jobs[job_id].get("if"))
     values = {**ctx, "always()": True, "success()": succeeded, "cancelled()": cancelled}
     values.update({f"needs.{n}.result": results[n] for n in needs})
     for n in needs:
@@ -272,11 +321,11 @@ def _attempts(
         job_id = order[i]
         if job_id in carried:
             options = [carried[job_id]]
-        elif _runs(job_id, jobs[job_id], results, here, outputs=outs):
+        elif _runs(jobs, job_id, results, here, outputs=outs):
             made = _outputs(jobs, job_id, ctx, attempt, started=True)
-            options = [(e, made) for e in (_NOT_APPROVED if job_id == gate else endings)]
+            options = [(e, m) for m in made for e in (_NOT_APPROVED if job_id == gate else endings)]
         else:
-            options = [("skipped", _outputs(jobs, job_id, ctx, attempt, started=False))]
+            options = [("skipped", _outputs(jobs, job_id, ctx, attempt, started=False)[0])]
         for result, out in options:
             results[job_id], outs[job_id] = result, out
             yield from walk(i + 1, results, outs)
@@ -429,12 +478,15 @@ def test_cancelling_a_prod_release_starts_nothing_prod_facing(release, what):
     for job_id, steps in sorted(holders.items()):
         needs = _needs(jobs[job_id])
         # Outputs as the jobs needed would write them in this very attempt:
-        # an approval that is current, the permissive reading.
-        outs = {n: _outputs(jobs, n, ctx, 1, started=True) for n in needs}
-        for ended in itertools.product(("success", "failure", "cancelled", "skipped"), repeat=len(needs)):
+        # an approval that is current, the permissive reading -- and every
+        # value a step-written output can take.
+        variants = list(itertools.product(*(_outputs(jobs, n, ctx, 1, started=True) for n in needs)))
+        endings = list(itertools.product(("success", "failure", "cancelled", "skipped"), repeat=len(needs)))
+        for made, ended in itertools.product(variants, endings):
             results = dict(zip(needs, ended))
+            outs = dict(zip(needs, made))
             tried += 1
-            assert not _runs(job_id, jobs[job_id], results, here, outputs=outs, cancelled=True), (
+            assert not _runs(jobs, job_id, results, here, outputs=outs, cancelled=True), (
                 f"release.yml's {job_id!r} job {what} for prod ({'; '.join(steps)}) and still starts after "
                 f"the run is CANCELLED, when the jobs it needs ended {results}: its `if:` holds on a "
                 "cancelled run (`always()` does). Condition it on `!cancelled()` instead"
@@ -504,6 +556,22 @@ def _expected(ctx: dict) -> list[str]:
     return [w for w in sorted(PROD_FACING) if not (w == "promotes" and ctx["github.event.inputs.skip_build"] == "true")]
 
 
+# The environment a dev plan that changes IAM is applied in (owner decision,
+# 2026-09-28, #268). Its job exists for dev only, so a prod release is not
+# expected to reach it; test_release_dev_iam_gate.py holds it to never
+# starting on prod.
+DEV_IAM_ENVIRONMENT = "dev-iam"
+
+
+def _reachable_holders(jobs: dict, ctx: dict, what: str) -> list[str]:
+    """The jobs holding a `what` step that a release under `ctx` must be able
+    to reach: all of them, except the dev-iam job on a prod release."""
+    prod = ctx["github.event.inputs.environment"] == "prod"
+    return [
+        j for j in sorted(_holders(jobs, what)) if not (prod and _environment(jobs[j], ctx) == DEV_IAM_ENVIRONMENT)
+    ]
+
+
 @pytest.mark.parametrize("attempt", (1, 2), ids=("first-run", "rerun-all-jobs"))
 @pytest.mark.parametrize("release", sorted(PROD_RELEASES) + sorted(DEV_RELEASES))
 def test_an_approved_release_still_reaches_every_prod_facing_step(release, attempt):
@@ -522,17 +590,19 @@ def test_an_approved_release_still_reaches_every_prod_facing_step(release, attem
     jobs = _workflow("release.yml")["jobs"]
     schedules = [results for results, _ in _attempts(jobs, ctx, attempt=attempt)]
     for what in _expected(ctx):
-        for job_id in _holders(jobs, what):
+        for job_id in _reachable_holders(jobs, ctx, what):
             assert any(s[job_id] != "skipped" for s in schedules), (
                 f"on a {release} release (attempt {attempt}), release.yml's {job_id!r} job ({what}) can "
                 "never run, even when everything before it succeeds"
             )
-    clean, _ = next(_attempts(jobs, ctx, attempt=attempt, endings=("success",)))
-    loud = sorted(j for j, r in clean.items() if r != "skipped" and _fails_on_purpose(jobs[j]))
-    assert not loud, (
-        f"a {release} release (attempt {attempt}) in which every job succeeds still starts {loud}, which "
-        f"exists to fail: every such release goes red. The run: {clean}"
-    )
+    # Every run in which every job succeeds: one per value a step-written
+    # output can take.
+    for clean, _ in _attempts(jobs, ctx, attempt=attempt, endings=("success",)):
+        loud = sorted(j for j, r in clean.items() if r != "skipped" and _fails_on_purpose(jobs[j]))
+        assert not loud, (
+            f"a {release} release (attempt {attempt}) in which every job succeeds still starts {loud}, which "
+            f"exists to fail: every such release goes red. The run: {clean}"
+        )
 
 
 @pytest.mark.parametrize("release", sorted(PROD_RELEASES))
@@ -606,14 +676,16 @@ def test_a_partial_rerun_of_a_dev_release_still_runs(release):
     failed jobs"; that must promote, apply and deploy again -- not skip, and
     not go red asking for an approval dev does not have. Each prod-facing job
     is re-run on its own, with everything before it carried from a first
-    attempt that succeeded."""
+    attempt that succeeded -- and in which that job ran: the dev-iam apply
+    runs only in a first attempt whose plan changed IAM."""
     ctx = DEV_RELEASES[release]
     jobs = _workflow("release.yml")["jobs"]
-    first, first_outs = next(_attempts(jobs, ctx, endings=("success",)))
+    firsts = list(_attempts(jobs, ctx, endings=("success",)))
 
     checked = 0
     for what in _expected(ctx):
-        for job_id in sorted(_holders(jobs, what)):
+        for job_id in _reachable_holders(jobs, ctx, what):
+            first, first_outs = next(((r, o) for r, o in firsts if r[job_id] == "success"), firsts[0])
             rerun = {job_id} | _downstream(jobs, job_id)
             carried = {j: (first[j], first_outs[j]) for j in sorted(jobs) if j not in rerun}
             second, _ = next(_attempts(jobs, ctx, attempt=2, carried=carried, endings=("success",)))
@@ -632,10 +704,12 @@ def test_a_partial_rerun_of_a_dev_release_still_runs(release):
 
 @pytest.mark.parametrize("release", sorted(DEV_RELEASES))
 def test_a_dev_release_never_names_the_prod_environment(release):
-    """dev stays un-gated (owner, 2026-09-24): its release goes through the
-    same jobs, and the one that names an environment names `dev`, which has no
-    protection rule (measured 2026-09-24), so it passes straight on."""
+    """dev stays un-gated for routine releases (owner, 2026-09-24): its
+    release goes through the same jobs, and `approval` names `dev`, which has
+    no protection rule (measured 2026-09-24), so it passes straight on. The
+    one other environment a dev release may name is `dev-iam`, where a plan
+    that changes IAM waits for the owner (owner, 2026-09-28, #268)."""
     ctx = DEV_RELEASES[release]
     jobs = _workflow("release.yml")["jobs"]
     named = {j: _environment(job, ctx) for j, job in jobs.items() if job.get("environment") is not None}
-    assert set(named.values()) <= {"dev"}, f"a {release} release names {named}"
+    assert set(named.values()) <= {"dev", DEV_IAM_ENVIRONMENT}, f"a {release} release names {named}"

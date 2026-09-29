@@ -143,6 +143,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO, Iterable, Mapping
 
+from .workspace import walk_tree
+
 #: The manifest prefix every working-folder file is uploaded under. See the
 #: module docstring for why it is not the bare path.
 PREFIX = "workdir"
@@ -304,7 +306,9 @@ def scan(work: Path, *, reserved: Iterable[str] = ()) -> Scan:
     # `/`. Nothing is uploaded from it then, and the caller says so.
     if root.is_symlink() or not root.is_dir():
         return Scan(files={})
-    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+    # `walk_tree`, not `os.walk`, which recurses on Python 3.11: a working
+    # folder 1,000 levels deep raised `RecursionError` out of the scan (#259).
+    for dirpath, dirnames, filenames in walk_tree(root):
         here = Path(dirpath)
         at_top = here == root
         keep: list[str] = []

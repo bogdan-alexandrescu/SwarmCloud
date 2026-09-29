@@ -545,13 +545,15 @@ resource "google_project_iam_member" "deployer_secrets_scoped" {
 }
 
 # ---------------------------------------------------------------------------
-# THE NINE THAT STAY UNCONDITIONED, and why each one cannot be scoped here.
+# THE EIGHT THAT STAY UNCONDITIONED, and why each one cannot be scoped here.
 #
-# Eight of them belong to services that are absent from IAM's resource-attribute
+# Seven of them belong to services that are absent from IAM's resource-attribute
 # list (docs.cloud.google.com/iam/docs/conditions-resource-attributes), so a
 # resource.name condition would never grant anything -- the role would simply
-# be revoked, as the first IAP condition was. The ninth manages something that
-# has no per-owner resource at all. Their listings are recorded because an
+# be revoked, as the first IAP condition was. One of the seven,
+# serviceAccountCreator, is also checked on the project, where nothing exists
+# yet to name. The eighth manages something that has no per-owner resource at
+# all. Their listings are recorded because an
 # unscoped grant is only as safe as what currently sits in its reach.
 #
 # There were ten. roles/iam.roleAdmin is gone from deployer_roles since
@@ -564,6 +566,29 @@ resource "google_project_iam_member" "deployer_secrets_scoped" {
 # ever being evaluated. Every custom role terraform/infra used it for is
 # defined in platform_roles.tf now, by the owner.
 #
+# Then there were nine. roles/iam.workloadIdentityPoolAdmin is gone from
+# deployer_roles since 2026-09-29 (#314, owner decision). Pools on 2026-09-24:
+# swarm-github (made by THIS root, which the owner applies), github-actions
+# (theirs), saga-agents-staging.svc.id.goog (GKE's). terraform/infra manages no
+# pool or provider at all -- it names GKE's pool only as a string inside a
+# service-account binding's member -- so CI never used the role, and holding it
+# let CI add a provider to swarm-github, minting tokens for itself or
+# swarm-ci-fix outside the WIF ref pin, or to THEIR github-actions pool.
+#
+# And roles/iam.serviceAccountAdmin is off the project since 2026-09-29 (#334,
+# owner decision), replaced by roles/iam.serviceAccountCreator above it in the
+# count. On the project it reached 23 service accounts: 11 ours (swarm-*), 11
+# theirs (api-service, promptlab-runner, promptlab-deployer, publisher,
+# crawler, external-secrets, staging-gke-nodes, aipipeline, saga-storage-ro,
+# saga-storage-rw, tournament-digest) and the default compute account, and its
+# setIamPolicy let CI grant itself actAs on any of them. No condition could
+# narrow it -- "the condition resource.name.endsWith == devResource never
+# grants access to any IAM resource because IAM resources don't provide the
+# resource name" (docs.cloud.google.com/iam/docs/conditions-attribute-reference,
+# read 2026-09-28) -- and modifiedGrantsByRole limits which ROLES, not which
+# accounts. It is granted on each account terraform/infra manages instead, in
+# deployer_service_accounts.tf, the resource-level shape #23 gave IAP.
+#
 #   roles/artifactregistry.admin      repositories: swarm-images (ours),
 #       cloud-run-source-deploy (made by `gcloud run deploy --source`; not
 #       ours). CI can delete the latter. A RESOURCE-LEVEL grant on swarm-images
@@ -574,19 +599,10 @@ resource "google_project_iam_member" "deployer_secrets_scoped" {
 #       209012342332-compute@developer; no triggers exist.
 #   roles/cloudscheduler.admin        jobs (us-central1): swarm-reconciler-tick,
 #       swarm-scheduler-tick, swarm-quota-refresh. All ours; none of theirs.
-#   roles/iam.serviceAccountAdmin     23 service accounts: 11 ours (swarm-*),
-#       11 theirs (api-service, promptlab-runner, promptlab-deployer, publisher,
-#       crawler, external-secrets, staging-gke-nodes, aipipeline,
-#       saga-storage-ro, saga-storage-rw, tournament-digest) and the default
-#       compute account. THE LARGEST REMAINING HOLE: setIamPolicy on
-#       promptlab-runner lets CI grant itself actAs on their production
-#       identity. modifiedGrantsByRole limits which ROLES, not which accounts,
-#       so it cannot close this.
-#   roles/iam.workloadIdentityPoolAdmin   pools: swarm-github (ours, but made by
-#       THIS root, which the owner applies), github-actions (theirs),
-#       saga-agents-staging.svc.id.goog (GKE's). terraform/infra manages no
-#       pool at all, so CI appears not to need this role -- and holding it lets
-#       CI add a provider to THEIR github-actions pool.
+#   roles/iam.serviceAccountCreator   create, get and list service accounts.
+#       Creating is checked on the project, where no account exists yet to
+#       name. It sets no policy and changes no existing account, so the most
+#       it reaches is a new, empty account CI then holds nothing on.
 #   roles/monitoring.editor           alert policies: 6, all swarm-dev-*;
 #       dashboards: 1 (ours); channels, uptime checks, groups: none.
 #   roles/pubsub.admin                Pub/Sub is unlisted (only Pub/Sub Lite is

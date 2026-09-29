@@ -204,16 +204,21 @@ for a single task.
 
 `inputs` — on `swarm_dispatch` and on each `swarm_workflow` step — carries only
 what the named profile **declares**, which `swarm_profiles` lists under
-`inputs`. Today that is `mock`'s test knobs: `{"sleep_seconds": 120}` keeps a
+`inputs`. For `mock` that is its test knobs: `{"sleep_seconds": 120}` keeps a
 mock step RUNNING long enough to cancel, `{"fail": true}` fails it on purpose,
 and `{"quota_exhausted": true, "retry_after_seconds": 60}` parks it ONCE on a
 simulated rate limit; the attempt after the park runs to the end. Report that
 step as parked while it waits, not as failed. `exit_code` takes a failure's
 code, but not one the worker reads as a rate limit, a refused credential or a
 cancellation; `swarm_profiles` names those, with every key's bounds, so do
-not quote a bound from memory. `claude-code` and `codex` declare none and take
-only the prompt. For a profile that declares, a key it does not declare is
-refused before anything is dispatched, by the bridge and by the API alike.
+not quote a bound from memory. `claude-code` and `codex` declare one input,
+`issue`: the number of a GitHub issue in the repository the step clones. The
+worker fetches that issue's title, body and comments read-only into `issue.md`
+in the workspace and names it in the prompt, so point a step at the issue
+rather than restating it in the prompt. It needs a repository (`repo` or
+`infer`); without one the API refuses it. For a profile that declares, a key
+it does not declare is refused before anything is dispatched, by the bridge
+and by the API alike.
 `browser` and `generic` have **not declared their inputs yet** (#218): the
 bridge sends them none, but the API bounds what any other caller sends them by
 size alone, so do not tell anyone their inputs are checked.

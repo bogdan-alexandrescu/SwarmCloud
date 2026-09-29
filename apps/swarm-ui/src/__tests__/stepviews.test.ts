@@ -10,10 +10,13 @@ import { describe, expect, it } from 'vitest'
 import {
   depItems,
   edgeKinds,
+  heightOf,
   edgeProvenance,
   inputFileOf,
   inputsByStep,
   layoutOf,
+  nodeHeightAt,
+  shapeOf,
   stepDuration,
   taskInputsOf,
 } from '../dag'
@@ -22,13 +25,20 @@ import {
   attemptPhase,
   attemptsInOrder,
   axisOf,
+  drawnSpan,
+  failureCause,
+  failureGroups,
+  firstLine,
   nextSort,
+  parentsDoneOf,
   pctOf,
   sameStepAcross,
+  shapeSignature,
   sortRows,
   spanLabel,
   stateRankOf,
   stepTimes,
+  stepWhy,
   type SortFacts,
   type TimelineAxis,
 } from '../stepviews'
@@ -324,6 +334,7 @@ describe('sameStepAcross', () => {
         wf('w_new', iso(-60), [step('plan', [])]),
       ],
       'plan',
+      shapeSignature([step('plan', [])]),
     )
     expect(found.map((f) => f.workflowId)).toEqual(['w_new', 'w_old', 'w_bad'])
   })
@@ -641,5 +652,376 @@ describe('the dependency line', () => {
     expect(inputFileOf(step('b', ['constructor']), 'constructor')).toBeNull()
     expect(inputFileOf(step('b', ['a'], { input_from: { a: 7 } as unknown as Record<string, string> }), 'a')).toBeNull()
     expect(inputFileOf(step('b', ['a'], { input_from: 'a.md' as unknown as Record<string, string> }), 'a')).toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// #112: the same step, in a workflow of the same shape
+// ---------------------------------------------------------------------------
+
+/** `n` parallel steps joining into `join`: an `n -> 1` workflow. */
+function fanIn(n: number, join = 'synthesis'): WorkflowStep[] {
+  const branches = Array.from({ length: n }, (_, i) => step(`part-${i}`, []))
+  return [...branches, step(join, branches.map((b) => b.step_id))]
+}
+
+/** Thirty steps: one root, a 28-wide fan, and the join. */
+function thirty(join = 'synthesis'): WorkflowStep[] {
+  const fan = Array.from({ length: 28 }, (_, i) => step(`scan-${i}`, ['plan']))
+  return [step('plan', []), ...fan, step(join, fan.map((f) => f.step_id))]
+}
+
+describe('#112: sameStepAcross compares a step only with workflows of the same shape', () => {
+  it('visits only the 5 -> 1 workflows when scrubbing from one, past the 30-step and the 19 -> 1 ones', () => {
+    expect(thirty()).toHaveLength(30)
+    const board = [
+      wf('w_30', iso(-10), thirty()),
+      wf('w_19', iso(-20), fanIn(19)),
+      wf('w_5a', iso(-30), fanIn(5)),
+      wf('w_30b', iso(-40), thirty()),
+      wf('w_5b', iso(-50), fanIn(5)),
+    ]
+    // Every one of them has a `synthesis` step: step_id alone would visit all five.
+    expect(board.every((w) => w.steps.some((s) => s.step_id === 'synthesis'))).toBe(true)
+    const from5 = sameStepAcross(board, 'synthesis', shapeSignature(fanIn(5)))
+    expect(from5.map((f) => f.workflowId)).toEqual(['w_5a', 'w_5b'])
+    const from30 = sameStepAcross(board, 'synthesis', shapeSignature(thirty()))
+    expect(from30.map((f) => f.workflowId)).toEqual(['w_30', 'w_30b'])
+    const from19 = sameStepAcross(board, 'synthesis', shapeSignature(fanIn(19)))
+    expect(from19.map((f) => f.workflowId)).toEqual(['w_19'])
+  })
+
+  it('keys the shape on the level widths AND the step count', () => {
+    // Same widths, same count: the same shape, whatever the steps are called.
+    expect(shapeSignature(fanIn(5))).toBe(shapeSignature(fanIn(5, 'merge')))
+    expect(shapeSignature(fanIn(5))).not.toBe(shapeSignature(fanIn(6)))
+    expect(shapeSignature(fanIn(5))).toBe(`${shapeOf(fanIn(5)).text} · 6`)
+    // A chain and a join of the same count are different shapes.
+    const chain = Array.from({ length: 6 }, (_, i) => step(`c${i}`, i === 0 ? [] : [`c${i - 1}`]))
+    expect(shapeSignature(chain)).not.toBe(shapeSignature(fanIn(5)))
+  })
+})
+
+// ---------------------------------------------------------------------------
+// #107: the wait split at the parents' finish, and outliers clamped
+// ---------------------------------------------------------------------------
+
+describe('#107: parentsDoneOf', () => {
+  const steps = [step('a', [], { task_id: 'ta' }), step('b', [], { task_id: 'tb' }), step('c', ['a', 'b'], { task_id: 'tc' })]
+
+  it('is the LATEST parent completion when every parent has finished', () => {
+    const tasks = new Map([
+      ['ta', task('ta', 'SUCCEEDED', { completed_at: iso(-500) })],
+      ['tb', task('tb', 'SUCCEEDED', { completed_at: iso(-300) })],
+    ])
+    expect(parentsDoneOf(steps[2]!, steps, tasks)).toEqual({ kind: 'at', at: T0 - 300_000 })
+  })
+
+  it('is pending while a parent is still going, none for a root, unknown for an unread parent', () => {
+    const tasks = new Map([
+      ['ta', task('ta', 'SUCCEEDED', { completed_at: iso(-500) })],
+      ['tb', task('tb', 'RUNNING', { started_at: iso(-400) })],
+    ])
+    expect(parentsDoneOf(steps[2]!, steps, tasks)).toEqual({ kind: 'pending', stepIds: ['b'] })
+    expect(parentsDoneOf(steps[0]!, steps, tasks)).toEqual({ kind: 'none' })
+    expect(parentsDoneOf(steps[2]!, steps, new Map([['ta', tasks.get('ta')!]]))).toEqual({ kind: 'unknown' })
+  })
+})
+
+describe('#107: stepTimes splits the wait at max(parent.completed_at)', () => {
+  it('draws waiting-on-parents, then queued, then ran', () => {
+    const t = stepTimes(
+      joined(task('c', 'SUCCEEDED', { created_at: iso(-600), started_at: iso(-200), completed_at: iso(-100) })),
+      T0,
+      { kind: 'at', at: T0 - 300_000 },
+    )
+    expect(t.spans.map((s) => [s.kind, (s.to - s.from) / 1000])).toEqual([
+      ['parents', 300],
+      ['waited', 100],
+      ['ran', 100],
+    ])
+    expect(t.parentsMs).toBe(300_000)
+    // THE SORT VALUE IS THE QUEUE: the part of the wait that was this step's.
+    expect(t.waitedMs).toBe(100_000)
+    expect(t.sentence).toMatch(/^waited 5m 0s on its parents, then queued 1m 40s until its start, then ran 1m 40s/)
+  })
+
+  it('draws a step still waiting on a parent as waiting on parents, open, and not as queued', () => {
+    const t = stepTimes(joined(task('c', 'QUEUED', { created_at: iso(-600) })), T0, { kind: 'pending', stepIds: ['b'] })
+    expect(t.spans.map((s) => [s.kind, s.open])).toEqual([['parents', true]])
+    expect(t.parentsMs).toBe(600_000)
+    expect(t.waitedMs).toBeNull()
+    expect(t.sentence).toContain('on its parents (b)')
+  })
+
+  it('splits a step still waiting after its parents finished, with the queued part open', () => {
+    const t = stepTimes(joined(task('c', 'READY', { created_at: iso(-600) })), T0, { kind: 'at', at: T0 - 120_000 })
+    expect(t.spans.map((s) => [s.kind, s.open])).toEqual([
+      ['parents', false],
+      ['waiting', true],
+    ])
+    expect(t.waitedMs).toBe(120_000)
+    expect(t.waitedOpen).toBe(true)
+  })
+
+  it('does not split what it cannot place: a root, or a parent nobody read', () => {
+    const done = task('c', 'SUCCEEDED', { created_at: iso(-600), started_at: iso(-200), completed_at: iso(-100) })
+    for (const parents of [{ kind: 'none' as const }, { kind: 'unknown' as const }]) {
+      const t = stepTimes(joined(done), T0, parents)
+      expect(t.spans.map((s) => s.kind)).toEqual(['waited', 'ran'])
+      expect(t.waitedMs).toBe(400_000)
+      expect(t.parentsMs).toBeNull()
+    }
+  })
+})
+
+/** The drawn (broken) width of an axis, in ms: its real width less every break. */
+function drawnWidth(axis: TimelineAxis): number {
+  return axis.t1 - axis.t0 - axis.breaks.reduce((n, b) => n + Math.max(0, Math.min(axis.t1, b.to) - Math.max(axis.t0, b.from)), 0)
+}
+
+describe('#107: axisOf clamps an outlier wait beyond the 95th percentile', () => {
+  /** Twenty finished steps with a ten-second wait and a one-minute run each,
+   *  and one whose wait was three hours. */
+  function rows() {
+    const out = Array.from({ length: 20 }, (_, i) =>
+      stepTimes(
+        joined(task(`s${i}`, 'SUCCEEDED', { created_at: iso(-600), started_at: iso(-590), completed_at: iso(-530) })),
+        T0,
+      ),
+    )
+    out.push(
+      stepTimes(
+        joined(task('slow', 'SUCCEEDED', { created_at: iso(-600 - 3 * 3600), started_at: iso(-590), completed_at: iso(-530) })),
+        T0,
+      ),
+    )
+    return out
+  }
+
+  it('cuts the outlier to the threshold, keeps its end, and keeps the real length to print', () => {
+    const r = rows()
+    const axis = axisOf(r, T0, null)!
+    // 42 spans, sorted: twenty 10s waits, twenty-one 60s runs, one 3h wait.
+    // The nearest-rank 95th percentile is the 40th: 60s.
+    expect(axis.clampMs).toBe(60_000)
+    const slow = r[20]!.spans[0]!
+    const drawn = drawnSpan(axis, slow)
+    expect(drawn.clampedMs).toBe(slow.to - slow.from)
+    expect(drawn.to).toBe(slow.to)
+    expect(drawn.breaks).toEqual([slow.from])
+    // Drawn at the threshold: the time before its last minute is taken out.
+    const drawnMs = ((pctOf(axis, slow.to) - pctOf(axis, slow.from)) / 100) * drawnWidth(axis)
+    expect(drawnMs).toBeCloseTo(60_000, 3)
+    // An ordinary span is drawn as it is.
+    const ordinary = drawnSpan(axis, r[0]!.spans[0]!)
+    expect(ordinary.clampedMs).toBeNull()
+    // And a RUN is never clamped, however long: only a wait is cut.
+    expect(drawnSpan(axis, { kind: 'ran', from: T0 - 9e6, to: T0, open: false }).clampedMs).toBeNull()
+  })
+
+  it('BREAKS THE AXIS when every step is submitted together and one starts hours late', () => {
+    // The ordinary case: twenty roots submitted at -600s run in minutes; one
+    // more, submitted with them, queues three hours and then runs a minute.
+    // Trimming the front of its wait alone leaves the axis three hours long,
+    // because its run still ends three hours out.
+    const late = 3 * 3600
+    const r = Array.from({ length: 20 }, (_, i) =>
+      stepTimes(
+        joined(task(`s${i}`, 'SUCCEEDED', { created_at: iso(-late - 600), started_at: iso(-late - 590), completed_at: iso(-late - 530) })),
+        T0,
+      ),
+    )
+    r.push(
+      stepTimes(
+        joined(task('slow', 'SUCCEEDED', { created_at: iso(-late - 600), started_at: iso(-60), completed_at: iso(0) })),
+        T0,
+      ),
+    )
+    const axis = axisOf(r, T0, Date.parse(iso(-late - 600)))!
+    expect(axis.clampMs).toBe(60_000)
+    expect(axis.breaks.length).toBe(1)
+    // THE DRAWN AXIS IS MINUTES, NOT HOURS.
+    expect(drawnWidth(axis)).toBeLessThan(5 * 60_000)
+    // Every other row's run is a readable bar, not a sliver.
+    const ran = r[0]!.spans.find((s) => s.kind === 'ran')!
+    expect(pctOf(axis, ran.to) - pctOf(axis, ran.from)).toBeGreaterThan(20)
+    // The slow step's run keeps its real length on the drawn axis: runs are never cut.
+    const slowRan = r[20]!.spans.find((s) => s.kind === 'ran')!
+    expect(((pctOf(axis, slowRan.to) - pctOf(axis, slowRan.from)) / 100) * drawnWidth(axis)).toBeCloseTo(60_000, 3)
+    // And the break is only where nothing else was drawn: after the others ended.
+    expect(axis.breaks[0]!.from).toBeGreaterThanOrEqual(ran.to)
+    // A tick after the break reads the REAL time since the start, hours on.
+    expect(axis.ticks.length).toBeLessThanOrEqual(6)
+    expect(axis.ticks.at(-1)!.label).toMatch(/^\+3h/)
+  })
+
+  it('never takes out time another step ran in', () => {
+    // An outlier queue with another step running inside it: the run is drawn
+    // whole, so only the gaps either side of it are taken out.
+    const others = Array.from({ length: 20 }, (_, i) =>
+      stepTimes(joined(task(`s${i}`, 'SUCCEEDED', { created_at: iso(-7200), started_at: iso(-7190), completed_at: iso(-7130) })), T0),
+    )
+    const mid = stepTimes(joined(task('mid', 'SUCCEEDED', { created_at: iso(-3600), started_at: iso(-3600), completed_at: iso(-3540) })), T0)
+    const slow = stepTimes(joined(task('slow', 'SUCCEEDED', { created_at: iso(-7200), started_at: iso(-60), completed_at: iso(0) })), T0)
+    const axis = axisOf([...others, mid, slow], T0, null)!
+    const run = mid.spans.find((s) => s.kind === 'ran')!
+    for (const b of axis.breaks) expect(b.to <= run.from || b.from >= run.to, 'a break cuts a run').toBe(true)
+    expect(axis.breaks.length).toBe(2)
+    expect(drawnSpan(axis, slow.spans[0]!).breaks.length).toBe(2)
+  })
+
+  it('clamps nothing on a small workflow, where the 95th percentile is the longest span', () => {
+    const axis = axisOf(rows().slice(18), T0, null)!
+    for (const s of rows().slice(18).flatMap((x) => x.spans)) expect(drawnSpan(axis, s).clampedMs).toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// #105: a failure's cause
+// ---------------------------------------------------------------------------
+
+describe('#105: the cause of a failure', () => {
+  it('takes the first line, and normalises a cause so the same failure groups', () => {
+    expect(firstLine('input collision: plan.md\nTraceback ...')).toBe('input collision: plan.md')
+    expect(failureCause('input collision: `plan.md` is staged by both a and b\nmore')).toBe('input collision')
+    expect(failureCause('Input collision: notes.md from tsk_1234abcd')).toBe('input collision')
+    expect(failureCause('exit 1: the agent crashed')).toBe('exit 1')
+    expect(failureCause('lease lost')).toBe('lease lost')
+    expect(failureCause(null)).toBeNull()
+    expect(failureCause('   \n')).toBeNull()
+  })
+
+  it('scrubs a quoted value that lands before the first ": ", so two such failures still group', () => {
+    // failureCause splits on the first ": " and only scrubs the part BEFORE
+    // it -- the head. Every other fixture here quotes AFTER that colon, so
+    // this is the only assertion that exercises the scrub on the head itself.
+    const a = failureCause("input collision 'a.txt' vs 'b.txt': step x")
+    const b = failureCause("input collision 'c.txt' vs 'd.txt': step y")
+    expect(a).toBe('input collision … vs …')
+    expect(a).toBe(b)
+  })
+
+  it('groups a workflow’s failed steps by cause, largest first', () => {
+    const tasks = new Map<string, Task>()
+    const steps: WorkflowStep[] = []
+    const add = (id: string, state: TaskState, last_error: string | null) => {
+      tasks.set(`t_${id}`, task(`t_${id}`, state, { last_error }))
+      steps.push(step(id, [], { task_id: `t_${id}` }))
+    }
+    add('a', 'FAILED', 'input collision: a.md')
+    add('b', 'FAILED', 'exit 1: boom')
+    add('c', 'FAILED', 'input collision: c.md')
+    add('d', 'FAILED', 'Input collision: d.md')
+    add('e', 'FAILED', 'input collision: e.md')
+    add('f', 'SUCCEEDED', null)
+    add('g', 'FAILED', null)
+    expect(failureGroups(steps, tasks)).toEqual([
+      { cause: 'input collision', n: 4 },
+      { cause: 'exit 1', n: 1 },
+      { cause: null, n: 1 },
+    ])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// #106: why a step is not running
+// ---------------------------------------------------------------------------
+
+describe('#106: stepWhy', () => {
+  const steps = [
+    step('plan', [], { task_id: 't_plan' }),
+    step('build', ['plan'], { task_id: 't_build' }),
+    step('ship', ['build', 'plan'], { task_id: 't_ship' }),
+    step('later', ['ship']),
+  ]
+
+  it('says a READY step held by a pool why, in the words the Agents list uses, with its ink', () => {
+    const t = task('t_build', 'READY', {
+      blocked_by: [{ pool: 'resource:browser', reason: 'RESOURCE_CLASS_LIMIT', limit: 0, active: 0 }],
+    })
+    const tasks = new Map([['t_plan', task('t_plan', 'SUCCEEDED', { completed_at: iso(-60) })], ['t_build', t]])
+    const why = stepWhy(steps[1]!, joined(t), steps, tasks, null)!
+    expect(why.text).toMatch(/paused by operator \(limit 0\)/i)
+    expect(why.warn).toBe(true)
+  })
+
+  it('says a routine park in plain ink, and a step waiting on its parents names them', () => {
+    const parked = task('t_build', 'PARKED', { park_reason: 'QUOTA_EXHAUSTED' })
+    const tasks = new Map([['t_plan', task('t_plan', 'SUCCEEDED', { completed_at: iso(-60) })], ['t_build', parked]])
+    const p = stepWhy(steps[1]!, joined(parked), steps, tasks, null)!
+    expect(p.text.length).toBeGreaterThan(0)
+    expect(p.warn).toBe(false)
+    const queued = task('t_ship', 'QUEUED')
+    tasks.set('t_ship', queued)
+    const q = stepWhy(steps[2]!, joined(queued), steps, tasks, null)!
+    expect(q.text).toBe('waiting on build')
+    expect(q.warn).toBe(false)
+  })
+
+  it('upgrades the cascade copy to name the parent that failed, on ANY parent failing', () => {
+    const tasks = new Map([
+      ['t_plan', task('t_plan', 'SUCCEEDED', { completed_at: iso(-300) })],
+      ['t_build', task('t_build', 'DEAD_LETTERED', { completed_at: iso(-200) })],
+    ])
+    const cascade = task('t_ship', 'CANCELLED', { completed_at: iso(-190), depends_on: ['build', 'plan'] })
+    tasks.set('t_ship', cascade)
+    expect(stepWhy(steps[2]!, joined(cascade), steps, tasks, null)!.text).toBe('blocked: build failed')
+    // A person's cancel is not a cascade, whatever its parents did.
+    const asked = { ...cascade, cancel_requested: true }
+    expect(stepWhy(steps[2]!, joined(asked), steps, tasks, null)!.text).toBe('Cancelled by request.')
+    // And a step with no task yet under a failed parent says so too.
+    tasks.set('t_ship', task('t_ship', 'FAILED', { last_error: 'boom' }))
+    expect(stepWhy(steps[3]!, { kind: 'unstarted' }, steps, tasks, null)!.text).toBe('blocked: ship failed')
+  })
+
+  it('upgrades a still-waiting step (READY, PARKED or QUEUED) to the cascade copy when a parent failed, over its own state’s words', () => {
+    // These three all fall into stepWhy's `default:` switch arm. Each one
+    // carries its OWN reason to show (a pool block, a park reason, or
+    // nothing but WAITING_WORDS) -- proving the cascade line wins only if
+    // that reason is demonstrably different from "blocked: plan failed".
+    const failedPlan = task('t_plan', 'FAILED', { completed_at: iso(-300), last_error: 'boom' })
+    const tasks = new Map([['t_plan', failedPlan]])
+
+    const queuedBuild = task('t_build', 'QUEUED')
+    tasks.set('t_build', queuedBuild)
+    expect(stepWhy(steps[1]!, joined(queuedBuild), steps, tasks, null)!.text).toBe('blocked: plan failed')
+
+    const readyBuild = task('t_build', 'READY', {
+      blocked_by: [{ pool: 'resource:browser', reason: 'RESOURCE_CLASS_LIMIT', limit: 0, active: 0 }],
+    })
+    tasks.set('t_build', readyBuild)
+    expect(stepWhy(steps[1]!, joined(readyBuild), steps, tasks, null)!.text).toBe('blocked: plan failed')
+
+    const parkedBuild = task('t_build', 'PARKED', { park_reason: 'QUOTA_EXHAUSTED' })
+    tasks.set('t_build', parkedBuild)
+    expect(stepWhy(steps[1]!, joined(parkedBuild), steps, tasks, null)!.text).toBe('blocked: plan failed')
+  })
+
+  it('gives a failure its first line, the whole error underneath, and nothing for a running or finished step', () => {
+    const failed = task('t_build', 'FAILED', { last_error: 'input collision: plan.md\nstaged twice' })
+    const f = stepWhy(steps[1]!, joined(failed), steps, new Map([['t_build', failed]]), null)!
+    expect(f).toMatchObject({ kind: 'cause', text: 'input collision: plan.md', full: 'input collision: plan.md\nstaged twice', warn: true })
+    const running = task('t_build', 'RUNNING', { started_at: iso(-10) })
+    expect(stepWhy(steps[1]!, joined(running), steps, new Map([['t_build', running]]), null)).toBeNull()
+    const ok = task('t_build', 'SUCCEEDED', { started_at: iso(-10), completed_at: iso(-5) })
+    expect(stepWhy(steps[1]!, joined(ok), steps, new Map([['t_build', ok]]), null)).toBeNull()
+  })
+})
+
+describe('#105/#106: a node that carries a cause or a why line is measured for it', () => {
+  it('adds one micro line and its gap to the node, and the layout gives the level that height', () => {
+    const s = [step('a', []), step('b', ['a'])]
+    // One `.node-note` at --t-micro/--lh-micro (17.4) and the `--ctl-s1` gap
+    // above it, rounded up the way every node height is: 22.
+    const line = Math.ceil(12 * 1.45 + 4)
+    expect(heightOf(s[0]!, 'figures', undefined, true)).toBe(nodeHeightAt('figures') + line)
+    expect(heightOf(s[1]!, 'names', 200, true) - heightOf(s[1]!, 'names', 200)).toBe(line)
+    const plain = layoutOf(s)
+    const noted = layoutOf(s, undefined, 'figures', new Set(['b']))
+    const h = (l: typeof plain, id: string) => l.nodes.find((n) => n.step.step_id === id)!.h
+    expect(h(noted, 'b')).toBe(h(plain, 'b') + line)
+    expect(h(noted, 'a')).toBe(h(plain, 'a'))
+    expect(noted.height).toBe(plain.height + line)
   })
 })

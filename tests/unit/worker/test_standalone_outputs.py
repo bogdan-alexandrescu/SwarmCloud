@@ -53,7 +53,7 @@ from agent_worker.objectstore import LocalObjectStore
 from agent_worker.runners.base import RunnerContext
 from swarm_common.states import TaskState
 
-from conftest import TENANT, seed_attempt
+from conftest import TENANT, record_as_earlier_attempt, seed_attempt
 
 PROFILE = "claude-code"
 
@@ -439,11 +439,14 @@ def test_a_resumed_attempt_uploads_what_an_earlier_attempt_created(
         def warning(self, *a: Any, **k: Any) -> None: ...
         def error(self, *a: Any, **k: Any) -> None: ...
 
-    CheckpointManager(
+    record = CheckpointManager(
         store=store, tenant_id=TENANT, task_id="task_1", attempt_id="att_0",
         generation=1, logger=_Quiet(),
     ).create(earlier)
     _seed(db, {"write": {"primes.txt": PRIMES}})
+    # Attempt 0 recorded it, as a real earlier attempt does: a worker restores
+    # nothing else, and nothing at all on a first attempt (#347).
+    record_as_earlier_attempt(db, record)
 
     assert _run(worker_factory) == ExitCode.OK
     _succeeded(db)
