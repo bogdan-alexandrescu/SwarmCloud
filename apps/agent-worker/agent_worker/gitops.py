@@ -409,6 +409,14 @@ def _git_env(private_dir: Path) -> dict[str, str]:
         # unfolded (#259 review, M1). `GIT_NO_REPLACE_OBJECTS=1` makes every
         # git command below read the real object instead.
         "GIT_NO_REPLACE_OBJECTS": "1",
+        # The same for `.git/info/grafts`, which the agent can also write:
+        # `rev-list --first-parent` and `merge-base` follow a graft even with
+        # replacement off, so a grafted parent made the replay's list skip a
+        # commit whose tree then shipped inside the next kept one (#259
+        # re-review). An empty graft file means no grafts. The replay also
+        # checks the chain itself against each commit's recorded parent
+        # (`lifecycle._first_leaking_commit`), which covers `.git/shallow`.
+        "GIT_GRAFT_FILE": "/dev/null",
     }
 
 
@@ -643,16 +651,21 @@ def _git_stream(
     """
     read_fd, write_fd = os.pipe()
     failure: list[BaseException] = []
+    consumed = [0]
 
     def drain() -> None:
         with os.fdopen(read_fd, "rb", buffering=0) as source:
             while True:
                 try:
                     chunk = source.read(GIT_STREAM_CHUNK_BYTES)
-                except OSError:
+                except OSError as exc:
+                    # FAIL CLOSED: a stream this side could not read is a
+                    # stream the scan did not see.
+                    failure.append(GitError(f"git {slug}: the output could not be read ({exc})"))
                     return
                 if not chunk:
                     return
+                consumed[0] += len(chunk)
                 if failure:
                     continue
                 try:
@@ -681,11 +694,22 @@ def _git_stream(
         # The pump reopened the pipe through /dev/fd and has closed its copy;
         # closing this one is what lets the reader see the end of the stream.
         os.close(write_fd)
-        reader.join()
+        # With a deadline: a pump that never closed its end would otherwise
+        # hold this call, and the publish, past the git command's own.
+        reader.join(timeout=max(timeout_seconds, 1))
+    if reader.is_alive():
+        raise GitError(f"git {slug}: its output was still open after {timeout_seconds}s")
     if failure:
         raise failure[0]
     if result.timed_out:
         raise GitError(f"git {slug} timed out after {timeout_seconds}s")
+    # FAIL CLOSED: every byte the pump wrote must have reached the consumer,
+    # or the scan passed over output it never read.
+    if consumed[0] != result.stdout_bytes:
+        raise GitError(
+            f"git {slug}: {result.stdout_bytes} bytes were written and "
+            f"{consumed[0]} read; the stream was not scanned whole"
+        )
     return result.exit_code if result.exit_code is not None else -1
 
 

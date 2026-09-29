@@ -5474,22 +5474,12 @@ _MENTION_RE = re.compile(r"(?<![A-Za-z0-9_.`/@-])@[A-Za-z0-9][A-Za-z0-9-]*(?:/[A
 #: one for a mention inside either (owner decision, 2026-09-28), so
 #: `@pytest.fixture` in a code block does not refuse a body.
 #:
-#: TWO BRANCHES, NOT ONE (#259 review, M3): CommonMark refuses a backtick
-#: fence (``` ... ```) whose INFO STRING itself contains a backtick -- that
-#: line is not a fence at all, so treating it as one hid whatever followed,
-#: including a real mention, until the next line that happened to look like a
-#: close. A tilde fence (~~~) has no such restriction. Each branch names its
-#: own fence group (`btick`/`tilde`, not one name reused) because a Python
-#: pattern cannot define the same group name twice even in different
-#: alternatives.
-_FENCED_RE = re.compile(
-    r"^[ \t]{0,3}(?:"
-    r"(?P<btick>`{3,})[^\n`]*\n.*?(?:^[ \t]{0,3}(?P=btick)[`~]*[ \t]*$|\Z)"
-    r"|"
-    r"(?P<tilde>~{3,})[^\n]*\n.*?(?:^[ \t]{0,3}(?P=tilde)[`~]*[ \t]*$|\Z)"
-    r")",
-    re.MULTILINE | re.DOTALL,
-)
+#: CommonMark refuses a backtick fence whose INFO STRING itself contains a
+#: backtick (#259 review, M3) -- that line is not a fence at all, so treating
+#: it as one hid whatever followed, including a real mention. A tilde fence
+#: has no such restriction. Fences are found line by line in `_without_code`
+#: (`_FENCE_LINE_RE`), so an HTML block round one can be told apart.
+#:
 #: An inline code span, per CommonMark: a run of backticks, closed by a run of
 #: the same length, and THE SPAN CANNOT CROSS A BLANK LINE -- a blank line is a
 #: paragraph break, and CommonMark never lets a code span span one (a stray
@@ -5500,11 +5490,99 @@ _FENCED_RE = re.compile(
 #: span" and hid the mention (#259 review, M3). `(?!\n[ \t]*\n)` refuses to
 #: consume into the start of a blank line, so the span simply fails to close
 #: across one instead of swallowing everything up to the next stray backtick.
-_CODE_SPAN_RE = re.compile(r"(?P<ticks>`+)(?!`)(?:(?!\n[ \t]*\n)[\s\S])+?(?<!`)(?P=ticks)(?!`)")
+#:
+#: AN ESCAPED BACKTICK OPENS NOTHING (#259 re-review): `\`@octocat\`` is two
+#: literal backticks round a real mention. The opening run must be a whole
+#: run -- not preceded by another backtick -- and not preceded by a
+#: backslash. That also refuses `\\`` (an escaped backslash, then a real
+#: opener), which errs towards prose: a false refusal costs the agent's
+#: wording, a false pass pings someone.
+_CODE_SPAN_RE = re.compile(
+    r"(?<![\\`])(?P<ticks>`+)(?!`)(?:(?!\n[ \t]*\n)[\s\S])+?(?<!`)(?P=ticks)(?!`)"
+)
+
+#: A fence line: up to three spaces, then three or more backticks or tildes.
+#: A backtick fence's info string may not hold a backtick (CommonMark), so
+#: such a line is prose, not a fence.
+_FENCE_LINE_RE = re.compile(r"^ {0,3}(?P<fence>`{3,}|~{3,})(?P<info>[^\n]*)$")
+
+#: The start of an HTML block: up to three spaces, then `<` and a tag name,
+#: `/`, `!` or `?`. Deliberately wider than CommonMark's seven start
+#: conditions (a type-7 tag cannot interrupt a paragraph there): whatever is
+#: read as HTML is kept as prose, so reading too much as HTML errs safe.
+_HTML_START_RE = re.compile(r"^ {0,3}<[A-Za-z/!?]")
+
+#: The HTML blocks that do not end at a blank line, with what ends them.
+_HTML_ENDS: tuple[tuple[re.Pattern[str], re.Pattern[str]], ...] = (
+    (re.compile(r"^ {0,3}<(?:pre|script|style|textarea)(?:[\s>]|$)", re.I),
+     re.compile(r"</(?:pre|script|style|textarea)>", re.I)),
+    (re.compile(r"^ {0,3}<!--"), re.compile(r"-->")),
+    (re.compile(r"^ {0,3}<\?"), re.compile(r"\?>")),
+    (re.compile(r"^ {0,3}<!\[CDATA\["), re.compile(r"\]\]>")),
+    (re.compile(r"^ {0,3}<![A-Za-z]"), re.compile(r">")),
+)
 
 
 def _without_code(text: str) -> str:
-    return _CODE_SPAN_RE.sub(" ", _FENCED_RE.sub("\n", text))
+    """`text` with the code GitHub would not notify from taken out.
+
+    ERRS TOWARDS PROSE (#259 re-review). Only two things are removed:
+
+    * a fenced block whose opening line is a valid CommonMark fence and
+      which is not inside an HTML block, through its closing fence (a fence
+      of the same character at least as long) or the end of the text, as
+      CommonMark runs an unclosed fence;
+    * an inline code span, per `_CODE_SPAN_RE`, inside a run of prose lines
+      -- never across a fence or an HTML block, which end a paragraph.
+
+    Everything else is prose, where a mention refuses: an indented block, a
+    fence inside a block quote or a list, and every line of an HTML block
+    (`<details>`, `<div>` ...), whose content GitHub does not parse as
+    Markdown code and does notify from. An HTML block runs to its end
+    marker for the five kinds that have one (`_HTML_ENDS`) and otherwise to
+    the next blank line.
+    """
+    out: list[str] = []
+    prose: list[str] = []
+
+    def flush_prose() -> None:
+        if prose:
+            out.append(_CODE_SPAN_RE.sub(" ", "".join(prose)))
+            prose.clear()
+
+    lines = text.splitlines(keepends=True)
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        bare = line.rstrip("\r\n")
+        fence = _FENCE_LINE_RE.match(bare)
+        if fence and not (fence.group("fence")[0] == "`" and "`" in fence.group("info")):
+            flush_prose()
+            char, size = fence.group("fence")[0], len(fence.group("fence"))
+            closing = re.compile(r"^ {0,3}" + re.escape(char) + r"{%d,}[ \t]*$" % size)
+            i += 1
+            while i < len(lines) and not closing.match(lines[i].rstrip("\r\n")):
+                i += 1
+            i += 1  # past the closing fence, or past the end
+            out.append("\n")
+            continue
+        if _HTML_START_RE.match(bare):
+            flush_prose()
+            end = next((stop for start, stop in _HTML_ENDS if start.match(bare)), None)
+            while i < len(lines):
+                current = lines[i]
+                out.append(current)
+                i += 1
+                if end is not None:
+                    if end.search(current):
+                        break
+                elif i < len(lines) and not lines[i].strip():
+                    break
+            continue
+        prose.append(line)
+        i += 1
+    flush_prose()
+    return "".join(out)
 
 
 def _carries_mention(text: str) -> bool:
@@ -5894,11 +5972,18 @@ def _first_leaking_commit(
     timeout_seconds: int,
     logger: Any,
     overlap: int = SCAN_OVERLAP_CHARS,
+    floor: str = "",
 ) -> int | None:
     """The 1-based index of the first agent commit whose ADDED text `leaks`, or None.
 
-    Each commit is diffed against its ORIGINAL first parent (the empty tree
-    for a parentless first commit), with `--text` so a file git would call
+    `floor` is the clone base the first commit must sit on ("" for an empty
+    repository, whose first commit has no parent). A commit whose first
+    parent is not the entry before it in `shas` (or `floor`) is returned as
+    a hit too: the list is not the chain the replay would write.
+
+    Each commit is diffed against the tree it will sit on once replayed --
+    the entry before it, which the chain check makes its first parent (the
+    empty tree for a parentless first commit) -- with `--text` so a file git would call
     binary is still shown byte for byte, and `--no-renames` so a moved file's
     content is shown rather than only its new name. `leaks` is asked about
     what each file ADDS, `+` removed: a removed line was in the parent's tree
@@ -5920,15 +6005,29 @@ def _first_leaking_commit(
 
     empty_tree: str | None = None
     for index, sha in enumerate(shas, 1):
-        if sha == keep:
-            continue
         code, raw, _ = run([*git, "cat-file", "commit", sha], "publish-scan-read")
         if code != 0:
             raise GitError(f"could not read commit {sha[:12]}")
         header = raw.partition("\n\n")[0]
         parents = [line[len("parent "):].strip() for line in header.split("\n") if line.startswith("parent ")]
-        if parents:
-            before = parents[0]
+        # EACH COMMIT IS SCANNED AGAINST THE TREE IT WILL ACTUALLY SIT ON
+        # (#259 re-review, grafts). The replay writes commit i on the
+        # rewritten commit i-1 (or the base for the first), so the diff that
+        # matters is against THAT, and it is the same as the commit's own
+        # first parent only when the list is an unbroken chain. A list that
+        # skips a commit -- `.git/info/grafts`, which `rev-list` and
+        # `merge-base` follow and `GIT_GRAFT_FILE=/dev/null` now switches off
+        # (`gitops._git_env`) -- would have scanned each commit against a
+        # parent the push never sends, and shipped a skipped commit's secret
+        # in the next kept tree. A broken chain folds: the index is returned.
+        expected = shas[index - 2] if index > 1 else (floor or None)
+        actual = parents[0] if parents else None
+        if actual != expected:
+            return index
+        if sha == keep:
+            continue
+        if expected is not None:
+            before = expected
         else:
             if empty_tree is None:
                 code, made, _ = run([*git, "hash-object", "-t", "tree", "/dev/null"], "publish-scan-empty")
@@ -5944,7 +6043,7 @@ def _first_leaking_commit(
         code, hit = _scan_diff_stream(
             [
                 *git, "-c", "core.quotePath=false", "diff", "--no-color", "--no-ext-diff",
-                "--no-textconv", "--text", "--no-renames", "--src-prefix=a/",
+                "--no-textconv", "--text", "--no-renames", "--submodule=short", "--src-prefix=a/",
                 "--dst-prefix=b/", "-U0", before, sha, "--",
             ],
             leaks=leaks,
@@ -6032,7 +6131,7 @@ def final_tree_leak(
     code, hit = _scan_diff_stream(
         [
             *g, "diff", "--no-color", "--no-ext-diff", "--no-textconv", "--text",
-            "--no-renames", "--src-prefix=a/", "--dst-prefix=b/", "-U0",
+            "--no-renames", "--submodule=short", "--src-prefix=a/", "--dst-prefix=b/", "-U0",
             before, "HEAD", "--",
         ],
         leaks=leaks,
@@ -6156,6 +6255,7 @@ def replay_agent_commits(
             keep=keep,
             leaks=leaks,
             overlap=overlap,
+            floor=floor,
             git=g,
             repo=Path(repo),
             private_dir=private_dir,
