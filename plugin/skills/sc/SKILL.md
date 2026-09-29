@@ -54,6 +54,13 @@ dispatch to another cluster without asking.
 | which deployment, and who am I on it? | `uv run sc whoami` |
 | what may I actually run? | `uv run swarm profiles` |
 
+The task view says what the agent produced before its code: each artifact by
+name and size, the runner's own summary, the exit code, the duration, and the
+inputs staged into it from upstream steps. "Artifacts are uploaded when the
+attempt ends" means the task has not finished, not that it produced nothing.
+Reading an artifact's content is the delegate skill's job, through the API,
+which redacts it at read time; this skill lists and never fetches.
+
 Add `--json` for the numbers, `--width N` to force a column count, `--ascii`
 for a terminal without the bar glyphs. Put them **after** the view's name —
 `uv run sc accounts --json`, `uv run sc overview --json` — because that is

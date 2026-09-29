@@ -1,0 +1,272 @@
+# The `ready` label queues a pull request for GitHub's native auto-merge (#262).
+#
+# WHY THIS EXISTS. A green pull request labelled `ready` used to wait for a
+# merge watcher running in an operator's session: no session, no merge. Owner
+# decision, 2026-09-28: GitHub merges it. Adding the label enables auto-merge;
+# GitHub itself performs the merge once the base branch's required checks pass
+# at the pull request's head. Nothing here waits for CI or polls.
+#
+# THE MERGE MUST STILL START THE RELEASE. A merge performed with the default
+# GITHUB_TOKEN starts no workflow: GitHub drops every event that token causes
+# except workflow_dispatch and repository_dispatch. So the push to main would
+# run neither application.yml -- whose `build images` job is the one build of
+# the commit -- nor release.yml, which waits for that build. Nothing would go
+# red; main would just stop being built and deployed. A `workflow_run` or a
+# second `push` workflow does not rescue it: both hang off an event the
+# GITHUB_TOKEN merge never raised, and this workflow's own run ends when
+# auto-merge is ENABLED, long before GitHub merges. So auto-merge is enabled
+# with a GitHub App's installation token. GitHub attributes the eventual merge
+# to whoever enabled auto-merge, and an App's push starts workflows like a
+# person's does. The App (vars.MERGE_APP_ID, secrets.MERGE_APP_PRIVATE_KEY) is
+# something only the owner can create; docs/ci.md says how. Without it this
+# workflow refuses and says so -- it never falls back to the GITHUB_TOKEN.
+#
+# pull_request_target, BECAUSE a `pull_request` run from a fork gets a
+# read-only token and no secrets. The price is that this job runs with a write
+# token on an event the pull request's author can influence, so:
+#
+#   * it never checks out and never runs the pull request's code. It reads
+#     three event fields and calls `gh`; that is all;
+#   * the title reaches the shell through `env:` only. A `${{ }}` expansion of
+#     the title inside `run:` would be the title executed as bash;
+#   * its GITHUB_TOKEN reads the base branch, the head commit's check runs and
+#     comments, nothing more. The App token is minted after the gate, scoped
+#     to this repository and to contents + pull-requests + workflows -- the
+#     last one so that a pull request touching .github/workflows also
+#     auto-merges (owner decision, 2026-09-28). Requesting it here grants
+#     nothing until the owner creates the App with that permission;
+#     docs/ci.md says so.
+#
+# `READY` IS BOUND TO THE COMMIT IT WAS PUT ON, NOT TO THE NUMBER. Both `gh pr
+# merge` calls below carry `--match-head-commit`, so a push after the label --
+# including the SwarmCloud worker's own push, or a fork push in the seconds
+# between the label and this job -- makes GitHub refuse the merge rather than
+# squash a commit nobody reviewed. The `disable` job below is the other half:
+# on `synchronize`, `reopened`, or an `edited` that changes the base, it turns
+# auto-merge off and removes `ready`, because a still-armed auto-merge on an
+# old head would otherwise merge the next time the required checks go green.
+#
+# tests/unit/scripts/test_auto_merge_workflow.py holds every point above and
+# runs both jobs' shells against a fake `gh`.
+
+name: auto-merge
+
+on:
+  pull_request_target:
+    types: [labeled, synchronize, reopened, edited]
+
+permissions: {}
+
+concurrency:
+  # Two `ready` labels in a row on one pull request: the second run is a no-op.
+  group: auto-merge-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  enable:
+    name: queue for auto-merge
+    runs-on: ubuntu-24.04
+    if: github.event.label.name == 'ready' && github.event.pull_request.state == 'open'
+    permissions:
+      # contents: read -- the base branch's protection summary (the gate).
+      # checks: read -- the head commit's check runs (the gate, item 5): a
+      #   path-filtered workflow's checks are not required, but one that DID
+      #   run and is failing or still running must still hold the merge.
+      # pull-requests: write -- the comment that explains a refusal.
+      contents: read
+      checks: read
+      pull-requests: write
+    env:
+      GH_REPO: ${{ github.repository }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      PR_TITLE: ${{ github.event.pull_request.title }}
+      BASE_REF: ${{ github.event.pull_request.base.ref }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - name: refuse what must not be queued, and say why on the pull request
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MERGE_APP_ID: ${{ vars.MERGE_APP_ID }}
+          HAS_MERGE_APP_KEY: ${{ secrets.MERGE_APP_PRIVATE_KEY != '' }}
+        run: |
+          set -euo pipefail
+          refuse() {
+            local body
+            body="$(mktemp)"
+            {
+              echo "**Not queued for auto-merge.** $1"
+              echo
+              echo "Fix that, then remove and re-add the \`ready\` label."
+              echo "(.github/workflows/auto-merge.yml)"
+            } >"${body}"
+            gh pr comment "${PR_NUMBER}" --body-file "${body}"
+            {
+              echo "### Not queued for auto-merge"
+              echo
+              cat "${body}"
+            } >>"${GITHUB_STEP_SUMMARY}"
+            echo "::error::not queued for auto-merge: $1"
+            exit 1
+          }
+
+          # 1. A worker's placeholder title. The squash subject below IS the
+          #    title, so queuing this would put "[swarm] task_..." on main as a
+          #    headline -- the #238 defect with a different string. Quoted, so
+          #    the prefix is literal: an unquoted [swarm] is a glob bracket
+          #    expression matching one character. Case- and leading-whitespace-
+          #    insensitive: "[Swarm] task_" or "  [swarm] task_" is still the
+          #    placeholder, not a fact-style headline that happens to differ in
+          #    case.
+          no_leading_space="${PR_TITLE#"${PR_TITLE%%[![:space:]]*}"}"
+          lower_title="$(printf '%s' "${no_leading_space}" | tr '[:upper:]' '[:lower:]')"
+          if [[ "${lower_title}" == "[swarm] task_"* ]]; then
+            refuse "The title starts \`[swarm] task_\`: it is the worker's placeholder, and the squash commit's headline on main is the pull request's title. Retitle it as a fact-style headline that says what the change does."
+          fi
+
+          # 2. Only main is protected and only main's push starts the release
+          #    (see the top of this file). A pull request based on anything
+          #    else has no required checks for auto-merge to gate on and no
+          #    release for the merge to start.
+          if [[ "${BASE_REF}" != "main" ]]; then
+            refuse "The base branch is \`${BASE_REF}\`, not \`main\`. Auto-merge only ever targets main."
+          fi
+
+          # 3. Nothing to wait for. With no required check on the base branch,
+          #    auto-merge has no condition to hold on, and the pull request
+          #    merges at once, red or not.
+          branch="$(mktemp)"
+          gh api "repos/${GH_REPO}/branches/${BASE_REF}" >"${branch}"
+          required="$(jq '[ (.protection.required_status_checks.contexts // [])[],
+                            ((.protection.required_status_checks.checks // [])[] | .context) ]
+                          | unique | length' "${branch}")"
+          if [[ "${required}" -eq 0 ]]; then
+            refuse "\`${BASE_REF}\` has no required status checks, so auto-merge would merge this now whether CI is green or not. The owner applies branch protection with the command in docs/ci.md."
+          fi
+
+          # 4. No App, no merge. Merging with the GITHUB_TOKEN instead would
+          #    land the commit and start no build and no release.
+          if [[ -z "${MERGE_APP_ID}" || "${HAS_MERGE_APP_KEY}" != "true" ]]; then
+            refuse "The merge App is not configured (vars.MERGE_APP_ID and secrets.MERGE_APP_PRIVATE_KEY). A merge made with the workflow's own GITHUB_TOKEN would start no build and no release on main, so this does not fall back to it. See docs/ci.md."
+          fi
+
+          # 5. A check that already ran on this head and is failing or still
+          #    running must hold the merge too, even when it is not one of
+          #    the required checks above. Branch protection requires only the
+          #    checks that run on EVERY pull request (docs/ci.md); a
+          #    path-filtered workflow such as application.yml or terraform.yml
+          #    is not required, but when a pull request's changes DO trigger
+          #    it, its result is still real signal auto-merge must not ignore.
+          #    Excludes this very job's own check run ("queue for
+          #    auto-merge"), which is always still `in_progress` here.
+          runs="$(mktemp)"
+          gh api "repos/${GH_REPO}/commits/${HEAD_SHA}/check-runs" >"${runs}"
+          unfinished_or_failing="$(jq -r '
+              [ .check_runs[]
+                | select(.name != "queue for auto-merge")
+                | select(
+                    .status != "completed"
+                    or ((.conclusion // "") as $c |
+                        $c == "failure" or $c == "timed_out" or
+                        $c == "action_required" or $c == "cancelled")
+                  )
+                | .name
+              ] | unique | join(", ")' "${runs}")"
+          if [[ -n "${unfinished_or_failing}" ]]; then
+            refuse "This check already ran on the head commit and is failing or still running: ${unfinished_or_failing}. Auto-merge waits for every check that ran, required or not."
+          fi
+
+          echo "gate passed: ${required} required check(s) on ${BASE_REF}"
+
+      - name: mint the merge App's token for this repository
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.MERGE_APP_ID }}
+          private-key: ${{ secrets.MERGE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+          permission-pull-requests: write
+          permission-workflows: write
+
+      - name: enable auto-merge, squashed under the pull request's title
+        id: merge
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        # --subject: a one-commit squash otherwise takes that commit's own
+        # message as its headline, which is how #238 put "swarm: work from
+        # task_..." on main. --auto: GitHub merges when the required checks
+        # pass at the head, and re-evaluates after every push.
+        #
+        # ALREADY GREEN. The usual order is CI green, then the label -- and
+        # GitHub refuses to ENABLE auto-merge on a pull request that is already
+        # mergeable (merge state CLEAN). Then there is nothing to wait for, so
+        # it is merged now, same token, method and subject. The branch
+        # protection still decides: the App cannot bypass it, so a merge the
+        # required checks do not allow is refused by GitHub, not by this step.
+        run: |
+          set -euo pipefail
+          err="$(mktemp)"
+          if gh pr merge "${PR_NUMBER}" --auto --squash \
+              --match-head-commit "${HEAD_SHA}" \
+              --subject "${PR_TITLE} (#${PR_NUMBER})" 2>"${err}"; then
+            outcome="squash-merges when its required checks pass"
+          else
+            state="$(gh pr view "${PR_NUMBER}" --json mergeStateStatus --jq .mergeStateStatus)"
+            if [[ "${state}" != "CLEAN" ]]; then
+              cat "${err}" >&2
+              echo "::error::auto-merge was not enabled (merge state ${state})"
+              exit 1
+            fi
+            gh pr merge "${PR_NUMBER}" --squash \
+              --match-head-commit "${HEAD_SHA}" \
+              --subject "${PR_TITLE} (#${PR_NUMBER})"
+            outcome="was already green and was merged now"
+          fi
+          {
+            echo "### Queued for auto-merge"
+            echo
+            echo "#${PR_NUMBER} ${outcome}, under:"
+            echo
+            echo "    ${PR_TITLE} (#${PR_NUMBER})"
+          } >>"${GITHUB_STEP_SUMMARY}"
+
+  disable:
+    name: disable auto-merge on a new head
+    runs-on: ubuntu-24.04
+    # Only a pull request that is (or was) queued: `ready` still on it. Never
+    # for the `labeled` action itself -- GitHub already lists the just-added
+    # label in `github.event.pull_request.labels`, so without excluding that
+    # action this job would disable the auto-merge the `enable` job just
+    # turned on. `edited` only when the base branch changed: a title or body
+    # edit does not move the head and does not need a fresh `ready`.
+    if: >-
+      github.event.action != 'labeled' &&
+      contains(github.event.pull_request.labels.*.name, 'ready') &&
+      (github.event.action != 'edited' || github.event.changes.base.ref.from != null)
+    permissions:
+      # pull-requests: write -- disable auto-merge, remove the label, comment.
+      # No contents permission and no App token: disabling never starts a
+      # workflow, so it needs none of the reasons `enable` mints one.
+      pull-requests: write
+    env:
+      GH_REPO: ${{ github.repository }}
+      GH_TOKEN: ${{ github.token }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+    steps:
+      - name: turn off auto-merge and drop the stale ready label
+        run: |
+          set -euo pipefail
+          # The pull request may not have auto-merge enabled yet (a push that
+          # races the `enable` job) or may already have it off; either way
+          # there is nothing left to disable, so this does not fail the job.
+          gh pr merge "${PR_NUMBER}" --disable-auto || true
+          gh pr edit "${PR_NUMBER}" --remove-label ready
+          body="$(mktemp)"
+          {
+            echo "Removed \`ready\` and turned off auto-merge: this pull request's head changed after the label was applied."
+            echo
+            echo "A new head needs a new \`ready\` label to queue auto-merge again."
+          } >"${body}"
+          gh pr comment "${PR_NUMBER}" --body-file "${body}"

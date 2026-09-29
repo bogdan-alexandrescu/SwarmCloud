@@ -1,8 +1,9 @@
 # THE DEPLOYER'S REMAINING PROJECT-LEVEL ROLES, SCOPED -- WRITTEN, NOT APPLIED.
 #
-# Sixteen predefined roles and one custom role reach the CI deployer as
+# Fifteen predefined roles and one custom role reach the CI deployer as
 # unconditioned project-level grants, in a project that holds another team's
-# production. This file gives every one of them that CAN carry a working
+# production. (Sixteen until 2026-09-25, when roles/iam.roleAdmin came off the
+# deployer altogether, #79.) This file gives every one of them that CAN carry a working
 # condition a resource block of its own, and says -- with the live listing it
 # was checked against -- why each of the others cannot.
 #
@@ -323,7 +324,7 @@ locals {
   #   modules/iam/bindings.tf  plain      logging.logWriter, monitoring.metricWriter,
   #                                       cloudtrace.agent, serviceusage.serviceUsageConsumer,
   #                                       monitoring.viewer, swarmJobDispatcher,
-  #                                       swarmJobReaper, swarmSecretLister
+  #                                       swarmJobReaper
   #                            gke        swarmGkeDispatcher, swarmGkeReaper
   #                            firestore  datastore.user
   #   modules/iam/custom_roles.tf         secretmanager.secretVersionAdder (the
@@ -332,15 +333,28 @@ locals {
   #                                       telemetry roles
   #   infra/verify.tf                     datastore.viewer, run.viewer
   #
+  # swarmSecretLister IS NOT ON IT, since 2026-09-25 (#69, owner decision). It
+  # carries project-wide secrets.setIamPolicy, which reaches the other team's
+  # 63 secrets, and hasOnly limits which roles CI modifies, never whose member
+  # it adds: on the list, CI could grant it to itself, unconditioned. The
+  # broker's grant of it is made by THIS root (platform_roles.tf), so no CI
+  # apply ever modifies that role's members. That holds only because CI can no
+  # longer widen a role it CAN grant, either: roles/iam.roleAdmin is off the
+  # deployer (#79), and the five custom roles below are defined in
+  # platform_roles.tf, by the owner.
+  #
   # tests/terraform/deployer_iam.tftest.hcl plans those modules and fails if
   # any of them grants a role missing from this list -- the failure that would
   # otherwise arrive as a 403 in the middle of a release.
   #
-  # REFUSES 51 of the 65 roles in the live project policy, among them
-  # roles/owner, roles/editor, roles/container.admin, roles/secretmanager.admin,
-  # roles/iam.serviceAccountUser and roles/storage.admin -- every role CI does
-  # not itself hand out. The deployer's own roles are among the refused: they
-  # are granted by this root, which the owner applies, never by CI.
+  # REFUSES 51 of the 65 roles in the live project policy (2026-09-24), among
+  # them roles/owner, roles/editor, roles/container.admin,
+  # roles/secretmanager.admin, roles/iam.serviceAccountUser and
+  # roles/storage.admin -- every role CI does not itself hand out. The
+  # deployer's own roles are among the refused: they are granted by this root,
+  # which the owner applies, never by CI. Re-read 2026-09-25 08:52 UTC: 67
+  # distinct roles in the policy, and with swarmSecretLister off the list, 14
+  # grantable and 53 refused.
   #
   # NOT SCOPED BY THIS: two of the listed roles also have a member that is not
   # ours -- roles/logging.logWriter and roles/monitoring.metricWriter are held
@@ -362,37 +376,74 @@ locals {
       "roles/serviceusage.serviceUsageConsumer",
     ],
     [
-      # terraform/infra builds these as projects/<p>/roles/<id><suffix>; dev
-      # sets no custom_role_suffix. An environment that does must add its
-      # suffixed ids here, or its first apply after this role is scoped 403s.
-      for id in [
-        "swarmGkeDispatcher",
-        "swarmGkeReaper",
-        "swarmJobDispatcher",
-        "swarmJobReaper",
-        "swarmSecretLister",
-        "swarmTenantWorkerFirestore",
-      ] : "projects/${var.project_id}/roles/${id}"
+      # The five custom roles terraform/infra grants at the project level, by
+      # the names both roots read from terraform/modules/custom_role_ids -- so
+      # a custom_role_suffix there moves this list with the grants. In the
+      # order they were listed before, so the rendered condition changes only
+      # by the role it drops. swarmBucketMetadataReader and swarmImagePuller
+      # are granted on a bucket and a repository, never on the project, and
+      # swarmSecretLister is granted by this root; none of the three is here.
+      for key in [
+        "gke_dispatcher",
+        "gke_reaper",
+        "job_dispatcher",
+        "job_reaper",
+        "worker_firestore",
+      ] : module.custom_role_ids.names[key]
     ],
   )
 
-  deployer_conditions = merge(
-    {
-      for role, s in local.deployer_type_scoped : role => join(" || ", concat(
-        ["(${join(" && ", [for t in s.types : "resource.type != \"${t}\""])})"],
-        [for p in s.prefixes : "resource.name.startsWith(\"${p}\")"],
-      ))
-    },
-    {
-      "roles/resourcemanager.projectIamAdmin" = "api.getAttribute(\"iam.googleapis.com/modifiedGrantsByRole\", []).hasOnly([${join(", ", [for r in local.deployer_grantable_project_roles : "\"${r}\""])}])"
-    },
-  )
+  deployer_conditions = {
+    for role, s in local.deployer_type_scoped : role => join(" || ", concat(
+      ["(${join(" && ", [for t in s.types : "resource.type != \"${t}\""])})"],
+      [for p in s.prefixes : "resource.name.startsWith(\"${p}\")"],
+    ))
+  }
+
+  # roles/resourcemanager.projectIamAdmin's hasOnly() would need every one of
+  # the fifteen deployer_grantable_project_roles in one list, and GCP's linter
+  # (LintValidationUnits/ListLengthCheck) refuses a hasOnly() list over 10
+  # elements -- found only at apply, since the mock provider never lints (#275,
+  # apply 2026-09-28: "The list argument to hasOnly() cannot have more than 10
+  # elements").
+  #
+  # GCP's docs (Setting limits on granting roles) also say not to OR several
+  # hasOnly() calls together in one condition: "If you do, then requests that
+  # grant or revoke multiple roles might fail, even if the principal can grant
+  # or revoke those roles individually" -- the opposite of chunking's point.
+  # ORing 2 chunks of <=10 stays well inside IAM's 12-logical-operator limit
+  # (docs.cloud.google.com/iam/quotas; tests/terraform/deployer_iam.tftest.hcl
+  # holds every condition in this file to that limit already), so operator
+  # count is not why ORing is refused here -- GCP's own guidance against
+  # combining hasOnly() calls is.
+  #
+  # So each chunk of at most 10 roles gets its OWN conditioned binding, below
+  # (a for_each of google_project_iam_member.deployer_project_iam_admin, one
+  # instance per chunk) instead of one expression ORing hasOnly() calls
+  # together. Every instance still authorises only a setIamPolicy call whose
+  # modified roles stay within THAT chunk -- which is what every apply through
+  # this Terraform makes: the provider issues one setIamPolicy per role, per
+  # resource, so a single call never spans two chunks. #73's parity rule holds
+  # because the chunks partition deployer_grantable_project_roles exactly,
+  # with nothing added and nothing left out (proven in
+  # tests/terraform/deployer_iam.tftest.hcl).
+  deployer_project_iam_admin_chunks = chunklist(local.deployer_grantable_project_roles, 10)
+
+  deployer_project_iam_admin_conditions = {
+    for i, chunk in local.deployer_project_iam_admin_chunks :
+    tostring(i) => "api.getAttribute(\"iam.googleapis.com/modifiedGrantsByRole\", []).hasOnly([${join(", ", [for r in chunk : "\"${r}\""])}])"
+  }
 
   # role -> whether its conditioned grant replaces the project-wide one.
-  deployer_scoped = {
-    for role in keys(local.deployer_conditions) :
-    role => var.enable_github_wif && contains(var.deployer_scoped_roles, role)
-  }
+  deployer_scoped = merge(
+    {
+      for role in keys(local.deployer_conditions) :
+      role => var.enable_github_wif && contains(var.deployer_scoped_roles, role)
+    },
+    {
+      "roles/resourcemanager.projectIamAdmin" = var.enable_github_wif && contains(var.deployer_scoped_roles, "roles/resourcemanager.projectIamAdmin")
+    },
+  )
 }
 
 resource "google_project_iam_member" "deployer_network_admin" {
@@ -466,16 +517,16 @@ resource "google_project_iam_member" "deployer_logging_config_writer" {
 }
 
 resource "google_project_iam_member" "deployer_project_iam_admin" {
-  count = local.deployer_scoped["roles/resourcemanager.projectIamAdmin"] ? 1 : 0
+  for_each = local.deployer_scoped["roles/resourcemanager.projectIamAdmin"] ? local.deployer_project_iam_admin_conditions : {}
 
   project = var.project_id
   role    = "roles/resourcemanager.projectIamAdmin"
   member  = "serviceAccount:${google_service_account.deployer[0].email}"
 
   condition {
-    title       = "only the roles terraform infra grants"
-    description = "A project policy change may add or remove members of the listed roles and no others, so CI cannot grant itself or anyone else owner, editor or another team's roles."
-    expression  = local.deployer_conditions["roles/resourcemanager.projectIamAdmin"]
+    title       = "only the roles terraform infra grants (chunk ${tonumber(each.key) + 1} of ${length(local.deployer_project_iam_admin_conditions)})"
+    description = "Adds or removes members of only the roles in this chunk; all chunks together are every role terraform/infra grants, so CI cannot self-grant owner, editor or another team's roles. Chunked because hasOnly() refuses a list over 10 roles (#275)."
+    expression  = each.value
   }
 }
 
@@ -494,14 +545,24 @@ resource "google_project_iam_member" "deployer_secrets_scoped" {
 }
 
 # ---------------------------------------------------------------------------
-# THE TEN THAT STAY UNCONDITIONED, and why each one cannot be scoped here.
+# THE NINE THAT STAY UNCONDITIONED, and why each one cannot be scoped here.
 #
-# Nine of them belong to services that are absent from IAM's resource-attribute
+# Eight of them belong to services that are absent from IAM's resource-attribute
 # list (docs.cloud.google.com/iam/docs/conditions-resource-attributes), so a
 # resource.name condition would never grant anything -- the role would simply
-# be revoked, as the first IAP condition was. The tenth manages something that
+# be revoked, as the first IAP condition was. The ninth manages something that
 # has no per-owner resource at all. Their listings are recorded because an
 # unscoped grant is only as safe as what currently sits in its reach.
+#
+# There were ten. roles/iam.roleAdmin is gone from deployer_roles since
+# 2026-09-25 (#79, owner decision): "IAM resources don't provide the resource
+# name" (attribute reference), so it could not be scoped, and on the identity
+# that holds custom roles it is self-escalation by construction -- one
+# iam.roles.update adds secretmanager.versions.access, or
+# resourcemanager.projects.setIamPolicy, to a role CI already holds, and the
+# second authorises any grant without this file's projectIamAdmin condition
+# ever being evaluated. Every custom role terraform/infra used it for is
+# defined in platform_roles.tf now, by the owner.
 #
 #   roles/artifactregistry.admin      repositories: swarm-images (ours),
 #       cloud-run-source-deploy (made by `gcloud run deploy --source`; not
@@ -513,11 +574,6 @@ resource "google_project_iam_member" "deployer_secrets_scoped" {
 #       209012342332-compute@developer; no triggers exist.
 #   roles/cloudscheduler.admin        jobs (us-central1): swarm-reconciler-tick,
 #       swarm-scheduler-tick, swarm-quota-refresh. All ours; none of theirs.
-#   roles/iam.roleAdmin               IAM "resources don't provide the resource
-#       name" (attribute reference). 9 custom roles, all swarm*. NOTE: CI can
-#       UPDATE swarmSecretProvisioner, a role it holds, and add
-#       secretmanager.versions.access to it; roleAdmin on the identity that
-#       holds custom roles is self-escalation by construction.
 #   roles/iam.serviceAccountAdmin     23 service accounts: 11 ours (swarm-*),
 #       11 theirs (api-service, promptlab-runner, promptlab-deployer, publisher,
 #       crawler, external-secrets, staging-gke-nodes, aipipeline,

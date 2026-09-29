@@ -132,12 +132,26 @@ restoring was written by the attempt that died. Selection is by
 Extraction is hostile-input handling, because a checkpoint contains a tenant's
 working tree and an agent can put anything in it:
 
-* absolute paths are rejected;
-* any member whose resolved destination escapes the workspace is rejected;
-* symlinks and hard links whose target escapes the workspace are rejected;
+* **a symlink whose target leaves the workspace is skipped**: never created,
+  and named in one log line per restore (at most 20 names, scrubbed, then a
+  count), while the rest of the archive restores. uv leaves
+  `bin/python -> /usr/local/bin/python3.11` in every build environment, and
+  refusing the archive over it failed every later resume of the task (#286);
+* **an archive inconsistent with itself is refused whole**, before a byte is
+  extracted: a member path that is absolute, holds `..` or appears twice; a
+  member whose path passes through a symlink member (`d -> .`, `c -> d/..`,
+  then `c/x`); a hard link whose target is not an earlier regular-file member
+  of the archive -- one to a missing member, to a skipped symlink, or out of
+  the archive root (`../private/secret.txt`). This platform's archiver follows
+  no link and writes each name once, so none of these comes from an agent's
+  ordinary tree;
+* extraction then runs through `tarfile.data_filter`, which checks each member
+  again against the links already made (`agent_worker.checkpoint` refuses to
+  import on a Python without it, and the image build asserts 3.11.4 or later);
 * sockets, FIFOs and devices are skipped rather than restored.
 
 Path traversal is checked on the way **out**, not trusted on the way in.
+[`security.md`](security.md) says why each rule is there.
 
 ---
 
@@ -234,8 +248,9 @@ and in the task's event stream, `checkpoint_started` / `checkpoint_completed` /
 | `checkpoint_started` with no matching `completed` | upload interrupted; the manifest was never written | none needed — that checkpoint is invisible to restore, by design |
 | Resume restores an old checkpoint | newer ones never committed | check worker logs for upload errors and GCS permissions on the tenant prefix |
 | Resume starts from scratch | no committed checkpoint exists yet | the attempt died inside its first interval |
-| Checkpoints growing every cycle | build output or `node_modules` inside `work/` | fix the runner; do not raise `max_bytes` |
-| Restore fails with "escapes the workspace" | the archive contains a traversing path or link | expected refusal; inspect the archive before trusting its producer |
+| Checkpoints growing every cycle | build output inside `work/` (`node_modules`, anywhere, and HOME's tool caches are already left out: `checkpoint.TOOL_CACHES`) | fix the runner; do not raise `max_bytes` |
+| Restore fails with "holds a path outside the workspace", "through its own link", "holds a hard link" or "more than once" | the archive is inconsistent with itself: a traversing path, a member written through a symlink member, or a hard link to a missing, skipped or outside member | expected refusal; this platform's archiver never writes one, so inspect the archive before trusting its producer |
+| "checkpoint restore skipped links escaping the workspace" | the agent's tree held symlinks pointing outside `work/` (uv's `bin/python` is the usual one) | none needed; those links are not recreated and the rest restored |
 
 ---
 

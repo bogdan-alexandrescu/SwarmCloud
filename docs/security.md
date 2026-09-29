@@ -278,9 +278,30 @@ identity can do.
 * Workspaces are per attempt, created empty, and destroyed at the end. A resumed
   worker wipes the tree before restoring, so it cannot inherit another attempt's
   leftovers.
-* Checkpoint archives are extracted with path-traversal and link-escape checks,
+* Checkpoint archives are checked whole before a byte is extracted, then
+  extracted through Python's `tarfile.data_filter`
+  (`agent_worker/checkpoint.py`, `_safe_members` and `_restore_filter`),
   because a checkpoint contains a tenant's working tree and an agent can put a
-  symlink to `/etc` in it.
+  symlink to `/etc` in it. Two outcomes, on purpose:
+  * **A symlink that leaves `work/` is skipped**, never created, and the rest
+    restores. uv leaves `bin/python -> /usr/local/bin/python3.11` in every
+    build environment, and refusing the archive over it failed every resume of
+    the task (#286). The skip is logged once per restore: at most 20 links
+    named, each name and target through the worker's secret scrub, then a
+    count. A symlink that comes to leave only once a later one is made
+    (`y -> z/..`, then `z -> .`) is removed after extraction and named the same
+    way.
+  * **An archive inconsistent with itself is refused whole**, and the resume
+    falls back as it does on any refused checkpoint: a member path that is
+    absolute, holds `..` or appears twice; a member whose path passes through
+    a symlink member (`d -> .`, `c -> d/..`, then `c/x`); a hard link whose
+    target is not an earlier regular-file member, including one to a skipped
+    symlink and one out of the archive root (`../private/secret.txt`). This
+    platform's archiver follows no link and writes each name once, so none of
+    these comes from an agent's ordinary tree. The hard-link rule is enforced
+    here rather than left to `tarfile`, whose fallback for a link it cannot
+    make extracts the link's target member in its place (the CVE-2025-4330
+    class), so the restore's safety does not depend on the Python patch level.
 
 ---
 

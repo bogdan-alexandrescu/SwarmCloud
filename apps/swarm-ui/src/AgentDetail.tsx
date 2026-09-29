@@ -1,5 +1,6 @@
 import { useCallback, useState, type CSSProperties, type ReactNode } from 'react'
-import { EVENT_PAGE_LIMIT, loadAgentRun, loadTaskInputOnce, type AgentRun } from './api'
+import { EVENT_PAGE_LIMIT, loadAgentRun, loadTaskInputOnce, type AgentRun, type ResourceClasses } from './api'
+import { classUnits } from './Blockers'
 import { AttemptDurations } from './charts/AttemptPhases'
 import { CheckpointStrip } from './charts/CheckpointStrip'
 import { DiffstatChart } from './charts/Diffstat'
@@ -284,7 +285,7 @@ export function Run({
     <div className="run-stack">
       <Headline run={run} now={now} reload={reload} />
       <Alerts task={task} />
-      <Why task={task} events={events} now={now} />
+      <Why task={task} events={events} now={now} classes={run.classes} />
       <ErrorBanner run={run} />
       <RunMetrics run={run} now={now} />
       <Attempts run={run} now={now} />
@@ -1085,8 +1086,28 @@ function reasonText(reason: string): string {
  * of it". The heading went, because a one-line panel headed "Why" is a word of
  * chrome per word of content.
  */
-function Why({ task, events, now }: { task: Task; events: TaskEvent[] | null; now: number }) {
-  const why = whyAgent(task)
+function Why({
+  task,
+  events,
+  now,
+  classes,
+}: {
+  task: Task
+  events: TaskEvent[] | null
+  now: number
+  /**
+   * The catalogue `Run` already read alongside this task (`loadAgentRun`,
+   * api.ts) -- not a second fetch of `/v1/resource-classes`. `classUnits`
+   * (#66) turns it into this task's weight, never the bundled
+   * `RESOURCE_UNITS` table: #66's own repro (`resource:browser` at
+   * `hard_limit 1`, a 2-unit browser task) read "busy platform-wide. (0/1)"
+   * here before this was threaded through. null keeps the pre-#66 reading
+   * when the catalogue has not answered.
+   */
+  classes: ResourceClasses | null
+}) {
+  const units = classUnits(classes, task.resource_class)
+  const why = whyAgent(task, units)
   if (!why) return <SilentWorker task={task} events={events} now={now} />
   // ONCE, NOT THREE TIMES (AG-7). For a FAILED task `whyAgent` IS
   // `last_error`, and the error banner directly below prints that same text
@@ -1098,7 +1119,7 @@ function Why({ task, events, now }: { task: Task; events: TaskEvent[] | null; no
   // sentence asks a person to act, plain ink for a routine wait or a cancel.
   return (
     <section className="section">
-      <p className={`why-full${whyNeedsAction(task) ? ' is-warn' : ''}`}>{why}</p>
+      <p className={`why-full${whyNeedsAction(task, units) ? ' is-warn' : ''}`}>{why}</p>
     </section>
   )
 }

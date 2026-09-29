@@ -2679,6 +2679,34 @@ button.node:focus-visible { outline: 2px solid var(--info); outline-offset: 2px;
   line-height: var(--lh-body);
 }
 .row .why.is-warn { color: var(--warn); }
+/* A REASON SAID ONCE FOR A RUN OF ROWS (#100). The row above, or the group
+   header, already says it; twenty-one parked steps printing the same sentence
+   were what pushed the list off one screen. Visually hidden, never
+   `display: none` and never a hover reveal, so the row's accessible name still
+   carries its reason.
+
+   IT IS NOT A GRID ITEM. The row renders it inside `.row .agent`, which is
+   `position: relative` and `overflow: hidden`, and it is absolutely positioned
+   there. Pinned to the row's first cell (`grid-row: 1; grid-column: 1`) it
+   took that cell before auto-placement ran, so every other cell moved one
+   column right and the last wrapped to a line of its own -- on exactly the
+   parked runs this exists for. In flow under `grid-column: 1 / -1` it cost a
+   line of row-gap. And absolute against nothing positioned escapes the
+   scroller (see the stacked table head's note); `.agent` is its containing
+   block and clips it. Higher specificity than the phone block's `.row .why`,
+   so its grid placement, order and clamp do not bring the line back. */
+.row .why.is-shared {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
 
 /* ------------------------------------------------------------------------ */
 /* Stale: real data that is no longer current                               */
@@ -2937,6 +2965,41 @@ table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--tex
     white-space: nowrap;
   }
 }
+/* AN IDENTITY AND ITS COPY CONTROL, ON ONE LINE (#134, Activity.tsx
+   `Ident`). The value is the item that gives way; the control keeps its
+   width. The status beside it says whether the copy landed, in the faint
+   tone of a note, and is empty until a copy is asked for. At 560px and under
+   the control is §7.2's 44px target. */
+.ten-ident-row {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ctl-s2);
+  min-width: 0;
+}
+.ten-copy {
+  flex: none;
+  padding: 1px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--ctl-radius-sm);
+  background: var(--surface);
+  color: var(--text-dim);
+  font: var(--t-micro)/var(--lh-micro) var(--mono);
+  cursor: copy;
+}
+.ten-copy:hover { color: var(--text); border-color: var(--info); }
+.ten-copy:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+.ten-copy-said {
+  color: var(--text-faint);
+  font: var(--t-micro)/var(--lh-micro) var(--mono);
+  white-space: nowrap;
+}
+.ten-copy-said:empty { display: none; }
+@media (max-width: 560px) {
+  .ten-copy {
+    min-width: 44px;
+    min-height: 44px;
+  }
+}
 /* THE BUDGET NOTE IS A PLAIN FACT, IN PLAIN INK (AH-21). AG-5 defines a plain
    fact as no mark and no dimming. `.ctl-panel-note` is `--text-faint`, the
    tone of a qualifier under a figure; this line qualifies no figure -- it
@@ -3055,6 +3118,8 @@ table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--tex
 .row .agent {
   display: flex; align-items: baseline; gap: var(--ctl-s2);
   min-width: 0; overflow: hidden; white-space: nowrap;
+  /* The containing block of a shared reason (#100, `.row .why.is-shared`). */
+  position: relative;
   /* THE CONTAINER'S OWN CUT MUST ALSO SIGNAL — F3 of the 2026-09-23 overflow
      inventory named this element by its computed value: `overflow: hidden;
      text-overflow: clip`. The two column stages above and the `min-width: 3ch`
@@ -3102,6 +3167,16 @@ table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--tex
 .row .when.ticking { color: var(--text-dim); }
 
 .section.group > h2 { display: flex; align-items: center; gap: var(--ctl-s2); flex-wrap: wrap; }
+/* The reason a run of the group's rows shares, said once under the header
+   with the number of rows it covers (#100). The same ink and size as the row's
+   own `.why` it replaces: it is the same sentence, moved up. */
+.section.group > .group-why {
+  margin: 0 0 var(--ctl-s1);
+  font-size: var(--t-body);
+  line-height: var(--lh-body);
+  color: var(--text);
+}
+.section.group > .group-why > b { font-variant-numeric: tabular-nums; }
 /* `.roll`'S FOUR RULES ARE DELETED. It was the last filled pill on this screen:
    999px radius, an 18% tint of the state hue behind the word, and the word in
    `--*-ink` at 600, uppercase, tracked -- the 102x23px silhouette §6.6 measured
@@ -3222,7 +3297,8 @@ table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--tex
    which is `display:block` by default and must not take its own line here. */
 .ag-filter { display: inline-flex; align-items: center; gap: var(--ctl-s2); }
 .ag-filter > .ctl-eyebrow { display: inline; margin: 0; }
-.ag-filter select {
+.ag-filter select,
+.ag-filter input[type='search'] {
   padding: 4px 8px;
   border: 1px solid var(--line);
   border-radius: var(--ctl-radius-sm);
@@ -3557,7 +3633,8 @@ table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--tex
   /* The select is the other control on this toolbar and gets the same target.
      Its font-size stays at --t-body: a 16px minimum is an iOS zoom-avoidance
      trick, and this sheet's --t-body is 14px everywhere by decision. */
-  .ag-filter select { min-height: 44px; }
+  .ag-filter select,
+  .ag-filter input[type='search'] { min-height: 44px; }
   /* The facts strip is already a wrapping flex row; at 390px it wants the
      tighter of the two gaps so a six-fact strip is three lines rather than
      six. */
@@ -4226,6 +4303,33 @@ table.pools tbody tr.presumed-dead { background: color-mix(in srgb, var(--bad) 9
 .q-row .client-side { flex-basis: 100%; }
 
 /* ---- admin limit editor ---- */
+/* POOL LIMITS (#132). The profile card's figure is a ceiling, `max 5
+   agents`: the word before it is set as the unit after it is, with its gap on
+   the side that faces the figure. */
+.ctl-figure-unit.adm-figure-max { margin-left: 0; margin-right: 4px; }
+/* The row a link from Tenants named, outlined in the link accent so it is
+   found without moving anything. An outline and not a fill: the sheet gives
+   no head cell a fill of its own (WF-21), and the row's name is a `th`. */
+tr.is-target { outline: 2px solid var(--info); outline-offset: -2px; }
+/* What lowering does, under the open editor and on a line of its own, so the
+   row that grows is the one being edited. */
+.limit-note {
+  margin-top: 4px;
+  font: var(--t-micro)/var(--lh-micro) var(--font);
+  color: var(--text-faint);
+}
+/* The phone's filter over the pool names: the full width of the column. */
+.adm-filter > input {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 44px;
+  padding: 3px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font: var(--t-body)/var(--lh-body) var(--mono);
+}
 .limit-edit { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .limit-edit input {
   width: 74px; padding: 3px 7px;
@@ -6577,7 +6681,8 @@ a.ctl-metric:focus-visible { outline: 2px solid var(--info); outline-offset: 2px
 .sr-bar > i {
   display: block;
   height: 100%;
-  background: var(--info);
+  /* Grey, not --info: a plain fill reports no verdict (#122). See below. */
+  background: var(--text-dim);
   transition: width .3s ease;
 }
 /* A UTILISATION BAR THAT IS FINE IS GREY. A HUE ON ONE IS A VERDICT.
@@ -6602,9 +6707,13 @@ a.ctl-metric:focus-visible { outline: 2px solid var(--info); outline-offset: 2px
    `--track-radius` stays 2px, because `.ctl-track.wf-meter` on Workflows is
    the same 8px track and Workflows is the screen the owner named as already
    right. Shrinking the token to 2px would have "fixed" the one screen that
-   did not need fixing. The scoping is the fix: `.ctl-track > i` -- the meter
-   beside a number -- keeps `--info`; `.ctl-util-fill` -- the bar that is a
-   row of its own -- does not. */
+   did not need fixing.
+   OWNER RULE (#122): state hue is a verdict and a plain fill is grey. So
+   `.ctl-track > i` -- the meter beside a number -- and `.sr-bar > i` (Admin >
+   Platform counts) no longer keep `--info` either: the shared rule above
+   fills all three in `--text-dim`, and only a verdict (`.sr-bar > i.bad`, the
+   pool card's `.warn`/`.bad`, the `.is-*` fills below) is hued.
+   encoding.hues.test.ts holds it. */
 .ctl-util-fill { background: var(--text-dim); }
 /* THE WORKFLOWS METER IS GREY TOO, AND THERE IS NO LINE HERE SAYING OTHERWISE.
    ---------------------------------------------------------------------------
@@ -11377,76 +11486,7 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 .ov-figure { margin: 0 0 var(--ctl-s2); }
 .ov-figure-mark { margin: calc(-1 * var(--ctl-s1)) 0 var(--ctl-s2); }
 
-/* THE TOKEN MIX. Four segments, one total, hand-rolled -- the proportion is
-   the point and four numbers in a list is not one. Height and radius are the
-   track's, because every proportion in this product is drawn at that size. */
-.ov-mix {
-  display: flex;
-  height: var(--track-h);
-  border-radius: var(--track-radius);
-  overflow: hidden;
-  background: var(--surface-2);
-  margin-bottom: var(--ctl-s2);
-}
-.ov-mix-seg { height: 100%; }
-/* NOTHING MEASURED, SO NO SCALE. Hatched rather than left empty: an empty
-   track claims the scale starts somewhere and the value is at the start of
-   it, which is the absent-as-zero lie in bar form. */
-.ov-mix.is-unknown { background: var(--ctl-hatch); }
-/* ONE METRIC, ONE HUE, FOUR TONES. SERIES, NEVER STATE.
-   A segment drawn in --ok is read as a verdict, so these were --series-1..4:
-   blue, teal, violet, amber. That was four saturated hues in one 8px rule --
-   two of them the colours a reader has learned for PARKED (violet) and WARN
-   (amber) -- and the series block itself records that those five sit in a
-   1.36:1 band, NOT separable in greyscale. The keyed legend (design-system.md
-   §12.1) told a colour reader which swatch was which; a greyscale screenshot
-   still showed four identical greys.
-   Tokens are one metric split four ways, so they get ONE series (--series-1,
-   the single-series slot) at four tones.
-   THE TONES STEP TOWARD THE INK, NEVER TOWARD THE CARD. The first ramp mixed
-   toward --surface and bought its greyscale steps by fading three of the four
-   into the card: c-wr's 8px swatch measured 1.35:1 on white and 1.42:1 on the
-   dark card, under the 3:1 every series fill promises (styles.css, THE SERIES
-   PALETTE; WCAG 1.4.11). --series-1 is already the floor of that band -- 3.36
-   on light --surface-2 -- so any step toward the card goes under it, and the
-   only direction with room is toward --text: lighter on the dark card, darker
-   on the light one. At 100/75/50/25% the worst fill is --series-1 itself
-   (3.36, light --surface-2), and every other one is >= 4.77 on --bg, --surface
-   and --surface-2 in both themes; every pair is >= 1.32:1 (dark c-rd/c-wr).
-   Order is the reading order: input is the series hue itself, and each later
-   count sits one step nearer the ink, so c-wr is the heaviest mark. The .ov-sN
-   class names are unchanged, so each swatch still takes its fill from the same
-   class its segment does. encoding.hues.test.ts holds both floors. */
-.ov-s1 { background: var(--series-1); }
-.ov-s2 { background: color-mix(in srgb, var(--series-1) 75%, var(--text)); }
-.ov-s3 { background: color-mix(in srgb, var(--series-1) 50%, var(--text)); }
-.ov-s4 { background: color-mix(in srgb, var(--series-1) 25%, var(--text)); }
 .ov-mix-facts { padding: 0; }
-
-/* THE KEY TO THE FOUR TONES, NEXT TO THE WORD THEY BELONG TO.
-   8px square, --track-radius so it is the same corner the bar it keys is drawn
-   with, and it takes its fill from the SAME .ov-sN class the segment does --
-   one declaration per series, so a segment and its key cannot drift apart.
-   A square rather than a disc on purpose: .ctl-dot's vocabulary is STATE, and a
-   series is an identity, not a verdict (sec 1.6). */
-.ov-swatch {
-  flex: none;
-  width: 8px;
-  height: 8px;
-  border-radius: var(--track-radius);
-  /* No margin: .ctl-fact is an inline-flex with a 5px gap and adding to it
-     would make this one gap in the row wider than the other two. align-self
-     because the strip aligns on the BASELINE and an empty <i> has none, which
-     would drop the square to the bottom of the line box. */
-  align-self: center;
-}
-/* NOTHING REPORTED, SO NO KEY TO ANYTHING. Hollow, in the absence tone, at the
-   same size: the row keeps its rhythm and the swatch stops claiming a segment
-   that was never drawn. The em dash beside it carries the fact. */
-.ov-swatch.is-absent {
-  background: none;
-  border: 1px solid var(--ctl-absent);
-}
 
 /* ---- headroom: one panel, two groups ------------------------------------ */
 
