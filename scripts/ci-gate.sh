@@ -64,6 +64,7 @@
 # CI_GATE_API_TRIES (5) the consecutive failed reads tolerated.
 
 set -euo pipefail
+# shellcheck source-path=SCRIPTDIR
 # shellcheck source=lib/common.sh
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
 

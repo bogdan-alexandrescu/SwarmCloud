@@ -31,7 +31,7 @@ The properties asserted here, against the REAL script with a fake `gh`:
     pull request (no filter of its own) and on push to main, it holds only
     read permissions, and no `${{ }}` reaches a `run:`;
   * docs/ci.md carries the exact ruleset PUT that adds `ci-gate`, keeping the
-    four security checks and the ruleset's other rules.
+    four security checks and the ruleset's other rules, with no check pinned.
 
 WHAT THIS CANNOT PROVE: that GitHub's API answers in the shape the fake serves
 (workflow runs filtered by head_sha and event, each carrying its workflow
@@ -60,7 +60,6 @@ CI_DOC = REPO / "docs" / "ci.md"
 OWNER_REPO = "owner/swarm"
 SHA = "c0ffee" * 6 + "abcd"
 RULESET_ID = "24160219"
-GITHUB_ACTIONS_APP = 15368
 
 pytestmark = pytest.mark.skipif(
     shutil.which("jq") is None or shutil.which("bash") is None,
@@ -538,7 +537,7 @@ def _always_run_checks() -> set[str]:
 
 def test_docs_carry_the_ruleset_put_that_adds_ci_gate():
     """MUTATION: drop a security check from the body, drop a rule the live
-    ruleset has, or leave ci-gate unpinned to GitHub Actions."""
+    ruleset has, or pin a check the owner decided to leave unpinned."""
     text = CI_DOC.read_text()
     match = re.search(
         r"```bash\n(gh api -X PUT repos/bogdan-alexandrescu/SwarmCloud/rulesets/" + RULESET_ID + r".*?)```",
@@ -558,6 +557,23 @@ def test_docs_carry_the_ruleset_put_that_adds_ci_gate():
     always = _always_run_checks()
     assert always, "the control: security.yml has always-run jobs"
     assert contexts == always | {"ci-gate"}, contexts
-    gate_check = next(c for c in checks if c["context"] == "ci-gate")
-    assert gate_check.get("integration_id") == GITHUB_ACTIONS_APP, gate_check
+    # Owner decision, 2026-09-29: no check is pinned to an integration_id;
+    # the body restates the live ruleset and adds only ci-gate.
+    assert all(set(c) == {"context"} for c in checks), checks
     assert rules["required_status_checks"]["parameters"]["strict_required_status_checks_policy"] is False
+
+
+def test_a_pull_request_touching_only_the_gate_runs_its_tests_and_actionlint():
+    """Owner decision, 2026-09-29: application.yml's pull_request paths name
+    the gate's workflow and script, and its actionlint step lints the workflow.
+    MUTATION: drop either path, or the file from the actionlint list."""
+    application = _workflow(WORKFLOWS / "application.yml")
+    paths = application["on"]["pull_request"]["paths"]
+    assert ".github/workflows/ci-gate.yml" in paths, paths
+    assert "scripts/ci-gate.sh" in paths, paths
+    lint = [
+        step.get("run") or ""
+        for step in application["jobs"]["workflows"]["steps"]
+        if "actionlint" in (step.get("run") or "")
+    ]
+    assert any(".github/workflows/ci-gate.yml" in run for run in lint), lint

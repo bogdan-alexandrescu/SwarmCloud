@@ -38,7 +38,7 @@ Three reasons, in the order they cost the most:
 
 | workflow | runs on | jobs |
 |---|---|---|
-| `application.yml` | push to `main`; pull requests touching `apps/`, `images/`, `kubernetes/`, `scripts/`, `tests/`, `docs/`, `Makefile`, `pyproject.toml`, `uv.lock`, `README.md`, `CLAUDE.md`, `CONTRACT.md`, `release.yml`, `iam-refusal-probe.yml` or the workflow itself | `shellcheck` · `release workflow wiring (actionlint)` (also lints `iam-refusal-probe.yml`) · `format / unit tests` · `swarm-ui typecheck / component tests` · `integration tests (emulator)` · `kubernetes manifests` · `build images` (**push to `main` only** — the one build of each commit) |
+| `application.yml` | push to `main`; pull requests touching `apps/`, `images/`, `kubernetes/`, `scripts/`, `tests/`, `docs/`, `Makefile`, `pyproject.toml`, `uv.lock`, `README.md`, `CLAUDE.md`, `CONTRACT.md`, `release.yml`, `iam-refusal-probe.yml`, `ci-gate.yml` or the workflow itself | `shellcheck` · `release workflow wiring (actionlint)` (also lints `iam-refusal-probe.yml`) · `format / unit tests` · `swarm-ui typecheck / component tests` · `integration tests (emulator)` · `kubernetes manifests` · `build images` (**push to `main` only** — the one build of each commit) |
 | `terraform.yml` | push to `main`; pull requests touching `terraform/`, `tests/terraform/`, the plan guard, the destroy guard, the unlabelable-type list or the workflow itself | `fmt / validate / tflint` · `terraform test` · `checkov` · `plan` (**not** on a pull request) · `plan (not run on a pull request)` |
 | `security.yml` | every pull request; push to `main`; Mondays 06:00 UTC | `trivy (repo)` · `secret scan` · `checkov (terraform + kubernetes)` · `platform policy assertions` · `trivy (published images)` (schedule / dispatch only) |
 | `release.yml` | push to `main` touching `apps/`, `images/`, `terraform/`, `kubernetes/`, `scripts/` or the workflow; or manual dispatch with an environment | `verify` · `images and scan` (reuses `application.yml`'s build of the commit; moves nothing) · `approval` (the one job naming a GitHub environment — prod waits here) · `promote` · `terraform apply` · `deploy and smoke` — the last three only after `approval` succeeded, and on prod only in the attempt it succeeded in · `prod approval is from an earlier attempt` (runs only on a partial re-run of prod, and fails it) |
@@ -983,9 +983,9 @@ make its own gate pass. Review of those two files is the guard.
 the pull request adding it has merged and `ci-gate` has reported green on a
 pull request, the owner (or the orchestrator, with the owner's go-ahead) adds
 it to the ruleset. The PUT replaces the ruleset whole, so the body restates
-every rule it has today (read on 2026-09-29) and adds only `ci-gate`, pinned
-to GitHub Actions (`integration_id` 15368) so that no other App or token can
-satisfy it:
+every rule it has today (read on 2026-09-29) and adds only `ci-gate`. No check
+is pinned to an `integration_id` (owner decision, 2026-09-29), the four
+security checks included, as today:
 
 ```bash
 gh api -X PUT repos/bogdan-alexandrescu/SwarmCloud/rulesets/24160219 \
@@ -1027,7 +1027,7 @@ gh api -X PUT repos/bogdan-alexandrescu/SwarmCloud/rulesets/24160219 \
           {"context": "trivy (repo)"},
           {"context": "checkov (terraform + kubernetes)"},
           {"context": "platform policy assertions"},
-          {"context": "ci-gate", "integration_id": 15368}
+          {"context": "ci-gate"}
         ]
       }
     }
@@ -1041,7 +1041,7 @@ Then read it back and check the list:
 Before sending, compare the body with a fresh read of the ruleset: a rule
 added since 2026-09-29 that is not in this body would be removed by the PUT.
 [`test_ci_gate.py`](../tests/unit/scripts/test_ci_gate.py) holds this body to
-`security.yml`'s always-run jobs plus `ci-gate`, pinned.
+`security.yml`'s always-run jobs plus `ci-gate`, none pinned.
 
 ## The finishing sequence
 
