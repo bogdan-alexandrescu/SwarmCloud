@@ -9,22 +9,34 @@ clear beside a prompt that masked the same value.
 
 WHAT IS PINNED:
 
-  * a clean name, including ones the rules would take for a credential
-    (`eye-tracking-summary.md` is a JWT to the JWT rule, `task-report-final.md`
-    an OpenAI key to the `sk-` rule), is served byte for byte: the UI's
-    workflow graph matches staged names against declared ones by equality;
-  * a name carrying the task's learned literal, or a credential-shaped run, is
-    masked, and masked IDENTICALLY under both keys, so the two still pair;
+  * a clean name, including ones a rule's short prefix turns up inside
+    MID-WORD (`eye-tracking-summary.md` and `task-report-final.md`; and, after
+    the second review, `key-results-OKR2024.md`, `Survey-results-FY2024.xlsx`,
+    `hockey-stats-2023Q4.csv`, `eyeTracking.md`), is served byte for byte: the
+    UI's workflow graph matches staged names against declared ones by
+    equality;
+  * a name carrying the task's learned literal, or a credential-shaped run
+    that OPENS the name (`sk-abcdefghijklmnop`, `ghp_...`, even though the run
+    after the prefix is itself a plain lowercase word), is masked, and masked
+    IDENTICALLY under both keys, so the two still pair;
   * a word-shaped secret the task names that a prefix rule touches
     (`monkey-business-2024`, which the JWT rule sees at `ey`) is masked in a
     name too, though `redaction._carried` never learns it as a literal;
   * each mask is counted in `metadata_redaction_count`;
-  * `input_from`'s keys (upstream task ids) and `dispatch` are served as stored.
+  * `input_from`'s keys (upstream task ids) and `dispatch` are served as stored;
+  * the workflow route's own step map (`GET /v1/workflows/{id}`, and the
+    create response) masks `input_from` the same way `codec._step_to_api`
+    masks a step's `input` -- by the step's own task's masker (owner decision
+    2026-09-28).
 
 MUTATIONS: serve the platform keys as stored again (the secret tests fail);
 mask the names with `JsonMasker.text` (the clean-name tests fail); mask
 `dispatch` too (the dispatch test fails); leave the name masks uncounted;
-drop `TaskMasking.name_literals` (the word-shaped secret tests fail).
+drop `TaskMasking.name_literals` (the word-shaped secret tests fail); drop the
+anchoring in `_mask_anchored` (the mid-word clean-name tests fail); go back to
+a per-segment plain-word check (the provider-token-shape tests fail, because a
+token's tail is itself plain letters); serve `step.input_from` as stored in
+`_step_to_api` (the workflow-route tests fail).
 """
 
 from __future__ import annotations
@@ -45,14 +57,30 @@ SECRET = "zebra-quartz-lantern-7731"
 PROMPT = f"deploy with DB_PASSWORD={SECRET}"
 #: Shaped like the `sk-` family. Not a real credential.
 OPENAI = "sk-proj0123456789ABCDEFghijklmnopqrstuv"
+#: Shaped like the `ghp_` family. Not a real credential.
+GITHUB = "ghp_0123456789abcdefghijklmnopqrstuvwxyz"
+#: Two lowercase-letter runs after a REAL provider prefix -- indistinguishable
+#: from an English word by shape alone, which is exactly why the prefix, not a
+#: word check, is what has to decide (the #227 review, second round).
+FAKE_SK = "sk-abcdefghijklmnop"
 
-#: Clean names the rules would mask: the JWT rule (`ey` + 8), the `sk-` rule.
+#: Clean names a LOOSE prefix rule would mash into the credential family whose
+#: two- or three-character marker it happens to contain MID-WORD: the JWT
+#: rule's `ey` inside "key", "Survey" and "hockey", and the `sk-` rule inside
+#: "task"+"report" and "risk"+"assessment". None of these open a token -- the
+#: marker is never at the run's start or right after a separator -- which is
+#: the anchoring rule the fix applies (owner decision 2026-09-28, second
+#: review of #227).
 CLEAN_NAMES = [
     "eye-tracking-summary.md",
     "task-report-final.md",
     "risk-assessment.md",
     "scan-01.md",
     "reports/summary.md",
+    "key-results-OKR2024.md",
+    "Survey-results-FY2024.xlsx",
+    "hockey-stats-2023Q4.csv",
+    "eyeTracking.md",
 ]
 
 
@@ -95,6 +123,27 @@ def test_a_credential_shaped_name_is_masked_identically_in_both_keys():
     value, count = masking.metadata_value()
 
     assert OPENAI not in json.dumps(value)
+    assert MASK in value["input_from"]["task_up"]
+    assert value["expected_outputs"] == [value["input_from"]["task_up"]]
+    assert count == 2
+
+
+@pytest.mark.parametrize("token", [OPENAI, GITHUB, FAKE_SK])
+def test_a_provider_token_shape_is_masked_even_when_the_tail_is_plain_letters(token):
+    """`sk-abcdefghijklmnop` is, letter for letter, a run of lowercase words --
+    the same shape a per-segment plain-word check gives "task-report-final".
+    What tells them apart is that the prefix OPENS the token, at the run's
+    start; that is what the fix checks, not whether the letters after it read
+    like a dictionary word (the #227 review, second round: the plain-word
+    check let a token this shape through unmasked).
+    """
+    name = f"{token}.md"
+    masking = _masking({"input_from": {"task_up": name}, "expected_outputs": [name]})
+
+    value, count = masking.metadata_value()
+
+    assert token not in json.dumps(value)
+    assert value["input_from"]["task_up"].endswith(".md"), "the extension must survive the mask"
     assert MASK in value["input_from"]["task_up"]
     assert value["expected_outputs"] == [value["input_from"]["task_up"]]
     assert count == 2
@@ -164,6 +213,69 @@ def test_the_task_route_and_input_route_serve_the_masked_names(client, db):
     assert SECRET not in json.dumps(block)
     assert block["value"] == served["metadata"]
     assert block["redaction_count"] == 2
+
+
+def test_the_workflow_route_masks_a_credential_shaped_input_from_name(client):
+    """The step map `GET /v1/workflows/{id}` serves, not only the task's own copy.
+
+    `codec._step_to_api` served `step.input_from` exactly as stored, so the
+    same secret filename `test_the_task_route_and_input_route_serve_the_masked_names`
+    proves is masked in `task.metadata.input_from` arrived in clear one field
+    over, in the workflow's own step list (owner decision 2026-09-28). Proven
+    on the real create response AND the real read, because `create_workflow`
+    and `get_workflow` build the step map through two different call sites.
+    """
+    body = {
+        "steps": [
+            {"step_id": "research", "runner_profile": "mock", "input": {"prompt": "gather"}, "depends_on": []},
+            {
+                "step_id": "report",
+                "runner_profile": "mock",
+                "input": {"prompt": "write"},
+                "depends_on": ["research"],
+                "input_from": {"research": f"{OPENAI}.md"},
+            },
+        ],
+    }
+    created = client.post("/v1/workflows", headers=auth_header("alice"), json=body)
+    assert created.status_code == 201, created.text
+    workflow_id = created.json()["workflow"]["workflow_id"]
+    created_steps = {s["step_id"]: s for s in created.json()["workflow"]["steps"]}
+    assert OPENAI not in json.dumps(created_steps)
+    assert MASK in created_steps["report"]["input_from"]["research"]
+    assert created_steps["report"]["input_from"]["research"].endswith(".md")
+
+    fetched = client.get(f"/v1/workflows/{workflow_id}", headers=auth_header("alice"))
+    assert fetched.status_code == 200, fetched.text
+    fetched_steps = {s["step_id"]: s for s in fetched.json()["workflow"]["steps"]}
+    assert OPENAI not in json.dumps(fetched_steps)
+    assert fetched_steps["report"]["input_from"] == created_steps["report"]["input_from"]
+
+
+def test_the_workflow_route_leaves_a_clean_input_from_name_unchanged(client):
+    """The regression this fix must not cause: a clean name stays clean here too."""
+    body = {
+        "steps": [
+            {"step_id": "research", "runner_profile": "mock", "input": {"prompt": "gather"}, "depends_on": []},
+            {
+                "step_id": "report",
+                "runner_profile": "mock",
+                "input": {"prompt": "write"},
+                "depends_on": ["research"],
+                "input_from": {"research": "eyeTracking.md"},
+            },
+        ],
+    }
+    created = client.post("/v1/workflows", headers=auth_header("alice"), json=body)
+    assert created.status_code == 201, created.text
+    workflow_id = created.json()["workflow"]["workflow_id"]
+    steps = {s["step_id"]: s for s in created.json()["workflow"]["steps"]}
+    assert steps["report"]["input_from"] == {"research": "eyeTracking.md"}
+
+    fetched = client.get(f"/v1/workflows/{workflow_id}", headers=auth_header("alice"))
+    assert fetched.status_code == 200, fetched.text
+    fetched_steps = {s["step_id"]: s for s in fetched.json()["workflow"]["steps"]}
+    assert fetched_steps["report"]["input_from"] == {"research": "eyeTracking.md"}
 
 
 #: Word-shaped passphrases a prefix rule touches (the JWT rule at `ey`), so
