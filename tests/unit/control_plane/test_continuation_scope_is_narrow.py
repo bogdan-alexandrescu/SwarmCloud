@@ -140,6 +140,31 @@ def _calls(dependant: Any) -> Iterator[Any]:
         yield from _calls(sub)
 
 
+def _iter_api_routes(routes: Any) -> Iterator[APIRoute]:
+    """Every `APIRoute` under `routes`, however deeply FastAPI nests it.
+
+    A newer FastAPI resolves `include_router` lazily: `app.routes` holds a
+    `_IncludedRouter` wrapper around the ROUTER OBJECT passed to
+    `include_router` (its `original_router` attribute), not a flat copy of
+    that router's `APIRoute`s. Walking `app.routes` and filtering
+    `isinstance(route, APIRoute)` therefore found NOTHING -- confirmed by
+    reproducing the wrapping with a minimal FastAPI app and inspecting
+    `type(r).__name__` for each entry in `.routes`. Recursing through
+    `original_router.routes` (or a plain `.routes`, for a `Mount` or whatever
+    shape a future FastAPI version nests routers in) reaches the SAME
+    `APIRoute` objects a live request resolves to `request.scope["route"]` --
+    also verified directly, with a `TestClient` request whose handler read
+    `request.scope["route"]` back and compared it by identity.
+    """
+    for route in routes:
+        if isinstance(route, APIRoute):
+            yield route
+        elif (router := getattr(route, "original_router", None)) is not None:
+            yield from _iter_api_routes(router.routes)
+        elif (sub_routes := getattr(route, "routes", None)) is not None:
+            yield from _iter_api_routes(sub_routes)
+
+
 def _authenticated_routes() -> list[tuple[str, str]]:
     """Every (method, template) whose dependency tree authenticates the caller."""
     found = []
@@ -255,11 +280,17 @@ def test_every_allow_listed_template_is_a_published_url(listed_context):
     directly: `starlette.routing.Route("...{path:path}").path ==
     "...{path:path}"` while `.path_format` (what FastAPI's OpenAPI generator
     uses) strips it to `"...{path}"`.
+
+    Walked with `_iter_api_routes` rather than filtering `app.routes` directly
+    for `isinstance(route, APIRoute)` -- that filter alone found nothing on
+    this FastAPI version (`assert ... in set()`, "the published set was not
+    built"): `include_router` is resolved lazily into an internal wrapper
+    around the included router, so the real `APIRoute`s are nested under it,
+    not flat in `app.routes`. See `_iter_api_routes`'s docstring.
     """
     published = {
         (method, route.path)
-        for route in create_app(listed_context).routes
-        if isinstance(route, APIRoute)
+        for route in _iter_api_routes(create_app(listed_context).routes)
         for method in route.methods
     }
     assert ("GET", "/v1/tasks/{task_id}") in published, "the published set was not built"
