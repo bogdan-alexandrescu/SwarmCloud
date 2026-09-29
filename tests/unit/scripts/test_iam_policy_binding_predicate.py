@@ -158,10 +158,11 @@ def test_the_member_holding_a_different_role_is_not_this_grant(tmp_path) -> None
 def test_a_role_prefix_is_not_the_role(tmp_path) -> None:
     """Role ids are compared whole.
 
-    CUSTOM_ROLE_SUFFIX exists so two environments can coexist in one project, so
-    `swarmBucketMetadataReader` and `swarmBucketMetadataReader_dev` are both real
-    role ids here and one is a prefix of the other. A substring test grants the
-    second by finding the first.
+    terraform/modules/custom_role_ids appends `_<custom_role_suffix>` when that
+    constant is non-empty (a role re-created inside IAM's 7-day id hold), so
+    `swarmBucketMetadataReader` and `swarmBucketMetadataReader_dev` can both be
+    real role ids in one project and one is a prefix of the other. A substring
+    test grants the second by finding the first.
     """
     policy = {
         "bindings": [

@@ -2859,3 +2859,41 @@ figures are not dated, and a limit is never attributed to the kernel.
   is stated once in the worker (`metrics.CPU_LIMIT_SOURCES`) and read by the
   UI's `limitSource`; compare request #20.
 
+
+## 28. `profiles.py`: claude-code and codex declare an `issue` runner input
+
+**Status: ACCEPTED, accepted by the owner 2026-09-28** (recorded on #265), to
+be applied by the #265 change. Recorded 2026-09-28 from #265. If another
+branch has taken 28 by the time this merges, renumber this one.
+
+### What is true today
+
+A runner profile declares the inputs a caller may send (#213, contract
+request 25). `claude-code` and `codex` declare none, so a caller can only put
+an issue's text into the prompt itself. Every brief in the 2026-09-27/28 wave
+restated its issue by hand, and #247's brief lost the two screens its issue
+named as the reproduction.
+
+### The requested change
+
+`claude-code` and `codex` declare one input, `issue`: a positive integer
+naming an issue in the step's own `repo`. No other key is added and no type
+changes. The worker fetches that issue's title, body and comments read-only
+with the tenant's forge credential, writes them to the workspace as
+`issue.md`, and names the file in the prompt. The fetch is the worker's; the
+declared input is only the number.
+
+### What it would break if accepted
+
+Nothing that exists: no profile declares an input today, so every current
+submission stays valid. The API's declared-inputs check (#213) starts
+accepting `issue` for these two profiles and still refuses everything else.
+
+### Invariants
+
+- **Invariant 10.** The number is data, and the issue text the worker fetches is
+  data for the agent, never an image, a command, a resource spec or a backend
+  parameter.
+- **#219.** The forge token never reaches the workspace or the agent.
+- **Invariant 9.** The fetch uses the step's own tenant's credential against the
+  step's own repository.

@@ -63,7 +63,7 @@ from typing import Any, Callable, Sequence
 from swarm_common.states import CONCURRENCY_STATES, PENDING_STATES, TaskState
 
 from . import render
-from .client import SwarmClient, SwarmError
+from .client import SwarmClient, SwarmError, outputs_of
 from .invocation import help_command, terminal_command
 from .patches import explain_absence, patch_uri
 from .render import Finding, Snapshot, Style
@@ -535,6 +535,17 @@ def cmd_task(client: SwarmClient, args, out) -> int:
         out.write(json.dumps(task if task is not None else {"error": error}, indent=2, default=str) + "\n")
         return EXIT_OK if task is not None else EXIT_FAIL
     uri = patch_uri(task) if task else None
+    # WHAT IT PRODUCED (#143), from the artifacts route: `complete` there is
+    # what tells "not uploaded yet" from "none". A failed listing is said on
+    # its line and does not fail the command -- the task itself was read.
+    made = None
+    if task is not None:
+        listing, listing_failure = _attempt(lambda: client.artifacts(args.task_id))
+        made = outputs_of(
+            task,
+            listing,
+            listing_error=str(listing_failure) if listing_failure is not None else None,
+        )
     _emit(
         render.render_task(
             task,
@@ -543,6 +554,8 @@ def cmd_task(client: SwarmClient, args, out) -> int:
             error=error,
             patch=uri,
             no_patch_because=None if uri or not task else explain_absence(task),
+            produced=made,
+            fetch_with=terminal_command(f"swarm artifact {args.task_id} <name>"),
         ),
         out,
     )
@@ -967,7 +980,7 @@ def build_parser() -> argparse.ArgumentParser:
     _common(c, root=False)
     c.set_defaults(func=cmd_capacity)
 
-    t = sub.add_parser("task", help="one agent: state, commits, patch, pull request")
+    t = sub.add_parser("task", help="one agent: state, what it produced, commits, patch, pull request")
     t.add_argument("task_id")
     _common(t, root=False)
     t.set_defaults(func=cmd_task)
