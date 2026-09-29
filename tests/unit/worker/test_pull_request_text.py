@@ -21,14 +21,15 @@ WHAT IS PINNED. When the agent leaves `pr-title.txt` and/or `pr-body.md` in
 
 With no `pr-body.md` the generated body is unchanged. NO TITLE IS INVENTED
 (owner decisions, 2026-09-28): the only title the platform writes is the
-step's `issue` input, as "<issue title> (#N)" or "Fixes #N", with the `@`
-taken off any mention in the issue's title. With no usable `pr-title.txt` and
+step's `issue` input, as "<issue title> (#N)" or "Fixes #N", with a zero-width
+joiner after every `@` in the issue's title. With no usable `pr-title.txt` and
 no `issue` input the branch is pushed and no pull request is opened, and
 `_title_owed` makes `pr-title.txt` an expected output so the attempt fails
 retryably before it gets that far. An agent title carrying a task id is
 treated as absent, an adopted pull request still titled `[swarm] task_...`
-is retitled, and an agent title or body that @mentions anyone in prose is
-refused -- a mention inside a code span or a fenced block is not a mention.
+is retitled, and every `@` that could start a mention in the agent's title or
+body -- in code or not -- gets a U+200D ZERO WIDTH JOINER after it, so nothing
+pages anyone and no text is refused for a mention (owner decision, 2026-09-29).
 """
 
 from __future__ import annotations
@@ -382,18 +383,18 @@ def test_an_issue_input_names_the_issue_in_the_title(
     ["Ping @octocat about the widget", "The @acme/team widget accepts -1"],
     ids=["user", "team"],
 )
-def test_a_mention_in_an_issue_title_loses_its_at_sign(
+def test_a_mention_in_an_issue_title_is_neutralised(
     worker_factory, monkeypatch, origin, local_urls, forge, mentioned
 ):
     """An issue's title is anyone's text; a title the platform writes from it
-    must page no one."""
+    must page no one. The `@` stays and a zero-width joiner follows it, the
+    same transform as the agent's own text."""
     _publish(
         worker_factory, monkeypatch, origin, task_id="t-pr-issue-at", files={},
         task_input={"issue": {"number": 8, "title": mentioned}}, with_title=False,
     )
     pull = _only_pull(forge)
-    assert "@" not in pull["title"], pull["title"]
-    assert pull["title"] == f"{mentioned.replace('@', '')} (#8)", pull["title"]
+    assert pull["title"] == f"{mentioned.replace('@', '@' + chr(0x200D))} (#8)", pull["title"]
 
 
 def test_the_prompt_alone_opens_no_pull_request(
@@ -500,176 +501,172 @@ def test_the_worker_retitles_by_the_task_id_rule(
     assert retitle_if("") is False
 
 
-# -- an agent's text that @mentions anyone is refused (owner rule, 2026-09-28) --
+# -- every @mention in the agent's text is neutralised (owner decision, 2026-09-29) --
+#
+# Three reviews found a Markdown code/prose parser that decided which `@name`
+# GitHub would notify for, and each found a case it got wrong: an escaped
+# backtick, an unterminated fence, an HTML block. It is gone. Every `@` that
+# could start a mention gets a U+200D ZERO WIDTH JOINER right after it, in
+# code or not, so nothing the agent writes can page anyone and no body or
+# title is refused for a mention.
+
+ZWJ = "‍"
 
 
 @pytest.mark.parametrize(
-    ("files", "refused"),
+    ("text", "expected"),
     [
-        ({"pr-body.md": b"Closes #4\n\n@octocat please review.\n"}, "pr-body.md: mentions"),
-        ({"pr-body.md": b"Closes #4\n\ncc @acme/reviewers\n"}, "pr-body.md: mentions"),
-        ({"pr-title.txt": b"Refuse negatives (@octocat)\n"}, "pr-title.txt: mentions"),
+        ("Thanks @octocat for the report.", f"Thanks @{ZWJ}octocat for the report."),
+        ("cc @acme/reviewers", f"cc @{ZWJ}acme/reviewers"),
+        ("@octocat please review", f"@{ZWJ}octocat please review"),
+        ("(@octocat)", f"(@{ZWJ}octocat)"),
+        ("line one\n@octocat\n", f"line one\n@{ZWJ}octocat\n"),
+        ("Use `@pytest.fixture` here.", f"Use `@{ZWJ}pytest.fixture` here."),
+        ("Use ``@octocat`` please.", f"Use ``@{ZWJ}octocat`` please."),
+        (
+            "```python\n@pytest.fixture\ndef widget():\n    return 1\n```\n",
+            f"```python\n@{ZWJ}pytest.fixture\ndef widget():\n    return 1\n```\n",
+        ),
+        ("~~~\ncc @acme/reviewers\n~~~\n", f"~~~\ncc @{ZWJ}acme/reviewers\n~~~\n"),
+        (
+            "<details>\n<summary>Log</summary>\n\n@octocat\n</details>\n",
+            f"<details>\n<summary>Log</summary>\n\n@{ZWJ}octocat\n</details>\n",
+        ),
+        ("<div>`@octocat`</div>", f"<div>`@{ZWJ}octocat`</div>"),
+        ("Thanks \\`@octocat\\` for this.", f"Thanks \\`@{ZWJ}octocat\\` for this."),
+        ("Thanks \\@octocat.", f"Thanks \\@{ZWJ}octocat."),
+        ("Ping café@octocat about this.", f"Ping café@{ZWJ}octocat about this."),
+        ("@@octocat", f"@@{ZWJ}octocat"),
+        ("@-octocat and @_octocat", f"@{ZWJ}-octocat and @{ZWJ}_octocat"),
     ],
-    ids=["user-in-body", "team-in-body", "user-in-title"],
+    ids=[
+        "prose", "team", "start-of-text", "after-punctuation", "own-line", "code-span",
+        "double-backtick-span", "backtick-fence", "tilde-fence", "html-block", "html-inline",
+        "escaped-backticks", "escaped-at", "non-ascii-letter-before", "double-at",
+        "hyphen-and-underscore",
+    ],
 )
-def test_an_agent_text_with_a_mention_is_refused(
-    worker_factory, monkeypatch, origin, local_urls, forge, log_stream, files, refused
-):
-    _, _, out = _publish(
-        worker_factory, monkeypatch, origin, task_id="t-pr-mention", files=files,
-        task_input={"issue": 4},
-    )
-    pull = _only_pull(forge)
-    assert "@octocat" not in pull["title"] and "@octocat" not in pull["body"], pull
-    assert "@acme/reviewers" not in pull["body"], pull["body"]
-    assert refused in out.get("pull_request_text_refused", []), out
-    which = "body" if refused.startswith("pr-body") else "title"
-    assert out["pull_request_text"][which] == "platform", out
-    assert f"agent {which} refused: mentions" in log_stream.getvalue()
-
-
-def test_an_email_address_is_not_a_mention(
-    worker_factory, monkeypatch, origin, local_urls, forge
-):
-    """The control: `@` inside an address pages nobody, and is kept."""
-    _, _, out = _publish(
-        worker_factory, monkeypatch, origin, task_id="t-pr-email",
-        files={"pr-body.md": b"Closes #4\n\nReported by ops@example.com.\n"},
-    )
-    pull = _only_pull(forge)
-    assert pull["body"].startswith("Closes #4"), pull["body"]
-    assert out["pull_request_text"]["body"] == "agent", out
+def test_every_mention_gets_a_zero_width_joiner_after_its_at(text, expected):
+    assert lifecycle._neutralise_mentions(text) == expected
 
 
 @pytest.mark.parametrize(
-    "body",
+    ("text", "expected"),
     [
-        b"Closes #4\n\nThe fixture is now `@pytest.fixture(scope=\"module\")`.\n",
-        b"Closes #4\n\nUse ``@octocat`` as the example login.\n",
-        b"Closes #4\n\n```python\n@pytest.fixture\ndef widget():\n    return 1\n```\n\nDone.\n",
-        b"Closes #4\n\n~~~\ncc @acme/reviewers\n~~~\n",
+        ("Thanks &#64;octocat.", f"Thanks &#64;{ZWJ}octocat."),
+        ("Thanks &#064;octocat.", f"Thanks &#064;{ZWJ}octocat."),
+        ("Thanks &#x40;octocat.", f"Thanks &#x40;{ZWJ}octocat."),
+        ("Thanks &#X40;octocat.", f"Thanks &#X40;{ZWJ}octocat."),
+        ("Thanks &commat;octocat.", f"Thanks &commat;{ZWJ}octocat."),
+        ("<div>&#64octocat</div>", f"<div>&#64{ZWJ}octocat</div>"),
+        ("Thanks @&#111;ctocat.", f"Thanks @{ZWJ}&#111;ctocat."),
     ],
-    ids=["code-span", "double-backtick-span", "backtick-fence", "tilde-fence"],
+    ids=["decimal", "zero-padded", "hex", "hex-upper", "named", "no-semicolon", "entity-name"],
 )
-def test_a_mention_inside_code_is_kept(
-    worker_factory, monkeypatch, origin, local_urls, forge, body
-):
-    """GitHub notifies no one for `@name` inside a code span or a fenced
-    block (owner decision 3, 2026-09-28), so a body quoting a decorator is
-    the agent's, not refused."""
-    _, _, out = _publish(
-        worker_factory, monkeypatch, origin, task_id="t-pr-code-at", files={"pr-body.md": body},
-    )
-    pull = _only_pull(forge)
-    assert pull["body"].startswith("Closes #4"), pull["body"]
-    assert out["pull_request_text"]["body"] == "agent", out
-    assert not any(
-        r.startswith("pr-body.md") for r in out.get("pull_request_text_refused", [])
-    ), out
-
-
-def test_a_mention_after_a_closed_fence_still_refuses_the_body(
-    worker_factory, monkeypatch, origin, local_urls, forge
-):
-    """The control: code is skipped only while it lasts."""
-    _, _, out = _publish(
-        worker_factory, monkeypatch, origin, task_id="t-pr-code-then-at",
-        files={"pr-body.md": b"Closes #4\n\n```\n@pytest.fixture\n```\n\n@octocat please review.\n"},
-    )
-    assert "pr-body.md: mentions" in out.get("pull_request_text_refused", []), out
-    assert out["pull_request_text"]["body"] == "platform", out
-
-
-# -- two CommonMark bypasses in the code/fence skip (#259 review, M3) --
-
-
-def test_a_code_span_cannot_hide_a_mention_across_a_blank_line():
-    """CommonMark: an inline code span cannot cross a blank line (a paragraph
-    break) -- a lone backtick before one, and another after it, are just two
-    backticks, not an opening and a closing delimiter. The previous pattern
-    used `re.DOTALL`, which let `.` cross a blank line too, so a stray
-    backtick, a blank line, a real `@mention` in its own paragraph, and a
-    later backtick all read as "one code span" and the mention inside it was
-    never seen."""
-    text = "Closes #4\n\nnote `\n\n@octocat please review\n`\n"
-    assert lifecycle._carries_mention(text) is True
-
-
-def test_a_backtick_fences_info_string_cannot_hold_a_backtick():
-    """CommonMark: a backtick-fenced block's info string must not itself
-    contain a backtick -- a line like "``` `python" is not a valid fence at
-    all, so GitHub would read what follows as ordinary prose (and notify for
-    a mention in it). The previous pattern accepted any non-newline info
-    string on a backtick fence, so it read this as a real fence and hid a
-    mention inside it. A tilde fence has no such restriction and is
-    unaffected."""
-    text = "Closes #4\n\n``` `python\n@octocat please review\n```\n"
-    assert lifecycle._carries_mention(text) is True
-
-
-def test_a_real_code_span_and_fence_still_hide_a_decorator():
-    """The control: fixing the two bypasses above must not stop a genuine
-    code span or a valid fence from hiding `@pytest.fixture`."""
-    assert lifecycle._carries_mention("Use `@pytest.fixture` here.\n") is False
-    assert lifecycle._carries_mention("Use ``@octocat`` please.\n") is False
-    assert lifecycle._carries_mention("```python\n@pytest.fixture\n```\n") is False
-    assert lifecycle._carries_mention("~~~\ncc @acme/reviewers\n~~~\n") is False
-
-
-# -- three more ways past the code skip (#259 re-review): each is prose --
-
-
-def test_an_escaped_backtick_opens_no_code_span():
-    """CommonMark: `\\`` is a literal backtick, so `\\`@octocat\\`` is a real
-    mention between two backticks, and GitHub notifies."""
-    assert lifecycle._carries_mention("Closes #4\n\nThanks \\`@octocat\\` for this.\n") is True
-
-
-def test_an_invalid_backtick_fence_with_no_trailing_newline_is_not_a_span():
-    """A body stripped of its last newline: the first line is no fence (its
-    info string holds a backtick), and the last line is a fence of its own
-    that ends the paragraph, so no code span runs from the first to it."""
-    text = "Closes #4\n\n``` `python\n@octocat please review\n```"
-    assert lifecycle._carries_mention(text) is True
+def test_an_at_written_as_a_character_reference_is_neutralised_too(text, expected):
+    """GitHub decodes character references before it looks for mentions, so
+    `&#64;octocat` renders as `@octocat` and pages. The entity is kept as the
+    agent wrote it and the joiner goes right after it; a name that starts
+    with a reference of its own is neutralised as well."""
+    assert lifecycle._neutralise_mentions(text) == expected
 
 
 @pytest.mark.parametrize(
     "text",
     [
-        "<details>\n<summary>Log</summary>\n```\n@octocat\n```\n</details>\n",
-        "<div>\n`@octocat`\n</div>\n",
-        "<pre>\n\n```\ncc @octocat\n```\n\n</pre>\n",
+        "Reported by ops@example.com.",
+        "mail first.last_name@example.co.uk now",
+        "&#640; is not an at sign, nor is &#x40a;",
+        "an @ on its own, and @ followed by a space",
+        "no at sign at all",
+        "",
     ],
-    ids=["details-fence", "div-span", "pre-across-blank-lines"],
+    ids=["email", "email-dotted", "longer-entities", "bare-at", "none", "empty"],
 )
-def test_code_inside_an_html_block_is_prose(text):
-    """An HTML block's content is not parsed as Markdown: a fence or a span
-    inside `<details>` or `<div>` is literal text, and GitHub notifies."""
-    assert lifecycle._carries_mention(text) is True
+def test_text_with_nothing_that_could_mention_is_unchanged(text):
+    """An address is left intact: GitHub reads a mention only where the `@`
+    follows the start of the text or a character outside `[A-Za-z0-9_]`, so
+    `ops@example.com` pages no one (see `_MENTION_AT_RE`)."""
+    assert lifecycle._neutralise_mentions(text) == text
 
 
-def test_a_fence_after_an_html_block_has_ended_is_still_code():
-    """The control: a blank line ends a `<details>` block, and a valid fence
-    after it is code again."""
-    text = "<details>\n<summary>Log</summary>\n\n```python\n@pytest.fixture\n```\n\n</details>\n"
-    assert lifecycle._carries_mention(text) is False
+CORPUS = [
+    "Closes #4\n\nThanks @octocat and @acme/reviewers.\n\n```\n@pytest.fixture\n```\n",
+    "cc &#64;octocat, ops@example.com, café@octocat, @@x, \\@y",
+    "<details>\n`@a` @b\n</details>\n",
+]
 
 
-# -- the mention lookbehind is ASCII-only (#259 review, M3) --
+@pytest.mark.parametrize("text", CORPUS)
+def test_neutralising_is_idempotent(text):
+    once = lifecycle._neutralise_mentions(text)
+    assert lifecycle._neutralise_mentions(once) == once
 
 
-def test_a_non_ascii_letter_before_at_does_not_hide_a_mention():
-    """Python's `\\w` on a `str` pattern matches any Unicode letter, not just
-    `[A-Za-z0-9_]`; GitHub's own mention boundary is ASCII. A non-ASCII letter
-    immediately before `@` must not stop the mention after it from being
-    seen."""
-    assert lifecycle._carries_mention("Ping café@octocat about this.\n") is True
+@pytest.mark.parametrize("text", CORPUS)
+def test_nothing_but_the_joiners_changes(text):
+    """Taking the joiners back out gives the agent's text byte for byte, and
+    every joiner sits right after an `@` or an `@` written as a reference."""
+    out = lifecycle._neutralise_mentions(text)
+    assert out.replace(ZWJ, "") == text
+    assert out.count(ZWJ) > 0
+    for index, char in enumerate(out):
+        if char == ZWJ:
+            before = out[:index]
+            assert before.endswith(("@", "&#64;", "&#x40;")), repr(before[-8:])
 
 
-def test_an_ascii_letter_before_at_still_hides_an_email():
-    """The control for the ASCII fix: an ASCII letter before `@` is still
-    excluded, so an address like `ops@example.com` remains not a mention."""
-    assert lifecycle._carries_mention("Reported by ops@example.com.\n") is False
+@pytest.mark.parametrize(
+    ("files", "which", "needle"),
+    [
+        ({"pr-body.md": b"Closes #4\n\n@octocat please review.\n"}, "body", "@octocat"),
+        ({"pr-body.md": b"Closes #4\n\ncc @acme/reviewers\n"}, "body", "@acme/reviewers"),
+        ({"pr-title.txt": b"Refuse negatives (@octocat)\n"}, "title", "@octocat"),
+    ],
+    ids=["user-in-body", "team-in-body", "user-in-title"],
+)
+def test_an_agent_text_with_a_mention_is_used_neutralised(
+    worker_factory, monkeypatch, origin, local_urls, forge, files, which, needle
+):
+    """No body or title is refused for a mention any more: the agent's text is
+    used, with the joiner after each `@`."""
+    _, _, out = _publish(
+        worker_factory, monkeypatch, origin, task_id="t-pr-mention", files=files,
+        task_input={"issue": 4},
+    )
+    pull = _only_pull(forge)
+    assert needle not in pull["title"] and needle not in pull["body"], pull
+    assert needle.replace("@", f"@{ZWJ}") in pull[which], pull[which]
+    assert out["pull_request_text"][which] == "agent", out
+    assert not out.get("pull_request_text_refused"), out
+
+
+def test_an_email_address_in_the_body_is_kept(
+    worker_factory, monkeypatch, origin, local_urls, forge
+):
+    """The control: `@` inside an address pages nobody, and is kept as written."""
+    _, _, out = _publish(
+        worker_factory, monkeypatch, origin, task_id="t-pr-email",
+        files={"pr-body.md": b"Closes #4\n\nReported by ops@example.com.\n"},
+    )
+    pull = _only_pull(forge)
+    assert pull["body"].startswith("Closes #4\n\nReported by ops@example.com."), pull["body"]
+    assert out["pull_request_text"]["body"] == "agent", out
+
+
+def test_a_decorator_in_a_fence_is_kept_neutralised(
+    worker_factory, monkeypatch, origin, local_urls, forge
+):
+    """Code is not exempt: the fence reaches the pull request with the joiner
+    after its `@`, and nothing else in it changes."""
+    body = b"Closes #4\n\n```python\n@pytest.fixture\ndef widget():\n    return 1\n```\n\nDone.\n"
+    _, _, out = _publish(
+        worker_factory, monkeypatch, origin, task_id="t-pr-code-at", files={"pr-body.md": body},
+    )
+    pull = _only_pull(forge)
+    expected = body.decode().strip().replace("@pytest", f"@{ZWJ}pytest")
+    assert pull["body"].startswith(expected), pull["body"]
+    assert out["pull_request_text"]["body"] == "agent", out
 
 
 # -- the title is owed as an expected output only when a pull request needs it --
@@ -765,11 +762,10 @@ def test_a_refused_title_fails_the_attempt_retryably_and_pushes_nothing(
 @pytest.mark.parametrize(
     ("title", "why"),
     [
-        ("Refuse negatives, thanks @octocat\n", "mentions"),
         ("Fix it \U0001f916 Generated with [Claude Code](https://claude.com/claude-code)\n",
          "carries attribution"),
     ],
-    ids=["mention", "attribution"],
+    ids=["attribution"],
 )
 def test_every_refusal_fails_the_attempt_with_its_reason(
     db, worker_factory, monkeypatch, title, why
@@ -779,6 +775,18 @@ def test_every_refusal_fails_the_attempt_with_its_reason(
     assert worker.run() == ExitCode.FAILED
     assert published == [False]
     assert f"pr-title.txt refused: {why}" in db.doc("tasks/task_1")["last_error"]
+
+
+def test_a_title_with_a_mention_is_not_refused(db, worker_factory, monkeypatch):
+    """A mention no longer refuses a title (owner decision, 2026-09-29): it
+    is neutralised, and the attempt publishes and succeeds."""
+    worker, published = _run_writing_title(
+        db, worker_factory, monkeypatch, "Refuse negatives, thanks @octocat\n"
+    )
+
+    assert worker.run() == ExitCode.OK
+    assert published == [True]
+    assert db.doc("tasks/task_1")["state"] == TaskState.SUCCEEDED.value
 
 
 def test_a_usable_title_publishes_and_succeeds(db, worker_factory, monkeypatch):
