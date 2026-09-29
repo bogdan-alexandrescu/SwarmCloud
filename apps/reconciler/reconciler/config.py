@@ -182,14 +182,6 @@ class ReconcilerConfig:
     #: execution ends.
     ended_execution_grace_seconds: int = 30
 
-    #: How many attempts a task may have taken back because they ended before
-    #: their runner started (#67, owner decision 2026-09-28). Such an attempt
-    #: -- a 143 SIGTERM, or any exit but 78 while the task was DISPATCHED or
-    #: STARTING -- did no work, so it does not use up one of `max_attempts`.
-    #: Three, not unlimited: once they are used an early end counts as before,
-    #: so a task killed at every start still reaches FAILED. 0 turns refunds off.
-    startup_refund_limit: int = 3
-
     max_findings_per_pass: int = 200
     dry_run: bool = False
     enable_gke: bool = True
@@ -283,7 +275,6 @@ class ReconcilerConfig:
             stuck_evidence_max_gap_seconds=_int("STUCK_EVIDENCE_MAX_GAP_SECONDS", 600),
             left_running_grace_seconds=_int("LEFT_RUNNING_GRACE_SECONDS", 300),
             ended_execution_grace_seconds=_int("ENDED_EXECUTION_GRACE_SECONDS", 30),
-            startup_refund_limit=max(0, _int("STARTUP_REFUND_LIMIT", 3)),
             max_findings_per_pass=_int("MAX_FINDINGS_PER_PASS", 200),
             dry_run=_bool("RECONCILER_DRY_RUN", False),
             enable_gke=_bool("ENABLE_GKE_AUTOPILOT", settings.enable_gke_autopilot),

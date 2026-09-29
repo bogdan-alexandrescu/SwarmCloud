@@ -60,7 +60,7 @@ from typing import Any, Iterable
 #: a live execution it read as orphaned or never find a real orphan.
 #: docs/audits/2026-09-18/08-frozen-contract-restatements.md, finding 1.
 from swarm_common.identity import _TENANT_SAFE as _NAME_SAFE
-from swarm_common.models import utcnow
+from swarm_common.models import retries_exhausted, utcnow
 from swarm_common.profiles import Backend
 from swarm_common.states import TaskState
 
@@ -73,7 +73,6 @@ from .model import (
     JobResourceView,
     LeaseView,
     TaskView,
-    count_startup_end,
 )
 
 #: The backend the two eviction rules act on, spelled by the frozen contract.
@@ -1204,13 +1203,6 @@ def detect_ended_at_startup(
     the requeue are each refused, inside their transactions, for a task no
     longer in `ENDED_AT_STARTUP_STATES`.
 
-    THE ATTEMPT IS NOT COUNTED, three times (#67, owner 2026-09-28). It did no
-    work, so the requeue's transaction takes it back -- `attempt_count` - 1,
-    `metadata.startup_refunds` + 1 -- before deciding whether the attempts
-    are spent (`count_startup_end`). After three refunds an early end counts
-    as before, so a task killed at every start still reaches FAILED. Only
-    on the generation this pass fenced itself (invariant 5).
-
     Mutually exclusive with `detect_cannot_start` by exit code, and it
     supersedes the absence rules for the same lease in `detect_all`, as that
     rule does.
@@ -1241,19 +1233,11 @@ def detect_ended_at_startup(
         )
         short = where if execution.namespace else where.rsplit("/", 1)[-1]
         how = f"exited {exit_code}" if exit_code is not None else "ended with no exit code recorded"
-        # The refund is decided BEFORE whether the attempts are spent (#67):
-        # an attempt that took the task to its cap never ran, so it requeues.
-        # This is the snapshot's prediction, for the finding's reason; the
-        # repair's transaction re-reads the task and decides with the same
-        # rule (`ControlStore.repair_task_state`).
-        counted = count_startup_end(
-            task.attempt_count,
-            task.max_attempts,
-            getattr(task, "startup_refunds", 0),
-            int(getattr(config, "startup_refund_limit", 3)),
+        spent = retries_exhausted(task.attempt_count, task.max_attempts)
+        reason = (
+            f"execution {short} {how} before its runner started (task was "
+            f"{task.state.value}); {'no attempts left' if spent else 'retrying'}"
         )
-        what = f"execution {short} {how} before its runner started (task was {task.state.value})"
-        reason = f"{what}; {counted.tail}"
         findings.append(
             Finding(
                 kind=FindingKind.WORKER_ENDED_AT_STARTUP,
@@ -1272,10 +1256,6 @@ def detect_ended_at_startup(
                     "ended_seconds_before_snapshot": round(ended_before, 1),
                     "attempt_count": task.attempt_count,
                     "max_attempts": task.max_attempts,
-                    "startup_refunds": getattr(task, "startup_refunds", 0),
-                    # The reason without its prediction of how the attempt is
-                    # counted: the repair appends what its transaction decided.
-                    "what_ended": what,
                 },
             )
         )
