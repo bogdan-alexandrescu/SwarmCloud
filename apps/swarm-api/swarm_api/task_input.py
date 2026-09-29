@@ -64,10 +64,11 @@ THE KEYS THE PLATFORM WRITES STAY READABLE, and they are told apart by the one
 fact that proves who wrote them: `validation.RESERVED_METADATA_KEYS`
 (`dispatch`, `input_from`, `expected_outputs`) are REFUSED at submission from
 every caller (`check_reserved_metadata`), so a value under one of them was
-written by `SubmissionService` and nobody else. They are served exactly as
-stored and never counted: the worker, the UI's workflow joins and
-`codec.dispatch_of` read them, and a masked filename in `input_from` would be a
-staged input nobody can find. `unit`, `source` and `origin` -- the label keys
+written by `SubmissionService` and nobody else. They are never a source of
+literals and never walked by `JsonMasker`: the worker, the UI's workflow joins
+and `codec.dispatch_of` read them, and `JsonMasker`'s rules would serve
+`eye-tracking-summary.md` as `eye-tracki********` -- a staged input nobody can
+find. `dispatch` is served exactly as stored. `unit`, `source` and `origin` -- the label keys
 this platform's own CLI, plugin and scripts write -- are NOT reserved, so a
 caller can write them too, and nothing distinguishes the platform's value from
 a caller's. They go through the masker like every caller key. A label is never
@@ -77,6 +78,21 @@ serves raw. `workflow_step`, which `SubmissionService` writes on every step
 task of a workflow, is the same case (the PR #229 review asked): not reserved,
 so a plain task's caller can write it too, and it goes through the masker; a
 step id is never credential-shaped, so it is served as written.
+
+BUT THE FILENAMES IN TWO OF THEM ARE THE CALLER'S (#227). The platform writes
+`input_from` and `expected_outputs`, but it copies their VALUES -- filenames --
+out of the caller's workflow spec. A secret written into a filename was served
+as stored, beside a prompt that masked the same value. So every filename under
+those two keys (`NAME_METADATA_KEYS`) is masked by `TaskMasking.name`: the
+task's literals and the rules, with one difference from a caller string. A
+prefix rule's match made only of plain words (`_plain_words`) is a filename,
+not a credential, and is left alone, so a clean name stays byte for byte what
+was declared -- the UI's workflow graph pairs a staged name with a declared one
+by equality. A name that DOES carry a secret is masked, and masked the same
+way under both keys (one deterministic function, no memo of the caller's
+strings), so the two still pair with each other. Each mask is counted in
+`metadata_redaction_count`. `input_from`'s keys are upstream task ids the
+platform generated, and are served as stored.
 
 THE SAME REDACTOR, NOT A SECOND ONE. Every text below comes from
 `redaction.redact` and its one set of `RULES`, and the count is its count,
@@ -115,6 +131,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import re
 import threading
 from collections import OrderedDict
 from datetime import datetime
@@ -122,13 +139,37 @@ from typing import Any
 
 from swarm_common.models import Task
 
-from .redaction import MASK, RULES, JsonMasker, Redacted
+from .redaction import (
+    KEY_VALUE,
+    MASK,
+    MAX_LITERALS,
+    RULES,
+    JsonMasker,
+    Redacted,
+    _PEM_HINT,
+    _assigned_values,
+    _key_text,
+    _leaf_texts,
+    _masks_whole,
+)
 from .validation import RESERVED_METADATA_KEYS, repository_userinfo
 
 #: The metadata keys served as stored: only the platform can write them,
 #: because submission refuses each from every caller. See the module docstring
 #: for why `unit`, `source` and `origin` are not among them.
 PLATFORM_METADATA_KEYS: tuple[str, ...] = RESERVED_METADATA_KEYS
+
+#: The platform keys whose values are filenames the caller's workflow spec
+#: chose (#227): masked name by name by `TaskMasking.name`. `input_from` is
+#: `{upstream task id: filename}`, `expected_outputs` a list of filenames.
+NAME_METADATA_KEYS: frozenset[str] = frozenset({"input_from", "expected_outputs"})
+
+#: One segment of a plain word run: a lowercase word, a capitalised or
+#: all-capital one, or a short number (`scan-01`, `q3`, `2024`). A credential a
+#: prefix rule recognises is a long random run -- mixed case, letters mixed with
+#: digits -- and splits into segments like these with negligible probability.
+_PLAIN_SEGMENT = re.compile(r"[A-Z]?[a-z]+|[A-Z]+|[a-z]*[0-9]{1,8}")
+_SEGMENT_SEPARATORS = re.compile(r"[-_.]")
 
 #: Inside what the task collected about itself (`result_summary`, an event's
 #: `detail`), the keys whose string values are identifiers a client looks
@@ -146,8 +187,10 @@ class TaskMasking:
     Built once per served task, so a literal the metadata names as a
     credential is masked in the prompt, and one the prompt assigns
     (`DB_PASSWORD=<v>`) is masked in the metadata. The platform's own keys
-    (`PLATFORM_METADATA_KEYS`) are outside it: they are neither masked nor a
-    source of literals.
+    (`PLATFORM_METADATA_KEYS`) are outside it: never a source of literals, and
+    never walked by `JsonMasker`. `dispatch` is served as stored; the filenames
+    under `NAME_METADATA_KEYS` are masked by `name`, which leaves a clean one
+    as written (#227).
 
     The masked input and metadata are computed once and kept, so a masker that
     `masking_for` holds across requests pays for them once; every read hands
@@ -161,6 +204,9 @@ class TaskMasking:
             k: v for k, v in self.metadata.items() if k not in PLATFORM_METADATA_KEYS
         }
         self.masker = JsonMasker({"input": self.submitted, "metadata": self.caller_metadata})
+        self.name_literals: tuple[str, ...] = _named_values(
+            {"input": self.submitted, "metadata": self.caller_metadata}, exclude=self.masker.literals
+        )
         self._input: tuple[dict[str, Any], int] | None = None
         self._metadata: tuple[dict[str, Any], int] | None = None
 
@@ -197,17 +243,22 @@ class TaskMasking:
         return [k for k in self.metadata if k in PLATFORM_METADATA_KEYS]
 
     def metadata_value(self) -> tuple[dict[str, Any], int]:
-        """The metadata as an object: the caller's keys masked, the platform's as stored.
+        """The metadata as an object: the caller's keys masked, the platform's readable.
 
-        In the stored order. The count is the caller's keys' masks only; a
-        platform key is never counted, because it is never masked.
+        In the stored order. `dispatch` is served as stored; the filenames
+        under `NAME_METADATA_KEYS` are masked by `name` (#227), which leaves a
+        clean one byte for byte. The count is the caller's keys' masks plus
+        every masked filename.
         """
         if self._metadata is None:
             masked, count = self.masker.value(self.caller_metadata)
             caller_items = iter(masked.items())
             out: dict[str, Any] = {}
             for key, stored in self.metadata.items():
-                if key in PLATFORM_METADATA_KEYS:
+                if key in NAME_METADATA_KEYS:
+                    out[key], found = self._names(stored)
+                    count += found
+                elif key in PLATFORM_METADATA_KEYS:
                     out[key] = stored
                 else:
                     label, value = next(caller_items)
@@ -215,6 +266,63 @@ class TaskMasking:
             self._metadata = (out, count)
         value, count = self._metadata
         return copy.deepcopy(value), count
+
+    def name(self, value: str) -> tuple[str, int]:
+        """One filename from the caller's workflow spec, masked only where it carries a secret.
+
+        The rules as `redaction.redact` runs them over a decoded string, except
+        that a match of a PREFIX rule (`sk-`, `ey`, `gh?_`, ...) made only of
+        plain words is left as written: those rules guess from a few letters,
+        and `eye-tracking-summary.md` or `task-report-final.md` is a filename,
+        not a token. The private-key and key/value rules, which recognise a
+        credential by what it says it is rather than by a guess, always apply.
+        Then every literal the input and the caller's metadata named. Nothing is
+        remembered, so the same name masks the same way wherever it is served.
+
+        FIRST, the values the task named that a rule already recognises in
+        part (`name_literals`): `redaction._carried` does not learn those,
+        because the rules mask them wherever they appear, but in a name the
+        plain-word exemption would then leave `monkey-business-2024` -- a
+        passphrase the prompt assigns to `DB_PASSWORD`, which the JWT rule
+        touches at `ey` -- in clear (the #227 review). So they are replaced
+        whole before the exemption can see them.
+        """
+        text, count = value, 0
+        for literal in self.name_literals:
+            if literal in text:
+                count += text.count(literal)
+                text = text.replace(literal, MASK)
+        for rule in RULES:
+            if rule.apply is not None:
+                text, found = rule.apply(text, True, False)
+            elif rule is KEY_VALUE:
+                text, found = rule.pattern.subn(r"\1" + MASK, text)
+            else:
+                text, found = _mask_unless_plain(rule.pattern, text)
+            count += found
+        for literal in self.masker.literals:
+            if literal and literal in text:
+                count += text.count(literal)
+                text = text.replace(literal, MASK)
+        return text, count
+
+    def _names(self, node: Any) -> tuple[Any, int]:
+        """Every string VALUE in `node` masked by `name`; keys and shape as stored."""
+        total = 0
+
+        def walk(item: Any) -> Any:
+            nonlocal total
+            if isinstance(item, str):
+                masked, found = self.name(item)
+                total += found
+                return masked
+            if isinstance(item, dict):
+                return {key: walk(inner) for key, inner in item.items()}
+            if isinstance(item, (list, tuple)):
+                return [walk(inner) for inner in item]
+            return item
+
+        return walk(node), total
 
     # -- what the task collected about itself (the PR #229 review) ----------
     #
@@ -284,6 +392,75 @@ class TaskMasking:
             count += 1
         masked, found = self.text(url)
         return masked, count + found
+
+
+def _named_values(document: Any, *, exclude: tuple[str, ...]) -> tuple[str, ...]:
+    """The values `document` names as secret that `redaction._carried` refused, longest first.
+
+    The same two sources as `redaction._learned_literals` -- a value masked
+    whole under a credential's name, and a value beside `NAME=` -- and the
+    same bounds (eight characters, not a private key's marker, not a run of
+    mask characters, at most `MAX_LITERALS`), but WITHOUT `_carried`'s
+    refusal of a value the rules already match: that refusal is what lets a
+    word-shaped password through `TaskMasking.name`'s plain-word exemption.
+    Only `TaskMasking.name` uses these; the input and caller metadata are
+    masked by the rules as before.
+    """
+    found: list[str] = []
+
+    def learn(node: Any) -> None:
+        if isinstance(node, str):
+            found.extend(_assigned_values(node))
+        elif isinstance(node, dict):
+            for key, item in node.items():
+                label = _key_text(key)
+                found.extend(_assigned_values(label))
+                if _masks_whole(label, item):
+                    found.extend(_leaf_texts(item))
+                else:
+                    learn(item)
+        elif isinstance(node, (list, tuple)):
+            for item in node:
+                learn(item)
+        elif node is not None and not isinstance(node, (bool, int, float)):
+            learn(str(node))
+
+    learn(document)
+    chosen: list[str] = []
+    seen: set[str] = set(exclude)
+    for candidate in found:
+        for literal in (candidate, candidate.strip()):
+            if literal in seen or len(chosen) >= MAX_LITERALS:
+                continue
+            seen.add(literal)
+            if len(literal.strip()) < 8 or literal.strip("*").strip() == "":
+                continue
+            if _PEM_HINT in literal:
+                continue
+            chosen.append(literal)
+    return tuple(sorted(chosen, key=len, reverse=True))
+
+
+def _mask_unless_plain(pattern: re.Pattern[str], text: str) -> tuple[str, int]:
+    """`pattern`'s matches masked after group 1, except a run of plain words; and how many."""
+    hits = 0
+
+    def mask(match: re.Match[str]) -> str:
+        nonlocal hits
+        if _plain_words(match.group(0)):
+            return match.group(0)
+        hits += 1
+        return match.group(1) + MASK
+
+    return pattern.sub(mask, text), hits
+
+
+def _plain_words(run: str) -> bool:
+    """Whether a prefix rule's match is a run of plain words (`_PLAIN_SEGMENT`), not a token."""
+    return all(
+        segment == "" or _PLAIN_SEGMENT.fullmatch(segment)
+        for segment in _SEGMENT_SEPARATORS.split(run)
+    )
 
 
 # --------------------------------------------------------------------------
