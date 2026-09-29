@@ -247,10 +247,10 @@ describe('the shipped stylesheets', () => {
 
   it('actually read the sheet it passed', () => {
     // The precondition, so none of the above can pass against a sheet that
-    // failed to load: an empty string has no duplicates either. `.ov-mix` is
+    // failed to load: an empty string has no duplicates either. `.ov-figure` is
     // the Overview block's own rule, so this also says the fold landed.
     expect(STYLES.length).toBeGreaterThan(100_000)
-    expect(STYLES).toContain('.ov-mix {')
+    expect(STYLES).toContain('.ov-figure {')
   })
 
   it('is the only sheet: no screen injects a <style> of its own', () => {
