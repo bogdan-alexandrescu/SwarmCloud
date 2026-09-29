@@ -76,6 +76,12 @@ jobs:
           CI_FIX_RUN_ID: ${{ github.event.workflow_run.id }}
           CI_FIX_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
           CI_FIX_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          # The pull request GitHub itself associated with this run. GitHub
+          # excludes a fork's pull requests from this list, so it is where the
+          # pull request number comes from, never a `gh pr list --head`
+          # search by branch name -- a fork author picks that name (#273
+          # review).
+          CI_FIX_PR_NUMBER: ${{ github.event.workflow_run.pull_requests[0].number }}
           # The identity whose access token passes the API's IAP front door,
           # and whose tenant owns the swarm tasks it fixes (docs/ci.md).
           SWARM_IMPERSONATE_SA: ${{ vars.SWARM_CI_FIX_SA }}

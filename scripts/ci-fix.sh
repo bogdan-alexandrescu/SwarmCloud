@@ -62,8 +62,12 @@ MAX_FIX_ATTEMPTS=2
 # signal: the agent has the branch and can run the failing test itself.
 LOG_EXCERPT_MAX_BYTES=16384
 
-# The runner profile the fix runs as, BY NAME (invariant 10).
-FIX_RUNNER_PROFILE="claude-code"
+# The runner profile the fix runs as, BY NAME (invariant 10). Named `PROFILE`
+# (not `FIX_RUNNER_PROFILE`) so scripts/lib/check-contract-parity.sh's script
+# runner inputs scan -- which reads a literal `PROFILE="..."` assignment next
+# to an `input: {...}` site -- can see it; the scan does not look for a
+# renamed variable, and it should not have to (#273).
+PROFILE="claude-code"
 FIX_STEP_ID="ci-fix"
 
 # One marker per kind of comment, each on its own line so `grep -c` counts
@@ -169,17 +173,50 @@ run_fix() {
   [[ "${head_sha}" =~ ^[0-9a-f]{40}$ ]] || die "CI_FIX_HEAD_SHA is not a commit sha"
   require_cmd gh jq
 
-  local pr
-  pr="$(gh pr list --repo "${repo}" --head "${branch}" --state open \
-    --json number --jq '.[0].number // empty')"
+  # The pull request comes from the workflow_run event, never from searching
+  # by branch name: `gh pr list --head` matches ANY pull request with that
+  # head branch, including one opened from a fork, and a fork author picks
+  # their own branch name. Naming it swarm/<the real task id> would let a
+  # fork PR be selected here instead of the real one, redirecting the
+  # attempt-cap count and every comment onto a pull request the fork author
+  # controls (#273 review). GitHub does not put a fork's pull request in
+  # workflow_run.pull_requests (docs.github.com/actions, "workflow_run"), so
+  # that field is trustworthy where a branch-name search is not.
+  local owner="${repo%%/*}"
+  local pr="${CI_FIX_PR_NUMBER:-}"
   if [[ -z "${pr}" ]]; then
-    info "no open pull request from ${branch}; nothing to fix"
+    # Fallback for the rare event with an empty pull_requests array (for
+    # example, the pull request closed and reopened between the run and this
+    # job). Search by branch name, but accept only a pull request that is
+    # explicitly same-repository -- never `// true`-style leniency (CLAUDE.md):
+    # `isCrossRepository == false` and the head repository owner is this
+    # repository's, checked as two separate equalities.
+    local candidates
+    candidates="$(gh pr list --repo "${repo}" --head "${branch}" --state open \
+      --json number,isCrossRepository,headRepositoryOwner)"
+    pr="$(jq -r --arg owner "${owner}" \
+      '[.[] | select(.isCrossRepository == false and .headRepositoryOwner.login == $owner)][0].number // empty' \
+      <<<"${candidates}")"
+  fi
+  if [[ -z "${pr}" ]]; then
+    info "no same-repository open pull request from ${branch}; refusing to fix (fork branches with this name are not eligible)"
     return 0
   fi
-  [[ "${pr}" =~ ^[0-9]+$ ]] || die "gh returned a pull request number that is not one"
+  [[ "${pr}" =~ ^[0-9]+$ ]] || die "the pull request number is not one"
 
+  local pr_view
+  pr_view="$(gh pr view "${pr}" --repo "${repo}" \
+    --json headRefOid,isCrossRepository,headRepositoryOwner,headRefName)"
+  local same_repo
+  same_repo="$(jq -r --arg owner "${owner}" --arg branch "${branch}" \
+    'if .isCrossRepository == false and .headRepositoryOwner.login == $owner and .headRefName == $branch then "true" else "false" end' \
+    <<<"${pr_view}")"
+  if [[ "${same_repo}" != "true" ]]; then
+    info "#${pr} is not a same-repository pull request from ${branch}; refusing to fix"
+    return 0
+  fi
   local current
-  current="$(gh pr view "${pr}" --repo "${repo}" --json headRefOid --jq '.headRefOid')"
+  current="$(jq -r '.headRefOid' <<<"${pr_view}")"
   if [[ "${current}" != "${head_sha}" ]]; then
     info "run ${run_id} tested ${head_sha}; #${pr} is now at ${current}. Not fixing a superseded failure."
     return 0
@@ -188,7 +225,15 @@ run_fix() {
   WORK="$(mktemp -d "${TMPDIR:-/tmp}/swarm-ci-fix.XXXXXX")"
   trap cleanup EXIT
 
-  gh api --paginate "repos/${repo}/issues/${pr}/comments" --jq '.[].body' >"${WORK}/comments"
+  # Only github-actions[bot]'s own comments count: it is the identity this
+  # workflow's GH_TOKEN posts as, and every marker below is meant to be
+  # written by this script alone. Without this filter, any third party could
+  # comment a `MARK_ATTEMPT` line to push the count to the cap (stopping the
+  # fixer) or open and close throwaway comments to reset it, since the cap is
+  # a `grep -c` over whatever comments exist (#273 review).
+  gh api --paginate "repos/${repo}/issues/${pr}/comments" >"${WORK}/comments.json"
+  jq -r '.[] | select(.user.login == "github-actions[bot]") | .body' \
+    "${WORK}/comments.json" >"${WORK}/comments"
   local made
   made="$(grep -cF -- "${MARK_ATTEMPT}" "${WORK}/comments" || true)"
 
@@ -252,7 +297,7 @@ run_fix() {
 
   jq -n \
     --rawfile prompt "${WORK}/prompt" \
-    --arg profile "${FIX_RUNNER_PROFILE}" \
+    --arg profile "${PROFILE}" \
     --arg step "${FIX_STEP_ID}" \
     --arg task "${task}" \
     --arg sha "${head_sha}" \
@@ -295,7 +340,7 @@ run_fix() {
     printf '%s\n' "${MARK_ATTEMPT}"
     printf '**CI fixer: attempt %s of %s.** ' "${attempt}" "${MAX_FIX_ATTEMPTS}"
     printf 'CI failed in [run %s](%s) on `%s`. ' "${run_id}" "${run_url}" "${head_sha:0:12}"
-    printf 'A `%s` step was submitted to fix exactly that failure and push the fix to `%s`.\n\n' "${FIX_RUNNER_PROFILE}" "${branch}"
+    printf 'A `%s` step was submitted to fix exactly that failure and push the fix to `%s`.\n\n' "${PROFILE}" "${branch}"
     printf -- '- workflow: `%s`\n' "${workflow_id}"
     printf -- '- fix task: `%s`\n' "${fix_task}"
     printf -- '- continues: `%s`\n' "${task}"

@@ -38,6 +38,9 @@ HEAD = "a" * 40
 RUN_ID = "4242"
 PR = "77"
 GH_REPO = "acme/widgets"
+OWNER = GH_REPO.split("/", 1)[0]
+FORK_OWNER = "attacker"
+BOT = "github-actions[bot]"
 
 # Shapes the redaction must catch. Fake, and each distinct, so a leak is
 # attributable to the rule that missed it.
@@ -77,12 +80,42 @@ def _write_exe(path: Path, text: str) -> None:
     path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
 
+def _pr_list(*prs: dict) -> str:
+    """`gh pr list --json number,isCrossRepository,headRepositoryOwner`."""
+    return json.dumps(list(prs))
+
+
+def _same_repo_pr(number: str = PR, owner: str = OWNER) -> dict:
+    return {"number": int(number), "isCrossRepository": False, "headRepositoryOwner": {"login": owner}}
+
+
+def _fork_pr(number: str = "999", owner: str = FORK_OWNER) -> dict:
+    return {"number": int(number), "isCrossRepository": True, "headRepositoryOwner": {"login": owner}}
+
+
+def _pr_view(head_sha: str = HEAD, owner: str = OWNER, branch: str = BRANCH, cross: bool = False) -> str:
+    """`gh pr view --json headRefOid,isCrossRepository,headRepositoryOwner,headRefName`."""
+    return json.dumps(
+        {
+            "headRefOid": head_sha,
+            "isCrossRepository": cross,
+            "headRepositoryOwner": {"login": owner},
+            "headRefName": branch,
+        }
+    )
+
+
+def _comments_json(bodies: list[str], login: str = BOT) -> str:
+    """`gh api .../comments`: the raw shape, before the script's own author filter."""
+    return json.dumps([{"user": {"login": login}, "body": b} for b in bodies])
+
+
 FAKE_GH = r"""#!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >>"${FAKE_DIR}/gh.calls"
 case "$1 $2" in
-  "pr list")    cat "${FAKE_DIR}/pr_number" ;;
-  "pr view")    cat "${FAKE_DIR}/pr_head" ;;
+  "pr list")    cat "${FAKE_DIR}/pr_list.json" ;;
+  "pr view")    cat "${FAKE_DIR}/pr_view.json" ;;
   "run view")   cat "${FAKE_DIR}/log" ;;
   "pr comment")
     n=$(ls "${FAKE_DIR}" | grep -c '^comment-' || true)
@@ -91,7 +124,7 @@ case "$1 $2" in
       shift
     done
     ;;
-  api\ *)       cat "${FAKE_DIR}/comments" ;;
+  api\ *)       cat "${FAKE_DIR}/comments.json" ;;
   *) echo "fake gh: unexpected: $*" >&2; exit 3 ;;
 esac
 """
@@ -131,9 +164,9 @@ def fake(tmp_path: Path):
     _write_exe(bin_dir / "gh", FAKE_GH)
     _write_exe(bin_dir / "gcloud", FAKE_GCLOUD)
     _write_exe(bin_dir / "curl", FAKE_CURL)
-    (state / "pr_number").write_text(PR + "\n")
-    (state / "pr_head").write_text(HEAD + "\n")
-    (state / "comments").write_text("")
+    (state / "pr_list.json").write_text(_pr_list(_same_repo_pr()))
+    (state / "pr_view.json").write_text(_pr_view())
+    (state / "comments.json").write_text(_comments_json([]))
     (state / "log").write_text(_log())
     (state / "api_status").write_text("201")
     (state / "api_response").write_text(
@@ -274,10 +307,106 @@ def test_a_red_swarm_pr_gets_one_fix_step_that_names_a_profile_and_nothing_else(
 
 def test_the_next_attempt_is_numbered_from_the_comments_already_on_the_pr(fake):
     _, state = fake
-    (state / "comments").write_text("<!-- swarm-ci-fix:attempt -->\nattempt 1\n")
+    (state / "comments.json").write_text(_comments_json(["<!-- swarm-ci-fix:attempt -->\nattempt 1"]))
     out = _run(fake, "run")
     assert out.returncode == 0, out.stderr
     body = json.loads((state / "request.json").read_text())
+    assert body["metadata"]["ci_fix"]["attempt"] == 2
+
+
+# --------------------------------------------------------------------------
+# The pull request is never picked by searching for its branch name alone
+# (#273 review): `gh pr list --head` matches any pull request with that head
+# branch, including one a fork author opened naming their own branch after
+# the real task, which would redirect the attempt count and every comment
+# onto a pull request they control.
+# --------------------------------------------------------------------------
+
+def test_ci_fix_pr_number_from_the_event_is_used_and_no_branch_search_happens(fake):
+    """When the workflow_run event already names the pull request, the
+    script never falls back to a branch-name search for it."""
+    _, state = fake
+    out = _run(fake, "run", CI_FIX_PR_NUMBER=PR)
+    assert out.returncode == 0, out.stderr
+    calls = _calls(state, "gh")
+    assert not any(c.startswith("pr list") for c in calls), "searched by branch name despite CI_FIX_PR_NUMBER"
+    assert any(c.startswith("pr view") for c in calls)
+    body = json.loads((state / "request.json").read_text())
+    assert body["metadata"]["ci_fix"]["pull_request"] == int(PR)
+
+
+def test_a_fork_pull_request_with_the_same_branch_name_is_never_picked(fake):
+    """A fork can open a PR whose head branch is named swarm/<the real task
+    id> -- a string only the fork author chooses. The branch-name fallback
+    must not select it, and nothing about it may be commented on."""
+    _, state = fake
+    (state / "pr_list.json").write_text(_pr_list(_fork_pr()))
+    out = _run(fake, "run")
+    assert out.returncode == 0, out.stderr
+    assert _calls(state, "curl") == [], "a fix was submitted for a fork's pull request"
+    assert _comments(state) == [], "a comment was posted on a fork's pull request"
+
+
+def test_a_same_named_fork_pr_does_not_shadow_the_real_same_repo_pr(fake):
+    """Both a legitimate same-repository PR and an attacker's same-named
+    fork PR can be open at once; the real one is still the one picked."""
+    _, state = fake
+    (state / "pr_list.json").write_text(_pr_list(_fork_pr(), _same_repo_pr()))
+    out = _run(fake, "run")
+    assert out.returncode == 0, out.stderr
+    body = json.loads((state / "request.json").read_text())
+    assert body["metadata"]["ci_fix"]["pull_request"] == int(PR)
+
+
+def test_a_forged_ci_fix_pr_number_pointing_at_a_fork_pr_is_refused(fake):
+    """Defence in depth: even if CI_FIX_PR_NUMBER named a cross-repository
+    pull request, the script's own `gh pr view` check refuses it rather than
+    trusting the number alone."""
+    _, state = fake
+    (state / "pr_view.json").write_text(_pr_view(owner=FORK_OWNER, cross=True))
+    out = _run(fake, "run", CI_FIX_PR_NUMBER=PR)
+    assert out.returncode == 0, out.stderr
+    assert _calls(state, "curl") == []
+    assert _comments(state) == []
+
+
+# --------------------------------------------------------------------------
+# Only github-actions[bot]'s own comments count toward the attempt cap
+# (#273 review): the cap is a count over comments on the pull request, and
+# without an author check a third party could post the marker themselves.
+# --------------------------------------------------------------------------
+
+def test_attempt_markers_from_a_third_party_do_not_count_toward_the_cap(fake):
+    _, state = fake
+    cap = _constant("MAX_FIX_ATTEMPTS")
+    (state / "comments.json").write_text(
+        _comments_json(["<!-- swarm-ci-fix:attempt -->"] * (cap + 5), login="some-random-user")
+    )
+    out = _run(fake, "run")
+    assert out.returncode == 0, out.stderr
+    # Spoofed markers from a non-bot author did not push the count to the
+    # cap: this is still attempt 1, and a fix was still submitted.
+    assert _calls(state, "curl") != [], "third-party comments stopped the fixer"
+    body = json.loads((state / "request.json").read_text())
+    assert body["metadata"]["ci_fix"]["attempt"] == 1
+
+
+def test_attempt_markers_from_the_bot_still_count(fake):
+    """The filter narrows by author; it does not stop counting altogether."""
+    _, state = fake
+    # One real bot attempt and one third-party comment mimicking the marker.
+    (state / "comments.json").write_text(
+        json.dumps(
+            [
+                {"user": {"login": BOT}, "body": "<!-- swarm-ci-fix:attempt -->"},
+                {"user": {"login": "some-random-user"}, "body": "<!-- swarm-ci-fix:attempt -->"},
+            ]
+        )
+    )
+    out = _run(fake, "run")
+    assert out.returncode == 0, out.stderr
+    body = json.loads((state / "request.json").read_text())
+    # Only the one bot comment counted, so this is attempt 2, not 3.
     assert body["metadata"]["ci_fix"]["attempt"] == 2
 
 
@@ -288,7 +417,7 @@ def test_the_next_attempt_is_numbered_from_the_comments_already_on_the_pr(fake):
 def test_at_the_cap_nothing_is_submitted_and_the_pr_says_why_once(fake):
     _, state = fake
     cap = _constant("MAX_FIX_ATTEMPTS")
-    (state / "comments").write_text("<!-- swarm-ci-fix:attempt -->\n" * cap)
+    (state / "comments.json").write_text(_comments_json(["<!-- swarm-ci-fix:attempt -->"] * cap))
 
     out = _run(fake, "run")
     assert out.returncode == 0, out.stderr
@@ -298,8 +427,8 @@ def test_at_the_cap_nothing_is_submitted_and_the_pr_says_why_once(fake):
     assert str(cap) in comment
 
     # The next red run on the same PR says nothing more.
-    (state / "comments").write_text(
-        "<!-- swarm-ci-fix:attempt -->\n" * cap + "<!-- swarm-ci-fix:stopped -->\n"
+    (state / "comments.json").write_text(
+        _comments_json(["<!-- swarm-ci-fix:attempt -->"] * cap + ["<!-- swarm-ci-fix:stopped -->"])
     )
     again = _run(fake, "run")
     assert again.returncode == 0, again.stderr
@@ -310,7 +439,7 @@ def test_at_the_cap_nothing_is_submitted_and_the_pr_says_why_once(fake):
 def test_a_run_for_a_commit_that_is_no_longer_the_head_is_ignored(fake):
     """Something already moved the branch; fixing the old failure would fight it."""
     _, state = fake
-    (state / "pr_head").write_text("b" * 40 + "\n")
+    (state / "pr_view.json").write_text(_pr_view(head_sha="b" * 40))
     out = _run(fake, "run")
     assert out.returncode == 0, out.stderr
     assert _calls(state, "curl") == []
@@ -352,7 +481,7 @@ def test_an_unconfigured_fixer_says_so_on_the_pr_once_and_submits_nothing(fake):
     (comment,) = _comments(state)
     assert "<!-- swarm-ci-fix:unconfigured -->" in comment
 
-    (state / "comments").write_text("<!-- swarm-ci-fix:unconfigured -->\n")
+    (state / "comments.json").write_text(_comments_json(["<!-- swarm-ci-fix:unconfigured -->"]))
     _run(fake, "run", SWARM_IMPERSONATE_SA="")
     assert len(_comments(state)) == 1
 
