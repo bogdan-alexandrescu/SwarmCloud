@@ -9428,18 +9428,10 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 /* ---- the runner catalogue, as rows ---- */
 /* INVARIANT 10, MADE VISIBLE. A `<select>` hid the one thing that makes
    caller-named execution safe: what each name actually selects. A row per
-   profile shows its room and whether this tenant holds the key it needs
-   (#114, `RunnerPicker`, drawn by both Submit forms), and a disabled profile
-   shows the platform's own reason instead of vanishing from the list. */
+   profile shows the resource class, the weight, the backend and whether a
+   provider key is needed, and a disabled profile shows the platform's own
+   reason instead of vanishing from the list. */
 .sbf-runners { list-style: none; margin: 0 0 var(--ctl-s3); padding: 0; display: grid; gap: 2px; }
-/* INSIDE A WORKFLOW STEP, a ~370px column holding one picker per step: the
-   rows close up so five runners do not make one step a screen tall. */
-.sbf-runners.is-compact { margin: 0; gap: 0; }
-.sbf-runners.is-compact .sbf-runner { padding: var(--ctl-s1) var(--ctl-s2); min-height: 0; }
-/* The radio's margin DECLARED, not the user agent's `ex`-based default: the
-   step card is a surface, and the inset from its edge to the first text has to
-   be a length the spacing sweep can add up. The column gap spaces it. */
-.sbf-runners.is-compact .sbf-runner > input { margin: 0; }
 /* A GRID, so the radio occupies its own column and the two text lines stack
    beside it rather than under it. */
 .sbf-runner {
@@ -9471,10 +9463,6 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 .sbf-runner.is-on .sbf-runner-name { font-weight: 600; }
 .sbf-runner-facts { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
 .sbf-runner-off { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--warn-ink); }
-/* A MISSING KEY IS THE ONE FACT IN THE ROW SOMEBODY HAS TO ACT ON: a task
-   under it is parked until the key is registered. Warn ink, the refusal
-   reason's own, and the words carry it without the hue. */
-.sbf-runner-miss { color: var(--warn-ink); }
 
 .sbf-room {
   display: grid; gap: var(--ctl-s2); max-width: var(--measure); min-width: 0;
@@ -9659,6 +9647,7 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 }
 .wfb-step-h { display: flex; align-items: center; gap: var(--ctl-s2); flex-wrap: wrap; }
 .wfb-id { flex: 1 1 130px; min-width: 0; }
+.wfb-profile { flex: 0 1 auto; min-width: 0; }
 .wfb-drop { margin-left: auto; }
 .wfb-cost {
   margin: 0; display: flex; align-items: center; gap: var(--ctl-s1); flex-wrap: wrap;
