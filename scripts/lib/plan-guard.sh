@@ -23,23 +23,13 @@
 # nobody had decided on. The terraform.yml copy checked the deny-list and simply
 # never implemented the label half its own comment promised.
 #
-# It also answers the one other question a release asks of a plan: DOES IT
-# CHANGE IAM? (owner decision, 2026-09-28, #268). A dev release whose plan does
-# is applied only in the `dev-iam` environment, behind the owner's review.
-# `--classify-iam` prints exactly `true` or `false` on stdout and, with
-# `--summary FILE`, appends the IAM rows as a markdown table for the reviewer.
-# The rule is scripts/lib/iam-plan.jq, stated there once.
-#
 # Usage:
 #   scripts/lib/plan-guard.sh --plan terraform/infra/plan.json            # apply
 #   scripts/lib/plan-guard.sh --plan build/dev.plan.json --mode destroy
-#   scripts/lib/plan-guard.sh --plan terraform/infra/plan.json --classify-iam \
-#       [--summary "$GITHUB_STEP_SUMMARY"]
 #   scripts/lib/plan-guard.sh --self-test
 #
 # Exit 0 = the plan is allowed. Exit 2 = it is not. Exit 1 = it could not be
-# judged, which is also a refusal: this fails closed. --classify-iam exits 0
-# with its answer, or 1 without one: a plan it cannot read is never "false".
+# judged, which is also a refusal: this fails closed.
 
 set -euo pipefail
 # shellcheck source-path=SCRIPTDIR
@@ -49,17 +39,13 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 PLAN=""
 MODE="apply"
 SELF_TEST=0
-CLASSIFY_IAM=0
-SUMMARY=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --plan|-p)   PLAN="$2"; shift 2 ;;
     --mode|-m)   MODE="$2"; shift 2 ;;
     --self-test) SELF_TEST=1; shift ;;
-    --classify-iam) CLASSIFY_IAM=1; shift ;;
-    --summary)   SUMMARY="$2"; shift 2 ;;
-    -h|--help)   sed -n '2,42p' "$0"; exit 0 ;;
+    -h|--help)   sed -n '2,33p' "$0"; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
@@ -67,10 +53,8 @@ done
 require_cmd jq
 GUARD_JQ="${SWARM_LIB_DIR}/destroy-guard.jq"
 TYPES_JSON="${SWARM_LIB_DIR}/unlabelable-types.json"
-IAM_JQ="${SWARM_LIB_DIR}/iam-plan.jq"
 [[ -f "${GUARD_JQ}" ]]   || die "missing ${GUARD_JQ}"
 [[ -f "${TYPES_JSON}" ]] || die "missing ${TYPES_JSON}"
-[[ -f "${IAM_JQ}" ]]     || die "missing ${IAM_JQ}"
 
 # The allow-list of types that cannot carry a label. Read from the file so that
 # destroy.sh and both workflows are judging by the same list.
@@ -91,60 +75,6 @@ judge() {
     --arg project "${PROJECT_ID}" \
     --arg prefix "$(guard_name_prefix)" \
     "${plan}" >"${out}"
-}
-
-# ---------------------------------------------------------------------------
-# Does the plan change IAM? iam-plan.jq decides; these read its answer.
-# ---------------------------------------------------------------------------
-
-# classify_iam PLAN_JSON OUT -- the classification, as JSON, into OUT.
-classify_iam() {
-  jq -f "${IAM_JQ}" "$1" >"$2"
-}
-
-# iam_answer CLASSIFICATION -> prints `true` or `false`; exits non-zero on
-# anything else.
-#
-# SLURPED, so that an EMPTY classification is a refusal on every jq. jq 1.6
-# (still what some machines have) runs a filter over no input at all, prints
-# nothing and exits 0 even under -e; slurping turns no input into [], which
-# fails the length check below. And `.iam` is compared with `== true` and
-# `== false` both, never `.iam // false`: in jq `false // x` is x, and a
-# missing `.iam` must not read as either answer.
-iam_answer() {
-  jq -e -r -s '
-    if length == 1 and (.[0] | type) == "object"
-       and (.[0].rows | type) == "array"
-       and ((.[0].iam == true and (.[0].rows | length) > 0)
-            or (.[0].iam == false and (.[0].rows | length) == 0))
-    then (if .[0].iam == true then "true" else "false" end)
-    else error("the IAM classification is unusable") end' "$1"
-}
-
-# write_iam_summary CLASSIFICATION ANSWER FILE -- markdown for the reviewer,
-# appended to FILE ($GITHUB_STEP_SUMMARY in release.yml). Every row, because
-# the reviewer approves what this lists and nothing else.
-write_iam_summary() {
-  local classification="$1" answer="$2" out="$3"
-  {
-    if [[ "${answer}" == "true" ]]; then
-      echo "### This plan changes IAM: it is applied only after the owner approves \`dev-iam\`"
-      echo
-      echo "$(jq -r '.rows | length' "${classification}") IAM change(s). The apply waits for review and then applies"
-      echo "this same saved plan, checked by its sha256 -- never a new plan."
-      echo
-      echo "| address | type | actions | on | change |"
-      echo "|---|---|---|---|---|"
-      # A literal | inside a cell ends the cell; GitHub reads \| as the character.
-      jq -r '.rows[]
-        | [.address, .type, (.actions | join("+")), .target, .detail]
-        | map(gsub("\\|"; "\\|"))
-        | "| `\(.[0])` | `\(.[1])` | \(.[2]) | `\(.[3])` | \(.[4]) |"' "${classification}"
-    else
-      echo "### This plan changes no IAM: it is applied in \`dev\` without review"
-    fi
-    echo
-  } >>"${out}"
 }
 
 # THE GUARD'S OWN FAIL-OPEN BUG, found on 2026-09-19. Every check in `report`
@@ -407,48 +337,6 @@ FIXTURE_JSON
   guard_refuses "a verdict missing a field is refused" '{"denylist_touches": []}'
   guard_refuses "a verdict that is not an object is refused" '"nope"'
 
-  # ---------------------------------------------------------------------
-  # --classify-iam. "false" applies a dev plan with nobody asked, so the cases
-  # are the one that would be missed (a FORGET, which deletes nothing live),
-  # the routine release that must not be stopped, and inputs that must be
-  # refused rather than answered.
-  # ---------------------------------------------------------------------
-  iam_case() {
-    local label="$1" want="$2" content="$3" got rc=0
-    printf '%s' "${content}" >"${WORK}/iam-plan.json"
-    # Subshell and `|| rc=$?`: a refusal must not end the self-test.
-    got="$( { classify_iam "${WORK}/iam-plan.json" "${WORK}/iam.json" \
-              && iam_answer "${WORK}/iam.json"; } 2>/dev/null )" || rc=$?
-    if [[ "${want}" == "refused" ]]; then
-      if [[ "${rc}" -ne 0 ]]; then ok "${label}: refused"; else err "${label}: expected a refusal, got '${got}'"; FAILED=1; fi
-    elif [[ "${rc}" -eq 0 && "${got}" == "${want}" ]]; then
-      ok "${label}: ${got}"
-    else
-      err "${label}: expected ${want}, got '${got}' (exit ${rc})"; FAILED=1
-    fi
-  }
-
-  iam_case "a forgotten custom role is an IAM change" true \
-    '{"format_version":"1.2","resource_changes":[
-      {"address":"module.iam.google_project_iam_custom_role.job_dispatcher","type":"google_project_iam_custom_role",
-       "change":{"actions":["forget"],"after":null,
-         "before":{"project":"saga-agents-staging","role_id":"swarmJobDispatcher"}}}]}'
-  iam_case "an image digest update is not an IAM change" false \
-    '{"format_version":"1.2","resource_changes":[
-      {"address":"module.cloud_run.google_cloud_run_v2_service.this","type":"google_cloud_run_v2_service",
-       "change":{"actions":["update"],"before":{"name":"swarm-api"},"after":{"name":"swarm-api"}}},
-      {"address":"module.iam.google_project_iam_member.plain","type":"google_project_iam_member",
-       "change":{"actions":["no-op"],"before":{},"after":{}}}]}'
-  iam_case "a replaced bucket binding is an IAM change" true \
-    '{"format_version":"1.2","resource_changes":[
-      {"address":"b","type":"google_storage_bucket_iam_binding",
-       "change":{"actions":["delete","create"],"before":{},"after":{"role":"roles/storage.objectViewer"}}}]}'
-  iam_case "a plan with no changes is not an IAM change" false '{"format_version":"1.2"}'
-  iam_case "an empty plan file is refused, not answered" refused ""
-  iam_case "an object that is not a plan is refused" refused '{}'
-  iam_case "a change with no actions is refused" refused \
-    '{"format_version":"1.2","resource_changes":[{"address":"x","type":"google_project_iam_member"}]}'
-
   hr
   [[ "${FAILED}" -eq 0 ]] || die "PLAN-GUARD SELF-TEST FAILED -- do not trust the workflow gates until this passes"
   ok "plan-guard self-test passed"
@@ -458,27 +346,6 @@ fi
 # ---------------------------------------------------------------------------
 [[ -n "${PLAN}" ]] || die "--plan <terraform show -json output> is required"
 [[ -f "${PLAN}" ]] || die "no such plan file: ${PLAN}"
-
-if [[ "${CLASSIFY_IAM}" -eq 1 ]]; then
-  mkdir -p "${BUILD_DIR}"
-  CLASSIFICATION="${BUILD_DIR}/plan-iam.json"
-  step "Does this plan change IAM?"
-  classify_iam "${PLAN}" "${CLASSIFICATION}" || die "could not classify ${PLAN} -- refusing to answer rather than answering 'false'"
-  # `|| die` on the assignment itself: its status is the substitution's, so an
-  # unusable classification ends the script here, with nothing on stdout.
-  ANSWER="$(iam_answer "${CLASSIFICATION}")" || die "the IAM classification of ${PLAN} is unusable: ${CLASSIFICATION}"
-  if [[ "${ANSWER}" == "true" ]]; then
-    warn "$(jq -r '.rows | length' "${CLASSIFICATION}") IAM change(s):"
-    jq -r '.rows[] | "    \(.address)  (\(.type))  \(.actions | join("+"))  on \(.target): \(.detail)"' \
-      "${CLASSIFICATION}" >&2
-  else
-    ok "no IAM change"
-  fi
-  [[ -z "${SUMMARY}" ]] || write_iam_summary "${CLASSIFICATION}" "${ANSWER}" "${SUMMARY}"
-  printf '%s\n' "${ANSWER}"
-  exit 0
-fi
-[[ -z "${SUMMARY}" ]] || die "--summary is written only with --classify-iam"
 case "${MODE}" in
   apply|destroy) ;;
   *) die "--mode must be 'apply' or 'destroy', got '${MODE}'" ;;
