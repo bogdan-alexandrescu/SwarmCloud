@@ -93,6 +93,31 @@ def check_worker_models(models: object) -> None:
             )
 
 
+def check_spec_settings(settings: object) -> None:
+    """The worker's step-spec settings, refused here rather than on every Job.
+
+    The worker parses the same values (`agent_worker.specverify`); a bad one
+    passed through would fail every worker this scheduler creates as
+    CANNOT_START, which is the loudest possible place to find a typo and the
+    most expensive.
+    """
+    import json
+
+    raw = str(getattr(settings, "spec_verify_keys", "") or "")
+    if raw:
+        try:
+            keys = json.loads(raw)
+        except ValueError as exc:
+            raise ValueError(f"SPEC_VERIFY_KEYS is not valid JSON: {exc}") from exc
+        if not isinstance(keys, dict) or not all(
+            isinstance(k, str) and isinstance(v, str) for k, v in keys.items()
+        ):
+            raise ValueError("SPEC_VERIFY_KEYS must be a JSON object of version name -> PEM")
+    mode = str(getattr(settings, "spec_signature_mode", "") or "").lower()
+    if mode and mode not in ("enforce", "legacy"):
+        raise ValueError(f"SPEC_SIGNATURE_MODE must be enforce or legacy, got {mode!r}")
+
+
 def parse_worker_models(raw: str) -> dict[str, str]:
     """WORKER_MODELS -> {runner profile: model}. Empty means no profile pins one.
 
@@ -296,6 +321,16 @@ class SchedulerSettings:
     #: is attribution. Excluded from the hash, like `worker_image_refs`.
     worker_models: dict[str, str] = field(default_factory=dict, hash=False)
     dispatch_topic: str = ""
+    #: The step-spec verification settings a worker needs (contract request
+    #: 34), passed through VERBATIM onto every Cloud Run Job this scheduler
+    #: CREATES -- the same values terraform renders onto its own Jobs -- and
+    #: NEVER into `worker_env`, which a task shapes. Empty means the scheduler
+    #: was deployed without them and its Jobs' workers verify nothing: they
+    #: refuse a signed task as CANNOT_START rather than run it unverified.
+    spec_verify_keys: str = ""
+    spec_signing_key: str = ""
+    spec_signature_mode: str = ""
+    spec_legacy_cutover: str = ""
 
     @classmethod
     def from_env(cls) -> "SchedulerSettings":
@@ -337,6 +372,10 @@ class SchedulerSettings:
             worker_image_refs=parse_worker_image_refs(os.environ.get("WORKER_IMAGE_REFS", "")),
             worker_models=parse_worker_models(os.environ.get("WORKER_MODELS", "")),
             dispatch_topic=os.environ.get("DISPATCH_TOPIC", ""),
+            spec_verify_keys=os.environ.get("SPEC_VERIFY_KEYS", "").strip(),
+            spec_signing_key=os.environ.get("SPEC_SIGNING_KEY", "").strip(),
+            spec_signature_mode=os.environ.get("SPEC_SIGNATURE_MODE", "").strip(),
+            spec_legacy_cutover=os.environ.get("SPEC_LEGACY_CUTOVER", "").strip(),
         )
 
     def __post_init__(self) -> None:
@@ -364,3 +403,4 @@ class SchedulerSettings:
         # directly -- as every test does -- cannot carry a tag either.
         check_worker_image_refs(self.worker_image_refs)
         check_worker_models(self.worker_models)
+        check_spec_settings(self)

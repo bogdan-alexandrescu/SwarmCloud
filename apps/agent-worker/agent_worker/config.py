@@ -12,8 +12,9 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from swarm_common.config import Settings
 from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES, RunnerProfile, resolve_backend
@@ -197,6 +198,34 @@ class WorkerConfig:
     model: str | None = None
     extra_env: dict[str, str] = field(default_factory=dict)
 
+    # --- the step-spec signature (contract request 34) ----------------------
+    # PLATFORM configuration, never a task's: terraform renders these onto
+    # every worker Job (and the swarm-spec-verify-keys ConfigMap on GKE), and
+    # `scheduler.dispatch.worker_env` is held by a test to never set them.
+    #
+    #: `enforce` (THE DEFAULT, decision 5) or `legacy`. In legacy an unsigned
+    #: task created before `spec_legacy_cutover` runs, until
+    #: `specverify.SPEC_LEGACY_UNTIL`. The FIRST release that verifies ships
+    #: `legacy` from terraform, because every task already parked then is
+    #: unsigned; the default is what the platform returns to after the window.
+    spec_signature_mode: str = "enforce"
+    #: The moment the signing swarm-api revision took all traffic (RFC 3339).
+    spec_legacy_cutover: datetime | None = None
+    #: The crypto key whose versions the worker trusts: projects/.../cryptoKeys/<k>.
+    spec_signing_key: str = ""
+    #: {full version name: PEM public key}, every ENABLED version of that key.
+    spec_verify_keys: dict[str, str] = field(default_factory=dict, hash=False)
+    #: TASK_TIMEOUT_SECONDS as the execution carried it, or None when unset.
+    #: Compared with the signed `timeout_seconds` (check 5).
+    task_timeout_env: int | None = None
+    #: CLOUD_RUN_JOB, set by Cloud Run itself, not by the scheduler.
+    cloud_run_job: str | None = None
+    #: RUNNER_JOB_NAME, set by the GKE dispatcher's render (self-consistency only).
+    runner_job_name: str | None = None
+    #: The clock the legacy window is read against. None is the wall clock;
+    #: a test injects one to stand past SPEC_LEGACY_UNTIL.
+    spec_clock: Callable[[], datetime] | None = field(default=None, compare=False, hash=False)
+
     # ------------------------------------------------------------------------
     @property
     def profile(self) -> RunnerProfile:
@@ -281,6 +310,10 @@ class WorkerConfig:
             raise ConfigError("timeout must be positive")
         if self.termination_grace_seconds < 0:
             raise ConfigError("termination grace must not be negative")
+        if self.spec_signature_mode not in ("enforce", "legacy"):
+            raise ConfigError(
+                f"SPEC_SIGNATURE_MODE must be enforce or legacy, got {self.spec_signature_mode!r}"
+            )
 
     @classmethod
     def from_env(cls, settings: Settings | None = None) -> "WorkerConfig":
@@ -292,6 +325,19 @@ class WorkerConfig:
 
         repo = os.environ.get("REPOSITORY_URL", "").strip() or None
         ref = os.environ.get("REPOSITORY_REF", "").strip() or None
+
+        # The step-spec verification settings (contract request 34). The Job's
+        # environment on Cloud Run; the read-only ConfigMap mount on GKE,
+        # read only when the environment carries no keys.
+        from . import specverify
+
+        raw_keys = os.environ.get("SPEC_VERIFY_KEYS", "")
+        signing_key = os.environ.get("SPEC_SIGNING_KEY", "").strip()
+        if not raw_keys.strip():
+            mounted_keys, mounted_key = specverify.read_mount()
+            raw_keys = mounted_keys
+            signing_key = signing_key or mounted_key.strip()
+        timeout_env = os.environ.get("TASK_TIMEOUT_SECONDS", "").strip()
 
         return cls(
             task_id=_require("TASK_ID"),
@@ -330,4 +376,13 @@ class WorkerConfig:
             ),
             provider=profile.provider,
             model=os.environ.get("MODEL", "").strip() or None,
+            spec_signature_mode=specverify.parse_mode(os.environ.get("SPEC_SIGNATURE_MODE", "")),
+            spec_legacy_cutover=specverify.parse_cutover(
+                os.environ.get("SPEC_LEGACY_CUTOVER", "")
+            ),
+            spec_signing_key=signing_key,
+            spec_verify_keys=specverify.parse_verify_keys(raw_keys),
+            task_timeout_env=_int_env("TASK_TIMEOUT_SECONDS", 0) if timeout_env else None,
+            cloud_run_job=os.environ.get("CLOUD_RUN_JOB", "").strip() or None,
+            runner_job_name=os.environ.get("RUNNER_JOB_NAME", "").strip() or None,
         )

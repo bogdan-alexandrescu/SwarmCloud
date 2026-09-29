@@ -122,6 +122,21 @@ cannot be reached -- fails the attempt with `INPUTS_UNAVAILABLE` and the
 agent never starts. A step that asks for an issue cannot also stage an
 `input_from` file named `issue.md`.
 
+**Every step's spec is signed at submission, and verified before it runs**
+(contract request 34, #342). A tenant's agents can write any task document
+of their tenant -- Firestore has no document-level IAM -- so one step could
+rewrite a parked later step's prompt, its `input_from`, its dispatch role or
+its repository. swarm-api signs each step's canonical spec
+(`swarm_common.specsign`) with a Cloud KMS key only its own account may use,
+after `input_from` and `expected_outputs` are written; the worker verifies it
+immediately after it fetches the task, before the checkpoint restore, the
+clone, the staged inputs, the credentials or the issue. A mismatch ends the
+task FAILED with `SPEC_SIGNATURE_INVALID`, never retried. What the signature
+does NOT cover is every field a later writer changes (`state`,
+`attempt_count`, `result_summary`, `latest_checkpoint` and the rest) and the
+restored workspace; contract request 34's threat model states those
+residuals.
+
 Every declared number has a floor and a ceiling, and an integer's bounds lie
 inside the signed 64-bit range; the catalogue refuses a declaration without
 them. Python reads a JSON integer at any length and Firestore stores 64 bits,

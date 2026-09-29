@@ -38,6 +38,7 @@ const ZERO_CLASSES: Record<FailureClassKey, number> = {
   inputs_unavailable: 0,
   outputs_missing: 0,
   dispatch_failed: 0,
+  spec_signature_invalid: 0,
   other: 0,
   no_reason: 0,
 }
@@ -139,6 +140,7 @@ export function ledgerFixture(): Outcomes {
         { key: 'inputs_unavailable', label: 'inputs unavailable' },
         { key: 'outputs_missing', label: 'outputs missing' },
         { key: 'dispatch_failed', label: 'dispatch failed' },
+        { key: 'spec_signature_invalid', label: 'spec signature invalid' },
         { key: 'other', label: 'other' },
         { key: 'no_reason', label: 'no reason recorded' },
       ],

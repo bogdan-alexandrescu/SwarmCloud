@@ -35,6 +35,7 @@ from .outcomes import Outcomes
 from .ratelimit import TokenBucketLimiter
 from .rollup import WorkflowRollups
 from .service import SubmissionService
+from .specsigning import SpecSigner, signer_from_settings
 from .settings import ApiSettings
 from .store import Store
 from .waker import NullWaker, PubSubWaker, SchedulerWaker
@@ -116,6 +117,10 @@ def build_context(
     # that indistinguishable from "not supplied".
     objects: ObjectReader | None | object = _MISSING,
     now: Callable[[], Any] = utcnow,
+    # The step-spec signer (contract request 34). `_MISSING` means "from the
+    # settings": Cloud KMS when SPEC_SIGNING_KEY_VERSION is set, a refusal to
+    # start in a hardened environment without it. Tests inject a local key.
+    signer: SpecSigner | None | object = _MISSING,
 ) -> AppContext:
     settings = settings or ApiSettings.from_env()
     db = db if db is not None else build_firestore(settings)
@@ -144,8 +149,10 @@ def build_context(
     # rather than "used without the check".
     iap = IapAssertionVerifier(settings.iap_audiences)
     authenticator = Authenticator(settings, verifier, groups, iap=iap)
+    spec_signer = signer_from_settings(settings) if signer is _MISSING else signer
     submissions = SubmissionService(
-        settings=settings, store=store, waker=waker, metrics=metrics, now=now
+        settings=settings, store=store, waker=waker, metrics=metrics, now=now,
+        signer=spec_signer,  # type: ignore[arg-type]
     )
     limiter = TokenBucketLimiter(
         rate_per_second=settings.core.requests_per_second,

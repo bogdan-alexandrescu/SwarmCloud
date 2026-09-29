@@ -55,6 +55,7 @@ from .metrics import ApiMetrics
 from .runnerinputs import input_contract
 from .schemas import TaskCreate, WorkflowCreate
 from .settings import ApiSettings
+from .specsigning import SpecSigner, sign_task_specs
 from .store import Store
 from .validation import (
     DISPATCH_METADATA_KEY,
@@ -111,12 +112,29 @@ class SubmissionService:
         waker: SchedulerWaker,
         metrics: ApiMetrics,
         now=utcnow,
+        signer: SpecSigner | None = None,
     ) -> None:
         self._settings = settings
         self._store = store
         self._waker = waker
         self._metrics = metrics
         self._now = now
+        #: Signs each step's canonical spec (contract request 34). None only
+        #: in local development: `build_context` refuses a hardened
+        #: environment without a key.
+        self._signer = signer
+
+    def _sign(self, tasks: Sequence[Task]) -> None:
+        """After every write to the tasks, immediately before the store call.
+
+        A refusal is counted like every other rejected submission; a KMS
+        failure is 503 and, like the refusal, nothing is stored.
+        """
+        try:
+            sign_task_specs(tasks, self._signer)
+        except ValidationFailed as exc:
+            self._metrics.tasks_rejected.labels(reason=exc.code).inc()
+            raise
 
     # -- tenant -----------------------------------------------------------
 
@@ -304,6 +322,8 @@ class SubmissionService:
         except ValidationFailed as exc:
             self._metrics.tasks_rejected.labels(reason=exc.code).inc()
             raise
+        # Contract request 34: signed over the task as it will be stored.
+        self._sign(tasks)
         self._store.create_tasks(tasks)
         for task in tasks:
             self._metrics.tasks_submitted.labels(
@@ -454,6 +474,10 @@ class SubmissionService:
         expected = expected_outputs_by_step((s.step_id, s.input_from) for s in spec.steps)
         for task in tasks:
             record_expected_outputs(task.metadata, expected.get(task.step_id or ""))
+        # Contract request 34: AFTER `metadata.input_from` and
+        # `record_expected_outputs`, both written after `_build_task`, and
+        # immediately before the write that creates the documents.
+        self._sign(tasks)
         self._store.create_workflow(workflow, tasks)
         self._metrics.workflows_submitted.labels(tenant=tenant.tenant_id).inc()
         self._wake("workflow_submitted", tenant_id=tenant.tenant_id, workflow_id=workflow_id)

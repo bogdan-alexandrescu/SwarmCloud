@@ -67,6 +67,7 @@ export type FailureClassKey =
   | 'inputs_unavailable'
   | 'outputs_missing'
   | 'dispatch_failed'
+  | 'spec_signature_invalid'
   | 'other'
   | 'no_reason'
 

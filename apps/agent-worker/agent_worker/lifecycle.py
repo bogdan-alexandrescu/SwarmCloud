@@ -165,9 +165,11 @@ from .errors import (
     FencedError,
     FencedWriteRefused,
     InputUnavailable,
+    SpecSignatureInvalid,
     TenantMismatchError,
     WorkerError,
 )
+from . import specverify
 from .forge import ForgeError, probe_repository, open_pull_request
 from .gitops import (
     ATTRIBUTION_MARKERS,
@@ -632,6 +634,19 @@ class Worker:
             # state, an attempt record and an event -- and on this path every
             # one of those writes would land on ANOTHER TENANT's documents.
             return self._exit_tenant_mismatch(exc)
+        except SpecSignatureInvalid as exc:
+            # BEFORE `except WorkerError`. FAILED at once, whatever attempts
+            # are left -- another attempt reads the same document -- with the
+            # check's reason, task, version and digest, and no spec content.
+            # Fenced like every terminal write: a superseded worker stands down.
+            fenced = self._safe_finish(
+                TaskState.FAILED,
+                exit_code=exc.exit_code,
+                error=str(exc),
+                end_cause=EndCause.SPEC_SIGNATURE_INVALID,
+                extra_summary={"spec_check": exc.spec_check()},
+            )
+            return exc.exit_code if fenced is None else fenced
         except WorkerError as exc:
             self.log.exception("worker failed", exc)
             fenced = self._safe_finish(
@@ -800,6 +815,40 @@ class Worker:
         # ---- STEPS 10-12: artifacts, checkpoint, terminal state, lease --
         return self._finalise(result)
 
+    def _verify_spec(self, task: dict[str, Any], create_time: Any) -> None:
+        """Contract request 34's check, with its log line and its legacy note.
+
+        The spec itself is never logged: a prompt can hold anything.
+        """
+        clock = self.cfg.spec_clock
+        now = clock() if clock is not None else datetime.now(timezone.utc)
+        try:
+            check = specverify.verify_step_spec(
+                task, create_time=create_time, cfg=self.cfg, now=now, log=self.log
+            )
+        except SpecSignatureInvalid as exc:
+            self.log.error(
+                "spec signature invalid: refusing to run this task",
+                end_cause=EndCause.SPEC_SIGNATURE_INVALID.value,
+                spec_check=exc.spec_check(),
+            )
+            raise
+        if check.reason == "legacy_unsigned":
+            self.log.warning(
+                "unsigned task admitted by the legacy window (SPEC_SIGNATURE_MODE=legacy)",
+                spec_check=check.as_detail(),
+            )
+            # On the task's own stream, so the unsigned run is visible where
+            # its operator looks, not only in the log. RUNNING, because there
+            # is no note-only event type in the frozen contract and the task
+            # is RUNNING by now; `phase` says which step wrote it.
+            self.control.emit(
+                EventType.RUNNING,
+                detail={"phase": "verify_spec", "spec_check": check.as_detail()},
+            )
+        else:
+            self.log.info("spec signature verified", spec_check=check.as_detail())
+
     def _prepare(self) -> dict[str, str] | Callable[[], Outcome]:
         """Steps 2 to 6, the fence re-check and the quota preflight.
 
@@ -842,12 +891,23 @@ class Worker:
         ws = self.ws
         self.log.info("workspace created", path=str(ws.root))
 
-        # ---- STEP 4: restore the latest checkpoint ----------------------
+        # ---- STEP 4: fetch the task and VERIFY ITS SPEC -----------------
+        # Contract request 34 (#342). Immediately after the fetch and before
+        # anything reads the document for what to do: the checkpoint restore,
+        # the clone (and its git token), the staged inputs, the child's
+        # credentials and the issue. A phase of its own, so the phase log
+        # proves the order. A refusal raises `SpecSignatureInvalid`, which
+        # `_execute` ends FAILED with SPEC_SIGNATURE_INVALID, fenced.
+        self.phases.enter("verify_spec")
+        task, create_time = self.control.fetch_task_snapshot()
+        self._verify_spec(task, create_time)
+
+        # ---- STEP 4b: restore the latest checkpoint ---------------------
         self.phases.enter("restore_checkpoint")
-        task = self.control.fetch_task()
         # Kept because the publish gate, several steps later, needs the
         # caller's dispatch strategy and re-fetching it there would be a
-        # second read of a document that cannot have changed.
+        # second read of a document that cannot have changed. It is the
+        # VERIFIED document: nothing later reads a covered field from Firestore.
         self._task = task
         self._standalone = self._uploads_working_folder(task)
         self._restore_checkpoint(task)
@@ -5844,8 +5904,12 @@ class Worker:
         exit_code: int,
         error: str,
         end_cause: EndCause | None = None,
+        extra_summary: dict[str, Any] | None = None,
     ) -> int | None:
         """The crash path's terminal write. Never raises.
+
+        `extra_summary` is merged into `result_summary`: a spec refusal's
+        `spec_check` (contract request 34) travels this way.
 
         Returns None, or `ExitCode.GENERATION_FENCED` when the write was
         refused because this attempt is fenced. The old version wrote FAILED
@@ -5854,6 +5918,8 @@ class Worker:
         """
         try:
             summary = self._upload_outputs()
+            if extra_summary:
+                summary = {**(summary or {}), **extra_summary}
             self._export_metrics()
             self.control.finish(
                 state=state,
@@ -6712,6 +6778,8 @@ def _end_cause_of(exc: BaseException) -> EndCause:
     """
     if isinstance(exc, InputUnavailable):
         return EndCause.INPUTS_UNAVAILABLE
+    if isinstance(exc, SpecSignatureInvalid):
+        return EndCause.SPEC_SIGNATURE_INVALID
     if getattr(exc, "exit_code", None) == ExitCode.CONFIG:
         return EndCause.CANNOT_START
     return EndCause.RUNNER_ERROR

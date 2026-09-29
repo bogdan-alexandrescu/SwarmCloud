@@ -21,6 +21,12 @@ dependencies = [
     "google-cloud-storage>=2.18",
     "google-auth>=2.30",
     "prometheus-client>=0.20",
+    # Signs each step's canonical spec at submission with the platform's
+    # Cloud KMS key (contract request 34, swarm_api.specsigning). Imported
+    # lazily, so create_app() still builds no client. swarm-api only: no
+    # other service signs, and no worker holds any role on the key.
+    "google-cloud-kms>=2.21",
+    "google-crc32c>=1.5",
 ]
 
 [tool.uv.sources]

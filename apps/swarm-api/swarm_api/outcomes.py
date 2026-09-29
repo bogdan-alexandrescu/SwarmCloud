@@ -145,7 +145,12 @@ _CACHE_MAX_ENTRIES = 256
 #: version 2 was released, so no day was ever stored under it), InputUnavailable is
 #: its own class, and `Task.end_cause` is read before any text. Every sealed
 #: day was classified by version 1's rules, so every one is re-derived.
-DERIVE_VERSION = 2
+#:
+#: 3 (2026-09-29, contract request 34): SPEC_SIGNATURE_INVALID is its own
+#: failure class, `spec_signature_invalid`. A stored day counted under 2 has
+#: no such key, so every one is re-derived. CLASSIFIER_VERSION stays: the text
+#: rules did not change, and a typed cause is read before any of them.
+DERIVE_VERSION = 3
 CLASSIFIER_VERSION = 2
 
 #: Firestore caps a document at 1 MiB. A day whose tuples pass this many bytes
@@ -229,6 +234,9 @@ FAILURE_CLASSES: tuple[tuple[str, str], ...] = (
     ("inputs_unavailable", "inputs unavailable"),
     ("outputs_missing", "outputs missing"),
     ("dispatch_failed", "dispatch failed"),
+    # Contract request 34: the worker refused a spec swarm-api did not sign.
+    # Every one is a tenant's agent rewriting a step or a platform bug.
+    ("spec_signature_invalid", "spec signature invalid"),
     ("other", "other"),
     ("no_reason", "no reason recorded"),
 )
@@ -298,6 +306,7 @@ _FAILURE_OF_CAUSE: dict[str, str] = {
     EndCause.INPUTS_UNAVAILABLE.value: "inputs_unavailable",
     EndCause.DISPATCH_FAILED.value: "dispatch_failed",
     EndCause.RUNNER_ERROR.value: "runner_error",
+    EndCause.SPEC_SIGNATURE_INVALID.value: "spec_signature_invalid",
 }
 #: ... and as a cancel cause. The two maps partition `EndCause`.
 _CANCEL_OF_CAUSE: dict[str, str] = {

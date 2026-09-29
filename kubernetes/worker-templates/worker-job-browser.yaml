@@ -176,6 +176,12 @@ spec:
               value: "169.254.169.254"
             - name: GCE_METADATA_IP
               value: "169.254.169.254"
+            # This Job's own name, for the worker's step-spec check 5 (contract
+            # request 34). From THIS render, like metadata.name above, so the
+            # worker's comparison proves only that the render agrees with
+            # itself: GKE injects no Job name of its own.
+            - name: RUNNER_JOB_NAME
+              value: "__JOB_NAME__"
             # NO PROVIDER KEY IS PROJECTED HERE, deliberately.
             #
             # Every process in this container runs as uid 10001, so anything in
@@ -200,6 +206,13 @@ spec:
               mountPath: /tmp
             - name: home
               mountPath: /home/swarm
+            # The step-spec public keys (contract request 34): terraform's
+            # swarm-spec-verify-keys ConfigMap in this namespace, READ-ONLY and
+            # never in `env:`. The kubelet fetches it with the node's
+            # credentials; the pod has no token and the worker Role stays empty.
+            - name: spec-verify-keys
+              mountPath: /etc/swarm/spec-verify-keys
+              readOnly: true
       volumes:
         - name: workspace
           emptyDir:
@@ -214,3 +227,10 @@ spec:
         - name: home
           emptyDir:
             sizeLimit: 4Gi
+        # `optional`: a namespace whose ConfigMap has not been applied yet
+        # still starts its pod, and the worker refuses a signed task as
+        # CANNOT_START (no keys) -- loud, and never an unverified run.
+        - name: spec-verify-keys
+          configMap:
+            name: swarm-spec-verify-keys
+            optional: true

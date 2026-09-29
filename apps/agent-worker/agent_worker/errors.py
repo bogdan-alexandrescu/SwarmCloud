@@ -171,3 +171,49 @@ class ArtifactTooLarge(WorkerError):
 
 class WorkspaceError(WorkerError):
     """The isolated workspace could not be created or is not clean."""
+
+
+class SpecSignatureInvalid(WorkerError):
+    """The fetched task's spec is not one swarm-api signed (contract request 34).
+
+    Raised by `specverify.verify_step_spec` before anything reads the spec for
+    what to do, and ended FAILED with `EndCause.SPEC_SIGNATURE_INVALID`
+    whatever attempts are left: another attempt reads the same document.
+
+    `reason` is the worker's own vocabulary, not a frozen one (the way
+    `publish_reason` is): `signature_mismatch`, `unsigned`, `unknown_format`,
+    `not_canonical`, `foreign_key_version`, `environment_mismatch`, and
+    `upstream:<task id>:<reason>` reserved for contract request 33's
+    worker-action steps. The message names the reason and the task and NEVER
+    any spec content: a prompt can hold anything.
+    """
+
+    exit_code = ExitCode.FAILED
+
+    def __init__(
+        self,
+        reason: str,
+        *,
+        task_id: str,
+        key_version: str | None = None,
+        digest: str | None = None,
+        detail: str = "",
+    ) -> None:
+        self.reason = reason
+        self.task_id = task_id
+        self.key_version = key_version
+        self.digest = digest
+        self.detail = detail
+        message = f"spec signature invalid ({reason}) for task {task_id}"
+        if detail:
+            message += f": {detail}"
+        super().__init__(message)
+
+    def spec_check(self) -> dict[str, str | None]:
+        """`result_summary.spec_check`: the reason, the task, the version, the digest."""
+        return {
+            "reason": self.reason,
+            "task_id": self.task_id,
+            "key_version": self.key_version,
+            "digest": self.digest,
+        }

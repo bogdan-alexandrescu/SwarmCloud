@@ -182,7 +182,8 @@ class EndCause(str, Enum):
     Each value is written by exactly one kind of writer, beside `completed_at`:
 
       * the worker (`agent_worker.control`): TIMEOUT, OUTPUTS_MISSING,
-        INPUTS_UNAVAILABLE, CANNOT_START, RUNNER_ERROR, CANCEL_REQUESTED;
+        INPUTS_UNAVAILABLE, CANNOT_START, RUNNER_ERROR, CANCEL_REQUESTED,
+        SPEC_SIGNATURE_INVALID;
       * the reconciler (`repair_task_state`): LOST_WORKER, CANNOT_START,
         CANCEL_REQUESTED;
       * the scheduler: DISPATCH_FAILED, FAILED_PARENT, CANCELLED_PARENT,
@@ -209,6 +210,17 @@ class EndCause(str, Enum):
     its own class, not a runner error -- 10 of dev's 13 "runner errors" on
     2026-09-25 were exactly that. CANCELLED_PARENT is the request's own, and
     what decision item 2 (split "after a cancel" from "after a failure") needs.
+
+    SPEC_SIGNATURE_INVALID is contract request 34 (#342): the worker refused
+    to run a spec swarm-api did not sign -- a signature that does not verify
+    over the fetched document, a missing one outside the rollout window, or a
+    key version that is not the platform's. A worker-action step's OWN spec
+    failing this check is this cause too; an UPSTREAM step's spec failing it
+    is contract request 33's own end cause instead (that entry names it; this
+    one does not), with reason "upstream:<task id>:<why>" -- the same reason
+    shape this cause uses for its own failures. Never retried: another
+    attempt reads the same document. Every occurrence is either a tenant's
+    agent rewriting a step or a platform bug, and both causes are alerted on.
     """
 
     TIMEOUT = "timeout"
@@ -222,6 +234,7 @@ class EndCause(str, Enum):
     FAILED_PARENT = "failed_parent"
     CANCELLED_PARENT = "cancelled_parent"
     WORKFLOW_SWEEP = "workflow_sweep"
+    SPEC_SIGNATURE_INVALID = "spec_signature_invalid"
 
 
 @dataclass
@@ -263,6 +276,21 @@ class Task:
     #: every task that has not ended, on a success, and on anything written
     #: before 2026-09-25 -- an old document decodes exactly as it did.
     end_cause: EndCause | None = None
+    #: swarm-api's signature over this task's canonical step spec (contract
+    #: request 34, #342): standard base64 of the DER ECDSA signature that Cloud
+    #: KMS returns for `specsign.spec_digest(specsign.canonical_step_spec(...))`.
+    #: Written once, in the write that creates the document, and never after.
+    #: None on every task written before swarm-api signed; the worker refuses
+    #: such a task outside the rollout window.
+    spec_signature: str | None = None
+    #: The FULL resource name of the key version that made `spec_signature`:
+    #: projects/<p>/locations/<l>/keyRings/<r>/cryptoKeys/<k>/cryptoKeyVersions/<n>.
+    #: Written by the same write. A tenant can rewrite it, so the worker trusts
+    #: it only as a lookup key among the versions the platform published.
+    spec_key_version: str | None = None
+    #: `specsign.SPEC_FORMAT` at signing. Read to choose the projection; it is
+    #: also inside the signed bytes, so a rewrite to another format fails.
+    spec_format: int | None = None
 
     def retries_exhausted(self) -> bool:
         """This task has used its last attempt. See `retries_exhausted`."""

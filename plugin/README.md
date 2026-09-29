@@ -513,6 +513,16 @@ the clone, and never reaches the workspace. A fetch that fails -- no such
 issue, a pull request's number, a repository the token cannot read -- fails
 the attempt before the agent starts, with `INPUTS_UNAVAILABLE`.
 
+Every step's spec -- its prompt and inputs, profile, class, timeout, attempt
+cap, repository, dependencies and the platform's own `metadata` blocks -- is
+signed by swarm-api when it is submitted (contract request 34). A worker
+that finds the stored spec no longer matches its signature, or finds it
+unsigned outside the rollout window, ends the task FAILED with
+`SPEC_SIGNATURE_INVALID` before the agent starts or any credential is read,
+and does not retry it: another attempt would read the same rewritten
+document. Every occurrence is either another agent rewriting the step or a
+platform bug, and both are alerted on. Resubmit the work.
+
 ## A task's input comes back masked
 
 The API serves a task's `input` and `metadata` masked at read time, to every
