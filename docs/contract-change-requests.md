@@ -2873,9 +2873,13 @@ accepting `issue` for these two profiles and still refuses everything else.
 ## 32. `profiles.py`: `browser` and `generic` declare no inputs, so the API bounds them by size alone and the plugin can send them none
 
 **Status: ACCEPTED 2026-09-29 by the owner after three security reviews.**
-Nothing here is applied yet; an implementation PR, `part of #218`, carries
-this out (see `docs/DEPLOY_STATE.md` or the linked PR for its state — this
-entry itself does not track a moving target). It answers #218,
+**Applied** to `apps/common/swarm_common/profiles.py` by the implementation
+PR from branch `impl/cr32-runner-inputs` (`part of #218`), exactly as the diff
+under *The requested change* reads -- accepted by the owner on 2026-09-29, and
+applied with `git apply` from this entry's own text, not re-typed. That PR
+also carries the runner-side preconditions it could carry; the live-cluster
+metadata measurement is the owner's and is recorded in that PR as not run.
+(This entry does not track a moving target; see the PR for its state.) It answers #218,
 which contract request 25 left open: which inputs `browser` and `generic`
 declare, and with which bounds. Originally numbered 29, because 28 was the
 last entry on `main` when this branch was cut and 27 appears nowhere on

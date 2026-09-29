@@ -68,12 +68,13 @@ and each step here.
 | the profile | what `input` may carry |
 |---|---|
 | `mock` | `prompt`, and its declared test knobs, in the table below |
+| `browser` | `prompt`, and what the browser runner reads: a `url`, `actions` in eight fixed shapes, timeouts, the viewport, in the table below |
+| `generic` | `prompt`, and a **required** `command` from the runner's own catalogue, plus the paths, target, directory and limits in the table below |
 | `claude-code`, `codex` | `prompt` and nothing else |
-| `browser`, `generic` | **not declared yet**: anything, bounded by `max_input_bytes` alone, as before |
 
-What the mock declares, with each key's kind and bounds. This table is
-generated from the catalogue, not written: a bound stated anywhere else in
-this file would be a copy nothing compares, so none is.
+What each declaring profile takes, with each key's kind and bounds. These
+tables are generated from the catalogue, not written: a bound stated anywhere
+else in this file would be a copy nothing compares, so none is.
 
 <!-- runner-inputs:mock generated from RUNNER_PROFILES["mock"].inputs; tests/unit/mcp/test_runner_input_prose.py fails when it differs -->
 | input | kind and bounds | what the mock runner does with it |
@@ -90,13 +91,48 @@ this file would be a copy nothing compares, so none is.
 | `retry_after_seconds` | integer 1..3600 | the retry-after that simulated rate limit reports |
 <!-- /runner-inputs:mock -->
 
+<!-- runner-inputs:browser generated from RUNNER_PROFILES["browser"].inputs; tests/unit/mcp/test_runner_input_prose.py fails when it differs -->
+| input | kind and bounds | what the browser runner does with it |
+|---|---|---|
+| `url` | url | opened first, before any action |
+| `actions` | list of 0..200, each object, `type` one of goto \| click \| fill \| press \| wait_for \| wait \| screenshot \| extract | run in order, after `url` |
+| `actions` `goto` | `url` (required) url, `wait_until` string, one of load \| domcontentloaded \| networkidle \| commit | `url`: the page to open; `wait_until`: when the load counts as done; default load |
+| `actions` `click` | `selector` (required) string 0..4096 | `selector`: the element to click |
+| `actions` `fill` | `selector` (required) string 0..4096, `text` string 0..4096 | `selector`: the field to fill; `text`: what to type into it; default empty |
+| `actions` `press` | `selector` (required) string 0..4096, `key` string 0..4096 | `selector`: the element to press a key in; `key`: the key; default Enter |
+| `actions` `wait_for` | `selector` (required) string 0..4096, `timeout_ms` integer 1..300000 | `selector`: the element to wait for; `timeout_ms`: how long to wait; default the task's timeout_ms |
+| `actions` `wait` | `seconds` number 0..60 | `seconds`: how long to pause; default 1 |
+| `actions` `screenshot` | `name` filename, `full_page` boolean | `name`: the artifact's file name; default by position; `full_page`: the whole page, not the viewport; default true |
+| `actions` `extract` | `selector` string 0..4096, `name` filename | `selector`: the element whose text is kept; default body; `name`: the artifact's file name; default by position |
+| `timeout_ms` | integer 1..300000 | how long any one action may take; default 30000 |
+| `launch_timeout_ms` | integer 1..180000 | how long Chromium may take to start; default 60000 |
+| `viewport_width` | integer 320..3840 | pixels; default 1280 |
+| `viewport_height` | integer 240..2160 | pixels; default 900 |
+| `user_agent` | header 0..512 | the User-Agent sent; default Chromium's |
+| `extract_text` | boolean | keep the final page's text as page.txt; default true |
+| `screenshot` | boolean | keep a final full-page screenshot; default true |
+<!-- /runner-inputs:browser -->
+
+<!-- runner-inputs:generic generated from RUNNER_PROFILES["generic"].inputs; tests/unit/mcp/test_runner_input_prose.py fails when it differs -->
+| input | kind and bounds | what the generic runner does with it |
+|---|---|---|
+| `command` | string, one of make \| npm-build \| npm-ci \| npm-test \| pytest \| uv-sync, required | the platform catalogue entry to run; the platform owns its argv |
+| `paths` | list of 0..32, each argument | pytest only: what to run; default everything |
+| `target` | argument | make only: the target; default all |
+| `working_directory` | argument | a directory inside the workspace to run in; default the workspace |
+| `timeout_seconds` | number 1..3600 | lowers the command's wall clock |
+| `grace_seconds` | number 1..20 | lowers the wait between SIGTERM and SIGKILL |
+| `max_stdout_bytes` | integer 1..33554432 | lowers the stdout kept |
+| `max_stderr_bytes` | integer 1..8388608 | lowers the stderr kept |
+<!-- /runner-inputs:generic -->
+
 Every declared number has a floor and a ceiling, and an integer's bounds lie
 inside the signed 64-bit range; the catalogue refuses a declaration without
 them. Python reads a JSON integer at any length and Firestore stores 64 bits,
 so an unbounded number passed every check and failed at the task write with a
 500. The API also refuses, with 422, an integer anywhere in an input or a
 task's metadata that Firestore could not store, which is the only number check
-a profile not declared yet gets.
+a task's metadata gets.
 
 A key the profile does not declare, or a declared one outside its bounds, is
 refused with 422 `invalid_input`. The detail names the key (`key`, and every
@@ -108,16 +144,24 @@ them from JSON, and every comparison with `NaN` is false, so a bound alone
 would let them through. `swarm_profiles` and `swarm profiles` list each
 profile's inputs.
 
-`browser` and `generic` are the exception because their work IS their input.
-The browser runner cannot start without `url` or `actions`, and the generic
-runner cannot start without the name of a command in its own catalogue, so an
-empty declaration would refuse every task they run. Which keys they declare,
-with which bounds, is an open question recorded under request 25 in
-[contract-change-requests.md](contract-change-requests.md) and tracked as #218.
-Request 29 in that file proposes an answer: every key each runner reads, with
-its kind and bounds, and the list, object and URL kinds they need. It is not
-applied, so until the owner decides, these two profiles are still bounded by
-size alone.
+`browser` and `generic` declare every key their runners read (contract
+request 32, #218, accepted by the owner on 2026-09-29). Until then both were
+bounded by size alone, so a `generic` task with no `command`, an action with
+no `selector`, or a browser `goto` to a private address was admitted, leased
+and started, and failed inside the pod. Each is a 422 at the door now.
+
+* A browser `url`, and every `goto` action's, must be http or https, carry no
+  `user:password@`, and name a public host: the metadata server, private and
+  cluster addresses, `.internal`, `.local`, `.localhost` and `.svc` names, a
+  single-label host and any host that is not plain ASCII letters, digits, dots
+  and hyphens are refused (`url_refusal` in the frozen catalogue). That check
+  is **not** the SSRF control -- it sees the URL typed, never a redirect, a
+  page's subresources or what a name resolves to in the pod. The worker's
+  NetworkPolicy is the control.
+* A browser task still needs `url` or at least one action. Neither is required
+  on its own, so a task with neither is refused by the runner, not the API.
+* A `generic` task's four limits may only lower the platform's own: each
+  declared ceiling is what the worker exports by default.
 
 `{"quota_exhausted": true}` parks a mock step ONCE: the task's first attempt,
 and no other. The attempt is counted by the task's own `attempt_count`, which

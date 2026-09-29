@@ -29,6 +29,8 @@ import time
 from typing import Any
 from urllib.parse import urlparse
 
+from swarm_common.profiles import url_refusal
+
 from .base import RunnerContext, RunnerFailure, run_runner
 
 ALLOWED_SCHEMES = ("http", "https")
@@ -37,13 +39,29 @@ MAX_ACTIONS = 200
 
 
 def _check_url(url: Any) -> str:
+    """The URL, when the browser may open it; RunnerFailure when not.
+
+    The runner's own scheme and host checks stay, and the catalogue's
+    `url_refusal` -- the one rule swarm-api and the plugin's bridge call at
+    submission (contract request 32) -- runs after them. Checked here as well
+    because a task written before request 32, or one that reached the store
+    by any path that skipped the submission check, still arrives at this
+    runner. Neither check is the SSRF control: the NetworkPolicy is, and
+    `url_refusal`'s docstring says why a string check cannot be.
+
+    A refusal names the reason, never the URL: `url_refusal` refuses a URL
+    carrying `user:password@`, and the failure text is stored with the task.
+    """
     if not isinstance(url, str) or not url:
         raise RunnerFailure("browser action requires a url")
     parsed = urlparse(url)
     if parsed.scheme not in ALLOWED_SCHEMES:
         raise RunnerFailure(f"url scheme {parsed.scheme!r} is not allowed")
     if not parsed.netloc:
-        raise RunnerFailure(f"url {url!r} has no host")
+        raise RunnerFailure("the url has no host")
+    reason = url_refusal(url)
+    if reason:
+        raise RunnerFailure(f"the url is refused: {reason}")
     return url
 
 

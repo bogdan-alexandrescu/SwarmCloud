@@ -68,6 +68,12 @@ BASE_PATH = "/opt/venv/bin:/usr/local/bin:/usr/local/share/npm-global/bin:/usr/b
 #: A value a caller may supply as an argument. No leading dash (that is how a
 #: value becomes a flag), no NUL, no newline, no shell metacharacters -- there is
 #: no shell in this path, but a newline in an argument is never intentional.
+#:
+#: ALWAYS `fullmatch`, never `match`: without re.MULTILINE, `$` also matches
+#: just before a trailing newline, so `.match("safe\n")` passed (contract
+#: request 32, *Preconditions*). The catalogue restates this rule as the
+#: `argument` kind (`swarm_common.profiles._ARGUMENT`), and
+#: tests/unit/mcp/test_runner_inputs.py holds the two patterns together.
 _ARGUMENT_SAFE = re.compile(r"^[A-Za-z0-9._][A-Za-z0-9._\-/]{0,255}$")
 
 
@@ -178,7 +184,7 @@ def _resolve_program(program: str) -> str:
 
 def _check_argument(value: Any, *, field: str) -> str:
     text = str(value)
-    if not _ARGUMENT_SAFE.match(text):
+    if not _ARGUMENT_SAFE.fullmatch(text):
         raise RunnerFailure(
             f"{field} entry {text!r} is not allowed: it must start with a letter, "
             "digit, '.' or '_' and contain only those plus '-' and '/'"

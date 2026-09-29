@@ -264,12 +264,14 @@ interface Suggestion {
  * codex that the catalogue does not declare is a refusal this form invites --
  * which is why `model` (the CLI runners pass it as `--model`, choosing the
  * model an agent runs) and a `timeout_seconds` offered to every profile are
- * gone. `generic` and `browser` have not declared their inputs yet and are
- * bounded by size only, so their entries are still the runner census.
- * scripts/lib/check-contract-parity.sh (section 13) holds every entry for a
- * declared profile to the declaration, and
+ * gone. `generic` and `browser` declared nothing until contract request 32
+ * (#218, 2026-09-29), and their entries were a runner census; they declare
+ * now, so every entry here is held to the declaration like the rest.
+ * scripts/lib/check-contract-parity.sh (section 13) holds every entry to the
+ * declaration, and
  * tests/unit/control_plane/test_submit_offers_only_what_runners_read.py holds
- * every entry for a profile not declared yet to a key its runner reads.
+ * every entry to the declaration AND to a key its runner reads, and every
+ * action `ACTION_SHAPE` builds to the declared shape of its `type`.
  *
  * REQUESTED, NOT CHANGED (CLAUDE.md's reporting rule): `/v1/capacity` should
  * serve each profile's declared inputs beside `required_keys`, so this
@@ -325,12 +327,16 @@ function suggestionsFor(profile: string): Suggestion[] {
 
 const ACTION_TYPES = ['goto', 'click', 'fill', 'press', 'wait_for', 'wait', 'screenshot', 'extract'] as const
 
-/** The scalars each action type reads. Anything not listed is not sent. */
-const ACTION_SHAPE: Record<string, Array<{ prop: keyof BrowserAction; label: string }>> = {
+/** The scalars each action type reads. Anything not listed is not sent.
+ *  `send` is the key the value travels under when it is not `prop`: a
+ *  `press` keeps its key in the draft's `text` box, and the runner reads it
+ *  as `key`. Sent as `text`, nothing read it, and since contract request 32
+ *  the declared `press` shape refuses it. */
+const ACTION_SHAPE: Record<string, Array<{ prop: keyof BrowserAction; label: string; send?: string }>> = {
   goto: [{ prop: 'url', label: 'url' }],
   click: [{ prop: 'selector', label: 'selector' }],
   fill: [{ prop: 'selector', label: 'selector' }, { prop: 'text', label: 'text' }],
-  press: [{ prop: 'selector', label: 'selector' }, { prop: 'text', label: 'key' }],
+  press: [{ prop: 'selector', label: 'selector' }, { prop: 'text', label: 'key', send: 'key' }],
   wait_for: [{ prop: 'selector', label: 'selector' }],
   wait: [{ prop: 'seconds', label: 'seconds' }],
   screenshot: [{ prop: 'name', label: 'artifact name' }],
@@ -391,7 +397,7 @@ export function buildInput(fields: InputField[]): BuiltInput {
           const raw = String(a[part.prop] ?? '').trim()
           if (raw === '') return { ok: false, message: `a ${a.type} action needs its ${part.label}` }
           // `wait` is the one numeric field inside an action (`:141`).
-          one[part.prop === 'seconds' ? 'seconds' : part.prop] = part.prop === 'seconds' ? Number(raw) : raw
+          one[part.send ?? part.prop] = part.prop === 'seconds' ? Number(raw) : raw
         }
         if (a.type === 'wait' && !Number.isFinite(Number(a.seconds))) {
           return { ok: false, message: `a wait action needs a number of seconds` }

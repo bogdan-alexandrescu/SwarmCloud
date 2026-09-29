@@ -304,6 +304,16 @@ profile_input() {
         actions: [{type: "screenshot", name: "proof.png", full_page: false}],
         extract_text: false}'
       ;;
+    generic)
+      # `command` is REQUIRED since contract request 32 (#218): a generic task
+      # with only a prompt is a 422 at the door, where before it was admitted
+      # and failed in the pod with "input.command is required". `pytest` is
+      # the catalogue entry that needs nothing but the image. It does NOT
+      # succeed on an empty workspace -- pytest exits 5, "no tests collected"
+      # -- so a run through this branch proves admission, dispatch and the
+      # runner starting its argv, not a passing command.
+      jq -nc --arg r "${run_id}" '{prompt: ("smoke " + $r), command: "pytest"}'
+      ;;
     *)
       jq -nc --arg r "${run_id}" '{prompt: ("smoke " + $r)}'
       ;;

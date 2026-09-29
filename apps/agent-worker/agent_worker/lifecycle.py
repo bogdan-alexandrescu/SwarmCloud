@@ -818,9 +818,9 @@ class Worker:
             # A CALLER NEVER CHOOSES THE MODEL (#226, invariant 10). The API
             # refuses `input.model` on every profile that declares its inputs
             # (#213); this is the same rule for a task written before that
-            # refusal shipped, a profile whose inputs are not declared yet
-            # (`browser`, `generic`: #218), or a path that does not go through
-            # the API. The model is the Job's `MODEL`, which reaches the runner
+            # refusal shipped (every profile declares since contract request
+            # 32, #218, so the API now refuses it for all of them), or a path
+            # that does not go through the API. The model is the Job's `MODEL`, which reaches the runner
             # in its environment (`_build_child_env`), never through input.json.
             payload.pop("model")
             self.log.warning(
