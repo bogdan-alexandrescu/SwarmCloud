@@ -53,6 +53,7 @@ from swarm_api.validation import (
     DISPATCH_METADATA_KEY,
     INPUT_FROM_METADATA_KEY,
     RESERVED_METADATA_KEYS,
+    STARTUP_REFUNDS_METADATA_KEY,
     reject_reserved_metadata,
 )
 
@@ -307,6 +308,7 @@ def test_every_service_written_key_is_reserved_in_one_place():
         DISPATCH_METADATA_KEY,
         INPUT_FROM_METADATA_KEY,
         EXPECTED_OUTPUTS_METADATA_KEY,
+        STARTUP_REFUNDS_METADATA_KEY,
     )
 
 

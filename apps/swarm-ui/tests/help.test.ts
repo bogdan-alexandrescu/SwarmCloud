@@ -872,3 +872,28 @@ test('a topic published silently draws nothing at all', () => {
   // corpus into the rendered-word counts and pass them for the wrong reason.
   assert.ok(markup.includes('data-help-description'), 'HelpNote is not marked as help copy')
 })
+
+/**
+ * #120. The `?` on "Lay out the plan" opened runner naming -- a rule about
+ * what the form may not ask for -- while the thing the step is actually
+ * laying out, stages and what waits for what, had no topic at all. It has
+ * one now, among the submitting-work topics, and it states the three rules a
+ * plan runs by: steps run in stages, a step starts once every step it depends
+ * on has succeeded, and a failure cancels its dependants.
+ *
+ * MUTATION: point `Lay out the plan` back at `runner-profile-by-name`, or drop
+ * the failure rule from the topic.
+ */
+test('the workflow-stages topic says how a plan runs, and the plan step opens it (#120)', () => {
+  const t = topicFor('workflow-stages')
+  assert.ok(t, 'there is no workflow-stages topic')
+  assert.equal(t.group, 'submitting-work')
+  const all = [t.short, ...t.long].join(' ')
+  assert.match(all, /\bstages?\b/i, 'the topic never says steps run in stages')
+  assert.match(t.short, /every step it depends on has succeeded/, 'the start rule is not on the card')
+  assert.match(t.short, /cancels? (its|every step that depends|the steps that depend)/, 'the failure rule is not on the card')
+  const src = readFileSync(join(SRC, 'SubmitWorkflow.tsx'), 'utf8')
+  const plan = /<Move n=\{1\} title="Lay out the plan" aside=\{<HelpCard topic="([a-z0-9-]+)" \/>\}>/.exec(src)
+  assert.ok(plan, 'the plan step carries no `?`')
+  assert.equal(plan[1], 'workflow-stages', `the plan step's ? opens ${plan[1]}`)
+})
