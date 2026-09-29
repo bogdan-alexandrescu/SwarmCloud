@@ -6639,8 +6639,7 @@ a.ctl-metric:focus-visible { outline: 2px solid var(--info); outline-offset: 2px
 .sr-bar > i {
   display: block;
   height: 100%;
-  /* Grey, not --info: a plain fill reports no verdict (#122). See below. */
-  background: var(--text-dim);
+  background: var(--info);
   transition: width .3s ease;
 }
 /* A UTILISATION BAR THAT IS FINE IS GREY. A HUE ON ONE IS A VERDICT.
@@ -6665,13 +6664,9 @@ a.ctl-metric:focus-visible { outline: 2px solid var(--info); outline-offset: 2px
    `--track-radius` stays 2px, because `.ctl-track.wf-meter` on Workflows is
    the same 8px track and Workflows is the screen the owner named as already
    right. Shrinking the token to 2px would have "fixed" the one screen that
-   did not need fixing.
-   OWNER RULE (#122): state hue is a verdict and a plain fill is grey. So
-   `.ctl-track > i` -- the meter beside a number -- and `.sr-bar > i` (Admin >
-   Platform counts) no longer keep `--info` either: the shared rule above
-   fills all three in `--text-dim`, and only a verdict (`.sr-bar > i.bad`, the
-   pool card's `.warn`/`.bad`, the `.is-*` fills below) is hued.
-   encoding.hues.test.ts holds it. */
+   did not need fixing. The scoping is the fix: `.ctl-track > i` -- the meter
+   beside a number -- keeps `--info`; `.ctl-util-fill` -- the bar that is a
+   row of its own -- does not. */
 .ctl-util-fill { background: var(--text-dim); }
 /* THE WORKFLOWS METER IS GREY TOO, AND THERE IS NO LINE HERE SAYING OTHERWISE.
    ---------------------------------------------------------------------------
@@ -11444,7 +11439,76 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 .ov-figure { margin: 0 0 var(--ctl-s2); }
 .ov-figure-mark { margin: calc(-1 * var(--ctl-s1)) 0 var(--ctl-s2); }
 
+/* THE TOKEN MIX. Four segments, one total, hand-rolled -- the proportion is
+   the point and four numbers in a list is not one. Height and radius are the
+   track's, because every proportion in this product is drawn at that size. */
+.ov-mix {
+  display: flex;
+  height: var(--track-h);
+  border-radius: var(--track-radius);
+  overflow: hidden;
+  background: var(--surface-2);
+  margin-bottom: var(--ctl-s2);
+}
+.ov-mix-seg { height: 100%; }
+/* NOTHING MEASURED, SO NO SCALE. Hatched rather than left empty: an empty
+   track claims the scale starts somewhere and the value is at the start of
+   it, which is the absent-as-zero lie in bar form. */
+.ov-mix.is-unknown { background: var(--ctl-hatch); }
+/* ONE METRIC, ONE HUE, FOUR TONES. SERIES, NEVER STATE.
+   A segment drawn in --ok is read as a verdict, so these were --series-1..4:
+   blue, teal, violet, amber. That was four saturated hues in one 8px rule --
+   two of them the colours a reader has learned for PARKED (violet) and WARN
+   (amber) -- and the series block itself records that those five sit in a
+   1.36:1 band, NOT separable in greyscale. The keyed legend (design-system.md
+   §12.1) told a colour reader which swatch was which; a greyscale screenshot
+   still showed four identical greys.
+   Tokens are one metric split four ways, so they get ONE series (--series-1,
+   the single-series slot) at four tones.
+   THE TONES STEP TOWARD THE INK, NEVER TOWARD THE CARD. The first ramp mixed
+   toward --surface and bought its greyscale steps by fading three of the four
+   into the card: c-wr's 8px swatch measured 1.35:1 on white and 1.42:1 on the
+   dark card, under the 3:1 every series fill promises (styles.css, THE SERIES
+   PALETTE; WCAG 1.4.11). --series-1 is already the floor of that band -- 3.36
+   on light --surface-2 -- so any step toward the card goes under it, and the
+   only direction with room is toward --text: lighter on the dark card, darker
+   on the light one. At 100/75/50/25% the worst fill is --series-1 itself
+   (3.36, light --surface-2), and every other one is >= 4.77 on --bg, --surface
+   and --surface-2 in both themes; every pair is >= 1.32:1 (dark c-rd/c-wr).
+   Order is the reading order: input is the series hue itself, and each later
+   count sits one step nearer the ink, so c-wr is the heaviest mark. The .ov-sN
+   class names are unchanged, so each swatch still takes its fill from the same
+   class its segment does. encoding.hues.test.ts holds both floors. */
+.ov-s1 { background: var(--series-1); }
+.ov-s2 { background: color-mix(in srgb, var(--series-1) 75%, var(--text)); }
+.ov-s3 { background: color-mix(in srgb, var(--series-1) 50%, var(--text)); }
+.ov-s4 { background: color-mix(in srgb, var(--series-1) 25%, var(--text)); }
 .ov-mix-facts { padding: 0; }
+
+/* THE KEY TO THE FOUR TONES, NEXT TO THE WORD THEY BELONG TO.
+   8px square, --track-radius so it is the same corner the bar it keys is drawn
+   with, and it takes its fill from the SAME .ov-sN class the segment does --
+   one declaration per series, so a segment and its key cannot drift apart.
+   A square rather than a disc on purpose: .ctl-dot's vocabulary is STATE, and a
+   series is an identity, not a verdict (sec 1.6). */
+.ov-swatch {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: var(--track-radius);
+  /* No margin: .ctl-fact is an inline-flex with a 5px gap and adding to it
+     would make this one gap in the row wider than the other two. align-self
+     because the strip aligns on the BASELINE and an empty <i> has none, which
+     would drop the square to the bottom of the line box. */
+  align-self: center;
+}
+/* NOTHING REPORTED, SO NO KEY TO ANYTHING. Hollow, in the absence tone, at the
+   same size: the row keeps its rhythm and the swatch stops claiming a segment
+   that was never drawn. The em dash beside it carries the fact. */
+.ov-swatch.is-absent {
+  background: none;
+  border: 1px solid var(--ctl-absent);
+}
 
 /* ---- headroom: one panel, two groups ------------------------------------ */
 
