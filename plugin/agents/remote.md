@@ -89,7 +89,9 @@ Keep calling (up to that limit) until the reply's `stop` is `true`. Then:
   `SUCCEEDED`, else to section 4.
 
 If a call itself returns an error, make the same call again with the same
-`since`; after five errors in a row, go to section 4 with state `UNKNOWN` and
+`since`. When the error says the `since` token fails its checksum, the token was
+changed on the way: copy `since` again from the previous reply, character for
+character, and make the call with that. After five errors in a row, go to section 4 with state `UNKNOWN` and
 the last error. If three replies in a row show `tasks[0].read` as `failed`,
 stop the same way, with last_error `tasks[0].read_error`. Never cancel the task
 and never dispatch it again: SwarmCloud already retries an attempt that fails

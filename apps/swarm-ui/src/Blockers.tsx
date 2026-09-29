@@ -13,10 +13,15 @@
 // making a second one. See the header of headroom.py for why that is served
 // rather than restated here.
 
+import { useEffect, useState } from 'react'
+
+import { loadResourceClasses, type ResourceClasses } from './api'
+import type { Result } from './fetch'
 import {
   blockerCeiling,
   blockerGroup,
   ceilingCopy,
+  needsAPerson,
   poolLabelAmong,
   reasonCopy,
   type Ceiling,
@@ -96,8 +101,104 @@ export function IncompleteNote({ h, label = labelsFor(h) }: { h: Headroom; label
   )
 }
 
+/**
+ * THE RESOURCE-CLASS CATALOGUE, AS `GET /v1/resource-classes` SERVES IT (#66).
+ *
+ * A blocker does not carry the weight of the task it refused, and one fact
+ * needs it: a pool whose limit is above 0 but BELOW that weight refuses the
+ * task on every drain, with nothing running at all. The weight is the task's
+ * resource class's `units`, and the route serves `units` for every class, so
+ * that is where it is read. `RESOURCE_UNITS` in types.ts is a bundled copy of
+ * the same table and is deliberately not read here: #66 asks for no copy.
+ *
+ * A SECONDARY READ, AND A FAILED ONE CLAIMS NOTHING. The screens that call
+ * this are drawn from the capacity read; this one only sharpens a verdict,
+ * so until it answers -- or if it never does -- `units` is null and every
+ * blocker is drawn exactly as it was before. Read once per mount: a class is
+ * resized by a deploy, not between two refreshes. Called inside `then` so a
+ * load that throws rather than rejects is swallowed the same way.
+ */
+export function useResourceClasses(): ResourceClasses | null {
+  const [classes, setClasses] = useState<ResourceClasses | null>(null)
+  useEffect(() => {
+    let live = true
+    Promise.resolve()
+      .then(() => loadResourceClasses())
+      .then(
+        (r: Result<{ resource_classes: ResourceClasses }>) => {
+          if (live && (r.status === 'ok' || r.status === 'stale')) setClasses(r.data.resource_classes)
+        },
+        () => undefined,
+      )
+    return () => {
+      live = false
+    }
+  }, [])
+  return classes
+}
+
+/** One task's weight for `resourceClass`, or null when the catalogue did not say. */
+export function classUnits(classes: ResourceClasses | null, resourceClass: string): number | null {
+  const units = classes?.[resourceClass]?.units
+  return typeof units === 'number' && units > 0 ? units : null
+}
+
+/**
+ * `blockerCeiling`/`ceilingCopy` (types.ts) ARE THE ONE VERDICT (#66).
+ *
+ * This file used to carry its own copy of the below-units arithmetic --
+ * `blockerVerdict`/`verdictCopy`, threaded only into Capacity, Profiles and
+ * Submit -- so the Agents list and the agent inspector, which read
+ * `whyAgent`/`whyNeedsAction` in types.ts instead, never saw it: #66's own
+ * repro (`resource:browser` at `hard_limit 1`, a 2-unit browser task) still
+ * read "This resource class is busy platform-wide. (0/1)" there. `Verdict`,
+ * `blockerVerdict` and `verdictCopy` stay exported -- Capacity.tsx,
+ * Profiles.tsx and Submit.tsx call them by these names -- but they are now
+ * thin wrappers over `blockerCeiling`/`ceilingCopy`, which carry the below-
+ * units logic themselves, so every screen renders one verdict.
+ */
+export type Verdict = Ceiling
+
+export function blockerVerdict(
+  b: { reason: string; pool?: string; limit?: unknown },
+  units: number | null,
+): Verdict {
+  return blockerCeiling(b, units)
+}
+
+/** The verdicts no amount of waiting clears: a person has to act. */
+export function verdictNeedsAPerson(v: Verdict): boolean {
+  return needsAPerson(v)
+}
+
+/**
+ * `blockerGroup`, with a pool too small for one task filed where a pool set
+ * to zero is: under `needs_action`, whatever group its reason arrived in.
+ */
+export function verdictGroup(
+  b: ProfileBlocker,
+  groups: Record<string, string[]> | undefined,
+  units: number | null,
+): 'needs_action' | 'no_room' | null {
+  if (blockerVerdict(b, units) === 'below-units') return 'needs_action'
+  return blockerGroup(b, groups)
+}
+
+/**
+ * `ceilingCopy`, with `subject` in this file's own argument order (pools call
+ * this with `units` before `subject`; types.ts's callers have no subject to
+ * give and default it from the blocker instead).
+ */
+export function verdictCopy(
+  b: { reason: string; pool?: string; limit?: unknown; active?: unknown },
+  units: number | null,
+  subject: string = b.pool ?? 'This pool',
+): string | null {
+  return ceilingCopy(b, subject, units)
+}
+
 /** The tag each ceiling is drawn with, and what hovering it says. */
-const CEILING_TAG: Readonly<Record<Ceiling, { cls: string; word: string; title: string }>> = {
+const CEILING_TAG: Readonly<Record<Verdict, { cls: string; word: string; title: string }>> = {
   paused: {
     cls: 'paused',
     word: 'paused',
@@ -119,6 +220,17 @@ const CEILING_TAG: Readonly<Record<Ceiling, { cls: string; word: string; title: 
     word: 'full',
     title: 'This pool is at its ceiling. Waiting clears it, and so does raising the ceiling.',
   },
+  'below-units': {
+    // The paused tone, for the reason `set-to-zero` has it: a person acts.
+    cls: 'paused',
+    word: 'too small',
+    title: "This pool's limit is below what one task of this profile weighs, so it can never admit one at this limit. Waiting changes nothing — somebody has to raise it.",
+  },
+  'below-units-quota': {
+    cls: 'capped',
+    word: 'too small',
+    title: "This pool's limit is below what one task of this profile weighs, so it can never admit one at this limit. A provider pool's quota state lowers it as well as an operator does, so this does not say who set it.",
+  },
 }
 
 /**
@@ -130,8 +242,8 @@ const CEILING_TAG: Readonly<Record<Ceiling, { cls: string; word: string; title: 
  * this file stopped -- so a pool capped at zero was still `full` there after
  * it had become `limit 0` here. One definition, two callers.
  */
-export function CeilingTag({ blocker }: { blocker: ProfileBlocker }) {
-  const tag = CEILING_TAG[blockerCeiling(blocker)]
+export function CeilingTag({ blocker, units = null }: { blocker: ProfileBlocker; units?: number | null }) {
+  const tag = CEILING_TAG[blockerVerdict(blocker, units)]
   return (
     <span className={`tag ${tag.cls}`} title={tag.title}>
       {tag.word}
@@ -144,7 +256,7 @@ export function CeilingTag({ blocker }: { blocker: ProfileBlocker }) {
  * Profile headroom's status marks (CP-12, #85) carry the same explanation the
  * tags did, so it is read from the one table rather than written twice.
  */
-export function ceilingTitle(c: Ceiling): string {
+export function ceilingTitle(c: Verdict): string {
   return CEILING_TAG[c].title
 }
 
@@ -156,14 +268,18 @@ export function ceilingTitle(c: Ceiling): string {
  * full. `CeilingTag` above is the submit box's, which CP-12 did not touch.
  * ONE TABLE, so the card's two places cannot draw one pool two ways.
  */
-const CEILING_MARK: Readonly<Record<Ceiling, { cls: 'is-paused' | 'is-bad' | 'is-warn'; word: string }>> = {
+const CEILING_MARK: Readonly<Record<Verdict, { cls: 'is-paused' | 'is-bad' | 'is-warn'; word: string }>> = {
   paused: { cls: 'is-paused', word: 'paused' },
   'set-to-zero': { cls: 'is-paused', word: 'limit 0' },
   zero: { cls: 'is-bad', word: 'limit 0' },
   full: { cls: 'is-warn', word: 'full' },
+  // A limit of 0 and a limit below one task are one kind of fact (#66), so
+  // they take the same tones: paused when a person set it, bad when quota may.
+  'below-units': { cls: 'is-paused', word: 'too small' },
+  'below-units-quota': { cls: 'is-bad', word: 'too small' },
 }
 
-export function ceilingMark(c: Ceiling): { cls: 'is-paused' | 'is-bad' | 'is-warn'; word: string } {
+export function ceilingMark(c: Verdict): { cls: 'is-paused' | 'is-bad' | 'is-warn'; word: string } {
   return CEILING_MARK[c]
 }
 
@@ -175,23 +291,31 @@ export function ceilingMark(c: Ceiling): { cls: 'is-paused' | 'is-bad' | 'is-war
  * says the zero in words. Only a full pool gets the fraction, because it is
  * the only one the fraction is true of. Shared with the submit box for the
  * reason `CeilingTag` is.
+ *
+ * A pool too small for one task (#66) is not full either: "0 of 1 units in
+ * use" is the busy reading of a pool that has nothing in it. It prints its
+ * limit beside the weight it is below.
  */
-export function ceilingFigure(blocker: ProfileBlocker): string {
-  const ceiling = blockerCeiling(blocker)
+export function ceilingFigure(blocker: ProfileBlocker, units: number | null = null): string {
+  const ceiling = blockerVerdict(blocker, units)
   const held = `${blocker.active} unit${blocker.active === 1 ? '' : 's'} held`
   if (ceiling === 'full') return `${blocker.active} of ${blocker.limit} units in use`
+  if (ceiling === 'below-units' || ceiling === 'below-units-quota') {
+    return `limit ${blocker.limit} · one task is ${units} units · ${held}`
+  }
   return ceiling === 'paused' ? held : `limit 0 · ${held}`
 }
 
-function BlockerRow({ blocker, label }: { blocker: ProfileBlocker; label: Label }) {
+function BlockerRow({ blocker, label, units }: { blocker: ProfileBlocker; label: Label; units: number | null }) {
   // A pause and a full pool both stop everything and have OPPOSITE remedies:
   // resume it, versus wait or raise it. A pause is told apart by the reason
   // the server sent -- a paused pool can read 0 of 8 in use and still admit
   // nothing, which is the case that looks healthiest and is not. A pool at
   // ZERO is told apart by its ceiling, because its reason is the full pool's
   // (see `blockerCeiling`): "0 of 0 units in use" under a `full` tag is how
-  // the live console came to call a switched-off pool busy.
-  const ceiling = blockerCeiling(blocker)
+  // the live console came to call a switched-off pool busy. A pool whose
+  // limit is below one task's weight is told apart by that weight (#66).
+  const ceiling = blockerVerdict(blocker, units)
   // THE CARD'S OWN MARK, NOT `.tag` (CP-12, #85). This list is drawn on the
   // Profile headroom card, and the owner's decision left no `.tag` in that
   // card: each refusal carries the mark its row's Status cell carries, and the
@@ -209,9 +333,9 @@ function BlockerRow({ blocker, label }: { blocker: ProfileBlocker; label: Label 
         </code>
         <strong className="blocker-reason">{blocker.reason}</strong>
         {/* The numbers that made it fail, on the entry that failed. */}
-        <span className="blocker-at">{ceilingFigure(blocker)}</span>
+        <span className="blocker-at">{ceilingFigure(blocker, units)}</span>
       </span>
-      <span className="blocker-copy">{ceilingCopy(blocker, 'This pool') ?? reasonCopy(blocker.reason)}</span>
+      <span className="blocker-copy">{verdictCopy(blocker, units, 'This pool') ?? reasonCopy(blocker.reason)}</span>
     </li>
   )
 }
@@ -224,19 +348,25 @@ function BlockerRow({ blocker, label }: { blocker: ProfileBlocker; label: Label 
  * the `group` the server stamped on each blocker. A reason in neither group
  * gets its own section rather than being filed under "waiting is fine", which
  * would be a lie about the remedy.
+ *
+ * `units` is one task's weight, from `classUnits` (#66): with it, a pool too
+ * small for one task is filed under "somebody has to act", as a pool set to
+ * zero is. Null when the catalogue was not read, and then nothing changes.
  */
 export function BlockerList({
   h,
   groups,
   label = labelsFor(h),
+  units = null,
 }: {
   h: Headroom
   groups: Record<string, string[]> | undefined
   label?: Label
+  units?: number | null
 }) {
-  const needsAction = h.blockers.filter((b) => blockerGroup(b, groups) === 'needs_action')
-  const noRoom = h.blockers.filter((b) => blockerGroup(b, groups) === 'no_room')
-  const ungrouped = h.blockers.filter((b) => blockerGroup(b, groups) === null)
+  const needsAction = h.blockers.filter((b) => verdictGroup(b, groups, units) === 'needs_action')
+  const noRoom = h.blockers.filter((b) => verdictGroup(b, groups, units) === 'no_room')
+  const ungrouped = h.blockers.filter((b) => verdictGroup(b, groups, units) === null)
 
   // NOTHING TO LIST, NOTHING DRAWN (CP-6, #85). This printed "No pool is
   // refusing this profile." -- or, on an incomplete read, "No refusal was
@@ -256,7 +386,7 @@ export function BlockerList({
           </h3>
           <ul className="blocker-list">
             {needsAction.map((b) => (
-              <BlockerRow key={b.pool} blocker={b} label={label} />
+              <BlockerRow key={b.pool} blocker={b} label={label} units={units} />
             ))}
           </ul>
         </div>
@@ -269,7 +399,7 @@ export function BlockerList({
           </h3>
           <ul className="blocker-list">
             {noRoom.map((b) => (
-              <BlockerRow key={b.pool} blocker={b} label={label} />
+              <BlockerRow key={b.pool} blocker={b} label={label} units={units} />
             ))}
           </ul>
         </div>
@@ -284,7 +414,7 @@ export function BlockerList({
           </h3>
           <ul className="blocker-list">
             {ungrouped.map((b) => (
-              <BlockerRow key={b.pool} blocker={b} label={label} />
+              <BlockerRow key={b.pool} blocker={b} label={label} units={units} />
             ))}
           </ul>
         </div>
