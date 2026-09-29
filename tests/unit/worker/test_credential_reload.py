@@ -92,8 +92,8 @@ def test_a_revoked_credential_is_reloaded_and_the_attempt_survives(db, worker_fa
             "prompt": "work through a rotation",
             "steps": 1,
             "sleep_seconds": 0.01,
-            "credential_revoked_times": 1,
         },
+        simulated={"credential_revoked_times": 1},
     )
     worker, _, _ = worker_factory()
 
@@ -112,8 +112,8 @@ def test_reloading_is_bounded_so_a_broken_account_cannot_run_forever(db, worker_
             "prompt": "never gets a working credential",
             "steps": 1,
             "sleep_seconds": 0.01,
-            "credential_revoked_times": MAX_CREDENTIAL_RELOADS + 5,
         },
+        simulated={"credential_revoked_times": MAX_CREDENTIAL_RELOADS + 5},
     )
     worker, _, _ = worker_factory()
 
@@ -130,8 +130,8 @@ def test_a_reload_does_not_spend_one_of_the_tasks_attempts(db, worker_factory):
             "prompt": "rotated once",
             "steps": 1,
             "sleep_seconds": 0.01,
-            "credential_revoked_times": 1,
         },
+        simulated={"credential_revoked_times": 1},
     )
     worker, _, _ = worker_factory()
     worker.run()
