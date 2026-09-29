@@ -39,6 +39,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 24 | `profiles.py`: whether a profile's cost is declared rather than measured is named outside the catalogue | ACCEPTED 2026-09-25 (#185, decision 9), applied in PR #217 |
 | 25 | `profiles.py`: a runner profile cannot declare the inputs a caller may send it, so the bridge names the mock's by profile | ACCEPTED 2026-09-25 (owner, on #142), applied in PR #213; both amendments confirmed by the owner 2026-09-26: `inputs=None` for `browser` and `generic` (#218), and the bounded park counted by the task's `attempt_count` rather than the state file |
 | 26 | `models.py`: the attempt's CPU figures carry no time and their limit no source | ACCEPTED 2026-09-26 (owner, on #184), applied in PR #229 |
+| 30 | `identity.py`: a tenant may list service accounts that resolve to it by exact email (#273) | ACCEPTED 2026-09-29 by the owner after three security reviews |
 | 32 | `profiles.py`: `browser` and `generic` declare no inputs, so the API bounds them by size alone and the plugin can send them none (#218) | ACCEPTED 2026-09-29 by the owner after three security reviews |
 
 ---
@@ -2832,9 +2833,10 @@ figures are not dated, and a limit is never attributed to the kernel.
 
 ## 28. `profiles.py`: claude-code and codex declare an `issue` runner input
 
-**Status: ACCEPTED, accepted by the owner 2026-09-28** (recorded on #265), to
-be applied by the #265 change. Recorded 2026-09-28 from #265. If another
-branch has taken 28 by the time this merges, renumber this one.
+**Status: ACCEPTED, accepted by the owner 2026-09-28** (recorded on #265), and
+applied by the #265 change the same day (see "Applied" below). Recorded
+2026-09-28 from #265. If another branch has taken 28 by the time this merges,
+renumber this one.
 
 ### What is true today
 
@@ -2855,7 +2857,8 @@ declared input is only the number.
 
 ### What it would break if accepted
 
-Nothing that exists: no profile declares an input today, so every current
+Nothing that exists: `mock` is the only profile that declares inputs today
+(#213), and neither `claude-code` nor `codex` does, so every current
 submission stays valid. The API's declared-inputs check (#213) starts
 accepting `issue` for these two profiles and still refuses everything else.
 
@@ -2867,6 +2870,1463 @@ accepting `issue` for these two profiles and still refuses everything else.
 - **#219.** The forge token never reaches the workspace or the agent.
 - **Invariant 9.** The fetch uses the step's own tenant's credential against the
   step's own repository.
+
+### Applied, 2026-09-28 (#265)
+
+Exactly the requested change, and nothing else in `apps/common/swarm_common/`:
+`profiles.py` gives `claude-code` and `codex` one declared input, `issue`, a
+`RunnerInput("integer", minimum=1, maximum=999_999)`. No other key, type or
+profile changed.
+
+- **The ceiling.** The request says "a positive integer" and a declared integer
+  needs both bounds (#213). 999999 is the largest bound `RunnerInput.describe()`
+  prints exactly: it formats six significant digits, so `2**31 - 1` would be
+  served as "2.14748e+09", a bound the check does not apply.
+- **The API** (`validation.validate_runner_input`) accepts `issue` for these
+  two profiles through the declaration, as it does every declared key, and
+  refuses it with 422 `invalid_input` on a submission with no
+  `repository_url`: the issue is the task's repository's, and there would be
+  nothing to fetch it from.
+- **The worker** (`agent_worker/issue.py`) fetches the issue and its comments
+  read-only after the credentials step, writes `work/issue.md`, and fails the
+  attempt `INPUTS_UNAVAILABLE` before the agent starts when it cannot. The
+  runner names the file in the prompt (`runners/cliagent.py`).
+- **Invariant 10.** The number is data, and so is the text: nothing in the
+  worker reads the issue for anything it does.
+- **#219.** The token is read by `Worker._git_token`, the clone's path, and
+  goes only into the request's `Authorization` header; a redirect to another
+  host is refused rather than followed with it.
+- **Invariant 9.** The fetch is against the task's own repository with its own
+  tenant's credential.
+
+## 29. `models.py`: `EndCause` gains `PUBLISH_REFUSED`
+
+**Status: ACCEPTED, accepted by the owner 2026-09-29** (recorded on #259),
+not yet applied. Recorded 2026-09-29 from #259. If another branch has taken
+29 by the time this merges, renumber this one.
+
+### What is true today
+
+The worker refuses to publish in two ways that fail the attempt retryably
+(#259): the branch it would push adds a credential ("the final tree adds a
+credential in <file>; remove it"), or the agent's `pr-title.txt` is present
+and unusable (a task id, or attribution; since 2026-09-29 a mention is
+neutralised with a zero-width joiner, never refused). Neither has an end cause
+of its own. `EndCause` is in the frozen `swarm_common`, so the worker writes
+`RUNNER_ERROR` for the first and `OUTPUTS_MISSING` for the second
+(`agent_worker.lifecycle._fail_for_final_tree_leak`,
+`_fail_for_refused_title`). The outcome ledger then counts a platform refusal
+as the runner's error or as a missing output, and neither is what happened.
+
+### The requested change
+
+One new member, `EndCause.PUBLISH_REFUSED = "publish_refused"`: the worker
+refused to publish -- a credential in the final tree, or an unusable
+`pr-title.txt`. The worker writes it from both call sites above. swarm-api's
+outcome classes (`swarm_api/outcomes.py`) and the UI's fixture gain the
+class with it.
+
+### What it would break if accepted
+
+Nothing that exists: a new enum value. A reader that does not know it falls
+back to its text classifier, as for any task written before `end_cause`
+existed. The outcome ledger's cause-to-class map and the UI's class list
+must add it in the same change, or those tasks read as unclassified.
+
+### Invariants
+
+- **Secrets.** The cause names the refusal, never the value; the attempt's
+  error names the file, never its content.
+- **Invariant 1.** A refused attempt that goes back to READY holds no
+  capacity, exactly as any retryable failure.
+---
+
+## 30. `identity.py`: a tenant may list service accounts that resolve to it by exact email
+
+**Status: ACCEPTED 2026-09-29 by the owner after three security reviews.**
+Decided in principle by the owner on 2026-09-28 for #273 (the red-CI fixer);
+this entry went through three rounds of security re-review on 2026-09-29 --
+the WIF/deployer-IAM correction, the default-deny scope and IAP-subject
+correction, and the required-keyword `submitted_by` correction, each recorded
+in its own addendum below -- before the owner accepted it as it now reads.
+Nothing here is applied YET: `identity.py`, `auth.py`, `settings.py`,
+`variables.tf` and `locals.tf` are unchanged by the pull request that adds
+this entry; implementation is tracked separately (`part of #273`). Recorded
+2026-09-29. Numbered 30 because 27 and 29 are taken on open branches (29
+twice); if another branch has taken 30 by the time this merges, renumber this
+one.
+
+**2026-09-29, after a security review: accept with changes.** The owner made
+four decisions, folded into this entry below and marked where they land:
+the account stays in `saga-agents-staging` as an accepted risk (**Who can
+mint the account's token**, below); a listed account's rights are narrowed
+to continuation-only (**5. Scope: continuation-only rights**); the deployer
+loses `roles/iam.workloadIdentityPoolAdmin` outright (#334) and, since an IAM
+condition cannot scope `roles/iam.serviceAccountAdmin` at all (IAM resources
+expose no `resource.name` to a condition), instead loses that role
+project-wide in favour of project-wide `roles/iam.serviceAccountCreator` plus
+a per-account `serviceAccountAdmin` grant on each account `terraform/infra`
+manages, excluding `swarm-ci-fix` and `swarm-tf-deployer` (end of **Who can
+mint the account's token**, corrected 2026-09-29 after PR #334); and the
+reviewer's minors are folded into the diffs below. Status stays
+**PROPOSED** — this is
+what re-review checks against, not an acceptance.
+
+**2026-09-29, second re-review pass: "NOT YET," three more corrections.**
+(1) The per-route scope list in item 5 was incomplete -- it missed
+`routes/accounts.py` (8 routes, some writing), `POST
+/v1/tenants/me/credentials`, `GET /v1/attempts`, `GET /v1/outcomes`, and the
+checkpoint-content routes, which took no `AuthContext` at all and so had no
+seam for the old design to attach to. Item 5 is now a DEFAULT-DENY check
+inside `current_auth` against an explicit `CONTINUATION_ROUTES` allow-list
+(the `POOL_ADMIN_ROUTES` pattern), and the `submitted_by` filter moved into
+`Store.get_task`/`Store.list_tasks` themselves rather than being restated at
+each read route; `/v1/stats`, `/v1/capacity`, `/v1/providers` and
+`/v1/tenants/me` are now explicitly classified out, `/v1/resource-classes`
+and `/v1/runtimes` explicitly in. (2) The `uid` pin (item 3/4) compared
+`principal.subject` against Terraform's bare unique id, but IAP -- which
+`ci-fix.yml` actually calls through -- prefixes `sub` with
+`"accounts.google.com:"`; item 4 now strips that prefix once, for both
+paths, before `Principal` is built, and notes that `email_verified`
+defaults to `True` on the IAP path regardless, so decision 4's "explicit
+True" check is a bearer-path protection only. (3) The stolen-token reach
+(**Isolation analysis**, "What an attacker who steals its token gets") is
+restated: `continues_task` carries an ARBITRARY, caller-chosen prompt, not a
+constrained fix, and the account can read back what that prompt produced --
+an exfiltration path, not merely an unwanted commit -- repeatable without
+limit, because the owner declined a continuation cap (decision 3,
+2026-09-29). Recorded as an accepted reach, not a mitigated one.
+
+**2026-09-29, round 3: "NOT YET" on one mechanical point, folded in without
+another owner round.** The `submitted_by` filter (item 5) was still OPT-IN:
+`get_task`, `list_tasks`, `get_workflow` and `list_workflows` defaulted
+`submitted_by=None`, so a route that reaches a task through a layer round 2
+did not personally thread the parameter through -- the artifact service,
+`ctx.inspection`, the transcript or answer service, or one not yet written --
+would keep compiling and keep serving, silently unfiltered. `submitted_by` is
+now a REQUIRED keyword with no default on all four store methods: a missed
+call site is a `TypeError` at the call and a type-check error before that,
+not a silent pass-through. `test_continuation_scope_is_narrow.py` is extended
+to drive every task/workflow-scoped route in `CONTINUATION_ROUTES` at a task
+another `eng` member submitted and assert 404, so a route added to the
+allow-list later without its filter wired through fails on the day it is
+added.
+
+**2026-09-29, implementation correction: the "is not a task in your tenant"
+wording throughout item 5 and its tests was wrong.** Checked directly against
+`apps/swarm-api/swarm_api/store.py` on `main` while implementing this entry
+(`part of #273`): `Store.get_task` today raises `NotFound(f"task {task_id!r}
+not found")` for BOTH a genuinely missing task and another tenant's task --
+never "is not a task in your tenant". That phrase belongs to a DIFFERENT code
+path: #273's own `resolve_continuation` wraps its `continues_task` lookup in
+a `DispatchOptionError` carrying that exact sentence, but it never touches
+`Store.get_task`'s own message. Every place below that quoted "is not a task
+in your tenant" as `Store.get_task`'s (and therefore the new `submitted_by`
+filter's) refusal text has been corrected to the words the store actually
+uses, "task 'X' not found" -- the invariant this entry cares about (SAME
+words for "not yours" as for "not found" and "cross-tenant", so the filter is
+not a new enumeration oracle) is unaffected; only the literal quoted string
+was wrong. Every place describing #273's own `continues_task` message is
+unchanged and was already correct.
+
+### What is true today
+
+`.github/workflows/ci-fix.yml` (#273) federates as
+`swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com` and submits a
+one-step `claude-code` workflow with `continues_task` set to the red swarm
+task. `resolve_continuation` (`apps/swarm-api/swarm_api/continuation.py` on
+#273) looks the task up with `store.get_task(tenant_id, requested)` and answers
+"is not a task in your tenant" for another tenant's task exactly as for a
+missing one. The `swarm/` pull requests belong to `eng`, which resolves from
+the Google group `eng@saga.xyz` (`terraform/environments/dev/dev.tfvars`,
+`tenants.eng`, `directory_group = true`).
+
+So the fixer's account has to resolve to `eng`, and today there are exactly
+two ways a caller does:
+
+- **Group membership.** `Authenticator._from_claims` asks Cloud Identity
+  `groups_for(email, tenant_groups)`, puts the answers in `Principal.groups`,
+  and the frozen `resolve_tenant` returns the first registered group the
+  caller is in. Adding the account to `eng@saga.xyz` would work, and the owner
+  rejected it: that group is a company group, and every grant it holds
+  anywhere in saga.xyz -- Drive, other GCP projects, other applications that
+  authorise by it -- would go to a bot whose only job is to comment on pull
+  requests and submit fix steps.
+- **Being the tenant's principal.** A `kind = "user"` tenant whose principal is
+  the account's own email (as `u-sw-c90291` is for `swarm-verify`). That is a
+  tenant of its own, not `eng`, so it owns none of the tasks it must continue.
+
+Without either, the account is also refused before tenant resolution: its
+domain is `saga-agents-staging.iam.gserviceaccount.com`, not `saga.xyz`, so
+`assert_allowed_domain` answers 403 unless it is in `ALLOWED_USERS`. And if it
+were admitted through `ALLOWED_USERS`, `groups_for` would ask Cloud Identity
+about a service-account address on every request, a lookup that can only
+answer "no" and whose failure is fatal by design (503).
+
+### The requested change
+
+**1. Terraform: one new optional field per tenant.** In
+`terraform/infra/variables.tf`, `var.tenants` gains
+
+```hcl
+    # Service accounts that resolve to THIS tenant besides its principal, by an
+    # exact match on the email the caller's verified token carries. For a bot
+    # that must act as the tenant without joining the tenant's group, which
+    # would hand it every grant the group holds across the company (contract
+    # request 30). Bare emails of user-managed accounts in this project; never
+    # a human, never an admin, never under two tenants -- see the validations.
+    service_accounts = optional(list(string), [])
+```
+
+and `dev.tfvars` would set, once #273's account exists:
+
+```hcl
+  eng = {
+    ...
+    service_accounts = ["swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com"]
+  }
+```
+
+**2. How it reaches swarm-api.** `terraform/infra/locals.tf` renders one new
+environment variable on swarm-api beside `TENANT_GROUPS`. **Revised from the
+first draft (reviewer minor): a JSON list of objects, not a JSON object keyed
+by email**, because Python's `json.loads` on an object keyed by email would
+silently keep the LAST of two duplicate keys rather than refuse them -- fine
+for what Terraform renders today (its own for-expression already errors on a
+duplicate key at plan time), not fine for `TENANT_SERVICE_ACCOUNTS` set by
+hand, which is exactly the case `settings.py`'s own startup check exists for.
+A list carries duplicates through unchanged, so the Python-side check
+(below) is the one thing that can refuse them, not an accident of which
+representation the object literal happens to pick:
+
+```hcl
+locals {
+  # Every listed service account across every tenant, lower-cased and deduped
+  # for the data source below -- a `for_each` key must be unique even though
+  # the SAME email under two tenants is refused by validation, not by this.
+  listed_service_accounts = toset(flatten([
+    for t, v in var.tenants : [for sa in v.service_accounts : lower(sa)]
+  ]))
+}
+
+# The account's unique id (`sub` on the token it presents), pinned beside its
+# email so a service account deleted and recreated under the same address --
+# GCP lets the account id be reused -- does not inherit the old one's tenant.
+# Reviewer minor.
+data "google_service_account" "listed" {
+  for_each   = local.listed_service_accounts
+  project    = var.project_id
+  account_id = split("@", each.value)[0]
+}
+
+      # Every listed service account -> its tenant's kind and principal, and
+      # its own unique id. A list, not an object: see above.
+      TENANT_SERVICE_ACCOUNTS = jsonencode(flatten([
+        for t, v in var.tenants : [
+          for sa in v.service_accounts : {
+            email     = lower(sa)
+            kind      = v.kind
+            principal = lower(v.principal)
+            uid       = data.google_service_account.listed[lower(sa)].unique_id
+          }
+        ]
+      ]))
+```
+
+JSON rather than `_csv`, because each entry carries four values now and a
+delimiter scheme invented for it would be a second format to get wrong.
+`directory_group` is deliberately not consulted: a listed account never needs
+a directory lookup, so it resolves to a `kind = "group"` tenant whose group
+cannot be read (as `smoke`'s cannot) exactly as to one whose group can.
+
+`apps/swarm-api/swarm_api/settings.py` gains
+
+```python
+    #: Service accounts a tenant lists besides its principal (contract request
+    #: 30), from TENANT_SERVICE_ACCOUNTS. Refused at startup, not at request
+    #: time, when an entry is not a user-managed service account in THIS
+    #: project, is listed more than once, sits under two tenants, is missing
+    #: its unique id, or is also in admin_users, admin_pool_users or
+    #: secret_admin_principals: a revision that would resolve one wrongly must
+    #: not start serving.
+    tenant_service_accounts: tuple[TenantMember, ...] = ()
+```
+
+parsed by a `_tenant_members("TENANT_SERVICE_ACCOUNTS")` helper that
+`json.loads` the value as a **list** (empty or absent is `()`), and for each
+entry: lower-cases `email`, `kind` and `principal`; requires `kind` in
+`{"group", "user"}`, a non-empty `principal` and a non-empty `uid`; requires
+`email` to match `identity.SERVICE_ACCOUNT_EMAIL` **and** to end with
+`@{self.project_id}.iam.gserviceaccount.com` -- the second check is what a
+bare regex on the shape cannot do, and is why a Google-managed service agent
+(`service-<number>@gcp-sa-<api>.iam.gserviceaccount.com`) can never match: its
+domain never ends with this project's id, however the regex is written
+(reviewer minor). It then **refuses a duplicate email itself**, by building
+the tuple through a plain loop that checks membership before appending rather
+than relying on `dict`/`json` key semantics to catch it (the other half of the
+reviewer minor above): two entries for the same email raise `ValueError`
+whether or not they agree on tenant. It raises `ValueError` on any of the
+refusals above, including the ones already caught at `terraform plan` --
+belt and suspenders for a hand-set environment variable Terraform never saw.
+A startup `ValueError` fails the new Cloud Run revision's readiness, so the
+previous revision keeps serving.
+
+**3. How `resolve_tenant` uses it.** The frozen change is the diff below:
+a `TenantMember` type, a `SERVICE_ACCOUNT_EMAIL` expression, a
+`tenant_member_for()` matcher, and a third, defaulted parameter on
+`resolve_tenant`. The match is:
+
+- **exact and case-insensitive on email, exact on the account's unique id**:
+  `email.strip().lower() == member.email` (already lower-cased once, on
+  `TenantMember`, not at every comparison -- reviewer minor) **and**
+  `principal.subject == member.uid`. The second half is new: pinning the
+  token's `sub` claim beside the listed email is what stops a service account
+  that was deleted and recreated under the same address -- GCP allows the
+  account id to be reused -- from silently inheriting the old account's
+  tenant the moment its email is presented again. An email match with a
+  mismatched `uid` is treated as no match at all, exactly like an unlisted
+  account, and falls through to today's refusal (wrong domain, not in
+  `ALLOWED_USERS`);
+- **matched with `re.fullmatch`, not `re.match`** (reviewer minor: `match`
+  with a trailing `$` in the pattern still accepts a string with a trailing
+  newline, which `fullmatch` does not; a compiled anchor is not a substitute
+  for asking the regex engine to consume the whole string);
+- **only on a user-managed service-account address**
+  (`<id>@<project>.iam.gserviceaccount.com`); a listed entry of any other
+  shape never matches even if it got past Terraform and settings. The
+  project-id pin that excludes a Google-managed service agent is enforced at
+  startup in `settings.py`, not in this regex -- `identity.py` is frozen and
+  has no notion of which project it is running in, so the regex alone would
+  still accept `service-1234@gcp-sa-x.iam.gserviceaccount.com` under a
+  project literally named `gcp-sa-x`; only `settings.py`'s `endswith` check
+  closes that (reviewer minor, see item 2);
+- **on the email and subject the token verified**: `_from_claims` passes the
+  `email` and `sub` claims of a Google ID token that `verify_oauth2_token`
+  accepted with `email_verified` not false, or of an IAP assertion
+  `IapAssertionVerifier` accepted. Nothing the caller sends in a body, a
+  header or a query is read;
+- **before any group lookup**: a match returns the listing tenant's id,
+  derived by `tenant_id_for_group(principal)` for `kind="group"` or
+  `tenant_id_for_user(principal)` for `kind="user"`, from the tenant's own
+  kind and principal, so the account and the group it stands beside cannot
+  name two different tenants. An entry whose `kind` is neither now **raises**
+  `AuthError` instead of silently falling through to the `user` branch
+  (reviewer minor) -- `settings.py` already refuses that shape at startup, so
+  reaching it here means the belt-and-suspenders check caught something the
+  suspenders should already have caught, and that is worth surfacing as a 401
+  rather than quietly guessing.
+
+With the default `service_accounts=()` every existing caller of
+`resolve_tenant` behaves exactly as today.
+
+**4. `auth.py`, the non-frozen half.** **Corrected 2026-09-29: the `sub` claim
+needs normalising before it reaches `tenant_member_for`, and the first draft
+of this entry did not do that.** `_from_claims` reads it today at line 335:
+
+```python
+        subject = str(claims.get("sub", ""))
+```
+
+For a bearer ID token that is already the bare unique id Terraform's
+`data.google_service_account.unique_id` renders. For an **IAP assertion it is
+not**: `IapAssertionVerifier.verify` documents it in so many words --
+*"IAP puts the verified identity in `email`, and `sub` carries a stable
+`accounts.google.com:<id>` rather than a bare subject"* (`auth.py`, in the
+class docstring). **`ci-fix.yml` calls swarm-api through IAP**, like every
+other caller of this Cloud Run service that is not inside the VPC, so the
+listed path's `uid` pin -- compared as `principal.subject == member.uid` in
+`tenant_member_for` -- would never match the real account's own token as
+first drafted: the claim it would compare carries a twelve-character prefix
+Terraform's rendered `uid` never has. Fixed at the same line, before
+`Principal` is built, since this is a fact about the claims format and not
+about listing:
+
+```python
+        subject = str(claims.get("sub", ""))
+        # IAP prefixes a stable "accounts.google.com:" (IapAssertionVerifier,
+        # above); a bearer ID token's `sub` carries no such prefix. Stripped
+        # here, once, for BOTH paths, so `principal.subject` is the bare id
+        # either way and `tenant_member_for`'s `uid` comparison (item 3) does
+        # not need to know which path produced it -- normalising per-path
+        # inside the comparison would be the second copy of this rule,
+        # findable only by reading both call sites at once.
+        subject = subject.removeprefix("accounts.google.com:")
+```
+
+`Principal.subject` had no reader anywhere in the codebase before this
+change (`grep -rn "\.subject\b" apps/swarm-api apps/common` -- none), so this
+is safe to normalise unconditionally rather than only inside the new listed
+path: nothing existing depended on the prefixed form.
+
+Then, as the first thing after reading `email` and `subject`:
+
+```python
+        member = tenant_member_for(email, subject, self._settings.tenant_service_accounts)
+        if member is not None:
+            # Reviewer minor: the listed path requires an EXPLICIT True, not
+            # merely "not False" -- the weaker rule the bearer path applies
+            # everywhere else (GoogleTokenVerifier.verify). A listed account
+            # skips both Cloud Identity passes below, so this claim is the
+            # only outside confirmation of the identity left; treating an
+            # absent claim as acceptable here would remove it.
+            if claims.get("email_verified") is not True:
+                raise AuthError("listed service account requires a verified email claim")
+            principal = Principal(
+                email=email,
+                subject=subject,
+                domain=email.rsplit("@", 1)[1],
+                groups=(),
+            )
+            log.info("tenant member %s resolved by listing", email)
+            return AuthContext(
+                principal=principal,
+                tenant_id=resolve_tenant(
+                    principal,
+                    self._settings.tenant_groups,
+                    service_accounts=self._settings.tenant_service_accounts,
+                ),
+                is_admin=False,
+                tenant_principal=member.principal,
+                admin_unresolved=False,
+                is_pool_admin=False,
+                tenant_member=email,
+                # Decision 2: a listed account's rights, below.
+                member_scope="continuation",
+            )
+```
+
+That is: the listing **admits** the account (it does not also go in
+`ALLOWED_USERS`, so there is one place that says it may call), it **skips both
+Cloud Identity passes** (no tenant-group lookup and no admin-group lookup, so a
+directory outage cannot 503 it and it can never pick up admin through a group
+it happens to be in), and it is **never an admin or a pool admin**. An
+unlisted service account takes today's path unchanged.
+
+**Said plainly, because it changes what the `email_verified is not True` check
+(above) is actually worth for `ci-fix.yml`: on the IAP path that check is
+inert.** `IapAssertionVerifier.verify` already does `claims.setdefault
+("email_verified", True)` (`auth.py:211`) before `_from_claims` ever sees the
+claims, because IAP "only ever forwards identities it has already
+authenticated" -- so by the time the new listed-path check runs, the claim is
+always `True` for an IAP caller, whatever IAP itself received. The check is
+real and load-bearing on the **bearer** path, where `GoogleTokenVerifier`
+applies the weaker "not False" rule and an absent claim would otherwise pass
+through unchanged; on the **IAP** path it can never fire, because IAP has
+already made the decision this check exists to double-check. Since
+`ci-fix.yml` calls through IAP, decision 4's "listed path requires an
+explicit True" is, for this account specifically, a bearer-path-only
+protection that happens to also be written for a caller that never takes the
+bearer path. It stays in the diff because a future listed account might.
+
+**A second, non-frozen fix folded in here (reviewer minor: "a duplicate-listing
+`AuthError` maps to 401/403, not 500").** `Authenticator._authenticate_bearer`
+today calls `self._from_claims(claims)` unwrapped at its tail, unlike the IAP
+branch of `authenticate()`, which already catches `AuthError` from
+`_from_claims` and converts it to `Unauthenticated`. `main.py` registers a
+global `@app.exception_handler(AuthError)` that maps an uncaught one to 401
+today, so this is not observed as a live 500 -- but it is the one place in
+`auth.py` that relies on that global handler instead of converting its own
+error, which is exactly the asymmetry `tenant_member_for`'s new
+"listed under more than one tenant" `AuthError` (a case this change
+introduces) would go through on the bearer path. Made symmetric with the IAP
+branch:
+
+```python
+        try:
+            return self._from_claims(claims)
+        except Forbidden:
+            raise
+        except AuthError as exc:
+            raise Unauthenticated(str(exc)) from None
+```
+
+**5. Scope: continuation-only rights, DEFAULT-DENY (decision 2, 2026-09-29;
+redesigned 2026-09-29 after re-review found the per-route list incomplete).**
+A listed account's tenant membership is real -- it is `eng`, with `eng`'s GSA,
+secrets, prefix and namespace -- but its RIGHTS within that tenant are not a
+human member's. `AuthContext` gains
+
+```python
+    #: "" for an ordinary member (a human, or -- unlisted -- today's only
+    #: kind of caller): every route behaves exactly as today. "continuation"
+    #: for a listed service account (decision 2, 2026-09-29): it may submit a
+    #: `continues_task` workflow and read what IT submitted, and nothing else.
+    #: Not a kind of admin and not read by `require_admin` -- `is_admin` and
+    #: `is_pool_admin` already answer that, independently, and stay False for
+    #: every listed account regardless of this field.
+    member_scope: str = ""
+```
+
+**What the first draft of this entry got wrong.** It named a list of routes
+to gate: `create_task`, `create_task_batch`, `cancel_task`, `cancel_workflow`,
+and a `submitted_by` filter on the task/workflow read routes. Re-review found
+that list incomplete by construction -- it was built by reading `tasks.py` and
+`workflows.py` and stopping, not by enumerating every router the app
+includes. Missed, all of them reachable by a continuation-scoped caller under
+that design because they depend on bare `current_auth` and were simply never
+looked at:
+
+- **`routes/accounts.py`, all eight routes** (`routes/accounts.py:157-369`):
+  `GET /v1/accounts` (list, read-only). `POST /v1/accounts/authorize` only
+  starts a sign-in (no write). The other six WRITE: `POST /v1/accounts`
+  (register a credential), `POST /v1/accounts/exchange` (redeem a sign-in
+  and register the account), `POST /v1/accounts/{id}/refresh` (rotate the
+  credential now), `PUT /v1/accounts/{id}/lending`, `PUT
+  /v1/accounts/{id}/state` (pause/drain), `DELETE /v1/accounts/{id}`. A
+  stolen token could register a credential into `eng`'s pool, pause or
+  delete one of `eng`'s accounts, or change who it lends to.
+- **`POST /v1/tenants/me/credentials`** (`routes/tenants.py:54`): the one
+  route in the service that accepts key material. A stolen token could
+  overwrite `eng`'s provider API key with one the attacker controls.
+- **`GET /v1/attempts` and `GET /v1/outcomes`**: both tenant-wide by design
+  (`list_attempts`'s docstring: "Attempts across every TASK of the caller's
+  tenant"), not task-scoped, so neither goes through `Store.get_task` and
+  neither can be narrowed by a `submitted_by` filter the way the task routes
+  can -- there is no task in the call to filter.
+- **The checkpoint-content routes** (`routes/checkpoints.py:53-118`): `GET
+  .../checkpoints/{checkpoint_id}/files`, `.../files/{path}`, `.../content`.
+  These three don't even declare `auth: AuthContext` -- only `tenant_id: str =
+  Depends(tenant_scope)` -- so there was **no seam** for a per-route
+  `member_scope` check to attach to in the first draft's design at all; the
+  gap was not a missed line, it was a missing parameter.
+
+**The fix: default-deny in `current_auth` itself, not an opt-in gate each
+route remembers to add.** `tenant_scope` already depends on `current_auth`
+(every route above does, transitively, including the checkpoint ones -- that
+part was never the gap), so putting the check there closes every route in one
+place, present and future, the same way `admin_auth`/`POOL_ADMIN_ROUTES`
+already gates the admin surface:
+
+```python
+# auth.py, beside POOL_ADMIN_ROUTES
+
+#: Every route a CONTINUATION-SCOPED account (member_scope="continuation") may
+#: call, as (HTTP method, route template) -- an ALLOW-LIST, same reasoning as
+#: POOL_ADMIN_ROUTES: a route defaults to CLOSED for this scope until named
+#: here, where opening it is a decision visible in review, rather than
+#: defaulting OPEN until someone notices and closes it. This is what the first
+#: draft's per-route list should have been from the start.
+#: tests/unit/control_plane/test_continuation_scope_is_narrow.py holds this
+#: set equal to the decided one and sweeps every route in every router
+#: against it, the same shape as test_pool_admin_is_narrow.py.
+CONTINUATION_ROUTES: frozenset[tuple[str, str]] = frozenset({
+    ("POST", "/v1/workflows"),  # only WITH continues_task -- see item 4
+    ("GET", "/v1/tasks"),
+    ("GET", "/v1/tasks/{task_id}"),
+    ("GET", "/v1/tasks/{task_id}/events"),
+    ("GET", "/v1/tasks/{task_id}/attempts"),
+    ("GET", "/v1/tasks/{task_id}/artifacts"),
+    ("GET", "/v1/tasks/{task_id}/artifacts/content"),
+    ("GET", "/v1/tasks/{task_id}/artifacts/raw"),
+    ("GET", "/v1/tasks/{task_id}/checkpoints"),
+    ("GET", "/v1/tasks/{task_id}/checkpoints/{checkpoint_id}/files"),
+    ("GET", "/v1/tasks/{task_id}/checkpoints/{checkpoint_id}/files/{path:path}"),
+    ("GET", "/v1/tasks/{task_id}/checkpoints/{checkpoint_id}/content"),
+    ("GET", "/v1/tasks/{task_id}/logs"),
+    ("GET", "/v1/tasks/{task_id}/transcript"),
+    ("GET", "/v1/tasks/{task_id}/answer"),
+    ("GET", "/v1/tasks/{task_id}/input"),
+    ("GET", "/v1/workflows"),
+    ("GET", "/v1/workflows/{workflow_id}"),
+    ("GET", "/v1/resource-classes"),  # static catalogue, no tenant data
+    ("GET", "/v1/runtimes"),          # static catalogue, no tenant data
+})
+
+
+def require_continuation_route(
+    ctx: AuthContext, route: tuple[str, str] | None
+) -> AuthContext:
+    """A continuation-scoped caller may reach only CONTINUATION_ROUTES.
+
+    An ordinary member (`member_scope == ""`) returns immediately -- this
+    changes nothing for anyone but a listed account. `route=None` (no route
+    matched) fails closed, same as `require_admin`.
+    """
+    if not ctx.member_scope:
+        return ctx
+    if route is not None and route in CONTINUATION_ROUTES:
+        return ctx
+    method, path = route if route else ("?", "unmatched")
+    raise Forbidden(f"a continuation-scoped account may not call {method} {path}")
+```
+
+```python
+# deps.py, current_auth -- after ctx.authenticator.authenticate(...) succeeds,
+# before the rate limiter (an account refused the route gets no limiter
+# consequence for the request it was never allowed to make)
+    path = getattr(request.scope.get("route"), "path", None)
+    route = (request.method.upper(), path) if path else None
+    require_continuation_route(auth, route)
+```
+
+This is the SAME dependency every route already calls to authenticate at
+all -- directly, or through `tenant_scope`/`admin_auth`, both of which
+`Depends(current_auth)` themselves -- so a route added tomorrow with no idea
+this scope exists is closed to it by default, not open until someone
+remembers to gate it. `routes/accounts.py`, `routes/tenants.py`'s credential
+route, `/v1/attempts`, `/v1/outcomes`, `/v1/stats`, `/v1/capacity`,
+`/v1/providers`, `POST /v1/tasks`, `POST /v1/tasks/batch`, every `/{id}/cancel`
+route and every `/v1/admin/*` route are refused **because they are absent from
+CONTINUATION_ROUTES**, not because each was individually taught to check
+`member_scope` -- the fix for the missed routes and the fix for the routes
+this entry already named are the same fix.
+
+**`/v1/stats`, `/v1/capacity`, `/v1/providers`, `/v1/tenants/me`, classified
+explicitly, per re-review:** none is in `CONTINUATION_ROUTES`. All four are
+tenant-wide informational reads the fixer's job -- submit a continuation, read
+what it submitted -- does not need; `/v1/tenants/me` is otherwise harmless
+(no secrets, only the caller's own principal and the tenant's declared
+providers) but is left out on the same "nothing not needed for the job"
+principle, not because it is dangerous. `/v1/resource-classes` and
+`/v1/runtimes` ARE included: both are the platform's static, non-tenant
+catalogue (`platform.py`'s own docstrings: "no store read, no tenant filter"),
+so listing them costs nothing and a client would otherwise have no way to
+interpret `resource_class`/`runtime` names it already receives back on the
+tasks it can read.
+
+**`POST /v1/workflows`** stays in `CONTINUATION_ROUTES`, but
+`SubmissionService.submit_workflow`, right beside its existing
+`resolve_continuation` call (#273), still refuses when
+`auth.member_scope == "continuation" and spec.continues_task is None`: being
+on the route allow-list only means the ROUTE is reachable, not that every
+request to it succeeds. Everything `resolve_continuation` already checks --
+caller's own tenant, `direct-pr`, one step, no `repository_ref` -- still
+applies unchanged on top of this.
+
+**The `submitted_by` filter lives in the store's task lookup, not
+route-by-route, per re-review.** One shared dependency derives it:
+
+```python
+# deps.py
+def submission_scope(auth: AuthContext = Depends(current_auth)) -> str | None:
+    """`None` for an ordinary member (unfiltered within the tenant, today's
+    behaviour); the caller's own email for a continuation-scoped one. ONE
+    function, so every read route derives this the same way instead of each
+    restating `auth.email if auth.member_scope == "continuation" else None` --
+    which is what the first draft did, and how the checkpoint-content routes,
+    which never even took an `AuthContext`, were missed: there was nowhere
+    that repeated expression could have been written for them.
+    """
+    return auth.email if auth.member_scope else None
+```
+
+Every route in `CONTINUATION_ROUTES` that reads a task or workflow now also
+declares `submitted_by: str | None = Depends(submission_scope)` and passes it
+down to `Store.get_task`/`Store.list_tasks`/`Store.get_workflow`/
+`Store.list_workflows`, which gain the parameter and do the filtering
+**once, in the store**.
+
+**`submitted_by` is a REQUIRED keyword, with no default, on all four --
+corrected 2026-09-29, round 3 of re-review.** The first draft gave it
+`submitted_by: str | None = None`, which is opt-in: a route or service
+that reaches a task through a layer that never learned about this change --
+the artifact service, `ctx.inspection`, the transcript and answer services,
+`Store`'s OWN internal helpers that call `self.get_task(...)` before doing
+something else -- keeps compiling, keeps passing its existing tests, and
+keeps returning the task, silently, to a caller the filter was supposed to
+refuse. `Store.get_task` alone has two such internal callers today
+(`store.py:961` and `:1051`, a tenant check and an artifact-manifest read
+that each call `self.get_task(tenant_id, task_id)` with no third argument),
+and `Store.get_workflow` has a third (`store.py:1194`) -- none of them
+security-relevant today, all three exactly the shape a missed thread-through
+would take. A default makes that shape free to write; removing the default
+makes it a `TypeError` at the call, and a `reportCallIssue`/missing-argument
+error at type-check, before it ever reaches a test:
+
+```python
+# store.py
+def get_task(self, tenant_id: str, task_id: str, *, submitted_by: str | None) -> Task:
+    task = ...  # unchanged lookup and tenant check
+    if submitted_by is not None and task.submitted_by != submitted_by:
+        # SAME words as the existing cross-tenant refusal, corrected 2026-09-29:
+        # `Store.get_task` today (main, checked directly) raises
+        # `NotFound(f"task {task_id!r} not found")` for BOTH a genuinely
+        # missing task and another tenant's task -- NOT "is not a task in
+        # your tenant", which is #273's own `resolve_continuation` wrapper
+        # message for `continues_task` specifically, a different code path.
+        # An earlier draft of this entry quoted the wrong one. Not a new
+        # enumeration oracle: a continuation-scoped caller cannot distinguish
+        # "not yours" from "not in your tenant" from "does not exist" any
+        # more than a cross-tenant caller can today.
+        raise NotFound(f"task {task_id!r} not found")
+    return task
+```
+
+`list_tasks`, `get_workflow` and `list_workflows` gain the identical
+`*, submitted_by: str | None` (no default) and the identical check, so all
+four fail the same way when a call site forgets the argument. **Every
+existing call site in the codebase passes `submitted_by=None` explicitly**
+(today's unfiltered behaviour, made an explicit decision rather than an
+implicit default) -- verified by `grep -rln
+"\.get_task(\|\.list_tasks(\|\.get_workflow(\|\.list_workflows(" --include="*.py" .`
+against this branch: `apps/swarm-api/swarm_api/{store.py, rollup.py,
+outcomes.py, inspect.py, routes/admin.py, routes/tasks.py,
+routes/workflows.py}`, `apps/reconciler/reconciler/backends.py`, and
+`tests/unit/control_plane/{test_scheduler_writes_are_guarded.py,
+test_workflow_state_rollup.py}` -- fifteen call sites in `apps/swarm-api`
+alone outside `store.py`'s own internals, plus the reconciler's. Every one of
+them is a full-member or internal (non-tenant-scope) read today, so
+`submitted_by=None` is a no-op change to their behaviour and a REQUIRED
+statement of that fact, not a new one to justify per site.
+
+**This is what closes the checkpoint-content gap, and closes it the way
+round 2 intended but did not enforce.** Those three routes gain
+`submitted_by: str | None = Depends(submission_scope)` and thread it through
+`service.list_files(tenant_id, task_id, submitted_by=submitted_by, ...)` ->
+`CheckpointContent` -> `InspectionService`'s own `Store.get_task` call. Round
+2 already proposed this thread-through; round 3's fix is that `Store.get_task`
+itself now REFUSES to compile or run without the keyword arriving from
+somewhere, so a fourth service layer discovered later -- the artifact
+service, the transcript service, the answer service, or one not yet
+written -- cannot reach a task by forgetting the argument; it can only reach
+one by supplying it, correctly or not, and supplying it wrong is a much
+narrower way to fail than supplying nothing at all.
+
+### What `tenant_principal` becomes for such a caller
+
+**The tenant's principal, not the caller's email**: `eng@saga.xyz` for the
+fixer, exactly what a human member of `eng` gets from `_tenant_principal`.
+It has to be. `Service.tenant_for` passes it to `Store.ensure_tenant`, and
+`Service.scope_for` to `Store.assert_tenant_scope`, and both compare it with
+the principal stored on the `eng` tenant document to refuse a caller whose
+tenant id belongs to a different principal. The account's own email there
+would make every request it sends a collision refusal -- and if it were ever
+the first caller to create the document, it would record the bot as `eng`'s
+principal. The `secret_admin_principals` check in `tenant_for` is unaffected,
+because it reads that same tenant principal, and the listing refuses an
+account in `secret_admin_members` separately (below).
+
+The caller's own identity is still `principal.email`, which is what
+`submitted_by` is built from. `member_scope` (item 5, above) is a separate,
+narrower gate layered on top of `tenant_id`/`tenant_principal`: the tenant
+says WHICH secrets, GSA and prefix a caller gets; the scope says WHICH of the
+tenant's routes it may use. A future listed account with fuller rights would
+set `member_scope=""` and get everything a human member gets -- this entry
+proposes `"continuation"` for `swarm-ci-fix` specifically, not a ceiling on
+the mechanism.
+
+### Audit: which member submitted a task
+
+Three records, none a frozen-type change; extended so submit, cancel and
+continue are recorded the same way rather than only the first (decision 4,
+"audit records the acting member ... consistently"):
+
+- **`Task.submitted_by` and `Workflow.submitted_by`** are already the verified
+  email (`service.py` sets both from `ctx.email`), so a fixer task already
+  carries `swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com`, and the
+  outcome ledger's `submitted_by` grouping separates the bot's tasks from the
+  humans' in `eng` with no further change. This covers submit AND continue --
+  a continuation is a normal `Store.create_tasks` call for its one step task,
+  so it already gets both fields with no extra code.
+- **`AuthContext.tenant_member`** (new, in `auth.py`, default `""`) is the
+  listed email when the tenant came from a listing. The `SUBMITTED` event that
+  `Store.create_tasks` writes gains `detail["submitted_by"]` and
+  `detail["tenant_member"]` -- `"service_account"` for a listed caller, absent
+  otherwise -- so the event trail says, per task, not only who submitted it
+  but that the tenant was assigned by a listing rather than by a group. The
+  sign-in log line above records the same per request, with no token material
+  (the email is already what every other `auth.py` log line names).
+- **`Store.request_cancel`**, called from `cancel_task` with `by=auth.email`
+  already, gains the same `tenant_member` parameter `create_tasks` gets, so
+  the event it writes carries `detail["tenant_member"] = "service_account"`
+  under the identical rule. Today only a full member can reach `cancel_task`
+  at all -- `("POST", "/v1/tasks/{task_id}/cancel")` is absent from
+  `CONTINUATION_ROUTES` (item 5), so `current_auth` itself refuses a
+  continuation-scoped caller before the route body, let alone the store, runs
+  -- so this is written for consistency with any future listed account whose
+  scope is not `"continuation"`, not for `swarm-ci-fix` itself -- a
+  `member_scope` that changes must not also have to remember to re-wire the
+  audit trail for the one action it newly permits.
+
+### Validation
+
+Every rule is enforced at plan time in `terraform/infra/variables.tf`, and again
+at swarm-api startup in `settings.py` for anything Terraform cannot see (an
+environment variable set by hand). The variable already requires Terraform
+`>= 1.9.0` (`versions.tf`), which is what lets a validation on `var.tenants`
+read `var.admin_users`; `secret_admin_members` already validates against
+`var.tenants` the same way.
+
+1. **Only a user-managed service account in this project, never a human.**
+
+   ```hcl
+   validation {
+     condition = alltrue(flatten([
+       for t, v in var.tenants : [
+         for sa in v.service_accounts :
+         can(regex("^[a-z][a-z0-9-]{4,28}[a-z0-9]@[a-z][a-z0-9-]{4,28}[a-z0-9]\\.iam\\.gserviceaccount\\.com$", sa))
+         && endswith(sa, "@${var.project_id}.iam.gserviceaccount.com")
+       ]
+     ]))
+     error_message = "tenants.*.service_accounts takes bare, lower-case emails of user-managed service accounts in this project (<id>@<project>.iam.gserviceaccount.com): never a person, a group, a domain, a pattern, a serviceAccount: member or a Google-managed account."
+   }
+   ```
+
+   The expression is the one #273's `ci_fix_service_account` validation
+   already uses. It refuses a human (no Workspace domain ends in
+   `.iam.gserviceaccount.com`), a `serviceAccount:` member, a wildcard, and
+   the Google-managed accounts every workload in a project can run as
+   (`<number>-compute@developer.gserviceaccount.com`,
+   `<project>@appspot.gserviceaccount.com`). The project pin is this entry's
+   addition, and one the owner must accept: who can mint a token for an
+   account is decided by IAM in that account's project, and only this
+   project's IAM is reviewed here.
+
+2. **Under one tenant only.**
+
+   ```hcl
+   validation {
+     condition = length(flatten([for t, v in var.tenants : [for sa in v.service_accounts : lower(sa)]])) == length(distinct(flatten([for t, v in var.tenants : [for sa in v.service_accounts : lower(sa)]])))
+     error_message = "a service account may be listed under ONE tenant: it decides the account's secrets, GCS prefix and namespace, and two listings would make that depend on rendering order."
+   }
+   ```
+
+   The same rule is enforced two more times, not three as the first draft of
+   this entry said: `TENANT_SERVICE_ACCOUNTS` renders as a JSON **list**, not
+   an object keyed by email (item 2, above, reviewer minor), so a duplicate
+   there is no longer a `locals.tf` plan-time error by construction -- it is
+   `settings.py` that refuses one explicitly at startup (by membership check,
+   not by relying on `dict`/`json` key collapsing), and `tenant_member_for`
+   that raises `AuthError` rather than pick one if a caller somehow reaches
+   this layer with two live entries for the same email. Terraform's own
+   `var.tenants` validation above is still the first and cheapest of the
+   three: it never lets the plan apply with a duplicate in the first place.
+
+3. **Never an admin, in any admin list.**
+
+   ```hcl
+   validation {
+     condition = length(setintersection(
+       toset(flatten([for t, v in var.tenants : [for sa in v.service_accounts : lower(sa)]])),
+       toset(concat(
+         [for u in var.admin_users : lower(u)],
+         [for u in var.admin_pool_users : lower(u)],
+         [for m in var.secret_admin_members : lower(replace(m, "serviceAccount:", ""))]
+       ))
+     )) == 0
+     error_message = "a tenant's service account may not also be in admin_users, admin_pool_users or secret_admin_members: a listing gives exactly one tenant's rights, and an admin entry would add every tenant's."
+   }
+   ```
+
+   `admin_groups` cannot be checked here, because whether a group contains the
+   account is a fact in the directory, not in Terraform. That is why
+   `auth.py` skips the admin-group pass for a listed caller and sets
+   `is_admin=False` unconditionally: membership of an admin group does not
+   make a listed account an admin, by construction rather than by validation.
+
+4. **Never a tenant's own principal.**
+
+   ```hcl
+   validation {
+     condition = length(setintersection(
+       toset(flatten([for t, v in var.tenants : [for sa in v.service_accounts : lower(sa)]])),
+       toset([for t, v in var.tenants : lower(v.principal)])
+     )) == 0
+     error_message = "a service account that is a tenant's principal already has a tenant; listing it under another would give it two."
+   }
+   ```
+
+   This is what stops `swarm-verify` (principal of `u-sw-c90291`) being listed
+   under `eng`.
+
+**The account's unique id is not a `validation` block** -- it is not user
+input, it is read live from `data.google_service_account.listed` (item 2,
+above) at plan time, from whatever account currently holds that email. If the
+email is later deleted and recreated, the next `terraform apply` reads the
+NEW account's unique id and renders that; nothing here freezes the old one.
+The pin's job is narrower than a validation: it stops a stale, already-issued
+token's `sub` claim (from the old account) from matching a listing that now
+names a different one, in the window between the account being recreated and
+the next successful apply -- not to catch a recreation that Terraform itself
+already reflects.
+
+Every refusal happens at `terraform plan`, before anything is applied, and
+`tests/terraform` asserts each one (below).
+
+### Isolation analysis (invariant 9)
+
+**A listed account gets exactly its tenant's rights, narrowed further to
+continuation only, and nothing else.** It resolves to one `tenant_id` and one
+`tenant_principal`, the same pair a human member of that tenant gets, so every
+tenant-scoped check downstream -- `get_task(tenant_id, ...)`,
+`assert_tenant_scope`, the tenant's GSA, secrets, GCS prefix and namespace --
+applies to it unchanged. On top of that, `member_scope` (below) cuts it down
+to a fraction of what a human member of `eng` can do. It gets no admin (the
+flag is forced false and the lists refuse it), no pool admin, no second
+tenant (one listing, never a principal), and no personal tenant (a listed
+account never falls through to `u-...`). The change grants it **no GCP IAM at
+all**: it does not touch the tenant's GSA, its secrets or its bucket, and the
+account's own roles stay exactly what #273's `ci_fix.tf` and
+`frontend_iap_members` give it. Compared with the rejected alternative
+(joining `eng@saga.xyz`), it gets none of that group's grants outside this
+platform, and, after decision 2 below, far less than a member's grants inside
+it too.
+
+**What an attacker who steals its token gets (M2), restated honestly after
+re-review -- the first draft of this section understated the reach, and the
+owner has now reviewed and accepted the reach as stated here, not the earlier,
+narrower one.** For as long as the token lives -- an ID token or IAP assertion
+expires in at most an hour, and an access token minted by federation the
+same, though "who can mint it" is wider than the token's own lifetime, see
+below -- and constrained by `member_scope = "continuation"` (item 5, above):
+
+- **Submit `continues_task` for ANY `eng` `direct-pr` task that still exists,
+  with an ARBITRARY PROMPT.** `resolve_continuation` (#273) constrains the
+  SHAPE of a continuation -- caller's own tenant, `direct-pr` strategy, one
+  step, no `repository_ref`, the continued task's own repository -- and
+  constrains NOTHING about the step's own instructions: that field is
+  ordinary caller-supplied task input, read exactly as any other task's is.
+  A continuation is not "reapply the same fix"; it is "run a new agent
+  session, with a prompt of the attacker's choosing, against that repository,
+  using `eng`'s forge token to push whatever it produces to that PR's
+  branch." Cannot spend `eng`'s capacity on a genuinely NEW task (no existing
+  `direct-pr` PR to attach to) and cannot touch another tenant's task --
+  `resolve_continuation` and the scope check both still refuse those -- but
+  neither of those is much of a ceiling: any `eng` repository with an open
+  `swarm/` pull request is reachable, for whatever prompt the attacker sends.
+- **Exfiltrate private repository content through the agent's own
+  artifacts.** The account may read `GET /v1/tasks/{id}/artifacts`,
+  `/logs`, `/transcript` and `/answer` for tasks it itself submitted (item 5).
+  A continuation it submits is such a task. So the arbitrary prompt above can
+  instruct the agent to copy the contents of any file the checked-out
+  repository holds -- not only files related to the original red build --
+  into a commit message, an artifact, or its own transcript, and the
+  attacker reads it back through the same allowed routes. This is not a
+  hypothetical composition of two separately-acceptable capabilities: it is
+  the direct consequence of "arbitrary prompt with `eng`'s push access" plus
+  "read what I submitted" existing on the same account.
+- **No cap on how many times, and no cap on spend.** The owner considered and
+  DECLINED a limit on continuation count or cost for this account (decision
+  3, 2026-09-29). So the two capabilities above are not "one bounded
+  incident" -- they can be repeated against every `eng` repository with an
+  open `direct-pr` PR, for as long as the token can be used or re-minted (see
+  **Who can mint the account's token**, below), each repetition spending real
+  agent-provider cost against `eng`'s subscription and real capacity against
+  `eng`'s `max_active` ceiling (invariant 2 still gates CONCURRENT capacity;
+  nothing gates the NUMBER of sequential continuations over time). **Read the
+  tasks it itself submitted** is otherwise the account's only read reach: it
+  cannot list or read a human `eng` member's other work, and it cannot
+  cancel anything, its own tasks included.
+
+**`.github/workflows/auto-merge.yml` remains a real mitigation, but of a
+narrower thing than the reach above.** A push to a pull request's branch
+fires `synchronize`, which the workflow's `remove-stale-ready` job treats as
+"this head changed" -- it turns auto-merge off and removes the `ready` label
+unconditionally, label-adding events excepted
+(`.github/workflows/auto-merge.yml` lines ~237-270). So a malicious commit
+pushed this way cannot merge ITSELF: the pull request it lands on drops out
+of the auto-merge queue the moment the push lands, and needs a human to
+re-review and re-label it `ready`. **That bounds only the worst
+CODE-SHIPPING outcome.** It does nothing for the exfiltration path above --
+reading a secret back through the agent's own artifacts needs no merge at
+all -- and nothing for the spend -- an agent session costs money and capacity
+whether or not its commit ever merges. Restated so this is not read as more
+protective than it is: it is one mitigation against one of three
+consequences, not a bound on the reach as a whole.
+
+**This is accepted, not mitigated, by owner decision on 2026-09-29 (decision
+3).** The owner reviewed this restated reach -- arbitrary-prompt push access
+plus artifact-based exfiltration plus unbounded repetition and spend -- and
+chose not to add a continuation cap. What actually bounds this account is the
+scope in item 5 (it is `continues_task`-or-nothing, and read-your-own-only)
+and the token-lifetime and who-can-mint analysis below, not a limit on how
+many times or how expensively the account can act within that scope.
+
+Every task it submits still says so in `submitted_by` and in its `SUBMITTED`
+event (and, after decision 4's audit fix, every cancel and continuation it
+performs says so too), so what it did is enumerable afterwards, after the
+fact. It is not other tenants, not the admin surface, not the provider key or
+forge token AS MATERIAL (#219 keeps both out of the workspace -- the
+exfiltration path above is through repository content the agent reads and
+reports, not through reading the credential itself), and not saga.xyz outside
+this platform.
+
+### Who can mint the account's token
+
+**#273's `terraform/bootstrap/ci_fix.tf` binds `roles/iam.workloadIdentityUser`
+on the account to exactly one principalSet,**
+`attribute.job_workflow_ref/bogdan-alexandrescu/SwarmCloud/.github/workflows/ci-fix.yml@refs/heads/main`.
+GitHub sets `job_workflow_ref` from the workflow file the job actually runs,
+so another workflow -- in this repository on main, on another branch, or in a
+fork -- presents a different value and is refused; the pool provider's
+`attribute_condition` separately refuses any other repository and any ref
+outside `github_allowed_refs`, and never `refs/pull/*`. `workflow_run` runs
+the default branch's copy, so a pull request cannot change the file it runs
+under. **That is a real limit on an external caller who holds nothing else in
+this project:** minting a token that way means first getting a change to
+`ci-fix.yml` merged to `main`.
+
+**It is not a limit on the project's own IAM, and the first draft of this
+entry overstated it as one.** Measured on 2026-09-29 as bogdan@saga.xyz,
+`saga-agents-staging` IAM already lets several principals mint the account's
+token without touching `ci-fix.yml` at all:
+
+- **`roles/iam.serviceAccountAdmin`** includes `iam.serviceAccounts.setIamPolicy`
+  on every service account in the project, so a holder can bind
+  `roles/iam.serviceAccountTokenCreator` on `swarm-ci-fix` to any principal,
+  themselves included, and mint a token directly -- no workflow run, no WIF
+  pool involved. Held by: the deployer (`swarm-tf-deployer`), `bogdan@`,
+  `facu@`, `konstantin@`.
+- **`roles/iam.workloadIdentityPoolAdmin`** can edit the pool provider's
+  `attribute_condition` and attribute mapping, so a holder can widen the
+  principalSet the binding above already trusts to admit a different
+  workflow, ref or repository -- defeating the "only `ci-fix.yml` on `main`"
+  guarantee from the inside rather than around it. Held by: the deployer,
+  `bogdan@`.
+- **`roles/owner`** can do both of the above and everything else in the
+  project. Held by: `bogdan@`, `emanuel@`.
+
+**The owner accepted this as a known risk on 2026-09-29, not as a gap for
+this PR to close.** Every principal listed already holds project-level trust
+for other reasons -- the deployer runs Terraform against this project;
+`bogdan@`, `facu@`, `konstantin@` and `emanuel@` administer it. What this PR
+narrows is the ACCOUNT's own reach once a token is minted (decision 2,
+continuation-only rights, above) and the DEPLOYER's standing roles (next
+paragraph) -- not who else in the project could, in principle, mint the
+token; that is accepted, not mitigated, here.
+
+**The deployer's two roles, corrected (2026-09-29, after this entry's first
+draft): `roles/iam.serviceAccountAdmin` cannot be scoped by an IAM
+condition.** IAM resources do not expose `resource.name` to a condition at
+all: *"the condition `resource.name.endsWith == devResource` never grants
+access to any IAM resource because IAM resources don't provide the resource
+name"* ([conditions attribute reference](https://docs.cloud.google.com/iam/docs/conditions-attribute-reference)),
+and `iam.googleapis.com` is absent from the resource-service table in
+[conditions-resource-attributes](https://docs.cloud.google.com/iam/docs/conditions-resource-attributes).
+A `resource.name` condition on this role would revoke it outright, not narrow
+it, and the deployer's first service-account change after applying one would
+403. `terraform/bootstrap/deployer_conditions.tf` (#334) records this in the
+same words, as the reason the role stays **unscoped** in that PR.
+
+**`roles/iam.workloadIdentityPoolAdmin` IS removed, in #334, and needs no
+condition:** `terraform/infra` names no pool or provider of its own -- it
+only names GKE's pool as a string inside a service-account binding's member
+-- so the role was pure standing reach, dropped outright rather than scoped.
+
+**For `roles/iam.serviceAccountAdmin`, the owner decided the shape that
+actually works, recorded in #334's `docs/ci.md` on 2026-09-29 but not yet
+applied by that PR's own diff -- a further bootstrap change:** remove the
+deployer's project-wide `roles/iam.serviceAccountAdmin`; grant it
+project-wide `roles/iam.serviceAccountCreator` instead (which needs no
+per-resource name and stays project-wide by necessity, same as
+`serviceusage.serviceUsageAdmin` above); and grant `serviceAccountAdmin`
+**per account**, one resource-level binding on each `swarm-*` service account
+`terraform/infra` manages, **excluding `swarm-ci-fix` and `swarm-tf-deployer`
+themselves** (both bootstrap-managed, outside `terraform/infra`'s remit) --
+the shape #23 already gave IAP admin, applied here to service accounts.
+Until that lands, the deployer keeps its project-wide `serviceAccountAdmin`
+and remains part of the accepted risk above; once it lands, the deployer can
+still create and administer the `swarm-*` accounts `terraform/infra` manages,
+but can no longer touch `swarm-ci-fix`'s IAM policy at all -- narrower than
+"scoped", closed for that one account specifically.
+
+**The residual, stated plainly: this narrows the deployer, not the humans
+who separately hold these roles.** `bogdan@`, `facu@` and `konstantin@` hold
+`roles/iam.serviceAccountAdmin` as individually granted principals, not
+through the deployer, and neither #334 nor the per-account change above
+touches those grants. So after both land, **`facu@`, `konstantin@` and
+`emanuel@` (`roles/owner`) still can mint `swarm-ci-fix`'s token** --
+an accepted risk, for the reason given above: they already hold project-level
+trust for other reasons, and this entry narrows the account's own reach and
+the deployer's standing access, not every human administrator's.
+
+The remaining preconditions this entry's WIF analysis still depends on:
+
+- the account has **no user-managed keys** (`gcloud iam service-accounts keys
+  list --iam-account=swarm-ci-fix@...` lists only system-managed ones), since a
+  key mints tokens with no workflow involved;
+- `ci-fix.yml` never runs pull-request code in a step that can read the
+  federated credential. On #273's head it checks out `main` only ("NOT the
+  branch being fixed: its code runs in the fix step's container, never here")
+  and runs only when the head repository is this one. That has to stay true,
+  because a `workflow_run` job that executes the head's code with the token
+  present hands the token to whoever wrote the pull request.
+
+### The diff proposed for `identity.py`
+
+Not applied. Generated against `main` at `d4a2352`. **Revised 2026-09-29 to
+fold in the reviewer's minors** (`fullmatch`; `TenantMember` normalises once;
+a `uid` pinned beside the email; an unknown `kind` raises) -- this supersedes
+the diff this entry's first draft posted.
+
+```diff
+--- a/apps/common/swarm_common/identity.py
++++ b/apps/common/swarm_common/identity.py
+@@ -8,12 +8,20 @@
+ A TENANT IS A GOOGLE GROUP. `eng@saga.xyz` is one tenant whose members share a
+ quota budget, provider keys and artifacts. A user in no mapped group falls back
+ to a personal tenant so nobody is ever hard-blocked from the platform.
++
++A TENANT MAY ALSO LIST SERVICE ACCOUNTS (contract request 30). A service
++account is not a Workspace principal, and making it a member of the tenant's
++group would hand it every grant that group holds across the company. So a
++listed account resolves to its tenant by an EXACT match on the email AND the
++unique id its verified token carries, before any group is consulted -- never
++by a pattern, a prefix or a domain.
+ """
+ 
+ from __future__ import annotations
+ 
+ import hashlib
+ import re
++from collections.abc import Iterable
+ from dataclasses import dataclass
+ 
+ 
+@@ -29,6 +37,70 @@
+     groups: tuple[str, ...] = ()
+ 
+ 
++#: A user-managed service account: `<account id>@<project id>.iam.gserviceaccount.com`,
++#: both halves 6-30 characters as GCP names them. Google-managed accounts
++#: (`<number>-compute@developer.gserviceaccount.com`, `<project>@appspot...`)
++#: do NOT match on purpose: every workload in a project can run as those, so
++#: listing one would put the whole project in the tenant. A human address
++#: cannot match either -- no Workspace domain ends in `.iam.gserviceaccount.com`.
++#: This regex alone does not pin the PROJECT: `settings.py` does that at
++#: startup with an `endswith` check this frozen module has no project id to
++#: perform itself -- see contract request 30, item 2. terraform/infra/variables.tf
++#: validates `tenants.*.service_accounts` with the same expression, and
++#: scripts/lib/check-contract-parity.sh holds the two equal.
++SERVICE_ACCOUNT_EMAIL = re.compile(
++    r"^[a-z][a-z0-9-]{4,28}[a-z0-9]@[a-z][a-z0-9-]{4,28}[a-z0-9]\.iam\.gserviceaccount\.com$"
++)
++
++
++@dataclass(frozen=True)
++class TenantMember:
++    """A service account a tenant lists besides its group or user principal.
++
++    `kind` and `principal` are the TENANT's, not the account's: the tenant id
++    is derived from them by the same function that derives it for a human
++    member, so a listed account and the group it stands beside can never name
++    two different tenants.
++
++    Every field is normalised ONCE, here, rather than at each comparison --
++    the earlier draft of this type left `email`/`kind`/`principal` as given
++    and called `.strip().lower()` at every call site instead, which is
++    exactly the kind of repetition that lets one site be missed.
++    """
++
++    email: str       # swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com
++    kind: str        # "group" | "user" -- the tenant's kind
++    principal: str   # eng@saga.xyz -- the tenant's principal
++    uid: str         # the account's OAuth2 unique id (the token's `sub`
++                     # claim), from Terraform's
++                     # data.google_service_account.unique_id -- pinned beside
++                     # the email so an account deleted and recreated under
++                     # the same address, which GCP permits, does not inherit
++                     # the old one's tenant.
++
++    def __post_init__(self) -> None:
++        object.__setattr__(self, "email", self.email.strip().lower())
++        object.__setattr__(self, "kind", self.kind.strip().lower())
++        object.__setattr__(self, "principal", self.principal.strip().lower())
++        object.__setattr__(self, "uid", self.uid.strip())
++
++
++def tenant_member_for(
++    email: str, subject: str, members: Iterable[TenantMember]
++) -> TenantMember | None:
++    """The listed member whose email AND unique id (`sub`) both match, or None.
++
++    Exact equality on both, nothing else. An entry that is not a user-managed
++    service-account address is never matched even when listed, so a
++    misconfiguration that names a human cannot route that human around their
++    group. An email match with no matching `uid` is treated as no match at
++    all -- the caller falls through to today's refusal exactly as an unlisted
++    account would, rather than being told why. An address listed under two
++    tenants is refused rather than resolved by order: the tenant decides
++    which secrets and which GCS prefix a caller gets, and "whichever was
++    rendered first" is not a decision.
++    """
++    wanted = email.strip().lower()
++    if not SERVICE_ACCOUNT_EMAIL.fullmatch(wanted):
++        return None
++    found = [m for m in members if m.email == wanted and m.uid == subject]
++    tenants = {(m.kind, m.principal) for m in found}
++    if len(tenants) > 1:
++        raise AuthError("a service account is listed under more than one tenant")
++    return found[0] if found else None
++
++
+ _TENANT_SAFE = re.compile(r"[^a-z0-9-]+")
+ 
+ 
+@@ -98,14 +166,33 @@
+     return domain
+ 
+ 
+-def resolve_tenant(principal: Principal, group_priority: tuple[str, ...]) -> str:
++def resolve_tenant(
++    principal: Principal,
++    group_priority: tuple[str, ...],
++    service_accounts: tuple[TenantMember, ...] = (),
++) -> str:
+     """Pick the caller's tenant.
+ 
+-    `group_priority` is the admin-ordered list of group emails that map to
+-    tenants. First match wins, so a user in several mapped groups lands
++    A caller whose verified email AND subject match a listed service account
++    resolves to the tenant that lists it, FIRST and regardless of
++    `principal.groups`: the listing is an admin's explicit statement about
++    this one identity, and a group membership (which a service account can
++    hold) must not be able to move it somewhere else.
++
++    Otherwise `group_priority` is the admin-ordered list of group emails that
++    map to tenants. First match wins, so a user in several mapped groups lands
+     deterministically in the same tenant on every request -- which matters
+     because the tenant determines which secrets and which GCS prefix they get.
+     """
++    member = tenant_member_for(principal.email, principal.subject, service_accounts)
++    if member is not None:
++        if member.kind == "group":
++            return tenant_id_for_group(member.principal)
++        if member.kind == "user":
++            return tenant_id_for_user(member.principal)
++        # settings.py already refuses this shape at startup; reaching it here
++        # means that check was bypassed (a hand-set env var, a test double) --
++        # surfaced rather than guessed at.
++        raise AuthError(f"a listed tenant member names an unknown kind {member.kind!r}")
++
+     member_of = {g.lower() for g in principal.groups}
+     for group in group_priority:
+         if group.lower() in member_of:
+```
+
+### What it would break if accepted
+
+Nothing that exists. `resolve_tenant`'s new parameter is keyword-defaulted to
+`()`, so `auth.py`'s current call, `test_group_resolution.py` and any other
+caller behave exactly as today until `TENANT_SERVICE_ACCOUNTS` is non-empty.
+`AuthContext.member_scope` is likewise defaulted to `""`, and
+`require_continuation_route` (item 5) returns its argument immediately
+whenever `ctx.member_scope` is falsy -- which is every existing caller, since
+nothing sets it today -- so `current_auth` gaining this check changes nothing
+for a human member or an unlisted service account, on any route, existing or
+future. It is EVERY route that newly runs this check, not routes that opt
+in (the design item 5 replaced was the opt-in shape, and re-review is why it
+was replaced); the change in observable behaviour is confined entirely to a
+caller whose `member_scope` is non-empty, and there are none until
+`TENANT_SERVICE_ACCOUNTS` lists one. No stored document changes shape: `Task`,
+`Workflow`, `Tenant` and `TaskEvent` are untouched (the audit fields are
+`detail` keys and `AuthContext` fields outside the contract). `docs/ci.md` on
+#273 says the fixer's account must be "admitted (`allowed_users`) and a
+member of that tenant's Google group"; that sentence changes to naming
+`tenants.eng.service_accounts` and to saying its rights are continuation-only.
+
+### If it is declined
+
+The fixer's account can resolve to `eng` only by joining `eng@saga.xyz`, which
+the owner has rejected, or not at all, in which case #273's continuation is
+refused with "is not a task in your tenant" on every red pull request and the
+fixer can only comment.
+
+### The tests that would prove it
+
+Unit, no credentials and no emulator:
+
+- `tests/unit/control_plane/test_group_resolution.py` (`resolve_tenant`,
+  `tenant_member_for`):
+  - a listed account resolves to `eng` when `principal.email` AND
+    `principal.subject` both match the listing's `email`/`uid`, with
+    `groups=()`, and to `tenant_id_for_user(principal)` when the listing
+    tenant is `kind="user"`;
+  - `SWARM-CI-FIX@SAGA-AGENTS-STAGING.IAM.GSERVICEACCOUNT.COM` resolves the
+    same (case-insensitive on email; `uid` still matches exactly);
+  - **an email match with a mismatched `uid` does NOT resolve to `eng`** --
+    falls through exactly as an unlisted account would (the recreated-account
+    case the `uid` pin exists for);
+  - **`fullmatch`, not `match`:** an email with a trailing newline
+    (`"swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com\n"`) does not
+    match, where the earlier `.match()` with `$` in the pattern would have;
+  - the listing wins over groups: the same account with
+    `groups=("other@saga.xyz",)` and `other@saga.xyz` first in priority still
+    resolves to `eng`;
+  - no pattern and no domain: `swarm-ci-fix2@...`, `x-swarm-ci-fix@...`,
+    `swarm-ci-fix@other-project.iam.gserviceaccount.com` and
+    `swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com.evil.example`
+    each fall through to today's rule;
+  - a human address listed as a member (`bogdan@saga.xyz`) never matches;
+  - an account listed under two tenants raises `AuthError`; listed twice
+    under the same tenant (same `kind`/`principal`) resolves;
+  - **a `TenantMember` with `kind="workspace"` (anything but `"group"` or
+    `"user"`) raises `AuthError` from `resolve_tenant`** rather than
+    resolving as `kind="user"`;
+  - `TenantMember(" Eng@Saga.xyz ".strip(), " GROUP ", ...)`-style
+    constructor arguments come out normalised once (`__post_init__`), so two
+    `TenantMember`s built from differently-cased/whitespaced input compare
+    equal on `email`/`kind`/`principal`;
+  - **`tenant_member_for` does no IAP-prefix stripping of its own:** a
+    `principal.subject` of `"accounts.google.com:12345"` against a listed
+    `uid` of `"12345"` does NOT match here -- proving the frozen function
+    does exact comparison only, and that the `"accounts.google.com:"` strip
+    (item 4) has to happen in `auth.py`, before this function is ever called,
+    not be expected of it;
+  - with `service_accounts` omitted, every existing case in the file gives
+    today's answer (the file's current cases, unchanged, are this test).
+- a new `tests/unit/control_plane/test_tenant_service_accounts.py`
+  (`Authenticator` with `StaticTokenVerifier`):
+  - a listed account gets `tenant_id="eng"`, `tenant_principal="eng@saga.xyz"`,
+    `is_admin=False`, `is_pool_admin=False`, `admin_unresolved=False`,
+    `tenant_member=<its email>`, **`member_scope="continuation"`**;
+  - a caller with no listing gets `member_scope=""`, including every case
+    `test_group_resolution.py` already covers for a human;
+  - it is admitted with `allowed_domains=("saga.xyz",)` and empty
+    `ALLOWED_USERS`, and an unlisted service account is still 403;
+  - the `MembershipResolver` is a fake that raises `GroupLookupError` on any
+    call, and `admin_groups` is non-empty: the listed account still
+    authenticates (no lookup made, no 503), and is still not an admin;
+  - `email_verified: False` is still 401 (the general rule);
+  - **`email_verified` ABSENT (not `False`, simply missing) is 401 for the
+    listed path on the BEARER path specifically** -- the stricter, listed-only
+    rule (decision 4) -- while an unlisted bearer caller with the claim absent
+    still succeeds, proving the two paths are not accidentally the same code;
+  - **on the IAP path, the same listed caller with `email_verified` absent
+    from the raw assertion still authenticates.** This is not a gap in the
+    check -- `IapAssertionVerifier.verify` already forces
+    `claims.setdefault("email_verified", True)` (`auth.py:211`) before
+    `_from_claims` runs, so the listed-path check never observes an absent
+    claim on this path at all. The test exists to SAY so, not to catch a
+    bug: it is the proof that decision 4's "explicit True" rule is a
+    bearer-path protection that happens to be inert for `ci-fix.yml`, which
+    calls through IAP;
+  - **the IAP path and the bearer path resolve to the SAME `AuthContext`
+    (including `member_scope`) from DIFFERENT-SHAPED `sub` claims** -- a
+    bearer token's bare `"12345"` and an IAP assertion's
+    `"accounts.google.com:12345"` both resolve to the listed account when its
+    `uid` is `"12345"`, proving the `"accounts.google.com:"` strip (item 4)
+    actually closes the gap it exists for, not merely that both paths agree
+    when fed identical input;
+  - **a duplicate listing (`tenant_member_for` raising `AuthError`) comes back
+    401, not 500,** on both the bearer path and the IAP path -- the symmetric
+    `try`/`except` decision 4 adds to `_authenticate_bearer`;
+  - `continues_task` naming an `eng` task is accepted, naming a `u-bogdan`
+    task is refused "is not a task in your tenant";
+  - **`CONTINUATION_ROUTES` is swept against every route in every router the
+    app includes, and extended in round 3 to a second assertion per
+    task/workflow-scoped route** (`tests/unit/control_plane/test_continuation_scope_is_narrow.py`,
+    the same shape as `test_pool_admin_is_narrow.py`):
+      - **reachability:** every route NOT in the set 403s a continuation-scoped
+        caller with an otherwise-valid request, and every route IN the set
+        does not 403 for that reason. This is the test that would have caught
+        the first draft's gap, because it does not require anyone to have
+        thought of `routes/accounts.py` -- it walks the app's own route table;
+      - **ownership, round 3's addition:** for every route in the swept set
+        whose path names a `{task_id}` or `{workflow_id}`, the fixture creates
+        ONE task/workflow submitted by a different `eng` member and drives
+        that route at it with the listed caller's credentials -- every one
+        404s ("task 'X' not found", the existing cross-tenant wording --
+        corrected 2026-09-29, see item 5's `Store.get_task` snippet). This is
+        the assertion that
+        catches a missed `submitted_by` thread-through directly, rather than
+        relying on someone naming the right route by hand: it walks
+        `CONTINUATION_ROUTES` itself, so a route added to the allow-list
+        later without its filter wired through fails this test on the day it
+        is added, not on the day someone thinks to ask;
+  - named explicitly, because re-review found them missing: **all eight
+    `routes/accounts.py` routes** (list, register, authorize, exchange,
+    refresh, lending, state, delete), **`POST /v1/tenants/me/credentials`**,
+    **`GET /v1/attempts`**, **`GET /v1/outcomes`**, **`GET /v1/stats`**,
+    **`GET /v1/capacity`**, **`GET /v1/providers`**, **`GET /v1/tenants/me`**
+    each 403 for the listed caller with a request that would succeed for an
+    ordinary `eng` member;
+  - **`GET /v1/resource-classes` and `GET /v1/runtimes`** succeed for the
+    listed caller (static catalogue, no tenant data, explicitly allow-listed);
+  - **`POST /v1/tasks`, `POST /v1/tasks/batch`, `POST /v1/tasks/{id}/cancel`,
+    `POST /v1/workflows/{id}/cancel`** each 403 for the listed caller and
+    succeed for an ordinary `eng` member with an identical request otherwise
+    -- covered by the sweep above too, and named individually because they
+    are the routes decision 2 was written about first;
+  - **`POST /v1/workflows` with no `continues_task`** 403s for the listed
+    caller and succeeds for an ordinary `eng` member -- `submit_workflow`'s
+    own check, since being in `CONTINUATION_ROUTES` only opens the route, not
+    every request to it;
+  - **`GET /v1/tasks/{id}` for a task `eng`'s human member submitted** 404s
+    ("task 'X' not found", the existing cross-tenant wording) for the listed
+    caller, and **the same
+    call for a task the listed caller itself submitted** succeeds -- proving
+    the `submitted_by` filter is per-caller, not per-tenant. Also covered by
+    the sweep's ownership assertion above; kept as its own named case because
+    it is the one this entry's examples build on elsewhere;
+  - **`GET /v1/tasks`** for the listed caller returns only tasks it submitted,
+    even when `eng` has others (a LIST assertion, which the sweep's
+    single-task ownership check does not itself make -- `Store.list_tasks`
+    filtering is exercised here specifically);
+  - **`GET /v1/tasks/{id}/checkpoints/{checkpoint_id}/files` (and `/files/{path}`,
+    `/content`) for a checkpoint of a task `eng`'s human member submitted**
+    404s for the listed caller, and the same call for the listed caller's OWN
+    task succeeds -- the case that had no seam at all before `submission_scope`
+    was threaded into `checkpoints.py`, and now also caught by the sweep's
+    ownership assertion since these three are members of `CONTINUATION_ROUTES`;
+  - a new `tests/unit/control_plane/test_store_task_scope_is_required.py`:
+    calling `store.get_task(tenant_id, task_id)` (two positional arguments,
+    no `submitted_by`) raises `TypeError: get_task() missing 1 required
+    keyword-only argument: 'submitted_by'`, and the same for `list_tasks`,
+    `get_workflow`, `list_workflows` -- the test that proves the signature
+    change itself, independent of any route, so it stays red even if every
+    route-level test above were somehow satisfied by an accident of fixture
+    setup;
+  - the created task's `submitted_by` is the account's email and its
+    `SUBMITTED` event carries `tenant_member="service_account"`; the same is
+    true of a `CANCELLED` event when a FULL member (not the listed caller,
+    which cannot reach cancel -- absent from `CONTINUATION_ROUTES`) cancels
+    while resolving through a listing, and of a continuation's own
+    `SUBMITTED` event.
+- settings: `TENANT_SERVICE_ACCOUNTS` parses as a **list**; `ApiSettings.from_env`
+  raises `ValueError` for a human address, a Google-managed service agent
+  under a project-shaped id (`service-123@gcp-sa-x.iam.gserviceaccount.com`
+  where `x` happens to look like a project id, refused by the `endswith`
+  pin, not by the regex), an account from a DIFFERENT project, a duplicate
+  email (two list entries, same or different tenant -- refused by the
+  explicit membership check, not by relying on `dict`/`json` key collapse), a
+  missing or empty `uid`, a `kind` outside `{group, user}`, and an entry also
+  in `ADMIN_USERS`, `ADMIN_POOL_USERS` or `SECRET_ADMIN_PRINCIPALS`; absent or
+  `[]` is `()`.
+
+Terraform, `tests/terraform/tenancy.tftest.hcl`, each refusal a `run` with
+`expect_failures = [var.tenants]`: an account under two tenants; a human
+address; `serviceAccount:`-prefixed; a Google-managed compute account; an
+account in another project; one in `admin_users`, in `admin_pool_users`, in
+`secret_admin_members`; one that is another tenant's principal. `data.
+google_service_account.listed` is overridden with a mocked `unique_id` via
+`override_data` in the `.tftest.hcl` file, so these runs need no real GCP
+call. And one passing `run` asserting the rendered `TENANT_SERVICE_ACCOUNTS`
+equals
+`[{"email":"swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com","kind":"group","principal":"eng@saga.xyz","uid":"<mocked>"}]`
+-- a **list**, revised from the object-keyed-by-email shape the first draft
+of this entry proposed (reviewer minor) -- and `[]` when no tenant lists one.
+
+Parity: `scripts/lib/check-contract-parity.sh` gains a check that the
+expression in the `variables.tf` validation equals
+`identity.SERVICE_ACCOUNT_EMAIL.pattern`, so the plan-time rule and the
+runtime rule cannot drift apart. It does not and cannot check the project-id
+pin, which lives only in `variables.tf` and `settings.py` (`identity.py` has
+no project id to compare against) -- those two are checked against each
+other by the settings test above instead.
+
+Each test is proved red first in CI, per CLAUDE.md: the tests land alone on
+the implementing branch and must fail there before the change lands on
+`<branch>-fix`.
+
+### Invariants
+
+- **Invariant 9.** Analysed above: a listed account is one more member of one
+  tenant, with that tenant's GSA, secrets, prefix and namespace and nothing
+  else -- and, after decision 2 (2026-09-29), fewer of that tenant's ROUTES
+  than a human member, not merely the same rights routed through a bot.
+- **Invariant 10.** Unaffected: the listing is operator configuration in
+  Terraform; nothing a caller sends chooses a tenant.
+- **Invariant 2 (all-or-nothing capacity).** Unaffected in mechanism -- a
+  continuation still reserves capacity through the same transaction every
+  other task does -- but worth stating given decision 3: nothing here caps
+  HOW MANY times a continuation-scoped account can go through that
+  transaction over time, only how many it can hold `LEASED` at once (`eng`'s
+  `max_active`, invariant 3). The owner accepted that as part of the same
+  no-cap decision, not as a separate gap.
+- **CONTRACT.md "Tenant = Google group".** Refined, not reversed: a tenant is
+  still a group (or a user), and its listed accounts are members by
+  declaration rather than by directory.
 
 ---
 

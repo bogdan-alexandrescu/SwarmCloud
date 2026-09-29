@@ -30,13 +30,15 @@ tenant a credential compromise for all of them (invariant 9).
 
 from __future__ import annotations
 
+import os
 import re
-import shutil
+import shlex
 import stat
 import tempfile
+import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 from urllib.parse import urlparse, urlunparse, quote
 
 from .procman import run_child
@@ -137,8 +139,28 @@ def _write_credentials(url: str, token: str, private_dir: Path) -> Path:
             "",
         )
     )
-    cred_file.write_text(entry + "\n")
-    cred_file.chmod(stat.S_IRUSR | stat.S_IWUSR)
+    # O_CREAT|O_EXCL|O_NOFOLLOW, mode 0600 from the first byte (#259 review).
+    # `private_dir` shares a uid with the agent, so a link planted at this
+    # name would have had `write_text` write the token wherever it pointed,
+    # and a file created with the default mode is readable until the chmod.
+    # Whatever is at the name is unlinked first -- unlink never follows a
+    # link -- and O_EXCL then refuses anything that appears in between.
+    try:
+        cred_file.unlink()
+    except FileNotFoundError:
+        pass
+    fd = os.open(
+        cred_file,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+        stat.S_IRUSR | stat.S_IWUSR,
+    )
+    try:
+        data = (entry + "\n").encode()
+        view = memoryview(data)
+        while view:
+            view = view[os.write(fd, view):]
+    finally:
+        os.close(fd)
     return cred_file
 
 
@@ -391,6 +413,43 @@ def _git_env(private_dir: Path) -> dict[str, str]:
         "GIT_CONFIG_GLOBAL": "/dev/null",
         "GIT_SSH_COMMAND": "ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new",
         "LC_ALL": "C",
+        # Every command that reaches this env runs in the clone AFTER the
+        # agent has had the run of it, so its refs -- including `refs/replace/*`
+        # -- are the agent's to write. `git replace` substitutes an object
+        # wherever git reads one through the object database: `cat-file`,
+        # `diff`, `show`, `log` all follow it (measured with git 2.40.1: a
+        # `git replace <blob> <clean-blob>` made `git diff` print the clean
+        # content for a blob that still held the real one). Replacement is
+        # read-side only -- it never touches the tree a commit points at, so
+        # `commit-tree`, pack-objects and the eventual push always send the
+        # REAL object. Without this, the per-commit secret scan
+        # (`lifecycle._first_leaking_commit`) could be shown a clean
+        # replacement for a blob that holds a registered secret, pass the
+        # commit as non-leaking, and then push the real, secret-holding blob
+        # unfolded (#259 review, M1). `GIT_NO_REPLACE_OBJECTS=1` makes every
+        # git command below read the real object instead.
+        "GIT_NO_REPLACE_OBJECTS": "1",
+        # The same for `.git/info/grafts`, which the agent can also write:
+        # `rev-list --first-parent` and `merge-base` follow a graft even with
+        # replacement off, so a grafted parent made the replay's list skip a
+        # commit whose tree then shipped inside the next kept one (#259
+        # re-review). An empty graft file means no grafts. The replay also
+        # checks the chain itself against each commit's recorded parent
+        # (`lifecycle._first_leaking_commit`), which covers `.git/shallow`.
+        "GIT_GRAFT_FILE": "/dev/null",
+        # And for a commit-graph (#259, third review): git takes a commit's
+        # ROOT TREE from `objects/info/commit-graph` when one is present, so
+        # a graph whose entry for a commit names a different tree made
+        # `git diff` compare trees the push never sends. The scans run in a
+        # repository the worker made (`prepare_publish_repo`), which has no
+        # graph the agent wrote; this switches graphs off for every worker
+        # git as well, so none is read even where one exists. Command-scope
+        # configuration outranks any repository's own `core.commitGraph`.
+        "GIT_CONFIG_COUNT": "2",
+        "GIT_CONFIG_KEY_0": "core.commitGraph",
+        "GIT_CONFIG_VALUE_0": "false",
+        "GIT_CONFIG_KEY_1": "fetch.writeCommitGraph",
+        "GIT_CONFIG_VALUE_1": "false",
     }
 
 
@@ -414,10 +473,15 @@ def _git_env(private_dir: Path) -> dict[str, str]:
 #:
 #: NOT CLOSED HERE, and not closable by listing keys: a filter driver the
 #: agent defines (`filter.<name>.clean`) and names in `.gitattributes` runs on
-#: `git add`; diff drivers and `log.showSignature` are the same class. The fix
-#: for that class is to run the worker's git in a repository whose
-#: configuration the worker wrote, which is what the forge-token lane (#219)
-#: does for the commands that carry a credential.
+#: `git add`; diff drivers and `log.showSignature` are the same class. That
+#: class is closed by WHERE the worker's git runs at publish: every command
+#: from the reap onwards -- the commit of uncommitted work included
+#: (`mirror_worktree`, #259 M1) -- runs in the repository `prepare_publish_repo`
+#: builds, whose configuration the worker wrote. The harvest (`summarize_work`)
+#: runs there too, after the reap (#259 item 3), and HEAD is read from the
+#: clone's files as data (`read_head_as_data`, #259 B1). The one git process
+#: left in the clone is the fetch's `upload-pack`, hardened by
+#: `_UPLOAD_PACK_ENV` and `_UPLOAD_PACK_CONFIG`.
 _NO_HOOKS = [
     "-c", "core.hooksPath=/dev/null",
     "-c", "core.fsmonitor=false",
@@ -509,9 +573,59 @@ def _git_text(
 ) -> tuple[int, str]:
     """Run a git command and return its exit code with its stdout as text.
 
+    A thin wrapper over `_git_text_full` for the many callers that only need
+    the text, never whether the capture was truncated.
+    """
+    code, text, _truncated = _git_text_full(
+        argv,
+        repo=repo,
+        private_dir=private_dir,
+        logs_dir=logs_dir,
+        slug=slug,
+        timeout_seconds=timeout_seconds,
+        logger=logger,
+        max_bytes=max_bytes,
+    )
+    return code, text
+
+
+def _git_text_full(
+    argv: list[str],
+    *,
+    repo: Path,
+    private_dir: Path,
+    logs_dir: Path,
+    slug: str,
+    timeout_seconds: int,
+    logger: Any,
+    max_bytes: int = 4 * 1024 * 1024,
+) -> tuple[int, str, bool]:
+    """Run a git command; return its exit code, stdout as text, and whether the
+    capture was truncated.
+
     Output goes to a file rather than a pipe because `run_child` is the only
     thing in this worker that knows how to kill a process group on a timeout,
     and reusing it is what keeps a wedged git from outliving the attempt.
+
+    TRUNCATION IS DECIDED FROM THE CAPTURE, NEVER FROM THE DECODED TEXT'S
+    LENGTH (#259 review, M2). `StreamCapture` caps at `max_bytes` on the raw
+    stream and sets `stdout_truncated` the moment it starts dropping bytes; a
+    caller that instead re-measured `len(text.encode(...))` after `read_text`
+    could be fooled, because reading in TEXT mode with the default `newline`
+    applies universal-newline translation: every `\r\n` in the capture becomes
+    one `\n`, which can decode-and-reencode SHORTER than the byte cap the
+    capture actually hit, so a diff too big to scan whole could read as
+    "under the cap" and pass as scanned.
+
+    THE FILE IS READ WITH `newline=""` FOR THE SAME REASON `\r` MUST NOT
+    DISAPPEAR (#259 review, M2). Universal-newline translation also turns a
+    LONE `\r` inside a line (no `\n` after it) into a `\n`, which splits that
+    one line into two. `lifecycle._adds_a_credential` reads only lines
+    starting with `+`; a line the translation split in two loses its `+`
+    prefix on the second half, so a credential that started after an embedded
+    `\r` was read as un-prefixed context and never scanned. `newline=""`
+    disables the translation: whatever bytes the stream carried are what this
+    function hands back.
     """
     out = logs_dir / f"git-{slug}.out.log"
     result = run_child(
@@ -529,10 +643,112 @@ def _git_text(
     if result.timed_out:
         raise GitError(f"git {slug} timed out after {timeout_seconds}s")
     try:
-        text = out.read_text(errors="replace")
+        raw_size = out.stat().st_size
+    except OSError:
+        raw_size = 0
+    try:
+        with out.open("r", newline="", errors="replace") as handle:
+            text = handle.read()
     except OSError:
         text = ""
-    return result.exit_code, text
+    truncated = result.stdout_truncated or raw_size >= max_bytes
+    return result.exit_code, text, truncated
+
+
+#: The most bytes `_git_stream` hands its consumer in one call.
+GIT_STREAM_CHUNK_BYTES = 1024 * 1024
+
+
+def _git_stream(
+    argv: list[str],
+    *,
+    repo: Path,
+    private_dir: Path,
+    logs_dir: Path,
+    slug: str,
+    timeout_seconds: int,
+    logger: Any,
+    consume: Callable[[bytes], None],
+) -> int:
+    """Run a git command and hand ALL of its stdout to `consume`, in chunks.
+
+    OWNER DECISION, 2026-09-29 (#259): the leak scans read every byte of a
+    diff however big it is, and nothing of it is stored. A capture to a file
+    has to be capped -- the workspace is memory-backed tmpfs -- and a cap is
+    either a refusal of every big change or a hole in the scan. So stdout
+    goes to a PIPE this process reads while git writes: `run_child` (still
+    the one thing that kills a wedged git's process group on the deadline)
+    is pointed at `/dev/fd/<write end>`, its pump reopens that as its sink,
+    and a reader thread passes each read of at most `GIT_STREAM_CHUNK_BYTES`
+    to `consume`. Memory is one chunk plus whatever `consume` keeps.
+
+    The reader never stops draining, even once `consume` has seen enough or
+    raised: a pipe nobody reads would block the pump, and git behind it,
+    until the deadline. An exception from `consume` is re-raised here after
+    the child has been reaped.
+    """
+    read_fd, write_fd = os.pipe()
+    failure: list[BaseException] = []
+    consumed = [0]
+
+    def drain() -> None:
+        with os.fdopen(read_fd, "rb", buffering=0) as source:
+            while True:
+                try:
+                    chunk = source.read(GIT_STREAM_CHUNK_BYTES)
+                except OSError as exc:
+                    # FAIL CLOSED: a stream this side could not read is a
+                    # stream the scan did not see.
+                    failure.append(GitError(f"git {slug}: the output could not be read ({exc})"))
+                    return
+                if not chunk:
+                    return
+                consumed[0] += len(chunk)
+                if failure:
+                    continue
+                try:
+                    consume(chunk)
+                except BaseException as exc:  # re-raised on the caller's thread
+                    failure.append(exc)
+
+    reader = threading.Thread(target=drain, name=f"git-{slug}-stream", daemon=True)
+    reader.start()
+    try:
+        result = run_child(
+            argv,
+            cwd=repo,
+            env=_git_env(private_dir),
+            stdout_path=Path(f"/dev/fd/{write_fd}"),
+            stderr_path=logs_dir / f"git-{slug}.err.log",
+            timeout_seconds=timeout_seconds,
+            grace_seconds=5,
+            # Never reached: the pipe is not storage, and the scan must see
+            # every byte. The cap exists only because the capture takes one.
+            max_stdout_bytes=1 << 62,
+            max_stderr_bytes=256 * 1024,
+            logger=logger,
+        )
+    finally:
+        # The pump reopened the pipe through /dev/fd and has closed its copy;
+        # closing this one is what lets the reader see the end of the stream.
+        os.close(write_fd)
+        # With a deadline: a pump that never closed its end would otherwise
+        # hold this call, and the publish, past the git command's own.
+        reader.join(timeout=max(timeout_seconds, 1))
+    if reader.is_alive():
+        raise GitError(f"git {slug}: its output was still open after {timeout_seconds}s")
+    if failure:
+        raise failure[0]
+    if result.timed_out:
+        raise GitError(f"git {slug} timed out after {timeout_seconds}s")
+    # FAIL CLOSED: every byte the pump wrote must have reached the consumer,
+    # or the scan passed over output it never read.
+    if consumed[0] != result.stdout_bytes:
+        raise GitError(
+            f"git {slug}: {result.stdout_bytes} bytes were written and "
+            f"{consumed[0]} read; the stream was not scanned whole"
+        )
+    return result.exit_code if result.exit_code is not None else -1
 
 
 def _parse_log(stream: str) -> tuple[list[CommitSummary], int, int]:
@@ -603,6 +819,7 @@ def summarize_work(
     logger: Any,
     git_binary: str = "git",
     max_dirty_listed: int = 200,
+    empty_base: bool = False,
 ) -> WorkSummary:
     """Describe what the agent did, and write one applicable patch.
 
@@ -613,6 +830,13 @@ def summarize_work(
     `base` is the commit the clone landed on. Without it there is nothing to
     diff against and only the dirty list can be reported -- which is still
     worth having, so this degrades rather than raising.
+
+    `empty_base` says the missing base is KNOWN to be nothing: the repository
+    was empty when it was cloned, so every commit reachable from HEAD is the
+    agent's. Without it, an empty clone whose agent committed everything and
+    left nothing dirty summarised as "changed nothing", and the publish
+    returned before its commits were replayed (#259) -- the one case where a
+    missing base must not mean "no commits to list".
     """
     repo = Path(repo)
     if not (repo / ".git").exists():
@@ -653,12 +877,13 @@ def summarize_work(
 
     commits: list[CommitSummary] = []
     adds = dels = 0
-    if base and head and base != head:
+    span = f"{base}..HEAD" if base else ("HEAD" if empty_base else None)
+    if span and head and base != head:
         log_code, log_text = run(
             [
-                *g, "log", "--numstat", "--no-color", "--no-merges",
-                f"--format={_RS}%H{_FS}%s{_FS}%an{_FS}%aI",
-                f"{base}..HEAD",
+                *g, "log", "--numstat", "--no-color", "--no-merges", "--no-ext-diff",
+                "--no-textconv", f"--format={_RS}%H{_FS}%s{_FS}%an{_FS}%aI",
+                span,
             ],
             "harvest-log",
         )
@@ -681,8 +906,14 @@ def summarize_work(
         # patch that carries committed and uncommitted work together. That is
         # what a reader wants: agents that edit without committing are the
         # common case, not the exception.
+        # `--no-ext-diff --no-textconv`: the clone's `.git/config` and
+        # `.gitattributes` are the agent's, and `git diff` runs the
+        # `diff.external` program or `diff.<driver>.textconv` filter they
+        # name -- agent code executing in the worker after the sandbox was
+        # finished with, and a patch reading whatever that program printed
+        # (#259, the hostile-config test).
         diff_code, _ = _git_text(
-            [*g, "diff", "--binary", "--no-color", base, "--"],
+            [*g, "diff", "--binary", "--no-color", "--no-ext-diff", "--no-textconv", base, "--"],
             repo=repo,
             private_dir=private_dir,
             logs_dir=logs_dir,
@@ -824,6 +1055,12 @@ def commit_dirty(
     It is safe specifically because of where it writes: a branch named after
     the task, which only this attempt pushes, created fresh from the clone
     base. It never runs against a branch a human shares.
+
+    WHERE IT RUNS on the publish path: in the worker's clean publish
+    repository, after `mirror_worktree` has copied the agent's working tree
+    into it -- never in the agent's clone, whose `.git/config` can define a
+    filter driver that `git add` would run (#259 M1). `repo` can be any
+    repository; the harvest tests still call it on a clone directly.
 
     `--no-verify` and a null hooks path: the agent can write `.git/hooks/*` in
     its own workspace, and a commit that ran them would be arbitrary code
@@ -1187,6 +1424,80 @@ def verify_worker_authorship(
     return len(shas)
 
 
+#: A full sha-1 object name. The clean repository's fetch names each commit it
+#: wants by sha, never by a ref the agent could point elsewhere, and a
+#: refspec's source must be the whole name.
+_FULL_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+
+
+#: The environment `git upload-pack` runs with IN THE AGENT'S CLONE -- the one
+#: git process that still reads the clone after the reap (#259, owner item 4).
+#: It reads the clone's `.git/config`, so every key that names a program and
+#: that upload-pack or its `pack-objects` child could reach is neutralised
+#: here or in `_UPLOAD_PACK_CONFIG`. Checked key by key against the git
+#: documentation and source for git 2.55.0 -- the version CI runs (the Actions
+#: runner's `git version`, 2026-09-29) -- and against 2.40.1, the oldest this
+#: worker has been measured with:
+#:
+#: * no system file and no global file, so the only configuration read is the
+#:   clone's and the command line's;
+#: * grafts, replace refs and (below) the commit-graph off: see `_git_env`;
+#: * `GIT_NO_LAZY_FETCH`: a clone the agent marked a partial clone
+#:   (`extensions.partialClone`, `remote.<name>.promisor`) makes a git that
+#:   misses an object FETCH it from the remote the clone's config names, with
+#:   that config's `core.sshCommand`, `remote.<name>.uploadpack` or credential
+#:   helper -- a program of the agent's, run as the worker (the #259 B1
+#:   reproduction, on 2.40.1 and 2.50.1). git 2.55 documents the variable
+#:   (git(1): "tells Git not to lazily fetch missing objects from the promisor
+#:   remote on demand"); older gits do not know it, so
+#:   `GIT_ALLOW_PROTOCOL=none` is the belt that holds there: it allows only a
+#:   protocol named "none", overriding every `protocol.<name>.allow` in the
+#:   clone's config, so no transport opens at all;
+#: * `GIT_SSH_COMMAND` and `GIT_PROXY_COMMAND` outrank `core.sshCommand` and
+#:   `core.gitProxy`. The environment is needed for the proxy: `core.gitProxy`
+#:   is multi-valued and FIRST match wins, so a repository value would beat a
+#:   command-line one. `false` is the worker's own program and connects to
+#:   nothing.
+_UPLOAD_PACK_ENV = [
+    "GIT_GRAFT_FILE=/dev/null",
+    "GIT_NO_REPLACE_OBJECTS=1",
+    "GIT_CONFIG_NOSYSTEM=1",
+    "GIT_CONFIG_GLOBAL=/dev/null",
+    "GIT_NO_LAZY_FETCH=1",
+    "GIT_ALLOW_PROTOCOL=none",
+    "GIT_SSH_COMMAND=false",
+    "GIT_PROXY_COMMAND=false",
+    "GIT_TERMINAL_PROMPT=0",
+    "GIT_ASKPASS=/bin/true",
+]
+
+#: The command-line configuration for the same process. Command scope outranks
+#: the clone's own file for every single-valued key.
+#:
+#: * `core.hooksPath`, `core.fsmonitor`: upload-pack runs no hook and reads no
+#:   index today; pinned so a future git that does finds nothing;
+#: * `core.alternateRefsCommand` is run through the shell to list an
+#:   alternate's tips; `true` lists none;
+#: * `core.sshCommand`, `protocol.allow`, `credential.helper`: the transport
+#:   half of the lazy-fetch path above, pinned on the command line as well;
+#: * NOT SET: `uploadpack.packObjectsHook`. git-config(1): it "is only
+#:   respected when it is specified in protected configuration" -- system,
+#:   global or command line -- precisely so that fetching from an untrusted
+#:   repository cannot run it. With the system and global files off and no
+#:   command-line value, nothing sets it. There is no value that disables it:
+#:   any value set here IS protected and would be run.
+#: * `pack.*` names no program in git-config(1), so nothing there to pin.
+_UPLOAD_PACK_CONFIG = [
+    "-c", "core.commitGraph=false",
+    "-c", "core.hooksPath=/dev/null",
+    "-c", "core.fsmonitor=false",
+    "-c", "core.alternateRefsCommand=true",
+    "-c", "core.sshCommand=false",
+    "-c", "protocol.allow=never",
+    "-c", "credential.helper=",
+]
+
+
 def prepare_publish_repo(
     *,
     source_repo: Path,
@@ -1195,79 +1506,132 @@ def prepare_publish_repo(
     logs_dir: Path,
     timeout_seconds: int,
     logger: Any,
+    base: str | None = None,
     git_binary: str = "git",
     local_branch: str = "swarm-publish",
+    allow_unknown_base: bool = False,
 ) -> Path:
-    """Build a fresh, worker-owned repository holding the work about to be pushed.
+    """Build the worker-owned CLEAN repository the publish decides and pushes from.
 
-    WHY THIS EXISTS. The push and the integrator's merge authenticate with the
-    tenant's token, and a token that reaches many repositories makes where it is
-    allowed to go a tenant-isolation guarantee (invariant 9). Run inside the
-    repository the agent just edited, those commands honour that repository's
-    `.git/config` -- which the agent can write. A `credential.helper` there is
-    handed the token when the request succeeds; a `url.<host>.insteadOf` /
-    `pushInsteadOf` there redirects the authenticated push, and the credential
-    with it, to a host of the agent's choosing. No `-c` override disables
-    `insteadOf`, so the only robust defence is to run the token-bearing commands
-    in a repository whose configuration the worker wrote.
+    TWO GUARANTEES LIVE HERE, and both come from where the repository is, not
+    from a list of settings to switch off.
 
-    This builds that repository. It is created empty with `git init` under an
-    unpredictable name in the worker's private scratch (see the body: a constant
-    name the agent could predict let it pre-plant a symlink there), so its
-    config is the worker's. The work is brought in WITHOUT running git against
-    the clone: the clone's object database is borrowed through
-    `objects/info/alternates` and its shallow boundary copied, then the exact
-    commit the worker resolved is checked out. No `upload-pack` runs in the
-    clone, so its configuration never executes; no token is present; and the
-    commit is a sha, never a ref the agent could redirect. The remote is never
-    taken from here either; the caller passes the validated `repository_url` to
-    `push_branch` / `merge_branches`.
+    THE TOKEN (#219). The push and the integrator's merge authenticate with
+    the tenant's token, and a token that reaches many repositories makes where
+    it is allowed to go a tenant-isolation guarantee (invariant 9). Run inside
+    the repository the agent edited, those commands honour its `.git/config`,
+    which the agent can write: a `credential.helper` there is handed the
+    token, and a `url.<host>.insteadOf` / `pushInsteadOf` redirects the
+    authenticated push to a host of the agent's choosing. No `-c` disables
+    `insteadOf`, so the token-bearing commands run in a repository whose
+    configuration the worker wrote. The remote is never taken from here either;
+    the caller passes the validated `repository_url` to `push_branch` /
+    `merge_branches`.
 
-    `source_repo` is the agent's clone -- by the time this runs the worker has
-    folded every agent commit into one it wrote (`fold_agent_commits`), so the
-    clone's HEAD is the worker's. `work_head`, when given, is that commit; when
-    None it is read from the clone's HEAD, which is the folded worker commit.
+    THE LEAK SCANS (#259, owner decision 2026-09-29). Three security reviews
+    each found the per-commit and final-tree scans bypassable through state
+    the agent writes under its clone's `.git`: `refs/replace/*`,
+    `info/grafts`, `shallow`, and a forged `objects/info/commit-graph`, from
+    which `git diff` takes a commit's root tree. Each was closed on its own
+    and the next review found another. So the kept-commit list, both scans,
+    the fold, the replay, the authorship check and the push all run HERE,
+    and nothing the agent wrote under `.git` reaches them:
+
+    * the repository is `git init`-ed fresh under an unpredictable name in
+      the worker's private scratch (outside `work/`), so its config, hooks,
+      refs and object store are the worker's;
+    * NO ALTERNATES. The agent's objects are FETCHED in, with
+      `transfer.fsckObjects=true`: every object arrives as bytes git checks
+      and hashes, and the connectivity check proves each commit's real tree
+      and parents are present. An object store borrowed through
+      `objects/info/alternates` would bring the agent's
+      `objects/info/commit-graph` with it;
+    * the commits wanted are named by SHA -- `work_head` or the clone's HEAD,
+      and the clone base the worker recorded
+      before the agent ran -- never by a ref the agent could repoint;
+    * the fetch's upload side runs in the clone (git has no other way to read
+      a repository it does not own) with grafts, replacement and the
+      commit-graph switched off and its SHALLOW boundary taken from a file
+      the worker writes here, holding the recorded base -- never from the
+      agent's `.git/shallow`. `upload-pack` is the one git command git
+      documents as safe to run in an untrusted repository: it runs no hook,
+      and `uploadpack.packObjectsHook` is honoured only from configuration
+      the agent cannot write. Whatever the agent's store or config does to
+      the upload side can only make the fetch fail -- a missing or
+      inconsistent object fails the check here, and nothing is published --
+      never change what an object this side reads contains;
+    * every git command here runs with `core.commitGraph=false`, no graft
+      file and no replacement (`_git_env`), and the repository has no graph,
+      grafts or replace refs of the agent's in it anyway.
+
+    `work_head`, when given, is the commit to publish; when None it is the
+    clone's HEAD, read from its files as data (`read_head_as_data`; the
+    agent's processes are reaped before this runs, so it cannot move). `base` is the clone base the
+    worker recorded (`EMPTY_CLONE_BASE` for an empty repository); it is
+    fetched too, so the fold and the final-tree scan have its tree, and
+    anything else refuses: without it there is no telling the agent's
+    commits from the repository's. The work is checked out on
+    `local_branch`, so the index holds the final tree the fold commits and
+    the integrator's merges have a working tree.
     """
     source_repo = Path(source_repo)
     private_dir = Path(private_dir)
     private_dir.mkdir(parents=True, exist_ok=True)
 
-    # WHERE the publish repository lives is part of the guarantee, not an
-    # implementation detail. `private_dir` shares a uid with the agent
-    # (workspace.py: "not a permission boundary"), so during its run the agent
-    # can create any path under it -- including a SYMLINK at a name it can
-    # predict. A constant name was exactly that hole: `shutil.rmtree` refuses to
-    # delete a symlink and, with `ignore_errors=True`, swallows the refusal;
-    # `mkdir(exist_ok=True)` then no-ops on the surviving link; and `git init`
-    # at that path re-initialises the AGENT's repository behind it, honouring the
-    # `.git/config` the agent wrote there (`url.*.insteadOf`, a
-    # `credential.helper`, `http.proxy`) on the very push this repository exists
-    # to isolate. `mkdtemp` creates the directory with an unpredictable name and
-    # O_EXCL semantics, generated now -- after the agent has exited -- so the
-    # worker never lands on, nor follows, anything the agent could have planted.
-    publish_dir = Path(tempfile.mkdtemp(dir=str(private_dir), prefix="publish-"))
-
-    agent_git = source_repo / ".git"
-    agent_objects = (agent_git / "objects").resolve()
-    if not agent_objects.is_dir():
-        raise GitError(f"the agent repository has no object store at {agent_objects}")
+    empty = base == EMPTY_CLONE_BASE
+    floor = "" if empty else (base or "").strip()
+    # A base nobody knows: allowed only for the harvest (`allow_unknown_base`),
+    # which then fetches HEAD alone, as a root, so the dirty list can still be
+    # read here rather than in the clone. There are no commits to list and no
+    # patch without a base, and the publish refuses before it pushes anything.
+    unknown = not empty and not _FULL_SHA_RE.match(floor)
+    if unknown and not allow_unknown_base:
+        raise GitError(
+            "the clone base is unknown, so the worker cannot tell the agent's "
+            "commits from the repository's; nothing was pushed"
+        )
 
     target = (work_head or "").strip()
     if not target:
-        # The clone's HEAD after the fold is the worker's own commit; read it
-        # here rather than trust a ref the agent could have pointed elsewhere.
-        code, text = _git_text(
-            [git_binary, *_NO_HOOKS, "rev-parse", "HEAD"],
-            repo=source_repo,
+        # READ AS DATA, never `git rev-parse` in the clone (#259 B1): see
+        # `read_head_as_data`. Raises, with the reason, on a HEAD it will
+        # not follow.
+        target = read_head_as_data(source_repo) or ""
+    # AN EMPTY CLONE THE AGENT NEVER COMMITTED IN has no commit to fetch: its
+    # HEAD is unborn. That is not an error now that the worker's commit of the
+    # uncommitted work is made HERE (`mirror_worktree`, #259 M1) rather than in
+    # the clone first -- the repository is left on an unborn `local_branch`,
+    # and that commit becomes its root. Anywhere else an unresolvable HEAD
+    # still refuses.
+    unborn = empty and not target and not (work_head or "").strip()
+    if not unborn and not _OBJECT_ID.match(target):
+        raise GitError("could not resolve the commit to publish from the clone")
+    if unknown:
+        floor = target
+
+    # WHERE the repository lives is part of the guarantee, not an
+    # implementation detail. `private_dir` shares a uid with the agent
+    # (workspace.py: "not a permission boundary"), so during its run the agent
+    # could create any path under it -- including a SYMLINK at a name it can
+    # predict. A constant name was exactly that hole: `shutil.rmtree` refuses
+    # to delete a symlink and, with `ignore_errors=True`, swallows the refusal;
+    # `mkdir(exist_ok=True)` then no-ops on the surviving link; and `git init`
+    # at that path re-initialises the AGENT's repository behind it. `mkdtemp`
+    # creates the directory with an unpredictable name and O_EXCL semantics,
+    # generated now -- after the agent has exited -- so the worker never lands
+    # on, nor follows, anything the agent could have planted.
+    publish_dir = Path(tempfile.mkdtemp(dir=str(private_dir), prefix="publish-"))
+
+    def run(argv: list[str], slug: str) -> tuple[int, str]:
+        return _git_text(
+            argv,
+            repo=publish_dir,
             private_dir=private_dir,
             logs_dir=logs_dir,
-            slug="publish-source-head",
+            slug=slug,
             timeout_seconds=timeout_seconds,
             logger=logger,
         )
-        target = text.strip() if code == 0 else ""
-    if not target or not _SHA_RE.match(target):
-        raise GitError("could not resolve the commit to publish from the clone")
 
     init_code, _ = _git_text(
         [git_binary, *_NO_HOOKS, "init", "--quiet", str(publish_dir)],
@@ -1281,33 +1645,558 @@ def prepare_publish_repo(
     if init_code != 0:
         raise GitError("could not initialise the worker's publish repository")
 
-    # Borrow the clone's objects; no git runs against the clone, so its config
-    # never executes, and no token is present during the transfer.
-    alternates = publish_dir / ".git" / "objects" / "info" / "alternates"
-    alternates.parent.mkdir(parents=True, exist_ok=True)
-    alternates.write_text(f"{agent_objects}\n")
+    if unborn:
+        head_code, _ = run(
+            [git_binary, *_NO_HOOKS, "symbolic-ref", "HEAD", f"refs/heads/{local_branch}"],
+            "publish-unborn",
+        )
+        if head_code != 0:
+            raise GitError("could not set up the publish repository's branch")
+        logger.info("clean publish repository prepared on an unborn branch", branch=local_branch)
+        return publish_dir
 
-    # A shallow clone's history stops at a boundary whose parents are absent.
-    # The publish repo must know the same boundary, or git would look for
-    # ancestors that were never fetched.
-    agent_shallow = agent_git / "shallow"
-    if agent_shallow.exists():
-        shutil.copyfile(agent_shallow, publish_dir / ".git" / "shallow")
+    # The upload side's shallow boundary is the base the worker recorded, not
+    # the agent's `.git/shallow`: a line the agent added there would make git
+    # treat a commit mid-history as a root, and one it removed would send the
+    # walk into history the clone never had. The first only drops objects
+    # (the connectivity check then fails the fetch), the second only fails
+    # the pack -- but neither is the agent's to decide.
+    if empty:
+        shallow_file = "/dev/null"
+    else:
+        boundary = publish_dir / ".git" / "swarm-source-shallow"
+        boundary.write_text(f"{floor}\n")
+        shallow_file = str(boundary)
+    upload_pack = " ".join(
+        [
+            "env",
+            *_UPLOAD_PACK_ENV,
+            f"GIT_SHALLOW_FILE={shlex.quote(shallow_file)}",
+            shlex.quote(git_binary),
+            *_UPLOAD_PACK_CONFIG,
+            # The wants are shas, not advertised refs.
+            "-c", "uploadpack.allowAnySHA1InWant=true",
+            "upload-pack",
+        ]
+    )
+    refspecs = [f"+{target}:refs/swarm/head"]
+    if not empty and not unknown:
+        refspecs.append(f"+{floor}:refs/swarm/base")
+    fetch_code, _ = run(
+        [
+            git_binary, *_NO_HOOKS,
+            "-c", "transfer.fsckObjects=true",
+            "-c", "fetch.fsckObjects=true",
+            "-c", "fetch.recurseSubmodules=false",
+            "-c", "submodule.recurse=false",
+            "-c", "gc.auto=0",
+            "fetch", "--quiet", "--no-tags", "--no-recurse-submodules", "--update-shallow",
+            f"--upload-pack={upload_pack}",
+            "--", str(source_repo), *refspecs,
+        ],
+        "publish-fetch",
+    )
+    if fetch_code != 0:
+        raise GitError(
+            "could not fetch the agent's work into the worker's clean repository "
+            "(an object failed git's checks, or the clone's history is incomplete); "
+            "nothing was pushed"
+        )
 
-    checkout_code, _ = _git_text(
+    checkout_code, _ = run(
         [git_binary, *_NO_HOOKS, "checkout", "--quiet", "-f", "-B", local_branch, target],
-        repo=publish_dir,
-        private_dir=private_dir,
-        logs_dir=logs_dir,
-        slug="publish-checkout",
-        timeout_seconds=timeout_seconds,
-        logger=logger,
+        "publish-checkout",
     )
     if checkout_code != 0:
-        raise GitError("could not check out the worker's commit in the publish repository")
+        raise GitError("could not check out the agent's work in the publish repository")
 
-    logger.info("publish repository prepared", branch=local_branch)
+    logger.info("clean publish repository prepared", branch=local_branch)
     return publish_dir
+
+
+def _empty_worktree(root: Path) -> None:
+    """Delete everything in `root` except its top-level `.git`, WITHOUT recursion.
+
+    The tree is the checkout `prepare_publish_repo` just wrote, so it is the
+    worker's -- but it has the agent's commits' shape, and on Python 3.11
+    `shutil.rmtree` recurses one frame per level (see `workspace.walk_tree`).
+    Links are unlinked, never followed.
+    """
+    folders: list[Path] = []
+    stack: list[Path] = [root]
+    while stack:
+        here = stack.pop()
+        with os.scandir(here) as entries:
+            for entry in entries:
+                if here == root and entry.name == ".git":
+                    continue
+                path = Path(entry.path)
+                if entry.is_dir(follow_symlinks=False):
+                    folders.append(path)
+                    stack.append(path)
+                else:
+                    path.unlink()
+    # Deepest first: a folder is listed after the folder that holds it.
+    for folder in reversed(folders):
+        folder.rmdir()
+
+
+def _copy_file(source: Path, dest: Path, mode: int) -> None:
+    """A regular file, by hard link where the filesystem allows it, else by copy.
+
+    The workspace is memory-backed tmpfs (CLAUDE.md, workspace storage), and
+    `private/` and `work/` are on the same one, so a byte copy of a large
+    working tree would double what the attempt holds in memory at the very end
+    of it. A hard link costs nothing and is safe here: the agent's processes
+    are reaped before this runs, so nothing writes through the other name, and
+    git in the publish repository never writes a working-tree file in place --
+    a checkout unlinks the old entry and creates a new one. A filesystem that
+    refuses the link (EXDEV, EPERM, EMLINK) gets a byte copy instead.
+    """
+    try:
+        os.link(source, dest, follow_symlinks=False)
+        return
+    except OSError:
+        pass
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    fd_in = os.open(source, flags)
+    try:
+        # O_EXCL: the destination folder was emptied a moment ago, so a name
+        # that already exists is a bug, never something to write through.
+        fd_out = os.open(
+            dest, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+            stat.S_IMODE(mode) | stat.S_IWUSR | stat.S_IRUSR,
+        )
+        try:
+            while True:
+                chunk = os.read(fd_in, 1024 * 1024)
+                if not chunk:
+                    break
+                view = memoryview(chunk)
+                while view:
+                    written = os.write(fd_out, view)
+                    view = view[written:]
+            # Only the execute bit reaches git, but the file keeps its mode
+            # as the agent left it, as the hard link would.
+            os.fchmod(fd_out, stat.S_IMODE(mode))
+        finally:
+            os.close(fd_out)
+    finally:
+        os.close(fd_in)
+
+
+#: The most of any one file the agent wrote that `read_agent_excludes` reads.
+#: An exclude file is a list of patterns; a megabyte of them is far past any
+#: real one, and reading more would hand the agent a way to make the worker
+#: hold an arbitrary file in memory.
+AGENT_EXCLUDE_MAX_BYTES = 1024 * 1024
+
+_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+_NONBLOCK = getattr(os, "O_NONBLOCK", 0)
+_DIRECTORY = getattr(os, "O_DIRECTORY", 0)
+
+
+def _read_capped_fd(fd: int, cap: int = AGENT_EXCLUDE_MAX_BYTES) -> bytes | None:
+    """The contents of a REGULAR file open as `fd`, up to `cap`; None past it."""
+    if not stat.S_ISREG(os.fstat(fd).st_mode):
+        return None
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = os.read(fd, 64 * 1024)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > cap:
+            return None
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def _read_in_git_dir(
+    clone: Path, *names: str, cap: int = AGENT_EXCLUDE_MAX_BYTES
+) -> bytes | None:
+    """`<clone>/.git/<names...>`, opened one component at a time with
+    O_NOFOLLOW, so a link at `.git`, at a folder below it or at the file
+    itself is refused rather than read through. O_NONBLOCK so a FIFO the
+    agent put there cannot hang the worker; only a regular file is read,
+    and at most `cap` bytes of it."""
+    fds: list[int] = []
+    try:
+        fds.append(os.open(clone / ".git", os.O_RDONLY | _DIRECTORY | _NOFOLLOW))
+        for folder in names[:-1]:
+            fds.append(os.open(folder, os.O_RDONLY | _DIRECTORY | _NOFOLLOW, dir_fd=fds[-1]))
+        fds.append(os.open(names[-1], os.O_RDONLY | _NOFOLLOW | _NONBLOCK, dir_fd=fds[-1]))
+        return _read_capped_fd(fds[-1], cap)
+    except OSError:
+        return None
+    finally:
+        for fd in reversed(fds):
+            os.close(fd)
+
+
+#: A ref or HEAD file holds one line. 4 KiB is far past any real one.
+_REF_FILE_MAX_BYTES = 4096
+#: `packed-refs` of a depth-1, single-branch, tag-free clone holds a handful of
+#: lines; an agent can add more. 64 MiB is past any repository's real refs and
+#: bounds what the worker will hold.
+_PACKED_REFS_MAX_BYTES = 64 * 1024 * 1024
+_OBJECT_ID = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
+
+
+def _branch_ref_name_ok(name: str) -> bool:
+    """A `refs/heads/...` name the worker will open, component by component:
+    nothing that climbs (`..`), is empty, starts with a dot, or carries a
+    control character -- git's own rules, in the part that matters for
+    reading a path safely."""
+    if not name.startswith("refs/heads/") or name.endswith("/") or name.endswith(".lock"):
+        return False
+    for part in name.split("/"):
+        if not part or part.startswith(".") or ".." in part:
+            return False
+        if any(ord(ch) < 0x20 or ch == "\x7f" for ch in part):
+            return False
+    return True
+
+
+def read_head_as_data(clone: Path) -> str | None:
+    """The object id the clone's HEAD names, read from its FILES, never by git.
+
+    WHY (#259 final review, B1; owner decision 2026-09-29). The worker used
+    to ask `git rev-parse HEAD^{commit}` in the clone, after the reap. The
+    agent can make its clone a partial clone (`extensions.partialClone`, a
+    promisor remote) and point its branch at an object the clone lacks; git
+    then LAZY-FETCHES that object through a transport the agent chose --
+    `remote.<name>.uploadpack`, `core.sshCommand`, an `ext::` URL -- running
+    its program as the worker, after the reap, and a process it starts lives
+    on into the push. No git process runs in the clone after the reap now,
+    except the hardened `upload-pack` of the fetch (`_UPLOAD_PACK_ENV`).
+
+    HOW. `.git/HEAD`, then the ref it names, each opened component by
+    component with O_NOFOLLOW, regular files only, capped:
+
+    * a 40- or 64-hex object id (a detached HEAD) is the answer;
+    * `ref: refs/heads/<name>` is followed ONCE: to the loose ref file, else
+      to its line in `packed-refs`. A symbolic ref anywhere else -- or a ref
+      file that is itself symbolic -- raises `GitError`: the worker follows
+      no ref it would have to take the agent's word about;
+    * a branch that exists nowhere is an unborn HEAD, and None is returned
+      (the caller decides whether that is an empty clone or a refusal).
+
+    Whether the object exists is not asked here -- asking is exactly what
+    ran the agent's program. The object-checked fetch decides, and a missing
+    object fails it: nothing is published.
+    """
+    raw = _read_in_git_dir(clone, "HEAD", cap=_REF_FILE_MAX_BYTES)
+    if raw is None:
+        raise GitError("the clone's .git/HEAD could not be read as a regular file")
+    head = raw.decode("ascii", "replace").strip()
+    if _OBJECT_ID.match(head):
+        return head
+    if not head.startswith("ref:"):
+        raise GitError("the clone's HEAD is neither an object id nor a symbolic ref")
+    name = head[4:].strip()
+    if not _branch_ref_name_ok(name):
+        raise GitError(
+            "the clone's HEAD is a symbolic ref outside refs/heads/; the worker "
+            "follows no other ref, and nothing was pushed"
+        )
+    loose = _read_in_git_dir(clone, *name.split("/"), cap=_REF_FILE_MAX_BYTES)
+    if loose is not None:
+        value = loose.decode("ascii", "replace").strip()
+        if _OBJECT_ID.match(value):
+            return value
+        raise GitError(
+            "the branch the clone's HEAD names is not an object id (a symbolic "
+            "ref, or damaged); the worker follows no further ref, and nothing was pushed"
+        )
+    packed = _read_in_git_dir(clone, "packed-refs", cap=_PACKED_REFS_MAX_BYTES)
+    if packed is not None:
+        for line in packed.decode("utf-8", "surrogateescape").splitlines():
+            if not line or line[0] in "#^":
+                continue
+            oid, _, ref = line.partition(" ")
+            if ref.strip() == name and _OBJECT_ID.match(oid):
+                return oid
+    return None
+
+
+_CONFIG_SECTION = re.compile(r'^\[\s*([A-Za-z0-9.-]+)\s*(?:"((?:[^"\\]|\\.)*)")?\s*\](.*)$')
+_CONFIG_KEY = re.compile(r"^([A-Za-z][A-Za-z0-9-]*)\s*(?:=(.*))?$")
+
+
+def _config_value(raw: str) -> str:
+    """A git-config value as git reads it: quotes joined, `\\"`, `\\\\`,
+    `\\n` and `\\t` unescaped, a `#` or `;` outside quotes ending it."""
+    out: list[str] = []
+    quoted = False
+    i = 0
+    raw = raw.strip()
+    while i < len(raw):
+        ch = raw[i]
+        if ch == "\\" and i + 1 < len(raw):
+            nxt = raw[i + 1]
+            out.append({"n": "\n", "t": "\t", "b": "\b"}.get(nxt, nxt))
+            i += 2
+            continue
+        if ch == '"':
+            quoted = not quoted
+        elif ch in "#;" and not quoted:
+            break
+        else:
+            out.append(ch)
+        i += 1
+    return "".join(out).strip() if not quoted else "".join(out)
+
+
+def _config_excludes_file(text: str) -> str | None:
+    """`core.excludesFile` from the text of a git config file, parsed WITHOUT git.
+
+    Only the file itself: an `[include]` or `[includeIf]` it names is not
+    followed, because following it is reading another file the agent chose.
+    The last value wins, as in git. A value continued onto the next line
+    with a trailing backslash is not supported and reads as absent.
+    """
+    section: str | None = None
+    value: str | None = None
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped[0] in "#;":
+            continue
+        header = _CONFIG_SECTION.match(stripped)
+        if header:
+            name, sub, rest = header.group(1), header.group(2), header.group(3)
+            section = name.lower() if sub is None and "." not in name else None
+            stripped = rest.strip()
+            if not stripped or stripped[0] in "#;":
+                continue
+        if section != "core":
+            continue
+        key = _CONFIG_KEY.match(stripped)
+        if not key or key.group(1).lower() != "excludesfile":
+            continue
+        if stripped.endswith("\\"):
+            value = None
+            continue
+        value = _config_value(key.group(2) or "")
+    return value or None
+
+
+def read_agent_excludes(*, clone: Path, workspace_root: Path, home: Path, logger: Any) -> bytes:
+    """The patterns the agent hid files with, read as DATA (#259, owner item 2).
+
+    When the worker committed in the clone, git honoured the clone's
+    `.git/info/exclude` and the `core.excludesFile` its config named, so a
+    file the agent kept out of git stayed out of the pull request. The commit
+    is now made in the worker's own repository, which reads neither -- so
+    both are read here, WITHOUT running git in the clone, and handed to
+    `mirror_worktree` for that repository's own exclude file:
+
+    * `.git/info/exclude`, opened component by component with O_NOFOLLOW and
+      read to `AGENT_EXCLUDE_MAX_BYTES` at most;
+    * `core.excludesFile`, parsed out of `.git/config` in Python
+      (`_config_excludes_file`). A leading `~/` is the agent's HOME (`home`,
+      which is `work/`); a relative path is relative to the checkout. The
+      file is honoured only when it lies inside the workspace AND no link is
+      on the way to it -- its real path is its literal path -- and it is read
+      with the same cap. Anything else is ignored and logged.
+
+    The `core.excludesFile` patterns come first and `info/exclude` second,
+    which is git's own order of precedence between the two. Returns b"" when
+    there is nothing to honour.
+    """
+    clone = Path(clone)
+    parts: list[bytes] = []
+
+    config = _read_in_git_dir(clone, "config")
+    named = _config_excludes_file(config.decode("utf-8", "surrogateescape")) if config else None
+    if named:
+        if named.startswith("~/"):
+            path = Path(home) / named[2:]
+        elif named.startswith("~"):
+            path = None
+        else:
+            path = Path(named) if os.path.isabs(named) else clone / named
+        honoured = False
+        if path is not None:
+            literal = os.path.normpath(os.path.abspath(path))
+            real = os.path.realpath(literal)
+            # "No link on the way" is asked BELOW the workspace root: the
+            # root's own path may pass through a link the platform made (a
+            # macOS /var, a mounted volume), which is not the agent's.
+            root_literal = os.path.normpath(os.path.abspath(workspace_root))
+            root_real = os.path.realpath(root_literal)
+            inside = False
+            for root in (root_literal, root_real):
+                if (literal + os.sep).startswith(root + os.sep) and literal != root:
+                    expected = os.path.normpath(
+                        os.path.join(root_real, os.path.relpath(literal, root))
+                    )
+                    inside = real == expected
+                    break
+            if inside:
+                try:
+                    fd = os.open(real, os.O_RDONLY | _NOFOLLOW | _NONBLOCK)
+                except OSError:
+                    fd = -1
+                if fd >= 0:
+                    try:
+                        data = _read_capped_fd(fd)
+                    finally:
+                        os.close(fd)
+                    if data is not None:
+                        parts.append(data)
+                        honoured = True
+        if not honoured:
+            logger.warning(
+                "the agent's core.excludesFile was not honoured: it is outside the "
+                "workspace, reached through a link, missing, not a regular file or "
+                "over the size cap; files it lists may be published"
+            )
+
+    exclude = _read_in_git_dir(clone, "info", "exclude")
+    if exclude:
+        parts.append(exclude)
+    return b"\n".join(part.rstrip(b"\n") for part in parts if part.strip())
+
+
+def mirror_worktree(
+    *,
+    source: Path,
+    dest: Path,
+    logger: Any,
+    hidden_names: Sequence[str] = (),
+    agent_excludes: bytes = b"",
+) -> int:
+    """Make `dest`'s working tree the agent's working tree, file for file (#259 M1).
+
+    WHY. The worker commits whatever the agent left uncommitted, and it used
+    to do that with `git add --all` / `git commit` in the AGENT's clone. Those
+    commands read the clone's `.git/config` and the tree's `.gitattributes`,
+    both the agent's to write, so a filter driver the agent defined
+    (`filter.<name>.clean`) and named in `.gitattributes` ran as the worker,
+    after the reap, a step away from the tenant token. `_NO_HOOKS` cannot
+    close that class by listing keys. So the files are brought HERE, into the
+    worker's clean publish repository (`prepare_publish_repo`), and staged and
+    committed with the worker's configuration alone (owner decision,
+    2026-09-28). A `.gitattributes` in the tree is data here: it names a
+    filter or diff driver this repository does not define, which git treats
+    as no filter and no driver.
+
+    WHAT IS COPIED. Everything under `source` except:
+
+    * `.git`, at ANY depth. At the top it is the agent's repository; below it,
+      a folder holding a `.git` is a repository the agent made or populated
+      (a submodule checkout, a nested clone), and git would read that
+      repository's refs and config to record it. Such a folder is created
+      EMPTY here -- an unpopulated submodule reads as unchanged, and anything
+      else empty is invisible to git -- and nothing inside it is copied.
+      Accepted by the owner on 2026-09-28: before, git in the clone recorded
+      such a folder as an embedded gitlink;
+    * anything that is not a regular file, a folder or a link (a FIFO, a
+      socket, a device), which git does not track either.
+
+    REGULAR FILES ARE HARD-LINKED, with a byte copy only where the filesystem
+    refuses the link (`_copy_file`; accepted by the owner on 2026-09-28): the
+    workspace is memory-backed, and a copy would double it at the end of the
+    attempt.
+
+    A LINK IS COPIED AS A LINK, its target text read with `readlink` and
+    never followed: a link out of the workspace is published as the link
+    git would have recorded, never as what it points at. Folders are walked
+    from an explicit stack, not by recursion (`workspace.walk_tree` says why)
+    and never through a link.
+
+    `hidden_names` are top-level names the worker hides from git in the clone
+    (`hide_from_git`, the `./artifacts` link, #226); they are written to this
+    repository's own `.git/info/exclude`, which the worker owns, AFTER
+    `agent_excludes` -- the patterns of the agent's own `.git/info/exclude`
+    and `core.excludesFile`, read as data by `read_agent_excludes` -- so a
+    `!` pattern of the agent's cannot un-hide the worker's names (in one
+    exclude file the last matching pattern wins).
+
+    `dest`'s existing working tree -- the checkout of the agent's last commit
+    -- is emptied first, so a file the agent deleted is deleted here too.
+    Returns how many entries were copied. Raises `GitError` when the tree
+    cannot be copied whole: a partial copy would publish a partial change.
+    """
+    source = Path(source)
+    dest = Path(dest)
+    git_dir = dest / ".git"
+    if not git_dir.is_dir() or git_dir.is_symlink():
+        raise GitError("the publish repository has no .git of its own")
+    if source.is_symlink() or not source.is_dir():
+        # The checkout's own folder, replaced by a link, would have the copy
+        # read wherever the link points.
+        raise GitError("the agent's checkout is not a folder; nothing was pushed")
+    try:
+        _empty_worktree(dest)
+    except OSError as exc:
+        raise GitError(
+            f"could not clear the publish repository's working tree ({type(exc).__name__})"
+        ) from exc
+
+    # The worker's own configuration for this repository. `_git_env` pins the
+    # global config to /dev/null, but git still reads its default attributes
+    # and ignore files from $HOME/.config/git -- and HOME is `private/`,
+    # which shares a uid with the agent. Pointing both at /dev/null leaves
+    # the tree's own `.gitignore` and `.gitattributes` as the only ones read.
+    config = git_dir / "config"
+    try:
+        with config.open("a", encoding="utf-8") as handle:
+            handle.write("[core]\n\tattributesFile = /dev/null\n\texcludesFile = /dev/null\n")
+        if hidden_names or agent_excludes:
+            info = git_dir / "info"
+            info.mkdir(exist_ok=True)
+            with (info / "exclude").open("ab") as handle:
+                if agent_excludes:
+                    handle.write(b"\n" + agent_excludes.rstrip(b"\n") + b"\n")
+                for name in hidden_names:
+                    handle.write(f"/{name}\n".encode("utf-8", "surrogateescape"))
+    except OSError as exc:
+        raise GitError(
+            f"could not write the publish repository's own settings ({type(exc).__name__})"
+        ) from exc
+
+    copied = 0
+    nested = 0
+    stack: list[tuple[Path, Path]] = [(source, dest)]
+    try:
+        while stack:
+            here, there = stack.pop()
+            with os.scandir(here) as entries:
+                listing = list(entries)
+            for entry in listing:
+                if entry.name == ".git":
+                    continue
+                src = Path(entry.path)
+                dst = there / entry.name
+                if entry.is_symlink():
+                    os.symlink(os.readlink(src), dst)
+                    copied += 1
+                elif entry.is_dir(follow_symlinks=False):
+                    dst.mkdir()
+                    copied += 1
+                    if os.path.lexists(src / ".git"):
+                        # A repository of its own: see the docstring.
+                        nested += 1
+                        continue
+                    stack.append((src, dst))
+                elif entry.is_file(follow_symlinks=False):
+                    _copy_file(src, dst, entry.stat(follow_symlinks=False).st_mode)
+                    copied += 1
+    except OSError as exc:
+        raise GitError(
+            "could not copy the agent's working tree into the publish repository "
+            f"({type(exc).__name__}); nothing was pushed"
+        ) from exc
+    if nested:
+        logger.warning(
+            "folders holding a repository of their own were published empty",
+            count=nested,
+        )
+    logger.info("agent working tree copied into the publish repository", entries=copied)
+    return copied
 
 
 def push_branch(

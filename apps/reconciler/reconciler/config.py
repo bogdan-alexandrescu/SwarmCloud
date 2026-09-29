@@ -41,6 +41,16 @@ def _float(name: str, default: float) -> float:
         raise ValueError(f"{name} must be a number, got {raw!r}") from exc
 
 
+#: Upper bound on `STARTUP_REFUND_LIMIT` (#67, security review, PR #290). The
+#: refund exists so an attempt that never reached its runner does not spend
+#: one of `max_attempts`; an operator override with no ceiling could set it
+#: high enough that a task failing at startup every time never runs out of
+#: refunds and so never reaches FAILED, holding capacity in a retry loop
+#: `max_attempts` exists specifically to bound. Ten is well above the default
+#: of three and still small next to any reasonable `max_attempts`.
+STARTUP_REFUND_LIMIT_MAX = 10
+
+
 @dataclass(frozen=True)
 class ReconcilerConfig:
     project_id: str
@@ -182,6 +192,18 @@ class ReconcilerConfig:
     #: execution ends.
     ended_execution_grace_seconds: int = 30
 
+    #: How many attempts a task may have taken back because they ended before
+    #: their runner started (#67, owner decision 2026-09-28). Such an attempt
+    #: -- a 143 SIGTERM, or any exit but 78 while the task was DISPATCHED or
+    #: STARTING -- did no work, so it does not use up one of `max_attempts`.
+    #: Three, not unlimited: once they are used an early end counts as before,
+    #: so a task killed at every start still reaches FAILED. 0 turns refunds off.
+    #: Bounded at `STARTUP_REFUND_LIMIT_MAX` below: an operator override past
+    #: that effectively disables `max_attempts` for a task stuck failing at
+    #: startup, which would hold capacity in a retry loop that never reaches
+    #: FAILED (security review, PR #290).
+    startup_refund_limit: int = 3
+
     max_findings_per_pass: int = 200
     dry_run: bool = False
     enable_gke: bool = True
@@ -275,6 +297,9 @@ class ReconcilerConfig:
             stuck_evidence_max_gap_seconds=_int("STUCK_EVIDENCE_MAX_GAP_SECONDS", 600),
             left_running_grace_seconds=_int("LEFT_RUNNING_GRACE_SECONDS", 300),
             ended_execution_grace_seconds=_int("ENDED_EXECUTION_GRACE_SECONDS", 30),
+            startup_refund_limit=min(
+                STARTUP_REFUND_LIMIT_MAX, max(0, _int("STARTUP_REFUND_LIMIT", 3))
+            ),
             max_findings_per_pass=_int("MAX_FINDINGS_PER_PASS", 200),
             dry_run=_bool("RECONCILER_DRY_RUN", False),
             enable_gke=_bool("ENABLE_GKE_AUTOPILOT", settings.enable_gke_autopilot),

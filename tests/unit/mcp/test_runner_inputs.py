@@ -124,9 +124,10 @@ def test_a_mock_step_carries_its_declared_inputs():
     }
 
 
-def test_a_profile_that_declares_no_inputs_refuses_them():
+def test_a_key_claude_code_does_not_declare_is_refused():
     """`claude-code` read `input.model` until #226; letting a caller set it was
-    the contract change invariant 10 forbids. It declares nothing, so nothing goes."""
+    the contract change invariant 10 forbids. It declares `issue` and nothing
+    else (contract request 28, #265), so the mock's knobs do not go either."""
     with pytest.raises(SwarmError) as caught:
         workflows.build_steps(
             [{"step_id": "a", "runner_profile": "claude-code", "prompt": "x",
@@ -134,7 +135,8 @@ def test_a_profile_that_declares_no_inputs_refuses_them():
         )
     message = str(caught.value)
     assert "claude-code" in message, message
-    assert "mock" in message, "the refusal names the profiles that do declare inputs"
+    assert "sleep_seconds" in message, message
+    assert "issue" in message, "the refusal offers what claude-code does declare"
 
 
 @pytest.mark.parametrize("key", _NEVER)
@@ -232,7 +234,7 @@ def test_swarm_dispatch_sends_input_flags_typed_by_the_declaration(capsys):
     }
 
 
-def test_swarm_dispatch_refuses_an_input_for_a_profile_that_declares_none():
+def test_swarm_dispatch_refuses_an_input_claude_code_does_not_declare():
     args = cli.build_parser().parse_args(
         ["dispatch", "x", "--profile", "claude-code", "--input", "model=opus"]
     )
@@ -304,9 +306,10 @@ def test_the_bridge_keeps_no_table_of_its_own():
 
 
 def test_the_declaring_profiles_and_no_declaration_names_execution_detail():
-    """The owner's decisions on #142 and on contract request 32 (#218): the
-    mock declares its test knobs, `browser` and `generic` declare what their
-    runners read, and `claude-code` and `codex` declare none. And no
+    """The owner's decisions on #142, on contract request 28 (#265, accepted
+    2026-09-28) and on contract request 32 (#218): the mock declares its test
+    knobs, `claude-code` and `codex` declare `issue` and only it, and
+    `browser` and `generic` declare what their runners read. And no
     declaration, anywhere, names an image, a command, a resource spec, a
     backend, a model or a key the mock writes platform records with.
 
@@ -317,7 +320,9 @@ def test_the_declaring_profiles_and_no_declaration_names_execution_detail():
     `test_generic_command_is_exactly_the_runners_catalogue` holds it to.
     Every other profile declaring `command` is still flagged here."""
     declaring = sorted(name for name in RUNNER_PROFILES if _declared(name))
-    assert declaring == ["browser", "generic", "mock"], declaring
+    assert declaring == ["browser", "claude-code", "codex", "generic", "mock"], declaring
+    for name in ("claude-code", "codex"):
+        assert set(_declared(name)) == {"issue"}, (name, _declared(name))
     for name in RUNNER_PROFILES:
         named = set(_declared(name)) & set(_NEVER)
         if name == "generic":
@@ -371,6 +376,10 @@ def test_every_declared_input_is_one_its_runner_reads():
         module = RUNNER_PROFILES[name].runner_argv[-1]
         path = _REPO / "apps" / "agent-worker" / (module.replace(".", "/") + ".py")
         source = path.read_text()
+        if "run_cli_agent(" in source:
+            # claude-code and codex hand their payload to the one CLI runner,
+            # which is where every key of theirs is read.
+            source += (path.parent / "cliagent.py").read_text()
         # The generic runner hands its whole payload to `resolve_limits`,
         # which reads the four limits by name (`runners/limits.py`).
         limits = _limit_keys() if "resolve_limits(payload" in source else set()
@@ -387,7 +396,7 @@ def test_the_profiles_view_says_what_each_profile_takes():
     from a sentence of prose that can go stale."""
     entries = {entry["name"]: entry for entry in catalogue.catalogue()}
     assert set(entries["mock"]["inputs"]) == set(_declared("mock"))
-    assert "inputs" not in entries["claude-code"] or not entries["claude-code"]["inputs"]
+    assert set(entries["claude-code"]["inputs"]) == {"issue"}
 
 
 def test_swarm_profiles_prints_the_declared_inputs(capsys):
