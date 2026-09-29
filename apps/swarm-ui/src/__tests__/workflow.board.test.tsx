@@ -2836,3 +2836,118 @@ describe('the settlements: what a finished row draws, and what a healthy one doe
     }
   })
 })
+
+// ---------------------------------------------------------------------------
+// #105: a failed step says why, on the node, on the band and on the row
+// ---------------------------------------------------------------------------
+
+describe('#105: a failure’s cause is on the canvas, not only in the inspector', () => {
+  pinTheClock()
+
+  const COLLISION = (f: string) => `input collision: ${f} is staged by two parents\nparents: plan, scan-0`
+
+  /** A root, a thirteen-wide stage (a band at every tier) with four of its
+   *  steps failed on one cause and one on another, and a join. */
+  function broken(): { w: Workflow; tasks: Map<string, Task> } {
+    const tasks = new Map<string, Task>()
+    const fan = Array.from({ length: 13 }, (_, i) => `scan-${i}`)
+    tasks.set('t_plan', task('t_plan', 'SUCCEEDED', { started_at: iso(-500_000), completed_at: iso(-400_000) }))
+    const steps: WorkflowStep[] = [step('plan', [], { task_id: 't_plan' })]
+    fan.forEach((id, i) => {
+      const failed = i < 5
+      tasks.set(
+        `t_${id}`,
+        task(`t_${id}`, failed ? 'FAILED' : 'SUCCEEDED', {
+          started_at: iso(-300_000),
+          completed_at: iso(-200_000),
+          last_error: !failed ? null : i === 4 ? 'exit 1: the agent crashed' : COLLISION(`${id}.md`),
+        }),
+      )
+      steps.push(step(id, ['plan'], { task_id: `t_${id}` }))
+    })
+    tasks.set('t_join', task('t_join', 'FAILED', { started_at: iso(-100_000), completed_at: iso(-50_000), last_error: COLLISION('join.md') }))
+    steps.push(step('join', fan, { task_id: 't_join' }))
+    const w = workflow('wf_broken', steps, {
+      rollup: {
+        state: 'RUNNING',
+        complete: true,
+        reason: 'steps_hold_capacity',
+        counts: { SUCCEEDED: 9, FAILED: 6 },
+        unreadable_steps: [],
+        unstarted_steps: [],
+        steps_read: steps.length,
+      },
+    })
+    return { w, tasks }
+  }
+
+  it('prints the error’s first line on a failed node, whole in its title and on focus, and measures it', () => {
+    const { w, tasks } = broken()
+    const { container } = card(w, tasks, true)
+    const node = nodeNamed(container, 'join')
+    const note = node.querySelector<HTMLElement>('.node-note')
+    expect(note, 'a failed node shows no cause').toBeTruthy()
+    expect(note!.textContent).toBe('input collision: join.md is staged by two parents')
+    expect(note!.getAttribute('title')).toBe(COLLISION('join.md'))
+    // ON FOCUS: the card's description is the whole error, never truncated.
+    const described = node.getAttribute('aria-describedby')
+    expect(described, 'the focused card does not describe its error').toBeTruthy()
+    const full = container.querySelector<HTMLElement>(`[id="${described}"]`)
+    expect(full?.textContent).toBe(COLLISION('join.md'))
+    expect(full!.classList.contains('node-note-full')).toBe(true)
+    // OUTSIDE THE BUTTON: shown on focus inside it, the error joined the
+    // button's name and a screen reader heard it twice.
+    expect(node.contains(full), 'the full note is inside the card, so it is read as its name too').toBe(false)
+    expect(node.textContent).not.toContain(COLLISION('join.md').split('\n')[1] ?? '\u0000')
+    // COUNTED: the slot is the height `heightOf` gives a node with that line.
+    const layout = layoutOf(w.steps, new Set<number>(), autoTier(w.steps), new Set(['join']))
+    const placed = layout.nodes.find((n) => n.step.step_id === 'join')!
+    expect(Number.parseFloat(slotOf(container, 'join').style.height)).toBe(placed.h)
+    expect(placed.h).toBe(heightOf(w.steps[w.steps.length - 1]!, layout.tier, layout.nodeW, true))
+    expect(placed.h).toBeGreaterThan(heightOf(w.steps[w.steps.length - 1]!, layout.tier, layout.nodeW))
+    // A node that succeeded carries no line and is not made taller for one.
+    expect(nodeNamed(container, 'plan').querySelector('.node-note')).toBeNull()
+    expect(Number.parseFloat(slotOf(container, 'plan').style.height)).toBe(nodeHeightAt(layout.tier))
+  })
+
+  it('keeps the line to one line in the sheet, and shows the whole error on focus', () => {
+    const rule = (sel: string) => {
+      const at = STYLES.indexOf(`\n${sel} {`)
+      expect(at, `no ${sel} rule`).toBeGreaterThan(-1)
+      return STYLES.slice(at, STYLES.indexOf('}', at))
+    }
+    const note = rule('.node-note')
+    expect(note).toMatch(/white-space:\s*nowrap/)
+    expect(note).toMatch(/text-overflow:\s*ellipsis/)
+    expect(rule('.node-note-full')).toMatch(/display:\s*none/)
+    expect(STYLES).toMatch(/\.node:focus-visible ~ \.node-note-full\s*\{[^}]*display:\s*block/)
+  })
+
+  it('names the cause on a band holding failures, and in its accessible name', () => {
+    const { w, tasks } = broken()
+    const { container } = card(w, tasks, true)
+    const band = container.querySelector<HTMLElement>('.wf-band')
+    expect(band, 'the thirteen-wide stage is not a band; this case is vacuous').toBeTruthy()
+    const cause = band!.querySelector<HTMLElement>('.wf-band-cause')
+    expect(cause, 'a band holding failures says nothing about why').toBeTruthy()
+    // The commonest cause, as its first failure wrote it, and a count of the rest.
+    expect(cause!.textContent).toBe('input collision: scan-0.md is staged by two parents (+1 other cause)')
+    expect(cause!.getAttribute('title')).toContain(COLLISION('scan-0.md'))
+    expect(cause!.getAttribute('title')).toContain('scan-4: exit 1: the agent crashed')
+    expect(band!.getAttribute('aria-label')).toContain('input collision: scan-0.md is staged by two parents')
+    // A clean band has no cause line.
+    const clean = card(wideStage(13, Array(13).fill('SUCCEEDED')).w, wideStage(13, Array(13).fill('SUCCEEDED')).tasks, true)
+    expect(clean.container.querySelector('.wf-band')).toBeTruthy()
+    expect(clean.container.querySelector('.wf-band-cause')).toBeNull()
+  })
+
+  it('groups the row’s failures by a normalised cause', () => {
+    const { w, tasks } = broken()
+    const { container } = card(w, tasks, false)
+    const text = container.querySelector<HTMLElement>('.wf-progress-text')!.textContent
+    expect(text).toBe('9/15 done · 5 failed: input collision · 1 failed: exit 1')
+    // Without the task read there is no cause to group, and the count stands alone.
+    const bare = card(w, null, false)
+    expect(bare.container.querySelector<HTMLElement>('.wf-progress-text')!.textContent).toBe('9/15 done · 6 failed')
+  })
+})
