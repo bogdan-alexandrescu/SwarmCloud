@@ -1,12 +1,10 @@
 import { useCallback } from 'react'
 import { Chip, Em, Mark, attemptLabel, type ChipTone } from './AgentDetail'
 import { loadAgentDetail, loadAttempts } from './api'
-import { instant, spanText } from './duration'
-import { eventKind, isTerminalEvent } from './events'
 import { num, type Result } from './fetch'
 import { HelpCard } from './HelpCard'
 import { Screen, timeAgo } from './Shell'
-import { TERMINAL_STATES, bytesLabel, type AttemptRow, type Task, type TaskEvent } from './types'
+import { bytesLabel, formatDuration, type AttemptRow, type TaskEvent } from './types'
 
 /**
  * One task, attempt by attempt. Replaces the flat event list in the drawer, which
@@ -19,13 +17,6 @@ import { TERMINAL_STATES, bytesLabel, type AttemptRow, type Task, type TaskEvent
  */
 
 interface AttemptTimeline {
-  /**
-   * The task, from the same read as the events. Null when that read failed:
-   * the attempt cards stand without it, and the one thing it is read for --
-   * whether a finished task's terminal event is on this page -- is then not
-   * claimed either way.
-   */
-  task: Task | null
   attempts: AttemptRow[]
   /** null means the event read FAILED. An empty array means there are none. */
   events: TaskEvent[] | null
@@ -49,7 +40,6 @@ async function loadTimeline(taskId: string): Promise<Result<AttemptTimeline>> {
   // and failing the screen would hide records that exist nowhere else.
   const haveEvents = detail.status === 'ok' || detail.status === 'stale'
   const data: AttemptTimeline = {
-    task: haveEvents ? detail.data.task : null,
     attempts: attempts.data.attempts,
     events: haveEvents ? detail.data.events : null,
     eventsDetail: haveEvents
@@ -181,14 +171,6 @@ function Body({ t }: { t: AttemptTimeline }) {
   const groups = grouped(t)
   const blind = groups.filter((g) => g.attempt !== null && g.events.length === 0)
   const count = t.events?.length ?? 0
-  const prev = previousOf(t.events ?? [])
-  // THE FULL TIMELINE LIVES HERE NOW (#101), so the proof Details drew with
-  // it comes too: a terminal task always writes a terminal event, so a
-  // finished task whose page carries none proves the page ends before the
-  // run did. Details keeps the same mark over its compact form.
-  const endMissing =
-    t.task !== null && t.events !== null && TERMINAL_STATES.has(t.task.state) && !t.events.some(isTerminalEvent)
-  const lastEvent = t.events?.[t.events.length - 1]
   return (
     <>
       <div className="ctl-toolbar">
@@ -251,16 +233,6 @@ function Body({ t }: { t: AttemptTimeline }) {
                 {blind.length} blind
               </>
             )}
-            {endMissing && t.task !== null && (
-              <>
-                {' · '}
-                <Mark
-                  kind="partial"
-                  say={`The task is ${t.task.state.toLowerCase()} and a terminal task writes a terminal event — none is on this page. This screen reads one page of events, oldest-first, and does not follow the page token the events route returns, so the newest events are not on it. The end of this task's history is missing, not absent.`}
-                />{' '}
-                {lastEvent === undefined ? 'ends early' : `ends at ${eventKind(lastEvent)}`}
-              </>
-            )}
           </span>
         )}
         {/* THIS SCREEN'S ONE `?` (B7.4), HOISTED OUT OF THE BRANCH IT USED TO
@@ -281,7 +253,7 @@ function Body({ t }: { t: AttemptTimeline }) {
             built from this toolbar's own `say` strings. */}
       </div>
       {groups.map((g) => (
-        <AttemptCard key={g.key} g={g} eventsRead={t.events !== null} prev={prev} />
+        <AttemptCard key={g.key} g={g} eventsRead={t.events !== null} />
       ))}
       <p className="ctl-card-foot">
         <span>reading these cards:</span>
@@ -292,16 +264,7 @@ function Body({ t }: { t: AttemptTimeline }) {
   )
 }
 
-function AttemptCard({
-  g,
-  eventsRead,
-  prev,
-}: {
-  g: Group
-  eventsRead: boolean
-  /** Each event's predecessor on the page, by event id (`previousOf`). */
-  prev: ReadonlyMap<string, TaskEvent>
-}) {
+function AttemptCard({ g, eventsRead }: { g: Group; eventsRead: boolean }) {
   const a = g.attempt
   const out = a === null ? null : outcome(a)
   const ranText = a === null ? null : ran(a)
@@ -399,31 +362,14 @@ function AttemptCard({
           <ol className="timeline">
             {g.events.map((e) => (
               <li key={e.event_id}>
-                {/* `eventKind`, as Details names it: a stored `cancelled` that
-                    was only the request reads `cancel_requested`. */}
-                <span className="ev-type">{eventKind(e)}</span>
-                <EventWhen e={e} prev={prev.get(e.event_id) ?? null} />
+                <span className="ev-type">{e.type}</span>
+                <span className="ev-at">{timeAgo(e.at)}</span>
                 {/* The fencing generation the event was written under. A stale
                     worker's events carry the OLD one -- that is how a reclaim
                     reads here. */}
-                {e.generation !== null && (
-                  <span className="ev-gen" title="Fencing generation for this event">
-                    gen {e.generation}
-                  </span>
-                )}
-                {/* Only the reconciler labels itself. THE TEST IS THE VALUE,
-                    NOT THE KEY: the worker's quota_exhausted events also carry
-                    a detail.source, describing where the quota signal came
-                    from, so a presence check badges them as reconciler work. */}
-                {e.detail?.['source'] === 'reconciler' && <span className="ev-badge">reconciler</span>}
-                {/* THE JSON IS BEHIND A CLOSED DISCLOSURE (#101). Every
-                    event's full detail, open, made the sequence -- which is
-                    what a timeline is read for -- a scroll through braces. */}
+                {e.generation !== null && <span className="ev-gen">gen {e.generation}</span>}
                 {e.detail && Object.keys(e.detail).length > 0 && (
-                  <details className="ev-more">
-                    <summary>detail</summary>
-                    <pre className="ev-detail">{JSON.stringify(e.detail, null, 2)}</pre>
-                  </details>
+                  <pre className="ev-detail">{JSON.stringify(e.detail, null, 2)}</pre>
                 )}
               </li>
             ))}
@@ -468,83 +414,11 @@ function outcome(a: AttemptRow): { label: string; tone: ChipTone } {
 function ran(a: AttemptRow): string | null {
   if (a.started_at === null) return null
   if (a.completed_at === null) return `${timeAgo(a.started_at)} · open`
-  const done = instant(a.completed_at)
-  const started = instant(a.started_at)
-  if (done === null || started === null) return null
-  // `spanText`, the one duration formatter the inspector draws with (AG-21,
-  // #102). `769s` here beside `12m 49s` for the same attempt in the detail
-  // pane was two formatters for one number; the Details card reads the same
-  // helper over the same two instants, so the two panes cannot round apart.
-  return spanText(done - started)
-}
-
-// ---------------------------------------------------------------------------
-// When an event happened, as a sequence (#101)
-// ---------------------------------------------------------------------------
-
-/**
- * Each event's predecessor, by event id, in the order the page holds them --
- * which is the route's `at` ascending. ACROSS attempt groups, not within one:
- * the gap between a task's `submitted` and its first attempt's `started` is
- * the queue wait, and it is the gap a reader most wants.
- */
-function previousOf(events: readonly TaskEvent[]): Map<string, TaskEvent> {
-  const out = new Map<string, TaskEvent>()
-  for (let i = 1; i < events.length; i += 1) {
-    const e = events[i]
-    const p = events[i - 1]
-    if (e !== undefined && p !== undefined) out.set(e.event_id, p)
-  }
-  return out
-}
-
-/**
- * A gap between two events: `+3m 09s`.
- *
- * THE SECONDS ARE PADDED, AND ONLY HERE. A column of gaps is read down, and
- * `+3m 9s` over `+3m 10s` does not line up; a duration standing alone
- * (`spanText`) does not need to. The rounding is `spanText`'s -- whole
- * seconds, a measured sub-second gap kept in milliseconds -- so a gap and a
- * `ran` over the same two instants never disagree by one.
- */
-export function gapText(ms: number): string {
-  if (!Number.isFinite(ms)) return '—'
-  const sign = ms < 0 ? '−' : '+'
-  const a = Math.abs(ms)
-  if (a < 60_000) return `${sign}${spanText(a)}`
-  const s = Math.round(a / 1000)
-  const m = Math.floor(s / 60)
-  if (m < 60) return `${sign}${m}m ${String(s % 60).padStart(2, '0')}s`
-  const h = Math.floor(m / 60)
-  if (h < 24) return `${sign}${h}h ${String(m % 60).padStart(2, '0')}m`
-  return `${sign}${spanText(a)}`
-}
-
-/**
- * An instant as recorded, in UTC, to the second: `2026-09-22 10:02:09 UTC`.
- * UTC because the event document is, and a reader matching this against a
- * log line should not have to know which zone the browser is in.
- */
-export function absTime(iso: string): string {
-  const t = instant(iso)
-  if (t === null) return iso
-  return `${new Date(t).toISOString().slice(0, 19).replace('T', ' ')} UTC`
-}
-
-/**
- * WHEN, AS THE GAP FROM THE EVENT BEFORE, with the absolute time in `title`
- * and -- because a title is a hover a keyboard never gets -- in a span the
- * sheet shows while the element has focus. The first event on the page has
- * no predecessor, so it keeps its age.
- */
-export function EventWhen({ e, prev }: { e: TaskEvent; prev: TaskEvent | null }) {
-  const at = instant(e.at)
-  const before = prev === null ? null : instant(prev.at)
-  const abs = absTime(e.at)
-  return (
-    <time className="ev-at" dateTime={e.at} title={abs} tabIndex={0}>
-      {at !== null && before !== null ? gapText(at - before) : timeAgo(e.at)}
-      <span className="ev-abs">{abs}</span>
-    </time>
-  )
+  const ms = new Date(a.completed_at).getTime() - new Date(a.started_at).getTime()
+  if (!Number.isFinite(ms)) return null
+  // `formatDuration`, the one duration formatter (AG-21). `769s` here beside
+  // `12m 49s` for the same attempt in the detail pane was two formatters for
+  // one number -- the disagreement `formatDuration`'s own comment exists to
+  // prevent.
+  return formatDuration(ms)
 }
