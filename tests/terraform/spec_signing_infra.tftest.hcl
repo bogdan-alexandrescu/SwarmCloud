@@ -148,11 +148,16 @@ run "workers_trust_every_enabled_version_and_no_other" {
   }
 
   # swarm-api signs with one named version -- an asymmetric key has no primary.
-  # The value is derived here; #353 puts it in swarm-api's environment next to
-  # the code that reads it (check-env-parity.sh refuses it any earlier).
+  # The value is derived here, and swarm-api carries it (#353, beside the code
+  # that reads it): a hardened swarm-api without it refuses to start.
   assert {
     condition     = output.spec_signing_key_version == "projects/saga-agents-staging/locations/us-central1/keyRings/swarm-dev-specs/cryptoKeys/step-spec/cryptoKeyVersions/1"
     error_message = "the signing version must be a full version name of this environment's step-spec key"
+  }
+
+  assert {
+    condition     = lookup(output.spec_service_env["swarm-api"], "SPEC_SIGNING_KEY_VERSION", "") == output.spec_signing_key_version
+    error_message = "swarm-api must carry SPEC_SIGNING_KEY_VERSION as the full signing version name; a hardened swarm-api without it refuses to start"
   }
 
   # swarm-api signs; it has no business holding the verification map.

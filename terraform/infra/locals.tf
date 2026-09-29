@@ -403,13 +403,6 @@ locals {
       # and the subscription were always correct.
       DISPATCH_TOPIC = local.wake_topic
 
-      # SPEC_SIGNING_KEY_VERSION (contract request 34) is NOT set here yet, on
-      # purpose: scripts/lib/check-env-parity.sh refuses a variable no code
-      # reads, and today's swarm-api reads none. #353 adds
-      # `SPEC_SIGNING_KEY_VERSION = local.spec_signing_key_version` here in
-      # the same change as the code that reads it (owner decision 2026-09-29),
-      # so the hardened swarm-api never ships without it.
-
       # Neither name appeared anywhere in terraform, so swarm_api.settings read
       # empty tuples, resolve_tenant() had no groups to check, and EVERY caller
       # fell through to the personal `u-<email>` tenant.
