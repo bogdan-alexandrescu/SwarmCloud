@@ -3125,14 +3125,25 @@ Chromium normalises the same value to that host and opens it.
   browser's IDNA/UTS46 host processing folds full-width Unicode to its ASCII
   equivalent before it resolves, so both open the address they spell out
   once normalised.
-* `kubernetes.default` and `swarm-api.swarm-system` -- refused today only by
-  the "single-label host" rule below, and both have **two** labels, so they
-  passed it. GKE's pod `resolv.conf` sets `ndots:5`: any name with fewer
-  than five dots is tried against every search domain (`<namespace>.svc.
-  cluster.local`, `svc.cluster.local`, `cluster.local`, ...) before the
-  absolute name, and Kubernetes' own DNS resolves the two-label short form
-  `<service>.<namespace>` through exactly that path. A single-label check
-  does not see either name as a risk; the cluster's resolver does.
+* `kubernetes.default.svc` and `swarm-api.swarm-system.svc` -- refused today
+  only by the "single-label host" rule below, and both have three labels, so
+  they passed it. GKE's pod `resolv.conf` sets `ndots:5`: any name with
+  fewer than five dots is tried against every search domain
+  (`<namespace>.svc.cluster.local`, `svc.cluster.local`, `cluster.local`,
+  ...) before the absolute name, and Kubernetes' own DNS resolves the
+  `<service>.<namespace>.svc` short form through exactly that path. A
+  single-label check does not see either name as a risk; the cluster's
+  resolver does. **Revision history on this one bypass, because it changed
+  twice:** the first draft's single-label rule missed it (three labels). A
+  second draft (2026-09-29) replaced the single-label rule with "fewer than
+  two dots," which caught `kubernetes.default.svc` (only by widening the net
+  far past what the bypass needed) but ALSO refused every bare apex domain a
+  browser task might target (`github.com`, one dot). **The owner declined
+  that trade on 2026-09-29** and asked for the narrow fix instead: keep the
+  single-label rule, and add `.svc` to the refused-suffix list next to
+  `.internal`, `.local` and `.localhost`. That is what ships below. It also
+  does not pretend to close the general `ndots:5` gap for an arbitrary
+  short name -- see the paragraph after the rule for what does.
 
 **The fix is one check before anything else runs, not four patches.** Every
 bypass above turns on `url_refusal` accepting a host character, or a host
@@ -3168,34 +3179,66 @@ The rule, as written in the diff, now refuses, **in this order**:
 * a host whose last label does not start with a letter (`http://2852039166/`
   and `http://0xa9.254.169.254/`, which a browser reads as 169.254.169.254
   and `ipaddress` parses as neither; no public suffix starts with a digit);
-* **a host with fewer than two dots that is not an IP literal.** This
-  replaces the single-label rule the review found insufficient: `kubernetes`
-  (0 dots) and `kubernetes.default` (1 dot) are both refused now, because
-  GKE's `ndots:5` search path resolves both, not only the single-label form.
-  The plain cost, stated so the owner sees it and not just the fix: a bare
-  two-label public domain (`example.com`, `anthropic.com`) is now refused
-  too, since this check cannot tell it apart from a two-label cluster name
-  from the URL string alone. A caller who wants such a domain sends a
-  subdomain of it (`www.example.com`) or is refused with a 422 that says
-  why. This trade-off is listed as its own line in *Owner's decisions*
-  below, because request 25's caller expectations never assumed apex
-  domains would be refused.
+* a host with an empty label (`a..b`, or a label produced by a leading or
+  doubled `.`) -- added 2026-09-29 (minor, folded into this revision): the
+  character-class check does not catch it, because `.` is itself allowed,
+  and nothing downstream would otherwise notice a zero-length label;
+* a host with a label made only of hyphens (`http://---.com/`) -- added
+  2026-09-29 (minor): the previous message for this case ("ends in a
+  number") was wrong and confusing, since a hyphen is not a digit; it now
+  says plainly that an all-hyphen label is not a valid domain label;
+* a host whose last label does not start with a letter, with two distinct
+  messages now instead of one: a digit-led last label (`http://2852039166/`,
+  `http://0xa9.254.169.254/`, which a browser reads as 169.254.169.254 and
+  `ipaddress` parses as neither; no public suffix starts with a digit) says
+  so; anything else that is not a letter (a hyphen, after the all-hyphen
+  case above is already out of the way) says which character it found;
+* **a single label** (`kubernetes`, `metadata`) -- restored 2026-09-29. A
+  second draft of this rule (2026-09-29) had widened this to "fewer than two
+  dots," to also catch the `.svc` bypass below; the owner declined that
+  trade the same day, because it refused every bare apex domain
+  (`github.com`, `example.com`) a browser task's own purpose is to reach.
+  The single-label form is restored, unchanged from the first draft, and
+  costs nothing a real page address would ever need;
+* any name under `.internal`, `.local`, `.localhost` or **`.svc`** (new
+  2026-09-29, for `kubernetes.default.svc` / `swarm-api.swarm-system.svc` --
+  see the bypass write-up above), checked after the ASCII and single-label
+  rules, so a suffix check can no longer be the only thing standing between
+  a bypass and a pass;
 * a host that is an IP address and, after unwrapping an IPv4-mapped IPv6
-  address, a NAT64 address (`64:ff9b::/96`, RFC 6052) or a 6to4 address
-  (`2002::/16`, RFC 3056) down to the IPv4 address each embeds, is not
-  global by this module's own explicit list of refused networks (below) --
-  **not `ipaddress.*.is_global`**, whose own membership changed between
-  Python 3.11 and 3.13 (the CGNAT block and `192.0.0.0/24` both moved
-  category more than once across that span). An explicit, named list is what
-  a reviewer can diff against RFC 1918, 5735, 4291 and 6890 directly, and it
-  does not move under this module on a Python upgrade the platform did not
-  choose for this reason;
+  address or one of five other IPv6 forms that embed an IPv4 address --
+  NAT64 well-known (`64:ff9b::/96`, RFC 6052), **NAT64 local-use
+  (`64:ff9b:1::/48`, RFC 8215, new 2026-09-29)**, 6to4 (`2002::/16`, RFC
+  3056), **SIIT / "IPv4-translated" (`::ffff:0:0:0/96`, RFC 6052 section
+  2.1, new 2026-09-29)** and **IPv4-compatible, deprecated but still a
+  parseable literal (`::/96`, new 2026-09-29)** -- down to the IPv4 address
+  each embeds, is not global by this module's own explicit list of refused
+  networks (below) -- **not `ipaddress.*.is_global`**, whose own membership
+  changed between Python 3.11 and 3.13 (the CGNAT block and `192.0.0.0/24`
+  both moved category more than once across that span). An explicit, named
+  list is what a reviewer can diff against RFC 1918, 5735, 4291 and 6890
+  directly, and it does not move under this module on a Python upgrade the
+  platform did not choose for this reason;
 * the two Google VIP ranges, which are global addresses by any definition
-  but are refused anyway (see above);
-* any name under `.internal`, `.local` or `.localhost`
-  (`metadata.google.internal`, `*.svc.cluster.local`), checked only after
-  the ASCII and dot-count rules above, so a suffix check can no longer be
-  the only thing standing between a bypass and a pass.
+  but are refused anyway (see above).
+
+**This is not the general `ndots:5` fix, and does not claim to be.** The
+`.svc` suffix closes the one specific, named bypass above -- a fixed string,
+not an open-ended shape -- but GKE's search path can in principle try any
+name under five dots against every search domain, and nothing in this
+function sees what the pod's resolver eventually does with a name it
+accepted. What actually closes that gap: the worker's NetworkPolicy (which
+does not depend on what a name resolves to at all), the pod's own DNS
+config -- **tracked as #341: set `ndots:1` and drop search domains**, which
+removes the search-path trial rather than trying to enumerate every name
+shape it could produce -- and the planned `context.route` guard (see
+*Preconditions for the applying PR*). This entry's door check is one layer
+among those three, not a substitute for the other two.
+
+**Underscore.** A host carrying one (`a_b.example.com`) is refused by the
+same `[a-z0-9.-]+` character class as any other character outside it, with
+no separate rule needed: RFC 952/1035 never allowed an underscore in a
+hostname label, so refusing it costs nothing a valid page address needs.
 
 **Required for the applying PR: a test table that runs every refusal above,
 and every bypass this review found, through a real WHATWG URL parser, not
@@ -3207,15 +3250,21 @@ example Node's own `URL` (the runtime the plugin already ships with), driven
 from the test as a subprocess, or a maintained Python WHATWG binding if one
 is vendored -- and asserts `url_refusal`'s verdict agrees with what that
 parser resolves the host to, for every case in this section, including the
-four bypasses above and the NAT64/6to4 embeddings.
+four original bypasses, the `.svc` bypass, and all six embedded-IPv4 forms
+(IPv4-mapped, NAT64 well-known, NAT64 local-use, 6to4, SIIT, IPv4-compatible).
 
-**Why not https-only.** The scheme is not the SSRF vector. The metadata
-server and every private address are plain http either way, and the rule
-above refuses them by host. The runner already sets
+**Why not https-only, decided.** The scheme is not the SSRF vector. The
+metadata server and every private address are plain http either way, and
+the rule above refuses them by host. The runner already sets
 `ignore_https_errors=False`, so an https page with a bad certificate still
 fails. Refusing http would refuse legitimate plain-http targets and close no
-path. The owner may still want https-only as a data-in-transit rule. That is
-a separate decision, listed below.
+path. **The owner confirmed on 2026-09-29: no https-only rule.** It is not
+listed as an open decision below any more.
+
+**IDN, decided.** A caller whose real target is an internationalised domain
+sends its ASCII (punycode) form; this entry does not add a separate IDN
+allowance or normalisation path. **The owner confirmed on 2026-09-29:
+accepted as written**, alongside declining the https-only rule above.
 
 **Why no allow-list.** A platform-wide list contradicts the profile's purpose
 and the NetworkPolicy's stated design. A per-tenant allow-list is tenant
@@ -3423,7 +3472,7 @@ on `main`, touches neither these lines nor these kinds.
  
  #: The signed 64-bit range, which is what Firestore stores an integer in.
  #: Python reads a JSON integer of any length, so an integer input whose bounds
-@@ -113,16 +138,217 @@
+@@ -113,16 +138,282 @@
  INT64_MIN = -(2**63)
  INT64_MAX = 2**63 - 1
  
@@ -3498,17 +3547,40 @@ on `main`, touches neither these lines nor these kinds.
 +    ipaddress.ip_network("199.36.153.8/30"),
 +)
 +
-+#: NAT64 (RFC 6052) and 6to4 (RFC 3056): both are global IPv6 ranges that
-+#: EMBED an IPv4 address, so a refused v4 address reachable through either
-+#: would otherwise pass `_URL_REFUSED_V6_NETWORKS` unseen.
-+#: `64:ff9b::a9fe:a9fe` and `2002:a9fe:a9fe::` both embed 169.254.169.254.
++#: Every IPv6 range that EMBEDS an IPv4 address, so a refused v4 address
++#: reachable through any of them would otherwise pass
++#: `_URL_REFUSED_V6_NETWORKS` unseen. IPv4-mapped (`::ffff:a.b.c.d`) is
++#: handled separately by `ipaddress.IPv6Address.ipv4_mapped`; the rest are
++#: unwrapped by `_embedded_v4`:
++#: * `64:ff9b::/96` -- NAT64, RFC 6052 (well-known prefix).
++#: * `64:ff9b:1::/48` -- NAT64, RFC 8215 (local-use prefix; the embedding
++#:   follows RFC 6052 section 2.2's PL48 layout: 48-bit prefix, 16 bits of
++#:   v4, an 8-bit zero field, 16 more bits of v4, 40-bit suffix).
++#: * `2002::/16` -- 6to4, RFC 3056.
++#: * `::ffff:0:0:0/96` -- "IPv4-translated", RFC 6052's SIIT form
++#:   (`::ffff:0:a.b.c.d`; note the extra `:0:` before the address, which is
++#:   what distinguishes it from IPv4-mapped).
++#: * `::/96` -- IPv4-compatible, deprecated (RFC 4291 says so; RFC 6540 says
++#:   not to originate or accept it) but still a parseable literal
++#:   (`::a9fe:a9fe`), so still refused here explicitly rather than assumed
++#:   gone.
 +_URL_NAT64_PREFIX = ipaddress.ip_network("64:ff9b::/96")
++_URL_NAT64_LOCAL_PREFIX = ipaddress.ip_network("64:ff9b:1::/48")
 +_URL_6TO4_PREFIX = ipaddress.ip_network("2002::/16")
++_URL_SIIT_PREFIX = ipaddress.ip_network("::ffff:0:0:0/96")
++_URL_IPV4_COMPATIBLE_PREFIX = ipaddress.ip_network("::/96")
 +
 +#: Names that are never a public page: GKE's metadata server is
-+#: `metadata.google.internal`, and `.local`/`.localhost` never leave the host
-+#: or the cluster (`cluster.local`).
-+_URL_REFUSED_SUFFIXES = (".internal", ".local", ".localhost")
++#: `metadata.google.internal`; `.local`/`.localhost` never leave the host or
++#: the cluster (`cluster.local`); and `.svc` is the short, no-FQDN-suffix
++#: form Kubernetes' own DNS resolves for a Service
++#: (`<service>.<namespace>.svc`, e.g. `kubernetes.default.svc`), which the
++#: pod's search path completes to `.svc.cluster.local` for any name under
++#: five dots (`ndots:5`) -- added 2026-09-29, after the owner found the
++#: dot-count rule this replaced still admitted it. See `url_refusal`'s
++#: docstring for what actually closes the general search-path gap; this
++#: suffix closes only the specific, well-known `.svc` shorthand.
++_URL_REFUSED_SUFFIXES = (".internal", ".local", ".localhost", ".svc")
 +
  #: How much of a refused value a refusal repeats. A caller who sent three
  #: hundred digits needs the bound, not the digits back.
@@ -3521,12 +3593,22 @@ on `main`, touches neither these lines nor these kinds.
 +
 +
 +def _embedded_v4(address: ipaddress.IPv6Address) -> ipaddress.IPv4Address | None:
-+    """The IPv4 address a NAT64 or 6to4 address embeds, or None."""
++    """The IPv4 address a NAT64, 6to4, SIIT or IPv4-compatible address
++    embeds, or None. IPv4-mapped is handled by the caller
++    (`address.ipv4_mapped`) and never reaches here."""
 +    packed = address.packed
 +    if address in _URL_NAT64_PREFIX:
 +        return ipaddress.IPv4Address(packed[12:16])
++    if address in _URL_NAT64_LOCAL_PREFIX:
++        # RFC 6052 section 2.2, PL48: prefix(6 bytes) + v4-hi(2) + u(1, zero)
++        # + v4-lo(2) + suffix(5). The `u` byte at packed[8] is skipped.
++        return ipaddress.IPv4Address(bytes([packed[6], packed[7], packed[9], packed[10]]))
 +    if address in _URL_6TO4_PREFIX:
 +        return ipaddress.IPv4Address(packed[2:6])
++    if address in _URL_SIIT_PREFIX:
++        return ipaddress.IPv4Address(packed[12:16])
++    if address in _URL_IPV4_COMPATIBLE_PREFIX:
++        return ipaddress.IPv4Address(packed[12:16])
 +    return None
 +
 +
@@ -3558,7 +3640,38 @@ on `main`, touches neither these lines nor these kinds.
 +    track whatever WHATWG host-parsing Chromium does, forever, while a
 +    refusing rule only has to be a subset of what Chromium accepts. A caller
 +    whose real target is an internationalised domain sends its ASCII
-+    (punycode) form, which the site already answers to.
++    (punycode) form, which the site already answers to -- the owner accepted
++    this as the rule on 2026-09-29 (no separate IDN allowance).
++
++    An underscore is refused by the same `[a-z0-9.-]+` check as any other
++    character outside that set, with no separate rule: RFC 952/1035 do not
++    allow one in a hostname label at all (some internal DNS -- SRV records,
++    `_service._proto.name` -- uses one anyway, which is one more reason a
++    browser task should not be handed a host carrying one).
++
++    WHAT THIS DOES NOT DO, as of the owner's decision on 2026-09-29: it does
++    not refuse a host by dot count. An earlier revision refused any non-IP
++    host with fewer than two dots, which caught `kubernetes.default` and
++    `swarm-api.swarm-system` but also every bare apex domain a browser task
++    might legitimately target (`github.com`, `example.com` both have exactly
++    one dot) -- for a browser profile, refusing those is refusing the
++    profile's main use. It was also incomplete on its own terms: a three-label
++    name ending in `.svc` (`kubernetes.default.svc`) has two dots and was
++    never caught by it either. The general gap -- GKE's `ndots:5` pod
++    resolver tries every search domain before the absolute name for anything
++    under five dots -- is NOT closed by any check in this function, and
++    cannot be from here: it sees the string the caller sent, never what the
++    pod's resolver does with it. The real controls are the worker's
++    NetworkPolicy (which does not depend on what a name resolves to), the
++    pod's own DNS config (tracked as #341: set `ndots:1` and drop search
++    domains, which removes the search-path trial entirely rather than
++    guessing at every name shape it could produce), and the planned
++    `context.route` guard (see the entry's *Preconditions*). What this
++    function still refuses is the single-label case (`kubernetes`,
++    `metadata`), which resolves only through the cluster's search path and
++    is never a real page address, and the specific `.svc` shorthand below,
++    which is the one case named in the review that is also a fixed, known
++    string rather than an open-ended shape.
 +    """
 +    if len(value) > _URL_MAX_CHARS:
 +        return f"it is longer than {_URL_MAX_CHARS} characters"
@@ -3597,21 +3710,22 @@ on `main`, touches neither these lines nor these kinds.
 +                "rather than reproduces it"
 +            )
 +        labels = host.split(".")
++        if any(label == "" for label in labels):
++            return "its host has an empty label ('..' in it, or it starts or ends with '.')"
++        if any(label.strip("-") == "" for label in labels):
++            return "its host has a label made only of hyphens, which is not a valid domain label"
 +        # A browser reads a host whose last label is a number (`2852039166`,
 +        # `0xa9.254.169.254`) as an IPv4 address in another notation, which
 +        # `ip_address` does not parse. No public suffix starts with a digit.
-+        if not labels[-1][:1].isalpha():
++        if labels[-1][:1].isdigit():
 +            return "its host ends in a number, which a browser reads as an address"
-+        # FEWER THAN TWO DOTS IS REFUSED, not only a single label: GKE's
-+        # ndots:5 pod resolver tries every search domain before the absolute
-+        # name for anything with fewer than five dots, and Kubernetes' own
-+        # DNS resolves the two-label short form `<service>.<namespace>`
-+        # through exactly that path -- `kubernetes.default` and
-+        # `swarm-api.swarm-system` both have two labels and one dot each.
-+        # This also refuses a bare two-label public domain (`example.com`);
-+        # see contract request 32's *Owner's decisions*.
-+        if len(labels) < 3:
-+            return "its host has fewer than two dots, which the cluster's search path can still resolve"
++        if not labels[-1][:1].isalpha():
++            return f"its host's last label starts with {labels[-1][:1]!r}, not a letter"
++        # SINGLE LABEL ONLY, not a general dot-count rule: see the docstring
++        # above for why the broader rule this replaced was both too costly
++        # (it refused bare apex domains) and still incomplete.
++        if len(labels) < 2:
++            return "its host is a single label, which only the cluster's search path resolves"
 +        if host.endswith(_URL_REFUSED_SUFFIXES):
 +            return "its host is a cluster or node-local name"
 +        return ""
@@ -3642,7 +3756,7 @@ on `main`, touches neither these lines nor these kinds.
      The message names the key and the bound, and never repeats a value longer
      than it has to.
      """
-@@ -165,18 +391,73 @@
+@@ -165,18 +456,73 @@
      #: the platform would read it as instead -- the mock's exit codes 77, 78
      #: and 143. Pairs, not a dict, so the declaration stays hashable.
      refused: tuple[tuple[Any, str], ...] = ()
@@ -3720,7 +3834,7 @@ on `main`, touches neither these lines nor these kinds.
          for bound in (self.minimum, self.maximum):
              if bound is not None and not math.isfinite(bound):
                  raise ValueError("an input's bounds must be finite numbers")
-@@ -197,10 +478,16 @@
+@@ -197,10 +543,16 @@
      def describe(self) -> str:
          """`integer 1..255 except 77, 78, 143`: the kind and the bound, as a caller reads it."""
          # `__post_init__` gives a number both bounds and anything else neither.
@@ -3738,7 +3852,7 @@ on `main`, touches neither these lines nor these kinds.
          if self.refused:
              text += " except " + ", ".join(str(value) for value, _ in self.refused)
          return text
-@@ -208,7 +495,7 @@
+@@ -208,7 +560,7 @@
      def check(self, key: str, value: Any) -> Any:
          """`value`, normalised (an integral float becomes an int), or InputRefused."""
          expected = self.describe()
@@ -3747,7 +3861,7 @@ on `main`, touches neither these lines nor these kinds.
          wanted = f"input {key!r} must be {article} {expected}"
  
          def refuse(detail: str = "") -> InputRefused:
-@@ -245,18 +532,64 @@
+@@ -245,18 +597,64 @@
              if not isinstance(value, bool):
                  raise refuse(" (true or false)")
              return value
@@ -3814,7 +3928,7 @@ on `main`, touches neither these lines nor these kinds.
  
  
  @dataclass(frozen=True)
-@@ -330,29 +663,39 @@
+@@ -330,29 +728,39 @@
      #: That is what closes `input.model` on `claude-code`, which its runner
      #: would pass as `--model`.
      #:
@@ -3872,14 +3986,10 @@ on `main`, touches neither these lines nor these kinds.
          if not self.available and not self.disabled_reason:
              raise ValueError(
                  f"runner {self.name}: a disabled profile must say why. A caller "
-@@ -446,10 +789,198 @@
-         minimum=1,
-         maximum=3600,
-         means="the retry-after that simulated rate limit reports",
-+    ),
-+}
-+
-+
+@@ -450,6 +858,194 @@
+ }
+ 
+ 
 +#: A wait the browser runner hands Playwright, in milliseconds. FROM 1, NOT 0:
 +#: Playwright reads a timeout of 0 as "no timeout", so a 0 here would let one
 +#: action wait out the whole 5400 s attempt. FIVE MINUTES at most: a selector
@@ -3971,7 +4081,7 @@ on `main`, touches neither these lines nor these kinds.
 +    # 200: the runner's MAX_ACTIONS.
 +    "actions": RunnerInput(
 +        "list", minimum=0, maximum=200, items=_BROWSER_ACTION, means="run in order, after `url`"
-     ),
++    ),
 +    "timeout_ms": RunnerInput(
 +        "integer", **_BROWSER_WAIT_MS, means="how long any one action may take; default 30000"
 +    ),
@@ -3994,13 +4104,13 @@ on `main`, touches neither these lines nor these kinds.
 +    ),
 +    "extract_text": RunnerInput("boolean", means="keep the final page's text as page.txt; default true"),
 +    "screenshot": RunnerInput("boolean", means="keep a final full-page screenshot; default true"),
- }
- 
++}
++
 +#: The generic runner's catalogue (`agent_worker/runners/generic.py`,
 +#: `GENERIC_COMMANDS`), restated because the catalogue cannot import the
 +#: worker, and held to it by a test, as `_ARGUMENT` is.
 +_GENERIC_COMMANDS = ("make", "npm-build", "npm-ci", "npm-test", "pytest", "uv-sync")
- 
++
 +#: Built without `inputs` first, so `_GENERIC_INPUTS` below can read this
 +#: profile's OWN `timeout_seconds` for its `timeout_seconds` input's ceiling
 +#: instead of restating the number as a second literal. `RunnerProfile` sets
@@ -4071,7 +4181,7 @@ on `main`, touches neither these lines nor these kinds.
  RUNNER_PROFILES: dict[str, RunnerProfile] = {
      "mock": RunnerProfile(
          name="mock",
-@@ -463,18 +994,10 @@
+@@ -463,18 +1059,10 @@
          checkpoint_interval_seconds=30,
          inputs=_MOCK_INPUTS,
      ),
@@ -4094,7 +4204,7 @@ on `main`, touches neither these lines nor these kinds.
      "claude-code": RunnerProfile(
          name="claude-code",
          image="agent-runtime-base",
-@@ -528,10 +1051,7 @@
+@@ -528,10 +1116,7 @@
          provider="anthropic",
          secrets=("ANTHROPIC_API_KEY",),
          timeout_seconds=5400,
@@ -4106,7 +4216,7 @@ on `main`, touches neither these lines nor these kinds.
      ),
  }
  
-@@ -556,23 +1076,10 @@
+@@ -556,23 +1141,10 @@
  
      `raw` holds the keys BESIDES the prompt. Returns them normalised (an
      integral float for an integer input becomes an int), or raises
@@ -4133,7 +4243,7 @@ on `main`, touches neither these lines nor these kinds.
      declared = profile.inputs
      unknown = sorted(set(raw) - set(declared))
      if unknown:
-@@ -590,4 +1097,11 @@
+@@ -590,4 +1162,11 @@
                  f"so {unknown} cannot be sent"
              )
          raise InputRefused(message, key=unknown[0], keys=tuple(unknown))
@@ -4255,11 +4365,31 @@ merge without them:
   correct on this point already); it is listed here because it is the same
   class of bug this entry's URL work found, in the sibling check.
 
-**A runner-side `context.route` guard is not a precondition of this request,
-but gets its own issue.** It is the only layer anywhere in this path that
-sees a redirect or a subresource; the door check above never does, however
-its own bugs are fixed. File it separately rather than folding it in here,
-so this entry is not blocked on worker-side Playwright work.
+**Neither of the two remaining layers is a precondition of this request,
+because both are already filed and neither is code this entry touches:**
+
+* **The pod's DNS config is #341** ("Browser worker pods resolve short
+  names through the cluster search path, so `kubernetes.default` reaches
+  cluster services by DNS"). Set `ndots:1` and drop search domains, which
+  removes the search-path trial for every short name at once, rather than
+  this entry's door check trying to enumerate which short names are unsafe.
+  This is the fix the owner pointed to on 2026-09-29 when declining the
+  broader host-dot-count rule: `url_refusal`'s job is a 422 with a clear
+  reason for the names it CAN recognise as unsafe from the string alone
+  (single-label, `.svc`); closing the general case is #341's job, in the
+  pod spec, not this module's.
+* **A runner-side `context.route` guard is not filed as part of this
+  request either.** It is the only layer anywhere in this path that sees a
+  redirect or a subresource; the door check above never does, however its
+  own bugs are fixed. File it as its own worker issue, so this entry is not
+  blocked on worker-side Playwright work.
+
+Together with the worker's NetworkPolicy, these three -- #341, the
+`context.route` guard, and the network policy already deployed -- are what
+actually keep the pod from reaching a cluster-internal service by name. This
+entry's `url_refusal` is a fourth, outermost layer: a fast, clear refusal at
+submission for the shapes it can recognise, not the mechanism any of this
+relies on for correctness.
 
 ### Invariants
 
@@ -4301,26 +4431,26 @@ so this entry is not blocked on worker-side Playwright work.
    * add a profile-level `requires_one_of` to the catalogue;
    * make `actions` required with a minimum of 1 and drop `url`, which
      breaks every current caller of `url`.
-3. **The `url` rule, revised 2026-09-29.** Accept the scheme restriction and
-   the public-host rule as rewritten above (refuse before parsing, explicit
-   refused-network lists in place of `is_global`, NAT64/6to4 unwrapped), with
-   no allow-list. A runner-side `context.route` guard is filed as its own
-   worker issue, not part of this request (recommended, see *Preconditions*).
-   Decide whether https-only is also wanted as a separate transit rule.
-3a. **The two-dot host rule's cost, which is new in this revision and is its
-   own decision.** Refusing any non-IP host with fewer than two dots closes
-   the `kubernetes.default` / `swarm-api.swarm-system` bypass completely, but
-   it also refuses a bare two-label public domain (`example.com`,
-   `anthropic.com`): a caller must send a subdomain (`www.example.com`)
-   instead. Options:
-   * accept the refusal as written (recommended -- the alternative is a
-     rule that names specific cluster suffixes and hopes the list stays
-     complete, which is exactly the kind of rule this review found insufficient once already);
-   * carve an exception for a host whose two labels match a known public
-     suffix list (adds a new restated data file to keep in sync, with the
-     same drift risk `_GENERIC_COMMANDS` and `_ARGUMENT` already carry);
-   * decline the stricter rule and accept that `kubernetes.default` and
-     `swarm-api.swarm-system` stay reachable through this input.
+3. **The `url` rule, revised 2026-09-29, DECIDED the same day.** Accept the
+   scheme restriction and the public-host rule as rewritten above (refuse
+   before parsing, explicit refused-network lists in place of `is_global`,
+   the single-label rule kept, `.svc` added to the refused suffixes, six
+   IPv4-in-IPv6 embedding forms unwrapped), with no allow-list. **The owner
+   answered all three sub-decisions on 2026-09-29:**
+   * **the host-dot-count question, resolved: DROP the "fewer than two
+     dots" rule.** It refused apex domains (`github.com`, `example.com`),
+     the browser profile's main targets, while still admitting
+     `kubernetes.default.svc` and `swarm-api.swarm-system.svc` (GKE's
+     `ndots:5` search path applies to any name under five dots, so a
+     two-label rule was never going to close that on its own terms either).
+     The single-label rule is restored, and `.svc` is added to the refused
+     suffixes; the general search-path gap is #341's job, not this
+     module's (see *Preconditions for the applying PR*);
+   * **https-only: no.** Recorded above ("Why not https-only, decided");
+   * **IDN: accepted as written**, i.e. punycode only, no separate
+     normalisation path. Recorded above ("IDN, decided").
+   A runner-side `context.route` guard is filed as its own worker issue, not
+   part of this request (recommended, see *Preconditions*).
 4. **The bounds.**
    * `timeout_ms` 1..300000;
    * `launch_timeout_ms` 1..180000;
