@@ -28,10 +28,20 @@
 # Running the tests from inside the VPC needs no client, no secret, and behaves
 # identically in CI -- the ingress setting already permits internal traffic.
 
+# The id is spelled in modules/service_account_ids, which terraform/bootstrap
+# reads to grant the release deployer roles/iam.serviceAccountAdmin on this
+# account and on no account infra does not manage (#334).
+module "service_account_ids" {
+  source = "../modules/service_account_ids"
+}
+
 resource "google_service_account" "verify" {
   project      = var.project_id
-  account_id   = "swarm-verify"
+  account_id   = module.service_account_ids.verify_id
   display_name = "SwarmCloud verification job"
+  # No create_ignore_already_exists: this account is in state, and a 409 on it
+  # should fail the release rather than adopt an account somebody else made
+  # under the name (#334 security review).
   # 256 characters at most -- the provider refuses a longer description at
   # plan time, which is how an earlier wording of this line failed CI. This one
   # is 245. It names what the identity CAN do (any runner ceiling, through

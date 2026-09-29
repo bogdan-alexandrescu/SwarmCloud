@@ -132,8 +132,6 @@ run "the_deployer_is_not_granted_role_admin" {
         "roles/compute.securityAdmin",
         "roles/container.admin",
         "roles/datastore.owner",
-        "roles/iam.serviceAccountAdmin",
-        "roles/iam.workloadIdentityPoolAdmin",
         "roles/logging.configWriter",
         "roles/monitoring.editor",
         "roles/pubsub.admin",
