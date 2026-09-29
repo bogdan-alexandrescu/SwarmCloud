@@ -13,7 +13,11 @@
 # `data.google_service_account.listed` is overridden, so no run makes a real
 # GCP call for the account's unique id.
 
-mock_provider "google" {}
+# source: the shared defaults every suite that plans terraform/infra needs
+# (mocks/google/kms.tfmock.hcl -- the step-spec key's enabled version 1).
+mock_provider "google" {
+  source = "./mocks/google"
+}
 
 variables {
   project_id  = "saga-agents-staging"
