@@ -88,8 +88,8 @@ task's literals, then the credential-shaped rules. `expected_outputs` and
 `input_from` share `_step_to_api` in `codec.py` (owner decision 2026-09-28), so
 a served workflow's step map is masked the same way.
 
-A CLEAN NAME STAYS CLEAN, ONLY TWO FAMILIES ARE ANCHORED (owner decision
-2026-09-28, three rounds of review on #227). The first cut ran every rule over
+A CLEAN NAME STAYS CLEAN, ONLY ONE FAMILY IS ANCHORED (owner decision
+2026-09-28, four rounds of review on #227). The first cut ran every rule over
 the whole name and exempted a match made only of "plain words" (`_plain_words`,
 a per-segment regex). That both over- and under-masked: the JWT rule's
 two-letter prefix ("ey") matches inside ordinary English words at ANY position
@@ -111,16 +111,29 @@ distinctive, unmistakable prefix (`AKIA`, `ghp_`, `AIza`, `xox?-`, `ya29.`,
 credential in clear the moment it was glued to a preceding letter or digit
 (`notesAKIA...`, `xghp_...`, `keyAIzaSy...`).
 
-The fix now in place: only `sk-` and the JWT family (`ey`, tightened to `eyJ`
-plus its three dot-separated segments) get a boundary, and it is baked into
-the PATTERN itself as a lookbehind (`_NAME_SK`, `_NAME_JWT`), not applied to
-the result of a match `re.sub` already picked -- so the engine itself skips an
-illegal mid-word start and keeps scanning for the real one, which is what
-fixes SWALLOW. Every other family, and the private-key and key/value rules,
-run exactly as `RULES` applies them everywhere else: unanchored, which is what
-fixes GLUED. A name that DOES carry a secret is masked, and masked the same
-way under both keys (one deterministic function, no memo of the caller's
-strings), so the two still pair with each other. Each mask is counted in
+The third cut anchored `sk-` AND the JWT family with the same lookbehind,
+baked into the PATTERN itself (`_NAME_SK`, `_NAME_JWT`), which fixed SWALLOW
+for both: the engine itself skips an illegal mid-word start and keeps
+scanning for the real one, rather than a callback rejecting whichever match
+`re.sub` already committed to. But JWT did not need the anchor in the first
+place: `_NAME_JWT` requires `eyJ` -- not the loose two-letter `ey` -- plus the
+full three dot-separated segments, a shape none of this fix's clean names
+produce by accident, so anchoring it only cost the ability to catch a JWT
+glued directly onto a preceding word with no separator (`tokeneyJ...`), which
+is exactly the GLUED defect for every other family too.
+
+THE FIX NOW IN PLACE (fourth round): only `sk-` keeps the lookbehind baked
+into its pattern (`_NAME_SK`). The JWT family (`_NAME_JWT`) and every other
+family (AWS key ids, `ghp_`/`github_pat_`, `AIza`, `xox?-`, `ya29.`,
+`Bearer`), and the private-key and key/value rules, all run exactly as
+`RULES` applies them everywhere else: unanchored. `sk-`'s prefix is genuinely
+loose (a common two-letter run plus a hyphen), so it keeps the boundary;
+every other family's prefix is either tightened to a shape no clean filename
+produces (JWT) or distinctive enough on its own (AKIA, ghp_, AIza, xox, ya29,
+Bearer) that a boundary only causes GLUED, never prevents a false positive. A
+name that DOES carry a secret is masked, and masked the same way under both
+keys (one deterministic function, no memo of the caller's strings), so the
+two still pair with each other. Each mask is counted in
 `metadata_redaction_count`. `input_from`'s keys are upstream task ids the
 platform generated, and are served as stored.
 
@@ -194,41 +207,46 @@ PLATFORM_METADATA_KEYS: tuple[str, ...] = RESERVED_METADATA_KEYS
 #: `{upstream task id: filename}`, `expected_outputs` a list of filenames.
 NAME_METADATA_KEYS: frozenset[str] = frozenset({"input_from", "expected_outputs"})
 
-#: The two LOOSE families (`TaskMasking.name`, #227 review, third round): a
-#: short, common prefix that turns up inside an ordinary word by chance --
-#: "risk", "desk" and "task-report" all contain `sk-`; "hockey" and
-#: "eyeTracking" contain `ey`. Anchored with a LOOKBEHIND baked into the
-#: pattern itself, `(?<![A-Za-z0-9])`, so the regex engine refuses to START a
-#: match there and keeps scanning -- which is what a boundary check applied
-#: AFTER `re.sub` already picked a match cannot do. `_mask_anchored`, the
-#: first version of this fix, checked the boundary in the substitution
-#: callback: when the leftmost match began mid-word the callback declined to
-#: replace it, but `re.sub` had already committed to that match's SPAN and
-#: continued scanning from its end, so a real credential inside that same
-#: span -- `task-sk-proj-<real key>.md`, where the embedded match starting at
+#: ONE LOOSE FAMILY (`TaskMasking.name`, #227 review, third round -- fourth on
+#: this specific pattern): `sk-` is a short, common prefix that turns up
+#: inside an ordinary word by chance -- "risk", "desk" and "task-report" all
+#: contain it. Anchored with a LOOKBEHIND baked into the pattern itself,
+#: `(?<![A-Za-z0-9])`, so the regex engine refuses to START a match there and
+#: keeps scanning -- which is what a boundary check applied AFTER `re.sub`
+#: already picked a match cannot do. `_mask_anchored`, an earlier version of
+#: this fix, checked the boundary in the substitution callback: when the
+#: leftmost match began mid-word the callback declined to replace it, but
+#: `re.sub` had already committed to that match's SPAN and continued scanning
+#: from its end, so a real credential inside that same span --
+#: `task-sk-proj-<real key>.md`, where the embedded match starting at
 #: `ta[sk-]proj...` swallows the real `sk-` that opens two characters later --
 #: was never tried at all and went unmasked. The lookbehind fixes this at the
 #: source: the engine itself skips the illegal start and finds the real one.
 #:
-#: The JWT family is also tightened to the shape a JWT actually has: `RULES`'
-#: own pattern masks any "ey" followed by eight more characters, which is what
-#: a JWT's base64url header always starts with, but also what "hockey" and
-#: "key-results" contain by accident. A JWT's header is always the base64url
-#: encoding of a JSON object opening `{"`, which always encodes to "eyJ" --
-#: three characters, never two -- and a JWT is always three dot-separated
-#: segments, header.payload.signature. Requiring both, on top of the same
-#: lookbehind, narrows the match to a shape no ordinary filename produces.
+#: THE JWT FAMILY IS NOT ANCHORED (owner decision 2026-09-28, fourth round). An
+#: earlier version of this pattern kept the same lookbehind on the reasoning
+#: that its two-letter prefix, `ey`, is as loose as `sk-`. But `_NAME_JWT`
+#: does not match on `ey` at all: it requires `eyJ` -- the exact three
+#: characters a JWT's base64url header always starts with, because that
+#: header is always the base64url encoding of a JSON object opening `{"` --
+#: PLUS the full three dot-separated segments, header.payload.signature. No
+#: ordinary filename produces that shape by accident (`eyeTracking.md`,
+#: `hockey-stats-2023Q4.csv` and the other three clean names in this file's
+#: `CLEAN_NAMES` do not contain `eyJ` at all, let alone three base64url
+#: segments), so leaving it unanchored is safe, and it is what closes the
+#: GLUED case for a JWT stuck directly onto a preceding word with no
+#: separator (`tokeneyJ...`), which an anchored version would still miss.
 #:
 #: EVERY OTHER FAMILY (AWS key ids, `ghp_`/`github_pat_`, `AIza`, `xox?-`,
-#: `ya29.`, `Bearer`/`Basic`) runs UNANCHORED, with `RULES`' own pattern and no
-#: boundary check at all -- their prefixes are distinctive enough (four or
-#: more characters, a fixed case, no ordinary word contains them) that a
+#: `ya29.`, `Bearer`/`Basic`) also runs UNANCHORED, with `RULES`' own pattern
+#: and no boundary check at all -- their prefixes are distinctive enough (four
+#: or more characters, a fixed case, no ordinary word contains them) that a
 #: filename producing one by chance is not a real risk, and anchoring them
 #: would have the opposite defect: `notesAKIAIOSFODNN7EXAMPLE.md`, `xghp_...`
 #: and `keyAIzaSy...` are real credentials GLUED to a preceding word, and a
 #: boundary check would leave them in clear.
 _NAME_SK = re.compile(r"(?<![A-Za-z0-9])(sk-[A-Za-z0-9_-]{6})[A-Za-z0-9_-]+")
-_NAME_JWT = re.compile(r"(?<![A-Za-z0-9])(eyJ[A-Za-z0-9_-]{5,})\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+")
+_NAME_JWT = re.compile(r"(eyJ[A-Za-z0-9_-]{5,})\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+")
 
 #: Inside what the task collected about itself (`result_summary`, an event's
 #: `detail`), the keys whose string values are identifiers a client looks
@@ -330,27 +348,31 @@ class TaskMasking:
         """One filename from the caller's workflow spec, masked only where it carries a secret.
 
         The rules as `redaction.redact` runs them over a decoded string,
-        except for the two LOOSE families -- `sk-` and JWT/`ey` -- which use a
-        name-specific pattern with a LOOKBEHIND baked in (`_NAME_SK`,
-        `_NAME_JWT`): the match may only start at the name's beginning or
-        right after a separator, never mid-word, because their short prefixes
-        turn up inside an ordinary word by chance ("task-report" contains
-        `sk-`, "hockey" and "eyeTracking" contain `ey`) -- which is what
-        over-masked a clean filename in the first cut of this fix (the #227
-        review, second round). The lookbehind has to live IN the pattern, not
-        in a check applied after the match: a boundary check on the result of
-        `re.sub` cannot make the engine retry inside a span it already
-        consumed, so a real credential just past an illegal mid-word start
-        (`task-sk-proj-<real key>.md`) went unmasked entirely (the #227
-        review, third round -- see `_NAME_SK`'s comment). Every OTHER family
-        (AWS key ids, `ghp_`/`github_pat_`, `AIza`, `xox?-`, `ya29.`,
-        `Bearer`/`Basic`) and the private-key and key/value rules run
-        UNANCHORED, exactly as `RULES` applies them elsewhere: their prefixes
-        are distinctive enough that gluing to a preceding letter or digit is a
-        real credential, not a false positive, and a boundary check on them
-        would serve `notesAKIA...`, `xghp_...` and `keyAIzaSy...` in clear.
-        Then every literal the input and the caller's metadata named. Nothing
-        is remembered, so the same name masks the same way wherever it is
+        except for `sk-`, which uses a name-specific pattern with a
+        LOOKBEHIND baked in (`_NAME_SK`): the match may only start at the
+        name's beginning or right after a separator, never mid-word, because
+        its short prefix turns up inside an ordinary word by chance
+        ("task-report" contains `sk-`) -- which is what over-masked a clean
+        filename in the first cut of this fix (the #227 review, second
+        round). The lookbehind has to live IN the pattern, not in a check
+        applied after the match: a boundary check on the result of `re.sub`
+        cannot make the engine retry inside a span it already consumed, so a
+        real credential just past an illegal mid-word start
+        (`task-sk-proj-<real key>.md`) went unmasked entirely (third round --
+        see `_NAME_SK`'s comment). JWT (`_NAME_JWT`) runs UNANCHORED: it is
+        tightened to `eyJ` plus the full three dot-separated segments, a
+        shape no clean filename in this file's `CLEAN_NAMES` produces by
+        accident, so it needs no boundary, and leaving it unanchored is what
+        catches a JWT glued directly onto a preceding word with no separator
+        (fourth round). Every OTHER family (AWS key ids, `ghp_`/
+        `github_pat_`, `AIza`, `xox?-`, `ya29.`, `Bearer`/`Basic`) and the
+        private-key and key/value rules also run UNANCHORED, exactly as
+        `RULES` applies them elsewhere: their prefixes are distinctive enough
+        that gluing to a preceding letter or digit is a real credential, not
+        a false positive, and a boundary check on them would serve
+        `notesAKIA...`, `xghp_...` and `keyAIzaSy...` in clear. Then every
+        literal the input and the caller's metadata named. Nothing is
+        remembered, so the same name masks the same way wherever it is
         served.
 
         FIRST, the values the task named that a rule already recognises in
