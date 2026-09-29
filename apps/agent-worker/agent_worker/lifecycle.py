@@ -122,7 +122,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterator, Sequence
 
 from swarm_common.models import EndCause, ProviderState, retries_exhausted, utcnow
-from swarm_common.profiles import RESOURCE_CLASSES
+from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES, InputRefused, check_inputs
 from swarm_common.states import EventType, ParkReason, TaskState
 
 from . import artifact_manifest as manifest_mod
@@ -151,6 +151,7 @@ from .config import WorkerConfig
 from .control import ControlPlane, ControlSignals
 from .errors import (
     CheckpointError,
+    ConfigError,
     ExitCode,
     FencedError,
     FencedWriteRefused,
@@ -795,6 +796,12 @@ class Worker:
         self._link_checkout_artifacts()
 
         # ---- runner input -----------------------------------------------
+        # THE STORED INPUT IS CHECKED AGAIN HERE, before the worker adds a key
+        # of its own (contract request 32, *Preconditions*): a task written
+        # before its profile declared, or one that reached the store by a path
+        # that skipped the submission check, is refused at the point that
+        # actually runs it -- before a credential is mounted.
+        _recheck_runner_input(cfg.runner_profile, task.get("input"))
         payload = dict(task.get("input") or {})
         if repo_info:
             payload.setdefault("repository", repo_info)
@@ -4742,6 +4749,52 @@ class Worker:
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
+
+
+#: Profiles whose stored input the worker does NOT re-check.
+#:
+#: OWNER DECISION PENDING (contract request 32, *Preconditions*). The mock
+#: reads keys the owner withheld from callers on #142 -- `spend`, `provider`,
+#: `credential_revoked_times`, `attempt_count` and the rest -- because they
+#: write platform records; the API refuses them, so the only way to reach
+#: them is a task document seeded directly, which is how the worker's unit
+#: suite simulates a refused credential, a spend report or a park. A re-check
+#: of the mock would make every one of those paths unreachable. Exempting it
+#: keeps them, and costs nothing a caller can use: no caller can store one.
+_INPUT_RECHECK_EXEMPT = frozenset({"mock"})
+
+
+def _recheck_runner_input(runner_profile: str, stored: Any) -> None:
+    """Refuse a stored `input` its profile's declaration refuses.
+
+    The same rule swarm-api and the plugin's bridge apply at submission,
+    `swarm_common.profiles.check_inputs`, on the input as stored -- before the
+    worker adds `task_id`, `attempt_id`, `repository` and its other keys, none
+    of which is a caller's. A refusal is `ConfigError`, which exits 78, "cannot
+    start": the reconciler fails the task without a retry, because every retry
+    would read the same document and be refused the same way.
+
+    The message names the key and the bound, never the value: a refused URL
+    may carry `user:password@`, and this text is stored as the task's error.
+    """
+    if runner_profile in _INPUT_RECHECK_EXEMPT:
+        return
+    profile = RUNNER_PROFILES[runner_profile]
+    raw = stored if stored is not None else {}
+    if not isinstance(raw, dict):
+        raise ConfigError(
+            f"the task's input is a {type(raw).__name__}, not an object; runner profile "
+            f"{runner_profile!r} cannot read it"
+        )
+    try:
+        check_inputs(profile, {key: value for key, value in raw.items() if key != "prompt"})
+    except InputRefused as refused:
+        bound = f"; expected {refused.expected}" if refused.expected else ""
+        raise ConfigError(
+            f"the task's input is refused by runner profile {runner_profile!r}: "
+            f"{', '.join(refused.keys)}{bound} (checked again by the worker, contract "
+            "request 32)"
+        ) from None
 
 
 def _end_cause_of(exc: BaseException) -> EndCause:

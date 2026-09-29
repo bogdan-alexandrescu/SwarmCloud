@@ -111,6 +111,15 @@ def seed_tenant(db: FakeFirestore, *, credentials: list[str] | None = None) -> N
     )
 
 
+#: What `seed_attempt` stores as a task's input when a test names none: an
+#: input its profile's declaration accepts.
+_DEFAULT_INPUT: dict[str, dict[str, Any]] = {
+    "mock": {"prompt": "hello", "steps": 2, "sleep_seconds": 0.1},
+    "generic": {"prompt": "hello", "command": "pytest"},
+    "browser": {"prompt": "hello", "url": "https://example.com"},
+}
+
+
 def seed_attempt(
     db: FakeFirestore,
     *,
@@ -149,7 +158,10 @@ def seed_attempt(
             "runner_profile": runner_profile,
             "resource_class": profile.resource_class,
             "provider": profile.provider,
-            "input": task_input or {"prompt": "hello", "steps": 2, "sleep_seconds": 0.1},
+            # By profile: the worker re-checks a stored input against its
+            # profile's declaration (contract request 32), so a claude-code
+            # task seeded with the mock's knobs would be refused before it ran.
+            "input": task_input or _DEFAULT_INPUT.get(runner_profile, {"prompt": "hello"}),
             "submitted_by": "alice@saga.xyz",
             "created_at": now,
             "updated_at": now,
