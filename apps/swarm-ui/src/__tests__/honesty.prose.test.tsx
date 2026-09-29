@@ -28,6 +28,7 @@ import { act, render, screen, waitFor } from '@testing-library/react'
 
 import { cascade } from './cssgate'
 import type { Result } from '../fetch'
+import { HELP } from '../help'
 import type { AccountsBoard, RuntimeTopology, SpendRollup } from '../api'
 import type {
   Account,
@@ -1027,5 +1028,57 @@ describe('Runtimes, with every help card closed', () => {
     expect(links).toContain('#help/catalogue-from-route')
     expect(links).toContain('#help/units-not-agents')
     expect(links).toContain('#help/workspace-memory')
+  })
+
+  // #126. The screen's one always-present `?` opened `catalogue-from-route`,
+  // which the footer index already carries; what a reader of a card cannot
+  // work out from it is what `Sets it apart` is measured against and what the
+  // `disabled` chip means. The `?` goes to that topic, still after a label.
+  it('points its one `?` at what "Sets it apart" and "disabled" mean, after a label, and keeps catalogue-from-route in the footer', async () => {
+    renderRuntimes()
+    await screen.findAllByText('claude-code', undefined, WAIT)
+    const eyebrow = document.querySelector('.rt-eyebrow')
+    expect(eyebrow, 'the catalogue label is gone').not.toBeNull()
+    const glyph = eyebrow!.querySelector('button[aria-label^="Help: "]')
+    expect(glyph, 'the always-present `?` does not follow a label').not.toBeNull()
+    expect(glyph!.getAttribute('aria-label')).toBe(`Help: ${HELP['what-sets-it-apart-is-arithmetic'].title}`)
+    expect(eyebrow!.firstChild?.textContent, 'the `?` leads its label').not.toBe('')
+    // The topic explains both words the card draws.
+    const topic = HELP['what-sets-it-apart-is-arithmetic']
+    expect(topic.short).toMatch(/rest of the catalogue|the others/)
+    expect(topic.short).toMatch(/[Dd]isabled/)
+    // catalogue-from-route stays reachable, from the footer index.
+    const footer = [...document.querySelectorAll('a[href^="#help/"]')].map((a) => a.getAttribute('href'))
+    expect(footer).toContain('#help/catalogue-from-route')
+  })
+
+  it('makes "Pools" in the Backends caption a link to the pool board', async () => {
+    renderRuntimes()
+    await screen.findAllByText('claude-code', undefined, WAIT)
+    const caption = document.querySelector('.rt-backends caption')
+    expect(caption, 'the Backends table has no caption').not.toBeNull()
+    const link = caption!.querySelector('a.ctl-link')
+    expect(link, '"Pools" in the caption is plain text').not.toBeNull()
+    expect(link!.getAttribute('href')).toBe('#capacity/pools')
+    expect(link!.textContent).toBe('Pools')
+  })
+
+  it('holds only the disabled chip in the card head: no resolved-backend note', async () => {
+    renderRuntimes({
+      runtimes: {
+        'claude-code': runtime({}),
+        codex: runtime({ name: 'codex', available: false, disabled_reason: 'switched off. Use claude-code.' }),
+      },
+    })
+    await screen.findAllByText('codex', undefined, WAIT)
+    const heads = [...document.querySelectorAll<HTMLElement>('.ctl-cards .ctl-card-head')]
+    expect(heads).toHaveLength(2)
+    for (const head of heads) {
+      expect(head.querySelector('.ctl-card-note'), 'the head still repeats the backend the card lists under `runs on`').toBeNull()
+    }
+    const off = heads.find((h) => h.textContent?.includes('codex'))!
+    expect(off.querySelector('.ctl-chip.is-bad')?.textContent).toBe('disabled')
+    const on = heads.find((h) => h.textContent?.includes('claude-code'))!
+    expect(on.querySelector('.ctl-chip'), 'an available runtime carries a chip').toBeNull()
   })
 })

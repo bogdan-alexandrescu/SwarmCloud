@@ -2831,9 +2831,10 @@ figures are not dated, and a limit is never attributed to the kernel.
 
 ## 28. `profiles.py`: claude-code and codex declare an `issue` runner input
 
-**Status: ACCEPTED, accepted by the owner 2026-09-28** (recorded on #265), to
-be applied by the #265 change. Recorded 2026-09-28 from #265. If another
-branch has taken 28 by the time this merges, renumber this one.
+**Status: ACCEPTED, accepted by the owner 2026-09-28** (recorded on #265), and
+applied by the #265 change the same day (see "Applied" below). Recorded
+2026-09-28 from #265. If another branch has taken 28 by the time this merges,
+renumber this one.
 
 ### What is true today
 
@@ -2854,7 +2855,8 @@ declared input is only the number.
 
 ### What it would break if accepted
 
-Nothing that exists: no profile declares an input today, so every current
+Nothing that exists: `mock` is the only profile that declares inputs today
+(#213), and neither `claude-code` nor `codex` does, so every current
 submission stays valid. The API's declared-inputs check (#213) starts
 accepting `issue` for these two profiles and still refuses everything else.
 
@@ -2867,6 +2869,33 @@ accepting `issue` for these two profiles and still refuses everything else.
 - **Invariant 9.** The fetch uses the step's own tenant's credential against the
   step's own repository.
 
+### Applied, 2026-09-28 (#265)
+
+Exactly the requested change, and nothing else in `apps/common/swarm_common/`:
+`profiles.py` gives `claude-code` and `codex` one declared input, `issue`, a
+`RunnerInput("integer", minimum=1, maximum=999_999)`. No other key, type or
+profile changed.
+
+- **The ceiling.** The request says "a positive integer" and a declared integer
+  needs both bounds (#213). 999999 is the largest bound `RunnerInput.describe()`
+  prints exactly: it formats six significant digits, so `2**31 - 1` would be
+  served as "2.14748e+09", a bound the check does not apply.
+- **The API** (`validation.validate_runner_input`) accepts `issue` for these
+  two profiles through the declaration, as it does every declared key, and
+  refuses it with 422 `invalid_input` on a submission with no
+  `repository_url`: the issue is the task's repository's, and there would be
+  nothing to fetch it from.
+- **The worker** (`agent_worker/issue.py`) fetches the issue and its comments
+  read-only after the credentials step, writes `work/issue.md`, and fails the
+  attempt `INPUTS_UNAVAILABLE` before the agent starts when it cannot. The
+  runner names the file in the prompt (`runners/cliagent.py`).
+- **Invariant 10.** The number is data, and so is the text: nothing in the
+  worker reads the issue for anything it does.
+- **#219.** The token is read by `Worker._git_token`, the clone's path, and
+  goes only into the request's `Authorization` header; a redirect to another
+  host is refused rather than followed with it.
+- **Invariant 9.** The fetch is against the task's own repository with its own
+  tenant's credential.
 
 ## 29. `models.py`: `EndCause` gains `PUBLISH_REFUSED`
 

@@ -45,6 +45,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from .. import expected_outputs as expected_mod
+from .. import issue as issue_mod
 from ..logs import StructuredLogger
 from ..procman import TRUNCATION_MARK, run_child
 from ..redact import collect_secrets, scrub_file, scrub_text
@@ -337,8 +338,9 @@ def run_cli_agent(
     # (`lifecycle._build_child_env`). This used to read `input.model` first,
     # so a caller of the API or the console chose the model an agent ran -- an
     # execution parameter from a caller, which invariant 10 forbids. The API
-    # now refuses `input.model` (claude-code and codex declare no input, #213)
-    # and the worker drops a stored one; it is not read here either way.
+    # now refuses `input.model` (claude-code and codex declare only `issue`,
+    # #213 and #265) and the worker drops a stored one; it is not read here
+    # either way.
     model = os.environ.get("MODEL", "").strip() or None
     if model and spec.model_flag:
         if not re.fullmatch(r"[A-Za-z0-9._:\-]{1,128}", model):
@@ -377,6 +379,20 @@ def run_cli_agent(
         if cwd != ctx.work_dir
         else ()
     )
+    # THE ISSUE THIS STEP WAS POINTED AT (#265, contract request 28). The
+    # worker fetched it into `work/issue.md` before starting this process, or
+    # failed the attempt; its line follows the caller's prompt and comes
+    # before the platform's instructions, which still end the prompt. A task
+    # that asks for an issue whose file is not there is refused here rather
+    # than started with a prompt about an issue it cannot read.
+    if payload.get("issue") is not None:
+        issue_file = issue_mod.issue_path(ctx.work_dir)
+        if issue_file.is_symlink() or not issue_file.is_file():
+            raise RunnerFailure(
+                f"input.issue is set but {issue_mod.FILE_NAME} is not in the work "
+                "directory; the agent is not started without the issue it was pointed at"
+            )
+        prompt = f"{prompt}\n\n{issue_mod.prompt_line(issue_file)}"
     # The prompt is the only caller-controlled value that reaches argv, and it
     # is passed as a single trailing argument with no shell in the picture.
     argv.append(expected_mod.with_instructions(prompt, told, ctx.artifacts_dir, staged))

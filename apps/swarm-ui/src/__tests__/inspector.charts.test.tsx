@@ -126,15 +126,19 @@ describe('the inspector draws its charts and keeps its tables', () => {
     expect(el.querySelectorAll('.ctl-util').length).toBeGreaterThanOrEqual(3)
   })
 
-  it('draws the checkpoint strip ABOVE the checkpoint table, which is still there', async () => {
+  // #102: THE CHECKPOINTS ARE LISTED ONCE, in the Checkpoints section's table
+  // read from the bucket. The attempt card keeps what only it can say -- how
+  // many it recorded, and when, which is the strip -- under one line.
+  it('draws the checkpoint strip under the attempt’s one-line count, and no second table', async () => {
     const el = await mount()
     const strip = el.querySelector('figure.ctl-ckpt-strip')
     expect(strip, 'the checkpoint strip is not mounted').not.toBeNull()
-    const table = strip!.nextElementSibling
-    expect(table?.querySelector('th')?.textContent).toBe('Checkpoint')
-    // ck_2 has no event on the page: in the tray, and still a table row.
+    const line = strip!.previousElementSibling
+    expect(line?.classList.contains('att-ckpt-line')).toBe(true)
+    expect(line?.textContent).toMatch(/^2 written/)
+    // ck_2 has no event on the page: in the tray, and counted on the line.
     expect(strip!.querySelector('[data-testid="ckpt-offpage"][data-id="ck_2"]')).not.toBeNull()
-    expect(table?.textContent).toContain('ck_2')
+    expect(strip!.closest('.att-card')?.querySelector('table')).toBeNull()
   })
 
   it('draws the diffstat ABOVE the commit table, which is still there', async () => {
