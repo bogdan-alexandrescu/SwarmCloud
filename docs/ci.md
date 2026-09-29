@@ -34,7 +34,7 @@ Three reasons, in the order they cost the most:
    `make test` is the whole offline suite; running it serialises against every
    other lane working in the same checkout.
 
-## The five workflows, and what each one is responsible for
+## The six workflows, and what each one is responsible for
 
 | workflow | runs on | jobs |
 |---|---|---|
@@ -42,6 +42,7 @@ Three reasons, in the order they cost the most:
 | `terraform.yml` | push to `main`; pull requests touching `terraform/`, `tests/terraform/`, the plan guard, the destroy guard, the unlabelable-type list or the workflow itself | `fmt / validate / tflint` · `terraform test` · `checkov` · `plan` (**not** on a pull request) · `plan (not run on a pull request)` |
 | `security.yml` | every pull request; push to `main`; Mondays 06:00 UTC | `trivy (repo)` · `secret scan` · `checkov (terraform + kubernetes)` · `platform policy assertions` · `trivy (published images)` (schedule / dispatch only) |
 | `release.yml` | push to `main` touching `apps/`, `images/`, `terraform/`, `kubernetes/`, `scripts/` or the workflow; or manual dispatch with an environment | `verify` · `images and scan` (reuses `application.yml`'s build of the commit; moves nothing) · `approval` (the one job naming a GitHub environment — prod waits here) · `promote` · `terraform apply` · `deploy and smoke` — the last three only after `approval` succeeded, and on prod only in the attempt it succeeded in · `prod approval is from an earlier attempt` (runs only on a partial re-run of prod, and fails it) |
+| `auto-merge.yml` | `pull_request_target` when a label is added; acts only on `ready` ([below](#a-ready-pull-request-is-merged-by-github-not-by-a-session)) | `queue for auto-merge` (refuses a `[swarm] task_` title, an unprotected base branch or a missing merge App, with a comment; otherwise enables native squash auto-merge under the PR's title) |
 | `iam-refusal-probe.yml` | **manual dispatch on `main` only**, by the owner, once ([below](#the-deployers-refusal-is-proven-once-by-a-probe-the-owner-dispatches)) — never on a push, a pull request or a schedule | `deployer is refused an unlisted role` |
 
 Three details in that table are easy to misread and each has bitten someone:
@@ -690,6 +691,175 @@ been seen on the runner. A wording change therefore costs a re-run, never a
 false pass. [`classify`](../scripts/iam-refusal-probe.sh) has the full rule.
 [`test_iam_refusal_probe.py`](../tests/unit/scripts/test_iam_refusal_probe.py)
 runs the script against a fake `gcloud`, and holds each case.
+
+## A ready pull request is merged by GitHub, not by a session
+
+Owner decision, 2026-09-28 (#262): **adding the `ready` label enables GitHub's
+native auto-merge**, and GitHub performs the squash merge once the base
+branch's required checks pass at the pull request's head. It used to take a
+merge watcher running in an operator's session, so a green, ready pull request
+waited for somebody's laptop. [`auto-merge.yml`](../.github/workflows/auto-merge.yml)
+is the whole mechanism; it waits for nothing and polls nothing.
+
+It refuses, with a comment on the pull request saying which and why:
+
+* **a title starting `[swarm] task_`** — the worker's placeholder. The squash
+  subject is the pull request's title plus `(#N)`, set explicitly, because a
+  one-commit squash otherwise takes the commit's own message: that is how #238
+  put `swarm: work from task_...` on main as a headline. Retitle it as a
+  fact-style headline, then remove and re-add `ready`;
+* **a base branch with no required status checks** — auto-merge would have
+  nothing to wait for and would merge at once, red or not;
+* **no merge App configured** — see the next paragraph;
+* **a check that already ran on the head commit and is failing or still
+  running** — even one that is not required. Branch protection below requires
+  only the checks that run on every pull request; a path-filtered workflow
+  (`application.yml`, `terraform.yml`) is not required, but when a pull
+  request's changes do trigger it, this still holds the merge on its result.
+
+If the pull request is already green when the label lands, GitHub will not
+*enable* auto-merge on it (its merge state is already `CLEAN`), so the
+workflow merges it directly with the same token, method and subject. Branch
+protection still decides; the App has no bypass.
+
+### Why the merge uses a GitHub App token, not the GITHUB_TOKEN
+
+**A merge performed with the workflow's GITHUB_TOKEN starts no workflow.**
+GitHub drops every event that token causes except `workflow_dispatch` and
+`repository_dispatch`. The push to `main` would then run neither
+`application.yml` — whose `build images` job is the
+[one build of the commit](#images-are-built-once-per-commit-and-the-release-reuses-them)
+— nor `release.yml`, which waits for that build. Nothing would go red: main
+would silently stop being built and released.
+
+A `workflow_run` trigger or a second `push` workflow does not fix that. Both
+hang off an event the GITHUB_TOKEN merge never raised, and this workflow's own
+run finishes when auto-merge is *enabled*, typically long before GitHub
+merges. So auto-merge is enabled with a **GitHub App installation token**:
+GitHub attributes the eventual merge to whoever enabled auto-merge, and a push
+made by an App starts workflows the way a person's does. `release.yml` and
+`application.yml` are unchanged and fire on that push exactly as they do for a
+merge made by hand. The workflow never falls back to the GITHUB_TOKEN; without
+the App it refuses.
+
+The workflow's own GITHUB_TOKEN holds `contents: read` (to read the base
+branch's protection), `checks: read` (to read the head commit's check runs)
+and `pull-requests: write` (to comment on a refusal). The App token is minted
+after the gate passes, scoped to this repository and to `contents: write` +
+`pull-requests: write` + `workflows: write` — the last one so that a pull
+request touching `.github/workflows` auto-merges too (owner decision,
+2026-09-28). Requesting it on the token mint grants nothing by itself; nothing
+is granted until the owner creates the App with that permission (below). The
+job never checks out or runs the pull request's code, and the title reaches
+bash only through `env:`.
+
+**A leaked App private key could rewrite CI and release workflows** — the
+`workflows` permission is exactly the permission to change what
+`.github/workflows/*.yml` do on this repository's next push. That is why the
+key lives only in `secrets.MERGE_APP_PRIVATE_KEY` (never in a file, a log or a
+tfvars) and the App is installed on this repository only, not on the
+organization or another repository.
+[`test_auto_merge_workflow.py`](../tests/unit/scripts/test_auto_merge_workflow.py)
+holds all of that and runs the gate against a fake `gh`.
+
+### What the owner applies, once
+
+These are repository settings. A workflow cannot apply them and no lane
+should; they are here so that applying them is copying three commands.
+
+**1. The merge App.** Create a GitHub App (Settings → Developer settings →
+GitHub Apps) with no webhook and exactly three repository permissions,
+**Contents: Read and write**, **Pull requests: Read and write** and
+**Workflows: Read and write**; install it on this repository only.
+
+**A leaked App private key could rewrite CI and release workflows.** The
+`workflows` permission is the permission to change what
+`.github/workflows/*.yml` do on the next push, so this key is more sensitive
+than the other two: it lives only in the `secrets.MERGE_APP_PRIVATE_KEY`
+Actions secret, never in this repository, a tfvars file, a Job environment or
+a log, and the App is installed on this repository only — never the
+organization, never another repository.
+
+Then:
+
+```bash
+gh variable set MERGE_APP_ID --repo bogdan-alexandrescu/SwarmCloud --body '<the App ID>'
+gh secret set MERGE_APP_PRIVATE_KEY --repo bogdan-alexandrescu/SwarmCloud < merge-app.private-key.pem
+rm merge-app.private-key.pem
+```
+
+The key lives only in that Actions secret: never in this repository, a tfvars
+file or a log. (It is not a tenant's forge token, which lives in Secret
+Manager as `swarm-tenant-<tenant>-git`; this key merges this repository's own
+pull requests and is read only by `auto-merge.yml`.)
+
+**2. Auto-merge allowed on the repository:**
+
+```bash
+gh api --method PATCH repos/bogdan-alexandrescu/SwarmCloud -F allow_auto_merge=true
+```
+
+**3. Branch protection on `main`**, requiring only the checks that run on
+**every** pull request — `security.yml`'s four jobs. `application.yml` and
+`terraform.yml` both have a `pull_request` path filter
+([table above](#the-six-workflows-and-what-each-one-is-responsible-for)), so
+none of their jobs — including `shellcheck` and
+`release workflow wiring (actionlint)` — report on a pull request that does
+not touch their paths. GitHub treats a required check whose workflow was
+skipped by a path filter as **pending, forever**, not as passed, so a required
+check list may hold only checks that report on every pull request:
+
+```bash
+gh api --method PUT \
+  repos/bogdan-alexandrescu/SwarmCloud/branches/main/protection \
+  -H "Accept: application/vnd.github+json" \
+  --input - <<'JSON'
+{
+  "required_status_checks": {
+    "strict": false,
+    "checks": [
+      {"context": "trivy (repo)", "app_id": 15368},
+      {"context": "secret scan", "app_id": 15368},
+      {"context": "checkov (terraform + kubernetes)", "app_id": 15368},
+      {"context": "platform policy assertions", "app_id": 15368}
+    ]
+  },
+  "enforce_admins": false,
+  "required_pull_request_reviews": null,
+  "restrictions": null
+}
+JSON
+```
+
+Why each value:
+
+* **The four checks are exactly `security.yml`'s jobs that run on every pull
+  request.** Its fifth job, `trivy (published images)`, runs only on a
+  schedule or `workflow_dispatch`, never on a pull request, so it is not
+  listed for the same reason `build images` and `plan` are not: a required
+  check that is never reported holds the pull request forever.
+* **`shellcheck` and `release workflow wiring (actionlint)` are deliberately
+  left out**, even though they are useful signal. `application.yml`'s
+  `pull_request` path filter means they do not report on a pull request
+  outside its paths, and GitHub has no way to require a check "when its
+  workflow ran." `terraform.yml`'s jobs are excluded for the same reason.
+  `auto-merge.yml`'s gate (above) is what still holds the merge on these when
+  they DO run: it reads the head commit's check runs directly and refuses to
+  queue while any of them is failing or still in progress, required or not.
+* **`app_id: 15368`** is GitHub Actions. Pinning it means a check of the same
+  name posted by any other App or token cannot satisfy the rule.
+* **`strict: false`**: auto-merge never updates a branch, so "must be up to
+  date with main" would hold every pull request that fell behind main until a
+  person clicked *Update branch* — the session dependency this removes.
+* **`enforce_admins: false`** keeps the owner's manual merge as the emergency
+  path. The App is not an admin and cannot bypass.
+* **`required_pull_request_reviews: null`, `restrictions: null`**: the PUT
+  rejects a body without them; `ready` is the review decision here.
+
+`test_auto_merge_workflow.py` holds this command's check names to the jobs
+that exist and to the ones `security.yml` runs on every pull request, so
+renaming a job, adding a path filter to `security.yml`, or widening the
+required list past what always runs fails CI.
 
 ## The finishing sequence
 
