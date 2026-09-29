@@ -76,7 +76,6 @@ export function RunFiles({
   attempts,
   readAt = null,
   now = null,
-  listing,
 }: {
   task: Task
   /**
@@ -97,38 +96,8 @@ export function RunFiles({
    * the inspector. NULL (or not passed) reads the wall clock at render.
    */
   now?: number | null
-  /**
-   * THE LISTING, WHEN THE CALLER HAS ALREADY READ IT (#103). Details reads it
-   * once, in `Run`, so the Checkpoints tile above can say how many of the
-   * checkpoints written are still in the bucket from the SAME answer this
-   * section draws -- two reads could disagree about the same prefix one poll
-   * apart. Not passed, this section reads its own, as it always has.
-   */
-  listing?: CheckpointListing
 }) {
-  if (listing !== undefined) return <CheckpointsView task={task} listing={listing} now={now} />
   return <CheckpointsPanel task={task} attempts={attempts ?? null} readAt={readAt} now={now} />
-}
-
-/** The checkpoint listing and the attempt records it was asked alongside. */
-export type CheckpointListing = Held<CheckpointsPage, readonly AttemptRow[] | null>
-
-/**
- * THE ONE READ OF A TASK'S CHECKPOINT LISTING, re-read with the drawer. The
- * attempt records ride with it as `asked` -- see `Held` for why the listing is
- * only ever compared with records read no later than it.
- */
-export function useCheckpointListing(
-  task: Task,
-  attempts: readonly AttemptRow[] | null,
-  readAt: number | null,
-): CheckpointListing {
-  return useRead<CheckpointsPage, readonly AttemptRow[] | null>(
-    () => loadCheckpoints(task.id),
-    task.id,
-    `${readAt ?? ''}`,
-    attempts,
-  )
 }
 
 /**
@@ -141,7 +110,7 @@ export function useCheckpointListing(
  * bucket by the time the listing looks. Records read AFTER the listing can
  * name a checkpoint that did not exist when it looked.
  */
-export interface Held<T, C> {
+interface Held<T, C> {
   task: string
   state: Result<T>
   asked: C
@@ -256,14 +225,15 @@ function CheckpointsPanel({
   readAt: number | null
   now: number | null
 }) {
-  return <CheckpointsView task={task} listing={useCheckpointListing(task, attempts, readAt)} now={now} />
-}
-
-function CheckpointsView({ task, listing, now }: { task: Task; listing: CheckpointListing; now: number | null }) {
   // `records` ARE THE ATTEMPTS AS THEY WERE WHEN THIS LISTING WAS ASKED FOR,
   // not as the latest drawer read has them -- see `Held`. Every comparison
   // below is between a listing and records read no later than it.
-  const { state, asked: records } = listing
+  const { state, asked: records } = useRead<CheckpointsPage, readonly AttemptRow[] | null>(
+    () => loadCheckpoints(task.id),
+    task.id,
+    `${readAt ?? ''}`,
+    attempts,
+  )
 
   if (state.status === 'loading') {
     return (
@@ -809,20 +779,6 @@ function CheckpointRow({
         {/* THREE VALUES. `resumable ?? false` here would turn "we could not
             tell" into "a retry cannot use this", which is a different and
             much more alarming sentence. */}
-        {/* THE LOCATION, WHOLE (#102). The attempt cards' checkpoint table
-            carried it with `copy gsutil`, and this is the checkpoints' one
-            table now. The whole uri is in the title: a stacked record
-            ellipsizes it to one line (CH-13), and a cut uri is a different
-            uri. No signed URL is minted: the reader's own credentials keep
-            the tenant boundary in one place. */}
-        <span className="ctl-sub rf-uri">
-          <code className="mono uri" title={record.uri}>
-            {record.uri}
-          </code>
-          <button type="button" className="copy" onClick={() => navigator.clipboard?.writeText(`gsutil cp -r ${record.uri} .`)}>
-            copy gsutil
-          </button>
-        </span>
         <span className="ctl-sub" data-testid="rf-resume">
           resume{' '}
           {record.resumable === null ? (
