@@ -258,14 +258,43 @@ settings are enough to move it:
 The fix is therefore structural, not a longer blocklist. `gitops.prepare_publish_repo`
 builds a fresh repository under the worker's private scratch (never checkpointed,
 never uploaded, never named in the agent's environment), `git init`-ed so its
-config is the worker's. The agent's committed work is transferred in by a
-**local, token-less** transfer of the commit the worker computed — the clone's
-object store is borrowed and no git runs against the clone, so no credential is
-present during the transfer and nothing the clone's configuration could do can
-move one. The remote is set from the validated `repository_url`, never read back
-from the clone; the credential-helper list is reset to the worker's own helper
-before it is added; and the transport is pinned (verified TLS, no proxy, no
-injected header). The integrator's merges happen in this repository too.
+config is the worker's. The agent's work is transferred in by a **local,
+token-less fetch** of the commits the worker names by sha — the head it computed
+and the clone base it recorded before the agent ran — with
+`transfer.fsckObjects=true`, so no credential is present during the transfer and
+every object arrives checked. The remote is set from the validated
+`repository_url`, never read back from the clone; the credential-helper list is
+reset to the worker's own helper before it is added; and the transport is pinned
+(verified TLS, no proxy, no injected header). The integrator's merges happen in
+this repository too.
+
+**The leak scans and the replay run here as well** (owner decision, 2026-09-29,
+#259). Three security reviews found the per-commit and final-tree secret scans
+bypassable through state the agent writes under its clone's `.git` — replace
+refs, `info/grafts`, `shallow`, and finally a forged
+`objects/info/commit-graph`, from which `git diff` takes a commit's root tree —
+each closed on its own before the next was found. So the kept-commit list, both
+scans, the fold, the replay (`commit-tree`), the authorship check and the push
+all run in the clean repository, and none of that state reaches them:
+
+* **no alternates.** An earlier version borrowed the clone's object store
+  through `objects/info/alternates`, which brings the clone's commit-graph with
+  it. Objects are fetched instead, and the connectivity check proves each
+  commit's real tree and parents arrived;
+* **the upload side cannot choose the history.** `upload-pack` runs in the clone
+  (git has no other way to read a repository it does not own; it is the one
+  command git documents as safe in an untrusted repository, and it runs no
+  hook) with grafts, replacement and the commit-graph off, and with its shallow
+  boundary read from a file the worker writes holding the recorded base — never
+  the agent's `.git/shallow`. Anything the agent's store or config does there
+  can only make the fetch fail, which publishes nothing;
+* **every worker git runs with `core.commitGraph=false`, `GIT_GRAFT_FILE=/dev/null`
+  and `GIT_NO_REPLACE_OBJECTS=1`** as a second belt.
+
+The agent's clone is still where the worker commits what the agent left
+uncommitted (`commit_dirty`, with hooks, fsmonitor and signing overridden), and
+where the harvest's patch is read (`--no-ext-diff --no-textconv`, so an external
+diff program or textconv filter the agent configured never runs).
 
 **That private scratch is not itself a permission boundary** — it shares a uid
 with the agent (`workspace.py` says so), so the agent can create paths inside it

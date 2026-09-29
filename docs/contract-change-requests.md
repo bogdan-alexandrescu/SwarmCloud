@@ -2879,7 +2879,8 @@ not yet applied. Recorded 2026-09-29 from #259. If another branch has taken
 The worker refuses to publish in two ways that fail the attempt retryably
 (#259): the branch it would push adds a credential ("the final tree adds a
 credential in <file>; remove it"), or the agent's `pr-title.txt` is present
-and unusable (a task id, a mention, attribution). Neither has an end cause
+and unusable (a task id, or attribution; since 2026-09-29 a mention is
+neutralised with a zero-width joiner, never refused). Neither has an end cause
 of its own. `EndCause` is in the frozen `swarm_common`, so the worker writes
 `RUNNER_ERROR` for the first and `OUTPUTS_MISSING` for the second
 (`agent_worker.lifecycle._fail_for_final_tree_leak`,

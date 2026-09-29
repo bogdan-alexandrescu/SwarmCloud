@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import os
 import re
-import shutil
+import shlex
 import stat
 import tempfile
 import threading
@@ -417,6 +417,19 @@ def _git_env(private_dir: Path) -> dict[str, str]:
         # checks the chain itself against each commit's recorded parent
         # (`lifecycle._first_leaking_commit`), which covers `.git/shallow`.
         "GIT_GRAFT_FILE": "/dev/null",
+        # And for a commit-graph (#259, third review): git takes a commit's
+        # ROOT TREE from `objects/info/commit-graph` when one is present, so
+        # a graph whose entry for a commit names a different tree made
+        # `git diff` compare trees the push never sends. The scans run in a
+        # repository the worker made (`prepare_publish_repo`), which has no
+        # graph the agent wrote; this switches graphs off for every worker
+        # git as well, so none is read even where one exists. Command-scope
+        # configuration outranks any repository's own `core.commitGraph`.
+        "GIT_CONFIG_COUNT": "2",
+        "GIT_CONFIG_KEY_0": "core.commitGraph",
+        "GIT_CONFIG_VALUE_0": "false",
+        "GIT_CONFIG_KEY_1": "fetch.writeCommitGraph",
+        "GIT_CONFIG_VALUE_1": "false",
     }
 
 
@@ -843,8 +856,8 @@ def summarize_work(
     if span and head and base != head:
         log_code, log_text = run(
             [
-                *g, "log", "--numstat", "--no-color", "--no-merges",
-                f"--format={_RS}%H{_FS}%s{_FS}%an{_FS}%aI",
+                *g, "log", "--numstat", "--no-color", "--no-merges", "--no-ext-diff",
+                "--no-textconv", f"--format={_RS}%H{_FS}%s{_FS}%an{_FS}%aI",
                 span,
             ],
             "harvest-log",
@@ -868,8 +881,14 @@ def summarize_work(
         # patch that carries committed and uncommitted work together. That is
         # what a reader wants: agents that edit without committing are the
         # common case, not the exception.
+        # `--no-ext-diff --no-textconv`: the clone's `.git/config` and
+        # `.gitattributes` are the agent's, and `git diff` runs the
+        # `diff.external` program or `diff.<driver>.textconv` filter they
+        # name -- agent code executing in the worker after the sandbox was
+        # finished with, and a patch reading whatever that program printed
+        # (#259, the hostile-config test).
         diff_code, _ = _git_text(
-            [*g, "diff", "--binary", "--no-color", base, "--"],
+            [*g, "diff", "--binary", "--no-color", "--no-ext-diff", "--no-textconv", base, "--"],
             repo=repo,
             private_dir=private_dir,
             logs_dir=logs_dir,
@@ -1374,6 +1393,12 @@ def verify_worker_authorship(
     return len(shas)
 
 
+#: A full sha-1 object name. The clean repository's fetch names each commit it
+#: wants by sha, never by a ref the agent could point elsewhere, and a
+#: refspec's source must be the whole name.
+_FULL_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+
+
 def prepare_publish_repo(
     *,
     source_repo: Path,
@@ -1382,69 +1407,89 @@ def prepare_publish_repo(
     logs_dir: Path,
     timeout_seconds: int,
     logger: Any,
+    base: str | None = None,
     git_binary: str = "git",
     local_branch: str = "swarm-publish",
 ) -> Path:
-    """Build a fresh, worker-owned repository holding the work about to be pushed.
+    """Build the worker-owned CLEAN repository the publish decides and pushes from.
 
-    WHY THIS EXISTS. The push and the integrator's merge authenticate with the
-    tenant's token, and a token that reaches many repositories makes where it is
-    allowed to go a tenant-isolation guarantee (invariant 9). Run inside the
-    repository the agent just edited, those commands honour that repository's
-    `.git/config` -- which the agent can write. A `credential.helper` there is
-    handed the token when the request succeeds; a `url.<host>.insteadOf` /
-    `pushInsteadOf` there redirects the authenticated push, and the credential
-    with it, to a host of the agent's choosing. No `-c` override disables
-    `insteadOf`, so the only robust defence is to run the token-bearing commands
-    in a repository whose configuration the worker wrote.
+    TWO GUARANTEES LIVE HERE, and both come from where the repository is, not
+    from a list of settings to switch off.
 
-    This builds that repository. It is created empty with `git init` under an
-    unpredictable name in the worker's private scratch (see the body: a constant
-    name the agent could predict let it pre-plant a symlink there), so its
-    config is the worker's. The work is brought in WITHOUT running git against
-    the clone: the clone's object database is borrowed through
-    `objects/info/alternates` and its shallow boundary copied, then the exact
-    commit the worker resolved is checked out. No `upload-pack` runs in the
-    clone, so its configuration never executes; no token is present; and the
-    commit is a sha, never a ref the agent could redirect. The remote is never
-    taken from here either; the caller passes the validated `repository_url` to
-    `push_branch` / `merge_branches`.
+    THE TOKEN (#219). The push and the integrator's merge authenticate with
+    the tenant's token, and a token that reaches many repositories makes where
+    it is allowed to go a tenant-isolation guarantee (invariant 9). Run inside
+    the repository the agent edited, those commands honour its `.git/config`,
+    which the agent can write: a `credential.helper` there is handed the
+    token, and a `url.<host>.insteadOf` / `pushInsteadOf` redirects the
+    authenticated push to a host of the agent's choosing. No `-c` disables
+    `insteadOf`, so the token-bearing commands run in a repository whose
+    configuration the worker wrote. The remote is never taken from here either;
+    the caller passes the validated `repository_url` to `push_branch` /
+    `merge_branches`.
 
-    `source_repo` is the agent's clone -- by the time this runs the worker has
-    folded every agent commit into one it wrote (`fold_agent_commits`), so the
-    clone's HEAD is the worker's. `work_head`, when given, is that commit; when
-    None it is read from the clone's HEAD, which is the folded worker commit.
+    THE LEAK SCANS (#259, owner decision 2026-09-29). Three security reviews
+    each found the per-commit and final-tree scans bypassable through state
+    the agent writes under its clone's `.git`: `refs/replace/*`,
+    `info/grafts`, `shallow`, and a forged `objects/info/commit-graph`, from
+    which `git diff` takes a commit's root tree. Each was closed on its own
+    and the next review found another. So the kept-commit list, both scans,
+    the fold, the replay, the authorship check and the push all run HERE,
+    and nothing the agent wrote under `.git` reaches them:
+
+    * the repository is `git init`-ed fresh under an unpredictable name in
+      the worker's private scratch (outside `work/`), so its config, hooks,
+      refs and object store are the worker's;
+    * NO ALTERNATES. The agent's objects are FETCHED in, with
+      `transfer.fsckObjects=true`: every object arrives as bytes git checks
+      and hashes, and the connectivity check proves each commit's real tree
+      and parents are present. An object store borrowed through
+      `objects/info/alternates` would bring the agent's
+      `objects/info/commit-graph` with it;
+    * the commits wanted are named by SHA -- the worker's own `commit_dirty`
+      result or the clone's HEAD, and the clone base the worker recorded
+      before the agent ran -- never by a ref the agent could repoint;
+    * the fetch's upload side runs in the clone (git has no other way to read
+      a repository it does not own) with grafts, replacement and the
+      commit-graph switched off and its SHALLOW boundary taken from a file
+      the worker writes here, holding the recorded base -- never from the
+      agent's `.git/shallow`. `upload-pack` is the one git command git
+      documents as safe to run in an untrusted repository: it runs no hook,
+      and `uploadpack.packObjectsHook` is honoured only from configuration
+      the agent cannot write. Whatever the agent's store or config does to
+      the upload side can only make the fetch fail -- a missing or
+      inconsistent object fails the check here, and nothing is published --
+      never change what an object this side reads contains;
+    * every git command here runs with `core.commitGraph=false`, no graft
+      file and no replacement (`_git_env`), and the repository has no graph,
+      grafts or replace refs of the agent's in it anyway.
+
+    `work_head`, when given, is the commit to publish; when None it is the
+    clone's HEAD, read by `rev-parse` (the agent's processes are reaped
+    before this runs, so it cannot move). `base` is the clone base the
+    worker recorded (`EMPTY_CLONE_BASE` for an empty repository); it is
+    fetched too, so the fold and the final-tree scan have its tree, and
+    anything else refuses: without it there is no telling the agent's
+    commits from the repository's. The work is checked out on
+    `local_branch`, so the index holds the final tree the fold commits and
+    the integrator's merges have a working tree.
     """
     source_repo = Path(source_repo)
     private_dir = Path(private_dir)
     private_dir.mkdir(parents=True, exist_ok=True)
 
-    # WHERE the publish repository lives is part of the guarantee, not an
-    # implementation detail. `private_dir` shares a uid with the agent
-    # (workspace.py: "not a permission boundary"), so during its run the agent
-    # can create any path under it -- including a SYMLINK at a name it can
-    # predict. A constant name was exactly that hole: `shutil.rmtree` refuses to
-    # delete a symlink and, with `ignore_errors=True`, swallows the refusal;
-    # `mkdir(exist_ok=True)` then no-ops on the surviving link; and `git init`
-    # at that path re-initialises the AGENT's repository behind it, honouring the
-    # `.git/config` the agent wrote there (`url.*.insteadOf`, a
-    # `credential.helper`, `http.proxy`) on the very push this repository exists
-    # to isolate. `mkdtemp` creates the directory with an unpredictable name and
-    # O_EXCL semantics, generated now -- after the agent has exited -- so the
-    # worker never lands on, nor follows, anything the agent could have planted.
-    publish_dir = Path(tempfile.mkdtemp(dir=str(private_dir), prefix="publish-"))
-
-    agent_git = source_repo / ".git"
-    agent_objects = (agent_git / "objects").resolve()
-    if not agent_objects.is_dir():
-        raise GitError(f"the agent repository has no object store at {agent_objects}")
+    empty = base == EMPTY_CLONE_BASE
+    floor = "" if empty else (base or "").strip()
+    if not empty and not _FULL_SHA_RE.match(floor):
+        raise GitError(
+            "the clone base is unknown, so the worker cannot tell the agent's "
+            "commits from the repository's; nothing was pushed"
+        )
 
     target = (work_head or "").strip()
     if not target:
-        # The clone's HEAD after the fold is the worker's own commit; read it
-        # here rather than trust a ref the agent could have pointed elsewhere.
         code, text = _git_text(
-            [git_binary, *_NO_HOOKS, "rev-parse", "HEAD"],
+            [git_binary, *_NO_HOOKS, "rev-parse", "--verify", "--quiet", "HEAD^{commit}"],
             repo=source_repo,
             private_dir=private_dir,
             logs_dir=logs_dir,
@@ -1453,8 +1498,32 @@ def prepare_publish_repo(
             logger=logger,
         )
         target = text.strip() if code == 0 else ""
-    if not target or not _SHA_RE.match(target):
+    if not _FULL_SHA_RE.match(target):
         raise GitError("could not resolve the commit to publish from the clone")
+
+    # WHERE the repository lives is part of the guarantee, not an
+    # implementation detail. `private_dir` shares a uid with the agent
+    # (workspace.py: "not a permission boundary"), so during its run the agent
+    # could create any path under it -- including a SYMLINK at a name it can
+    # predict. A constant name was exactly that hole: `shutil.rmtree` refuses
+    # to delete a symlink and, with `ignore_errors=True`, swallows the refusal;
+    # `mkdir(exist_ok=True)` then no-ops on the surviving link; and `git init`
+    # at that path re-initialises the AGENT's repository behind it. `mkdtemp`
+    # creates the directory with an unpredictable name and O_EXCL semantics,
+    # generated now -- after the agent has exited -- so the worker never lands
+    # on, nor follows, anything the agent could have planted.
+    publish_dir = Path(tempfile.mkdtemp(dir=str(private_dir), prefix="publish-"))
+
+    def run(argv: list[str], slug: str) -> tuple[int, str]:
+        return _git_text(
+            argv,
+            repo=publish_dir,
+            private_dir=private_dir,
+            logs_dir=logs_dir,
+            slug=slug,
+            timeout_seconds=timeout_seconds,
+            logger=logger,
+        )
 
     init_code, _ = _git_text(
         [git_binary, *_NO_HOOKS, "init", "--quiet", str(publish_dir)],
@@ -1468,32 +1537,67 @@ def prepare_publish_repo(
     if init_code != 0:
         raise GitError("could not initialise the worker's publish repository")
 
-    # Borrow the clone's objects; no git runs against the clone, so its config
-    # never executes, and no token is present during the transfer.
-    alternates = publish_dir / ".git" / "objects" / "info" / "alternates"
-    alternates.parent.mkdir(parents=True, exist_ok=True)
-    alternates.write_text(f"{agent_objects}\n")
+    # The upload side's shallow boundary is the base the worker recorded, not
+    # the agent's `.git/shallow`: a line the agent added there would make git
+    # treat a commit mid-history as a root, and one it removed would send the
+    # walk into history the clone never had. The first only drops objects
+    # (the connectivity check then fails the fetch), the second only fails
+    # the pack -- but neither is the agent's to decide.
+    if empty:
+        shallow_file = "/dev/null"
+    else:
+        boundary = publish_dir / ".git" / "swarm-source-shallow"
+        boundary.write_text(f"{floor}\n")
+        shallow_file = str(boundary)
+    upload_pack = " ".join(
+        [
+            "env",
+            "GIT_GRAFT_FILE=/dev/null",
+            "GIT_NO_REPLACE_OBJECTS=1",
+            f"GIT_SHALLOW_FILE={shlex.quote(shallow_file)}",
+            "GIT_CONFIG_NOSYSTEM=1",
+            "GIT_CONFIG_GLOBAL=/dev/null",
+            shlex.quote(git_binary),
+            "-c", "core.commitGraph=false",
+            "-c", "core.hooksPath=/dev/null",
+            "-c", "core.fsmonitor=false",
+            # The wants are shas, not advertised refs.
+            "-c", "uploadpack.allowAnySHA1InWant=true",
+            "upload-pack",
+        ]
+    )
+    refspecs = [f"+{target}:refs/swarm/head"]
+    if not empty:
+        refspecs.append(f"+{floor}:refs/swarm/base")
+    fetch_code, _ = run(
+        [
+            git_binary, *_NO_HOOKS,
+            "-c", "transfer.fsckObjects=true",
+            "-c", "fetch.fsckObjects=true",
+            "-c", "fetch.recurseSubmodules=false",
+            "-c", "submodule.recurse=false",
+            "-c", "gc.auto=0",
+            "fetch", "--quiet", "--no-tags", "--no-recurse-submodules", "--update-shallow",
+            f"--upload-pack={upload_pack}",
+            "--", str(source_repo), *refspecs,
+        ],
+        "publish-fetch",
+    )
+    if fetch_code != 0:
+        raise GitError(
+            "could not fetch the agent's work into the worker's clean repository "
+            "(an object failed git's checks, or the clone's history is incomplete); "
+            "nothing was pushed"
+        )
 
-    # A shallow clone's history stops at a boundary whose parents are absent.
-    # The publish repo must know the same boundary, or git would look for
-    # ancestors that were never fetched.
-    agent_shallow = agent_git / "shallow"
-    if agent_shallow.exists():
-        shutil.copyfile(agent_shallow, publish_dir / ".git" / "shallow")
-
-    checkout_code, _ = _git_text(
+    checkout_code, _ = run(
         [git_binary, *_NO_HOOKS, "checkout", "--quiet", "-f", "-B", local_branch, target],
-        repo=publish_dir,
-        private_dir=private_dir,
-        logs_dir=logs_dir,
-        slug="publish-checkout",
-        timeout_seconds=timeout_seconds,
-        logger=logger,
+        "publish-checkout",
     )
     if checkout_code != 0:
-        raise GitError("could not check out the worker's commit in the publish repository")
+        raise GitError("could not check out the agent's work in the publish repository")
 
-    logger.info("publish repository prepared", branch=local_branch)
+    logger.info("clean publish repository prepared", branch=local_branch)
     return publish_dir
 
 

@@ -4190,9 +4190,10 @@ class Worker:
 
         # NO AGENT PROCESS IS ALIVE ONCE THE TOKEN IS IN HAND. This is the one
         # place the credential-bearing publish begins -- everything below carries
-        # or leads directly to the tenant token (`commit_dirty`/`fold` run in the
-        # clone, then `prepare_publish_repo` mkdtemps the publish repo and the
-        # fetch/merge/push authenticate). A process the agent double-forked into
+        # or leads directly to the tenant token (`commit_dirty` runs in the
+        # clone, then `prepare_publish_repo` mkdtemps the clean publish repo and
+        # fetches the work into it, where the scans, the replay or fold and the
+        # merge/push run). A process the agent double-forked into
         # its own session survives the runner's group kill (procman.py), shares
         # the worker's uid, and could watch `ws.private` to poison the publish
         # repo before the push or read the short-lived credential file while it
@@ -4265,8 +4266,32 @@ class Worker:
                     "was pushed; the harvest still describes the work against "
                     "that marker"
                 )
+
+            # EVERYTHING THAT DECIDES WHAT IS PUSHED, AND THE PUSH, RUNS IN A
+            # REPOSITORY THE WORKER OWNS (owner decision, 2026-09-29, #259).
+            # The agent's commits are fetched out of the clone into a fresh,
+            # worker-owned repository -- object-checked, by sha, with no
+            # alternates into the clone and none of its config, hooks, grafts,
+            # shallow file, replace refs or commit-graph honoured -- and the
+            # kept-commit list, the per-commit scan, the fold, the final-tree
+            # scan, the replay, the authorship check, the integrator's merges
+            # and the token-bearing push all run there. Three reviews found
+            # the scans bypassable through `.git` state the agent writes, one
+            # file at a time; this removes the class. The token is still only
+            # ever used in this repository (#219). See
+            # `gitops.prepare_publish_repo` and docs/merge-strategy-live-proof.md §6.
+            publish_repo = prepare_publish_repo(
+                source_repo=repo,
+                work_head=new_sha or None,
+                base=self._publish_base,
+                private_dir=ws.private,
+                logs_dir=ws.logs,
+                timeout_seconds=cfg.git_clone_timeout_seconds,
+                logger=self.log,
+            )
+
             replayed = replay_agent_commits(
-                repo=repo,
+                repo=publish_repo,
                 base=self._publish_base,
                 keep=new_sha,
                 task_id=cfg.task_id,
@@ -4293,7 +4318,7 @@ class Worker:
                 out["agent_commits_kept"] = kept
             else:
                 replaced = fold_agent_commits(
-                    repo=repo,
+                    repo=publish_repo,
                     base=self._publish_base,
                     keep=new_sha,
                     message=(
@@ -4324,7 +4349,7 @@ class Worker:
             # the attempt fails retryably (`_fail_for_final_tree_leak`),
             # naming the file and never the value.
             leak = final_tree_leak(
-                repo=repo,
+                repo=publish_repo,
                 base=self._publish_base,
                 leaks=self._leaks_in_added_text,
                 private_dir=ws.private,
@@ -4342,25 +4367,12 @@ class Worker:
                 self.log.error("not publishing: the final tree failed the leak check", reason=reason)
                 return out
 
-            # EVERYTHING THAT CARRIES THE TOKEN RUNS IN A REPOSITORY THE WORKER
-            # OWNS, NOT IN THE CLONE. The push and the integrator's contributor
-            # fetch authenticate with the tenant token; run in the clone, a
-            # `credential.helper` or `url.*.insteadOf` the agent wrote into
-            # `.git/config` would receive or redirect it. So the worker's folded
-            # commit is transferred into a fresh, worker-owned repository -- by
-            # borrowing the clone's objects, with no token and no git run against
-            # the clone -- and the merge, the authorship check and the push all
-            # happen there. See `gitops.prepare_publish_repo` and
-            # docs/merge-strategy-live-proof.md §6. The verify runs here too, so
-            # it sees the integrator's merge commits, which exist only here.
-            publish_repo = prepare_publish_repo(
-                source_repo=repo,
-                work_head=None,
-                private_dir=ws.private,
-                logs_dir=ws.logs,
-                timeout_seconds=cfg.git_clone_timeout_seconds,
-                logger=self.log,
-            )
+            # EVERYTHING THAT CARRIES THE TOKEN RUNS IN THE SAME WORKER-OWNED
+            # REPOSITORY, NOT IN THE CLONE. The push and the integrator's
+            # contributor fetch authenticate with the tenant token; run in the
+            # clone, a `credential.helper` or `url.*.insteadOf` the agent wrote
+            # into `.git/config` would receive or redirect it. The verify runs
+            # here too, so it sees the integrator's merge commits.
 
             # THE INTEGRATOR MERGES BEFORE IT PUSHES.
             #
@@ -4478,6 +4490,11 @@ class Worker:
         agent_title, agent_body, refused = self._agent_pull_request_text()
         title = agent_title or self._generated_pull_request_title()
         body = f"{agent_body}\n\n---\n\n{generated}" if agent_body else generated
+        # The generated block quotes the step's prompt, which is anyone's
+        # text too; the whole body is neutralised, so no part of what the
+        # platform posts can page anyone (owner decision, 2026-09-29). The
+        # agent's part already was, and a second pass changes nothing.
+        body = _neutralise_mentions(body)
         out["pull_request_text"] = {
             "title": "agent" if agent_title else "platform",
             "body": "agent" if agent_body else "platform",
@@ -4495,7 +4512,7 @@ class Worker:
                 f"the branch was pushed; no pull request was opened because the "
                 f"agent wrote no usable {PR_TITLE_FILE}. Write a one-line title "
                 f"to $SWARM_ARTIFACTS_DIR/{PR_TITLE_FILE} (no task id, no "
-                f"mentions) and retry"
+                f"attribution) and retry"
             )
             self.log.warning("no pull request opened: no usable agent title", refused=refused)
             return out
@@ -4662,8 +4679,10 @@ class Worker:
           neither may carry attribution (`gitops.ATTRIBUTION_MARKERS`, the
           list the push check reads): the owner's rule is none on GitHub, and
           the forge would carry it where the push check cannot see;
-        * scrubbed of every registered secret, THEN cut (the #232 rule): the
-          title to `PR_TITLE_MAX_CHARS`, the body to `PR_BODY_MAX_BYTES`.
+        * scrubbed of every registered secret, then every `@` that could
+          mention given a zero-width joiner (`_neutralise_mentions`; a mention
+          never refuses either file), THEN cut (the #232 rule): the title to
+          `PR_TITLE_MAX_CHARS`, the body to `PR_BODY_MAX_BYTES`.
 
         The body is Markdown rendered on a public page, like the prompt the
         generated body used to quote; it gets no more trust than that.
@@ -4682,11 +4701,12 @@ class Worker:
                 refused.append(f"{PR_BODY_FILE}: blank")
             elif _carries_attribution(text):
                 refused.append(f"{PR_BODY_FILE}: carries attribution")
-            elif _carries_mention(text):
-                refused.append(f"{PR_BODY_FILE}: mentions")
-                self.log.warning("agent body refused: mentions")
             else:
-                text = str(self._scrub(text))
+                # Scrubbed FIRST, then every mention neutralised: a joiner
+                # inserted inside a registered value would stop the scrub
+                # matching it (owner decision, 2026-09-29: neutralised, never
+                # refused).
+                text = _neutralise_mentions(str(self._scrub(text)))
                 encoded = text.encode("utf-8")
                 if len(encoded) > PR_BODY_MAX_BYTES:
                     text = (
@@ -4723,10 +4743,9 @@ class Worker:
             refused.append(f"{PR_TITLE_FILE}: holds control characters")
         elif _carries_attribution(text):
             refused.append(f"{PR_TITLE_FILE}: carries attribution")
-        elif _carries_mention(text):
-            refused.append(f"{PR_TITLE_FILE}: mentions")
-            self.log.warning("agent title refused: mentions")
         else:
+            # A mention does not refuse a title: `_scrub_and_cap_title`
+            # neutralises it (owner decision, 2026-09-29).
             candidate = self._scrub_and_cap_title(text)
             if self._title_carries_task_id(text) or self._title_carries_task_id(candidate):
                 # OWNER RULE, 2026-09-28: a pull request title never carries
@@ -4744,7 +4763,8 @@ class Worker:
         attempt owes, or None when it can, is not owed, or is absent.
 
         OWNER DECISION, 2026-09-28: a title that EXISTS but is refused (it
-        names a task id, mentions someone, carries attribution, ...) fails
+        names a task id, carries attribution, ...; a mention is neutralised,
+        never refused, since 2026-09-29) fails
         the attempt retryably before anything is pushed, exactly like a
         missing one (`_publish_withheld`, `_fail_for_refused_title`). The
         finish check tests that the title is USABLE, not only that the file
@@ -4762,10 +4782,14 @@ class Worker:
         return f"{PR_TITLE_FILE} refused: {why}; write a fact-style title"
 
     def _scrub_and_cap_title(self, text: str) -> str:
-        """Redact every registered secret, THEN cut to `PR_TITLE_MAX_CHARS` (#232's
-        rule): scrubbed first, or a cut prefix of a secret would survive the cut
-        that was supposed to remove it."""
-        text = str(self._scrub(text))
+        """Redact every registered secret, neutralise every mention, THEN cut
+        to `PR_TITLE_MAX_CHARS` (#232's rule): scrubbed first, or a cut prefix
+        of a secret would survive the cut that was supposed to remove it, and
+        before the joiners go in, which would stop a registered value that
+        holds an `@` from matching. Every title the platform sends -- the
+        agent's and one made from an issue title -- comes through here, so
+        none can page anyone (owner decision, 2026-09-29)."""
+        text = _neutralise_mentions(str(self._scrub(text)))
         if len(text) > PR_TITLE_MAX_CHARS:
             text = text[: PR_TITLE_MAX_CHARS - 3].rstrip() + "..."
         return text
@@ -4842,8 +4866,9 @@ class Worker:
         if number is None:
             return None
         # An issue's title is anyone's text: a mention in it would page that
-        # person or team from a title the platform wrote, so the `@` goes.
-        text = f"{_unmention(title)} (#{number})" if title else f"Fixes #{number}"
+        # person or team from a title the platform wrote, so
+        # `_scrub_and_cap_title` puts a zero-width joiner after each `@`.
+        text = f"{title} (#{number})" if title else f"Fixes #{number}"
         return self._scrub_and_cap_title(text)
 
     def _read_agent_text(self, name: str, refused: list[str]) -> str | None:
@@ -5449,150 +5474,59 @@ def _carries_attribution(text: str) -> bool:
     return any(marker in lowered for marker in ATTRIBUTION_MARKERS)
 
 
-#: A GitHub @mention as the forge reads one: `@user` or `@org/team`, the `@`
-#: not preceded by a word character, dot, slash or backtick (so `a@b.com` and
-#: `x@y` are not mentions), the name starting with a letter or digit. An agent
-#: pull request text that mentions anyone is refused (owner rule, 2026-09-28):
-#: a pull request the platform opens must not page a person or a team on the
-#: agent's say-so, and GitHub notifies on the title as well as the body. It is
-#: deliberately wider than GitHub's own rules (which skip code spans): a false
-#: refusal costs the agent's wording; a false pass pings someone.
+#: Every `@` that could start a GitHub mention, written literally, as a
+#: character reference (`&#64;`, `&#x40;`, `&commat;`, or a numeric one with
+#: no semicolon, which an HTML parser still decodes), or as the fullwidth
+#: `U+FF20`. OWNER DECISION, 2026-09-29 (#259): the agent's `pr-title.txt` and
+#: `pr-body.md`, and every title or body the platform opens a pull request
+#: with, have a U+200D ZERO WIDTH JOINER inserted right after each such `@`,
+#: in code or not, so nothing the worker publishes pages anyone and no text
+#: is refused for a mention. It replaced a Markdown parser that tried to tell
+#: code from prose and that three reviews each found a way past (an escaped
+#: backtick, an unterminated fence, an HTML block).
 #:
-#: THE LOOKBEHIND IS ASCII-ONLY ON PURPOSE (#259 review, M3). Python's `\w` on
-#: a `str` pattern matches any Unicode letter, digit or underscore, not just
-#: `[A-Za-z0-9_]`. GitHub's own mention boundary is not Unicode-aware, so a
-#: non-ASCII letter immediately before `@` (`café@octocat`) made `\w`
-#: match, the lookbehind fail, and the mention after it go undetected --
-#: hiding exactly the notification this pattern exists to catch. `_unmention`
-#: below shares this pattern, so the fix covers both directions at once.
-_MENTION_RE = re.compile(r"(?<![A-Za-z0-9_.`/@-])@[A-Za-z0-9][A-Za-z0-9-]*(?:/[A-Za-z0-9][\w.-]*)?")
-
-
-#: A fenced code block (``` or ~~~, closed by a fence of the same character
-#: at least as long, or by the end of the text) and an inline code span (a
-#: run of backticks closed by a run of the same length). GitHub notifies no
-#: one for a mention inside either (owner decision, 2026-09-28), so
-#: `@pytest.fixture` in a code block does not refuse a body.
+#: WHAT FOLLOWS THE `@`: a character a GitHub username, organisation or team
+#: can start with, widened to `_` and `-`, or `&`, which could begin a
+#: character reference for the name's first letter (`@&#111;ctocat`).
+#: Erring towards neutralising costs an invisible character; missing one
+#: pages a person.
 #:
-#: CommonMark refuses a backtick fence whose INFO STRING itself contains a
-#: backtick (#259 review, M3) -- that line is not a fence at all, so treating
-#: it as one hid whatever followed, including a real mention. A tilde fence
-#: has no such restriction. Fences are found line by line in `_without_code`
-#: (`_FENCE_LINE_RE`), so an HTML block round one can be told apart.
+#: CHARACTER REFERENCES ARE MATCHED, NOT DECODED: GitHub decodes them before
+#: it looks for mentions, so `&#64;octocat` renders as `@octocat` and pages.
+#: Decoding first and re-encoding would change more of the agent's text than
+#: the joiner; matching the reference and putting the joiner after it is the
+#: same result with nothing else changed. A decimal or hex reference is
+#: matched only where it ends (`;`, or no further digit), so `&#640;` and
+#: `&#x40a;` -- other characters -- are left alone.
 #:
-#: An inline code span, per CommonMark: a run of backticks, closed by a run of
-#: the same length, and THE SPAN CANNOT CROSS A BLANK LINE -- a blank line is a
-#: paragraph break, and CommonMark never lets a code span span one (a stray
-#: opening backtick before a blank line is just a backtick). The previous
-#: pattern used `re.DOTALL` to let `.` cross any newline including a blank
-#: one, so a single stray backtick, then a blank line, then a real `@mention`
-#: in its own paragraph, then a later backtick, read as "all inside a code
-#: span" and hid the mention (#259 review, M3). `(?!\n[ \t]*\n)` refuses to
-#: consume into the start of a blank line, so the span simply fails to close
-#: across one instead of swallowing everything up to the next stray backtick.
+#: AN EMAIL ADDRESS IS LEFT INTACT. GitHub's mention filter (html-pipeline's
+#: `MentionFilter`, the open-source implementation GitHub.com's is derived
+#: from) matches `@` only at the start of the text or after a character
+#: outside ASCII `[A-Za-z0-9_]` -- `(?:^|\W)@` in a Ruby pattern, where `\W`
+#: is ASCII-only -- so `ops@example.com` pages no one. The lookbehind here is
+#: that same ASCII class, spelled out: Python's `\w` would also match `é`,
+#: and `café@octocat` DOES page `@octocat` on GitHub (#259 review, M3).
 #:
-#: AN ESCAPED BACKTICK OPENS NOTHING (#259 re-review): `\`@octocat\`` is two
-#: literal backticks round a real mention. The opening run must be a whole
-#: run -- not preceded by another backtick -- and not preceded by a
-#: backslash. That also refuses `\\`` (an escaped backslash, then a real
-#: opener), which errs towards prose: a false refusal costs the agent's
-#: wording, a false pass pings someone.
-_CODE_SPAN_RE = re.compile(
-    r"(?<![\\`])(?P<ticks>`+)(?!`)(?:(?!\n[ \t]*\n)[\s\S])+?(?<!`)(?P=ticks)(?!`)"
+#: IDEMPOTENT: an `@` already followed by the joiner is not followed by a
+#: name character, so a second pass inserts nothing.
+_MENTION_AT_RE = re.compile(
+    r"(?<![A-Za-z0-9_])"
+    r"(@|\uff20|&commat;|&#0*64(?![0-9]);?|&#[xX]0*40(?![0-9A-Fa-f]);?)"
+    r"(?=[A-Za-z0-9_&-])"
 )
 
-#: A fence line: up to three spaces, then three or more backticks or tildes.
-#: A backtick fence's info string may not hold a backtick (CommonMark), so
-#: such a line is prose, not a fence.
-_FENCE_LINE_RE = re.compile(r"^ {0,3}(?P<fence>`{3,}|~{3,})(?P<info>[^\n]*)$")
-
-#: The start of an HTML block: up to three spaces, then `<` and a tag name,
-#: `/`, `!` or `?`. Deliberately wider than CommonMark's seven start
-#: conditions (a type-7 tag cannot interrupt a paragraph there): whatever is
-#: read as HTML is kept as prose, so reading too much as HTML errs safe.
-_HTML_START_RE = re.compile(r"^ {0,3}<[A-Za-z/!?]")
-
-#: The HTML blocks that do not end at a blank line, with what ends them.
-_HTML_ENDS: tuple[tuple[re.Pattern[str], re.Pattern[str]], ...] = (
-    (re.compile(r"^ {0,3}<(?:pre|script|style|textarea)(?:[\s>]|$)", re.I),
-     re.compile(r"</(?:pre|script|style|textarea)>", re.I)),
-    (re.compile(r"^ {0,3}<!--"), re.compile(r"-->")),
-    (re.compile(r"^ {0,3}<\?"), re.compile(r"\?>")),
-    (re.compile(r"^ {0,3}<!\[CDATA\["), re.compile(r"\]\]>")),
-    (re.compile(r"^ {0,3}<![A-Za-z]"), re.compile(r">")),
-)
+#: U+200D ZERO WIDTH JOINER. Invisible where GitHub renders it, and not a
+#: character a mention can contain, so `@<U+200D>octocat` names and pages no one.
+MENTION_BREAK = "\u200d"
 
 
-def _without_code(text: str) -> str:
-    """`text` with the code GitHub would not notify from taken out.
+def _neutralise_mentions(text: str) -> str:
+    """`text` with a zero-width joiner after every `@` that could mention.
 
-    ERRS TOWARDS PROSE (#259 re-review). Only two things are removed:
-
-    * a fenced block whose opening line is a valid CommonMark fence and
-      which is not inside an HTML block, through its closing fence (a fence
-      of the same character at least as long) or the end of the text, as
-      CommonMark runs an unclosed fence;
-    * an inline code span, per `_CODE_SPAN_RE`, inside a run of prose lines
-      -- never across a fence or an HTML block, which end a paragraph.
-
-    Everything else is prose, where a mention refuses: an indented block, a
-    fence inside a block quote or a list, and every line of an HTML block
-    (`<details>`, `<div>` ...), whose content GitHub does not parse as
-    Markdown code and does notify from. An HTML block runs to its end
-    marker for the five kinds that have one (`_HTML_ENDS`) and otherwise to
-    the next blank line.
+    Nothing else changes: removing every joiner the call added gives back
+    the input exactly. See `_MENTION_AT_RE` for which `@` qualify and why.
     """
-    out: list[str] = []
-    prose: list[str] = []
-
-    def flush_prose() -> None:
-        if prose:
-            out.append(_CODE_SPAN_RE.sub(" ", "".join(prose)))
-            prose.clear()
-
-    lines = text.splitlines(keepends=True)
-    i = 0
-    while i < len(lines):
-        line = lines[i]
-        bare = line.rstrip("\r\n")
-        fence = _FENCE_LINE_RE.match(bare)
-        if fence and not (fence.group("fence")[0] == "`" and "`" in fence.group("info")):
-            flush_prose()
-            char, size = fence.group("fence")[0], len(fence.group("fence"))
-            closing = re.compile(r"^ {0,3}" + re.escape(char) + r"{%d,}[ \t]*$" % size)
-            i += 1
-            while i < len(lines) and not closing.match(lines[i].rstrip("\r\n")):
-                i += 1
-            i += 1  # past the closing fence, or past the end
-            out.append("\n")
-            continue
-        if _HTML_START_RE.match(bare):
-            flush_prose()
-            end = next((stop for start, stop in _HTML_ENDS if start.match(bare)), None)
-            while i < len(lines):
-                current = lines[i]
-                out.append(current)
-                i += 1
-                if end is not None:
-                    if end.search(current):
-                        break
-                elif i < len(lines) and not lines[i].strip():
-                    break
-            continue
-        prose.append(line)
-        i += 1
-    flush_prose()
-    return "".join(out)
-
-
-def _carries_mention(text: str) -> bool:
-    """A mention GitHub would notify for: in prose, not in code."""
-    return _MENTION_RE.search(_without_code(text)) is not None
-
-
-def _unmention(text: str) -> str:
-    """`text` with the `@` taken off every mention, so it names and pings no one."""
-    return _MENTION_RE.sub(lambda match: match.group(0)[1:], text)
+    return _MENTION_AT_RE.sub(lambda match: match.group(1) + MENTION_BREAK, text)
 
 
 #: A trailer line as git reads one: `Token: value`, the token letters, digits
@@ -6094,11 +6028,14 @@ def final_tree_leak(
     overlapping windows (`_DiffLeakScanner`; owner decision, 2026-09-29):
     size alone never refuses a publish, and no file holds the diff.
 
-    `GIT_NO_REPLACE_OBJECTS=1` (`gitops._git_env`) makes this read the real
-    objects the push sends, never a replacement the agent registered; the
-    explicit `--src-prefix`/`--dst-prefix` and `core.quotePath=false` keep a
-    `diff.noprefix` or quoting setting in the agent's `.git/config` from
-    changing how a path reads.
+    `repo` is the worker's clean repository (`gitops.prepare_publish_repo`,
+    owner decision 2026-09-29): the agent's objects were fetched into it with
+    object checking, and it holds no commit-graph, grafts, shallow file,
+    replace refs or config of the agent's -- a forged commit-graph entry made
+    `git diff` in the clone compare a tree the push never sends. The
+    `GIT_NO_REPLACE_OBJECTS=1`, `GIT_GRAFT_FILE` and `core.commitGraph=false`
+    of `gitops._git_env`, and the explicit `--src-prefix`/`--dst-prefix` and
+    `core.quotePath=false`, stay as a second belt.
     """
     g = [git_binary, *_NO_HOOKS, "-c", "core.quotePath=false"]
     run_kwargs: dict[str, Any] = {
@@ -6195,6 +6132,12 @@ def replay_agent_commits(
     The index and working tree are not touched; `reset --soft` moves the
     branch onto the rewritten line, which ends in the same tree HEAD had.
     An unknown `base` refuses, exactly as the fold does.
+
+    `repo` is the worker's clean repository, never the agent's clone
+    (`gitops.prepare_publish_repo`, owner decision 2026-09-29): the list, the
+    scan and the rewrite read only objects fetched with object checking, and
+    none of the agent's grafts, shallow file, replace refs, commit-graph or
+    config.
     """
     empty = base == EMPTY_CLONE_BASE
     if not empty and (not base or not _SHA_RE.match(base.strip())):
