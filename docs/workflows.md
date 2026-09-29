@@ -490,23 +490,34 @@ bookkeeping you are not using.
 
 ## PROPOSED: a chain that merges its own pull request
 
-**Proposed on 2026-09-29 for #295 and not built. Revised twice, 2026-09-29,**
-against a security review's two blockers and five majors, and then a
-re-review that found the first B1 revision insufficient; both are owner
-decisions, [merge-step.md](merge-step.md)'s own revision note lists what
-changed each time. The API refuses this spec today. `single-pr`, `pr_role`,
-the `merge` profile and the `post-verdict` profile below do not exist yet.
-The `merge` profile needs contract request 33 in
+**Proposed on 2026-09-29 for #295 and not built. Revised three times,
+2026-09-29,** against a security review's two blockers and five majors, then
+a re-review that found the first B1 revision insufficient, then a third
+round that found B1 still open against a different attack and decided three
+more owner questions; [merge-step.md](merge-step.md)'s own revision note
+lists what changed each time. The API refuses this spec today. `single-pr`,
+`pr_role`, the `merge` profile, and the `post-verdict` and
+`claude-code-review` profiles below, do not exist yet. The `merge` profile
+needs contract request 33 in
 [contract-change-requests.md](contract-change-requests.md); `post-verdict`
-needs a second, not-yet-filed request ([merge-step.md](merge-step.md) §1.3,
-§4.3, §10) — a worker-action profile structured exactly like `merge`: its own
-Job, its own service account, and **no agent ever runs on it**. That last
-part is why `post-verdict` exists rather than a dedicated
-`claude-code-review` profile for the `review` step itself: a dedicated
-profile only changes which Job an agent runs on, and the review agent —
-which reads attacker-controlled diffs — would still share a container with
-the App key regardless of profile. The design, and the reason for each rule
-below, is [merge-step.md](merge-step.md).
+and `claude-code-review` each need their own, not-yet-filed request
+([merge-step.md](merge-step.md) §1.3, §4.3, §10). `post-verdict` is a
+worker-action profile structured exactly like `merge`: its own Job, its own
+service account, and **no agent ever runs on it** — that is why it exists
+rather than holding the review App's key on a dedicated profile for the
+`review` step itself, which a re-review found insufficient (a dedicated
+profile only changes which Job an agent runs on, and the review agent, which
+reads attacker-controlled diffs, would still share a container with the App
+key regardless of profile). `claude-code-review`, by contrast, **is** a
+dedicated profile for the `review` step — safe for a narrower reason: it
+holds no App key, only a GCS write grant scoped to one prefix, which is not
+a portable secret an agent could exfiltrate and reuse. **This design also
+depends on S0 issue #342 (signed step specs), which is not a
+`profiles.py`/`models.py` request and is not built either** — without it, an
+earlier step's agent can rewrite a later step's own `prompt` before that
+step starts, which nothing else in this design touches (see below). The
+design, and the reason for each rule below, is
+[merge-step.md](merge-step.md).
 
 The owner's chain is **implement → review → post-verdict → fix → proof →
 merge**. It produces **one** pull request and ends with the **worker**
@@ -527,7 +538,7 @@ step earlier, for the review credential.
      "input": {"prompt": "Implement issue #295. Write a fact-style pull request title to pr-title.txt."}},
 
     {"step_id": "review",
-     "runner_profile": "claude-code",
+     "runner_profile": "claude-code-review",
      "pr_role": "reader",
      "depends_on": ["implement"],
      "input": {"prompt": "Review the checked-out head against issue #295. Write review.json: {\"verdict\": \"MERGE\" or \"CHANGES\", \"sha\": the checked-out HEAD, \"title\": the pull request title you reviewed, \"summary\": your findings}."}},
@@ -577,8 +588,8 @@ What each step does:
 | step | clones | publishes | writes |
 |---|---|---|---|
 | implement (`author`) | `main` | pushes `swarm/<its task id>` and opens the pull request | the code, and `pr-title.txt` |
-| review (`reader`) | the implement branch | no git push, nothing to GitHub at all | `review.json` |
-| post-verdict (no agent, profile `post-verdict`) | nothing | submits a GitHub PR review (`APPROVE` or `REQUEST_CHANGES`, `commit_id` pinned to `review.json.sha`), from a credential only this step's own service account can read — the review agent that wrote `review.json` cannot read it | nothing |
+| review (`reader`, profile `claude-code-review`) | the implement branch | no git push, nothing to GitHub at all. Writes `review.json` under its own identity, `swarm-<tenant>-review`, to a prefix the tenant's ordinary worker account cannot write | `review.json` |
+| post-verdict (no agent, profile `post-verdict`) | nothing | submits a GitHub PR review (`APPROVE` or `REQUEST_CHANGES`, `commit_id` pinned to `review.json.sha`), from a credential only this step's own service account can read — the review agent that wrote `review.json` cannot read it. Reads `review.json` from the review-only-writable prefix, not the general staged-artifact location | nothing |
 | fix (`amender`) | the implement branch | fast-forward pushes to the **same** branch, only if it changed something | the fix |
 | proof (`reader`) | the implement branch | no git push, nothing to GitHub at all | `proof.json` |
 | merge (profile `merge`) | nothing, and it runs no agent | `PUT .../pulls/{n}/merge`, squash, `sha` pinned, to `api.github.com` only, no redirect followed | the squash commit, and a comment naming the task that merged it |
@@ -620,12 +631,11 @@ The merge happens only if **all** of these hold. Otherwise the step ends
   request lands only through a human's `ready`.
 
 `owner`/`repo` and the forge host come from a record no tenant identity can
-write, never from the task document (owner decision B2), and the merge worker
-talks only to that pinned host. **Exactly where that record lives is an open
-question, not yet decided** — a reviewer recommends the merge secret's own
-JSON or a Terraform-rendered Job environment value, never Firestore, since a
-tenant identity can write any Firestore document whose id it can guess
-([merge-step.md](merge-step.md) §2.1b, §11 open question (a)).
+write, never from the task document (owner decision B2). **Decided,
+round-3 re-review: that record is Terraform-rendered environment on the
+`post-verdict` and `merge` Jobs, not Secret Manager and not Firestore**
+([merge-step.md](merge-step.md) §2.1b) — the open question this section
+used to carry is resolved.
 
 A person's `ready` label on the same pull request still works — and so, in
 principle, does an agent's: the owner has kept `-git`'s PAT for agent pushes
@@ -633,6 +643,22 @@ principle, does an agent's: the owner has kept `-git`'s PAT for agent pushes
 though the label stays bound to the exact head it was set on. `auto-merge.yml`
 stays authoritative for labelled pull requests, and whichever merge lands
 first, the other finds it merged at the same pinned head.
+
+**None of the above closes B1 by itself.** Every mechanism in this section —
+`post-verdict`'s isolation, the review-only-writable prefix, the pinned
+host — protects an artifact's integrity once it exists. Signed step specs
+(#342) protect something none of them touch: the `prompt` a step is handed
+*before* it runs. Without #342, an `implement` agent can rewrite `review`'s
+still-`PARKED` task document, and the review agent would honestly follow
+corrupted instructions to a genuine, unforced `MERGE` verdict about a change
+it was never actually asked to judge. `post-verdict` and `merge` must verify
+the signed spec of every upstream step they depend on, not only stage its
+output ([merge-step.md](merge-step.md) §0 consequence 4, §7 T14). **The
+merge step must not be enabled for any tenant until #342 ships** — a
+precondition independent of, and in addition to, `main-protection` (M1). By
+contrast, moving `release.yml`'s `id-token: write` to job level is
+recommended but, per the owner's round-3 decision, is **not** a
+precondition ([merge-step.md](merge-step.md) §7 R4, §11 open question (b)).
 
 ---
 
