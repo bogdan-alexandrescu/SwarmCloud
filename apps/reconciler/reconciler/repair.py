@@ -28,7 +28,7 @@ from datetime import datetime
 from typing import Any
 
 from swarm_common.models import EndCause, utcnow
-from swarm_common.states import EventType, TaskState
+from swarm_common.states import CONCURRENCY_STATES, EventType, TaskState
 
 from .backends import Backend, NamespacedBackend, NamespacedListing, Probe, ProbeOutcome
 from .checkpoints import CheckpointCollector, CheckpointStore
@@ -87,6 +87,11 @@ _TERMINATE_ONLY = (FindingKind.LEFT_RUNNING,)
 #: Findings repaired by fencing alone in the pass that finds them. See
 #: `_repair_stuck` for why the kill waits for the next pass.
 _FENCE_ONLY = (FindingKind.STUCK_NO_PROGRESS,)
+
+#: The states a leaseless-task finding is about. Its fence and its requeue are
+#: each refused for a task that has left them since the snapshot -- parked,
+#: finished, or anything else a worker decided in the meantime (#332).
+_LEASELESS_STATES = tuple(sorted(CONCURRENCY_STATES, key=lambda state: state.value))
 
 #: What happens after a stuck attempt is fenced, written onto its event so the
 #: task's timeline says what to expect next.
@@ -311,6 +316,9 @@ class Reconciler:
         # whose task an execution is (and so its tenant), and the progress read
         # is only for executions whose task is known.
         self._read_settled(snapshot, sight.executions, report)
+        # Every task an unreleased lease names that `snapshot()` did not return,
+        # read by id BEFORE any rule may call that lease an orphan (#332).
+        self._read_lease_tasks(snapshot, report)
         self._read_progress(snapshot, sight.executions, report)
         # How the current attempts' FINISHED executions ended. Only those the
         # cannot-start rule could act on, so an ordinary pass reads nothing.
@@ -562,6 +570,71 @@ class Reconciler:
             if task is not None:
                 snapshot.settled[task_id] = task
 
+    def _read_lease_tasks(self, snapshot: ControlSnapshot, report: ReconcileReport) -> None:
+        """Read, by id, every task an unreleased lease names that the snapshot lacks.
+
+        WHY (#332). `snapshot()` reads `tasks` and `leases` in two queries. On
+        2026-09-29 the scheduler's admission of task_7ead19eefca1439ea9df
+        committed between them: the tasks query saw the task still READY, the
+        leases query saw its brand-new lease. `detect_orphan_leases` found a
+        lease whose task was absent and called it "a task that no longer
+        exists"; the repair fenced the healthy task and released its lease two
+        seconds after admission.
+
+        One `get` per such lease tells the cases apart: a task that does not
+        exist (an orphan), a finished or requeued one (an orphan, with the
+        reason that says so), and one admitted after the snapshot that still
+        holds this lease (not an orphan at all). The answer goes into
+        `settled`, which `ControlSnapshot.task_named` already reads, and a read
+        that FAILS goes into `unreadable_tasks`, which the orphan rule already
+        stands aside for.
+
+        Chosen over reading both queries at one `read_time`: a consistent
+        snapshot would close the gap between the two queries, but the repair
+        still runs seconds to minutes after the snapshot, and only the
+        transactions in `ControlStore` see the truth at the moment of writing
+        -- which is why they now guard the orphan repair as well. A by-id read
+        is also what `_read_settled` already does for executions, so the two
+        absences are judged one way, and it needs nothing from the Firestore
+        client or the in-memory fakes that they do not already support.
+
+        NOT gated on `enable_gke_eviction`, unlike `_read_settled`: the orphan
+        rule it feeds runs whatever that switch says. A task found here in a
+        concurrency state also makes `orphan_rule_defers` hold back an active
+        execution naming it (DEFER_TASK_READMITTED) rather than kill it as
+        taskless -- the same race, seen from the execution's side.
+
+        Bounded by the unreleased leases whose task is outside the concurrency
+        states: ordinarily none, or the handful whose worker ended without
+        releasing.
+        """
+        wanted = sorted(
+            {
+                lease.task_id
+                for lease in snapshot.leases.values()
+                if not lease.is_released
+                and lease.task_id
+                and lease.task_id not in snapshot.tasks
+                and lease.task_id not in snapshot.settled
+                and lease.task_id not in snapshot.unreadable_tasks
+            }
+        )
+        for task_id in wanted:
+            try:
+                task = self._store.task_by_id(task_id)
+            except Exception as exc:
+                snapshot.unreadable_tasks.add(task_id)
+                self._log.warning(
+                    "could not read the task an unreleased lease names; "
+                    "that lease is not judged this pass",
+                    task_id=task_id,
+                    error=str(exc),
+                )
+                report.errors.append(f"task {task_id}: {exc}")
+                continue
+            if task is not None:
+                snapshot.settled[task_id] = task
+
     def _read_progress(
         self,
         snapshot: ControlSnapshot,
@@ -696,6 +769,9 @@ class Reconciler:
         FindingKind.STALE_LEASE,
         FindingKind.DEAD_WORKER,
         FindingKind.MISSING_EXECUTION,
+        # "No execution runs for it" is part of what makes a leaseless task
+        # safe to requeue, and an unreadable backend cannot say that.
+        FindingKind.LEASELESS_TASK,
     )
 
     def _never_dispatched(self, finding: Finding, snapshot: ControlSnapshot) -> bool:
@@ -1032,9 +1108,18 @@ class Reconciler:
         # fence and its requeue are each refused, inside their transactions,
         # for a task that has left them since the snapshot (#198). Passed only
         # for that rule, so every other repair calls the store as it did.
+        leaseless = finding.kind is FindingKind.LEASELESS_TASK
         guard: dict[str, Any] = (
-            {"only_from": ENDED_AT_STARTUP_STATES} if ended_at_startup else {}
+            {"only_from": ENDED_AT_STARTUP_STATES}
+            if ended_at_startup
+            else {"only_from": _LEASELESS_STATES}
+            if leaseless
+            else {}
         )
+        # An orphan-lease finding may rest on a snapshot that missed its task
+        # (#332). The fence and the release re-read the task inside their own
+        # transactions and refuse while it still holds this lease.
+        orphan_lease = finding.kind is FindingKind.ORPHAN_LEASE
         if self._config.dry_run:
             outcome.skipped = "dry_run"
             outcome.actions.append(
@@ -1048,8 +1133,13 @@ class Reconciler:
 
         # ---- STEP 1: invalidate the generation --------------------------
         if finding.task_id and finding.generation is not None:
+            fence_guard = (
+                {**guard, "unless_holding_lease": finding.lease_id}
+                if orphan_lease and finding.lease_id
+                else guard
+            )
             new_generation = self._store.invalidate_generation(
-                finding.task_id, finding.generation, **guard
+                finding.task_id, finding.generation, **fence_guard
             )
             outcome.invalidated_to = new_generation
             if new_generation is not None:
@@ -1074,9 +1164,15 @@ class Reconciler:
             return outcome
 
         # ---- STEP 3: release the slot -----------------------------------
-        if finding.lease_id:
+        # Never for a leaseless task: its lease is already released (or was
+        # never written), so its capacity is already back. Asking again is a
+        # no-op only because the frozen release is idempotent; not asking
+        # keeps the requeue from depending on that (invariants 2 and 3).
+        if finding.lease_id and not leaseless:
             outcome.released = self._store.release_lease(
-                finding.lease_id, f"reconciler:{finding.kind.value}"
+                finding.lease_id,
+                f"reconciler:{finding.kind.value}",
+                **({"refuse_while_task_holds_it": True} if orphan_lease else {}),
             )
             if outcome.released:
                 outcome.actions.append(f"released {finding.lease_id}")
