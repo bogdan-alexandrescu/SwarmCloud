@@ -113,6 +113,7 @@ import json
 import os
 import shutil
 import sys
+import threading
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -3197,7 +3198,8 @@ class Worker:
             )
         try:
             self.control.emit(EventType.CHECKPOINT_STARTED, {"label": label})
-            record = self.checkpoints.create(self.ws, label=label)
+            with self._heartbeat_meanwhile(f"checkpoint ({label})"):
+                record = self.checkpoints.create(self.ws, label=label)
         except CheckpointError as exc:
             self.log.error("CHECKPOINT FAILED", label=label, error=str(exc))
             return None
@@ -3212,6 +3214,47 @@ class Worker:
             seq=record.seq,
         )
         return record
+
+    @contextmanager
+    def _heartbeat_meanwhile(self, what: str) -> Iterator[None]:
+        """Heartbeat the lease from a thread for as long as the block runs.
+
+        THE CHECKPOINT RAN ON THE LOOP THAT HEARTBEATS THE LEASE (#286), so the
+        lease aged for as long as the archive and the upload took: a large
+        work tree -- tool caches, before `checkpoint.TOOL_CACHES` -- held it
+        for however long gzip and GCS needed, and on 2026-09-29 the attempt was
+        fenced 64 s after `checkpoint_started`. The block's own work touches
+        only the workspace and the object store, so the heartbeat has the
+        control plane to itself meanwhile.
+
+        Beats every `heartbeat_interval_seconds`, the loop's own cadence, and
+        through `_heartbeat`, the loop's own call. A heartbeat that raises is
+        logged and ends this thread only: the loop's next heartbeat meets the
+        same condition and handles it as it always has. Joined before the
+        block's caller goes on, so it never outlives the checkpoint -- every
+        checkpoint comes before its park's or its end's lease release.
+        """
+        stop = threading.Event()
+
+        def beat() -> None:
+            while not stop.wait(self.cfg.heartbeat_interval_seconds):
+                try:
+                    self._heartbeat()
+                except Exception as exc:
+                    self.log.warning(
+                        "a heartbeat during a long operation failed; the loop will retry it",
+                        during=what,
+                        error=f"{type(exc).__name__}: {exc}",
+                    )
+                    return
+
+        thread = threading.Thread(target=beat, name="heartbeat-meanwhile", daemon=True)
+        thread.start()
+        try:
+            yield
+        finally:
+            stop.set()
+            thread.join()
 
     def _sleep_with_heartbeat(self, seconds: float) -> None:
         """Short waits only -- long ones park. Keeps the lease alive meanwhile."""

@@ -43,14 +43,50 @@ import tempfile
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .errors import CheckpointError
 from .objectstore import ObjectStore
-from .workspace import Workspace
+from .workspace import REPO_DIR_NAME, Workspace
 
 ARCHIVE_NAME = "archive.tar.gz"
 MANIFEST_NAME = "manifest.json"
+
+#: Tool caches under the agent's HOME, which is `work/` (`Workspace.child_env`),
+#: left out of every checkpoint (#286). Since #261 an agent runs the offline
+#: tests in its container, so uv, pip, npm, pnpm and yarn fill these. They are
+#: REBUILDABLE -- the next `uv run` or `npm ci` fetches them again -- and they
+#: are the bulk of the bytes, which lengthens every checkpoint and counts
+#: toward its cap. And they hold absolute links (uv's build environment's
+#: `.cache/uv/builds-v0/.tmpX/bin/python -> /usr/local/bin/python3.11`), which
+#: a restore can never make.
+#:
+#: Each entry is a path relative to HOME, except `**/node_modules`: a
+#: `node_modules` directory ANYWHERE in `work/` except inside the repository
+#: checkout (`work/repo`, `workspace.REPO_DIR_NAME`). The checkout is the
+#: repository's own tree and the agent's real work lives there; its
+#: `node_modules` is kept, as everything under it is -- a `.cache` inside the
+#: checkout included, since the rule is HOME's. What stays in regardless: the
+#: CLIs' session transcripts (`.claude/`, `.codex/`), which are not caches.
+TOOL_CACHES: tuple[str, ...] = (
+    ".cache",
+    ".npm",
+    ".local/share/uv",
+    ".local/share/pnpm",
+    ".yarn/cache",
+    "**/node_modules",
+)
+
+
+def _is_tool_cache(rel: str) -> bool:
+    """True when `rel`, relative to `work/`, is one of `TOOL_CACHES`."""
+    for entry in TOOL_CACHES:
+        if entry.startswith("**/"):
+            if rel.rsplit("/", 1)[-1] == entry[3:] and not rel.startswith(REPO_DIR_NAME + "/"):
+                return True
+        elif rel == entry:
+            return True
+    return False
 
 
 @dataclass(frozen=True)
@@ -97,13 +133,27 @@ def attempts_prefix(*, tenant_id: str, task_id: str) -> str:
     return f"tenants/{tenant_id}/tasks/{task_id}/attempts/"
 
 
-def _safe_members(tar: tarfile.TarFile, destination: Path) -> list[tarfile.TarInfo]:
+def _safe_members(
+    tar: tarfile.TarFile,
+    destination: Path,
+    *,
+    on_skip: Callable[[str, str], None] | None = None,
+) -> list[tarfile.TarInfo]:
     """Reject anything that would write outside the destination.
 
     A checkpoint archive is written by this platform, but it contains a tenant's
     working tree, and a tenant's agent can create any file it likes inside it --
     including a symlink to /etc. Path traversal is checked on the way out, not
     trusted on the way in.
+
+    A LINK THAT ESCAPES IS SKIPPED, NOT A REASON TO REFUSE THE ARCHIVE (#286).
+    It is never created -- that is the check -- but one such link used to fail
+    the whole restore, and with it every later resume of the task: uv's build
+    environment leaves `bin/python -> /usr/local/bin/python3.11` behind as a
+    matter of course. `on_skip(name, linkname)` is called for each one so the
+    caller can name it. A member whose own PATH is absolute or escapes still
+    refuses the archive: this platform's archiver never writes one, so it is
+    evidence of a tampered archive, not of an agent's ordinary tree.
     """
     resolved_dest = destination.resolve()
     members: list[tarfile.TarInfo] = []
@@ -125,9 +175,9 @@ def _safe_members(tar: tarfile.TarFile, destination: Path) -> list[tarfile.TarIn
                 str(link_target).startswith(str(resolved_dest) + os.sep)
                 or link_target == resolved_dest
             ):
-                raise CheckpointError(
-                    f"checkpoint archive contains a link escaping the workspace: {name} -> {link}"
-                )
+                if on_skip is not None:
+                    on_skip(name, link)
+                continue
         elif not (member.isfile() or member.isdir()):
             # Sockets, FIFOs and devices are never restored; an agent that left
             # one behind gets a workspace without it rather than a failed resume.
@@ -214,10 +264,11 @@ class CheckpointManager:
 
         # THE ARTIFACTS LINK IS LEFT OUT, knowingly (#149). `work/artifacts` is
         # a link the worker makes to `artifacts/` (`workspace.link_artifacts`).
-        # Archived, it would break every resume: it resolves outside `work/`,
-        # and `_safe_members` refuses an archive holding such a link, so the
-        # restore would fail and the attempt with it. It names this attempt's
-        # directory besides, and a resumed attempt makes its own.
+        # Archived, it broke every resume: it resolves outside `work/`, and
+        # `_safe_members` refused an archive holding such a link (it skips
+        # one now, #286, but a link restore can never make has no business in
+        # the archive). It names this attempt's directory besides, and a
+        # resumed attempt makes its own.
         #
         # What is BEHIND the link is not archived either: `_write_archive`
         # follows no link, so it meets the link as one entry and never its
@@ -235,6 +286,9 @@ class CheckpointManager:
         # `_prepare` writes it from the task document at every attempt, AFTER
         # the restore (STEP 4) and before the runner starts, so a resumed
         # attempt reads the one it wrote, never an archived one.
+        #
+        # The tool caches under HOME (`TOOL_CACHES`, #286) are left out by
+        # `_write_archive` itself, which matches them as it walks.
         skip = frozenset(
             path.relative_to(ws.work).as_posix()
             for path in (ws.artifacts_link(), ws.artifacts_link(ws.checkout()))
@@ -292,7 +346,8 @@ class CheckpointManager:
 
         Returns the members that are not directories, which is how the API's
         listing counts them (`checkpoint_content`). `skip` holds names relative
-        to `source`; a skipped directory is not descended into.
+        to `source`; a skipped directory is not descended into. Neither is a
+        tool cache (`TOOL_CACHES`), which is never archived.
 
         A LINKED ROOT IS REFUSED (#227). `work/` is in the agent's reach, and
         `Path.rglob` -- what this walked before -- lists the TARGET of a linked
@@ -340,7 +395,7 @@ class CheckpointManager:
                         continue
                     name = names.pop()  # reverse-sorted, so this is the smallest
                     rel = prefix + name
-                    if rel in skip:
+                    if rel in skip or _is_tool_cache(rel):
                         continue
                     try:
                         count += self._add_entry(tar, stack, dir_fd, name, rel)
@@ -513,8 +568,16 @@ class CheckpointManager:
                 f"expected {record.archive_sha256}, got {digest}"
             )
 
+        def skipped(name: str, link: str) -> None:
+            self._log.warning(
+                "checkpoint restore skipped a link escaping the workspace",
+                checkpoint_id=record.checkpoint_id,
+                member=name,
+                link=link,
+            )
+
         with tarfile.open(archive_path, "r:gz") as tar:
-            members = _safe_members(tar, ws.work)
+            members = _safe_members(tar, ws.work, on_skip=skipped)
             tar.extractall(path=ws.work, members=members)
         archive_path.unlink(missing_ok=True)
 
