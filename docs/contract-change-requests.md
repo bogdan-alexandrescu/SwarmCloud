@@ -2885,10 +2885,15 @@ four decisions, folded into this entry below and marked where they land:
 the account stays in `saga-agents-staging` as an accepted risk (**Who can
 mint the account's token**, below); a listed account's rights are narrowed
 to continuation-only (**5. Scope: continuation-only rights**); the deployer
-loses `roles/iam.workloadIdentityPoolAdmin` and has its
-`roles/iam.serviceAccountAdmin` scoped by condition, in a separate bootstrap
-change (end of **Who can mint the account's token**); and the reviewer's
-minors are folded into the diffs below. Status stays **PROPOSED** — this is
+loses `roles/iam.workloadIdentityPoolAdmin` outright (#334) and, since an IAM
+condition cannot scope `roles/iam.serviceAccountAdmin` at all (IAM resources
+expose no `resource.name` to a condition), instead loses that role
+project-wide in favour of project-wide `roles/iam.serviceAccountCreator` plus
+a per-account `serviceAccountAdmin` grant on each account `terraform/infra`
+manages, excluding `swarm-ci-fix` and `swarm-tf-deployer` (end of **Who can
+mint the account's token**, corrected 2026-09-29 after PR #334); and the
+reviewer's minors are folded into the diffs below. Status stays
+**PROPOSED** — this is
 what re-review checks against, not an acceptance.
 
 ### What is true today
@@ -3464,18 +3469,50 @@ continuation-only rights, above) and the DEPLOYER's standing roles (next
 paragraph) -- not who else in the project could, in principle, mint the
 token; that is accepted, not mitigated, here.
 
-**The deployer's two roles are being narrowed, in a separate bootstrap
-change.** `roles/iam.workloadIdentityPoolAdmin` is being removed from
-`swarm-tf-deployer` entirely -- it has no ongoing need to edit pool providers
-after bootstrap. Its `roles/iam.serviceAccountAdmin` is being scoped by an IAM
-condition to the `swarm-*` service accounts `terraform/infra` actually
-manages, **excluding `swarm-ci-fix` and `swarm-tf-deployer` itself** (both
-bootstrap-managed, outside `terraform/infra`'s remit). Until that change
-lands, the deployer keeps both roles unscoped and is part of the accepted
-risk above; once it lands, the deployer can no longer mint the fixer's token
-by either route, and the accepted risk narrows to `bogdan@`, `facu@`,
-`konstantin@` (`serviceAccountAdmin`), `bogdan@` (`workloadIdentityPoolAdmin`)
-and `bogdan@`/`emanuel@` (`owner`).
+**The deployer's two roles, corrected (2026-09-29, after this entry's first
+draft): `roles/iam.serviceAccountAdmin` cannot be scoped by an IAM
+condition.** IAM resources do not expose `resource.name` to a condition at
+all: *"the condition `resource.name.endsWith == devResource` never grants
+access to any IAM resource because IAM resources don't provide the resource
+name"* ([conditions attribute reference](https://docs.cloud.google.com/iam/docs/conditions-attribute-reference)),
+and `iam.googleapis.com` is absent from the resource-service table in
+[conditions-resource-attributes](https://docs.cloud.google.com/iam/docs/conditions-resource-attributes).
+A `resource.name` condition on this role would revoke it outright, not narrow
+it, and the deployer's first service-account change after applying one would
+403. `terraform/bootstrap/deployer_conditions.tf` (#334) records this in the
+same words, as the reason the role stays **unscoped** in that PR.
+
+**`roles/iam.workloadIdentityPoolAdmin` IS removed, in #334, and needs no
+condition:** `terraform/infra` names no pool or provider of its own -- it
+only names GKE's pool as a string inside a service-account binding's member
+-- so the role was pure standing reach, dropped outright rather than scoped.
+
+**For `roles/iam.serviceAccountAdmin`, the owner decided the shape that
+actually works, recorded in #334's `docs/ci.md` on 2026-09-29 but not yet
+applied by that PR's own diff -- a further bootstrap change:** remove the
+deployer's project-wide `roles/iam.serviceAccountAdmin`; grant it
+project-wide `roles/iam.serviceAccountCreator` instead (which needs no
+per-resource name and stays project-wide by necessity, same as
+`serviceusage.serviceUsageAdmin` above); and grant `serviceAccountAdmin`
+**per account**, one resource-level binding on each `swarm-*` service account
+`terraform/infra` manages, **excluding `swarm-ci-fix` and `swarm-tf-deployer`
+themselves** (both bootstrap-managed, outside `terraform/infra`'s remit) --
+the shape #23 already gave IAP admin, applied here to service accounts.
+Until that lands, the deployer keeps its project-wide `serviceAccountAdmin`
+and remains part of the accepted risk above; once it lands, the deployer can
+still create and administer the `swarm-*` accounts `terraform/infra` manages,
+but can no longer touch `swarm-ci-fix`'s IAM policy at all -- narrower than
+"scoped", closed for that one account specifically.
+
+**The residual, stated plainly: this narrows the deployer, not the humans
+who separately hold these roles.** `bogdan@`, `facu@` and `konstantin@` hold
+`roles/iam.serviceAccountAdmin` as individually granted principals, not
+through the deployer, and neither #334 nor the per-account change above
+touches those grants. So after both land, **`facu@`, `konstantin@` and
+`emanuel@` (`roles/owner`) still can mint `swarm-ci-fix`'s token** --
+an accepted risk, for the reason given above: they already hold project-level
+trust for other reasons, and this entry narrows the account's own reach and
+the deployer's standing access, not every human administrator's.
 
 The remaining preconditions this entry's WIF analysis still depends on:
 
