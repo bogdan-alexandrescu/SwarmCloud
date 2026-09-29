@@ -12,7 +12,11 @@
 # or user-managed keys it did not expect
 # (tests/integration/test_register_tenant_squat.py).
 
-mock_provider "google" {}
+# source: the shared defaults every suite that plans terraform/infra needs
+# (mocks/google/kms.tfmock.hcl -- the step-spec key's enabled version 1).
+mock_provider "google" {
+  source = "./mocks/google"
+}
 
 run "platform_and_tick_accounts_are_never_adopted" {
   command = plan

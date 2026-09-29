@@ -25,7 +25,11 @@
 # rendered from, and a separate assertion holds each rendered expression to
 # exactly those prefixes, so a prefix cannot be tested here and missing there.
 
-mock_provider "google" {}
+# source: the shared defaults every suite that plans terraform/infra needs
+# (mocks/google/kms.tfmock.hcl -- the step-spec key's enabled version 1).
+mock_provider "google" {
+  source = "./mocks/google"
+}
 
 variables {
   project_id = "saga-agents-staging"

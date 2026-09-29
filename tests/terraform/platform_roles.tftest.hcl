@@ -28,7 +28,11 @@
 # The last runs hold the adoption: the import blocks wait until terraform/infra
 # has let go of the roles, and proceed once it has.
 
-mock_provider "google" {}
+# source: the shared defaults every suite that plans terraform/infra needs
+# (mocks/google/kms.tfmock.hcl -- the step-spec key's enabled version 1).
+mock_provider "google" {
+  source = "./mocks/google"
+}
 
 variables {
   project_id = "saga-agents-staging"
