@@ -39,6 +39,8 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 26 | `models.py`: the attempt's CPU figures carry no time and their limit no source | ACCEPTED 2026-09-26 (owner, on #184), applied in PR #229 |
 | 30 | `identity.py`: a tenant may list service accounts that resolve to it by exact email (#273) | ACCEPTED 2026-09-29 by the owner after three security reviews |
 | 32 | `profiles.py`: `browser` and `generic` declare no inputs, so the API bounds them by size alone and the plugin can send them none (#218) | ACCEPTED 2026-09-29 by the owner after three security reviews |
+| 35 | `profiles.py` / `models.py`: the `post-verdict` worker-action profile, and its own end causes (part of #295) | PROPOSED 2026-09-29 |
+| 36 | `profiles.py`: the `claude-code-review` profile, and a typed `restore_on_retry` (part of #295) | PROPOSED 2026-09-29 |
 
 ---
 
@@ -5941,3 +5943,248 @@ relies on for correctness.
 8. **Question 3 (#218).** Keep the bridge's send-only-what-is-declared
    policy (recommended). #218's own text, read directly on 2026-09-29,
    confirms this is its third question; no further check is needed.
+
+---
+
+## 35. `profiles.py` / `models.py`: the `post-verdict` worker-action profile, and its own end causes
+
+**Status: PROPOSED, 2026-09-29.** Part of #295. Recorded from
+[merge-step.md](merge-step.md)'s design (contract request 33, ACCEPTED by
+the owner 2026-09-29 as the design for #295), which pointed at this as a
+separate, not-yet-filed request (33's own §10 build item 2, §6a). The design
+is merge-step.md §4.3 and §6a. Nothing under `apps/common/swarm_common/` has
+been edited.
+
+**This request depends on contract request 33's `WorkerAction` enum and
+`RunnerProfile.worker_action` field, which it extends rather than
+restates.** If 33 is not yet applied when this is decided, apply 33 first;
+this diff assumes it exists.
+
+### What is true today
+
+Contract request 33 gives `merge` a worker-action profile so an App key
+never sits in a container that runs an agent. The verdict-anchoring design
+in merge-step.md needs the identical isolation one step earlier in the
+chain, for a different key: a GitHub PR review posted by a `swarm-review`
+App, using the `swarm-tenant-<tenant>-git-review` secret. If that key were
+held by the review step's own agent-running container (a `claude-code-review`
+profile, contract request 36), the review agent — which reads
+attacker-controlled diffs — would share a container with it, exactly the
+exposure request 33's own §1.1 already rejects for `merge`. `post-verdict`
+is the same shape as `merge`: a worker-action profile that runs no agent,
+reads `review.json` (from the review-only-writable GCS prefix, at a path it
+derives from its own signed dispatch, not through ordinary `input_from`;
+merge-step.md §4.3), and posts the GitHub review.
+
+`EndCause` has no value that says a verdict-posting attempt was refused or
+failed, for the same reason request 33 gave `merge` its own pair: recording
+one as `RUNNER_ERROR` would be false (no runner ran), and `None` sends the
+outcome ledger back to classifying text.
+
+### The requested change
+
+In `profiles.py`, extend the `WorkerAction` enum contract request 33 adds:
+
+```python
+class WorkerAction(str, Enum):
+    """A platform action the WORKER performs instead of starting a runner."""
+    MERGE = "merge"
+    POST_VERDICT = "post_verdict"
+```
+
+A catalogue entry:
+
+```python
+"post-verdict": RunnerProfile(
+    name="post-verdict",
+    image="agent-runtime-base",
+    resource_class="standard",
+    backend=Backend.CLOUD_RUN_JOB,
+    runner_argv=(),
+    worker_action=WorkerAction.POST_VERDICT,
+    # The credential is never mounted: its secret is read by the worker at
+    # post-time, as `swarm-<tenant>-post-verdict`, the Job's own service
+    # account. `provider` is what parks the step CREDENTIAL_MISSING, at no
+    # cost, for a tenant that has not registered one, and keeps Terraform
+    # from creating a post-verdict Job for that tenant.
+    provider="git-review",
+    secrets=(),
+    timeout_seconds=300,
+    inputs={},
+),
+```
+
+`__post_init__`'s existing refusal (request 33: `worker_action` requires
+empty `runner_argv`, and vice versa) already covers this entry; nothing new
+is needed there.
+
+In `models.py`, two more `EndCause` values, written only by the worker,
+alongside request 33's `MERGE_REFUSED`/`MERGE_FAILED`:
+
+```python
+VERDICT_REFUSED = "verdict_refused"   # a condition for posting the review was not met; nothing changed on the forge
+VERDICT_FAILED = "verdict_failed"     # the post was allowed, and the forge did not do it
+```
+
+The specific reason goes in `result_summary.spec_check.reason` for a signed-
+spec failure (`upstream:<task id>:<why>`, CR 34's own field and format — not
+a `post-verdict`-only convention) and in `result_summary.verdict.refusal`
+for every other refusal code (`verdict_unreadable`, `verdict_prefix_unavailable`,
+`forge_unavailable`, `forge_refused`, ...). merge-step.md §6a lists every
+code and its cause.
+
+### What it would break if accepted
+
+* **Nothing stored**, the same as request 33: `worker_action` already
+  defaults to `None`; this only adds one more enum member and one more
+  catalogue entry.
+* **Terraform's `job_matrix`** creates a `post-verdict` Job for each tenant
+  whose providers include `git-review`, running as `swarm-<tenant>-post-verdict`,
+  not `worker_service_accounts[tenant]` and not the `merge` account either —
+  a third, distinct identity (merge-step.md §1.3, invariant 9). Until it
+  lands, the Job must not exist.
+* **Every restatement of the catalogue** — the plugin's bridge,
+  `swarm_profiles`, the UI's profile list, `check-contract-parity.sh` —
+  needs the new entry, the same as request 33.
+* **The outcome ledger** gains two more classes, and `DERIVE_VERSION` bumps
+  again, so stored days are re-derived a second time if this lands after
+  request 33 already bumped it once.
+
+### If it is declined
+
+The verdict cannot be anchored without an agent-adjacent App key, which
+merge-step.md's threat model (§0, §1.3, §4.3) already shows is not safe:
+either the key sits with the review agent (rejected once already, the
+reason `claude-code-review`, request 36, holds no App key at all) or B1
+reverts to the control-plane attestation the owner already declined. The
+merge step cannot be enabled for any tenant without this.
+
+### Invariants
+
+- **Invariants 1–3.** `post-verdict` is an ordinary task: admitted in the
+  same transaction, parked and costing nothing until `review` succeeds, and
+  counted from `LEASED`.
+- **Invariant 4.** A forge failure fails the attempt retryably; the worker
+  does not sleep through it.
+- **Invariant 5.** The worker checks its generation at start and again
+  before the post. A stale worker never touches the forge.
+- **Invariant 8.** Checkpointing stays on, restore is skipped (the same
+  `worker_action`-gated skip request 33 already establishes, merge-step.md
+  §1.3); the workspace is empty either way.
+- **Invariant 9.** The review credential's only accessor is the tenant's own
+  post-verdict service account. No agent runs as that account.
+- **Invariant 10.** A caller names `post-verdict` and sends `input: {}`.
+
+---
+
+## 36. `profiles.py`: the `claude-code-review` profile, and a typed `restore_on_retry`
+
+**Status: PROPOSED, 2026-09-29.** Part of #295. Recorded from
+[merge-step.md](merge-step.md)'s design (contract request 33, ACCEPTED by
+the owner 2026-09-29 as the design for #295), which pointed at this as a
+separate, not-yet-filed request (33's own §10 build item 3, §1.3 and §4.3).
+The design is merge-step.md §1.3 and §4.3. Nothing under
+`apps/common/swarm_common/` has been edited.
+
+### What is true today
+
+The `review` step of merge-step.md's chain needs an identity distinct from
+the tenant's ordinary worker account, `swarm-agent-worker-<tenant>`, for one
+narrow reason: it is the only identity allowed to write `review.json` to the
+review-only-writable GCS prefix (`tenants/<t>/verdicts/`, merge-step.md
+§4.3), which the ordinary tenant account's own IAM binding excludes. Unlike
+`post-verdict` and `merge`, `review` still runs an agent — the same
+`claude-code` runner, on the same image, needing the same Anthropic
+credential — so it cannot be a `worker_action` profile; it needs its own
+ordinary, agent-running profile with its own Job, so Terraform can bind
+`swarm-<tenant>-review` to that Job specifically and not to every
+`claude-code` step of the tenant.
+
+Separately: merge-step.md §1.3 and §10 (build item 4a) require that
+`claude-code-review`, `post-verdict` and `merge` never restore a checkpoint,
+on any attempt, not only the first. `post-verdict` and `merge` get this for
+free from the existing `worker_action`-gated skip (request 33). A profile
+that runs an agent, like `claude-code-review`, is not covered by that
+mechanism, and the repository's own house style is against keying behaviour
+off `profile.name` in the lifecycle (request 18's history: `command` keyed
+off a name once and produced incident wf_ebb3ab2d65664707a559). A typed
+field is needed for this profile alone.
+
+### The requested change
+
+In `profiles.py`, add one field to `RunnerProfile`:
+
+```python
+@dataclass(frozen=True)
+class RunnerProfile:
+    ...
+    #: When False, the lifecycle never restores a checkpoint for this
+    #: profile, on any attempt, not only the first. True (the default)
+    #: preserves today's behaviour for every existing profile. `review`
+    #: must never resume an agent inside a workspace a previous attempt
+    #: left behind -- its whole judgement depends on seeing the checked-out
+    #: head honestly (merge-step.md's own threat model, S0).
+    restore_on_retry: bool = True
+```
+
+A catalogue entry, identical to `claude-code`'s except its name (and so its
+Job and service account) and `restore_on_retry`:
+
+```python
+"claude-code-review": RunnerProfile(
+    name="claude-code-review",
+    image="agent-runtime-base",
+    resource_class="standard",
+    backend=Backend.CLOUD_RUN_JOB,
+    runner_argv=("python", "-m", "agent_worker.runners.claude_code"),
+    provider="anthropic",
+    secrets=("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"),
+    secrets_any_of=True,
+    timeout_seconds=7200,
+    inputs=_CLI_AGENT_INPUTS,
+    restore_on_retry=False,
+),
+```
+
+### What it would break if accepted
+
+* **Nothing stored.** `restore_on_retry` defaults to `True`, so every
+  existing profile keeps today's restore behaviour unchanged.
+* **The lifecycle's restore path** (`agent_worker.lifecycle`, wherever it
+  currently restores unconditionally on a retried attempt) must read
+  `profile.restore_on_retry` before restoring, the same way it already
+  branches on `worker_action` before building an argv (request 33).
+* **Terraform** needs a per-tenant `review` service account and Job, holding
+  `roles/storage.objectCreator` on `tenants/<t>/verdicts/` alone (no
+  delete), plus the ordinary `objectViewer`/excluding-`objectUser` pair for
+  its own artifacts and checkpoints (merge-step.md §4.3, §10). Until it
+  lands, `claude-code-review` must not be dispatchable: an agent running
+  under the tenant's ordinary account, with no distinct identity, gives up
+  exactly the isolation this profile exists for.
+* **Every restatement of the catalogue** — the plugin's bridge,
+  `swarm_profiles`, the UI's profile list, `check-contract-parity.sh` —
+  needs the new entry and the new field.
+
+### If it is declined
+
+`review` runs on the plain `claude-code` profile, sharing its Job and
+service account with `implement`, `fix` and `proof`. Since that shared
+account would then need write access to the verdicts prefix for `review` to
+do its job, every other step on that profile — and every other tenant
+workflow's `claude-code` steps — inherits the same write grant, reopening
+the in-chain forgery T3a exists to close (merge-step.md §7). The merge step
+cannot be enabled for any tenant without this either.
+
+### Invariants
+
+- **Invariants 1–3, 5, 10.** Unchanged: `claude-code-review` is an ordinary
+  agent-running task like `claude-code`, admitted, fenced and named the same
+  way.
+- **Invariant 8.** Checkpointing stays on; `restore_on_retry=False` is the
+  point of this request, not a violation of it — checkpointing and
+  restoring are separate steps, and mandatory periodic checkpointing is
+  unaffected. What is skipped is resuming a workspace a previous attempt
+  left behind.
+- **Invariant 9.** `swarm-<tenant>-review`'s only elevated grant relative to
+  the ordinary tenant account is the verdicts-prefix write, which carries no
+  portable secret an agent could exfiltrate and reuse elsewhere.
