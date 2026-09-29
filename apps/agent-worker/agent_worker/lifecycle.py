@@ -4153,29 +4153,6 @@ class Worker:
             cap=self.cfg.max_artifact_files,
             declared=self._expected_outputs,
         )
-        if plan.declared_past_bound:
-            # MORE DECLARED NAMES THAN THE MANIFEST'S BUDGET ALLOWS (#227): the
-            # ones past `MAX_DECLARED_NAMES` lost their exemption from the name
-            # bound in `plan`, which logs nothing itself. Named here, through
-            # this logger, because the names come from task metadata: SCRUBBED
-            # FIRST, then cut, the order the #232 review set for every name.
-            # `LOG_BATCH` to a line, so metadata holding thousands cannot pass
-            # Cloud Logging's entry limit.
-            past = [
-                standalone_mod.shown(self._scrub(name)) for name in plan.declared_past_bound
-            ]
-            batch = standalone_mod.LOG_BATCH
-            batches = (len(past) + batch - 1) // batch
-            for index in range(batches):
-                self.log.warning(
-                    "declared outputs past the manifest's bound are held to its "
-                    "name length like any other file",
-                    count=len(past),
-                    batch=f"{index + 1} of {batches}",
-                    declared_exempt=manifest_mod.MAX_DECLARED_NAMES,
-                    cap_name_bytes=manifest_mod.MAX_NAME_BYTES,
-                    names=past[index * batch : (index + 1) * batch],
-                )
         skipped: list[str] = []
         for name in plan.unstorable:
             # A name whose bytes are not UTF-8 (#225 review): no object can be

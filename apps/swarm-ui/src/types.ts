@@ -3497,12 +3497,6 @@ export interface ArtifactListing {
   task_id: string
   artifacts: ArtifactEntry[]
   artifacts_skipped: string[]
-  /**
-   * Files past the 500-file cap, counted and not named (#227): null until
-   * `complete`, 0 when none were. `complete` means the manifest is written,
-   * not that nothing was left out.
-   */
-  artifacts_over_cap?: number | null
   artifact_bytes: number | null
   complete: boolean
   /** The attempt the manifest describes: the final one, and only it. */

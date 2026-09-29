@@ -292,15 +292,6 @@ class ArtifactManifest:
     listing that omitted them silently would show a short list with no reason
     for it.
 
-    `over_cap` is the same idea for the FILE cap (#227): the worker uploads at
-    most 500 files from the artifacts folder (#228) and counts the rest as
-    `result_summary.artifacts_over_cap` -- a number, deliberately not names in
-    `skipped`, whose readers call a name there dropped at the size cap. None
-    until the manifest is written, 0 when nothing was past the cap. It sits
-    BESIDE `complete` rather than folding into it: `complete` means "the
-    manifest is written" to every reader (the Artifacts tab and the MCP client
-    stop polling on it), and a run that lost files is still finished.
-
     Nothing here has been resolved to an object. The `uri` on each entry is
     Firestore DATA, written by a worker, and the reader that turns one into a
     GCS key re-derives the key rather than trusting it -- see
@@ -311,7 +302,6 @@ class ArtifactManifest:
     skipped: list[str]
     artifact_bytes: Any
     complete: bool
-    over_cap: int | None = None
 
     def find(self, name: str) -> dict[str, Any] | None:
         """The entry the SERVER already knows about, by exact name.
@@ -999,21 +989,14 @@ class Store:
         skipped = summary.get("artifacts_skipped")
         if not isinstance(skipped, list):
             skipped = []
-        # `result_summary` is written once, by `finish()`, at terminal state.
-        # Until then "no artifacts yet" and "produced none" are the same empty
-        # list, and only this flag tells them apart.
-        complete = bool(task.result_summary)
-        over_cap = summary.get("artifacts_over_cap")
-        # A count or nothing: `result_summary` is free-form, and a bool is an
-        # int to Python. Absent on a written summary is a run under the cap.
-        if isinstance(over_cap, bool) or not isinstance(over_cap, int) or over_cap < 0:
-            over_cap = 0
         return ArtifactManifest(
             artifacts=[dict(e) for e in entries if isinstance(e, dict)],
             skipped=[str(name) for name in skipped],
             artifact_bytes=summary.get("artifact_bytes"),
-            complete=complete,
-            over_cap=over_cap if complete else None,
+            # `result_summary` is written once, by `finish()`, at terminal
+            # state. Until then "no artifacts yet" and "produced none" are the
+            # same empty list, and only this flag tells them apart.
+            complete=bool(task.result_summary),
         )
 
     def list_artifacts(self, tenant_id: str, task_id: str, *, limit: int = 200) -> dict:
@@ -1041,8 +1024,7 @@ class Store:
         `artifacts_skipped` comes back too. The worker drops files once the
         attempt passes `max_artifact_bytes`, and an artifact list that silently
         omits them is the same class of lie in miniature: the caller sees a short
-        list and no reason for it. `artifacts_over_cap` counts the files past
-        the 500-file cap, for the same reason (#227); see `ArtifactManifest`.
+        list and no reason for it.
 
         A task that has not reached a terminal state has no `result_summary`
         yet, so `artifacts` is empty and `complete` is false -- which is a
@@ -1052,7 +1034,6 @@ class Store:
         return {
             "artifacts": manifest.artifacts[:limit],
             "artifacts_skipped": manifest.skipped,
-            "artifacts_over_cap": manifest.over_cap,
             "artifact_bytes": manifest.artifact_bytes,
             "complete": manifest.complete,
         }
