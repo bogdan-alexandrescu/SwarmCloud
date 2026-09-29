@@ -125,12 +125,14 @@ run "only_swarm_api_can_sign_and_only_on_the_key" {
 
   # Nobody else holds anything that can sign: the deployer's grants on the key
   # read public keys and version state, nothing more.
+  # (The deployer's email is computed, so unknown at plan; the roles are what
+  # decide whether it can sign.)
   assert {
-    condition = length(google_kms_crypto_key_iam_member.deployer_key_readers) > 0 && alltrue([
+    condition = length(google_kms_crypto_key_iam_member.deployer_key_readers) == 2 * length(google_kms_crypto_key.step_spec) && alltrue([
       for m in google_kms_crypto_key_iam_member.deployer_key_readers :
-      contains(["roles/cloudkms.publicKeyViewer", "roles/cloudkms.viewer"], m.role) && m.member != "serviceAccount:swarm-api@saga-agents-staging.iam.gserviceaccount.com"
+      contains(["roles/cloudkms.publicKeyViewer", "roles/cloudkms.viewer"], m.role)
     ])
-    error_message = "the deployer reads the public keys (publicKeyViewer) and the version states (viewer) and holds no role that can sign"
+    error_message = "the deployer reads the public keys (publicKeyViewer) and the version states (viewer) on each key, and holds no role that can sign"
   }
 
   # And no project-level grant hands out a KMS role: a project grant would

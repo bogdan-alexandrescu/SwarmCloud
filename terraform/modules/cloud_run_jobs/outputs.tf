@@ -23,6 +23,18 @@ output "models" {
   value = { for k, v in var.jobs : k => lookup(v.env, "MODEL", null) }
 }
 
+# Job -> the four step-spec settings its container environment carries, null
+# where absent (contract request 34; tests/terraform/spec_signing_infra.tftest.hcl).
+# Read from the same `env` map as `models`, for the same reason.
+output "spec_env" {
+  value = {
+    for k, v in var.jobs : k => {
+      for name in ["SPEC_VERIFY_KEYS", "SPEC_SIGNING_KEY", "SPEC_SIGNATURE_MODE", "SPEC_LEGACY_CUTOVER"] :
+      name => lookup(v.env, name, null)
+    }
+  }
+}
+
 output "workspace_size_gib" {
   description = <<-EOT
     Effective workspace size per job. This is a FRACTION OF CONTAINER MEMORY,

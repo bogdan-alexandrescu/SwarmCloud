@@ -348,6 +348,11 @@ locals {
         # there. Absent, not empty, on a profile with none: the worker reads an
         # empty MODEL as "no model", but a Job with no such variable says so.
         { for name, value in { MODEL = job.model } : name => value if value != null },
+        # The step-spec verification settings (contract request 34,
+        # spec_signing.tf): the public keys, the key, the rollout mode. On the
+        # Job, where only the platform writes; never in the dispatcher's
+        # per-execution overrides, which a task shapes.
+        local.spec_worker_env,
       )
     }
   }
@@ -397,6 +402,13 @@ locals {
       # alerts on. Renaming the env key is the whole fix -- the topic, the IAM
       # and the subscription were always correct.
       DISPATCH_TOPIC = local.wake_topic
+
+      # The step-spec key version every submission is signed with (contract
+      # request 34, spec_signing.tf). A full version name: an asymmetric key
+      # has no primary version. The hardened swarm-api (#353) refuses to start
+      # without it, so it ships BEFORE that code does; today's swarm-api does
+      # not read it.
+      SPEC_SIGNING_KEY_VERSION = local.spec_signing_key_version
 
       # Neither name appeared anywhere in terraform, so swarm_api.settings read
       # empty tuples, resolve_tenant() had no groups to check, and EVERY caller
@@ -507,7 +519,13 @@ locals {
       QUOTA_BROKER_URL      = var.quota_broker_url
       QUOTA_BROKER_AUDIENCE = local.push_audiences["swarm-quota-broker"]
     })
-    "swarm-scheduler" = merge(local.common_env, {
+    "swarm-scheduler" = merge(local.common_env, local.spec_worker_env, {
+      # local.spec_worker_env, merged in above: the four step-spec settings
+      # (contract request 34), which the scheduler passes VERBATIM onto every
+      # Cloud Run Job it creates itself (#353, scheduler.dispatch.spec_job_env),
+      # so those workers verify against the same keys as the Jobs this root
+      # creates. Never into worker_env, which a task shapes.
+      #
       # See the swarm-api block: the reader has always been DISPATCH_TOPIC.
       DISPATCH_TOPIC = local.wake_topic
 

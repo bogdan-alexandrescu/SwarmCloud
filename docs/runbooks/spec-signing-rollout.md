@@ -1,0 +1,207 @@
+# Step-spec signing: rollout, rotation and revocation
+
+Contract request 34 ([`docs/contract-change-requests.md`](../contract-change-requests.md),
+issue #342). swarm-api signs every step's canonical spec with a Cloud KMS key
+at submission; every worker verifies the signature before it reads anything
+the spec decides, and refuses a task that does not verify as
+`spec_signature_invalid`.
+
+**Why it exists.** A tenant's agent writes its own task documents -- it has to,
+to report progress -- and nothing stopped it from rewriting a *later* step of
+its own workflow while that step sat parked: the prompt, the repository, the
+inputs. The later step then ran whatever the earlier agent chose. The
+signature binds what the caller submitted, so a rewritten step is refused
+instead of run.
+
+**Why it rolls out in stages.** Every task already queued or parked when the
+verifying worker ships is unsigned, and signing cannot be retrofitted: signing
+a document as it stands now would sign whatever an agent already wrote into
+it. So the worker starts in `legacy`, which admits an unsigned task created
+before a cutover, and moves to `enforce`, which admits none. The code enforces
+after **2026-10-20T00:00:00Z** whatever the configuration says
+(`SPEC_LEGACY_UNTIL`, in the worker), so a forgotten flag stops working anyway.
+
+## Where each piece lives
+
+| piece | where | applied by |
+|---|---|---|
+| `cloudkms.googleapis.com`, the key ring `swarm-<env>-specs`, the key `step-spec` (EC P-256, software), swarm-api's `signer` grant, the deployer's `publicKeyViewer` + `viewer` | [`terraform/bootstrap/spec_signing.tf`](../../terraform/bootstrap/spec_signing.tf) | **the owner**, never CI: CI must not hold `setIamPolicy` on the key, or the release could grant itself a signature |
+| the names of both, spelled once | [`terraform/modules/spec_signing_key`](../../terraform/modules/spec_signing_key/main.tf) | both roots |
+| `SPEC_VERIFY_KEYS`, `SPEC_SIGNING_KEY`, `SPEC_SIGNATURE_MODE`, `SPEC_LEGACY_CUTOVER` on every Cloud Run worker Job and on the scheduler; `SPEC_SIGNING_KEY_VERSION` on swarm-api | [`terraform/infra/spec_signing.tf`](../../terraform/infra/spec_signing.tf), values in [`dev.tfvars`](../../terraform/environments/dev/dev.tfvars) | the release |
+| the `swarm-spec-verify-keys` ConfigMap in each tenant namespace, for GKE pods | [`kubernetes/render.py`](../../kubernetes/render.py) from `terraform output -json spec_verify_keys_configmap`, applied by [`kubernetes/apply.sh`](../../kubernetes/apply.sh) `--spec-verify-keys` | the release's `deploy` job, when `vars.APPLY_TENANT_NAMESPACES` is `true` |
+| the alert on a refusal | [`terraform/modules/monitoring`](../../terraform/modules/monitoring/alerts.tf), `spec-signature-invalid` | the release |
+
+Nobody holds `roles/cloudkms.signerVerifier`, and no tenant or worker account
+holds any role on the key. Workers get the public keys in their Job's
+environment (Cloud Run) or a read-only mount (GKE): no KMS call, no quota and no
+IAM at attempt start.
+
+**What this does not protect against**, accepted by the owner on 2026-09-29:
+the key lives in the shared `saga-agents-staging` project, so a project Owner
+or Editor can redeploy swarm-api to run their own code as its account, and sign
+through it. It does hold against tenant agents, which is who #342 is about.
+
+## The rollout
+
+Each step is its own change, in this order. Never skip to `enforce` before
+signed tasks are confirmed: a worker that enforces before swarm-api signs
+refuses every task.
+
+### 1. The key (owner, bootstrap), then the Terraform half (release)
+
+The owner applies bootstrap's step-spec resources **before** the Terraform-half
+pull request merges. terraform/infra reads the key's versions at plan; a
+release planned before the key exists, or before the deployer can read it,
+fails at plan.
+
+```bash
+cd terraform/bootstrap
+terraform plan \
+  -target='module.project_services[0].google_project_service.this["cloudkms.googleapis.com"]' \
+  -target='google_kms_key_ring.step_spec' \
+  -target='google_kms_crypto_key.step_spec' \
+  -target='google_kms_crypto_key_iam_member.swarm_api_signer' \
+  -target='google_kms_crypto_key_iam_member.deployer_key_readers' \
+  -target='data.google_kms_crypto_key_versions.step_spec' \
+  -out=spec-signing.tfplan
+terraform apply spec-signing.tfplan
+terraform output spec_signing_keys
+terraform output spec_verify_keys      # one PEM per environment: version 1
+```
+
+Read the plan for: two key rings and two keys (`dev`, `prod`), each key
+`EC_SIGN_P256_SHA256` / `SOFTWARE`; `roles/cloudkms.signer` for
+`swarm-api@saga-agents-staging.iam.gserviceaccount.com` on each key and nothing
+else; `roles/cloudkms.publicKeyViewer` and `roles/cloudkms.viewer` for
+`swarm-tf-deployer` on each key. Nothing on the project.
+
+Then the Terraform-half pull request merges and releases. It is inert for
+today's code: the worker and swarm-api read none of these variables yet. It
+exists first because the hardened swarm-api (#353) **refuses to start without
+`SPEC_SIGNING_KEY_VERSION`**.
+
+dev ships `spec_signature_mode = "legacy"` with the cutover at
+`2026-10-20T00:00:00Z` -- the end of the window -- so that when the verifying
+worker ships in step 2 every unsigned task is admitted, and none of the tasks
+parked at that moment fails.
+
+**Check** (read-only): the worker Jobs carry the keys.
+
+```bash
+gcloud run jobs describe swarm-job-eng-claude-code --region us-central1 \
+  --format=json | jq -r '.spec.template.spec.template.spec.containers[0].env[]
+  | select(.name | startswith("SPEC_")) | "\(.name)=\(.value | .[0:80])"'
+```
+
+### 2. Signing and verifying (#353's release)
+
+swarm-api signs every new task; every worker verifies. In `legacy`, an unsigned
+task created before the cutover runs with a WARNING
+(`unsigned task admitted by the legacy window`) and a RUNNING event whose
+detail has `phase: verify_spec` and `spec_check.reason: legacy_unsigned`.
+
+**Check** that signing works, before anything else moves:
+
+* a new task's document carries `spec_signature`, `spec_key_version` (the full
+  name of version 1) and `spec_format`;
+* its worker logs `spec signature verified`;
+* the `spec-signature-invalid` metric stays at zero.
+
+If swarm-api answers 503 on submissions, KMS refused the signature: check the
+`signer` grant and `SPEC_SIGNING_KEY_VERSION`.
+
+### 3. Tighten the cutover (a pull request)
+
+Set `spec_legacy_cutover` in `dev.tfvars` to the moment the signing swarm-api
+revision took all traffic -- that revision's creation time, from
+
+```bash
+gcloud run services describe swarm-api --region us-central1 \
+  --format='value(status.traffic)'
+gcloud run revisions describe <that revision> --region us-central1 \
+  --format='value(metadata.creationTimestamp)'
+```
+
+From that release on, a task created after the cutover with its signature
+stripped is refused instead of admitted. `create_time` is Firestore's and no
+client can write it.
+
+### 4. Enforce (a pull request, before 2026-10-20)
+
+Count the non-terminal tasks without a signature (read-only), and let them
+finish or cancel and resubmit them. Resubmitting signs them. When none is
+left, a pull request sets `spec_signature_mode = "enforce"` and removes
+`spec_legacy_cutover`. After 2026-10-20 the worker enforces regardless, and any
+unsigned task left fails `spec_signature_invalid` with reason `unsigned`.
+
+## GKE
+
+The browser profile's pods read the keys from the `swarm-spec-verify-keys`
+ConfigMap mounted read-only at `/etc/swarm/spec-verify-keys` -- never from
+their `env:`, which the scheduler renders per task. The release refreshes it
+with every tenant namespace once the repository variable
+`APPLY_TENANT_NAMESPACES` is `true`; until then it says so and applies nothing.
+By hand:
+
+```bash
+terraform -chdir=terraform/infra output -json spec_verify_keys_configmap > keys.json
+kubernetes/apply.sh --tenant eng --spec-verify-keys keys.json          # preview
+kubernetes/apply.sh --tenant eng --spec-verify-keys keys.json --confirm
+```
+
+The mount is `optional`: a namespace without the ConfigMap still starts its
+pods, and the worker refuses a signed task as `CANNOT_START` (no keys) rather
+than run it unverified. Nothing in the tenant namespace may write a ConfigMap
+-- the worker Role is empty and the pods carry no token -- and
+`tests/unit/worker/test_spec_verify_keys_configmap.py` holds that.
+
+**Not delivered to GKE pods yet:** the worker (#353) reads only
+`SPEC_VERIFY_KEYS` and `SPEC_SIGNING_KEY` from the mount, and a GKE Job's
+environment carries no `SPEC_SIGNATURE_MODE`, so a browser pod enforces from
+the day #353 ships, legacy window or not. The ConfigMap already carries the
+mode and cutover, for the worker to read them there.
+
+## Rotation
+
+Cloud KMS does not rotate asymmetric keys; rotate by hand, in this order:
+
+1. create version N+1: `gcloud kms keys versions create --key step-spec
+   --keyring swarm-dev-specs --location us-central1`;
+2. release, so every worker's `SPEC_VERIFY_KEYS` holds N and N+1 (the GKE
+   ConfigMap too);
+3. set `spec_signing_key_version = N+1` in `dev.tfvars` and release;
+4. once no non-terminal task names version N, disable it
+   (`gcloud kms keys versions disable N ...`) and release.
+
+The plan warns (`check "spec_signing_version_is_trusted"`) when
+`spec_signing_key_version` names a version that is not enabled.
+
+## Revocation
+
+Disable the version. From the next release on it is absent from every
+worker's `SPEC_VERIFY_KEYS`, and every task signed by it is refused as
+`foreign_key_version`. A compromised signing identity could sign anything by
+submitting it through the API anyway, so revocation closes the leak; a release
+is fast enough for that.
+
+## The alert
+
+`swarm-<env>-spec-signature-invalid` fires on one refusal. It counts the
+worker's ERROR line `spec signature invalid: refusing to run this task` with
+`end_cause = spec_signature_invalid`, from Cloud Run Jobs and GKE pods alike,
+labelled by tenant and `spec_check.reason`. The half that covers contract
+request 33's worker actions refusing an **upstream** spec (`MERGE_REFUSED` /
+`VERDICT_REFUSED` with a reason starting `upstream:`) is added when CR 33 is
+built.
+
+## Not verified here
+
+* The `AsymmetricSign` quota for this project and region, and its headroom
+  against the other team's use of KMS. Every task and workflow step is one
+  sign call; a `RESOURCE_EXHAUSTED` is a 503 on every submission. Check it with
+  `gcloud services quota list --service=cloudkms.googleapis.com` before
+  `enforce`.
+* That the `state=ENABLED` filter of `google_kms_crypto_key_versions` is
+  accepted by the live API as written. The module filters on `state` again, so
+  a filter that matched too much would still trust only enabled versions; one
+  the API rejected would fail the plan, loudly.
