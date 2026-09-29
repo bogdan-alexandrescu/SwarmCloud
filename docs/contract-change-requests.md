@@ -40,7 +40,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 30 | `identity.py`: a tenant may list service accounts that resolve to it by exact email (#273) | ACCEPTED 2026-09-29 by the owner after three security reviews |
 | 32 | `profiles.py`: `browser` and `generic` declare no inputs, so the API bounds them by size alone and the plugin can send them none (#218) | ACCEPTED 2026-09-29 by the owner after three security reviews |
 | 33 | `profiles.py` / `models.py`: a merge profile that runs no agent, and two end causes for it (#295) | ACCEPTED 2026-09-29 by the owner, as the design; build gated on #342 |
-| 34 | `models.py` / `specsign.py`: a step's spec is signed by swarm-api and verified by every worker (#342) | ACCEPTED 2026-09-29 by the owner after three security reviews |
+| 34 | `models.py` / `specsign.py`: a step's spec is signed by swarm-api and verified by every worker (#342) | ACCEPTED 2026-09-29 by the owner after three security reviews, applied in PR #353 (code) and #354 (Terraform) |
 
 ---
 
@@ -6126,6 +6126,9 @@ reach it. They are listed there as rejected, not as fallbacks.
 ## 34. `models.py` / a new `specsign.py`: a step's spec is signed by swarm-api and verified by every worker
 
 **Status: ACCEPTED 2026-09-29 by the owner after three security reviews.**
+Applied by #353 (accepted by the owner 2026-09-29): `swarm_common/specsign.py`
+and the three signature fields and `EndCause.SPEC_SIGNATURE_INVALID` in
+`swarm_common/models.py`; the Terraform half by #354.
 Recorded from #342 (S0), which the round-3 security re-review of #316
 (contract request 33, the merge step) found the same day. This entry went
 through three rounds of joint review with contract request 33 on 2026-09-29 --
