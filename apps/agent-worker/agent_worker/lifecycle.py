@@ -179,7 +179,14 @@ from .gitops import (
 # The helpers every function in `gitops` builds its git commands from. Borrowed
 # rather than restated for `replay_agent_commits` below, so its commands carry
 # exactly the hook, fsmonitor, signing and identity overrides the fold's do.
-from .gitops import _NO_HOOKS, _SHA_RE, _git_text, _git_text_full, _worker_identity
+from .gitops import (
+    _NO_HOOKS,
+    _SHA_RE,
+    _git_stream,
+    _git_text,
+    _git_text_full,
+    _worker_identity,
+)
 from .hardening import FAILED, MemoryProtection
 from .metrics import (
     ResourceSampler,
@@ -2521,6 +2528,9 @@ class Worker:
             result_summary=summary,
             retry_delay_seconds=EXPECTED_OUTPUT_RETRY_DELAY_SECONDS,
             detail={"refused": error},
+            # To become `PUBLISH_REFUSED` with the contract change request of
+            # 2026-09-29 (docs/contract-change-requests.md); OUTPUTS_MISSING
+            # stands in until `swarm_common.EndCause` carries it.
             end_cause=EndCause.OUTPUTS_MISSING,
         )
         self.log.info("the attempt failed for a refused pull request title", task_state=state.value)
@@ -2547,10 +2557,32 @@ class Worker:
             result_summary=summary,
             retry_delay_seconds=EXPECTED_OUTPUT_RETRY_DELAY_SECONDS,
             detail={"refused": error},
+            # OWNER DECISION, 2026-09-29: this gets its own end cause,
+            # `PUBLISH_REFUSED`, requested in docs/contract-change-requests.md
+            # (accepted by the owner, not yet applied). `EndCause` is in the
+            # frozen `swarm_common`, so RUNNER_ERROR stands in until the
+            # request lands; switch this line (and the refused title's) then.
             end_cause=EndCause.RUNNER_ERROR,
         )
         self.log.info("the attempt failed: its final tree adds a credential", task_state=state.value)
         return Outcome(exit_code=ExitCode.FAILED, state=state)
+
+    def _leaks_in_added_text(self, text: str) -> bool:
+        """The leak test both publish scans apply to the text a diff ADDS.
+
+        A registered secret -- the scrub replaces exactly the registered
+        values, so "the scrub changed it" is "a registered value is in it" --
+        or a credential-shaped literal (`_holds_a_credential`), which catches
+        a key the agent minted or pasted and nobody registered.
+        """
+        return str(self._scrub(text)) != text or _holds_a_credential(text)
+
+    def _scan_overlap(self) -> int:
+        """How far the leak scan's windows overlap: the longest credential
+        match (`SCAN_OVERLAP_CHARS`) plus the longest registered secret, so a
+        value straddling a window's edge is whole in the next window."""
+        secrets = getattr(self.log, "_secrets", None) or ()
+        return SCAN_OVERLAP_CHARS + max((len(s) for s in secrets), default=0)
 
     def _clone_base_path(self) -> Path | None:
         ws = self.ws
@@ -4251,8 +4283,10 @@ class Worker:
                 # replaces exactly the registered values, so "the scrub
                 # changed it" is "a registered value is in it", and a key the
                 # agent minted or an `.env` it committed is registered nowhere
-                # and caught only by `_adds_a_credential`.
-                leaks=lambda text: str(self._scrub(text)) != text or _adds_a_credential(text),
+                # and caught only by the patterns. Asked about the text each
+                # file ADDS, `+` removed, in overlapping windows.
+                leaks=self._leaks_in_added_text,
+                overlap=self._scan_overlap(),
             )
             if replayed is not None:
                 kept = replayed
@@ -4292,11 +4326,12 @@ class Worker:
             leak = final_tree_leak(
                 repo=repo,
                 base=self._publish_base,
-                leaks=lambda text: str(self._scrub(text)) != text or _holds_a_credential(text),
+                leaks=self._leaks_in_added_text,
                 private_dir=ws.private,
                 logs_dir=ws.logs,
                 timeout_seconds=cfg.git_harvest_timeout_seconds,
                 logger=self.log,
+                overlap=self._scan_overlap(),
             )
             if leak is not None:
                 reason = str(self._scrub(leak))
@@ -5533,9 +5568,210 @@ def _is_trailer_block(paragraph: list[str]) -> bool:
     return all(_TRAILER_LINE.match(line) or line[:1] in (" ", "\t") for line in paragraph)
 
 
-#: How much of one commit's diff the secret scan reads. A diff at or over this
-#: is not scanned whole, and counts as a hit (`_first_leaking_commit`).
-REPLAY_SCAN_MAX_BYTES = 32 * 1024 * 1024
+#: How much added text one window of the leak scan holds (`_DiffLeakScanner`).
+#: OWNER DECISION, 2026-09-29 (#259): a diff is scanned WHOLE however big it
+#: is, in windows of this size, rather than refused or cut at a cap. Sized so
+#: a window is cheap to hold and to run every rule over, not as a limit.
+SCAN_WINDOW_CHARS = 4 * 1024 * 1024
+
+#: How much of one window is scanned again at the start of the next, so a
+#: credential straddling the cut is still seen whole in one of them. It must
+#: be at least the longest credential match and the longest registered
+#: secret; the callers add the longest registered secret to this. Every
+#: credential rule matches within one line, and a key/value assignment or a
+#: provider token is far under 64 KiB. A PEM block's marker is what its rule
+#: finds, and the marker is 40 characters.
+SCAN_OVERLAP_CHARS = 64 * 1024
+
+
+class _DiffLeakScanner:
+    """Scans a `git diff` stream's ADDED text, file by file, in bounded windows.
+
+    `feed` takes the diff's bytes as they arrive (`gitops._git_stream`), in
+    chunks of any size; `close` ends the stream and returns the path of the
+    first file whose added text `leaks`, or None. Nothing is held but the
+    current window, the overlap carried from the one before, and one line's
+    first few characters -- a 40 MB single-line file costs a window, not 40 MB.
+
+    The diff is parsed as `_added_by_file` parses a whole one: a `+++ `
+    line is a file's header only before its first `@@`, and every `+` line
+    after is content. Bytes are decoded incrementally as UTF-8 with
+    replacement, and no newline translation happens, so a lone `\\r` stays
+    inside its line (#259 review, M2).
+
+    WINDOWS OVERLAP. When a file's added text passes `window` characters, it
+    is scanned and all but its last `overlap` characters are dropped; those
+    are scanned again with what follows. The carry starts at a line boundary
+    when one is within another `overlap` of the cut, so a match at the start
+    of a window reads the true character before it. On a single line longer
+    than that the carry starts mid-line, where a pattern starting the window
+    counts as starting a token: a possible false hit, which folds or refuses
+    -- the safe direction.
+    """
+
+    _HEADS = ("diff --git ", "+++ ", "@@")
+
+    def __init__(self, leaks: Callable[[str], bool], *, window: int, overlap: int) -> None:
+        import codecs
+
+        self._leaks = leaks
+        self._window = max(window, 2 * overlap + 1)
+        self._overlap = overlap
+        self._decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        self.hit: str | None = None
+        self._path = ""
+        self._in_header = True
+        self._mode: str | None = None  # None (line start), "add", "header", "skip"
+        self._head = ""
+        self._header_line = ""
+        self._buf: list[str] = []
+        self._buf_len = 0
+        self._carry = ""
+
+    def feed(self, data: bytes) -> None:
+        if self.hit is None:
+            self._text(self._decoder.decode(data))
+
+    def close(self) -> str | None:
+        if self.hit is None:
+            self._text(self._decoder.decode(b"", final=True))
+        if self.hit is None:
+            self._end_line()
+            self._flush_file()
+        return self.hit
+
+    # -- parsing -------------------------------------------------------------
+
+    #: Runs of whole content lines, taken in one step rather than a line at a
+    #: time: a 40 MB diff is millions of lines, and a Python step per line
+    #: made the scan the slowest thing in the publish. Inside a hunk a line
+    #: starting `+` is added content, and `-`, ` ` or `\\` is not; neither
+    #: run can hold a `diff --git` or `@@` line, which start otherwise.
+    _ADDED_RUN = re.compile(r"(?:\+[^\n]*\n)+")
+    _OTHER_RUN = re.compile(r"(?:[-\\ ][^\n]*\n)+")
+
+    def _text(self, text: str) -> None:
+        i, n = 0, len(text)
+        while i < n and self.hit is None:
+            if self._mode is None and not self._head and not self._in_header:
+                run = self._ADDED_RUN.match(text, i)
+                if run is not None:
+                    # Each line's one `+` prefix goes: the first by the
+                    # slice, every other as the character after a newline.
+                    self._add(run.group()[1:].replace("\n+", "\n"))
+                    i = run.end()
+                    continue
+                run = self._OTHER_RUN.match(text, i)
+                if run is not None:
+                    i = run.end()
+                    continue
+            newline = text.find("\n", i)
+            end = n if newline < 0 else newline
+            if self._mode is None:
+                need = 11 - len(self._head)
+                take = text[i : min(end, i + need)]
+                self._head += take
+                i += len(take)
+                complete = i == end and newline >= 0
+                if not complete and len(self._head) < 11 and i >= n:
+                    if any(p.startswith(self._head) for p in self._HEADS):
+                        return  # undecided until more arrives
+                self._classify()
+                continue
+            segment = text[i:end]
+            if self._mode == "add":
+                self._add(segment)
+            elif self._mode == "header" and len(self._header_line) < 64 * 1024:
+                self._header_line += segment
+            i = end
+            if newline >= 0:
+                i += 1
+                self._end_line()
+
+    def _classify(self) -> None:
+        head = self._head
+        if head.startswith("diff --git "):
+            self._flush_file()
+            self._path, self._in_header, self._mode = "", True, "skip"
+        elif head.startswith("@@"):
+            self._in_header, self._mode = False, "skip"
+        elif self._in_header:
+            if head.startswith("+++ "):
+                self._mode, self._header_line = "header", head
+            else:
+                self._mode = "skip"
+        elif head.startswith("+"):
+            self._mode = "add"
+            self._add(head[1:])
+        else:
+            self._mode = "skip"
+
+    def _end_line(self) -> None:
+        if self._mode is None and self._head:
+            self._classify()
+        if self._mode == "add":
+            self._add("\n")
+        elif self._mode == "header":
+            name = self._header_line[4:].rstrip("\r")
+            if len(name) > 1 and name.startswith('"') and name.endswith('"'):
+                name = name[1:-1]
+            self._path = name[2:] if name.startswith("b/") else name
+        self._mode, self._head, self._header_line = None, "", ""
+
+    # -- scanning ------------------------------------------------------------
+
+    def _add(self, text: str) -> None:
+        if not text:
+            return
+        self._buf.append(text)
+        self._buf_len += len(text)
+        if self._buf_len >= self._window:
+            self._scan(last=False)
+
+    def _scan(self, *, last: bool) -> None:
+        text = self._carry + "".join(self._buf)
+        self._buf, self._buf_len = [], 0
+        if text and self._leaks(text):
+            self.hit = self._path or "a file"
+            return
+        if last:
+            self._carry = ""
+            return
+        cut = max(len(text) - self._overlap, 0)
+        line_start = text.rfind("\n", max(cut - self._overlap, 0), cut)
+        self._carry = text[line_start + 1 :] if line_start >= 0 else text[cut:]
+
+    def _flush_file(self) -> None:
+        if self._buf:
+            self._scan(last=True)
+        self._carry = ""
+
+
+def _scan_diff_stream(
+    argv: list[str],
+    *,
+    leaks: Callable[[str], bool],
+    overlap: int,
+    repo: Path,
+    private_dir: Path,
+    logs_dir: Path,
+    slug: str,
+    timeout_seconds: int,
+    logger: Any,
+) -> tuple[int, str | None]:
+    """Run a `git diff` and scan everything it adds; (exit code, leaking path or None)."""
+    scanner = _DiffLeakScanner(leaks, window=SCAN_WINDOW_CHARS, overlap=overlap)
+    code = _git_stream(
+        argv,
+        repo=repo,
+        private_dir=private_dir,
+        logs_dir=logs_dir,
+        slug=slug,
+        timeout_seconds=timeout_seconds,
+        logger=logger,
+        consume=scanner.feed,
+    )
+    return code, scanner.close()
 
 
 def _adds_a_credential(diff: str) -> bool:
@@ -5657,16 +5893,17 @@ def _first_leaking_commit(
     logs_dir: Path,
     timeout_seconds: int,
     logger: Any,
+    overlap: int = SCAN_OVERLAP_CHARS,
 ) -> int | None:
-    """The 1-based index of the first agent commit whose diff `leaks`, or None.
+    """The 1-based index of the first agent commit whose ADDED text `leaks`, or None.
 
     Each commit is diffed against its ORIGINAL first parent (the empty tree
     for a parentless first commit), with `--text` so a file git would call
     binary is still shown byte for byte, and `--no-renames` so a moved file's
-    content is shown rather than only its new name. The worker's own `keep`
-    commit is skipped: its tree is the final tree, which the fold pushes
-    either way. The diff's output file is deleted as soon as it is read --
-    it may hold the very value it was scanned for, and `logs/` is uploaded.
+    content is shown rather than only its new name. `leaks` is asked about
+    what each file ADDS, `+` removed: a removed line was in the parent's tree
+    already. The worker's own `keep` commit is skipped here; its tree is the
+    final tree, which `final_tree_leak` scans before any push.
     """
 
     def run(argv: list[str], slug: str, cap: int = 4 * 1024 * 1024) -> tuple[int, str, bool]:
@@ -5699,30 +5936,29 @@ def _first_leaking_commit(
                 if code != 0 or not _SHA_RE.match(empty_tree):
                     raise GitError("could not name the empty tree")
             before = empty_tree
-        slug = "publish-scan-diff"
-        try:
-            code, diff, diff_truncated = run(
-                [
-                    *git, "diff", "--no-color", "--no-ext-diff", "--no-textconv",
-                    "--text", "--no-renames", "-U0", before, sha, "--",
-                ],
-                slug,
-                cap=REPLAY_SCAN_MAX_BYTES,
-            )
-        finally:
-            for suffix in ("out", "err"):
-                try:
-                    (logs_dir / f"git-{slug}.{suffix}.log").unlink()
-                except OSError:
-                    pass
+        # EVERY BYTE OF THE DIFF IS SCANNED, AND NONE IS STORED (owner
+        # decision, 2026-09-29): streamed from git through a pipe into
+        # overlapping windows (`_DiffLeakScanner`), so a big diff is neither
+        # refused for its size nor scanned only in part, and no file holds
+        # the value it was scanned for.
+        code, hit = _scan_diff_stream(
+            [
+                *git, "-c", "core.quotePath=false", "diff", "--no-color", "--no-ext-diff",
+                "--no-textconv", "--text", "--no-renames", "--src-prefix=a/",
+                "--dst-prefix=b/", "-U0", before, sha, "--",
+            ],
+            leaks=leaks,
+            overlap=overlap,
+            repo=repo,
+            private_dir=private_dir,
+            logs_dir=logs_dir,
+            slug="publish-scan-diff",
+            timeout_seconds=timeout_seconds,
+            logger=logger,
+        )
         if code != 0:
             raise GitError(f"could not diff commit {sha[:12]} against its parent")
-        # `diff_truncated` comes from the capture itself (its truncated flag,
-        # or its raw byte size at or over the cap) -- never from
-        # `len(diff.encode(...))`, which a `\r\n` -> `\n` translation could
-        # shrink below the cap after the capture already hit it (#259 review,
-        # M2). "not scanned whole" must count as a hit either way.
-        if diff_truncated or leaks(diff):
+        if hit is not None:
             return index
     return None
 
@@ -5737,6 +5973,7 @@ def final_tree_leak(
     timeout_seconds: int,
     logger: Any,
     git_binary: str = "git",
+    overlap: int = SCAN_OVERLAP_CHARS,
 ) -> str | None:
     """Why the branch about to be pushed must not be, or None when it may.
 
@@ -5750,13 +5987,13 @@ def final_tree_leak(
     the fold, so it covers every commit's tree the push carries: each kept
     commit is scanned by the per-commit pass and the final tree here.
 
-    `leaks` is asked about the text each FILE adds (`_added_by_file`), with
-    the `+` removed, so a line the branch removes -- the repository's own,
-    already public -- never refuses it. The answer names the FILE and never
-    the value: the reason becomes the attempt's error, which the retry and a
-    human both read. A diff too big to read whole is refused too, naming the
-    file it was cut in, because "not scanned" is not "clean". The diff's
-    output file is deleted as soon as it is read, as the per-commit scan's is.
+    `leaks` is asked about the text each FILE adds, with the `+` removed, so
+    a line the branch removes -- the repository's own, already public --
+    never refuses it. The answer names the FILE and never the value: the
+    reason becomes the attempt's error, which the retry and a human both
+    read. The whole diff is scanned however big it is, streamed in
+    overlapping windows (`_DiffLeakScanner`; owner decision, 2026-09-29):
+    size alone never refuses a publish, and no file holds the diff.
 
     `GIT_NO_REPLACE_OBJECTS=1` (`gitops._git_env`) makes this read the real
     objects the push sends, never a replacement the agent registered; the
@@ -5792,36 +6029,21 @@ def final_tree_leak(
             "the clone base is unknown, so the worker cannot read what the push "
             "would add; nothing was pushed"
         )
-    slug = "publish-final-diff"
-    try:
-        code, diff, truncated = _git_text_full(
-            [
-                *g, "diff", "--no-color", "--no-ext-diff", "--no-textconv", "--text",
-                "--no-renames", "--src-prefix=a/", "--dst-prefix=b/", "-U0",
-                before, "HEAD", "--",
-            ],
-            slug=slug,
-            max_bytes=REPLAY_SCAN_MAX_BYTES,
-            **run_kwargs,
-        )
-    finally:
-        for suffix in ("out", "err"):
-            try:
-                (logs_dir / f"git-{slug}.{suffix}.log").unlink()
-            except OSError:
-                pass
+    code, hit = _scan_diff_stream(
+        [
+            *g, "diff", "--no-color", "--no-ext-diff", "--no-textconv", "--text",
+            "--no-renames", "--src-prefix=a/", "--dst-prefix=b/", "-U0",
+            before, "HEAD", "--",
+        ],
+        leaks=leaks,
+        overlap=overlap,
+        slug="publish-final-diff",
+        **run_kwargs,
+    )
     if code != 0:
         raise GitError("could not diff the branch against the clone base")
-    files = _added_by_file(diff)
-    for path, added in files:
-        if leaks(added):
-            return f"the final tree adds a credential in {path or 'a file'}; remove it"
-    if truncated:
-        where = files[-1][0] if files and files[-1][0] else "a file"
-        return (
-            f"the final tree's diff is too large to scan whole (cut in {where}); "
-            "nothing was pushed. Make the change smaller"
-        )
+    if hit is not None:
+        return f"the final tree adds a credential in {hit}; remove it"
     return None
 
 
@@ -5840,6 +6062,7 @@ def replay_agent_commits(
     logger: Any,
     git_binary: str = "git",
     leaks: Callable[[str], bool] | None = None,
+    overlap: int = SCAN_OVERLAP_CHARS,
 ) -> int | None:
     """Rewrite each commit on HEAD's first-parent line since `base` as the worker's (#242).
 
@@ -5851,14 +6074,14 @@ def replay_agent_commits(
     * HEAD does not descend from `base` (the agent reset or checked out
       another line): nothing tells its commits from the repository's;
     * more than `MAX_KEPT_COMMITS` of them;
-    * `leaks` answers True for any agent commit's diff against its parent
-      (#259 review). A kept commit keeps its TREE, so a key the agent added
+    * `leaks` answers True for the text any agent commit ADDS over its parent
+      (#259 review), read whole in windows overlapping by `overlap`. A kept commit keeps its TREE, so a key the agent added
       in one commit and deleted in the next would be pushed in the first
       one's tree even though the final tree is clean -- and a pushed object
       on a public forge is published for good. The fold pushes only the
       final tree. Only the offending commit's index is logged, never any of
-      its content; a diff too large to read whole counts as a hit, because
-      "not scanned" is not "clean".
+      its content. A diff of any size is scanned whole (owner decision,
+      2026-09-29), so size alone never folds a history.
 
     WHAT IS KEPT, AND WHAT IS NOT. Each commit keeps its TREE, exactly -- so
     the tests-only commit of a red-first change is still tests only, and CI
@@ -5932,6 +6155,7 @@ def replay_agent_commits(
             shas=shas,
             keep=keep,
             leaks=leaks,
+            overlap=overlap,
             git=g,
             repo=Path(repo),
             private_dir=private_dir,

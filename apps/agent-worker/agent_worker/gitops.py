@@ -30,13 +30,15 @@ tenant a credential compromise for all of them (invariant 9).
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import stat
 import tempfile
+import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 from urllib.parse import urlparse, urlunparse, quote
 
 from .procman import run_child
@@ -605,6 +607,86 @@ def _git_text_full(
         text = ""
     truncated = result.stdout_truncated or raw_size >= max_bytes
     return result.exit_code, text, truncated
+
+
+#: The most bytes `_git_stream` hands its consumer in one call.
+GIT_STREAM_CHUNK_BYTES = 1024 * 1024
+
+
+def _git_stream(
+    argv: list[str],
+    *,
+    repo: Path,
+    private_dir: Path,
+    logs_dir: Path,
+    slug: str,
+    timeout_seconds: int,
+    logger: Any,
+    consume: Callable[[bytes], None],
+) -> int:
+    """Run a git command and hand ALL of its stdout to `consume`, in chunks.
+
+    OWNER DECISION, 2026-09-29 (#259): the leak scans read every byte of a
+    diff however big it is, and nothing of it is stored. A capture to a file
+    has to be capped -- the workspace is memory-backed tmpfs -- and a cap is
+    either a refusal of every big change or a hole in the scan. So stdout
+    goes to a PIPE this process reads while git writes: `run_child` (still
+    the one thing that kills a wedged git's process group on the deadline)
+    is pointed at `/dev/fd/<write end>`, its pump reopens that as its sink,
+    and a reader thread passes each read of at most `GIT_STREAM_CHUNK_BYTES`
+    to `consume`. Memory is one chunk plus whatever `consume` keeps.
+
+    The reader never stops draining, even once `consume` has seen enough or
+    raised: a pipe nobody reads would block the pump, and git behind it,
+    until the deadline. An exception from `consume` is re-raised here after
+    the child has been reaped.
+    """
+    read_fd, write_fd = os.pipe()
+    failure: list[BaseException] = []
+
+    def drain() -> None:
+        with os.fdopen(read_fd, "rb", buffering=0) as source:
+            while True:
+                try:
+                    chunk = source.read(GIT_STREAM_CHUNK_BYTES)
+                except OSError:
+                    return
+                if not chunk:
+                    return
+                if failure:
+                    continue
+                try:
+                    consume(chunk)
+                except BaseException as exc:  # re-raised on the caller's thread
+                    failure.append(exc)
+
+    reader = threading.Thread(target=drain, name=f"git-{slug}-stream", daemon=True)
+    reader.start()
+    try:
+        result = run_child(
+            argv,
+            cwd=repo,
+            env=_git_env(private_dir),
+            stdout_path=Path(f"/dev/fd/{write_fd}"),
+            stderr_path=logs_dir / f"git-{slug}.err.log",
+            timeout_seconds=timeout_seconds,
+            grace_seconds=5,
+            # Never reached: the pipe is not storage, and the scan must see
+            # every byte. The cap exists only because the capture takes one.
+            max_stdout_bytes=1 << 62,
+            max_stderr_bytes=256 * 1024,
+            logger=logger,
+        )
+    finally:
+        # The pump reopened the pipe through /dev/fd and has closed its copy;
+        # closing this one is what lets the reader see the end of the stream.
+        os.close(write_fd)
+        reader.join()
+    if failure:
+        raise failure[0]
+    if result.timed_out:
+        raise GitError(f"git {slug} timed out after {timeout_seconds}s")
+    return result.exit_code if result.exit_code is not None else -1
 
 
 def _parse_log(stream: str) -> tuple[list[CommitSummary], int, int]:
