@@ -3238,10 +3238,18 @@ class Worker:
         a wedged upload, which the supervision loop is not running to notice.
         So it beats for at most `heartbeat_meanwhile_max_seconds` (three lease
         timeouts; `config.WorkerConfig` says why), and before each beat it
-        reads the control plane: once the attempt is fenced or cancelled it
-        stops at once, rather than prolonging a lease that is no longer this
-        attempt's or a task nobody wants. The loop sees the same signal on its
-        next poll and acts on it as it always has.
+        reads the control plane: once the attempt is FENCED -- another
+        generation owns the task, or its lease is released or it is terminal
+        (`ControlSignals.is_fenced`) -- it stops at once, rather than
+        prolonging a lease that is no longer this attempt's. The loop sees the
+        same signal on its next poll and acts on it as it always has.
+
+        A CANCEL DOES NOT STOP IT (owner decision 2026-09-29, PR #288). A
+        cancelled attempt still writes a checkpoint on its way out
+        (`self._checkpoint("cancellation")`), and that checkpoint needs the lease alive as
+        much as any other; stopping the beat on `cancel_requested` would let
+        the lease lapse under the very checkpoint the cancel asked for. The
+        bound still applies to it.
 
         Joined before the block's caller goes on, with a timeout: a beat stuck
         in a Firestore call does not hold the checkpoint's caller up with it.
@@ -3272,13 +3280,14 @@ class Worker:
                     continue  # the top of the loop logs the bound and ends
                 try:
                     signals = self.control.poll()
-                    if signals.wants_stop(self.cfg.generation):
+                    if signals.is_fenced(self.cfg.generation):
                         self.log.warning(
                             "stopped heartbeating the lease during a long operation: "
-                            "the attempt is fenced or cancelled",
+                            "the attempt is fenced",
                             during=what,
-                            fenced=signals.is_fenced(self.cfg.generation),
-                            cancel_requested=signals.cancel_requested,
+                            task_generation=signals.generation,
+                            lease_released=signals.lease_released,
+                            state=signals.state,
                         )
                         return
                     self._heartbeat()
