@@ -490,26 +490,29 @@ bookkeeping you are not using.
 
 ## PROPOSED: a chain that merges its own pull request
 
-**Proposed on 2026-09-29 for #295 and not built. Revised 2026-09-29** against
-a security review's two blockers and five majors (owner decisions the same
-day); [merge-step.md](merge-step.md)'s own revision note lists what changed.
-The API refuses this spec today. `single-pr`, `pr_role`, the `merge` profile
-and the `claude-code-review`/`claude-code-proof` profiles below do not exist
-yet. The `merge` profile needs contract request 33 in
-[contract-change-requests.md](contract-change-requests.md); `claude-code-review`
-and `claude-code-proof` need a second, not-yet-filed request
-([merge-step.md](merge-step.md) §1.3, §10) — they are otherwise identical to
-`claude-code`, but each needs its **own** Job and service account, the same
-reason the `merge` profile needed one: a review or proof step that shared
-`claude-code`'s Job would share its service account too, and so would give the
-`fix` step's agent read access to the very credential (§4.3) that anchors the
-verdict it must not be able to forge. The design, and the reason for each rule
+**Proposed on 2026-09-29 for #295 and not built. Revised twice, 2026-09-29,**
+against a security review's two blockers and five majors, and then a
+re-review that found the first B1 revision insufficient; both are owner
+decisions, [merge-step.md](merge-step.md)'s own revision note lists what
+changed each time. The API refuses this spec today. `single-pr`, `pr_role`,
+the `merge` profile and the `post-verdict` profile below do not exist yet.
+The `merge` profile needs contract request 33 in
+[contract-change-requests.md](contract-change-requests.md); `post-verdict`
+needs a second, not-yet-filed request ([merge-step.md](merge-step.md) §1.3,
+§4.3, §10) — a worker-action profile structured exactly like `merge`: its own
+Job, its own service account, and **no agent ever runs on it**. That last
+part is why `post-verdict` exists rather than a dedicated
+`claude-code-review` profile for the `review` step itself: a dedicated
+profile only changes which Job an agent runs on, and the review agent —
+which reads attacker-controlled diffs — would still share a container with
+the App key regardless of profile. The design, and the reason for each rule
 below, is [merge-step.md](merge-step.md).
 
-The owner's chain is implement → review → fix → proof → merge. It produces
-**one** pull request and ends with the **worker** squash-merging it. The merge
-runs under a service account no agent ever runs as, with a credential no agent
-can read.
+The owner's chain is **implement → review → post-verdict → fix → proof →
+merge**. It produces **one** pull request and ends with the **worker**
+squash-merging it. The merge runs under a service account no agent ever runs
+as, with a credential no agent can read — and so does `post-verdict`, one
+step earlier, for the review credential.
 
 ```bash
 ./scripts/api.sh POST /workflows '{
@@ -524,57 +527,76 @@ can read.
      "input": {"prompt": "Implement issue #295. Write a fact-style pull request title to pr-title.txt."}},
 
     {"step_id": "review",
-     "runner_profile": "claude-code-review",
+     "runner_profile": "claude-code",
      "pr_role": "reader",
      "depends_on": ["implement"],
      "input": {"prompt": "Review the checked-out head against issue #295. Write review.json: {\"verdict\": \"MERGE\" or \"CHANGES\", \"sha\": the checked-out HEAD, \"title\": the pull request title you reviewed, \"summary\": your findings}."}},
 
+    {"step_id": "post-verdict",
+     "runner_profile": "post-verdict",
+     "depends_on": ["review"],
+     "input_from": {"review": "review.json"},
+     "input": {}},
+
     {"step_id": "fix",
      "runner_profile": "claude-code",
      "pr_role": "amender",
-     "depends_on": ["review"],
+     "depends_on": ["post-verdict"],
      "input_from": {"review": "review.json"},
      "input": {"prompt": "If review.json says MERGE, change nothing and exit. Otherwise fix every finding in it."}},
 
     {"step_id": "proof",
-     "runner_profile": "claude-code-proof",
+     "runner_profile": "claude-code",
      "pr_role": "reader",
      "depends_on": ["fix"],
      "input": {"prompt": "Prove the change works at the checked-out head. Write proof.json: {\"outcome\": \"PROVED\" or \"NOT_PROVED\", \"sha\": the checked-out HEAD, \"evidence\": what you ran and saw}."}},
 
     {"step_id": "merge",
      "runner_profile": "merge",
-     "depends_on": ["review", "proof"],
-     "input_from": {"review": "review.json", "proof": "proof.json"},
+     "depends_on": ["post-verdict", "proof"],
+     "input_from": {"proof": "proof.json"},
      "input": {}}
   ]
 }'
 ```
 
-`merge` depends on `review` directly as well as through `proof`, because
-`validate_dag` requires every `input_from` source to be a direct dependency.
-The extra edge changes nothing about ordering, and `merge` is still the only
-sink.
+`fix` depends on `post-verdict`, not on `review` directly, even though `fix`'s
+own `input_from` still reads `review.json` from the `review` task (staged
+artifacts are named by the task that wrote them, not the task that gates
+starting). That substitution is the point: `fix`'s agent cannot start, and so
+cannot race to overwrite `review.json`, until `post-verdict` has already read
+it and posted an immutable GitHub review ([merge-step.md](merge-step.md)
+§4.3). `merge` depends on `post-verdict` the same ordering-only way, and on
+`proof` for its `input_from`; it does **not** depend on `review` directly any
+more, since `post-verdict` is now the thing that stands between them.
+`validate_dag` allows a `depends_on` entry with no matching `input_from`
+source for exactly this reason.
 
 What each step does:
 
 | step | clones | publishes | writes |
 |---|---|---|---|
 | implement (`author`) | `main` | pushes `swarm/<its task id>` and opens the pull request | the code, and `pr-title.txt` |
-| review (`reader`) | the implement branch | no git push. Submits a GitHub PR review (`APPROVE` or `REQUEST_CHANGES`, pinned to the checked-out head) as the `swarm-review` App, an identity only this step's own service account can read | `review.json` |
+| review (`reader`) | the implement branch | no git push, nothing to GitHub at all | `review.json` |
+| post-verdict (no agent, profile `post-verdict`) | nothing | submits a GitHub PR review (`APPROVE` or `REQUEST_CHANGES`, `commit_id` pinned to `review.json.sha`), from a credential only this step's own service account can read — the review agent that wrote `review.json` cannot read it | nothing |
 | fix (`amender`) | the implement branch | fast-forward pushes to the **same** branch, only if it changed something | the fix |
-| proof (`reader`) | the implement branch | no git push. Submits a `swarmcloud-proof` check run (`success` or `failure`, pinned to the checked-out head) as the `swarm-proof` App, an identity only this step's own service account can read | `proof.json` |
+| proof (`reader`) | the implement branch | no git push, nothing to GitHub at all | `proof.json` |
 | merge (profile `merge`) | nothing, and it runs no agent | `PUT .../pulls/{n}/merge`, squash, `sha` pinned, to `api.github.com` only, no redirect followed | the squash commit, and a comment naming the task that merged it |
 
 The merge happens only if **all** of these hold. Otherwise the step ends
 `MERGE_REFUSED` and `result_summary.merge.refusal` says which one failed:
 
-* the `swarm-review` App's review is `APPROVED` at the pinned head — not
-  merely `review.json.verdict == "MERGE"`, which is now a descriptive claim,
-  not the trust anchor (owner decision B1, 2026-09-29: this replaces the
-  scheduler attestation the original proposal described);
-* the `swarm-proof` App's `swarmcloud-proof` check run is `success` at the
-  same pinned head — likewise not merely `proof.json.outcome == "PROVED"`;
+* `post-verdict`'s review is `APPROVED` at the pinned head — not merely
+  `review.json.verdict == "MERGE"`, which is now a descriptive claim, not the
+  trust anchor (owner decision B1, 2026-09-29, corrected the same day: this
+  replaces both the original scheduler attestation and a first, insufficient
+  B1 revision that would have run the review agent and the App key in the
+  same container);
+* `proof.json.outcome` is exactly `PROVED` — a plain staged-artifact check,
+  not an App-anchored one. **A proof that executes the pull request's own
+  code anchors only that the code ran and produced that outcome — never that
+  the change is safe** (owner decision, 2026-09-29; [merge-step.md](merge-step.md)
+  §4.3, §11 Q6);
 * the review and the proof ran on the same head, the fix pushed nothing after
   the review, and that head is still the pull request's live head. A fix
   that changed anything therefore ends this workflow's merge with
@@ -597,9 +619,13 @@ The merge happens only if **all** of these hold. Otherwise the step ends
   workflow level and its verify job runs the merged tests). Such a pull
   request lands only through a human's `ready`.
 
-`owner`/`repo` and the forge host come from the tenant's control-plane
-registration, never from the task document (owner decision B2), and the merge
-worker talks only to that pinned host.
+`owner`/`repo` and the forge host come from a record no tenant identity can
+write, never from the task document (owner decision B2), and the merge worker
+talks only to that pinned host. **Exactly where that record lives is an open
+question, not yet decided** — a reviewer recommends the merge secret's own
+JSON or a Terraform-rendered Job environment value, never Firestore, since a
+tenant identity can write any Firestore document whose id it can guess
+([merge-step.md](merge-step.md) §2.1b, §11 open question (a)).
 
 A person's `ready` label on the same pull request still works — and so, in
 principle, does an agent's: the owner has kept `-git`'s PAT for agent pushes
