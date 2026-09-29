@@ -302,6 +302,58 @@ def test_a_secret_added_then_deleted_is_folded_and_reaches_no_pushed_object(
     assert KEY not in logged
 
 
+#: Shaped like an AWS access key id (AWS's own documentation example), and
+#: registered NOWHERE: only the credential patterns can catch it.
+UNREGISTERED_AWS_KEY = "AKIAIOSFODNN7EXAMPLE"
+
+
+def test_an_unregistered_credential_in_an_intermediate_commit_folds_the_history(
+    worker_factory, monkeypatch, origin, local_urls, forge, log_stream
+):
+    """Owner decision 4, 2026-09-28: the per-commit scan matches the
+    credential PATTERNS too (`swarm_redaction.RULES`), not only the task's
+    registered secrets. A key the agent pasted into an `.env` is registered
+    by no one; kept one by one, the first commit's tree would publish it.
+
+    MUTATION: drop `_adds_a_credential` from `leaks=` in `_publish_git` and
+    this history is kept as two commits, the first carrying the key."""
+    def edit(repo: Path) -> None:
+        (repo / ".env").write_text(f"AWS_SECRET_ACCESS_KEY={UNREGISTERED_AWS_KEY}\n")
+        (repo / "client.py").write_text("import os\nREGION = os.environ.get('AWS_REGION')\n")
+        _commit(repo, "Configure the client")
+        (repo / ".env").unlink()
+        _commit(repo, "Stop committing the env file")
+
+    _, config, out = _attempt(worker_factory, monkeypatch, origin, task_id="t-leak-pattern", edit=edit)
+
+    branch = f"{config.git_branch_prefix}{config.task_id}"
+    assert out["published"] is True, out.get("publish_reason")
+    commits = pushed_commits(origin, branch)
+    assert len(commits) == 1, [c["message"] for c in commits]
+    assert out.get("agent_commits_folded") == 2, out
+    assert "agent_commits_kept" not in out, out
+    assert ".env" not in tree_at(origin, branch)
+    assert UNREGISTERED_AWS_KEY.encode() not in _all_object_bytes(origin), "the key reached a pushed object"
+    logged = log_stream.getvalue()
+    assert '"commit_index": 1' in logged, "the dropped commit's index was not logged"
+    assert UNREGISTERED_AWS_KEY not in logged
+
+
+@pytest.mark.parametrize(
+    ("diff", "found"),
+    [
+        (f"+++ b/.env\n@@ -0,0 +1 @@\n+AWS_SECRET_ACCESS_KEY={UNREGISTERED_AWS_KEY}\n", True),
+        (f"--- a/.env\n+++ /dev/null\n@@ -1 +0,0 @@\n-AWS_SECRET_ACCESS_KEY={UNREGISTERED_AWS_KEY}\n", False),
+        ("+++ b/notes.txt\n@@ -1 +1 @@\n-plain text\n+plain text, edited\n", False),
+    ],
+    ids=["added", "only-removed", "no-credential"],
+)
+def test_the_pattern_scan_reads_only_the_lines_a_commit_adds(diff, found):
+    """The control for the fold above: a line shaped like a key that a commit
+    REMOVES was in its parent's tree already, and the commit is kept."""
+    assert lifecycle._adds_a_credential(diff) is found
+
+
 def test_a_history_that_does_not_descend_from_the_base_is_folded_as_before(
     worker_factory, monkeypatch, origin, local_urls, forge
 ):

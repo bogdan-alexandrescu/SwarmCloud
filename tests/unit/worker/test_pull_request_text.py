@@ -40,7 +40,11 @@ import pytest
 
 from agent_worker import forge as forge_mod
 from agent_worker import lifecycle, workspace as workspace_mod
+from agent_worker.errors import ExitCode
 from agent_worker.forge import RepoAccess, RepoRef
+from swarm_common.states import TaskState
+
+from conftest import seed_attempt
 
 from test_strategy_end_to_end import (  # noqa: F401 - fixtures are used by name
     assert_no_attribution_in,
@@ -612,3 +616,85 @@ def test_the_title_is_owed_only_when_a_pull_request_has_nothing_else_to_title_it
 ):
     worker, task = _owing_worker(worker_factory, dispatch=dispatch, task_input=task_input)
     assert worker._title_owed(task) is owed
+
+
+# -- a refused title fails the attempt retryably, before anything is pushed ----
+#
+# Owner decision, 2026-09-28: a `pr-title.txt` that EXISTS but is refused is
+# treated like a missing one. The finish check tests that the title is usable,
+# not only that the file is there, so the retry is told what to fix and no
+# branch is pushed without the pull request it was for.
+
+
+def _run_writing_title(db, worker_factory, monkeypatch, title: str):
+    seed_attempt(
+        db,
+        task_input={
+            "prompt": "fix the widget",
+            "steps": 1,
+            "sleep_seconds": 0.01,
+            "artifact_name": "pr-title.txt",
+            "artifact_text": title,
+        },
+    )
+    db.doc("tasks/task_1")["metadata"] = {"dispatch": {"strategy": "direct-pr"}}
+    # Owed as though the step had a repository to open a pull request on; the
+    # repository itself is `_publish`'s concern above, not this one's.
+    monkeypatch.setattr(lifecycle.Worker, "_title_owed", lambda self, task: True)
+    worker, _config, _exporter = worker_factory()
+    published: list[bool] = []
+
+    def harvest(*, publish: bool, **_kwargs):
+        published.append(publish)
+        return None
+
+    monkeypatch.setattr(worker, "_harvest_git", harvest)
+    return worker, published
+
+
+def test_a_refused_title_fails_the_attempt_retryably_and_pushes_nothing(
+    db, worker_factory, monkeypatch
+):
+    worker, published = _run_writing_title(db, worker_factory, monkeypatch, "Fix task_1 now\n")
+
+    assert worker.run() == ExitCode.FAILED
+    assert published == [False], "a refused title still published"
+    task = db.doc("tasks/task_1")
+    assert task["state"] == TaskState.READY.value, task["state"]
+    assert "pr-title.txt refused: names a task id; write a fact-style title" in task["last_error"], (
+        task["last_error"]
+    )
+    retrying = [e for e in db.events("task_1") if e["type"] == "retrying"]
+    assert len(retrying) == 1, db.event_types("task_1")
+    assert retrying[0]["detail"]["cause"] == "pull_request_title_refused"
+    assert "succeeded" not in db.event_types("task_1")
+
+
+@pytest.mark.parametrize(
+    ("title", "why"),
+    [
+        ("Refuse negatives, thanks @octocat\n", "mentions"),
+        ("Fix it \U0001f916 Generated with [Claude Code](https://claude.com/claude-code)\n",
+         "carries attribution"),
+    ],
+    ids=["mention", "attribution"],
+)
+def test_every_refusal_fails_the_attempt_with_its_reason(
+    db, worker_factory, monkeypatch, title, why
+):
+    worker, published = _run_writing_title(db, worker_factory, monkeypatch, title)
+
+    assert worker.run() == ExitCode.FAILED
+    assert published == [False]
+    assert f"pr-title.txt refused: {why}" in db.doc("tasks/task_1")["last_error"]
+
+
+def test_a_usable_title_publishes_and_succeeds(db, worker_factory, monkeypatch):
+    """The control: the same attempt with a fact-style title publishes."""
+    worker, published = _run_writing_title(
+        db, worker_factory, monkeypatch, "The widget refuses a negative size\n"
+    )
+
+    assert worker.run() == ExitCode.OK
+    assert published == [True]
+    assert db.doc("tasks/task_1")["state"] == TaskState.SUCCEEDED.value
