@@ -761,20 +761,7 @@ step "IAM"
 #
 #   datastore.entities.list -- queries. Without it a document can only be fetched
 #   by an id already known, and ids are `<prefix>_<20 hex>`.
-#
-# The ids are derived exactly as terraform/modules/custom_role_ids does, from
-# that module's `local.custom_role_suffix` restated here: a CONSTANT there, a
-# constant here, and never read from the environment. They used to come from a
-# CUSTOM_ROLE_SUFFIX env var, left over from when the suffix was a terraform/infra
-# variable; with the roles now defined in terraform/bootstrap from that constant
-# (#79), an exported suffix made this script bind a role nobody made (#227).
-# Change it only together with the module's value;
-# tests/unit/scripts/test_register_tenant_role_ids.py fails when the two differ.
-CUSTOM_ROLE_SUFFIX_MODULE=""
-# The module's `role_suffix`: "" when the suffix is empty, else "_<suffix>".
-ROLE_ID_SUFFIX="${CUSTOM_ROLE_SUFFIX_MODULE:+_${CUSTOM_ROLE_SUFFIX_MODULE}}"
-FIRESTORE_ROLE_ID="swarmTenantWorkerFirestore${ROLE_ID_SUFFIX}"
-FIRESTORE_ROLE="projects/${PROJECT_ID}/roles/${FIRESTORE_ROLE_ID}"
+FIRESTORE_ROLE="projects/${PROJECT_ID}/roles/swarmTenantWorkerFirestore${CUSTOM_ROLE_SUFFIX:+_${CUSTOM_ROLE_SUFFIX}}"
 
 # THREE ANSWERS, NOT TWO. This was `describe >/dev/null 2>&1`, so a denied
 # iam.roles.get or a dead session printed "does not exist. Run make infra" --
@@ -787,7 +774,7 @@ FIRESTORE_ROLE="projects/${PROJECT_ID}/roles/${FIRESTORE_ROLE_ID}"
 # same one this asks.
 FS_ROLE_RC=0
 shared_resource_present "custom role ${FIRESTORE_ROLE}" \
-  gcloud iam roles describe "${FIRESTORE_ROLE_ID}" \
+  gcloud iam roles describe "swarmTenantWorkerFirestore${CUSTOM_ROLE_SUFFIX:+_${CUSTOM_ROLE_SUFFIX}}" \
   --project "${PROJECT_ID}" --format='value(name)' || FS_ROLE_RC=$?
 case "${FS_ROLE_RC}" in
   0) ;;
@@ -887,7 +874,7 @@ fi
 #     client libraries both need the bucket's own metadata, and a prefix
 #     condition can never match the bucket resource name. legacyBucketReader
 #     would hand over objects.list across the whole bucket instead.
-BUCKET_METADATA_ROLE_ID="swarmBucketMetadataReader${ROLE_ID_SUFFIX}"
+BUCKET_METADATA_ROLE_ID="swarmBucketMetadataReader${CUSTOM_ROLE_SUFFIX:+_${CUSTOM_ROLE_SUFFIX}}"
 # Tri-state, for the reason given at the Firestore role above: a denied
 # storage.buckets.get used to print "does not exist yet; run 'make infra'".
 BUCKET_RC=0
