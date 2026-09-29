@@ -812,6 +812,7 @@ class Worker:
         # agent starts, because that publish pushes.
         if self._evaluate_verdict_gate(staged_inputs) is False:
             self.phases.enter("revalidate_generation")
+            self.control.validate_generation()
             return self._finish_without_agent
 
         # ---- runner input -----------------------------------------------
