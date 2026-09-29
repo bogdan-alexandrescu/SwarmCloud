@@ -151,8 +151,12 @@ variable "deployer_roles" {
 
     Every role here is granted project-wide until it is also named in
     deployer_scoped_roles. The six marked SCOPABLE below have a conditioned
-    grant waiting in deployer_conditions.tf; the nine marked UNSCOPABLE belong to
+    grant waiting in deployer_conditions.tf; the eight marked UNSCOPABLE belong to
     services IAM cannot name resources in, and that file records why for each.
+
+    roles/iam.workloadIdentityPoolAdmin is NOT here, and a validation below
+    refuses it (#314, owner decision 2026-09-29): terraform/infra manages no
+    pool, and a provider CI adds to swarm-github escapes the WIF ref pin.
 
     roles/iam.roleAdmin is NOT here, and a validation below refuses it (#79,
     owner decision 2026-09-25): its iam.roles.update, which no condition can
@@ -191,10 +195,23 @@ variable "deployer_roles" {
     # terraform/infra defines no custom role any more (platform_roles.tf), so CI
     # needs no iam.roles.* permission at all.
     #
-    # UNSCOPABLE: IAM resources provide no resource name.
+    # UNSCOPABLE: IAM resources provide no resource name. "the condition
+    # resource.name.endsWith == devResource never grants access to any IAM
+    # resource because IAM resources don't provide the resource name"
+    # (docs.cloud.google.com/iam/docs/conditions-attribute-reference, read
+    # 2026-09-28), and iam.googleapis.com is absent from the resource-service
+    # list in conditions-resource-attributes. A resource.name condition naming
+    # the swarm-* accounts would therefore REVOKE this role, not narrow it.
     "roles/iam.serviceAccountAdmin",
-    # UNSCOPABLE: IAM resources provide no resource name.
-    "roles/iam.workloadIdentityPoolAdmin",
+    # roles/iam.workloadIdentityPoolAdmin WAS HERE until 2026-09-29 (owner
+    # decision, security review of contract request 30, #314). terraform/infra
+    # manages no workload identity pool or provider -- the one pool it names is
+    # GKE's "<project>.svc.id.goog", a string inside a service-account binding's
+    # member -- so CI never used it, and holding it let CI add a provider to any
+    # pool in the project: swarm-github, minting tokens for swarm-ci-fix or for
+    # itself outside the WIF ref pin, or the other team's github-actions pool.
+    # A validation below refuses it by name.
+    #
     # SCOPABLE (partly): log buckets and views; sinks and exclusions stay wide.
     "roles/logging.configWriter",
     # UNSCOPABLE: Cloud Monitoring is not in IAM's resource-attribute list.
@@ -224,6 +241,12 @@ variable "deployer_roles" {
   validation {
     condition     = !contains(var.deployer_roles, "roles/iam.roleAdmin")
     error_message = "roles/iam.roleAdmin is never granted to CI (#79): iam.roles.update cannot be conditioned, and with it CI can add resourcemanager.projects.setIamPolicy to a custom role it already holds and grant itself anything, so no condition on its other grants is ever evaluated. Custom roles are defined in terraform/bootstrap/platform_roles.tf, which the owner applies."
+  }
+
+  # OWNER DECISION 2026-09-29 (#314). Said by name for the same reason.
+  validation {
+    condition     = !contains(var.deployer_roles, "roles/iam.workloadIdentityPoolAdmin")
+    error_message = "roles/iam.workloadIdentityPoolAdmin is never granted to CI (#314): terraform/infra manages no workload identity pool or provider, and with it CI can add a provider to swarm-github and mint tokens for swarm-ci-fix or swarm-tf-deployer outside the WIF ref pin. Pools and providers are made in terraform/bootstrap/wif.tf, which the owner applies."
   }
 
   # Every role here confers secretmanager.versions.access, directly or by

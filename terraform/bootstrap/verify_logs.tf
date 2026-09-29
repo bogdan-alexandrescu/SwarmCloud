@@ -263,7 +263,8 @@ locals {
     "roles/container.admin",
     "roles/datastore.owner",
     "roles/iam.serviceAccountAdmin",
-    "roles/iam.workloadIdentityPoolAdmin",
+    # roles/iam.workloadIdentityPoolAdmin was here until 2026-09-29 (#314):
+    # off deployer_roles, and off this list so it is refused twice.
     "roles/logging.configWriter",
     "roles/monitoring.editor",
     "roles/pubsub.admin",

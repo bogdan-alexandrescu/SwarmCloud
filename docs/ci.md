@@ -634,6 +634,62 @@ no allow policy of its own; the project's testable permissions include no
 `iam.roles.setIamPolicy`, read 2026-09-25), so it came off the deployer and the
 custom roles moved to the root the owner applies.
 
+## The deployer's project-level roles
+
+`swarm-tf-deployer` holds these predefined roles project-wide
+(`deployer_roles` in
+[`terraform/bootstrap/variables.tf`](../terraform/bootstrap/variables.tf)).
+A role marked scopable has a conditioned grant waiting in
+[`deployer_conditions.tf`](../terraform/bootstrap/deployer_conditions.tf) and
+switches to it when named in `deployer_scoped_roles`; the reasons each
+unscopable one stays wide are recorded there, with what sat in its reach.
+
+| role | scope |
+|---|---|
+| `roles/artifactregistry.admin` | unscopable: Artifact Registry is absent from IAM's resource-attribute list |
+| `roles/cloudbuild.builds.editor` | unscopable: builds are named by server-generated UUID |
+| `roles/cloudscheduler.admin` | unscopable |
+| `roles/compute.networkAdmin` | scopable in part |
+| `roles/compute.securityAdmin` | scopable in part |
+| `roles/container.admin` | scopable |
+| `roles/datastore.owner` | scopable |
+| `roles/iam.serviceAccountAdmin` | **unscopable by a condition**, see below |
+| `roles/logging.configWriter` | scopable in part |
+| `roles/monitoring.editor` | unscopable |
+| `roles/pubsub.admin` | unscopable |
+| `roles/resourcemanager.projectIamAdmin` | scopable, by the roles a change modifies |
+| `roles/run.admin` | unscopable |
+| `roles/serviceusage.serviceUsageAdmin` | unscopable: one set of services per project |
+
+**Not held, and refused by a validation:** `roles/owner`, `roles/editor`,
+`roles/iam.roleAdmin` (#79, 2026-09-25) and, since 2026-09-29,
+**`roles/iam.workloadIdentityPoolAdmin`** (owner decision, from the security
+review of contract request 30, #314). `terraform/infra` manages no workload
+identity pool or provider: the only pool it names is GKE's
+`<project>.svc.id.goog`, and only as a string inside the member of a
+service-account binding. So CI never used the role, and holding it let CI add
+a provider to `swarm-github` that mints tokens for `swarm-ci-fix`, or for the
+deployer itself, from outside the WIF ref pin, or to the other team's
+`github-actions` pool. Pools and providers are made in
+[`wif.tf`](../terraform/bootstrap/wif.tf), which the owner applies.
+
+**Why `roles/iam.serviceAccountAdmin` is still project-wide.** The same review
+asked for it to be conditioned to the service accounts `terraform/infra`
+manages, excluding `swarm-ci-fix` and `swarm-tf-deployer`. IAM does not
+evaluate a resource name for its own resources: *"the condition
+`resource.name.endsWith == devResource` never grants access to any IAM
+resource because IAM resources don't provide the resource name"*
+([conditions attribute reference](https://docs.cloud.google.com/iam/docs/conditions-attribute-reference),
+read 2026-09-28), and `iam.googleapis.com` is absent from the resource-service
+table in
+[conditions-resource-attributes](https://docs.cloud.google.com/iam/docs/conditions-resource-attributes).
+A `resource.name` condition on this role would therefore revoke it rather than
+narrow it, and the release's first service-account change would fail with a
+403. What can narrow it is a resource-level grant on each account
+`terraform/infra` manages plus a project-level create role, which is a
+different change and not made here. Until then route 3 above stays open, bounded
+only by the ref pin.
+
 ## The deployer's refusal is proven once, by a probe the owner dispatches
 
 Once PR #73's targeted apply lands, the deployer's `projectIamAdmin` carries the
