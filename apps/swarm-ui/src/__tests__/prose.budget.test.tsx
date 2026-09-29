@@ -42,7 +42,9 @@ const api = vi.hoisted(() => ({
   loadStats: vi.fn(),
   loadSpend: vi.fn(),
 }))
-vi.mock('../api', () => api)
+// `TASK_PAGE_LIMIT` BESIDE THE READS: Overview names the full page it asks
+// for (#168), and a factory mock throws on any export it does not declare.
+vi.mock('../api', () => ({ ...api, TASK_PAGE_LIMIT: 200 }))
 
 const { OverviewScreen } = await import('../Overview')
 

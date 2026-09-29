@@ -3,7 +3,18 @@ import { isPaused } from './fetch'
 import type { TopicId } from './help'
 import { HelpLinks } from './HelpCard'
 import { Screen, timeAgo } from './Shell'
-import { BlockerList, IncompleteNote, ceilingFigure, ceilingMark, ceilingTitle, headroomFigure, liftFigure } from './Blockers'
+import {
+  BlockerList,
+  IncompleteNote,
+  blockerVerdict,
+  ceilingFigure,
+  ceilingMark,
+  ceilingTitle,
+  classUnits,
+  headroomFigure,
+  liftFigure,
+  useResourceClasses,
+} from './Blockers'
 import { AGE_TICK_MS, useNow } from './useNow'
 import {
   blockerCeiling,
@@ -129,6 +140,9 @@ function Catalogue({ capacity }: { capacity: Capacity }) {
   const entries = Object.entries(capacity.runner_profiles).sort(([a], [b]) => a.localeCompare(b))
   const byName = new Map(capacity.pools.map((p) => [p.name, p]))
   const tenant = tenantOf(capacity)
+  // One task's weight per class, from `/v1/resource-classes` (#66): what tells
+  // a pool too small for one task from a full one. Null until it answers.
+  const classes = useResourceClasses()
 
   // A read that succeeded with an empty catalogue. Not the Screen's `empty`,
   // which can only mean "no pools", and not a failure — so nothing here is red.
@@ -170,6 +184,7 @@ function Catalogue({ capacity }: { capacity: Capacity }) {
           byName={byName}
           tenant={tenant}
           groups={capacity.blocked_reason_groups}
+          units={classUnits(classes, profile.resource_class)}
         />
       ))}
       {/* §8.4(4): PROVENANCE, ONCE, FOR THE WHOLE PAGE. Every `+N if lifted`
@@ -204,7 +219,7 @@ function CountsAge({ generatedAt }: { generatedAt: string }) {
   )
 }
 
-function ProfileCard({ name, profile, byName, tenant, groups }: {
+function ProfileCard({ name, profile, byName, tenant, groups, units }: {
   name: string
   profile: RunnerProfile
   /** Every pool this caller may see, by name. A name absent from it is uncapped. */
@@ -212,6 +227,8 @@ function ProfileCard({ name, profile, byName, tenant, groups }: {
   tenant: string | null
   /** The server's remedy groups, `blocked_reason_groups`, for the blocker list. */
   groups: Record<string, string[]> | undefined
+  /** One task's weight from the class catalogue, or null when it was not read. */
+  units: number | null
 }) {
   // Read, not computed. `profile.admission` is what swarm_api/headroom.py got
   // out of `evaluate_capacity`; this card used to re-derive it and kept only
@@ -356,7 +373,7 @@ function ProfileCard({ name, profile, byName, tenant, groups }: {
               const blocker = refusing.get(pool) ?? null
               const capping = binding.includes(pool) || blocker !== null
               const scope = poolScope(pool)
-              const mark = statusMark(row, blocker, unread.has(pool))
+              const mark = statusMark(row, blocker, unread.has(pool), units)
               return (
                 <tr role="row" key={pool} className={mark.row}>
                   <th role="rowheader" scope="row" className="pool-name" title={pool}>
@@ -444,7 +461,7 @@ function ProfileCard({ name, profile, byName, tenant, groups }: {
       {!off && (
         <>
           <IncompleteNote h={head} label={label} />
-          <BlockerList h={head} groups={groups} label={label} />
+          <BlockerList h={head} groups={groups} label={label} units={units} />
         </>
       )}
     </section>
@@ -463,6 +480,9 @@ function ProfileCard({ name, profile, byName, tenant, groups }: {
  *   limit 0    the chip Held back by draws for a blocker at a ceiling of zero:
  *              `is-paused` when a person set it (`set-to-zero`), `is-bad` for
  *              a provider pool zeroed by quota (`zero`). Never `full`.
+ *   too small  a blocker whose limit is above 0 and below one task's weight
+ *              (#66), in the same two tones for the same two reasons. Never
+ *              `full`: nothing is running, and no wait will admit the task.
  *   full       a blocker at a positive ceiling: `.ctl-chip.is-warn`, as Pools
  *              draws full (it was `.tag.full` in `--bad`)
  *   ok         read, capped, not paused, not refusing: `.ctl-chip.is-ok`, the
@@ -475,14 +495,14 @@ function ProfileCard({ name, profile, byName, tenant, groups }: {
  * card cannot draw one pool two ways.
  */
 interface StatusMark {
-  kind: 'unread' | 'uncapped' | 'paused' | 'limit-0' | 'full' | 'ok'
+  kind: 'unread' | 'uncapped' | 'paused' | 'limit-0' | 'too-small' | 'full' | 'ok'
   cls: string
   word: string
   say: string
   row: string | undefined
 }
 
-function statusMark(row: Pool | null, blocker: ProfileBlocker | null, notRead: boolean): StatusMark {
+function statusMark(row: Pool | null, blocker: ProfileBlocker | null, notRead: boolean, units: number | null): StatusMark {
   if (notRead) {
     return {
       kind: 'unread',
@@ -501,14 +521,14 @@ function statusMark(row: Pool | null, blocker: ProfileBlocker | null, notRead: b
       row: undefined,
     }
   }
-  const ceiling = blocker !== null ? blockerCeiling(blocker) : null
+  const ceiling = blocker !== null ? blockerVerdict(blocker, units) : null
   if (isPaused(row) || ceiling === 'paused') {
     const m = ceilingMark('paused')
     return {
       kind: 'paused',
       cls: `ctl-chip ${m.cls}`,
       word: m.word,
-      say: `${blocker !== null ? `${blocker.reason}, ${ceilingFigure(blocker)}. ` : ''}${ceilingTitle('paused')}`,
+      say: `${blocker !== null ? `${blocker.reason}, ${ceilingFigure(blocker, units)}. ` : ''}${ceilingTitle('paused')}`,
       row: 'paused',
     }
   }
@@ -527,8 +547,20 @@ function statusMark(row: Pool | null, blocker: ProfileBlocker | null, notRead: b
       kind: 'limit-0',
       cls: `ctl-chip ${m.cls}`,
       word: m.word,
-      say: `${blocker !== null ? `${blocker.reason}, ${ceilingFigure(blocker)}. ` : ''}${ceilingTitle(zero)}`,
+      say: `${blocker !== null ? `${blocker.reason}, ${ceilingFigure(blocker, units)}. ` : ''}${ceilingTitle(zero)}`,
       row: person ? 'paused' : 'over',
+    }
+  }
+  // A limit above 0 and below one task (#66): the limit-0 fact at a positive
+  // limit, drawn with the limit-0 tones and row classes rather than `full`.
+  if ((ceiling === 'below-units' || ceiling === 'below-units-quota') && blocker !== null) {
+    const m = ceilingMark(ceiling)
+    return {
+      kind: 'too-small',
+      cls: `ctl-chip ${m.cls}`,
+      word: m.word,
+      say: `${blocker.reason}, ${ceilingFigure(blocker, units)}. ${ceilingTitle(ceiling)}`,
+      row: ceiling === 'below-units' ? 'paused' : 'over',
     }
   }
   if (ceiling === 'full' && blocker !== null) {
@@ -537,7 +569,7 @@ function statusMark(row: Pool | null, blocker: ProfileBlocker | null, notRead: b
       kind: 'full',
       cls: `ctl-chip ${m.cls}`,
       word: m.word,
-      say: `${blocker.reason}, ${ceilingFigure(blocker)}. ${ceilingTitle('full')}`,
+      say: `${blocker.reason}, ${ceilingFigure(blocker, units)}. ${ceilingTitle('full')}`,
       row: 'full',
     }
   }

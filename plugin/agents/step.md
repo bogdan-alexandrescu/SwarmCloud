@@ -60,7 +60,9 @@ and null or empty for everything else. Answer the same way if
 `task <task_id> is step <its step_id>, not <your step_id>`.
 
 If a call itself returns an error, make the same call again with the same
-`since`. After five errors in a row — or three replies in a row whose
+`since`. When the error says the `since` token fails its checksum, the token was
+changed on the way: copy `since` again from the previous reply, character
+for character, and make the call with that. After five errors in a row — or three replies in a row whose
 `tasks[0].read` is `failed` — stop and answer with `state: "UNKNOWN"`,
 `last_error` set to the last error (or `tasks[0].read_error`), and null or
 empty for everything else.
