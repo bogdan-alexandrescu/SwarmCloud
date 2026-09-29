@@ -2921,6 +2921,21 @@ an exfiltration path, not merely an unwanted commit -- repeatable without
 limit, because the owner declined a continuation cap (decision 3,
 2026-09-29). Recorded as an accepted reach, not a mitigated one.
 
+**2026-09-29, round 3: "NOT YET" on one mechanical point, folded in without
+another owner round.** The `submitted_by` filter (item 5) was still OPT-IN:
+`get_task`, `list_tasks`, `get_workflow` and `list_workflows` defaulted
+`submitted_by=None`, so a route that reaches a task through a layer round 2
+did not personally thread the parameter through -- the artifact service,
+`ctx.inspection`, the transcript or answer service, or one not yet written --
+would keep compiling and keep serving, silently unfiltered. `submitted_by` is
+now a REQUIRED keyword with no default on all four store methods: a missed
+call site is a `TypeError` at the call and a type-check error before that,
+not a silent pass-through. `test_continuation_scope_is_narrow.py` is extended
+to drive every task/workflow-scoped route in `CONTINUATION_ROUTES` at a task
+another `eng` member submitted and assert 404, so a route added to the
+allow-list later without its filter wired through fails on the day it is
+added.
+
 ### What is true today
 
 `.github/workflows/ci-fix.yml` (#273) federates as
@@ -3406,11 +3421,28 @@ Every route in `CONTINUATION_ROUTES` that reads a task or workflow now also
 declares `submitted_by: str | None = Depends(submission_scope)` and passes it
 down to `Store.get_task`/`Store.list_tasks`/`Store.get_workflow`/
 `Store.list_workflows`, which gain the parameter and do the filtering
-**once, in the store**:
+**once, in the store**.
+
+**`submitted_by` is a REQUIRED keyword, with no default, on all four --
+corrected 2026-09-29, round 3 of re-review.** The first draft gave it
+`submitted_by: str | None = None`, which is opt-in: a route or service
+that reaches a task through a layer that never learned about this change --
+the artifact service, `ctx.inspection`, the transcript and answer services,
+`Store`'s OWN internal helpers that call `self.get_task(...)` before doing
+something else -- keeps compiling, keeps passing its existing tests, and
+keeps returning the task, silently, to a caller the filter was supposed to
+refuse. `Store.get_task` alone has two such internal callers today
+(`store.py:961` and `:1051`, a tenant check and an artifact-manifest read
+that each call `self.get_task(tenant_id, task_id)` with no third argument),
+and `Store.get_workflow` has a third (`store.py:1194`) -- none of them
+security-relevant today, all three exactly the shape a missed thread-through
+would take. A default makes that shape free to write; removing the default
+makes it a `TypeError` at the call, and a `reportCallIssue`/missing-argument
+error at type-check, before it ever reaches a test:
 
 ```python
 # store.py
-def get_task(self, tenant_id: str, task_id: str, submitted_by: str | None = None) -> Task:
+def get_task(self, tenant_id: str, task_id: str, *, submitted_by: str | None) -> Task:
     task = ...  # unchanged lookup and tenant check
     if submitted_by is not None and task.submitted_by != submitted_by:
         # SAME words as the existing cross-tenant refusal -- not a new
@@ -3421,14 +3453,35 @@ def get_task(self, tenant_id: str, task_id: str, submitted_by: str | None = None
     return task
 ```
 
-**This is what closes the checkpoint-content gap.** Those three routes gain
-`submitted_by: str | None = Depends(submission_scope)` (their missing seam --
-now present, mechanically, the same one line every other read route gets) and
-thread it through `service.list_files(tenant_id, task_id, submitted_by=
-submitted_by, ...)` -> `CheckpointContent` -> `InspectionService`'s own
-`Store.get_task` call, which is where the actual check now happens. No route
-re-implements the check; every route that can reach a task supplies the one
-filter value, and the store enforces it once.
+`list_tasks`, `get_workflow` and `list_workflows` gain the identical
+`*, submitted_by: str | None` (no default) and the identical check, so all
+four fail the same way when a call site forgets the argument. **Every
+existing call site in the codebase passes `submitted_by=None` explicitly**
+(today's unfiltered behaviour, made an explicit decision rather than an
+implicit default) -- verified by `grep -rln
+"\.get_task(\|\.list_tasks(\|\.get_workflow(\|\.list_workflows(" --include="*.py" .`
+against this branch: `apps/swarm-api/swarm_api/{store.py, rollup.py,
+outcomes.py, inspect.py, routes/admin.py, routes/tasks.py,
+routes/workflows.py}`, `apps/reconciler/reconciler/backends.py`, and
+`tests/unit/control_plane/{test_scheduler_writes_are_guarded.py,
+test_workflow_state_rollup.py}` -- fifteen call sites in `apps/swarm-api`
+alone outside `store.py`'s own internals, plus the reconciler's. Every one of
+them is a full-member or internal (non-tenant-scope) read today, so
+`submitted_by=None` is a no-op change to their behaviour and a REQUIRED
+statement of that fact, not a new one to justify per site.
+
+**This is what closes the checkpoint-content gap, and closes it the way
+round 2 intended but did not enforce.** Those three routes gain
+`submitted_by: str | None = Depends(submission_scope)` and thread it through
+`service.list_files(tenant_id, task_id, submitted_by=submitted_by, ...)` ->
+`CheckpointContent` -> `InspectionService`'s own `Store.get_task` call. Round
+2 already proposed this thread-through; round 3's fix is that `Store.get_task`
+itself now REFUSES to compile or run without the keyword arriving from
+somewhere, so a fourth service layer discovered later -- the artifact
+service, the transcript service, the answer service, or one not yet
+written -- cannot reach a task by forgetting the argument; it can only reach
+one by supplying it, correctly or not, and supplying it wrong is a much
+narrower way to fail than supplying nothing at all.
 
 ### What `tenant_principal` becomes for such a caller
 
@@ -4052,13 +4105,24 @@ Unit, no credentials and no emulator:
   - `continues_task` naming an `eng` task is accepted, naming a `u-bogdan`
     task is refused "is not a task in your tenant";
   - **`CONTINUATION_ROUTES` is swept against every route in every router the
-    app includes** (`tests/unit/control_plane/test_continuation_scope_is_narrow.py`,
-    the same shape as `test_pool_admin_is_narrow.py`): every route NOT in the
-    set 403s a continuation-scoped caller with an otherwise-valid request,
-    and every route IN the set does not 403 for that reason. This is the
-    test that would have caught the first draft's gap, because it does not
-    require anyone to have thought of `routes/accounts.py` -- it walks the
-    app's own route table;
+    app includes, and extended in round 3 to a second assertion per
+    task/workflow-scoped route** (`tests/unit/control_plane/test_continuation_scope_is_narrow.py`,
+    the same shape as `test_pool_admin_is_narrow.py`):
+      - **reachability:** every route NOT in the set 403s a continuation-scoped
+        caller with an otherwise-valid request, and every route IN the set
+        does not 403 for that reason. This is the test that would have caught
+        the first draft's gap, because it does not require anyone to have
+        thought of `routes/accounts.py` -- it walks the app's own route table;
+      - **ownership, round 3's addition:** for every route in the swept set
+        whose path names a `{task_id}` or `{workflow_id}`, the fixture creates
+        ONE task/workflow submitted by a different `eng` member and drives
+        that route at it with the listed caller's credentials -- every one
+        404s ("is not a task in your tenant"). This is the assertion that
+        catches a missed `submitted_by` thread-through directly, rather than
+        relying on someone naming the right route by hand: it walks
+        `CONTINUATION_ROUTES` itself, so a route added to the allow-list
+        later without its filter wired through fails this test on the day it
+        is added, not on the day someone thinks to ask;
   - named explicitly, because re-review found them missing: **all eight
     `routes/accounts.py` routes** (list, register, authorize, exchange,
     refresh, lending, state, delete), **`POST /v1/tenants/me/credentials`**,
@@ -4080,14 +4144,27 @@ Unit, no credentials and no emulator:
   - **`GET /v1/tasks/{id}` for a task `eng`'s human member submitted** 404s
     ("is not a task in your tenant") for the listed caller, and **the same
     call for a task the listed caller itself submitted** succeeds -- proving
-    the `submitted_by` filter is per-caller, not per-tenant;
+    the `submitted_by` filter is per-caller, not per-tenant. Also covered by
+    the sweep's ownership assertion above; kept as its own named case because
+    it is the one this entry's examples build on elsewhere;
   - **`GET /v1/tasks`** for the listed caller returns only tasks it submitted,
-    even when `eng` has others;
+    even when `eng` has others (a LIST assertion, which the sweep's
+    single-task ownership check does not itself make -- `Store.list_tasks`
+    filtering is exercised here specifically);
   - **`GET /v1/tasks/{id}/checkpoints/{checkpoint_id}/files` (and `/files/{path}`,
     `/content`) for a checkpoint of a task `eng`'s human member submitted**
     404s for the listed caller, and the same call for the listed caller's OWN
     task succeeds -- the case that had no seam at all before `submission_scope`
-    was threaded into `checkpoints.py`;
+    was threaded into `checkpoints.py`, and now also caught by the sweep's
+    ownership assertion since these three are members of `CONTINUATION_ROUTES`;
+  - a new `tests/unit/control_plane/test_store_task_scope_is_required.py`:
+    calling `store.get_task(tenant_id, task_id)` (two positional arguments,
+    no `submitted_by`) raises `TypeError: get_task() missing 1 required
+    keyword-only argument: 'submitted_by'`, and the same for `list_tasks`,
+    `get_workflow`, `list_workflows` -- the test that proves the signature
+    change itself, independent of any route, so it stays red even if every
+    route-level test above were somehow satisfied by an accident of fixture
+    setup;
   - the created task's `submitted_by` is the account's email and its
     `SUBMITTED` event carries `tenant_member="service_account"`; the same is
     true of a `CANCELLED` event when a FULL member (not the listed caller,
