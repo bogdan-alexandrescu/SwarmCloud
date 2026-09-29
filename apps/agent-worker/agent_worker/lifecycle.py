@@ -179,7 +179,7 @@ from .gitops import (
 # The helpers every function in `gitops` builds its git commands from. Borrowed
 # rather than restated for `replay_agent_commits` below, so its commands carry
 # exactly the hook, fsmonitor, signing and identity overrides the fold's do.
-from .gitops import _NO_HOOKS, _SHA_RE, _git_text, _worker_identity
+from .gitops import _NO_HOOKS, _SHA_RE, _git_text, _git_text_full, _worker_identity
 from .hardening import FAILED, MemoryProtection
 from .metrics import (
     ResourceSampler,
@@ -1432,6 +1432,10 @@ class Worker:
                 return self._fail_for_missing_outputs(missing, summary, exit_code=0)
             if title_refused is not None:
                 return self._fail_for_refused_title(title_refused, summary, exit_code=0)
+            git_summary = summary.get("git")
+            leak = git_summary.get("final_tree_leak") if isinstance(git_summary, dict) else None
+            if leak:
+                return self._fail_for_final_tree_leak(str(leak), summary, exit_code=0)
             self.control.finish(
                 state=TaskState.SUCCEEDED, exit_code=0, result_summary=summary
             )
@@ -2520,6 +2524,32 @@ class Worker:
             end_cause=EndCause.OUTPUTS_MISSING,
         )
         self.log.info("the attempt failed for a refused pull request title", task_state=state.value)
+        return Outcome(exit_code=ExitCode.FAILED, state=state)
+
+    def _fail_for_final_tree_leak(
+        self, reason: str, summary: dict[str, Any], *, exit_code: int
+    ) -> Outcome:
+        """Fail this attempt, retryably, because the branch it would push adds a
+        credential (owner decision, 2026-09-28, #259 review M4).
+
+        `reason` comes from `final_tree_leak`: it names the file and never the
+        value, so it is safe as the attempt's error, which is what tells the
+        retry what to remove. Nothing was pushed (`_publish_git` returned
+        before the publish repository was made). The retry resumes from the
+        final checkpoint, taken before the worker's commit of uncommitted work,
+        so the agent's files are there to edit.
+        """
+        error = self._scrub(reason)
+        state = self.control.fail_retryably(
+            exit_code=exit_code,
+            error=error,
+            cause="final_tree_adds_a_credential",
+            result_summary=summary,
+            retry_delay_seconds=EXPECTED_OUTPUT_RETRY_DELAY_SECONDS,
+            detail={"refused": error},
+            end_cause=EndCause.RUNNER_ERROR,
+        )
+        self.log.info("the attempt failed: its final tree adds a credential", task_state=state.value)
         return Outcome(exit_code=ExitCode.FAILED, state=state)
 
     def _clone_base_path(self) -> Path | None:
@@ -4251,6 +4281,32 @@ class Worker:
                 folded = max(replaced - (1 if new_sha else 0), 0)
                 out["agent_commits_folded"] = folded
 
+            # THE BRANCH AS IT WILL BE PUSHED IS SCANNED BEFORE ANY PUSH
+            # (owner decision, 2026-09-28, #259 review M4). The scan above
+            # decides only between keeping and folding; the fold's one commit
+            # and the worker's commit of uncommitted work carry the FINAL
+            # tree, which it never read. A registered value or a
+            # credential-shaped literal that tree ADDS publishes nothing, and
+            # the attempt fails retryably (`_fail_for_final_tree_leak`),
+            # naming the file and never the value.
+            leak = final_tree_leak(
+                repo=repo,
+                base=self._publish_base,
+                leaks=lambda text: str(self._scrub(text)) != text or _holds_a_credential(text),
+                private_dir=ws.private,
+                logs_dir=ws.logs,
+                timeout_seconds=cfg.git_harvest_timeout_seconds,
+                logger=self.log,
+            )
+            if leak is not None:
+                reason = str(self._scrub(leak))
+                out["published"] = False
+                out["auto_committed"] = auto_committed
+                out["final_tree_leak"] = reason
+                out["publish_reason"] = f"refusing to publish: {reason}"
+                self.log.error("not publishing: the final tree failed the leak check", reason=reason)
+                return out
+
             # EVERYTHING THAT CARRIES THE TOKEN RUNS IN A REPOSITORY THE WORKER
             # OWNS, NOT IN THE CLONE. The push and the integrator's contributor
             # fetch authenticate with the tenant token; run in the clone, a
@@ -5366,7 +5422,15 @@ def _carries_attribution(text: str) -> bool:
 #: agent's say-so, and GitHub notifies on the title as well as the body. It is
 #: deliberately wider than GitHub's own rules (which skip code spans): a false
 #: refusal costs the agent's wording; a false pass pings someone.
-_MENTION_RE = re.compile(r"(?<![\w.`/@-])@[A-Za-z0-9][A-Za-z0-9-]*(?:/[A-Za-z0-9][\w.-]*)?")
+#:
+#: THE LOOKBEHIND IS ASCII-ONLY ON PURPOSE (#259 review, M3). Python's `\w` on
+#: a `str` pattern matches any Unicode letter, digit or underscore, not just
+#: `[A-Za-z0-9_]`. GitHub's own mention boundary is not Unicode-aware, so a
+#: non-ASCII letter immediately before `@` (`café@octocat`) made `\w`
+#: match, the lookbehind fail, and the mention after it go undetected --
+#: hiding exactly the notification this pattern exists to catch. `_unmention`
+#: below shares this pattern, so the fix covers both directions at once.
+_MENTION_RE = re.compile(r"(?<![A-Za-z0-9_.`/@-])@[A-Za-z0-9][A-Za-z0-9-]*(?:/[A-Za-z0-9][\w.-]*)?")
 
 
 #: A fenced code block (``` or ~~~, closed by a fence of the same character
@@ -5374,11 +5438,34 @@ _MENTION_RE = re.compile(r"(?<![\w.`/@-])@[A-Za-z0-9][A-Za-z0-9-]*(?:/[A-Za-z0-9
 #: run of backticks closed by a run of the same length). GitHub notifies no
 #: one for a mention inside either (owner decision, 2026-09-28), so
 #: `@pytest.fixture` in a code block does not refuse a body.
+#:
+#: TWO BRANCHES, NOT ONE (#259 review, M3): CommonMark refuses a backtick
+#: fence (``` ... ```) whose INFO STRING itself contains a backtick -- that
+#: line is not a fence at all, so treating it as one hid whatever followed,
+#: including a real mention, until the next line that happened to look like a
+#: close. A tilde fence (~~~) has no such restriction. Each branch names its
+#: own fence group (`btick`/`tilde`, not one name reused) because a Python
+#: pattern cannot define the same group name twice even in different
+#: alternatives.
 _FENCED_RE = re.compile(
-    r"^[ \t]{0,3}(?P<fence>`{3,}|~{3,})[^\n]*\n.*?(?:^[ \t]{0,3}(?P=fence)[`~]*[ \t]*$|\Z)",
+    r"^[ \t]{0,3}(?:"
+    r"(?P<btick>`{3,})[^\n`]*\n.*?(?:^[ \t]{0,3}(?P=btick)[`~]*[ \t]*$|\Z)"
+    r"|"
+    r"(?P<tilde>~{3,})[^\n]*\n.*?(?:^[ \t]{0,3}(?P=tilde)[`~]*[ \t]*$|\Z)"
+    r")",
     re.MULTILINE | re.DOTALL,
 )
-_CODE_SPAN_RE = re.compile(r"(?P<ticks>`+)(?!`).+?(?<!`)(?P=ticks)(?!`)", re.DOTALL)
+#: An inline code span, per CommonMark: a run of backticks, closed by a run of
+#: the same length, and THE SPAN CANNOT CROSS A BLANK LINE -- a blank line is a
+#: paragraph break, and CommonMark never lets a code span span one (a stray
+#: opening backtick before a blank line is just a backtick). The previous
+#: pattern used `re.DOTALL` to let `.` cross any newline including a blank
+#: one, so a single stray backtick, then a blank line, then a real `@mention`
+#: in its own paragraph, then a later backtick, read as "all inside a code
+#: span" and hid the mention (#259 review, M3). `(?!\n[ \t]*\n)` refuses to
+#: consume into the start of a blank line, so the span simply fails to close
+#: across one instead of swallowing everything up to the next stray backtick.
+_CODE_SPAN_RE = re.compile(r"(?P<ticks>`+)(?!`)(?:(?!\n[ \t]*\n)[\s\S])+?(?<!`)(?P=ticks)(?!`)")
 
 
 def _without_code(text: str) -> str:
@@ -5469,11 +5556,53 @@ def _adds_a_credential(diff: str) -> bool:
     character before it is not a letter, a digit or `_`. The private-key
     block is exempt: its marker is never part of an identifier.
     """
-    added = "\n".join(
-        line[1:]
-        for line in diff.split("\n")
-        if line.startswith("+") and not line.startswith("+++ ")
-    )
+    return _holds_a_credential("\n".join(added for _path, added in _added_by_file(diff)))
+
+
+def _added_by_file(diff: str) -> list[tuple[str, str]]:
+    """Each file in a `git diff` that adds text, with that text, `+` removed.
+
+    A file's `+++ b/<path>` line is read as its header only BEFORE its first
+    `@@` hunk line. After that every line starting with `+` is content, even
+    one that reads `+++ ...`: an added line whose own text is `++ AKIA...`
+    prints as `+++ AKIA...`, so dropping every `+++ ` line as a header let a
+    credential through behind two plus signs. The path is what the `+++ `
+    header names after the `b/` destination prefix; a deleted file
+    (`+++ /dev/null`) adds nothing. Text before any `diff --git` line is read
+    as one file, named by its own `+++ ` header if it has one.
+    """
+    files: list[tuple[str, list[str]]] = []
+    path = ""
+    added: list[str] = []
+    # A file's header runs from its `diff --git` line (or the start of the
+    # text) to its first `@@`: git prints every hunk behind one.
+    in_header = True
+    for line in diff.split("\n"):
+        if line.startswith("diff --git "):
+            if added:
+                files.append((path, added))
+            path, added, in_header = "", [], True
+            continue
+        if line.startswith("@@"):
+            in_header = False
+            continue
+        if in_header:
+            if line.startswith("+++ "):
+                name = line[4:]
+                if len(name) > 1 and name.startswith('"') and name.endswith('"'):
+                    name = name[1:-1]
+                path = name[2:] if name.startswith("b/") else name
+            continue
+        if line.startswith("+"):
+            added.append(line[1:])
+    if added:
+        files.append((path, added))
+    return [(name, "\n".join(lines)) for name, lines in files]
+
+
+def _holds_a_credential(added: str) -> bool:
+    """True when `added` -- text a diff adds, its `+` removed -- matches a
+    credential pattern where the match starts a token (`_adds_a_credential`)."""
     if not added:
         return False
     for rule in CREDENTIAL_RULES:
@@ -5540,8 +5669,8 @@ def _first_leaking_commit(
     it may hold the very value it was scanned for, and `logs/` is uploaded.
     """
 
-    def run(argv: list[str], slug: str, cap: int = 4 * 1024 * 1024) -> tuple[int, str]:
-        return _git_text(
+    def run(argv: list[str], slug: str, cap: int = 4 * 1024 * 1024) -> tuple[int, str, bool]:
+        return _git_text_full(
             argv,
             repo=repo,
             private_dir=private_dir,
@@ -5556,7 +5685,7 @@ def _first_leaking_commit(
     for index, sha in enumerate(shas, 1):
         if sha == keep:
             continue
-        code, raw = run([*git, "cat-file", "commit", sha], "publish-scan-read")
+        code, raw, _ = run([*git, "cat-file", "commit", sha], "publish-scan-read")
         if code != 0:
             raise GitError(f"could not read commit {sha[:12]}")
         header = raw.partition("\n\n")[0]
@@ -5565,14 +5694,14 @@ def _first_leaking_commit(
             before = parents[0]
         else:
             if empty_tree is None:
-                code, made = run([*git, "hash-object", "-t", "tree", "/dev/null"], "publish-scan-empty")
+                code, made, _ = run([*git, "hash-object", "-t", "tree", "/dev/null"], "publish-scan-empty")
                 empty_tree = made.strip()
                 if code != 0 or not _SHA_RE.match(empty_tree):
                     raise GitError("could not name the empty tree")
             before = empty_tree
         slug = "publish-scan-diff"
         try:
-            code, diff = run(
+            code, diff, diff_truncated = run(
                 [
                     *git, "diff", "--no-color", "--no-ext-diff", "--no-textconv",
                     "--text", "--no-renames", "-U0", before, sha, "--",
@@ -5588,8 +5717,111 @@ def _first_leaking_commit(
                     pass
         if code != 0:
             raise GitError(f"could not diff commit {sha[:12]} against its parent")
-        if len(diff.encode("utf-8", errors="replace")) >= REPLAY_SCAN_MAX_BYTES or leaks(diff):
+        # `diff_truncated` comes from the capture itself (its truncated flag,
+        # or its raw byte size at or over the cap) -- never from
+        # `len(diff.encode(...))`, which a `\r\n` -> `\n` translation could
+        # shrink below the cap after the capture already hit it (#259 review,
+        # M2). "not scanned whole" must count as a hit either way.
+        if diff_truncated or leaks(diff):
             return index
+    return None
+
+
+def final_tree_leak(
+    *,
+    repo: Path,
+    base: str | None,
+    leaks: Callable[[str], bool],
+    private_dir: Path,
+    logs_dir: Path,
+    timeout_seconds: int,
+    logger: Any,
+    git_binary: str = "git",
+) -> str | None:
+    """Why the branch about to be pushed must not be, or None when it may.
+
+    OWNER DECISION, 2026-09-28 (#259 review, M4). The per-commit scan
+    (`_first_leaking_commit`) decides only between keeping the agent's
+    commits and folding them; it skips the worker's own commit of
+    uncommitted work, and a fold pushes the final tree unscanned. So a key
+    the agent committed and never deleted -- or wrote and never committed --
+    reached the forge in the one commit the worker wrote. This reads what
+    the push would add, `base..HEAD` diffed as one span AFTER the replay or
+    the fold, so it covers every commit's tree the push carries: each kept
+    commit is scanned by the per-commit pass and the final tree here.
+
+    `leaks` is asked about the text each FILE adds (`_added_by_file`), with
+    the `+` removed, so a line the branch removes -- the repository's own,
+    already public -- never refuses it. The answer names the FILE and never
+    the value: the reason becomes the attempt's error, which the retry and a
+    human both read. A diff too big to read whole is refused too, naming the
+    file it was cut in, because "not scanned" is not "clean". The diff's
+    output file is deleted as soon as it is read, as the per-commit scan's is.
+
+    `GIT_NO_REPLACE_OBJECTS=1` (`gitops._git_env`) makes this read the real
+    objects the push sends, never a replacement the agent registered; the
+    explicit `--src-prefix`/`--dst-prefix` and `core.quotePath=false` keep a
+    `diff.noprefix` or quoting setting in the agent's `.git/config` from
+    changing how a path reads.
+    """
+    g = [git_binary, *_NO_HOOKS, "-c", "core.quotePath=false"]
+    run_kwargs: dict[str, Any] = {
+        "repo": Path(repo),
+        "private_dir": private_dir,
+        "logs_dir": logs_dir,
+        "timeout_seconds": timeout_seconds,
+        "logger": logger,
+    }
+    code, _head, _ = _git_text_full(
+        [*g, "rev-parse", "--verify", "--quiet", "HEAD"], slug="publish-final-head", **run_kwargs
+    )
+    if code != 0:
+        # Nothing is committed, so the push has nothing to send.
+        return None
+    if base == EMPTY_CLONE_BASE:
+        code, made, _ = _git_text_full(
+            [*g, "hash-object", "-t", "tree", "/dev/null"], slug="publish-final-empty", **run_kwargs
+        )
+        before = made.strip()
+        if code != 0 or not _SHA_RE.match(before):
+            raise GitError("could not name the empty tree")
+    elif base and _SHA_RE.match(base.strip()):
+        before = base.strip()
+    else:
+        raise GitError(
+            "the clone base is unknown, so the worker cannot read what the push "
+            "would add; nothing was pushed"
+        )
+    slug = "publish-final-diff"
+    try:
+        code, diff, truncated = _git_text_full(
+            [
+                *g, "diff", "--no-color", "--no-ext-diff", "--no-textconv", "--text",
+                "--no-renames", "--src-prefix=a/", "--dst-prefix=b/", "-U0",
+                before, "HEAD", "--",
+            ],
+            slug=slug,
+            max_bytes=REPLAY_SCAN_MAX_BYTES,
+            **run_kwargs,
+        )
+    finally:
+        for suffix in ("out", "err"):
+            try:
+                (logs_dir / f"git-{slug}.{suffix}.log").unlink()
+            except OSError:
+                pass
+    if code != 0:
+        raise GitError("could not diff the branch against the clone base")
+    files = _added_by_file(diff)
+    for path, added in files:
+        if leaks(added):
+            return f"the final tree adds a credential in {path or 'a file'}; remove it"
+    if truncated:
+        where = files[-1][0] if files and files[-1][0] else "a file"
+        return (
+            f"the final tree's diff is too large to scan whole (cut in {where}); "
+            "nothing was pushed. Make the change smaller"
+        )
     return None
 
 

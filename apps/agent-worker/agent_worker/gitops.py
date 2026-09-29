@@ -391,6 +391,22 @@ def _git_env(private_dir: Path) -> dict[str, str]:
         "GIT_CONFIG_GLOBAL": "/dev/null",
         "GIT_SSH_COMMAND": "ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new",
         "LC_ALL": "C",
+        # Every command that reaches this env runs in the clone AFTER the
+        # agent has had the run of it, so its refs -- including `refs/replace/*`
+        # -- are the agent's to write. `git replace` substitutes an object
+        # wherever git reads one through the object database: `cat-file`,
+        # `diff`, `show`, `log` all follow it (measured with git 2.40.1: a
+        # `git replace <blob> <clean-blob>` made `git diff` print the clean
+        # content for a blob that still held the real one). Replacement is
+        # read-side only -- it never touches the tree a commit points at, so
+        # `commit-tree`, pack-objects and the eventual push always send the
+        # REAL object. Without this, the per-commit secret scan
+        # (`lifecycle._first_leaking_commit`) could be shown a clean
+        # replacement for a blob that holds a registered secret, pass the
+        # commit as non-leaking, and then push the real, secret-holding blob
+        # unfolded (#259 review, M1). `GIT_NO_REPLACE_OBJECTS=1` makes every
+        # git command below read the real object instead.
+        "GIT_NO_REPLACE_OBJECTS": "1",
     }
 
 
@@ -509,9 +525,59 @@ def _git_text(
 ) -> tuple[int, str]:
     """Run a git command and return its exit code with its stdout as text.
 
+    A thin wrapper over `_git_text_full` for the many callers that only need
+    the text, never whether the capture was truncated.
+    """
+    code, text, _truncated = _git_text_full(
+        argv,
+        repo=repo,
+        private_dir=private_dir,
+        logs_dir=logs_dir,
+        slug=slug,
+        timeout_seconds=timeout_seconds,
+        logger=logger,
+        max_bytes=max_bytes,
+    )
+    return code, text
+
+
+def _git_text_full(
+    argv: list[str],
+    *,
+    repo: Path,
+    private_dir: Path,
+    logs_dir: Path,
+    slug: str,
+    timeout_seconds: int,
+    logger: Any,
+    max_bytes: int = 4 * 1024 * 1024,
+) -> tuple[int, str, bool]:
+    """Run a git command; return its exit code, stdout as text, and whether the
+    capture was truncated.
+
     Output goes to a file rather than a pipe because `run_child` is the only
     thing in this worker that knows how to kill a process group on a timeout,
     and reusing it is what keeps a wedged git from outliving the attempt.
+
+    TRUNCATION IS DECIDED FROM THE CAPTURE, NEVER FROM THE DECODED TEXT'S
+    LENGTH (#259 review, M2). `StreamCapture` caps at `max_bytes` on the raw
+    stream and sets `stdout_truncated` the moment it starts dropping bytes; a
+    caller that instead re-measured `len(text.encode(...))` after `read_text`
+    could be fooled, because reading in TEXT mode with the default `newline`
+    applies universal-newline translation: every `\r\n` in the capture becomes
+    one `\n`, which can decode-and-reencode SHORTER than the byte cap the
+    capture actually hit, so a diff too big to scan whole could read as
+    "under the cap" and pass as scanned.
+
+    THE FILE IS READ WITH `newline=""` FOR THE SAME REASON `\r` MUST NOT
+    DISAPPEAR (#259 review, M2). Universal-newline translation also turns a
+    LONE `\r` inside a line (no `\n` after it) into a `\n`, which splits that
+    one line into two. `lifecycle._adds_a_credential` reads only lines
+    starting with `+`; a line the translation split in two loses its `+`
+    prefix on the second half, so a credential that started after an embedded
+    `\r` was read as un-prefixed context and never scanned. `newline=""`
+    disables the translation: whatever bytes the stream carried are what this
+    function hands back.
     """
     out = logs_dir / f"git-{slug}.out.log"
     result = run_child(
@@ -529,10 +595,16 @@ def _git_text(
     if result.timed_out:
         raise GitError(f"git {slug} timed out after {timeout_seconds}s")
     try:
-        text = out.read_text(errors="replace")
+        raw_size = out.stat().st_size
+    except OSError:
+        raw_size = 0
+    try:
+        with out.open("r", newline="", errors="replace") as handle:
+            text = handle.read()
     except OSError:
         text = ""
-    return result.exit_code, text
+    truncated = result.stdout_truncated or raw_size >= max_bytes
+    return result.exit_code, text, truncated
 
 
 def _parse_log(stream: str) -> tuple[list[CommitSummary], int, int]:
