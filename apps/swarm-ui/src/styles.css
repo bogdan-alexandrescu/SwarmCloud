@@ -3512,6 +3512,7 @@ table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--tex
 .att-none,
 .att-spend-none,
 .att-ckpt-none,
+.att-ckpt-line,
 .att-rss-note,
 .art-fallback,
 .art-empty,
@@ -3525,21 +3526,6 @@ table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--tex
   color: var(--text-faint);
 }
 .att-spend-none > .ctl-eyebrow { margin: 0; }
-/* The task's restore pointer, which is a fact with a key like any other. */
-.att-restore {
-  display: flex;
-  align-items: baseline;
-  flex-wrap: wrap;
-  gap: var(--ctl-s2);
-  margin: var(--ctl-s3) 0 0;
-  font-size: var(--t-micro);
-  line-height: var(--lh-micro);
-  color: var(--text-faint);
-}
-.att-restore > b {
-  font: 500 var(--t-micro)/var(--lh-micro) var(--mono);
-  color: var(--text-faint);
-}
 
 /* THE CPU ROWS' STRIP (#184), AND WHY PART OF IT IS FOR PHONES ONLY.
    ---------------------------------------------------------------------------
@@ -3847,8 +3833,46 @@ ol.timeline li::before {
   background: var(--text-faint); border: 2px solid var(--bg);
 }
 .ev-type { font: 600 var(--t-meta)/var(--lh-meta) var(--mono); color: var(--text); }
-.ev-at { margin-left: 8px; font-size: var(--t-micro); color: var(--text-faint); }
+.ev-at { margin-left: 8px; font: var(--t-micro)/var(--lh-micro) var(--mono); font-variant-numeric: tabular-nums; color: var(--text-faint); }
 .ev-gen { margin-left: 8px; font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-faint); }
+/* THE GAP, AND THE INSTANT BEHIND IT (#101). `.ev-at` prints the gap from the
+   event before; the absolute time is its `title` for a pointer and `.ev-abs`
+   for a keyboard, shown while the element has focus -- a title is a hover no
+   keyboard ever gets. Mono (above), so a column of gaps lines up. */
+.ev-at:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; border-radius: var(--ctl-radius-sm); }
+.ev-abs { display: none; }
+.ev-at:focus .ev-abs,
+.ev-at:focus-visible .ev-abs { display: inline; margin-left: var(--ctl-s2); color: var(--text-dim); }
+/* The detail JSON, closed until asked for. */
+.ev-more { margin-top: var(--ctl-s1); }
+.ev-more > summary {
+  cursor: pointer;
+  font: var(--t-micro)/var(--lh-micro) var(--mono);
+  color: var(--text-faint);
+}
+/* Details' compact timeline: the last event, and the way to the full one. */
+.ev-last {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0 var(--ctl-s2);
+  margin: 0;
+}
+.ev-last .ev-at { margin-left: 0; }
+.ev-owner { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-faint); }
+.ev-more-link { margin: var(--ctl-s2) 0 0; font-size: var(--t-micro); line-height: var(--lh-micro); }
+/* Code a step handed on to a dependant rather than pushed (#278). */
+.git-handed { margin: var(--ctl-s3) 0 0; }
+.git-handed-line,
+.git-handed-pr {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0 var(--ctl-s2);
+  margin: 0 0 var(--ctl-s2);
+  font-variant-numeric: tabular-nums;
+}
+.git-handed-pr > b { font: 500 var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-faint); }
 
 /* ------------------------------------------------------------------------ */
 /* Data-source strip                                                         */
@@ -8657,6 +8681,52 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
   overflow-x: auto; white-space: pre;
 }
 .art-text { max-height: 60vh; overflow-y: auto; }
+
+/* A UNIFIED DIFF, LINE BY LINE (#104). The gutter carries the glyph -- `+`,
+   `−` or nothing -- so an added line is told from a removed one in greyscale;
+   the tint is the second signal, never the only one. Lines do not wrap unless
+   asked (`.is-wrapped`), and the bar says the block scrolls sideways, because
+   the drawer paints no scrollbar to say it. */
+.art-diff-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--ctl-s2);
+  margin: 0 0 var(--ctl-s2);
+  font: var(--t-micro)/var(--lh-micro) var(--mono);
+  color: var(--text-faint);
+}
+.art-diff-wrap[aria-pressed="true"] { color: var(--text); border-color: var(--text-dim); }
+.art-diff {
+  max-height: 60vh;
+  overflow: auto;
+  margin: 0 0 var(--ctl-s3);
+  border: 1px solid var(--line);
+  border-radius: var(--ctl-radius-sm);
+  background: var(--surface);
+  font: var(--t-body)/var(--lh-body) var(--mono);
+}
+.art-diff-line { display: flex; min-width: max-content; }
+.art-diff.is-wrapped .art-diff-line { min-width: 0; }
+.art-diff-glyph {
+  flex: none;
+  width: 2ch;
+  text-align: center;
+  user-select: none;
+  color: var(--text-faint);
+  border-right: 1px solid var(--line);
+}
+.art-diff-text { padding: 0 var(--ctl-s2); white-space: pre; color: var(--text-dim); }
+.art-diff.is-wrapped .art-diff-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.art-diff-line.is-add { background: color-mix(in srgb, var(--ok) 12%, transparent); }
+.art-diff-line.is-add .art-diff-glyph { color: var(--ok-ink); font-weight: 600; }
+.art-diff-line.is-add .art-diff-text { color: var(--text); }
+.art-diff-line.is-del { background: color-mix(in srgb, var(--bad) 12%, transparent); }
+.art-diff-line.is-del .art-diff-glyph { color: var(--bad-ink); font-weight: 600; }
+.art-diff-line.is-del .art-diff-text { color: var(--text); }
+.art-diff-line.is-hunk { background: var(--surface-2); }
+.art-diff-line.is-hunk .art-diff-text { color: var(--info); }
+.art-diff-line.is-meta .art-diff-text { color: var(--text-faint); font-weight: 600; }
 
 .art-turns { display: flex; flex-direction: column; gap: var(--ctl-s2); }
 .art-turn {
