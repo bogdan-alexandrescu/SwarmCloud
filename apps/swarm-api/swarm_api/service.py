@@ -324,7 +324,7 @@ class SubmissionService:
             raise
         # Contract request 34: signed over the task as it will be stored.
         self._sign(tasks)
-        self._store.create_tasks(tasks)
+        self._store.create_tasks(tasks, tenant_member=ctx.tenant_member)
         for task in tasks:
             self._metrics.tasks_submitted.labels(
                 tenant=task.tenant_id, runner_profile=task.runner_profile
@@ -335,6 +335,19 @@ class SubmissionService:
     # -- workflows --------------------------------------------------------
 
     def submit_workflow(self, ctx: AuthContext, spec: WorkflowCreate) -> WorkflowSubmission:
+        # A continuation-scoped caller (a listed service account, contract
+        # request 30) reaches this route because it is in CONTINUATION_ROUTES,
+        # but being on the allow-list opens the ROUTE, not every request to it:
+        # it may submit a workflow that continues an existing task and nothing
+        # else. Before `tenant_for`, so a refused request writes nothing.
+        # getattr: `continues_task` arrives with #273's schema; until then no
+        # spec carries one, and this scope can submit no workflow at all --
+        # closed, which is the direction to be wrong in.
+        if ctx.member_scope == "continuation" and getattr(spec, "continues_task", None) is None:
+            raise Forbidden(
+                "a continuation-scoped account may only submit a workflow with "
+                "continues_task; it cannot start new work"
+            )
         tenant = self.tenant_for(ctx)
         step_specs = [
             StepSpec(
@@ -478,7 +491,7 @@ class SubmissionService:
         # `record_expected_outputs`, both written after `_build_task`, and
         # immediately before the write that creates the documents.
         self._sign(tasks)
-        self._store.create_workflow(workflow, tasks)
+        self._store.create_workflow(workflow, tasks, tenant_member=ctx.tenant_member)
         self._metrics.workflows_submitted.labels(tenant=tenant.tenant_id).inc()
         self._wake("workflow_submitted", tenant_id=tenant.tenant_id, workflow_id=workflow_id)
         return WorkflowSubmission(

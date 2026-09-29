@@ -207,3 +207,146 @@ def test_a_malformed_setting_is_the_workers_configuration(monkeypatch, name, val
     _env(monkeypatch, **{name: value})
     with pytest.raises(ConfigError):
         WorkerConfig.from_env()
+
+
+# ---------------------------------------------------------------------------
+# GKE follows the legacy window exactly as Cloud Run does (owner decision,
+# 2026-09-29). A GKE pod's environment carries none of the four settings:
+# kubernetes/render.py writes every key of terraform's
+# `spec_verify_keys_configmap` output -- SPEC_VERIFY_KEYS, SPEC_SIGNING_KEY,
+# SPEC_SIGNATURE_MODE, SPEC_LEGACY_CUTOVER -- as a file of the
+# `swarm-spec-verify-keys` ConfigMap, mounted at /etc/swarm/spec-verify-keys.
+# A worker that read only the keys from the mount enforced on GKE from its
+# first day while Cloud Run ran legacy.
+# ---------------------------------------------------------------------------
+
+
+def _gke_mount(tmp_path, **files: str):
+    mount = tmp_path / "spec-verify-keys"
+    mount.mkdir(parents=True)
+    for name, value in files.items():
+        (mount / name).write_text(value)
+    return mount
+
+
+def _gke_legacy_mount(tmp_path):
+    import spec_keys
+
+    return _gke_mount(
+        tmp_path,
+        SPEC_VERIFY_KEYS=json.dumps(spec_keys.VERIFY_KEYS),
+        SPEC_SIGNING_KEY=spec_keys.SIGNING_KEY,
+        SPEC_SIGNATURE_MODE="legacy",
+        SPEC_LEGACY_CUTOVER="2026-09-29T12:00:00Z",
+    )
+
+
+def _gke_config(monkeypatch, mount) -> WorkerConfig:
+    """A GKE pod's configuration: no SPEC_* in the environment, the mount at `mount`."""
+    from agent_worker import specverify
+
+    monkeypatch.setattr(specverify, "VERIFY_KEYS_MOUNT", mount)
+    _env(monkeypatch, RUNNER_JOB_NAME="swarm-1-1")
+    return WorkerConfig.from_env()
+
+
+def _spec_settings(cfg: WorkerConfig) -> dict:
+    """The four settings a GKE pod's `from_env` read, for `build_worker`."""
+    return {
+        "spec_signature_mode": cfg.spec_signature_mode,
+        "spec_legacy_cutover": cfg.spec_legacy_cutover,
+        "spec_signing_key": cfg.spec_signing_key,
+        "spec_verify_keys": dict(cfg.spec_verify_keys),
+    }
+
+
+def test_the_gke_mount_carries_the_mode_and_the_cutover(monkeypatch, tmp_path):
+    cfg = _gke_config(monkeypatch, _gke_legacy_mount(tmp_path))
+    assert cfg.spec_signature_mode == "legacy"
+    assert cfg.spec_legacy_cutover == CUTOVER
+
+
+def test_the_environment_wins_over_the_gke_mount(monkeypatch, tmp_path):
+    """The mount fills only what the environment leaves unset, as it already
+    does for the keys; Cloud Run's Jobs carry all four in the environment."""
+    from agent_worker import specverify
+
+    monkeypatch.setattr(specverify, "VERIFY_KEYS_MOUNT", _gke_legacy_mount(tmp_path))
+    _env(monkeypatch, SPEC_SIGNATURE_MODE="enforce")
+    assert WorkerConfig.from_env().spec_signature_mode == "enforce"
+
+
+@pytest.mark.parametrize(
+    "name,value",
+    [
+        ("SPEC_SIGNATURE_MODE", "off"),
+        ("SPEC_LEGACY_CUTOVER", "2026-09-29T12:00:00"),  # no zone
+    ],
+)
+def test_a_malformed_setting_in_the_gke_mount_is_the_workers_configuration(
+    monkeypatch, tmp_path, name, value
+):
+    import spec_keys
+
+    files = {
+        "SPEC_VERIFY_KEYS": json.dumps(spec_keys.VERIFY_KEYS),
+        "SPEC_SIGNING_KEY": spec_keys.SIGNING_KEY,
+        "SPEC_SIGNATURE_MODE": "legacy",
+        "SPEC_LEGACY_CUTOVER": "2026-09-29T12:00:00Z",
+        name: value,
+    }
+    with pytest.raises(ConfigError):
+        _gke_config(monkeypatch, _gke_mount(tmp_path, **files))
+
+
+def test_a_gke_worker_in_legacy_admits_an_unsigned_task_created_before_the_cutover(
+    monkeypatch, tmp_path, db, worker_factory
+):
+    cfg = _gke_config(monkeypatch, _gke_legacy_mount(tmp_path / "gke"))
+    _unsigned(db, BEFORE_CUTOVER)
+    rc = _run(worker_factory, spec_clock=lambda: INSIDE_WINDOW, **_spec_settings(cfg))
+    task = db.doc(f"tasks/{TASK}")
+    assert rc == ExitCode.OK, task.get("last_error")
+    assert task["state"] == TaskState.SUCCEEDED.value
+
+
+def test_a_gke_worker_in_legacy_refuses_an_unsigned_task_created_after_the_cutover(
+    monkeypatch, tmp_path, db, worker_factory
+):
+    cfg = _gke_config(monkeypatch, _gke_legacy_mount(tmp_path / "gke"))
+    _unsigned(db, AFTER_CUTOVER)
+    rc = _run(worker_factory, spec_clock=lambda: INSIDE_WINDOW, **_spec_settings(cfg))
+    task = db.doc(f"tasks/{TASK}")
+    assert rc == ExitCode.FAILED
+    assert task["end_cause"] == "spec_signature_invalid"
+    assert task["result_summary"]["spec_check"]["reason"] == "unsigned"
+
+
+@pytest.mark.parametrize("created", [BEFORE_CUTOVER, AFTER_CUTOVER])
+def test_a_gke_worker_with_no_configmap_is_cannot_start_for_an_unsigned_task(
+    monkeypatch, tmp_path, db, worker_factory, created
+):
+    """The volume is `optional`, so a namespace with no ConfigMap still starts
+    its pod, and that pod has no key, no mode and no cutover. It must neither
+    admit an unsigned task nor refuse the tenant's task as a signature failure:
+    it cannot verify anything, which is CANNOT_START -- its own configuration."""
+    cfg = _gke_config(monkeypatch, tmp_path / "no-configmap-mounted")
+    assert not cfg.spec_verify_keys
+    _unsigned(db, created)
+    rc = _run(worker_factory, spec_clock=lambda: INSIDE_WINDOW, **_spec_settings(cfg))
+    task = db.doc(f"tasks/{TASK}")
+    assert rc == ExitCode.CONFIG
+    assert task.get("end_cause") != "spec_signature_invalid"
+    assert task["state"] != TaskState.SUCCEEDED.value
+
+
+def test_a_gke_worker_with_no_configmap_is_cannot_start_for_a_signed_task(
+    monkeypatch, tmp_path, db, worker_factory
+):
+    cfg = _gke_config(monkeypatch, tmp_path / "no-configmap-mounted")
+    seed_attempt(db, task_id=TASK)
+    worker, _, _ = worker_factory(
+        task_id=TASK, spec_clock=lambda: INSIDE_WINDOW, **_spec_settings(cfg)
+    )
+    assert worker.run() == ExitCode.CONFIG
+    assert db.doc(f"tasks/{TASK}")["state"] != TaskState.SUCCEEDED.value

@@ -2570,7 +2570,9 @@ class Outcomes:
             for row in rows:
                 meter.add(1)
                 try:
-                    workflow = self._store.get_workflow(tenant_id, row["workflow_id"])
+                    workflow = self._store.get_workflow(
+                        tenant_id, row["workflow_id"], submitted_by=None
+                    )
                 except NotFound:
                     continue
                 except Exception:

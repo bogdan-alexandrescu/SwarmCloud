@@ -24,6 +24,7 @@ from .auth import (
     IapAssertionVerifier,
     TokenVerifier,
     require_admin,
+    require_continuation_route,
 )
 from .credentials import CredentialWriter, SecretManagerCredentials
 from .errors import ValidationFailed
@@ -252,6 +253,15 @@ def current_auth(
             ) or "none",
         )
         raise
+    # DEFAULT-DENY for a continuation-scoped account (contract request 30):
+    # here, in the dependency every route reaches -- directly, or through
+    # `tenant_scope`/`admin_auth` -- so a route added tomorrow is closed to that
+    # scope until someone adds it to `auth.CONTINUATION_ROUTES`. Before the
+    # limiter: a request that was never allowed costs the caller no budget.
+    # The template, not the concrete path, exactly as `admin_auth` reads it.
+    path = getattr(request.scope.get("route"), "path", None)
+    route = (request.method.upper(), path) if path else None
+    require_continuation_route(auth, route)
     try:
         ctx.limiter.check(auth.principal.email)
     except Exception:
@@ -259,6 +269,19 @@ def current_auth(
         raise
     request.state.tenant_id = auth.tenant_id
     return auth
+
+
+def submission_scope(auth: AuthContext = Depends(current_auth)) -> str | None:
+    """`None` for an ordinary member (unfiltered, today's behaviour); the
+    caller's own email for a continuation-scoped one. ONE function so every
+    read route derives this the same way.
+
+    Every route in `auth.CONTINUATION_ROUTES` that reads a task or a workflow
+    declares it and hands it to `Store`, whose four reads take `submitted_by`
+    as a REQUIRED keyword -- so a layer that forgets it fails with a TypeError
+    rather than serving another member's task (contract request 30).
+    """
+    return auth.email if auth.member_scope else None
 
 
 def tenant_scope(
