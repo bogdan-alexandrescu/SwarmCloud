@@ -7,6 +7,14 @@ project_id = "saga-agents-staging"
 region     = "us-central1"
 location   = "US-CENTRAL1"
 
+# The platform's eight custom roles and the broker's swarmSecretLister grant
+# were created by terraform/infra's dev state and are ADOPTED by this root
+# (platform_roles.tf; #79, #69, 2026-09-25). Naming the state does two things:
+# the import blocks adopt the live objects, and every plan refuses to manage
+# them until that state's custom_roles_owner output shows the release has
+# already made infra forget them. docs/runbooks/custom-roles-to-bootstrap.md.
+adopt_from_infra_states = ["infra/dev"]
+
 # Keyless CI. Turned on 2026-09-24 so testing, building and deploying run in
 # GitHub Actions rather than on a laptop.
 enable_github_wif = true
@@ -93,8 +101,9 @@ github_allowed_refs = ["refs/heads/main"]
 #      the binding with no condition); the two chunk bindings are untouched.
 #   5. Re-run step 3. Expect exactly the two chunk titles, nothing else.
 #   6. Prove the admitted side with a terraform/infra plan or a release apply:
-#      CI must still be able to grant/revoke the 15 roles it needs, now
-#      through the chunked conditions alone.
+#      CI must still be able to grant/revoke the 14 roles it needs (15 before
+#      #150 also took swarmSecretLister off deployer_grantable_project_roles),
+#      now through the chunked conditions alone.
 #
 # REVERT: delete the entry, leaving `[]`, and run
 # `scripts/bootstrap.sh --target 'google_project_iam_member.deployer_project_iam_admin'`.
