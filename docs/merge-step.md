@@ -314,19 +314,35 @@ What this needs from the frozen contract, requested in
     branches on `worker_action` the same way it does for the argv (below)
     before deciding whether to restore. What actually makes an interrupted
     merge survivable is that it is idempotent (§6, "the worker died after the
-    merge"), not the checkpoint. **This design inherits, rather than
-    reinvents, a platform-wide restore fix tracked separately as S0 #347
-    (round-3/joint-review note, 2026-09-29): no attempt-1 restore for *any*
-    profile, since attempt 1 has nothing to restore from, and no restore at
-    all on `review`, `post-verdict` or `merge` specifically** — `merge` and
-    `post-verdict` for the reason just given (no runner, nothing to restore);
-    `review` because it must never resume an agent inside a workspace a
-    previous, possibly-compromised attempt left behind — its whole judgement
-    depends on seeing the checked-out head honestly, and a carried-over
-    workspace is exactly the kind of tampering vector §0's own threat model
-    already takes seriously elsewhere. #347 is being fixed separately, not by
-    this design; this section states what this design needs from it rather
-    than restating its fix.
+    merge"), not the checkpoint. **Corrected, round-5 re-review, 2026-09-29:
+    "no attempt-1 restore" and "never restore on `claude-code-review`,
+    `post-verdict`, `merge`" are two different fixes, not one.** No
+    attempt-1 restore for any profile (attempt 1 has nothing to restore
+    from) is a platform-wide bug tracked separately as S0 #347, fixed
+    elsewhere, not by this design. **#347 does NOT cover
+    `claude-code-review`, `post-verdict` or `merge` specifically — never
+    restoring on those three profiles, on *any* attempt including retries,
+    is this design's own requirement, and needs its own §10 build item with
+    its own test (§10), not a ride on #347's fix.** `merge` and
+    `post-verdict` need it because there is no runner to restore for, ever.
+    `review` needs it for a different reason: it must never resume an agent
+    inside a workspace a previous, possibly-compromised attempt left behind
+    — its whole judgement depends on seeing the checked-out head honestly,
+    and a carried-over workspace is exactly the kind of tampering vector
+    §0's own threat model already takes seriously elsewhere. **ACCEPTED
+    RESIDUAL, round-5 re-review, 2026-09-29: the checkpoint-plant-on-retry
+    path that goes through Firestore is not closed by any of the above, and
+    this design does not close it.** A checkpoint's own metadata (what to
+    restore, and from where) is Firestore-capable — read and written through
+    the same worker path every other Firestore access in this design
+    already treats as tenant-writable (§0) — so a tenant identity that could
+    plant a malicious checkpoint record could, in principle, have it
+    "restored" the next time a profile that *does* restore retries. This is
+    a platform-wide exposure, not specific to `review`/`post-verdict`/`merge`
+    (which never restore at all, closing it for exactly those three), and
+    the real fix — moving checkpoint metadata off a store any tenant worker
+    can write — waits on workers leaving Firestore for that purpose
+    entirely, which is out of scope here. Recorded, not built.
 * `EndCause.MERGE_REFUSED` and `EndCause.MERGE_FAILED` (§6).
 
 What this needs **outside** the frozen contract (none of it is built; each is
@@ -581,7 +597,7 @@ it resolves, into that step's dispatch block:
 |---|---|---|---|
 | `author` | the workflow's `repository_ref` | pushes `swarm/<own task id>` and opens the pull request | implement |
 | `reader` | the author's branch, `swarm/<author task id>` | **no git push**, whatever the strategy. Neither review nor proof talks to GitHub itself any more (§4.3, corrected 2026-09-29): review only writes `review.json`; proof only writes `proof.json` | review, proof |
-| (none, no clone) | nothing — it runs no agent | submits the GitHub PR review with the review App's key (§4.3) | `post-verdict` (worker-action profile, new 2026-09-29) |
+| `reader` (round-5 re-review: matches CR 34, which also assigns `post-verdict` `reader`; an earlier draft of this table said "none, no clone" — picked here as the one value both designs use, since `reader` only ever meant "no git push," which stays true even though `post-verdict` clones nothing at all) | nothing — it runs no agent | submits the GitHub PR review with the review App's key (§4.3) | `post-verdict` (worker-action profile, new 2026-09-29) |
 | `amender` | the author's branch | fast-forward pushes to the **author's** branch and opens nothing | fix |
 | (none) | nothing | the merge (§5) | merge (profile `merge`) |
 
@@ -801,8 +817,10 @@ gs://<bucket>/tenants/<tenant>/verdicts/<workflow_id>/<review task id>/review.js
 ```
 
 `workflow_id` is `post-verdict`'s own task's workflow id; `<review task id>`
-is the upstream task id named in `post-verdict`'s own dispatch block, the
-same way `merges: {author, review, ...}` names task ids for `merge` (§4.2).
+is the upstream task id named in `post-verdict`'s own dispatch block, under
+the key **`verdict_source: {review: <review task id>}`** — named here,
+round-5 re-review, so the key is not left implicit — the same way
+`merges: {author, review, ...}` names task ids for `merge` (§4.2).
 Once #342 verifies `post-verdict`'s signed spec, both values are facts, not
 claims — the signature is exactly what makes them trustworthy inputs to a
 path computation, where the ordinary staging mechanism's `result_summary`
@@ -851,41 +869,83 @@ not close the whole threat: §7 T3 and the residual below say what remains,
 because the review identity itself, not just the ordinary tenant account, is
 shared tenant-wide.**
 
-**Real bucket layout, corrected (CR 33/CR 34 joint review):** this platform's
-artifacts live in one shared bucket per environment, under `tenants/<t>/` —
-not a per-tenant bucket, and not `<tenant-bucket>/<tenant>/` as an earlier
-draft of this section said. The tenant worker SA's existing grant
-(`register-tenant.sh:961`, the conditioned `worker_objects` binding) already
-gives it `roles/storage.objectUser` on everything under `tenants/<t>/`. **IAM
-on Cloud Storage is allow-only — there is no deny binding to carve an
-exception out of that grant** — so closing off `tenants/<t>/verdicts/`
-specifically means replacing that one broad binding with two narrower ones,
-not adding a third:
+**Real bucket layout and real grant, corrected (round-5 re-review, joint with
+CR 34, 2026-09-29):** this platform's artifacts live in one shared bucket
+per environment, under `tenants/<t>/` — not a per-tenant bucket, and not
+`<tenant-bucket>/<tenant>/` as an earlier draft of this section said. The
+tenant worker SA's existing grant is the **`worker_objects` binding**,
+defined in Terraform at `terraform/modules/tenancy/main.tf:164-183` — that
+is the primary grant; `register-tenant.sh:961` is the separate `gcloud` path
+that applies the equivalent binding outside Terraform's own apply cycle, not
+a second, independent grant. **Binding 1 is NOT unconditioned — an earlier
+draft of this section said it was, at what were then lines :865/:872/
+:1644/:1666, and that was wrong.** On a bucket shared by every tenant,
+an unconditioned `objectViewer` grant is cross-tenant read, which breaks
+invariant 9 outright. `worker_objects` today carries **two** clauses, both
+kept: the `resource.name` prefix (`startsWith(".../objects/tenants/<t>/")`)
+*and* an `objectListPrefix` clause (GCS's own mechanism for scoping `list`
+calls to a prefix, without which a conditioned binding still permits listing
+outside the prefix). **IAM on Cloud Storage is allow-only — there is no deny
+binding to carve an exception out of a broad grant** — so closing off
+`tenants/<t>/verdicts/` means replacing `worker_objects` with two narrower
+bindings, not adding a third:
 
-1. **`roles/storage.objectViewer` on `tenants/<t>/`**, unconditioned within
-   that prefix — the tenant worker SA keeps ordinary read everywhere,
-   including `verdicts/`, so `fix`'s `input_from` staging of `review.json`
-   (§4.1) is unaffected;
+1. **`roles/storage.objectViewer` on `tenants/<t>/`, keeping both of
+   `worker_objects`'s existing condition clauses** (the `resource.name`
+   prefix and the `objectListPrefix` clause) — the tenant worker SA keeps
+   ordinary read and list everywhere under its own tenant prefix, including
+   `verdicts/`, so `fix`'s `input_from` staging of `review.json` (§4.1) is
+   unaffected, and cross-tenant read stays closed exactly as
+   `worker_objects` already closes it;
 2. **`roles/storage.objectUser` on `tenants/<t>/`, conditioned to
    `resource.name.startsWith("projects/_/buckets/<bucket>/objects/tenants/<t>/") && !resource.name.startsWith("projects/_/buckets/<bucket>/objects/tenants/<t>/verdicts/")`**
    — write everywhere under the tenant's prefix *except* `verdicts/`. This
-   replaces the tenant worker SA's current unconditioned `objectUser`
-   binding; it is not an addition alongside it, since two IAM bindings
-   granting overlapping write access would defeat the exclusion;
-3. **the review SA, `swarm-<tenant>-review`, gets `roles/storage.objectUser`
-   on `tenants/<t>/verdicts/` alone**, the complement of binding 2 — this is
-   what makes it, not the ordinary tenant SA, the only identity able to write
-   there. It also needs `storage.objects.delete` on the same conditioned
-   prefix: **overwriting an existing object is a delete-then-create under
-   GCS's own permission model whenever the write must be conditional**
-   (below), so a *legitimate* retry of the `review` task — which needs to
-   replace its own prior attempt's `review.json` — cannot do so with
-   `objectUser` (create/update) alone.
+   binding carries **no `objectListPrefix` clause of its own** — it relies on
+   binding 1 for listing, which is why binding 1 must exist and stay
+   conditioned rather than being dropped once binding 2 is added. This
+   replaces `worker_objects`; it is not an addition alongside it, since two
+   overlapping write grants would defeat the exclusion;
+3. **the review SA, `swarm-<tenant>-review`, gets `roles/storage.objectCreator`
+   — not `objectUser`, and with NO delete — on `tenants/<t>/verdicts/`
+   alone**, per the owner's decision, round-5 re-review: `objectCreator`
+   grants only `storage.objects.create`, never `update` or `delete`, so the
+   review SA cannot overwrite an object once written, by design, not merely
+   by convention. **A failed review becomes a new task, at a new path, not a
+   retry that overwrites the old one** — task ids are unique, so a fresh
+   attempt at review (dispatched as a new task, however the caller chooses
+   to recover from a failure) lands at
+   `tenants/<t>/verdicts/<workflow_id>/<new review task id>/review.json`, a
+   path the old attempt, and any attacker who only knew the old task id,
+   never touched. This is why no delete grant is needed at all — there is no
+   legitimate reason to overwrite an existing verdicts object, ever;
+4. **the review SA's other grants — its own artifacts and checkpoints
+   (round-5 re-review, minor named MAJOR):** `review` is still an
+   agent-running `claude-code-review` profile (§1.3), so its worker needs
+   the *same* two-binding shape the ordinary tenant SA has — `objectViewer`
+   and the excluding-`verdicts/` `objectUser` — scoped to its own task's
+   ordinary artifact and checkpoint paths under `tenants/<t>/`, for the same
+   reasons every other agent-running profile needs them (staging its own
+   inputs, writing its own checkpoint, §1.3's restore note). The review SA
+   is not exempt from the platform's ordinary per-task GCS access merely
+   because it also holds the `verdicts/` grant; it needs both.
 
 **Conditions of this shape require Uniform bucket-level access on the
-bucket** (fine-grained ACLs disabled) — already true, since the existing
-`worker_objects` binding in `register-tenant.sh:961` is itself conditioned,
-so this is not a new bucket-level prerequisite this design introduces.
+bucket** (fine-grained ACLs disabled) — already true, since `worker_objects`
+is itself conditioned today, so this is not a new bucket-level prerequisite
+this design introduces.
+
+**Removing the old broad grant is its own step, not a side effect of adding
+the new ones (round-5 re-review, MAJOR 1c).** Every tenant already
+registered has `worker_objects` bound as the old, unconditioned-on-`verdicts/`
+form; replacing the Terraform resource for *new* tenants does nothing for
+those already applied. §10 needs an explicit removal step, in **both**
+places the grant is set: the Terraform module (a `terraform apply` that
+retires the old `google_storage_bucket_iam_member`/`iam_binding` resource
+for every existing tenant, not only stops creating new ones) and
+`register-tenant.sh` (whose current idempotency check — "already binds
+`objectUser`, skip" — would otherwise leave an already-registered tenant's
+old broad binding in place forever, silently defeating the split for every
+tenant that isn't newly registered after this change ships).
 
 `post-verdict`'s own service account keeps the same read grant every other
 tenant identity has under `tenants/<t>/` (binding 1, unaffected) — nothing
@@ -907,50 +967,60 @@ cross-workflow one unconditionally — corrected, joint review with CR 34,
   mint `swarm-<tenant>-post-verdict`'s token, because that service account
   is not theirs and nothing grants their account `iam.serviceAccountTokenCreator`
   or `actAs` on it (the same clause §1.3 gives the merge account);
-* **in-chain forgery (the fix agent, in this workflow) is closed by
-  ordering:** `fix` depends on `post-verdict`, not on `review` (§3), so
-  `fix`'s agent cannot start — and so cannot overwrite `review.json` — until
-  `post-verdict` has already read it and posted an immutable GitHub review.
-  This is the same principle the original attestation design used ("the fix
-  agent starts only after the attestation is written"), applied to a
-  no-agent step instead of a scheduler sweep;
-* **cross-workflow verdict laundering is NOT closed. The owner did not
-  choose to bind a review to a specific pull request or task id
-  (round-3/joint-review decision), so this is recorded as a NAMED RESIDUAL,
-  R8, below** — `swarm-<tenant>-review` is one identity shared by *every*
-  `single-pr` workflow of the tenant, not scoped per-workflow (the same
-  "one Job per tenant per profile" constraint that shapes every other
-  identity in this design, §1.1), and its write grant covers the whole
-  `tenants/<t>/verdicts/` subtree, not one workflow's slice of it. A review
-  agent compromised by prompt injection (T11) in workflow A can write a
-  fabricated `review.json` to workflow B's path,
-  `tenants/<t>/verdicts/<workflow-B id>/<review-task-B id>/review.json`, if
-  it is told (or can derive) workflow B's identifiers — the same "would have
-  to be told them" caveat the pre-B1 design's R2 already carried. Workflow
-  B's own, legitimate `post-verdict` has no way to tell a forged object at
-  that path from a genuine one: the write identity is shared, so only the
-  *path* indicates provenance, and the path is exactly what an attacker who
-  has the ids can compute too. **A minted `-git-review` installation token
-  is also a portable bearer credential in the same sense:** it authorises
+* **in-chain forgery (the fix agent, in this workflow) is closed by the
+  PREFIX, not by ordering — corrected, round-5 re-review, 2026-09-29.**
+  `fix` runs as the ordinary tenant worker account, which binding 2's
+  exclusion leaves with no write grant on `tenants/<t>/verdicts/` at all
+  (§4.3 above); `fix` cannot overwrite `review.json` whether it runs before
+  or after `post-verdict`. `fix` depending on `post-verdict` rather than
+  `review` (§3) still matters, but for a different reason than file
+  integrity: it keeps `fix` from acting on a verdict before that verdict is
+  anchored on GitHub, the same principle the original attestation design
+  used ("the fix agent starts only after the attestation is written"),
+  applied here to *readiness*, not to *write access*;
+* **cross-workflow verdict laundering (R8) — the write-path attack is
+  closed, round-5 re-review; the App-token half is not, and the owner still
+  did not choose to bind a review to a specific pull request or task id.**
+  `swarm-<tenant>-review` is one identity shared by *every* `single-pr`
+  workflow of the tenant, not scoped per-workflow (the same "one Job per
+  tenant per profile" constraint that shapes every other identity in this
+  design, §1.1). Its GCS grant (`objectCreator` on the whole
+  `tenants/<t>/verdicts/` subtree) is likewise not workflow-scoped — but
+  combined with write-once and no delete (below), a review agent of
+  workflow A that writes to workflow B's path either loses the race outright
+  or wins one that workflow B's own `post-verdict` never ends up depending
+  on, because a review that lost its write never reaches `SUCCEEDED` (§4.1,
+  R8 below has the full argument). **A minted `-git-review` installation
+  token is still a portable bearer credential**, though: it authorises
   `pull_requests: write` on the whole installed repository, not one PR, so
   even a correctly-anchored review from `post-verdict` proves "the App
   approved this exact commit," not "the App approved it *on behalf of this
   workflow specifically*" — the same tenant-wide, not workflow-scoped,
-  granularity problem, one layer up;
-* **partial mitigation, not a close: write-once (`ifGenerationMatch=0`) on
-  the review write.** `review` publishes `review.json` with GCS's
-  compare-and-swap precondition, so whichever write reaches a given path
-  *first* wins, and every later write to that same path fails outright. This
-  does not prevent the race — it only changes what losing it looks like.
-  If the legitimate write wins, an attacker's later write to the same path
-  is rejected, not silently accepted as an overwrite. If an attacker's write
-  wins first, the *legitimate* `review` task's own write then fails the same
-  precondition — which the review step can detect and fail its own attempt
-  on, turning a silent forgery into a loud, attributable one (the review
-  task ends in error rather than the workflow quietly anchoring a verdict
-  nobody in it wrote). It does not stop the forged verdict from existing at
-  that path in the meantime, or from being read by a `post-verdict` that
-  races ahead of the detection;
+  granularity problem, one layer up, and the part R8 still records as open;
+* **write-once (`ifGenerationMatch=0`) is a REAL mitigation, not merely
+  partial — owner decision, round-5 re-review, 2026-09-29, given
+  `objectCreator`-only and no delete (above).** `review` publishes
+  `review.json` with GCS's compare-and-swap precondition, so whichever write
+  reaches a given exact path *first* wins, and every later write to that
+  same path fails outright — and with no delete grant anywhere, "first"
+  really is permanent for that path. Combine this with two things already
+  true elsewhere in this design: `post-verdict` only ever starts once
+  `review` has **succeeded** (ordinary dependency promotion — a review that
+  fails its write never reaches `SUCCEEDED`, §4.1), and a failed review
+  becomes a new task at a new path, not a retry of the old one. So: if an
+  attacker writes to workflow B's path *before* workflow B's real review
+  runs, the real review's own write then fails the precondition — the
+  review task fails its attempt, `post-verdict` for that task id never
+  starts (it has nothing to depend on succeeding), and the eventual retry
+  lands at a fresh path the attacker never touched. If the attacker writes
+  *after* the real review already succeeded, the precondition blocks the
+  attacker outright. **There is no window left in which a `post-verdict`
+  reads a forged object while believing the review task it depends on
+  succeeded** — the forged object may exist at the old, poisoned path, but
+  nothing legitimate is ever gated on that path succeeding, because it
+  didn't. This closes T3b for the pre-empt case R8 describes, given the
+  platform's existing dependency-gating, which this design assumes rather
+  than re-derives;
 * what is **not** closed, by any of the above or by #342: **T11**, prompt
   injection of the review agent itself, so that the *real* review step
   reaches the wrong conclusion and writes `"verdict": "MERGE"` honestly, on
@@ -1272,19 +1342,23 @@ is the merge step's end causes only.
 | 41 | the merge succeeded, and the post-merge re-read of `base.ref` (§5.3, §9) disagrees with the pre-merge one | `base_mismatch_recorded` | SUCCEEDED, with the discrepancy flagged in `result_summary` rather than asserted away |
 | 42 | the signed spec of `author`, `review`, `post-verdict`, `fix` or `proof` does not verify — the union `merge` depends on (§4.2), whether or not that task's output feeds `merge`'s own `input_from` (§0 consequence 4, §7 T14/R7) | `spec_unverified` | `MERGE_REFUSED` — checked early, alongside row 8, before any credential is read |
 
-**Interop with CR 34 (joint review, 2026-09-29): CR 33 keeps its own
-`*_REFUSED`/`*_FAILED` vocabulary — the owner did not unify the two designs'
-end causes — so row 42's `spec_unverified` and §6a row 5's `spec_unverified`
-report the failing upstream task explicitly, in the same shape CR 34's own
-reporting uses, rather than a bare code.** `result_summary.merge.refusal`
-(and `result_summary.verdict.refusal` for `post-verdict`) carries
-`{"code": "spec_unverified", "message": "upstream:<task id>:<why>"}` — for
-example `upstream:task_review_abc123:signature_mismatch` or
-`upstream:task_fix_def456:spec_missing`. `<why>` is CR 34's own short
-vocabulary for a verification failure, not a new one invented here; CR 33
-only adopts the format, `upstream:<task id>:<why>`, so a reader (or a test)
-correlating a `MERGE_REFUSED`/`spec_unverified` row against CR 34's own
-failure log finds the same task id and the same reason string in both
+**Interop with CR 34, corrected round-5 re-review, 2026-09-29: CR 33 keeps
+its own `*_REFUSED`/`*_FAILED` vocabulary as the `end_cause` — the owner did
+not unify the two designs' end causes — but the failure detail goes in
+`result_summary.spec_check.reason`, the SAME field CR 34 itself writes, not
+a CR-33-only field.** Row 42 and §6a row 5 both set `end_cause` to
+`MERGE_REFUSED`/`VERDICT_REFUSED` as already described, and separately write
+`result_summary.spec_check.reason = "upstream:<task id>:<why>"` — for
+example `upstream:task_review_abc123:unsigned` or
+`upstream:task_fix_def456:SPEC_SIGNATURE_INVALID`. **`<why>` is CR 34's own
+vocabulary, verbatim — `unsigned` for a spec with no signature at all,
+`SPEC_SIGNATURE_INVALID` for one that fails verification, and whatever
+others CR 34 defines — not a CR-33-invented term like the earlier draft's
+`spec_missing`.** CR 33 only adopts the field name and the
+`upstream:<task id>:<why>` format; a reader or a test correlating a
+`MERGE_REFUSED`/`VERDICT_REFUSED` row against CR 34's own `spec_check`
+reporting reads the identical field, the identical task id and the
+identical reason string in both
 places.
 
 Row 39 is why the merge step can tolerate a lost attempt without a meaningful
@@ -1364,7 +1438,7 @@ review**, or **the merge credential**.
 | T11 | prompt-inject the reviewer, with text in the diff that tells it to answer MERGE | **not stopped by this design.** The verdict is only as good as the reviewer model reading attacker-authored text; B1 makes the resulting `APPROVE` harder to *fabricate* without a real review step, but does nothing about a real review step reaching the wrong conclusion. What limits the damage is the rest of the gate: required checks green at the exact head, a proof at that head, no protected-path changes, and a human's standing ability to revert. This is residual risk **R1** |
 | T12 | merge it directly with `-git`, bypassing the step completely | **narrowed by M1, not closed.** Ruleset `main-protection` (§0.3) removed the direct-push bypass `enforce_admins: false` used to allow: an administrator can no longer push straight past the required checks. What it did **not** yet restrict is *who* may use the ordinary PR-merge route — today that is still anyone with write access, which includes any identity holding `-git`. M2's second ruleset (restrict-updates, with a bypass list naming the Apps) is what would close that, and whether GitHub honours an App name in a bypass list on a personal repository is **not verified**; a dry run comes first (§8, §11 Q3). This residual is **R5** |
 | T13 | an agent adds the `ready` label to its own pull request, which `auto-merge.yml` trusts as the human review decision | **not stopped by this design — an accepted risk (M3, owner decision 2026-09-29: keep `-git`'s PAT for agent pushes).** Any agent can read `-git` (§0) and so can call the label API directly, without needing the merge step at all. Two things limit what it buys: the label's effect is **head-bound** (`auto-merge.yml`'s `--match-head-commit`), so a later, un-reviewed push does not silently ride an old `ready`; and #219's ordering means the *credential a running agent could otherwise scrape from a worker's memory* is held only by the **worker**, and only after the agent has been reaped — which stops a memory-leak style theft of a token the agent does not already have, but does nothing for `-git`, which the agent can read directly regardless. This residual is **R6** |
-| T14 | rewrite a downstream step's own `prompt`/`input`/`input_from` in its Firestore task document before that step starts — for example, `implement` rewrites the still-`PARKED` `review` task's `prompt` to bias its judgement, or rewrites what `post-verdict` or `merge` would read as their own effective instructions | **BLOCKER, round-3 re-review, 2026-09-29 — not stopped until #342 ships.** §0 already grants any tenant identity write access to any Firestore document whose id it knows; a step's own spec was never excepted. This is a different attack from T10 (rewriting the *merge task's* dispatch block) and from T11 (influencing the review agent through diff *content* it reads): T14 rewrites the *instructions* a later step is handed before that step ever starts, so the later step's own execution is completely honest and still wrong. **Owner decision: signed step specs (S0 issue #342).** swarm-api signs each step's canonical spec at submission with a KMS key only it holds; every worker verifies its own spec's signature before starting an agent or a worker action, and `post-verdict` and `merge` additionally verify the **upstream** specs the artifacts they trust depend on (`post-verdict` verifies `review`'s spec; `merge` verifies the union — `author`'s, `review`'s, `post-verdict`'s, `fix`'s and `proof`'s — §4.2, §6 row 42). This residual is **R7**, and it is the reason B1 is not fully closed by §4.3 alone (§0 consequence 4, §10) |
+| T14 | rewrite a downstream step's own `prompt`/`input`/`input_from` in its Firestore task document before that step starts — for example, `implement` rewrites the still-`PARKED` `review` task's `prompt` to bias its judgement, or rewrites what `post-verdict` or `merge` would read as their own effective instructions | **BLOCKER, round-3 re-review, 2026-09-29 — not stopped until #342 ships.** §0 already grants any tenant identity write access to any Firestore document whose id it knows; a step's own spec was never excepted. This is a different attack from T10 (rewriting the *merge task's* dispatch block) and from T11 (influencing the review agent through diff *content* it reads): T14 rewrites the *instructions* a later step is handed before that step ever starts, so the later step's own execution is completely honest and still wrong. **Owner decision: signed step specs (S0 issue #342).** swarm-api signs each step's canonical spec at submission with a KMS key only it holds; every worker verifies its own spec's signature before starting an agent or a worker action, and `post-verdict` and `merge` additionally verify the **upstream** specs the artifacts they trust depend on (`post-verdict` verifies `review`'s spec; `merge` verifies the union — `author`'s, `review`'s, `post-verdict`'s, `fix`'s and `proof`'s — §4.2, §6 row 42). This design uses CR 34's own field names verbatim, not new ones: the signed spec's `spec_signature`, `spec_key_version` and `spec_format` fields on the task document, and `SPEC_SIGNATURE_INVALID` as one of the `<why>` values a failed verification reports (§6, §6a). This residual is **R7**, and it is the reason B1 is not fully closed by §4.3 alone (§0 consequence 4, §10) |
 
 **Residual risks, stated plainly:**
 
@@ -1377,23 +1451,33 @@ review**, or **the merge credential**.
   the bar for *fabricating* an approval without a real review step, not for a
   real one reaching the wrong answer.
 * **R2. In-chain half only — closed, by design; cross-workflow half moved to
-  R8, NOT closed — corrected 2026-09-29, three times, since each of two
-  earlier revisions of this document overstated part of this as already
-  true.** T3a — the `fix` agent, *this* workflow, forging `review.json` — is
-  closed once `post-verdict` is built exactly as specified (§4.3): DAG
-  ordering gates `fix` behind `post-verdict`, not beside `review`, so no
-  later agent in this workflow can act before the verdict is already posted.
-  This claim is conditional on the build, because the status here is still
-  PROPOSED — nothing is built yet (§10). T3b — a different workflow's agent
-  of the same tenant forging a verdict, since the review identity itself is
-  tenant-wide, not workflow-scoped — is a **separate, named residual, R8**,
-  below; it is not closed by the prefix, ordering, or anything else in this
-  design. The first correction of this document asserted T3 closure while
-  describing a mechanism (`claude-code-review`) that did not actually
-  achieve it; the second closed only the in-chain half before the prefix was
-  added and still called the whole thing closed; this, the third, is the
-  first version to state the cross-workflow half honestly as open rather
-  than folding it into a claim of full closure.
+  R8, substantially closed too as of round 5 — corrected 2026-09-29, four
+  times, since three earlier revisions of this document each overstated or
+  misattributed part of this.** T3a — the `fix` agent, *this* workflow,
+  forging `review.json` — is closed once the review-only-writable prefix is
+  built exactly as specified (§4.3). **Corrected, round-5 re-review: it is
+  the PREFIX's IAM write restriction that holds here, not DAG ordering.**
+  `fix` runs as the ordinary tenant worker account, which has no write grant
+  on `tenants/<t>/verdicts/` at all under binding 2's exclusion — `fix`
+  cannot write there whether it acts before or after `post-verdict`, so the
+  earlier framing ("ordering closes it") credited the wrong mechanism.
+  `fix` depending on `post-verdict` rather than `review` (§3) still matters,
+  but for a different reason: it keeps `fix` from acting on a verdict that
+  is not yet anchored, not from overwriting the file, which it could never
+  do regardless. This claim is conditional on the build, because the status
+  here is still PROPOSED — nothing is built yet (§10). T3b — a different
+  workflow's agent of the same tenant forging a verdict — is **R8**, below;
+  round 5 narrows it further than round 4 did, given the owner's
+  `objectCreator`-only, no-delete, new-path-per-retry decision (§4.3): the
+  write-path attack is closed, and what remains is the App token's own
+  repo-wide, not PR-scoped, authority. The first correction of this document
+  asserted T3 closure while describing a mechanism (`claude-code-review`)
+  that did not actually achieve it; the second closed only the in-chain half
+  before the prefix existed and still called the whole thing closed; the
+  third stated the cross-workflow half honestly as open but left it fully
+  open; this, the fourth, corrects which mechanism does the in-chain
+  closing and narrows the cross-workflow residual to what the owner's
+  round-5 decisions leave genuinely open.
 * **R3.** Proof has no App anchor (§4.3): `proof.json` is a plain staged
   artifact, checked only by sha equality. Unlike the verdict, there is no
   later agent in *this* chain to forge it — `proof` runs immediately before
@@ -1446,27 +1530,32 @@ review**, or **the merge credential**.
   close it. **This design depends on #342, and B1 is closed only once #342
   is built — not merely once `post-verdict` and the prefix are (§0
   consequence 4, §10).**
-* **R8. NAMED RESIDUAL, not closed — the owner did not choose to bind a
-  review to a specific pull request or task id (joint review with CR 34,
-  2026-09-29).** T3b: `swarm-<tenant>-review` is one identity shared by
-  every `single-pr` workflow of the tenant, and its GCS write grant covers
-  the whole `tenants/<t>/verdicts/` subtree, not one workflow's slice. A
-  review agent of workflow A, compromised by prompt injection (T11), can
-  write a fabricated `review.json` at workflow B's path if it is told (or
-  can derive) workflow B's identifiers, and workflow B's own `post-verdict`
-  has no way to distinguish that object from a genuine one — the write
-  identity is shared, so only the path indicates provenance, and an
-  attacker who has the ids can compute the same path. The minted
-  `-git-review` installation token compounds this: it is a portable bearer
-  credential authorising `pull_requests: write` on the whole repository, not
-  one PR, so an anchored review proves "the App approved this commit," not
-  "the App approved it on behalf of this workflow." Write-once
-  (`ifGenerationMatch=0`) on the review's publish is a **partial**
-  mitigation (§4.3): it turns a successful silent overwrite into a loud,
-  attributable write-conflict failure on whichever side loses the race, but
-  does not prevent the race or guarantee the honest side wins it. Closing
-  this fully would need per-workflow write scoping or PR/task-id binding on
-  the review itself — considered, and explicitly not chosen.
+* **R8. NARROWED to the App-token layer only — the GCS write-path half is
+  closed, round-5 re-review, 2026-09-29 (joint with CR 34); the owner still
+  did not choose to bind a review to a specific pull request or task id, and
+  that narrower gap remains.** T3b: `swarm-<tenant>-review` is one identity
+  shared by every `single-pr` workflow of the tenant, and its GCS grant
+  (`objectCreator` on the whole `tenants/<t>/verdicts/` subtree, §4.3) is
+  not workflow-scoped. Write-once (`ifGenerationMatch=0`), combined with
+  `objectCreator`-only (no delete) and a failed review always landing at a
+  **new** path rather than retrying the old one, closes the write-path
+  attack: a review agent of workflow A that writes to workflow B's path
+  either loses the race outright (workflow B's real review already
+  succeeded) or wins a race against an object that workflow B's own
+  `post-verdict` never ends up depending on, because a review that lost its
+  own write never reaches `SUCCEEDED` and its retry moves to a path the
+  attacker doesn't know (§4.3). **What is not closed:** the minted
+  `-git-review` installation token is still a portable bearer credential —
+  it authorises `pull_requests: write` on the whole repository, not one PR,
+  so an anchored review proves "the App approved this commit," not "the App
+  approved it on behalf of this workflow specifically." This is a narrower
+  residual than the original R8: it requires `post-verdict` itself (not
+  merely the review agent) to be compromised or misdirected, since
+  `post-verdict` is the only identity that ever presents that token, and its
+  own container runs no agent. Closing it fully would still need
+  per-workflow token scoping or PR/task-id binding on the review — considered
+  and not chosen — but the practically-reachable half of T3b, an agent
+  forging `review.json` itself, is closed.
 
 ---
 
@@ -1638,22 +1727,35 @@ dependency order.
 4. **Terraform (Track C):** the per-tenant `review`, `post-verdict` and merge
    service accounts, each with its own narrowed grants (§1.3) — three Jobs,
    three service accounts. **The review-only-writable prefix's IAM split
-   (§4.3, corrected layout, joint review with CR 34):** replace
-   `register-tenant.sh:961`'s single conditioned `worker_objects` binding
-   (currently `roles/storage.objectUser` on all of `tenants/<t>/`) with two —
-   `roles/storage.objectViewer` on `tenants/<t>/` unconditioned, and
-   `roles/storage.objectUser` on `tenants/<t>/` conditioned to exclude
-   `tenants/<t>/verdicts/` — and grant the review SA its own
-   `roles/storage.objectUser` **plus** `storage.objects.delete` scoped to
-   `tenants/<t>/verdicts/` alone (delete is needed for a legitimate retry to
-   replace its own prior write under write-once semantics, §4.3). Requires
-   Uniform bucket-level access, already implied by the existing conditioned
-   binding. The Terraform-rendered `host`/`owner`/`repo`/`review_app_id`/
+   (§4.3, real grant and layout, joint review with CR 34):** replace
+   `worker_objects` (`terraform/modules/tenancy/main.tf:164-183`, the
+   primary grant; `register-tenant.sh:961` applies the equivalent binding
+   outside Terraform's apply cycle and needs the identical split, item 5)
+   with two conditioned bindings — `objectViewer` on `tenants/<t>/` keeping
+   both of `worker_objects`'s existing condition clauses (the
+   `resource.name` prefix and the `objectListPrefix` clause, so read/list
+   stays tenant-scoped), and `objectUser` on `tenants/<t>/` with the same
+   prefix clause plus `&& !startsWith(.../tenants/<t>/verdicts/)`, no list
+   clause of its own — and grant the review SA `objectCreator` (create
+   only, no update, no delete) on `tenants/<t>/verdicts/` alone, plus the
+   review SA's own ordinary `objectViewer`/excluding-`objectUser` pair for
+   its own artifacts and checkpoints, the same as any other agent-running
+   profile. **Include the explicit removal of the old, unconditioned-on-
+   `verdicts/` `worker_objects` binding for every already-registered
+   tenant** — a new Terraform resource definition does nothing for tenants
+   applied under the old one. Requires Uniform bucket-level access, already
+   true today. The Terraform-rendered `host`/`owner`/`repo`/`review_app_id`/
    `review_app_bot_id` Job environment values for `post-verdict` and `merge`
    (§2.1b, §11 open question (a), resolved). Also the `terraform test`
    assertion that no tenant identity holds `run.jobs.run`,
    `run.jobs.runWithOverrides` or `run.jobs.update` on the merge Job (§1.3),
    and its counterpart for the `review` and `post-verdict` Jobs.
+4a. **Worker (Track B), its own item with its own test — round-5 re-review:**
+   never restore a checkpoint on `claude-code-review`, `post-verdict` or
+   `merge`, on any attempt, not only attempt 1. This is not covered by S0
+   #347 (attempt-1 restore generally), which is being fixed separately;
+   this design needs its own guard and its own regression test that these
+   three profiles specifically never restore (§1.3).
 5. **Scripts (Track D):** `register-tenant.sh --add-provider git-merge` and
    `--add-provider git-review` both refuse to bind the tenant's ordinary
    worker account; separate binding paths grant the `review` and
@@ -1662,12 +1764,19 @@ dependency order.
    the App's own freshly-minted JWT, and emits it into the tenant's
    Terraform variables for the next `terraform apply` (§2.1b, §5.2a), rather
    than writing it anywhere at runtime. **`register-tenant.sh:961`'s own
-   `worker_objects` binding gets the same split as item 4** — the tenant
-   worker account's grant changes from unconditioned `objectUser` on
-   `tenants/<t>/` to the `objectViewer`-plus-excluding-`objectUser` pair, at
-   the same call site that grants it today, so the script and whatever
-   Terraform module it invokes do not drift from each other the way
-   CLAUDE.md's own warning about restated rules describes.
+   `worker_objects` binding gets the same split as item 4, at the same call
+   site — corrected, round-5 re-review: the tenant worker account's grant
+   changes from `worker_objects` (already conditioned to the tenant's own
+   prefix, never cross-tenant) to the `objectViewer`-plus-excluding-
+   `objectUser` pair**, so the script and the Terraform module it invokes do
+   not drift from each other the way CLAUDE.md's own warning about restated
+   rules describes. **The script's idempotency check must also change
+   (MAJOR 1c): today it skips re-applying the binding when the tenant
+   "already binds `objectUser`," which would leave an already-registered
+   tenant's old, unconditioned-on-`verdicts/` binding in place forever.**
+   The check needs to distinguish the old binding's shape from the new
+   split and actively replace the old one, not treat any existing
+   `objectUser` grant as already-done.
 6. **swarm-api (Track A):** the `single-pr` strategy, `pr_role`, the
    `merges` block, the submission refusals in §3 (including the
    `post-verdict` placement and the ordering-only `depends_on` edges it and

@@ -548,6 +548,7 @@ step earlier, for the review credential.
 
     {"step_id": "post-verdict",
      "runner_profile": "post-verdict",
+     "pr_role": "reader",
      "depends_on": ["review"],
      "input": {}},
 
