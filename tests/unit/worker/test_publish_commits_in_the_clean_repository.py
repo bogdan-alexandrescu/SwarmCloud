@@ -451,3 +451,99 @@ def test_the_fetch_out_of_the_clone_runs_no_program_the_agent_configured(
     branch = f"{config.git_branch_prefix}{config.task_id}"
     files = tree_at(origin, branch)
     assert {"committed.txt", "uncommitted.txt"} <= files, files
+
+
+# -- HEAD is read as data, never by git in the clone (#259 review, B1) ------
+
+
+def test_a_partial_clone_with_a_missing_head_runs_nothing_and_publishes_nothing(
+    worker_factory, monkeypatch, origin, local_urls, forge, tmp_path
+):
+    """After the reap the worker resolved the commit to publish with
+    `git rev-parse HEAD^{commit}` IN THE CLONE. The agent makes its clone a
+    partial clone whose promisor remote's upload-pack is a program of its
+    own, and points its branch at an object the clone does not have: git
+    lazy-fetches the missing object through that remote, running the
+    program as the worker -- and a process it starts would outlive the reap
+    into the push. HEAD is now read from `.git/HEAD` as data: nothing runs,
+    and the publish fails closed, saying why."""
+    marker = tmp_path / "agent-promisor.ran"
+    recorder = tmp_path / "agent-promisor.sh"
+    recorder.write_text(f"#!/bin/sh\necho \"$0 $*\" >> '{marker}'\nexit 1\n")
+    recorder.chmod(0o755)
+    missing = "0123456789abcdef0123456789abcdef01234567"
+
+    def edit(repo: Path) -> None:
+        (repo / "work.txt").write_text("the agent's work\n")
+        _commit(repo, "Add work")
+        branch = _git(repo, "symbolic-ref", "--short", "HEAD")
+        _git(repo, "config", "core.repositoryFormatVersion", "1")
+        _git(repo, "config", "extensions.partialClone", "origin")
+        _git(repo, "config", "remote.origin.promisor", "true")
+        _git(repo, "config", "remote.origin.url", str(origin))
+        _git(repo, "config", "remote.origin.uploadpack", str(recorder))
+        _git(repo, "config", "protocol.allow", "always")
+        _git(repo, "config", "protocol.file.allow", "always")
+        (repo / ".git" / "refs" / "heads" / branch).write_text(f"{missing}\n")
+        marker.unlink(missing_ok=True)
+
+    _, config, out = _attempt(
+        worker_factory, monkeypatch, origin, task_id="t-promisor-head", edit=edit,
+    )
+
+    assert not marker.exists(), (
+        "git in the clone lazy-fetched through the agent's promisor remote: "
+        + marker.read_text()
+    )
+    assert out.get("published") is not True, out
+    reason = f"{out.get('publish_reason', '')} {out.get('error', '')}"
+    assert "could not fetch the agent's work" in reason, out
+    branch = f"{config.git_branch_prefix}{config.task_id}"
+    assert branch not in tree_at_refs(origin), "a branch was pushed"
+
+
+def tree_at_refs(bare: Path) -> set[str]:
+    listing = subprocess.run(
+        ["git", "for-each-ref", "--format=%(refname:short)", "refs/heads/"],
+        cwd=str(bare), check=True, capture_output=True, text=True,
+    ).stdout
+    return {line for line in listing.splitlines() if line}
+
+
+@pytest.mark.parametrize("how", ["detached", "packed-ref", "symref-outside-heads"])
+def test_head_is_resolved_from_the_files_the_way_git_would_or_refused(
+    worker_factory, monkeypatch, origin, local_urls, forge, how
+):
+    """A detached HEAD and a branch that lives only in `packed-refs` publish
+    the agent's commit as before. A HEAD that is a symbolic ref to anything
+    outside `refs/heads/` is refused, with a reason naming HEAD, and nothing
+    is pushed: the worker reads the ref files itself now, and it follows no
+    ref it would have to trust the agent about."""
+    def edit(repo: Path) -> None:
+        (repo / "committed.txt").write_text("the agent's commit\n")
+        _commit(repo, "Add committed")
+        head = _git(repo, "rev-parse", "HEAD")
+        if how == "detached":
+            (repo / ".git" / "HEAD").write_text(f"{head}\n")
+        elif how == "packed-ref":
+            _git(repo, "pack-refs", "--all", "--prune")
+            branch = _git(repo, "symbolic-ref", "--short", "HEAD")
+            assert not (repo / ".git" / "refs" / "heads" / branch).exists()
+        else:
+            _git(repo, "update-ref", "refs/agent/head", head)
+            (repo / ".git" / "HEAD").write_text("ref: refs/agent/head\n")
+        (repo / "uncommitted.txt").write_text("left uncommitted\n")
+
+    _, config, out = _attempt(
+        worker_factory, monkeypatch, origin, task_id=f"t-head-{how}", edit=edit,
+    )
+
+    branch = f"{config.git_branch_prefix}{config.task_id}"
+    if how == "symref-outside-heads":
+        assert out.get("published") is not True, out
+        reason = f"{out.get('publish_reason', '')} {out.get('error', '')}"
+        assert "HEAD" in reason and "refs/heads/" in reason, out
+        assert branch not in tree_at_refs(origin), "a branch was pushed"
+    else:
+        assert out["published"] is True, out.get("publish_reason")
+        assert {"committed.txt", "uncommitted.txt"} <= tree_at(origin, branch)
