@@ -24,10 +24,13 @@ module "service_account_ids" {
   source = "../service_account_ids"
 }
 
-# create_ignore_already_exists: an account made ahead of the release -- the
-# step that has to come before bootstrap can grant the deployer on it
-# (docs/ci.md, "The deployer's service-account grants") -- is adopted, not
-# refused with a 409.
+# NO create_ignore_already_exists, here or on swarm-tick (#334 security
+# review). These accounts are in state already, and a release that met a 409
+# on one of them should fail rather than adopt an account somebody else made
+# under the name -- with that somebody's IAM policy and keys. A NEW platform
+# account is created by the release, which then 403s setting its IAM until the
+# owner applies bootstrap's per-account grant; re-run the release after
+# (docs/ci.md, "A new account exists before the release that adds it").
 resource "google_service_account" "platform" {
   for_each = local.platform_accounts
 
@@ -35,8 +38,6 @@ resource "google_service_account" "platform" {
   account_id   = each.key
   display_name = each.value.display_name
   description  = "${local.owner_marker}; ${each.value.description}"
-
-  create_ignore_already_exists = true
 }
 
 # Cloud Scheduler and Pub/Sub push present this identity when they call the
@@ -49,6 +50,4 @@ resource "google_service_account" "tick" {
   account_id   = module.service_account_ids.tick_id
   display_name = "Swarm Tick Invoker"
   description  = "${local.owner_marker}; OIDC identity for Cloud Scheduler and Pub/Sub push. No project roles."
-
-  create_ignore_already_exists = true
 }

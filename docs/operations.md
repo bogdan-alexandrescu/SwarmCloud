@@ -65,8 +65,13 @@ on each account `terraform/infra` manages, not on the project, and the release
 sets the new worker account's IAM in the same apply that adds the tenant. So:
 register the tenant (which creates `swarm-agent-worker-<tenant>`), add it to
 `terraform/environments/dev/dev.tfvars` on the pull request's branch, have the
-owner run the targeted bootstrap apply the script prints, and only then merge.
-Skipping the apply fails the release with a 403 on that account.
+owner run the targeted bootstrap apply the script prints — from `main`, with the
+branch's `dev.tfvars` copied out by `git show` and passed as
+`-var infra_tenants_tfvars`, never from the branch itself — and only then merge.
+Skipping the apply fails the release with a 403 on that account. If the worker
+account already existed, the script refuses to go on when it carries IAM
+bindings the platform does not make or a user-managed key: terraform would
+adopt that account, and whoever made it with them.
 [docs/ci.md](ci.md#a-new-account-exists-before-the-release-that-adds-it) has
 the commands and why.
 

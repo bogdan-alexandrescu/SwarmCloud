@@ -729,21 +729,69 @@ those need bootstrap's grant on it, and bootstrap cannot grant on an account
 that does not exist yet. So for a **new tenant**:
 
 1. `scripts/register-tenant.sh --group <group>` creates `swarm-agent-worker-<tenant>`
-   (and checks the grant, step 2b).
+   and checks the grant (step 2b). If the account **already existed**, step 2b
+   refuses to go on when it carries any IAM binding the platform does not make,
+   any conditioned binding, or a user-managed key — see "Adoption is limited to
+   the tenant worker" below.
 2. Add the tenant to the `tenants` block of `terraform/environments/dev/dev.tfvars`
-   on the pull request's branch.
-3. The owner, from that branch:
-   `terraform -chdir=terraform/bootstrap apply -target='google_service_account_iam_member.deployer_admin["swarm-agent-worker-<tenant>"]'`
+   on the pull request's branch, and push it.
+3. The owner applies bootstrap **from an up-to-date `main` checkout, never from
+   the branch.** The branch contributes one file, as data, copied out with
+   `git show`; every line of bootstrap code that runs is `main`'s:
+
+   ```bash
+   git fetch origin && git switch main && git pull --ff-only
+   git show origin/<branch>:terraform/environments/dev/dev.tfvars > /tmp/pr-dev.tfvars
+   grep -n '<<' /tmp/pr-dev.tfvars          # expect nothing inside the tenants block
+   terraform -chdir=terraform/bootstrap init
+   terraform -chdir=terraform/bootstrap plan -var infra_tenants_tfvars=/tmp/pr-dev.tfvars
+   ```
+
+   `terraform init` is needed before any bootstrap plan or targeted apply: this
+   root reads `modules/service_account_ids` and `modules/custom_role_ids`, and a
+   checkout that has not initialised them since they were added fails with
+   "Module not installed".
+
+   **Check the untargeted plan before applying anything**, and stop if any of
+   these does not hold:
+
+   * the `deployer_admin_accounts` output gains exactly the worker ids of the
+     tenants the pull request means to add, and loses none;
+   * the resource changes are exactly those tenants'
+     `google_service_account_iam_member.deployer_admin["swarm-agent-worker-<tenant>"]`,
+     and the summary reads **"N to add, 0 to change, 0 to destroy"**, N being
+     the number of new tenants;
+   * no heredoc is inside the file's tenants block. The plan also refuses one
+     (a precondition on `deployer_admin`), because a heredoc's body is free
+     text and a line in it shaped like `  name = {` would parse as a tenant.
+
+   Then apply only those grants, with the same `-var`:
+
+   ```bash
+   terraform -chdir=terraform/bootstrap apply -var infra_tenants_tfvars=/tmp/pr-dev.tfvars \
+     -target='google_service_account_iam_member.deployer_admin["swarm-agent-worker-<tenant>"]'
+   ```
 4. Merge. The release adopts the existing account (`create_ignore_already_exists`)
    and sets its IAM.
 
-A **new platform account** is the same with the account created by hand
-(`gcloud iam service-accounts create`) and added to
-`modules/service_account_ids`. If step 3 is skipped the release fails on a
-403 on that account's `setIamPolicy`, after creating nothing else it cannot
-set; apply step 3 and re-run the failed release job. Removing a tenant is the
-reverse: the release destroys the account first, then bootstrap's next apply
-drops its grant.
+Removing a tenant is the reverse: the release destroys the account first, then
+bootstrap's next apply from `main` drops its grant.
+
+#### Adoption is limited to the tenant worker
+
+`create_ignore_already_exists` makes a create that meets a 409 take the
+existing account into state instead of failing. On an account somebody else
+made first, that is squatting: their IAM policy and their keys come with it.
+So only `modules/tenancy`'s worker sets it — the one account that is created
+before the release, by `register-tenant.sh`, which inspects an account it did
+not create and refuses one carrying anything the platform does not grant
+(tests/integration/test_register_tenant_squat.py). The platform accounts,
+`swarm-tick` and `swarm-verify` are in state already and do not adopt: a 409 on
+one of them fails the release. A **new platform account** is therefore created
+by the release itself, which then fails with a 403 on that account's
+`setIamPolicy`; the owner applies bootstrap's grant on it from `main` (its id
+comes from `modules/service_account_ids`, already on `main` after the merge) and
+re-runs the failed release job.
 
 ## The deployer's refusal is proven once, by a probe the owner dispatches
 

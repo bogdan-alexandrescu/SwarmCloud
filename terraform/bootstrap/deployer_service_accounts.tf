@@ -38,11 +38,19 @@
 # answers on a fixture built to trip it, and a missing block fails the plan.
 #
 # ORDERING. A grant needs its account to exist, and the release sets a new
-# account's IAM in the same apply that creates it. So an account is made BEFORE
-# the release that adds it: scripts/register-tenant.sh creates a tenant's; the
-# owner applies this file's grant on it; then the release runs, and infra's
-# create_ignore_already_exists adopts the account. docs/ci.md, "The deployer's
-# service-account grants", has the commands.
+# account's IAM in the same apply that creates it. So a tenant's account is made
+# BEFORE the release that adds it: scripts/register-tenant.sh creates it (and
+# refuses one somebody else made first); the owner applies this file's grant
+# on it FROM MAIN, reading the pull request's dev.tfvars as data through
+# -var infra_tenants_tfvars=<a copy taken with git show> -- never running this
+# root's code from an unmerged branch; then the release runs, and
+# modules/tenancy's create_ignore_already_exists adopts the account. docs/ci.md,
+# "A new account exists before the release that adds it", has the commands and
+# the plan checks.
+#
+# A HEREDOC IN THE TENANTS BLOCK IS REFUSED. The file is a pull request's data,
+# and a heredoc's body is free text: a line in it shaped like `  name = {` would
+# parse as a tenant and be granted on. dev.tfvars has no reason to hold one.
 
 module "service_account_ids" {
   source = "../modules/service_account_ids"
@@ -51,14 +59,21 @@ module "service_account_ids" {
 }
 
 locals {
-  infra_tenants_tfvars_text = file("${path.module}/${var.infra_tenants_tfvars}")
+  # Relative to this root, or absolute: the owner points it at a copy outside
+  # the checkout.
+  infra_tenants_tfvars_path = startswith(var.infra_tenants_tfvars, "/") ? var.infra_tenants_tfvars : "${path.module}/${var.infra_tenants_tfvars}"
+  infra_tenants_tfvars_text = file(local.infra_tenants_tfvars_path)
 
   # One match, whose one capture is the body of the top-level tenants block.
   infra_tenants_block = regexall("(?ms)^tenants[ \\t]*=[ \\t]*\\{[ \\t]*$(.*?)^\\}[ \\t]*$", local.infra_tenants_tfvars_text)
 
-  infra_tenant_ids = length(local.infra_tenants_block) == 1 ? [
-    for m in regexall("(?m)^  \"?([a-z0-9][a-z0-9-]*)\"?[ \\t]*=[ \\t]*\\{", local.infra_tenants_block[0][0]) : m[0]
-  ] : []
+  # "" when there is no single tenants block; the first precondition below
+  # refuses that case, so "" never means "no tenants".
+  infra_tenants_body = length(local.infra_tenants_block) == 1 ? local.infra_tenants_block[0][0] : ""
+
+  infra_tenant_ids = [
+    for m in regexall("(?m)^  \"?([a-z0-9][a-z0-9-]*)\"?[ \\t]*=[ \\t]*\\{", local.infra_tenants_body) : m[0]
+  ]
 
   # Admin on either is admin over CI's own identity: the fix bot's account
   # (contract request 30) and the deployer itself. Neither is managed by
@@ -88,8 +103,21 @@ resource "google_service_account_iam_member" "deployer_admin" {
     }
 
     precondition {
+      condition     = !strcontains(local.infra_tenants_body, "<<")
+      error_message = "the tenants block of ${var.infra_tenants_tfvars} holds a heredoc (`<<`). Its body is free text, and a line in it shaped like `  name = {` would be read as a tenant and granted serviceAccountAdmin on (#334). Take the heredoc out of the tenants block."
+    }
+
+    precondition {
       condition     = length(setintersection(toset(module.service_account_ids.infra_managed), toset(local.deployer_admin_excluded))) == 0
       error_message = "terraform/infra would manage swarm-ci-fix or the deployer's own account. The deployer is never granted serviceAccountAdmin on either (#334): that is admin over CI's own identity."
     }
   }
+}
+
+# What the owner checks a plan against: exactly the accounts the deployer is
+# granted serviceAccountAdmin on, so a tenant the pull request did not mean to
+# add -- or one a malformed tenants block invented -- shows up by name.
+output "deployer_admin_accounts" {
+  description = "Every service account id the release deployer holds roles/iam.serviceAccountAdmin on, sorted."
+  value       = sort(keys(google_service_account_iam_member.deployer_admin))
 }

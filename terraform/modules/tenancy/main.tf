@@ -74,9 +74,14 @@ module "service_account_ids" {
 # through a per-account roles/iam.serviceAccountAdmin grant terraform/bootstrap
 # makes -- which cannot be made on an account that does not exist yet. So
 # scripts/register-tenant.sh creates the account first, the owner applies
-# bootstrap's grant on it, and only then does the release run;
+# bootstrap's grant on it (from main), and only then does the release run;
 # create_ignore_already_exists adopts that account here instead of failing on a
-# 409. docs/ci.md, "The deployer's service-account grants", has the order.
+# 409. This is the ONLY account infra adopts (#334 security review): adopting is
+# also how an account somebody else made first -- their IAM policy, their keys
+# -- would become a tenant's identity, so register-tenant.sh refuses an existing
+# account carrying any IAM member the platform does not make, or any
+# user-managed key. docs/ci.md, "A new account exists before the release that
+# adds it", has the order.
 resource "google_service_account" "worker" {
   for_each = var.tenants
 

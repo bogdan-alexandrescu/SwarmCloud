@@ -11,7 +11,10 @@ variable "region" {
 variable "infra_tenants_tfvars" {
   description = <<-EOT
     The tfvars file whose top-level `tenants` block names the tenants
-    terraform/infra creates worker accounts for, relative to terraform/bootstrap.
+    terraform/infra creates worker accounts for: relative to terraform/bootstrap,
+    or absolute. For a pull request that adds a tenant, the owner applies this
+    root from MAIN with this pointed at a copy of the branch's dev.tfvars taken
+    with `git show`, so the branch contributes data and never code (docs/ci.md).
     deployer_service_accounts.tf reads the tenant keys from it, so the accounts
     the release deployer holds roles/iam.serviceAccountAdmin on have one source
     -- the file the release applies -- and not a second hand-written copy (#334).

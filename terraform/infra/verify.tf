@@ -39,10 +39,9 @@ resource "google_service_account" "verify" {
   project      = var.project_id
   account_id   = module.service_account_ids.verify_id
   display_name = "SwarmCloud verification job"
-
-  # Adopts an account made ahead of the release instead of failing on a 409
-  # (docs/ci.md, "The deployer's service-account grants").
-  create_ignore_already_exists = true
+  # No create_ignore_already_exists: this account is in state, and a 409 on it
+  # should fail the release rather than adopt an account somebody else made
+  # under the name (#334 security review).
   # 256 characters at most -- the provider refuses a longer description at
   # plan time, which is how an earlier wording of this line failed CI. This one
   # is 245. It names what the identity CAN do (any runner ceiling, through

@@ -30,11 +30,20 @@
 #
 # ORDER, FOR A TENANT TERRAFORM WILL MANAGE (#334). This script creates the
 # worker account first; the owner then applies terraform/bootstrap's grant of
-# roles/iam.serviceAccountAdmin on it to the release deployer; only then does a
-# release that adds the tenant to terraform/environments/dev/dev.tfvars run.
-# The release sets the account's IAM in the same apply, and the deployer holds
-# that role per account, never on the project. Section 2b checks the grant and
-# prints the targeted apply.
+# roles/iam.serviceAccountAdmin on it to the release deployer -- FROM MAIN, with
+# the pull request's dev.tfvars copied out by `git show` and passed as
+# -var infra_tenants_tfvars, so the branch contributes data and never code;
+# only then does the release that adds the tenant to
+# terraform/environments/dev/dev.tfvars run. The release sets the account's IAM
+# in the same apply, and the deployer holds that role per account, never on the
+# project. Section 2b checks the grant and prints the commands.
+#
+# AN ACCOUNT THAT ALREADY EXISTED IS INSPECTED, AND REFUSED IF SOMEBODY ELSE
+# COULD HOLD IT. terraform adopts an existing worker account
+# (create_ignore_already_exists), so an account made first by anyone else would
+# become the tenant's identity with their IAM policy and keys. Section 2b stops
+# the registration when the existing account has an IAM binding the platform
+# does not make, a conditioned binding, or a user-managed key.
 #
 # NAMING. The identity created here is `swarm-agent-worker-<tenant>`, which is
 # what terraform/modules/tenancy creates, what terraform/modules/cloud_run_jobs
@@ -715,8 +724,10 @@ fi
 
 # --- 2. service account -------------------------------------------------------
 step "Service account"
+SA_PREEXISTED=0
 if gcloud iam service-accounts describe "${GSA_EMAIL}" \
      --project "${PROJECT_ID}" --format='value(email)' >/dev/null 2>&1; then
+  SA_PREEXISTED=1
   ok "${GSA_EMAIL} exists"
 else
   run gcloud iam service-accounts create "${GSA_ID}" \
@@ -738,11 +749,78 @@ fi
 # above, here, rather than by the release; terraform's
 # create_ignore_already_exists adopts it.
 #
-# Checked, not applied: bootstrap is the owner's root and runs as the owner.
-# The check reads the account's own policy, which this operator can read.
+# AN ACCOUNT THAT ALREADY EXISTED IS INSPECTED FIRST (#334 security review).
+# Adoption is also squatting: whoever made `swarm-agent-worker-<tenant>` before
+# this platform did chose its IAM policy and may hold a key to it, and the
+# tenant's provider keys, artifacts and Firestore access would follow. So an
+# existing account must carry nothing but what the platform itself grants --
+# the deployer's serviceAccountAdmin and serviceAccountUser, the scheduler's and
+# reconciler's serviceAccountUser, workloadIdentityUser for this tenant's two
+# Kubernetes service accounts -- with no condition on any binding, and no
+# user-managed key. Anything else stops the registration here, before a single
+# grant is made to the account. A policy or key list that cannot be read stops
+# it too: an account that cannot be inspected cannot be shown to be ours. These
+# are reads, so they run under --dry-run as well.
+#
+# The deployer's grant is checked, not applied: bootstrap is the owner's root
+# and runs as the owner, from main.
 step "Release deployer grant"
 DEPLOYER_SA="${DEPLOYER_SERVICE_ACCOUNT:-swarm-tf-deployer@${PROJECT_ID}.iam.gserviceaccount.com}"
 BOOTSTRAP_TARGET="google_service_account_iam_member.deployer_admin[\"${GSA_ID}\"]"
+
+if [[ "${SA_PREEXISTED}" -eq 1 ]]; then
+  ALLOWED_PAIRS=(
+    "roles/iam.serviceAccountAdmin serviceAccount:${DEPLOYER_SA}"
+    "roles/iam.serviceAccountUser serviceAccount:${DEPLOYER_SA}"
+    "roles/iam.serviceAccountUser serviceAccount:swarm-scheduler@${PROJECT_ID}.iam.gserviceaccount.com"
+    "roles/iam.serviceAccountUser serviceAccount:swarm-reconciler@${PROJECT_ID}.iam.gserviceaccount.com"
+  )
+  for ksa in "${KSAS[@]}"; do
+    ALLOWED_PAIRS+=("roles/iam.workloadIdentityUser serviceAccount:${PROJECT_ID}.svc.id.goog[${NAMESPACE}/${ksa}]")
+  done
+  ALLOWED_JSON='[]'
+  for pair in "${ALLOWED_PAIRS[@]}"; do
+    ALLOWED_JSON="$(jq -c --arg p "${pair}" '. + [$p]' <<<"${ALLOWED_JSON}")"
+  done
+
+  SQUAT_POLICY_FILE="$(mktemp)"
+  SQUAT_KEYS_FILE="$(mktemp)"
+  if ! gcloud iam service-accounts get-iam-policy "${GSA_EMAIL}" \
+         --project "${PROJECT_ID}" --format=json >"${SQUAT_POLICY_FILE}" 2>/dev/null; then
+    rm -f "${SQUAT_POLICY_FILE}" "${SQUAT_KEYS_FILE}"
+    die "${GSA_EMAIL} already existed and its IAM policy could not be read; refusing to adopt an account that cannot be inspected (#334)"
+  fi
+  if ! UNEXPECTED="$(jq -r --argjson allowed "${ALLOWED_JSON}" '
+        .bindings[]? as $b | $b.members[]? as $m
+        | select(($b.condition != null) or (($allowed | any(. == ($b.role + " " + $m))) | not))
+        | "\($b.role) \($m)" + (if $b.condition != null then " (conditioned)" else "" end)
+      ' "${SQUAT_POLICY_FILE}")"; then
+    rm -f "${SQUAT_POLICY_FILE}" "${SQUAT_KEYS_FILE}"
+    die "${GSA_EMAIL} already existed and its IAM policy is not readable JSON; refusing to adopt it (#334)"
+  fi
+  if ! gcloud iam service-accounts keys list --iam-account "${GSA_EMAIL}" \
+         --project "${PROJECT_ID}" --managed-by=user --format='value(name)' >"${SQUAT_KEYS_FILE}" 2>/dev/null; then
+    rm -f "${SQUAT_POLICY_FILE}" "${SQUAT_KEYS_FILE}"
+    die "${GSA_EMAIL} already existed and its keys could not be listed; refusing to adopt an account that cannot be inspected (#334)"
+  fi
+  USER_KEYS="$(grep -c . "${SQUAT_KEYS_FILE}" || true)"
+  rm -f "${SQUAT_POLICY_FILE}" "${SQUAT_KEYS_FILE}"
+
+  if [[ -n "${UNEXPECTED}" || "${USER_KEYS}" -gt 0 ]]; then
+    err "${GSA_EMAIL} ALREADY EXISTED and carries what this platform never grants it:"
+    if [[ -n "${UNEXPECTED}" ]]; then
+      while IFS= read -r line; do
+        err "  binding  ${line}"
+      done <<<"${UNEXPECTED}"
+    fi
+    [[ "${USER_KEYS}" -gt 0 ]] && err "  ${USER_KEYS} user-managed key(s)"
+    err "terraform would ADOPT this account as tenant '${TENANT_ID}'s identity, so whoever holds those"
+    err "bindings or keys would hold the tenant's provider keys, artifacts and Firestore access."
+    die "refusing to register '${TENANT_ID}' onto an account somebody else may control (#334). Find out who made it; delete it, or remove the bindings and keys, and re-run."
+  fi
+  ok "${GSA_EMAIL} existed and carries only the platform's own grants and no user-managed key"
+fi
+
 if [[ "${DRY_RUN}" -eq 1 ]]; then
   dim "  would check ${DEPLOYER_SA} holds roles/iam.serviceAccountAdmin on ${GSA_EMAIL}"
 else
@@ -756,8 +834,13 @@ else
   else
     warn "the release deployer does not hold roles/iam.serviceAccountAdmin on ${GSA_EMAIL} yet"
     warn "a release that adds tenant '${TENANT_ID}' to terraform/environments/dev/dev.tfvars will 403 until it does. In this order:"
-    warn "  1. add '${TENANT_ID}' to the tenants block of terraform/environments/dev/dev.tfvars (on the pull request's branch)"
-    warn "  2. as the owner: terraform -chdir=terraform/bootstrap apply -target='${BOOTSTRAP_TARGET}'"
+    warn "  1. add '${TENANT_ID}' to the tenants block of terraform/environments/dev/dev.tfvars on the pull request's branch, and push it"
+    warn "  2. the owner, from an up-to-date MAIN checkout (never the branch), takes the branch's file as data only:"
+    warn "       git show origin/<branch>:terraform/environments/dev/dev.tfvars > /tmp/pr-dev.tfvars"
+    warn "       terraform -chdir=terraform/bootstrap init"
+    warn "       terraform -chdir=terraform/bootstrap plan -var infra_tenants_tfvars=/tmp/pr-dev.tfvars -target='${BOOTSTRAP_TARGET}'"
+    warn "     checks the plan (docs/ci.md: the deployer_admin_accounts output, no heredoc, '1 to add, 0 to change, 0 to destroy'),"
+    warn "     and applies the same command"
     warn "  3. then merge; the release adopts this account and sets its IAM"
   fi
   rm -f "${GSA_POLICY_FILE}"
@@ -1353,9 +1436,10 @@ ok "tenant ${TENANT_ID} registered"
 cat >&2 <<EOF
 
 Next:
-  terraform-managed?    add '${TENANT_ID}' to terraform/environments/dev/dev.tfvars, then BEFORE merging
-                        terraform -chdir=terraform/bootstrap apply -target='${BOOTSTRAP_TARGET}'
-                        (the owner; the release 403s on this account's IAM without it -- docs/ci.md)
+  terraform-managed?    add '${TENANT_ID}' to terraform/environments/dev/dev.tfvars on a branch; BEFORE merging,
+                        the owner applies terraform/bootstrap FROM MAIN with that file copied out by git show:
+                        -var infra_tenants_tfvars=<copy> -target='${BOOTSTRAP_TARGET}'
+                        (the release 403s on this account's IAM without it -- docs/ci.md has the plan checks)
   store a provider key  scripts/create-secrets.sh --tenant ${TENANT_ID} --provider anthropic --stdin
   then add it           scripts/register-tenant.sh --tenant ${TENANT_ID} --add-provider anthropic
   check it              scripts/status.sh --tenant ${TENANT_ID}
