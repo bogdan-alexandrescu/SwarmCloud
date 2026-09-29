@@ -855,7 +855,7 @@ export function shapeSignature(steps: readonly WorkflowStep[]): string {
  * a workflow older than that page is not here -- the position reads "n of m"
  * against what was read, never against a total nobody counted.
  */
-export function sameStepAcross(workflows: readonly Workflow[], stepId: string, shape: string): SameStep[] {
+export function sameStepAcross(workflows: readonly Workflow[], stepId: string, _shape: string): SameStep[] {
   const found: SameStep[] = []
   for (const w of workflows) {
     const s = w.steps.find((x) => x.step_id === stepId)
