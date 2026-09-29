@@ -146,6 +146,48 @@ run "a_tfvars_without_a_tenants_block_is_refused" {
   expect_failures = [google_service_account_iam_member.deployer_admin]
 }
 
+# A heredoc inside the tenants block is refused (#334 security review): its
+# body is free text, so a line in it shaped like `  name = {` would be parsed as
+# a tenant and granted on. The owner applies bootstrap with a copy of a pull
+# request's dev.tfvars, so the file is not trusted to be only tenants.
+run "a_heredoc_in_the_tenants_block_is_refused" {
+  command = plan
+
+  module {
+    source = "../../terraform/bootstrap"
+  }
+
+  variables {
+    infra_tenants_tfvars = "../../tests/terraform/tenants_tfvars_fixture/heredoc_tenants.tfvars"
+  }
+
+  expect_failures = [google_service_account_iam_member.deployer_admin]
+}
+
+# The owner checks a plan's account list against the tenants they meant to
+# add, so the list is an output, and it is exactly the grants' keys.
+run "the_granted_accounts_are_an_output_the_owner_can_read" {
+  command = plan
+
+  module {
+    source = "../../terraform/bootstrap"
+  }
+
+  variables {
+    infra_tenants_tfvars = "../../tests/terraform/tenants_tfvars_fixture/fixture.tfvars"
+  }
+
+  assert {
+    condition     = output.deployer_admin_accounts == sort(keys(google_service_account_iam_member.deployer_admin))
+    error_message = "output.deployer_admin_accounts is not exactly the accounts the deployer is granted serviceAccountAdmin on"
+  }
+
+  assert {
+    condition     = contains(output.deployer_admin_accounts, "swarm-agent-worker-alpha") && !contains(output.deployer_admin_accounts, "swarm-agent-worker-smuggled")
+    error_message = "the output does not list the fixture's tenants"
+  }
+}
+
 # Putting the project-wide grant back by hand is refused at plan.
 run "project_wide_service_account_admin_cannot_be_put_back" {
   command = plan
