@@ -76,13 +76,13 @@ def test_appendix_b_non_finite_numbers_are_refused(bits):
 def test_section_3_2_2_example():
     value = {
         "numbers": [333333333.33333329, 1e30, 4.50, 2e-3, 0.000000000000000000000000001],
-        "string": "€$\u000f\u000aA'B"\\\\"/",
+        "string": "\u20ac$\u000f\u000aA'\u0042\u0022\u005c\\\"/",
         "literals": [None, True, False],
     }
     expected = (
         '{"literals":[null,true,false],'
         '"numbers":[333333333.3333333,1e+30,4.5,0.002,1e-27],'
-        '"string":"€$\\u000f\\nA\'B\\"\\\\\\\\\\"/"}'
+        '"string":"\u20ac$\\u000f\\nA\'B\\"\\\\\\\\\\\"/"}'
     )
     assert jcs(value) == expected.encode("utf-8")
 
