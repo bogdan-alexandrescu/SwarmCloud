@@ -759,19 +759,30 @@ def _step_to_api(step: WorkflowStep, masking: tuple[TaskMasking, str] | None) ->
     `task` (the step's task), `workflow` (a sibling step task's copy of the
     workflow metadata), or `not_read` (no step task was read, so the input is
     not served at all -- read it on the task).
+
+    `input_from`'s VALUES are filenames out of the caller's workflow spec, the
+    same as `metadata.expected_outputs` (#227), and this route served them as
+    stored: `GET /v1/workflows/{id}` drew the step map straight off the
+    document, next to the masked copy `metadata_value` puts in the task's own
+    served metadata, so the same secret filename arrived once masked and once
+    in clear (owner decision 2026-09-28). Each value is masked here by
+    `TaskMasking.name` -- the step's own masker when one was read, `_RULES_ONLY`
+    (the rules alone, no literal to check) when it was not, so the map is never
+    served in clear merely because this read stopped short of the step's task.
     """
+    masker = masking[0] if masking is not None else _RULES_ONLY
     base = {
         "step_id": step.step_id,
         "runner_profile": step.runner_profile,
         "resource_class": step.resource_class,
         "depends_on": step.depends_on,
-        "input_from": step.input_from,
+        "input_from": {key: masker.name(value)[0] for key, value in step.input_from.items()},
         "timeout_seconds": step.timeout_seconds,
         "task_id": step.task_id,
     }
     if masking is None:
         return {**base, "input": None, "input_redaction_count": None, "input_masked_by": "not_read"}
-    masker, whose = masking
+    _, whose = masking
     masked_input, input_count = masker.step_input_value(step.input)
     return {
         **base,
