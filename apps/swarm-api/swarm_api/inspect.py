@@ -341,7 +341,9 @@ class InspectionService:
         except UnsafeKeySegment as exc:
             raise ValidationFailed(str(exc)) from None
 
-    def _scoped(self, tenant_id: str, task_id: str) -> tuple[Task, str]:
+    def _scoped(
+        self, tenant_id: str, task_id: str, *, submitted_by: str | None
+    ) -> tuple[Task, str]:
         """Resolve the task inside the caller's tenant and return its prefix.
 
         `get_task` raises the SAME 404 for a task in another tenant as for one
@@ -354,7 +356,7 @@ class InspectionService:
         check costs nothing and is the difference between a boundary that holds
         by construction and one that holds by a property of another system.
         """
-        task = self._store.get_task(tenant_id, task_id)
+        task = self._store.get_task(tenant_id, task_id, submitted_by=submitted_by)
         tenant = self._segment(task.tenant_id, what="tenant id")
         task_key = self._segment(task.id, what="task id")
         return task, attempts_prefix(tenant_id=tenant, task_id=task_key)
@@ -395,6 +397,7 @@ class InspectionService:
         tenant_id: str,
         task_id: str,
         *,
+        submitted_by: str | None,
         attempt_id: str | None = None,
         limit: int,
         page_token: str | None = None,
@@ -423,7 +426,7 @@ class InspectionService:
         it, so the digest is served for a caller who wants to check it and is
         not checked here.
         """
-        task, prefix = self._scoped(tenant_id, task_id)
+        task, prefix = self._scoped(tenant_id, task_id, submitted_by=submitted_by)
         scope = prefix
         if attempt_id is not None:
             # Narrowing only. The attempt segment cannot widen the prefix: it
@@ -645,6 +648,7 @@ class InspectionService:
         tenant_id: str,
         task_id: str,
         *,
+        submitted_by: str | None,
         attempt_id: str | None = None,
         stream: str | Sequence[str] | None = None,
         source: str = "auto",
@@ -702,7 +706,7 @@ class InspectionService:
             `min_log_bytes` for the same reason: a window too small to hold a
             line can only ever be withheld.
         """
-        task, prefix = self._scoped(tenant_id, task_id)
+        task, prefix = self._scoped(tenant_id, task_id, submitted_by=submitted_by)
         if offset < 0:
             raise ValidationFailed("offset must not be negative")
         if source not in ("auto", "final", "live"):
@@ -1043,6 +1047,7 @@ class InspectionService:
         tenant_id: str,
         task_id: str,
         *,
+        submitted_by: str | None,
         name: str,
         offset: int = 0,
         limit_bytes: int | None = None,
@@ -1096,7 +1101,7 @@ class InspectionService:
         exists to prevent; the listing route's position -- the caller reads GCS
         with their own credentials -- is the honest one for those.
         """
-        task, _prefix = self._scoped(tenant_id, task_id)
+        task, _prefix = self._scoped(tenant_id, task_id, submitted_by=submitted_by)
         entry, attempt_id, key, reader = self._resolve_artifact(task, name)
 
         window = self._default_artifact_bytes if limit_bytes is None else limit_bytes

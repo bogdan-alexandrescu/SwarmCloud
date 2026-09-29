@@ -772,10 +772,11 @@ class CheckpointContent:
         tenant_id: str,
         task_id: str,
         *,
+        submitted_by: str | None,
         checkpoint_id: str,
         attempt_id: str | None,
     ) -> tuple[Task, CheckpointRef, dict[str, ObjectInfo], ObjectReader]:
-        task, attempts_root = self._inspection._scoped(tenant_id, task_id)
+        task, attempts_root = self._inspection._scoped(tenant_id, task_id, submitted_by=submitted_by)
         reader = self._inspection._reader()
         ref, objects = self._locate(
             task,
@@ -858,6 +859,7 @@ class CheckpointContent:
         tenant_id: str,
         task_id: str,
         *,
+        submitted_by: str | None,
         checkpoint_id: str,
         attempt_id: str | None = None,
         limit: int | None = None,
@@ -883,7 +885,11 @@ class CheckpointContent:
         rather than quietly so.
         """
         task, ref, objects, reader = self._resolve(
-            tenant_id, task_id, checkpoint_id=checkpoint_id, attempt_id=attempt_id
+            tenant_id,
+            task_id,
+            checkpoint_id=checkpoint_id,
+            attempt_id=attempt_id,
+            submitted_by=submitted_by,
         )
         if limit is not None and limit < 1:
             raise ValidationFailed("limit must be at least 1")
@@ -994,6 +1000,7 @@ class CheckpointContent:
         tenant_id: str,
         task_id: str,
         *,
+        submitted_by: str | None,
         checkpoint_id: str,
         path: str,
         attempt_id: str | None = None,
@@ -1021,7 +1028,7 @@ class CheckpointContent:
         in a fully read archive is a 404; one beyond the scan budget is a 413,
         because it may be there.
         """
-        task, attempts_root = self._inspection._scoped(tenant_id, task_id)
+        task, attempts_root = self._inspection._scoped(tenant_id, task_id, submitted_by=submitted_by)
         wanted = requested_path(path)
         if offset < 0:
             raise ValidationFailed("offset must not be negative")
@@ -1246,6 +1253,7 @@ class CheckpointContent:
         tenant_id: str,
         task_id: str,
         *,
+        submitted_by: str | None,
         checkpoint_id: str,
         attempt_id: str | None = None,
     ) -> ArchiveDownload:
@@ -1295,7 +1303,11 @@ class CheckpointContent:
         `X-Checkpoint-Manifest` says whether there was a commit marker at all.
         """
         task, ref, objects, reader = self._resolve(
-            tenant_id, task_id, checkpoint_id=checkpoint_id, attempt_id=attempt_id
+            tenant_id,
+            task_id,
+            checkpoint_id=checkpoint_id,
+            attempt_id=attempt_id,
+            submitted_by=submitted_by,
         )
         key = ref.archive_key
         manifest = self._manifest(reader, ref, listed=ref.manifest_key in objects)
