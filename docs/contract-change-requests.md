@@ -39,7 +39,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 24 | `profiles.py`: whether a profile's cost is declared rather than measured is named outside the catalogue | ACCEPTED 2026-09-25 (#185, decision 9), applied in PR #217 |
 | 25 | `profiles.py`: a runner profile cannot declare the inputs a caller may send it, so the bridge names the mock's by profile | ACCEPTED 2026-09-25 (owner, on #142), applied in PR #213; both amendments confirmed by the owner 2026-09-26: `inputs=None` for `browser` and `generic` (#218), and the bounded park counted by the task's `attempt_count` rather than the state file |
 | 26 | `models.py`: the attempt's CPU figures carry no time and their limit no source | ACCEPTED 2026-09-26 (owner, on #184), applied in PR #229 |
-| 32 | `profiles.py`: `browser` and `generic` declare no inputs, so the API bounds them by size alone and the plugin can send them none (#218) | PROPOSED 2026-09-29, revised 2026-09-29 after security review |
+| 32 | `profiles.py`: `browser` and `generic` declare no inputs, so the API bounds them by size alone and the plugin can send them none (#218) | ACCEPTED 2026-09-29 by the owner after three security reviews |
 
 ---
 
@@ -2872,7 +2872,10 @@ accepting `issue` for these two profiles and still refuses everything else.
 
 ## 32. `profiles.py`: `browser` and `generic` declare no inputs, so the API bounds them by size alone and the plugin can send them none
 
-**Status: PROPOSED, 2026-09-29.** Nothing here is applied. It answers #218,
+**Status: ACCEPTED 2026-09-29 by the owner after three security reviews.**
+Nothing here is applied yet; an implementation PR, `part of #218`, carries
+this out (see `docs/DEPLOY_STATE.md` or the linked PR for its state — this
+entry itself does not track a moving target). It answers #218,
 which contract request 25 left open: which inputs `browser` and `generic`
 declare, and with which bounds. Originally numbered 29, because 28 was the
 last entry on `main` when this branch was cut and 27 appears nowhere on
