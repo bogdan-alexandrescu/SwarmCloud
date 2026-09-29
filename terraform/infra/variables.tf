@@ -279,12 +279,56 @@ variable "tenants" {
     # Empty falls back to var.secret_admin_members, which must be a platform
     # admin group rather than any tenant's own group -- see the validation there.
     secret_admins = optional(list(string), [])
+    # Service accounts that resolve to THIS tenant besides its principal, by
+    # an exact match on the email the caller's verified token carries
+    # (contract request 30). Bare emails of user-managed accounts in this
+    # project; never a human, never an admin, never under two tenants.
+    service_accounts = optional(list(string), [])
   }))
   default = {}
 
   validation {
     condition     = alltrue([for t, v in var.tenants : v.max_active == null || v.max_active > 0])
     error_message = "a tenant's max_active must be positive; omit it to take pool_limits.default_tenant."
+  }
+
+  # The same expression as swarm_common.identity.SERVICE_ACCOUNT_EMAIL, held
+  # equal by scripts/lib/check-contract-parity.sh (section 14), plus the pin to
+  # THIS project that the frozen module has no project id to apply.
+  validation {
+    condition = alltrue(flatten([
+      for t, v in var.tenants : [
+        for sa in v.service_accounts :
+        can(regex("^[a-z][a-z0-9-]{4,28}[a-z0-9]@[a-z][a-z0-9-]{4,28}[a-z0-9]\\.iam\\.gserviceaccount\\.com$", sa))
+        && endswith(sa, "@${var.project_id}.iam.gserviceaccount.com")
+      ]
+    ]))
+    error_message = "tenants.*.service_accounts takes bare, lower-case emails of user-managed service accounts in this project (<id>@<project>.iam.gserviceaccount.com): never a person, a group, a domain, a pattern, a serviceAccount: member or a Google-managed account."
+  }
+
+  validation {
+    condition     = length(flatten([for t, v in var.tenants : [for sa in v.service_accounts : lower(sa)]])) == length(distinct(flatten([for t, v in var.tenants : [for sa in v.service_accounts : lower(sa)]])))
+    error_message = "a service account may be listed under ONE tenant: it decides the account's secrets, GCS prefix and namespace, and two listings would make that depend on rendering order."
+  }
+
+  validation {
+    condition = length(setintersection(
+      toset(flatten([for t, v in var.tenants : [for sa in v.service_accounts : lower(sa)]])),
+      toset(concat(
+        [for u in var.admin_users : lower(u)],
+        [for u in var.admin_pool_users : lower(u)],
+        [for m in var.secret_admin_members : lower(replace(m, "serviceAccount:", ""))]
+      ))
+    )) == 0
+    error_message = "a tenant's service account may not also be in admin_users, admin_pool_users or secret_admin_members: a listing gives exactly one tenant's rights, and an admin entry would add every tenant's."
+  }
+
+  validation {
+    condition = length(setintersection(
+      toset(flatten([for t, v in var.tenants : [for sa in v.service_accounts : lower(sa)]])),
+      toset([for t, v in var.tenants : lower(v.principal)])
+    )) == 0
+    error_message = "a service account that is a tenant's principal already has a tenant; listing it under another would give it two."
   }
 }
 

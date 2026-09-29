@@ -22,6 +22,7 @@ from swarm_common.identity import (
     Principal,
     assert_allowed_domain,
     resolve_tenant,
+    tenant_member_for,
 )
 
 from .errors import Forbidden, Unauthenticated, UpstreamUnavailable
@@ -65,6 +66,16 @@ class AuthContext:
     #: stays False for such a caller, so nothing that reads that flag widens.
     #: The only place this is consulted is `require_admin`.
     is_pool_admin: bool = False
+    #: The listed email when the tenant came from a service-account listing
+    #: (contract request 30); "" otherwise (today's only case).
+    tenant_member: str = ""
+    #: "" for an ordinary member (a human, or -- unlisted -- a service
+    #: account): every route behaves exactly as today. "continuation" for a
+    #: listed service account: it may submit a `continues_task` workflow and
+    #: read what IT submitted, and nothing else. NOT a kind of admin and not
+    #: read by `require_admin` -- `is_admin`/`is_pool_admin` stay False for
+    #: every listed account regardless of this field.
+    member_scope: str = ""
 
     @property
     def email(self) -> str:
@@ -320,7 +331,17 @@ class Authenticator:
             )
             raise Unauthenticated(str(last) if last else "id token verification failed") from None
 
-        return self._from_claims(claims)
+        # Symmetric with the IAP branch of `authenticate`: an AuthError raised
+        # while turning VERIFIED claims into a context (a service account
+        # listed under two tenants, a listed account without an explicit
+        # email_verified) is the caller's identity failing to resolve -- a 401,
+        # not an unhandled 500.
+        try:
+            return self._from_claims(claims)
+        except Forbidden:
+            raise
+        except AuthError as exc:
+            raise Unauthenticated(str(exc)) from None
 
     def _from_claims(self, claims: dict[str, Any]) -> AuthContext:
         """Verified claims -> AuthContext, whatever verified them.
@@ -333,6 +354,53 @@ class Authenticator:
         """
         email = str(claims.get("email", "")).lower()
         subject = str(claims.get("sub", ""))
+        # IAP prefixes a stable "accounts.google.com:" (see
+        # IapAssertionVerifier's docstring above); a bearer ID token's `sub`
+        # carries no such prefix. Stripped here, once, for BOTH paths, so
+        # `principal.subject` is the bare id either way.
+        subject = subject.removeprefix("accounts.google.com:")
+
+        # A SERVICE ACCOUNT THE TENANT LISTS (contract request 30), resolved by
+        # an exact email AND unique-id match before anything else is asked --
+        # before ALLOWED_USERS and the domain check (a service-account address
+        # is in no Workspace domain), and before either Cloud Identity pass (it
+        # is in no group, and a failed lookup must not 503 it). getattr because
+        # hand-built settings in tests predate the field, as `allowed_users`.
+        listing = getattr(self._settings, "tenant_service_accounts", ())
+        member = tenant_member_for(email, subject, listing)
+        if member is not None:
+            # The listed path requires an EXPLICIT True, not merely "not
+            # False" -- the weaker rule GoogleTokenVerifier applies on the
+            # bearer path elsewhere. A listed account skips both Cloud
+            # Identity passes below, so this claim is the only outside
+            # confirmation of the identity left. (On the IAP path this can
+            # never fire: IapAssertionVerifier.verify already does
+            # claims.setdefault("email_verified", True) before this code
+            # runs, so this check is bearer-path-only in practice.)
+            if claims.get("email_verified") is not True:
+                raise AuthError("listed service account requires a verified email claim")
+            principal = Principal(
+                email=email,
+                subject=subject,
+                domain=email.rsplit("@", 1)[1],
+                groups=(),
+            )
+            log.info("tenant member %s resolved by listing", email)
+            return AuthContext(
+                principal=principal,
+                tenant_id=resolve_tenant(
+                    principal,
+                    self._settings.tenant_groups,
+                    service_accounts=listing,
+                ),
+                is_admin=False,
+                tenant_principal=member.principal,
+                admin_unresolved=False,
+                is_pool_admin=False,
+                tenant_member=email,
+                member_scope="continuation",
+            )
+
         # ALLOWED_USERS is checked first and is purely additive. Authorisation
         # is otherwise by hosted domain, which is right for an organisation and
         # collapses for anyone without one: a single developer on a personal
@@ -492,6 +560,59 @@ POOL_ADMIN_ROUTES: frozenset[tuple[str, str]] = frozenset(
         ("PUT", "/v1/admin/limits/runner/{runner_profile}"),
     }
 )
+
+
+#: Every route a CONTINUATION-SCOPED account (member_scope="continuation") may
+#: call, as (HTTP method, route template) -- an ALLOW-LIST, same reasoning as
+#: POOL_ADMIN_ROUTES: a route defaults to CLOSED for this scope until named
+#: here, where opening it is a decision visible in review. The templates follow
+#: the same rule as POOL_ADMIN_ROUTES (the declaring router's path, its own
+#: prefix included). tests/unit/control_plane/test_continuation_scope_is_narrow.py
+#: holds this set equal to the decided one and sweeps every route in every
+#: router against it, the same shape as test_pool_admin_is_narrow.py.
+#:
+#: Being here opens the ROUTE, not every request to it: `POST /v1/workflows`
+#: still refuses this scope without `continues_task` (service.py), and every
+#: task and workflow read is filtered to what the caller submitted
+#: (`deps.submission_scope` -> `Store`'s required `submitted_by`).
+CONTINUATION_ROUTES: frozenset[tuple[str, str]] = frozenset({
+    ("POST", "/v1/workflows"),  # only WITH continues_task -- enforced in service.py
+    ("GET", "/v1/tasks"),
+    ("GET", "/v1/tasks/{task_id}"),
+    ("GET", "/v1/tasks/{task_id}/events"),
+    ("GET", "/v1/tasks/{task_id}/attempts"),
+    ("GET", "/v1/tasks/{task_id}/artifacts"),
+    ("GET", "/v1/tasks/{task_id}/artifacts/content"),
+    ("GET", "/v1/tasks/{task_id}/artifacts/raw"),
+    ("GET", "/v1/tasks/{task_id}/checkpoints"),
+    ("GET", "/v1/tasks/{task_id}/checkpoints/{checkpoint_id}/files"),
+    ("GET", "/v1/tasks/{task_id}/checkpoints/{checkpoint_id}/files/{path:path}"),
+    ("GET", "/v1/tasks/{task_id}/checkpoints/{checkpoint_id}/content"),
+    ("GET", "/v1/tasks/{task_id}/logs"),
+    ("GET", "/v1/tasks/{task_id}/transcript"),
+    ("GET", "/v1/tasks/{task_id}/answer"),
+    ("GET", "/v1/tasks/{task_id}/input"),
+    ("GET", "/v1/workflows"),
+    ("GET", "/v1/workflows/{workflow_id}"),
+    ("GET", "/v1/resource-classes"),  # static catalogue, no tenant data
+    ("GET", "/v1/runtimes"),          # static catalogue, no tenant data
+})
+
+
+def require_continuation_route(
+    ctx: AuthContext, route: tuple[str, str] | None
+) -> AuthContext:
+    """A continuation-scoped caller may reach only CONTINUATION_ROUTES.
+
+    An ordinary member (`member_scope == ""`) returns immediately. `route=None`
+    (no route matched) fails closed, same as `require_admin`.
+    """
+    if not ctx.member_scope:
+        return ctx
+    if route is not None and route in CONTINUATION_ROUTES:
+        return ctx
+    method, path = route if route else ("?", "unmatched")
+    raise Forbidden(f"a continuation-scoped account may not call {method} {path}")
 
 
 def require_admin(
