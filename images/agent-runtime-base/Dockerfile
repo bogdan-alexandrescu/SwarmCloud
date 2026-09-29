@@ -62,14 +62,17 @@ RUN apt-get update \
 COPY --from=uvbin /uv /usr/local/bin/uv
 
 WORKDIR /src
-# Only what the image needs to build: the frozen contract and the worker.
+# Only what the image needs to build: the frozen contract, the credential
+# patterns the worker's per-commit secret scan matches (#259), and the worker.
 COPY apps/common/ /src/apps/common/
+COPY apps/redaction/ /src/apps/redaction/
 COPY apps/agent-worker/ /src/apps/agent-worker/
 
 # Wheels first, then install from the local wheelhouse. Resolving
 # `swarm-common` from a wheel we just built -- rather than from an index that
 # has never heard of it -- is what makes this build reproducible offline.
 RUN uv build --wheel --out-dir /wheels /src/apps/common \
+ && uv build --wheel --out-dir /wheels /src/apps/redaction \
  && uv build --wheel --out-dir /wheels /src/apps/agent-worker
 
 # Floors, not pins: both ship inside the stdlib venv at versions Debian's

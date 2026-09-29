@@ -345,8 +345,14 @@ def test_an_unregistered_credential_in_an_intermediate_commit_folds_the_history(
         (f"+++ b/.env\n@@ -0,0 +1 @@\n+AWS_SECRET_ACCESS_KEY={UNREGISTERED_AWS_KEY}\n", True),
         (f"--- a/.env\n+++ /dev/null\n@@ -1 +0,0 @@\n-AWS_SECRET_ACCESS_KEY={UNREGISTERED_AWS_KEY}\n", False),
         ("+++ b/notes.txt\n@@ -1 +1 @@\n-plain text\n+plain text, edited\n", False),
+        # A family's prefix inside an identifier is not a credential: the JWT
+        # rule alone would read `eyword_only_args` as a token.
+        ("+++ b/api.py\n@@ -0,0 +1 @@\n+def f(*, keyword_only_args=None): pass\n", False),
+        # Assembled, so no secret scanner reads this file as holding a key.
+        ("+++ b/key.pem\n@@ -0,0 +2 @@\n+" + "-----" + "BEGIN RSA " + "PRIVATE KEY" + "-----"
+         + "\n+MIIEowIBAAKCAQEA\n", True),
     ],
-    ids=["added", "only-removed", "no-credential"],
+    ids=["added", "only-removed", "no-credential", "prefix-inside-an-identifier", "private-key"],
 )
 def test_the_pattern_scan_reads_only_the_lines_a_commit_adds(diff, found):
     """The control for the fold above: a line shaped like a key that a commit

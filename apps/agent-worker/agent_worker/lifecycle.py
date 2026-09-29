@@ -124,6 +124,7 @@ from typing import Any, Callable, Iterator, Sequence
 from swarm_common.models import EndCause, ProviderState, retries_exhausted, utcnow
 from swarm_common.profiles import RESOURCE_CLASSES
 from swarm_common.states import EventType, ParkReason, TaskState
+from swarm_redaction import RULES as CREDENTIAL_RULES
 
 from . import artifact_manifest as manifest_mod
 from . import expected_outputs as expected_mod
@@ -1363,7 +1364,10 @@ class Worker:
             and result.exit_code == 0
             and _read_json(ws.result_path) is not None
         )
-        withheld = self._publish_withheld(ran_clean)
+        # Read BEFORE the harvest and the upload, like the absence check in
+        # `_publish_withheld`: a refused title withholds the publish too.
+        title_refused = self._refused_title_reason() if ran_clean else None
+        withheld = self._publish_withheld(ran_clean, title_refused=title_refused)
         # The ONLY call that may pass publish=True. The agent exited on its own
         # here; the other five call sites are parks and crashes. It is False
         # only for an attempt that is going to run again (`_publish_withheld`).
@@ -1425,6 +1429,8 @@ class Worker:
                 )
             if missing:
                 return self._fail_for_missing_outputs(missing, summary, exit_code=0)
+            if title_refused is not None:
+                return self._fail_for_refused_title(title_refused, summary, exit_code=0)
             self.control.finish(
                 state=TaskState.SUCCEEDED, exit_code=0, result_summary=summary
             )
@@ -2402,7 +2408,7 @@ class Worker:
         """
         return [*(summary.get("artifacts_skipped") or []), *self._artifacts_not_uploaded]
 
-    def _publish_withheld(self, ran_clean: bool) -> str | None:
+    def _publish_withheld(self, ran_clean: bool, *, title_refused: str | None = None) -> str | None:
         """Why this attempt must not publish, or None when it may (#149).
 
         Withheld only from an attempt that is going to RUN AGAIN: its runner
@@ -2434,13 +2440,20 @@ class Worker:
         # before anything was uploaded.
         present = list(self._walk_artifacts(ws.artifacts)[0])
         absent = expected_mod.missing_outputs(owed, present)
-        if not absent:
+        if not absent and title_refused is None:
             return None
         task = self._task or {}
         if retries_exhausted(
             int(task.get("attempt_count", 0)), int(task.get("max_attempts", 3))
         ):
             return None
+        if not absent:
+            # `title_refused` (`_refused_title_reason`): the file is there and
+            # cannot title the pull request, which withholds like an absence.
+            return (
+                f"this attempt is retried because {title_refused}; publishing "
+                f"waits for the attempt that writes a usable one"
+            )
         return (
             "this attempt is retried because expected outputs are missing ("
             + ", ".join(absent)
@@ -2482,6 +2495,30 @@ class Worker:
             task_state=state.value,
             missing_count=len(missing),
         )
+        return Outcome(exit_code=ExitCode.FAILED, state=state)
+
+    def _fail_for_refused_title(
+        self, reason: str, summary: dict[str, Any], *, exit_code: int
+    ) -> Outcome:
+        """Fail this attempt, retryably, because its `pr-title.txt` was refused.
+
+        The owner's decision of 2026-09-28: the same outcome as a missing
+        expected output (`_fail_for_missing_outputs`), with the refusal as the
+        cause, so the retry is told what to fix. `reason` quotes none of the
+        title. The retry starts with an empty artifacts folder and must write
+        the title again.
+        """
+        error = self._scrub(reason)
+        state = self.control.fail_retryably(
+            exit_code=exit_code,
+            error=error,
+            cause="pull_request_title_refused",
+            result_summary=summary,
+            retry_delay_seconds=EXPECTED_OUTPUT_RETRY_DELAY_SECONDS,
+            detail={"refused": error},
+            end_cause=EndCause.OUTPUTS_MISSING,
+        )
+        self.log.info("the attempt failed for a refused pull request title", task_state=state.value)
         return Outcome(exit_code=ExitCode.FAILED, state=state)
 
     def _clone_base_path(self) -> Path | None:
@@ -4177,11 +4214,14 @@ class Worker:
                 logs_dir=ws.logs,
                 timeout_seconds=cfg.git_harvest_timeout_seconds,
                 logger=self.log,
-                # A registered secret in any kept commit's diff folds the
-                # history instead (#259 review): the scrub replaces exactly
-                # the registered values, so "the scrub changed it" is "a
-                # registered value is in it".
-                leaks=lambda text: str(self._scrub(text)) != text,
+                # A registered secret OR a credential-shaped run in any kept
+                # commit's diff folds the history instead (#259 review; owner
+                # decision 4, 2026-09-28, for the patterns): the scrub
+                # replaces exactly the registered values, so "the scrub
+                # changed it" is "a registered value is in it", and a key the
+                # agent minted or an `.env` it committed is registered nowhere
+                # and caught only by `_adds_a_credential`.
+                leaks=lambda text: str(self._scrub(text)) != text or _adds_a_credential(text),
             )
             if replayed is not None:
                 kept = replayed
@@ -4539,36 +4579,9 @@ class Worker:
         ws = self.ws
         assert ws is not None
         refused: list[str] = []
-        title: str | None = None
         body: str | None = None
 
-        raw = self._read_agent_text(PR_TITLE_FILE, refused)
-        if raw is not None:
-            text = raw.strip()
-            if not text:
-                refused.append(f"{PR_TITLE_FILE}: blank")
-            elif "\n" in text or "\r" in text:
-                refused.append(f"{PR_TITLE_FILE}: more than one line")
-            elif any(ord(char) < 32 and char != "\t" for char in text):
-                refused.append(f"{PR_TITLE_FILE}: holds control characters")
-            elif _carries_attribution(text):
-                refused.append(f"{PR_TITLE_FILE}: carries attribution")
-            elif _carries_mention(text):
-                refused.append(f"{PR_TITLE_FILE}: mentions")
-                self.log.warning("agent title refused: mentions")
-            else:
-                candidate = self._scrub_and_cap_title(text)
-                if self._title_carries_task_id(text) or self._title_carries_task_id(candidate):
-                    # OWNER RULE, 2026-09-28: a pull request title never
-                    # carries the task id. An agent's own `pr-title.txt` is
-                    # not an exception -- one that echoed the id (by habit,
-                    # or by copying the platform's old `[swarm] <task>`
-                    # fallback) is treated exactly as though it wrote
-                    # nothing, and the generated fallback names something a
-                    # reader can act on instead.
-                    refused.append(f"{PR_TITLE_FILE}: carries the task id")
-                else:
-                    title = candidate
+        title = self._agent_title(refused)
 
         raw = self._read_agent_text(PR_BODY_FILE, refused)
         if raw is not None:
@@ -4596,6 +4609,65 @@ class Worker:
                 refused=refused,
             )
         return title, body, refused
+
+    def _agent_title(self, refused: list[str]) -> str | None:
+        """The agent's `pr-title.txt`, scrubbed and capped, or None.
+
+        None when the file is absent, or when it is there and refused, in
+        which case `refused` gains one `pr-title.txt: <why>` entry that quotes
+        none of it. The one check both the publish (`_agent_pull_request_text`)
+        and the finish check (`_refused_title_reason`) make, so a title the
+        finish accepts is a title the publish uses.
+        """
+        raw = self._read_agent_text(PR_TITLE_FILE, refused)
+        if raw is None:
+            return None
+        text = raw.strip()
+        if not text:
+            refused.append(f"{PR_TITLE_FILE}: blank")
+        elif "\n" in text or "\r" in text:
+            refused.append(f"{PR_TITLE_FILE}: more than one line")
+        elif any(ord(char) < 32 and char != "\t" for char in text):
+            refused.append(f"{PR_TITLE_FILE}: holds control characters")
+        elif _carries_attribution(text):
+            refused.append(f"{PR_TITLE_FILE}: carries attribution")
+        elif _carries_mention(text):
+            refused.append(f"{PR_TITLE_FILE}: mentions")
+            self.log.warning("agent title refused: mentions")
+        else:
+            candidate = self._scrub_and_cap_title(text)
+            if self._title_carries_task_id(text) or self._title_carries_task_id(candidate):
+                # OWNER RULE, 2026-09-28: a pull request title never carries
+                # the task id. An agent's own `pr-title.txt` is not an
+                # exception -- one that echoed the id (by habit, or by
+                # copying the platform's old `[swarm] <task>` fallback) is
+                # refused like any other unusable title.
+                refused.append(f"{PR_TITLE_FILE}: names a task id")
+            else:
+                return candidate
+        return None
+
+    def _refused_title_reason(self) -> str | None:
+        """Why the agent's `pr-title.txt` cannot title the pull request this
+        attempt owes, or None when it can, is not owed, or is absent.
+
+        OWNER DECISION, 2026-09-28: a title that EXISTS but is refused (it
+        names a task id, mentions someone, carries attribution, ...) fails
+        the attempt retryably before anything is pushed, exactly like a
+        missing one (`_publish_withheld`, `_fail_for_refused_title`). The
+        finish check tests that the title is USABLE, not only that the file
+        exists: a refused title reaching the publish would push a branch with
+        no pull request. An absent file is the missing-output path's (#149).
+        """
+        if self.ws is None or PR_TITLE_FILE not in self._expected_outputs:
+            return None
+        if not self._title_owed(self._task or {}):
+            return None
+        refused: list[str] = []
+        if self._agent_title(refused) is not None or not refused:
+            return None
+        why = refused[0].partition(": ")[2] or "unusable"
+        return f"{PR_TITLE_FILE} refused: {why}; write a fact-style title"
 
     def _scrub_and_cap_title(self, text: str) -> str:
         """Redact every registered secret, THEN cut to `PR_TITLE_MAX_CHARS` (#232's
@@ -5376,6 +5448,43 @@ def _is_trailer_block(paragraph: list[str]) -> bool:
 #: How much of one commit's diff the secret scan reads. A diff at or over this
 #: is not scanned whole, and counts as a hit (`_first_leaking_commit`).
 REPLAY_SCAN_MAX_BYTES = 32 * 1024 * 1024
+
+
+def _adds_a_credential(diff: str) -> bool:
+    """True when a line this diff ADDS matches a credential pattern.
+
+    The patterns are `swarm_redaction.RULES`, the same families swarm-api
+    masks at read time (owner decision 4, 2026-09-28), so "credential-shaped"
+    means one thing on the platform. Only added lines are read: a removed line
+    was in the parent's tree already -- the repository's own history, or an
+    earlier agent commit, whose own diff added it and is scanned in its turn --
+    and `+++ ` is a file header, not content.
+
+    A MATCH MUST START A TOKEN. swarm-api masks a run wherever it starts,
+    because there a false positive costs one masked word. Here it costs the
+    agent's whole history (a fold), and code is full of identifiers that hold
+    a family's prefix in the middle: `keyword_only` holds `eyword_only`, which
+    the JWT rule takes for a token. So a pattern match counts only when the
+    character before it is not a letter, a digit or `_`. The private-key
+    block is exempt: its marker is never part of an identifier.
+    """
+    added = "\n".join(
+        line[1:]
+        for line in diff.split("\n")
+        if line.startswith("+") and not line.startswith("+++ ")
+    )
+    if not added:
+        return False
+    for rule in CREDENTIAL_RULES:
+        if rule.apply is not None:
+            if rule.apply(added, False, False)[1]:
+                return True
+            continue
+        for match in rule.pattern.finditer(added):
+            start = match.start()
+            if start == 0 or not (added[start - 1].isalnum() or added[start - 1] == "_"):
+                return True
+    return False
 
 
 def _first_leaking_commit(
