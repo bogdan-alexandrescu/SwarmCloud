@@ -128,10 +128,20 @@ run "every_switched_role_trades_its_project_wide_grant_for_a_conditioned_one" {
       google_project_iam_member.deployer_container_admin[0].condition[0].expression == local.deployer_conditions["roles/container.admin"],
       google_project_iam_member.deployer_datastore_owner[0].condition[0].expression == local.deployer_conditions["roles/datastore.owner"],
       google_project_iam_member.deployer_logging_config_writer[0].condition[0].expression == local.deployer_conditions["roles/logging.configWriter"],
-      google_project_iam_member.deployer_project_iam_admin[0].condition[0].expression == local.deployer_conditions["roles/resourcemanager.projectIamAdmin"],
       google_project_iam_member.deployer_secrets_scoped[0].condition[0].expression == local.deployer_conditions["swarmSecretProvisioner"],
     ])
     error_message = "every scoped grant must carry its own condition, not a neighbour's"
+  }
+
+  # projectIamAdmin is chunked (deployer_conditions.tf, #275): one instance per
+  # chunk of at most 10 roles, rather than the single condition every other
+  # scoped role gets, so it is asserted on its own.
+  assert {
+    condition = alltrue([
+      for k, m in google_project_iam_member.deployer_project_iam_admin :
+      m.condition[0].expression == local.deployer_project_iam_admin_conditions[k]
+    ])
+    error_message = "every projectIamAdmin chunk must carry its own chunk's condition, not a neighbour's"
   }
 
   assert {
@@ -141,20 +151,43 @@ run "every_switched_role_trades_its_project_wide_grant_for_a_conditioned_one" {
       google_project_iam_member.deployer_container_admin[0].role == "roles/container.admin",
       google_project_iam_member.deployer_datastore_owner[0].role == "roles/datastore.owner",
       google_project_iam_member.deployer_logging_config_writer[0].role == "roles/logging.configWriter",
-      google_project_iam_member.deployer_project_iam_admin[0].role == "roles/resourcemanager.projectIamAdmin",
       google_project_iam_member.deployer_secrets_scoped[0].role == "projects/saga-agents-staging/roles/swarmSecretProvisioner",
     ])
     error_message = "a scoped grant must be for the role it replaces"
   }
 
-  # docs.cloud.google.com/iam/quotas: 12 logic operators per condition. Over
-  # that the apply fails, and nothing before the apply notices.
   assert {
     condition = alltrue([
-      for r, e in local.deployer_conditions :
+      for k, m in google_project_iam_member.deployer_project_iam_admin : m.role == "roles/resourcemanager.projectIamAdmin"
+    ])
+    error_message = "every projectIamAdmin chunk must be for the role it replaces"
+  }
+
+  # docs.cloud.google.com/iam/quotas: 12 logic operators per condition. Over
+  # that the apply fails, and nothing before the apply notices. Every
+  # projectIamAdmin chunk is one hasOnly() call and no && / || / !, so this
+  # covers those too, at 0 operators each -- they are chunked because of the
+  # 10-element hasOnly() limit, never this one.
+  assert {
+    condition = alltrue([
+      for r, e in merge(local.deployer_conditions, local.deployer_project_iam_admin_conditions) :
       length(regexall("&&", e)) + length(regexall("\\|\\|", e)) + length(regexall("![^=]", e)) <= 12
     ])
     error_message = "a condition exceeds IAM's 12 logical operators; split it into a second binding rather than lengthening it"
+  }
+
+  # docs.cloud.google.com/iam/quotas also caps at 20 the role bindings in one
+  # allow policy that may share a role and a principal with different
+  # condition expressions -- one per projectIamAdmin chunk here, since they
+  # are per-chunk bindings rather than one ORed expression (deployer_conditions.tf
+  # explains why). 15 roles / 10 per chunk is 2 today; this guards the day
+  # deployer_grantable_project_roles grows past 200 roles (20 chunks), which
+  # would need a different scheme, not a bigger number here. No documented
+  # limit on total expression length was found for IAM conditions, so none is
+  # asserted.
+  assert {
+    condition     = length(local.deployer_project_iam_admin_conditions) <= 20
+    error_message = "projectIamAdmin needs more than 20 chunked bindings for the same role and principal, which IAM's allow-policy quota refuses; deployer_grantable_project_roles has outgrown per-chunk bindings and needs a different scheme"
   }
 
   # The type guard is what keeps a name test from refusing every permission in
@@ -533,12 +566,17 @@ run "the_iam_admin_condition_refuses_every_role_ci_does_not_hand_out" {
   }
 
   # The attribute IAM provides for limiting role grants, on the allowlist.
+  # Chunked (#275): every chunk's expression must be a modifiedGrantsByRole
+  # hasOnly(), and every grantable role must appear in some chunk.
   assert {
     condition = (
-      startswith(local.deployer_conditions["roles/resourcemanager.projectIamAdmin"], "api.getAttribute(\"iam.googleapis.com/modifiedGrantsByRole\", []).hasOnly([") &&
+      alltrue([
+        for e in values(local.deployer_project_iam_admin_conditions) :
+        startswith(e, "api.getAttribute(\"iam.googleapis.com/modifiedGrantsByRole\", []).hasOnly([")
+      ]) &&
       alltrue([
         for r in local.deployer_grantable_project_roles :
-        strcontains(local.deployer_conditions["roles/resourcemanager.projectIamAdmin"], "\"${r}\"")
+        anytrue([for e in values(local.deployer_project_iam_admin_conditions) : strcontains(e, "\"${r}\"")])
       ])
     )
     error_message = "projectIamAdmin must be limited by modifiedGrantsByRole to exactly the grantable roles"
@@ -711,17 +749,25 @@ run "the_scoping_terraform_tfvars_names_moves_its_own_grants_and_nothing_else" {
       length(google_project_iam_member.deployer_container_admin) == (contains(var.deployer_scoped_roles, "roles/container.admin") ? 1 : 0),
       length(google_project_iam_member.deployer_datastore_owner) == (contains(var.deployer_scoped_roles, "roles/datastore.owner") ? 1 : 0),
       length(google_project_iam_member.deployer_logging_config_writer) == (contains(var.deployer_scoped_roles, "roles/logging.configWriter") ? 1 : 0),
-      length(google_project_iam_member.deployer_project_iam_admin) == (contains(var.deployer_scoped_roles, "roles/resourcemanager.projectIamAdmin") ? 1 : 0),
+      length(google_project_iam_member.deployer_project_iam_admin) == (contains(var.deployer_scoped_roles, "roles/resourcemanager.projectIamAdmin") ? length(local.deployer_project_iam_admin_conditions) : 0),
     ])
     error_message = "the scoping terraform.tfvars names moves a deployer grant other than its own roles' two halves; the owner's apply would do more than the tfvars line says"
   }
 
   # What the file names TODAY, and so what the targeted apply command in its
-  # comment, and the plan PR #73 derived (1 to add, 0 to change, 1 to destroy
-  # against a live policy with nothing scoped), describe.
+  # comment describes. PR #73's original plan was 1 to add (one unchunked
+  # condition); after #275's chunking fix a fresh apply against a live policy
+  # with nothing scoped is deployer_grantable_project_roles chunked at 10 --
+  # today 2 to add, 0 to change, 1 to destroy. The chunk count changes only if
+  # deployer_grantable_project_roles crosses a multiple of 10 (deployer_conditions.tf).
   assert {
     condition     = var.deployer_scoped_roles == toset(["roles/resourcemanager.projectIamAdmin"])
     error_message = "terraform/bootstrap/terraform.tfvars no longer scopes exactly roles/resourcemanager.projectIamAdmin, so the targeted apply command in its comment and the plan derived for it describe a different change. Update the command, that plan and this assertion together."
+  }
+
+  assert {
+    condition     = length(local.deployer_project_iam_admin_conditions) == 2
+    error_message = "deployer_grantable_project_roles has crossed a chunk boundary (a multiple of 10); update the plan-count comment above and in docs/ci.md to the new chunk count"
   }
 }
 

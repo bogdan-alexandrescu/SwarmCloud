@@ -376,23 +376,57 @@ locals {
     ],
   )
 
-  deployer_conditions = merge(
-    {
-      for role, s in local.deployer_type_scoped : role => join(" || ", concat(
-        ["(${join(" && ", [for t in s.types : "resource.type != \"${t}\""])})"],
-        [for p in s.prefixes : "resource.name.startsWith(\"${p}\")"],
-      ))
-    },
-    {
-      "roles/resourcemanager.projectIamAdmin" = "api.getAttribute(\"iam.googleapis.com/modifiedGrantsByRole\", []).hasOnly([${join(", ", [for r in local.deployer_grantable_project_roles : "\"${r}\""])}])"
-    },
-  )
+  deployer_conditions = {
+    for role, s in local.deployer_type_scoped : role => join(" || ", concat(
+      ["(${join(" && ", [for t in s.types : "resource.type != \"${t}\""])})"],
+      [for p in s.prefixes : "resource.name.startsWith(\"${p}\")"],
+    ))
+  }
+
+  # roles/resourcemanager.projectIamAdmin's hasOnly() would need every one of
+  # the fifteen deployer_grantable_project_roles in one list, and GCP's linter
+  # (LintValidationUnits/ListLengthCheck) refuses a hasOnly() list over 10
+  # elements -- found only at apply, since the mock provider never lints (#275,
+  # apply 2026-09-28: "The list argument to hasOnly() cannot have more than 10
+  # elements").
+  #
+  # GCP's docs (Setting limits on granting roles) also say not to OR several
+  # hasOnly() calls together in one condition: "If you do, then requests that
+  # grant or revoke multiple roles might fail, even if the principal can grant
+  # or revoke those roles individually" -- the opposite of chunking's point.
+  # ORing 2 chunks of <=10 stays well inside IAM's 12-logical-operator limit
+  # (docs.cloud.google.com/iam/quotas; tests/terraform/deployer_iam.tftest.hcl
+  # holds every condition in this file to that limit already), so operator
+  # count is not why ORing is refused here -- GCP's own guidance against
+  # combining hasOnly() calls is.
+  #
+  # So each chunk of at most 10 roles gets its OWN conditioned binding, below
+  # (a for_each of google_project_iam_member.deployer_project_iam_admin, one
+  # instance per chunk) instead of one expression ORing hasOnly() calls
+  # together. Every instance still authorises only a setIamPolicy call whose
+  # modified roles stay within THAT chunk -- which is what every apply through
+  # this Terraform makes: the provider issues one setIamPolicy per role, per
+  # resource, so a single call never spans two chunks. #73's parity rule holds
+  # because the chunks partition deployer_grantable_project_roles exactly,
+  # with nothing added and nothing left out (proven in
+  # tests/terraform/deployer_iam.tftest.hcl).
+  deployer_project_iam_admin_chunks = chunklist(local.deployer_grantable_project_roles, 10)
+
+  deployer_project_iam_admin_conditions = {
+    for i, chunk in local.deployer_project_iam_admin_chunks :
+    tostring(i) => "api.getAttribute(\"iam.googleapis.com/modifiedGrantsByRole\", []).hasOnly([${join(", ", [for r in chunk : "\"${r}\""])}])"
+  }
 
   # role -> whether its conditioned grant replaces the project-wide one.
-  deployer_scoped = {
-    for role in keys(local.deployer_conditions) :
-    role => var.enable_github_wif && contains(var.deployer_scoped_roles, role)
-  }
+  deployer_scoped = merge(
+    {
+      for role in keys(local.deployer_conditions) :
+      role => var.enable_github_wif && contains(var.deployer_scoped_roles, role)
+    },
+    {
+      "roles/resourcemanager.projectIamAdmin" = var.enable_github_wif && contains(var.deployer_scoped_roles, "roles/resourcemanager.projectIamAdmin")
+    },
+  )
 }
 
 resource "google_project_iam_member" "deployer_network_admin" {
@@ -466,16 +500,16 @@ resource "google_project_iam_member" "deployer_logging_config_writer" {
 }
 
 resource "google_project_iam_member" "deployer_project_iam_admin" {
-  count = local.deployer_scoped["roles/resourcemanager.projectIamAdmin"] ? 1 : 0
+  for_each = local.deployer_scoped["roles/resourcemanager.projectIamAdmin"] ? local.deployer_project_iam_admin_conditions : {}
 
   project = var.project_id
   role    = "roles/resourcemanager.projectIamAdmin"
   member  = "serviceAccount:${google_service_account.deployer[0].email}"
 
   condition {
-    title       = "only the roles terraform infra grants"
-    description = "A project policy change may add or remove members of the listed roles and no others, so CI cannot grant itself or anyone else owner, editor or another team's roles."
-    expression  = local.deployer_conditions["roles/resourcemanager.projectIamAdmin"]
+    title       = "only the roles terraform infra grants (chunk ${tonumber(each.key) + 1} of ${length(local.deployer_project_iam_admin_conditions)})"
+    description = "A project policy change may add or remove members of the roles in THIS chunk and no others; the chunks together are every role terraform/infra grants, so CI cannot grant itself or anyone else owner, editor or another team's roles. Split across ${length(local.deployer_project_iam_admin_conditions)} bindings because IAM's hasOnly() refuses a list over 10 elements (#275), and GCP's docs say not to OR several hasOnly() calls into one condition instead."
+    expression  = each.value
   }
 }
 

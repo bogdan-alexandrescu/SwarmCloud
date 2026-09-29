@@ -68,9 +68,13 @@ github_allowed_refs = ["refs/heads/main"]
 # local state:
 #   scripts/bootstrap.sh \
 #     --target 'google_project_iam_member.deployer_roles["roles/resourcemanager.projectIamAdmin"]' \
-#     --target 'google_project_iam_member.deployer_project_iam_admin[0]'
+#     --target 'google_project_iam_member.deployer_project_iam_admin'
+# The second target is every chunk (deployer_conditions.tf, #275): hasOnly()
+# refuses a list over 10 elements, so the fifteen grantable roles are two
+# chunked bindings, not one -- targeting the resource without an index reaches
+# all of them.
 # REVERT: delete the entry, leaving `[]`, and run the same command. The plan is
-# the mirror image: the conditioned grant destroyed, the project-wide one back.
+# the mirror image: the conditioned grant(s) destroyed, the project-wide one back.
 deployer_scoped_roles = ["roles/resourcemanager.projectIamAdmin"]
 
 # Who may pass IAP on the front door (wif.tf, frontend_accessors).

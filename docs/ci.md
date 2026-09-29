@@ -636,7 +636,11 @@ do, none is made here, and which to make is the owner's decision.
 
 Once PR #73's targeted apply lands, the deployer's `projectIamAdmin` carries the
 `modifiedGrantsByRole` condition in
-[`deployer_conditions.tf`](../terraform/bootstrap/deployer_conditions.tf).
+[`deployer_conditions.tf`](../terraform/bootstrap/deployer_conditions.tf) --
+as of #275, chunked into two bindings rather than one: `hasOnly()` refuses a
+list over 10 elements, and the fifteen grantable roles no longer fit in a
+single call. Every chunk still authorises only a `setIamPolicy` whose modified
+roles stay inside it, which is what each Terraform-issued call already does.
 Releases then prove the **admitted** side. Every plan reads the project policy,
 and a release that adds a tenant writes it. Nothing in the pipeline asks for a
 role **off** the list. **Owner decision, 2026-09-25 (#68):** a deliberate
@@ -655,11 +659,20 @@ reopened. The owner's steps, and what each outcome means, are in
 **What a pass proves.** One role the list does not name was refused under the
 condition, for a direct grant by the deployer to itself, at the time of the run.
 Preflight makes that the condition's refusal and nobody else's. The scoped
-binding is the only `projectIamAdmin` the deployer holds, and none of its other
-roles carries `resourcemanager.projects.setIamPolicy`. That check is limited to
-the roles preflight could read, which is all of them before step 4 (#150).
-`hasOnly` treats every unlisted role alike, so one refusal speaks for the
-expression. It is still one role, measured once.
+bindings are the only `projectIamAdmin` grants the deployer holds, and none of
+its other roles carries `resourcemanager.projects.setIamPolicy`. That check is
+limited to the roles preflight could read, which is all of them before step 4
+(#150). `hasOnly` treats every unlisted role alike, and a role absent from
+`deployer_grantable_project_roles` is absent from every chunk, so one refusal
+still speaks for all of them. It is still one role, measured once.
+
+**#275's chunking is not yet reflected in the probe script (#276).**
+[`iam-refusal-probe.sh`](../scripts/iam-refusal-probe.sh)'s preflight step
+still asserts *exactly one* conditioned `projectIamAdmin` binding
+(`bindings_for` on `SCOPED_ROLE`) and `die`s otherwise; after #275's apply it
+will find two and stop before asking IAM anything. Filed as #276 rather than
+fixed alongside #275, because the probe is `scripts/` (Track D) and #275's
+brief was terraform/tests/docs only.
 
 **What it cannot prove:**
 
