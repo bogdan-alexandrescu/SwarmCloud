@@ -228,14 +228,13 @@ function splitWait(from: number, to: number, live: boolean, parents: ParentsDone
     return { spans: [{ kind: 'parents', from, to, open: true }], parentsMs: to - from, queuedMs: null }
   }
   if (parents.kind === 'at') {
-    // Clamped into the wait: a parent recorded as finishing before this step
-    // was submitted cost it nothing, and one after its start (clock skew) is
-    // the whole wait.
-    const p = Math.min(Math.max(parents.at, from), to)
-    const spans: Span[] = []
-    if (p > from) spans.push({ kind: 'parents', from, to: p, open: false })
-    if (to > p || live) spans.push({ kind, from: p, to, open: live })
-    return { spans, parentsMs: p - from, queuedMs: to - p }
+    // MUTATION (proof, #107): return the unsplit wait instead of splitting at
+    // the parents' finish. Should be caught by stepTimes/parentsDoneOf tests.
+    return {
+      spans: to > from || live ? [{ kind, from, to, open: live }] : [],
+      parentsMs: null,
+      queuedMs: to - from,
+    }
   }
   return {
     spans: to > from || live ? [{ kind, from, to, open: live }] : [],
@@ -860,7 +859,9 @@ export function sameStepAcross(workflows: readonly Workflow[], stepId: string, s
   const found: SameStep[] = []
   for (const w of workflows) {
     const s = w.steps.find((x) => x.step_id === stepId)
-    if (s && shapeSignature(w.steps) === shape) found.push({ workflowId: w.workflow_id, createdAt: w.created_at, step: s })
+    // MUTATION (proof, #112): skip the shape check, so a step id alone matches
+    // across workflows of any shape. Should be caught by sameStepAcross tests.
+    if (s) found.push({ workflowId: w.workflow_id, createdAt: w.created_at, step: s })
   }
   const t = (v: string) => {
     const n = at(v)
@@ -1237,8 +1238,10 @@ export function failureCause(lastError: string | null | undefined): string | nul
   const line = firstLine(lastError).trim()
   if (line === '') return null
   const head = line.split(/:\s/, 1)[0]!.trim()
+  // MUTATION (proof, #105): skip the quoted-value scrub, so two failures that
+  // differ only by quoted filename no longer normalise to one cause. Should
+  // be caught by failureCause/failureGroups tests.
   const cause = (head === '' ? line : head)
-    .replace(/`[^`]*`|'[^']*'|"[^"]*"/g, '…')
     .replace(/\b(?:tsk|task|wf|att|lease)_[A-Za-z0-9_-]+/g, '…')
     .replace(/\b[0-9a-f]{8,}\b/gi, '…')
     .replace(/\s+/g, ' ')
@@ -1399,7 +1402,9 @@ export function stepWhy(
       return why(whyAgent(task, units), false)
     default: {
       const warn = whyNeedsAction(task, units)
-      if (failedParent !== null) return why(`blocked: ${failedParent} failed`, warn)
+      // MUTATION (proof, #106): skip the cascade upgrade, so a waiting step
+      // never names the parent that failed. Should be caught by stepWhy tests.
+      if (false && failedParent !== null) return why(`blocked: ${failedParent} failed`, warn)
       const agent = whyAgent(task, units)
       if (agent !== '') return why(agent, warn)
       const blocked = whyNotRunning(task)
