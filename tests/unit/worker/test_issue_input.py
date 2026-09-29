@@ -174,6 +174,102 @@ def test_a_github_enterprise_repository_is_asked_at_its_own_host(forge):
     assert fake.requests[0].full_url == "https://ghe.example.com/api/v3/repos/octo/widgets/issues/7"
 
 
+def test_a_non_github_https_repository_is_fetched_with_no_authorization_header(forge):
+    """The security finding of #270's review: a task can name any repository
+    URL, and before this fix the tenant's github.com token was attached to
+    whatever host that URL resolved to -- a GitHub Enterprise Server install
+    included."""
+    fake = forge({"/api/v3/repos/octo/widgets/issues/7": (200, _issue_doc(number=7))})
+
+    issue_mod.fetch_issue(
+        repository_url="https://ghe.example.com/octo/widgets", number=7, token=TOKEN
+    )
+
+    (req,) = fake.requests
+    assert req.get_header("Authorization") is None
+
+
+def test_a_non_github_ssh_repository_is_fetched_with_no_authorization_header(forge):
+    """An ssh `repository_url` is the new exposure the review named: nothing
+    about it looks like a credentialed HTTPS request, so a reviewer reading
+    only the task's repository field would not expect a bearer token to leave
+    the worker for it at all."""
+    fake = forge({"/api/v3/repos/octo/widgets/issues/7": (200, _issue_doc(number=7))})
+
+    issue_mod.fetch_issue(
+        repository_url="ssh://git@ghe.example.com/octo/widgets.git", number=7, token=TOKEN
+    )
+
+    (req,) = fake.requests
+    assert req.get_header("Authorization") is None
+
+
+def test_github_com_and_its_www_alias_still_get_the_token(forge):
+    fake = forge({
+        "/repos/octo/widgets/issues/7": (200, _issue_doc(number=7)),
+    })
+    issue_mod.fetch_issue(repository_url="https://www.github.com/octo/widgets", number=7, token=TOKEN)
+    (req,) = fake.requests
+    assert req.get_header("Authorization") == f"Bearer {TOKEN}"
+
+
+@pytest.mark.parametrize(
+    "repository_url",
+    [
+        # a subdomain suffix, not the host itself
+        "https://github.com.evil.example/octo/widgets",
+        # "github.com" appears only in the path, never as the host
+        "https://evil.example/github.com/octo/widgets",
+        # userinfo dressed up as the expected host; the real host is evil.example
+        "https://github.com:notapassword@evil.example/octo/widgets",
+    ],
+)
+def test_a_host_that_merely_names_github_gets_no_token(forge, repository_url):
+    fake = forge({"/api/v3/repos/octo/widgets/issues/7": (200, _issue_doc(number=7))})
+
+    issue_mod.fetch_issue(repository_url=repository_url, number=7, token=TOKEN)
+
+    (req,) = fake.requests
+    assert req.get_header("Authorization") is None
+
+
+# ---------------------------------------------------------------------------
+# the response size cap (#270 review, minor)
+# ---------------------------------------------------------------------------
+
+
+class _GrowingSource:
+    """Answers `read(n)` with exactly `n` bytes, like a live socket would."""
+
+    def read(self, size: int) -> bytes:
+        return b"x" * size
+
+
+class _FixedSource:
+    def __init__(self, data: bytes) -> None:
+        self._data = data
+
+    def read(self, size: int) -> bytes:
+        chunk, self._data = self._data[:size], self._data[size:]
+        return chunk
+
+
+def test_a_response_over_the_size_cap_is_refused():
+    req = urllib.request.Request("https://api.github.com/repos/octo/widgets/issues/7")
+
+    with pytest.raises(issue_mod.IssueUnavailable) as caught:
+        issue_mod._read_capped(_GrowingSource(), req=req)
+
+    assert "api.github.com" in str(caught.value)
+
+
+def test_a_response_at_the_cap_is_read_in_full():
+    req = urllib.request.Request("https://api.github.com/repos/octo/widgets/issues/7")
+    body = b"{}"
+
+    assert issue_mod._read_capped(_FixedSource(body), req=req) == body
+
+
 def test_a_missing_issue_is_named_with_its_repository(forge):
     forge({})
 
