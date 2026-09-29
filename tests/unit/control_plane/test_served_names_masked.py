@@ -22,6 +22,12 @@ WHAT IS PINNED:
   * a word-shaped secret the task names that a prefix rule touches
     (`monkey-business-2024`, which the JWT rule sees at `ey`) is masked in a
     name too, though `redaction._carried` never learns it as a literal;
+  * a real key or JWT GLUED directly onto a preceding letter or digit, with no
+    separator at all (`notesAKIA...`, `xghp_...`, `keyAIzaSy...`,
+    `tokeneyJ....…...…`), is still masked: only `sk-` carries a boundary;
+  * a fake `sk-` token preceded by a word that itself contains "sk-" mid-word
+    (`task-sk-...`, `risk-sk-...`, `desk-sk-...`) is not SWALLOWED by that
+    embedded false match -- the real prefix past it is still found and masked;
   * each mask is counted in `metadata_redaction_count`;
   * `input_from`'s keys (upstream task ids) and `dispatch` are served as stored;
   * the workflow route's own step map (`GET /v1/workflows/{id}`, and the
@@ -32,11 +38,16 @@ WHAT IS PINNED:
 MUTATIONS: serve the platform keys as stored again (the secret tests fail);
 mask the names with `JsonMasker.text` (the clean-name tests fail); mask
 `dispatch` too (the dispatch test fails); leave the name masks uncounted;
-drop `TaskMasking.name_literals` (the word-shaped secret tests fail); drop the
-anchoring in `_mask_anchored` (the mid-word clean-name tests fail); go back to
-a per-segment plain-word check (the provider-token-shape tests fail, because a
-token's tail is itself plain letters); serve `step.input_from` as stored in
-`_step_to_api` (the workflow-route tests fail).
+drop `TaskMasking.name_literals` (the word-shaped secret tests fail); go back
+to a per-segment plain-word check (the provider-token-shape tests fail,
+because a token's tail is itself plain letters); drop the lookbehind from
+`_NAME_SK`'s pattern, or apply it as a post-match check instead of inside the
+pattern (the swallow tests fail: the real prefix past a fake mid-word one goes
+unmasked); add a lookbehind to `_NAME_JWT`, or apply a boundary check to any
+of the other specific-shape families (AKIA/ASIA, `ghp_`, `github_pat_`,
+`AIza`, `xox?-`, `ya29.`, `Bearer`) (the glued tests fail: a real credential
+stuck onto a preceding word goes unmasked); serve `step.input_from` as stored
+in `_step_to_api` (the workflow-route tests fail).
 """
 
 from __future__ import annotations
@@ -196,9 +207,9 @@ def test_a_specific_shape_glued_to_a_preceding_word_is_still_masked(token):
     filename does not produce one by accident, so gluing one onto a preceding
     letter or digit is a real credential, not a false positive. Anchoring
     THESE families -- as the second cut of this fix did, uniformly -- served
-    them in clear the moment they were glued. Only `sk-` and the JWT family
-    keep a boundary; every other family, including these, runs exactly as
-    `RULES` applies it elsewhere.
+    them in clear the moment they were glued. Only `sk-` keeps a boundary;
+    every other family, including these, runs exactly as `RULES` applies it
+    elsewhere.
     """
     name = f"{token}.md"
     masking = _masking({"input_from": {"task_up": name}, "expected_outputs": [name]})
@@ -206,6 +217,34 @@ def test_a_specific_shape_glued_to_a_preceding_word_is_still_masked(token):
     value, count = masking.metadata_value()
 
     assert token not in json.dumps(value)
+    assert MASK in value["input_from"]["task_up"]
+    assert value["input_from"]["task_up"].endswith(".md")
+    assert value["expected_outputs"] == [value["input_from"]["task_up"]]
+    assert count == 2
+
+
+#: A real (fake-payload) JWT shape glued directly onto a preceding word, no
+#: separator at all -- the same GLUED shape as `GLUED_TOKENS`, for the family
+#: the fourth review round un-anchored.
+GLUED_JWT = "tokeneyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abcDEF123"
+
+
+def test_a_jwt_glued_to_a_preceding_word_is_masked():
+    """The fourth round: JWT does not need a boundary at all.
+
+    `_NAME_JWT` requires `eyJ` -- not the loose two-letter `ey` `RULES`' own
+    pattern uses -- plus the full three dot-separated segments. No filename in
+    `CLEAN_NAMES` (including `eyeTracking.md`) produces that shape by
+    accident, so leaving it unanchored is safe, and it is what catches a JWT
+    stuck directly onto a preceding word, which an anchored version -- the
+    third round's `_NAME_JWT` -- would still have missed.
+    """
+    name = f"{GLUED_JWT}.md"
+    masking = _masking({"input_from": {"task_up": name}, "expected_outputs": [name]})
+
+    value, count = masking.metadata_value()
+
+    assert GLUED_JWT not in json.dumps(value)
     assert MASK in value["input_from"]["task_up"]
     assert value["input_from"]["task_up"].endswith(".md")
     assert value["expected_outputs"] == [value["input_from"]["task_up"]]
