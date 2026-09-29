@@ -2265,6 +2265,17 @@ body {
   color: var(--text);
   white-space: nowrap;
 }
+/* WHY THE STAGE BROKE, ON ONE LINE (#105): the commonest cause's first error
+   line. It shrinks before the counts do -- the counts say THAT something
+   failed, which may never be the part clipped -- and ellipses; every failed
+   step's whole error is its title and the cause is in the band's name. On the
+   band's one row, so `BAND_H` is unchanged. */
+.wf-band-cause {
+  flex: 0 1 auto; min-width: 8ch;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font: var(--t-micro)/var(--lh-micro) var(--mono);
+  color: var(--bad-ink);
+}
 /* THE WRAPPER `aria-controls` POINTS AT, AND IT IS DELIBERATELY SIZELESS.
    A disclosure control needs something to name, and the nodes of a stage are
    absolutely positioned siblings on a shared canvas with no container of their
@@ -2474,6 +2485,39 @@ button.node:focus-visible { outline: 2px solid var(--info); outline-offset: 2px;
   min-height: calc(var(--t-micro) * var(--lh-micro));
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+/* THE NOTE LINE (#105, #106): a failed step's first error line, or why a
+   waiting step is not running. ONE LINE, and that is what `dag.ts` measures
+   (`NOTE_H`, 17.4 + the 4px gap): a note that wrapped would grow a card whose
+   height `layoutOf` already committed to. Ellipsed, because an error is as
+   unbounded as a step id; the whole text is its title and `.node-note-full`
+   on focus. Plain ink unless it asks a person to act (`whyNeedsAction`, the
+   Agents list's rule for its own why line). */
+.node-note {
+  font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.node-note.is-warn { color: var(--warn-ink); }
+/* THE WHOLE NOTE, ON FOCUS. Hidden until the card has keyboard focus, then
+   laid over the canvas directly under the card -- absolutely, so it grows
+   nothing the layout measured -- in full, wrapped, never truncated. It is the
+   card's `aria-describedby` whether shown or not, and a SIBLING of the card
+   in `.node-slot`, so it never joins the button's name. */
+.node-note-full {
+  display: none;
+  position: absolute; left: -1px; right: -1px; top: 100%;
+  z-index: 3;
+  margin-top: var(--ctl-s1);
+  padding: var(--ctl-s2);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--ctl-radius-sm);
+  font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text);
+  white-space: pre-wrap; overflow-wrap: anywhere;
+  text-align: left;
+}
+/* The note is the card's next sibling in `.node-slot`, not its child, so it
+   is never part of the button's name. */
+.node:focus-visible ~ .node-note-full { display: block; }
 .node-reading {
   display: block; width: 44px; height: 9px; border-radius: 999px;
   background: var(--surface-2);
@@ -10652,9 +10696,11 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
    intervals from the next; with an even tick count `0` and the tick after it
    both print one interval apart, which is safe because `0` is one character.
    The one case this does not clear: exactly five steps, to the millisecond,
-   is six ticks, and two seven-character labels at 60% and 100% can touch. */
+   is six ticks, and two seven-character labels at 60% and 100% can touch.
+   Counted OF TYPE: a tick is a `span`, and a broken axis's marks (#107) are
+   `i` siblings after the ticks, which must not shift the count. */
 @media (max-width: 560px) {
-  .wf-tl-tick:nth-last-child(even):not(:first-child) > .wf-tl-tick-label { visibility: hidden; }
+  .wf-tl-tick:nth-last-of-type(even):not(:first-of-type) > .wf-tl-tick-label { visibility: hidden; }
 }
 .wf-tl-track {
   position: relative;
@@ -10760,6 +10806,37 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
   padding-left: 0;
   padding-right: var(--ctl-s1);
 }
+/* WAITING ON PARENTS (#107): the part of a wait the step could not have
+   shortened, from submission to its last parent's finish. LIGHTER than the
+   queue after it -- a `--line` outline against the queue's `--text-faint` --
+   because it is not this step's wait, and hueless like every wait. */
+.wf-tl-span.is-parents { border: 1px solid var(--line); }
+/* AN OUTLIER WAIT, CUT SHORT (#107): the axis is broken inside it, so it is
+   dashed, the broken-axis mark stands on the break, and its real length is
+   written just after the mark. The mark is centred on the break and the text
+   runs RIGHT, into the kept part of the wait: a break at the track's left
+   edge -- the common case, an outlier submitted with everything else -- keeps
+   its label on the track, not over the step names. */
+.wf-tl-span.is-clamped { border-style: dashed; }
+.wf-tl-cut {
+  position: absolute;
+  top: 50%;
+  transform: translate(-0.5ch, -50%);
+  padding: 0 var(--ctl-s1) 0 0;
+  background: var(--surface);
+  display: inline-flex; align-items: center; gap: var(--ctl-s1);
+  font: var(--t-micro)/var(--lh-micro) var(--mono);
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+.wf-tl-break { font-style: normal; color: var(--text); }
+/* The same mark on the scale, so the axis itself reads as broken there. */
+.wf-tl-scale-break {
+  position: absolute; bottom: 0;
+  transform: translateX(-50%);
+  font: var(--t-micro)/var(--lh-micro) var(--mono); font-style: normal;
+  color: var(--text);
+}
 
 /* THE TABLE. `.ctl-table` draws it; these are only its column-head controls
    and its cells' absence treatment, which matches the node's. */
@@ -10786,6 +10863,15 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
    hue, because a source is not a verdict and the figure is still a figure. */
 .wf-src { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-faint); font-style: normal; }
 .wf-cell-state { display: inline-flex; align-items: center; gap: var(--ctl-s2); }
+/* THE TABLE'S WHY (#106): one line, the whole of it in the title, warn ink
+   only for what asks a person to act -- the rule `.row .why` keeps. */
+.wf-why {
+  display: inline-block; max-width: 40ch;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  vertical-align: bottom;
+  color: var(--text-dim);
+}
+.wf-why.is-warn { color: var(--warn-ink); }
 .wf-table .node-reading { display: inline-block; vertical-align: middle; }
 .wf-table .wf-pick { min-height: 0; padding: 0 var(--ctl-s1); }
 
@@ -10855,6 +10941,12 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
   font: var(--t-micro)/var(--lh-micro) var(--mono);
   font-variant-numeric: tabular-nums;
   color: var(--text);
+}
+/* THE SHAPE THE SAME-STEP SCRUBBER COMPARES WITHIN (#112), beside the
+   position it qualifies. */
+.wf-scrub-shape {
+  font: var(--t-micro)/var(--lh-micro) var(--mono);
+  color: var(--text-dim);
 }
 /* Every occurrence of the step, in scrub order, in its own state's
    silhouette; this one ringed. */
