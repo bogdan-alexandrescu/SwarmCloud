@@ -42,7 +42,7 @@ import json
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urlparse
 
 _UA = "swarmcloud-agent-worker"
@@ -101,6 +101,14 @@ class PullRequest:
     #: False when an open pull request for this branch already existed. A
     #: resumed attempt pushing again must update that one, never open a second.
     created: bool
+    #: True when that existing pull request's title and body were replaced
+    #: (`open_pull_request(update_existing=True)`, #214).
+    updated: bool = False
+    #: The title GitHub reports for an ADOPTED pull request (empty on one this
+    #: call created). Read only so `open_pull_request` can tell a title a
+    #: human may have written from the platform's own stale one (`retitle_if`,
+    #: #259 follow-up); nothing else in this module or its caller uses it.
+    title: str = ""
 
 
 def parse_repo(url: str) -> RepoRef | None:
@@ -246,6 +254,8 @@ def open_pull_request(
     base: str,
     title: str,
     body: str,
+    update_existing: bool = False,
+    retitle_if: Callable[[str], bool] | None = None,
 ) -> PullRequest:
     """Open one pull request, or adopt the open one this branch already has.
 
@@ -253,6 +263,22 @@ def open_pull_request(
     branch a second time, and a second pull request for the same work would be
     noise that a human has to close by hand. GitHub answers 422 for the
     duplicate; that is looked up rather than treated as a failure.
+
+    `update_existing` replaces an adopted pull request's title and body with
+    these (#214). The worker asks for it only when the AGENT wrote them
+    (`pr-title.txt`, `pr-body.md`): a retry whose agent wrote a new
+    `Closes #N` must put it on the pull request it reuses, and a retry with
+    nothing of the agent's to say must not overwrite a title or body a human
+    edited by hand. A refused update is not a failure -- the pull request is
+    still adopted, with `updated` False.
+
+    `retitle_if`, separately, retitles an adopted pull request whose CURRENT
+    title it answers True for -- the worker passes the owner's 2026-09-28 rule
+    that a title never carries the task id, so a pull request left with the
+    old `[swarm] task_...` fallback is retitled the next time this task's
+    branch is pushed, whether or not the agent wrote anything of its own. Only
+    the title is replaced on that path: the body may be a human's, and
+    nothing about it broke the rule.
     """
     ref = access.ref
     status, data = _request(
@@ -272,6 +298,14 @@ def open_pull_request(
     if status == 422:
         existing = _find_open_pull_request(access=access, token=token, head=head)
         if existing is not None:
+            if update_existing and existing.number:
+                return _update_pull_request(
+                    access=access, token=token, existing=existing, title=title, body=body
+                )
+            if retitle_if is not None and existing.number and retitle_if(existing.title):
+                return _update_pull_request(
+                    access=access, token=token, existing=existing, title=title, body=None
+                )
             return existing
         message = ""
         if isinstance(data, dict):
@@ -308,4 +342,34 @@ def _find_open_pull_request(
         url=str(first.get("html_url") or ""),
         state=str(first.get("state") or "open"),
         created=False,
+        title=str(first.get("title") or ""),
+    )
+
+
+def _update_pull_request(
+    *, access: RepoAccess, token: str, existing: PullRequest, title: str, body: str | None
+) -> PullRequest:
+    """PATCH an adopted pull request's title and body (title only when `body`
+    is None); `updated` says whether it took."""
+    ref = access.ref
+    payload: dict[str, Any] = {"title": title}
+    if body is not None:
+        payload["body"] = body
+    try:
+        status, _ = _request(
+            f"{ref.api_base}/repos/{ref.owner}/{ref.name}/pulls/{existing.number}",
+            token=token,
+            method="PATCH",
+            payload=payload,
+        )
+    except ForgeError:
+        # The pull request exists either way; an unreachable forge on the
+        # update must not read as "no pull request was opened".
+        status = 0
+    return PullRequest(
+        number=existing.number,
+        url=existing.url,
+        state=existing.state,
+        created=False,
+        updated=status == 200,
     )

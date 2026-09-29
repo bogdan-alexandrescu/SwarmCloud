@@ -186,13 +186,16 @@ def test_a_manifest_whose_archive_points_outside_this_tasks_prefix_is_refused(st
         mine.restore(forged, ws2)
 
 
-def test_the_worker_falls_back_to_its_own_latest_when_the_pointer_is_foreign(
+def test_the_worker_starts_clean_when_the_pointer_is_foreign(
     db, store, tmp_path, worker_factory
 ):
     """A planted pointer must not become an error either: the attempt carries on
-    from the checkpoint that really is its own."""
+    from an empty workspace. It no longer falls back to the newest checkpoint
+    under its own prefix, which any agent of the tenant can write (#347).
+    A retry (`attempt_count` 2), so the pointer itself is what is refused, not
+    the first attempt."""
     victim = _write_foreign_checkpoint(store, tmp_path)
-    seed_attempt(db, latest_checkpoint=victim.uri)
+    seed_attempt(db, latest_checkpoint=victim.uri, attempt_count=2)
     worker, _, _ = worker_factory()
 
     assert worker.run() == ExitCode.OK

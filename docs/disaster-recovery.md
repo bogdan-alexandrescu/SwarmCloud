@@ -39,7 +39,7 @@ execution disappears
   -> reconciler: invalidate generation -> terminate -> confirm -> release
   -> task returns to READY
   -> scheduler admits a new attempt, new generation
-  -> worker restores the newest checkpoint ACROSS ALL ATTEMPTS
+  -> worker restores the checkpoint the earlier attempt RECORDED (#347)
   -> work resumes, having lost at most one checkpoint interval
 ```
 

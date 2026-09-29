@@ -11,8 +11,6 @@ somebody to live with if it is declined.
 
 These are requests for a person to decide. Nothing in this file is a plan.
 
-| # | Request | Status |
-|---|---|---|
 | 1 | `identity.py`: the `u-` prefix does not namespace personal tenants | open |
 | 2 | `models.py`: `Attempt` records memory and disk, but not tokens or cost | APPLIED 2026-09-19 |
 | 3 | `models.py`: a typed `input_from` on `Task` | open |
@@ -39,7 +37,9 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 24 | `profiles.py`: whether a profile's cost is declared rather than measured is named outside the catalogue | ACCEPTED 2026-09-25 (#185, decision 9), applied in PR #217 |
 | 25 | `profiles.py`: a runner profile cannot declare the inputs a caller may send it, so the bridge names the mock's by profile | ACCEPTED 2026-09-25 (owner, on #142), applied in PR #213; both amendments confirmed by the owner 2026-09-26: `inputs=None` for `browser` and `generic` (#218), and the bounded park counted by the task's `attempt_count` rather than the state file |
 | 26 | `models.py`: the attempt's CPU figures carry no time and their limit no source | ACCEPTED 2026-09-26 (owner, on #184), applied in PR #229 |
-| 34 | `models.py` / `specsign.py`: a step's spec is signed by swarm-api and verified by every worker (#342) | PROPOSED 2026-09-29 |
+| 30 | `identity.py`: a tenant may list service accounts that resolve to it by exact email (#273) | ACCEPTED 2026-09-29 by the owner after three security reviews |
+| 32 | `profiles.py`: `browser` and `generic` declare no inputs, so the API bounds them by size alone and the plugin can send them none (#218) | ACCEPTED 2026-09-29 by the owner after three security reviews |
+| 34 | `models.py` / `specsign.py`: a step's spec is signed by swarm-api and verified by every worker (#342) | ACCEPTED 2026-09-29 by the owner after three security reviews |
 
 ---
 
@@ -2898,15 +2898,3065 @@ profile changed.
 - **Invariant 9.** The fetch is against the task's own repository with its own
   tenant's credential.
 
+## 29. `models.py`: `EndCause` gains `PUBLISH_REFUSED`
+
+**Status: ACCEPTED, accepted by the owner 2026-09-29** (recorded on #259),
+not yet applied. Recorded 2026-09-29 from #259. If another branch has taken
+29 by the time this merges, renumber this one.
+
+### What is true today
+
+The worker refuses to publish in two ways that fail the attempt retryably
+(#259): the branch it would push adds a credential ("the final tree adds a
+credential in <file>; remove it"), or the agent's `pr-title.txt` is present
+and unusable (a task id, or attribution; since 2026-09-29 a mention is
+neutralised with a zero-width joiner, never refused). Neither has an end cause
+of its own. `EndCause` is in the frozen `swarm_common`, so the worker writes
+`RUNNER_ERROR` for the first and `OUTPUTS_MISSING` for the second
+(`agent_worker.lifecycle._fail_for_final_tree_leak`,
+`_fail_for_refused_title`). The outcome ledger then counts a platform refusal
+as the runner's error or as a missing output, and neither is what happened.
+
+### The requested change
+
+One new member, `EndCause.PUBLISH_REFUSED = "publish_refused"`: the worker
+refused to publish -- a credential in the final tree, or an unusable
+`pr-title.txt`. The worker writes it from both call sites above. swarm-api's
+outcome classes (`swarm_api/outcomes.py`) and the UI's fixture gain the
+class with it.
+
+### What it would break if accepted
+
+Nothing that exists: a new enum value. A reader that does not know it falls
+back to its text classifier, as for any task written before `end_cause`
+existed. The outcome ledger's cause-to-class map and the UI's class list
+must add it in the same change, or those tasks read as unclassified.
+
+### Invariants
+
+- **Secrets.** The cause names the refusal, never the value; the attempt's
+  error names the file, never its content.
+- **Invariant 1.** A refused attempt that goes back to READY holds no
+  capacity, exactly as any retryable failure.
+---
+
+## 30. `identity.py`: a tenant may list service accounts that resolve to it by exact email
+
+**Status: ACCEPTED 2026-09-29 by the owner after three security reviews.**
+Decided in principle by the owner on 2026-09-28 for #273 (the red-CI fixer);
+this entry went through three rounds of security re-review on 2026-09-29 --
+the WIF/deployer-IAM correction, the default-deny scope and IAP-subject
+correction, and the required-keyword `submitted_by` correction, each recorded
+in its own addendum below -- before the owner accepted it as it now reads.
+Nothing here is applied YET: `identity.py`, `auth.py`, `settings.py`,
+`variables.tf` and `locals.tf` are unchanged by the pull request that adds
+this entry; implementation is tracked separately (`part of #273`). Recorded
+2026-09-29. Numbered 30 because 27 and 29 are taken on open branches (29
+twice); if another branch has taken 30 by the time this merges, renumber this
+one.
+
+**2026-09-29, after a security review: accept with changes.** The owner made
+four decisions, folded into this entry below and marked where they land:
+the account stays in `saga-agents-staging` as an accepted risk (**Who can
+mint the account's token**, below); a listed account's rights are narrowed
+to continuation-only (**5. Scope: continuation-only rights**); the deployer
+loses `roles/iam.workloadIdentityPoolAdmin` outright (#334) and, since an IAM
+condition cannot scope `roles/iam.serviceAccountAdmin` at all (IAM resources
+expose no `resource.name` to a condition), instead loses that role
+project-wide in favour of project-wide `roles/iam.serviceAccountCreator` plus
+a per-account `serviceAccountAdmin` grant on each account `terraform/infra`
+manages, excluding `swarm-ci-fix` and `swarm-tf-deployer` (end of **Who can
+mint the account's token**, corrected 2026-09-29 after PR #334); and the
+reviewer's minors are folded into the diffs below. Status stays
+**PROPOSED** — this is
+what re-review checks against, not an acceptance.
+
+**2026-09-29, second re-review pass: "NOT YET," three more corrections.**
+(1) The per-route scope list in item 5 was incomplete -- it missed
+`routes/accounts.py` (8 routes, some writing), `POST
+/v1/tenants/me/credentials`, `GET /v1/attempts`, `GET /v1/outcomes`, and the
+checkpoint-content routes, which took no `AuthContext` at all and so had no
+seam for the old design to attach to. Item 5 is now a DEFAULT-DENY check
+inside `current_auth` against an explicit `CONTINUATION_ROUTES` allow-list
+(the `POOL_ADMIN_ROUTES` pattern), and the `submitted_by` filter moved into
+`Store.get_task`/`Store.list_tasks` themselves rather than being restated at
+each read route; `/v1/stats`, `/v1/capacity`, `/v1/providers` and
+`/v1/tenants/me` are now explicitly classified out, `/v1/resource-classes`
+and `/v1/runtimes` explicitly in. (2) The `uid` pin (item 3/4) compared
+`principal.subject` against Terraform's bare unique id, but IAP -- which
+`ci-fix.yml` actually calls through -- prefixes `sub` with
+`"accounts.google.com:"`; item 4 now strips that prefix once, for both
+paths, before `Principal` is built, and notes that `email_verified`
+defaults to `True` on the IAP path regardless, so decision 4's "explicit
+True" check is a bearer-path protection only. (3) The stolen-token reach
+(**Isolation analysis**, "What an attacker who steals its token gets") is
+restated: `continues_task` carries an ARBITRARY, caller-chosen prompt, not a
+constrained fix, and the account can read back what that prompt produced --
+an exfiltration path, not merely an unwanted commit -- repeatable without
+limit, because the owner declined a continuation cap (decision 3,
+2026-09-29). Recorded as an accepted reach, not a mitigated one.
+
+**2026-09-29, round 3: "NOT YET" on one mechanical point, folded in without
+another owner round.** The `submitted_by` filter (item 5) was still OPT-IN:
+`get_task`, `list_tasks`, `get_workflow` and `list_workflows` defaulted
+`submitted_by=None`, so a route that reaches a task through a layer round 2
+did not personally thread the parameter through -- the artifact service,
+`ctx.inspection`, the transcript or answer service, or one not yet written --
+would keep compiling and keep serving, silently unfiltered. `submitted_by` is
+now a REQUIRED keyword with no default on all four store methods: a missed
+call site is a `TypeError` at the call and a type-check error before that,
+not a silent pass-through. `test_continuation_scope_is_narrow.py` is extended
+to drive every task/workflow-scoped route in `CONTINUATION_ROUTES` at a task
+another `eng` member submitted and assert 404, so a route added to the
+allow-list later without its filter wired through fails on the day it is
+added.
+
+**2026-09-29, implementation correction: the "is not a task in your tenant"
+wording throughout item 5 and its tests was wrong.** Checked directly against
+`apps/swarm-api/swarm_api/store.py` on `main` while implementing this entry
+(`part of #273`): `Store.get_task` today raises `NotFound(f"task {task_id!r}
+not found")` for BOTH a genuinely missing task and another tenant's task --
+never "is not a task in your tenant". That phrase belongs to a DIFFERENT code
+path: #273's own `resolve_continuation` wraps its `continues_task` lookup in
+a `DispatchOptionError` carrying that exact sentence, but it never touches
+`Store.get_task`'s own message. Every place below that quoted "is not a task
+in your tenant" as `Store.get_task`'s (and therefore the new `submitted_by`
+filter's) refusal text has been corrected to the words the store actually
+uses, "task 'X' not found" -- the invariant this entry cares about (SAME
+words for "not yours" as for "not found" and "cross-tenant", so the filter is
+not a new enumeration oracle) is unaffected; only the literal quoted string
+was wrong. Every place describing #273's own `continues_task` message is
+unchanged and was already correct.
+
+### What is true today
+
+`.github/workflows/ci-fix.yml` (#273) federates as
+`swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com` and submits a
+one-step `claude-code` workflow with `continues_task` set to the red swarm
+task. `resolve_continuation` (`apps/swarm-api/swarm_api/continuation.py` on
+#273) looks the task up with `store.get_task(tenant_id, requested)` and answers
+"is not a task in your tenant" for another tenant's task exactly as for a
+missing one. The `swarm/` pull requests belong to `eng`, which resolves from
+the Google group `eng@saga.xyz` (`terraform/environments/dev/dev.tfvars`,
+`tenants.eng`, `directory_group = true`).
+
+So the fixer's account has to resolve to `eng`, and today there are exactly
+two ways a caller does:
+
+- **Group membership.** `Authenticator._from_claims` asks Cloud Identity
+  `groups_for(email, tenant_groups)`, puts the answers in `Principal.groups`,
+  and the frozen `resolve_tenant` returns the first registered group the
+  caller is in. Adding the account to `eng@saga.xyz` would work, and the owner
+  rejected it: that group is a company group, and every grant it holds
+  anywhere in saga.xyz -- Drive, other GCP projects, other applications that
+  authorise by it -- would go to a bot whose only job is to comment on pull
+  requests and submit fix steps.
+- **Being the tenant's principal.** A `kind = "user"` tenant whose principal is
+  the account's own email (as `u-sw-c90291` is for `swarm-verify`). That is a
+  tenant of its own, not `eng`, so it owns none of the tasks it must continue.
+
+Without either, the account is also refused before tenant resolution: its
+domain is `saga-agents-staging.iam.gserviceaccount.com`, not `saga.xyz`, so
+`assert_allowed_domain` answers 403 unless it is in `ALLOWED_USERS`. And if it
+were admitted through `ALLOWED_USERS`, `groups_for` would ask Cloud Identity
+about a service-account address on every request, a lookup that can only
+answer "no" and whose failure is fatal by design (503).
+
+### The requested change
+
+**1. Terraform: one new optional field per tenant.** In
+`terraform/infra/variables.tf`, `var.tenants` gains
+
+```hcl
+    # Service accounts that resolve to THIS tenant besides its principal, by an
+    # exact match on the email the caller's verified token carries. For a bot
+    # that must act as the tenant without joining the tenant's group, which
+    # would hand it every grant the group holds across the company (contract
+    # request 30). Bare emails of user-managed accounts in this project; never
+    # a human, never an admin, never under two tenants -- see the validations.
+    service_accounts = optional(list(string), [])
+```
+
+and `dev.tfvars` would set, once #273's account exists:
+
+```hcl
+  eng = {
+    ...
+    service_accounts = ["swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com"]
+  }
+```
+
+**2. How it reaches swarm-api.** `terraform/infra/locals.tf` renders one new
+environment variable on swarm-api beside `TENANT_GROUPS`. **Revised from the
+first draft (reviewer minor): a JSON list of objects, not a JSON object keyed
+by email**, because Python's `json.loads` on an object keyed by email would
+silently keep the LAST of two duplicate keys rather than refuse them -- fine
+for what Terraform renders today (its own for-expression already errors on a
+duplicate key at plan time), not fine for `TENANT_SERVICE_ACCOUNTS` set by
+hand, which is exactly the case `settings.py`'s own startup check exists for.
+A list carries duplicates through unchanged, so the Python-side check
+(below) is the one thing that can refuse them, not an accident of which
+representation the object literal happens to pick:
+
+```hcl
+locals {
+  # Every listed service account across every tenant, lower-cased and deduped
+  # for the data source below -- a `for_each` key must be unique even though
+  # the SAME email under two tenants is refused by validation, not by this.
+  listed_service_accounts = toset(flatten([
+    for t, v in var.tenants : [for sa in v.service_accounts : lower(sa)]
+  ]))
+}
+
+# The account's unique id (`sub` on the token it presents), pinned beside its
+# email so a service account deleted and recreated under the same address --
+# GCP lets the account id be reused -- does not inherit the old one's tenant.
+# Reviewer minor.
+data "google_service_account" "listed" {
+  for_each   = local.listed_service_accounts
+  project    = var.project_id
+  account_id = split("@", each.value)[0]
+}
+
+      # Every listed service account -> its tenant's kind and principal, and
+      # its own unique id. A list, not an object: see above.
+      TENANT_SERVICE_ACCOUNTS = jsonencode(flatten([
+        for t, v in var.tenants : [
+          for sa in v.service_accounts : {
+            email     = lower(sa)
+            kind      = v.kind
+            principal = lower(v.principal)
+            uid       = data.google_service_account.listed[lower(sa)].unique_id
+          }
+        ]
+      ]))
+```
+
+JSON rather than `_csv`, because each entry carries four values now and a
+delimiter scheme invented for it would be a second format to get wrong.
+`directory_group` is deliberately not consulted: a listed account never needs
+a directory lookup, so it resolves to a `kind = "group"` tenant whose group
+cannot be read (as `smoke`'s cannot) exactly as to one whose group can.
+
+`apps/swarm-api/swarm_api/settings.py` gains
+
+```python
+    #: Service accounts a tenant lists besides its principal (contract request
+    #: 30), from TENANT_SERVICE_ACCOUNTS. Refused at startup, not at request
+    #: time, when an entry is not a user-managed service account in THIS
+    #: project, is listed more than once, sits under two tenants, is missing
+    #: its unique id, or is also in admin_users, admin_pool_users or
+    #: secret_admin_principals: a revision that would resolve one wrongly must
+    #: not start serving.
+    tenant_service_accounts: tuple[TenantMember, ...] = ()
+```
+
+parsed by a `_tenant_members("TENANT_SERVICE_ACCOUNTS")` helper that
+`json.loads` the value as a **list** (empty or absent is `()`), and for each
+entry: lower-cases `email`, `kind` and `principal`; requires `kind` in
+`{"group", "user"}`, a non-empty `principal` and a non-empty `uid`; requires
+`email` to match `identity.SERVICE_ACCOUNT_EMAIL` **and** to end with
+`@{self.project_id}.iam.gserviceaccount.com` -- the second check is what a
+bare regex on the shape cannot do, and is why a Google-managed service agent
+(`service-<number>@gcp-sa-<api>.iam.gserviceaccount.com`) can never match: its
+domain never ends with this project's id, however the regex is written
+(reviewer minor). It then **refuses a duplicate email itself**, by building
+the tuple through a plain loop that checks membership before appending rather
+than relying on `dict`/`json` key semantics to catch it (the other half of the
+reviewer minor above): two entries for the same email raise `ValueError`
+whether or not they agree on tenant. It raises `ValueError` on any of the
+refusals above, including the ones already caught at `terraform plan` --
+belt and suspenders for a hand-set environment variable Terraform never saw.
+A startup `ValueError` fails the new Cloud Run revision's readiness, so the
+previous revision keeps serving.
+
+**3. How `resolve_tenant` uses it.** The frozen change is the diff below:
+a `TenantMember` type, a `SERVICE_ACCOUNT_EMAIL` expression, a
+`tenant_member_for()` matcher, and a third, defaulted parameter on
+`resolve_tenant`. The match is:
+
+- **exact and case-insensitive on email, exact on the account's unique id**:
+  `email.strip().lower() == member.email` (already lower-cased once, on
+  `TenantMember`, not at every comparison -- reviewer minor) **and**
+  `principal.subject == member.uid`. The second half is new: pinning the
+  token's `sub` claim beside the listed email is what stops a service account
+  that was deleted and recreated under the same address -- GCP allows the
+  account id to be reused -- from silently inheriting the old account's
+  tenant the moment its email is presented again. An email match with a
+  mismatched `uid` is treated as no match at all, exactly like an unlisted
+  account, and falls through to today's refusal (wrong domain, not in
+  `ALLOWED_USERS`);
+- **matched with `re.fullmatch`, not `re.match`** (reviewer minor: `match`
+  with a trailing `$` in the pattern still accepts a string with a trailing
+  newline, which `fullmatch` does not; a compiled anchor is not a substitute
+  for asking the regex engine to consume the whole string);
+- **only on a user-managed service-account address**
+  (`<id>@<project>.iam.gserviceaccount.com`); a listed entry of any other
+  shape never matches even if it got past Terraform and settings. The
+  project-id pin that excludes a Google-managed service agent is enforced at
+  startup in `settings.py`, not in this regex -- `identity.py` is frozen and
+  has no notion of which project it is running in, so the regex alone would
+  still accept `service-1234@gcp-sa-x.iam.gserviceaccount.com` under a
+  project literally named `gcp-sa-x`; only `settings.py`'s `endswith` check
+  closes that (reviewer minor, see item 2);
+- **on the email and subject the token verified**: `_from_claims` passes the
+  `email` and `sub` claims of a Google ID token that `verify_oauth2_token`
+  accepted with `email_verified` not false, or of an IAP assertion
+  `IapAssertionVerifier` accepted. Nothing the caller sends in a body, a
+  header or a query is read;
+- **before any group lookup**: a match returns the listing tenant's id,
+  derived by `tenant_id_for_group(principal)` for `kind="group"` or
+  `tenant_id_for_user(principal)` for `kind="user"`, from the tenant's own
+  kind and principal, so the account and the group it stands beside cannot
+  name two different tenants. An entry whose `kind` is neither now **raises**
+  `AuthError` instead of silently falling through to the `user` branch
+  (reviewer minor) -- `settings.py` already refuses that shape at startup, so
+  reaching it here means the belt-and-suspenders check caught something the
+  suspenders should already have caught, and that is worth surfacing as a 401
+  rather than quietly guessing.
+
+With the default `service_accounts=()` every existing caller of
+`resolve_tenant` behaves exactly as today.
+
+**4. `auth.py`, the non-frozen half.** **Corrected 2026-09-29: the `sub` claim
+needs normalising before it reaches `tenant_member_for`, and the first draft
+of this entry did not do that.** `_from_claims` reads it today at line 335:
+
+```python
+        subject = str(claims.get("sub", ""))
+```
+
+For a bearer ID token that is already the bare unique id Terraform's
+`data.google_service_account.unique_id` renders. For an **IAP assertion it is
+not**: `IapAssertionVerifier.verify` documents it in so many words --
+*"IAP puts the verified identity in `email`, and `sub` carries a stable
+`accounts.google.com:<id>` rather than a bare subject"* (`auth.py`, in the
+class docstring). **`ci-fix.yml` calls swarm-api through IAP**, like every
+other caller of this Cloud Run service that is not inside the VPC, so the
+listed path's `uid` pin -- compared as `principal.subject == member.uid` in
+`tenant_member_for` -- would never match the real account's own token as
+first drafted: the claim it would compare carries a twelve-character prefix
+Terraform's rendered `uid` never has. Fixed at the same line, before
+`Principal` is built, since this is a fact about the claims format and not
+about listing:
+
+```python
+        subject = str(claims.get("sub", ""))
+        # IAP prefixes a stable "accounts.google.com:" (IapAssertionVerifier,
+        # above); a bearer ID token's `sub` carries no such prefix. Stripped
+        # here, once, for BOTH paths, so `principal.subject` is the bare id
+        # either way and `tenant_member_for`'s `uid` comparison (item 3) does
+        # not need to know which path produced it -- normalising per-path
+        # inside the comparison would be the second copy of this rule,
+        # findable only by reading both call sites at once.
+        subject = subject.removeprefix("accounts.google.com:")
+```
+
+`Principal.subject` had no reader anywhere in the codebase before this
+change (`grep -rn "\.subject\b" apps/swarm-api apps/common` -- none), so this
+is safe to normalise unconditionally rather than only inside the new listed
+path: nothing existing depended on the prefixed form.
+
+Then, as the first thing after reading `email` and `subject`:
+
+```python
+        member = tenant_member_for(email, subject, self._settings.tenant_service_accounts)
+        if member is not None:
+            # Reviewer minor: the listed path requires an EXPLICIT True, not
+            # merely "not False" -- the weaker rule the bearer path applies
+            # everywhere else (GoogleTokenVerifier.verify). A listed account
+            # skips both Cloud Identity passes below, so this claim is the
+            # only outside confirmation of the identity left; treating an
+            # absent claim as acceptable here would remove it.
+            if claims.get("email_verified") is not True:
+                raise AuthError("listed service account requires a verified email claim")
+            principal = Principal(
+                email=email,
+                subject=subject,
+                domain=email.rsplit("@", 1)[1],
+                groups=(),
+            )
+            log.info("tenant member %s resolved by listing", email)
+            return AuthContext(
+                principal=principal,
+                tenant_id=resolve_tenant(
+                    principal,
+                    self._settings.tenant_groups,
+                    service_accounts=self._settings.tenant_service_accounts,
+                ),
+                is_admin=False,
+                tenant_principal=member.principal,
+                admin_unresolved=False,
+                is_pool_admin=False,
+                tenant_member=email,
+                # Decision 2: a listed account's rights, below.
+                member_scope="continuation",
+            )
+```
+
+That is: the listing **admits** the account (it does not also go in
+`ALLOWED_USERS`, so there is one place that says it may call), it **skips both
+Cloud Identity passes** (no tenant-group lookup and no admin-group lookup, so a
+directory outage cannot 503 it and it can never pick up admin through a group
+it happens to be in), and it is **never an admin or a pool admin**. An
+unlisted service account takes today's path unchanged.
+
+**Said plainly, because it changes what the `email_verified is not True` check
+(above) is actually worth for `ci-fix.yml`: on the IAP path that check is
+inert.** `IapAssertionVerifier.verify` already does `claims.setdefault
+("email_verified", True)` (`auth.py:211`) before `_from_claims` ever sees the
+claims, because IAP "only ever forwards identities it has already
+authenticated" -- so by the time the new listed-path check runs, the claim is
+always `True` for an IAP caller, whatever IAP itself received. The check is
+real and load-bearing on the **bearer** path, where `GoogleTokenVerifier`
+applies the weaker "not False" rule and an absent claim would otherwise pass
+through unchanged; on the **IAP** path it can never fire, because IAP has
+already made the decision this check exists to double-check. Since
+`ci-fix.yml` calls through IAP, decision 4's "listed path requires an
+explicit True" is, for this account specifically, a bearer-path-only
+protection that happens to also be written for a caller that never takes the
+bearer path. It stays in the diff because a future listed account might.
+
+**A second, non-frozen fix folded in here (reviewer minor: "a duplicate-listing
+`AuthError` maps to 401/403, not 500").** `Authenticator._authenticate_bearer`
+today calls `self._from_claims(claims)` unwrapped at its tail, unlike the IAP
+branch of `authenticate()`, which already catches `AuthError` from
+`_from_claims` and converts it to `Unauthenticated`. `main.py` registers a
+global `@app.exception_handler(AuthError)` that maps an uncaught one to 401
+today, so this is not observed as a live 500 -- but it is the one place in
+`auth.py` that relies on that global handler instead of converting its own
+error, which is exactly the asymmetry `tenant_member_for`'s new
+"listed under more than one tenant" `AuthError` (a case this change
+introduces) would go through on the bearer path. Made symmetric with the IAP
+branch:
+
+```python
+        try:
+            return self._from_claims(claims)
+        except Forbidden:
+            raise
+        except AuthError as exc:
+            raise Unauthenticated(str(exc)) from None
+```
+
+**5. Scope: continuation-only rights, DEFAULT-DENY (decision 2, 2026-09-29;
+redesigned 2026-09-29 after re-review found the per-route list incomplete).**
+A listed account's tenant membership is real -- it is `eng`, with `eng`'s GSA,
+secrets, prefix and namespace -- but its RIGHTS within that tenant are not a
+human member's. `AuthContext` gains
+
+```python
+    #: "" for an ordinary member (a human, or -- unlisted -- today's only
+    #: kind of caller): every route behaves exactly as today. "continuation"
+    #: for a listed service account (decision 2, 2026-09-29): it may submit a
+    #: `continues_task` workflow and read what IT submitted, and nothing else.
+    #: Not a kind of admin and not read by `require_admin` -- `is_admin` and
+    #: `is_pool_admin` already answer that, independently, and stay False for
+    #: every listed account regardless of this field.
+    member_scope: str = ""
+```
+
+**What the first draft of this entry got wrong.** It named a list of routes
+to gate: `create_task`, `create_task_batch`, `cancel_task`, `cancel_workflow`,
+and a `submitted_by` filter on the task/workflow read routes. Re-review found
+that list incomplete by construction -- it was built by reading `tasks.py` and
+`workflows.py` and stopping, not by enumerating every router the app
+includes. Missed, all of them reachable by a continuation-scoped caller under
+that design because they depend on bare `current_auth` and were simply never
+looked at:
+
+- **`routes/accounts.py`, all eight routes** (`routes/accounts.py:157-369`):
+  `GET /v1/accounts` (list, read-only). `POST /v1/accounts/authorize` only
+  starts a sign-in (no write). The other six WRITE: `POST /v1/accounts`
+  (register a credential), `POST /v1/accounts/exchange` (redeem a sign-in
+  and register the account), `POST /v1/accounts/{id}/refresh` (rotate the
+  credential now), `PUT /v1/accounts/{id}/lending`, `PUT
+  /v1/accounts/{id}/state` (pause/drain), `DELETE /v1/accounts/{id}`. A
+  stolen token could register a credential into `eng`'s pool, pause or
+  delete one of `eng`'s accounts, or change who it lends to.
+- **`POST /v1/tenants/me/credentials`** (`routes/tenants.py:54`): the one
+  route in the service that accepts key material. A stolen token could
+  overwrite `eng`'s provider API key with one the attacker controls.
+- **`GET /v1/attempts` and `GET /v1/outcomes`**: both tenant-wide by design
+  (`list_attempts`'s docstring: "Attempts across every TASK of the caller's
+  tenant"), not task-scoped, so neither goes through `Store.get_task` and
+  neither can be narrowed by a `submitted_by` filter the way the task routes
+  can -- there is no task in the call to filter.
+- **The checkpoint-content routes** (`routes/checkpoints.py:53-118`): `GET
+  .../checkpoints/{checkpoint_id}/files`, `.../files/{path}`, `.../content`.
+  These three don't even declare `auth: AuthContext` -- only `tenant_id: str =
+  Depends(tenant_scope)` -- so there was **no seam** for a per-route
+  `member_scope` check to attach to in the first draft's design at all; the
+  gap was not a missed line, it was a missing parameter.
+
+**The fix: default-deny in `current_auth` itself, not an opt-in gate each
+route remembers to add.** `tenant_scope` already depends on `current_auth`
+(every route above does, transitively, including the checkpoint ones -- that
+part was never the gap), so putting the check there closes every route in one
+place, present and future, the same way `admin_auth`/`POOL_ADMIN_ROUTES`
+already gates the admin surface:
+
+```python
+# auth.py, beside POOL_ADMIN_ROUTES
+
+#: Every route a CONTINUATION-SCOPED account (member_scope="continuation") may
+#: call, as (HTTP method, route template) -- an ALLOW-LIST, same reasoning as
+#: POOL_ADMIN_ROUTES: a route defaults to CLOSED for this scope until named
+#: here, where opening it is a decision visible in review, rather than
+#: defaulting OPEN until someone notices and closes it. This is what the first
+#: draft's per-route list should have been from the start.
+#: tests/unit/control_plane/test_continuation_scope_is_narrow.py holds this
+#: set equal to the decided one and sweeps every route in every router
+#: against it, the same shape as test_pool_admin_is_narrow.py.
+CONTINUATION_ROUTES: frozenset[tuple[str, str]] = frozenset({
+    ("POST", "/v1/workflows"),  # only WITH continues_task -- see item 4
+    ("GET", "/v1/tasks"),
+    ("GET", "/v1/tasks/{task_id}"),
+    ("GET", "/v1/tasks/{task_id}/events"),
+    ("GET", "/v1/tasks/{task_id}/attempts"),
+    ("GET", "/v1/tasks/{task_id}/artifacts"),
+    ("GET", "/v1/tasks/{task_id}/artifacts/content"),
+    ("GET", "/v1/tasks/{task_id}/artifacts/raw"),
+    ("GET", "/v1/tasks/{task_id}/checkpoints"),
+    ("GET", "/v1/tasks/{task_id}/checkpoints/{checkpoint_id}/files"),
+    ("GET", "/v1/tasks/{task_id}/checkpoints/{checkpoint_id}/files/{path:path}"),
+    ("GET", "/v1/tasks/{task_id}/checkpoints/{checkpoint_id}/content"),
+    ("GET", "/v1/tasks/{task_id}/logs"),
+    ("GET", "/v1/tasks/{task_id}/transcript"),
+    ("GET", "/v1/tasks/{task_id}/answer"),
+    ("GET", "/v1/tasks/{task_id}/input"),
+    ("GET", "/v1/workflows"),
+    ("GET", "/v1/workflows/{workflow_id}"),
+    ("GET", "/v1/resource-classes"),  # static catalogue, no tenant data
+    ("GET", "/v1/runtimes"),          # static catalogue, no tenant data
+})
+
+
+def require_continuation_route(
+    ctx: AuthContext, route: tuple[str, str] | None
+) -> AuthContext:
+    """A continuation-scoped caller may reach only CONTINUATION_ROUTES.
+
+    An ordinary member (`member_scope == ""`) returns immediately -- this
+    changes nothing for anyone but a listed account. `route=None` (no route
+    matched) fails closed, same as `require_admin`.
+    """
+    if not ctx.member_scope:
+        return ctx
+    if route is not None and route in CONTINUATION_ROUTES:
+        return ctx
+    method, path = route if route else ("?", "unmatched")
+    raise Forbidden(f"a continuation-scoped account may not call {method} {path}")
+```
+
+```python
+# deps.py, current_auth -- after ctx.authenticator.authenticate(...) succeeds,
+# before the rate limiter (an account refused the route gets no limiter
+# consequence for the request it was never allowed to make)
+    path = getattr(request.scope.get("route"), "path", None)
+    route = (request.method.upper(), path) if path else None
+    require_continuation_route(auth, route)
+```
+
+This is the SAME dependency every route already calls to authenticate at
+all -- directly, or through `tenant_scope`/`admin_auth`, both of which
+`Depends(current_auth)` themselves -- so a route added tomorrow with no idea
+this scope exists is closed to it by default, not open until someone
+remembers to gate it. `routes/accounts.py`, `routes/tenants.py`'s credential
+route, `/v1/attempts`, `/v1/outcomes`, `/v1/stats`, `/v1/capacity`,
+`/v1/providers`, `POST /v1/tasks`, `POST /v1/tasks/batch`, every `/{id}/cancel`
+route and every `/v1/admin/*` route are refused **because they are absent from
+CONTINUATION_ROUTES**, not because each was individually taught to check
+`member_scope` -- the fix for the missed routes and the fix for the routes
+this entry already named are the same fix.
+
+**`/v1/stats`, `/v1/capacity`, `/v1/providers`, `/v1/tenants/me`, classified
+explicitly, per re-review:** none is in `CONTINUATION_ROUTES`. All four are
+tenant-wide informational reads the fixer's job -- submit a continuation, read
+what it submitted -- does not need; `/v1/tenants/me` is otherwise harmless
+(no secrets, only the caller's own principal and the tenant's declared
+providers) but is left out on the same "nothing not needed for the job"
+principle, not because it is dangerous. `/v1/resource-classes` and
+`/v1/runtimes` ARE included: both are the platform's static, non-tenant
+catalogue (`platform.py`'s own docstrings: "no store read, no tenant filter"),
+so listing them costs nothing and a client would otherwise have no way to
+interpret `resource_class`/`runtime` names it already receives back on the
+tasks it can read.
+
+**`POST /v1/workflows`** stays in `CONTINUATION_ROUTES`, but
+`SubmissionService.submit_workflow`, right beside its existing
+`resolve_continuation` call (#273), still refuses when
+`auth.member_scope == "continuation" and spec.continues_task is None`: being
+on the route allow-list only means the ROUTE is reachable, not that every
+request to it succeeds. Everything `resolve_continuation` already checks --
+caller's own tenant, `direct-pr`, one step, no `repository_ref` -- still
+applies unchanged on top of this.
+
+**The `submitted_by` filter lives in the store's task lookup, not
+route-by-route, per re-review.** One shared dependency derives it:
+
+```python
+# deps.py
+def submission_scope(auth: AuthContext = Depends(current_auth)) -> str | None:
+    """`None` for an ordinary member (unfiltered within the tenant, today's
+    behaviour); the caller's own email for a continuation-scoped one. ONE
+    function, so every read route derives this the same way instead of each
+    restating `auth.email if auth.member_scope == "continuation" else None` --
+    which is what the first draft did, and how the checkpoint-content routes,
+    which never even took an `AuthContext`, were missed: there was nowhere
+    that repeated expression could have been written for them.
+    """
+    return auth.email if auth.member_scope else None
+```
+
+Every route in `CONTINUATION_ROUTES` that reads a task or workflow now also
+declares `submitted_by: str | None = Depends(submission_scope)` and passes it
+down to `Store.get_task`/`Store.list_tasks`/`Store.get_workflow`/
+`Store.list_workflows`, which gain the parameter and do the filtering
+**once, in the store**.
+
+**`submitted_by` is a REQUIRED keyword, with no default, on all four --
+corrected 2026-09-29, round 3 of re-review.** The first draft gave it
+`submitted_by: str | None = None`, which is opt-in: a route or service
+that reaches a task through a layer that never learned about this change --
+the artifact service, `ctx.inspection`, the transcript and answer services,
+`Store`'s OWN internal helpers that call `self.get_task(...)` before doing
+something else -- keeps compiling, keeps passing its existing tests, and
+keeps returning the task, silently, to a caller the filter was supposed to
+refuse. `Store.get_task` alone has two such internal callers today
+(`store.py:961` and `:1051`, a tenant check and an artifact-manifest read
+that each call `self.get_task(tenant_id, task_id)` with no third argument),
+and `Store.get_workflow` has a third (`store.py:1194`) -- none of them
+security-relevant today, all three exactly the shape a missed thread-through
+would take. A default makes that shape free to write; removing the default
+makes it a `TypeError` at the call, and a `reportCallIssue`/missing-argument
+error at type-check, before it ever reaches a test:
+
+```python
+# store.py
+def get_task(self, tenant_id: str, task_id: str, *, submitted_by: str | None) -> Task:
+    task = ...  # unchanged lookup and tenant check
+    if submitted_by is not None and task.submitted_by != submitted_by:
+        # SAME words as the existing cross-tenant refusal, corrected 2026-09-29:
+        # `Store.get_task` today (main, checked directly) raises
+        # `NotFound(f"task {task_id!r} not found")` for BOTH a genuinely
+        # missing task and another tenant's task -- NOT "is not a task in
+        # your tenant", which is #273's own `resolve_continuation` wrapper
+        # message for `continues_task` specifically, a different code path.
+        # An earlier draft of this entry quoted the wrong one. Not a new
+        # enumeration oracle: a continuation-scoped caller cannot distinguish
+        # "not yours" from "not in your tenant" from "does not exist" any
+        # more than a cross-tenant caller can today.
+        raise NotFound(f"task {task_id!r} not found")
+    return task
+```
+
+`list_tasks`, `get_workflow` and `list_workflows` gain the identical
+`*, submitted_by: str | None` (no default) and the identical check, so all
+four fail the same way when a call site forgets the argument. **Every
+existing call site in the codebase passes `submitted_by=None` explicitly**
+(today's unfiltered behaviour, made an explicit decision rather than an
+implicit default) -- verified by `grep -rln
+"\.get_task(\|\.list_tasks(\|\.get_workflow(\|\.list_workflows(" --include="*.py" .`
+against this branch: `apps/swarm-api/swarm_api/{store.py, rollup.py,
+outcomes.py, inspect.py, routes/admin.py, routes/tasks.py,
+routes/workflows.py}`, `apps/reconciler/reconciler/backends.py`, and
+`tests/unit/control_plane/{test_scheduler_writes_are_guarded.py,
+test_workflow_state_rollup.py}` -- fifteen call sites in `apps/swarm-api`
+alone outside `store.py`'s own internals, plus the reconciler's. Every one of
+them is a full-member or internal (non-tenant-scope) read today, so
+`submitted_by=None` is a no-op change to their behaviour and a REQUIRED
+statement of that fact, not a new one to justify per site.
+
+**This is what closes the checkpoint-content gap, and closes it the way
+round 2 intended but did not enforce.** Those three routes gain
+`submitted_by: str | None = Depends(submission_scope)` and thread it through
+`service.list_files(tenant_id, task_id, submitted_by=submitted_by, ...)` ->
+`CheckpointContent` -> `InspectionService`'s own `Store.get_task` call. Round
+2 already proposed this thread-through; round 3's fix is that `Store.get_task`
+itself now REFUSES to compile or run without the keyword arriving from
+somewhere, so a fourth service layer discovered later -- the artifact
+service, the transcript service, the answer service, or one not yet
+written -- cannot reach a task by forgetting the argument; it can only reach
+one by supplying it, correctly or not, and supplying it wrong is a much
+narrower way to fail than supplying nothing at all.
+
+### What `tenant_principal` becomes for such a caller
+
+**The tenant's principal, not the caller's email**: `eng@saga.xyz` for the
+fixer, exactly what a human member of `eng` gets from `_tenant_principal`.
+It has to be. `Service.tenant_for` passes it to `Store.ensure_tenant`, and
+`Service.scope_for` to `Store.assert_tenant_scope`, and both compare it with
+the principal stored on the `eng` tenant document to refuse a caller whose
+tenant id belongs to a different principal. The account's own email there
+would make every request it sends a collision refusal -- and if it were ever
+the first caller to create the document, it would record the bot as `eng`'s
+principal. The `secret_admin_principals` check in `tenant_for` is unaffected,
+because it reads that same tenant principal, and the listing refuses an
+account in `secret_admin_members` separately (below).
+
+The caller's own identity is still `principal.email`, which is what
+`submitted_by` is built from. `member_scope` (item 5, above) is a separate,
+narrower gate layered on top of `tenant_id`/`tenant_principal`: the tenant
+says WHICH secrets, GSA and prefix a caller gets; the scope says WHICH of the
+tenant's routes it may use. A future listed account with fuller rights would
+set `member_scope=""` and get everything a human member gets -- this entry
+proposes `"continuation"` for `swarm-ci-fix` specifically, not a ceiling on
+the mechanism.
+
+### Audit: which member submitted a task
+
+Three records, none a frozen-type change; extended so submit, cancel and
+continue are recorded the same way rather than only the first (decision 4,
+"audit records the acting member ... consistently"):
+
+- **`Task.submitted_by` and `Workflow.submitted_by`** are already the verified
+  email (`service.py` sets both from `ctx.email`), so a fixer task already
+  carries `swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com`, and the
+  outcome ledger's `submitted_by` grouping separates the bot's tasks from the
+  humans' in `eng` with no further change. This covers submit AND continue --
+  a continuation is a normal `Store.create_tasks` call for its one step task,
+  so it already gets both fields with no extra code.
+- **`AuthContext.tenant_member`** (new, in `auth.py`, default `""`) is the
+  listed email when the tenant came from a listing. The `SUBMITTED` event that
+  `Store.create_tasks` writes gains `detail["submitted_by"]` and
+  `detail["tenant_member"]` -- `"service_account"` for a listed caller, absent
+  otherwise -- so the event trail says, per task, not only who submitted it
+  but that the tenant was assigned by a listing rather than by a group. The
+  sign-in log line above records the same per request, with no token material
+  (the email is already what every other `auth.py` log line names).
+- **`Store.request_cancel`**, called from `cancel_task` with `by=auth.email`
+  already, gains the same `tenant_member` parameter `create_tasks` gets, so
+  the event it writes carries `detail["tenant_member"] = "service_account"`
+  under the identical rule. Today only a full member can reach `cancel_task`
+  at all -- `("POST", "/v1/tasks/{task_id}/cancel")` is absent from
+  `CONTINUATION_ROUTES` (item 5), so `current_auth` itself refuses a
+  continuation-scoped caller before the route body, let alone the store, runs
+  -- so this is written for consistency with any future listed account whose
+  scope is not `"continuation"`, not for `swarm-ci-fix` itself -- a
+  `member_scope` that changes must not also have to remember to re-wire the
+  audit trail for the one action it newly permits.
+
+### Validation
+
+Every rule is enforced at plan time in `terraform/infra/variables.tf`, and again
+at swarm-api startup in `settings.py` for anything Terraform cannot see (an
+environment variable set by hand). The variable already requires Terraform
+`>= 1.9.0` (`versions.tf`), which is what lets a validation on `var.tenants`
+read `var.admin_users`; `secret_admin_members` already validates against
+`var.tenants` the same way.
+
+1. **Only a user-managed service account in this project, never a human.**
+
+   ```hcl
+   validation {
+     condition = alltrue(flatten([
+       for t, v in var.tenants : [
+         for sa in v.service_accounts :
+         can(regex("^[a-z][a-z0-9-]{4,28}[a-z0-9]@[a-z][a-z0-9-]{4,28}[a-z0-9]\\.iam\\.gserviceaccount\\.com$", sa))
+         && endswith(sa, "@${var.project_id}.iam.gserviceaccount.com")
+       ]
+     ]))
+     error_message = "tenants.*.service_accounts takes bare, lower-case emails of user-managed service accounts in this project (<id>@<project>.iam.gserviceaccount.com): never a person, a group, a domain, a pattern, a serviceAccount: member or a Google-managed account."
+   }
+   ```
+
+   The expression is the one #273's `ci_fix_service_account` validation
+   already uses. It refuses a human (no Workspace domain ends in
+   `.iam.gserviceaccount.com`), a `serviceAccount:` member, a wildcard, and
+   the Google-managed accounts every workload in a project can run as
+   (`<number>-compute@developer.gserviceaccount.com`,
+   `<project>@appspot.gserviceaccount.com`). The project pin is this entry's
+   addition, and one the owner must accept: who can mint a token for an
+   account is decided by IAM in that account's project, and only this
+   project's IAM is reviewed here.
+
+2. **Under one tenant only.**
+
+   ```hcl
+   validation {
+     condition = length(flatten([for t, v in var.tenants : [for sa in v.service_accounts : lower(sa)]])) == length(distinct(flatten([for t, v in var.tenants : [for sa in v.service_accounts : lower(sa)]])))
+     error_message = "a service account may be listed under ONE tenant: it decides the account's secrets, GCS prefix and namespace, and two listings would make that depend on rendering order."
+   }
+   ```
+
+   The same rule is enforced two more times, not three as the first draft of
+   this entry said: `TENANT_SERVICE_ACCOUNTS` renders as a JSON **list**, not
+   an object keyed by email (item 2, above, reviewer minor), so a duplicate
+   there is no longer a `locals.tf` plan-time error by construction -- it is
+   `settings.py` that refuses one explicitly at startup (by membership check,
+   not by relying on `dict`/`json` key collapsing), and `tenant_member_for`
+   that raises `AuthError` rather than pick one if a caller somehow reaches
+   this layer with two live entries for the same email. Terraform's own
+   `var.tenants` validation above is still the first and cheapest of the
+   three: it never lets the plan apply with a duplicate in the first place.
+
+3. **Never an admin, in any admin list.**
+
+   ```hcl
+   validation {
+     condition = length(setintersection(
+       toset(flatten([for t, v in var.tenants : [for sa in v.service_accounts : lower(sa)]])),
+       toset(concat(
+         [for u in var.admin_users : lower(u)],
+         [for u in var.admin_pool_users : lower(u)],
+         [for m in var.secret_admin_members : lower(replace(m, "serviceAccount:", ""))]
+       ))
+     )) == 0
+     error_message = "a tenant's service account may not also be in admin_users, admin_pool_users or secret_admin_members: a listing gives exactly one tenant's rights, and an admin entry would add every tenant's."
+   }
+   ```
+
+   `admin_groups` cannot be checked here, because whether a group contains the
+   account is a fact in the directory, not in Terraform. That is why
+   `auth.py` skips the admin-group pass for a listed caller and sets
+   `is_admin=False` unconditionally: membership of an admin group does not
+   make a listed account an admin, by construction rather than by validation.
+
+4. **Never a tenant's own principal.**
+
+   ```hcl
+   validation {
+     condition = length(setintersection(
+       toset(flatten([for t, v in var.tenants : [for sa in v.service_accounts : lower(sa)]])),
+       toset([for t, v in var.tenants : lower(v.principal)])
+     )) == 0
+     error_message = "a service account that is a tenant's principal already has a tenant; listing it under another would give it two."
+   }
+   ```
+
+   This is what stops `swarm-verify` (principal of `u-sw-c90291`) being listed
+   under `eng`.
+
+**The account's unique id is not a `validation` block** -- it is not user
+input, it is read live from `data.google_service_account.listed` (item 2,
+above) at plan time, from whatever account currently holds that email. If the
+email is later deleted and recreated, the next `terraform apply` reads the
+NEW account's unique id and renders that; nothing here freezes the old one.
+The pin's job is narrower than a validation: it stops a stale, already-issued
+token's `sub` claim (from the old account) from matching a listing that now
+names a different one, in the window between the account being recreated and
+the next successful apply -- not to catch a recreation that Terraform itself
+already reflects.
+
+Every refusal happens at `terraform plan`, before anything is applied, and
+`tests/terraform` asserts each one (below).
+
+### Isolation analysis (invariant 9)
+
+**A listed account gets exactly its tenant's rights, narrowed further to
+continuation only, and nothing else.** It resolves to one `tenant_id` and one
+`tenant_principal`, the same pair a human member of that tenant gets, so every
+tenant-scoped check downstream -- `get_task(tenant_id, ...)`,
+`assert_tenant_scope`, the tenant's GSA, secrets, GCS prefix and namespace --
+applies to it unchanged. On top of that, `member_scope` (below) cuts it down
+to a fraction of what a human member of `eng` can do. It gets no admin (the
+flag is forced false and the lists refuse it), no pool admin, no second
+tenant (one listing, never a principal), and no personal tenant (a listed
+account never falls through to `u-...`). The change grants it **no GCP IAM at
+all**: it does not touch the tenant's GSA, its secrets or its bucket, and the
+account's own roles stay exactly what #273's `ci_fix.tf` and
+`frontend_iap_members` give it. Compared with the rejected alternative
+(joining `eng@saga.xyz`), it gets none of that group's grants outside this
+platform, and, after decision 2 below, far less than a member's grants inside
+it too.
+
+**What an attacker who steals its token gets (M2), restated honestly after
+re-review -- the first draft of this section understated the reach, and the
+owner has now reviewed and accepted the reach as stated here, not the earlier,
+narrower one.** For as long as the token lives -- an ID token or IAP assertion
+expires in at most an hour, and an access token minted by federation the
+same, though "who can mint it" is wider than the token's own lifetime, see
+below -- and constrained by `member_scope = "continuation"` (item 5, above):
+
+- **Submit `continues_task` for ANY `eng` `direct-pr` task that still exists,
+  with an ARBITRARY PROMPT.** `resolve_continuation` (#273) constrains the
+  SHAPE of a continuation -- caller's own tenant, `direct-pr` strategy, one
+  step, no `repository_ref`, the continued task's own repository -- and
+  constrains NOTHING about the step's own instructions: that field is
+  ordinary caller-supplied task input, read exactly as any other task's is.
+  A continuation is not "reapply the same fix"; it is "run a new agent
+  session, with a prompt of the attacker's choosing, against that repository,
+  using `eng`'s forge token to push whatever it produces to that PR's
+  branch." Cannot spend `eng`'s capacity on a genuinely NEW task (no existing
+  `direct-pr` PR to attach to) and cannot touch another tenant's task --
+  `resolve_continuation` and the scope check both still refuse those -- but
+  neither of those is much of a ceiling: any `eng` repository with an open
+  `swarm/` pull request is reachable, for whatever prompt the attacker sends.
+- **Exfiltrate private repository content through the agent's own
+  artifacts.** The account may read `GET /v1/tasks/{id}/artifacts`,
+  `/logs`, `/transcript` and `/answer` for tasks it itself submitted (item 5).
+  A continuation it submits is such a task. So the arbitrary prompt above can
+  instruct the agent to copy the contents of any file the checked-out
+  repository holds -- not only files related to the original red build --
+  into a commit message, an artifact, or its own transcript, and the
+  attacker reads it back through the same allowed routes. This is not a
+  hypothetical composition of two separately-acceptable capabilities: it is
+  the direct consequence of "arbitrary prompt with `eng`'s push access" plus
+  "read what I submitted" existing on the same account.
+- **No cap on how many times, and no cap on spend.** The owner considered and
+  DECLINED a limit on continuation count or cost for this account (decision
+  3, 2026-09-29). So the two capabilities above are not "one bounded
+  incident" -- they can be repeated against every `eng` repository with an
+  open `direct-pr` PR, for as long as the token can be used or re-minted (see
+  **Who can mint the account's token**, below), each repetition spending real
+  agent-provider cost against `eng`'s subscription and real capacity against
+  `eng`'s `max_active` ceiling (invariant 2 still gates CONCURRENT capacity;
+  nothing gates the NUMBER of sequential continuations over time). **Read the
+  tasks it itself submitted** is otherwise the account's only read reach: it
+  cannot list or read a human `eng` member's other work, and it cannot
+  cancel anything, its own tasks included.
+
+**`.github/workflows/auto-merge.yml` remains a real mitigation, but of a
+narrower thing than the reach above.** A push to a pull request's branch
+fires `synchronize`, which the workflow's `remove-stale-ready` job treats as
+"this head changed" -- it turns auto-merge off and removes the `ready` label
+unconditionally, label-adding events excepted
+(`.github/workflows/auto-merge.yml` lines ~237-270). So a malicious commit
+pushed this way cannot merge ITSELF: the pull request it lands on drops out
+of the auto-merge queue the moment the push lands, and needs a human to
+re-review and re-label it `ready`. **That bounds only the worst
+CODE-SHIPPING outcome.** It does nothing for the exfiltration path above --
+reading a secret back through the agent's own artifacts needs no merge at
+all -- and nothing for the spend -- an agent session costs money and capacity
+whether or not its commit ever merges. Restated so this is not read as more
+protective than it is: it is one mitigation against one of three
+consequences, not a bound on the reach as a whole.
+
+**This is accepted, not mitigated, by owner decision on 2026-09-29 (decision
+3).** The owner reviewed this restated reach -- arbitrary-prompt push access
+plus artifact-based exfiltration plus unbounded repetition and spend -- and
+chose not to add a continuation cap. What actually bounds this account is the
+scope in item 5 (it is `continues_task`-or-nothing, and read-your-own-only)
+and the token-lifetime and who-can-mint analysis below, not a limit on how
+many times or how expensively the account can act within that scope.
+
+Every task it submits still says so in `submitted_by` and in its `SUBMITTED`
+event (and, after decision 4's audit fix, every cancel and continuation it
+performs says so too), so what it did is enumerable afterwards, after the
+fact. It is not other tenants, not the admin surface, not the provider key or
+forge token AS MATERIAL (#219 keeps both out of the workspace -- the
+exfiltration path above is through repository content the agent reads and
+reports, not through reading the credential itself), and not saga.xyz outside
+this platform.
+
+### Who can mint the account's token
+
+**#273's `terraform/bootstrap/ci_fix.tf` binds `roles/iam.workloadIdentityUser`
+on the account to exactly one principalSet,**
+`attribute.job_workflow_ref/bogdan-alexandrescu/SwarmCloud/.github/workflows/ci-fix.yml@refs/heads/main`.
+GitHub sets `job_workflow_ref` from the workflow file the job actually runs,
+so another workflow -- in this repository on main, on another branch, or in a
+fork -- presents a different value and is refused; the pool provider's
+`attribute_condition` separately refuses any other repository and any ref
+outside `github_allowed_refs`, and never `refs/pull/*`. `workflow_run` runs
+the default branch's copy, so a pull request cannot change the file it runs
+under. **That is a real limit on an external caller who holds nothing else in
+this project:** minting a token that way means first getting a change to
+`ci-fix.yml` merged to `main`.
+
+**It is not a limit on the project's own IAM, and the first draft of this
+entry overstated it as one.** Measured on 2026-09-29 as bogdan@saga.xyz,
+`saga-agents-staging` IAM already lets several principals mint the account's
+token without touching `ci-fix.yml` at all:
+
+- **`roles/iam.serviceAccountAdmin`** includes `iam.serviceAccounts.setIamPolicy`
+  on every service account in the project, so a holder can bind
+  `roles/iam.serviceAccountTokenCreator` on `swarm-ci-fix` to any principal,
+  themselves included, and mint a token directly -- no workflow run, no WIF
+  pool involved. Held by: the deployer (`swarm-tf-deployer`), `bogdan@`,
+  `facu@`, `konstantin@`.
+- **`roles/iam.workloadIdentityPoolAdmin`** can edit the pool provider's
+  `attribute_condition` and attribute mapping, so a holder can widen the
+  principalSet the binding above already trusts to admit a different
+  workflow, ref or repository -- defeating the "only `ci-fix.yml` on `main`"
+  guarantee from the inside rather than around it. Held by: the deployer,
+  `bogdan@`.
+- **`roles/owner`** can do both of the above and everything else in the
+  project. Held by: `bogdan@`, `emanuel@`.
+
+**The owner accepted this as a known risk on 2026-09-29, not as a gap for
+this PR to close.** Every principal listed already holds project-level trust
+for other reasons -- the deployer runs Terraform against this project;
+`bogdan@`, `facu@`, `konstantin@` and `emanuel@` administer it. What this PR
+narrows is the ACCOUNT's own reach once a token is minted (decision 2,
+continuation-only rights, above) and the DEPLOYER's standing roles (next
+paragraph) -- not who else in the project could, in principle, mint the
+token; that is accepted, not mitigated, here.
+
+**The deployer's two roles, corrected (2026-09-29, after this entry's first
+draft): `roles/iam.serviceAccountAdmin` cannot be scoped by an IAM
+condition.** IAM resources do not expose `resource.name` to a condition at
+all: *"the condition `resource.name.endsWith == devResource` never grants
+access to any IAM resource because IAM resources don't provide the resource
+name"* ([conditions attribute reference](https://docs.cloud.google.com/iam/docs/conditions-attribute-reference)),
+and `iam.googleapis.com` is absent from the resource-service table in
+[conditions-resource-attributes](https://docs.cloud.google.com/iam/docs/conditions-resource-attributes).
+A `resource.name` condition on this role would revoke it outright, not narrow
+it, and the deployer's first service-account change after applying one would
+403. `terraform/bootstrap/deployer_conditions.tf` (#334) records this in the
+same words, as the reason the role stays **unscoped** in that PR.
+
+**`roles/iam.workloadIdentityPoolAdmin` IS removed, in #334, and needs no
+condition:** `terraform/infra` names no pool or provider of its own -- it
+only names GKE's pool as a string inside a service-account binding's member
+-- so the role was pure standing reach, dropped outright rather than scoped.
+
+**For `roles/iam.serviceAccountAdmin`, the owner decided the shape that
+actually works, recorded in #334's `docs/ci.md` on 2026-09-29 but not yet
+applied by that PR's own diff -- a further bootstrap change:** remove the
+deployer's project-wide `roles/iam.serviceAccountAdmin`; grant it
+project-wide `roles/iam.serviceAccountCreator` instead (which needs no
+per-resource name and stays project-wide by necessity, same as
+`serviceusage.serviceUsageAdmin` above); and grant `serviceAccountAdmin`
+**per account**, one resource-level binding on each `swarm-*` service account
+`terraform/infra` manages, **excluding `swarm-ci-fix` and `swarm-tf-deployer`
+themselves** (both bootstrap-managed, outside `terraform/infra`'s remit) --
+the shape #23 already gave IAP admin, applied here to service accounts.
+Until that lands, the deployer keeps its project-wide `serviceAccountAdmin`
+and remains part of the accepted risk above; once it lands, the deployer can
+still create and administer the `swarm-*` accounts `terraform/infra` manages,
+but can no longer touch `swarm-ci-fix`'s IAM policy at all -- narrower than
+"scoped", closed for that one account specifically.
+
+**The residual, stated plainly: this narrows the deployer, not the humans
+who separately hold these roles.** `bogdan@`, `facu@` and `konstantin@` hold
+`roles/iam.serviceAccountAdmin` as individually granted principals, not
+through the deployer, and neither #334 nor the per-account change above
+touches those grants. So after both land, **`facu@`, `konstantin@` and
+`emanuel@` (`roles/owner`) still can mint `swarm-ci-fix`'s token** --
+an accepted risk, for the reason given above: they already hold project-level
+trust for other reasons, and this entry narrows the account's own reach and
+the deployer's standing access, not every human administrator's.
+
+The remaining preconditions this entry's WIF analysis still depends on:
+
+- the account has **no user-managed keys** (`gcloud iam service-accounts keys
+  list --iam-account=swarm-ci-fix@...` lists only system-managed ones), since a
+  key mints tokens with no workflow involved;
+- `ci-fix.yml` never runs pull-request code in a step that can read the
+  federated credential. On #273's head it checks out `main` only ("NOT the
+  branch being fixed: its code runs in the fix step's container, never here")
+  and runs only when the head repository is this one. That has to stay true,
+  because a `workflow_run` job that executes the head's code with the token
+  present hands the token to whoever wrote the pull request.
+
+### The diff proposed for `identity.py`
+
+Not applied. Generated against `main` at `d4a2352`. **Revised 2026-09-29 to
+fold in the reviewer's minors** (`fullmatch`; `TenantMember` normalises once;
+a `uid` pinned beside the email; an unknown `kind` raises) -- this supersedes
+the diff this entry's first draft posted.
+
+```diff
+--- a/apps/common/swarm_common/identity.py
++++ b/apps/common/swarm_common/identity.py
+@@ -8,12 +8,20 @@
+ A TENANT IS A GOOGLE GROUP. `eng@saga.xyz` is one tenant whose members share a
+ quota budget, provider keys and artifacts. A user in no mapped group falls back
+ to a personal tenant so nobody is ever hard-blocked from the platform.
++
++A TENANT MAY ALSO LIST SERVICE ACCOUNTS (contract request 30). A service
++account is not a Workspace principal, and making it a member of the tenant's
++group would hand it every grant that group holds across the company. So a
++listed account resolves to its tenant by an EXACT match on the email AND the
++unique id its verified token carries, before any group is consulted -- never
++by a pattern, a prefix or a domain.
+ """
+ 
+ from __future__ import annotations
+ 
+ import hashlib
+ import re
++from collections.abc import Iterable
+ from dataclasses import dataclass
+ 
+ 
+@@ -29,6 +37,70 @@
+     groups: tuple[str, ...] = ()
+ 
+ 
++#: A user-managed service account: `<account id>@<project id>.iam.gserviceaccount.com`,
++#: both halves 6-30 characters as GCP names them. Google-managed accounts
++#: (`<number>-compute@developer.gserviceaccount.com`, `<project>@appspot...`)
++#: do NOT match on purpose: every workload in a project can run as those, so
++#: listing one would put the whole project in the tenant. A human address
++#: cannot match either -- no Workspace domain ends in `.iam.gserviceaccount.com`.
++#: This regex alone does not pin the PROJECT: `settings.py` does that at
++#: startup with an `endswith` check this frozen module has no project id to
++#: perform itself -- see contract request 30, item 2. terraform/infra/variables.tf
++#: validates `tenants.*.service_accounts` with the same expression, and
++#: scripts/lib/check-contract-parity.sh holds the two equal.
++SERVICE_ACCOUNT_EMAIL = re.compile(
++    r"^[a-z][a-z0-9-]{4,28}[a-z0-9]@[a-z][a-z0-9-]{4,28}[a-z0-9]\.iam\.gserviceaccount\.com$"
++)
++
++
++@dataclass(frozen=True)
++class TenantMember:
++    """A service account a tenant lists besides its group or user principal.
++
++    `kind` and `principal` are the TENANT's, not the account's: the tenant id
++    is derived from them by the same function that derives it for a human
++    member, so a listed account and the group it stands beside can never name
++    two different tenants.
++
++    Every field is normalised ONCE, here, rather than at each comparison --
++    the earlier draft of this type left `email`/`kind`/`principal` as given
++    and called `.strip().lower()` at every call site instead, which is
++    exactly the kind of repetition that lets one site be missed.
++    """
++
++    email: str       # swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com
++    kind: str        # "group" | "user" -- the tenant's kind
++    principal: str   # eng@saga.xyz -- the tenant's principal
++    uid: str         # the account's OAuth2 unique id (the token's `sub`
++                     # claim), from Terraform's
++                     # data.google_service_account.unique_id -- pinned beside
++                     # the email so an account deleted and recreated under
++                     # the same address, which GCP permits, does not inherit
++                     # the old one's tenant.
++
++    def __post_init__(self) -> None:
++        object.__setattr__(self, "email", self.email.strip().lower())
++        object.__setattr__(self, "kind", self.kind.strip().lower())
++        object.__setattr__(self, "principal", self.principal.strip().lower())
++        object.__setattr__(self, "uid", self.uid.strip())
++
++
++def tenant_member_for(
++    email: str, subject: str, members: Iterable[TenantMember]
++) -> TenantMember | None:
++    """The listed member whose email AND unique id (`sub`) both match, or None.
++
++    Exact equality on both, nothing else. An entry that is not a user-managed
++    service-account address is never matched even when listed, so a
++    misconfiguration that names a human cannot route that human around their
++    group. An email match with no matching `uid` is treated as no match at
++    all -- the caller falls through to today's refusal exactly as an unlisted
++    account would, rather than being told why. An address listed under two
++    tenants is refused rather than resolved by order: the tenant decides
++    which secrets and which GCS prefix a caller gets, and "whichever was
++    rendered first" is not a decision.
++    """
++    wanted = email.strip().lower()
++    if not SERVICE_ACCOUNT_EMAIL.fullmatch(wanted):
++        return None
++    found = [m for m in members if m.email == wanted and m.uid == subject]
++    tenants = {(m.kind, m.principal) for m in found}
++    if len(tenants) > 1:
++        raise AuthError("a service account is listed under more than one tenant")
++    return found[0] if found else None
++
++
+ _TENANT_SAFE = re.compile(r"[^a-z0-9-]+")
+ 
+ 
+@@ -98,14 +166,33 @@
+     return domain
+ 
+ 
+-def resolve_tenant(principal: Principal, group_priority: tuple[str, ...]) -> str:
++def resolve_tenant(
++    principal: Principal,
++    group_priority: tuple[str, ...],
++    service_accounts: tuple[TenantMember, ...] = (),
++) -> str:
+     """Pick the caller's tenant.
+ 
+-    `group_priority` is the admin-ordered list of group emails that map to
+-    tenants. First match wins, so a user in several mapped groups lands
++    A caller whose verified email AND subject match a listed service account
++    resolves to the tenant that lists it, FIRST and regardless of
++    `principal.groups`: the listing is an admin's explicit statement about
++    this one identity, and a group membership (which a service account can
++    hold) must not be able to move it somewhere else.
++
++    Otherwise `group_priority` is the admin-ordered list of group emails that
++    map to tenants. First match wins, so a user in several mapped groups lands
+     deterministically in the same tenant on every request -- which matters
+     because the tenant determines which secrets and which GCS prefix they get.
+     """
++    member = tenant_member_for(principal.email, principal.subject, service_accounts)
++    if member is not None:
++        if member.kind == "group":
++            return tenant_id_for_group(member.principal)
++        if member.kind == "user":
++            return tenant_id_for_user(member.principal)
++        # settings.py already refuses this shape at startup; reaching it here
++        # means that check was bypassed (a hand-set env var, a test double) --
++        # surfaced rather than guessed at.
++        raise AuthError(f"a listed tenant member names an unknown kind {member.kind!r}")
++
+     member_of = {g.lower() for g in principal.groups}
+     for group in group_priority:
+         if group.lower() in member_of:
+```
+
+### What it would break if accepted
+
+Nothing that exists. `resolve_tenant`'s new parameter is keyword-defaulted to
+`()`, so `auth.py`'s current call, `test_group_resolution.py` and any other
+caller behave exactly as today until `TENANT_SERVICE_ACCOUNTS` is non-empty.
+`AuthContext.member_scope` is likewise defaulted to `""`, and
+`require_continuation_route` (item 5) returns its argument immediately
+whenever `ctx.member_scope` is falsy -- which is every existing caller, since
+nothing sets it today -- so `current_auth` gaining this check changes nothing
+for a human member or an unlisted service account, on any route, existing or
+future. It is EVERY route that newly runs this check, not routes that opt
+in (the design item 5 replaced was the opt-in shape, and re-review is why it
+was replaced); the change in observable behaviour is confined entirely to a
+caller whose `member_scope` is non-empty, and there are none until
+`TENANT_SERVICE_ACCOUNTS` lists one. No stored document changes shape: `Task`,
+`Workflow`, `Tenant` and `TaskEvent` are untouched (the audit fields are
+`detail` keys and `AuthContext` fields outside the contract). `docs/ci.md` on
+#273 says the fixer's account must be "admitted (`allowed_users`) and a
+member of that tenant's Google group"; that sentence changes to naming
+`tenants.eng.service_accounts` and to saying its rights are continuation-only.
+
+### If it is declined
+
+The fixer's account can resolve to `eng` only by joining `eng@saga.xyz`, which
+the owner has rejected, or not at all, in which case #273's continuation is
+refused with "is not a task in your tenant" on every red pull request and the
+fixer can only comment.
+
+### The tests that would prove it
+
+Unit, no credentials and no emulator:
+
+- `tests/unit/control_plane/test_group_resolution.py` (`resolve_tenant`,
+  `tenant_member_for`):
+  - a listed account resolves to `eng` when `principal.email` AND
+    `principal.subject` both match the listing's `email`/`uid`, with
+    `groups=()`, and to `tenant_id_for_user(principal)` when the listing
+    tenant is `kind="user"`;
+  - `SWARM-CI-FIX@SAGA-AGENTS-STAGING.IAM.GSERVICEACCOUNT.COM` resolves the
+    same (case-insensitive on email; `uid` still matches exactly);
+  - **an email match with a mismatched `uid` does NOT resolve to `eng`** --
+    falls through exactly as an unlisted account would (the recreated-account
+    case the `uid` pin exists for);
+  - **`fullmatch`, not `match`:** an email with a trailing newline
+    (`"swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com\n"`) does not
+    match, where the earlier `.match()` with `$` in the pattern would have;
+  - the listing wins over groups: the same account with
+    `groups=("other@saga.xyz",)` and `other@saga.xyz` first in priority still
+    resolves to `eng`;
+  - no pattern and no domain: `swarm-ci-fix2@...`, `x-swarm-ci-fix@...`,
+    `swarm-ci-fix@other-project.iam.gserviceaccount.com` and
+    `swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com.evil.example`
+    each fall through to today's rule;
+  - a human address listed as a member (`bogdan@saga.xyz`) never matches;
+  - an account listed under two tenants raises `AuthError`; listed twice
+    under the same tenant (same `kind`/`principal`) resolves;
+  - **a `TenantMember` with `kind="workspace"` (anything but `"group"` or
+    `"user"`) raises `AuthError` from `resolve_tenant`** rather than
+    resolving as `kind="user"`;
+  - `TenantMember(" Eng@Saga.xyz ".strip(), " GROUP ", ...)`-style
+    constructor arguments come out normalised once (`__post_init__`), so two
+    `TenantMember`s built from differently-cased/whitespaced input compare
+    equal on `email`/`kind`/`principal`;
+  - **`tenant_member_for` does no IAP-prefix stripping of its own:** a
+    `principal.subject` of `"accounts.google.com:12345"` against a listed
+    `uid` of `"12345"` does NOT match here -- proving the frozen function
+    does exact comparison only, and that the `"accounts.google.com:"` strip
+    (item 4) has to happen in `auth.py`, before this function is ever called,
+    not be expected of it;
+  - with `service_accounts` omitted, every existing case in the file gives
+    today's answer (the file's current cases, unchanged, are this test).
+- a new `tests/unit/control_plane/test_tenant_service_accounts.py`
+  (`Authenticator` with `StaticTokenVerifier`):
+  - a listed account gets `tenant_id="eng"`, `tenant_principal="eng@saga.xyz"`,
+    `is_admin=False`, `is_pool_admin=False`, `admin_unresolved=False`,
+    `tenant_member=<its email>`, **`member_scope="continuation"`**;
+  - a caller with no listing gets `member_scope=""`, including every case
+    `test_group_resolution.py` already covers for a human;
+  - it is admitted with `allowed_domains=("saga.xyz",)` and empty
+    `ALLOWED_USERS`, and an unlisted service account is still 403;
+  - the `MembershipResolver` is a fake that raises `GroupLookupError` on any
+    call, and `admin_groups` is non-empty: the listed account still
+    authenticates (no lookup made, no 503), and is still not an admin;
+  - `email_verified: False` is still 401 (the general rule);
+  - **`email_verified` ABSENT (not `False`, simply missing) is 401 for the
+    listed path on the BEARER path specifically** -- the stricter, listed-only
+    rule (decision 4) -- while an unlisted bearer caller with the claim absent
+    still succeeds, proving the two paths are not accidentally the same code;
+  - **on the IAP path, the same listed caller with `email_verified` absent
+    from the raw assertion still authenticates.** This is not a gap in the
+    check -- `IapAssertionVerifier.verify` already forces
+    `claims.setdefault("email_verified", True)` (`auth.py:211`) before
+    `_from_claims` runs, so the listed-path check never observes an absent
+    claim on this path at all. The test exists to SAY so, not to catch a
+    bug: it is the proof that decision 4's "explicit True" rule is a
+    bearer-path protection that happens to be inert for `ci-fix.yml`, which
+    calls through IAP;
+  - **the IAP path and the bearer path resolve to the SAME `AuthContext`
+    (including `member_scope`) from DIFFERENT-SHAPED `sub` claims** -- a
+    bearer token's bare `"12345"` and an IAP assertion's
+    `"accounts.google.com:12345"` both resolve to the listed account when its
+    `uid` is `"12345"`, proving the `"accounts.google.com:"` strip (item 4)
+    actually closes the gap it exists for, not merely that both paths agree
+    when fed identical input;
+  - **a duplicate listing (`tenant_member_for` raising `AuthError`) comes back
+    401, not 500,** on both the bearer path and the IAP path -- the symmetric
+    `try`/`except` decision 4 adds to `_authenticate_bearer`;
+  - `continues_task` naming an `eng` task is accepted, naming a `u-bogdan`
+    task is refused "is not a task in your tenant";
+  - **`CONTINUATION_ROUTES` is swept against every route in every router the
+    app includes, and extended in round 3 to a second assertion per
+    task/workflow-scoped route** (`tests/unit/control_plane/test_continuation_scope_is_narrow.py`,
+    the same shape as `test_pool_admin_is_narrow.py`):
+      - **reachability:** every route NOT in the set 403s a continuation-scoped
+        caller with an otherwise-valid request, and every route IN the set
+        does not 403 for that reason. This is the test that would have caught
+        the first draft's gap, because it does not require anyone to have
+        thought of `routes/accounts.py` -- it walks the app's own route table;
+      - **ownership, round 3's addition:** for every route in the swept set
+        whose path names a `{task_id}` or `{workflow_id}`, the fixture creates
+        ONE task/workflow submitted by a different `eng` member and drives
+        that route at it with the listed caller's credentials -- every one
+        404s ("task 'X' not found", the existing cross-tenant wording --
+        corrected 2026-09-29, see item 5's `Store.get_task` snippet). This is
+        the assertion that
+        catches a missed `submitted_by` thread-through directly, rather than
+        relying on someone naming the right route by hand: it walks
+        `CONTINUATION_ROUTES` itself, so a route added to the allow-list
+        later without its filter wired through fails this test on the day it
+        is added, not on the day someone thinks to ask;
+  - named explicitly, because re-review found them missing: **all eight
+    `routes/accounts.py` routes** (list, register, authorize, exchange,
+    refresh, lending, state, delete), **`POST /v1/tenants/me/credentials`**,
+    **`GET /v1/attempts`**, **`GET /v1/outcomes`**, **`GET /v1/stats`**,
+    **`GET /v1/capacity`**, **`GET /v1/providers`**, **`GET /v1/tenants/me`**
+    each 403 for the listed caller with a request that would succeed for an
+    ordinary `eng` member;
+  - **`GET /v1/resource-classes` and `GET /v1/runtimes`** succeed for the
+    listed caller (static catalogue, no tenant data, explicitly allow-listed);
+  - **`POST /v1/tasks`, `POST /v1/tasks/batch`, `POST /v1/tasks/{id}/cancel`,
+    `POST /v1/workflows/{id}/cancel`** each 403 for the listed caller and
+    succeed for an ordinary `eng` member with an identical request otherwise
+    -- covered by the sweep above too, and named individually because they
+    are the routes decision 2 was written about first;
+  - **`POST /v1/workflows` with no `continues_task`** 403s for the listed
+    caller and succeeds for an ordinary `eng` member -- `submit_workflow`'s
+    own check, since being in `CONTINUATION_ROUTES` only opens the route, not
+    every request to it;
+  - **`GET /v1/tasks/{id}` for a task `eng`'s human member submitted** 404s
+    ("task 'X' not found", the existing cross-tenant wording) for the listed
+    caller, and **the same
+    call for a task the listed caller itself submitted** succeeds -- proving
+    the `submitted_by` filter is per-caller, not per-tenant. Also covered by
+    the sweep's ownership assertion above; kept as its own named case because
+    it is the one this entry's examples build on elsewhere;
+  - **`GET /v1/tasks`** for the listed caller returns only tasks it submitted,
+    even when `eng` has others (a LIST assertion, which the sweep's
+    single-task ownership check does not itself make -- `Store.list_tasks`
+    filtering is exercised here specifically);
+  - **`GET /v1/tasks/{id}/checkpoints/{checkpoint_id}/files` (and `/files/{path}`,
+    `/content`) for a checkpoint of a task `eng`'s human member submitted**
+    404s for the listed caller, and the same call for the listed caller's OWN
+    task succeeds -- the case that had no seam at all before `submission_scope`
+    was threaded into `checkpoints.py`, and now also caught by the sweep's
+    ownership assertion since these three are members of `CONTINUATION_ROUTES`;
+  - a new `tests/unit/control_plane/test_store_task_scope_is_required.py`:
+    calling `store.get_task(tenant_id, task_id)` (two positional arguments,
+    no `submitted_by`) raises `TypeError: get_task() missing 1 required
+    keyword-only argument: 'submitted_by'`, and the same for `list_tasks`,
+    `get_workflow`, `list_workflows` -- the test that proves the signature
+    change itself, independent of any route, so it stays red even if every
+    route-level test above were somehow satisfied by an accident of fixture
+    setup;
+  - the created task's `submitted_by` is the account's email and its
+    `SUBMITTED` event carries `tenant_member="service_account"`; the same is
+    true of a `CANCELLED` event when a FULL member (not the listed caller,
+    which cannot reach cancel -- absent from `CONTINUATION_ROUTES`) cancels
+    while resolving through a listing, and of a continuation's own
+    `SUBMITTED` event.
+- settings: `TENANT_SERVICE_ACCOUNTS` parses as a **list**; `ApiSettings.from_env`
+  raises `ValueError` for a human address, a Google-managed service agent
+  under a project-shaped id (`service-123@gcp-sa-x.iam.gserviceaccount.com`
+  where `x` happens to look like a project id, refused by the `endswith`
+  pin, not by the regex), an account from a DIFFERENT project, a duplicate
+  email (two list entries, same or different tenant -- refused by the
+  explicit membership check, not by relying on `dict`/`json` key collapse), a
+  missing or empty `uid`, a `kind` outside `{group, user}`, and an entry also
+  in `ADMIN_USERS`, `ADMIN_POOL_USERS` or `SECRET_ADMIN_PRINCIPALS`; absent or
+  `[]` is `()`.
+
+Terraform, `tests/terraform/tenancy.tftest.hcl`, each refusal a `run` with
+`expect_failures = [var.tenants]`: an account under two tenants; a human
+address; `serviceAccount:`-prefixed; a Google-managed compute account; an
+account in another project; one in `admin_users`, in `admin_pool_users`, in
+`secret_admin_members`; one that is another tenant's principal. `data.
+google_service_account.listed` is overridden with a mocked `unique_id` via
+`override_data` in the `.tftest.hcl` file, so these runs need no real GCP
+call. And one passing `run` asserting the rendered `TENANT_SERVICE_ACCOUNTS`
+equals
+`[{"email":"swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com","kind":"group","principal":"eng@saga.xyz","uid":"<mocked>"}]`
+-- a **list**, revised from the object-keyed-by-email shape the first draft
+of this entry proposed (reviewer minor) -- and `[]` when no tenant lists one.
+
+Parity: `scripts/lib/check-contract-parity.sh` gains a check that the
+expression in the `variables.tf` validation equals
+`identity.SERVICE_ACCOUNT_EMAIL.pattern`, so the plan-time rule and the
+runtime rule cannot drift apart. It does not and cannot check the project-id
+pin, which lives only in `variables.tf` and `settings.py` (`identity.py` has
+no project id to compare against) -- those two are checked against each
+other by the settings test above instead.
+
+Each test is proved red first in CI, per CLAUDE.md: the tests land alone on
+the implementing branch and must fail there before the change lands on
+`<branch>-fix`.
+
+### Invariants
+
+- **Invariant 9.** Analysed above: a listed account is one more member of one
+  tenant, with that tenant's GSA, secrets, prefix and namespace and nothing
+  else -- and, after decision 2 (2026-09-29), fewer of that tenant's ROUTES
+  than a human member, not merely the same rights routed through a bot.
+- **Invariant 10.** Unaffected: the listing is operator configuration in
+  Terraform; nothing a caller sends chooses a tenant.
+- **Invariant 2 (all-or-nothing capacity).** Unaffected in mechanism -- a
+  continuation still reserves capacity through the same transaction every
+  other task does -- but worth stating given decision 3: nothing here caps
+  HOW MANY times a continuation-scoped account can go through that
+  transaction over time, only how many it can hold `LEASED` at once (`eng`'s
+  `max_active`, invariant 3). The owner accepted that as part of the same
+  no-cap decision, not as a separate gap.
+- **CONTRACT.md "Tenant = Google group".** Refined, not reversed: a tenant is
+  still a group (or a user), and its listed accounts are members by
+  declaration rather than by directory.
+---
+
+## 32. `profiles.py`: `browser` and `generic` declare no inputs, so the API bounds them by size alone and the plugin can send them none
+
+**Status: ACCEPTED 2026-09-29 by the owner after three security reviews.**
+Nothing here is applied yet; an implementation PR, `part of #218`, carries
+this out (see `docs/DEPLOY_STATE.md` or the linked PR for its state — this
+entry itself does not track a moving target). It answers #218,
+which contract request 25 left open: which inputs `browser` and `generic`
+declare, and with which bounds. Originally numbered 29, because 28 was the
+last entry on `main` when this branch was cut and 27 appears nowhere on
+`main`. **Renumbered to 32 on 2026-09-29**, after a security review found
+four other open PRs had each numbered their own new entry 29 for the same
+reason: #259, #314, #304 and #316. Resolved as #259 keeps 29, #314 becomes
+30, #304 becomes 31, this entry (#218) becomes 32, and #316 becomes 33.
+
+### What is true today
+
+Measured from `main` at `d4a2352` on 2026-09-29.
+
+**Both profiles are `inputs=None`**, and `check_inputs` hands their input
+back unchecked, so swarm-api bounds it by size (`validate_input_size`) and by
+Firestore's integer range (`validate_storable`) and nothing else. The owner
+confirmed that on 2026-09-26 as the interim (request 25's table row). It was
+meant to last until #218 was decided.
+
+**It has already stopped work.** #220 found on 2026-09-28 that every browser
+task dispatched through the `sc` plugin failed after it started, with
+"browser runner needs input.url or at least one action". The bridge sends a
+key only when a declaration names it (`swarm_mcp/profiles.py`, `check_inputs`),
+and `browser` declares nothing. So no caller of the plugin can give a browser
+task the one thing it cannot run without, and the refusal arrives after
+admission, after a lease and a GKE pod start.
+
+**What the size bound lets through, and where it fails instead.** Every item
+below is a value the API accepts today that the runner then fails on, or
+quietly reads differently:
+
+* `timeout_ms: 0` and `launch_timeout_ms: 0`. Playwright reads 0 as "no
+  timeout", so one `wait_for` on a selector that never appears holds the
+  attempt, and its `browser` capacity (2 units), for the profile's full
+  5400 s.
+* `timeout_ms: "abc"`. The runner calls `int()` on it, raises `ValueError` and
+  fails the attempt after admission.
+* An action without the field its type needs: `{"type": "click"}` raises
+  `KeyError` at `action["selector"]`, also after admission.
+* `{"type": "wait", "seconds": 600}`. The runner clamps it to 60 with
+  `min(..., 60.0)` and does not report the clamp.
+* A `goto` to `http://10.0.0.1/`. The runner accepts any http(s) URL with a
+  host. The worker's NetworkPolicy drops the packets, and Dataplane V2 drops
+  without replying, so the action waits out `timeout_ms` and fails as a
+  timeout. Nothing in the failure says the address was refused.
+* `generic` with no `command`. It is admitted, leased and started, and then
+  fails with "input.command is required".
+* `generic` limits. `timeout_seconds: 0` is read as "not asked" and ignored.
+  `timeout_seconds: 99999` is clamped to the platform's ceiling, with a
+  WARNING in the worker's log that the caller never sees.
+* Keys the worker fills with `setdefault` (`task_id`, `attempt_id`,
+  `repository`, `resumed_from_checkpoint`, `lifecycle.py` around line 860).
+  For these two profiles a value the caller sent takes precedence over the
+  worker's. Neither runner reads those keys, so nothing is affected today.
+  A declaration closes the gap anyway, because an undeclared key is refused
+  at the door.
+
+### What each runner reads
+
+Read again from the runners' source on 2026-09-29. These tables list every
+key `body()` reads from `ctx.payload`, and nothing else.
+`generic.py` refuses `argv`, `script`, `env`, `command_line` and `shell` by
+name. Once the profile declares, the API refuses those at 422 like any other
+undeclared key.
+
+**`browser`** (`agent_worker/runners/browser.py`):
+
+| key | kind | bounds | required | runner's default, and why this bound |
+|---|---|---|---|---|
+| `url` | `url` (new) | http or https, public host (see question 2) | no; `url` or `actions` | none. The runner turns it into a leading `goto`. |
+| `actions` | `list` (new) of `object` (new) | 0..200 entries | no; `url` or `actions` | `[]`. 200 is the runner's `MAX_ACTIONS`. |
+| `timeout_ms` | integer | 1..300000 | no | 30000. Must be at least 1 because 0 disables Playwright's timeout. Five minutes is the most one action may wait. |
+| `launch_timeout_ms` | integer | 1..180000 | no | 60000. The same reason for 1. A launch still waiting at three minutes means the pod is short of `/dev/shm`. |
+| `viewport_width` | integer | 320..3840 | no | 1280. The viewport, and a full-page screenshot of it, are held in the pod's memory. |
+| `viewport_height` | integer | 240..2160 | no | 900 |
+| `user_agent` | string | none | no | Chromium's own; `""` also means Chromium's |
+| `extract_text` | boolean | none | no | true: the final page's text is kept as `page.txt` |
+| `screenshot` | boolean | none | no | true: a final full-page `final.png` is kept |
+
+Each element of `actions` is an object whose `type` selects one of eight
+fixed shapes. A key that the selected shape does not name is refused:
+
+| `type` | fields (required in bold) | runner's defaults |
+|---|---|---|
+| `goto` | **`url`** (`url`), `wait_until` (string, one of `load`, `domcontentloaded`, `networkidle`, `commit`) | `wait_until` `load` |
+| `click` | **`selector`** (string) | |
+| `fill` | **`selector`** (string), `text` (string) | `text` `""` |
+| `press` | **`selector`** (string), `key` (string) | `key` `Enter` |
+| `wait_for` | **`selector`** (string), `timeout_ms` (integer 1..300000) | the task's `timeout_ms` |
+| `wait` | `seconds` (number 0..60) | 1. Refusing a value above 60 replaces the runner's silent clamp. |
+| `screenshot` | `name` (`filename`), `full_page` (boolean) | `screenshot-NNN.png`, `true` |
+| `extract` | `selector` (string), `name` (`filename`) | `body`, `extract-NNN.txt` |
+
+The runner writes both `name` fields through `RunnerContext.artifact_path`,
+which keeps only the last path segment. That is the rule the existing
+`filename` kind already states. The runner lower-cases `type`, so `"Goto"`
+runs today. The declaration matches `type` exactly.
+
+**`generic`** (`agent_worker/runners/generic.py`, `runners/limits.py`):
+
+| key | kind | bounds | required | runner's default, and why this bound |
+|---|---|---|---|---|
+| `command` | string | one of `make`, `npm-build`, `npm-ci`, `npm-test`, `pytest`, `uv-sync` | **yes** | none. The runner fails without it. The list is `GENERIC_COMMANDS`. |
+| `paths` | `list` (new) of `argument` (new) | 0..32 entries | no | none, so pytest runs the whole suite. 32 is `GenericCommand.max_arguments`. Only `pytest` reads it. |
+| `target` | `argument` (new) | the runner's argument rule | no | `all`. Only `make` reads it. |
+| `working_directory` | `argument` (new) | the runner's argument rule | no | the workspace root |
+| `timeout_seconds` | number | 1..3600 | no | the profile's `timeout_seconds` (3600), which the worker exports as the ceiling |
+| `grace_seconds` | number | 1..20 | no | `WorkerConfig.termination_grace_seconds` (20) |
+| `max_stdout_bytes` | integer | 1..33554432 | no | `WorkerConfig.max_stdout_bytes` (32 MiB) |
+| `max_stderr_bytes` | integer | 1..8388608 | no | `WorkerConfig.max_stderr_bytes` (8 MiB) |
+
+**The four limits may only lower the platform's own.** Each declared ceiling
+is the value the worker exports by default, so a request above it gets a 422
+at submission. Today the runner accepts it and clamps it. The runner still
+clamps to whatever the attempt's worker exports, because an operator may set
+that lower through the environment. The minimum is 1 because the runner reads
+0 or less as "not asked". `argument` is exactly what the runner's
+`_check_argument` accepts: `^[A-Za-z0-9._][A-Za-z0-9._\-/]{0,255}$` and no
+`..`. Whether the path exists and lies inside the workspace stays the
+runner's check, because only the runner has the workspace.
+
+### Question 1 (#218): `RunnerInput.kind` has no kind for a list
+
+**Recommendation: add one `list` kind, whose bounds are its length and whose
+elements are a declared `RunnerInput` (`items`).** It reuses the fields that
+already exist. `minimum` and `maximum` become the length bounds and are
+required, as they are for a number, for the same reason: without them a list
+is unbounded until the task write fails. Each element is checked by the same
+`check`, under the key `actions[3]`, so a refusal names the element that
+failed.
+
+For `paths` that is the whole addition, plus an `argument` kind for the
+element. `argument` is the generic runner's argument rule, added as a kind for
+the same reason `filename` is one: a regex field would be a second, more
+general feature that one rule does not need. `target` and
+`working_directory` use it as well.
+
+`actions` needs one more addition, because its elements are objects in eight
+shapes. The smallest form that still checks each element is **an `object`
+kind with `variants`**: a mapping from the value of `type` to the fields that
+shape takes. Each field is a `RunnerInput`, which gains `required`. A shape
+refuses keys it does not name. It is not general: the discriminator is always
+`type`, and there is no nesting beyond what `items` and `variants` compose.
+That is enough for every input any runner reads today. Two further fields
+serve keys that are not lists. `choices` (string only) covers `command` and
+`wait_until`. `required` is also read for a profile's top-level keys, so a
+`generic` task with no `command` is refused at the door.
+
+**Alternatives considered, and why they were not chosen:**
+
+* An opaque `json` kind, bounded by size. That is the current behaviour under
+  another name. It checks no element, so a missing `selector` is still found
+  after admission.
+* A `browser_action` kind. It would put one runner's vocabulary into the kind
+  list as code instead of as data, and the next runner with a list of shapes
+  would need another kind.
+* A full JSON Schema. It is far larger than any runner needs, and a caller
+  could no longer read it from `describe()`.
+
+**What `required` cannot say:** the browser runner needs `url` *or*
+`actions`. This request leaves that check with the runner. That is a
+decision for the owner, listed below.
+
+### The `url` rule: does it need an allow-list or a scheme restriction?
+
+**Not one of #218's three questions.** #218 asks three things, quoted
+verbatim below under Question 2 and Question 3; whether `url` needs a scheme
+or host restriction is not among them. It is this entry's own addition,
+because declaring `url` as a kind at all raises it. A revision of this entry
+mislabelled it "Question 2" and cited it as "#218's second question" in the
+diff's own docstring; that was wrong on both counts and is fixed below and in
+the diff.
+
+**Recommendation: a scheme restriction and a public-host rule, checked at
+submission. No host allow-list, and not https-only.** The check sits in one
+place, `url_refusal` in the frozen module. It serves `url` and every `goto`
+action's `url`. swarm-api, the bridge and the runner's `_check_url` all call
+it.
+
+**What the browser can reach today.** The pod's egress is
+`kubernetes/network-policies/allow-egress.yaml`. It allows cluster DNS, the
+metadata server at 169.254.169.254, the Private Google Access VIPs
+(199.36.153.4/30 and 199.36.153.8/30) and the public internet. It excepts
+every private range: RFC 1918, link-local, CGNAT and the cluster's pod and
+service ranges. So the browser can reach:
+
+1. **The GKE metadata server.** The pod needs it for Workload Identity, and
+   the policy's own header says a NetworkPolicy cannot close it for one
+   process in a pod. It mints the tenant GSA's token. What protects that
+   token from a browser is that the server answers `/computeMetadata/v1/`
+   only with a `Metadata-Flavor: Google` header. A navigation does not send
+   that header. A cross-origin `fetch()` from page script that sets it
+   triggers a CORS preflight, and the metadata server does not answer the
+   preflight in a way that permits the request. The preflight behaviour is
+   **not measured here**. The applying change should measure it with a
+   browser task against the live cluster.
+2. **The Google API VIPs.** These are authenticated APIs, so they are useless
+   without a token.
+3. **The public internet.** That is the browser profile's purpose. The
+   policy's header says it "has to fetch whatever page the task names, which
+   cannot be an allow-list".
+
+**Why the submission check cannot be the SSRF control.** It sees only the
+URL the caller typed. It cannot see redirects (a public page can answer
+`302` to `http://169.254.169.254/...`), the page's subresources, requests
+its script makes, or what a name resolves to when the pod asks. That last gap
+includes DNS rebinding, and names such as `svc.namespace` that the pod's
+search path expands into the cluster. Resolving the name at submission does
+not close it, because the pod resolves it again later. **The control is the
+network, plus the header requirement.** A check at the door is defence in
+depth.
+
+**What the door check still buys:**
+
+* A private address becomes a 422 with the reason, instead of a timeout that
+  never says the address was dropped.
+* A URL with `user:password@` is never stored with the task, served by
+  the API or shown in the UI. The runner would also echo it
+  back as `final_url`.
+* An address the rule can actually see, and that is not global, becomes an
+  error at submission instead of a silent pass. **This is narrower than the
+  first draft of this entry claimed** ("addresses that parse as public but
+  are not become errors"): a security review on 2026-09-29 found that claim
+  false, because the first draft's rule let the address it was supposed to
+  catch avoid being parsed as that address at all -- see the four bypasses
+  below, each of which reached `""` (accepted) under the original diff.
+
+**A security review on 2026-09-29 found the rule below, as it stood, refused
+by a different notion of "URL" than the browser that opens it.** Chromium
+parses to the WHATWG URL Standard; `urlsplit` parses to RFC 3986. The two
+disagree on backslash, on percent-encoding inside a host, and on non-ASCII
+characters, and every disagreement is a bypass here: `url_refusal` sees a
+value it does not recognise as the metadata host and returns `""`, while
+Chromium normalises the same value to that host and opens it.
+
+* `169.254.169.254\@example.com` -- `urlsplit` does not treat `\` as a netloc
+  terminator (RFC 3986 does not, either), so the whole string, backslash
+  included, becomes `parsed.hostname`. It fails no check the first draft
+  had, and passes. Chromium treats `\` exactly like `/` in an authority, so
+  it opens `169.254.169.254` with an ignored path.
+* `metadata.google.interna%6cl` (`%6c` is a lower-case `l`) -- `urlsplit`
+  does **not** percent-decode a host; `.hostname` returns the literal string
+  with the `%6c` still in it, so the `.internal` suffix check never matches
+  it and the loop over `_URL_REFUSED_SUFFIXES` passes. A browser host-parses
+  it as the WHATWG standard requires (percent-decode, then IDNA), which
+  yields `metadata.google.internal`, and opens it.
+* `metadata.google.ｉｎｔｅｒｎａｌ` (full-width Unicode letters, U+FF49 etc.)
+  and `169254169254｡` (U+3002 IDEOGRAPHIC FULL STOP, which IDNA/UTS46
+  maps to `.`) -- neither is refused by anything in the first draft, which
+  checked only ASCII punctuation and a handful of named suffixes. A
+  browser's IDNA/UTS46 host processing folds full-width Unicode to its ASCII
+  equivalent before it resolves, so both open the address they spell out
+  once normalised.
+* `kubernetes.default.svc` and `swarm-api.swarm-system.svc` -- refused today
+  only by the "single-label host" rule below, and both have three labels, so
+  they passed it. GKE's pod `resolv.conf` sets `ndots:5`: any name with
+  fewer than five dots is tried against every search domain
+  (`<namespace>.svc.cluster.local`, `svc.cluster.local`, `cluster.local`,
+  ...) before the absolute name, and Kubernetes' own DNS resolves the
+  `<service>.<namespace>.svc` short form through exactly that path. A
+  single-label check does not see either name as a risk; the cluster's
+  resolver does. **Revision history on this one bypass, because it changed
+  twice:** the first draft's single-label rule missed it (three labels). A
+  second draft (2026-09-29) replaced the single-label rule with "fewer than
+  two dots," which caught `kubernetes.default.svc` (only by widening the net
+  far past what the bypass needed) but ALSO refused every bare apex domain a
+  browser task might target (`github.com`, one dot). **The owner declined
+  that trade on 2026-09-29** and asked for the narrow fix instead: keep the
+  single-label rule, and add `.svc` to the refused-suffix list next to
+  `.internal`, `.local` and `.localhost`. That is what ships below. It also
+  does not pretend to close the general `ndots:5` gap for an arbitrary
+  short name -- see the paragraph after the rule for what does.
+
+**The fix is one check before anything else runs, not four patches.** Every
+bypass above turns on `url_refusal` accepting a host character, or a host
+shape, that Chromium's own parser would not read as plain ASCII. So the
+rule now normalises nothing and instead refuses anything that is not
+already plain ASCII host syntax, before the rest of the checks run: a
+backslash anywhere in the URL, and a host that is not `[a-z0-9.-]+` once
+lower-cased -- which is refused whether it got there by a literal
+backslash, a literal percent sign, or a literal non-ASCII character, so
+those three bypasses close with one rule instead of three. The alternative
+this entry considered -- IDNA/UTS46-normalise the host, then require
+`[a-z0-9.-]+` of the *normalised* form, so a legitimately internationalised
+domain still passes -- was not chosen: it accepts more real hosts, but it
+also means the two representations (raw and normalised) must be kept in
+step with whatever `agent_worker/runners/browser.py`'s own Chromium build
+does, forever. Refusing raw non-ASCII outright means a caller whose target
+is a real IDN sends the ASCII (punycode) form, which every such site
+already answers to.
+
+The rule, as written in the diff, now refuses, **in this order**:
+
+* a URL over 2048 characters;
+* a space, a control character, or any character outside 0x20-0x7E anywhere
+  in the URL -- this alone is what closes the full-width and U+3002 bypass,
+  because neither is ASCII;
+* a backslash anywhere in the URL;
+* any scheme but `http` and `https`;
+* userinfo (`user:password@`);
+* a host that, once lower-cased, is not `[a-z0-9.-]+` -- this is what closes
+  the percent-encoded-host bypass, because `%` is not in that class, and it
+  is what would also close a raw non-ASCII host if the character check above
+  had not already caught it;
+* a host whose last label does not start with a letter (`http://2852039166/`
+  and `http://0xa9.254.169.254/`, which a browser reads as 169.254.169.254
+  and `ipaddress` parses as neither; no public suffix starts with a digit);
+* a host with an empty label (`a..b`, or a label produced by a leading or
+  doubled `.`) -- added 2026-09-29 (minor, folded into this revision): the
+  character-class check does not catch it, because `.` is itself allowed,
+  and nothing downstream would otherwise notice a zero-length label;
+* a host with a label made only of hyphens (`http://---.com/`) -- added
+  2026-09-29 (minor): the previous message for this case ("ends in a
+  number") was wrong and confusing, since a hyphen is not a digit; it now
+  says plainly that an all-hyphen label is not a valid domain label;
+* a host whose last label does not start with a letter, with two distinct
+  messages now instead of one: a digit-led last label (`http://2852039166/`,
+  `http://0xa9.254.169.254/`, which a browser reads as 169.254.169.254 and
+  `ipaddress` parses as neither; no public suffix starts with a digit) says
+  so; anything else that is not a letter (a hyphen, after the all-hyphen
+  case above is already out of the way) says which character it found;
+* **a single label** (`kubernetes`, `metadata`) -- restored 2026-09-29. A
+  second draft of this rule (2026-09-29) had widened this to "fewer than two
+  dots," to also catch the `.svc` bypass below; the owner declined that
+  trade the same day, because it refused every bare apex domain
+  (`github.com`, `example.com`) a browser task's own purpose is to reach.
+  The single-label form is restored, unchanged from the first draft, and
+  costs nothing a real page address would ever need;
+* any name under `.internal`, `.local`, `.localhost` or **`.svc`** (new
+  2026-09-29, for `kubernetes.default.svc` / `swarm-api.swarm-system.svc` --
+  see the bypass write-up above), checked after the ASCII and single-label
+  rules, so a suffix check can no longer be the only thing standing between
+  a bypass and a pass;
+* a host that is an IP address and, after unwrapping an IPv4-mapped IPv6
+  address or one of five other IPv6 forms that embed an IPv4 address --
+  NAT64 well-known (`64:ff9b::/96`, RFC 6052), **NAT64 local-use
+  (`64:ff9b:1::/48`, RFC 8215, new 2026-09-29)**, 6to4 (`2002::/16`, RFC
+  3056), **SIIT / "IPv4-translated" (`::ffff:0:0:0/96`, RFC 6052 section
+  2.1, new 2026-09-29)** and **IPv4-compatible, deprecated but still a
+  parseable literal (`::/96`, new 2026-09-29)** -- down to the IPv4 address
+  each embeds, is not global by this module's own explicit list of refused
+  networks (below) -- **not `ipaddress.*.is_global`**, whose own membership
+  changed between Python 3.11 and 3.13 (the CGNAT block and `192.0.0.0/24`
+  both moved category more than once across that span). An explicit, named
+  list is what a reviewer can diff against RFC 1918, 5735, 4291 and 6890
+  directly, and it does not move under this module on a Python upgrade the
+  platform did not choose for this reason;
+* the two Google VIP ranges, which are global addresses by any definition
+  but are refused anyway (see above).
+
+**This is not the general `ndots:5` fix, and does not claim to be.** The
+`.svc` suffix closes the one specific, named bypass above -- a fixed string,
+not an open-ended shape -- but GKE's search path can in principle try any
+name under five dots against every search domain, and nothing in this
+function sees what the pod's resolver eventually does with a name it
+accepted. What actually closes that gap: the worker's NetworkPolicy (which
+does not depend on what a name resolves to at all), the pod's own DNS
+config -- **tracked as #341: set `ndots:1` and drop search domains**, which
+removes the search-path trial rather than trying to enumerate every name
+shape it could produce -- and the planned `context.route` guard (see
+*Preconditions for the applying PR*). This entry's door check is one layer
+among those three, not a substitute for the other two.
+
+**Underscore.** A host carrying one (`a_b.example.com`) is refused by the
+same `[a-z0-9.-]+` character class as any other character outside it, with
+no separate rule needed: RFC 952/1035 never allowed an underscore in a
+hostname label, so refusing it costs nothing a valid page address needs.
+
+**Required for the applying PR: a test table that runs every refusal above,
+and every bypass this review found, through a real WHATWG URL parser, not
+only `urlsplit`.** A test that constructs its expected value with `urlsplit`
+and checks `url_refusal` against that same `urlsplit` output proves nothing
+about Chromium; it is the rule re-checking itself in a mirror. The applying
+PR's test table parses each case with a WHATWG-conformant parser -- for
+example Node's own `URL` (the runtime the plugin already ships with), driven
+from the test as a subprocess, or a maintained Python WHATWG binding if one
+is vendored -- and asserts `url_refusal`'s verdict agrees with what that
+parser resolves the host to, for every case in this section, including the
+four original bypasses, the `.svc` bypass, and all six embedded-IPv4 forms
+(IPv4-mapped, NAT64 well-known, NAT64 local-use, 6to4, SIIT, IPv4-compatible).
+
+**Why not https-only, decided.** The scheme is not the SSRF vector. The
+metadata server and every private address are plain http either way, and
+the rule above refuses them by host. The runner already sets
+`ignore_https_errors=False`, so an https page with a bad certificate still
+fails. Refusing http would refuse legitimate plain-http targets and close no
+path. **The owner confirmed on 2026-09-29: no https-only rule.** It is not
+listed as an open decision below any more.
+
+**IDN, decided.** A caller whose real target is an internationalised domain
+sends its ASCII (punycode) form; this entry does not add a separate IDN
+allowance or normalisation path. **The owner confirmed on 2026-09-29:
+accepted as written**, alongside declining the https-only rule above.
+
+**Why no allow-list.** A platform-wide list contradicts the profile's purpose
+and the NetworkPolicy's stated design. A per-tenant allow-list is tenant
+configuration, not catalogue. If it is ever wanted, it belongs with the
+tenant's registration, not in `RunnerInput`.
+
+**Not in this request, and recommended as its own worker issue:** a
+request-level guard in the runner, `context.route("**/*", ...)`, that aborts
+any request, including redirects and subresources, whose host fails
+`url_refusal`. It still cannot see DNS answers. That makes it the second
+layer behind the network, not a replacement for it. **File it as its own
+worker issue rather than folding it into this request**, because
+`context.route` is the only layer in this entire path that sees a redirect
+or a page's subresources; the door check above never does, whichever way its
+own bugs are fixed. Until that issue lands, a page reachable at a refused URL
+that itself redirects, or loads a subresource from one, is not caught by
+anything this request adds.
+
+### Question 2 (#218): a key named `command`
+
+**#218's own text**, read directly on 2026-09-29 (an earlier draft of this
+entry could not read the issue and reconstructed this question from where
+this repository quotes it; that reconstruction is replaced here): "A
+declared input NAMED `command` reads as invariant 10 relaxed, although it
+names a catalogue entry, not an argv. `FORBIDDEN_CALLER_FIELDS` in
+`swarm_api/validation.py` and `_NEVER` in
+`tests/unit/mcp/test_runner_inputs.py` both list `command`." Request 25
+recorded the same concern in its own words before #218 was filed: "a
+declared input named `command` would read as invariant 10 relaxed although
+it names a catalogue entry, not an argv."
+
+**Recommendation: keep the name, and narrow the guard rather than remove
+it.** `command` is what every existing caller sends, including the example
+in `docs/workflows.md`, the Submit form and the runner's own error text. The
+declaration makes the difference #218 asks about visible instead of hiding
+it: `choices` is the closed list of catalogue names, and `describe()`
+renders it as `string, one of make | npm-build | ...`. A reader sees a menu,
+not an argv. Renaming it to `catalogue_command` would break every caller to
+address something a reviewer can already see.
+
+**What this means for the two guards #218 names, checked directly against
+their source on 2026-09-29:**
+
+* **`_NEVER` in `tests/unit/mcp/test_runner_inputs.py` (line 52) lists
+  `command`, and `test_only_the_mock_declares_inputs_and_no_declaration_
+  names_execution_detail` (line ~314) asserts, for **every** profile in
+  `RUNNER_PROFILES`, that none of its declared keys intersect `_NEVER`. That
+  is invariant 10's own test, and it is written to fail the moment any
+  profile declares `command` -- this request must say so explicitly, because
+  the diff below makes it fail as written. **This entry does not ask for
+  `command` to be removed from `_NEVER`.** It asks for one narrow, named
+  exemption: a declared key named `command` is allowed **only** for the
+  `generic` profile, and **only** when its `RunnerInput` is `kind="string"`
+  with `choices` exactly equal to `GENERIC_COMMANDS`. Any other profile
+  declaring `command`, any other kind, or a `command` whose `choices` is not
+  exactly that closed list stays refused by the same guard it is refused by
+  today. The applying PR narrows the test's assertion to express that
+  exemption in code, rather than deleting `command` from `_NEVER` or
+  weakening the assertion for every profile.
+* **`FORBIDDEN_CALLER_FIELDS` in `swarm_api/validation.py` (line 41) also
+  lists `command`, but is unaffected by this request and needs no change.**
+  It refuses fields on the **top-level task body** (`image`, `command`,
+  `resources`, and the rest of invariant 10's list, checked in
+  `swarm_api/main.py` before a runner profile is even resolved). A
+  `generic` task's declared `command` lives under `input`, a separate
+  namespace `FORBIDDEN_CALLER_FIELDS` does not read and has never read --
+  `mock`'s existing declarations already put keys under `input` today
+  without needing a change there. Declaring `input.command` for `generic`
+  touches neither this list nor its call site.
+
+### Question 3 (#218): should the plugin's bridge send inputs to a profile that has not declared?
+
+**#218's own text**, read directly on 2026-09-29: "Once declared, the
+plugin's bridge reads the same field, so `swarm_dispatch` could send a
+browser task's `actions` for the first time. That is a new plugin
+capability, not only a narrowing." An earlier draft of this entry could not
+read #218 and reconstructed this question instead from the places in this
+repository that quote it -- request 25's amendment ("Letting it send a
+browser task's `actions` is #218's third question"), the header of
+`apps/swarm-mcp/swarm_mcp/profiles.py`, and `check_inputs`'s docstring. Read
+directly, the issue's wording matches all three; no further check against
+the issue's text is needed.
+
+**Recommendation: no. Keep the send policy, and declare instead.** This
+request fixes #220's failure by giving `browser` a declaration. No bridge
+exception is needed. The bridge sends a key only when a declaration names it,
+because the declaration gives `--input` a kind to type the value by, and it
+lets the bridge refuse a bad value before anything travels. Letting it send
+unchecked keys to a `None` profile would forward, from the plugin, exactly the
+unchecked input this request exists to close.
+
+Once `browser` declares, `swarm_dispatch`'s `inputs` object carries `url`
+and `actions` as JSON with no change. `swarm dispatch --input` needs one line:
+`parse_input_flags` keeps `string` and `filename` values as typed text, and
+must keep `url` and `argument` values the same way. Otherwise
+`--input target=123` would be parsed as the number 123 and refused. A list is
+already read as JSON (`--input 'actions=[{"type":"screenshot"}]'`).
+
+With the diff below applied there is no `None` profile left, so the policy
+stops being a live question.
+
+### The requested change
+
+The exact diff against `apps/common/swarm_common/profiles.py` at `d4a2352`.
+**Not applied.** Revised 2026-09-29 after a security review; this version
+re-verified with `git apply --check` against the current file (still
+`d4a2352`; nothing has touched `profiles.py` since) and with a standalone
+run of `url_refusal` and `check_inputs` against every case this entry names,
+including the four bypasses -- both done outside this repository's own test
+suite, since nothing here runs `pytest`. The applying PR still owes the real
+test files listed under *Downstream restatements* and the WHATWG-parser
+table above; this only proves the diff parses, applies and behaves as this
+entry claims.
+
+* **Kinds:** `url`, `argument`, `list`, `object`, and **`header`** (added in
+  this revision, for `user_agent`): printable ASCII only, bounded like a
+  list, by length.
+* **New `RunnerInput` fields:** `choices`, `required`, `items`, `variants`.
+  `required` on a list's `items` is now refused in `__post_init__`: an
+  element of a list is always present, so the flag had nothing to say on one.
+* **`string` may now also give a `maximum`** (a length bound in characters,
+  `minimum` defaulting to 0), for `selector`, `text` and `key`: 4 KiB each,
+  the runner's own content otherwise unconstrained.
+* **A shared rule:** `url_refusal`, rewritten in this revision to refuse
+  before parsing rather than after: a backslash or non-ASCII character
+  anywhere, and a host that is not `[a-z0-9.-]+` once lower-cased, checked
+  before the scheme, the dot count or the suffix list. See the entry's prose
+  above for the four bypasses this closes and the explicit refused-network
+  lists that replace `is_global`.
+* **`browser` and `generic` declare** the tables above. `generic`'s
+  `command` is `RunnerProfile.__post_init__`'s one exemption from `_NEVER`,
+  enforced in code, not only in prose: a string whose `choices` are exactly
+  `_GENERIC_COMMANDS`, for `generic` only.
+* **`generic`'s `timeout_seconds` ceiling is read off the profile itself**
+  (`_GENERIC_PROFILE.timeout_seconds`, built before `_GENERIC_INPUTS` and
+  attached to `RUNNER_PROFILES["generic"]` with `dataclasses.replace`),
+  not restated as a second literal.
+* **`required` is enforced at the top level** by `check_inputs`.
+* **The field returns to the type request 25 was accepted with.**
+  `RunnerProfile.inputs` becomes `Mapping[str, RunnerInput]` with no `None`,
+  and `check_inputs` loses its `None` branch. That retires the amendment.
+* **`describe()` prints whole-number bounds in full** (`1..33554432`, not
+  `:g`'s `1..3.35544e+07`). The mock's bounds render unchanged.
+* **The article** reads "a url".
+
+CR 28 (`issue` for `claude-code` and `codex`), accepted and not yet applied
+on `main`, touches neither these lines nor these kinds.
+
+```diff
+--- a/apps/common/swarm_common/profiles.py
++++ b/apps/common/swarm_common/profiles.py
+@@ -19,12 +19,15 @@
+ 
+ from __future__ import annotations
+ 
++import ipaddress
+ import math
++import re
+ from collections.abc import Mapping
+-from dataclasses import dataclass, field
++from dataclasses import dataclass, field, replace
+ from enum import Enum
+ from types import MappingProxyType
+ from typing import Any
++from urllib.parse import urlsplit
+ 
+ 
+ class Backend(str, Enum):
+@@ -98,13 +101,35 @@
+ # choose the model a `claude-code` agent runs. So what may be sent is declared
+ # per profile, here, once. swarm-api refuses anything else at submission and
+ # the plugin's bridge refuses it sooner; both read this, and neither keeps a
+-# table of its own. Two profiles, `browser` and `generic`, have not declared
+-# yet (#218), and the API bounds what is sent to them by size alone.
++# table of its own. Every profile declares: `browser` and `generic` last, by
++# contract request 32 (#218), which added the kinds their inputs needed.
+ 
+ #: The kinds an input can be. `filename` is a bare file name with no
+ #: directory: the worker keeps only the last path segment of an artifact name
+ #: (`RunnerContext.artifact_path`), so `../x` would quietly become `x`.
+-INPUT_KINDS = ("number", "integer", "boolean", "string", "filename")
++#:
++#: Added by contract request 32 (#218), for the two runners whose work IS
++#: their input:
++#:
++#: * `url`: an http or https URL a browser may open. See `url_refusal`.
++#: * `argument`: a value the generic runner appends to a catalogue argv, or
++#:   runs in -- `_ARGUMENT_SAFE` and the `..` refusal in
++#:   `agent_worker/runners/generic.py`, restated because the catalogue cannot
++#:   import the worker. Existence and "inside the workspace" stay the
++#:   runner's: only it has the workspace.
++#: * `list`: a JSON array. Its BOUNDS ARE ITS LENGTH, both required, as a
++#:   number's are; every element is `items`, and `items` may not itself be
++#:   `required` -- an element of a list is always present, so that flag on an
++#:   element has nothing to say.
++#: * `object`: a JSON object in one of the fixed shapes `variants` names,
++#:   chosen by its `type` key. A key its shape does not name is refused, as a
++#:   key a profile does not declare is.
++#: * `header`: a string that is, or could become, an HTTP header value:
++#:   printable ASCII only (0x20-0x7E), which by construction rules out CR and
++#:   LF and every other control character, so a caller cannot use it to
++#:   inject a second header. `maximum` is required, as it is for a list: the
++#:   bound is the string's length in characters.
++INPUT_KINDS = ("number", "integer", "boolean", "string", "filename", "url", "argument", "list", "object", "header")
+ 
+ #: The signed 64-bit range, which is what Firestore stores an integer in.
+ #: Python reads a JSON integer of any length, so an integer input whose bounds
+@@ -113,16 +138,282 @@
+ INT64_MIN = -(2**63)
+ INT64_MAX = 2**63 - 1
+ 
++#: `argument`: what `generic._ARGUMENT_SAFE` accepts, restated because the
++#: catalogue cannot import the worker. No leading dash, so no value becomes a
++#: flag; no leading slash; 256 characters at most.
++_ARGUMENT = re.compile(r"[A-Za-z0-9._][A-Za-z0-9._\-/]{0,255}")
++
++#: The longest URL a browser task may name. Chromium's own limit is far
++#: larger; a task's URL is stored with the task and shown with it, and past
++#: this it is not a page address but a payload.
++_URL_MAX_CHARS = 2048
++
++#: A host, once `urlsplit` has extracted it and this module has lower-cased
++#: it, must be exactly this: letters, digits, `.` and `-`. Nothing else is
++#: plain ASCII host syntax, so this single check is what closes a
++#: percent-encoded host (`interna%6cl`), a host carrying a literal backslash,
++#: and a raw non-ASCII host at once -- see `url_refusal` and the entry's own
++#: prose for the three bypasses a security review found here on 2026-09-29.
++_HOST_CHARS = re.compile(r"[a-z0-9.-]+")
++
++#: Every network `url_refusal` refuses a *global* IPv4 address in, besides
++#: RFC 1918 and the rest of the ranges `ipaddress` itself would already
++#: refuse as non-global. Chosen as an explicit, named list instead of relying
++#: on `ipaddress.IPv4Address.is_global`, because that property's own
++#: membership is not pinned across the versions this platform runs: the
++#: CGNAT block (100.64.0.0/10) and 192.0.0.0/24 have both changed category
++#: in `ipaddress` between Python 3.11 and 3.13. An explicit list is what a
++#: reviewer can diff against RFC 1918, 5735 and 6890 directly, and it does
++#: not move under this module on a Python upgrade the platform did not make
++#: for this reason.
++_URL_REFUSED_V4_NETWORKS = (
++    ipaddress.ip_network("0.0.0.0/8"),  # "this network" (RFC 791)
++    ipaddress.ip_network("10.0.0.0/8"),  # RFC 1918
++    ipaddress.ip_network("100.64.0.0/10"),  # CGNAT, RFC 6598
++    ipaddress.ip_network("127.0.0.0/8"),  # loopback
++    ipaddress.ip_network("169.254.0.0/16"),  # link-local, and the metadata server
++    ipaddress.ip_network("172.16.0.0/12"),  # RFC 1918
++    ipaddress.ip_network("192.0.0.0/24"),  # IETF protocol assignments
++    ipaddress.ip_network("192.0.2.0/24"),  # documentation (TEST-NET-1)
++    ipaddress.ip_network("192.168.0.0/16"),  # RFC 1918
++    ipaddress.ip_network("198.18.0.0/15"),  # benchmarking
++    ipaddress.ip_network("198.51.100.0/24"),  # documentation (TEST-NET-2)
++    ipaddress.ip_network("203.0.113.0/24"),  # documentation (TEST-NET-3)
++    ipaddress.ip_network("224.0.0.0/4"),  # multicast
++    ipaddress.ip_network("240.0.0.0/4"),  # reserved
++    ipaddress.ip_network("255.255.255.255/32"),  # limited broadcast
++)
++
++#: The IPv6 equivalent of `_URL_REFUSED_V4_NETWORKS`, for a literal IPv6 host
++#: that is neither IPv4-mapped nor a NAT64/6to4 embedding (both unwrapped to
++#: an IPv4 address and checked against the list above instead; see
++#: `_embedded_v4`).
++_URL_REFUSED_V6_NETWORKS = (
++    ipaddress.ip_network("::1/128"),  # loopback
++    ipaddress.ip_network("::/128"),  # unspecified
++    ipaddress.ip_network("100::/64"),  # discard-only, RFC 6666
++    ipaddress.ip_network("2001:db8::/32"),  # documentation
++    ipaddress.ip_network("fc00::/7"),  # unique local
++    ipaddress.ip_network("fe80::/10"),  # link-local
++    ipaddress.ip_network("ff00::/8"),  # multicast
++)
++
++#: Private Google Access, which the worker's NetworkPolicy opens
++#: (kubernetes/network-policies/allow-egress.yaml, rule 3). These are global
++#: addresses by any definition, so they are refused explicitly rather than by
++#: `is_global`: the pod can reach them, but they are authenticated Google
++#: APIs, useless to a browser task without a token, and not what "the public
++#: internet" is meant to include.
++_URL_REFUSED_NETWORKS = (
++    ipaddress.ip_network("199.36.153.4/30"),
++    ipaddress.ip_network("199.36.153.8/30"),
++)
++
++#: Every IPv6 range that EMBEDS an IPv4 address, so a refused v4 address
++#: reachable through any of them would otherwise pass
++#: `_URL_REFUSED_V6_NETWORKS` unseen. IPv4-mapped (`::ffff:a.b.c.d`) is
++#: handled separately by `ipaddress.IPv6Address.ipv4_mapped`; the rest are
++#: unwrapped by `_embedded_v4`:
++#: * `64:ff9b::/96` -- NAT64, RFC 6052 (well-known prefix).
++#: * `64:ff9b:1::/48` -- NAT64, RFC 8215 (local-use prefix; the embedding
++#:   follows RFC 6052 section 2.2's PL48 layout: 48-bit prefix, 16 bits of
++#:   v4, an 8-bit zero field, 16 more bits of v4, 40-bit suffix).
++#: * `2002::/16` -- 6to4, RFC 3056.
++#: * `::ffff:0:0:0/96` -- "IPv4-translated", RFC 6052's SIIT form
++#:   (`::ffff:0:a.b.c.d`; note the extra `:0:` before the address, which is
++#:   what distinguishes it from IPv4-mapped).
++#: * `::/96` -- IPv4-compatible, deprecated (RFC 4291 says so; RFC 6540 says
++#:   not to originate or accept it) but still a parseable literal
++#:   (`::a9fe:a9fe`), so still refused here explicitly rather than assumed
++#:   gone.
++_URL_NAT64_PREFIX = ipaddress.ip_network("64:ff9b::/96")
++_URL_NAT64_LOCAL_PREFIX = ipaddress.ip_network("64:ff9b:1::/48")
++_URL_6TO4_PREFIX = ipaddress.ip_network("2002::/16")
++_URL_SIIT_PREFIX = ipaddress.ip_network("::ffff:0:0:0/96")
++_URL_IPV4_COMPATIBLE_PREFIX = ipaddress.ip_network("::/96")
++
++#: Names that are never a public page: GKE's metadata server is
++#: `metadata.google.internal`; `.local`/`.localhost` never leave the host or
++#: the cluster (`cluster.local`); and `.svc` is the short, no-FQDN-suffix
++#: form Kubernetes' own DNS resolves for a Service
++#: (`<service>.<namespace>.svc`, e.g. `kubernetes.default.svc`), which the
++#: pod's search path completes to `.svc.cluster.local` for any name under
++#: five dots (`ndots:5`) -- added 2026-09-29, after the owner found the
++#: dot-count rule this replaced still admitted it. See `url_refusal`'s
++#: docstring for what actually closes the general search-path gap; this
++#: suffix closes only the specific, well-known `.svc` shorthand.
++_URL_REFUSED_SUFFIXES = (".internal", ".local", ".localhost", ".svc")
++
+ #: How much of a refused value a refusal repeats. A caller who sent three
+ #: hundred digits needs the bound, not the digits back.
+ _SHOWN_VALUE_CHARS = 40
+ 
+ 
++def _bound(value: float) -> str:
++    """`33554432`, not `3.35544e+07`: a caller copies a bound, and `:g` rounds it."""
++    return str(int(value)) if float(value).is_integer() else f"{value:g}"
++
++
++def _embedded_v4(address: ipaddress.IPv6Address) -> ipaddress.IPv4Address | None:
++    """The IPv4 address a NAT64, 6to4, SIIT or IPv4-compatible address
++    embeds, or None. IPv4-mapped is handled by the caller
++    (`address.ipv4_mapped`) and never reaches here."""
++    packed = address.packed
++    if address in _URL_NAT64_PREFIX:
++        return ipaddress.IPv4Address(packed[12:16])
++    if address in _URL_NAT64_LOCAL_PREFIX:
++        # RFC 6052 section 2.2, PL48: prefix(6 bytes) + v4-hi(2) + u(1, zero)
++        # + v4-lo(2) + suffix(5). The `u` byte at packed[8] is skipped.
++        return ipaddress.IPv4Address(bytes([packed[6], packed[7], packed[9], packed[10]]))
++    if address in _URL_6TO4_PREFIX:
++        return ipaddress.IPv4Address(packed[2:6])
++    if address in _URL_SIIT_PREFIX:
++        return ipaddress.IPv4Address(packed[12:16])
++    if address in _URL_IPV4_COMPATIBLE_PREFIX:
++        return ipaddress.IPv4Address(packed[12:16])
++    return None
++
++
++def url_refusal(value: str) -> str:
++    """Why `value` is not a URL a browser task may open, or "" when it is.
++
++    One home for the rule, so swarm-api, the plugin's bridge and the browser
++    runner (`_check_url`, which today checks the scheme and that there is a
++    host) give one answer. Not one of #218's three questions -- declaring
++    `url` as a kind at all raises it; see the entry's prose in
++    docs/contract-change-requests.md for why, and for four bypasses a
++    security review found and closed here on 2026-09-29.
++
++    THIS IS NOT THE SSRF CONTROL, AND CANNOT BE. It sees the URL a caller
++    typed, never the page's redirects, its subresources, its script's
++    requests, or what a name resolves to when the pod asks. The control is the
++    network: the worker's NetworkPolicy drops every private range but the
++    metadata server, and the metadata server answers only a request carrying
++    `Metadata-Flavor: Google`, which a navigation does not send. What this
++    buys is a 422 naming the reason, instead of a task that waits out
++    `timeout_ms` against an address the network silently drops (Dataplane V2
++    drops; the sender sees a timeout), and a URL with a password in it that
++    is never stored with the task, served by the API or shown in the UI.
++
++    Refuses rather than normalises. Every check below runs on the raw string
++    or on `urlsplit`'s own view of it: a host that is not already plain ASCII
++    (`[a-z0-9.-]+` once lower-cased) is refused outright rather than
++    IDNA/UTS46-normalised and re-checked, because a normalising rule has to
++    track whatever WHATWG host-parsing Chromium does, forever, while a
++    refusing rule only has to be a subset of what Chromium accepts. A caller
++    whose real target is an internationalised domain sends its ASCII
++    (punycode) form, which the site already answers to -- the owner accepted
++    this as the rule on 2026-09-29 (no separate IDN allowance).
++
++    An underscore is refused by the same `[a-z0-9.-]+` check as any other
++    character outside that set, with no separate rule: RFC 952/1035 do not
++    allow one in a hostname label at all (some internal DNS -- SRV records,
++    `_service._proto.name` -- uses one anyway, which is one more reason a
++    browser task should not be handed a host carrying one).
++
++    WHAT THIS DOES NOT DO, as of the owner's decision on 2026-09-29: it does
++    not refuse a host by dot count. An earlier revision refused any non-IP
++    host with fewer than two dots, which caught `kubernetes.default` and
++    `swarm-api.swarm-system` but also every bare apex domain a browser task
++    might legitimately target (`github.com`, `example.com` both have exactly
++    one dot) -- for a browser profile, refusing those is refusing the
++    profile's main use. It was also incomplete on its own terms: a three-label
++    name ending in `.svc` (`kubernetes.default.svc`) has two dots and was
++    never caught by it either. The general gap -- GKE's `ndots:5` pod
++    resolver tries every search domain before the absolute name for anything
++    under five dots -- is NOT closed by any check in this function, and
++    cannot be from here: it sees the string the caller sent, never what the
++    pod's resolver does with it. The real controls are the worker's
++    NetworkPolicy (which does not depend on what a name resolves to), the
++    pod's own DNS config (tracked as #341: set `ndots:1` and drop search
++    domains, which removes the search-path trial entirely rather than
++    guessing at every name shape it could produce), and the planned
++    `context.route` guard (see the entry's *Preconditions*). What this
++    function still refuses is the single-label case (`kubernetes`,
++    `metadata`), which resolves only through the cluster's search path and
++    is never a real page address, and the specific `.svc` shorthand below,
++    which is the one case named in the review that is also a fixed, known
++    string rather than an open-ended shape.
++    """
++    if len(value) > _URL_MAX_CHARS:
++        return f"it is longer than {_URL_MAX_CHARS} characters"
++    if any(ch < " " or ch == "\x7f" or ord(ch) > 0x7E for ch in value):
++        return "it contains a space, a control character or a non-ASCII character"
++    if "\\" in value:
++        return "it contains a backslash, which a browser treats as a host or path separator"
++    try:
++        parsed = urlsplit(value)
++        parsed.port  # noqa: B018 -- raises ValueError on a port out of range
++    except ValueError:
++        return "it is not a URL"
++    if parsed.scheme not in ("http", "https"):
++        return "only http and https are opened"
++    if parsed.username is not None or parsed.password is not None:
++        return "it carries credentials, which would be stored with the task and shown with it"
++    host = (parsed.hostname or "").rstrip(".")
++    if not host:
++        return "it has no host"
++    # An IP LITERAL IS CHECKED BEFORE THE HOST-CHARACTER RULE, not after: an
++    # IPv6 literal's `hostname` is unbracketed and colon-bearing
++    # (`64:ff9b::808:808`), which `_HOST_CHARS` never matches, and `ipaddress`
++    # itself already rejects a backslash, a percent sign or a non-ASCII
++    # character in an address -- there is nothing left for a second charset
++    # check to catch there.
++    try:
++        address = ipaddress.ip_address(host)
++    except ValueError:
++        address = None
++    if address is None:
++        if not _HOST_CHARS.fullmatch(host):
++            return (
++                "its host is not letters, digits, '.' and '-' once lower-cased -- a "
++                "browser's own host parsing accepts more than this, including a "
++                "percent-encoded or backslash-bearing host, and this module refuses "
++                "rather than reproduces it"
++            )
++        labels = host.split(".")
++        if any(label == "" for label in labels):
++            return "its host has an empty label ('..' in it, or it starts or ends with '.')"
++        if any(label.strip("-") == "" for label in labels):
++            return "its host has a label made only of hyphens, which is not a valid domain label"
++        # A browser reads a host whose last label is a number (`2852039166`,
++        # `0xa9.254.169.254`) as an IPv4 address in another notation, which
++        # `ip_address` does not parse. No public suffix starts with a digit.
++        if labels[-1][:1].isdigit():
++            return "its host ends in a number, which a browser reads as an address"
++        if not labels[-1][:1].isalpha():
++            return f"its host's last label starts with {labels[-1][:1]!r}, not a letter"
++        # SINGLE LABEL ONLY, not a general dot-count rule: see the docstring
++        # above for why the broader rule this replaced was both too costly
++        # (it refused bare apex domains) and still incomplete.
++        if len(labels) < 2:
++            return "its host is a single label, which only the cluster's search path resolves"
++        if host.endswith(_URL_REFUSED_SUFFIXES):
++            return "its host is a cluster or node-local name"
++        return ""
++    if isinstance(address, ipaddress.IPv6Address):
++        if address.ipv4_mapped is not None:
++            address = address.ipv4_mapped
++        else:
++            embedded = _embedded_v4(address)
++            if embedded is not None:
++                address = embedded
++    if isinstance(address, ipaddress.IPv4Address):
++        if any(address in net for net in _URL_REFUSED_V4_NETWORKS) or any(
++            address in net for net in _URL_REFUSED_NETWORKS
++        ):
++            return "its host is not a public address"
++    elif any(address in net for net in _URL_REFUSED_V6_NETWORKS):
++        return "its host is not a public address"
++    return ""
++
++
+ class InputRefused(ValueError):
+     """An input a profile does not accept, and why.
+ 
+     `key` is the first key refused and `keys` every one; `expected` is the
+-    declared bound a value broke, or None when the key is not declared at all.
++    declared bound a value broke, or None when the key is not declared at all
++    or is required and was not sent.
+     The message names the key and the bound, and never repeats a value longer
+     than it has to.
+     """
+@@ -165,18 +456,73 @@
+     #: the platform would read it as instead -- the mock's exit codes 77, 78
+     #: and 143. Pairs, not a dict, so the declaration stays hashable.
+     refused: tuple[tuple[Any, str], ...] = ()
++    #: A `string` must be one of these, when any are named: a name from a
++    #: catalogue the runner owns, such as the generic runner's commands.
++    choices: tuple[str, ...] = ()
++    #: The caller must send this key. Read for a profile's keys and for an
++    #: object's fields. Refused on a list's `items`: an element of a list is
++    #: always present, so `required` on it has nothing to say.
++    required: bool = False
++    #: What each element of a `list` must be.
++    items: RunnerInput | None = None
++    #: An `object`'s shapes: the value of its `type` key, to the fields that
++    #: shape takes besides `type`. Excluded from the hash, as
++    #: `RunnerProfile.inputs` is; frozen read-only below.
++    variants: Mapping[str, Mapping[str, RunnerInput]] | None = field(default=None, hash=False)
+ 
+     def __post_init__(self) -> None:
+         if self.kind not in INPUT_KINDS:
+             raise ValueError(f"input kind {self.kind!r} is not one of {INPUT_KINDS}")
+         numeric = self.kind in ("number", "integer")
+-        if not numeric and (self.minimum is not None or self.maximum is not None or self.refused):
+-            raise ValueError(f"a {self.kind} input has no bounds; only a number or an integer does")
+-        if numeric and (self.minimum is None or self.maximum is None):
++        #: `list` and `header` MUST give both bounds, like a number: without
++        #: them a list or a header string is unbounded until the task write
++        #: fails. `string` MAY give a `maximum` -- a length bound in
++        #: characters, for keys such as `selector`, `text` and `key`, whose
++        #: content the runner does not otherwise constrain -- and when it
++        #: does, an omitted `minimum` defaults to 0 rather than being
++        #: required, because most bounded strings have no meaningful floor.
++        strictly_bounded = numeric or self.kind in ("list", "header")
++        length_boundable = strictly_bounded or self.kind == "string"
++        if not length_boundable and (self.minimum is not None or self.maximum is not None):
+             raise ValueError(
++                f"a {self.kind} input has no bounds; only a number, a list, a header or a "
++                "string does"
++            )
++        if not numeric and self.refused:
++            raise ValueError(f"a {self.kind} input refuses no values; only a number does")
++        if strictly_bounded and (self.minimum is None or self.maximum is None):
++            raise ValueError(
+                 f"a {self.kind} input declares both a minimum and a maximum; without "
+-                "one, a JSON number of any size passes and fails at the store instead"
++                "one, a JSON number -- or a string, for a header -- of any size passes "
++                "and fails at the store instead"
+             )
++        if self.kind == "string" and self.maximum is not None and self.minimum is None:
++            object.__setattr__(self, "minimum", 0.0)
++        if self.kind in ("list", "header") and not (
++            float(self.minimum).is_integer() and float(self.maximum).is_integer() and self.minimum >= 0
++        ):
++            raise ValueError(f"a {self.kind}'s bounds are its length: whole numbers, from 0")
++        if self.choices and self.kind != "string":
++            raise ValueError(f"a {self.kind} input has no choices; only a string does")
++        if (self.kind == "list") != isinstance(self.items, RunnerInput):
++            raise ValueError("a list input names what its elements are, and nothing else does")
++        if self.kind == "list" and self.items is not None and self.items.required:
++            raise ValueError(
++                "a list's items are always present; `required` on them is refused"
++            )
++        if (self.kind == "object") != bool(self.variants):
++            raise ValueError("an object input names its shapes, and nothing else does")
++        if self.variants:
++            frozen: dict[str, Mapping[str, RunnerInput]] = {}
++            for shape, fields in self.variants.items():
++                for name, declared in fields.items():
++                    if name == "type" or not isinstance(declared, RunnerInput):
++                        raise ValueError(
++                            f"shape {shape!r}: field {name!r} must be a RunnerInput, "
++                            "and `type` is the shape's name, not a field"
++                        )
++                frozen[shape] = MappingProxyType(dict(fields))
++            object.__setattr__(self, "variants", MappingProxyType(frozen))
+         for bound in (self.minimum, self.maximum):
+             if bound is not None and not math.isfinite(bound):
+                 raise ValueError("an input's bounds must be finite numbers")
+@@ -197,10 +543,16 @@
+     def describe(self) -> str:
+         """`integer 1..255 except 77, 78, 143`: the kind and the bound, as a caller reads it."""
+         # `__post_init__` gives a number both bounds and anything else neither.
++        if self.kind == "list" and self.items is not None:
++            return f"list of {_bound(self.minimum)}..{_bound(self.maximum)}, each {self.items.describe()}"
++        if self.variants:
++            return f"object, `type` one of {' | '.join(self.variants)}"
+         if self.minimum is not None and self.maximum is not None:
+-            text = f"{self.kind} {self.minimum:g}..{self.maximum:g}"
++            text = f"{self.kind} {_bound(self.minimum)}..{_bound(self.maximum)}"
+         else:
+             text = self.kind
++        if self.choices:
++            text += f", one of {' | '.join(self.choices)}"
+         if self.refused:
+             text += " except " + ", ".join(str(value) for value, _ in self.refused)
+         return text
+@@ -208,7 +560,7 @@
+     def check(self, key: str, value: Any) -> Any:
+         """`value`, normalised (an integral float becomes an int), or InputRefused."""
+         expected = self.describe()
+-        article = "an" if expected[0] in "aeiou" else "a"
++        article = "an" if expected[0] in "aeio" else "a"  # "a url"
+         wanted = f"input {key!r} must be {article} {expected}"
+ 
+         def refuse(detail: str = "") -> InputRefused:
+@@ -245,18 +597,64 @@
+             if not isinstance(value, bool):
+                 raise refuse(" (true or false)")
+             return value
++        if self.kind == "list":
++            if not isinstance(value, list):
++                raise refuse()
++            if not self.minimum <= len(value) <= self.maximum:
++                raise refuse(f" -- it has {len(value)} entries")
++            # Named by position, so a refusal says WHICH element: `actions[3].url`.
++            return [self.items.check(f"{key}[{index}]", item) for index, item in enumerate(value)]
++        if self.kind == "object":
++            if not isinstance(value, Mapping):
++                raise refuse()
++            shape = value.get("type")
++            if not isinstance(shape, str) or shape not in self.variants:
++                raise refuse()
++            fields = self.variants[shape]
++            unknown = sorted(set(value) - set(fields) - {"type"})
++            if unknown:
++                raise refuse(f" -- a {shape!r} takes {sorted(fields) or 'no field'}, not {unknown}")
++            missing = sorted(name for name, spec in fields.items() if spec.required and name not in value)
++            if missing:
++                raise refuse(f" -- a {shape!r} needs {missing}")
++            checked = {
++                name: fields[name].check(f"{key}.{name}", value[name])
++                for name in sorted(value)
++                if name != "type"
++            }
++            return {"type": shape, **checked}
+         if not isinstance(value, str):
+             raise refuse()
+         if self.kind == "filename" and (
+             not value or value in (".", "..") or "/" in value or "\\" in value or "\x00" in value
+         ):
+             raise refuse(" -- a bare file name, with no directory")
++        if self.kind == "argument" and (not _ARGUMENT.fullmatch(value) or ".." in value):
++            raise refuse(
++                " -- letters, digits, '.', '_', '-' and '/', starting with none of '-' or "
++                "'/', at most 256 characters, and no '..'"
++            )
++        if self.kind == "url":
++            reason = url_refusal(value)
++            if reason:
++                raise refuse(f" -- {reason}")
++        if self.kind == "header":
++            if not (self.minimum <= len(value) <= self.maximum):
++                raise refuse(f" -- it has {len(value)} characters")
++            if any(ch < " " or ch == "\x7f" or ord(ch) > 0x7E for ch in value):
++                raise refuse(" -- printable ASCII only (0x20-0x7E), which rules out CR and LF")
++        if self.kind == "string" and self.maximum is not None and not (
++            self.minimum <= len(value) <= self.maximum
++        ):
++            raise refuse(f" -- it has {len(value)} characters")
++        if self.choices and value not in self.choices:
++            raise refuse()
+         return value
+ 
+ 
+-def _frozen_inputs(declared: Mapping[str, RunnerInput] | None) -> Mapping[str, RunnerInput] | None:
++def _frozen_inputs(declared: Mapping[str, RunnerInput]) -> Mapping[str, RunnerInput]:
+     """A read-only copy, so no caller can widen a profile's declaration in place."""
+-    return None if declared is None else MappingProxyType(dict(declared))
++    return MappingProxyType(dict(declared))
+ 
+ 
+ @dataclass(frozen=True)
+@@ -330,29 +728,39 @@
+     #: That is what closes `input.model` on `claude-code`, which its runner
+     #: would pass as `--model`.
+     #:
+-    #: NONE MEANS NOT DECLARED YET, and then only the input's size is bounded,
+-    #: as it was for every profile before this field existed. It exists for
+-    #: the runners whose work IS their input -- `browser` cannot start without
+-    #: `url` or `actions`, `generic` without `command` -- where an empty
+-    #: declaration would refuse every task they run. What they declare is the
+-    #: owner's open question #218, recorded under contract request 25 in
+-    #: docs/contract-change-requests.md as an amendment awaiting approval:
+-    #: the request as accepted typed this field `Mapping`, with no None.
++    #: THERE IS NO "NOT DECLARED YET". Until contract request 32 (#218) this
++    #: field could be None, for `browser` and `generic`, and then only the
++    #: input's size was bounded -- an amendment to request 25 the owner
++    #: confirmed on 2026-09-26 as the state until #218 was decided. Both
++    #: declare now, so the type is the one request 25 was accepted with.
+     #:
+     #: Excluded from the hash: a mapping is not hashable, and a profile's
+     #: identity is its name.
+-    inputs: Mapping[str, RunnerInput] | None = field(default_factory=dict, hash=False)
++    inputs: Mapping[str, RunnerInput] = field(default_factory=dict, hash=False)
+ 
+     def __post_init__(self) -> None:
+-        if self.inputs is not None:
+-            for key, declared in self.inputs.items():
+-                if not isinstance(declared, RunnerInput):
+-                    raise ValueError(f"runner {self.name}: input {key!r} is not a RunnerInput")
+-                if key == "prompt":
+-                    raise ValueError(
+-                        f"runner {self.name}: `prompt` is every profile's input and is not declared"
+-                    )
+-            object.__setattr__(self, "inputs", _frozen_inputs(self.inputs))
++        for key, declared in self.inputs.items():
++            if not isinstance(declared, RunnerInput):
++                raise ValueError(f"runner {self.name}: input {key!r} is not a RunnerInput")
++            if key == "prompt":
++                raise ValueError(
++                    f"runner {self.name}: `prompt` is every profile's input and is not declared"
++                )
++            if key == "command" and self.name != "generic":
++                raise ValueError(
++                    f"runner {self.name}: `command` is invariant 10's own guard "
++                    "(_NEVER, FORBIDDEN_CALLER_FIELDS); only `generic` is exempted, "
++                    "and only for its closed catalogue -- see contract request 32"
++                )
++            if key == "command" and self.name == "generic" and (
++                declared.kind != "string" or set(declared.choices) != set(_GENERIC_COMMANDS)
++            ):
++                raise ValueError(
++                    f"runner {self.name}: `command` may only be a string whose choices "
++                    "are exactly GENERIC_COMMANDS -- the one exemption contract request "
++                    "32 asks _NEVER to carry, not a general licence to declare it"
++                )
++        object.__setattr__(self, "inputs", _frozen_inputs(self.inputs))
+         if not self.available and not self.disabled_reason:
+             raise ValueError(
+                 f"runner {self.name}: a disabled profile must say why. A caller "
+@@ -450,6 +858,194 @@
+ }
+ 
+ 
++#: A wait the browser runner hands Playwright, in milliseconds. FROM 1, NOT 0:
++#: Playwright reads a timeout of 0 as "no timeout", so a 0 here would let one
++#: action wait out the whole 5400 s attempt. FIVE MINUTES at most: a selector
++#: that has not appeared in five minutes is not coming, and the attempt's own
++#: timeout is the ceiling above that.
++_BROWSER_WAIT_MS = {"minimum": 1, "maximum": 300_000}
++
++#: `selector`, `text` and `key` may carry arbitrary Unicode (a CSS selector, a
++#: page's own text, a key combination), so they are `string` with a length
++#: bound rather than `header`, which is ASCII-only. 4 KiB: far past any real
++#: selector or typed text, and small enough that a caller who sent this much
++#: sent a payload, not a selector.
++_BROWSER_TEXT_MAX = 4096
++
++#: The browser runner's actions (`agent_worker/runners/browser.py`, `body`),
++#: one shape per `type`, each field as the runner reads it. `type` is matched
++#: exactly: the runner lower-cases it, so `"Goto"` runs today and is refused
++#: here. The restatement is held to the runner's source by a test, as the
++#: mock's keys are (tests/unit/mcp/test_runner_inputs.py).
++_BROWSER_ACTION = RunnerInput(
++    "object",
++    means="one step of the run, in the shape its `type` names",
++    variants={
++        "goto": {
++            "url": RunnerInput("url", required=True, means="the page to open"),
++            "wait_until": RunnerInput(
++                "string",
++                choices=("load", "domcontentloaded", "networkidle", "commit"),
++                means="when the load counts as done; default load",
++            ),
++        },
++        "click": {
++            "selector": RunnerInput(
++                "string", minimum=0, maximum=_BROWSER_TEXT_MAX, required=True,
++                means="the element to click",
++            )
++        },
++        "fill": {
++            "selector": RunnerInput(
++                "string", minimum=0, maximum=_BROWSER_TEXT_MAX, required=True,
++                means="the field to fill",
++            ),
++            "text": RunnerInput(
++                "string", minimum=0, maximum=_BROWSER_TEXT_MAX,
++                means="what to type into it; default empty",
++            ),
++        },
++        "press": {
++            "selector": RunnerInput(
++                "string", minimum=0, maximum=_BROWSER_TEXT_MAX, required=True,
++                means="the element to press a key in",
++            ),
++            "key": RunnerInput(
++                "string", minimum=0, maximum=_BROWSER_TEXT_MAX,
++                means="the key; default Enter",
++            ),
++        },
++        "wait_for": {
++            "selector": RunnerInput(
++                "string", minimum=0, maximum=_BROWSER_TEXT_MAX, required=True,
++                means="the element to wait for",
++            ),
++            "timeout_ms": RunnerInput(
++                "integer", **_BROWSER_WAIT_MS, means="how long to wait; default the task's timeout_ms"
++            ),
++        },
++        # 0..60: the runner clamps above 60 with `min(..., 60.0)`, so a larger
++        # value is refused rather than quietly shortened.
++        "wait": {"seconds": RunnerInput("number", minimum=0, maximum=60, means="how long to pause; default 1")},
++        "screenshot": {
++            "name": RunnerInput("filename", means="the artifact's file name; default by position"),
++            "full_page": RunnerInput("boolean", means="the whole page, not the viewport; default true"),
++        },
++        "extract": {
++            "selector": RunnerInput(
++                "string", minimum=0, maximum=_BROWSER_TEXT_MAX,
++                means="the element whose text is kept; default body",
++            ),
++            "name": RunnerInput("filename", means="the artifact's file name; default by position"),
++        },
++    },
++)
++
++#: The browser runner's inputs. NEITHER `url` NOR `actions` IS REQUIRED ALONE:
++#: the runner needs one or the other, which `required` cannot say, so that
++#: refusal stays the runner's (contract request 32, *Owner's decisions*).
++_BROWSER_INPUTS: dict[str, RunnerInput] = {
++    "url": RunnerInput("url", means="opened first, before any action"),
++    # 200: the runner's MAX_ACTIONS.
++    "actions": RunnerInput(
++        "list", minimum=0, maximum=200, items=_BROWSER_ACTION, means="run in order, after `url`"
++    ),
++    "timeout_ms": RunnerInput(
++        "integer", **_BROWSER_WAIT_MS, means="how long any one action may take; default 30000"
++    ),
++    # Three minutes: Chromium starts in seconds, and a launch still waiting at
++    # three minutes is a pod short of /dev/shm, not a slow start.
++    "launch_timeout_ms": RunnerInput(
++        "integer", minimum=1, maximum=180_000, means="how long Chromium may take to start; default 60000"
++    ),
++    # Up to 4K. The viewport is rendered in the pod's memory, and a full-page
++    # screenshot of it is written to the workspace, which is memory too.
++    "viewport_width": RunnerInput("integer", minimum=320, maximum=3840, means="pixels; default 1280"),
++    "viewport_height": RunnerInput("integer", minimum=240, maximum=2160, means="pixels; default 900"),
++    # `header`, not `string`: this value is sent as the User-Agent HTTP
++    # header verbatim, so it must be printable ASCII -- a caller could
++    # otherwise inject a second header through it. 512: real User-Agent
++    # strings run under 300 characters; past 512 it is not a browser
++    # signature.
++    "user_agent": RunnerInput(
++        "header", minimum=0, maximum=512, means="the User-Agent sent; default Chromium's"
++    ),
++    "extract_text": RunnerInput("boolean", means="keep the final page's text as page.txt; default true"),
++    "screenshot": RunnerInput("boolean", means="keep a final full-page screenshot; default true"),
++}
++
++#: The generic runner's catalogue (`agent_worker/runners/generic.py`,
++#: `GENERIC_COMMANDS`), restated because the catalogue cannot import the
++#: worker, and held to it by a test, as `_ARGUMENT` is.
++_GENERIC_COMMANDS = ("make", "npm-build", "npm-ci", "npm-test", "pytest", "uv-sync")
++
++#: Built without `inputs` first, so `_GENERIC_INPUTS` below can read this
++#: profile's OWN `timeout_seconds` for its `timeout_seconds` input's ceiling
++#: instead of restating the number as a second literal. `RunnerProfile` sets
++#: no `timeout_seconds` for `generic`, so this is the class default (3600) --
++#: reading it here, rather than writing `3600` again, is what keeps the two
++#: from drifting if a future change gives `generic` its own value.
++_GENERIC_PROFILE = RunnerProfile(
++    name="generic",
++    image="agent-runtime-base",
++    resource_class="standard",
++    backend=Backend.CLOUD_RUN_JOB,
++    runner_argv=("python", "-m", "agent_worker.runners.generic"),
++    provider=None,
++)
++
++#: The generic runner's inputs (`agent_worker/runners/generic.py`).
++#:
++#: `command` IS A NAME, NOT AN ARGV: `choices` is `_GENERIC_COMMANDS`, the
++#: runner's own `GENERIC_COMMANDS` restated, whose argv are constants in the
++#: runner. Declaring it reads as invariant 10 relaxed and is not -- see
++#: contract request 32, Question 2 (#218) -- and `RunnerProfile.__post_init__`
++#: enforces the one exemption `_NEVER` (tests/unit/mcp/test_runner_inputs.py)
++#: is asked to carry: `command` declared as a string whose `choices` are
++#: exactly `_GENERIC_COMMANDS`, for `generic` only.
++#:
++#: THE FOUR LIMITS MAY ONLY LOWER THE PLATFORM'S (`runners/limits.py`). Each
++#: ceiling here is the value the worker exports by default -- the profile's
++#: `timeout_seconds`, and `WorkerConfig`'s grace and output caps -- so a
++#: request above it is refused at the door instead of accepted and clamped.
++#: The runner still clamps to what the attempt's worker exports, which an
++#: operator may have set lower. From 1: the runner reads 0 or less as "not
++#: asked", so a 0 was accepted and meant nothing.
++_GENERIC_INPUTS: dict[str, RunnerInput] = {
++    "command": RunnerInput(
++        "string",
++        required=True,
++        choices=_GENERIC_COMMANDS,
++        means="the platform catalogue entry to run; the platform owns its argv",
++    ),
++    # 32: `GenericCommand.max_arguments`. Read for `pytest` only.
++    "paths": RunnerInput(
++        "list",
++        minimum=0,
++        maximum=32,
++        items=RunnerInput("argument", means="an existing path inside the workspace"),
++        means="pytest only: what to run; default everything",
++    ),
++    "target": RunnerInput("argument", means="make only: the target; default all"),
++    "working_directory": RunnerInput(
++        "argument", means="a directory inside the workspace to run in; default the workspace"
++    ),
++    "timeout_seconds": RunnerInput(
++        "number", minimum=1, maximum=_GENERIC_PROFILE.timeout_seconds,
++        means="lowers the command's wall clock",
++    ),
++    "grace_seconds": RunnerInput(
++        "number", minimum=1, maximum=20, means="lowers the wait between SIGTERM and SIGKILL"
++    ),
++    "max_stdout_bytes": RunnerInput(
++        "integer", minimum=1, maximum=32 * 1024 * 1024, means="lowers the stdout kept"
++    ),
++    "max_stderr_bytes": RunnerInput(
++        "integer", minimum=1, maximum=8 * 1024 * 1024, means="lowers the stderr kept"
++    ),
++}
++
++
+ RUNNER_PROFILES: dict[str, RunnerProfile] = {
+     "mock": RunnerProfile(
+         name="mock",
+@@ -463,18 +1059,10 @@
+         checkpoint_interval_seconds=30,
+         inputs=_MOCK_INPUTS,
+     ),
+-    "generic": RunnerProfile(
+-        name="generic",
+-        image="agent-runtime-base",
+-        resource_class="standard",
+-        backend=Backend.CLOUD_RUN_JOB,
+-        runner_argv=("python", "-m", "agent_worker.runners.generic"),
+-        provider=None,
+-        # NOT DECLARED YET. The runner cannot start without `input.command`,
+-        # the NAME of an entry in its own catalogue, so an empty declaration
+-        # would refuse every task it runs. See RunnerProfile.inputs.
+-        inputs=None,
+-    ),
++    # Built from `_GENERIC_PROFILE` (declared above, alongside `_GENERIC_INPUTS`,
++    # so the input's own `timeout_seconds` ceiling can read this profile's
++    # `timeout_seconds` instead of restating it).
++    "generic": replace(_GENERIC_PROFILE, inputs=_GENERIC_INPUTS),
+     "claude-code": RunnerProfile(
+         name="claude-code",
+         image="agent-runtime-base",
+@@ -528,10 +1116,7 @@
+         provider="anthropic",
+         secrets=("ANTHROPIC_API_KEY",),
+         timeout_seconds=5400,
+-        # NOT DECLARED YET. The runner cannot start without `input.url` or
+-        # `input.actions`, so an empty declaration would refuse every task it
+-        # runs, the smoke suite's GKE row included. See RunnerProfile.inputs.
+-        inputs=None,
++        inputs=_BROWSER_INPUTS,
+     ),
+ }
+ 
+@@ -556,23 +1141,10 @@
+ 
+     `raw` holds the keys BESIDES the prompt. Returns them normalised (an
+     integral float for an integer input becomes an int), or raises
+-    InputRefused: for every key the profile does not declare, naming them all,
+-    or for the first declared key whose value is out of its bounds, naming the
+-    bound.
+-
+-    NOT DECLARED YET IS DECIDED HERE, AND ONLY HERE. A profile whose inputs are
+-    not declared yet (`inputs is None`: `browser` and `generic`, open with the
+-    owner on #218) has no declaration to check a key against, so `raw` comes
+-    back as it was sent and only its size bounds it, which the caller that
+-    measures the size enforces (`validate_input_size` in swarm-api). The review
+-    of #213 found this decided twice and differently: this function refused
+-    every key while the API returned before asking and accepted every key, so
+-    the one rule and the API gave opposite answers for the same profile. The
+-    plugin's bridge sending such a profile nothing is its own send policy, not
+-    this rule (#218's third question).
++    InputRefused: for every key the profile does not declare, naming them all;
++    for every required key `raw` does not send, naming them all; or for the
++    first declared key whose value is out of its bounds, naming the bound.
+     """
+-    if profile.inputs is None:
+-        return dict(raw)
+     declared = profile.inputs
+     unknown = sorted(set(raw) - set(declared))
+     if unknown:
+@@ -590,4 +1162,11 @@
+                 f"so {unknown} cannot be sent"
+             )
+         raise InputRefused(message, key=unknown[0], keys=tuple(unknown))
++    missing = sorted(key for key, spec in declared.items() if spec.required and key not in raw)
++    if missing:
++        raise InputRefused(
++            f"runner profile {profile.name!r} needs {missing} in its input",
++            key=missing[0],
++            keys=tuple(missing),
++        )
+     return {key: declared[key].check(key, raw[key]) for key in sorted(raw)}
+```
+
+### What it would break if accepted
+
+* **Nothing stored.** Tasks keep their `input`. The check runs at submission
+  only.
+* **Callers that send what the declaration refuses** would get 422
+  `invalid_input` for input the API accepts today. That is the point, and it
+  is a behaviour change to announce. Every case below fails or misbehaves at
+  the runner today. The only exceptions are an upper-case `type`, a number
+  sent as a string, and a limit above the ceiling: today those are coerced or
+  clamped, and they would now be refused.
+  * `generic` with no `command`, or a `command` outside the catalogue.
+  * An action with an upper-case `type`, a missing `selector` or `url`, or a
+    key its shape does not take.
+  * `timeout_ms`, `launch_timeout_ms` or a viewport sent as a string or out
+    of bounds, and `seconds` above 60.
+  * A `goto` to a private, metadata, cluster or credentialled URL.
+  * A `generic` limit of 0 or less, or above its ceiling.
+* **In-repository callers were checked on 2026-09-29.**
+  * `scripts/lib/testlib.sh` `profile_input` sends `browser` a `screenshot`
+    action with `name` and `full_page` and `extract_text: false`. This
+    passes the proposed catalogue.
+  * `scripts/prove-gke-dispatch.sh --url https://example.com` passes.
+  * `docs/workflows.md`'s example step `{"command": "pytest"}` passes.
+  * `profile_input`'s default branch sends `generic` only a prompt. It would
+    now be refused at 422 instead of failing at the runner. No script
+    submits `generic` through that branch today.
+* **Downstream restatements that must follow in the applying PR:**
+  * The bridge: `parse_input_flags`'s string kinds (question 3). Its
+    `not_yet` wording for a `None` profile is deleted.
+  * swarm-api: `validation.validate_runner_input`'s and `runnerinputs.py`'s
+    docstrings, which describe `None`. There is no code branch to remove;
+    the rule decides.
+  * The worker: `browser._check_url` calls `url_refusal`. The runner may keep
+    its own checks, because a task written before this change still reaches
+    it.
+  * The Submit form's `SUGGESTED` for `browser` and `generic`
+    (`apps/swarm-ui/src/Submit.tsx`). Today it is a runner census. Section 13
+    of `scripts/lib/check-contract-parity.sh` would then hold it to the
+    declaration, as it does for the declared profiles.
+  * The generated tables. `docs/workflows.md` and `plugin/README.md` gain
+    `runner-inputs:browser` and `runner-inputs:generic` blocks, and
+    `test_runner_input_prose.py` needs a rendering for `list` and `object`.
+  * The tests that key on `inputs is None`.
+    `test_runner_inputs.py::_UNDECLARED` skips itself ("#218 is settled").
+    `test_runner_inputs_by_declaration.py` and
+    `test_submit_offers_only_what_runners_read.py` assert the `None`
+    behaviour and are rewritten for the declarations.
+  * `apps/swarm-ui/src/types.ts`, if it ever mirrors `inputs`. Today it does
+    not.
+* **Restatements this creates, each needing a parity test** of the kind
+  `test_runner_inputs.py` already runs for the mock:
+  * `choices` for `command`, against `GENERIC_COMMANDS`;
+  * the `argument` pattern, against `_ARGUMENT_SAFE`;
+  * 200, against `MAX_ACTIONS`, and 32, against `max_arguments`;
+  * the eight action shapes and their fields, against the `if kind ==`
+    chain in `browser.py`;
+  * 60, against the `wait` clamp;
+  * the four limit ceilings, against `WorkerConfig`'s defaults and the
+    profile's `timeout_seconds`.
+
+  The catalogue cannot import the worker, so each of these is a copy, the
+  same kind of copy as the mock's exit codes.
+
+### If it is declined
+
+`browser` and `generic` stay `None`. The API goes on bounding them by size,
+and every failure listed under *What is true today* goes on arriving after
+admission, having spent a lease and a pod start. The plugin still cannot
+dispatch a working browser task (#220). The only way around that without a
+declaration is a bridge exception for `None` profiles, and question 3
+recommends against it. A private-address `goto` still times out instead of
+being refused, and a URL with a password is still stored with its task.
+
+### Preconditions for the applying PR
+
+Three things this entry does not itself change, because they are code, not
+the frozen module, and this request is docs-only. The applying PR does not
+merge without them:
+
+* **Measure against the live cluster that page script cannot use the
+  metadata token endpoint, before it merges.** The CORS-preflight claim
+  above ("a cross-origin `fetch()` ... triggers a CORS preflight, and the
+  metadata server does not answer the preflight in a way that permits the
+  request") is reasoned from the metadata server's documented behaviour, not
+  measured from this cluster. Run a `browser` task against the live GKE pod
+  that attempts exactly that `fetch()` and confirm the token never reaches
+  the page before this entry's SSRF posture is relied on for anything.
+* **The worker re-runs `check_inputs` on the payload it reads.** Confirmed
+  on 2026-09-29: nothing under `apps/agent-worker` calls `check_inputs`
+  today; only swarm-api (`validation.py`) and the plugin's bridge
+  (`swarm_mcp/server.py`, `workflows.py`) do, both at submission. A task
+  document written before this declaration existed, or reached by a future
+  bypass of the submission check, is never re-checked at the point that
+  actually runs it. The applying PR adds that second call in the worker's
+  own dispatch path, so a bad `input` is refused twice, not once.
+* **The runner's `_ARGUMENT_SAFE` uses `fullmatch`, not `match`.** Confirmed
+  on 2026-09-29: `agent_worker/runners/generic.py` line 71 defines
+  `_ARGUMENT_SAFE = re.compile(r"^[A-Za-z0-9._][A-Za-z0-9._\-/]{0,255}$")`
+  and line 181 calls `_ARGUMENT_SAFE.match(text)`. Without `re.MULTILINE`,
+  `$` matches at the end of the string **or immediately before a trailing
+  newline**, so `"safe\n"` passes `.match()` today though it should not: a
+  value the runner appends to an argv, or writes as a working directory,
+  carrying a trailing newline. `.fullmatch()` has no such exception. This is
+  the runner's own code, not `apps/common/swarm_common/profiles.py`
+  (`_ARGUMENT.fullmatch(value)` there already uses `fullmatch`, and was
+  correct on this point already); it is listed here because it is the same
+  class of bug this entry's URL work found, in the sibling check.
+
+**Neither of the two remaining layers is a precondition of this request,
+because both are already filed and neither is code this entry touches:**
+
+* **The pod's DNS config is #341** ("Browser worker pods resolve short
+  names through the cluster search path, so `kubernetes.default` reaches
+  cluster services by DNS"). Set `ndots:1` and drop search domains, which
+  removes the search-path trial for every short name at once, rather than
+  this entry's door check trying to enumerate which short names are unsafe.
+  This is the fix the owner pointed to on 2026-09-29 when declining the
+  broader host-dot-count rule: `url_refusal`'s job is a 422 with a clear
+  reason for the names it CAN recognise as unsafe from the string alone
+  (single-label, `.svc`); closing the general case is #341's job, in the
+  pod spec, not this module's.
+* **A runner-side `context.route` guard is not filed as part of this
+  request either.** It is the only layer anywhere in this path that sees a
+  redirect or a subresource; the door check above never does, however its
+  own bugs are fixed. File it as its own worker issue, so this entry is not
+  blocked on worker-side Playwright work.
+
+Together with the worker's NetworkPolicy, these three -- #341, the
+`context.route` guard, and the network policy already deployed -- are what
+actually keep the pod from reaching a cluster-internal service by name. This
+entry's `url_refusal` is a fourth, outermost layer: a fast, clear refusal at
+submission for the shapes it can recognise, not the mechanism any of this
+relies on for correctness.
+
+### Invariants
+
+* **Invariant 10.** Every declared key is data. `command` is a name from a
+  closed list whose argv the platform owns, and the ONE EXEMPTION `_NEVER`
+  (`tests/unit/mcp/test_runner_inputs.py`) is asked to carry for it is
+  narrow and enforced in code (`RunnerProfile.__post_init__`): `generic`
+  only, and only a string whose `choices` are exactly `_GENERIC_COMMANDS`.
+  `FORBIDDEN_CALLER_FIELDS` (`swarm_api/validation.py`) is unaffected -- it
+  guards the top-level task body, a different namespace declared `input`
+  keys never touch. `paths`, `target` and `working_directory` are appended
+  after a fixed argv and can never become a flag. The four limits can only
+  lower the platform's own. Nothing declared is an image, a command line, a
+  resource spec or a backend parameter, and `argv`, `script`, `env`,
+  `command_line` and `shell` become refusals at the door.
+* **Invariant 9.** `url_refusal` refuses the cluster's own names it can
+  parse as such, and a global address it can identify in the ranges this
+  module lists. **It does not refuse every private address by construction**
+  -- a security review on 2026-09-29 found the first draft's version of this
+  claim false, because a host it failed to parse the way a browser does
+  could avoid every check that followed. The revised rule refuses non-ASCII,
+  backslash and any host that is not plain `[a-z0-9.-]+` before any of the
+  address logic runs, which is what makes the address logic trustworthy
+  again; it is still not the SSRF control (see above), and per-tenant
+  isolation stays the network's job regardless.
+* **Invariant 1.** A refusal at submission creates no task. So a task that
+  is bound to fail no longer takes a lease, which is less infrastructure
+  demand, never more.
+* **Invariant 7.** Unchanged. Nothing here sizes a pod.
+
+### Owner's decisions
+
+1. **Accept the three new kinds** (`list` with `items`, `object` with
+   `variants`, and `argument`), the `url` kind, and the `choices` and
+   `required` fields. Or name a smaller shape.
+2. **The either/or on `browser`.** A task with neither `url` nor `actions`
+   passes the declaration and fails at the runner. Options:
+   * leave it with the runner (this request);
+   * add a profile-level `requires_one_of` to the catalogue;
+   * make `actions` required with a minimum of 1 and drop `url`, which
+     breaks every current caller of `url`.
+3. **The `url` rule, revised 2026-09-29, DECIDED the same day.** Accept the
+   scheme restriction and the public-host rule as rewritten above (refuse
+   before parsing, explicit refused-network lists in place of `is_global`,
+   the single-label rule kept, `.svc` added to the refused suffixes, six
+   IPv4-in-IPv6 embedding forms unwrapped), with no allow-list. **The owner
+   answered all three sub-decisions on 2026-09-29:**
+   * **the host-dot-count question, resolved: DROP the "fewer than two
+     dots" rule.** It refused apex domains (`github.com`, `example.com`),
+     the browser profile's main targets, while still admitting
+     `kubernetes.default.svc` and `swarm-api.swarm-system.svc` (GKE's
+     `ndots:5` search path applies to any name under five dots, so a
+     two-label rule was never going to close that on its own terms either).
+     The single-label rule is restored, and `.svc` is added to the refused
+     suffixes; the general search-path gap is #341's job, not this
+     module's (see *Preconditions for the applying PR*);
+   * **https-only: no.** Recorded above ("Why not https-only, decided");
+   * **IDN: accepted as written**, i.e. punycode only, no separate
+     normalisation path. Recorded above ("IDN, decided").
+   A runner-side `context.route` guard is filed as its own worker issue, not
+   part of this request (recommended, see *Preconditions*).
+4. **The bounds.**
+   * `timeout_ms` 1..300000;
+   * `launch_timeout_ms` 1..180000;
+   * viewport up to 3840×2160;
+   * `wait.seconds` 0..60;
+   * `user_agent`: printable ASCII (0x20-0x7E), 0..512 characters (new in
+     this revision, closing a CRLF-header-injection gap the first draft left
+     open, since `user_agent` had no bound at all);
+   * `selector`, `text` and `key`: 0..4096 characters each (new in this
+     revision, for the same reason);
+   * the `generic` limits at the worker's default ceilings: refused above
+     them at the door, still clamped to the attempt's actual ceiling by the
+     runner; `timeout_seconds`'s ceiling is read off `RunnerProfile.
+     timeout_seconds` itself rather than restated as a literal (new in this
+     revision).
+5. **Exact matching of an action's `type`**, which refuses the `"Goto"` the
+   runner accepts today.
+6. **Keep the key name `command`, with the narrow `_NEVER` exemption this
+   revision adds** (`generic` only, only a string whose `choices` are
+   exactly `_GENERIC_COMMANDS`, enforced in `RunnerProfile.__post_init__`,
+   not only asserted in prose) -- or decline the exemption and rename the
+   key, which breaks every existing caller to avoid a guard this revision
+   already narrows to the one case invariant 10 does not mean to forbid.
+7. **Retire the `None` amendment.** This returns `RunnerProfile.inputs` to
+   `Mapping` with no `None`, the type request 25 was accepted with. The
+   alternative is to keep `| None` for a future profile, which leaves the
+   branch in `check_inputs`.
+8. **Question 3 (#218).** Keep the bridge's send-only-what-is-declared
+   policy (recommended). #218's own text, read directly on 2026-09-29,
+   confirms this is its third question; no further check is needed.
 
 ---
 
 ## 34. `models.py` / a new `specsign.py`: a step's spec is signed by swarm-api and verified by every worker
 
-**Status: PROPOSED, 2026-09-29.** Recorded from #342 (S0), which the round-3
-security re-review of #316 (contract request 33, the merge step) found the
-same day. The owner decided the mechanism on 2026-09-29, in a joint review
-with contract request 33: swarm-api signs each step's canonical spec at
+**Status: ACCEPTED 2026-09-29 by the owner after three security reviews.**
+Recorded from #342 (S0), which the round-3 security re-review of #316
+(contract request 33, the merge step) found the same day. This entry went
+through three rounds of joint review with contract request 33 on 2026-09-29 --
+the initial mechanism decision, the checkpoint-restore/shared-signer/GKE
+review, and the checkpoint-residual/end-cause/post-verdict-mechanism
+correction, each recorded in this entry as it was made -- before the owner
+accepted it as it now reads. The owner decided the mechanism on 2026-09-29, in
+a joint review with contract request 33: swarm-api signs each step's canonical
+spec at
 submission with a Cloud KMS asymmetric key that only `swarm-api`'s service
 account holds `signer` on; every worker verifies the signature against the
 spec it fetched before it starts an agent or a worker action, and refuses a
@@ -2997,7 +6047,7 @@ a missing key read as null:
 | `input` | the **whole object** | the prompt and every declared input (`issue`, the mock's), whatever keys a profile declares later |
 | `depends_on` | the list, **in stored order** | a removed parent is how a step would be made to run early |
 | `repository_url`, `repository_ref` | the fields | what is cloned, and where a pull request is opened |
-| `metadata` | exactly the three keys `dispatch`, `input_from`, `expected_outputs`, each the stored value or null | the platform's own blocks. `dispatch` carries `strategy`, `carrier`, `role`, `integrates`, #273's `continues`, and contract request 33's `pr_role` and `merges`; `input_from` is the task-id-keyed map `submit_workflow` writes; `expected_outputs` is what `record_expected_outputs` writes on an upstream step |
+| `metadata` | exactly the three keys `dispatch`, `input_from`, `expected_outputs`, each the stored value or null | the platform's own blocks. `dispatch` carries `strategy`, `carrier`, `role`, `integrates`, #273's `continues`, and contract request 33's `pr_role`, `merges` and `verdict_source` (`post-verdict`'s own dispatch-block pointer at the review task it reads, `{review: <review task id>}`, added in that entry's round-5 re-review so `post-verdict` never has to trust `input_from`'s tenant-writable staging for the one read this whole design depends on); `input_from` is the task-id-keyed map `submit_workflow` writes; `expected_outputs` is what `record_expected_outputs` writes on an upstream step |
 
 **Not covered, on purpose.** `state`, `park_reason`, `blocked_by`,
 `current_lease_id`, `current_generation`, `attempt_count`,
@@ -3563,9 +6613,10 @@ refusal.
 **Worker-action steps verify their upstream steps too** (the owner's
 decision). Before it reads its credential, contract request 33's
 `post-verdict` step fetches `review.json` from the path it computes itself,
-using the review task id **named in its own signed `dispatch` block** (the
-same way `merge`'s `dispatch.merges` block names task ids, not through
-`input_from`). **Corrected from the first draft of this entry, which said
+using the review task id **named in its own signed `metadata.dispatch.verdict_source`**
+(`{review: <review task id>}`, the same way `merge`'s `dispatch.merges` block
+names task ids, not through `input_from`). **Corrected from the first draft of
+this entry, which said
 `post-verdict` uses `input_from`:** contract request 33's joint review with
 this entry, 2026-09-29, removed `post-verdict`'s `input_from` on purpose --
 the ordinary staging path resolves an artifact's location from the upstream

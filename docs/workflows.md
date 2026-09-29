@@ -146,6 +146,10 @@ runner cannot start without the name of a command in its own catalogue, so an
 empty declaration would refuse every task they run. Which keys they declare,
 with which bounds, is an open question recorded under request 25 in
 [contract-change-requests.md](contract-change-requests.md) and tracked as #218.
+Request 29 in that file proposes an answer: every key each runner reads, with
+its kind and bounds, and the list, object and URL kinds they need. It is not
+applied, so until the owner decides, these two profiles are still bounded by
+size alone.
 
 `{"quota_exhausted": true}` parks a mock step ONCE: the task's first attempt,
 and no other. The attempt is counted by the task's own `attempt_count`, which
