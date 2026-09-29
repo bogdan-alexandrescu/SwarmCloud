@@ -39,7 +39,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 24 | `profiles.py`: whether a profile's cost is declared rather than measured is named outside the catalogue | ACCEPTED 2026-09-25 (#185, decision 9), applied in PR #217 |
 | 25 | `profiles.py`: a runner profile cannot declare the inputs a caller may send it, so the bridge names the mock's by profile | ACCEPTED 2026-09-25 (owner, on #142), applied in PR #213; both amendments confirmed by the owner 2026-09-26: `inputs=None` for `browser` and `generic` (#218), and the bounded park counted by the task's `attempt_count` rather than the state file |
 | 26 | `models.py`: the attempt's CPU figures carry no time and their limit no source | ACCEPTED 2026-09-26 (owner, on #184), applied in PR #229 |
-| 29 | `profiles.py` / `models.py`: a merge profile that runs no agent, and two end causes for it (#295) | PROPOSED 2026-09-29 |
+| 33 | `profiles.py` / `models.py`: a merge profile that runs no agent, and two end causes for it (#295) | PROPOSED 2026-09-29 |
 
 ---
 
@@ -2870,12 +2870,17 @@ accepting `issue` for these two profiles and still refuses everything else.
 
 ---
 
-## 29. `profiles.py` / `models.py`: a merge profile that runs no agent, and two end causes for it
+## 33. `profiles.py` / `models.py`: a merge profile that runs no agent, and two end causes for it
 
-**Status: PROPOSED, 2026-09-29.** Recorded from #295's design step. The
-design is [merge-step.md](merge-step.md). Nothing under
-`apps/common/swarm_common/` has been edited. If another branch has taken 29 by
-the time this merges, renumber this one.
+**Status: PROPOSED, 2026-09-29.** Recorded from #295's design step. Revised
+2026-09-29 against a security review (B1, B2, M1–M5 and their minors); see
+[merge-step.md](merge-step.md)'s own revision note for the changes, which are
+almost entirely outside this request's own frozen-contract surface —
+`worker_action`, the `merge` profile and the two end causes are unchanged by
+the review. The design is [merge-step.md](merge-step.md). Nothing under
+`apps/common/swarm_common/` has been edited. Renumbered from 29 to 33: #259 is
+29, #314 is 30, #304 is 31, #315 is 32. If another branch has taken 33 by the
+time this merges, renumber this one again.
 
 ### What is true today
 

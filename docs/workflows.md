@@ -490,11 +490,21 @@ bookkeeping you are not using.
 
 ## PROPOSED: a chain that merges its own pull request
 
-**Proposed on 2026-09-29 for #295 and not built.** The API refuses this spec
-today. `single-pr`, `pr_role` and the `merge` profile do not exist yet, and the
-`merge` profile needs contract request 29 in
-[contract-change-requests.md](contract-change-requests.md). The design, and the
-reason for each rule below, is [merge-step.md](merge-step.md).
+**Proposed on 2026-09-29 for #295 and not built. Revised 2026-09-29** against
+a security review's two blockers and five majors (owner decisions the same
+day); [merge-step.md](merge-step.md)'s own revision note lists what changed.
+The API refuses this spec today. `single-pr`, `pr_role`, the `merge` profile
+and the `claude-code-review`/`claude-code-proof` profiles below do not exist
+yet. The `merge` profile needs contract request 33 in
+[contract-change-requests.md](contract-change-requests.md); `claude-code-review`
+and `claude-code-proof` need a second, not-yet-filed request
+([merge-step.md](merge-step.md) §1.3, §10) — they are otherwise identical to
+`claude-code`, but each needs its **own** Job and service account, the same
+reason the `merge` profile needed one: a review or proof step that shared
+`claude-code`'s Job would share its service account too, and so would give the
+`fix` step's agent read access to the very credential (§4.3) that anchors the
+verdict it must not be able to forge. The design, and the reason for each rule
+below, is [merge-step.md](merge-step.md).
 
 The owner's chain is implement → review → fix → proof → merge. It produces
 **one** pull request and ends with the **worker** squash-merging it. The merge
@@ -514,7 +524,7 @@ can read.
      "input": {"prompt": "Implement issue #295. Write a fact-style pull request title to pr-title.txt."}},
 
     {"step_id": "review",
-     "runner_profile": "claude-code",
+     "runner_profile": "claude-code-review",
      "pr_role": "reader",
      "depends_on": ["implement"],
      "input": {"prompt": "Review the checked-out head against issue #295. Write review.json: {\"verdict\": \"MERGE\" or \"CHANGES\", \"sha\": the checked-out HEAD, \"title\": the pull request title you reviewed, \"summary\": your findings}."}},
@@ -527,7 +537,7 @@ can read.
      "input": {"prompt": "If review.json says MERGE, change nothing and exit. Otherwise fix every finding in it."}},
 
     {"step_id": "proof",
-     "runner_profile": "claude-code",
+     "runner_profile": "claude-code-proof",
      "pr_role": "reader",
      "depends_on": ["fix"],
      "input": {"prompt": "Prove the change works at the checked-out head. Write proof.json: {\"outcome\": \"PROVED\" or \"NOT_PROVED\", \"sha\": the checked-out HEAD, \"evidence\": what you ran and saw}."}},
@@ -551,34 +561,52 @@ What each step does:
 | step | clones | publishes | writes |
 |---|---|---|---|
 | implement (`author`) | `main` | pushes `swarm/<its task id>` and opens the pull request | the code, and `pr-title.txt` |
-| review (`reader`) | the implement branch | nothing | `review.json` |
+| review (`reader`) | the implement branch | no git push. Submits a GitHub PR review (`APPROVE` or `REQUEST_CHANGES`, pinned to the checked-out head) as the `swarm-review` App, an identity only this step's own service account can read | `review.json` |
 | fix (`amender`) | the implement branch | fast-forward pushes to the **same** branch, only if it changed something | the fix |
-| proof (`reader`) | the implement branch | nothing | `proof.json` |
-| merge (profile `merge`) | nothing, and it runs no agent | `PUT .../pulls/{n}/merge`, squash, `sha` pinned | the squash commit, and a comment naming the task that merged it |
+| proof (`reader`) | the implement branch | no git push. Submits a `swarmcloud-proof` check run (`success` or `failure`, pinned to the checked-out head) as the `swarm-proof` App, an identity only this step's own service account can read | `proof.json` |
+| merge (profile `merge`) | nothing, and it runs no agent | `PUT .../pulls/{n}/merge`, squash, `sha` pinned, to `api.github.com` only, no redirect followed | the squash commit, and a comment naming the task that merged it |
 
 The merge happens only if **all** of these hold. Otherwise the step ends
 `MERGE_REFUSED` and `result_summary.merge.refusal` says which one failed:
 
-* the review's verdict is exactly `MERGE`, and the scheduler attested that
-  verdict before the fix step started (open question Q2 in the design);
-* the proof's outcome is exactly `PROVED`;
+* the `swarm-review` App's review is `APPROVED` at the pinned head — not
+  merely `review.json.verdict == "MERGE"`, which is now a descriptive claim,
+  not the trust anchor (owner decision B1, 2026-09-29: this replaces the
+  scheduler attestation the original proposal described);
+* the `swarm-proof` App's `swarmcloud-proof` check run is `success` at the
+  same pinned head — likewise not merely `proof.json.outcome == "PROVED"`;
 * the review and the proof ran on the same head, the fix pushed nothing after
   the review, and that head is still the pull request's live head. A fix
   that changed anything therefore ends this workflow's merge with
   `review_not_at_head`, because nobody reviewed the fix;
 * every required check on `main` is completed `success` or `skipped` at that
-  head, pinned to GitHub Actions, and no other check that ran there is failing
-  or still running. **Pending is not green, and the step does not wait for
-  it**;
+  head, pinned to GitHub Actions — and any required check with **no** pinned
+  `app_id` is refused rather than accepted through a legacy commit status
+  (owner decision M5) — and no other check that ran there is failing or still
+  running. **Pending is not green, and the step does not wait for it**;
 * GitHub reports the pull request cleanly mergeable. The branch is never
-  updated from `main`;
+  updated from `main`, and its `base.ref` is re-checked immediately before and
+  again immediately after the merge call, so a retargeted base is caught
+  rather than silently merged;
 * the title is the one the review saw, and not the `[swarm] task_` placeholder;
-* the pull request does not touch `.github/workflows/`. Such a pull request
-  lands only through a human's `ready`.
+* the pull request does not touch a protected path — `.github/**`,
+  `scripts/**`, `terraform/**`, `kubernetes/**`, `images/**`, `Makefile`,
+  `pyproject.toml`, `uv.lock`, or any `**/conftest.py` (broadened from
+  `.github/workflows/` alone, owner decision M4: merging to `main` is code
+  execution as the deployer, since `release.yml` grants `id-token: write` at
+  workflow level and its verify job runs the merged tests). Such a pull
+  request lands only through a human's `ready`.
 
-A person's `ready` label on the same pull request still works.
-`auto-merge.yml` stays authoritative for labelled pull requests, and whichever
-merge lands first, the other finds it merged at the same pinned head.
+`owner`/`repo` and the forge host come from the tenant's control-plane
+registration, never from the task document (owner decision B2), and the merge
+worker talks only to that pinned host.
+
+A person's `ready` label on the same pull request still works — and so, in
+principle, does an agent's: the owner has kept `-git`'s PAT for agent pushes
+(owner decision M3), so `ready` is not exclusively a human action any more,
+though the label stays bound to the exact head it was set on. `auto-merge.yml`
+stays authoritative for labelled pull requests, and whichever merge lands
+first, the other finds it merged at the same pinned head.
 
 ---
 
