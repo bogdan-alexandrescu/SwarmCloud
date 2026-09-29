@@ -366,6 +366,32 @@ export const POOL_FAMILY_ORDER: readonly PoolKind[] = [
 ]
 
 /**
+ * Each family's heading, as Capacity › Pools draws it. Here so that Pool
+ * limits, which groups the same pools the same way (#132), draws the same
+ * words over them: a family called one thing on the board and another on the
+ * screen that edits it is two names for one group. ONE TABLE, imported by
+ * both screens: Capacity.tsx held its own copy until #132, and two copies of
+ * the same words are two copies that can drift.
+ *
+ * THESE ARE POOL FAMILIES, NOT NAV LABELS, and `runner` keeps the contract's
+ * noun on purpose: it groups the pools whose scope is a runner profile. The
+ * TAB one along used to be called "Runner profiles" too and is now "Profile
+ * headroom" -- that rename was about telling a per-tenant measurement from the
+ * platform-wide catalogue beside it in the rail, and it does not reach in
+ * here. A pool family named after the thing it is scoped by is unambiguous on
+ * the capacity board, where every other row is `Tenants`, `Backends` or
+ * `Providers`.
+ */
+export const FAMILY_TITLE: Readonly<Record<PoolKind, string>> = {
+  global: 'Global',
+  tenant: 'Tenants',
+  resource: 'Resource classes',
+  runner: 'Runner profiles',
+  backend: 'Backends',
+  provider: 'Providers',
+}
+
+/**
  * `active` above `effective_limit`. Not merely "full": it means the pool is
  * carrying more than its ceiling allows, which admission cannot produce and
  * which therefore indicates drift -- a limit lowered under running work, or a
