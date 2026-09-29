@@ -22,8 +22,10 @@ Three properties, one per defect:
    earlier regular file, a member written through a symlink member, a hard
    link out of the archive) is refused whole, before a byte is written;
 3. the lease is heartbeaten while a checkpoint is being written, for at most
-   `heartbeat_meanwhile_max_seconds`, and not once the attempt is fenced or
-   cancelled; and a checkpoint over its cap is stopped while it is written.
+   `heartbeat_meanwhile_max_seconds`, through a cancel (so the cancellation's
+   own checkpoint can finish; owner decision 2026-09-29) but not once the
+   attempt is fenced; and a checkpoint over its cap is stopped while it is
+   written.
 
 MUTATIONS: drop an entry from `checkpoint.TOOL_CACHES` (test 1 goes red on that
 path); keep `node_modules` inside the checkout again (the `repo/node_modules`
@@ -32,8 +34,10 @@ the link without logging (test 2's log assertion); log every skipped link
 (the cap test); accept a hard link whose target is not an earlier regular file
 member, or drop the through-a-symlink check (the three review probes write
 outside `work/` or stop raising); take the heartbeat thread out of
-`_checkpoint` (test 3: `heartbeat_at` does not move); drop the bound or the
-poll from the thread (the bound and the cancel tests count beats); check the
+`_checkpoint` (test 3: `heartbeat_at` does not move); drop the bound (the
+bound and the cancel tests see beats past it); stop on a cancel as well as a
+fence (the cancel test counts too few beats); drop the poll from the thread
+(the fence test counts beats after the fence); check the
 cap only after the archive is written (the oversized test sees `b.txt` added).
 """
 
@@ -502,32 +506,45 @@ def test_the_heartbeat_during_a_checkpoint_stops_at_its_bound(db, worker_factory
     assert 1 <= during[0] <= 3, f"{during[0]} heartbeats in 6 s against a 2 s bound"
 
 
-def test_the_heartbeat_during_a_checkpoint_stops_once_the_task_is_cancelled(db, worker_factory):
-    """Cancelled mid-checkpoint: the heartbeat itself still succeeds, so only
-    the thread's own poll stops it. At most the beat already in flight lands
-    after the cancel."""
+def test_the_heartbeat_during_a_checkpoint_keeps_beating_after_a_cancel_until_its_bound(
+    db, worker_factory
+):
+    """Cancelled mid-checkpoint: the cancellation's own checkpoint has to
+    finish, so the thread keeps the lease alive through a cancel (owner
+    decision 2026-09-29, PR #288) -- but no longer than its bound. The bound
+    here is 4 s from the start of the checkpoint and the cancel lands at 1.5 s:
+    beats at about 2 s and 3 s, none after 4 s."""
     seed_attempt(db, task_input={"prompt": "x", "steps": 1, "sleep_seconds": 0.05})
     worker, _, _ = worker_factory(
         heartbeat_interval_seconds=1, checkpoint_interval_seconds=60, control_poll_seconds=60,
+        heartbeat_meanwhile_max_seconds=4,
     )
     beats = _count_beats(worker)
     real_create = worker.checkpoints.create
-    after_cancel: list[int] = []
+    window: list[tuple[float, float]] = []
 
     def slow_create(ws, *, label="periodic"):
-        if after_cancel:
+        if window:
             return real_create(ws, label=label)
+        start = time.monotonic()
         time.sleep(1.5)
         db.doc("tasks/task_1").update({"cancel_requested": True})
-        mark = len(beats)
-        time.sleep(4)
-        after_cancel.append(len(beats) - mark)
+        cancelled_at = time.monotonic()
+        time.sleep(5)
+        window.append((start, cancelled_at))
         return real_create(ws, label=label)
 
     worker.checkpoints.create = slow_create  # type: ignore[method-assign]
     worker.run()
-    assert after_cancel, "no checkpoint was written"
-    assert after_cancel[0] <= 1, f"{after_cancel[0]} heartbeats in 4 s after the cancel"
+    assert window, "no checkpoint was written"
+    start, cancelled_at = window[0]
+    after_cancel = [b for b in beats if cancelled_at < b < start + 6.5]
+    assert len(after_cancel) >= 2, (
+        f"{len(after_cancel)} heartbeats after the cancel: the cancellation's checkpoint "
+        f"was left to lose its lease"
+    )
+    past_bound = [round(b - start, 2) for b in after_cancel if b > start + 4.5]
+    assert not past_bound, f"heartbeats past the 4 s bound, at {past_bound} s"
 
 
 def test_the_heartbeat_during_a_checkpoint_stops_once_the_attempt_is_fenced(db, worker_factory):
