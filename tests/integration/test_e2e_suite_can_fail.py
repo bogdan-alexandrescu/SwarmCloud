@@ -451,7 +451,7 @@ def test_the_fakes_artifact_shape_matches_the_production_read_path():
         }
 
     store = Store.__new__(Store)
-    store.get_task = lambda tenant_id, task_id: _Task()  # type: ignore[method-assign]
+    store.get_task = lambda tenant_id, task_id, *, submitted_by: _Task()  # type: ignore[method-assign]
     served = Store.list_artifacts(store, "eng", "task_1")
 
     assert set(served) == {

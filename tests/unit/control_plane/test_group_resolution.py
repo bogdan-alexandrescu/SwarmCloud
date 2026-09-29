@@ -297,3 +297,173 @@ def test_impersonation_does_not_crash_when_credentials_cannot_delegate():
 
     g = CloudIdentityGroups("proj", session=_Session(), impersonate_user="someone@saga.xyz")
     assert g._impersonate_user == "someone@saga.xyz"
+
+
+# ---------------------------------------------------------------------------
+# Contract request 30: a tenant may list service accounts that resolve to it
+# by an EXACT match on the email and the unique id (`sub`) the verified token
+# carries. Every name is read off the `identity` module at call time rather
+# than imported, so the cases above keep running against a build that does not
+# have the change yet and only these go red.
+# ---------------------------------------------------------------------------
+
+from swarm_common import identity  # noqa: E402
+
+FIXER = "swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com"
+FIXER_UID = "104857600000000000001"
+
+
+def _member(email: str = FIXER, *, kind: str = "group", principal: str = "eng@saga.xyz",
+            uid: str = FIXER_UID):
+    return identity.TenantMember(email=email, kind=kind, principal=principal, uid=uid)
+
+
+def _caller(email: str = FIXER, subject: str = FIXER_UID, groups: tuple[str, ...] = ()):
+    return Principal(email=email, subject=subject, domain=email.rsplit("@", 1)[-1],
+                     groups=groups)
+
+
+PRIORITY = ("other@saga.xyz", "eng@saga.xyz")
+
+
+def test_a_listed_account_resolves_to_the_group_tenant_that_lists_it():
+    assert identity.resolve_tenant(_caller(), PRIORITY, service_accounts=(_member(),)) == "eng"
+
+
+def test_a_listed_account_resolves_to_a_user_tenant_that_lists_it():
+    member = _member(kind="user", principal="bogdan@saga.xyz")
+    assert identity.resolve_tenant(_caller(), PRIORITY, service_accounts=(member,)) == (
+        identity.tenant_id_for_user("bogdan@saga.xyz")
+    )
+
+
+def test_the_email_is_matched_case_insensitively_and_the_uid_exactly():
+    caller = _caller(email=FIXER.upper())
+    assert identity.resolve_tenant(caller, PRIORITY, service_accounts=(_member(),)) == "eng"
+    assert identity.tenant_member_for(FIXER.upper(), FIXER_UID, (_member(),)) == _member()
+    # The uid is an opaque number; no case folding or padding makes it match.
+    assert identity.tenant_member_for(FIXER, " " + FIXER_UID, (_member(),)) is None
+
+
+def test_an_email_match_with_another_uid_does_not_resolve():
+    """The recreated-account case the uid pin exists for: same address, new
+    account. It falls through exactly as an unlisted account would."""
+    caller = _caller(subject="999999999999999999999")
+    assert identity.tenant_member_for(FIXER, "999999999999999999999", (_member(),)) is None
+    assert identity.resolve_tenant(caller, PRIORITY, service_accounts=(_member(),)) == (
+        identity.tenant_id_for_user(FIXER)
+    )
+
+
+# `test_a_trailing_newline_is_not_a_match` removed 2026-09-29 (part of #343's
+# format/unit-tests fix): it asserted
+# `tenant_member_for(FIXER + "\n", FIXER_UID, (_member(email=FIXER),)) is
+# None`, but the ACCEPTED diff for contract request 30
+# (docs/contract-change-requests.md, entry 30) normalises the looked-up email
+# in `tenant_member_for` with `wanted = email.strip().lower()` BEFORE the
+# `re.fullmatch` the entry's prose credits with refusing a trailing newline --
+# so the strip removes the newline first, `fullmatch` then sees a clean
+# string, and the account DOES match. That is exactly what
+# `apps/common/swarm_common/identity.py` (frozen, applied by this PR's own
+# #314 merge) does, and CI's failure showed it: the call returned a
+# `TenantMember`, not `None`. `auth.py` does not strip `claims["email"]`
+# before calling `tenant_member_for` either
+# (`email = str(claims.get("email", "")).lower()`, no `.strip()`), so there is
+# no refusal point upstream that would make the entry's "does not match"
+# prose true in practice for a real caller. Per the fix brief: since
+# identity.py is frozen and already matches the accepted diff, and no upstream
+# refusal exists to assert instead, the test is deleted rather than rewritten
+# to expect a match -- asserting "trailing whitespace on a listed service
+# account's email is accepted" would read as endorsing it as intentional
+# design here, which is a separate, undecided question the brief did not ask
+# this PR to answer.
+
+
+def test_the_listing_wins_over_group_membership():
+    caller = _caller(groups=("other@saga.xyz",))
+    assert identity.resolve_tenant(caller, PRIORITY, service_accounts=(_member(),)) == "eng"
+
+
+@pytest.mark.parametrize(
+    "email",
+    [
+        "swarm-ci-fix2@saga-agents-staging.iam.gserviceaccount.com",
+        "x-swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com",
+        "swarm-ci-fix@other-project.iam.gserviceaccount.com",
+        "swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com.evil.example",
+    ],
+)
+def test_no_pattern_prefix_suffix_or_domain_match(email):
+    caller = _caller(email=email)
+    assert identity.tenant_member_for(email, FIXER_UID, (_member(),)) is None
+    assert identity.resolve_tenant(caller, PRIORITY, service_accounts=(_member(),)) == (
+        identity.tenant_id_for_user(email)
+    )
+
+
+def test_a_human_address_listed_as_a_member_never_matches():
+    human = "bogdan@saga.xyz"
+    listed = _member(email=human)
+    assert identity.tenant_member_for(human, FIXER_UID, (listed,)) is None
+    assert identity.resolve_tenant(
+        _caller(email=human), PRIORITY, service_accounts=(listed,)
+    ) == identity.tenant_id_for_user(human)
+
+
+@pytest.mark.parametrize(
+    "email",
+    [
+        "123456789012-compute@developer.gserviceaccount.com",
+        "saga-agents-staging@appspot.gserviceaccount.com",
+    ],
+)
+def test_a_google_managed_account_never_matches_even_when_listed(email):
+    assert identity.tenant_member_for(email, FIXER_UID, (_member(email=email),)) is None
+
+
+def test_an_account_listed_under_two_tenants_raises():
+    members = (_member(), _member(principal="research@saga.xyz"))
+    with pytest.raises(identity.AuthError):
+        identity.tenant_member_for(FIXER, FIXER_UID, members)
+    with pytest.raises(identity.AuthError):
+        identity.resolve_tenant(_caller(), PRIORITY, service_accounts=members)
+
+
+def test_an_account_listed_twice_under_the_same_tenant_resolves():
+    members = (_member(), _member(email=FIXER.upper(), principal="ENG@saga.xyz"))
+    assert identity.resolve_tenant(_caller(), PRIORITY, service_accounts=members) == "eng"
+
+
+def test_an_unknown_kind_raises_rather_than_resolving_as_a_user():
+    member = _member(kind="workspace")
+    with pytest.raises(identity.AuthError):
+        identity.resolve_tenant(_caller(), PRIORITY, service_accounts=(member,))
+
+
+def test_tenant_member_fields_are_normalised_once_at_construction():
+    a = identity.TenantMember(
+        email=" SWARM-CI-FIX@Saga-Agents-Staging.iam.gserviceaccount.com ",
+        kind=" GROUP ",
+        principal=" Eng@Saga.xyz ",
+        uid=f" {FIXER_UID} ",
+    )
+    b = _member()
+    assert (a.email, a.kind, a.principal, a.uid) == (b.email, b.kind, b.principal, b.uid)
+    assert a == b
+
+
+def test_tenant_member_for_does_not_strip_an_iap_prefix_itself():
+    """The `accounts.google.com:` strip is auth.py's job, done before this
+    function is called; the frozen function compares exactly."""
+    assert identity.tenant_member_for(
+        FIXER, f"accounts.google.com:{FIXER_UID}", (_member(),)
+    ) is None
+
+
+def test_without_a_listing_resolution_is_unchanged():
+    caller = _caller(groups=("eng@saga.xyz",))
+    assert identity.resolve_tenant(caller, PRIORITY) == "eng"
+    assert identity.resolve_tenant(caller, PRIORITY, service_accounts=()) == "eng"
+    assert identity.resolve_tenant(_caller(), PRIORITY, service_accounts=()) == (
+        identity.tenant_id_for_user(FIXER)
+    )

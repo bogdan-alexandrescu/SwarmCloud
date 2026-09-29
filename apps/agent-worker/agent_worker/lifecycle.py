@@ -150,9 +150,15 @@ from .accountlease import (
     NoAccountAvailable,
     credential_env_from_account,
 )
-from .checkpoint import CheckpointManager, CheckpointRecord
+from .checkpoint import (
+    ARCHIVE_NAME,
+    MANIFEST_NAME,
+    CheckpointManager,
+    CheckpointRecord,
+    checkpoint_prefix,
+)
 from .config import WorkerConfig
-from .control import ControlPlane, ControlSignals
+from .control import CHECKPOINT_DIGESTS_FIELD, ControlPlane, ControlSignals
 from .errors import (
     CheckpointError,
     ConfigError,
@@ -323,6 +329,12 @@ PR_READ_LIMIT_BYTES = 256 * 1024
 #: title that matches is treated as carrying the task id even when the id in
 #: it is not this task's (an agent that copied another task's old title).
 _RETIRED_TITLE_RE = re.compile(r"\[swarm\]\s*task_", re.IGNORECASE)
+
+#: One path segment of a checkpoint's key, as a manifest's `attempt_id` and
+#: `checkpoint_id` must be before a restore builds a key from them (#347). A
+#: manifest is bucket data: an id carrying `/` or `..` would name a key that
+#: starts with this task's prefix and leaves it.
+_KEY_SEGMENT_RE = re.compile(r"[A-Za-z0-9_-][A-Za-z0-9_.-]*")
 
 
 def _as_issue_number(value: Any) -> int | None:
@@ -852,7 +864,7 @@ class Worker:
         # second read of a document that cannot have changed.
         self._task = task
         self._standalone = self._uploads_working_folder(task)
-        self._restore_checkpoint(task.get("latest_checkpoint"))
+        self._restore_checkpoint(task)
         if self._standalone and self._restored_from is not None:
             # What the checkpoint brought back, BEFORE the worker stages
             # anything: whatever in here is not a staged input was written by
@@ -1803,16 +1815,33 @@ class Worker:
                 error=f"{type(write_exc).__name__}: {write_exc}",
             )
 
-    def _restore_checkpoint(self, pointer: Any) -> None:
+    def _restore_checkpoint(self, task: dict[str, Any]) -> None:
+        """Restore the checkpoint this task's own earlier attempt recorded, or nothing.
+
+        ONLY A RECORDED CHECKPOINT, AND NEVER ON A FIRST ATTEMPT (#347, owner
+        decision 2026-09-29). This used to fall back to the newest manifest
+        under the task's prefix when the pointer resolved to nothing, and to
+        do so on attempt 1 as well. The tenant's worker account can write
+        anywhere under `tenants/<tenant>/`, so any agent of the tenant could
+        plant a checkpoint under another task's prefix -- an implement step
+        under its parked review step's -- and HOME is `work/`, whose
+        `.claude/` travels in every checkpoint: the planter's settings, and
+        the hooks in them, arrived in the next step, where a hook runs code
+        without persuading any model. Now:
+
+        * a first attempt restores nothing, whatever is under the prefix;
+        * a retry restores only what `_recorded_checkpoint` accepts;
+        * nothing lists the prefix to choose a checkpoint.
+
+        Every refusal starts the attempt from an empty workspace, which is
+        what a first attempt does anyway. The restore's own checks --
+        ownership, digest, the member filter, the escaping-link skip, the
+        size caps -- still apply to whatever is accepted.
+        """
         ws = self.ws
         assert ws is not None
-        record: CheckpointRecord | None = None
-        if isinstance(pointer, str) and pointer:
-            record = self.checkpoints.find_by_uri(pointer)
+        record = self._recorded_checkpoint(task)
         if record is None:
-            record = self.checkpoints.find_latest()
-        if record is None:
-            self.log.info("no checkpoint to restore; starting from an empty workspace")
             return
         files = self.checkpoints.restore(record, ws)
         self._restored_from = record
@@ -1825,6 +1854,120 @@ class Worker:
                 "bytes": record.archive_bytes,
             },
         )
+
+    def _recorded_checkpoint(self, task: dict[str, Any]) -> CheckpointRecord | None:
+        """The checkpoint an earlier attempt of THIS task recorded, or None.
+
+        Accepted only when every one of these holds:
+
+        1. the task has had an earlier attempt: its `attempt_count`, which
+           admission increments in the lease's own transaction, is above 1;
+        2. the task's `latest_checkpoint` names one, and it resolves inside
+           this task's own prefix to a manifest naming this tenant and task
+           (`CheckpointManager.find_by_uri`, which refuses anything outside
+           the prefix);
+        3. the pointer, the manifest and the archive all lie where the
+           manifest's own ids put them, so the attempt and checkpoint it
+           names are the ones at that path;
+        4. it is not this attempt's own -- this attempt has recorded nothing;
+        5. the attempt document of the attempt that wrote it exists, is this
+           tenant's and this task's, lists that checkpoint id, and records
+           the archive digest the manifest carries -- as
+           `ControlPlane.record_checkpoint` writes both, before it moves the
+           pointer. The restore then checks the archive's bytes against that
+           digest, so bytes rewritten in the bucket after the attempt
+           recorded them are refused even when manifest and archive were
+           rewritten together.
+
+        WHAT THIS DOES NOT STOP. Firestore has no document-level IAM
+        (docs/multi-tenancy.md), so an agent of the tenant that knows this
+        task's id can write `attempt_count`, `latest_checkpoint` and an
+        attempt document of an id it chose, and satisfy every check above.
+        What it stops is every first attempt, and on a retry the planter
+        that has only the bucket -- the issue's reproduction -- whether it
+        adds a checkpoint beside the recorded one or rewrites the recorded
+        one. The complete fix needs a record the tenant cannot write, which
+        is the signed step specs' work (#342).
+        """
+        refuse = functools.partial(
+            self.log.info, "no checkpoint is restored; starting from an empty workspace"
+        )
+        count = task.get("attempt_count")
+        if isinstance(count, bool) or not isinstance(count, int) or count <= 1:
+            refuse(reason="first attempt of this task", attempt_count=count)
+            return None
+        pointer = task.get("latest_checkpoint")
+        if not isinstance(pointer, str) or not pointer:
+            refuse(reason="no earlier attempt of this task recorded a checkpoint")
+            return None
+        record = self.checkpoints.find_by_uri(pointer)
+        if record is None:
+            refuse(reason="the recorded checkpoint does not resolve to one of this task's")
+            return None
+        ids = (record.attempt_id, record.checkpoint_id)
+        if not all(isinstance(i, str) and _KEY_SEGMENT_RE.fullmatch(i) for i in ids):
+            self.log.error(
+                "refusing a checkpoint whose ids are not single key segments",
+                attempt_id=str(record.attempt_id)[:200],
+                checkpoint_id=str(record.checkpoint_id)[:200],
+            )
+            refuse(reason="the checkpoint's ids are not single key segments")
+            return None
+        expected = checkpoint_prefix(
+            tenant_id=self.cfg.tenant_id,
+            task_id=self.cfg.task_id,
+            attempt_id=record.attempt_id,
+            checkpoint_id=record.checkpoint_id,
+        )
+        named = pointer.rstrip("/")
+        if (
+            record.manifest_key != f"{expected}/{MANIFEST_NAME}"
+            or record.archive_key != f"{expected}/{ARCHIVE_NAME}"
+            or not (named == expected or named.endswith("/" + expected))
+        ):
+            self.log.error(
+                "refusing a checkpoint that is not where its own ids put it",
+                pointer=pointer,
+                manifest_key=record.manifest_key,
+                archive_key=record.archive_key,
+                expected_prefix=expected,
+            )
+            refuse(reason="the checkpoint's ids do not match its path")
+            return None
+        if record.attempt_id == self.cfg.attempt_id:
+            refuse(reason="the pointer names this attempt, which has recorded nothing")
+            return None
+        try:
+            attempt = self.control.fetch_attempt(record.attempt_id)
+        except TenantMismatchError as exc:
+            self.log.error(
+                "refusing a checkpoint whose attempt document is another tenant's",
+                attempt_id=record.attempt_id,
+                error=str(exc),
+            )
+            refuse(reason="the recording attempt is another tenant's")
+            return None
+        listed = attempt.get("checkpoints") if attempt else None
+        digests = attempt.get(CHECKPOINT_DIGESTS_FIELD) if attempt else None
+        if (
+            attempt is None
+            or attempt.get("task_id") != self.cfg.task_id
+            or not isinstance(listed, list)
+            or record.checkpoint_id not in listed
+            or not isinstance(digests, dict)
+            or digests.get(record.checkpoint_id) != record.archive_sha256
+        ):
+            self.log.error(
+                "refusing a checkpoint no earlier attempt of this task recorded",
+                attempt_id=record.attempt_id,
+                checkpoint_id=record.checkpoint_id,
+                attempt_document=attempt is not None,
+                digest_recorded=isinstance(digests, dict)
+                and record.checkpoint_id in digests,
+            )
+            refuse(reason="no attempt document of this task lists the checkpoint")
+            return None
+        return record
 
     def _maybe_clone(self, task: dict[str, Any]) -> dict[str, Any] | None:
         ws = self.ws
@@ -3441,7 +3584,9 @@ class Worker:
         A FENCE IS NOT A FAILED CHECKPOINT. The attempt is over, and
         `FencedWriteRefused` is raised to say so. It is checked twice. The first
         check comes before anything is uploaded, because a stale archive in the
-        task's prefix is one `find_latest` can later choose. The second is in
+        task's prefix is bytes a superseded attempt should not have written
+        (a restore no longer lists the prefix, #347, but the archive still
+        costs storage and reads as this task's work). The second is in
         the pointer's own transaction (`ControlPlane.record_checkpoint`),
         because a fence can land during the upload.
         """
@@ -3477,6 +3622,7 @@ class Worker:
             uri=record.uri,
             size_bytes=record.archive_bytes,
             seq=record.seq,
+            archive_sha256=record.archive_sha256,
         )
         return record
 

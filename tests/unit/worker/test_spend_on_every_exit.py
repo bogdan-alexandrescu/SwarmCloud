@@ -135,12 +135,13 @@ def agent_cli(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 def seed(db: Any, *, attempt_id: str = "att_1", lease_id: str = "lease_1",
          generation: int = 1, latest_checkpoint: str | None = None,
-         **plan: Any) -> None:
+         attempt_count: int = 1, **plan: Any) -> None:
     seed_attempt(
         db,
         attempt_id=attempt_id,
         lease_id=lease_id,
         generation=generation,
+        attempt_count=attempt_count,
         runner_profile=PROFILE,
         latest_checkpoint=latest_checkpoint,
         task_input={"prompt": json.dumps(plan)},
@@ -474,6 +475,7 @@ def park_on_a_rate_limit_then_resume(db: Any, worker_factory: Any, **second_plan
         attempt_id="att_2",
         lease_id="lease_2",
         generation=2,
+        attempt_count=2,
         latest_checkpoint=checkpoint,
         **second_plan,
     )
