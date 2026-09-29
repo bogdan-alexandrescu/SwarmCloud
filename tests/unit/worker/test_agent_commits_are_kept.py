@@ -430,3 +430,140 @@ def test_a_history_that_does_not_descend_from_the_base_is_folded_as_before(
     assert len(commits) == 1, commits
     assert_only_the_worker_wrote(commits, config)
     assert out.get("agent_commits_folded") == 1, out
+
+
+# -- the per-commit scan cannot be shown a replacement object (#259 review, M1) --
+
+
+def test_a_replace_ref_over_a_secret_blob_does_not_hide_it_from_the_scan(
+    worker_factory, monkeypatch, origin, local_urls, forge, log_stream
+):
+    """The scan runs in the agent's own clone, whose refs the agent owns. A
+    `refs/replace/<blob>` entry makes `cat-file`/`diff` -- read commands --
+    show a clean replacement for a blob that still holds the real, registered
+    secret; `git replace` never touches the tree a commit points at, so
+    `commit-tree`, pack-objects and the eventual push always carry the REAL
+    object regardless. Without `GIT_NO_REPLACE_OBJECTS=1` on every worker git
+    command, the scan would read the clean replacement, call this commit
+    clean, and push the real secret unfolded.
+
+    Verified directly against git 2.40.1 (not asserted here, but what this
+    test exercises): `git replace <blob> <clean>` makes `git cat-file -p
+    <blob>` and `git diff` print the clean content, while the real object
+    stays in the store and is what a clone of the pushed branch would carry.
+    """
+    def edit(repo: Path) -> None:
+        (repo / ".env").write_text(f"ANTHROPIC_API_KEY={KEY}\n")
+        _commit(repo, "Configure the client")
+        # This clone already has history from `origin`, so the sha to replace
+        # a blob under is THIS commit's, not the repository's true root.
+        first_sha = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=str(repo), check=True, capture_output=True, text=True,
+        ).stdout.strip()
+        (repo / ".env").unlink()
+        _commit(repo, "Stop committing the env file")
+
+        # The agent creates a replacement for the FIRST commit's `.env` blob.
+        # This only changes what read commands print for that object id; it
+        # is not a rewrite of history, and it is never pushed (the worker's
+        # publish repository is a separate, worker-owned clone).
+        real_blob = subprocess.run(
+            ["git", "rev-parse", f"{first_sha}:.env"],
+            cwd=str(repo), check=True, capture_output=True, text=True,
+        ).stdout.strip()
+        clean_blob = subprocess.run(
+            ["git", "hash-object", "-w", "--stdin"],
+            cwd=str(repo), input="ANTHROPIC_API_KEY=not-a-secret\n",
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
+        subprocess.run(
+            ["git", "replace", real_blob, clean_blob],
+            cwd=str(repo), check=True, capture_output=True, text=True,
+        )
+
+    _, config, out = _attempt(
+        worker_factory, monkeypatch, origin, task_id="t-replace-hidden", edit=edit, register=(KEY,)
+    )
+
+    branch = f"{config.git_branch_prefix}{config.task_id}"
+    assert out["published"] is True, out.get("publish_reason")
+    commits = pushed_commits(origin, branch)
+    assert len(commits) == 1, [c["message"] for c in commits]
+    assert out.get("agent_commits_folded") == 2, out
+    assert "agent_commits_kept" not in out, out
+    assert ".env" not in tree_at(origin, branch)
+    assert KEY.encode() not in _all_object_bytes(origin), "the key reached a pushed object"
+
+
+# -- a diff too big or too CRLF-heavy to scan cannot pass as scanned (#259 review, M2) --
+
+
+def test_a_diff_too_big_to_scan_whole_counts_as_a_hit(
+    worker_factory, monkeypatch, origin, local_urls, forge
+):
+    """A diff at or over the scan's cap is not read whole, and must count as a
+    hit -- "not scanned" is not "clean" (`_first_leaking_commit`'s docstring).
+
+    Truncation must be decided from the CAPTURE (its truncated flag, or its
+    raw byte size at or over the cap), never from the decoded text's length:
+    reading in text mode with the default newline handling translates every
+    `\\r\\n` in the capture to `\\n`, which can decode-and-reencode SHORTER
+    than the cap the capture already hit. The cap is monkeypatched down so
+    this does not require an actual 32 MiB file; a CRLF-heavy file is what
+    makes the decoded length undercount the true, truncated size.
+    """
+    monkeypatch.setattr(lifecycle, "REPLAY_SCAN_MAX_BYTES", 200)
+
+    def edit(repo: Path) -> None:
+        (repo / "big.py").write_bytes(b"x\r\n" * 500)
+        _commit(repo, "Add a big CRLF file")
+        (repo / "notes.txt").write_text("done\n")
+        _commit(repo, "Add notes")
+
+    _, config, out = _attempt(
+        worker_factory, monkeypatch, origin, task_id="t-truncated-diff", edit=edit,
+    )
+
+    branch = f"{config.git_branch_prefix}{config.task_id}"
+    assert out["published"] is True, out.get("publish_reason")
+    commits = pushed_commits(origin, branch)
+    assert len(commits) == 1, [c["message"] for c in commits]
+    assert out.get("agent_commits_folded") == 2, out
+    assert "agent_commits_kept" not in out, out
+
+
+def test_a_lone_carriage_return_does_not_hide_a_credential_from_the_scan(
+    worker_factory, monkeypatch, origin, local_urls, forge
+):
+    """A LONE `\\r` (not part of `\\r\\n`) inside a line git's own diff leaves
+    embedded (git splits lines on `\\n` only). Reading the capture with the
+    default newline handling translates that `\\r` into a `\\n`, splitting
+    `+x = 1\\rAKIAIOSFODNN7EXAMPLE` into `+x = 1` and `AKIAIOSFODNN7EXAMPLE` --
+    the second half loses its `+` prefix, so `_adds_a_credential` (which reads
+    only lines starting with `+`) never sees the credential that follows.
+    Reading with `newline=""` keeps the `\\r` embedded in one line.
+
+    Verified directly (git 2.40.1): a file written with an embedded `\\r` (no
+    `\\n`) produces a diff whose added line literally contains
+    `x = 1\\rAKIAIOSFODNN7EXAMPLE`, unescaped.
+    """
+    def edit(repo: Path) -> None:
+        (repo / "config.py").write_bytes(f"x = 1\r{UNREGISTERED_AWS_KEY}\n".encode())
+        _commit(repo, "Configure the client")
+        (repo / "notes.txt").write_text("done\n")
+        _commit(repo, "Add notes")
+
+    _, config, out = _attempt(
+        worker_factory, monkeypatch, origin, task_id="t-cr-credential", edit=edit,
+    )
+
+    branch = f"{config.git_branch_prefix}{config.task_id}"
+    assert out["published"] is True, out.get("publish_reason")
+    commits = pushed_commits(origin, branch)
+    assert len(commits) == 1, [c["message"] for c in commits]
+    assert out.get("agent_commits_folded") == 2, out
+    assert "agent_commits_kept" not in out, out
+    assert UNREGISTERED_AWS_KEY.encode() not in _all_object_bytes(origin), (
+        "the key reached a pushed object"
+    )

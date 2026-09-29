@@ -179,7 +179,7 @@ from .gitops import (
 # The helpers every function in `gitops` builds its git commands from. Borrowed
 # rather than restated for `replay_agent_commits` below, so its commands carry
 # exactly the hook, fsmonitor, signing and identity overrides the fold's do.
-from .gitops import _NO_HOOKS, _SHA_RE, _git_text, _worker_identity
+from .gitops import _NO_HOOKS, _SHA_RE, _git_text, _git_text_full, _worker_identity
 from .hardening import FAILED, MemoryProtection
 from .metrics import (
     ResourceSampler,
@@ -5366,7 +5366,15 @@ def _carries_attribution(text: str) -> bool:
 #: agent's say-so, and GitHub notifies on the title as well as the body. It is
 #: deliberately wider than GitHub's own rules (which skip code spans): a false
 #: refusal costs the agent's wording; a false pass pings someone.
-_MENTION_RE = re.compile(r"(?<![\w.`/@-])@[A-Za-z0-9][A-Za-z0-9-]*(?:/[A-Za-z0-9][\w.-]*)?")
+#:
+#: THE LOOKBEHIND IS ASCII-ONLY ON PURPOSE (#259 review, M3). Python's `\w` on
+#: a `str` pattern matches any Unicode letter, digit or underscore, not just
+#: `[A-Za-z0-9_]`. GitHub's own mention boundary is not Unicode-aware, so a
+#: non-ASCII letter immediately before `@` (`café@octocat`) made `\w`
+#: match, the lookbehind fail, and the mention after it go undetected --
+#: hiding exactly the notification this pattern exists to catch. `_unmention`
+#: below shares this pattern, so the fix covers both directions at once.
+_MENTION_RE = re.compile(r"(?<![A-Za-z0-9_.`/@-])@[A-Za-z0-9][A-Za-z0-9-]*(?:/[A-Za-z0-9][\w.-]*)?")
 
 
 #: A fenced code block (``` or ~~~, closed by a fence of the same character
@@ -5374,11 +5382,34 @@ _MENTION_RE = re.compile(r"(?<![\w.`/@-])@[A-Za-z0-9][A-Za-z0-9-]*(?:/[A-Za-z0-9
 #: run of backticks closed by a run of the same length). GitHub notifies no
 #: one for a mention inside either (owner decision, 2026-09-28), so
 #: `@pytest.fixture` in a code block does not refuse a body.
+#:
+#: TWO BRANCHES, NOT ONE (#259 review, M3): CommonMark refuses a backtick
+#: fence (``` ... ```) whose INFO STRING itself contains a backtick -- that
+#: line is not a fence at all, so treating it as one hid whatever followed,
+#: including a real mention, until the next line that happened to look like a
+#: close. A tilde fence (~~~) has no such restriction. Each branch names its
+#: own fence group (`btick`/`tilde`, not one name reused) because a Python
+#: pattern cannot define the same group name twice even in different
+#: alternatives.
 _FENCED_RE = re.compile(
-    r"^[ \t]{0,3}(?P<fence>`{3,}|~{3,})[^\n]*\n.*?(?:^[ \t]{0,3}(?P=fence)[`~]*[ \t]*$|\Z)",
+    r"^[ \t]{0,3}(?:"
+    r"(?P<btick>`{3,})[^\n`]*\n.*?(?:^[ \t]{0,3}(?P=btick)[`~]*[ \t]*$|\Z)"
+    r"|"
+    r"(?P<tilde>~{3,})[^\n]*\n.*?(?:^[ \t]{0,3}(?P=tilde)[`~]*[ \t]*$|\Z)"
+    r")",
     re.MULTILINE | re.DOTALL,
 )
-_CODE_SPAN_RE = re.compile(r"(?P<ticks>`+)(?!`).+?(?<!`)(?P=ticks)(?!`)", re.DOTALL)
+#: An inline code span, per CommonMark: a run of backticks, closed by a run of
+#: the same length, and THE SPAN CANNOT CROSS A BLANK LINE -- a blank line is a
+#: paragraph break, and CommonMark never lets a code span span one (a stray
+#: opening backtick before a blank line is just a backtick). The previous
+#: pattern used `re.DOTALL` to let `.` cross any newline including a blank
+#: one, so a single stray backtick, then a blank line, then a real `@mention`
+#: in its own paragraph, then a later backtick, read as "all inside a code
+#: span" and hid the mention (#259 review, M3). `(?!\n[ \t]*\n)` refuses to
+#: consume into the start of a blank line, so the span simply fails to close
+#: across one instead of swallowing everything up to the next stray backtick.
+_CODE_SPAN_RE = re.compile(r"(?P<ticks>`+)(?!`)(?:(?!\n[ \t]*\n)[\s\S])+?(?<!`)(?P=ticks)(?!`)")
 
 
 def _without_code(text: str) -> str:
@@ -5540,8 +5571,8 @@ def _first_leaking_commit(
     it may hold the very value it was scanned for, and `logs/` is uploaded.
     """
 
-    def run(argv: list[str], slug: str, cap: int = 4 * 1024 * 1024) -> tuple[int, str]:
-        return _git_text(
+    def run(argv: list[str], slug: str, cap: int = 4 * 1024 * 1024) -> tuple[int, str, bool]:
+        return _git_text_full(
             argv,
             repo=repo,
             private_dir=private_dir,
@@ -5556,7 +5587,7 @@ def _first_leaking_commit(
     for index, sha in enumerate(shas, 1):
         if sha == keep:
             continue
-        code, raw = run([*git, "cat-file", "commit", sha], "publish-scan-read")
+        code, raw, _ = run([*git, "cat-file", "commit", sha], "publish-scan-read")
         if code != 0:
             raise GitError(f"could not read commit {sha[:12]}")
         header = raw.partition("\n\n")[0]
@@ -5565,14 +5596,14 @@ def _first_leaking_commit(
             before = parents[0]
         else:
             if empty_tree is None:
-                code, made = run([*git, "hash-object", "-t", "tree", "/dev/null"], "publish-scan-empty")
+                code, made, _ = run([*git, "hash-object", "-t", "tree", "/dev/null"], "publish-scan-empty")
                 empty_tree = made.strip()
                 if code != 0 or not _SHA_RE.match(empty_tree):
                     raise GitError("could not name the empty tree")
             before = empty_tree
         slug = "publish-scan-diff"
         try:
-            code, diff = run(
+            code, diff, diff_truncated = run(
                 [
                     *git, "diff", "--no-color", "--no-ext-diff", "--no-textconv",
                     "--text", "--no-renames", "-U0", before, sha, "--",
@@ -5588,7 +5619,12 @@ def _first_leaking_commit(
                     pass
         if code != 0:
             raise GitError(f"could not diff commit {sha[:12]} against its parent")
-        if len(diff.encode("utf-8", errors="replace")) >= REPLAY_SCAN_MAX_BYTES or leaks(diff):
+        # `diff_truncated` comes from the capture itself (its truncated flag,
+        # or its raw byte size at or over the cap) -- never from
+        # `len(diff.encode(...))`, which a `\r\n` -> `\n` translation could
+        # shrink below the cap after the capture already hit it (#259 review,
+        # M2). "not scanned whole" must count as a hit either way.
+        if diff_truncated or leaks(diff):
             return index
     return None
 

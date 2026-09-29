@@ -580,6 +580,59 @@ def test_a_mention_after_a_closed_fence_still_refuses_the_body(
     assert out["pull_request_text"]["body"] == "platform", out
 
 
+# -- two CommonMark bypasses in the code/fence skip (#259 review, M3) --
+
+
+def test_a_code_span_cannot_hide_a_mention_across_a_blank_line():
+    """CommonMark: an inline code span cannot cross a blank line (a paragraph
+    break) -- a lone backtick before one, and another after it, are just two
+    backticks, not an opening and a closing delimiter. The previous pattern
+    used `re.DOTALL`, which let `.` cross a blank line too, so a stray
+    backtick, a blank line, a real `@mention` in its own paragraph, and a
+    later backtick all read as "one code span" and the mention inside it was
+    never seen."""
+    text = "Closes #4\n\nnote `\n\n@octocat please review\n`\n"
+    assert lifecycle._carries_mention(text) is True
+
+
+def test_a_backtick_fences_info_string_cannot_hold_a_backtick():
+    """CommonMark: a backtick-fenced block's info string must not itself
+    contain a backtick -- a line like "``` `python" is not a valid fence at
+    all, so GitHub would read what follows as ordinary prose (and notify for
+    a mention in it). The previous pattern accepted any non-newline info
+    string on a backtick fence, so it read this as a real fence and hid a
+    mention inside it. A tilde fence has no such restriction and is
+    unaffected."""
+    text = "Closes #4\n\n``` `python\n@octocat please review\n```\n"
+    assert lifecycle._carries_mention(text) is True
+
+
+def test_a_real_code_span_and_fence_still_hide_a_decorator():
+    """The control: fixing the two bypasses above must not stop a genuine
+    code span or a valid fence from hiding `@pytest.fixture`."""
+    assert lifecycle._carries_mention("Use `@pytest.fixture` here.\n") is False
+    assert lifecycle._carries_mention("Use ``@octocat`` please.\n") is False
+    assert lifecycle._carries_mention("```python\n@pytest.fixture\n```\n") is False
+    assert lifecycle._carries_mention("~~~\ncc @acme/reviewers\n~~~\n") is False
+
+
+# -- the mention lookbehind is ASCII-only (#259 review, M3) --
+
+
+def test_a_non_ascii_letter_before_at_does_not_hide_a_mention():
+    """Python's `\\w` on a `str` pattern matches any Unicode letter, not just
+    `[A-Za-z0-9_]`; GitHub's own mention boundary is ASCII. A non-ASCII letter
+    immediately before `@` must not stop the mention after it from being
+    seen."""
+    assert lifecycle._carries_mention("Ping café@octocat about this.\n") is True
+
+
+def test_an_ascii_letter_before_at_still_hides_an_email():
+    """The control for the ASCII fix: an ASCII letter before `@` is still
+    excluded, so an address like `ops@example.com` remains not a mention."""
+    assert lifecycle._carries_mention("Reported by ops@example.com.\n") is False
+
+
 # -- the title is owed as an expected output only when a pull request needs it --
 
 
