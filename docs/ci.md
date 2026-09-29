@@ -34,16 +34,17 @@ Three reasons, in the order they cost the most:
    `make test` is the whole offline suite; running it serialises against every
    other lane working in the same checkout.
 
-## The six workflows, and what each one is responsible for
+## The seven workflows, and what each one is responsible for
 
 | workflow | runs on | jobs |
 |---|---|---|
-| `application.yml` | push to `main`; pull requests touching `apps/`, `images/`, `kubernetes/`, `scripts/`, `tests/`, `docs/`, `Makefile`, `pyproject.toml`, `uv.lock`, `README.md`, `CLAUDE.md`, `CONTRACT.md`, `release.yml`, `iam-refusal-probe.yml` or the workflow itself | `shellcheck` · `release workflow wiring (actionlint)` (also lints `iam-refusal-probe.yml`) · `format / unit tests` · `swarm-ui typecheck / component tests` · `integration tests (emulator)` · `kubernetes manifests` · `build images` (**push to `main` only** — the one build of each commit) |
+| `application.yml` | push to `main`; pull requests touching `apps/`, `images/`, `kubernetes/`, `scripts/`, `tests/`, `docs/`, `Makefile`, `pyproject.toml`, `uv.lock`, `README.md`, `CLAUDE.md`, `CONTRACT.md`, `release.yml`, `iam-refusal-probe.yml`, `ci-gate.yml` or the workflow itself | `shellcheck` · `release workflow wiring (actionlint)` (also lints `iam-refusal-probe.yml`) · `format / unit tests` · `swarm-ui typecheck / component tests` · `integration tests (emulator)` · `kubernetes manifests` · `build images` (**push to `main` only** — the one build of each commit) |
 | `terraform.yml` | push to `main`; pull requests touching `terraform/`, `tests/terraform/`, the plan guard, the destroy guard, the unlabelable-type list or the workflow itself | `fmt / validate / tflint` · `terraform test` · `checkov` · `plan` (**not** on a pull request) · `plan (not run on a pull request)` |
 | `security.yml` | every pull request; push to `main`; Mondays 06:00 UTC | `trivy (repo)` · `secret scan` · `checkov (terraform + kubernetes)` · `platform policy assertions` · `trivy (published images)` (schedule / dispatch only) |
 | `release.yml` | push to `main` touching `apps/`, `images/`, `terraform/`, `kubernetes/`, `scripts/` or the workflow; or manual dispatch with an environment | `verify` · `images and scan` (reuses `application.yml`'s build of the commit; moves nothing) · `approval` (the one job naming `dev` or `prod` — prod waits here) · `promote` · `terraform apply` · `terraform apply, IAM (dev-iam)` (dev only, and only when the plan changes IAM — the owner approves it [below](#a-dev-release-that-changes-iam-waits-for-the-owner)) · `deploy and smoke` — the apply and deploy jobs only after `approval` succeeded, and on prod only in the attempt it succeeded in · `prod approval is from an earlier attempt` (runs only on a partial re-run of prod, and fails it) |
 | `auto-merge.yml` | `pull_request_target` when a label is added; acts only on `ready` ([below](#a-ready-pull-request-is-merged-by-github-not-by-a-session)) | `queue for auto-merge` (refuses a `[swarm] task_` title, an unprotected base branch or a missing merge App, with a comment; otherwise enables native squash auto-merge under the PR's title) |
 | `iam-refusal-probe.yml` | **manual dispatch on `main` only**, by the owner, once ([below](#the-deployers-refusal-is-proven-once-by-a-probe-the-owner-dispatches)) — never on a push, a pull request or a schedule | `deployer is refused an unlisted role` |
+| `ci-gate.yml` | every pull request and push to `main`, with no filter of its own | `ci-gate` — waits for this commit's `application.yml` and `terraform.yml` runs and passes only when every one that ran passed ([below](#the-ruleset-on-main-and-ci-gate)) |
 
 Three details in that table are easy to misread and each has bitten someone:
 
@@ -996,10 +997,14 @@ pull requests and is read only by `auto-merge.yml`.)
 gh api --method PATCH repos/bogdan-alexandrescu/SwarmCloud -F allow_auto_merge=true
 ```
 
+(Superseded on 2026-09-29 by the repository ruleset `main-protection`, which
+requires the same four checks; see [the ruleset on main](#the-ruleset-on-main-and-ci-gate).
+The command below is kept as the record of why each value is what it is.)
+
 **3. Branch protection on `main`**, requiring only the checks that run on
 **every** pull request — `security.yml`'s four jobs. `application.yml` and
 `terraform.yml` both have a `pull_request` path filter
-([table above](#the-six-workflows-and-what-each-one-is-responsible-for)), so
+([table above](#the-seven-workflows-and-what-each-one-is-responsible-for)), so
 none of their jobs — including `shellcheck` and
 `release workflow wiring (actionlint)` — report on a pull request that does
 not touch their paths. GitHub treats a required check whose workflow was
@@ -1057,6 +1062,144 @@ Why each value:
 that exist and to the ones `security.yml` runs on every pull request, so
 renaming a job, adding a path filter to `security.yml`, or widening the
 required list past what always runs fails CI.
+
+## The ruleset on main, and ci-gate
+
+**Owner decision, 2026-09-29.** `main` is protected by a repository ruleset,
+**`main-protection` (id `24160219`)**, not by the classic branch protection
+in step 3 above. It forbids deleting `main` and force-pushing to it, requires
+a pull request (no approving review: `ready` is the review decision), and
+requires four status checks: `security.yml`'s `secret scan`, `trivy (repo)`,
+`checkov (terraform + kubernetes)` and `platform policy assertions`.
+
+### Why only security is required directly
+
+`security.yml` has no path filter, so its four jobs report on every pull
+request. `application.yml` and `terraform.yml` both carry a `pull_request`
+path filter ([table above](#the-seven-workflows-and-what-each-one-is-responsible-for)),
+and **GitHub holds a required check whose workflow was filtered out as
+pending, forever** — not skipped, not passed. Requiring `format / unit tests`
+directly would freeze every pull request that touches only `terraform/`;
+requiring `terraform test` would freeze every docs-only one. So before
+`ci-gate`, nothing *required* held a pull request on its unit tests, its
+integration tests or its terraform tests; only `auto-merge.yml`'s gate
+(which reads the head's check runs when `ready` lands) did.
+
+### What ci-gate does
+
+[`ci-gate.yml`](../.github/workflows/ci-gate.yml) runs one job, named exactly
+`ci-gate`, on **every** pull request and every push to `main` — it has no
+filter of its own, so it always reports. It runs
+[`scripts/ci-gate.sh wait`](../scripts/ci-gate.sh), which waits for the
+`application.yml` and `terraform.yml` runs at the same head commit and passes
+only when every one of them that ran passed:
+
+* **Did not run because the paths did not match: pass.** Which workflows a
+  change triggers is computed from the `pull_request.paths` lists **read out
+  of the workflow files themselves**, against `git diff base...head` (the
+  three-dot diff GitHub's filter uses). There is no second copy of those
+  lists to drift.
+* **Should have run, and its run does not exist yet: wait.** `ci-gate` starts
+  on the same event as the workflows it waits for, often before their runs are
+  created, and "no run yet" looks exactly like "not triggered" in the API.
+  An expected run that has not appeared after 10 minutes fails the gate by
+  name.
+* **Ran and failed, was cancelled, timed out, awaits approval or failed to
+  start: fail**, naming the job and its URL.
+* **A `skipped` job passes only inside a run that concluded `success`** — a
+  skip its own `if:` chose, like `build images` on a pull request or `plan`.
+  A run that failed to start (`startup_failure`), or whose jobs were skipped
+  because something they need failed, does not conclude `success`, and fails
+  the gate whatever its jobs say.
+* **A run the path model did not predict is still judged.** The gate looks
+  for at least a minute before it will pass, so a run that appears although
+  the paths said it would not — and fails — still fails the gate.
+* **An unreadable API is never a pass**, and a run still going after 90
+  minutes fails it with what was pending.
+
+It reads runs from the Actions API (`actions: read`), filtered by head sha
+and event, rather than matching check-run names: a check run is named by its
+job's `name:`, which is not unique across workflows and cannot say whether its
+workflow started at all. Its token holds `actions: read` and `contents: read`
+and nothing else; every value reaches the shell through `env:`.
+[`test_ci_gate.py`](../tests/unit/scripts/test_ci_gate.py) runs the real
+script against a fake `gh`, and holds the path lists it reads to what PyYAML
+reads from the same files.
+
+**Re-running a failed job does not re-run `ci-gate`.** Its run already
+failed; re-run it too (Actions → the `ci-gate` run → *Re-run jobs*) once the
+re-run is green.
+
+**What it does not stop.** `pull_request` runs the pull request's own copy of
+`ci-gate.yml` and `scripts/ci-gate.sh`, so a pull request that edits either can
+make its own gate pass. Review of those two files is the guard.
+
+### Owner step: require ci-gate, once it is on main
+
+**Not before it is on `main`**: until then no pull request reports a
+`ci-gate` check, and requiring it would hold every one of them forever. Once
+the pull request adding it has merged and `ci-gate` has reported green on a
+pull request, the owner (or the orchestrator, with the owner's go-ahead) adds
+it to the ruleset. The PUT replaces the ruleset whole, so the body restates
+every rule it has today (read on 2026-09-29) and adds only `ci-gate`. No check
+is pinned to an `integration_id` (owner decision, 2026-09-29), the four
+security checks included, as today:
+
+```bash
+gh api -X PUT repos/bogdan-alexandrescu/SwarmCloud/rulesets/24160219 \
+  -H "Accept: application/vnd.github+json" \
+  --input - <<'JSON'
+{
+  "name": "main-protection",
+  "target": "branch",
+  "enforcement": "active",
+  "conditions": {
+    "ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}
+  },
+  "bypass_actors": [
+    {"actor_id": 5, "actor_type": "RepositoryRole", "bypass_mode": "pull_request"}
+  ],
+  "rules": [
+    {"type": "deletion"},
+    {"type": "non_fast_forward"},
+    {
+      "type": "pull_request",
+      "parameters": {
+        "required_approving_review_count": 0,
+        "dismiss_stale_reviews_on_push": false,
+        "required_reviewers": [],
+        "require_code_owner_review": false,
+        "require_last_push_approval": false,
+        "required_review_thread_resolution": false,
+        "require_extra_approval_for_unattributed_changes": true,
+        "allowed_merge_methods": ["merge", "squash", "rebase"]
+      }
+    },
+    {
+      "type": "required_status_checks",
+      "parameters": {
+        "strict_required_status_checks_policy": false,
+        "do_not_enforce_on_create": false,
+        "required_status_checks": [
+          {"context": "secret scan"},
+          {"context": "trivy (repo)"},
+          {"context": "checkov (terraform + kubernetes)"},
+          {"context": "platform policy assertions"},
+          {"context": "ci-gate"}
+        ]
+      }
+    }
+  ]
+}
+JSON
+```
+
+Then read it back and check the list:
+`gh api repos/bogdan-alexandrescu/SwarmCloud/rulesets/24160219 --jq '.rules[] | select(.type == "required_status_checks") | .parameters.required_status_checks'`.
+Before sending, compare the body with a fresh read of the ruleset: a rule
+added since 2026-09-29 that is not in this body would be removed by the PUT.
+[`test_ci_gate.py`](../tests/unit/scripts/test_ci_gate.py) holds this body to
+`security.yml`'s always-run jobs plus `ci-gate`, none pinned.
 
 ## The finishing sequence
 
