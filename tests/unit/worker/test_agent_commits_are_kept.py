@@ -27,7 +27,10 @@ from pathlib import Path
 import pytest
 
 from agent_worker import lifecycle, workspace as workspace_mod
+from agent_worker.errors import ExitCode
+from swarm_common.states import TaskState
 
+from conftest import seed_attempt
 from test_strategy_end_to_end import (  # noqa: F401 - fixtures are used by name
     _commit_as_claude,
     assert_only_the_worker_wrote,
@@ -430,3 +433,279 @@ def test_a_history_that_does_not_descend_from_the_base_is_folded_as_before(
     assert len(commits) == 1, commits
     assert_only_the_worker_wrote(commits, config)
     assert out.get("agent_commits_folded") == 1, out
+
+
+# -- the per-commit scan cannot be shown a replacement object (#259 review, M1) --
+
+
+def test_a_replace_ref_over_a_secret_blob_does_not_hide_it_from_the_scan(
+    worker_factory, monkeypatch, origin, local_urls, forge, log_stream
+):
+    """The scan runs in the agent's own clone, whose refs the agent owns. A
+    `refs/replace/<blob>` entry makes `cat-file`/`diff` -- read commands --
+    show a clean replacement for a blob that still holds the real, registered
+    secret; `git replace` never touches the tree a commit points at, so
+    `commit-tree`, pack-objects and the eventual push always carry the REAL
+    object regardless. Without `GIT_NO_REPLACE_OBJECTS=1` on every worker git
+    command, the scan would read the clean replacement, call this commit
+    clean, and push the real secret unfolded.
+
+    Verified directly against git 2.40.1 (not asserted here, but what this
+    test exercises): `git replace <blob> <clean>` makes `git cat-file -p
+    <blob>` and `git diff` print the clean content, while the real object
+    stays in the store and is what a clone of the pushed branch would carry.
+    """
+    def edit(repo: Path) -> None:
+        (repo / ".env").write_text(f"ANTHROPIC_API_KEY={KEY}\n")
+        _commit(repo, "Configure the client")
+        # This clone already has history from `origin`, so the sha to replace
+        # a blob under is THIS commit's, not the repository's true root.
+        first_sha = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=str(repo), check=True, capture_output=True, text=True,
+        ).stdout.strip()
+        (repo / ".env").unlink()
+        _commit(repo, "Stop committing the env file")
+
+        # The agent creates a replacement for the FIRST commit's `.env` blob.
+        # This only changes what read commands print for that object id; it
+        # is not a rewrite of history, and it is never pushed (the worker's
+        # publish repository is a separate, worker-owned clone).
+        real_blob = subprocess.run(
+            ["git", "rev-parse", f"{first_sha}:.env"],
+            cwd=str(repo), check=True, capture_output=True, text=True,
+        ).stdout.strip()
+        clean_blob = subprocess.run(
+            ["git", "hash-object", "-w", "--stdin"],
+            cwd=str(repo), input="ANTHROPIC_API_KEY=not-a-secret\n",
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
+        subprocess.run(
+            ["git", "replace", real_blob, clean_blob],
+            cwd=str(repo), check=True, capture_output=True, text=True,
+        )
+
+    _, config, out = _attempt(
+        worker_factory, monkeypatch, origin, task_id="t-replace-hidden", edit=edit, register=(KEY,)
+    )
+
+    branch = f"{config.git_branch_prefix}{config.task_id}"
+    assert out["published"] is True, out.get("publish_reason")
+    commits = pushed_commits(origin, branch)
+    assert len(commits) == 1, [c["message"] for c in commits]
+    assert out.get("agent_commits_folded") == 2, out
+    assert "agent_commits_kept" not in out, out
+    assert ".env" not in tree_at(origin, branch)
+    assert KEY.encode() not in _all_object_bytes(origin), "the key reached a pushed object"
+
+
+# -- a diff too big or too CRLF-heavy to scan cannot pass as scanned (#259 review, M2) --
+
+
+def test_a_diff_too_big_to_scan_whole_counts_as_a_hit(
+    worker_factory, monkeypatch, origin, local_urls, forge
+):
+    """A diff at or over the scan's 32 MiB cap is not read whole, and must
+    count as a hit -- "not scanned" is not "clean" (`_first_leaking_commit`'s
+    docstring).
+
+    Truncation must be decided from the CAPTURE (its truncated flag, or its
+    raw byte size at or over the cap), never from the decoded text's length:
+    reading in text mode with the default newline handling translates every
+    `\\r\\n` in the capture to `\\n`. This file is all CRLF lines, so its
+    diff's lines are `+x\\r\\n`: the capture stops at 32 MiB, and a quarter of
+    those bytes are `\\r`s the translation drops, so the text re-measured
+    reads about 24 MiB -- "under the cap" for a diff that was cut. The real
+    cap, not a patched one: the capture appends a cut notice of fixed size,
+    and on a tiny cap that notice alone can push the re-measured text back
+    over it. The second commit deletes the file, so the final tree the push
+    carries is small and passes its own scan (`final_tree_leak`).
+    """
+    assert lifecycle.REPLAY_SCAN_MAX_BYTES == 32 * 1024 * 1024
+
+    def edit(repo: Path) -> None:
+        (repo / "big.py").write_bytes(b"x\r\n" * 12_000_000)  # 36 MB; 48 MB of diff
+        _commit(repo, "Add a big CRLF file")
+        (repo / "big.py").unlink()
+        (repo / "notes.txt").write_text("done\n")
+        _commit(repo, "Remove the big file")
+
+    _, config, out = _attempt(
+        worker_factory, monkeypatch, origin, task_id="t-truncated-diff", edit=edit,
+    )
+
+    branch = f"{config.git_branch_prefix}{config.task_id}"
+    assert out["published"] is True, out.get("publish_reason")
+    commits = pushed_commits(origin, branch)
+    assert len(commits) == 1, [c["message"] for c in commits]
+    assert out.get("agent_commits_folded") == 2, out
+    assert "agent_commits_kept" not in out, out
+    assert "big.py" not in tree_at(origin, branch)
+
+
+def test_a_lone_carriage_return_does_not_hide_a_credential_from_the_scan(
+    worker_factory, monkeypatch, origin, local_urls, forge
+):
+    """A LONE `\\r` (not part of `\\r\\n`) inside a line git's own diff leaves
+    embedded (git splits lines on `\\n` only). Reading the capture with the
+    default newline handling translates that `\\r` into a `\\n`, splitting
+    `+x = 1\\rAKIAIOSFODNN7EXAMPLE` into `+x = 1` and `AKIAIOSFODNN7EXAMPLE` --
+    the second half loses its `+` prefix, so `_adds_a_credential` (which reads
+    only lines starting with `+`) never sees the credential that follows.
+    Reading with `newline=""` keeps the `\\r` embedded in one line.
+
+    Verified directly (git 2.40.1): a file written with an embedded `\\r` (no
+    `\\n`) produces a diff whose added line literally contains
+    `x = 1\\rAKIAIOSFODNN7EXAMPLE`, unescaped.
+    """
+    def edit(repo: Path) -> None:
+        (repo / "config.py").write_bytes(f"x = 1\r{UNREGISTERED_AWS_KEY}\n".encode())
+        _commit(repo, "Configure the client")
+        # Deleted again, so the final tree is clean and passes its own scan
+        # (`final_tree_leak`); only the first commit's tree holds the key.
+        (repo / "config.py").unlink()
+        (repo / "notes.txt").write_text("done\n")
+        _commit(repo, "Stop committing the config")
+
+    _, config, out = _attempt(
+        worker_factory, monkeypatch, origin, task_id="t-cr-credential", edit=edit,
+    )
+
+    branch = f"{config.git_branch_prefix}{config.task_id}"
+    assert out["published"] is True, out.get("publish_reason")
+    commits = pushed_commits(origin, branch)
+    assert len(commits) == 1, [c["message"] for c in commits]
+    assert out.get("agent_commits_folded") == 2, out
+    assert "agent_commits_kept" not in out, out
+    assert UNREGISTERED_AWS_KEY.encode() not in _all_object_bytes(origin), (
+        "the key reached a pushed object"
+    )
+
+
+# -- the branch as it will be pushed is scanned before any push (#259 review, M4) --
+#
+# Owner decision, 2026-09-28: the per-commit scan decides only between keeping
+# the agent's commits and folding them; the fold's one commit, and the
+# worker's own commit of uncommitted work, carry the FINAL tree, which it never
+# read. So the same leak check runs over base..final before any push. On a
+# hit nothing is published, and the attempt fails retryably, naming the file
+# and never the value.
+
+
+def _branch_exists(bare: Path, branch: str) -> bool:
+    return subprocess.run(
+        ["git", "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"],
+        cwd=str(bare), capture_output=True, text=True,
+    ).returncode == 0
+
+
+def test_an_env_committed_with_a_registered_key_and_never_deleted_publishes_nothing(
+    worker_factory, monkeypatch, origin, local_urls, forge, log_stream
+):
+    """The per-commit scan folds this history, and the fold's one commit then
+    carried `.env` -- key and all -- to the forge, because the fold pushes the
+    final tree unscanned."""
+    def edit(repo: Path) -> None:
+        (repo / ".env").write_text(f"ANTHROPIC_API_KEY={KEY}\n")
+        (repo / "client.py").write_text("import os\nKEY = os.environ['ANTHROPIC_API_KEY']\n")
+        _commit(repo, "Configure the client")
+
+    _, config, out = _attempt(
+        worker_factory, monkeypatch, origin, task_id="t-final-leak", edit=edit, register=(KEY,)
+    )
+
+    branch = f"{config.git_branch_prefix}{config.task_id}"
+    assert out["published"] is False, out
+    assert out.get("final_tree_leak") == "the final tree adds a credential in .env; remove it", out
+    assert ".env" in out["publish_reason"], out["publish_reason"]
+    assert KEY not in str(out), "the value reached the publish result"
+    assert not _branch_exists(origin, branch), "a branch was pushed"
+    assert KEY.encode() not in _all_object_bytes(origin), "the key reached a pushed object"
+    assert KEY not in log_stream.getvalue()
+
+
+def test_an_uncommitted_credential_in_the_final_tree_publishes_nothing(
+    worker_factory, monkeypatch, origin, local_urls, forge
+):
+    """The worker's own commit of uncommitted work is scanned too: an `.env`
+    the agent wrote and never committed, holding a key registered nowhere,
+    was committed by the worker and pushed."""
+    def edit(repo: Path) -> None:
+        (repo / "client.py").write_text("import os\nREGION = os.environ.get('AWS_REGION')\n")
+        _commit(repo, "Configure the client")
+        (repo / ".env").write_text(f"AWS_ACCESS_KEY_ID={UNREGISTERED_AWS_KEY}\n")
+
+    _, config, out = _attempt(
+        worker_factory, monkeypatch, origin, task_id="t-final-uncommitted", edit=edit,
+    )
+
+    branch = f"{config.git_branch_prefix}{config.task_id}"
+    assert out["published"] is False, out
+    assert out.get("final_tree_leak") == "the final tree adds a credential in .env; remove it", out
+    assert UNREGISTERED_AWS_KEY not in str(out), "the value reached the publish result"
+    assert not _branch_exists(origin, branch), "a branch was pushed"
+    assert UNREGISTERED_AWS_KEY.encode() not in _all_object_bytes(origin), (
+        "the key reached a pushed object"
+    )
+
+
+def test_a_clean_final_tree_publishes(worker_factory, monkeypatch, origin, local_urls, forge):
+    """The control: the check refuses a credential, not a change. A final tree
+    that adds none -- including code that names a credential without holding
+    one -- is pushed."""
+    def edit(repo: Path) -> None:
+        (repo / "auth.py").write_text("token = get_token()\n")
+        _commit(repo, "Read the token at start")
+        (repo / "notes.txt").write_text("uncommitted\n")
+
+    _, config, out = _attempt(worker_factory, monkeypatch, origin, task_id="t-final-clean", edit=edit)
+
+    branch = f"{config.git_branch_prefix}{config.task_id}"
+    assert out["published"] is True, out.get("publish_reason")
+    assert "final_tree_leak" not in out, out
+    assert {"auth.py", "notes.txt"} <= tree_at(origin, branch)
+
+
+def test_a_final_tree_leak_fails_the_attempt_retryably_naming_the_file(
+    db, worker_factory, monkeypatch
+):
+    """The publish half returns `final_tree_leak`; the finish turns it into a
+    retryable failure of the attempt, with the file-naming reason as its
+    error, instead of a SUCCEEDED task whose work was never published."""
+    seed_attempt(db, task_input={"prompt": "fix the widget", "steps": 1, "sleep_seconds": 0.01})
+    db.doc("tasks/task_1")["metadata"] = {"dispatch": {"strategy": "direct-pr"}}
+    monkeypatch.setattr(lifecycle.Worker, "_title_owed", lambda self, task: False)
+    worker, _config, _exporter = worker_factory()
+    reason = "the final tree adds a credential in .env; remove it"
+
+    def harvest(*, publish: bool, **_kwargs):
+        return {
+            "published": False,
+            "final_tree_leak": reason,
+            "publish_reason": f"refusing to publish: {reason}",
+        }
+
+    monkeypatch.setattr(worker, "_harvest_git", harvest)
+
+    assert worker.run() == ExitCode.FAILED
+    task = db.doc("tasks/task_1")
+    assert task["state"] == TaskState.READY.value, task["state"]
+    assert reason in task["last_error"], task["last_error"]
+    retrying = [e for e in db.events("task_1") if e["type"] == "retrying"]
+    assert len(retrying) == 1, db.event_types("task_1")
+    assert retrying[0]["detail"]["cause"] == "final_tree_adds_a_credential"
+    assert "succeeded" not in db.event_types("task_1")
+
+
+def test_an_added_line_that_reads_like_a_file_header_is_still_scanned():
+    """An added line whose own text starts `++ ` prints as `+++ ...`. Only the
+    `+++ ` line before a file's first `@@` is its header; after that, every
+    `+` line is content, or a credential could hide behind two plus signs."""
+    diff = (
+        "diff --git a/notes.txt b/notes.txt\n"
+        "--- a/notes.txt\n"
+        "+++ b/notes.txt\n"
+        "@@ -0,0 +1 @@\n"
+        f"+++ {UNREGISTERED_AWS_KEY}\n"
+    )
+    assert lifecycle._adds_a_credential(diff) is True
