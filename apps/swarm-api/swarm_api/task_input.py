@@ -84,25 +84,41 @@ BUT THE FILENAMES IN TWO OF THEM ARE THE CALLER'S (#227). The platform writes
 out of the caller's workflow spec. A secret written into a filename was served
 as stored, beside a prompt that masked the same value. So every filename under
 those two keys (`NAME_METADATA_KEYS`) is masked by `TaskMasking.name`: the
-task's literals, then the credential-shaped rules -- but ANCHORED to a token's
-start (`_mask_anchored`), not run anywhere a short prefix turns up. `expected
-outputs` and `input_from` share `_step_to_api` in `codec.py` (owner decision
-2026-09-28), so a served workflow's step map is masked the same way.
+task's literals, then the credential-shaped rules. `expected_outputs` and
+`input_from` share `_step_to_api` in `codec.py` (owner decision 2026-09-28), so
+a served workflow's step map is masked the same way.
 
-A CLEAN NAME STAYS CLEAN (owner decision 2026-09-28, second review of #227). The
-first cut ran every rule over the whole name and exempted a match made only of
-"plain words" (`_plain_words`, a per-segment regex). That both over- and
-under-masked: the JWT rule's two-letter prefix ("ey") matches inside ordinary
-English words at ANY position -- "hockey", "eyeTracking", "key-results" --
-which is not a plain-word question at all, and a real fake token
-(`sk-abcdefghijklmnop`) is itself a run of lowercase letters, so the same
-segment check let it through unmasked. Anchoring fixes both: a rule may only
-fire where its prefix OPENS a token -- the name's start, or right after a
-separator -- never mid-word, because a genuine credential is never glued onto
-a preceding letter or digit with nothing between them. The JWT family is also
-tightened to the shape a JWT actually has (`eyJ`, three dot-separated
-segments), because "ey" alone opens plenty of real English words too
-(`_NAME_JWT`). A name that DOES carry a secret is masked, and masked the same
+A CLEAN NAME STAYS CLEAN, ONLY TWO FAMILIES ARE ANCHORED (owner decision
+2026-09-28, three rounds of review on #227). The first cut ran every rule over
+the whole name and exempted a match made only of "plain words" (`_plain_words`,
+a per-segment regex). That both over- and under-masked: the JWT rule's
+two-letter prefix ("ey") matches inside ordinary English words at ANY position
+-- "hockey", "eyeTracking", "key-results" -- which is not a plain-word question
+at all, and a real fake token (`sk-abcdefghijklmnop`) is itself a run of
+lowercase letters, so the same segment check let it through unmasked.
+
+The second cut anchored EVERY rule to a token's start -- the name's beginning,
+or right after a separator -- with a boundary check applied to whichever match
+`re.sub` happened to find first. That fixed the plain-word cases but broke two
+different ways: SWALLOW, because `re.sub` commits to the leftmost match's whole
+span once found, so a match rejected for starting mid-word is never retried at
+the real start INSIDE that same span (`task-sk-proj-<real key>.md` matched
+first at `ta[sk-]proj...`, which reached across the separator and swallowed the
+real `sk-` two characters later, so the callback rejected it and nothing tried
+again from there -- unmasked, count 0); and GLUED, because a rule with a
+distinctive, unmistakable prefix (`AKIA`, `ghp_`, `AIza`, `xox?-`, `ya29.`,
+`Bearer`) does not need a boundary at all, and anchoring it served a real
+credential in clear the moment it was glued to a preceding letter or digit
+(`notesAKIA...`, `xghp_...`, `keyAIzaSy...`).
+
+The fix now in place: only `sk-` and the JWT family (`ey`, tightened to `eyJ`
+plus its three dot-separated segments) get a boundary, and it is baked into
+the PATTERN itself as a lookbehind (`_NAME_SK`, `_NAME_JWT`), not applied to
+the result of a match `re.sub` already picked -- so the engine itself skips an
+illegal mid-word start and keeps scanning for the real one, which is what
+fixes SWALLOW. Every other family, and the private-key and key/value rules,
+run exactly as `RULES` applies them everywhere else: unanchored, which is what
+fixes GLUED. A name that DOES carry a secret is masked, and masked the same
 way under both keys (one deterministic function, no memo of the caller's
 strings), so the two still pair with each other. Each mask is counted in
 `metadata_redaction_count`. `input_from`'s keys are upstream task ids the
@@ -178,15 +194,41 @@ PLATFORM_METADATA_KEYS: tuple[str, ...] = RESERVED_METADATA_KEYS
 #: `{upstream task id: filename}`, `expected_outputs` a list of filenames.
 NAME_METADATA_KEYS: frozenset[str] = frozenset({"input_from", "expected_outputs"})
 
-#: The JWT family, tightened for a filename (`TaskMasking.name`). `RULES`'
-#: own pattern masks any "ey" followed by eight more characters -- which is
-#: what a JWT's base64url header always starts with, but also what "hockey",
-#: "eyeTracking" and "key-results" contain by accident. A JWT's header is
-#: always the base64url encoding of a JSON object opening `{"`, which always
-#: encodes to "eyJ" -- three characters, never two -- and a JWT is always
-#: three dot-separated segments, header.payload.signature. Requiring both
-#: narrows the match to a shape no ordinary filename produces.
-_NAME_JWT = re.compile(r"(eyJ[A-Za-z0-9_-]{5,})\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+")
+#: The two LOOSE families (`TaskMasking.name`, #227 review, third round): a
+#: short, common prefix that turns up inside an ordinary word by chance --
+#: "risk", "desk" and "task-report" all contain `sk-`; "hockey" and
+#: "eyeTracking" contain `ey`. Anchored with a LOOKBEHIND baked into the
+#: pattern itself, `(?<![A-Za-z0-9])`, so the regex engine refuses to START a
+#: match there and keeps scanning -- which is what a boundary check applied
+#: AFTER `re.sub` already picked a match cannot do. `_mask_anchored`, the
+#: first version of this fix, checked the boundary in the substitution
+#: callback: when the leftmost match began mid-word the callback declined to
+#: replace it, but `re.sub` had already committed to that match's SPAN and
+#: continued scanning from its end, so a real credential inside that same
+#: span -- `task-sk-proj-<real key>.md`, where the embedded match starting at
+#: `ta[sk-]proj...` swallows the real `sk-` that opens two characters later --
+#: was never tried at all and went unmasked. The lookbehind fixes this at the
+#: source: the engine itself skips the illegal start and finds the real one.
+#:
+#: The JWT family is also tightened to the shape a JWT actually has: `RULES`'
+#: own pattern masks any "ey" followed by eight more characters, which is what
+#: a JWT's base64url header always starts with, but also what "hockey" and
+#: "key-results" contain by accident. A JWT's header is always the base64url
+#: encoding of a JSON object opening `{"`, which always encodes to "eyJ" --
+#: three characters, never two -- and a JWT is always three dot-separated
+#: segments, header.payload.signature. Requiring both, on top of the same
+#: lookbehind, narrows the match to a shape no ordinary filename produces.
+#:
+#: EVERY OTHER FAMILY (AWS key ids, `ghp_`/`github_pat_`, `AIza`, `xox?-`,
+#: `ya29.`, `Bearer`/`Basic`) runs UNANCHORED, with `RULES`' own pattern and no
+#: boundary check at all -- their prefixes are distinctive enough (four or
+#: more characters, a fixed case, no ordinary word contains them) that a
+#: filename producing one by chance is not a real risk, and anchoring them
+#: would have the opposite defect: `notesAKIAIOSFODNN7EXAMPLE.md`, `xghp_...`
+#: and `keyAIzaSy...` are real credentials GLUED to a preceding word, and a
+#: boundary check would leave them in clear.
+_NAME_SK = re.compile(r"(?<![A-Za-z0-9])(sk-[A-Za-z0-9_-]{6})[A-Za-z0-9_-]+")
+_NAME_JWT = re.compile(r"(?<![A-Za-z0-9])(eyJ[A-Za-z0-9_-]{5,})\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+")
 
 #: Inside what the task collected about itself (`result_summary`, an event's
 #: `detail`), the keys whose string values are identifiers a client looks
@@ -287,21 +329,29 @@ class TaskMasking:
     def name(self, value: str) -> tuple[str, int]:
         """One filename from the caller's workflow spec, masked only where it carries a secret.
 
-        The rules as `redaction.redact` runs them over a decoded string, except
-        that a PREFIX rule (`sk-`, `ey`, `gh?_`, ...) may only fire where it
-        OPENS a token -- the name's start, or right after a separator
-        (`_mask_anchored`) -- never mid-word: those rules guess from a few
-        letters, and the same few letters turn up inside an ordinary word by
-        chance ("task-report" contains `sk-`, "hockey" contains `ey`), which is
-        what over-masked a clean filename in the first cut (the #227 review,
-        second round, owner decision 2026-09-28). The JWT family is also
-        tightened to the shape a JWT actually has (`_NAME_JWT`: `eyJ`, three
-        dot-separated segments), because its two-letter prefix opens plenty of
-        real English words too ("eyeTracking"). The private-key and key/value
-        rules, which recognise a credential by what it says it is rather than
-        by a guess, always apply, anchored or not. Then every literal the
-        input and the caller's metadata named. Nothing is remembered, so the
-        same name masks the same way wherever it is served.
+        The rules as `redaction.redact` runs them over a decoded string,
+        except for the two LOOSE families -- `sk-` and JWT/`ey` -- which use a
+        name-specific pattern with a LOOKBEHIND baked in (`_NAME_SK`,
+        `_NAME_JWT`): the match may only start at the name's beginning or
+        right after a separator, never mid-word, because their short prefixes
+        turn up inside an ordinary word by chance ("task-report" contains
+        `sk-`, "hockey" and "eyeTracking" contain `ey`) -- which is what
+        over-masked a clean filename in the first cut of this fix (the #227
+        review, second round). The lookbehind has to live IN the pattern, not
+        in a check applied after the match: a boundary check on the result of
+        `re.sub` cannot make the engine retry inside a span it already
+        consumed, so a real credential just past an illegal mid-word start
+        (`task-sk-proj-<real key>.md`) went unmasked entirely (the #227
+        review, third round -- see `_NAME_SK`'s comment). Every OTHER family
+        (AWS key ids, `ghp_`/`github_pat_`, `AIza`, `xox?-`, `ya29.`,
+        `Bearer`/`Basic`) and the private-key and key/value rules run
+        UNANCHORED, exactly as `RULES` applies them elsewhere: their prefixes
+        are distinctive enough that gluing to a preceding letter or digit is a
+        real credential, not a false positive, and a boundary check on them
+        would serve `notesAKIA...`, `xghp_...` and `keyAIzaSy...` in clear.
+        Then every literal the input and the caller's metadata named. Nothing
+        is remembered, so the same name masks the same way wherever it is
+        served.
 
         FIRST, the values the task named that a rule already recognises in
         part (`name_literals`): `redaction._carried` does not learn those,
@@ -321,10 +371,12 @@ class TaskMasking:
                 text, found = rule.apply(text, True, False)
             elif rule is KEY_VALUE:
                 text, found = rule.pattern.subn(r"\1" + MASK, text)
+            elif rule.name == "openai_key":
+                text, found = _NAME_SK.subn(r"\1" + MASK, text)
             elif rule.name == "jwt":
-                text, found = _mask_anchored(_NAME_JWT, text)
+                text, found = _NAME_JWT.subn(r"\1" + MASK, text)
             else:
-                text, found = _mask_anchored(rule.pattern, text)
+                text, found = rule.pattern.subn(r"\1" + MASK, text)
             count += found
         for literal in self.masker.literals:
             if literal and literal in text:
@@ -465,31 +517,6 @@ def _named_values(document: Any, *, exclude: tuple[str, ...]) -> tuple[str, ...]
                 continue
             chosen.append(literal)
     return tuple(sorted(chosen, key=len, reverse=True))
-
-
-def _mask_anchored(pattern: re.Pattern[str], text: str) -> tuple[str, int]:
-    """`pattern`'s matches masked after group 1, but only where the match OPENS a token; and how many.
-
-    "Opens a token" means the match starts at the beginning of `text` or right
-    after a character that is not itself part of a word or number -- never
-    where a rule's short prefix turns up in the MIDDLE of one, which is how
-    `sk-` matched inside "task-report" (task-[sk-]report) and `ey` matched
-    inside "hockey" (hock-[ey]) (the #227 review, second round). A real
-    credential value is never glued onto a
-    preceding letter or digit with nothing between them, so requiring the
-    boundary loses no genuine match.
-    """
-    hits = 0
-
-    def mask(match: re.Match[str]) -> str:
-        nonlocal hits
-        start = match.start()
-        if start > 0 and text[start - 1].isalnum():
-            return match.group(0)
-        hits += 1
-        return match.group(1) + MASK
-
-    return pattern.sub(mask, text), hits
 
 
 # --------------------------------------------------------------------------
