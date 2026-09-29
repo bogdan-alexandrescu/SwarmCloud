@@ -64,11 +64,10 @@ THE KEYS THE PLATFORM WRITES STAY READABLE, and they are told apart by the one
 fact that proves who wrote them: `validation.RESERVED_METADATA_KEYS`
 (`dispatch`, `input_from`, `expected_outputs`) are REFUSED at submission from
 every caller (`check_reserved_metadata`), so a value under one of them was
-written by `SubmissionService` and nobody else. They are never a source of
-literals and never walked by `JsonMasker`: the worker, the UI's workflow joins
-and `codec.dispatch_of` read them, and `JsonMasker`'s rules would serve
-`eye-tracking-summary.md` as `eye-tracki********` -- a staged input nobody can
-find. `dispatch` is served exactly as stored. `unit`, `source` and `origin` -- the label keys
+written by `SubmissionService` and nobody else. They are served exactly as
+stored and never counted: the worker, the UI's workflow joins and
+`codec.dispatch_of` read them, and a masked filename in `input_from` would be a
+staged input nobody can find. `unit`, `source` and `origin` -- the label keys
 this platform's own CLI, plugin and scripts write -- are NOT reserved, so a
 caller can write them too, and nothing distinguishes the platform's value from
 a caller's. They go through the masker like every caller key. A label is never
@@ -78,64 +77,6 @@ serves raw. `workflow_step`, which `SubmissionService` writes on every step
 task of a workflow, is the same case (the PR #229 review asked): not reserved,
 so a plain task's caller can write it too, and it goes through the masker; a
 step id is never credential-shaped, so it is served as written.
-
-BUT THE FILENAMES IN TWO OF THEM ARE THE CALLER'S (#227). The platform writes
-`input_from` and `expected_outputs`, but it copies their VALUES -- filenames --
-out of the caller's workflow spec. A secret written into a filename was served
-as stored, beside a prompt that masked the same value. So every filename under
-those two keys (`NAME_METADATA_KEYS`) is masked by `TaskMasking.name`: the
-task's literals, then the credential-shaped rules. `expected_outputs` and
-`input_from` share `_step_to_api` in `codec.py` (owner decision 2026-09-28), so
-a served workflow's step map is masked the same way.
-
-A CLEAN NAME STAYS CLEAN, ONLY ONE FAMILY IS ANCHORED (owner decision
-2026-09-28, four rounds of review on #227). The first cut ran every rule over
-the whole name and exempted a match made only of "plain words" (`_plain_words`,
-a per-segment regex). That both over- and under-masked: the JWT rule's
-two-letter prefix ("ey") matches inside ordinary English words at ANY position
--- "hockey", "eyeTracking", "key-results" -- which is not a plain-word question
-at all, and a real fake token (`sk-abcdefghijklmnop`) is itself a run of
-lowercase letters, so the same segment check let it through unmasked.
-
-The second cut anchored EVERY rule to a token's start -- the name's beginning,
-or right after a separator -- with a boundary check applied to whichever match
-`re.sub` happened to find first. That fixed the plain-word cases but broke two
-different ways: SWALLOW, because `re.sub` commits to the leftmost match's whole
-span once found, so a match rejected for starting mid-word is never retried at
-the real start INSIDE that same span (`task-sk-proj-<real key>.md` matched
-first at `ta[sk-]proj...`, which reached across the separator and swallowed the
-real `sk-` two characters later, so the callback rejected it and nothing tried
-again from there -- unmasked, count 0); and GLUED, because a rule with a
-distinctive, unmistakable prefix (`AKIA`, `ghp_`, `AIza`, `xox?-`, `ya29.`,
-`Bearer`) does not need a boundary at all, and anchoring it served a real
-credential in clear the moment it was glued to a preceding letter or digit
-(`notesAKIA...`, `xghp_...`, `keyAIzaSy...`).
-
-The third cut anchored `sk-` AND the JWT family with the same lookbehind,
-baked into the PATTERN itself (`_NAME_SK`, `_NAME_JWT`), which fixed SWALLOW
-for both: the engine itself skips an illegal mid-word start and keeps
-scanning for the real one, rather than a callback rejecting whichever match
-`re.sub` already committed to. But JWT did not need the anchor in the first
-place: `_NAME_JWT` requires `eyJ` -- not the loose two-letter `ey` -- plus the
-full three dot-separated segments, a shape none of this fix's clean names
-produce by accident, so anchoring it only cost the ability to catch a JWT
-glued directly onto a preceding word with no separator (`tokeneyJ...`), which
-is exactly the GLUED defect for every other family too.
-
-THE FIX NOW IN PLACE (fourth round): only `sk-` keeps the lookbehind baked
-into its pattern (`_NAME_SK`). The JWT family (`_NAME_JWT`) and every other
-family (AWS key ids, `ghp_`/`github_pat_`, `AIza`, `xox?-`, `ya29.`,
-`Bearer`), and the private-key and key/value rules, all run exactly as
-`RULES` applies them everywhere else: unanchored. `sk-`'s prefix is genuinely
-loose (a common two-letter run plus a hyphen), so it keeps the boundary;
-every other family's prefix is either tightened to a shape no clean filename
-produces (JWT) or distinctive enough on its own (AKIA, ghp_, AIza, xox, ya29,
-Bearer) that a boundary only causes GLUED, never prevents a false positive. A
-name that DOES carry a secret is masked, and masked the same way under both
-keys (one deterministic function, no memo of the caller's strings), so the
-two still pair with each other. Each mask is counted in
-`metadata_redaction_count`. `input_from`'s keys are upstream task ids the
-platform generated, and are served as stored.
 
 THE SAME REDACTOR, NOT A SECOND ONE. Every text below comes from
 `redaction.redact` and its one set of `RULES`, and the count is its count,
@@ -174,7 +115,6 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
-import re
 import threading
 from collections import OrderedDict
 from datetime import datetime
@@ -182,71 +122,13 @@ from typing import Any
 
 from swarm_common.models import Task
 
-from .redaction import (
-    KEY_VALUE,
-    MASK,
-    MAX_LITERALS,
-    RULES,
-    JsonMasker,
-    Redacted,
-    _PEM_HINT,
-    _assigned_values,
-    _key_text,
-    _leaf_texts,
-    _masks_whole,
-)
+from .redaction import MASK, RULES, JsonMasker, Redacted
 from .validation import RESERVED_METADATA_KEYS, repository_userinfo
 
 #: The metadata keys served as stored: only the platform can write them,
 #: because submission refuses each from every caller. See the module docstring
 #: for why `unit`, `source` and `origin` are not among them.
 PLATFORM_METADATA_KEYS: tuple[str, ...] = RESERVED_METADATA_KEYS
-
-#: The platform keys whose values are filenames the caller's workflow spec
-#: chose (#227): masked name by name by `TaskMasking.name`. `input_from` is
-#: `{upstream task id: filename}`, `expected_outputs` a list of filenames.
-NAME_METADATA_KEYS: frozenset[str] = frozenset({"input_from", "expected_outputs"})
-
-#: ONE LOOSE FAMILY (`TaskMasking.name`, #227 review, third round -- fourth on
-#: this specific pattern): `sk-` is a short, common prefix that turns up
-#: inside an ordinary word by chance -- "risk", "desk" and "task-report" all
-#: contain it. Anchored with a LOOKBEHIND baked into the pattern itself,
-#: `(?<![A-Za-z0-9])`, so the regex engine refuses to START a match there and
-#: keeps scanning -- which is what a boundary check applied AFTER `re.sub`
-#: already picked a match cannot do. `_mask_anchored`, an earlier version of
-#: this fix, checked the boundary in the substitution callback: when the
-#: leftmost match began mid-word the callback declined to replace it, but
-#: `re.sub` had already committed to that match's SPAN and continued scanning
-#: from its end, so a real credential inside that same span --
-#: `task-sk-proj-<real key>.md`, where the embedded match starting at
-#: `ta[sk-]proj...` swallows the real `sk-` that opens two characters later --
-#: was never tried at all and went unmasked. The lookbehind fixes this at the
-#: source: the engine itself skips the illegal start and finds the real one.
-#:
-#: THE JWT FAMILY IS NOT ANCHORED (owner decision 2026-09-28, fourth round). An
-#: earlier version of this pattern kept the same lookbehind on the reasoning
-#: that its two-letter prefix, `ey`, is as loose as `sk-`. But `_NAME_JWT`
-#: does not match on `ey` at all: it requires `eyJ` -- the exact three
-#: characters a JWT's base64url header always starts with, because that
-#: header is always the base64url encoding of a JSON object opening `{"` --
-#: PLUS the full three dot-separated segments, header.payload.signature. No
-#: ordinary filename produces that shape by accident (`eyeTracking.md`,
-#: `hockey-stats-2023Q4.csv` and the other three clean names in this file's
-#: `CLEAN_NAMES` do not contain `eyJ` at all, let alone three base64url
-#: segments), so leaving it unanchored is safe, and it is what closes the
-#: GLUED case for a JWT stuck directly onto a preceding word with no
-#: separator (`tokeneyJ...`), which an anchored version would still miss.
-#:
-#: EVERY OTHER FAMILY (AWS key ids, `ghp_`/`github_pat_`, `AIza`, `xox?-`,
-#: `ya29.`, `Bearer`/`Basic`) also runs UNANCHORED, with `RULES`' own pattern
-#: and no boundary check at all -- their prefixes are distinctive enough (four
-#: or more characters, a fixed case, no ordinary word contains them) that a
-#: filename producing one by chance is not a real risk, and anchoring them
-#: would have the opposite defect: `notesAKIAIOSFODNN7EXAMPLE.md`, `xghp_...`
-#: and `keyAIzaSy...` are real credentials GLUED to a preceding word, and a
-#: boundary check would leave them in clear.
-_NAME_SK = re.compile(r"(?<![A-Za-z0-9])(sk-[A-Za-z0-9_-]{6})[A-Za-z0-9_-]+")
-_NAME_JWT = re.compile(r"(eyJ[A-Za-z0-9_-]{5,})\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+")
 
 #: Inside what the task collected about itself (`result_summary`, an event's
 #: `detail`), the keys whose string values are identifiers a client looks
@@ -264,10 +146,8 @@ class TaskMasking:
     Built once per served task, so a literal the metadata names as a
     credential is masked in the prompt, and one the prompt assigns
     (`DB_PASSWORD=<v>`) is masked in the metadata. The platform's own keys
-    (`PLATFORM_METADATA_KEYS`) are outside it: never a source of literals, and
-    never walked by `JsonMasker`. `dispatch` is served as stored; the filenames
-    under `NAME_METADATA_KEYS` are masked by `name`, which leaves a clean one
-    as written (#227).
+    (`PLATFORM_METADATA_KEYS`) are outside it: they are neither masked nor a
+    source of literals.
 
     The masked input and metadata are computed once and kept, so a masker that
     `masking_for` holds across requests pays for them once; every read hands
@@ -281,9 +161,6 @@ class TaskMasking:
             k: v for k, v in self.metadata.items() if k not in PLATFORM_METADATA_KEYS
         }
         self.masker = JsonMasker({"input": self.submitted, "metadata": self.caller_metadata})
-        self.name_literals: tuple[str, ...] = _named_values(
-            {"input": self.submitted, "metadata": self.caller_metadata}, exclude=self.masker.literals
-        )
         self._input: tuple[dict[str, Any], int] | None = None
         self._metadata: tuple[dict[str, Any], int] | None = None
 
@@ -320,22 +197,17 @@ class TaskMasking:
         return [k for k in self.metadata if k in PLATFORM_METADATA_KEYS]
 
     def metadata_value(self) -> tuple[dict[str, Any], int]:
-        """The metadata as an object: the caller's keys masked, the platform's readable.
+        """The metadata as an object: the caller's keys masked, the platform's as stored.
 
-        In the stored order. `dispatch` is served as stored; the filenames
-        under `NAME_METADATA_KEYS` are masked by `name` (#227), which leaves a
-        clean one byte for byte. The count is the caller's keys' masks plus
-        every masked filename.
+        In the stored order. The count is the caller's keys' masks only; a
+        platform key is never counted, because it is never masked.
         """
         if self._metadata is None:
             masked, count = self.masker.value(self.caller_metadata)
             caller_items = iter(masked.items())
             out: dict[str, Any] = {}
             for key, stored in self.metadata.items():
-                if key in NAME_METADATA_KEYS:
-                    out[key], found = self._names(stored)
-                    count += found
-                elif key in PLATFORM_METADATA_KEYS:
+                if key in PLATFORM_METADATA_KEYS:
                     out[key] = stored
                 else:
                     label, value = next(caller_items)
@@ -343,86 +215,6 @@ class TaskMasking:
             self._metadata = (out, count)
         value, count = self._metadata
         return copy.deepcopy(value), count
-
-    def name(self, value: str) -> tuple[str, int]:
-        """One filename from the caller's workflow spec, masked only where it carries a secret.
-
-        The rules as `redaction.redact` runs them over a decoded string,
-        except for `sk-`, which uses a name-specific pattern with a
-        LOOKBEHIND baked in (`_NAME_SK`): the match may only start at the
-        name's beginning or right after a separator, never mid-word, because
-        its short prefix turns up inside an ordinary word by chance
-        ("task-report" contains `sk-`) -- which is what over-masked a clean
-        filename in the first cut of this fix (the #227 review, second
-        round). The lookbehind has to live IN the pattern, not in a check
-        applied after the match: a boundary check on the result of `re.sub`
-        cannot make the engine retry inside a span it already consumed, so a
-        real credential just past an illegal mid-word start
-        (`task-sk-proj-<real key>.md`) went unmasked entirely (third round --
-        see `_NAME_SK`'s comment). JWT (`_NAME_JWT`) runs UNANCHORED: it is
-        tightened to `eyJ` plus the full three dot-separated segments, a
-        shape no clean filename in this file's `CLEAN_NAMES` produces by
-        accident, so it needs no boundary, and leaving it unanchored is what
-        catches a JWT glued directly onto a preceding word with no separator
-        (fourth round). Every OTHER family (AWS key ids, `ghp_`/
-        `github_pat_`, `AIza`, `xox?-`, `ya29.`, `Bearer`/`Basic`) and the
-        private-key and key/value rules also run UNANCHORED, exactly as
-        `RULES` applies them elsewhere: their prefixes are distinctive enough
-        that gluing to a preceding letter or digit is a real credential, not
-        a false positive, and a boundary check on them would serve
-        `notesAKIA...`, `xghp_...` and `keyAIzaSy...` in clear. Then every
-        literal the input and the caller's metadata named. Nothing is
-        remembered, so the same name masks the same way wherever it is
-        served.
-
-        FIRST, the values the task named that a rule already recognises in
-        part (`name_literals`): `redaction._carried` does not learn those,
-        because the rules mask them wherever they appear, but in a name the
-        anchoring above would then leave `monkey-business-2024` -- a
-        passphrase the prompt assigns to `DB_PASSWORD`, which the JWT rule
-        touches at `ey` mid-word -- in clear (the #227 review). So they are
-        replaced whole before the rules can see them.
-        """
-        text, count = value, 0
-        for literal in self.name_literals:
-            if literal in text:
-                count += text.count(literal)
-                text = text.replace(literal, MASK)
-        for rule in RULES:
-            if rule.apply is not None:
-                text, found = rule.apply(text, True, False)
-            elif rule is KEY_VALUE:
-                text, found = rule.pattern.subn(r"\1" + MASK, text)
-            elif rule.name == "openai_key":
-                text, found = _NAME_SK.subn(r"\1" + MASK, text)
-            elif rule.name == "jwt":
-                text, found = _NAME_JWT.subn(r"\1" + MASK, text)
-            else:
-                text, found = rule.pattern.subn(r"\1" + MASK, text)
-            count += found
-        for literal in self.masker.literals:
-            if literal and literal in text:
-                count += text.count(literal)
-                text = text.replace(literal, MASK)
-        return text, count
-
-    def _names(self, node: Any) -> tuple[Any, int]:
-        """Every string VALUE in `node` masked by `name`; keys and shape as stored."""
-        total = 0
-
-        def walk(item: Any) -> Any:
-            nonlocal total
-            if isinstance(item, str):
-                masked, found = self.name(item)
-                total += found
-                return masked
-            if isinstance(item, dict):
-                return {key: walk(inner) for key, inner in item.items()}
-            if isinstance(item, (list, tuple)):
-                return [walk(inner) for inner in item]
-            return item
-
-        return walk(node), total
 
     # -- what the task collected about itself (the PR #229 review) ----------
     #
@@ -492,53 +284,6 @@ class TaskMasking:
             count += 1
         masked, found = self.text(url)
         return masked, count + found
-
-
-def _named_values(document: Any, *, exclude: tuple[str, ...]) -> tuple[str, ...]:
-    """The values `document` names as secret that `redaction._carried` refused, longest first.
-
-    The same two sources as `redaction._learned_literals` -- a value masked
-    whole under a credential's name, and a value beside `NAME=` -- and the
-    same bounds (eight characters, not a private key's marker, not a run of
-    mask characters, at most `MAX_LITERALS`), but WITHOUT `_carried`'s
-    refusal of a value the rules already match: that refusal is what lets a
-    word-shaped password through `TaskMasking.name`'s plain-word exemption.
-    Only `TaskMasking.name` uses these; the input and caller metadata are
-    masked by the rules as before.
-    """
-    found: list[str] = []
-
-    def learn(node: Any) -> None:
-        if isinstance(node, str):
-            found.extend(_assigned_values(node))
-        elif isinstance(node, dict):
-            for key, item in node.items():
-                label = _key_text(key)
-                found.extend(_assigned_values(label))
-                if _masks_whole(label, item):
-                    found.extend(_leaf_texts(item))
-                else:
-                    learn(item)
-        elif isinstance(node, (list, tuple)):
-            for item in node:
-                learn(item)
-        elif node is not None and not isinstance(node, (bool, int, float)):
-            learn(str(node))
-
-    learn(document)
-    chosen: list[str] = []
-    seen: set[str] = set(exclude)
-    for candidate in found:
-        for literal in (candidate, candidate.strip()):
-            if literal in seen or len(chosen) >= MAX_LITERALS:
-                continue
-            seen.add(literal)
-            if len(literal.strip()) < 8 or literal.strip("*").strip() == "":
-                continue
-            if _PEM_HINT in literal:
-                continue
-            chosen.append(literal)
-    return tuple(sorted(chosen, key=len, reverse=True))
 
 
 # --------------------------------------------------------------------------
