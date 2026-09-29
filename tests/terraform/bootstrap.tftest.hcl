@@ -304,3 +304,152 @@ run "a_backend_that_is_not_ours_is_refused" {
 
   expect_failures = [var.frontend_iap_backends]
 }
+
+# THE CI FIXER FEDERATES AS ITSELF, AND ONLY FROM ITS OWN WORKFLOW FILE ON MAIN.
+#
+# Owner decision, 2026-09-28 (#273): ci-fix.yml no longer authenticates as the
+# deployer and hops to SWARM_CI_FIX_SA. It is bound to that account directly,
+# and the principal is the ONE workflow file on main -- not the repository, not
+# repository@ref. A repository-wide principalSet would hand the fixer's
+# identity, and the IAP front door and tenant it carries, to every workflow in
+# the repository that runs on main: release.yml, terraform.yml, anything added
+# next week.
+run "the_ci_fixer_is_bound_to_its_one_workflow_on_main" {
+  command = plan
+
+  module {
+    source = "../../terraform/bootstrap"
+  }
+
+  # The pool's name is computed. Known at plan here so the principal it
+  # prefixes can be compared whole, rather than by a substring that would also
+  # match a wider one.
+  override_resource {
+    target          = google_iam_workload_identity_pool.github
+    override_during = plan
+    values = {
+      name = "projects/209012342332/locations/global/workloadIdentityPools/swarm-github"
+    }
+  }
+
+  variables {
+    enable_github_wif      = true
+    github_repository      = "saga/agent-swarm-infra"
+    ci_fix_service_account = "swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com"
+    frontend_iap_members = [
+      "domain:example.com",
+      "serviceAccount:swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com",
+    ]
+  }
+
+  assert {
+    condition     = google_service_account_iam_member.ci_fix_wif[0].member == "principalSet://iam.googleapis.com/projects/209012342332/locations/global/workloadIdentityPools/swarm-github/attribute.job_workflow_ref/saga/agent-swarm-infra/.github/workflows/ci-fix.yml@refs/heads/main"
+    error_message = "the fixer's identity must be federated to exactly ci-fix.yml on refs/heads/main, and nothing wider"
+  }
+
+  # Said separately from the equality above, so that relaxing the equality to a
+  # prefix match cannot quietly admit the repository-wide forms.
+  assert {
+    condition     = !strcontains(google_service_account_iam_member.ci_fix_wif[0].member, "/attribute.repository/") && !strcontains(google_service_account_iam_member.ci_fix_wif[0].member, "/attribute.repo_ref/") && !strcontains(google_service_account_iam_member.ci_fix_wif[0].member, "/*")
+    error_message = "a repository-wide principalSet on the fixer hands its identity to every workflow in the repository"
+  }
+
+  assert {
+    condition     = google_service_account_iam_member.ci_fix_wif[0].role == "roles/iam.workloadIdentityUser"
+    error_message = "the fixer federates through workloadIdentityUser; no key, and no token-creator hop from the deployer"
+  }
+
+  assert {
+    condition     = google_service_account_iam_member.ci_fix_wif[0].service_account_id == "projects/saga-agents-staging/serviceAccounts/swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com"
+    error_message = "the binding must sit on the fixer's own service account"
+  }
+
+  assert {
+    condition     = google_iam_workload_identity_pool_provider.github[0].attribute_mapping["attribute.job_workflow_ref"] == "assertion.job_workflow_ref"
+    error_message = "a principalSet can only name an attribute the provider maps"
+  }
+
+  # The mapping was added; the trust policy was not touched. Compared whole, so
+  # a clause dropped or an alternative OR-ed in fails here.
+  assert {
+    condition     = google_iam_workload_identity_pool_provider.github[0].attribute_condition == "assertion.repository == \"saga/agent-swarm-infra\" && (assertion.ref == \"refs/heads/main\")"
+    error_message = "adding the fixer must not loosen the provider's attribute_condition"
+  }
+
+  # The fixer's principal is on the fixer only. The deployer stays bound per
+  # repository@ref, exactly as before.
+  assert {
+    condition     = alltrue([for m in values(google_service_account_iam_member.deployer_wif) : strcontains(m.member, "/attribute.repo_ref/")])
+    error_message = "the deployer's bindings changed shape; the fixer change must not touch them"
+  }
+}
+
+run "the_ci_fixer_binding_is_absent_until_an_account_is_named" {
+  command = plan
+
+  module {
+    source = "../../terraform/bootstrap"
+  }
+
+  variables {
+    enable_github_wif = true
+    github_repository = "saga/agent-swarm-infra"
+  }
+
+  assert {
+    condition     = length(google_service_account_iam_member.ci_fix_wif) == 0
+    error_message = "no fixer account named, so nothing may be bound"
+  }
+}
+
+run "the_ci_fixer_can_never_be_the_deployer" {
+  command = plan
+
+  module {
+    source = "../../terraform/bootstrap"
+  }
+
+  variables {
+    enable_github_wif      = true
+    github_repository      = "saga/agent-swarm-infra"
+    ci_fix_service_account = "swarm-tf-deployer@saga-agents-staging.iam.gserviceaccount.com"
+    frontend_iap_members = [
+      "domain:example.com",
+      "serviceAccount:swarm-tf-deployer@saga-agents-staging.iam.gserviceaccount.com",
+    ]
+  }
+
+  expect_failures = [google_service_account_iam_member.ci_fix_wif]
+}
+
+run "a_ci_fixer_that_cannot_pass_iap_is_refused" {
+  command = plan
+
+  module {
+    source = "../../terraform/bootstrap"
+  }
+
+  variables {
+    enable_github_wif      = true
+    github_repository      = "saga/agent-swarm-infra"
+    ci_fix_service_account = "swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com"
+  }
+
+  expect_failures = [google_service_account_iam_member.ci_fix_wif]
+}
+
+run "a_malformed_ci_fixer_account_is_refused" {
+  command = plan
+
+  module {
+    source = "../../terraform/bootstrap"
+  }
+
+  variables {
+    enable_github_wif      = true
+    github_repository      = "saga/agent-swarm-infra"
+    ci_fix_service_account = "serviceAccount:swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com"
+  }
+
+  expect_failures = [var.ci_fix_service_account]
+}
