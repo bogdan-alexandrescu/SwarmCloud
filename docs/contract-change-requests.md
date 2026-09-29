@@ -39,6 +39,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 24 | `profiles.py`: whether a profile's cost is declared rather than measured is named outside the catalogue | ACCEPTED 2026-09-25 (#185, decision 9), applied in PR #217 |
 | 25 | `profiles.py`: a runner profile cannot declare the inputs a caller may send it, so the bridge names the mock's by profile | ACCEPTED 2026-09-25 (owner, on #142), applied in PR #213; both amendments confirmed by the owner 2026-09-26: `inputs=None` for `browser` and `generic` (#218), and the bounded park counted by the task's `attempt_count` rather than the state file |
 | 26 | `models.py`: the attempt's CPU figures carry no time and their limit no source | ACCEPTED 2026-09-26 (owner, on #184), applied in PR #229 |
+| 29 | `profiles.py`: `browser` and `generic` declare no inputs, so the API bounds them by size alone and the plugin can send them none (#218) | PROPOSED 2026-09-29 |
 
 ---
 
@@ -2866,3 +2867,988 @@ accepting `issue` for these two profiles and still refuses everything else.
 - **#219.** The forge token never reaches the workspace or the agent.
 - **Invariant 9.** The fetch uses the step's own tenant's credential against the
   step's own repository.
+
+---
+
+## 29. `profiles.py`: `browser` and `generic` declare no inputs, so the API bounds them by size alone and the plugin can send them none
+
+**Status: PROPOSED, 2026-09-29.** Nothing here is applied. It answers #218,
+which contract request 25 left open: which inputs `browser` and `generic`
+declare, and with which bounds. Numbered 29 because 28 is the last entry in
+this file and 27 appears nowhere on `main`; if another branch has taken 29 by
+the time this merges, renumber this one.
+
+### What is true today
+
+Measured from `main` at `d4a2352` on 2026-09-29.
+
+**Both profiles are `inputs=None`**, and `check_inputs` hands their input
+back unchecked, so swarm-api bounds it by size (`validate_input_size`) and by
+Firestore's integer range (`validate_storable`) and nothing else. The owner
+confirmed that on 2026-09-26 as the interim (request 25's table row). It was
+meant to last until #218 was decided.
+
+**It has already stopped work.** #220 found on 2026-09-28 that every browser
+task dispatched through the `sc` plugin failed after it started, with
+"browser runner needs input.url or at least one action". The bridge sends a
+key only when a declaration names it (`swarm_mcp/profiles.py`, `check_inputs`),
+and `browser` declares nothing. So no caller of the plugin can give a browser
+task the one thing it cannot run without, and the refusal arrives after
+admission, after a lease and a GKE pod start.
+
+**What the size bound lets through, and where it fails instead.** Every item
+below is a value the API accepts today that the runner then fails on, or
+quietly reads differently:
+
+* `timeout_ms: 0` and `launch_timeout_ms: 0`. Playwright reads 0 as "no
+  timeout", so one `wait_for` on a selector that never appears holds the
+  attempt, and its `browser` capacity (2 units), for the profile's full
+  5400 s.
+* `timeout_ms: "abc"`. The runner calls `int()` on it, raises `ValueError` and
+  fails the attempt after admission.
+* An action without the field its type needs: `{"type": "click"}` raises
+  `KeyError` at `action["selector"]`, also after admission.
+* `{"type": "wait", "seconds": 600}`. The runner clamps it to 60 with
+  `min(..., 60.0)` and does not report the clamp.
+* A `goto` to `http://10.0.0.1/`. The runner accepts any http(s) URL with a
+  host. The worker's NetworkPolicy drops the packets, and Dataplane V2 drops
+  without replying, so the action waits out `timeout_ms` and fails as a
+  timeout. Nothing in the failure says the address was refused.
+* `generic` with no `command`. It is admitted, leased and started, and then
+  fails with "input.command is required".
+* `generic` limits. `timeout_seconds: 0` is read as "not asked" and ignored.
+  `timeout_seconds: 99999` is clamped to the platform's ceiling, with a
+  WARNING in the worker's log that the caller never sees.
+* Keys the worker fills with `setdefault` (`task_id`, `attempt_id`,
+  `repository`, `resumed_from_checkpoint`, `lifecycle.py` around line 860).
+  For these two profiles a value the caller sent takes precedence over the
+  worker's. Neither runner reads those keys, so nothing is affected today.
+  A declaration closes the gap anyway, because an undeclared key is refused
+  at the door.
+
+### What each runner reads
+
+Read again from the runners' source on 2026-09-29. These tables list every
+key `body()` reads from `ctx.payload`, and nothing else.
+`generic.py` refuses `argv`, `script`, `env`, `command_line` and `shell` by
+name. Once the profile declares, the API refuses those at 422 like any other
+undeclared key.
+
+**`browser`** (`agent_worker/runners/browser.py`):
+
+| key | kind | bounds | required | runner's default, and why this bound |
+|---|---|---|---|---|
+| `url` | `url` (new) | http or https, public host (see question 2) | no; `url` or `actions` | none. The runner turns it into a leading `goto`. |
+| `actions` | `list` (new) of `object` (new) | 0..200 entries | no; `url` or `actions` | `[]`. 200 is the runner's `MAX_ACTIONS`. |
+| `timeout_ms` | integer | 1..300000 | no | 30000. Must be at least 1 because 0 disables Playwright's timeout. Five minutes is the most one action may wait. |
+| `launch_timeout_ms` | integer | 1..180000 | no | 60000. The same reason for 1. A launch still waiting at three minutes means the pod is short of `/dev/shm`. |
+| `viewport_width` | integer | 320..3840 | no | 1280. The viewport, and a full-page screenshot of it, are held in the pod's memory. |
+| `viewport_height` | integer | 240..2160 | no | 900 |
+| `user_agent` | string | none | no | Chromium's own; `""` also means Chromium's |
+| `extract_text` | boolean | none | no | true: the final page's text is kept as `page.txt` |
+| `screenshot` | boolean | none | no | true: a final full-page `final.png` is kept |
+
+Each element of `actions` is an object whose `type` selects one of eight
+fixed shapes. A key that the selected shape does not name is refused:
+
+| `type` | fields (required in bold) | runner's defaults |
+|---|---|---|
+| `goto` | **`url`** (`url`), `wait_until` (string, one of `load`, `domcontentloaded`, `networkidle`, `commit`) | `wait_until` `load` |
+| `click` | **`selector`** (string) | |
+| `fill` | **`selector`** (string), `text` (string) | `text` `""` |
+| `press` | **`selector`** (string), `key` (string) | `key` `Enter` |
+| `wait_for` | **`selector`** (string), `timeout_ms` (integer 1..300000) | the task's `timeout_ms` |
+| `wait` | `seconds` (number 0..60) | 1. Refusing a value above 60 replaces the runner's silent clamp. |
+| `screenshot` | `name` (`filename`), `full_page` (boolean) | `screenshot-NNN.png`, `true` |
+| `extract` | `selector` (string), `name` (`filename`) | `body`, `extract-NNN.txt` |
+
+The runner writes both `name` fields through `RunnerContext.artifact_path`,
+which keeps only the last path segment. That is the rule the existing
+`filename` kind already states. The runner lower-cases `type`, so `"Goto"`
+runs today. The declaration matches `type` exactly.
+
+**`generic`** (`agent_worker/runners/generic.py`, `runners/limits.py`):
+
+| key | kind | bounds | required | runner's default, and why this bound |
+|---|---|---|---|---|
+| `command` | string | one of `make`, `npm-build`, `npm-ci`, `npm-test`, `pytest`, `uv-sync` | **yes** | none. The runner fails without it. The list is `GENERIC_COMMANDS`. |
+| `paths` | `list` (new) of `argument` (new) | 0..32 entries | no | none, so pytest runs the whole suite. 32 is `GenericCommand.max_arguments`. Only `pytest` reads it. |
+| `target` | `argument` (new) | the runner's argument rule | no | `all`. Only `make` reads it. |
+| `working_directory` | `argument` (new) | the runner's argument rule | no | the workspace root |
+| `timeout_seconds` | number | 1..3600 | no | the profile's `timeout_seconds` (3600), which the worker exports as the ceiling |
+| `grace_seconds` | number | 1..20 | no | `WorkerConfig.termination_grace_seconds` (20) |
+| `max_stdout_bytes` | integer | 1..33554432 | no | `WorkerConfig.max_stdout_bytes` (32 MiB) |
+| `max_stderr_bytes` | integer | 1..8388608 | no | `WorkerConfig.max_stderr_bytes` (8 MiB) |
+
+**The four limits may only lower the platform's own.** Each declared ceiling
+is the value the worker exports by default, so a request above it gets a 422
+at submission. Today the runner accepts it and clamps it. The runner still
+clamps to whatever the attempt's worker exports, because an operator may set
+that lower through the environment. The minimum is 1 because the runner reads
+0 or less as "not asked". `argument` is exactly what the runner's
+`_check_argument` accepts: `^[A-Za-z0-9._][A-Za-z0-9._\-/]{0,255}$` and no
+`..`. Whether the path exists and lies inside the workspace stays the
+runner's check, because only the runner has the workspace.
+
+### Question 1: `RunnerInput.kind` has no kind for a list
+
+**Recommendation: add one `list` kind, whose bounds are its length and whose
+elements are a declared `RunnerInput` (`items`).** It reuses the fields that
+already exist. `minimum` and `maximum` become the length bounds and are
+required, as they are for a number, for the same reason: without them a list
+is unbounded until the task write fails. Each element is checked by the same
+`check`, under the key `actions[3]`, so a refusal names the element that
+failed.
+
+For `paths` that is the whole addition, plus an `argument` kind for the
+element. `argument` is the generic runner's argument rule, added as a kind for
+the same reason `filename` is one: a regex field would be a second, more
+general feature that one rule does not need. `target` and
+`working_directory` use it as well.
+
+`actions` needs one more addition, because its elements are objects in eight
+shapes. The smallest form that still checks each element is **an `object`
+kind with `variants`**: a mapping from the value of `type` to the fields that
+shape takes. Each field is a `RunnerInput`, which gains `required`. A shape
+refuses keys it does not name. It is not general: the discriminator is always
+`type`, and there is no nesting beyond what `items` and `variants` compose.
+That is enough for every input any runner reads today. Two further fields
+serve keys that are not lists. `choices` (string only) covers `command` and
+`wait_until`. `required` is also read for a profile's top-level keys, so a
+`generic` task with no `command` is refused at the door.
+
+**Alternatives considered, and why they were not chosen:**
+
+* An opaque `json` kind, bounded by size. That is the current behaviour under
+  another name. It checks no element, so a missing `selector` is still found
+  after admission.
+* A `browser_action` kind. It would put one runner's vocabulary into the kind
+  list as code instead of as data, and the next runner with a list of shapes
+  would need another kind.
+* A full JSON Schema. It is far larger than any runner needs, and a caller
+  could no longer read it from `describe()`.
+
+**What `required` cannot say:** the browser runner needs `url` *or*
+`actions`. This request leaves that check with the runner. That is a
+decision for the owner, listed below.
+
+### Question 2: does `url` need an allow-list or a scheme restriction?
+
+**Recommendation: a scheme restriction and a public-host rule, checked at
+submission. No host allow-list, and not https-only.** The check sits in one
+place, `url_refusal` in the frozen module. It serves `url` and every `goto`
+action's `url`. swarm-api, the bridge and the runner's `_check_url` all call
+it.
+
+**What the browser can reach today.** The pod's egress is
+`kubernetes/network-policies/allow-egress.yaml`. It allows cluster DNS, the
+metadata server at 169.254.169.254, the Private Google Access VIPs
+(199.36.153.4/30 and 199.36.153.8/30) and the public internet. It excepts
+every private range: RFC 1918, link-local, CGNAT and the cluster's pod and
+service ranges. So the browser can reach:
+
+1. **The GKE metadata server.** The pod needs it for Workload Identity, and
+   the policy's own header says a NetworkPolicy cannot close it for one
+   process in a pod. It mints the tenant GSA's token. What protects that
+   token from a browser is that the server answers `/computeMetadata/v1/`
+   only with a `Metadata-Flavor: Google` header. A navigation does not send
+   that header. A cross-origin `fetch()` from page script that sets it
+   triggers a CORS preflight, and the metadata server does not answer the
+   preflight in a way that permits the request. The preflight behaviour is
+   **not measured here**. The applying change should measure it with a
+   browser task against the live cluster.
+2. **The Google API VIPs.** These are authenticated APIs, so they are useless
+   without a token.
+3. **The public internet.** That is the browser profile's purpose. The
+   policy's header says it "has to fetch whatever page the task names, which
+   cannot be an allow-list".
+
+**Why the submission check cannot be the SSRF control.** It sees only the
+URL the caller typed. It cannot see redirects (a public page can answer
+`302` to `http://169.254.169.254/...`), the page's subresources, requests
+its script makes, or what a name resolves to when the pod asks. That last gap
+includes DNS rebinding, and names such as `svc.namespace` that the pod's
+search path expands into the cluster. Resolving the name at submission does
+not close it, because the pod resolves it again later. **The control is the
+network, plus the header requirement.** A check at the door is defence in
+depth.
+
+**What the door check still buys:**
+
+* A private address becomes a 422 with the reason, instead of a timeout that
+  never says the address was dropped.
+* A URL with `user:password@` is never stored with the task, served by
+  the API or shown in the UI. The runner would also echo it
+  back as `final_url`.
+* Addresses that parse as public but are not become errors.
+
+The rule, as written in the diff, refuses:
+
+* any scheme but `http` and `https`;
+* userinfo;
+* spaces and control characters;
+* a URL over 2048 characters;
+* a host that is an IP address and not `is_global` (loopback, private,
+  link-local, CGNAT, reserved), with IPv4-mapped IPv6 unwrapped first;
+* the two Google VIP ranges, which are global addresses;
+* a host whose last label does not start with a letter. A browser reads
+  `http://2852039166/` and `http://0xa9.254.169.254/` as 169.254.169.254, and
+  `ipaddress` parses neither. No public suffix starts with a digit.
+* a single-label host (`metadata`, `kubernetes`), which only the cluster's
+  search path resolves;
+* any name under `.internal`, `.local` or `.localhost`
+  (`metadata.google.internal`, `*.svc.cluster.local`).
+
+**Why not https-only.** The scheme is not the SSRF vector. The metadata
+server and every private address are plain http either way, and the rule
+above refuses them by host. The runner already sets
+`ignore_https_errors=False`, so an https page with a bad certificate still
+fails. Refusing http would refuse legitimate plain-http targets and close no
+path. The owner may still want https-only as a data-in-transit rule. That is
+a separate decision, listed below.
+
+**Why no allow-list.** A platform-wide list contradicts the profile's purpose
+and the NetworkPolicy's stated design. A per-tenant allow-list is tenant
+configuration, not catalogue. If it is ever wanted, it belongs with the
+tenant's registration, not in `RunnerInput`.
+
+**Not in this request, and recommended as its own worker issue:** a
+request-level guard in the runner, `context.route("**/*", ...)`, that aborts
+any request, including redirects and subresources, whose host fails
+`url_refusal`. It still cannot see DNS answers. That makes it the second layer
+behind the network, not a replacement for it.
+
+### Question 3: should the plugin's bridge send inputs to a profile that has not declared?
+
+#218 could not be read for this entry, because the lane had no `gh`. The
+third question is taken from the places in this repository that name it:
+request 25's amendment ("Letting it send a browser task's `actions` is
+#218's third question"), the header of `apps/swarm-mcp/swarm_mcp/profiles.py`
+("Letting `swarm_dispatch` send a browser task's `actions` would be a new
+plugin capability, #218's third question"), and `check_inputs`'s docstring.
+If the issue words it differently, this answer should be checked against the
+issue's text before the owner decides.
+
+**Recommendation: no. Keep the send policy, and declare instead.** This
+request fixes #220's failure by giving `browser` a declaration. No bridge
+exception is needed. The bridge sends a key only when a declaration names it,
+because the declaration gives `--input` a kind to type the value by, and it
+lets the bridge refuse a bad value before anything travels. Letting it send
+unchecked keys to a `None` profile would forward, from the plugin, exactly the
+unchecked input this request exists to close.
+
+Once `browser` declares, `swarm_dispatch`'s `inputs` object carries `url`
+and `actions` as JSON with no change. `swarm dispatch --input` needs one line:
+`parse_input_flags` keeps `string` and `filename` values as typed text, and
+must keep `url` and `argument` values the same way. Otherwise
+`--input target=123` would be parsed as the number 123 and refused. A list is
+already read as JSON (`--input 'actions=[{"type":"screenshot"}]'`).
+
+With the diff below applied there is no `None` profile left, so the policy
+stops being a live question.
+
+### Also open: a key named `command`
+
+Request 25 recorded that "a declared input named `command` would read as
+invariant 10 relaxed although it names a catalogue entry, not an argv."
+**Recommendation: keep the name.** It is what every existing caller sends,
+including the example in `docs/workflows.md`, the Submit form and the
+runner's own error text. The declaration makes the difference visible:
+`choices` is the closed list of catalogue names, and `describe()` renders it
+as `string, one of make | npm-build | ...`. A reader sees a menu, not an argv.
+Renaming it to `catalogue_command` would break every caller to address
+something a reviewer can already see.
+
+### The requested change
+
+The exact diff against `apps/common/swarm_common/profiles.py` at `d4a2352`
+(`git apply --check` passes). **Not applied.**
+
+* **Kinds:** `url`, `argument`, `list`, `object`.
+* **New `RunnerInput` fields:** `choices`, `required`, `items`, `variants`.
+* **A shared rule:** `url_refusal`.
+* **`browser` and `generic` declare** the tables above.
+* **`required` is enforced at the top level** by `check_inputs`.
+* **The field returns to the type request 25 was accepted with.**
+  `RunnerProfile.inputs` becomes `Mapping[str, RunnerInput]` with no `None`,
+  and `check_inputs` loses its `None` branch. That retires the amendment.
+* **`describe()` prints whole-number bounds in full** (`1..33554432`, not
+  `:g`'s `1..3.35544e+07`). The mock's bounds render unchanged.
+* **The article** reads "a url".
+
+CR 28 (`issue` for `claude-code` and `codex`), accepted and not yet applied
+on `main`, touches neither these lines nor these kinds.
+
+```diff
+--- a/apps/common/swarm_common/profiles.py
++++ b/apps/common/swarm_common/profiles.py
+@@ -19,12 +19,15 @@
+ 
+ from __future__ import annotations
+ 
++import ipaddress
+ import math
++import re
+ from collections.abc import Mapping
+ from dataclasses import dataclass, field
+ from enum import Enum
+ from types import MappingProxyType
+ from typing import Any
++from urllib.parse import urlsplit
+ 
+ 
+ class Backend(str, Enum):
+@@ -98,13 +101,30 @@
+ # choose the model a `claude-code` agent runs. So what may be sent is declared
+ # per profile, here, once. swarm-api refuses anything else at submission and
+ # the plugin's bridge refuses it sooner; both read this, and neither keeps a
+-# table of its own. Two profiles, `browser` and `generic`, have not declared
+-# yet (#218), and the API bounds what is sent to them by size alone.
++# table of its own. Every profile declares: `browser` and `generic` last, by
++# contract request 29 (#218), which added the kinds their inputs needed.
+ 
+ #: The kinds an input can be. `filename` is a bare file name with no
+ #: directory: the worker keeps only the last path segment of an artifact name
+ #: (`RunnerContext.artifact_path`), so `../x` would quietly become `x`.
+-INPUT_KINDS = ("number", "integer", "boolean", "string", "filename")
++#:
++#: Added by contract request 29 (#218), for the two runners whose work IS
++#: their input:
++#:
++#: * `url`: an http or https URL a browser may open. See `url_refusal`.
++#: * `argument`: a value the generic runner appends to a catalogue argv, or
++#:   runs in -- `_ARGUMENT_SAFE` and the `..` refusal in
++#:   `agent_worker/runners/generic.py`, restated because the catalogue cannot
++#:   import the worker. Existence and "inside the workspace" stay the runner's:
++#:   only it has the workspace.
++#: * `list`: a JSON array. Its BOUNDS ARE ITS LENGTH, both required, as a
++#:   number's are; every element is `items`.
++#: * `object`: a JSON object in one of the fixed shapes `variants` names,
++#:   chosen by its `type` key. A key its shape does not name is refused, as a
++#:   key a profile does not declare is.
++INPUT_KINDS = (
++    "number", "integer", "boolean", "string", "filename", "url", "argument", "list", "object"
++)
+ 
+ #: The signed 64-bit range, which is what Firestore stores an integer in.
+ #: Python reads a JSON integer of any length, so an integer input whose bounds
+@@ -113,6 +133,28 @@
+ INT64_MIN = -(2**63)
+ INT64_MAX = 2**63 - 1
+ 
++#: `argument`: what `generic._ARGUMENT_SAFE` accepts. No leading dash, so no
++#: value becomes a flag; no leading slash; 256 characters at most.
++_ARGUMENT = re.compile(r"[A-Za-z0-9._][A-Za-z0-9._\-/]{0,255}")
++
++#: The longest URL a browser task may name. Chromium's own limit is 2 MB; a
++#: task's URL is stored with the task and shown with it, and past this it is
++#: not a page address but a payload.
++_URL_MAX_CHARS = 2048
++
++#: Private Google Access, which the worker's NetworkPolicy opens
++#: (kubernetes/network-policies/allow-egress.yaml, rule 3). These are global
++#: addresses, so `is_global` alone lets them through.
++_URL_REFUSED_NETWORKS = (
++    ipaddress.ip_network("199.36.153.4/30"),
++    ipaddress.ip_network("199.36.153.8/30"),
++)
++
++#: Names that are never a public page: GKE's metadata server is
++#: `metadata.google.internal`, and `.local`/`.localhost` never leave the host
++#: or the cluster (`cluster.local`).
++_URL_REFUSED_SUFFIXES = (".internal", ".local", ".localhost")
++
+ #: How much of a refused value a refusal repeats. A caller who sent three
+ #: hundred digits needs the bound, not the digits back.
+ _SHOWN_VALUE_CHARS = 40
+@@ -122,7 +164,8 @@
+     """An input a profile does not accept, and why.
+ 
+     `key` is the first key refused and `keys` every one; `expected` is the
+-    declared bound a value broke, or None when the key is not declared at all.
++    declared bound a value broke, or None when the key is not declared at all
++    or is required and was not sent.
+     The message names the key and the bound, and never repeats a value longer
+     than it has to.
+     """
+@@ -141,6 +184,70 @@
+         self.expected = expected
+ 
+ 
++def url_refusal(value: str) -> str:
++    """Why `value` is not a URL a browser task may open, or "" when it is.
++
++    One home for the rule, so swarm-api, the plugin's bridge and the browser
++    runner (`_check_url`, which today checks the scheme and that there is a
++    host) give one answer. Contract request 29, #218's second question.
++
++    THIS IS NOT THE SSRF CONTROL, AND CANNOT BE. It sees the URL a caller
++    typed, never the page's redirects, its subresources, its script's
++    requests, or what a name resolves to when the pod asks. The control is the
++    network: the worker's NetworkPolicy drops every private range but the
++    metadata server, and the metadata server answers only a request carrying
++    `Metadata-Flavor: Google`, which a navigation does not send. What this
++    buys is a 422 naming the reason, instead of a task that waits out
++    `timeout_ms` against an address the network silently drops (Dataplane V2
++    drops; the sender sees a timeout), and a URL with a password in it that
++    is never stored with the task, served by the API or shown in the UI.
++    """
++    if len(value) > _URL_MAX_CHARS:
++        return f"it is longer than {_URL_MAX_CHARS} characters"
++    if any(ch <= " " or ch == "\x7f" for ch in value):
++        return "it contains a space or a control character"
++    try:
++        parsed = urlsplit(value)
++        parsed.port  # noqa: B018 -- raises ValueError on a port out of range
++    except ValueError:
++        return "it is not a URL"
++    if parsed.scheme not in ("http", "https"):
++        return "only http and https are opened"
++    if parsed.username is not None or parsed.password is not None:
++        return "it carries credentials, which would be stored with the task and shown with it"
++    host = (parsed.hostname or "").rstrip(".")
++    if not host:
++        return "it has no host"
++    try:
++        address = ipaddress.ip_address(host)
++    except ValueError:
++        address = None
++    if address is None:
++        labels = host.split(".")
++        # A browser reads a host whose last label is a number (`2852039166`,
++        # `0xa9.254.169.254`) as an IPv4 address in another notation, which
++        # `ip_address` does not parse. No public suffix starts with a digit.
++        if not labels[-1][:1].isalpha():
++            return "its host ends in a number, which a browser reads as an address"
++        # One label is resolved through the pod's DNS search path, which is
++        # the cluster's own (`metadata`, `kubernetes`), never a public site.
++        if len(labels) < 2:
++            return "its host is a single name, which resolves inside the cluster"
++        if host.endswith(_URL_REFUSED_SUFFIXES):
++            return "its host is a cluster or node-local name"
++        return ""
++    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
++        address = address.ipv4_mapped
++    if not address.is_global or any(address in net for net in _URL_REFUSED_NETWORKS):
++        return "its host is not a public address"
++    return ""
++
++
++def _bound(value: float) -> str:
++    """`33554432`, not `3.35544e+07`: a caller copies a bound, and `:g` rounds it."""
++    return str(int(value)) if float(value).is_integer() else f"{value:g}"
++
++
+ @dataclass(frozen=True)
+ class RunnerInput:
+     """One key of a task's `input` that a runner reads, and what it must be.
+@@ -165,18 +272,56 @@
+     #: the platform would read it as instead -- the mock's exit codes 77, 78
+     #: and 143. Pairs, not a dict, so the declaration stays hashable.
+     refused: tuple[tuple[Any, str], ...] = ()
++    #: A `string` must be one of these, when any are named: a name from a
++    #: catalogue the runner owns, such as the generic runner's commands.
++    choices: tuple[str, ...] = ()
++    #: The caller must send this key. Read for a profile's keys and for an
++    #: object's fields; an element of a list is always present.
++    required: bool = False
++    #: What each element of a `list` must be.
++    items: RunnerInput | None = None
++    #: An `object`'s shapes: the value of its `type` key, to the fields that
++    #: shape takes besides `type`. Excluded from the hash, as
++    #: `RunnerProfile.inputs` is; frozen read-only below.
++    variants: Mapping[str, Mapping[str, RunnerInput]] | None = field(default=None, hash=False)
+ 
+     def __post_init__(self) -> None:
+         if self.kind not in INPUT_KINDS:
+             raise ValueError(f"input kind {self.kind!r} is not one of {INPUT_KINDS}")
+         numeric = self.kind in ("number", "integer")
+-        if not numeric and (self.minimum is not None or self.maximum is not None or self.refused):
+-            raise ValueError(f"a {self.kind} input has no bounds; only a number or an integer does")
+-        if numeric and (self.minimum is None or self.maximum is None):
++        bounded = numeric or self.kind == "list"
++        if not bounded and (self.minimum is not None or self.maximum is not None):
++            raise ValueError(
++                f"a {self.kind} input has no bounds; only a number, an integer or a list does"
++            )
++        if not numeric and self.refused:
++            raise ValueError(f"a {self.kind} input refuses no values; only a number does")
++        if bounded and (self.minimum is None or self.maximum is None):
+             raise ValueError(
+                 f"a {self.kind} input declares both a minimum and a maximum; without "
+                 "one, a JSON number of any size passes and fails at the store instead"
+             )
++        if self.kind == "list" and not (
++            float(self.minimum).is_integer() and float(self.maximum).is_integer() and self.minimum >= 0
++        ):
++            raise ValueError("a list's bounds are its length: whole numbers, from 0")
++        if self.choices and self.kind != "string":
++            raise ValueError(f"a {self.kind} input has no choices; only a string does")
++        if (self.kind == "list") != isinstance(self.items, RunnerInput):
++            raise ValueError("a list input names what its elements are, and nothing else does")
++        if (self.kind == "object") != bool(self.variants):
++            raise ValueError("an object input names its shapes, and nothing else does")
++        if self.variants:
++            frozen: dict[str, Mapping[str, RunnerInput]] = {}
++            for shape, fields in self.variants.items():
++                for name, declared in fields.items():
++                    if name == "type" or not isinstance(declared, RunnerInput):
++                        raise ValueError(
++                            f"shape {shape!r}: field {name!r} must be a RunnerInput, "
++                            "and `type` is the shape's name, not a field"
++                        )
++                frozen[shape] = MappingProxyType(dict(fields))
++            object.__setattr__(self, "variants", MappingProxyType(frozen))
+         for bound in (self.minimum, self.maximum):
+             if bound is not None and not math.isfinite(bound):
+                 raise ValueError("an input's bounds must be finite numbers")
+@@ -197,10 +342,16 @@
+     def describe(self) -> str:
+         """`integer 1..255 except 77, 78, 143`: the kind and the bound, as a caller reads it."""
+         # `__post_init__` gives a number both bounds and anything else neither.
++        if self.kind == "list" and self.items is not None:
++            return f"list of {_bound(self.minimum)}..{_bound(self.maximum)}, each {self.items.describe()}"
++        if self.variants:
++            return f"object, `type` one of {' | '.join(self.variants)}"
+         if self.minimum is not None and self.maximum is not None:
+-            text = f"{self.kind} {self.minimum:g}..{self.maximum:g}"
++            text = f"{self.kind} {_bound(self.minimum)}..{_bound(self.maximum)}"
+         else:
+             text = self.kind
++        if self.choices:
++            text += f", one of {' | '.join(self.choices)}"
+         if self.refused:
+             text += " except " + ", ".join(str(value) for value, _ in self.refused)
+         return text
+@@ -208,7 +359,7 @@
+     def check(self, key: str, value: Any) -> Any:
+         """`value`, normalised (an integral float becomes an int), or InputRefused."""
+         expected = self.describe()
+-        article = "an" if expected[0] in "aeiou" else "a"
++        article = "an" if expected[0] in "aeio" else "a"  # "a url"
+         wanted = f"input {key!r} must be {article} {expected}"
+ 
+         def refuse(detail: str = "") -> InputRefused:
+@@ -245,18 +396,55 @@
+             if not isinstance(value, bool):
+                 raise refuse(" (true or false)")
+             return value
++        if self.kind == "list":
++            if not isinstance(value, list):
++                raise refuse()
++            if not self.minimum <= len(value) <= self.maximum:
++                raise refuse(f" -- it has {len(value)} entries")
++            # Named by position, so a refusal says WHICH element: `actions[3].url`.
++            return [self.items.check(f"{key}[{index}]", item) for index, item in enumerate(value)]
++        if self.kind == "object":
++            if not isinstance(value, Mapping):
++                raise refuse()
++            shape = value.get("type")
++            if not isinstance(shape, str) or shape not in self.variants:
++                raise refuse()
++            fields = self.variants[shape]
++            unknown = sorted(set(value) - set(fields) - {"type"})
++            if unknown:
++                raise refuse(f" -- a {shape!r} takes {sorted(fields) or 'no field'}, not {unknown}")
++            missing = sorted(name for name, spec in fields.items() if spec.required and name not in value)
++            if missing:
++                raise refuse(f" -- a {shape!r} needs {missing}")
++            checked = {
++                name: fields[name].check(f"{key}.{name}", value[name])
++                for name in sorted(value)
++                if name != "type"
++            }
++            return {"type": shape, **checked}
+         if not isinstance(value, str):
+             raise refuse()
+         if self.kind == "filename" and (
+             not value or value in (".", "..") or "/" in value or "\\" in value or "\x00" in value
+         ):
+             raise refuse(" -- a bare file name, with no directory")
++        if self.kind == "argument" and (not _ARGUMENT.fullmatch(value) or ".." in value):
++            raise refuse(
++                " -- letters, digits, '.', '_', '-' and '/', starting with none of '-' or "
++                "'/', at most 256 characters, and no '..'"
++            )
++        if self.kind == "url":
++            reason = url_refusal(value)
++            if reason:
++                raise refuse(f" -- {reason}")
++        if self.choices and value not in self.choices:
++            raise refuse()
+         return value
+ 
+ 
+-def _frozen_inputs(declared: Mapping[str, RunnerInput] | None) -> Mapping[str, RunnerInput] | None:
++def _frozen_inputs(declared: Mapping[str, RunnerInput]) -> Mapping[str, RunnerInput]:
+     """A read-only copy, so no caller can widen a profile's declaration in place."""
+-    return None if declared is None else MappingProxyType(dict(declared))
++    return MappingProxyType(dict(declared))
+ 
+ 
+ @dataclass(frozen=True)
+@@ -330,29 +518,25 @@
+     #: That is what closes `input.model` on `claude-code`, which its runner
+     #: would pass as `--model`.
+     #:
+-    #: NONE MEANS NOT DECLARED YET, and then only the input's size is bounded,
+-    #: as it was for every profile before this field existed. It exists for
+-    #: the runners whose work IS their input -- `browser` cannot start without
+-    #: `url` or `actions`, `generic` without `command` -- where an empty
+-    #: declaration would refuse every task they run. What they declare is the
+-    #: owner's open question #218, recorded under contract request 25 in
+-    #: docs/contract-change-requests.md as an amendment awaiting approval:
+-    #: the request as accepted typed this field `Mapping`, with no None.
++    #: THERE IS NO "NOT DECLARED YET". Until contract request 29 (#218) this
++    #: field could be None, for `browser` and `generic`, and then only the
++    #: input's size was bounded -- an amendment to request 25 the owner
++    #: confirmed on 2026-09-26 as the state until #218 was decided. Both
++    #: declare now, so the type is the one request 25 was accepted with.
+     #:
+     #: Excluded from the hash: a mapping is not hashable, and a profile's
+     #: identity is its name.
+-    inputs: Mapping[str, RunnerInput] | None = field(default_factory=dict, hash=False)
++    inputs: Mapping[str, RunnerInput] = field(default_factory=dict, hash=False)
+ 
+     def __post_init__(self) -> None:
+-        if self.inputs is not None:
+-            for key, declared in self.inputs.items():
+-                if not isinstance(declared, RunnerInput):
+-                    raise ValueError(f"runner {self.name}: input {key!r} is not a RunnerInput")
+-                if key == "prompt":
+-                    raise ValueError(
+-                        f"runner {self.name}: `prompt` is every profile's input and is not declared"
+-                    )
+-            object.__setattr__(self, "inputs", _frozen_inputs(self.inputs))
++        for key, declared in self.inputs.items():
++            if not isinstance(declared, RunnerInput):
++                raise ValueError(f"runner {self.name}: input {key!r} is not a RunnerInput")
++            if key == "prompt":
++                raise ValueError(
++                    f"runner {self.name}: `prompt` is every profile's input and is not declared"
++                )
++        object.__setattr__(self, "inputs", _frozen_inputs(self.inputs))
+         if not self.available and not self.disabled_reason:
+             raise ValueError(
+                 f"runner {self.name}: a disabled profile must say why. A caller "
+@@ -450,6 +634,133 @@
+ }
+ 
+ 
++#: A wait the browser runner hands Playwright, in milliseconds. FROM 1, NOT 0:
++#: Playwright reads a timeout of 0 as "no timeout", so a 0 here would let one
++#: action wait out the whole 5400 s attempt. FIVE MINUTES at most: a selector
++#: that has not appeared in five minutes is not coming, and the attempt's own
++#: timeout is the ceiling above that.
++_BROWSER_WAIT_MS = {"minimum": 1, "maximum": 300_000}
++
++#: The browser runner's actions (`agent_worker/runners/browser.py`, `body`),
++#: one shape per `type`, each field as the runner reads it. `type` is matched
++#: exactly: the runner lower-cases it, so `"Goto"` runs today and is refused
++#: here. The restatement is held to the runner's source by a test, as the
++#: mock's keys are (tests/unit/mcp/test_runner_inputs.py).
++_BROWSER_ACTION = RunnerInput(
++    "object",
++    means="one step of the run, in the shape its `type` names",
++    variants={
++        "goto": {
++            "url": RunnerInput("url", required=True, means="the page to open"),
++            "wait_until": RunnerInput(
++                "string",
++                choices=("load", "domcontentloaded", "networkidle", "commit"),
++                means="when the load counts as done; default load",
++            ),
++        },
++        "click": {"selector": RunnerInput("string", required=True, means="the element to click")},
++        "fill": {
++            "selector": RunnerInput("string", required=True, means="the field to fill"),
++            "text": RunnerInput("string", means="what to type into it; default empty"),
++        },
++        "press": {
++            "selector": RunnerInput("string", required=True, means="the element to press a key in"),
++            "key": RunnerInput("string", means="the key; default Enter"),
++        },
++        "wait_for": {
++            "selector": RunnerInput("string", required=True, means="the element to wait for"),
++            "timeout_ms": RunnerInput(
++                "integer", **_BROWSER_WAIT_MS, means="how long to wait; default the task's timeout_ms"
++            ),
++        },
++        # 0..60: the runner clamps above 60 with `min(..., 60.0)`, so a larger
++        # value is refused rather than quietly shortened.
++        "wait": {"seconds": RunnerInput("number", minimum=0, maximum=60, means="how long to pause; default 1")},
++        "screenshot": {
++            "name": RunnerInput("filename", means="the artifact's file name; default by position"),
++            "full_page": RunnerInput("boolean", means="the whole page, not the viewport; default true"),
++        },
++        "extract": {
++            "selector": RunnerInput("string", means="the element whose text is kept; default body"),
++            "name": RunnerInput("filename", means="the artifact's file name; default by position"),
++        },
++    },
++)
++
++#: The browser runner's inputs. NEITHER `url` NOR `actions` IS REQUIRED ALONE:
++#: the runner needs one or the other, which `required` cannot say, so that
++#: refusal stays the runner's (contract request 29, *Owner's decisions*).
++_BROWSER_INPUTS: dict[str, RunnerInput] = {
++    "url": RunnerInput("url", means="opened first, before any action"),
++    # 200: the runner's MAX_ACTIONS.
++    "actions": RunnerInput(
++        "list", minimum=0, maximum=200, items=_BROWSER_ACTION, means="run in order, after `url`"
++    ),
++    "timeout_ms": RunnerInput(
++        "integer", **_BROWSER_WAIT_MS, means="how long any one action may take; default 30000"
++    ),
++    # Three minutes: Chromium starts in seconds, and a launch still waiting at
++    # three minutes is a pod short of /dev/shm, not a slow start.
++    "launch_timeout_ms": RunnerInput(
++        "integer", minimum=1, maximum=180_000, means="how long Chromium may take to start; default 60000"
++    ),
++    # Up to 4K. The viewport is rendered in the pod's memory, and a full-page
++    # screenshot of it is written to the workspace, which is memory too.
++    "viewport_width": RunnerInput("integer", minimum=320, maximum=3840, means="pixels; default 1280"),
++    "viewport_height": RunnerInput("integer", minimum=240, maximum=2160, means="pixels; default 900"),
++    "user_agent": RunnerInput("string", means="the User-Agent sent; default Chromium's"),
++    "extract_text": RunnerInput("boolean", means="keep the final page's text as page.txt; default true"),
++    "screenshot": RunnerInput("boolean", means="keep a final full-page screenshot; default true"),
++}
++
++#: The generic runner's inputs (`agent_worker/runners/generic.py`).
++#:
++#: `command` IS A NAME, NOT AN ARGV: `choices` is the runner's
++#: `GENERIC_COMMANDS`, whose argv are constants in the runner, so the key
++#: reads as invariant 10 relaxed and is not. Restated because the catalogue
++#: cannot import the worker, and held to it by a test.
++#:
++#: THE FOUR LIMITS MAY ONLY LOWER THE PLATFORM'S (`runners/limits.py`). Each
++#: ceiling here is the value the worker exports by default -- the profile's
++#: `timeout_seconds`, and `WorkerConfig`'s grace and output caps -- so a
++#: request above it is refused at the door instead of accepted and clamped.
++#: The runner still clamps to what the attempt's worker exports, which an
++#: operator may have set lower. From 1: the runner reads 0 or less as "not
++#: asked", so a 0 was accepted and meant nothing.
++_GENERIC_INPUTS: dict[str, RunnerInput] = {
++    "command": RunnerInput(
++        "string",
++        required=True,
++        choices=("make", "npm-build", "npm-ci", "npm-test", "pytest", "uv-sync"),
++        means="the platform catalogue entry to run; the platform owns its argv",
++    ),
++    # 32: `GenericCommand.max_arguments`. Read for `pytest` only.
++    "paths": RunnerInput(
++        "list",
++        minimum=0,
++        maximum=32,
++        items=RunnerInput("argument", means="an existing path inside the workspace"),
++        means="pytest only: what to run; default everything",
++    ),
++    "target": RunnerInput("argument", means="make only: the target; default all"),
++    "working_directory": RunnerInput(
++        "argument", means="a directory inside the workspace to run in; default the workspace"
++    ),
++    "timeout_seconds": RunnerInput(
++        "number", minimum=1, maximum=3600, means="lowers the command's wall clock"
++    ),
++    "grace_seconds": RunnerInput(
++        "number", minimum=1, maximum=20, means="lowers the wait between SIGTERM and SIGKILL"
++    ),
++    "max_stdout_bytes": RunnerInput(
++        "integer", minimum=1, maximum=32 * 1024 * 1024, means="lowers the stdout kept"
++    ),
++    "max_stderr_bytes": RunnerInput(
++        "integer", minimum=1, maximum=8 * 1024 * 1024, means="lowers the stderr kept"
++    ),
++}
++
++
+ RUNNER_PROFILES: dict[str, RunnerProfile] = {
+     "mock": RunnerProfile(
+         name="mock",
+@@ -470,10 +781,7 @@
+         backend=Backend.CLOUD_RUN_JOB,
+         runner_argv=("python", "-m", "agent_worker.runners.generic"),
+         provider=None,
+-        # NOT DECLARED YET. The runner cannot start without `input.command`,
+-        # the NAME of an entry in its own catalogue, so an empty declaration
+-        # would refuse every task it runs. See RunnerProfile.inputs.
+-        inputs=None,
++        inputs=_GENERIC_INPUTS,
+     ),
+     "claude-code": RunnerProfile(
+         name="claude-code",
+@@ -528,10 +836,7 @@
+         provider="anthropic",
+         secrets=("ANTHROPIC_API_KEY",),
+         timeout_seconds=5400,
+-        # NOT DECLARED YET. The runner cannot start without `input.url` or
+-        # `input.actions`, so an empty declaration would refuse every task it
+-        # runs, the smoke suite's GKE row included. See RunnerProfile.inputs.
+-        inputs=None,
++        inputs=_BROWSER_INPUTS,
+     ),
+ }
+ 
+@@ -556,23 +861,10 @@
+ 
+     `raw` holds the keys BESIDES the prompt. Returns them normalised (an
+     integral float for an integer input becomes an int), or raises
+-    InputRefused: for every key the profile does not declare, naming them all,
+-    or for the first declared key whose value is out of its bounds, naming the
+-    bound.
+-
+-    NOT DECLARED YET IS DECIDED HERE, AND ONLY HERE. A profile whose inputs are
+-    not declared yet (`inputs is None`: `browser` and `generic`, open with the
+-    owner on #218) has no declaration to check a key against, so `raw` comes
+-    back as it was sent and only its size bounds it, which the caller that
+-    measures the size enforces (`validate_input_size` in swarm-api). The review
+-    of #213 found this decided twice and differently: this function refused
+-    every key while the API returned before asking and accepted every key, so
+-    the one rule and the API gave opposite answers for the same profile. The
+-    plugin's bridge sending such a profile nothing is its own send policy, not
+-    this rule (#218's third question).
++    InputRefused: for every key the profile does not declare, naming them all;
++    for every required key `raw` does not send, naming them all; or for the
++    first declared key whose value is out of its bounds, naming the bound.
+     """
+-    if profile.inputs is None:
+-        return dict(raw)
+     declared = profile.inputs
+     unknown = sorted(set(raw) - set(declared))
+     if unknown:
+@@ -590,4 +882,11 @@
+                 f"so {unknown} cannot be sent"
+             )
+         raise InputRefused(message, key=unknown[0], keys=tuple(unknown))
++    missing = sorted(key for key, spec in declared.items() if spec.required and key not in raw)
++    if missing:
++        raise InputRefused(
++            f"runner profile {profile.name!r} needs {missing} in its input",
++            key=missing[0],
++            keys=tuple(missing),
++        )
+     return {key: declared[key].check(key, raw[key]) for key in sorted(raw)}
+```
+
+### What it would break if accepted
+
+* **Nothing stored.** Tasks keep their `input`. The check runs at submission
+  only.
+* **Callers that send what the declaration refuses** would get 422
+  `invalid_input` for input the API accepts today. That is the point, and it
+  is a behaviour change to announce. Every case below fails or misbehaves at
+  the runner today. The only exceptions are an upper-case `type`, a number
+  sent as a string, and a limit above the ceiling: today those are coerced or
+  clamped, and they would now be refused.
+  * `generic` with no `command`, or a `command` outside the catalogue.
+  * An action with an upper-case `type`, a missing `selector` or `url`, or a
+    key its shape does not take.
+  * `timeout_ms`, `launch_timeout_ms` or a viewport sent as a string or out
+    of bounds, and `seconds` above 60.
+  * A `goto` to a private, metadata, cluster or credentialled URL.
+  * A `generic` limit of 0 or less, or above its ceiling.
+* **In-repository callers were checked on 2026-09-29.**
+  * `scripts/lib/testlib.sh` `profile_input` sends `browser` a `screenshot`
+    action with `name` and `full_page` and `extract_text: false`. This
+    passes the proposed catalogue.
+  * `scripts/prove-gke-dispatch.sh --url https://example.com` passes.
+  * `docs/workflows.md`'s example step `{"command": "pytest"}` passes.
+  * `profile_input`'s default branch sends `generic` only a prompt. It would
+    now be refused at 422 instead of failing at the runner. No script
+    submits `generic` through that branch today.
+* **Downstream restatements that must follow in the applying PR:**
+  * The bridge: `parse_input_flags`'s string kinds (question 3). Its
+    `not_yet` wording for a `None` profile is deleted.
+  * swarm-api: `validation.validate_runner_input`'s and `runnerinputs.py`'s
+    docstrings, which describe `None`. There is no code branch to remove;
+    the rule decides.
+  * The worker: `browser._check_url` calls `url_refusal`. The runner may keep
+    its own checks, because a task written before this change still reaches
+    it.
+  * The Submit form's `SUGGESTED` for `browser` and `generic`
+    (`apps/swarm-ui/src/Submit.tsx`). Today it is a runner census. Section 13
+    of `scripts/lib/check-contract-parity.sh` would then hold it to the
+    declaration, as it does for the declared profiles.
+  * The generated tables. `docs/workflows.md` and `plugin/README.md` gain
+    `runner-inputs:browser` and `runner-inputs:generic` blocks, and
+    `test_runner_input_prose.py` needs a rendering for `list` and `object`.
+  * The tests that key on `inputs is None`.
+    `test_runner_inputs.py::_UNDECLARED` skips itself ("#218 is settled").
+    `test_runner_inputs_by_declaration.py` and
+    `test_submit_offers_only_what_runners_read.py` assert the `None`
+    behaviour and are rewritten for the declarations.
+  * `apps/swarm-ui/src/types.ts`, if it ever mirrors `inputs`. Today it does
+    not.
+* **Restatements this creates, each needing a parity test** of the kind
+  `test_runner_inputs.py` already runs for the mock:
+  * `choices` for `command`, against `GENERIC_COMMANDS`;
+  * the `argument` pattern, against `_ARGUMENT_SAFE`;
+  * 200, against `MAX_ACTIONS`, and 32, against `max_arguments`;
+  * the eight action shapes and their fields, against the `if kind ==`
+    chain in `browser.py`;
+  * 60, against the `wait` clamp;
+  * the four limit ceilings, against `WorkerConfig`'s defaults and the
+    profile's `timeout_seconds`.
+
+  The catalogue cannot import the worker, so each of these is a copy, the
+  same kind of copy as the mock's exit codes.
+
+### If it is declined
+
+`browser` and `generic` stay `None`. The API goes on bounding them by size,
+and every failure listed under *What is true today* goes on arriving after
+admission, having spent a lease and a pod start. The plugin still cannot
+dispatch a working browser task (#220). The only way around that without a
+declaration is a bridge exception for `None` profiles, and question 3
+recommends against it. A private-address `goto` still times out instead of
+being refused, and a URL with a password is still stored with its task.
+
+### Invariants
+
+* **Invariant 10.** Every declared key is data. `command` is a name from a
+  closed list whose argv the platform owns. `paths`, `target` and
+  `working_directory` are appended after a fixed argv and can never become a
+  flag. The four limits can only lower the platform's own. Nothing declared
+  is an image, a command line, a resource spec or a backend parameter, and
+  `argv`, `script`, `env`, `command_line` and `shell` become refusals at the
+  door.
+* **Invariant 9.** `url_refusal` refuses the cluster's own names and every
+  private address. Per-tenant isolation stays the network's job.
+* **Invariant 1.** A refusal at submission creates no task. So a task that
+  is bound to fail no longer takes a lease, which is less infrastructure
+  demand, never more.
+* **Invariant 7.** Unchanged. Nothing here sizes a pod.
+
+### Owner's decisions
+
+1. **Accept the three new kinds** (`list` with `items`, `object` with
+   `variants`, and `argument`), the `url` kind, and the `choices` and
+   `required` fields. Or name a smaller shape.
+2. **The either/or on `browser`.** A task with neither `url` nor `actions`
+   passes the declaration and fails at the runner. Options:
+   * leave it with the runner (this request);
+   * add a profile-level `requires_one_of` to the catalogue;
+   * make `actions` required with a minimum of 1 and drop `url`, which
+     breaks every current caller of `url`.
+3. **The `url` rule.** Accept the scheme restriction and the public-host rule
+   as written, with no allow-list. Decide whether https-only is wanted as a
+   separate transit rule, and whether the runner's request-level
+   `context.route` guard should be filed as its own issue.
+4. **The bounds.**
+   * `timeout_ms` 1..300000;
+   * `launch_timeout_ms` 1..180000;
+   * viewport up to 3840×2160;
+   * `wait.seconds` 0..60;
+   * the `generic` limits at the worker's default ceilings: refused above
+     them at the door, still clamped to the attempt's actual ceiling by the
+     runner.
+5. **Exact matching of an action's `type`**, which refuses the `"Goto"` the
+   runner accepts today.
+6. **Keep the key name `command`**, or rename it.
+7. **Retire the `None` amendment.** This returns `RunnerProfile.inputs` to
+   `Mapping` with no `None`, the type request 25 was accepted with. The
+   alternative is to keep `| None` for a future profile, which leaves the
+   branch in `check_inputs`.
+8. **Question 3.** Keep the bridge's send-only-what-is-declared policy
+   (recommended). If #218 words the third question differently from the
+   comments this entry quotes, answer the issue's wording instead.
