@@ -3214,7 +3214,7 @@ def _number(x: float, path: str) -> str:
        * the reconciler (`repair_task_state`): LOST_WORKER, CANNOT_START,
          CANCEL_REQUESTED;
        * the scheduler: DISPATCH_FAILED, FAILED_PARENT, CANCELLED_PARENT,
-@@ -209,6 +210,16 @@
+@@ -209,6 +210,17 @@
      its own class, not a runner error -- 10 of dev's 13 "runner errors" on
      2026-09-25 were exactly that. CANCELLED_PARENT is the request's own, and
      what decision item 2 (split "after a cancel" from "after a failure") needs.
@@ -3232,7 +3232,7 @@ def _number(x: float, path: str) -> str:
      """
  
      TIMEOUT = "timeout"
-@@ -222,6 +231,7 @@
+@@ -222,6 +234,7 @@
      FAILED_PARENT = "failed_parent"
      CANCELLED_PARENT = "cancelled_parent"
      WORKFLOW_SWEEP = "workflow_sweep"
@@ -3240,7 +3240,7 @@ def _number(x: float, path: str) -> str:
  
  
  @dataclass
-@@ -263,6 +273,21 @@
+@@ -263,6 +276,21 @@
      #: every task that has not ended, on a success, and on anything written
      #: before 2026-09-25 -- an old document decodes exactly as it did.
      end_cause: EndCause | None = None
@@ -3264,11 +3264,16 @@ def _number(x: float, path: str) -> str:
          """This task has used its last attempt. See `retries_exhausted`."""
 ```
 
-**Not re-verified.** The `SPEC_SIGNATURE_INVALID` docstring above was reworded
-after the 2026-09-29 joint review, to separate own-spec from upstream-spec
-failures (**Verification in the worker**, below). The PR's "Checked" note
-that this diff patches cleanly onto `bc90da1` was run before this wording
-existed; it has not been re-run against this version.
+**Re-verified against current `main`, 2026-09-29.** The `SPEC_SIGNATURE_INVALID`
+docstring above was reworded after the joint review, to separate own-spec from
+upstream-spec failures (**Verification in the worker**, below), which changed
+this hunk's line counts twice over. The original PR's "Checked" note that this
+diff patched cleanly onto `bc90da1` predated both rewordings and this
+hunk-count fix. Re-run here: `git apply --check` against `apps/common/swarm_common/models.py`
+at `origin/main` (`e7c18ac`, 2026-09-29) exits 0, and the patched file parses
+(`ast.parse`). The first re-run, before this fix, failed with `error: corrupt
+patch` — the second hunk's header claimed 16 new lines where the body had 17
+(a one-line miscount left over from the rewording), which is corrected above.
 
 `to_firestore` needs no change: `asdict` writes the three fields as they are.
 `WorkflowStep` and `Workflow` are unchanged (see **What signing does not
@@ -3502,17 +3507,32 @@ admitting it. The presence/legacy check has to run first.
    worker process instead of failing the task cleanly.
 5. The execution's own environment agrees with the signed spec:
    `RUNNER_PROFILE`, `TENANT_ID`, `TASK_TIMEOUT_SECONDS`, `REPOSITORY_URL` /
-   `REPOSITORY_REF` when set, and the Job's own `CLOUD_RUN_JOB` (Cloud Run
-   sets this itself; the GKE dispatcher's manifest sets an equivalent
-   `RUNNER_JOB_NAME`) against the Job name the scheduler derived from
-   `tenant_id` and `runner_profile` (one Job per tenant per profile). The
-   scheduler derives `RUNNER_PROFILE`, `TENANT_ID` and `TASK_TIMEOUT_SECONDS`
-   from the document, so a rewritten `runner_profile` that got a step
-   dispatched onto another profile's Job is refused here even though step 4
-   alone would catch it too; comparing the Job's own identity, not only what
-   the scheduler copied into the execution's environment, also catches a
-   scheduler bug that dispatched onto the wrong Job while copying the right
-   environment across.
+   `REPOSITORY_REF` when set, and the Job's own identity against the Job name
+   the scheduler derived from `tenant_id` and `runner_profile` (one Job per
+   tenant per profile). The scheduler derives `RUNNER_PROFILE`, `TENANT_ID`
+   and `TASK_TIMEOUT_SECONDS` from the document, so a rewritten
+   `runner_profile` that got a step dispatched onto another profile's Job is
+   refused here even though step 4 alone would catch it too.
+
+   **The two backends' Job-identity checks are not equally strong, and this
+   entry says so rather than implying otherwise.** On **Cloud Run**,
+   `CLOUD_RUN_JOB` is set by the platform itself -- the execution environment,
+   not anything the scheduler wrote -- so comparing it catches a scheduler bug
+   that dispatched onto the wrong Job while still copying the right
+   environment variables across; that check is independent of the scheduler's
+   own arithmetic. On **GKE**, there is no such platform-injected value: the
+   dispatcher's manifest template sets `RUNNER_JOB_NAME` itself, from the same
+   `tenant_id`/`runner_profile` computation that also produces the Job's
+   actual `metadata.name` and the other env vars in the same render. **This
+   check on GKE only confirms the scheduler agrees with itself within one
+   render** -- it catches a copy-paste mismatch inside `GkeJobDispatcher`, not
+   an independent confirmation of which Job the pod is actually running in the
+   way Cloud Run's does. Closing that gap on GKE would need the worker to read
+   its own Job's name from the Kubernetes Downward API (`metadata.name` into
+   an env var, which needs no RBAC) rather than from a value the same
+   dispatcher wrote twice; not proposed here, since GKE runs only the
+   `browser` profile today and a wrong-Job dispatch there still fails step 4
+   (`RUNNER_PROFILE` disagreement) or the tenant-namespace boundary itself.
 
 **After it passes, the worker reads only the verified dict.** It already does:
 the rest of the attempt reads `self._task`, and the later `fetch_task` calls
@@ -3542,36 +3562,51 @@ refusal.
 
 **Worker-action steps verify their upstream steps too** (the owner's
 decision). Before it reads its credential, contract request 33's
-`post-verdict` step fetches the review task its signed `input_from` names, and
-`merge` verifies the **union** of every task its own signed spec names: the
-`dispatch.merges` block (author, review, **post-verdict**, fix, proof) and
-`input_from`. `post-verdict` is in that union because `merge` trusts what
-`post-verdict` posted to GitHub every bit as much as it trusts `review`'s
-verdict file -- consistent with contract request 33. Each upstream task must
-pass checks 2 to 4 above **with no legacy exception**, and in addition carry
-the acting step's own `tenant_id` and `workflow_id` and the role contract
-request 33's `single-pr` table gives it. **That table gains a row for
-`post-verdict` here**, since this entry is the first place anything needs its
-role: `reader`, the same as `review` and `proof` -- it only reads an upstream
-verdict and posts it, and holds no `pr_role` of its own to amend or merge
-with.
+`post-verdict` step fetches `review.json` from the path it computes itself,
+using the review task id **named in its own signed `dispatch` block** (the
+same way `merge`'s `dispatch.merges` block names task ids, not through
+`input_from`). **Corrected from the first draft of this entry, which said
+`post-verdict` uses `input_from`:** contract request 33's joint review with
+this entry, 2026-09-29, removed `post-verdict`'s `input_from` on purpose --
+the ordinary staging path resolves an artifact's location from the upstream
+task's own `result_summary`, a Firestore field the tenant identity writes,
+which is exactly the tenant-writable pointer this whole design exists to stop
+trusting. `merge` verifies the **union** of every task its own signed spec
+names: the `dispatch.merges` block (author, review, **post-verdict**, fix,
+proof) and `input_from`. `post-verdict` is in that union because `merge`
+trusts what `post-verdict` posted to GitHub every bit as much as it trusts
+`review`'s verdict file. Each upstream task must pass checks 2 to 4 above
+**with no legacy exception**, and in addition carry the acting step's own
+`tenant_id` and `workflow_id` and the role contract request 33's `single-pr`
+table gives it: `reader` for `review` and `proof`, `amender` for `fix`,
+`author` for the implement step, and **`none`, the same as `merge` itself,
+for `post-verdict`** -- it clones nothing, holds no `pr_role`, and only reads
+an upstream verdict and posts it. (This entry's earlier draft gave
+`post-verdict` role `reader`; contract request 33's own table has always said
+`none`, and this entry now agrees with it rather than the other way round.)
 
-**The end causes are deliberately not unified with #342's own
-(the owner's decision, 2026-09-29): a worker-action step's own spec failing
-its own check is still `SPEC_SIGNATURE_INVALID`,** exactly as for an
-agent step. **An upstream task failing this check is contract request 33's
-own concern, not this entry's:** `post-verdict` and `merge` end with
-whichever `*_REFUSED` end cause that entry gives worker actions (it names the
-enum member; this entry does not), carrying `reason: "upstream:<task
-id>:<why>"` in its `result_summary`, the same reason shape `SPEC_SIGNATURE_INVALID`
-uses for its own failures. **Decision 9's alert is keyed on both:** a
-log-based metric over `end_cause == SPEC_SIGNATURE_INVALID` alone would miss
-every worker-action refusal caused by a tampered upstream spec, since those
-end `*_REFUSED`; the alert matches `end_cause == SPEC_SIGNATURE_INVALID` **or**
-(`end_cause` in contract request 33's `*_REFUSED` set **and**
-`result_summary.spec_check.reason` starts with `upstream:`), because both are
-the same threat -- a spec that does not verify -- surfacing through two
-different steps' vocabularies. Verifying an upstream spec proves that the step
+**The end causes are deliberately not unified with #342's own (the owner's
+decision, 2026-09-29): a worker-action step's own spec failing its own check
+is still `SPEC_SIGNATURE_INVALID`,** exactly as for an agent step. **An
+upstream task failing this check is contract request 33's own concern, not
+this entry's, and keeps that entry's own end causes:** `merge` ends
+`EndCause.MERGE_REFUSED`, and `post-verdict` ends `EndCause.VERDICT_REFUSED`
+(contract request 33 names and owns both; this entry only requires that an
+upstream-spec failure use them, never `SPEC_SIGNATURE_INVALID`). **The owner's
+decision, 2026-09-29: both report through the same field this entry uses for
+its own refusals,** `result_summary.spec_check.reason`, with the value
+`"upstream:<task id>:<why>"` -- the same shape `SPEC_SIGNATURE_INVALID` uses
+for its own failures, so a reader (or an alert) does not need two different
+field names to find out why a spec check failed. **Decision 9's alert is keyed
+on both:** a log-based metric over `end_cause == SPEC_SIGNATURE_INVALID` alone
+would miss every worker-action refusal caused by a tampered upstream spec,
+since those end `MERGE_REFUSED` or `VERDICT_REFUSED`; the alert matches
+`end_cause == SPEC_SIGNATURE_INVALID` **or** (`end_cause` in `{MERGE_REFUSED,
+VERDICT_REFUSED}` **and** `result_summary.spec_check.reason` starts with
+`"upstream:"`), because both are the same threat -- a spec that does not
+verify -- surfacing through two different steps' vocabularies, and `MERGE_REFUSED`
+/ `VERDICT_REFUSED` have other, unrelated causes (contract request 33's own
+table) that this alert must not also fire on. Verifying an upstream spec proves that the step
 the action trusts was submitted as that step of this workflow and still
 carries that spec. It does not prove what that step produced (next section).
 
@@ -3651,20 +3686,47 @@ exposure is otherwise unchanged
   all.** `latest_checkpoint` is in the "not covered" list (section 1) because
   the reconciler and the worker itself write it legitimately mid-attempt. But
   that also means a signed, unmodified, correctly-verifying spec can still
-  start a second attempt against a workspace restored from a **planted**
+  start an attempt against a workspace restored from a **planted**
   checkpoint: the signature is over the spec, never over what
   `_restore_checkpoint` pulls from GCS before the runner starts. Joint review
   finding, 2026-09-29 (MAJOR): a planted checkpoint gets past this entry's
   signature entirely, because there was never anything here for it to get
-  past. **This is fixed separately, as S0 #347, ahead of this entry:** no
-  restore on attempt 1; on a retry, restore only the checkpoint the platform
-  itself recorded for that task (never one an attacker's write pointed at);
-  and never restore on an identity-bearing profile. **#347 is a precondition
-  of calling #342 closed.** Contract request 34 alone -- however completely
-  it is applied -- does not close #342's reproduction, because the
-  reproduction's path through a rewritten prompt is only one way to control
-  what an attempt runs; a planted checkpoint is another, and this entry does
-  not touch it.
+  past.
+
+  **Fixed separately, ahead of this entry: S0 #347, closed by PR #348.**
+  #348 makes `_restore_checkpoint` accept only the checkpoint this task's own
+  earlier attempt recorded on its own attempt document (never
+  `find_latest()`'s scan of the task's GCS prefix), and never restores
+  anything on a first attempt. **State it as #348's own body states it, not
+  more strongly:** this closes the reproduction in #347 (an implement agent
+  planting for a parked review step's first attempt) and, on a retry, every
+  path limited to the GCS bucket -- a checkpoint added beside the recorded one,
+  or the recorded one's archive rewritten in place. **It does not stop an
+  agent that can also write Firestore.** Firestore has no document-level IAM
+  (`multi-tenancy.md`), so on a retry such an agent can still raise the
+  victim task's `attempt_count`, repoint `latest_checkpoint`, and write a
+  forged `attempts/<id>` document naming its own planted checkpoint and
+  digest -- every check #348 added then passes, because all of it reads
+  Firestore fields and documents the tenant identity can write. #348's own
+  words: "the complete fix needs a record the tenant cannot write." Signed
+  step specs do not supply that record: `latest_checkpoint` and `attempt_count`
+  are both explicitly in contract request 34's own "Not covered" list
+  (section 1, above), by design -- the scheduler and the worker legitimately
+  rewrite both after submission, so signing either would break on the first
+  honest write -- and the `attempts/<id>` document is a different Firestore
+  collection entirely, never a candidate for this entry's per-task signature
+  in the first place. Extending coverage to close this was not the owner's
+  decision (decision 7 covers only re-checking a signed *parent's* `state`, a
+  different field, for a different attack).
+
+  **The owner's decision, 2026-09-29: this residual is ACCEPTED, not a
+  precondition of anything closing.** Firestore-capable planting on a retry
+  remains open until workers leave direct Firestore access (the alternative
+  **If it is declined** already names, and the same one #347's issue and
+  #348's PR both point at), a materially larger change than either #347 or
+  this entry. Contract request 34 closes the rewritten-prompt path #342
+  reproduced; it was never going to also close a checkpoint-planting path
+  that reads and writes fields it deliberately does not sign.
 * **Every field that is not covered.** A tenant agent can still write a
   task's `state`, `result_summary`, `cancel_requested`, `latest_checkpoint`
   and the rest. In particular:
@@ -3764,9 +3826,16 @@ public key. Each goes to CI red first, in the shape CLAUDE.md gives.
   `startup_refunds`, `priority`, a caller metadata key): the task runs. A
   signature copied from another task, a version outside `SPEC_SIGNING_KEY`, a
   version not in `SPEC_VERIFY_KEYS`, a `RUNNER_PROFILE` override that
-  disagrees, and a document whose `CLOUD_RUN_JOB` (or the GKE dispatcher's
-  `RUNNER_JOB_NAME`) names a Job other than the one the scheduler derived from
-  `tenant_id` and `runner_profile`, are each refused. A covered field holding
+  disagrees, and (Cloud Run only, where the platform sets `CLOUD_RUN_JOB`
+  independently of the scheduler) an execution whose `CLOUD_RUN_JOB` names a
+  Job other than the one the scheduler derived from `tenant_id` and
+  `runner_profile`, are each refused. A separate GKE case proves the weaker
+  claim honestly: a `RUNNER_JOB_NAME` that disagrees with the dispatcher's own
+  `tenant_id`/`runner_profile` computation in the same render is refused, but
+  a test also documents that this check cannot catch the dispatcher deriving
+  the wrong Job **consistently** (setting `RUNNER_JOB_NAME` and the Job's real
+  `metadata.name` to the same wrong value), since GKE has no platform-injected
+  value to check against. A covered field holding
   a value `canonical_step_spec` rejects (an integer past 2^53 − 1, a
   non-finite float, a lone surrogate -- written directly to Firestore, not
   through swarm-api's submission check) is refused `not_canonical`, and the
@@ -3784,13 +3853,15 @@ public key. Each goes to CI red first, in the shape CLAUDE.md gives.
   when it lands: `post-verdict` and `merge` refuse an upstream task that fails
   verification, is unsigned (in `legacy` mode too), belongs to another
   workflow or carries the wrong role -- **`post-verdict` included** in
-  `merge`'s upstream set, with role `reader`; the merge and review credentials
-  are never read in any of those cases; and the end cause on such a refusal is
-  contract request 33's own `*_REFUSED`, with `result_summary.spec_check.reason
-  == "upstream:<task id>:<why>"`, **never** `SPEC_SIGNATURE_INVALID` (that
-  cause is reserved for the acting step's own spec, and a test in this
-  entry's own suite asserts the two causes are never confused for the acting
-  step's own failures).
+  `merge`'s upstream set, with role `none` (matching contract request 33's own
+  `single-pr` table); the merge and review credentials are never read in any
+  of those cases; and the end cause on such a refusal is `EndCause.MERGE_REFUSED`
+  (`merge`) or `EndCause.VERDICT_REFUSED` (`post-verdict`) -- contract request
+  33's own causes, never `SPEC_SIGNATURE_INVALID` -- with
+  `result_summary.spec_check.reason == "upstream:<task id>:<why>"`. That cause
+  is reserved for the acting step's own spec, and a test in this entry's own
+  suite asserts the two causes are never confused for the acting step's own
+  failures.
 * **Writers.** A test that the scheduler's and the reconciler's task updates
   (`return_to_ready_after_failed_dispatch`, `cancel`, `repair_task_state` and
   the rest) write no covered field; that **swarm-api's own writes to an
@@ -3819,11 +3890,35 @@ public key. Each goes to CI red first, in the shape CLAUDE.md gives.
   tenant's own namespace, and is applied by Terraform's identity, not the
   scheduler's per-task render; `worker-job-browser.yaml`'s manifest and the
   dispatcher's rendered Job agree that neither sets `SPEC_VERIFY_KEYS` or
-  `SPEC_SIGNING_KEY` in `env:` and both mount the ConfigMap read-only; and no
-  `RoleBinding` in the tenant namespace (`kubernetes/rbac/*.yaml`) grants
-  `update`, `patch` or `delete` on `configmaps` to the `swarm-worker` Role or
-  any subject bound to it -- the same assertion style
-  `test_kubernetes_manifests.py` already uses to hold the empty Role empty.
+  `SPEC_SIGNING_KEY` in `env:` and both mount the ConfigMap read-only.
+  **The write-grant check is wider than one `RoleBinding` lookup, because a
+  write path could come in by any of several doors:**
+  * no `RoleBinding` in the tenant namespace (`kubernetes/rbac/*.yaml`) grants
+    `update`, `patch` or `delete` on `configmaps` to the `swarm-worker` Role,
+    to any subject bound to it, or **to the tenant's GSA named either way a
+    Kubernetes subject can name it** -- by email
+    (`swarm-agent-worker-<tenant>@<project>.iam.gserviceaccount.com`) and by
+    its numeric `uniqueId` -- since an email-only check here would repeat the
+    defect a prior lane already measured elsewhere in this platform: an
+    email-only RBAC subject can apply cleanly and bind nothing, which reads as
+    a passing test while authorising nobody, but the reverse -- a binding
+    keyed on `uniqueId` alone -- would be invisible to a check that only
+    greps for the email;
+  * no `ClusterRoleBinding` grants it either, cluster-wide, to any subject --
+    matching `kubernetes/rbac/worker-rbac.yaml`'s existing invariant that no
+    `ClusterRole` or `ClusterRoleBinding` appears anywhere in `kubernetes/` at
+    all, which this ConfigMap must not become the first exception to;
+  * and, in `tests/terraform`, no project-level IAM binding grants the
+    tenant's GSA a `container.*` role or permission (`roles/container.admin`,
+    `roles/container.developer`, or a custom role naming
+    `container.configMaps.update` or `container.secrets.update`) that would
+    let it write the object through the GKE API directly, bypassing in-cluster
+    RBAC entirely -- the tenant's GSA holds no `container.*` role today
+    (Terraform's `modules/iam`), and this test pins that absence rather than
+    assuming it.
+
+  This is the same assertion style `test_kubernetes_manifests.py` already uses
+  to hold the empty worker Role empty.
 * **Live, in dev, once, after (3) of the rollout.** Submit a two-step workflow,
   rewrite the parked step's `input.prompt` with the tenant worker account's
   own credentials, and see the step end `spec_signature_invalid` with no
@@ -3924,11 +4019,12 @@ cost.
    metric and an alert in `terraform/modules/monitoring`, because every
    occurrence is an attack or a bug. **Keyed on both end causes** (**Verification
    in the worker**, above): `end_cause == SPEC_SIGNATURE_INVALID` for an
-   acting step's own spec, or (`end_cause` in contract request 33's
-   `*_REFUSED` set and `result_summary.spec_check.reason` starts with
-   `"upstream:"`) for an upstream one -- the owner did not unify the end
-   causes themselves, so the metric is what ties the two vocabularies to one
-   alert.
+   acting step's own spec, or (`end_cause` in `{MERGE_REFUSED, VERDICT_REFUSED}`
+   and `result_summary.spec_check.reason` starts with `"upstream:"`) for an
+   upstream one -- the owner did not unify the end causes themselves, so the
+   metric is what ties the two vocabularies to one alert, and the reason
+   prefix is what keeps it from also firing on `MERGE_REFUSED` /
+   `VERDICT_REFUSED`'s many other, unrelated causes.
 10. **`SOFTWARE` or `HSM` protection.** Recommended: `SOFTWARE`. The private
     key never leaves Cloud KMS either way, and the threat here is who may call
     `AsymmetricSign`, which IAM decides, not extraction of the key.
