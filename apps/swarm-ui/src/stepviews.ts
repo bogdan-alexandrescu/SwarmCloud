@@ -28,7 +28,7 @@
 //     that is waiting AFTER an earlier attempt ran still carries a start time.
 //     It is drawn as waiting, never as running.
 
-import { NEVER_STARTED_WORD, levelsOf, shapeOf, type ResultUsage } from './dag'
+import { NEVER_STARTED_WORD, levelsOf, type ResultUsage } from './dag'
 import {
   absentCell,
   costCell,
@@ -42,13 +42,8 @@ import {
 } from './measure'
 import {
   TERMINAL_STATES,
-  stepState,
-  whyAgent,
-  whyNeedsAction,
-  whyNotRunning,
   type AttemptRow,
   type StepState,
-  type Task,
   type TaskState,
   type Workflow,
   type WorkflowStep,
@@ -81,19 +76,14 @@ export const VIEW_LABEL: Readonly<Record<WorkflowView, string>> = {
 /**
  * One span on a step's timeline row.
  *
- *   parents  submission to the moment its LAST parent finished (#107): time
- *            the step could not have started whatever the platform did, so it
- *            is drawn lighter than a queue. Open while a parent is still going.
- *   waited   the rest of the wait, to the LATEST start: time spent queued,
- *            parked, being dispatched and cold-starting -- and, on a retried
- *            step, every earlier attempt, because `started_at` is the latest
- *            start only. From submission when the step has no parents, or when
- *            a parent's finish was not read and the split cannot be placed.
+ *   waited   submission to the LATEST start. Time spent queued, parked, being
+ *            dispatched and cold-starting -- and, on a retried step, every
+ *            earlier attempt, because `started_at` is the latest start only.
  *   waiting  the same, still going: a step that is not running now.
  *   ran      the latest start to the recorded finish.
  *   running  the latest start to now, and it has not ended.
  */
-export type SpanKind = 'parents' | 'waited' | 'waiting' | 'ran' | 'running'
+export type SpanKind = 'waited' | 'waiting' | 'ran' | 'running'
 
 export interface Span {
   readonly kind: SpanKind
@@ -123,19 +113,9 @@ export interface StepTimes {
   readonly mark: TimesMark | null
   /** `attempt_count` when it is more than one: the waited span covers the earlier ones too. */
   readonly attempts: number | null
-  /**
-   * The QUEUE: from the moment the last parent finished (from submission for a
-   * step with no parents, or whose parents' finish was not read) to the latest
-   * start, or to now while still waiting. It is what the table's `waited`
-   * column prints and sorts on (#107), because the queue is the part of a wait
-   * that belongs to this step. Null when not measurable, and while a parent is
-   * still going -- a step that has not queued yet has no queue to rank.
-   */
+  /** Submission to latest start, or to now while still waiting. Null when not measurable. */
   readonly waitedMs: number | null
   readonly waitedOpen: boolean
-  /** Submission to the last parent's finish (#107), or to now while a parent is
-   *  still going. Null for a step with no parents, or none read. */
-  readonly parentsMs: number | null
   /** Latest start to finish, or to now while running. Null when the step is not running and has no recorded run. */
   readonly ranMs: number | null
   /** The whole row as one sentence -- the track's accessible name. */
@@ -152,119 +132,14 @@ function mark(kind: TimesMarkKind, text: string, note: string): TimesMark {
   return { kind, text, note }
 }
 
-/**
- * WHEN A STEP'S PARENTS WERE DONE (#107), which is where its wait splits.
- *
- *   none     it has no parents: all of its wait is queue.
- *   at       every parent has finished, the last of them at `at` --
- *            max(parent.completed_at), since the step could start no earlier.
- *   pending  a parent has not finished yet; `stepIds` names those.
- *   unknown  a parent's finish was not read (its task was not in the read, or
- *            it ended without writing when), so there is nowhere to split.
- *
- * A parent that FAILED counts as finished at its `completed_at`: a cascade
- * cancels the child at that moment, so the wait ends there too.
- */
-export type ParentsDone =
-  | { readonly kind: 'none' }
-  | { readonly kind: 'at'; readonly at: number }
-  | { readonly kind: 'pending'; readonly stepIds: readonly string[] }
-  | { readonly kind: 'unknown' }
-
-const UNKNOWN_PARENTS: ParentsDone = { kind: 'unknown' }
-
-/** `step`'s parents, read out of the same workflow's steps and task read. */
-export function parentsDoneOf(
-  step: WorkflowStep,
-  steps: readonly WorkflowStep[],
-  taskById: ReadonlyMap<string, Task> | null,
-): ParentsDone {
-  if (step.depends_on.length === 0) return { kind: 'none' }
-  const pending: string[] = []
-  let unknown = false
-  let last = -Infinity
-  for (const id of step.depends_on) {
-    const parent = steps.find((s) => s.step_id === id)
-    if (parent === undefined) {
-      unknown = true
-      continue
-    }
-    const st = stepState(parent, taskById)
-    if (st.kind === 'unstarted' || (st.kind === 'state' && !TERMINAL_STATES.has(st.state))) {
-      pending.push(id)
-      continue
-    }
-    const done = st.kind === 'state' ? at(st.task.completed_at) : NaN
-    if (!finite(done)) {
-      unknown = true
-      continue
-    }
-    last = Math.max(last, done)
-  }
-  // A PARENT STILL GOING OUTRANKS ONE UNREAD: whatever the unread one did, the
-  // step cannot start until the live one finishes.
-  if (pending.length > 0) return { kind: 'pending', stepIds: pending }
-  if (unknown) return UNKNOWN_PARENTS
-  return { kind: 'at', at: last }
-}
-
-interface WaitSplit {
-  readonly spans: Span[]
-  /** Null when there is no split: no parents, or their finish unread. */
-  readonly parentsMs: number | null
-  /** Null while a parent is still going: the step has not queued yet. */
-  readonly queuedMs: number | null
-}
-
-/**
- * One wait, `from` submission `to` its end (a start, an end, or now when
- * `live`), split at the parents' finish. A closed piece of no length draws no
- * span; the open piece of a live wait always does, because it is what reaches
- * "now".
- */
-function splitWait(from: number, to: number, live: boolean, parents: ParentsDone): WaitSplit {
-  const kind: SpanKind = live ? 'waiting' : 'waited'
-  if (parents.kind === 'pending' && live) {
-    return { spans: [{ kind: 'parents', from, to, open: true }], parentsMs: to - from, queuedMs: null }
-  }
-  if (parents.kind === 'at') {
-    // Clamped into the wait: a parent recorded as finishing before this step
-    // was submitted cost it nothing, and one after its start (clock skew) is
-    // the whole wait.
-    const p = Math.min(Math.max(parents.at, from), to)
-    const spans: Span[] = []
-    if (p > from) spans.push({ kind: 'parents', from, to: p, open: false })
-    if (to > p || live) spans.push({ kind, from: p, to, open: live })
-    return { spans, parentsMs: p - from, queuedMs: to - p }
-  }
-  return {
-    spans: to > from || live ? [{ kind, from, to, open: live }] : [],
-    parentsMs: null,
-    queuedMs: to - from,
-  }
-}
-
-/** The wait before a start, as the head of a row's sentence. */
-function waitPhrase(w: WaitSplit, latest: boolean): string {
-  const start = `its ${latest ? 'latest ' : ''}start`
-  if (w.parentsMs !== null && w.parentsMs > 0) {
-    return `waited ${durationText(w.parentsMs)} on its parents, then queued ${durationText(w.queuedMs ?? 0)} until ${start}, then `
-  }
-  return `waited ${durationText(w.queuedMs ?? 0)} from submission to ${start}, then `
-}
-
-/**
- * `parents` is when the step's parents were done (`parentsDoneOf`). Unknown by
- * default, which draws the wait unsplit exactly as before #107.
- */
-export function stepTimes(state: StepState, now: number, parents: ParentsDone = UNKNOWN_PARENTS): StepTimes {
+export function stepTimes(state: StepState, now: number): StepTimes {
   if (state.kind === 'unstarted') {
     const m = mark(
       'unstarted',
       'not started',
       'This step has no task yet: the workflow has not reached it, so there is no time to draw.',
     )
-    return { spans: [], mark: m, attempts: null, waitedMs: null, waitedOpen: false, parentsMs: null, ranMs: null, sentence: m.note }
+    return { spans: [], mark: m, attempts: null, waitedMs: null, waitedOpen: false, ranMs: null, sentence: m.note }
   }
   if (state.kind === 'unknown') {
     const m = mark(
@@ -272,7 +147,7 @@ export function stepTimes(state: StepState, now: number, parents: ParentsDone = 
       'task unread',
       `Task ${state.taskId} was not in the task read, so none of its times were looked at. That is unknown, not idle.`,
     )
-    return { spans: [], mark: m, attempts: null, waitedMs: null, waitedOpen: false, parentsMs: null, ranMs: null, sentence: m.note }
+    return { spans: [], mark: m, attempts: null, waitedMs: null, waitedOpen: false, ranMs: null, sentence: m.note }
   }
 
   const task = state.task
@@ -294,21 +169,24 @@ export function stepTimes(state: StepState, now: number, parents: ParentsDone = 
         'start not recorded',
         'This step finished, but neither a submission time nor a start time was recorded, so nothing can be placed on the axis.',
       )
-      return { spans: [], mark: m, attempts, waitedMs: null, waitedOpen: false, parentsMs: null, ranMs: null, sentence: m.note }
+      return { spans: [], mark: m, attempts, waitedMs: null, waitedOpen: false, ranMs: null, sentence: m.note }
     }
     if (finite(started) && started >= from && started <= completed) {
-      const w = finite(created) ? splitWait(created, started, false, parents) : null
-      const spans: Span[] = [...(w?.spans ?? []), { kind: 'ran', from: started, to: completed, open: false }]
+      const spans: Span[] = []
+      if (started > from) spans.push({ kind: 'waited', from, to: started, open: false })
+      spans.push({ kind: 'ran', from: started, to: completed, open: false })
+      const waitedMs = finite(created) ? started - created : null
       return {
         spans,
         mark: null,
         attempts,
-        waitedMs: w === null ? null : w.queuedMs,
+        waitedMs,
         waitedOpen: false,
-        parentsMs: w === null ? null : w.parentsMs,
         ranMs: completed - started,
         sentence:
-          (w === null ? 'No submission time was recorded, so the wait before it started is unknown. ' : waitPhrase(w, attempts !== null)) +
+          (waitedMs === null
+            ? 'No submission time was recorded, so the wait before it started is unknown. '
+            : `waited ${durationText(waitedMs)} from submission to its ${attempts ? 'latest ' : ''}start, then `) +
           `ran ${durationText(completed - started)} and ended ${task.state.toLowerCase()}.${retried}`,
       }
     }
@@ -318,19 +196,13 @@ export function stepTimes(state: StepState, now: number, parents: ParentsDone = 
     // words the node and the table print for this step. (A start that IS
     // recorded but falls outside the span -- clock skew -- lands here too, and
     // gets no word: something did record a start.)
-    // Split at the parents' finish like any wait (#107): a step cancelled by
-    // a cascade waited on its parents until the one that failed ended.
-    const w = splitWait(from, completed, false, finite(created) ? parents : UNKNOWN_PARENTS)
-    const onParents =
-      w.parentsMs !== null && w.parentsMs > 0 ? ` ${durationText(w.parentsMs)} of that was waiting on its parents.` : ''
-    const sentence = `ended ${task.state.toLowerCase()} ${durationText(completed - from)} after submission with no start recorded, so none of that time is shown as running.${onParents}${retried}`
+    const sentence = `ended ${task.state.toLowerCase()} ${durationText(completed - from)} after submission with no start recorded, so none of that time is shown as running.${retried}`
     return {
-      spans: w.spans.length > 0 ? w.spans : [{ kind: 'waited', from, to: completed, open: false }],
+      spans: [{ kind: 'waited', from, to: completed, open: false }],
       mark: finite(started) ? null : mark('never', NEVER_STARTED_WORD, sentence),
       attempts,
-      waitedMs: w.queuedMs,
+      waitedMs: completed - from,
       waitedOpen: false,
-      parentsMs: w.parentsMs,
       ranMs: null,
       sentence,
     }
@@ -345,14 +217,16 @@ export function stepTimes(state: StepState, now: number, parents: ParentsDone = 
       NEVER_STARTED_WORD,
       `This step is ${task.state.toLowerCase()} with no start time and no completion time: it never started, and when it stopped was not recorded.`,
     )
-    return { spans: [], mark: m, attempts, waitedMs: null, waitedOpen: false, parentsMs: null, ranMs: null, sentence: m.note + retried }
+    return { spans: [], mark: m, attempts, waitedMs: null, waitedOpen: false, ranMs: null, sentence: m.note + retried }
   }
 
   // TERMINAL WITHOUT AN END. It ran, it ended, and nobody wrote when. The wait
   // up to its start is real and is drawn; nothing past the start is.
   if (TERMINAL_STATES.has(task.state)) {
-    const w = finite(created) && finite(started) && started > created ? splitWait(created, started, false, parents) : null
-    const spans: Span[] = w === null ? [] : w.spans
+    const spans: Span[] =
+      finite(created) && finite(started) && started > created
+        ? [{ kind: 'waited', from: created, to: started, open: false }]
+        : []
     const m = mark(
       'unrecorded',
       'end not recorded',
@@ -362,9 +236,8 @@ export function stepTimes(state: StepState, now: number, parents: ParentsDone = 
       spans,
       mark: m,
       attempts,
-      waitedMs: w === null ? null : w.queuedMs,
+      waitedMs: spans.length > 0 ? started - created : null,
       waitedOpen: false,
-      parentsMs: w === null ? null : w.parentsMs,
       ranMs: null,
       sentence: m.note + retried,
     }
@@ -373,18 +246,19 @@ export function stepTimes(state: StepState, now: number, parents: ParentsDone = 
   // RUNNING NOW.
   if (RUNNING_STATES.has(task.state) && finite(started)) {
     const to = Math.max(started, now)
-    const w = finite(created) && started >= created ? splitWait(created, started, false, parents) : null
-    const spans: Span[] = [...(w?.spans ?? []), { kind: 'running', from: started, to, open: true }]
+    const spans: Span[] = []
+    if (finite(created) && started > created) spans.push({ kind: 'waited', from: created, to: started, open: false })
+    spans.push({ kind: 'running', from: started, to, open: true })
+    const waitedMs = finite(created) && started >= created ? started - created : null
     return {
       spans,
       mark: null,
       attempts,
-      waitedMs: w === null ? null : w.queuedMs,
+      waitedMs,
       waitedOpen: false,
-      parentsMs: w === null ? null : w.parentsMs,
       ranMs: to - started,
       sentence:
-        (w === null ? '' : waitPhrase(w, attempts !== null)) +
+        (waitedMs === null ? '' : `waited ${durationText(waitedMs)} from submission to its ${attempts ? 'latest ' : ''}start, then `) +
         `running ${durationText(to - started)} so far, with no end yet.${retried}`,
     }
   }
@@ -397,23 +271,14 @@ export function stepTimes(state: StepState, now: number, parents: ParentsDone = 
     const earlier = finite(started)
       ? ` An earlier attempt started ${durationText(now - started)} ago and is over; that run is inside this span and is not shown as running.`
       : ''
-    const w = splitWait(created, to, true, parents)
-    const word = task.state.toLowerCase()
-    const head =
-      parents.kind === 'pending'
-        ? `${word}: waiting ${durationText(to - created)} on its parents (${parents.stepIds.join(', ')}) since submission, not running.`
-        : w.parentsMs !== null && w.parentsMs > 0
-          ? `${word}: waited ${durationText(w.parentsMs)} on its parents, then waiting ${durationText(w.queuedMs ?? 0)} since they finished, not running.`
-          : `${word}: waiting ${durationText(to - created)} since submission, not running.`
     return {
-      spans: w.spans,
+      spans: [{ kind: 'waiting', from: created, to, open: true }],
       mark: null,
       attempts,
-      waitedMs: w.queuedMs,
-      waitedOpen: w.queuedMs !== null,
-      parentsMs: w.parentsMs,
+      waitedMs: to - created,
+      waitedOpen: true,
       ranMs: null,
-      sentence: `${head}${earlier}${retried}`,
+      sentence: `${task.state.toLowerCase()}: waiting ${durationText(to - created)} since submission, not running.${earlier}${retried}`,
     }
   }
   const m = mark(
@@ -421,7 +286,7 @@ export function stepTimes(state: StepState, now: number, parents: ParentsDone = 
     'times not recorded',
     'No submission time was recorded for this step, so nothing about it can be placed on the axis.',
   )
-  return { spans: [], mark: m, attempts, waitedMs: null, waitedOpen: false, parentsMs: null, ranMs: null, sentence: m.note }
+  return { spans: [], mark: m, attempts, waitedMs: null, waitedOpen: false, ranMs: null, sentence: m.note }
 }
 
 // ---------------------------------------------------------------------------
@@ -455,134 +320,6 @@ export interface TimelineAxis {
   readonly ticks: readonly Tick[]
   /** Where "now" is, when a span is open -- the one place an open span ends. */
   readonly now: number | null
-  /**
-   * The longest a WAIT is drawn (#107), when some wait on this axis is longer:
-   * the 95th percentile of every span's real length (`CLAMP_PERCENTILE`).
-   * Null when nothing was cut.
-   */
-  readonly clampMs: number | null
-  /**
-   * THE BREAKS IN THE AXIS (#107): stretches of real time taken out of the
-   * drawing, in time order and never overlapping. `pctOf` maps through them,
-   * so everything after a break is drawn that much earlier -- in every row.
-   * Empty when nothing was cut.
-   */
-  readonly breaks: readonly AxisBreak[]
-}
-
-/** Real time `from` to `to` that the axis does not draw. */
-export interface AxisBreak {
-  readonly from: number
-  readonly to: number
-}
-
-/**
- * WHERE AN OUTLIER WAIT IS CUT (#107): beyond the 95th PERCENTILE of the real
- * lengths of every span on the axis -- waits and runs alike, nearest rank.
- *
- * One step that queued for three hours in a workflow whose other steps took
- * minutes made the axis three hours long, and every other bar a sliver. So
- * the AXIS IS BROKEN: the part of such a wait beyond the threshold, where no
- * other span on the axis is drawn, is taken out of time itself (`breaks`), and
- * everything after it moves left by that much -- the slow step's own run, and
- * any row that happened later. The wait keeps its last `clampMs` whole, carries
- * a broken-axis mark where the time was taken out, and has its real length
- * written as text.
- *
- * ONLY TIME NOTHING ELSE COVERS IS TAKEN OUT. Another step's run (or its
- * ordinary wait) inside the outlier's wait is drawn at its real length, and
- * the outlier is drawn that much longer: a run drawn short would be a false
- * measurement, and a run is never cut.
- *
- * Nearest rank means that below twenty spans the 95th percentile IS the
- * longest span, so a small workflow is never cut -- there is no crowd for a
- * span to be an outlier from.
- */
-export const CLAMP_PERCENTILE = 95
-
-const WAIT_KINDS: ReadonlySet<SpanKind> = new Set<SpanKind>(['parents', 'waited', 'waiting'])
-
-/** The nearest-rank `CLAMP_PERCENTILE`th percentile of these lengths, or null. */
-function clampThreshold(rows: readonly StepTimes[]): number | null {
-  const lengths = rows.flatMap((r) => r.spans.map((s) => s.to - s.from)).sort((a, b) => a - b)
-  if (lengths.length === 0) return null
-  const rank = Math.ceil((CLAMP_PERCENTILE / 100) * lengths.length)
-  const t = lengths[Math.max(0, rank - 1)]!
-  // A zero threshold would cut every wait to nothing: a workflow of instant
-  // steps has no scale to call anything an outlier against.
-  return t > 0 ? t : null
-}
-
-/** Sorted, merged intervals. */
-function merged(intervals: readonly AxisBreak[]): AxisBreak[] {
-  const out: AxisBreak[] = []
-  for (const iv of [...intervals].sort((x, y) => x.from - y.from)) {
-    const last = out[out.length - 1]
-    if (last !== undefined && iv.from <= last.to) out[out.length - 1] = { from: last.from, to: Math.max(last.to, iv.to) }
-    else out.push(iv)
-  }
-  return out
-}
-
-/** `cuts` minus `covered`, both sorted and merged. */
-function without(cuts: readonly AxisBreak[], covered: readonly AxisBreak[]): AxisBreak[] {
-  const out: AxisBreak[] = []
-  for (const c of cuts) {
-    let from = c.from
-    for (const k of covered) {
-      if (k.to <= from || k.from >= c.to) continue
-      if (k.from > from) out.push({ from, to: k.from })
-      from = Math.max(from, k.to)
-    }
-    if (from < c.to) out.push({ from, to: c.to })
-  }
-  return out
-}
-
-/** The breaks for these rows at this threshold (see `CLAMP_PERCENTILE`). */
-function breaksOf(rows: readonly StepTimes[], clampMs: number | null): AxisBreak[] {
-  if (clampMs === null) return []
-  const spans = rows.flatMap((r) => r.spans)
-  const cuts: AxisBreak[] = []
-  const covered: AxisBreak[] = []
-  for (const s of spans) {
-    if (WAIT_KINDS.has(s.kind) && s.to - s.from > clampMs) {
-      cuts.push({ from: s.from, to: s.to - clampMs })
-      // The last `clampMs` of an outlier is drawn, so another outlier's cut
-      // cannot take it out.
-      covered.push({ from: s.to - clampMs, to: s.to })
-    } else {
-      covered.push({ from: s.from, to: s.to })
-    }
-  }
-  return without(merged(cuts), merged(covered)).filter((b) => b.to > b.from)
-}
-
-/** How much of `from`..`to` the breaks take out. */
-function takenOut(breaks: readonly AxisBreak[], from: number, to: number): number {
-  let ms = 0
-  for (const b of breaks) ms += Math.max(0, Math.min(to, b.to) - Math.max(from, b.from))
-  return ms
-}
-
-/** `t` on the drawn (broken) clock: real time less every break before it. */
-function drawnAt(breaks: readonly AxisBreak[], t: number): number {
-  return t - takenOut(breaks, -Infinity, t)
-}
-
-/** A span as it is drawn. `clampedMs` is its real length when a break cuts
- *  it (null when drawn whole), and `breaks` the real instants it is cut at. */
-export interface DrawnSpan {
-  readonly from: number
-  readonly to: number
-  readonly clampedMs: number | null
-  readonly breaks: readonly number[]
-}
-
-export function drawnSpan(axis: Pick<TimelineAxis, 'breaks'>, s: Span): DrawnSpan {
-  const inside = axis.breaks.filter((b) => b.to > s.from && b.from < s.to)
-  if (!WAIT_KINDS.has(s.kind) || inside.length === 0) return { from: s.from, to: s.to, clampedMs: null, breaks: [] }
-  return { from: s.from, to: s.to, clampedMs: s.to - s.from, breaks: inside.map((b) => Math.max(b.from, s.from)) }
 }
 
 /** Round intervals, smallest first. `axisOf` takes the first that gives at most
@@ -618,12 +355,6 @@ export function spanLabel(ms: number): string {
  *
  * NULL WHEN NOTHING HAS A TIME, which is a real answer (every step unstarted or
  * unread) and not an axis of zero width.
- *
- * `t0`/`t1` and every tick's `at` are REAL times; the drawn width between them
- * is less by the `breaks`. The tick interval is chosen on the drawn width, and
- * every label is the REAL time since `t0`, so a label after a break reads the
- * hours the break took out. Ticks keep at least one interval apart on the
- * drawing, so a broken axis still carries no more than six labels.
  */
 export function axisOf(rows: readonly StepTimes[], now: number, origin: number | null): TimelineAxis | null {
   let t0 = Infinity
@@ -638,59 +369,29 @@ export function axisOf(rows: readonly StepTimes[], now: number, origin: number |
   }
   if (!finite(t0) || !finite(t1)) return null
   if (origin !== null && finite(origin) && origin < t0) t0 = origin
-  const threshold = clampThreshold(rows)
-  const breaks = breaksOf(rows, threshold)
   // A second is the floor: a workflow whose every step took no measurable time
   // still gets an axis a reader can read, and nothing divides by zero.
-  if (drawnAt(breaks, t1) - drawnAt(breaks, t0) < 1000) t1 = t0 + 1000 + takenOut(breaks, t0, t1)
-  const d0 = drawnAt(breaks, t0)
-  const span = drawnAt(breaks, t1) - d0
+  if (t1 - t0 < 1000) t1 = t0 + 1000
+  const span = t1 - t0
   const step = TICK_STEPS_MS.find((s) => span / s <= 5) ?? TICK_STEPS_MS[TICK_STEPS_MS.length - 1]!
-  // Each unbroken stretch of real time carries its own round ticks.
-  const pieces: AxisBreak[] = []
-  let from = t0
-  for (const b of breaks) {
-    if (b.to <= t0 || b.from >= t1) continue
-    if (b.from > from) pieces.push({ from, to: b.from })
-    from = Math.max(from, b.to)
-  }
-  if (from <= t1) pieces.push({ from, to: t1 })
-  const at: number[] = []
-  let lastDrawn = -Infinity
-  for (const p of pieces) {
-    for (let k = Math.ceil((p.from - t0) / step); t0 + k * step <= p.to; k++) {
-      const t = t0 + k * step
-      const d = drawnAt(breaks, t) - d0
-      if (d - lastDrawn < step) continue
-      at.push(t)
-      lastDrawn = d
-    }
-  }
-  const ticks: Tick[] = at.map((t, k) => {
+  const count = Math.floor(span / step) + 1
+  const ticks: Tick[] = []
+  for (let k = 0; k < count; k++) {
     // THE LAST TICK HANGS LEFT ONLY IN THE LAST QUARTER (WF-12), and the
     // first never does: '0' at the left edge has nothing to its left.
-    const last = k === at.length - 1 && k > 0
-    return {
-      at: t,
-      label: k === 0 ? '0' : `+${spanLabel(t - t0)}`,
-      end: last && ((drawnAt(breaks, t) - d0) / span) * 100 >= TICK_END_AT_PCT,
-    }
-  })
-  return {
-    t0,
-    t1,
-    ticks,
-    now: open ? now : null,
-    clampMs: breaks.length > 0 ? threshold : null,
-    breaks,
+    const last = k === count - 1 && k > 0
+    ticks.push({
+      at: t0 + k * step,
+      label: k === 0 ? '0' : `+${spanLabel(k * step)}`,
+      end: last && ((k * step) / span) * 100 >= TICK_END_AT_PCT,
+    })
   }
+  return { t0, t1, ticks, now: open ? now : null }
 }
 
-/** Where `t` sits on the axis, as a percentage of the track, clamped. Through
- *  the breaks: a time inside one sits at the break. */
+/** Where `t` sits on the axis, as a percentage of the track, clamped. */
 export function pctOf(axis: TimelineAxis, t: number): number {
-  const d0 = drawnAt(axis.breaks, axis.t0)
-  const p = ((drawnAt(axis.breaks, t) - d0) / (drawnAt(axis.breaks, axis.t1) - d0)) * 100
+  const p = ((t - axis.t0) / (axis.t1 - axis.t0)) * 100
   return Math.min(100, Math.max(0, p))
 }
 
@@ -827,25 +528,7 @@ export interface SameStep {
 }
 
 /**
- * A workflow's SHAPE, as the key the same-step scrubber compares (#112): the
- * `shapeOf` level widths and the step count. `levelsOf` places every step on
- * some level, so today the count is the widths' sum; it is part of the key so
- * that the key does not rest on that.
- */
-export function shapeSignature(steps: readonly WorkflowStep[]): string {
-  const s = shapeOf(steps)
-  return `${s.text} · ${s.steps}`
-}
-
-/**
- * Every workflow on this board that has a step with this id AND THE SAME SHAPE
- * (`shape`, a `shapeSignature`), NEWEST FIRST.
- *
- * THE SHAPE, BECAUSE A STEP ID IS NOT A COMPARISON (#112). `synthesis` in a
- * 30-step fan and `synthesis` in a 5 -> 1 join share a name and nothing else:
- * one joins twenty-eight branches, the other five, and stepping from one to the
- * other compares two different jobs. So an occurrence counts only in a
- * workflow of the same shape as the one the step was picked in.
+ * Every workflow on this board that has a step with this id, NEWEST FIRST.
  *
  * By the workflow's submission time, not by the board's order: the board is
  * whatever order the route returned, and "the same step across the last ten
@@ -856,11 +539,11 @@ export function shapeSignature(steps: readonly WorkflowStep[]): string {
  * a workflow older than that page is not here -- the position reads "n of m"
  * against what was read, never against a total nobody counted.
  */
-export function sameStepAcross(workflows: readonly Workflow[], stepId: string, shape: string): SameStep[] {
+export function sameStepAcross(workflows: readonly Workflow[], stepId: string): SameStep[] {
   const found: SameStep[] = []
   for (const w of workflows) {
     const s = w.steps.find((x) => x.step_id === stepId)
-    if (s && shapeSignature(w.steps) === shape) found.push({ workflowId: w.workflow_id, createdAt: w.created_at, step: s })
+    if (s) found.push({ workflowId: w.workflow_id, createdAt: w.created_at, step: s })
   }
   const t = (v: string) => {
     const n = at(v)
@@ -1206,224 +889,4 @@ export function attemptFacts(
     })
   }
   return facts
-}
-
-// ---------------------------------------------------------------------------
-// Why a step is not running, and why one failed (#105, #106)
-// ---------------------------------------------------------------------------
-//
-// NO WORKFLOW VIEW SAID WHY. The Agents list reads `whyAgent`/`whyNotRunning`
-// off every row; the graph, the timeline and the table read none of it, and a
-// failed node showed no cause until it was picked into the inspector. These
-// are the same readers, with the one thing only a workflow has in hand: the
-// PARENTS' states, which turn the cascade's "an upstream step did not succeed"
-// into the step that did not (docs/web-ui/03-agents-and-workflows.md §2.3).
-
-/** The first line of a text, untrimmed of nothing but its line break. */
-export function firstLine(text: string): string {
-  return text.split(/\r?\n/, 1)[0] ?? ''
-}
-
-/**
- * A failure's CAUSE, normalised so the same failure groups on the row header:
- * the first line's head before its first `: ` (the part that names the kind of
- * failure rather than the file or the trace), quoted values and platform ids
- * reduced to `…`, lower-cased. `input collision: plan.md ...` and `Input
- * collision: notes.md ...` are one cause, `input collision`. Null when there is
- * no error text at all.
- */
-export function failureCause(lastError: string | null | undefined): string | null {
-  if (!lastError) return null
-  const line = firstLine(lastError).trim()
-  if (line === '') return null
-  const head = line.split(/:\s/, 1)[0]!.trim()
-  const cause = (head === '' ? line : head)
-    .replace(/`[^`]*`|'[^']*'|"[^"]*"/g, '…')
-    .replace(/\b(?:tsk|task|wf|att|lease)_[A-Za-z0-9_-]+/g, '…')
-    .replace(/\b[0-9a-f]{8,}\b/gi, '…')
-    .replace(/\s+/g, ' ')
-    .replace(/[.\s]+$/, '')
-    .toLowerCase()
-  return cause === '' ? null : cause
-}
-
-/** How many FAILED steps share a cause. `cause` is null for a failure whose
- *  task carried no error text. */
-export interface CauseGroup {
-  readonly cause: string | null
-  readonly n: number
-}
-
-/**
- * A workflow's FAILED steps grouped by `failureCause`, largest group first
- * (ties by cause), the failures with no cause last. Only steps whose task was
- * read: a step the read did not return has no error to group.
- */
-export function failureGroups(
-  steps: readonly WorkflowStep[],
-  taskById: ReadonlyMap<string, Task> | null,
-): CauseGroup[] {
-  const counts = new Map<string | null, number>()
-  for (const step of steps) {
-    const st = stepState(step, taskById)
-    if (st.kind !== 'state' || st.state !== 'FAILED') continue
-    const c = failureCause(st.task.last_error)
-    counts.set(c, (counts.get(c) ?? 0) + 1)
-  }
-  return [...counts.entries()]
-    .map(([cause, n]) => ({ cause, n }))
-    .sort((a, b) =>
-      a.cause === null ? 1 : b.cause === null ? -1 : b.n - a.n || a.cause.localeCompare(b.cause),
-    )
-}
-
-/** Parent states the cascade treats as "did not succeed" -- scheduler/loop.py
- *  `_FAILED_PARENT_STATES`. ANY one of them cancels the child. */
-const FAILED_PARENT_STATES: ReadonlySet<TaskState> = new Set<TaskState>(['FAILED', 'CANCELLED', 'DEAD_LETTERED'])
-
-/** The first parent, in `depends_on` order, whose task did not succeed. */
-function failedParentOf(
-  step: WorkflowStep,
-  steps: readonly WorkflowStep[],
-  taskById: ReadonlyMap<string, Task> | null,
-): string | null {
-  for (const id of step.depends_on) {
-    const parent = steps.find((s) => s.step_id === id)
-    if (parent === undefined) continue
-    const st = stepState(parent, taskById)
-    if (st.kind === 'state' && FAILED_PARENT_STATES.has(st.state)) return id
-  }
-  return null
-}
-
-/** The parents, in `depends_on` order, that have not succeeded yet. */
-function unfinishedParentsOf(
-  step: WorkflowStep,
-  steps: readonly WorkflowStep[],
-  taskById: ReadonlyMap<string, Task> | null,
-): string[] {
-  return step.depends_on.filter((id) => {
-    const parent = steps.find((s) => s.step_id === id)
-    if (parent === undefined) return false
-    const st = stepState(parent, taskById)
-    return st.kind === 'unstarted' || (st.kind === 'state' && st.state !== 'SUCCEEDED')
-  })
-}
-
-/**
- * What a step says when nothing more specific does, by state. `whyAgent`
- * writes nothing for these -- it has nothing to name -- but a waiting node
- * with no line reads as a node with nothing to wait for.
- */
-const WAITING_WORDS: Partial<Record<TaskState, string>> = {
-  SUBMITTED: 'submitted; not queued yet',
-  QUEUED: 'queued; not yet evaluated for admission',
-  READY: 'ready; waiting for the next admission pass',
-  LEASED: 'capacity reserved; being dispatched',
-  DISPATCHED: 'dispatched; its container has not started',
-}
-
-/**
- * One step's "why", for the table's `why` column and the graph node's line.
- *
- *   text  one line, what the surface prints
- *   full  the whole of it: a failure's complete `last_error`, for the `title`
- *         and the card's description on focus
- *   warn  whether it asks a person to act -- `whyNeedsAction`, the rule the
- *         Agents list inks its own why line by (AG-14)
- *   kind  `cause` for a failure (#105), `why` for everything else (#106)
- */
-export interface StepWhy {
-  readonly kind: 'cause' | 'why'
-  readonly text: string
-  readonly full: string
-  readonly warn: boolean
-}
-
-function why(text: string, warn: boolean): StepWhy {
-  return { kind: 'why', text, full: text, warn }
-}
-
-/**
- * Why `step` is not running, or why it failed; null when there is nothing to
- * explain (running, succeeded, or its task not read).
- *
- * First match wins, as in the Agents table's column:
- *
- *   FAILED / DEAD_LETTERED  the first line of `last_error`; the whole error is `full`
- *   CANCELLED               a cascade (no `cancel_requested`, has parents) names the
- *                           parent that failed -- ANY parent, the scheduler's rule --
- *                           and falls back to `whyAgent`'s copy when none is in hand
- *   no task yet             a failed parent, then the parents still going
- *   waiting                 a failed parent; `whyAgent` (park and admission blockers,
- *                           weighed with `units`); `whyNotRunning`; the parents still
- *                           going; the state's own words
- *
- * `units` is the task's weight from `classUnits` (Blockers.tsx) -- null when
- * the catalogue was not read, which keeps the pre-#66 reading.
- */
-export function stepWhy(
-  step: WorkflowStep,
-  state: StepState,
-  steps: readonly WorkflowStep[],
-  taskById: ReadonlyMap<string, Task> | null,
-  units: number | null,
-): StepWhy | null {
-  if (state.kind === 'unknown') return null
-  const failedParent = failedParentOf(step, steps, taskById)
-  if (state.kind === 'unstarted') {
-    if (failedParent !== null) return why(`blocked: ${failedParent} failed`, false)
-    const pending = unfinishedParentsOf(step, steps, taskById)
-    return pending.length > 0 ? why(`waiting on ${pending.join(', ')}`, false) : null
-  }
-  const task = state.task
-  switch (task.state) {
-    case 'SUCCEEDED':
-    case 'STARTING':
-    case 'RUNNING':
-      return null
-    case 'FAILED':
-    case 'DEAD_LETTERED': {
-      const err = task.last_error ?? ''
-      if (err.trim() === '') {
-        return task.state === 'FAILED'
-          ? { kind: 'cause', text: 'no error recorded', full: 'This step failed and its task carries no error text.', warn: whyNeedsAction(task, units) }
-          : null
-      }
-      return { kind: 'cause', text: firstLine(err), full: err, warn: whyNeedsAction(task, units) }
-    }
-    case 'CANCELLED':
-      if (!task.cancel_requested && step.depends_on.length > 0 && failedParent !== null) {
-        return why(`blocked: ${failedParent} failed`, false)
-      }
-      return why(whyAgent(task, units), false)
-    default: {
-      const warn = whyNeedsAction(task, units)
-      if (failedParent !== null) return why(`blocked: ${failedParent} failed`, warn)
-      const agent = whyAgent(task, units)
-      if (agent !== '') return why(agent, warn)
-      const blocked = whyNotRunning(task)
-      if (blocked !== null) return why(blocked, warn)
-      const pending = unfinishedParentsOf(step, steps, taskById)
-      if (pending.length > 0) return why(`waiting on ${pending.join(', ')}`, warn)
-      const words = WAITING_WORDS[task.state]
-      return words === undefined ? null : why(words, warn)
-    }
-  }
-}
-
-/**
- * The line a GRAPH NODE draws: a failure's cause (#105) or why a waiting step
- * is not running (#106). A cancelled step draws none -- it is over, and its
- * why is the table's column -- so only a failed or a waiting node grows.
- */
-export function nodeNote(
-  step: WorkflowStep,
-  state: StepState,
-  steps: readonly WorkflowStep[],
-  taskById: ReadonlyMap<string, Task> | null,
-  units: number | null,
-): StepWhy | null {
-  if (state.kind === 'state' && state.state === 'CANCELLED') return null
-  return stepWhy(step, state, steps, taskById, units)
 }
