@@ -45,11 +45,11 @@ costs nothing while it waits.
 |---|---|
 | `step_id` | unique within the workflow; `^[A-Za-z0-9][A-Za-z0-9_\-.]*$` |
 | `runner_profile` | a **name** from the frozen catalogue — never an image or command |
-| `input` | the step's own payload, bounded by `max_input_bytes`: its `prompt`, plus only the keys its profile declares (below) |
-| `depends_on` | upstream `step_id`s, up to 50 |
-| `input_from` | `{upstream_step: artifact_filename}` staged into this step's workspace |
-| `resource_class` | optional named class, no larger than the profile's own |
-| `timeout_seconds` | may only **shorten** the profile's timeout |
+| `input` | the step's own payload, bounded by `max_input_bytes`: its `prompt`, plus only the keys its profile declares (below). |
+| `depends_on` | upstream `step_id`s, up to 50. |
+| `input_from` | `{upstream_step: artifact_filename}` staged into this step's workspace. |
+| `resource_class` | optional named class, no larger than the profile's own. |
+| `timeout_seconds` | optional; may only shorten the profile's own default. |
 
 `max_workflow_steps` (default 50) bounds the whole thing.
 
