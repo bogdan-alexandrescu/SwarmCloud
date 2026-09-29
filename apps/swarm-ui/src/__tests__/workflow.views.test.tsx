@@ -30,7 +30,7 @@ import { useState } from 'react'
 import type { Result } from '../fetch'
 import type { StepUsage, WorkflowBoard, WorkflowUsage } from '../api'
 import type { AttemptRow, Task, TaskState, Workflow, WorkflowStep } from '../types'
-import { elapsed } from '../types'
+import { elapsed, whyAgent } from '../types'
 import { cascade } from './cssgate'
 import { colour, resolveSheet, resolveVars, tokenTables, type RGBA } from './spaceprobe'
 
@@ -416,10 +416,13 @@ describe('U2: the view modes', () => {
       await landed()
       chooseBoard('Timeline')
       const t = track(cardOf('wf_new'), 'scan')
+      // Its parent `plan` finished 100s after `scan` was submitted, so the
+      // wait is split there (#107): on the parent, then waiting, still open.
       const spans = t.querySelectorAll<HTMLElement>('.wf-tl-span')
-      expect(spans).toHaveLength(1)
-      expect(spans[0]!.classList.contains('is-waiting')).toBe(true)
-      expect(spans[0]!.classList.contains('is-open')).toBe(true)
+      expect(spans).toHaveLength(2)
+      expect(spans[0]!.classList.contains('is-parents')).toBe(true)
+      expect(spans[1]!.classList.contains('is-waiting')).toBe(true)
+      expect(spans[1]!.classList.contains('is-open')).toBe(true)
       expect(t.querySelector('.is-running, .is-ran')).toBeNull()
       expect(t.getAttribute('aria-label')).toMatch(/2 attempts/)
     })
@@ -955,41 +958,47 @@ describe('U5: scrubbing', () => {
     expect(within(i).getByText('attempt 2 of 3')).toBeTruthy()
   })
 
-  it('steps to the same step in the next workflow, newest first, and keeps focus on the control', async () => {
+  it('steps to the same step in the next workflow of the same shape, newest first, and keeps focus on the control', async () => {
+    // #112: `plan` is in all three workflows, but only `wf_mid` and `wf_old`
+    // share a shape (1 -> 1, two steps). `wf_new` is 1 -> 2 -> 1, so it is
+    // not a comparable object and the scrubber never visits it.
     await landed()
     chooseBoard('Table')
     pick(cardOf('wf_new'), 'plan')
-    const first = inspector(cardOf('wf_new'))
-    expect(within(first).getByText('workflow 1 of 3')).toBeTruthy()
+    const alone = inspector(cardOf('wf_new'))
+    expect(within(alone).getByText('workflow 1 of 1')).toBeTruthy()
+    expect(alone.querySelector('.wf-scrub-shape')!.textContent).toBe('1 → 2 → 1 · 4 steps')
+    fireEvent.click(within(alone).getByRole('button', { name: 'Stop inspecting this step' }))
+
+    pick(cardOf('wf_mid'), 'plan')
+    const first = inspector(cardOf('wf_mid'))
+    expect(within(first).getByText('workflow 1 of 2')).toBeTruthy()
+    expect(first.querySelector('.wf-scrub-shape')!.textContent).toBe('1 → 1 · 2 steps')
     expect(
       within(first).getByRole('button', { name: 'Same step, newer workflow' }).getAttribute('aria-disabled'),
     ).toBe('true')
 
     fireEvent.click(within(first).getByRole('button', { name: 'Same step, older workflow' }))
-    // The selection MOVED: it is now wf_mid's `plan`, inspected in wf_mid's card.
-    expect(cardOf('wf_new').querySelector('.wf-inspect')).toBeNull()
-    const second = inspector(cardOf('wf_mid'))
-    expect(within(second).getByText('workflow 2 of 3')).toBeTruthy()
-    expect(second.querySelector('a[href="#work/task/t_plan_mid"]')).toBeTruthy()
-    // Pressing it again must keep working: focus followed the selection.
-    expect(document.activeElement).toBe(
-      within(second).getByRole('button', { name: 'Same step, older workflow' }),
-    )
-
-    const group = second.querySelector<HTMLElement>('[data-scrub="workflow"]')
-    expect(group).toBeTruthy()
-    fireEvent.keyDown(group!, { key: 'ArrowRight' })
-    const third = inspector(cardOf('wf_old'))
-    expect(within(third).getByText('workflow 3 of 3')).toBeTruthy()
-    const older = within(third).getByRole('button', { name: 'Same step, older workflow' })
+    // The selection MOVED: it is now wf_old's `plan`, inspected in wf_old's card.
+    expect(cardOf('wf_mid').querySelector('.wf-inspect')).toBeNull()
+    const second = inspector(cardOf('wf_old'))
+    expect(within(second).getByText('workflow 2 of 2')).toBeTruthy()
+    expect(second.querySelector('a[href="#work/task/t_plan_old"]')).toBeTruthy()
+    const older = within(second).getByRole('button', { name: 'Same step, older workflow' })
     expect(older.getAttribute('aria-disabled')).toBe('true')
     // FOCUS LANDS ON THE CONTROL THE READER WAS PRESSING, even at its end. It
     // used to fall back to the other button, so a reader holding ArrowRight
     // found themselves on "newer" with nothing said.
     expect(document.activeElement).toBe(older)
-    // And from there the other direction still works.
-    fireEvent.keyDown(document.activeElement!, { key: 'ArrowLeft' })
-    expect(within(inspector(cardOf('wf_mid'))).getByText('workflow 2 of 3')).toBeTruthy()
+    // And from there the other direction still works, from the keyboard.
+    const group = second.querySelector<HTMLElement>('[data-scrub="workflow"]')
+    expect(group).toBeTruthy()
+    fireEvent.keyDown(group!, { key: 'ArrowLeft' })
+    const back = inspector(cardOf('wf_mid'))
+    expect(within(back).getByText('workflow 1 of 2')).toBeTruthy()
+    expect(document.activeElement).toBe(within(back).getByRole('button', { name: 'Same step, newer workflow' }))
+    // And never on to wf_new, whose `plan` is the same id in a different shape.
+    expect(cardOf('wf_new').querySelector('.wf-inspect')).toBeNull()
   })
 
   it('keeps focus on a scrub control that reaches its end, so the arrow keys keep working', async () => {
@@ -1481,20 +1490,21 @@ describe('the owner’s decisions: scrubbing across workflows (WF-10)', () => {
   it('keeps the view the reader chose, and the picked step, when the scrubber moves to another workflow', async () => {
     await landed()
     // Rows: open one card and look at it as a Timeline.
-    fireEvent.click(cardOf('wf_new').querySelector('.wf-bar')!)
-    fireEvent.click(within(cardOf('wf_new').querySelector<HTMLElement>('.wf-viewbar')!).getByText('Timeline'))
-    pick(cardOf('wf_new'), 'plan')
-    fireEvent.click(within(inspector(cardOf('wf_new'))).getByRole('button', { name: 'Same step, older workflow' }))
-    const mid = cardOf('wf_mid')
-    expect(mid.querySelector('.wf-timeline'), 'the next workflow opened in a view the reader did not choose').toBeTruthy()
-    expect(mid.querySelector('.wf-canvas')).toBeNull()
-    expect(mid.querySelector('.wf-pick[data-step="plan"]')!.getAttribute('aria-pressed')).toBe('true')
-    expect(inspector(mid)).toBeTruthy()
-    // And from a Table, to a Table.
-    fireEvent.click(within(mid.querySelector<HTMLElement>('.wf-viewbar')!).getByText('Table'))
+    // `wf_mid` and `wf_old` are the two workflows of one shape (#112).
+    fireEvent.click(cardOf('wf_mid').querySelector('.wf-bar')!)
+    fireEvent.click(within(cardOf('wf_mid').querySelector<HTMLElement>('.wf-viewbar')!).getByText('Timeline'))
+    pick(cardOf('wf_mid'), 'plan')
     fireEvent.click(within(inspector(cardOf('wf_mid'))).getByRole('button', { name: 'Same step, older workflow' }))
-    expect(cardOf('wf_old').querySelector('.wf-table'), 'the next workflow opened in a view the reader did not choose').toBeTruthy()
-    expect(inspector(cardOf('wf_old'))).toBeTruthy()
+    const old = cardOf('wf_old')
+    expect(old.querySelector('.wf-timeline'), 'the next workflow opened in a view the reader did not choose').toBeTruthy()
+    expect(old.querySelector('.wf-canvas')).toBeNull()
+    expect(old.querySelector('.wf-pick[data-step="plan"]')!.getAttribute('aria-pressed')).toBe('true')
+    expect(inspector(old)).toBeTruthy()
+    // And from a Table, to a Table.
+    fireEvent.click(within(old.querySelector<HTMLElement>('.wf-viewbar')!).getByText('Table'))
+    fireEvent.click(within(inspector(cardOf('wf_old'))).getByRole('button', { name: 'Same step, newer workflow' }))
+    expect(cardOf('wf_mid').querySelector('.wf-table'), 'the next workflow opened in a view the reader did not choose').toBeTruthy()
+    expect(inspector(cardOf('wf_mid'))).toBeTruthy()
   })
 })
 
@@ -1632,5 +1642,205 @@ describe('the owner’s decisions: two durations, two facts (WF-21)', () => {
     // why the Timeline counts earlier attempts as waiting. "and any park" was
     // false.
     expect(note, 'the note still claims the run includes a park').not.toMatch(/park/)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// #106: why a step is not running
+// ---------------------------------------------------------------------------
+
+describe('#106: every workflow view says why a step is not running', () => {
+  it('adds a why column to the table, from the task, the parents and the cascade', async () => {
+    await landed()
+    chooseBoard('Table')
+    const c = cardOf('wf_new')
+    const th = c.querySelector<HTMLElement>('.wf-table th[data-col="why"]')
+    expect(th, 'the table has no why column').toBeTruthy()
+    expect(th!.textContent).toBe('why')
+    // A parked step: the task's own reason, in the words the Agents list uses.
+    const { board: b } = board()
+    const scan = b.taskById!.get('t_scan')!
+    expect(cell(c, 'scan', 'why').textContent).toBe(whyAgent(scan))
+    // A step the workflow has not reached names the parents it is waiting on.
+    expect(cell(c, 'ship', 'why').textContent).toBe('waiting on build, scan')
+    // Running and finished steps have nothing to explain.
+    expect(cell(c, 'build', 'why').textContent).toBe('')
+    expect(cell(c, 'plan', 'why').textContent).toBe('')
+  })
+
+  it('names the failed parent on a cascade-cancelled step, and inks only what needs a person', () => {
+    const root = viewCard(
+      [
+        step('plan', [], { task_id: 't_p' }),
+        step('merge', ['plan'], { task_id: 't_m' }),
+        step('held', [], { task_id: 't_h' }),
+      ],
+      [
+        task('t_p', 'FAILED', { completed_at: iso(-300), last_error: 'input collision: plan.md\nfull trace' }),
+        task('t_m', 'CANCELLED', { completed_at: iso(-290), depends_on: ['plan'] }),
+        task('t_h', 'READY', {
+          blocked_by: [{ pool: 'resource:browser', reason: 'RESOURCE_CLASS_LIMIT', limit: 0, active: 0 }],
+        }),
+      ],
+      'table',
+    )
+    const why = (id: string) => root.querySelector<HTMLElement>(`.wf-table tr[data-step="${id}"] td[data-col="why"] .wf-why`)!
+    expect(why('merge').textContent).toBe('blocked: plan failed')
+    expect(why('merge').classList.contains('is-warn')).toBe(false)
+    expect(why('plan').textContent).toBe('input collision: plan.md')
+    expect(why('plan').getAttribute('title')).toBe('input collision: plan.md\nfull trace')
+    expect(why('plan').classList.contains('is-warn')).toBe(true)
+    expect(why('held').textContent).toMatch(/paused by operator/i)
+    expect(why('held').classList.contains('is-warn')).toBe(true)
+  })
+
+  it('draws a why line on a waiting graph node, and none on a running or finished one', () => {
+    const root = viewCard(
+      [
+        step('plan', [], { task_id: 't_p' }),
+        step('build', ['plan'], { task_id: 't_b' }),
+        step('scan', ['plan'], { task_id: 't_s' }),
+        step('ship', ['build', 'scan']),
+      ],
+      [
+        task('t_p', 'SUCCEEDED', { started_at: iso(-500), completed_at: iso(-400) }),
+        task('t_b', 'RUNNING', { started_at: iso(-300) }),
+        task('t_s', 'PARKED', { park_reason: 'QUOTA_EXHAUSTED' }),
+      ],
+      'graph',
+    )
+    const node = (id: string) =>
+      [...root.querySelectorAll<HTMLElement>('.node')].find((n) => n.querySelector('.node-name')?.textContent === id)!
+    const scan = node('scan').querySelector<HTMLElement>('.node-note')
+    expect(scan, 'a parked node does not say why').toBeTruthy()
+    expect(scan!.textContent).toBe(whyAgent(task('t_s', 'PARKED', { park_reason: 'QUOTA_EXHAUSTED' })))
+    expect(scan!.classList.contains('is-warn')).toBe(false)
+    expect(node('ship').querySelector('.node-note')!.textContent).toBe('waiting on build, scan')
+    expect(node('build').querySelector('.node-note')).toBeNull()
+    expect(node('plan').querySelector('.node-note')).toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// #107: the wait, split at the parents' finish
+// ---------------------------------------------------------------------------
+
+describe('#107: the Timeline splits a wait at the parents’ finish', () => {
+  it('draws waiting-on-parents lighter, then queued, then the run, and says so', async () => {
+    await landed()
+    chooseBoard('Timeline')
+    // `build` was submitted 600s ago; `plan`, its parent, finished 500s ago;
+    // `build` started 400s ago. 100s on its parent, then 100s queued.
+    const t = track(cardOf('wf_new'), 'build')
+    const parents = t.querySelector<HTMLElement>('.wf-tl-span.is-parents')
+    const queued = t.querySelector<HTMLElement>('.wf-tl-span.is-waited')
+    expect(parents, 'build has no waiting-on-parents span').toBeTruthy()
+    expect(queued, 'build has no queued span').toBeTruthy()
+    expect(pct(parents!, 'width')).toBeCloseTo((100 / 600) * 100, 2)
+    expect(pct(queued!, 'left')).toBeCloseTo(pct(parents!, 'left') + pct(parents!, 'width'), 2)
+    expect(pct(queued!, 'width')).toBeCloseTo((100 / 600) * 100, 2)
+    expect(t.getAttribute('aria-label')).toMatch(/waited 1m 40s on its parents, then queued 1m 40s/)
+    // A root has no parents to wait on: its wait is queue, as before.
+    expect(track(cardOf('wf_new'), 'plan').querySelector('.wf-tl-span.is-parents')).toBeNull()
+    // LIGHTER: a --line outline, where a queue is --text-faint.
+    for (const theme of THEMES) {
+      expect(sameColour(paintOf(parents!, OUTLINE, theme), tokenColour('--line', theme)), `${theme}: the parents' wait is not drawn lighter`).toBe(true)
+      expect(sameColour(paintOf(queued!, OUTLINE, theme), tokenColour('--text-faint', theme))).toBe(true)
+    }
+  })
+
+  it('sorts and prints the waited column by the queue, not by the time spent on parents', () => {
+    const root = viewCard(
+      [step('a', [], { task_id: 't_a' }), step('b', ['a'], { task_id: 't_b' }), step('c', [], { task_id: 't_c' })],
+      [
+        task('t_a', 'SUCCEEDED', { created_at: iso(-600), started_at: iso(-590), completed_at: iso(-100) }),
+        // Submitted with a, waited 500s on it, then queued 30s.
+        task('t_b', 'SUCCEEDED', { created_at: iso(-600), started_at: iso(-70), completed_at: iso(-10) }),
+        // A root that queued 60s.
+        task('t_c', 'SUCCEEDED', { created_at: iso(-600), started_at: iso(-540), completed_at: iso(-500) }),
+      ],
+      'table',
+    )
+    const waited = (id: string) => root.querySelector<HTMLElement>(`.wf-table tr[data-step="${id}"] td[data-col="waited"] .wf-cell`)!
+    expect(waited('b').textContent).toBe('30s')
+    expect(waited('b').getAttribute('title')).toMatch(/8m 20s on its parents/)
+    // The note counts from where the figure does, not from submission.
+    expect(waited('b').getAttribute('title')).toMatch(/Last parent’s finish to start/)
+    expect(waited('b').getAttribute('title')).not.toMatch(/Submission to/)
+    expect(waited('c').getAttribute('title')).toMatch(/^Submission to start/)
+    const th = root.querySelector<HTMLElement>('.wf-table th[data-col="waited"] button')!
+    fireEvent.click(th)
+    fireEvent.click(th)
+    expect(rowOrder(root)).toEqual(['c', 'b', 'a'])
+  })
+
+  it('cuts an outlier wait short with a broken-axis mark and its real length as text', () => {
+    const steps = Array.from({ length: 20 }, (_, i) => step(`s${i}`, [], { task_id: `t_s${i}` }))
+    steps.push(step('slow', [], { task_id: 't_slow' }))
+    const tasks = Array.from({ length: 20 }, (_, i) =>
+      task(`t_s${i}`, 'SUCCEEDED', { created_at: iso(-600), started_at: iso(-590), completed_at: iso(-530) }),
+    )
+    tasks.push(task('t_slow', 'SUCCEEDED', { created_at: iso(-600 - 3 * 3600), started_at: iso(-590), completed_at: iso(-530) }))
+    const root = viewCard(steps, tasks, 'timeline')
+    const slow = track(root, 'slow')
+    const cut = slow.querySelector<HTMLElement>('.wf-tl-cut')
+    expect(cut, 'the outlier wait is drawn at full length').toBeTruthy()
+    expect(cut!.querySelector('.wf-tl-break')).toBeTruthy()
+    expect(cut!.textContent).toContain('3h 0m')
+    expect(slow.querySelector('.wf-tl-span.is-waited')!.classList.contains('is-clamped')).toBe(true)
+    expect(slow.getAttribute('aria-label')).toMatch(/cut short/)
+    // Every other row keeps a readable bar: the axis is minutes, not hours.
+    const ran = track(root, 's0').querySelector<HTMLElement>('.wf-tl-span.is-ran')!
+    expect(pct(ran, 'width')).toBeGreaterThan(20)
+    expect(track(root, 's0').querySelector('.wf-tl-cut')).toBeNull()
+  })
+
+  it('prints a step still on its parents as a word that sorts with the absences, not as a figure', () => {
+    const root = viewCard(
+      [step('a', [], { task_id: 't_a' }), step('b', ['a'], { task_id: 't_b' }), step('c', [], { task_id: 't_c' })],
+      [
+        task('t_a', 'RUNNING', { created_at: iso(-600), started_at: iso(-590) }),
+        task('t_b', 'QUEUED', { created_at: iso(-600) }),
+        task('t_c', 'SUCCEEDED', { created_at: iso(-600), started_at: iso(-540), completed_at: iso(-500) }),
+      ],
+      'table',
+    )
+    const cell = root.querySelector<HTMLElement>('.wf-table tr[data-step="b"] td[data-col="waited"] .wf-cell')!
+    expect(cell.textContent).toBe('on parents')
+    expect(cell.classList.contains('is-absent'), 'a step with no queue yet prints a measured figure').toBe(true)
+    expect(cell.getAttribute('title')).toMatch(/10m 0s so far/)
+  })
+
+  it('breaks the axis when every step was submitted together and one started hours late', () => {
+    // The ordinary case the first cut missed: trimming the front of the slow
+    // wait left its run three hours out, so the axis stayed three hours long.
+    const late = 3 * 3600
+    const steps = Array.from({ length: 20 }, (_, i) => step(`s${i}`, [], { task_id: `t_s${i}` }))
+    steps.push(step('slow', [], { task_id: 't_slow' }))
+    const tasks = Array.from({ length: 20 }, (_, i) =>
+      task(`t_s${i}`, 'SUCCEEDED', { created_at: iso(-late - 600), started_at: iso(-late - 590), completed_at: iso(-late - 530) }),
+    )
+    tasks.push(task('t_slow', 'SUCCEEDED', { created_at: iso(-late - 600), started_at: iso(-60), completed_at: iso(0) }))
+    const root = viewCard(steps, tasks, 'timeline')
+    // Every other row's run is a readable bar.
+    const ran = track(root, 's0').querySelector<HTMLElement>('.wf-tl-span.is-ran')!
+    expect(pct(ran, 'width')).toBeGreaterThan(20)
+    // The slow step's run is not floated past hours of empty track: it ends
+    // the axis, one run's width from its end.
+    const slowRan = track(root, 'slow').querySelector<HTMLElement>('.wf-tl-span.is-ran')!
+    expect(pct(slowRan, 'left') + pct(slowRan, 'width')).toBeCloseTo(100, 1)
+    expect(pct(slowRan, 'width')).toBeCloseTo(pct(ran, 'width'), 1)
+    // The mark and the real length sit ON the track, right of the break --
+    // never translated out over the step names.
+    const cut = track(root, 'slow').querySelector<HTMLElement>('.wf-tl-cut')!
+    // Submitted 3h 10m ago, started a minute ago: it waited 3h 9m.
+    expect(cut.textContent).toContain('3h 9m')
+    expect(pct(cut, 'left')).toBeGreaterThan(0)
+    expect(STYLES).not.toMatch(/\.wf-tl-cut\s*\{[^}]*translate\(-100%/)
+    // The scale says it is broken, and a label after the break reads the real time.
+    const scale = root.querySelector<HTMLElement>('.wf-tl-scale')!
+    expect(scale.querySelector('.wf-tl-scale-break')).toBeTruthy()
+    const labels = [...scale.querySelectorAll('.wf-tl-tick')].map((t) => t.textContent)
+    expect(labels.at(-1)).toMatch(/^\+3h/)
   })
 })

@@ -55,8 +55,66 @@ import os
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Iterator
 
 from .errors import WorkspaceError
+
+#: How many folders deep `walk_tree` descends below its root. Past this a
+#: folder is listed but not entered. Every tree the worker walks is in the
+#: agent's reach, and on Python 3.11 `os.walk` and `Path.rglob` RECURSE, one
+#: frame per level: an agent that made a tree 1,000 folders deep raised
+#: `RecursionError` out of the disk check, the output scan and the restore
+#: count (#259 review). 2,048 is past where one-character names reach Linux's
+#: 4,096-byte PATH_MAX, so no tree a path can name is cut short by it; it
+#: bounds the walk's memory, not its reach.
+MAX_WALK_DEPTH = 2048
+
+
+def walk_tree(
+    root: Path, *, max_depth: int = MAX_WALK_DEPTH
+) -> Iterator[tuple[Path, list[str], list[str]]]:
+    """`os.walk(root, followlinks=False)`, top-down, WITHOUT recursion.
+
+    Yields `(dirpath, dirnames, filenames)` exactly as `os.walk` does -- a
+    link to a folder is listed in `dirnames` and never entered, a caller
+    prunes by editing `dirnames` in place -- from an explicit stack, so a deep
+    tree costs a list entry per level, not a Python frame. No descriptor is
+    held between yields: each folder is listed whole and closed. A folder that
+    cannot be listed is skipped, as `os.walk` skips it; a folder at
+    `max_depth` levels below `root` is yielded but not entered.
+    """
+    stack: list[tuple[Path, int]] = [(Path(root), 0)]
+    while stack:
+        here, depth = stack.pop()
+        dirnames: list[str] = []
+        filenames: list[str] = []
+        links: set[str] = set()
+        try:
+            with os.scandir(here) as entries:
+                for entry in entries:
+                    try:
+                        is_dir = entry.is_dir()
+                    except OSError:
+                        is_dir = False
+                    if is_dir:
+                        dirnames.append(entry.name)
+                        try:
+                            if entry.is_symlink():
+                                links.add(entry.name)
+                        except OSError:
+                            links.add(entry.name)
+                    else:
+                        filenames.append(entry.name)
+        except OSError:
+            continue
+        yield here, dirnames, filenames
+        if depth >= max_depth:
+            continue
+        # Reversed onto the stack, so they come off in the order listed.
+        for name in reversed(dirnames):
+            if name not in links:
+                stack.append((here / name, depth + 1))
+
 
 #: The repository checkout's directory inside `work/`. Defined here, beside the
 #: tree it names, because the checkpoint needs it as well as the lifecycle:
@@ -177,11 +235,15 @@ class Workspace:
             return False
 
     def disk_bytes(self) -> int:
-        """Bytes on disk under the workspace, symlinks not followed."""
+        """Bytes on disk under the workspace, symlinks not followed.
+
+        `walk_tree`, not `os.walk`: the tree is the agent's, and a deep one
+        must not raise `RecursionError` out of the disk check.
+        """
         total = 0
-        for dirpath, dirnames, filenames in os.walk(self.root, followlinks=False):
+        for dirpath, dirnames, filenames in walk_tree(self.root):
             for name in filenames:
-                path = Path(dirpath) / name
+                path = dirpath / name
                 try:
                     stat = path.lstat()
                 except OSError:

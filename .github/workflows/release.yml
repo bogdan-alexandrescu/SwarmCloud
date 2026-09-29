@@ -35,7 +35,10 @@
 #      :prod in the images job and ask for approval only at the apply, so a
 #      rejected or abandoned prod release had already repointed :prod.
 #
-#      The gate is the `approval` job, the ONLY job that names an environment.
+#      The gate is the `approval` job, the ONLY job that names prod (or dev).
+#      The one other environment is `dev-iam`, named by a dev-only job that
+#      applies a plan changing IAM once the owner approves it (owner
+#      decision, 2026-09-28, #268; docs/ci.md).
 #      `promote`, `infrastructure` and `deploy` need it and run only if it
 #      SUCCEEDED -- which has to be said in their `if:`, because a job that
 #      must run past a SKIPPED job (a `skip_build` redeploy skips `promote`)
@@ -279,13 +282,14 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   # -------------------------------------------------------------------------
-  # THE APPROVAL. The only job in this workflow that names an environment,
-  # so the only place a release waits for a human (see the header). For prod
+  # THE APPROVAL. The only job in this workflow that names prod or dev, so
+  # the only place a prod release waits for a human (see the header). For prod
   # that is the required reviewer, and nothing that promotes, applies or
   # deploys runs until this job has SUCCEEDED: a rejected approval fails it,
   # and every later job's `if:` asks for success, not just for completion.
   # For dev the environment has no protection rule and this passes straight
-  # on (owner: keep dev un-gated).
+  # on (owner: keep dev un-gated) -- unless the plan changes IAM, which
+  # `infrastructure-iam` holds for the owner in `dev-iam`.
   #
   # A `skip_build` redeploy skips `build` and still comes through here: a
   # prod redeploy of what :prod already holds is still a prod change.
@@ -405,6 +409,12 @@ jobs:
   # Infrastructure. Plans immediately before applying rather than trusting an
   # artifact from an earlier job: an apply must reflect the state as it is now,
   # and in a shared project "as it was ten minutes ago" is not the same thing.
+  #
+  # The one exception is a dev plan that changes IAM (owner decision,
+  # 2026-09-28, #268): this job classifies it, holds it, and does not apply
+  # it; `infrastructure-iam` applies that same saved plan once the owner has
+  # approved it. Terraform refuses a saved plan whose state has moved on, so
+  # the wait cannot turn it into an apply of stale intent.
   # -------------------------------------------------------------------------
   infrastructure:
     name: terraform apply (${{ github.event.inputs.environment || 'dev' }})
@@ -431,6 +441,12 @@ jobs:
     # after a lock timeout skips it, and `stale-approval` says to re-run all
     # jobs (see the header).
     if: ${{ !cancelled() && needs.verify.result == 'success' && needs.approval.result == 'success' && (needs.promote.result == 'success' || (needs.promote.result == 'skipped' && github.event.inputs.skip_build == 'true')) && (github.event.inputs.environment != 'prod' || needs.approval.outputs.attempt == github.run_attempt) }}
+    # Read by `infrastructure-iam` and `deploy`. On prod the classification
+    # does not run and all three are empty.
+    outputs:
+      iam: ${{ steps.iam.outputs.iam }}
+      plan_uri: ${{ steps.held.outputs.uri }}
+      plan_sha256: ${{ steps.held.outputs.sha256 }}
     env:
       ENVIRONMENT: ${{ github.event.inputs.environment || 'dev' }}
       PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
@@ -525,8 +541,147 @@ jobs:
         # refuses to delete anything that does not.
         run: ./scripts/lib/plan-guard.sh --plan "${TF_ROOT}/plan.json" --mode apply
 
+      - name: does this plan change IAM
+        id: iam
+        # DEV ONLY, and prod is untouched: its one approval is `approval
+        # (prod)` above, which already covers every plan.
+        #
+        # Owner decision, 2026-09-28 (#268): a dev plan that creates, updates,
+        # replaces, deletes or forgets a custom role or an IAM member, binding
+        # or policy is applied only in the `dev-iam` environment, behind the
+        # owner's review; every other dev plan applies here, as before. The rule
+        # is scripts/lib/iam-plan.jq, reached through plan-guard.sh, and it
+        # classifies the JSON of plan.tfplan -- the one file either apply
+        # applies. The IAM rows go to this job's summary, on the run's page,
+        # where the reviewer reads them while `dev-iam` waits.
+        #
+        # stdout is exactly `true` or `false`; anything the classifier cannot
+        # read exits non-zero, which fails this job, and nothing is applied.
+        if: env.ENVIRONMENT != 'prod'
+        run: |
+          set -euo pipefail
+          iam="$(./scripts/lib/plan-guard.sh --plan "${TF_ROOT}/plan.json" --classify-iam --summary "${GITHUB_STEP_SUMMARY}")"
+          case "${iam}" in
+            true|false) echo "iam=${iam}" >> "$GITHUB_OUTPUT" ;;
+            *) echo "::error::the IAM classification answered '${iam}'"; exit 1 ;;
+          esac
+
+      - name: hold the saved plan for the dev-iam review
+        id: held
+        # THE SAME PLAN, NOT A RE-PLAN. The rows the owner approves were read
+        # from plan.tfplan, so plan.tfplan is what the dev-iam job applies:
+        # this step records its sha256 as a job output and copies it to the
+        # state bucket, and that job refuses a file whose sha256 differs.
+        # Terraform itself refuses a saved plan whose state has moved on.
+        #
+        # THE STATE BUCKET, NOT A WORKFLOW ARTIFACT. This repository is public,
+        # and a saved plan holds every planned value in plaintext; the state
+        # bucket already holds the same values in the state, has public access
+        # prevention enforced, and the deployer is objectAdmin on it
+        # (terraform/bootstrap). The object is deleted once it is applied.
+        if: steps.iam.outputs.iam == 'true'
+        env:
+          TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+        run: |
+          set -euo pipefail
+          uri="gs://${TF_STATE_BUCKET}/plans/${ENVIRONMENT}/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/plan.tfplan"
+          sha="$(sha256sum "${TF_ROOT}/plan.tfplan" | cut -d' ' -f1)"
+          gcloud storage cp --no-user-output-enabled "${TF_ROOT}/plan.tfplan" "${uri}"
+          echo "uri=${uri}" >> "$GITHUB_OUTPUT"
+          echo "sha256=${sha}" >> "$GITHUB_OUTPUT"
+          {
+            echo "Held for review: \`${uri}\`, sha256 \`${sha}\`. Nothing in this plan has been applied."
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: apply
+        # prod: always, as before. dev: only a plan classified free of IAM --
+        # an explicit 'false'. 'true' is applied by the dev-iam job; an empty
+        # answer is applied nowhere rather than un-gated.
+        if: env.ENVIRONMENT == 'prod' || steps.iam.outputs.iam == 'false'
         run: terraform -chdir=${{ env.TF_ROOT }} apply -input=false -lock-timeout=180s plan.tfplan
+
+  # -------------------------------------------------------------------------
+  # A DEV PLAN THAT CHANGES IAM, APPLIED AFTER THE OWNER APPROVES IT (owner
+  # decision, 2026-09-28, #268). The one job that names `dev-iam`, whose
+  # required reviewer is the owner, so GitHub holds it before its first step.
+  # It applies the saved plan `terraform apply` classified and held, checked
+  # by sha256, and never plans: a new plan would be one nobody reviewed.
+  #
+  # Never on prod, whatever the classification said: prod's approval is
+  # `approval (prod)`. Named in GitHub's settings, not here -- a missing
+  # `dev-iam` is created with no protection at all, so the command that sets
+  # its reviewer is in docs/ci.md.
+  #
+  # A re-run of this job alone asks again (it names the environment), and
+  # re-applies the same held plan; if the state moved on since, Terraform
+  # refuses it as stale, and re-running `terraform apply` plans afresh.
+  # -------------------------------------------------------------------------
+  infrastructure-iam:
+    name: terraform apply, IAM (dev-iam)
+    runs-on: ubuntu-24.04
+    needs: [infrastructure]
+    # !cancelled(), NOT the default (bare success()). success() is not scoped
+    # to `needs: [infrastructure]` -- it is false when ANY job upstream,
+    # transitively, is not a plain success, and on a `skip_build` dispatch
+    # `build` and `promote` (both upstream of `infrastructure`) are skipped.
+    # `infrastructure`'s own `if:` already runs past that skip explicitly, but
+    # a bare `needs.infrastructure.result == 'success'` here does not stop
+    # GitHub inserting success() in front of it: this job used to skip anyway,
+    # every time, on a skip_build dev dispatch -- the IAM plan held but never
+    # applied, and the run still ended green (tests/unit/scripts/
+    # test_release_dev_iam_gate.py, test_a_skip_build_dev_release_with_an_iam_
+    # plan_still_reaches_dev_iam). `needs.infrastructure.result == 'success'`
+    # stays: `needs.*` reads only a job's direct result, which success() does
+    # not give us once a status function is spelled out.
+    if: ${{ !cancelled() && github.event.inputs.environment != 'prod' && needs.infrastructure.result == 'success' && needs.infrastructure.outputs.iam == 'true' }}
+    environment: dev-iam
+    env:
+      ENVIRONMENT: ${{ github.event.inputs.environment || 'dev' }}
+      PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      REGION: ${{ vars.GCP_REGION }}
+      PLAN_URI: ${{ needs.infrastructure.outputs.plan_uri }}
+      PLAN_SHA256: ${{ needs.infrastructure.outputs.plan_sha256 }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - id: auth
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v3
+
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+
+      - name: init
+        # The same backend and the same commit as the job that planned, so the
+        # same providers from the same lock file: a saved plan applies only in
+        # a working directory initialised like the one that made it.
+        run: |
+          terraform -chdir=${{ env.TF_ROOT }} init -input=false -reconfigure \
+            -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
+            -backend-config="prefix=infra/${ENVIRONMENT}"
+
+      - name: fetch the plan the owner reviewed
+        run: |
+          set -euo pipefail
+          if [ -z "${PLAN_URI}" ] || [ -z "${PLAN_SHA256}" ]; then
+            echo "::error::the planning job recorded no held plan, so there is nothing to apply"
+            exit 1
+          fi
+          gcloud storage cp --no-user-output-enabled "${PLAN_URI}" "${TF_ROOT}/plan.tfplan"
+          echo "${PLAN_SHA256}  ${TF_ROOT}/plan.tfplan" | sha256sum -c -
+
+      - name: apply the reviewed plan
+        run: terraform -chdir=${{ env.TF_ROOT }} apply -input=false -lock-timeout=180s plan.tfplan
+
+      - name: drop the held plan
+        run: gcloud storage rm --no-user-output-enabled "${PLAN_URI}"
 
   # -------------------------------------------------------------------------
   # Deploy and prove it works.
@@ -534,9 +689,13 @@ jobs:
   deploy:
     name: deploy and smoke (${{ github.event.inputs.environment || 'dev' }})
     runs-on: ubuntu-24.04
-    needs: [build, approval, infrastructure]
+    needs: [build, approval, infrastructure, infrastructure-iam]
     # Runs only after the apply succeeded, and the apply runs only after the
-    # approval succeeded -- so this is behind the same one approval. No
+    # approval succeeded -- so this is behind the same one approval. On dev
+    # "the apply" is `terraform apply`'s own when its plan changed no IAM
+    # (`iam` is 'false'), and otherwise `infrastructure-iam`'s, which must have
+    # succeeded: a plan the owner rejected, or one never classified, deploys
+    # nothing. Prod never classifies, so this reads as it did before. No
     # `environment:` of its own, for the reason given on `infrastructure`: it
     # used to name prod as well, which asked the reviewer a second time AFTER
     # the apply had already changed prod.
@@ -549,7 +708,7 @@ jobs:
     #
     # !cancelled() rather than always(), for the reason on `infrastructure`:
     # it runs past a `build` that skip_build skipped, and a cancel stops it.
-    if: ${{ !cancelled() && needs.infrastructure.result == 'success' && (github.event.inputs.environment != 'prod' || needs.approval.outputs.attempt == github.run_attempt) }}
+    if: ${{ !cancelled() && needs.infrastructure.result == 'success' && (github.event.inputs.environment == 'prod' || needs.infrastructure.outputs.iam == 'false' || needs.infrastructure-iam.result == 'success') && (github.event.inputs.environment != 'prod' || needs.approval.outputs.attempt == github.run_attempt) }}
     env:
       ENVIRONMENT: ${{ github.event.inputs.environment || 'dev' }}
       PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}

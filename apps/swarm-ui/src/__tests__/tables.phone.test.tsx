@@ -13,6 +13,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { render, waitFor } from '@testing-library/react'
 
 import type { AgentRun } from '../api'
+import type { CheckpointsPage } from '../types'
 import { at, attempt, ev, task } from './runfixture'
 
 const api = vi.hoisted(() => ({
@@ -42,10 +43,51 @@ function agentRun(): AgentRun {
   }
 }
 
+function listing(): CheckpointsPage {
+  return {
+    task_id: 'tsk_charts',
+    tenant_id: 'acme',
+    prefix: 'tenants/eng/tasks/tsk_charts/attempts/',
+    checkpoints: [
+      {
+        checkpoint_id: 'ckpt-00001',
+        attempt_id: 'att_1',
+        attempt_known: true,
+        attempt_created_at: null,
+        attempt_completed_at: null,
+        prefix: 'tenants/eng/tasks/tsk_charts/attempts/att_1/checkpoints/ckpt-00001/',
+        uri: URI,
+        is_latest_pointer: false,
+        objects: [],
+        stored_bytes: 2048,
+        manifest: 'present',
+        manifest_detail: null,
+        created_at: at(5),
+        seq: 1,
+        generation: 1,
+        label: null,
+        archive_bytes: null,
+        archive_sha256: null,
+        file_count: null,
+        resumable: true,
+        resumable_detail: null,
+      },
+    ],
+    count: 1,
+    total_found: 1,
+    next_page_token: null,
+    listed: true,
+    truncated: false,
+    latest_checkpoint: { pointer: null, status: 'unset', checkpoint_id: null },
+  }
+}
+
 describe('CH-13: a stacked record ellipsizes a long value and keeps it whole', () => {
   it("keeps a checkpoint's whole uri in its title, beside the action that copies it", async () => {
     // MUTATION: drop the `title` from the Location cell's uri.
-    api.loadCheckpoints.mockResolvedValue({ status: 'empty', fetchedAt: Date.now() })
+    // #102: the checkpoints' one table is the Checkpoints section's, read from
+    // the bucket, so the listing is what carries the uri now.
+    api.loadCheckpoints.mockResolvedValue({ status: 'ok', fetchedAt: Date.now(), data: listing() })
     api.loadTaskLogs.mockResolvedValue({ status: 'empty', fetchedAt: Date.now() })
     const { container } = render(<Run run={agentRun()} />)
     const uri = await waitFor(
