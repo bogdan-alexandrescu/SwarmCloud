@@ -61,7 +61,9 @@ import {
  *   that glyph to `catalogue-from-route` instead: with one `?` to spend on
  *   this screen, what the list IS beats what a caller may pass to it, because
  *   the second is stated by the submit form at the moment it matters. It is an
- *   argument, not a datum, and §8.4(5) is where arguments live.
+ *   argument, not a datum, and §8.4(5) is where arguments live. #126 moved
+ *   the glyph on again, to `what-sets-it-apart-is-arithmetic`, and put
+ *   `catalogue-from-route` in the footer index beside this one.
  *
  *   "up to N GiB of that memory may go to the workspace, leaving M GiB" --
  *   the WORKSPACE COLUMN IS NAMED `Workspace (of memory)`. §8.4(3). The clause
@@ -129,18 +131,21 @@ function Topology({ data }: { data: RuntimeTopology }) {
             It was ten: invariant 10 here, the resolved-backend rule on the
             Backends heading, the unit on a column whose own header already
             said `(units)`, the workspace basis on a column that already said
-            `(of memory)`, and five more. Every one of them is a standing
-            argument about the catalogue as a whole rather than about the thing
-            it was pinned to, so all ten are the footer index below and this is
-            the one that stays: what this list IS and where it comes from, which
-            is the question the other nine are downstream of.
-            It sits on the eyebrow because the eyebrow renders on every path
-            through this screen -- a rationed `?` is only learnable if it is in
-            the same place every time, and a glyph that appears only when a read
-            fails is one nobody has learned to look for. */}
+            `(of memory)`, and five more. All ten are the footer index below.
+            IT OPENS WHAT THE CARDS' OWN WORDS DO NOT SAY (#126). It opened
+            `catalogue-from-route`, which the footer index already carries --
+            where this list comes from -- while the two words every card draws
+            and none explains, `Sets it apart` (arithmetic against the rest of
+            the catalogue) and the `disabled` chip, had no glyph at all. So it
+            opens that topic, and where the list comes from stays in the
+            footer.
+            It sits after the eyebrow, a label, because the eyebrow renders on
+            every path through this screen -- a rationed `?` is only learnable
+            if it is in the same place every time, and a glyph that appears only
+            when a read fails is one nobody has learned to look for. */}
         <span className="ctl-eyebrow rt-eyebrow">
           The catalogue
-          <HelpCard topic="catalogue-from-route" />
+          <HelpCard topic="what-sets-it-apart-is-arithmetic" />
         </span>
         <span className="ctl-card-note is-end">
           {runtimes.length} of {runtimes.length} · whole catalogue
@@ -304,7 +309,12 @@ function Backends({
                 />
               ))}
             </tbody>
-          <caption>by resolved backend · full pool board under Pools</caption>
+          {/* `Pools` IS THE WAY THERE (#126): the caption named a screen and
+              left the reader to find it. */}
+          <caption>
+            by resolved backend · full pool board under{' '}
+            <a className="ctl-link" href="#capacity/pools">Pools</a>
+          </caption>
         </table>
       </div>
     </section>
@@ -542,13 +552,16 @@ function RuntimeCard({ runtime, all }: { runtime: Runtime; all: Runtime[] }) {
             not a choice. (No profile is named here: this file may hold no
             name from the frozen catalogue, comments included --
             test_runtimes_screen.py reads it whole.) */}
-        {off ? (
+        {/* THE SLOT HOLDS ONLY THE CHIP (#126). An available runtime printed
+            its resolved backend here, a second copy of the card's own `runs on`
+            row a few lines down, so the head said one fact twice and the
+            disabled chip shared its slot with a note that meant nothing like
+            it. */}
+        {off && (
           <span className="ctl-chip is-bad" aria-describedby={runtime.disabled_reason ? reasonId : undefined}>
             <i aria-hidden="true" />
             disabled
           </span>
-        ) : (
-          <span className="ctl-card-note">{runtime.resolved_backend}</span>
         )}
       </div>
 

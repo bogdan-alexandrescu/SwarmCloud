@@ -1,0 +1,21 @@
+# The credential patterns, shared by swarm-api (read-time redaction) and
+# agent-worker (the per-commit secret scan before a push). Owner decision 4,
+# 2026-09-28, PR #259. Standard library only, and NOT part of the frozen
+# contract in apps/common: a new rule here is an ordinary reviewed change.
+#
+# A plain, self-contained package, like apps/common: a static [project] table,
+# a build backend, and no path source of its own, so an image can build it
+# into its wheelhouse with nothing else copied in.
+[project]
+name = "swarm-redaction"
+version = "0.1.0"
+description = "Credential patterns shared by swarm-api and the agent worker."
+requires-python = ">=3.11"
+dependencies = []
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["swarm_redaction"]
