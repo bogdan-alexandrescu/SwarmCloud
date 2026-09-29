@@ -1117,6 +1117,21 @@ class Reconciler:
                     to_state, error = TaskState.FAILED, finding.reason
                 else:
                     to_state, error = TaskState.READY, f"reconciled: {finding.reason}"
+                # An attempt that ended before its runner started is refunded,
+                # up to a bound, inside the repair's own transaction and before
+                # it decides whether the attempts are spent (#67). The store
+                # appends how the attempt was counted, so the reason goes in
+                # without the snapshot's prediction of it. Only on this pass's
+                # own fence: `invalidated_to` is None when somebody else fenced
+                # first, and then nothing is refunded (invariant 5).
+                refund: dict[str, Any] = {}
+                if ended_at_startup and to_state is TaskState.READY:
+                    what = finding.detail.get("what_ended") or finding.reason
+                    error = f"reconciled: {what}"
+                    refund = {
+                        "startup_refund_limit": self._config.startup_refund_limit,
+                        "fenced_generation": outcome.invalidated_to,
+                    }
                 repaired = self._store.repair_task_state(
                     finding.task_id,
                     to_state=to_state,
@@ -1132,6 +1147,7 @@ class Reconciler:
                     # or (spent attempts on a requeue) its worker was lost.
                     failed_cause=EndCause.CANNOT_START if cannot_start else EndCause.LOST_WORKER,
                     **guard,
+                    **refund,
                 )
                 if repaired is not None:
                     outcome.repaired_to = repaired.value
