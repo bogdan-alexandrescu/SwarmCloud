@@ -2679,6 +2679,34 @@ button.node:focus-visible { outline: 2px solid var(--info); outline-offset: 2px;
   line-height: var(--lh-body);
 }
 .row .why.is-warn { color: var(--warn); }
+/* A REASON SAID ONCE FOR A RUN OF ROWS (#100). The row above, or the group
+   header, already says it; twenty-one parked steps printing the same sentence
+   were what pushed the list off one screen. Visually hidden, never
+   `display: none` and never a hover reveal, so the row's accessible name still
+   carries its reason.
+
+   IT IS NOT A GRID ITEM. The row renders it inside `.row .agent`, which is
+   `position: relative` and `overflow: hidden`, and it is absolutely positioned
+   there. Pinned to the row's first cell (`grid-row: 1; grid-column: 1`) it
+   took that cell before auto-placement ran, so every other cell moved one
+   column right and the last wrapped to a line of its own -- on exactly the
+   parked runs this exists for. In flow under `grid-column: 1 / -1` it cost a
+   line of row-gap. And absolute against nothing positioned escapes the
+   scroller (see the stacked table head's note); `.agent` is its containing
+   block and clips it. Higher specificity than the phone block's `.row .why`,
+   so its grid placement, order and clamp do not bring the line back. */
+.row .why.is-shared {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
 
 /* ------------------------------------------------------------------------ */
 /* Stale: real data that is no longer current                               */
@@ -3090,6 +3118,8 @@ table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--tex
 .row .agent {
   display: flex; align-items: baseline; gap: var(--ctl-s2);
   min-width: 0; overflow: hidden; white-space: nowrap;
+  /* The containing block of a shared reason (#100, `.row .why.is-shared`). */
+  position: relative;
   /* THE CONTAINER'S OWN CUT MUST ALSO SIGNAL — F3 of the 2026-09-23 overflow
      inventory named this element by its computed value: `overflow: hidden;
      text-overflow: clip`. The two column stages above and the `min-width: 3ch`
@@ -3137,6 +3167,16 @@ table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--tex
 .row .when.ticking { color: var(--text-dim); }
 
 .section.group > h2 { display: flex; align-items: center; gap: var(--ctl-s2); flex-wrap: wrap; }
+/* The reason a run of the group's rows shares, said once under the header
+   with the number of rows it covers (#100). The same ink and size as the row's
+   own `.why` it replaces: it is the same sentence, moved up. */
+.section.group > .group-why {
+  margin: 0 0 var(--ctl-s1);
+  font-size: var(--t-body);
+  line-height: var(--lh-body);
+  color: var(--text);
+}
+.section.group > .group-why > b { font-variant-numeric: tabular-nums; }
 /* `.roll`'S FOUR RULES ARE DELETED. It was the last filled pill on this screen:
    999px radius, an 18% tint of the state hue behind the word, and the word in
    `--*-ink` at 600, uppercase, tracked -- the 102x23px silhouette §6.6 measured
@@ -3257,7 +3297,8 @@ table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--tex
    which is `display:block` by default and must not take its own line here. */
 .ag-filter { display: inline-flex; align-items: center; gap: var(--ctl-s2); }
 .ag-filter > .ctl-eyebrow { display: inline; margin: 0; }
-.ag-filter select {
+.ag-filter select,
+.ag-filter input[type='search'] {
   padding: 4px 8px;
   border: 1px solid var(--line);
   border-radius: var(--ctl-radius-sm);
@@ -3592,7 +3633,8 @@ table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--tex
   /* The select is the other control on this toolbar and gets the same target.
      Its font-size stays at --t-body: a 16px minimum is an iOS zoom-avoidance
      trick, and this sheet's --t-body is 14px everywhere by decision. */
-  .ag-filter select { min-height: 44px; }
+  .ag-filter select,
+  .ag-filter input[type='search'] { min-height: 44px; }
   /* The facts strip is already a wrapping flex row; at 390px it wants the
      tighter of the two gaps so a six-fact strip is three lines rather than
      six. */
