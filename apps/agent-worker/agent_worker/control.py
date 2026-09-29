@@ -90,6 +90,13 @@ from swarm_common.states import (
 from .errors import ControlPlaneError, FencedError, FencedWriteRefused, TenantMismatchError
 from .startup import StartupInterrupted
 
+#: The attempt document's map of checkpoint id to the SHA-256 of its archive,
+#: written by `ControlPlane.record_checkpoint` beside `checkpoints`. A retry
+#: restores a checkpoint only when its archive digest is the one recorded here
+#: (`Worker._recorded_checkpoint`, #347): the manifest carrying the digest sits
+#: in the bucket, which every agent of the tenant can write.
+CHECKPOINT_DIGESTS_FIELD = "checkpoint_sha256"
+
 # ---------------------------------------------------------------------------
 # Signals
 # ---------------------------------------------------------------------------
@@ -504,6 +511,18 @@ class ControlPlane:
             snap.to_dict() or {}, kind="task", document_id=self.task_id
         )
 
+    def fetch_attempt(self, attempt_id: str) -> dict[str, Any] | None:
+        """Another attempt's document, by id; None when there is none.
+
+        Read by the restore (#347), which binds the checkpoint it is pointed
+        at to the attempt document that recorded it. Refused, with
+        `TenantMismatchError`, when the document is another tenant's.
+        """
+        snap = self._db.collection("attempts").document(attempt_id).get(**self.call_options())
+        if not snap.exists:
+            return None
+        return self._assert_tenant(snap.to_dict() or {}, kind="attempt", document_id=attempt_id)
+
     def fetch_lease(self) -> dict[str, Any] | None:
         snap = self._lease_ref().get(**self.call_options())
         if not snap.exists:
@@ -612,8 +631,9 @@ class ControlPlane:
 
         It writes nothing. It is for work that must be refused BEFORE its first
         side effect. A checkpoint uploads its archive long before it writes the
-        pointer to it, and a stale archive left in the task's prefix is one
-        that `CheckpointManager.find_latest` can later choose. It uses the same
+        pointer to it, and a stale archive left in the task's prefix is work a
+        superseded attempt should not have written (a restore no longer
+        chooses by listing the prefix, #347). It uses the same
         predicate as every guarded write, so it cannot pass where a write would
         be refused. It does not replace the check in the write's own
         transaction, because the fence can still land in between.
@@ -847,26 +867,43 @@ class ControlPlane:
             **self.call_options(),
         )
 
-    def record_checkpoint(self, *, checkpoint_id: str, uri: str, size_bytes: int, seq: int) -> None:
+    def record_checkpoint(
+        self,
+        *,
+        checkpoint_id: str,
+        uri: str,
+        size_bytes: int,
+        seq: int,
+        archive_sha256: str | None = None,
+    ) -> None:
         # Read-modify-write rather than ArrayUnion: exactly one worker owns an
         # attempt document, so there is no contention to serialise, and this
         # keeps the Firestore sentinel types out of the worker's hot path.
         snap = self._attempt_ref().get()
         existing: list[str] = []
+        digests: dict[str, str] = {}
         if snap.exists:
             data = self._assert_tenant(
                 snap.to_dict() or {}, kind="attempt", document_id=self.attempt_id
             )
             existing = list(data.get("checkpoints", []))
+            recorded = data.get(CHECKPOINT_DIGESTS_FIELD)
+            if isinstance(recorded, dict):
+                digests = dict(recorded)
         if checkpoint_id not in existing:
             existing.append(checkpoint_id)
+        fields: dict[str, Any] = {"checkpoints": existing, "tenant_id": self.tenant_id}
+        if archive_sha256:
+            # What the next attempt binds the archive's bytes to (#347): the
+            # manifest that also carries this digest sits in the bucket, which
+            # every agent of the tenant can write; this document does not.
+            digests[checkpoint_id] = archive_sha256
+            fields[CHECKPOINT_DIGESTS_FIELD] = digests
         # merge-set, not update: an attempt cancelled before it started has no
         # attempt document yet, and losing the record would be worse than
         # creating it late. `tenant_id` goes in every merge so a document this
         # path creates is never one the tenant check would later refuse.
-        self._attempt_ref().set(
-            {"checkpoints": existing, "tenant_id": self.tenant_id}, merge=True
-        )
+        self._attempt_ref().set(fields, merge=True)
 
         # FENCED LIKE A TRANSITION. `latest_checkpoint` is what the next
         # attempt restores from. A stale worker repointing it would hand the
