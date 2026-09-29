@@ -316,11 +316,25 @@ variable "tenants" {
       toset(flatten([for t, v in var.tenants : [for sa in v.service_accounts : lower(sa)]])),
       toset(concat(
         [for u in var.admin_users : lower(u)],
-        [for u in var.admin_pool_users : lower(u)],
-        [for m in var.secret_admin_members : lower(replace(m, "serviceAccount:", ""))]
+        [for u in var.admin_pool_users : lower(u)]
       ))
     )) == 0
-    error_message = "a tenant's service account may not also be in admin_users, admin_pool_users or secret_admin_members: a listing gives exactly one tenant's rights, and an admin entry would add every tenant's."
+    error_message = "a tenant's service account may not also be in admin_users or admin_pool_users: a listing gives exactly one tenant's rights, and an admin entry would add every tenant's. (secret_admin_members is checked by that variable's own validation: reading it from here would be a cycle, since it already reads var.tenants.)"
+  }
+
+  # Per-tenant secret admins, read from var.tenants itself, so no cycle: a
+  # listed account may not be ANY tenant's `secret_admins` entry. Any, not only
+  # its own tenant's -- secretVersionAdder on another tenant's key is the
+  # cross-tenant reach a listing exists to deny, and on its own tenant's key it
+  # would let the bot replace the provider key its own tasks run on.
+  validation {
+    condition = length(setintersection(
+      toset(flatten([for t, v in var.tenants : [for sa in v.service_accounts : lower(sa)]])),
+      toset(flatten([
+        for t, v in var.tenants : [for m in v.secret_admins : lower(replace(m, "serviceAccount:", ""))]
+      ]))
+    )) == 0
+    error_message = "a tenant's service account may not also be in any tenant's secret_admins: a listing gives read and submit rights inside one tenant, never the ability to replace a provider key."
   }
 
   validation {
@@ -561,6 +575,18 @@ variable "secret_admin_members" {
       || contains([for t, v in var.tenants : lower("user:${v.principal}")], lower(m))
     ]) == 0
     error_message = "secret_admin_members is applied to every tenant's secrets, so it may not name a tenant's own principal: that grants one tenant the ability to replace another tenant's provider key. Use a dedicated platform-admin group, or set per-tenant `secret_admins`."
+  }
+
+  # Contract request 30: nor a service account a tenant LISTS. This half of the
+  # "a listed account is never an admin" rule lives here, not on var.tenants
+  # beside the admin_users/admin_pool_users half, because this variable's
+  # validation already reads var.tenants and the reverse read is a cycle.
+  validation {
+    condition = length(setintersection(
+      toset([for m in var.secret_admin_members : lower(replace(m, "serviceAccount:", ""))]),
+      toset(flatten([for t, v in var.tenants : [for sa in v.service_accounts : lower(sa)]]))
+    )) == 0
+    error_message = "secret_admin_members may not name a service account a tenant lists in tenants.*.service_accounts: a listing gives exactly one tenant's rights, and secretVersionAdder on every tenant's provider key would add every tenant's."
   }
 }
 

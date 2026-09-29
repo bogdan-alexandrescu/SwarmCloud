@@ -227,11 +227,45 @@ run "an_account_in_secret_admin_members_is_refused" {
 
   # secret_admin_members holds IAM member strings; the prefix is stripped
   # before comparing, so the IAM spelling of the same account is still caught.
+  # Reported by secret_admin_members' own validation, not by var.tenants: that
+  # variable already reads var.tenants, so the reverse read would be a cycle.
   variables {
     tenants = {
       eng = { kind = "group", principal = "eng@saga.xyz", providers = [], service_accounts = ["swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com"] }
     }
     secret_admin_members = ["serviceAccount:swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com"]
+  }
+
+  expect_failures = [var.secret_admin_members]
+}
+
+run "an_account_in_a_tenants_own_secret_admins_is_refused" {
+  command = plan
+
+  module {
+    source = "../../terraform/infra"
+  }
+
+  override_data {
+    target          = data.google_service_account.listed
+    override_during = plan
+    values = {
+      unique_id = "104857600000000000001"
+    }
+  }
+
+  # The per-tenant list is refused too, including the listing tenant's own:
+  # a listing never carries the ability to replace a provider key.
+  variables {
+    tenants = {
+      eng = {
+        kind             = "group"
+        principal        = "eng@saga.xyz"
+        providers        = []
+        service_accounts = ["swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com"]
+        secret_admins    = ["serviceAccount:swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com"]
+      }
+    }
   }
 
   expect_failures = [var.tenants]
@@ -256,7 +290,7 @@ run "an_account_that_is_another_tenants_principal_is_refused" {
   variables {
     tenants = {
       eng     = { kind = "group", principal = "eng@saga.xyz", providers = [], service_accounts = ["swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com"] }
-      "u-bot" ={ kind = "user", principal = "swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com", providers = [] }
+      "u-bot" = { kind = "user", principal = "swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com", providers = [] }
     }
   }
 

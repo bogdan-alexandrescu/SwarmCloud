@@ -687,6 +687,15 @@ locals {
 # managed: the account is created and owned elsewhere (#273's
 # terraform/bootstrap/ci_fix.tf for swarm-ci-fix), and a data source carries
 # no labels to set.
+#
+# THE PIN HOLDS ONLY BETWEEN APPLIES. The uid is read at plan and rendered into
+# swarm-api's environment at apply. An account deleted and recreated under the
+# same address keeps resolving by the OLD uid until the next apply re-reads it:
+# the new account is refused (its uid does not match), but an ID token the OLD
+# account minted before it was deleted still carries the listed uid and is
+# accepted until it expires (Google ID tokens live an hour). Deleting a listed
+# account is therefore not a revocation until both the token lifetime has
+# passed and the next apply has re-read the listing.
 data "google_service_account" "listed" {
   for_each   = local.listed_service_accounts
   project    = var.project_id
