@@ -318,7 +318,7 @@ def test_an_unregistered_credential_in_an_intermediate_commit_folds_the_history(
     registered secrets. A key the agent pasted into an `.env` is registered
     by no one; kept one by one, the first commit's tree would publish it.
 
-    MUTATION: drop `_adds_a_credential` from `leaks=` in `_publish_git` and
+    MUTATION: drop `_holds_a_credential` from `Worker._leaks_in_added_text` and
     this history is kept as two commits, the first carrying the key."""
     def edit(repo: Path) -> None:
         (repo / ".env").write_text(f"AWS_SECRET_ACCESS_KEY={UNREGISTERED_AWS_KEY}\n")
@@ -457,6 +457,10 @@ def test_a_replace_ref_over_a_secret_blob_does_not_hide_it_from_the_scan(
     """
     def edit(repo: Path) -> None:
         (repo / ".env").write_text(f"ANTHROPIC_API_KEY={KEY}\n")
+        # A file that stays, so the final tree differs from the base and the
+        # fold has a commit to push: with `.env` alone, added and deleted,
+        # the branch equalled main and there was nothing to count.
+        (repo / "client.py").write_text("import os\nKEY = os.environ['ANTHROPIC_API_KEY']\n")
         _commit(repo, "Configure the client")
         # This clone already has history from `origin`, so the sha to replace
         # a blob under is THIS commit's, not the repository's true root.
@@ -499,48 +503,111 @@ def test_a_replace_ref_over_a_secret_blob_does_not_hide_it_from_the_scan(
     assert KEY.encode() not in _all_object_bytes(origin), "the key reached a pushed object"
 
 
-# -- a diff too big or too CRLF-heavy to scan cannot pass as scanned (#259 review, M2) --
+# -- a big diff is scanned whole, in chunks, and never refused for its size --
+#
+# Owner decision, 2026-09-29 (#259): the scans stream every diff through
+# overlapping windows (`_DiffLeakScanner`). A diff past 32 MiB -- the cap the
+# capture used to cut at -- is read to its end: clean, it publishes; a key past
+# the old cap is still found. Both files are CRLF lines, so the scan's bytes
+# are never newline-translated either (#259 review, M2).
+
+#: 40 MB of CRLF lines: `+x\r\n` per line puts the diff at about 53 MB.
+BIG_CLEAN = b"x\r\n" * 13_300_000
 
 
-def test_a_diff_too_big_to_scan_whole_counts_as_a_hit(
+def test_a_40_mb_clean_diff_publishes_commit_by_commit(
     worker_factory, monkeypatch, origin, local_urls, forge
 ):
-    """A diff at or over the scan's 32 MiB cap is not read whole, and must
-    count as a hit -- "not scanned" is not "clean" (`_first_leaking_commit`'s
-    docstring).
-
-    Truncation must be decided from the CAPTURE (its truncated flag, or its
-    raw byte size at or over the cap), never from the decoded text's length:
-    reading in text mode with the default newline handling translates every
-    `\\r\\n` in the capture to `\\n`. This file is all CRLF lines, so its
-    diff's lines are `+x\\r\\n`: the capture stops at 32 MiB, and a quarter of
-    those bytes are `\\r`s the translation drops, so the text re-measured
-    reads about 24 MiB -- "under the cap" for a diff that was cut. The real
-    cap, not a patched one: the capture appends a cut notice of fixed size,
-    and on a tiny cap that notice alone can push the re-measured text back
-    over it. The second commit deletes the file, so the final tree the push
-    carries is small and passes its own scan (`final_tree_leak`).
-    """
-    assert lifecycle.REPLAY_SCAN_MAX_BYTES == 32 * 1024 * 1024
-
     def edit(repo: Path) -> None:
-        (repo / "big.py").write_bytes(b"x\r\n" * 12_000_000)  # 36 MB; 48 MB of diff
+        (repo / "big.py").write_bytes(BIG_CLEAN)
         _commit(repo, "Add a big CRLF file")
-        (repo / "big.py").unlink()
         (repo / "notes.txt").write_text("done\n")
-        _commit(repo, "Remove the big file")
+        _commit(repo, "Add notes")
 
-    _, config, out = _attempt(
-        worker_factory, monkeypatch, origin, task_id="t-truncated-diff", edit=edit,
-    )
+    _, config, out = _attempt(worker_factory, monkeypatch, origin, task_id="t-big-clean", edit=edit)
 
     branch = f"{config.git_branch_prefix}{config.task_id}"
     assert out["published"] is True, out.get("publish_reason")
-    commits = pushed_commits(origin, branch)
-    assert len(commits) == 1, [c["message"] for c in commits]
-    assert out.get("agent_commits_folded") == 2, out
-    assert "agent_commits_kept" not in out, out
-    assert "big.py" not in tree_at(origin, branch)
+    assert "final_tree_leak" not in out, out
+    assert out.get("agent_commits_kept") == 2, out
+    assert "agent_commits_folded" not in out, out
+    assert {"big.py", "notes.txt"} <= tree_at(origin, branch)
+
+
+def test_a_key_past_the_32_mib_mark_of_a_40_mb_diff_is_caught(
+    worker_factory, monkeypatch, origin, local_urls, forge
+):
+    """The key sits about 46 MB into the diff, past everything the old
+    32 MiB capture kept, and is found and named by file."""
+    head = b"x\r\n" * 11_500_000
+    tail = b"x\r\n" * 1_800_000
+    content = head + f"AWS_ACCESS_KEY_ID={UNREGISTERED_AWS_KEY}\r\n".encode() + tail
+
+    def edit(repo: Path) -> None:
+        (repo / "big.py").write_bytes(content)
+        _commit(repo, "Add a big CRLF file")
+
+    _, config, out = _attempt(worker_factory, monkeypatch, origin, task_id="t-big-key", edit=edit)
+
+    branch = f"{config.git_branch_prefix}{config.task_id}"
+    assert out["published"] is False, out
+    assert out.get("final_tree_leak") == "the final tree adds a credential in big.py; remove it", out
+    assert not _branch_exists(origin, branch), "a branch was pushed"
+
+
+def _scan(diff: bytes, *, window: int, overlap: int, piece: int, leaks=None) -> str | None:
+    scanner = lifecycle._DiffLeakScanner(
+        leaks or lifecycle._holds_a_credential, window=window, overlap=overlap
+    )
+    for start in range(0, len(diff), piece):
+        scanner.feed(diff[start : start + piece])
+    return scanner.close()
+
+
+def _one_file_diff(path: str, lines: list[str]) -> bytes:
+    body = "".join(f"+{line}\n" for line in lines)
+    return (
+        f"diff --git a/{path} b/{path}\nnew file mode 100644\n--- /dev/null\n"
+        f"+++ b/{path}\n@@ -0,0 +1,{len(lines)} @@\n{body}"
+    ).encode()
+
+
+@pytest.mark.parametrize("piece", [1, 7, 4096])
+def test_a_key_straddling_a_window_edge_is_found(piece):
+    """With 200-character windows overlapping by 64, a key starting four
+    characters before the first window's edge -- too few for the AWS rule to
+    match there -- is whole in the second; fed a byte at a time, in odd
+    pieces, or whole, the parse is the same."""
+    filler = ["y" * 30] * 6  # 186 characters with newlines
+    diff = _one_file_diff("a.txt", [*filler, f"{'z' * 9} {UNREGISTERED_AWS_KEY}", *filler])
+    assert _scan(diff, window=200, overlap=64, piece=piece) == "a.txt"
+
+
+def test_a_registered_value_straddling_a_window_edge_is_found():
+    secret = "registered-" + "s" * 90  # longer than the base overlap
+    filler = ["y" * 30] * 6
+    diff = _one_file_diff("b.txt", [*filler, secret, *filler])
+    found = _scan(
+        diff, window=200, overlap=32 + len(secret), piece=5, leaks=lambda text: secret in text
+    )
+    assert found == "b.txt"
+
+
+def test_the_stream_scan_names_the_file_and_reads_only_added_lines():
+    diff = (
+        "diff --git a/clean.txt b/clean.txt\n--- a/clean.txt\n+++ b/clean.txt\n"
+        f"@@ -1 +1 @@\n-{UNREGISTERED_AWS_KEY}\n+nothing here\n"
+        "diff --git a/cfg.py b/cfg.py\n--- a/cfg.py\n+++ b/cfg.py\n"
+        f"@@ -0,0 +1 @@\n+x = 1\r{UNREGISTERED_AWS_KEY}\n"
+    ).encode()
+    assert _scan(diff, window=1 << 20, overlap=64, piece=3) == "cfg.py"
+    removed_only = diff.split(b"diff --git a/cfg.py")[0]
+    assert _scan(removed_only, window=1 << 20, overlap=64, piece=3) is None
+
+
+def test_a_multibyte_character_split_across_chunks_is_decoded_whole():
+    diff = _one_file_diff("c.txt", [f"café {UNREGISTERED_AWS_KEY}"])
+    assert _scan(diff, window=1 << 20, overlap=64, piece=1) == "c.txt"
 
 
 def test_a_lone_carriage_return_does_not_hide_a_credential_from_the_scan(
