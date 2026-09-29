@@ -306,7 +306,7 @@ def test_a_hostile_git_config_does_not_hide_the_key_or_run(
             _git(repo, "config", "core.hooksPath", str(hooks))
         else:
             _git(repo, "config", setting, str(program))
-        (repo / "notes.txt").write_text("left uncommitted, so the worker commits in the clone\n")
+        (repo / "notes.txt").write_text("left uncommitted, so the worker commits it\n")
 
     _, config, out = _attempt(
         worker_factory, monkeypatch, origin, task_id=f"t-config-{setting.replace('.', '-')}",

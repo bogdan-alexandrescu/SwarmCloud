@@ -19,7 +19,7 @@
 
 import STYLES from '../styles.css?raw'
 import { describe, expect, it, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { act, render, screen } from '@testing-library/react'
 
 import type { Result } from '../fetch'
 import { HELP } from '../help'
@@ -282,6 +282,112 @@ describe('Tenants says there is no budget in the reader’s words (AH-21)', () =
     expect(note, 'there is no budget note').toBeTruthy()
     for (const env of [WIDE, PHONE]) {
       expect(won(note!, 'color', env), `the budget note is dimmed at ${env.width}`).toBe('var(--text)')
+    }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// #134: the owner's decisions on the roster, 2026-09-29. Each block was
+// written before the change it demands.
+// ---------------------------------------------------------------------------
+
+describe('Tenants counts what a reader scans the roster for (#134)', () => {
+  it('says N tenants · N with no tenant key · N disabled', async () => {
+    const c = await roster()
+    const summary = visible(c.querySelector('p.sub'))
+    // ROSTER: three tenants, two with no credential registered, one disabled.
+    // The head appends the read's age after its own ` · `.
+    expect(summary.startsWith('3 tenants · 2 with no tenant key · 1 disabled ·'), summary).toBe(true)
+  })
+
+  it('never says a tenant cannot run: a lent account can still run it', async () => {
+    const c = await roster()
+    expect(c.textContent ?? '').not.toMatch(/cannot run|can't run|can’t run/i)
+  })
+})
+
+describe('Tenants copies a whole identity and says whether it landed (#134)', () => {
+  function clipboard(write: (text: string) => Promise<void>): void {
+    vi.stubGlobal('navigator', { ...navigator, clipboard: { writeText: write } })
+  }
+
+  it('puts a copy control beside the principal and the service account, copying the full value', async () => {
+    const writes: string[] = []
+    clipboard(async (text) => {
+      writes.push(text)
+    })
+    const c = await roster()
+    const r = row(c, 'u-sw-c90291')
+    for (const [label, full, noun] of [
+      ['Principal', LONG_PRINCIPAL, 'principal'],
+      ['Identity', LONG_SA, 'service account'],
+    ] as const) {
+      const cell = r.querySelector(`td[data-label="${label}"]`)!
+      const button = cell.querySelector('button.ten-copy')
+      expect(button, `no copy control beside the ${label}`).not.toBeNull()
+      expect(button!.getAttribute('aria-label')).toBe(`Copy ${noun} ${full}`)
+      // Beside the shortened value, not in place of it.
+      expect(cell.querySelector('.ten-ident')!.textContent).toBe(full)
+      await act(async () => {
+        ;(button as HTMLButtonElement).click()
+      })
+      expect(writes.at(-1)).toBe(full)
+      expect(visible(cell.querySelector('[role="status"]'))).toBe(`${noun} copied`)
+    }
+    // No identity, nothing to copy.
+    expect(row(c, 'smoke').querySelector('td[data-label="Identity"] button')).toBeNull()
+  })
+
+  it('says so when the browser refuses the copy', async () => {
+    clipboard(() => Promise.reject(new Error('denied')))
+    const c = await roster()
+    const cell = row(c, 'eng').querySelector('td[data-label="Principal"]')!
+    await act(async () => {
+      cell.querySelector<HTMLButtonElement>('button.ten-copy')!.click()
+    })
+    expect(visible(cell.querySelector('[role="status"]'))).toMatch(/^copy refused/)
+  })
+
+  it('clears what it said after a few seconds, so old outcomes do not pile up', async () => {
+    clipboard(async () => {})
+    const c = await roster()
+    const cell = row(c, 'eng').querySelector('td[data-label="Principal"]')!
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      await act(async () => {
+        cell.querySelector<HTMLButtonElement>('button.ten-copy')!.click()
+      })
+      expect(visible(cell.querySelector('[role="status"]'))).toBe('principal copied')
+      act(() => {
+        vi.advanceTimersByTime(5000)
+      })
+      expect(visible(cell.querySelector('[role="status"]'))).toBe('')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('makes the copy control a 44px target at phone width', async () => {
+    const c = await roster()
+    const button = row(c, 'eng').querySelector('td[data-label="Principal"] button.ten-copy')!
+    expect(won(button, 'min-height', PHONE)).toBe('44px')
+    expect(won(button, 'min-width', PHONE)).toBe('44px')
+  })
+})
+
+describe('Tenants links each Enforced figure to its pool on Pool limits (#134)', () => {
+  it('points at the tenant pool’s row by the id Pool limits gives it', async () => {
+    const c = await roster()
+    for (const [id, figure] of [
+      ['eng', '20'],
+      ['u-sw-c90291', '2'],
+      ['smoke', '4'],
+    ] as const) {
+      const link = row(c, id).querySelector<HTMLAnchorElement>('td[data-label="Enforced"] a')
+      expect(link, `${id}: the Enforced figure is not a link`).not.toBeNull()
+      expect(link!.getAttribute('href')).toBe(`#admin/limits?pool=${encodeURIComponent(`tenant:${id}`)}`)
+      expect(link!.textContent).toBe(figure)
+      expect(link!.className).toContain('ctl-link')
     }
   })
 })
