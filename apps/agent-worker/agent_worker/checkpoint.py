@@ -39,6 +39,7 @@ import io
 import json
 import os
 import stat
+import sys
 import tarfile
 import tempfile
 from dataclasses import dataclass, asdict
@@ -49,6 +50,26 @@ from typing import Any, Callable
 from .errors import CheckpointError
 from .objectstore import ObjectStore
 from .workspace import Workspace
+
+def _require_data_filter(module: Any = tarfile) -> None:
+    """Refuse to run on a Python whose `tarfile` has no extraction filters.
+
+    `restore` extracts through `tarfile.data_filter` (`_restore_filter`),
+    which CPython has from 3.11.4. Without it the restore would fail on the
+    first resume with a TypeError nobody connects to the interpreter, or --
+    worse, a change that dropped the filter argument to "fix" that would
+    extract with no filter at all. So the worker does not start: this runs
+    at import, and the image build imports this module (and asserts the
+    version itself, `images/agent-runtime-base/Dockerfile`).
+    """
+    if not callable(getattr(module, "data_filter", None)) or not hasattr(module, "FilterError"):
+        raise ImportError(
+            "agent_worker.checkpoint needs tarfile.data_filter (Python 3.11.4 or later) "
+            f"to restore a checkpoint safely; this is Python {sys.version.split()[0]}"
+        )
+
+
+_require_data_filter()
 
 ARCHIVE_NAME = "archive.tar.gz"
 MANIFEST_NAME = "manifest.json"

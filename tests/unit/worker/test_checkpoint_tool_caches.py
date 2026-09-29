@@ -553,3 +553,24 @@ def test_the_heartbeat_during_a_checkpoint_stops_once_the_attempt_is_fenced(db, 
     worker.run()
     assert after_fence, "no checkpoint was written"
     assert after_fence[0] <= 1, f"{after_fence[0]} heartbeats in 4 s after the fence"
+
+
+# ---------------------------------------------------------------------------
+# 4. the worker refuses to run on a Python without tarfile's extraction filters
+# ---------------------------------------------------------------------------
+
+
+def test_the_checkpoint_module_refuses_a_tarfile_without_data_filter():
+    """`restore` extracts through `tarfile.data_filter` (3.11.4 and later).
+    On an older interpreter the module must fail at import, naming the cause,
+    not at the first resume. MUTATION: make `_require_data_filter` a no-op and
+    the stand-in module without the filter is accepted."""
+    import types
+
+    from agent_worker.checkpoint import _require_data_filter
+
+    _require_data_filter(tarfile)  # this interpreter has it, or the import above failed
+
+    old = types.SimpleNamespace(FilterError=Exception)  # a 3.11.3 tarfile, as far as this goes
+    with pytest.raises(ImportError, match=r"tarfile\.data_filter \(Python 3\.11\.4 or later\)"):
+        _require_data_filter(old)
