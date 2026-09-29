@@ -510,3 +510,34 @@ def test_a_catalogue_that_gains_entries_needs_no_edit_here(client, monkeypatch, 
     for n in range(scale):
         assert f"probe-{n}" in served, "the route did not publish an added profile"
         assert served[f"probe-{n}"]["image"] == f"probe-image-{n}"
+
+
+def test_the_always_present_glyph_explains_the_card_and_the_footer_keeps_the_route():
+    """#126: the one `?` on the screen opens what a card's words mean.
+
+    It opened `catalogue-from-route`, which the footer index already carries,
+    so the two things a reader of a card cannot work out from the card -- what
+    `Sets it apart` is measured against, and what `disabled` means -- had no
+    route but the footer. The glyph now opens that topic; the footer keeps
+    `catalogue-from-route`; the card head holds only the disabled chip, since
+    the resolved backend is the card's own `runs on` row.
+    """
+    text = _screen_path().read_text()
+    topology = _component(text, "Topology")
+    glyphs = re.findall(r'<HelpCard topic="([a-z0-9-]+)"', topology)
+    assert glyphs == ["what-sets-it-apart-is-arithmetic"], (
+        f"the catalogue's always-present `?` opens {glyphs}, not the topic that "
+        "explains `Sets it apart` and `disabled`"
+    )
+    footer = re.search(r"RUNTIME_TOPICS: readonly TopicId\[\] = \[([^\]]*)\]", text)
+    assert footer, "the footer index was not found"
+    assert "'catalogue-from-route'" in footer.group(1), (
+        "catalogue-from-route left the footer when the glyph moved off it"
+    )
+    card = _component(text, "RuntimeCard")
+    head = card[card.index('className="ctl-card-head"'):card.index('className="ctl-card-body"')]
+    assert "resolved_backend" not in head, (
+        "the card head still prints the resolved backend beside the name; the "
+        "`runs on` row is where it is read"
+    )
+    assert 'href="#capacity/pools"' in text, "`Pools` in the Backends caption is not a link"

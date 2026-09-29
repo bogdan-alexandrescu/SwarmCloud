@@ -493,3 +493,213 @@ describe('the tab and the Recent state are addresses (OV-10)', () => {
     expect(selectedTab()).toBe('Live')
   })
 })
+
+describe('Recent can be searched and put failures first (#99)', () => {
+  /**
+   * The state segment answered "which failed"; it did not answer "where is
+   * mine". A pasted full task id or a step name has to leave only the rows it
+   * names, over the same loaded page every other count here runs over -- and
+   * the query stays on the screen, never in the address.
+   *
+   * MUTATION: drop the text filter from `rows`, match case-sensitively, or
+   * ignore `failedFirst` in the sort.
+   */
+  const OLDER = '2026-09-23T11:00:00.000Z'
+  const OLDEST = '2026-09-23T09:00:00.000Z'
+  const PAGE = [
+    task('task_aaaaaaaa00000000000a', 'SUCCEEDED', { workflow_id: 'wf_build', step_id: 'Scan-Terraform' }),
+    task('task_bbbbbbbb00000000000b', 'FAILED', { updated_at: OLDEST, workflow_id: 'wf_build', step_id: 'lint' }),
+    task('task_cccccccc00000000000c', 'CANCELLED', { updated_at: OLDER }),
+    task('task_dddddddd00000000000d', 'FAILED', { updated_at: OLDER, workflow_id: 'wf_docs', step_id: 'publish' }),
+  ]
+
+  async function landRecent(props: object = {}): Promise<HTMLElement> {
+    api.loadTasks.mockResolvedValue({
+      status: 'ok',
+      data: { tasks: PAGE, tenant_id: 'acme' },
+      fetchedAt: Date.now(),
+    } satisfies Result<TaskPage>)
+    const { container } = render(
+      <AgentsScreen onOpen={() => {}} {...{ list: { tab: 'recent', state: null }, ...props }} />,
+    )
+    await waitFor(() => expect(container.querySelector('.rows .row.clickable')).not.toBeNull())
+    return container as HTMLElement
+  }
+
+  const ids = (c: HTMLElement) =>
+    [...c.querySelectorAll('.rows .row.clickable .agent .id')].map((n) => n.getAttribute('title'))
+
+  it('offers a search box labelled like the other toolbar filters', async () => {
+    const c = await landRecent()
+    const box = screen.getByRole('searchbox', { name: /search/i })
+    expect(box.closest('label.ag-filter'), 'the search box is not an `.ag-filter`').not.toBeNull()
+    expect(box.closest('label')!.querySelector('.ctl-eyebrow')).not.toBeNull()
+    expect(ids(c)).toHaveLength(4)
+  })
+
+  it('leaves only the row a pasted full task id names', async () => {
+    const c = await landRecent()
+    fireEvent.change(screen.getByRole('searchbox', { name: /search/i }), {
+      target: { value: '  task_cccccccc00000000000c ' },
+    })
+    await waitFor(() => expect(ids(c)).toEqual(['task_cccccccc00000000000c']))
+  })
+
+  it('matches a step name and a workflow id case-insensitively', async () => {
+    const c = await landRecent()
+    const box = screen.getByRole('searchbox', { name: /search/i })
+    fireEvent.change(box, { target: { value: 'scan-terraform' } })
+    await waitFor(() => expect(ids(c)).toEqual(['task_aaaaaaaa00000000000a']))
+    fireEvent.change(box, { target: { value: 'WF_BUILD' } })
+    await waitFor(() =>
+      expect(ids(c)).toEqual(['task_aaaaaaaa00000000000a', 'task_bbbbbbbb00000000000b']),
+    )
+  })
+
+  it('applies after the state filter, and says so when nothing is left', async () => {
+    const c = await landRecent({ list: { tab: 'recent', state: 'failed' } })
+    expect(ids(c)).toEqual(['task_dddddddd00000000000d', 'task_bbbbbbbb00000000000b'])
+    fireEvent.change(screen.getByRole('searchbox', { name: /search/i }), { target: { value: 'scan' } })
+    await waitFor(() => expect(c.querySelector('.ctl-empty')).not.toBeNull())
+    expect(c.querySelector('.ctl-empty')!.textContent).toMatch(/scan/)
+  })
+
+  it('never writes the query to the address', async () => {
+    const seen: unknown[] = []
+    await landRecent({ onList: (l: unknown) => seen.push(l) })
+    const before = window.location.hash
+    fireEvent.change(screen.getByRole('searchbox', { name: /search/i }), { target: { value: 'lint' } })
+    expect(seen).toEqual([])
+    expect(window.location.hash).toBe(before)
+  })
+
+  it('puts FAILED rows first, then newest first, when asked', async () => {
+    const c = await landRecent()
+    // Newest first by default: the SUCCEEDED row is the newest.
+    expect(ids(c)[0]).toBe('task_aaaaaaaa00000000000a')
+    fireEvent.click(screen.getByRole('checkbox', { name: /failed first/i }))
+    await waitFor(() =>
+      expect(ids(c)).toEqual([
+        'task_dddddddd00000000000d',
+        'task_bbbbbbbb00000000000b',
+        'task_aaaaaaaa00000000000a',
+        'task_cccccccc00000000000c',
+      ]),
+    )
+  })
+
+  it("keeps the search and the sort inside the loaded-rows qualifier", async () => {
+    const c = await landRecent()
+    const say = c.querySelector('.ag-scope')!.getAttribute('aria-label') ?? ''
+    expect(say).toMatch(/search/)
+    expect(say).toMatch(/sort/)
+    expect(say).toMatch(/4 rows loaded/)
+  })
+})
+
+describe('a reason shared by neighbouring rows is said once (#100)', () => {
+  /**
+   * Twenty-one parked steps each printed "Waiting on an earlier step in its
+   * workflow." -- twenty-one lines of the same sentence, which is what pushed
+   * the list off one screen. A run of rows sharing a reason says it once: on
+   * the first row of the run in the flat list, on the group header in the
+   * grouped one. The hidden copies stay in each row's accessible name, and a
+   * reason that needs a person is never hidden.
+   *
+   * MUTATION: compare with the next row instead of the previous one, hide
+   * warn lines, or drop the shared line from the group header.
+   */
+  const WAIT = 'Waiting on an earlier step in its workflow.'
+  // Newest first is the list's order, so each fixture is a minute older than
+  // the one before it and the rows land in the order written.
+  let minute = 0
+  const at = () => new Date(Date.parse(NOW) - 60_000 * minute++).toISOString()
+  const parked = (id: string, over: Partial<Task> = {}) =>
+    task(id, 'PARKED', { park_reason: 'DEPENDENCY_INCOMPLETE', workflow_id: 'wf_chain', updated_at: at(), ...over })
+
+  const rowEls = (c: HTMLElement) => [...c.querySelectorAll<HTMLElement>('.rows .row.clickable')]
+  const shownWhy = (r: HTMLElement) => {
+    const w = r.querySelector('.why')
+    return w && !w.classList.contains('is-shared') ? (w.textContent ?? '') : null
+  }
+
+  it('says a run of equal reasons once in the flat list, and keeps it in every row', async () => {
+    const c = await land([
+      parked('task_aaaaaaaa00000000000a'),
+      parked('task_bbbbbbbb00000000000b'),
+      parked('task_cccccccc00000000000c'),
+      task('task_dddddddd00000000000d', 'PARKED', { park_reason: 'PROVIDER_COOLDOWN', updated_at: at() }),
+    ])
+    const rows = rowEls(c)
+    expect(rows).toHaveLength(4)
+    const shown = rows.map(shownWhy)
+    expect(shown[0]).toBe(WAIT)
+    expect(shown[1]).toBeNull()
+    expect(shown[2]).toBeNull()
+    // A differing neighbour keeps its own line.
+    expect(shown[3]).not.toBeNull()
+    expect(shown[3]).not.toBe(WAIT)
+    // Hidden from sight, never from the row's name.
+    for (const r of rows.slice(0, 3)) {
+      expect(screen.getByRole('button', { name: new RegExp(r.querySelector('.id')!.textContent!) }).textContent).toContain(WAIT)
+      expect(r.textContent).toContain(WAIT)
+    }
+  })
+
+  it('never hides a reason that needs a person', async () => {
+    const c = await land([
+      task('task_aaaaaaaa00000000000a', 'PARKED', { park_reason: 'MANUAL_PAUSE' }),
+      task('task_bbbbbbbb00000000000b', 'PARKED', { park_reason: 'MANUAL_PAUSE' }),
+    ])
+    const rows = rowEls(c)
+    expect(rows.map((r) => r.querySelector('.why.is-warn') !== null)).toEqual([true, true])
+    expect(c.querySelectorAll('.why.is-shared')).toHaveLength(0)
+  })
+
+  it('prints a shared reason once on the group header, with its count', async () => {
+    const c = await land([
+      parked('task_aaaaaaaa00000000000a'),
+      parked('task_bbbbbbbb00000000000b'),
+      parked('task_cccccccc00000000000c'),
+      parked('task_eeeeeeee00000000000e', { park_reason: 'PROVIDER_COOLDOWN' }),
+    ])
+    fireEvent.click(screen.getByRole('checkbox', { name: /group by workflow/i }))
+    await waitFor(() => expect(c.querySelector('.section.group')).not.toBeNull())
+    const group = c.querySelector('.section.group')!
+    const said = [...group.querySelectorAll('.group-why')].map((n) => (n.textContent ?? '').trim())
+    expect(said).toEqual([`3 ${WAIT}`])
+    const rows = rowEls(c)
+    expect(rows.slice(0, 3).map(shownWhy)).toEqual([null, null, null])
+    expect(shownWhy(rows[3]!)).not.toBeNull()
+    for (const r of rows) expect(r.querySelector('.why')).not.toBeNull()
+  })
+
+  it('keeps a shared reason out of the row grid, inside the agent cell', async () => {
+    // MUTATION: render the hidden reason as a direct child of `.row` again.
+    // As a grid item it must be placed, and every placement tried shifted the
+    // row's columns or cost it a line.
+    const c = await land([parked('task_aaaaaaaa00000000000a'), parked('task_bbbbbbbb00000000000b')])
+    const rows = rowEls(c)
+    const hidden = rows[1]!.querySelector('.why.is-shared')
+    expect(hidden).not.toBeNull()
+    expect(hidden!.parentElement!.classList.contains('agent')).toBe(true)
+    for (const r of rows) expect(r.querySelector(':scope > .why.is-shared')).toBeNull()
+  })
+
+  it('draws a shared reason visually hidden, not display:none and not on hover', async () => {
+    const { default: css } = await import('../styles.css?raw')
+    const rule = /\.row \.why\.is-shared\s*\{([^}]*)\}/.exec(css)
+    expect(rule, 'no `.row .why.is-shared` rule').not.toBeNull()
+    expect(rule![1]).toMatch(/clip-path:\s*inset\(50%\)/)
+    expect(rule![1]).not.toMatch(/display:\s*none/)
+    expect(css).not.toMatch(/:hover[^{]*\.why\.is-shared/)
+    // Not a grid item at a fixed cell: that took (1,1) before auto-placement
+    // and moved every other cell of the row one column right.
+    expect(rule![1]).not.toMatch(/grid-(row|column)\s*:/)
+    expect(rule![1]).toMatch(/position:\s*absolute/)
+    // ...against `.agent`, which clips it, not against the initial containing block.
+    const agent = /\.row \.agent\s*\{([^}]*)\}/.exec(css)
+    expect(agent![1]).toMatch(/position:\s*relative/)
+    expect(agent![1]).toMatch(/overflow:\s*hidden/)
+  })
+})

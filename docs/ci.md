@@ -41,7 +41,7 @@ Three reasons, in the order they cost the most:
 | `application.yml` | push to `main`; pull requests touching `apps/`, `images/`, `kubernetes/`, `scripts/`, `tests/`, `docs/`, `Makefile`, `pyproject.toml`, `uv.lock`, `README.md`, `CLAUDE.md`, `CONTRACT.md`, `release.yml`, `iam-refusal-probe.yml` or the workflow itself | `shellcheck` · `release workflow wiring (actionlint)` (also lints `iam-refusal-probe.yml`) · `format / unit tests` · `swarm-ui typecheck / component tests` · `integration tests (emulator)` · `kubernetes manifests` · `build images` (**push to `main` only** — the one build of each commit) |
 | `terraform.yml` | push to `main`; pull requests touching `terraform/`, `tests/terraform/`, the plan guard, the destroy guard, the unlabelable-type list or the workflow itself | `fmt / validate / tflint` · `terraform test` · `checkov` · `plan` (**not** on a pull request) · `plan (not run on a pull request)` |
 | `security.yml` | every pull request; push to `main`; Mondays 06:00 UTC | `trivy (repo)` · `secret scan` · `checkov (terraform + kubernetes)` · `platform policy assertions` · `trivy (published images)` (schedule / dispatch only) |
-| `release.yml` | push to `main` touching `apps/`, `images/`, `terraform/`, `kubernetes/`, `scripts/` or the workflow; or manual dispatch with an environment | `verify` · `images and scan` (reuses `application.yml`'s build of the commit; moves nothing) · `approval` (the one job naming a GitHub environment — prod waits here) · `promote` · `terraform apply` · `deploy and smoke` — the last three only after `approval` succeeded, and on prod only in the attempt it succeeded in · `prod approval is from an earlier attempt` (runs only on a partial re-run of prod, and fails it) |
+| `release.yml` | push to `main` touching `apps/`, `images/`, `terraform/`, `kubernetes/`, `scripts/` or the workflow; or manual dispatch with an environment | `verify` · `images and scan` (reuses `application.yml`'s build of the commit; moves nothing) · `approval` (the one job naming `dev` or `prod` — prod waits here) · `promote` · `terraform apply` · `terraform apply, IAM (dev-iam)` (dev only, and only when the plan changes IAM — the owner approves it [below](#a-dev-release-that-changes-iam-waits-for-the-owner)) · `deploy and smoke` — the apply and deploy jobs only after `approval` succeeded, and on prod only in the attempt it succeeded in · `prod approval is from an earlier attempt` (runs only on a partial re-run of prod, and fails it) |
 | `auto-merge.yml` | `pull_request_target` when a label is added; acts only on `ready` ([below](#a-ready-pull-request-is-merged-by-github-not-by-a-session)) | `queue for auto-merge` (refuses a `[swarm] task_` title, an unprotected base branch or a missing merge App, with a comment; otherwise enables native squash auto-merge under the PR's title) |
 | `iam-refusal-probe.yml` | **manual dispatch on `main` only**, by the owner, once ([below](#the-deployers-refusal-is-proven-once-by-a-probe-the-owner-dispatches)) — never on a push, a pull request or a schedule | `deployer is refused an unlisted role` |
 
@@ -295,8 +295,9 @@ would have asked twice — the second time
 after the apply had already changed prod, which made it a question with no
 decision left in it. Adding a third for the promotion would have put
 promotion behind a *different* approval from the apply, not "that same" one.
-So `approval` is the only job in `release.yml` that names an environment;
-`promote`, `terraform apply` and `deploy and smoke` name none. They run only
+So `approval` is the only job in `release.yml` that names `prod` (or `dev`);
+`promote`, `terraform apply` and `deploy and smoke` name none. The one other
+environment is `dev-iam`, named by a dev-only job ([below](#a-dev-release-that-changes-iam-waits-for-the-owner)). They run only
 if it **succeeded**, and on prod only in the attempt it succeeded in (see
 "A prod approval clears one attempt" below).
 
@@ -465,6 +466,163 @@ the model means cannot start on GitHub), that GitHub starts `always()` work
 after a cancel (that is its documented behaviour, not observed here), or that
 a real prod release waits. The first prod dispatch after this lands is that
 proof.
+
+## A dev release that changes IAM waits for the owner
+
+**Owner decision, 2026-09-28 (#268).** Gate only IAM plans. A dev release
+whose Terraform plan touches IAM stops for the owner. Every other dev release
+applies un-gated, as it did before. Prod is unchanged: its one approval is
+`approval (prod)`, which already covers every plan.
+
+**Why IAM, and only IAM.** A dev apply runs in `saga-agents-staging`, which is
+shared with another team. Most dev plans move image digests or change a
+service's environment, and gating those would put the owner in front of every
+merge. An IAM change decides who can do what in that shared project, and that
+is the kind of change the owner wants to read before it lands. Ungating dev
+(2026-09-24) was a decision about routine releases, not about grants.
+
+**What this gate stops, and what it does not.** `dev-iam` catches an operator
+mistake — a plan that changes who can do what in a shared project, applied
+without anyone reading it — the same way `approval (prod)` does for prod. It
+is not a boundary against an attacker who can merge to `main`: as measured
+above for `approval (prod)`, `GCP_DEPLOY_SA` and `GCP_WIF_PROVIDER` are
+repository variables, not environment ones, and the workload identity pool
+does not pin the minted token's `sub` to the environment a job named
+(`terraform/bootstrap/wif.tf`). `infrastructure-iam` authenticates with
+exactly the same service account, through exactly the same provider, as
+`terraform apply (dev)` and `terraform apply (prod)` — naming `dev-iam` asks a
+human to look at the plan, but grants the job asking no identity that a plan
+merged straight past the review could not already reach. Whether this gate
+should also be a real identity boundary — for example, an attribute condition
+on the WIF binding scoped to the environment — is the owner's to decide.
+
+**What counts as an IAM change.** A resource change whose type is one of
+
+* `google_project_iam_custom_role`, `google_organization_iam_custom_role`
+* `google_*_iam_member`, `google_*_iam_binding`, `google_*_iam_policy`,
+  `google_*_iam_member_remove`, `google_*_iam_audit_config` (any resource
+  family the provider names one of these on, not only `project`)
+* `google_iam_workload_identity_pool`, `google_iam_workload_identity_pool_provider`
+* `google_iam_deny_policy`, `google_iam_principal_access_boundary_policy`
+* `google_service_account_key`
+* `google_service_account` -- but only `delete` or `forget`; its own `create`
+  and `update` grant nothing (what it can do comes from the `_iam_member` /
+  `_iam_binding` / `_iam_policy` resources already gated above), so only its
+  removal is an access change
+* `google_storage_bucket_acl`, `google_storage_bucket_access_control`
+* `google_bigquery_dataset_access`
+
+and whose actions include `create`, `update`, `delete` or `forget` (every
+family above except `google_service_account`, which is `delete` or `forget`
+only). A replace is `delete` + `create`, so it counts. `no-op` and `read` do
+not. The rule is [`scripts/lib/iam-plan.jq`](../scripts/lib/iam-plan.jq),
+stated there once, and it is reached only through
+`scripts/lib/plan-guard.sh --classify-iam`.
+
+**The second widening, 2026-09-28 (#274).** The `google_iam_workload_identity_pool`
+family, the deny and principal-access-boundary policies, a service account's key
+or deletion, the pre-IAM-conditions ACL mechanisms on a bucket or a BigQuery
+dataset, an organization-level custom role, an audit config and
+`_iam_member_remove` all decide who can do what, or what they can do it as, in
+`saga-agents-staging` exactly like the families #268 already gated -- so they
+gate the same way, through the same rule.
+
+**`forget` is the case that would be missed.** A `removed` block with
+`destroy = false` plans the action `forget`. Nothing live is deleted; the
+resource just leaves this root's state. That is how
+`terraform/infra/custom_roles_moved_to_bootstrap.tf` hands eight custom roles to
+the owner's bootstrap root. A filter that knew only create, update and delete
+would have waved it through. Who administers a role is an IAM decision.
+
+**How a dev release runs now.**
+
+1. `terraform apply (dev)` plans and saves `plan.tfplan`, as before, then runs
+   the shared-project guard.
+2. It classifies `terraform show -json plan.tfplan`. The answer is `true` or
+   `false`. A plan the classifier cannot read fails the job, so nothing is
+   applied. It never answers `false` for a plan it could not read.
+3. The IAM rows go to the job's summary, one table row per change: address,
+   type, actions, the resource the grant is on, and the role and member. The
+   reviewer reads them on the run's page while the next job waits.
+4. **`false`:** the same job applies `plan.tfplan`, exactly as before.
+   **`true`:** the job does not apply. It copies `plan.tfplan` to
+   `gs://<state bucket>/plans/dev/<run id>-<attempt>/plan.tfplan`, records its
+   sha256 as a job output, and ends.
+5. `terraform apply, IAM (dev-iam)` names the `dev-iam` environment, so GitHub
+   holds it until the owner approves. It then fetches the held plan, refuses it
+   if its sha256 differs from the one recorded, and applies **that file**. It
+   never plans, because a new plan would be one nobody reviewed. After a
+   successful apply it deletes the held plan.
+6. `deploy and smoke` runs after whichever apply ran. If the owner rejects
+   `dev-iam`, nothing deploys, and the run ends failed.
+
+**Why the state bucket and not a workflow artifact.** This repository is
+public, and a saved plan holds every planned value in plaintext. The state
+bucket already holds the same values in the state. It enforces public access
+prevention, and the deployer is `objectAdmin` on it (`terraform/bootstrap`,
+`deployer_state`), so this needs no new grant.
+
+**Staleness.** Terraform refuses to apply a saved plan once the state it was
+planned against has changed ("Saved plan is stale"). This is Terraform's
+documented behaviour; it has not been observed on this workflow. A dev-iam
+approval given hours later therefore either applies exactly what was
+reviewed, or fails without applying anything. It never applies something
+else. To retry after a stale refusal, re-run `terraform apply (dev)`. That
+re-plans, re-classifies, holds the new plan and asks again. Re-running the
+dev-iam job on its own asks again and re-applies the same held plan.
+
+**What waiting costs.** The run holds the `release-dev` concurrency group
+while `dev-iam` waits. So the next dev release queues behind it, and GitHub
+keeps only the newest pending run in a group. A rejected or abandoned IAM
+release therefore delays routine dev releases until it ends. Reject or cancel
+it, rather than leaving it waiting.
+
+**The environment is a repository setting the owner creates.** GitHub
+creates an environment a workflow names if it does not exist, with no
+protection at all. Until the commands below have run, `dev-iam` does not wait
+for anyone. `release.yml` cannot check this. To create it with the owner as
+required reviewer, restricted to `main` like `prod`:
+
+```bash
+owner_id="$(gh api users/bogdan-alexandrescu --jq .id)"
+printf '{"reviewers":[{"type":"User","id":%s}],"prevent_self_review":false,"deployment_branch_policy":{"protected_branches":false,"custom_branch_policies":true}}' "${owner_id}" \
+  | gh api --method PUT repos/bogdan-alexandrescu/SwarmCloud/environments/dev-iam --input -
+gh api --method POST repos/bogdan-alexandrescu/SwarmCloud/environments/dev-iam/deployment-branch-policies \
+  -f name=main -f type=branch
+```
+
+and to read it back:
+
+```bash
+gh api repos/bogdan-alexandrescu/SwarmCloud/environments/dev-iam \
+  --jq '{reviewers: [.protection_rules[] | select(.type == "required_reviewers") | .reviewers[].reviewer.login], branches: .deployment_branch_policy, can_admins_bypass}'
+```
+
+`prevent_self_review` is `false` for the same reason as on `prod`: the owner
+is the only reviewer, and a release started by their own merge must still be
+approvable. `can_admins_bypass` is left at GitHub's default, `true`, as it
+was measured on `prod`.
+
+**What a pull request proves about this, and what it cannot.**
+`tests/unit/scripts/test_plan_guard_iam_classification.py` runs
+`--classify-iam` on the fixtures in `tests/unit/scripts/fixtures/plans/`. A
+plan that forgets a custom role must be classified IAM, and a plan that only
+moves image digests must not. It also runs every owner-named family with every
+changing action, and inputs that must be refused rather than answered. The
+self-test (`plan-guard.sh --self-test`) carries the same cases.
+`tests/unit/scripts/test_release_dev_iam_gate.py` schedules `release.yml` with
+the model from `test_release_prod_gate.py`, trying every value the
+classification can write. It checks four things:
+
+* nothing applies or deploys after an IAM plan unless `dev-iam` is approved;
+* a routine plan flows through `dev` untouched;
+* an empty answer applies nowhere;
+* the dev-iam job never starts on prod, and applies the checksummed saved
+  plan without ever planning.
+
+It cannot show that `dev-iam` has its reviewer (run the read-back above), nor
+that GitHub and Terraform behave as documented. The first dev release with an
+IAM change after this lands is that proof.
 
 ## The UI job's Node is read from the image, not pinned
 
